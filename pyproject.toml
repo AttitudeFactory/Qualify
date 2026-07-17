@@ -1,0 +1,4 @@
+[dependency-groups]
+dev = [
+    "reflex>=0.9.7",
+]
