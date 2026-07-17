@@ -61,9 +61,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-This repo is **pre-implementation**: it currently contains only `README.md` and two planning docs in `docs/`. There is no source code, no `docker-compose.yml`, no `packages/`, no `migrations/`, and no `scripts/` yet — those are the planned structure described in the docs, not the current state. Before assuming any file, service, or command exists, check the actual filesystem rather than trusting the docs, since the docs describe target architecture.
+This repo is **pre-implementation** with respect to the actual product described below: there is no `docker-compose.yml`, no `packages/`, no `migrations/`, no `scripts/`, and no api/worker code yet. What exists on disk today is:
 
-When the first code lands, this file should be updated with real build/lint/test commands. Until then, there are none to document.
+- `README.md` and two planning docs in `docs/` (see "What Qualify is").
+- A bare `Qualify/` **Reflex** app produced by `reflex init` (`rxconfig.py`, `Qualify/Qualify.py`, `assets/`, `reflex.lock/`) — still the unmodified default welcome-page template. This scaffold exists because of the Agents/Reflex-skills instructions above, not because the planning docs call for Reflex: **neither `docs/plan-ingesta-social.md` nor `docs/ingenieria-inversa-stack-gtm.md` mentions Reflex**, and the planned Phase 1 architecture is FastAPI + Celery + ClickHouse services, not a Reflex app. Don't assume Reflex is the intended frontend for that pipeline unless the user says so — treat it as a separate, currently-unconnected scaffold.
+
+Before assuming any file, service, or command exists, check the actual filesystem rather than trusting the docs, since the docs describe target architecture.
+
+### Commands
+
+The Reflex scaffold uses `uv` (`pyproject.toml` + `uv.lock`, Python >=3.12):
+
+```bash
+uv sync                 # install/sync dependencies into .venv
+uv run reflex run       # start the Reflex dev server (frontend + backend)
+```
+
+Follow the **reflex-process-management** skill (see Agents section above) rather than running `reflex` commands ad hoc — it covers the correct start/reload/debug sequence. There is no lint or test tooling configured yet (no ruff/pytest config, no test files) — nothing to run there until it's added.
 
 ## What Qualify is
 
