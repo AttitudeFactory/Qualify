@@ -1,4 +1,5 @@
 [dependency-groups]
 dev = [
     "reflex>=0.9.7",
+    "sqlmodel>=0.0.39",
 ]

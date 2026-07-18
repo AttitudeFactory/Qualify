@@ -1,36 +1,29 @@
-"""Welcome to Reflex! This file outlines the steps to create a basic app."""
-
 import reflex as rx
 
-from rxconfig import config
+from .components import filter_bar, mentions_table, sidebar, stats_row, topbar
+from .db import create_db_and_tables
+from .state import DashboardState
 
-
-class State(rx.State):
-    """The app state."""
+create_db_and_tables()
 
 
 def index() -> rx.Component:
-    # Welcome Page (Index)
-    return rx.container(
-        rx.color_mode.button(position="top-right"),
+    return rx.hstack(
+        sidebar(),
         rx.vstack(
-            rx.heading("Welcome to Reflex!", size="9"),
-            rx.text(
-                "Get started by editing ",
-                rx.code(f"{config.app_name}/{config.app_name}.py"),
-                size="5",
-            ),
-            rx.link(
-                rx.button("Check out our docs!"),
-                href="https://reflex.dev/docs/getting-started/introduction/",
-                is_external=True,
-            ),
-            spacing="5",
-            justify="center",
-            min_height="85vh",
+            topbar(),
+            stats_row(),
+            filter_bar(),
+            mentions_table(),
+            width="100%",
+            spacing="4",
+            align_items="start",
         ),
+        width="100%",
+        spacing="0",
+        align_items="start",
     )
 
 
 app = rx.App()
-app.add_page(index)
+app.add_page(index, on_load=DashboardState.load_mentions, title="Qualify · Menciones")
