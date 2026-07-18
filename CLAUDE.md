@@ -61,10 +61,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-This repo is **pre-implementation** with respect to the actual product described below: there is no `docker-compose.yml`, no `packages/`, no `migrations/`, no `scripts/`, and no api/worker code yet. What exists on disk today is:
+This repo is **mostly pre-implementation** with respect to the actual product described below: there is no `docker-compose.yml`, no `migrations/`, no `scripts/`, no api/worker code, and no ClickHouse/Postgres yet. The one exception is `packages/models/` — see below. What exists on disk today is:
 
-- `README.md` and two planning docs in `docs/` (see "What Qualify is").
-- A bare `Qualify/` **Reflex** app produced by `reflex init` (`rxconfig.py`, `Qualify/Qualify.py`, `assets/`, `reflex.lock/`) — still the unmodified default welcome-page template. This scaffold exists because of the Agents/Reflex-skills instructions above, not because the planning docs call for Reflex: **neither `docs/plan-ingesta-social.md` nor `docs/ingenieria-inversa-stack-gtm.md` mentions Reflex**, and the planned Phase 1 architecture is FastAPI + Celery + ClickHouse services, not a Reflex app. Don't assume Reflex is the intended frontend for that pipeline unless the user says so — treat it as a separate, currently-unconnected scaffold.
+- `README.md` (the most current, living summary of vision/architecture/roadmap) and five planning docs in `docs/` (see "What Qualify is" for what each one covers).
+- `packages/models/` — a standalone `uv` project (own `pyproject.toml`/`.venv`, not part of a workspace yet) implementing Fase 1 Parte 1: the multimodal analysis cascade (filter, vision, transcription, sentiment) as composable, typed functions with a `Provider` abstraction (local `transformers` for the small models, HF Inference Providers for the hosted VLM/ASR ones — swappable for self-hosted later, no rewrite). Runs against fixtures in `tests/fixtures/` (a real public TikTok sample video, frame + audio extracted via `ffmpeg`), not against live scraping — Parte 2 (scraping) and Parte 3 (ClickHouse/Celery/Postgres orchestration) don't exist yet. See `docs/plan-ingesta-social.md` §0 for the Parte 1/2/3 ordering and why it's sequenced this way, and `docs/modelos-multimodal-fase1.md` for the model choices this package implements.
+- A bare `Qualify/` **Reflex** app produced by `reflex init` (`rxconfig.py`, `Qualify/Qualify.py`, `assets/`, `reflex.lock/`) — still the unmodified default welcome-page template. This scaffold exists because of the Agents/Reflex-skills instructions above, not because the planning docs call for Reflex: **none of the docs in `docs/` mention Reflex**, and the planned architecture uses Next.js for the CRM UI and FastAPI + Celery + Postgres + ClickHouse for the backend, not a Reflex app. Don't assume Reflex is the intended frontend unless the user says so — treat it as a separate, currently-unconnected scaffold.
 
 Before assuming any file, service, or command exists, check the actual filesystem rather than trusting the docs, since the docs describe target architecture.
 
@@ -81,11 +82,14 @@ Follow the **reflex-process-management** skill (see Agents section above) rather
 
 ## What Qualify is
 
-Qualify is a planned CRM/GTM platform that fuses AI-driven social listening (TikTok / Instagram Reels — video, audio, captions, comments) with a revenue-activation engine: it listens to everything said about a brand and its competitors on social, turns that into insights, and converts those insights directly into marketing/sales actions (creator/lead identification, smart replies, crisis alerts, campaigns).
+**Goal and audience:** Qualify is a planned agentive CRM/GTM platform for marketing/growth/community teams at brands who today juggle two separate categories of tool: social-listening platforms (Buzzmonitor-style) to *understand* the conversation, and GTM/CRM/outbound tools (Viralnetix-style) to *act* on it. Qualify fuses both: it listens to everything said about a brand and its competitors on TikTok / Instagram Reels — video, audio, captions, comments, not just text — turns that into AI-driven insights (sentiment, themes, crisis alerts, audience mapping), and converts those insights directly into marketing/sales actions (creator/lead identification and scoring, smart replies, campaign activation) without manual work in between.
 
-Two source docs define the product and architecture:
+Four source docs define the product and architecture — treat `README.md` as the current living summary and these as the detailed backing docs:
 - `docs/plan-ingesta-social.md` — detailed Phase 1 implementation plan: infra choices, ClickHouse schema, services/queues, payload contracts, phased task breakdown.
 - `docs/ingenieria-inversa-stack-gtm.md` — reverse-engineering of the GTM tool stack (Zyte, DiscoLike, BetterContact, Trigify, PredictLeads, Warmly, Clay, Instantly, HeyReach, Zapmail) and how Qualify's architecture and roadmap map onto/against it.
+- `docs/arquitectura.md` — full-system architecture across all phases: monolithic-modular core + async workers, two data planes (Postgres for CRM transactional state, ClickHouse for analytics), a LangGraph agentive orchestrator that turns domain events into workflows, C4/sequence diagrams, and ADRs. The Phase 1 pipeline described below is one module of this larger system, not the whole planned architecture.
+- `docs/alternativas-fase1.md` — buy-vs-build market research for Phase 1's three blocks (proxy rotation, social listening, outreach), with vendor options and pricing.
+- `docs/modelos-multimodal-fase1.md` — open-weight model selection for the multimodal cascade (CLIP filter, vision/VLM, transcription), researched against the live Hugging Face Hub, with the specific checkpoints to use and why.
 
 ## Planned architecture (Phase 1 pipeline)
 
@@ -127,6 +131,16 @@ Qualify/
 └── scripts/                  # dev helpers, backfill
 ```
 
+Note: the `gpu-enrichment` row above (Moondream2 + faster-whisper) reflects `docs/plan-ingesta-social.md`'s original technical plan. `docs/modelos-multimodal-fase1.md` supersedes the specific checkpoints (`moondream/moondream3-preview` + `openai/whisper-large-v3-turbo` + `google/siglip2-base-patch16-224`, fallback `Qwen/Qwen3-VL-4B-Instruct`) — same open-weight approach, updated to what's current on the Hub. These weights can be served either via HF Inference Endpoints (buy, no GPU infra needed to start) or self-hosted on RunPod/Modal later, with no pipeline rewrite — see that doc's closing section. Still pending: validating these checkpoints against the golden-set evaluation described in `docs/arquitectura.md` §7 before committing in code.
+
+### Phase 1 target state
+
+What must exist at the end of Phase 1 (per `docs/plan-ingesta-social.md` + `docs/alternativas-fase1.md`):
+
+- **Ingestion pipeline running end-to-end:** scraping (Zyte) → frame/audio extraction (ffmpeg) → CLIP-style filter (`siglip2-base`) → vision (`moondream3-preview`) + transcription (`whisper-large-v3-turbo`) → comment sentiment (robertuito) → all materialized into `search.content_index` (ClickHouse) with FTS. Specific checkpoints and rationale in `docs/modelos-multimodal-fase1.md`.
+- **Vendor decisions locked for all three Phase 1 blocks** (decision made, not necessarily every feature built): proxies → Zyte, fallback Decodo/Bright Data; ingestion → either Zyte scraping built in-house or EnsembleData/Data365 bought as an API (evaluate real cost before committing); transcription/vision hosting → start via HF Inference Endpoints (buy, no GPU infra), migrate to self-hosted RunPod/Modal once volume justifies it — same checkpoints either way, no pipeline rewrite; **outreach → vendor decided (Zapmail/Smartlead/Prospeo) but the outreach feature itself is still Phase 5 work** — see the roadmap note below, this isn't a contradiction between `README.md` and the phase map.
+- **Phase 1 principle:** only orchestration (Celery) and the multimodal analysis layer (the differentiator) get built; everything else (proxies, raw ingestion, transcription, email infra) is bought via API.
+
 ## Data model conventions (ClickHouse)
 
 - Database `crm`, with logical prefixes `ingestion.*` (structured per-platform data) and `search.*` (unified text + vectors, consumed by later modules).
@@ -140,14 +154,27 @@ Qualify/
 
 Consult this before adding scope to a task — it determines what's in-bounds now vs. later:
 
-1. **Phase 1 (current)** — Social ingestion/enrichment pipeline for TikTok/IG Reels: scraping, frame/audio extraction, CLIP filtering, vision descriptions, transcription, comment sentiment, FTS index. This is the foundational data layer everything else builds on.
+1. **Phase 1 (current)** — Social ingestion/enrichment pipeline for TikTok/IG Reels: scraping, frame/audio extraction, CLIP filtering, vision descriptions, transcription, comment sentiment, FTS index. This is the foundational data layer everything else builds on. Per `docs/alternativas-fase1.md`, Phase 1 also locks the buy-vs-build vendor decision for outreach infra (Zapmail/Smartlead/Prospeo) — but building the outreach *feature* is still Phase 5, see below. Don't read "outreach" appearing in both places as a doc inconsistency.
 2. **Phase 2** — Social listening + AI Insights: saved queries/scheduler, sentiment/topic reporting, LLM summaries over `search.content_index`, real-time dashboards.
 3. **Phase 3** — Signals layer (elevated priority per the GTM stack analysis) + advanced visual listening: typed, composable signal detectors with provenance (`signals.events`), in-video/audio mention alerts, logo/product detection, visual clustering.
 4. **Phase 4** — Creator discovery + CRM: `crm.creators` with content-embedding centroids for lookalike/semantic search, contact waterfall enrichment (bio → link-in-bio → website → third-party API fallback), creator/lead scoring.
-5. **Phase 5** — GTM activation: packaged "plays" (signal → enrich → AI-drafted action → push), RAG smart replies, credit-based billing (`billing.usage_events`), MCP server over the API, outbound integration via Instantly/HeyReach (buy, don't build).
+5. **Phase 5** — GTM activation: packaged "plays" (signal → enrich → AI-drafted action → push), RAG smart replies, credit-based billing (`billing.usage_events`), MCP server over the API, outbound integration via Instantly/HeyReach or Smartlead+Zapmail (buy, don't build — vendor already selected in Phase 1).
 6. **Phase 6** — Platform hardening: multi-tenant isolation, natural-language configuration co-pilot, unified social inbox, cross-channel context graph, observability/SLAs, infra scale-up.
 
 Key strategic decisions carried across the docs — respect these when proposing designs:
 - **Buy, don't build**: web access/proxies (Zyte), outbound email/LinkedIn sending, mailbox infra, B2B contact databases, company-intel crawling, generic spreadsheet-style orchestration (à la Clay). Qualify integrates with these via API rather than reimplementing them.
 - **Build**: the social ingestion pipeline itself, the signals layer with provenance, creator lookalike discovery over proprietary content embeddings, and the cross-channel context graph — these are the differentiated core.
 - Primary source content (actual video/audio/transcript) is treated as the trust advantage over competitors who rely on self-reported bio/metadata — preserve this "read the content, not the profile" principle in any discovery/scoring feature.
+
+## Stack (tentative)
+
+Python 3.11+ · FastAPI · Celery + Redis 7 · PostgreSQL (CRM transactional state) · ClickHouse (analytics/listening) · Cloudflare R2 · Zyte API · `google/siglip2-base-patch16-224` (CLIP-style zero-shot filter) · `moondream/moondream3-preview` (vision, fallback `Qwen/Qwen3-VL-4B-Instruct`) or Gemini Flash · `openai/whisper-large-v3-turbo` (transcription, self-hosted via faster-whisper or bought via Groq — same weights) · `pysentimiento/robertuito-sentiment-analysis` (sentiment) · sentence-transformers · LangGraph (agentive orchestrator) · Next.js (CRM UI/dashboards) · HF Inference Endpoints (to start, no GPU infra) → RunPod/Modal (GPU serverless, once volume justifies self-hosting) · Hetzner VPS · Instantly/HeyReach or Smartlead+Zapmail (outreach, buy) · Prospeo (email finding, buy) · Shopify API (attribution)
+
+This is tentative: the buy-vs-build research in `docs/alternativas-fase1.md` (e.g. ingestion via EnsembleData/Data365 instead of Zyte scrapers built in-house) can still move pieces of this stack before Phase 1 implementation starts. The multimodal checkpoints specifically come from `docs/modelos-multimodal-fase1.md` and still need golden-set validation (`docs/arquitectura.md` §7) before being locked into code. Don't treat any single vendor/model choice as final until it shows up in code or a merged ADR.
+
+## Conventions
+
+- **Language:** product docs (`README.md`, everything under `docs/`) are Spanish; `CLAUDE.md` and code (including identifiers, comments, docstrings) stay English.
+- **Commits:** Conventional Commits in English (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`, ...).
+- **Code style:** `ruff` for both lint and format once real Python code exists under `packages/`; type hints are required on every new function/method signature. Not wired into `pyproject.toml` yet since `packages/` doesn't exist — apply this from the first commit that adds code there.
+- **Tooling: always use `uv`, never bare `pip`/`conda`.** Project dependencies via `uv add` / `uv sync` / `uv run`; standalone CLI tools (e.g. the Hugging Face Hub `hf` CLI) via `uv tool install` rather than a curl-installer or a global `pip install`. This keeps every tool isolated from the system/anaconda Python and reproducible from `pyproject.toml` + `uv.lock`.

@@ -28,16 +28,41 @@ Las marcas hoy usan dos mundos separados: herramientas de social listening para 
 | GTM Engine | Outbound automatizado (secuencias, enriquecimiento de leads), inbound intelligence, CRM limpio y enriquecido automáticamente | Viralnetix |
 | Smart Replies | Respuestas sugeridas con RAG sobre comentarios/transcripts para atención al cliente y community management | Buzzmonitor + Viralnetix |
 
-## Arquitectura base
+## Arquitectura
 
-Pipeline de ingesta y enriquecimiento (ver [docs/plan-ingesta-social.md](docs/plan-ingesta-social.md)):
+Arquitectura completa en [docs/arquitectura.md](docs/arquitectura.md) (diagramas, esquemas de datos, ADRs). Resumen:
 
-**Zyte (scraping) → Redis/Celery (colas) → Workers CPU (ffmpeg, CLIP, spam/sentiment) → GPU serverless (vision + whisper) → ClickHouse (analítica + FTS + embeddings) + Cloudflare R2 (artefactos)**
+**Monolito modular + workers asíncronos**, con dos planos de datos: **PostgreSQL** (estado transaccional del CRM: pipelines, campañas, gifting, agent runs) y **ClickHouse** (hechos analíticos: métricas, transcripciones, embeddings). Los módulos se comunican por eventos de dominio (`mention.detected`, `trend.spike`, `creator.enriched`), nunca por llamadas directas.
+
+Módulos:
+
+| Módulo | Responsabilidad |
+|---|---|
+| Core CRM | Workspaces, pipelines de creators, campañas, gifting (Postgres) |
+| Listening & Ingesta *(Fase 1, en curso)* | Pipeline Zyte → Redis/Celery → workers CPU (ffmpeg, CLIP, sentiment) → GPU serverless (vision + whisper) → ClickHouse + R2 — ver [docs/plan-ingesta-social.md](docs/plan-ingesta-social.md) |
+| Cascada Multimodal | 3 filtros de costo creciente: transcripción → CLIP/OCR → VLM solo para pre-calificados |
+| Waterfall Enrichment | Perfil on-demand: cache → scrape directo → APIs fallback, con TTL por tipo de dato |
+| Orquestador Agentivo | Grafos LangGraph que convierten eventos en workflows (prospección autónoma) con checkpoints humanos y presupuestos |
+| Outreach | Secuencias vía Instantly/HeyReach (buy, don't build); respuestas mueven deals de etapa |
+| Atribución | Códigos/UTM por creador vía Shopify → ROI por creador/campaña |
 
 ## Roadmap por fases
 
 ### Fase 1 — Ingesta y enriquecimiento social *(en curso — ver plan detallado)*
 Pipeline completo TikTok/IG Reels: scraping, extracción de frames/audio, filtro CLIP, descripciones visuales, transcripciones, comentarios con sentiment, índice FTS. Es la base de datos sobre la que se construye todo lo demás.
+
+La Fase 1 cubre tres bloques: **rotación de proxies**, **social listening** y **outreach**. Cada uno tiene alternativas ya desarrolladas (buy vs build) — análisis completo con precios en [docs/alternativas-fase1.md](docs/alternativas-fase1.md). Resumen:
+
+| Bloque | Alternativa recomendada | Fallback / plan B | Se construye |
+|---|---|---|---|
+| Rotación de proxies | Zyte API (rotación + CAPTCHAs gestionados) | Bright Data Web Unlocker (premium anti-bloqueos), Decodo (~$4/GB) | Nada |
+| Listening — ingesta | EnsembleData (API TikTok/IG) | Data365 (~$0.60/1K registros), Apify (prototipos) | Solo scrapers que decidamos internalizar |
+| Listening — transcripción (Filtro 1) | Groq Whisper-v3 (~$0.04/h) | AssemblyAI ($0.15/h), Deepgram Nova-3 | Nada |
+| Listening — visión (Filtro 3) | Gemini Flash sobre frames muestreados | Twelve Labs (POC si falla precisión de detección de marca) | La capa multimodal propia (diferenciador) |
+| Outreach — infraestructura email | Zapmail (mailboxes + warmup, API headless) + Smartlead (envío, API/white label) | Mailreef, Instantly | Nada (deliverability = problema resuelto, riesgoso de reimplementar) |
+| Outreach — email finding | Prospeo (~$0.01/email verificado) | Findymail, Anymailfinder | Nada |
+
+Principio: en Fase 1 solo se construye la **orquestación** (Celery/LangGraph) y la **capa de análisis multimodal**; todo lo demás se compra vía API. Ningún SaaS de listening (HypeAuditor, Brandwatch, Brand24, Upfluence) resuelve el punto ciego multimodal en video — ese diferenciador queda intacto.
 
 ### Fase 2 — Social Listening + AI Insights
 - Monitoreo de términos, hashtags y competidores (queries guardadas + scheduler)
@@ -73,6 +98,7 @@ Pipeline completo TikTok/IG Reels: scraping, extracción de frames/audio, filtro
 Qualify/
 ├── README.md
 ├── docs/
+│   ├── arquitectura.md                   # Arquitectura del sistema: módulos, datos, ADRs
 │   ├── plan-ingesta-social.md            # Plan de implementación Fase 1
 │   └── ingenieria-inversa-stack-gtm.md   # Análisis del stack Viralnetix + roadmap priorizado
 ├── docker-compose.yml            # (Fase 1) ClickHouse, Redis, api, workers
@@ -83,4 +109,4 @@ Qualify/
 
 ## Stack
 
-Python 3.11+ · FastAPI · Celery + Redis 7 · ClickHouse · Cloudflare R2 · Zyte API · CLIP · Moondream2 / Qwen2.5-VL · faster-whisper · robertuito · sentence-transformers · RunPod/Modal (GPU serverless) · Hetzner VPS
+Python 3.11+ · FastAPI · Celery + Redis 7 · PostgreSQL · ClickHouse · Cloudflare R2 · Zyte API · CLIP · Moondream2 / Qwen2.5-VL · faster-whisper · robertuito · sentence-transformers · LangGraph · RunPod/Modal (GPU serverless) · Hetzner VPS
