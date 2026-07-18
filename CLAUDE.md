@@ -65,7 +65,7 @@ This repo is **mostly pre-implementation** with respect to the actual product de
 
 - `README.md` (the most current, living summary of vision/architecture/roadmap) and five planning docs in `docs/` (see "What Qualify is" for what each one covers).
 - `packages/models/` — a standalone `uv` project (own `pyproject.toml`/`.venv`, not part of a workspace yet) implementing Fase 1 Parte 1: the multimodal analysis cascade (filter, vision, transcription, sentiment) as composable, typed functions with a `Provider` abstraction (local `transformers` for the small models, HF Inference Providers for the hosted VLM/ASR ones — swappable for self-hosted later, no rewrite). Runs against fixtures in `tests/fixtures/` (a real public TikTok sample video, frame + audio extracted via `ffmpeg`), not against live scraping — Parte 2 (scraping) and Parte 3 (ClickHouse/Celery/Postgres orchestration) don't exist yet. See `docs/plan-ingesta-social.md` §0 for the Parte 1/2/3 ordering and why it's sequenced this way, and `docs/modelos-multimodal-fase1.md` for the model choices this package implements.
-- A bare `Qualify/` **Reflex** app produced by `reflex init` (`rxconfig.py`, `Qualify/Qualify.py`, `assets/`, `reflex.lock/`) — still the unmodified default welcome-page template. This scaffold exists because of the Agents/Reflex-skills instructions above, not because the planning docs call for Reflex: **none of the docs in `docs/` mention Reflex**, and the planned architecture uses Next.js for the CRM UI and FastAPI + Celery + Postgres + ClickHouse for the backend, not a Reflex app. Don't assume Reflex is the intended frontend unless the user says so — treat it as a separate, currently-unconnected scaffold.
+- A `Qualify/` **Reflex** app (`rxconfig.py`, `Qualify/Qualify.py`, `assets/`, `reflex.lock/`) — as of the "mentions dashboard scaffold" commit it's no longer the default welcome-page template: it has a sidebar/topbar/stats-row/filter-bar/mentions-table UI, a SQLModel-backed `db.py` with seed data, and a `DashboardState` loading mentions on page load. **Reflex is now the decided CRM UI** (see `docs/arquitectura.md` §2 and §6 ADR 8), replacing the earlier Next.js placeholder. It's still exploratory and unconnected to the real Fase 1 pipeline — it runs against local SQLite/seed data, not ClickHouse.
 
 Before assuming any file, service, or command exists, check the actual filesystem rather than trusting the docs, since the docs describe target architecture.
 
@@ -119,6 +119,7 @@ Planned repo layout:
 
 ```
 Qualify/
+├── Qualify/                  # Reflex app: CRM UI + dashboards (rxconfig.py, state, components) — exists today
 ├── docker-compose.yml       # ClickHouse, Redis, api, workers (local)
 ├── infra/                   # Terraform/Pulumi (later phase)
 ├── packages/
@@ -168,7 +169,7 @@ Key strategic decisions carried across the docs — respect these when proposing
 
 ## Stack (tentative)
 
-Python 3.11+ · FastAPI · Celery + Redis 7 · PostgreSQL (CRM transactional state) · ClickHouse (analytics/listening) · Cloudflare R2 · Zyte API · `google/siglip2-base-patch16-224` (CLIP-style zero-shot filter) · `moondream/moondream3-preview` (vision, fallback `Qwen/Qwen3-VL-4B-Instruct`) or Gemini Flash · `openai/whisper-large-v3-turbo` (transcription, self-hosted via faster-whisper or bought via Groq — same weights) · `pysentimiento/robertuito-sentiment-analysis` (sentiment) · sentence-transformers · LangGraph (agentive orchestrator) · Next.js (CRM UI/dashboards) · HF Inference Endpoints (to start, no GPU infra) → RunPod/Modal (GPU serverless, once volume justifies self-hosting) · Hetzner VPS · Instantly/HeyReach or Smartlead+Zapmail (outreach, buy) · Prospeo (email finding, buy) · Shopify API (attribution)
+Python 3.11+ · FastAPI · Celery + Redis 7 · PostgreSQL (CRM transactional state) · ClickHouse (analytics/listening) · Cloudflare R2 · Zyte API · `google/siglip2-base-patch16-224` (CLIP-style zero-shot filter) · `moondream/moondream3-preview` (vision, fallback `Qwen/Qwen3-VL-4B-Instruct`) or Gemini Flash · `openai/whisper-large-v3-turbo` (transcription, self-hosted via faster-whisper or bought via Groq — same weights) · `pysentimiento/robertuito-sentiment-analysis` (sentiment) · sentence-transformers · LangGraph (agentive orchestrator) · Reflex (CRM UI/dashboards) · HF Inference Endpoints (to start, no GPU infra) → RunPod/Modal (GPU serverless, once volume justifies self-hosting) · Hetzner VPS · Instantly/HeyReach or Smartlead+Zapmail (outreach, buy) · Prospeo (email finding, buy) · Shopify API (attribution)
 
 This is tentative: the buy-vs-build research in `docs/alternativas-fase1.md` (e.g. ingestion via EnsembleData/Data365 instead of Zyte scrapers built in-house) can still move pieces of this stack before Phase 1 implementation starts. The multimodal checkpoints specifically come from `docs/modelos-multimodal-fase1.md` and still need golden-set validation (`docs/arquitectura.md` §7) before being locked into code. Don't treat any single vendor/model choice as final until it shows up in code or a merged ADR.
 

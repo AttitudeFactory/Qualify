@@ -20,7 +20,7 @@
 ```mermaid
 graph TB
     subgraph Cliente
-        UI[Next.js App<br/>CRM UI + Dashboards]
+        UI[Reflex App<br/>CRM UI + Dashboards]
     end
 
     subgraph Core["Core Platform (monolito modular)"]
@@ -217,6 +217,7 @@ sequenceDiagram
 | 5 | Waterfall enrichment on-demand | Base de datos estática precargada | Datos frescos, costo proporcional al uso, sin mantener 380M perfiles muertos |
 | 6 | Eventos de dominio como contrato | Llamadas directas entre módulos | Desacople real; el orquestador y las alertas observan sin acoplarse |
 | 7 | Outreach vía Instantly/HeyReach (buy) | Construir infra de envío propia | "Buy, don't build" para infra commodity; el diferencial de Qualify está en el listening y las señales |
+| 8 | Reflex (Python full-stack) para CRM UI | Next.js (React/TS) | El resto del stack ya es Python (FastAPI, Celery, LangGraph); Reflex evita mantener un segundo lenguaje/build toolchain para un equipo pequeño — ya existe un scaffold funcional (`Qualify/`) con dashboard de mentions sobre SQLModel |
 
 ---
 
