@@ -4,3 +4,7 @@ __pycache__/
 *.db
 assets/external/
 *.py[cod]
+.ruff_cache/
+packages/models/tests/fixtures/sample_source.mp4
+.claude/settings.local.json
+reflex.log
