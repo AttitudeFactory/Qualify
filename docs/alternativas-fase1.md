@@ -70,19 +70,21 @@ Los tres bloques de la Fase 1 tienen alternativas maduras ya desarrolladas — l
 |---|---|---|
 | **Zapmail** | ~$32.50/mes por 10 mailboxes Google; API en plan Pro | Dominios + DNS + warmup automatizados; **API headless** para gestionar mailboxes a escala — el modelo que citas en tu visión |
 | **Mailreef** | Desde ~$240/mes + costo por envío | Servidores pre-calentados, provisión de dominios/mailboxes; punto medio entre plug-and-play y control total |
-| **Smartlead** | $13–19/dominio/año + $3.99–9/mailbox/mes | Motor de envío con rotación de cuentas, warmup, **API + white label** en plan Pro — candidato a ser el backend de outreach de Qualify |
-| **Instantly** | Planes con warmup incluido | Referente UX; API más limitada para uso embebido |
+| **Smartlead** | $13–19/dominio/año + $3.99–9/mailbox/mes | Motor de envío con rotación de cuentas, warmup, **API + white label** en plan Pro — candidato a ser el backend de outreach de Qualify. **Corrección (`research-features-gtm.md`, 2026-07-18):** el tier Base ($39/mes) trae mailboxes ilimitados **sin API**; la API/white label solo está en Pro (**$94/mes**) — no asumir el coste del tier barato al presupuestar la integración |
+| **Instantly** | Planes con warmup incluido | Referente UX; API más limitada para uso embebido. **Corrección:** Instantly deprecó su API v1 el 2026-01-19 y se partió en 3 módulos de precio separado (Outreach/Credits/CRM) — cualquier integración debe apuntar a la API nueva |
 
-**Implicación:** no construyas warmup ni rotación de dominios — es un problema resuelto y arriesgado de reimplementar (deliverability). Para embeber outreach en Qualify, la vía corta es Smartlead white label (envío) + Zapmail API (aprovisionamiento de mailboxes).
+**Implicación:** no construyas warmup ni rotación de dominios — es un problema resuelto y arriesgado de reimplementar (deliverability). Para embeber outreach en Qualify, la vía corta es Smartlead white label (envío, plan Pro $94/mes) + Zapmail API (aprovisionamiento de mailboxes).
 
 ### 3b. Email finding (localizar el correo del creador)
 
 | Alternativa | Precio aprox. | Notas |
 |---|---|---|
-| **Prospeo** | ~$0.01/email; 98% precisión | El más barato por contacto verificado |
+| **Prospeo** | ~$0.01/email; 98% precisión (lookup individual) | El más barato por contacto verificado en lookup individual |
 | **Findymail** | ~$49/1K verificados; desde $49/mes | Mayor yield bruto; garantía de rebote |
 | **Anymailfinder** | $49/1K, planes desde $14/mes | Solo cobra emails verificados |
 | **Hunter.io** | $49–299/mes | Referente clásico, API sólida |
+
+**Corrección (`research-features-gtm.md`, 2026-07-18):** el 98% de precisión de Prospeo es válido **solo para lookup individual**. En **bulk** (el modo relevante para enriquecer creators a escala) el hit rate observado cae a **~4.5%** (45/1,000) y **cobra por cada fila importada aunque no haya match** (los créditos no rotan). No usar el 98% para modelar el coste de enriquecimiento masivo de creators — sigue siendo válido como escalón final del waterfall (lookup puntual sobre un creator ya identificado), no como fuente de estimación de coste bulk.
 
 **Implicación:** el paso autónomo "detectar creador → buscar correo → redactar propuesta" se resuelve con Prospeo/Findymail vía API + LLM para la redacción; solo la orquestación (LangGraph/BullMQ) es tuya.
 
