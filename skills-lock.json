@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "skills": {
+    "architecture-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/backend-development/skills/architecture-patterns/SKILL.md",
+      "computedHash": "a66aaa5aa49b75bec12b6270dcde8794b1f0cc75fbb9ecb999e43f8b723b461f"
+    },
+    "chdb-datastore": {
+      "source": "clickhouse/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/chdb-datastore/SKILL.md",
+      "computedHash": "8a652156aa260f4d01a14a15ec703c4b9c7b3bafb5824fa12e65089e096b17ba"
+    },
+    "chdb-sql": {
+      "source": "clickhouse/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/chdb-sql/SKILL.md",
+      "computedHash": "6eece2c3948e1c6178dff37d4e83be21c261111386a63b4de4adae494f3f65d1"
+    },
+    "clickhouse-architecture-advisor": {
+      "source": "clickhouse/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/clickhouse-architecture-advisor/SKILL.md",
+      "computedHash": "5cecc53a1aa47ff41f84b7f984c1242d70af09b8bbce4f52d423dd5a06f5ae0b"
+    },
+    "clickhouse-best-practices": {
+      "source": "clickhouse/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/clickhouse-best-practices/SKILL.md",
+      "computedHash": "4523a31bd5911ec70b68533d7d15bc445bca2e77b1bd6f649d5a36d52bdcc099"
+    },
+    "clickhouse-js-node-coding": {
+      "source": "clickhouse/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/clickhouse-js-node-coding/SKILL.md",
+      "computedHash": "0a1de8c68328512c8c6e40e57a976dcf793c70cc71912cd261db6ff65ced257f"
+    },
+    "clickhouse-js-node-rowbinary": {
+      "source": "clickhouse/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/clickhouse-js-node-rowbinary/SKILL.md",
+      "computedHash": "e4873d803ddc9c6f99877114017ce4edfd73d6d25e32a8b91b68903f90e3dc44"
+    },
+    "clickhouse-js-node-troubleshooting": {
+      "source": "clickhouse/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/clickhouse-js-node-troubleshooting/SKILL.md",
+      "computedHash": "5b07cae87b545082c9c651638b842ff58092105fac45ecbe1e20200c1d306256"
+    },
+    "clickhouse-managed-postgres-rca": {
+      "source": "clickhouse/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/clickhouse-managed-postgres-rca/SKILL.md",
+      "computedHash": "9115fcd317cfe39d4851396f1daa70de38ca6c009573ca5a2a301106b8e1a469"
+    },
+    "clickhousectl-cloud-deploy": {
+      "source": "clickhouse/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/clickhousectl-cloud-deploy/SKILL.md",
+      "computedHash": "94ce3179d4370b76383c9d376f1185b7e8ea25a78693130835b2a5899ed83945"
+    },
+    "clickhousectl-local-dev": {
+      "source": "clickhouse/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/clickhousectl-local-dev/SKILL.md",
+      "computedHash": "0a99c55a718d504fd5473d34c75da22a44179d4f33a8c5dc279b5963d3c6cbbd"
+    },
+    "clickstack-otel-collector": {
+      "source": "clickhouse/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/clickstack-otel-collector/SKILL.md",
+      "computedHash": "215049d4675ac3a6ac4e1ef71cfb6feabab07b723e95b0ebe92698cd95ac1134"
+    },
+    "competitor-profiling": {
+      "source": "coreyhaines31/marketingskills",
+      "sourceType": "github",
+      "skillPath": "skills/competitor-profiling/SKILL.md",
+      "computedHash": "d691200df7b02d85327192dd2203f97eec5a01e7748e9b171a5c9d6a584dc181"
+    },
+    "customer-research": {
+      "source": "coreyhaines31/marketingskills",
+      "sourceType": "github",
+      "skillPath": "skills/customer-research/SKILL.md",
+      "computedHash": "a432ee6d37151c4b5b89045e8611f755d657e1339d9d67d928d73875ccd03a01"
+    },
+    "develop-adr": {
+      "source": "product-on-purpose/pm-skills",
+      "sourceType": "github",
+      "skillPath": "skills/develop-adr/SKILL.md",
+      "computedHash": "842043506175f6a866e00f2635c41f8604b605ad0ee836b5d9ed35b87a648e32"
+    },
+    "eval-driven-dev": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "skillPath": "skills/eval-driven-dev/SKILL.md",
+      "computedHash": "2ff19b1e3741984a273dd0b3ba2f4881ce81d3704a32a5c85465fd0a79ef2b57"
+    },
+    "exploratory-data-analysis": {
+      "source": "davila7/claude-code-templates",
+      "sourceType": "github",
+      "skillPath": "cli-tool/components/skills/scientific/exploratory-data-analysis/SKILL.md",
+      "computedHash": "0567655b147076fe3d85429c081bd2a06b427c01a6ae72f0606a2586b940d381"
+    },
+    "improve-codebase-architecture": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/improve-codebase-architecture/SKILL.md",
+      "computedHash": "66e8a50c83c3c724fcfe0769701b665c56cec220cc4f49cc1aee8bdfc07de94a"
+    },
+    "model-evaluation": {
+      "source": "pymc-labs/python-analytics-skills",
+      "sourceType": "github",
+      "skillPath": "skills/model-evaluation/SKILL.md",
+      "computedHash": "17a21509a102e7213220b61f47412cefa65c275c964bb69afbef4a79eb9bb545"
+    },
+    "positioning": {
+      "source": "refoundai/lenny-skills",
+      "sourceType": "github",
+      "skillPath": "skills/positioning/SKILL.md",
+      "computedHash": "06da0a19c5d5e7c5e79d0f4c9b4cc7ae902a22641a016b56ef1de79d1111a40e"
+    },
+    "pricing": {
+      "source": "coreyhaines31/marketingskills",
+      "sourceType": "github",
+      "skillPath": "skills/pricing/SKILL.md",
+      "computedHash": "7f2dfd6cb6b5924f5dc0b7add2ec46a1665f6796504a7891b0550bb33c2628dd"
+    }
+  }
+}
