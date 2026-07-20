@@ -1,0 +1,20 @@
+{
+  "__DEFAULT_SCOPE__": {
+    "webapp.video-detail": {
+      "itemInfo": {
+        "itemStruct": {
+          "id": "7663622615168306462",
+          "desc": "Testing our new sneakers on a mountain trail #brand",
+          "createTime": 1710460800,
+          "author": {"uniqueId": "trailrunner", "id": "author_1001"},
+          "stats": {"playCount": 152300, "diggCount": 8400, "commentCount": 312, "shareCount": 190},
+          "video": {
+            "duration": 27,
+            "playAddr": "https://v.tiktok.example/video/7663622615168306462.mp4",
+            "cover": "https://p.tiktok.example/cover/7663622615168306462.jpg"
+          }
+        }
+      }
+    }
+  }
+}

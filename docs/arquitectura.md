@@ -163,16 +163,62 @@ attributions(id, creator_id, campaign_id, order_id_shopify, monto, ts)
 ```
 ingestion.posts / comments (per-platform, ReplacingMergeTree,
     clave natural (brand_id, platform, post_id), partición toYYYYMM(posted_date))
-search.content_index  -- FTS denormalizado: 1 fila por fragmento de texto
-                      -- (caption/frame/transcript/comment), índices tokenbf/ngrambf
-search.embeddings     -- vectores para búsqueda semántica (fase posterior)
-signals.events        -- señales tipadas con provenance (fase 3)
-crm.creators          -- centroides de embeddings para lookalike (fase 4)
-billing.usage_events  -- billing por créditos (fase 5)
+search.content_index    -- FTS denormalizado: 1 fila por fragmento de texto
+                        -- (caption/frame/transcript/comment), índices tokenbf/ngrambf
+search.embeddings       -- SOLO texto (caption/transcript/comment + descripción-texto del frame);
+                        -- + embedding_model/embedding_revision/embedding_dim (provenance). Fase posterior.
+search.visual_embeddings-- vectores de imagen RAW de frames (SigLIP2, 768-dim). DISEÑADA, NO construida:
+                        -- activo de Fase 3 (Visual Listening: clustering logo/producto, near-dup), NO de lookalike.
+                        -- Compute ≈ gratis (reusa el pass del filtro F2); el costo es storage+índice de billones de
+                        -- vectores → no se puebla/indexa hasta que exista un surface visual. Ver ADR 11.
+signals.events          -- señales tipadas con provenance (fase 3)
+crm.creators            -- perfil CRM del creator: métricas + metadata (followers, demografía,
+                        -- niche_labels) + contacto (waterfall). SIN vectores. ORDER BY (platform, creator_id)
+crm.creator_centroids   -- centroides de embeddings para lookalike (fase 4), tabla hija dedicada;
+                        -- dim fija por modalidad (text=1024 / visual=768), sub-centroides. Ver ADR 10
+billing.usage_events    -- billing por créditos (fase 5)
 trend_signals / attribution_facts -- vistas materializadas de agregación
 ```
 
 Reglas: `ORDER BY` es inmutable — se diseña alrededor de los filtros esperados antes de crear la tabla. ClickHouse nunca es fuente de verdad de estado; se puede reconstruir desde R2 + reproceso.
+
+**Lookalike (Fase 4) — separación vectores/metadata.** Los vectores de contenido NO viven en `crm.creators` (que churnea por upserts de metadata con TTL 24-72h, y un índice HNSW se reconstruye en cada merge). Viven en la tabla hija `crm.creator_centroids`:
+
+```sql
+CREATE TABLE crm.creator_centroids (
+    platform LowCardinality(String),
+    creator_id String,
+    modality LowCardinality(String),   -- text|visual (espacios separados, nunca concatenados)
+    centroid_ix UInt8 DEFAULT 0,        -- 0 = media global; 1..k = sub-centroides (multi-nicho)
+    embedding Array(Float32),           -- dim fija POR modalidad (text=1024, visual=768)
+    embedding_model LowCardinality(String),
+    embedding_revision LowCardinality(String),
+    n_posts UInt32,
+    updated_at DateTime DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY (platform, modality, creator_id, centroid_ix);
+```
+
+- **Pooling (centroid_ix=0):** media ponderada por recencia × engagement de embeddings por-post L2-normalizados (decay temporal exponencial × log-views), por modalidad. Pondera el estilo *actual* → captura pivots de contenido que el metadata pierde.
+- **Sub-centroides:** creators multi-nicho (fitness + cocina) necesitan 2-3 sub-centroides (mini k-means sobre sus posts); una sola media cae en el "medio vacío" y no matchea a nadie. v1 puede lanzar solo con `centroid_ix=0` — la columna deja añadir sub-centroides sin migración.
+- **Búsqueda ANN — snapshot con swap atómico:** `crm.creator_centroids` es la fuente de verdad; el índice HNSW vive en una tabla **snapshot por modalidad** (dim uniforme: text=1024, visual=768), reconstruida periódicamente (Celery Beat, p. ej. horario) en una staging y swapeada con `EXCHANGE TABLES` (atómico en ClickHouse). Esto elude por completo el problema de HNSW-rebuild-on-merge sobre un `ReplacingMergeTree` y hace irrelevante el bug de crash-durability (el snapshot es desechable y se reconstruye entero cada ciclo). Nunca se indexa `crm.creators` directamente. Ver ADR 9.
+
+```sql
+-- Una snapshot POR modalidad (vector_similarity exige dim uniforme). Ejemplo texto (bge-m3/e5-large, 1024).
+CREATE TABLE crm.creator_centroids_text_snap (
+    platform LowCardinality(String),
+    creator_id String,
+    centroid_ix UInt8,
+    embedding Array(Float32),
+    n_posts UInt32,
+    INDEX ann_idx embedding TYPE vector_similarity('hnsw', 'cosineDistance', 1024) GRANULARITY 1
+) ENGINE = MergeTree()
+ORDER BY (platform, creator_id, centroid_ix);
+-- Rebuild: construir en _stage → EXCHANGE TABLES crm.creator_centroids_text_snap AND crm.creator_centroids_text_stage
+```
+
+- **Lookalike = fusión, no content-only:** el centroide de contenido resuelve lo que el metadata no ve (pivots, contenido no-textual, mismo label/contenido opuesto); el metadata (`crm.creators`: demografía de audiencia, follower-graph) resuelve lo que el embedding no ve. La query combina similitud vectorial + filtros de metadata. El eje visual, cuando se incorpore, entra como **ingrediente de peso menor en el centroide fusionado** (ponderado hacia transcript+comentarios), nunca como feature standalone. Ver ADR 12.
+- **Modelo de texto (propuesto, pendiente golden-set):** `bge-m3` (1024-dim, MIT) por defecto — emite dense + sparse (lexical, se acopla al índice `tokenbf_v1` existente) + ColBERT desde un solo modelo, similaridad simétrica sin prefijos query:/passage: (encaja en lookalike creator-a-creator), contexto 8192 para transcripts largos. `multilingual-e5-large` como fallback más liviano. Reemplaza el tentativo MiniLM-384. Ver §8.1.
 
 ---
 
@@ -218,6 +264,88 @@ sequenceDiagram
 | 6 | Eventos de dominio como contrato | Llamadas directas entre módulos | Desacople real; el orquestador y las alertas observan sin acoplarse |
 | 7 | Outreach vía Instantly/HeyReach (buy) | Construir infra de envío propia | "Buy, don't build" para infra commodity; el diferencial de Qualify está en el listening y las señales |
 | 8 | Reflex (Python full-stack) para CRM UI | Next.js (React/TS) | El resto del stack ya es Python (FastAPI, Celery, LangGraph); Reflex evita mantener un segundo lenguaje/build toolchain para un equipo pequeño — ya existe un scaffold funcional (`Qualify/`) con dashboard de mentions sobre SQLModel |
+| 9 | Lookalike sobre ClickHouse nativo (`vector_similarity`, HNSW/usearch ≥26.4), índice en snapshot con swap atómico (`EXCHANGE TABLES`) | Vector DB dedicado (Qdrant/pgvector) / índice HNSW directo sobre el ReplacingMergeTree | Lookalike busca *centroides* de creator (millones de vectores), no per-post (billones); ClickHouse HNSW lo maneja y mantiene el principio de un solo store analítico. El índice vive en una snapshot reconstruida periódicamente y swapeada atómicamente → elude HNSW-rebuild-on-merge y el bug de crash-desync (snapshot desechable). Un vector DB solo se justificaría por ANN per-post a escala de billones (búsqueda semántica global) — decisión futura separada |
+| 10 | Centroides en tabla hija `crm.creator_centroids` (modality + centroid_ix) | Columna `content_embedding Array(Float32)` plana en `crm.creators` | Espacios de embedding separados por modalidad (text 1024 / visual 768) no caben en un vector plano; multi-nicho necesita sub-centroides; aísla el índice HNSW del churn de metadata de `crm.creators` |
+| 11 | Una tabla/índice de embeddings por (modalidad, modelo, dim); `search.embeddings` queda text-only, `search.visual_embeddings` separada y **diseñada-no-construida** (activo de Fase 3 Visual Listening, no de lookalike) | Columna de embeddings mixta multi-dim / fusionar text+visual en un vector / construir visual lookalike en Fase 4 | Un índice ANN exige dim fija. El eje visual es red ocean: Modash embebe frames RAW (búsqueda por imagen funciona) → un lookalike visual standalone sería una versión más limpia de lo que ellos ya venden, sin ventaja. El visual solo aporta como ingrediente menor de un centroide fusionado. La tabla se congela para su uso real (clustering visual de Fase 3), sin poblar/indexar hasta que haya surface |
+| 12 | Lookalike = fusión (centroide de contenido + filtros de metadata) | Lookalike content-only / metadata-only | El metadata (demografía de audiencia, follower-graph) captura lo que el embedding no ve; el contenido captura pivots, contenido no-textual y "mismo label/contenido opuesto" que el metadata pierde. Ninguno solo es suficiente |
+| 13 | Solo modelos de embedding con licencia comercial (Apache/MIT): SigLIP2, `multilingual-e5-large`, `bge-m3`, `Qwen/Qwen3-Embedding-0.6B` | `jinaai/jina-clip-v2`, `jinaai/jina-embeddings-v3` (CC-BY-NC-4.0) | Qualify es producto comercial; la cláusula NonCommercial prohíbe el uso. Guardrail para que nadie elija Jina por reflejo de downloads/MTEB. El checkpoint final entre los permitidos lo decide el golden-set (§8.1.2), no MTEB |
+| 14 | Score de creator (fit/tracción) persistido como salida tipada versionada — fila en `signals.events` (`detector_version` = versión del scorer, source = post_ids/señales puntuadas) o tabla de scoring dedicada con las mismas columnas de provenance | Columna `score` mutable en `crm.creators` | Un score es una señal DERIVADA → la regla de provenance dura aplica: debe llevar `detector_version` + los ids fuente que lo computaron para ser auditable y recomputable. Una columna mutable pierde historial/trazabilidad y churnea con el TTL de metadata de `crm.creators` |
+| 15 | Inbox social unificado (Fase 6) = construir la capa de agregación/routing/contexto; el transporte de mensajes (DM/comentarios TikTok/IG) se integra vía API de plataforma. Nuevas tablas Postgres `conversations`/`inbox_messages`, cada inbound ligado a source `post_id`/`comment_id` | Construir infra de mensajería propia / reutilizar `email_events` como store de conversación social | "Buy commodity, build differentiated": el transporte es commodity, el valor es el contexto unificado listening+CRM. `email_events` es solo outreach-email, no sirve como store de conversación social |
+| 16 | `signals.events` materializa salidas de detectores tipados como 1 fila por (fragmento fuente, `signal_type`, `label`); `ORDER BY (brand_id, platform, signal_type, toDate(posted_date), post_id)`; provenance obligatorio = source `post_id`/`comment_id` + `fragment_type` + `detector_version` + `model_id`/`revision` + `label_set_version`; multi-label → N filas, nunca `Array` | Columna `Array` de labels / tabla nueva por detector / `label_set` fuera del provenance | Mantiene `signals.events` filtrable por `signal_type`/`label` (regla ORDER-BY-alrededor-de-filtros); N filas evita explotar arrays en queries analíticas; `label_set_version` es provenance real porque cambiar las labels candidatas de un zero-shot cambia el output sin cambiar el modelo |
+| 17 | **Ingesta social (Fase 1 Parte 2) = construir** el scraping+parseo propio sobre Zyte: parsers tipados sobre hydration JSON, cobertura multi-formato TikTok/IG (video, foto/galería, story, texto / reel, post, carrusel, story). EnsembleData/Data365 quedan como **fallback documentado** por formato bloqueado o no rentable (p. ej. stories). La rotación de proxies **no se decide aquí**: sigue Zyte-primario / Decodo·Bright Data-fallback (fijo por `CLAUDE.md`, Bloque 1) | Comprar la ingesta completa como API (EnsembleData primario + Data365 fallback), tal como recomendaba `alternativas-fase1.md` #1 | (1) `CLAUDE.md` lista *"the social ingestion pipeline itself"* bajo **Build** (core diferenciado) y solo *"web access/proxies (Zyte)"* bajo **Buy** → el split estratégico ya resuelve comprar-proxy/construir-pipeline; (2) regla dura de raw-payload: no se puede *"re-parsear sin re-scrapear"* un campo que el vendor nunca expuso — su esquema normalizado es el techo permanente de cobertura; (3) la tesis *"leer el contenido, no el perfil"* exige media cruda + payload completo, no el subconjunto normalizado del vendor; (4) la matriz de cobertura (nota abajo) muestra stories y posts de texto **débil/inconsistentemente** cubiertos por AMBOS vendors, mientras el objetivo del sprint es cobertura ancha incluidas esas formas edge — parsear hydration JSON está acotado solo por lo que la plataforma renderiza. Vendor API se mantiene como fallback dirigido (stories, backstop anti-bloqueo), no como fuente primaria |
+| 18 | **Envelope de raw-payload + `content_signature`.** El artefacto persistido es un envelope autodescriptivo `{payload_schema_version, platform, source_url, fetched_at, content_signature, zyte_request_meta, hydration}`, **brand-agnóstico** (keyed por `(platform, url)`, no por `brand_id`). `content_signature` = `sha256:<hex>` sobre la serialización canónica del `hydration` crudo. `persist()` escribe los bytes canónicos → el artefacto almacenado es re-verificable. Tres ejes de versión ortogonales: `payload_schema_version` (forma del envelope + algoritmo de firma), `parser_version` (mapeo raw→Post), `pipeline_version` (config de orquestación) | (a) firmar sobre un subconjunto normalizado del payload; (b) claves de almacenamiento content-addressed (append-only por contenido); (c) envelope brand-scoped / meter `brand_id`+`post_id` en `fetch_hydration`; (d) reutilizar `parser_version` para versionar el envelope | Raw = **artefacto de contenido brand-agnóstico**; el `Post` parseado es el hecho **brand-scoped** (`brand_id` entra al parsear, `post_id` es derivado del parse) → `fetch_hydration(url)` no lleva brand/post, se envuelven después; y N marcas que monitorean el mismo post comparten un scrape (ahorro de coste Zyte, §7). Firmar el **payload crudo íntegro** (no un subconjunto) mantiene el envelope parser-agnóstico (normalizar es parser-específico) y da tamper-evidence; la detección de cambio *semántico* es un hash a nivel-parse aparte, fuera de alcance. Clave URL-derivada + overwrite-latest (consistente con `ReplacingMergeTree`); content-addressed/append-only queda como decisión futura de storage. `payload_schema_version` gobierna qué algoritmo canónico usó una firma → debe ser independiente para que la verificación sea autodescriptiva |
+
+> **Estado: RESUELTO (aprobado por el usuario, 2026-07-20).** El usuario aprobó ADR 17 —construir el scraping+parseo propio sobre Zyte como camino primario de la ingesta social— vía el lead. En la misma aprobación confirmó explícitamente que **EnsembleData/Data365 quedan como fallback diferido**: NO se construyen ahora, se mantienen documentados como backstop dirigido (formatos bloqueados —notablemente stories— y anti-bloqueo/ráfaga) per la nota de reconciliación abajo. La desviación de la Recomendación #1 de `alternativas-fase1.md` (comprar la ingesta completa) queda por tanto ratificada por el usuario, no solo flagged al lead. Gate de aprobación cerrado; el sprint de Parte 2 (`packages/scraper`) procede sobre esta base.
+
+> **Nota sobre ADR 7 (outreach):** Instantly deprecó su API v1 el 2026-01-19 y la partió en 3 módulos separados. La integración de Fase 5 debe apuntar a la API nueva; documentarlo al diseñar el conector. La decisión "buy, don't build" se sostiene.
+
+> **Corrección de tesis competitiva (pendiente de aprobación humana, ver §8):** la premisa de `ingenieria-inversa-stack-gtm.md` §2/§6 — "nadie hace content lookalike sobre TikTok/IG; los influencer tools usan solo bio+métricas" — es **falsa en 2026**: Modash (Creator Lookalikes API, eje visual+captions, ~$16.2K/año) y Kuli (frame-by-frame + transcripción de audio) ya lo hacen; Syncly Social es un tercer player en el eje audio. El diferenciador sobreviviente, en orden de fuerza: (1) **fusión listening+activation** — los competidores son solo discovery; *caveat*: Syncly Social (YC, TikTok-native) ya fusiona listening+discovery, pero **no cierra el loop a activation/outreach ni usa la señal de comentarios como eje de similitud** → es el benchmark competitivo #1 a vigilar, no un empate; (2) **señal de comentarios/audiencia** como eje de similitud (nadie embebe commenters) — *precondición arquitectónica:* exige filtrado spam/bot de Fase 3 upstream + ponderación IDF de commenters-hub, o colapsa a ruido de popularidad; esto hace la Fase 3 (señales) una dependencia dura de este eje en Fase 4, no independiente; (3) **provenance + capa de señales tipadas** sobre social audiovisual (Fase 3, vacío confirmado); (4) full-multimodal-incl-audio y **español-first como refuerzos secundarios, no pilares** — Kuli/Syncly ya transcriben audio, y el español es probablemente **table-stakes, no moat** (whisper WER ES ~3-5% en limpio, cerca del inglés; cualquiera con modelo multilingüe lo maneja) → requiere test empírico de WER en dominio TikTok antes de sostener cualquier claim. Fuentes en `docs/research-features-gtm.md` (acceso 2026-07-18).
+
+> **Matriz de cobertura de formatos (soporte de ADR 17).** Fuentes: `alternativas-fase1.md` §2a + verificación en vivo de docs/páginas de vendor (2026-07-19). Celdas sin confirmar se marcan como **pregunta abierta**, no se adivinan (regla `CLAUDE.md` de no inventar capacidades). `alternativas-fase1.md` documenta cobertura **a nivel plataforma**, no a nivel formato — casi toda la granularidad por formato edge sale de la verificación en vivo o queda abierta.
+>
+> | Formato | Zyte (parseo propio) | EnsembleData | Data365 |
+> |---|---|---|---|
+> | TikTok — video | Sí (hydration JSON) | Sí (docs) | Sí (docs) |
+> | TikTok — foto/galería (photo-mode) | Sí (construible; `imagePost` en hydration) | Parcial — homepage dice "photos" pero **sin endpoint dedicado en docs** ⚠ pregunta abierta | No confirmado ⚠ pregunta abierta |
+> | TikTok — story | Parcial (efímero; requiere sesión/auth — difícil para todos) | No (no documentado) | Parcial (solo mientras activa, ventana 24 h) |
+> | TikTok — texto | Parcial (formato raro; parseable si presente en hydration) | No confirmado ⚠ pregunta abierta | No confirmado ⚠ pregunta abierta |
+> | IG — reel | Sí | Sí (`getUserReels`) | Sí |
+> | IG — post (feed) | Sí | Sí | Sí |
+> | IG — carrusel | Sí | Parcial (dentro del endpoint de post; sin endpoint dedicado) ⚠ | Sí (imágenes de carrusel expuestas) |
+> | IG — story | Parcial (requiere auth) | No (no documentado) | Parcial (solo mientras activa) |
+>
+> **Coste e infra por vendor:**
+>
+> | | Modelo de coste | ~Coste/1K registros | Rotación IP/proxy incluida |
+> |---|---|---|---|
+> | Zyte (parseo propio) | Pay-per-request | Variable por dificultad del sitio (Zyte API PAYG desde $0; tope $100/mes Standard) | Sí — bundled en Zyte API (Bloque 1) |
+> | EnsembleData | Unidades (mayoría 1 unidad/request; varía por complejidad del endpoint) | No expresable limpio en $/1K (depende del endpoint); tiers $100–$1,400/mes | Sí (implícito — es una scraping API gestionada) |
+> | Data365 | Créditos (1 post = 1, post+comentarios = 5, perfil = 9) | ~€0.60/1K posts (€300/mes = 500K créditos); sube con comentarios/perfil | Sí (implícito — gestionada) |
+>
+> **Lectura para la decisión:** el eje que discrimina no es el coste (los tres son viables) sino **el techo de cobertura y el control del payload**. Los formatos edge que el sprint exige (foto-galería TikTok, texto, stories) son justo donde AMBOS vendors están sin confirmar o no cubren; y ninguna API expone el hydration JSON crudo requerido por la regla de re-parse-sin-re-scrape. Construir el parseo mantiene la cobertura acotada solo por lo que la plataforma renderiza, no por el roadmap de un vendor. Caveat de honestidad: el marketing de EnsembleData afirma "photos" para TikTok pero su página de docs no enumera endpoint de photo-mode ni de stories — por eso esas celdas quedan como pregunta abierta, no como "no".
+
+> **Nota de reconciliación con `alternativas-fase1.md` (ADR 17).** El Resumen Ejecutivo y la Recomendación #1 de ese doc dicen *"comprar la ingesta (EnsembleData primario + Data365 fallback)"*. ADR 17 **no** contradice esa investigación de mercado: **estrecha** su alcance a la luz del split Build/Buy de `CLAUDE.md`. Se compra la capa commodity (proxy/anti-bloqueo = Zyte, ya fijo) y se construye el pipeline de ingesta/parseo (core diferenciado, listado explícitamente bajo **Build** en `CLAUDE.md`). EnsembleData/Data365 **no se descartan**: quedan como fallback dirigido para (a) formatos donde el parseo propio esté bloqueado —notablemente stories, difíciles para todos por efímeras y auth-gated—, y (b) backstop de anti-bloqueo/ráfaga. Esta desviación de la recomendación escrita del doc es intencional y está flagged al lead.
+
+> **Contrato del envelope de raw-payload (soporte de ADR 18 — autoritativo para `packages/scraper`).** Vive en `shared.py` (destino `packages/shared`), parser-agnóstico.
+>
+> **Forma del envelope (persistido):**
+> ```
+> RawPayloadEnvelope {
+>     payload_schema_version: int      # actual = 1; versiona forma del envelope + algoritmo de firma
+>     platform: Platform
+>     source_url: str
+>     fetched_at: datetime
+>     content_signature: str           # "sha256:<hex>" sobre canonical_bytes(hydration)
+>     zyte_request_meta: dict[str, Any] = {}   # metadata brand-agnóstica del scrape (request id / coste / timing Zyte); {} hasta que Parte 3 la cablee desde el transporte
+>     hydration: dict[str, Any]        # payload crudo tal como se scrapeó (orden de arrays preservado)
+> }
+> ```
+> **Función canónica (única, compartida por firma y por `persist()`):**
+> ```
+> canonical_bytes(obj) = json.dumps(
+>     obj, sort_keys=True, ensure_ascii=False,
+>     separators=(",", ":"), allow_nan=False,
+> ).encode("utf-8")
+> content_signature(hydration) = "sha256:" + sha256(canonical_bytes(hydration)).hexdigest()
+> ```
+> - `sort_keys=True`: estabilidad ante reordenamiento de claves. **Arrays NO se ordenan** (el orden es significativo — deriva `MediaItem.ordinal`).
+> - `allow_nan=False`: `NaN`/`Infinity` no son JSON válido → se levanta en vez de emitir bytes no deterministas.
+> - **Sin normalización NFC Unicode** (decisión deliberada): normalizar mutaría el payload crudo; el hydration de la plataforma es byte-estable por scrape, la deriva de normalización cross-scrape es irreal. La firma es identidad del payload canónico-pero-no-normalizado.
+> - Prefijo `sha256:` autodescriptivo (self-describing) para permitir cambio de algoritmo bajo un nuevo `payload_schema_version`. (Nota: difiere del `manifest_sha256` hex-desnudo de la eval harness de datasci — deliberado; el envelope es un contrato cross-service de vida más larga.)
+>
+> **Persistencia — seam del `RawPayloadStore` (pregunta abierta a, PINNEADA 2026-07-20).** `persist` cambia de firma a un **sink de bytes puro**:
+> ```
+> persist(self, platform: Platform, source_url: str, body: bytes) -> str
+> ```
+> El store deriva la clave vía `raw_payload_key(platform, source_url)`, **escribe `body` verbatim** (sin re-serializar) y devuelve la clave. NO conoce `RawPayloadEnvelope`, ni pydantic, ni la canonicalización. Razones: (1) es la costura de red/persistencia y debe seguir siendo swappable — la impl R2 de Parte 3 es un solo `put_object(key, body)`, sin lógica de envelope duplicada; (2) recibir **bytes** en vez de un dict **elimina estructuralmente** el bug de re-serialización actual (`LocalDiskRawPayloadStore.persist` hoy hace `json.dumps(payload, ensure_ascii=False)` sin `sort_keys` ni `separators`) — el store ya no puede re-codificar porque nunca ve un dict; (3) la política de clave URL-derivada queda encapsulada y uniforme entre impls tras el seam.
+>
+> **Canonicalización en el sitio de commit (una sola vez, por encima del store).** El artefacto persistido es el **envelope entero**, no el `hydration` desnudo: `body = canonical_bytes(envelope.model_dump(mode="json"))`, calculado en la capa que hace commit (el `scrape-worker` de Celery en Parte 3; un helper fino `persist_envelope(store, envelope) -> str` en Parte 2). Ese helper hace `r2_key = store.persist(envelope.platform, envelope.source_url, canonical_bytes(envelope.model_dump(mode="json")))`. `r2_key` **no** vive en el envelope (no está en el field set) — es el retorno de `persist`, y fluye a `ScrapeProvenance.hydration_json_r2_key`.
+>
+> **Modelos in-memory — `RawHydration` se pliega en el envelope (pregunta abierta b, PINNEADA).** `RawHydration` **desaparece**: su rol —portar el payload crudo + provenance de captura— lo asume ahora `RawPayloadEnvelope`, que ya lleva `hydration` + `source_url` + `fetched_at` como fuente única de verdad. `fetch_hydration(url)` **mantiene su firma de parámetros** (solo `url`, brand-agnóstico) pero cambia su **retorno** a `RawPayloadEnvelope` y **deja de persistir**: es captura pura (fetch HTML → extrae hydration → construye+firma el envelope, estampando `payload_schema_version=1`, `content_signature`, `zyte_request_meta`). La persistencia es una operación de la costura de persistencia, propiedad de la orquestación (el `scrape-worker`), no del cliente vendor-agnóstico cuyo rol documentado es "URL → payload". La regla dura *"raw persistido antes de parsear"* se conserva **por dependencia de tipos**, no por acoplar persist a fetch: `ScrapeProvenance.hydration_json_r2_key` es obligatorio y solo `persist` lo produce → no se puede construir un `Post` sin haber persistido primero.
+>
+> **Provenance (DECIDIDO — lockeado por el lead, ya no solo recomendado).** `ScrapeProvenance` gana `content_signature: str`, de modo que un `Post` parseado referencie la **versión exacta de contenido** de la que se derivó — no solo el `hydration_json_r2_key` (URL-derivado y sobreescribible). Si el raw en esa clave se re-scrapea después, el `content_signature` del `Post` sigue identificando qué contenido lo produjo → re-parse auditable + detección de staleness (firma almacenada ≠ firma del Post ⇒ el contenido cambió desde el parseo).
+>
+> **Invariante de verificación (pregunta abierta 3, CONFIRMADA — reemplaza la exigencia informal "stored bytes == signed bytes"):** para todo envelope almacenado, `content_signature == "sha256:" + sha256(canonical_bytes(stored.hydration)).hexdigest()`, **re-verificable desde el artefacto solo**: cargar bytes → `RawPayloadEnvelope.model_validate` → recomputar la firma sobre el `hydration` embebido → comparar con `stored.content_signature`. Autocontenido porque el `hydration` viaja dentro del envelope; `sort_keys=True` es recursivo, así que la forma canónica del `hydration` embebido coincide byte-a-byte con `canonical_bytes(hydration)` standalone. No se guardan los bytes firmados por separado.
 
 ---
 
@@ -241,3 +369,22 @@ sequenceDiagram
 3. [ ] Prototipo del grafo LangGraph de *Prospección Autónoma* con checkpoints.
 4. [ ] Benchmark de la cascada multimodal con 100 videos reales (costo/precisión por etapa).
 5. [ ] Evaluación de proveedores de outreach (Instantly vs HeyReach) y diseño de la integración.
+
+### 8.1 Decisiones abiertas (requieren aprobación humana antes de fijarse en docs)
+
+Surgen de la reconciliación de los teardowns GTM (`research-features-gtm.md`) y la feasibility técnica de embeddings. Las ADRs 9-16 arriba SÍ están lockeadas (técnicas, dentro del mandato de arquitectura). Las de esta lista NO — pero varias han cambiado de estado; ver la línea **Estado** de cada una. Convención: *abierto* = sin decisión; *aplicado, pendiente confirmación* = el texto ya está escrito en el working tree pero el gate de aprobación humana que el backlog fijó (`backlog-features-gtm.md`) aún no consta cerrado por commit ni nota de aprobación.
+
+1. **Reescritura de tesis competitiva** en `ingenieria-inversa-stack-gtm.md` §2/§6 y `README.md`: la premisa "nadie hace content lookalike" es falsa (Modash/Kuli/Syncly). Reencuadrar el diferenciador a fusión listening+activation + eje comentarios/audiencia + provenance (audio-multimodal y español como secundarios).
+   - **Estado: RESUELTO (aprobado por el usuario, 2026-07-18).** El reencuadre está escrito en `ingenieria-inversa-stack-gtm.md` §2/§6, `README.md` y la nota de corrección de §6 arriba, y aprobado explícitamente por el usuario vía el lead. Era un claim de **posicionamiento/producto** fuera del mandato unilateral del architect, por eso requería sign-off humano — ya obtenido. Contenido correcto y sourced; gate de aprobación cerrado.
+2. **Upgrade del modelo de texto** MiniLM-384 → `bge-m3` (1024-dim, MIT) por defecto (fallbacks `multilingual-e5-large` y `Qwen/Qwen3-Embedding-0.6B`, Apache-2.0, top MTEB-multilingual actual) para lookalike/RAG: mejor en español a costo ~igual + dense/sparse/ColBERT en un modelo (el sparse se acopla al `tokenbf_v1` existente) + similaridad simétrica ideal para lookalike. `CLAUDE.md` exige validación con golden-set antes de fijar checkpoints.
+   - **Estado: ABIERTO (sin cambio).** Propuesto como default en §4 y admitido como candidato licencia-comercial en ADR 13, pero **no lockeado**: los tres candidatos entran al bake-off del golden-set (datasci). No fijar el checkpoint en código hasta ese número.
+3. **Construir vs diferir `search.visual_embeddings`** (lookalike visual): recomendación = diferir (eje visual ya cubierto por competidores). Si producto quiere entrar al eje visual, es decisión de scope/costo de Fase 4.
+   - **Estado: FIRMADO en su parte de arquitectura (ADR 11).** La decisión técnica —no construir/poblar/indexar visual lookalike ahora; `search.visual_embeddings` queda diseñada-no-construida como activo de Fase 3 Visual Listening— quedó lockeada en ADR 11 (§6). Lo único que sigue abierto es el **scope de producto** (si Qualify decide entrar al eje visual), que es una decisión de priorización de Fase 4, no un ítem de arquitectura pendiente.
+4. **"Español-first" como claim de producto**: probablemente **table-stakes, no moat** — whisper WER ES ~3-5% en limpio (cerca del inglés), y cualquier competidor con modelo multilingüe (bge-m3 es MIT/gratis) maneja español; el riesgo real es el dominio TikTok (música, slang, code-switch), que golpea también al inglés. datasci es dueño del probe empírico (WER de whisper-large-v3-turbo sobre ~20-30 clips ES con transcript de referencia vs control EN; calidad de lookalike bge-m3 en creators hispanos vs baseline EN). Bloqueado solo por datos etiquetados; se pliega al mismo esfuerzo de golden-set de Fase 1.
+   - **Estado: ABIERTO (sin cambio), rastreado como hipótesis.** Corresponde a `backlog-features-gtm.md` P4-3 (hipótesis a validar). No sostener el claim sin el número de WER en dominio. Consistente con la nota de §6 y el ítem 1.
+5. **Correcciones al modelo de costos de Fase 1** (en `alternativas-fase1.md`/`README.md`): Prospeo cae a ~4.5% hit-rate en bulk (no 98%, que es solo lookup individual); Smartlead API/white-label está en Pro $94/mes (no Base $39); Trigify 2026 = $149/$270/$549. Las decisiones de vendor se sostienen; solo el costeo cambia.
+   - **Estado: RESUELTO (aprobado por el usuario, 2026-07-18).** Las tres correcciones están escritas en `alternativas-fase1.md` §3a/§3b, `README.md` (tabla Fase 1) e `ingenieria-inversa-stack-gtm.md` (Trigify), y aprobadas explícitamente por el usuario vía el lead. Corresponden a `backlog-features-gtm.md` **F1-C1 y F1-C2** (que el PO había marcado "requiere aprobación explícita del lead" — ahora obtenida; **no** son la fila C5, que es la deprecación de la API de Instantly, ya RESUELTA vía la nota de ADR 7). `CLAUDE.md` **no** está afectado: no lista cifras de precio/precisión de estos vendors (verificado). Las decisiones de vendor se sostienen; solo cambia el costeo.
+6. **Principio de billing** (`billing.usage_events`, Fase 5): cobrar por dato VÁLIDO (patrón BetterContact), no por intento — advertencia directa del caso Clay (+28% precio / −40% créditos / cobra intentos fallidos; queja #1 = credit burn impredecible).
+   - **Estado: PRINCIPIO REGISTRADO, no contestado.** `backlog-features-gtm.md` lo marca RESUELTO (fila C6: "ya registrado en §8.1 item 6") y lo baja a los stories P5-1/P4-4. No es una decisión controvertida que requiera aprobación, sino un guardrail de diseño de Fase 5; se vuelve vinculante cuando se diseñe el esquema `billing.usage_events` (Fase 5, aún inexistente). Candidato a ADR propia recién en ese momento — no se mintea ahora para no adelantar una fase sin esquema.
+7. **Clasificador zero-shot de texto como primitiva de detección de Fase 3** (`MoritzLaurer/bge-m3-zeroshot-v2.0`, MIT): `packages/models/NOTES_pain_signal_feasibility.md` (datasci, 2026-07-18) encontró que la librería de señales tipadas (`backlog-features-gtm.md` P3-1) no es construible con el cascade actual tal cual — robertuito solo da polaridad 3-clase, y 7 de 10 pain points del set de creador/podcaster investigado (queja de pago, fricción de brand-deal, intención de sponsorship, etc.) son *tópico/intención*, no polaridad. Este gap no estaba reconciliado entre `backlog-features-gtm.md` (que no menciona la dependencia) y las notas de datasci hasta esta sesión.
+   - **Estado: RESUELTO (aprobado por el usuario, 2026-07-18) como adición de stack propuesta — NO como decisión de scope de Fase 3.** El checkpoint queda registrado en `docs/modelos-multimodal-fase1.md` ("Clasificador zero-shot de texto") y en el stack tentativo de `CLAUDE.md`, con costo estimado <5% del cascade/video y misma golden-set-antes-de-lockear que el resto de checkpoints. Lo que **sigue abierto** es si P3-1 (la librería de señales) entra a sprint — eso es una decisión de priorización de Fase 3, no de arquitectura, y no se adelanta aquí.

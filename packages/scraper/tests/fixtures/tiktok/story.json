@@ -1,0 +1,20 @@
+{
+  "__DEFAULT_SCOPE__": {
+    "webapp.video-detail": {
+      "itemInfo": {
+        "itemStruct": {
+          "id": "7671111122223333444",
+          "desc": "Behind the scenes today",
+          "createTime": 1710633600,
+          "contentTypeHint": "story",
+          "author": {"uniqueId": "colorlab", "id": "author_2002"},
+          "stats": {"playCount": 8800, "diggCount": 640, "commentCount": 12, "shareCount": 3},
+          "video": {
+            "duration": 9,
+            "playAddr": "https://v.tiktok.example/story/7671111122223333444.mp4"
+          }
+        }
+      }
+    }
+  }
+}

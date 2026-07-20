@@ -1,7 +1,7 @@
 # Selección de modelos open-weight para la cascada multimodal (Fase 1, Parte 1)
 
 **Alcance:** modelos concretos para las 3 etapas que sí se construyen en Fase 1 — filtro CLIP (F2), visión/VLM (F3), transcripción (F1) — más sentiment, ya confirmado.
-**Método:** consulta directa al Hugging Face Hub (`hf models info` / `hf models card`, vía `hf-cli`) el 2026-07-17. Todos los candidatos son Apache-2.0.
+**Método:** consulta directa al Hugging Face Hub (`hf models info` / `hf models card`, vía `hf-cli`) el 2026-07-17. La mayoría de los candidatos son Apache-2.0 — excepción: `moondream/moondream3-preview` (licencia `other`, no Apache-2.0; verificado de nuevo contra el Hub en vivo el 2026-07-18, ver nota en la sección de visión).
 **Por qué existe este doc:** `alternativas-fase1.md` compara proveedores/precios (buy vs build a nivel de infraestructura); este doc compara **qué pesos abiertos usar** dentro de la opción "build", porque son los mismos pesos que se pueden servir vía API gestionada (HF Inference Endpoints) o self-hosted (RunPod/Modal) sin reescribir el pipeline — ver la nota de cierre.
 
 ---
@@ -25,9 +25,11 @@
 | `Qwen/Qwen2.5-VL-7B-Instruct` (el propuesto originalmente) | 8.3B (denso) | Apache-2.0 | Sigue siendo el más adoptado (10M descargas), maduro, bien documentado |
 | `Qwen/Qwen3-VL-4B-Instruct` / `Qwen/Qwen3-VL-8B-Instruct` | 4.4B / 8.8B (denso) | Apache-2.0 | Generación más nueva: OCR en 32 idiomas (vs. 19), mejor grounding espacial/2D-3D, contexto nativo 256K, "reconoce todo" (marcas, productos, landmarks) — relevante para detección de marca/producto que hoy es diferenciador de Qualify |
 | **`vikhyatk/moondream2`** (el propuesto originalmente) | 1.9B (denso) | Apache-2.0 | Ahora "generación anterior" según su propio model card — Moondream recomienda migrar a v3 |
-| **`moondream/moondream3-preview`** (recomendado) | 9.3B total, **~2B activos** (MoE, 8 de 64 expertos por token) | Apache-2.0 | SOTA reportado por el propio Moondream reteniendo el costo de inferencia de un modelo ~2B gracias a MoE; expone **skills estructuradas** (`caption`, `query`, `detect`, `point`) que devuelven JSON/bounding-boxes directamente — mucho menos parsing/prompt-engineering que pedirle texto libre a un modelo chat genérico como Qwen-VL |
+| **`moondream/moondream3-preview`** (recomendado) | 9.3B total, **~2B activos** (MoE, 8 de 64 expertos por token) | **`other`** (no Apache-2.0 — corregido 2026-07-18, ver nota abajo) | SOTA reportado por el propio Moondream reteniendo el costo de inferencia de un modelo ~2B gracias a MoE; expone **skills estructuradas** (`caption`, `query`, `detect`, `point`) que devuelven JSON/bounding-boxes directamente — mucho menos parsing/prompt-engineering que pedirle texto libre a un modelo chat genérico como Qwen-VL |
 
 **Implicación:** `moondream3-preview` es la recomendación primaria — mismo patrón de "skills tipadas" que ya usaba Moondream2 (fit natural con el requisito de **provenance** y salidas estructuradas de `docs/arquitectura.md`), con el salto de calidad de MoE. Riesgo: sigue en estado "preview" — **fijar `revision` al descargar** y no asumir estabilidad de API entre releases. Fallback si el golden-set de validación (ya planeado en `arquitectura.md` §7) muestra accuracy insuficiente en detección de marca: `Qwen/Qwen3-VL-4B-Instruct` (denso, más maduro, mejor OCR/reconocimiento amplio, pero requiere más prompt-engineering para output estructurado y ~2× el costo de inferencia de moondream3-preview al no ser MoE).
+
+**Corrección de licencia (verificado contra el Hub en vivo, 2026-07-18):** `moondream/moondream3-preview` tiene licencia `other`, **no Apache-2.0** como afirmaba antes este doc — su model card no usa una licencia OSI estándar. Antes de comprometer este checkpoint en código (más allá del prototipo actual en `packages/models`), revisar los términos exactos de esa licencia `other` para uso comercial; si restringe el uso comercial, el fallback `Qwen/Qwen3-VL-4B-Instruct` (Apache-2.0 confirmado) pasa a ser la opción segura por defecto, no solo el fallback de accuracy. Esto no cambia la "Decisión final para Parte 1" de abajo, que ya usa `Qwen3-VL-4B-Instruct` local por razones independientes (incompatibilidad de `moondream2` con `transformers` reciente).
 
 ### 2026-07-17 — Actualización tras implementar Parte 1: ni Featherless ni Moondream2 funcionaron
 
@@ -74,6 +76,24 @@ Al implementar `packages/models`, ninguna de las dos rutas de arriba resultó vi
 
 ---
 
+## Clasificador zero-shot de texto (propuesto, Fase 3 — fuera de alcance de este doc, registrado aquí por continuidad de stack)
+
+**Nota de scope:** este doc cubre solo Fase 1 Parte 1 (F1/F2/F3 + sentiment, ya implementados en `packages/models`). Esta sección se añade porque `packages/models/NOTES_pain_signal_feasibility.md` (datasci, 2026-07-18) identificó un gap que bloquea la Fase 3 tal como está descrita en `backlog-features-gtm.md` (P3-1, librería de señales tipadas): **robertuito solo emite polaridad de 3 clases**, y la mayoría de señales de valor (queja de pago, fricción de brand-deal, intención de sponsorship, "crisis" más allá de negatividad genérica) son *tópico/intención*, no polaridad — la polaridad sola no puede separarlas. No hay ningún checkpoint de FTC/ad-disclosure dedicado en el Hub; la vía práctica es reglas + NLI zero-shot.
+
+| Checkpoint (verificado en vivo contra el Hub, 2026-07-18) | Tarea | Params | Licencia | Notas |
+|---|---|---|---|---|
+| **`MoritzLaurer/bge-m3-zeroshot-v2.0`** (recomendado) | Clasificación de texto zero-shot (NLI) | 567.8M (xlm-roberta) | **MIT** | Multilingüe incl. ES; labels candidatas arbitrarias, sin datos de entrenamiento etiquetados. Comparte base con `BAAI/bge-m3` (ya propuesto para embeddings de lookalike/RAG en `arquitectura.md` §4/§8.1) → sinergia de familia de checkpoint, no un modelo aislado más. Disponible en HF Inference Providers (patrón buy-primero del resto del stack) |
+| `MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7` | Clasificación de texto zero-shot (NLI) | 278.8M | MIT | Fallback más barato (~½ params, menor latencia/costo, calidad algo menor). Multilingüe incl. ES |
+| `pysentimiento/robertuito-emotion-analysis` | Emoción (ES) | ~109M | *no declarada en metadata del Hub* | Mismo patrón/infra que el sentiment ya comprometido (cero infra nueva, mismo CPU worker) — refina burnout/ansiedad (ejes miedo/tristeza) pero no reemplaza el clasificador de tópico |
+
+**Costo:** corre solo sobre texto que ya sobrevivió las etapas baratas del cascade (caption siempre, transcript si F1 corrió, top-N comentarios) — nunca sobre contenido descartado. Estimado **<5% del costo por video del cascade completo** (dominado por VLM+ASR); self-hosted en Fase 3 el costo incremental es ruido de cómputo. Ver detalle de cálculo en `packages/models/NOTES_pain_signal_feasibility.md` §5.
+
+**Caveat de licencia (heredado, no nuevo):** el Hub no declara licencia para los repos `pysentimiento/robertuito-*`, lo que incluye el sentiment **ya comprometido** en Fase 1, no solo la adición de emoción — verificar contra el repo/paper original antes de considerarlo cerrado para uso comercial (aplica el mismo guardrail que ADR 13 de `arquitectura.md` para embeddings no-comerciales). Si resulta no-comercial, los modelos zero-shot (MIT) pueden emitir labels tipo emoción también, como sustituto limpio.
+
+**Estado: propuesto, no lockeado.** Es un candidato a stack de Fase 3, condicionado a que la librería de señales tipadas (P3-1) entre a sprint — no se fija en código hasta esa decisión de scope y su propia validación en el golden-set (extensión descrita en `NOTES_pain_signal_feasibility.md` §4: labels multi-label a nivel de fragmento, sobre los mismos ~100 videos, con calibración de umbral por señal — recall-first para crisis/pago, precision-first para señales que disparan acción automática).
+
+---
+
 ## Recomendación final F2/F3/F1 (self-hosted / vía HF Inference Endpoints)
 
 ```
@@ -81,6 +101,7 @@ F2 filtro   → google/siglip2-base-patch16-224
 F3 visión   → moondream/moondream3-preview  (fallback: Qwen/Qwen3-VL-4B-Instruct)
 F1 audio    → openai/whisper-large-v3-turbo
 sentiment   → pysentimiento/robertuito-sentiment-analysis
+texto (Fase 3, propuesto) → MoritzLaurer/bge-m3-zeroshot-v2.0  (fallback: mDeBERTa-v3-base-xnli-multilingual-nli-2mil7)
 ```
 
 **Por qué esto resuelve también la decisión API-vs-self-hosted que quedó pendiente:** los cuatro son checkpoints públicos en el Hub. Se pueden servir hoy vía **HF Inference Endpoints** (`hf endpoints deploy`, pago por uso, cero infra propia) para validar el pipeline end-to-end sin esperar a tener GPU serverless propia, y migrar después a RunPod/Modal self-hosted **sin cambiar de modelo ni reescribir el pipeline** — el adaptador de proveedor solo cambia el endpoint HTTP, no el contrato de datos. Esto es lo mismo que la "Opción 3 (interfaz intercambiable)" discutida antes, ahora con modelos concretos en vez de una decisión abstracta.

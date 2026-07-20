@@ -59,10 +59,10 @@ La Fase 1 cubre tres bloques: **rotación de proxies**, **social listening** y *
 | Listening — ingesta | EnsembleData (API TikTok/IG) | Data365 (~$0.60/1K registros), Apify (prototipos) | Solo scrapers que decidamos internalizar |
 | Listening — transcripción (Filtro 1) | Groq Whisper-v3 (~$0.04/h) | AssemblyAI ($0.15/h), Deepgram Nova-3 | Nada |
 | Listening — visión (Filtro 3) | Gemini Flash sobre frames muestreados | Twelve Labs (POC si falla precisión de detección de marca) | La capa multimodal propia (diferenciador) |
-| Outreach — infraestructura email | Zapmail (mailboxes + warmup, API headless) + Smartlead (envío, API/white label) | Mailreef, Instantly | Nada (deliverability = problema resuelto, riesgoso de reimplementar) |
-| Outreach — email finding | Prospeo (~$0.01/email verificado) | Findymail, Anymailfinder | Nada |
+| Outreach — infraestructura email | Zapmail (mailboxes + warmup, API headless) + Smartlead (envío, API/white label **en plan Pro, $94/mes** — el tier Base $39/mes no la incluye) | Mailreef, Instantly (API v1 deprecada 2026-01-19, apuntar a la nueva) | Nada (deliverability = problema resuelto, riesgoso de reimplementar) |
+| Outreach — email finding | Prospeo (~$0.01/email verificado en **lookup individual**; en bulk el hit rate real es ~4.5% y cobra por fila importada — no usar el 98% para modelar coste de enriquecimiento masivo) | Findymail, Anymailfinder | Nada |
 
-Principio: en Fase 1 solo se construye la **orquestación** (Celery/LangGraph) y la **capa de análisis multimodal**; todo lo demás se compra vía API. Ningún SaaS de listening (HypeAuditor, Brandwatch, Brand24, Upfluence) resuelve el punto ciego multimodal en video — ese diferenciador queda intacto.
+Principio: en Fase 1 solo se construye la **orquestación** (Celery/LangGraph) y la **capa de análisis multimodal**; todo lo demás se compra vía API. Ningún SaaS de listening (HypeAuditor, Brandwatch, Brand24, Upfluence) resuelve el punto ciego multimodal en video — ese diferenciador queda intacto. (Nota: el discovery/lookalike de creators sobre contenido *sí* tiene ya competencia — Modash, Kuli, Syncly Social — ver `docs/research-features-gtm.md`; el diferenciador de Qualify en esa capa se redefinió como fusión listening→activation + eje comentarios/provenance, no "nadie lo hace con contenido".)
 
 ### Fase 2 — Social Listening + AI Insights
 - Monitoreo de términos, hashtags y competidores (queries guardadas + scheduler)

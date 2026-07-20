@@ -1,0 +1,17 @@
+{
+  "graphql": {
+    "shortcode_media": {
+      "shortcode": "CxPost002def",
+      "id": "3002000000000000002",
+      "__typename": "GraphImage",
+      "product_type": "feed",
+      "is_video": false,
+      "display_url": "https://scontent.ig.example/post/CxPost002def.jpg",
+      "taken_at_timestamp": 1710547200,
+      "owner": {"username": "colorlab", "id": "owner_2002"},
+      "edge_media_to_caption": {"edges": [{"node": {"text": "New colorway drop"}}]},
+      "edge_media_preview_like": {"count": 4100},
+      "edge_media_to_comment": {"count": 132}
+    }
+  }
+}
