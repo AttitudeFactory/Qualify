@@ -11,12 +11,22 @@ from uuid import UUID
 from qualify_scraper.client import FixtureScrapingClient
 from qualify_scraper.parsers.tiktok import parse_tiktok
 from qualify_scraper.schemas import ContentType, MediaKind, Platform, Post
+from qualify_scraper.shared import raw_payload_key
 
 
 def _parse(fixtures_dir: Path, brand_id: UUID, pipeline_version: str, name: str) -> Post:
     url = f"https://tiktok.example/{name}"
-    client = FixtureScrapingClient({url: fixtures_dir / "tiktok" / f"{name}.json"})
-    return parse_tiktok(client.fetch_hydration(url), brand_id, pipeline_version)
+    client = FixtureScrapingClient(
+        {url: fixtures_dir / "tiktok" / f"{name}.json"}, platform=Platform.TIKTOK
+    )
+    # Parser-focused: derive the r2_key with the same fn the store uses (store-free).
+    r2_key = raw_payload_key(Platform.TIKTOK, url)
+    return parse_tiktok(
+        client.fetch_hydration(url),
+        r2_key=r2_key,
+        brand_id=brand_id,
+        pipeline_version=pipeline_version,
+    )
 
 
 def test_video(fixtures_dir: Path, brand_id: UUID, pipeline_version: str) -> None:
@@ -29,7 +39,9 @@ def test_video(fixtures_dir: Path, brand_id: UUID, pipeline_version: str) -> Non
     assert len(post.media) == 1
     assert post.media[0].kind == MediaKind.VIDEO
     assert post.duration_ms == 27000
-    assert post.hydration_json_r2_key == "hydration/video.json"
+    assert post.hydration_json_r2_key == raw_payload_key(
+        Platform.TIKTOK, "https://tiktok.example/video"
+    )
 
 
 def test_photo_gallery(fixtures_dir: Path, brand_id: UUID, pipeline_version: str) -> None:

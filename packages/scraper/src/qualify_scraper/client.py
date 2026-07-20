@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from qualify_scraper.shared import Platform, RawHydration, RawPayloadStore
+from qualify_scraper.shared import Platform, RawPayloadEnvelope, build_envelope
 
 HydrationExtractor = Callable[[str], dict[str, Any]]
 
@@ -16,9 +16,13 @@ class ScrapingClient(Protocol):
     """Vendor-agnostic ingestion surface. ADR 17 selects build-in-house over
     Zyte as the primary path; EnsembleData/Data365 stay a documented fallback
     for blocked formats. Parsers and tests depend only on this Protocol, so the
-    concrete client stays swappable."""
+    concrete client stays swappable.
 
-    def fetch_hydration(self, url: str) -> RawHydration: ...
+    Pure capture (ADR 18): `fetch_hydration` builds + signs a brand-agnostic
+    `RawPayloadEnvelope` but does NOT persist. Persistence is a separate commit
+    step (`persist_envelope`), so the raw is stored before it is parsed."""
+
+    def fetch_hydration(self, url: str) -> RawPayloadEnvelope: ...
 
 
 class ZyteTransport(Protocol):
@@ -59,51 +63,54 @@ class ZyteApiTransport:
 
 
 class ZyteScrapingClient:
-    """Real ingestion client: fetch HTML via Zyte, extract the embedded
-    hydration JSON, persist the raw payload as the canonical artifact, then
-    return it wrapped for parsing. The raw payload is stored BEFORE parsing, so a
-    post can always be re-parsed without re-scraping."""
+    """Real ingestion client: fetch HTML via Zyte, extract the embedded hydration
+    JSON, and return it wrapped + signed as a brand-agnostic `RawPayloadEnvelope`.
+
+    Pure capture — it does NOT persist (ADR 18). The caller/scrape-worker commits
+    the envelope via `persist_envelope` before parsing, so the raw is always stored
+    before a `Post` is built (raw-before-parse, enforced by type dependency: only
+    persist yields the `hydration_json_r2_key` a `Post` requires)."""
 
     def __init__(
         self,
         transport: ZyteTransport,
-        store: RawPayloadStore,
         extractor: HydrationExtractor,
         platform: Platform,
     ) -> None:
         self._transport = transport
-        self._store = store
         self._extractor = extractor
         self._platform = platform
 
-    def fetch_hydration(self, url: str) -> RawHydration:
+    def fetch_hydration(self, url: str) -> RawPayloadEnvelope:
         html = self._transport.fetch_html(url)
         payload = self._extractor(html)
-        r2_key = self._store.persist(self._platform, url, payload)
-        return RawHydration(
-            url=url,
+        return build_envelope(
+            platform=self._platform,
+            source_url=url,
             hydration=payload,
             fetched_at=datetime.now(),
-            r2_key=r2_key,
         )
 
 
 class FixtureScrapingClient:
     """Test double that serves saved hydration JSON from disk — no network, ever.
 
-    Constructed with a mapping of post URL -> fixture path. Used across the test
-    suite in place of a live vendor client so parsers can be verified against
-    representative payloads offline."""
+    Constructed with a mapping of post URL -> fixture path plus the platform it
+    serves (an envelope needs a platform; a fixture client is platform-scoped
+    anyway). Returns a real, signed `RawPayloadEnvelope` with a deterministic
+    `fetched_at` so tests are reproducible. Used across the suite in place of a live
+    vendor client so parsers can be verified against representative payloads offline."""
 
-    def __init__(self, url_to_fixture: dict[str, Path]) -> None:
+    def __init__(self, url_to_fixture: dict[str, Path], platform: Platform) -> None:
         self._url_to_fixture = url_to_fixture
+        self._platform = platform
 
-    def fetch_hydration(self, url: str) -> RawHydration:
+    def fetch_hydration(self, url: str) -> RawPayloadEnvelope:
         fixture_path = self._url_to_fixture[url]
         payload = json.loads(fixture_path.read_text())
-        return RawHydration(
-            url=url,
+        return build_envelope(
+            platform=self._platform,
+            source_url=url,
             hydration=payload,
             fetched_at=datetime.fromtimestamp(0),
-            r2_key=f"hydration/{fixture_path.name}",
         )

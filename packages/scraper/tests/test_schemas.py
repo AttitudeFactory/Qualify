@@ -24,6 +24,7 @@ def _minimal_post(**overrides: object) -> Post:
         post_url="https://tiktok.example/@handle/video/abc123",
         posted_at=datetime.fromtimestamp(1710460800),
         hydration_json_r2_key="hydration/video.json",
+        content_signature="sha256:" + "0" * 64,
         source_url="https://tiktok.example/@handle/video/abc123",
         scraped_at=datetime.fromtimestamp(0),
         parser_version="tiktok-parser-0.1.0",

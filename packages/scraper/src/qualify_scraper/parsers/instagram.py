@@ -12,7 +12,7 @@ from qualify_scraper.schemas import (
     Post,
     PostMetrics,
 )
-from qualify_scraper.shared import RawHydration
+from qualify_scraper.shared import RawPayloadEnvelope
 
 PARSER_VERSION = "instagram-parser-0.1.0"
 
@@ -72,13 +72,23 @@ def _extract_media(
     return [item], duration_ms
 
 
-def parse_instagram(raw: RawHydration, brand_id: UUID, pipeline_version: str) -> Post:
-    """Convert a saved Instagram hydration payload into a typed Post.
+def parse_instagram(
+    envelope: RawPayloadEnvelope,
+    *,
+    r2_key: str,
+    brand_id: UUID,
+    pipeline_version: str,
+) -> Post:
+    """Convert a captured Instagram envelope into a typed Post.
 
-    Provenance (`hydration_json_r2_key`, `source_url`, `scraped_at`) comes from
-    the RawHydration wrapper, so every parsed post keeps a reference back to the
-    raw JSON it was built from."""
-    media = _shortcode_media(raw.hydration)
+    `source_url`, `scraped_at`, and `content_signature` come from the envelope;
+    `hydration_json_r2_key` is the caller-threaded `r2_key` — `persist_envelope`'s
+    return — so a Post cannot be built without the raw having been persisted first
+    (raw-before-parse rule). `r2_key`, `brand_id`, and `pipeline_version` are
+    keyword-only: `r2_key`/`pipeline_version` are both `str`, so keyword-only removes
+    a silent positional-swap footgun. `parser_version` is a parser-internal constant
+    (not a caller arg) — the code-that-reads-the-hydration axis."""
+    media = _shortcode_media(envelope.hydration)
     content_type = _detect_content_type(media)
     media_items, duration_ms = _extract_media(media, content_type)
 
@@ -91,7 +101,7 @@ def parse_instagram(raw: RawHydration, brand_id: UUID, pipeline_version: str) ->
         content_type=content_type,
         creator_handle=owner.get("username", ""),
         creator_id=str(owner.get("id", "")),
-        post_url=raw.url,
+        post_url=envelope.source_url,
         caption=_caption(media),
         posted_at=datetime.fromtimestamp(int(media["taken_at_timestamp"])),
         metrics=PostMetrics(
@@ -102,9 +112,10 @@ def parse_instagram(raw: RawHydration, brand_id: UUID, pipeline_version: str) ->
         ),
         media=media_items,
         duration_ms=duration_ms,
-        hydration_json_r2_key=raw.r2_key,
-        source_url=raw.url,
-        scraped_at=raw.fetched_at,
+        hydration_json_r2_key=r2_key,
+        content_signature=envelope.content_signature,
+        source_url=envelope.source_url,
+        scraped_at=envelope.fetched_at,
         parser_version=PARSER_VERSION,
         pipeline_version=pipeline_version,
     )
