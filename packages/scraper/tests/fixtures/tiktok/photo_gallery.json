@@ -1,0 +1,23 @@
+{
+  "__DEFAULT_SCOPE__": {
+    "webapp.video-detail": {
+      "itemInfo": {
+        "itemStruct": {
+          "id": "7669900011223344556",
+          "desc": "Swipe for our 3 new colorways",
+          "createTime": 1710547200,
+          "author": {"uniqueId": "colorlab", "id": "author_2002"},
+          "stats": {"playCount": 42100, "diggCount": 3900, "commentCount": 145, "shareCount": 60},
+          "imagePost": {
+            "title": "New colorways",
+            "images": [
+              {"imageURL": {"urlList": ["https://p.tiktok.example/img/gallery1_a.jpg"]}},
+              {"imageURL": {"urlList": ["https://p.tiktok.example/img/gallery1_b.jpg"]}},
+              {"imageURL": {"urlList": ["https://p.tiktok.example/img/gallery1_c.jpg"]}}
+            ]
+          }
+        }
+      }
+    }
+  }
+}

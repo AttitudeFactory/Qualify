@@ -1,0 +1,16 @@
+{
+  "__DEFAULT_SCOPE__": {
+    "webapp.video-detail": {
+      "itemInfo": {
+        "itemStruct": {
+          "id": "7672222233334444555",
+          "desc": "Hot take: our support team replies faster than any competitor. Prove me wrong.",
+          "createTime": 1710720000,
+          "contentTypeHint": "text",
+          "author": {"uniqueId": "brandvoice", "id": "author_3003"},
+          "stats": {"playCount": 0, "diggCount": 210, "commentCount": 47, "shareCount": 8}
+        }
+      }
+    }
+  }
+}
