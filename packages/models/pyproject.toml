@@ -26,9 +26,21 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.15.22",
 ]
+# Eval-only: WER computation. The production cascade never computes WER, so this
+# stays out of [project].dependencies — kept in default-groups so `uv run` (local
+# + CI test runs) installs it, while a downstream install of qualify_models does not.
+eval = [
+    "jiwer>=4.0.0",
+]
+
+[tool.uv]
+default-groups = ["dev", "eval"]
 
 [tool.pytest.ini_options]
-markers = ["integration: hits a hosted HF Inference Provider over the network"]
+markers = [
+    "integration: hits the network (hosted HF Inference Provider, model download, or Hub metadata)",
+]
+addopts = "-m 'not integration'"
 pythonpath = ["src"]
 
 [tool.ruff]
