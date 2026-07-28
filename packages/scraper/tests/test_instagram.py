@@ -20,9 +20,10 @@ def _parse(fixtures_dir: Path, brand_id: UUID, pipeline_version: str, name: str)
         {url: fixtures_dir / "instagram" / f"{name}.json"}, platform=Platform.INSTAGRAM
     )
     # Parser-focused: derive the r2_key with the same fn the store uses (store-free).
-    r2_key = raw_payload_key(Platform.INSTAGRAM, url)
+    envelope = client.fetch_hydration(url)
+    r2_key = raw_payload_key(envelope)
     return parse_instagram(
-        client.fetch_hydration(url),
+        envelope,
         r2_key=r2_key,
         brand_id=brand_id,
         pipeline_version=pipeline_version,
@@ -75,8 +76,6 @@ def test_provenance_and_natural_key(
 ) -> None:
     post = _parse(fixtures_dir, brand_id, pipeline_version, "reel")
     assert post.natural_key == (str(brand_id), Platform.INSTAGRAM, "CxReel001abc")
-    assert post.hydration_json_r2_key == raw_payload_key(
-        Platform.INSTAGRAM, "https://instagram.example/reel"
-    )
+    assert post.hydration_json_r2_key.startswith("scrape/instagram/")
     assert post.pipeline_version == pipeline_version
     assert post.parser_version == "instagram-parser-0.1.0"

@@ -1,6 +1,8 @@
 import reflex as rx
 
 from .components import filter_bar, mentions_table, sidebar, stats_row, topbar
+from .connections_page import connections_index
+from .connections_state import ConnectionsState
 from .db import create_db_and_tables
 from .state import DashboardState
 
@@ -27,3 +29,9 @@ def index() -> rx.Component:
 
 app = rx.App()
 app.add_page(index, on_load=DashboardState.load_mentions, title="Qualify · Menciones")
+app.add_page(
+    connections_index,
+    route="/connections",
+    on_load=ConnectionsState.load_connections,
+    title="Qualify · Conexiones",
+)

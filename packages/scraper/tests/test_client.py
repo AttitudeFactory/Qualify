@@ -15,7 +15,7 @@ def test_fixture_client_returns_signed_envelope_without_network(fixtures_dir: Pa
     assert isinstance(envelope, RawPayloadEnvelope)
     assert envelope.platform == Platform.TIKTOK
     assert envelope.source_url == url
-    assert envelope.payload_schema_version == 1
+    assert envelope.payload_schema_version == 2
     assert "__DEFAULT_SCOPE__" in envelope.hydration
     # The envelope is self-describing: its signature matches its own hydration.
     assert envelope.content_signature == content_signature(envelope.hydration)

@@ -18,8 +18,14 @@ _PLATFORMS = ["tiktok", "instagram"]
 _SENTIMENTS = ["positive", "neutral", "negative"]
 _SENTIMENT_WEIGHTS = [0.55, 0.3, 0.15]
 _HANDLES = [
-    "@valeskincare", "@creador.beauty", "@glowwithmia", "@laura.reviews",
-    "@sebasmakeup", "@dermatips_co", "@rutinasconana", "@camimakeupco",
+    "@valeskincare",
+    "@creador.beauty",
+    "@glowwithmia",
+    "@laura.reviews",
+    "@sebasmakeup",
+    "@dermatips_co",
+    "@rutinasconana",
+    "@camimakeupco",
 ]
 _CAPTIONS = [
     "Probé la nueva línea y mi piel quedó increíble, se las recomiendo full",
@@ -37,9 +43,7 @@ _CAPTIONS = [
 
 def _random_mention(brand: str) -> Mention:
     platform = random.choice(_PLATFORMS)
-    posted_at = datetime.now() - timedelta(
-        days=random.randint(0, 21), hours=random.randint(0, 23)
-    )
+    posted_at = datetime.now() - timedelta(days=random.randint(0, 21), hours=random.randint(0, 23))
     return Mention(
         brand=brand,
         platform=platform,
@@ -63,10 +67,6 @@ def seed_if_empty() -> None:
         already_seeded = session.exec(select(Mention.id).limit(1)).first()
         if already_seeded:
             return
-        rows = [
-            _random_mention(brand)
-            for brand in _BRANDS
-            for _ in range(30)
-        ]
+        rows = [_random_mention(brand) for brand in _BRANDS for _ in range(30)]
         session.add_all(rows)
         session.commit()

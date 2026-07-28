@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from qualify_scraper.shared import Platform, RawPayloadEnvelope, build_envelope
+from qualify_scraper.shared import Platform, RawPayloadEnvelope, build_scrape_envelope
 
 HydrationExtractor = Callable[[str], dict[str, Any]]
 
@@ -84,7 +84,7 @@ class ZyteScrapingClient:
     def fetch_hydration(self, url: str) -> RawPayloadEnvelope:
         html = self._transport.fetch_html(url)
         payload = self._extractor(html)
-        return build_envelope(
+        return build_scrape_envelope(
             platform=self._platform,
             source_url=url,
             hydration=payload,
@@ -108,7 +108,7 @@ class FixtureScrapingClient:
     def fetch_hydration(self, url: str) -> RawPayloadEnvelope:
         fixture_path = self._url_to_fixture[url]
         payload = json.loads(fixture_path.read_text())
-        return build_envelope(
+        return build_scrape_envelope(
             platform=self._platform,
             source_url=url,
             hydration=payload,

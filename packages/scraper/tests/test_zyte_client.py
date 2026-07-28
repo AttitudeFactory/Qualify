@@ -49,7 +49,8 @@ def test_capture_persist_parse_seam(
 
     # Capture is pure: the client does NOT persist.
     envelope = client.fetch_hydration(url)
-    expected_key = raw_payload_key(Platform.TIKTOK, url)
+    expected_key = raw_payload_key(envelope)
+    assert expected_key.startswith("scrape/tiktok/")
     assert not (tmp_path / expected_key).exists()
 
     # Commit the raw BEFORE parsing; only persist yields the key a Post requires.
