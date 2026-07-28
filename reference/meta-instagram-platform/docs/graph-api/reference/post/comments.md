@@ -1,0 +1,148 @@
+Graph API Version
+
+[v25.0](#)
+
+# Post Comments
+
+## Reading
+
+Comments for this object
+
+### New Page Experience
+
+This endpoint is supported for [New Page Experience](/docs/pages/new-pages-experience/).
+
+### Example
+
+HTTPPHP SDKJavaScript SDKAndroid SDKiOS SDK[Graph API Explorer](/tools/explorer/?method=GET&path=%7Bpost-id%7D%2Fcomments&version=v25.0)
+
+```
+GET /v25.0/{post-id}/comments HTTP/1.1
+Host: graph.facebook.com
+```
+
+```
+/* PHP SDK v5.0.0 */
+/* make the API call */
+try {
+  // Returns a `Facebook\FacebookResponse` object
+  $response = $fb->get(
+    '/{post-id}/comments',
+    '{access-token}'
+  );
+} catch(Facebook\Exceptions\FacebookResponseException $e) {
+  echo 'Graph returned an error: ' . $e->getMessage();
+  exit;
+} catch(Facebook\Exceptions\FacebookSDKException $e) {
+  echo 'Facebook SDK returned an error: ' . $e->getMessage();
+  exit;
+}
+$graphNode = $response->getGraphNode();
+/* handle the result */
+```
+
+```
+/* make the API call */
+FB.api(
+    "/{post-id}/comments",
+    function (response) {
+      if (response && !response.error) {
+        /* handle the result */
+      }
+    }
+);
+```
+
+```
+/* make the API call */
+new GraphRequest(
+    AccessToken.getCurrentAccessToken(),
+    "/{post-id}/comments",
+    null,
+    HttpMethod.GET,
+    new GraphRequest.Callback() {
+        public void onCompleted(GraphResponse response) {
+            /* handle the result */
+        }
+    }
+).executeAsync();
+```
+
+```
+/* make the API call */
+FBSDKGraphRequest *request = [[FBSDKGraphRequest alloc]
+                               initWithGraphPath:@"/{post-id}/comments"
+                                      parameters:params
+                                      HTTPMethod:@"GET"];
+[request startWithCompletionHandler:^(FBSDKGraphRequestConnection *connection,
+                                      id result,
+                                      NSError *error) {
+    // Handle the result
+}];
+```
+
+If you want to learn how to use the Graph API, read our [Using Graph API guide](/docs/graph-api/using-graph-api/).
+
+### Parameters
+
+| Parameter | Description |
+| --- | --- |
+|  |  |
+| --- | --- |
+| `filter`  enum{stream, toplevel} | Default value: `toplevel`  SELF\_EXPLANATORY |
+| `live_filter`  enum{filter\_low\_quality, no\_filter} | Default value: `filter_low_quality`  For comments on a Live streaming video, this determines whether low quality comments will be filtered out of the results (filtering is enabled by default). In all other circumstances this parameter is ignored. |
+| `order`  enum{chronological, reverse\_chronological} | Preferred ordering of the comments. Accepts chronological (oldest first) and reverse chronological (newest first). If the comments can be ranked, then the order will always be ranked regardless of this modifier. The best practice for querying comments on a Live video is to continually poll for comments in the reversechronological ordering mode. |
+| `since`  datetime | Lower bound of the time range to consider |
+
+### Fields
+
+Reading from this edge will return a JSON formatted result:
+
+```
+{
+    "data": [],
+    "paging": {},
+    "summary": {}
+}
+```
+
+#### `data`
+
+A list of [Comment](/docs/graph-api/reference/comment/) nodes.
+
+#### `paging`
+
+For more details about pagination, see the [Graph API guide](/docs/graph-api/using-graph-api/#paging).
+
+#### `summary`
+
+Aggregated information about the edge, such as counts. Specify the fields to fetch in the summary param (like `summary=order`).
+
+| Field | Description |
+| --- | --- |
+| `order`  enum | Preferred ordering of the comments. Accepts chronological (oldest first) and reverse chronological (newest first). If the comments can be ranked, then the order will always be ranked regardless of this modifier. The best practice for querying comments on a Live video is to continually poll for comments in the reversechronological ordering mode. |
+| `total_count`  unsigned int32 | Total number of people who commented |
+| `can_comment`  bool | Can the viewer comment |
+
+### Error Codes
+
+| Error | Description |
+| --- | --- |
+| 100 | Invalid parameter |
+| 368 | The action attempted has been deemed abusive or is otherwise disallowed |
+| 200 | Permissions error |
+| 190 | Invalid OAuth 2.0 Access Token |
+| 80001 | There have been too many calls to this Page account. Wait a bit and try again. For more info, please refer to https://developers.facebook.com/docs/graph-api/overview/rate-limiting. |
+| 104 | Incorrect signature |
+
+## Creating
+
+You can't perform this operation on this endpoint.
+
+## Updating
+
+You can't perform this operation on this endpoint.
+
+## Deleting
+
+You can't perform this operation on this endpoint.
