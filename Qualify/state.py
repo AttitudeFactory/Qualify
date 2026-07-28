@@ -1,8 +1,7 @@
 from dataclasses import dataclass
 
-from sqlmodel import select
-
 import reflex as rx
+from sqlmodel import select
 
 from .db import get_session
 from .models import Mention
@@ -41,9 +40,7 @@ class DashboardState(rx.State):
     def load_mentions(self) -> None:
         seed_if_empty()
         with get_session() as session:
-            rows = session.exec(
-                select(Mention).order_by(Mention.posted_at.desc())
-            ).all()
+            rows = session.exec(select(Mention).order_by(Mention.posted_at.desc())).all()
         self.mentions = [
             MentionRow(
                 id=m.id,
@@ -82,9 +79,7 @@ class DashboardState(rx.State):
         if self.search_query:
             query = self.search_query.lower()
             rows = [
-                r
-                for r in rows
-                if query in r.caption.lower() or query in r.creator_handle.lower()
+                r for r in rows if query in r.caption.lower() or query in r.creator_handle.lower()
             ]
         return rows
 

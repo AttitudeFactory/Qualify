@@ -61,24 +61,66 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-This repo is **mostly pre-implementation** with respect to the actual product described below: there is no `docker-compose.yml`, no `migrations/`, no `scripts/`, no api/worker code, and no ClickHouse/Postgres yet. The one exception is `packages/models/` — see below. What exists on disk today is:
+**Updated 2026-07-26.** The "mostly pre-implementation" era is over: the repo now has a real `uv` workspace, a Postgres/Redis compose stack, Alembic migrations with RLS, and five workspace packages. What is **still** absent is the analytical plane — **no ClickHouse, no Celery workers, no R2 client, no `migrations/clickhouse/`, no `scripts/`** (all Fase 1 Parte 3, not started).
 
-- `README.md` (the most current, living summary of vision/architecture/roadmap) and five planning docs in `docs/` (see "What Qualify is" for what each one covers).
-- `packages/models/` — a standalone `uv` project (own `pyproject.toml`/`.venv`, not part of a workspace yet) implementing Fase 1 Parte 1: the multimodal analysis cascade (filter, vision, transcription, sentiment) as composable, typed functions with a `Provider` abstraction (local `transformers` for the small models, HF Inference Providers for the hosted VLM/ASR ones — swappable for self-hosted later, no rewrite). Runs against fixtures in `tests/fixtures/` (a real public TikTok sample video, frame + audio extracted via `ffmpeg`), not against live scraping — Parte 2 (scraping) and Parte 3 (ClickHouse/Celery/Postgres orchestration) don't exist yet. See `docs/plan-ingesta-social.md` §0 for the Parte 1/2/3 ordering and why it's sequenced this way, and `docs/modelos-multimodal-fase1.md` for the model choices this package implements.
-- A `Qualify/` **Reflex** app (`rxconfig.py`, `Qualify/Qualify.py`, `assets/`, `reflex.lock/`) — as of the "mentions dashboard scaffold" commit it's no longer the default welcome-page template: it has a sidebar/topbar/stats-row/filter-bar/mentions-table UI, a SQLModel-backed `db.py` with seed data, and a `DashboardState` loading mentions on page load. **Reflex is now the decided CRM UI** (see `docs/arquitectura.md` §2 and §6 ADR 8), replacing the earlier Next.js placeholder. It's still exploratory and unconnected to the real Fase 1 pipeline — it runs against local SQLite/seed data, not ClickHouse.
+> ⚠ **Nothing below is committed.** The entire Sprint 1 tree is uncommitted working state (`git status` shows `migrations/`, `packages/api/`, `packages/shared/`, `docker-compose.yml`, `justfile`, `alembic.ini` as untracked). Do not infer from `git log` what exists — read the filesystem.
+
+What exists on disk today:
+
+- `README.md` (the most current, living summary of vision/architecture/roadmap) and 15 docs in `docs/` (see "What Qualify is" for the main ones).
+- **`uv` workspace at the root** (`pyproject.toml` with `[tool.uv.workspace] members = ["packages/*"]`, Python >=3.12) — ADR 26. `ruff` (line-length 100, `E`/`F`/`I`/`UP`) and `pytest` are configured here, with markers `integration` (external network/paid vendors/model weights — never in CI) and `db` (needs the compose Postgres/Redis). `asyncio_mode = "auto"`.
+- **`docker-compose.yml`** — `postgres` + `redis` only. **No ClickHouse service yet.**
+- **`migrations/postgres/`** — Alembic (ADR 27), revisions `0001_tenancy_foundation` (tenants/users/tenant_members/brands + the three roles + RLS) and `0002_connections` (platform_apps/social_connections/oauth_credentials/connection_events + `qualify_credential`). Runs as `qualify_owner`. RLS policies use `NULLIF(current_setting('app.tenant_id', true), '')::uuid` — see §6 ruling R7 in `docs/arquitectura.md` for why the `NULLIF` is load-bearing and must not be "simplified" away.
+- **`packages/api/`** — `qualify_api`: the `tenancy` models, the `connections` module (crypto, events, fsm, locks, models, resolver + the C-04 OAuth flow), and the seed.
+- **`packages/shared/`** — `qualify_shared`: the sanctioned DB doors. `tenant_session` (RLS-scoped, request path), `admin_session` (BYPASSRLS, provisioning/seed only), `credential_session` (the narrow `qualify_credential` role that alone may read `oauth_credentials.ciphertext`). A static test forbids constructing an `Engine`/`Session` anywhere else.
+- **`packages/scraper/`** — `qualify_scraper`: Zyte client + TikTok/IG parsers + the `payload_schema_version = 2` raw-payload envelope (ADR 18/22) and `raw_payload_key()`.
+- `packages/models/` — Fase 1 Parte 1: the multimodal analysis cascade (filter, vision, transcription, sentiment) as composable, typed functions with a `Provider` abstraction (local `transformers` for the small models, HF Inference Providers for the hosted VLM/ASR ones — swappable for self-hosted later, no rewrite). Now a workspace member, but its heavy deps live in the `ml` group, so a default `uv sync` does **not** install torch and a bare `uv run pytest` does **not** collect its suite. Runs against fixtures in `tests/fixtures/` (a real public TikTok sample video, frame + audio extracted via `ffmpeg`), not live scraping. Also holds `permission_capability.py` (C-05, the scope→capability matrix). See `docs/plan-ingesta-social.md` §0 for the Parte 1/2/3 ordering and `docs/modelos-multimodal-fase1.md` for the model choices.
+- `packages/docs-harvester/` — tooling for harvesting the Meta platform doc corpus that ADR 25 and the `[V]` scope research cite.
+- A `Qualify/` **Reflex** app — the decided CRM UI (`docs/arquitectura.md` §2, §6 ADR 8), replacing the earlier Next.js placeholder. It now holds **two halves at different maturity levels**, and the distinction matters:
+  - **C-06 connected-accounts UI** (`connections_page.py`, `connections_state.py`, `connections_vm.py`, `connections_provider.py`, `capabilities.py`, `tenant.py`) — **wired to the real backend**: it reads through `qualify_shared.db.session.tenant_session` against Postgres and imports the real `qualify_api.connections` FSM/models and the `qualify_models` capability matrix. Not a mock. Its tests are collected by the root `pytest` run.
+  - **Mentions dashboard** (sidebar/topbar/stats-row/filter-bar/mentions-table, SQLModel-backed `db.py`, `DashboardState`) — still exploratory, still on local SQLite/seed data, still unconnected to the Fase 1 pipeline (which has no ClickHouse to connect to yet).
 
 Before assuming any file, service, or command exists, check the actual filesystem rather than trusting the docs, since the docs describe target architecture.
 
+### Sprint 1 state (Fase 1 Parte 4-A, "núcleo compartido de cuentas conectadas") — IN FLIGHT, 2026-07-26
+
+Six stories, specced in `docs/refinamiento-sprint1.md` (§C-01…§C-06) with the binding architect rulings R1-R8 in `docs/arquitectura.md` §6. **Five are built and verified; C-04 landed only partially** — the session was cut when the agents hit a monthly spend limit. Do not assume either "pre-implementation" or "C-04 complete":
+
+- **C-01 tenancy foundation, C-02 envelope v2, C-03 connections custody+FSM, C-05 capability matrix, C-06 connections UI** — built, tests green.
+- **C-04 OAuth connect flow — PARTIAL.** Landed: `state_token`, `meta_oauth`, `credential_reader`, `repository`, `service`, `verifier`, `read`, the HTTP routes, and `access_posture` wiring. **Known gaps, all approved-but-unwritten:**
+  1. The FSM edge `(REVOKED, VERIFY_FAIL) → DEGRADED` — approved by the architect (§6 ruling on C-04 Q2: a `revoked` row pointing at a freshly rotated credential is a status field lying about its own row). No code, no test.
+  2. `revoke_connection` service — does not exist; C-06 needs it.
+  3. The pending interface contract to the Reflex UI.
+
+Full handoff, including who was mid-what: `.claude/sprint-state-2026-07-26-c04-inflight.md`.
+
+**Resolved 2026-07-26 — ADR 25 is signed.** The login fork (Facebook Login for Business) is now `[APROBADO]` in `docs/arquitectura.md` §6, signed by the founder on 2026-07-26 unchanged. This closes the doc/code inconsistency that used to sit here: the decision was already materialized in applied DDL (`social_connections.linked_page_id NOT NULL`) with all of C-04 written against it, and the docs now say so too. Nothing to change in code — build on it as settled. Two properties of the row remain operationally load-bearing and are **not** softened by the signature: (a) the linked Facebook Page is a **hard precondition**, enforced as post-consent enumeration in the OAuth callback (ruling R4), not as pre-auth detection; and (b) the publish scope has **four spellings in circulation** — never hardcode one from documentation, resolve it empirically against the authorization endpoint.
+
 ### Commands
 
-The Reflex scaffold uses `uv` (`pyproject.toml` + `uv.lock`, Python >=3.12):
+A `justfile` is the entry point for everything backend. Prefer it over ad-hoc commands — the recipes encode ordering that is easy to get wrong (e.g. `dev` = `up` → `migrate` → `seed`):
 
 ```bash
-uv sync                 # install/sync dependencies into .venv
-uv run reflex run       # start the Reflex dev server (frontend + backend)
+just dev          # up + migrate + seed — the full local stack from cold
+just up           # docker compose up -d --wait (postgres + redis)
+just migrate      # alembic upgrade head, as qualify_owner
+just migrate-down # alembic downgrade base — must land clean (reversibility is a gate)
+just seed         # the two real tenants, via admin_session()
+just test         # uv run pytest -m "not integration"  — mirrors CI
+just test-db      # only the tests needing the compose Postgres/Redis
+just lint / fmt   # ruff check . / ruff format .
+just down         # docker compose down -v — DROPS the pgdata volume
 ```
 
-Follow the **reflex-process-management** skill (see Agents section above) rather than running `reflex` commands ad hoc — it covers the correct start/reload/debug sequence. There is no lint or test tooling configured yet (no ruff/pytest config, no test files) — nothing to run there until it's added.
+Three operational traps worth knowing before you touch this stack:
+
+- **Editing an already-applied Alembic revision does not re-run it.** `just migrate` will no-op. Since nothing is deployed, migrations are edited **in place** (ADR 27 ruling R8a), so re-verifying a migration change means `just down` → `just dev` — a full recreate, not a re-migrate.
+- **Do not run `uv sync`/`uv venv` while other agents are working.** The shared workspace `.venv` has been broken by concurrent `uv` runs before; `uv run --no-sync pytest ...` is the safe read-only form.
+- **Do not alternate `uv sync` ↔ `uv sync --group ml` — this, not concurrency, is what actually breaks the venv.** Observed twice in sequence on 2026-07-26 with a single agent running, so the trap above does not explain it: toggling between the default groups (no `ml`) and `--group ml` corrupts the shared venv's editable-install mechanism. The packages still appear in `uv pip list`, but `import qualify_models` (etc.) fails exactly as if the venv had never been synced. The only fix that worked both times was `rm -rf .venv && uv sync --group ml`. Practical rule: always sync with `--group ml` (the `Qualify/` tests are in `testpaths` now and import `qualify_models` for real), and prefer `uv run --no-sync` for everything read-only.
+
+For the Reflex UI specifically, follow the **reflex-process-management** skill (see Agents section above) rather than running `reflex` commands ad hoc.
+
+**Test state as of 2026-07-26:** **147/147 green offline** (`uv run --no-sync pytest -m "not integration"`) and **22/22 against live Docker** (`-m db`). The previously-known non-idempotent query in `test_connections_schema.py` is fixed (it now filters by `connection_id`), so the `db` suite can be re-run without a `docker compose down -v` in between.
 
 ## What Qualify is
 
@@ -117,28 +159,43 @@ Planned queues (Celery over Redis Streams): `scrape_jobs → extract_jobs → fi
 
 Planned repo layout:
 
+Target layout, annotated with what is real as of 2026-07-26 — the tree below is the *plan*, and roughly half of it does not exist yet:
+
 ```
 Qualify/
-├── Qualify/                  # Reflex app: CRM UI + dashboards (rxconfig.py, state, components) — exists today
-├── docker-compose.yml       # ClickHouse, Redis, api, workers (local)
-├── infra/                   # Terraform/Pulumi (later phase)
+├── Qualify/                  # ✅ Reflex app: CRM UI + dashboards + C-06 connections UI
+├── justfile                  # ✅ dev/up/migrate/seed/test/lint/down (not in the original plan)
+├── docker-compose.yml        # ⚠  EXISTS but postgres + redis ONLY — no ClickHouse, no api/worker services
+├── infra/                    # ❌ Terraform/Pulumi (later phase)
 ├── packages/
-│   ├── shared/               # Pydantic schemas, IDs, R2 client
-│   ├── scraper/               # Zyte client + TikTok/IG parsers
-│   ├── pipeline/               # Celery tasks + orchestration
-│   ├── models/                 # CLIP, robertuito wrappers
-│   └── gpu-service/            # Modal/RunPod handler
-├── migrations/clickhouse/    # Versioned DDL
-└── scripts/                  # dev helpers, backfill
+│   ├── api/                  # ✅ FastAPI + tenancy + connections (not in the original plan; ADR 1 modular monolith)
+│   ├── shared/               # ⚠  EXISTS as the sanctioned DB doors; the R2 client + Pydantic ID layer are NOT there yet
+│   ├── scraper/              # ✅ Zyte client + TikTok/IG parsers + envelope v2
+│   ├── pipeline/             # ❌ Celery tasks + orchestration (Parte 3)
+│   ├── models/               # ✅ SigLIP/VLM/whisper/robertuito wrappers + C-05 capability matrix
+│   ├── docs-harvester/       # ✅ Meta doc-corpus tooling (not in the original plan)
+│   └── gpu-service/          # ❌ Modal/RunPod handler
+├── migrations/
+│   ├── postgres/             # ✅ Alembic 0001 + 0002 (ADR 27; not in the original plan, which assumed CH only)
+│   └── clickhouse/           # ❌ Versioned DDL (Parte 3)
+└── scripts/                  # ❌ dev helpers, backfill — superseded in practice by the justfile
 ```
 
-Note: the `gpu-enrichment` row above (Moondream2 + faster-whisper) reflects `docs/plan-ingesta-social.md`'s original technical plan. `docs/modelos-multimodal-fase1.md` supersedes the specific checkpoints (`moondream/moondream3-preview` + `openai/whisper-large-v3-turbo` + `google/siglip2-base-patch16-224`, fallback `Qwen/Qwen3-VL-4B-Instruct`) — same open-weight approach, updated to what's current on the Hub. These weights can be served either via HF Inference Endpoints (buy, no GPU infra needed to start) or self-hosted on RunPod/Modal later, with no pipeline rewrite — see that doc's closing section. Still pending: validating these checkpoints against the golden-set evaluation described in `docs/arquitectura.md` §7 before committing in code.
+Note: the `gpu-enrichment` row above (Moondream2 + faster-whisper) reflects `docs/plan-ingesta-social.md`'s original technical plan. `docs/modelos-multimodal-fase1.md` supersedes the specific checkpoints (`moondream/moondream3-preview` + `openai/whisper-large-v3-turbo` + `google/siglip2-base-patch16-224`, fallback `Qwen/Qwen3-VL-4B-Instruct`), updated to what's current on the Hub. Most of these weights can be served either via HF Inference Endpoints (buy, no GPU infra needed to start) or self-hosted on RunPod/Modal later, with no pipeline rewrite — see that doc's closing section. Still pending: validating these checkpoints against the golden-set evaluation described in `docs/arquitectura.md` §7 before committing in code.
+
+**Correction on the vision checkpoint (verified live against the Hub 2026-07-21, `packages/models/NOTES_fase0_agentive_layer.md` §1.2; folded into `docs/arquitectura.md` §6 ADR 19 addendum).** Do not describe this stack as uniformly "open-weight", and do not treat `moondream/moondream3-preview` as the working vision path:
+
+- It is **BSL 1.1** (Business Source License, licensor M87 Labs) — *not* open-weight. Hub metadata says `license: other`; the Additional Use Grant allows production use except offering the work to third parties hosted/embedded to compete with M87's paid versions; Change Date two years post-release, then Apache-2.0. Qualify's use is probably permitted, but that is a legal read, not an engineering one. ADR 13 rejected CC-BY-NC embedding models on commercial grounds — **BSL needs the same explicit test, not an implicit pass.**
+- **9.27B params (~18.5 GB) and zero Inference Providers** → "buy it hosted to start" is not available for this checkpoint; it requires a real GPU from day one, inverting the buy-first sequencing.
+- **It has never been run in this repo** (local cache holds 16 KB, no weights). `Qwen/Qwen3-VL-4B-Instruct` — documented as the *fallback* — is the de-facto vision checkpoint and the only one that has ever worked, with single-provider risk (featherless-ai).
+
+`docs/modelos-multimodal-fase1.md` still carries the uncorrected vision row; fixing it is a pending action (that file was not in the architect's ownership for the 2026-07-23 session).
 
 ### Phase 1 target state
 
 What must exist at the end of Phase 1 (per `docs/plan-ingesta-social.md` + `docs/alternativas-fase1.md`):
 
-- **Ingestion pipeline running end-to-end:** scraping (Zyte) → frame/audio extraction (ffmpeg) → CLIP-style filter (`siglip2-base`) → vision (`moondream3-preview`) + transcription (`whisper-large-v3-turbo`) → comment sentiment (robertuito) → all materialized into `search.content_index` (ClickHouse) with FTS. Specific checkpoints and rationale in `docs/modelos-multimodal-fase1.md`.
+- **Ingestion pipeline running end-to-end:** scraping (Zyte) → frame/audio extraction (ffmpeg) → CLIP-style filter (`siglip2-base`) → vision (`Qwen3-VL-4B-Instruct` de facto; `moondream3-preview` unvalidated and BSL-licensed — see the vision-checkpoint correction above) + transcription (`whisper-large-v3-turbo`) → comment sentiment (robertuito) → all materialized into `search.content_index` (ClickHouse) with FTS. Specific checkpoints and rationale in `docs/modelos-multimodal-fase1.md`.
 - **Vendor decisions locked for all three Phase 1 blocks** (decision made, not necessarily every feature built): proxies → Zyte, fallback Decodo/Bright Data; ingestion → either Zyte scraping built in-house or EnsembleData/Data365 bought as an API (evaluate real cost before committing); transcription/vision hosting → start via HF Inference Endpoints (buy, no GPU infra), migrate to self-hosted RunPod/Modal once volume justifies it — same checkpoints either way, no pipeline rewrite; **outreach → vendor decided (Zapmail/Smartlead/Prospeo) but the outreach feature itself is still Phase 5 work** — see the roadmap note below, this isn't a contradiction between `README.md` and the phase map.
 - **Phase 1 principle:** only orchestration (Celery) and the multimodal analysis layer (the differentiator) get built; everything else (proxies, raw ingestion, transcription, email infra) is bought via API.
 
@@ -155,12 +212,21 @@ What must exist at the end of Phase 1 (per `docs/plan-ingesta-social.md` + `docs
 
 Consult this before adding scope to a task — it determines what's in-bounds now vs. later:
 
-1. **Phase 1 (current)** — Social ingestion/enrichment pipeline for TikTok/IG Reels: scraping, frame/audio extraction, CLIP filtering, vision descriptions, transcription, comment sentiment, FTS index. This is the foundational data layer everything else builds on. Per `docs/alternativas-fase1.md`, Phase 1 also locks the buy-vs-build vendor decision for outreach infra (Zapmail/Smartlead/Prospeo) — but building the outreach *feature* is still Phase 5, see below. Don't read "outreach" appearing in both places as a doc inconsistency.
+1. **Phase 1 (current)** — Social ingestion/enrichment pipeline for TikTok/IG Reels: scraping, frame/audio extraction, CLIP filtering, vision descriptions, transcription, comment sentiment, FTS index. This is the foundational data layer everything else builds on. Per `docs/alternativas-fase1.md`, Phase 1 also locks the buy-vs-build vendor decision for outreach infra (Zapmail/Smartlead/Prospeo) — but building the outreach *feature* is still Phase 5, see below. Don't read "outreach" appearing in both places as a doc inconsistency. Phase 1 also gains a **Parte 4 — first-party (connected-account) ingestion via the Meta platform API** (sibling of Parte 2 scraping, hard-dependent on Parte 3), which is where the signed Parte 4-A/4-B dogfooding slices land (see ADR 21/22/24 and the reclassification note below).
 2. **Phase 2** — Social listening + AI Insights: saved queries/scheduler, sentiment/topic reporting, LLM summaries over `search.content_index`, real-time dashboards.
 3. **Phase 3** — Signals layer (elevated priority per the GTM stack analysis) + advanced visual listening: typed, composable signal detectors with provenance (`signals.events`), in-video/audio mention alerts, logo/product detection, visual clustering.
 4. **Phase 4** — Creator discovery + CRM: `crm.creators` with content-embedding centroids for lookalike/semantic search, contact waterfall enrichment (bio → link-in-bio → website → third-party API fallback), creator/lead scoring.
 5. **Phase 5** — GTM activation: packaged "plays" (signal → enrich → AI-drafted action → push), RAG smart replies, credit-based billing (`billing.usage_events`), MCP server over the API, outbound integration via Instantly/HeyReach or Smartlead+Zapmail (buy, don't build — vendor already selected in Phase 1).
-6. **Phase 6** — Platform hardening: multi-tenant isolation, natural-language configuration co-pilot, unified social inbox, cross-channel context graph, observability/SLAs, infra scale-up.
+6. **Phase 6** — Platform hardening: **residual** multi-tenant isolation only (resource quotas, compute isolation, full multi-tenant audit — the `tenant_id` identifier + Postgres RLS + tenant-scoped R2 keying moved forward to foundation, see ADR 24), natural-language configuration co-pilot, the **cross-channel unified** social inbox + cross-channel context graph (the *single-channel* inbox for a tenant's own connected accounts moved forward to Parte 4-B, see ADR 21/24 — a mailbox is not a unified inbox until it unifies more than one channel), observability/SLAs, infra scale-up.
+
+> **MULTI-TENANCY LEAVES PHASE 6 — APROBADO (firmado por el fundador 2026-07-24, B0-6/A5-3, ADR 24).** Phase 6 lists "multi-tenant isolation" last. That ordering assumed single-tenant-until-scale, and **that premise is now false: there are two real tenants on day one.** Ruling: the **identifier** `tenant_id` and its propagation are **foundation, not hardening**, and so are Postgres RLS and the tenant-scoped R2 keying of ADR 22. Rate-limit fair-share is a later layer; resource quotas and full multi-tenant audit stay in Phase 6 — moving the whole block would be as wrong as moving none. Decisive reason: **the identifier ends up in a ClickHouse `ORDER BY` prefix, which is immutable**, and it is greenfield *right now* (zero occurrences of `tenant_id`/`workspace_id` in the repo, verified) — this is the last cheap window. Note `brand_id` does **not** merge into it: `brand_id` = what is observed, `tenant_id` = who may see it, and merging them would break ADR 18's surviving "N brands share one scrape" economy. Separately, the **unified social inbox** conflict splits: a single-channel inbox for a tenant's connected accounts comes now (Parte 4-B), while the *unified cross-channel* inbox stays Phase 6 — **a mailbox is not a unified inbox until it unifies more than one channel.**
+
+> **RECLASSIFICATION — APROBADO, firmado por el fundador 2026-07-24 (B0-6/A5-3) y aplicado.** The numbered map above still orders **the product** (multi-tenant SaaS over earned media). On top of it the founder signed a **dogfooding track over own media** that draws concrete slices forward, recorded as **ADR 21 (APROBADO)** in `docs/arquitectura.md` §6:
+> - **Parte 4-A (now, was Fase 5):** publishing reels/stories/organic promos to accounts the operator administers — built thin, it is commodity.
+> - **Parte 4-B (now):** the *single-channel* DM/comment inbox for the tenant's own connected accounts (Postgres plane, least blocked by the Fase 1 Parte 3 critical path), plus **assisted** replies (draft + human approval). **Autonomous** replies stay permanently out — a precision problem (65% precision = 1 in 3 drafts wrong), not a phase problem. The *cross-channel unified* inbox stays Fase 6.
+> - **Out / unchanged:** **scheduled publishing to TikTok is blocked, not scheduled** — per TikTok's own docs an unaudited API client forces the posting account itself to be private, regardless of who owns it, with no engineering mitigation; multi-agent seats remain unphased (they are customer one — the realtor — not customer zero). Paid advertising (Marketing API / `ads_management`) is a deferred future research/ADR item, not in ADR 21's organic-first scope.
+>
+> The one verification (task V1 — whether the IG publish/messaging permissions are Advanced-only by nature) that could have overturned the Meta half is now **CLOSED**: access level is a property of the app and the scenario, not of the permission — no "Advanced-only permission" trap exists. Note the boundary the reclassification rests on: standard access (Development Mode) is proven **review-free** for customer zero, but **not proven functionally complete for publishing** — Advanced Access + App Review + Business Verification still bind at **customer one**, and that administrative clock should start week 0 (see the ADR 21 enmienda in §6).
 
 Key strategic decisions carried across the docs — respect these when proposing designs:
 - **Buy, don't build**: web access/proxies (Zyte), outbound email/LinkedIn sending, mailbox infra, B2B contact databases, company-intel crawling, generic spreadsheet-style orchestration (à la Clay). Qualify integrates with these via API rather than reimplementing them.
@@ -169,7 +235,7 @@ Key strategic decisions carried across the docs — respect these when proposing
 
 ## Stack (tentative)
 
-Python 3.11+ · FastAPI · Celery + Redis 7 · PostgreSQL (CRM transactional state) · ClickHouse (analytics/listening) · Cloudflare R2 · Zyte API · `google/siglip2-base-patch16-224` (CLIP-style zero-shot filter) · `moondream/moondream3-preview` (vision, fallback `Qwen/Qwen3-VL-4B-Instruct`) or Gemini Flash · `openai/whisper-large-v3-turbo` (transcription, self-hosted via faster-whisper or bought via Groq — same weights) · `pysentimiento/robertuito-sentiment-analysis` (sentiment) · `MoritzLaurer/bge-m3-zeroshot-v2.0` (text zero-shot topic/intent classifier, proposed for the Phase 3 typed-signals detection primitive — not yet committed, see below) · sentence-transformers · LangGraph (agentive orchestrator) · Reflex (CRM UI/dashboards) · HF Inference Endpoints (to start, no GPU infra) → RunPod/Modal (GPU serverless, once volume justifies self-hosting) · Hetzner VPS · Instantly/HeyReach or Smartlead+Zapmail (outreach, buy) · Prospeo (email finding, buy) · Shopify API (attribution)
+Python 3.11+ · FastAPI · Celery + Redis 7 · PostgreSQL (CRM transactional state) · ClickHouse (analytics/listening) · Cloudflare R2 · Zyte API · `google/siglip2-base-patch16-224` (CLIP-style zero-shot filter) · `Qwen/Qwen3-VL-4B-Instruct` (vision, de-facto — the only vision path ever run here; `moondream/moondream3-preview` is BSL 1.1, 9.27B, no hosted provider, never run — see the correction above) or Gemini Flash · `openai/whisper-large-v3-turbo` (transcription, self-hosted via faster-whisper or bought via Groq — same weights) · `pysentimiento/robertuito-sentiment-analysis` (sentiment) · `MoritzLaurer/bge-m3-zeroshot-v2.0` (text zero-shot topic/intent classifier, proposed for the Phase 3 typed-signals detection primitive — not yet committed, see below) · sentence-transformers · LangGraph (agentive orchestrator) · Reflex (CRM UI/dashboards) · HF Inference Endpoints (to start, no GPU infra) → RunPod/Modal (GPU serverless, once volume justifies self-hosting) · Hetzner VPS · Instantly/HeyReach or Smartlead+Zapmail (outreach, buy) · Prospeo (email finding, buy) · Shopify API (attribution)
 
 This is tentative: the buy-vs-build research in `docs/alternativas-fase1.md` (e.g. ingestion via EnsembleData/Data365 instead of Zyte scrapers built in-house) can still move pieces of this stack before Phase 1 implementation starts. The multimodal checkpoints specifically come from `docs/modelos-multimodal-fase1.md` and still need golden-set validation (`docs/arquitectura.md` §7) before being locked into code. Don't treat any single vendor/model choice as final until it shows up in code or a merged ADR. The zero-shot text classifier is a Phase 3 proposal, not a Phase 1 commitment: `packages/models/NOTES_pain_signal_feasibility.md` (datasci, 2026-07-18) found that the committed sentiment model (3-class polarity) can't carry most pain-point/intent signals (payment complaints, brand-deal friction, sponsorship intent) that the Phase 3 typed-signals library (`docs/backlog-features-gtm.md` P3-1) needs — this checkpoint is the proposed detection primitive that closes that gap. See `docs/modelos-multimodal-fase1.md` "Clasificador zero-shot de texto" for the full candidate table and cost analysis.
 
@@ -177,5 +243,15 @@ This is tentative: the buy-vs-build research in `docs/alternativas-fase1.md` (e.
 
 - **Language:** product docs (`README.md`, everything under `docs/`) are Spanish; `CLAUDE.md` and code (including identifiers, comments, docstrings) stay English.
 - **Commits:** Conventional Commits in English (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`, ...).
-- **Code style:** `ruff` for both lint and format once real Python code exists under `packages/`; type hints are required on every new function/method signature. Not wired into `pyproject.toml` yet since `packages/` doesn't exist — apply this from the first commit that adds code there.
+- **Code style:** `ruff` for both lint and format — **configured** in the root `pyproject.toml` (line-length 100, `select = ["E", "F", "I", "UP"]`); run via `just lint` / `just fmt`. Type hints are required on every new function/method signature.
 - **Tooling: always use `uv`, never bare `pip`/`conda`.** Project dependencies via `uv add` / `uv sync` / `uv run`; standalone CLI tools (e.g. the Hugging Face Hub `hf` CLI) via `uv tool install` rather than a curl-installer or a global `pip install`. This keeps every tool isolated from the system/anaconda Python and reproducible from `pyproject.toml` + `uv.lock`.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

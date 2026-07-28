@@ -1,0 +1,17 @@
+# Ruff lint + format on commit, run through `uv` so the hook uses the workspace's
+# pinned ruff (never a system/global one). Matches the CLAUDE.md convention.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check --fix
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+        require_serial: true
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+        require_serial: true

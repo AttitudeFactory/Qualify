@@ -1,0 +1,24 @@
+[project]
+name = "qualify-shared"
+version = "0.1.0"
+description = "Cross-cutting primitives for Qualify: tenant-scoped Postgres session (RLS gate), ID types, domain-event and encryption seams"
+readme = "README.md"
+authors = [
+    { name = "Herwin Rey", email = "hlrd1993@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.13.4",
+    "sqlalchemy>=2.0.36",
+    "psycopg[binary]>=3.2.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.29,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

@@ -1,0 +1,40 @@
+# Local development infra for Sprint 1 (Fase 1 Parte 4-A).
+# Only the services this sprint actually exercises:
+#   - postgres 16: CRM transactional plane (tenancy C-01, connections C-03) with RLS.
+#   - redis 7: refresh lock (C-03.4) and one-time OAuth `state` (C-04.2).
+# NOT here yet (added with their story): ClickHouse (Parte 3), Celery workers,
+# MinIO/R2 (no raw store this sprint).
+#
+# The DB roles (qualify_owner/qualify_admin/qualify_app) are created by Alembic
+# migration 0001, NOT by this compose — role creation must be versioned and
+# reproducible. Postgres boots owning the objects as `qualify_owner` (POSTGRES_USER),
+# which is the role migrations run as.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: qualify
+      POSTGRES_USER: qualify_owner
+      POSTGRES_PASSWORD: dev_only
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qualify_owner -d qualify"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:

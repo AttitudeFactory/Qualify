@@ -2,27 +2,49 @@ import reflex as rx
 
 from .state import DashboardState, MentionRow
 
+# (label, icon, route, enabled). Enabled items navigate; disabled show a "pronto"
+# badge. The active item is derived from the current route, not a hardcoded flag.
 _NAV_ITEMS = [
-    ("Menciones", "message-circle", True),
-    ("Creadores", "users", False),
-    ("Señales", "bell", False),
-    ("Configuración", "settings", False),
+    ("Menciones", "message-circle", "/", True),
+    ("Conexiones", "link", "/connections", True),
+    ("Creadores", "users", "#", False),
+    ("Señales", "bell", "#", False),
+    ("Configuración", "settings", "#", False),
 ]
 
 
 def sidebar() -> rx.Component:
-    def nav_item(label: str, icon: str, active: bool) -> rx.Component:
-        return rx.hstack(
-            rx.icon(icon, size=18),
-            rx.text(label, size="3"),
-            rx.spacer(),
-            rx.box() if active else rx.badge("pronto", variant="soft", color_scheme="gray", size="1"),
+    # `router` is available on any State subclass; DashboardState is already imported.
+    current_path = DashboardState.router.page.path
+
+    def nav_item(label: str, icon: str, route: str, enabled: bool) -> rx.Component:
+        if not enabled:
+            return rx.hstack(
+                rx.icon(icon, size=18),
+                rx.text(label, size="3"),
+                rx.spacer(),
+                rx.badge("pronto", variant="soft", color_scheme="gray", size="1"),
+                width="100%",
+                padding="0.5rem 0.75rem",
+                border_radius="0.5rem",
+                color=rx.color("gray", 10),
+                opacity="0.6",
+            )
+
+        active = current_path == route
+        return rx.link(
+            rx.hstack(
+                rx.icon(icon, size=18),
+                rx.text(label, size="3"),
+                width="100%",
+                padding="0.5rem 0.75rem",
+                border_radius="0.5rem",
+                background=rx.cond(active, rx.color("accent", 4), "transparent"),
+                color=rx.cond(active, rx.color("accent", 11), rx.color("gray", 11)),
+            ),
+            href=route,
             width="100%",
-            padding="0.5rem 0.75rem",
-            border_radius="0.5rem",
-            background=rx.color("accent", 4) if active else "transparent",
-            color=rx.color("accent", 11) if active else rx.color("gray", 10),
-            opacity="1" if active else "0.6",
+            underline="none",
         )
 
     return rx.vstack(
@@ -32,7 +54,7 @@ def sidebar() -> rx.Component:
             padding="1rem 0.75rem",
         ),
         rx.vstack(
-            *[nav_item(label, icon, active) for label, icon, active in _NAV_ITEMS],
+            *[nav_item(label, icon, route, enabled) for label, icon, route, enabled in _NAV_ITEMS],
             width="100%",
             spacing="1",
             padding="0 0.5rem",
@@ -148,7 +170,13 @@ def mention_row(mention: MentionRow) -> rx.Component:
         rx.table.cell(platform_badge(mention.platform)),
         rx.table.cell(mention.brand),
         rx.table.cell(mention.creator_handle),
-        rx.table.cell(mention.caption, max_width="360px", overflow="hidden", text_overflow="ellipsis", white_space="nowrap"),
+        rx.table.cell(
+            mention.caption,
+            max_width="360px",
+            overflow="hidden",
+            text_overflow="ellipsis",
+            white_space="nowrap",
+        ),
         rx.table.cell(sentiment_badge(mention.sentiment)),
         rx.table.cell(mention.views.to_string(), text_align="right"),
         rx.table.cell(mention.likes.to_string(), text_align="right"),

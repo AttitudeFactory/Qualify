@@ -1,0 +1,68 @@
+"""Read side of the connections module — what the CRM screen (C-06) is allowed to see.
+
+`ConnectionSummary` is a whitelist, and that is the whole point: it is a frozen dataclass
+with no field that could carry a token, a ciphertext, or a `key_id`, so there is no route
+from the database to the browser even by accident. The Reflex UI maps these onto its own
+`ConnectionVM`; adding a credential-bearing field here would be the security regression
+its `test_connection_vm_has_no_credential_fields` exists to catch.
+
+`granted_scopes` are the RAW literals Meta returned. They are not translated here — the UI
+runs them through `resolve_scope_keys`/`assess_capabilities` (C-05) to decide which product
+capabilities to show and why each disabled one is disabled.
+
+Reads go through `tenant_session`, so RLS scopes them even though the query also filters
+explicitly. Defense in depth: the explicit scope is the upper layer, RLS the lower one, and
+the test that matters asserts a tenant-A session returns zero rows of tenant B.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from uuid import UUID
+
+from qualify_shared.db.session import tenant_session
+from sqlalchemy import select
+
+from qualify_api.connections.models import SocialConnection
+
+
+@dataclass(frozen=True)
+class ConnectionSummary:
+    """One connection, credential-free by construction."""
+
+    connection_id: UUID
+    brand_id: UUID | None
+    platform: str
+    external_account_id: str
+    external_username: str | None
+    status: str
+    granted_scopes: tuple[str, ...]
+    access_posture: str
+    last_verified_at: datetime | None
+    connected_at: datetime
+
+
+def list_connections(tenant_id: UUID) -> tuple[ConnectionSummary, ...]:
+    """Every connection visible to this tenant, newest first."""
+    with tenant_session(tenant_id) as session:
+        rows = session.scalars(
+            select(SocialConnection)
+            .where(SocialConnection.tenant_id == tenant_id)
+            .order_by(SocialConnection.connected_at.desc())
+        ).all()
+        return tuple(
+            ConnectionSummary(
+                connection_id=row.id,
+                brand_id=row.brand_id,
+                platform=row.platform,
+                external_account_id=row.external_account_id,
+                external_username=row.external_username,
+                status=row.status,
+                granted_scopes=tuple(row.granted_scopes),
+                access_posture=row.access_posture,
+                last_verified_at=row.last_verified_at,
+                connected_at=row.connected_at,
+            )
+            for row in rows
+        )

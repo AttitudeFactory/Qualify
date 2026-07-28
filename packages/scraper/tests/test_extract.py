@@ -17,7 +17,7 @@ from qualify_scraper.extract import (
     extract_tiktok_hydration,
 )
 from qualify_scraper.parsers.tiktok import parse_tiktok
-from qualify_scraper.shared import Platform, build_envelope, raw_payload_key
+from qualify_scraper.shared import Platform, build_scrape_envelope, raw_payload_key
 
 
 def _tiktok_html(fixtures_dir: Path) -> str:
@@ -43,13 +43,13 @@ def test_extract_then_parse_tiktok(
 ) -> None:
     payload = extract_tiktok_hydration(_tiktok_html(fixtures_dir))
     url = "https://tiktok.example/video"
-    envelope = build_envelope(
+    envelope = build_scrape_envelope(
         platform=Platform.TIKTOK,
         source_url=url,
         hydration=payload,
         fetched_at=datetime.fromtimestamp(0),
     )
-    r2_key = raw_payload_key(Platform.TIKTOK, url)
+    r2_key = raw_payload_key(envelope)
     post = parse_tiktok(
         envelope, r2_key=r2_key, brand_id=brand_id, pipeline_version=pipeline_version
     )

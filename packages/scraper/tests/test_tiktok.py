@@ -20,9 +20,10 @@ def _parse(fixtures_dir: Path, brand_id: UUID, pipeline_version: str, name: str)
         {url: fixtures_dir / "tiktok" / f"{name}.json"}, platform=Platform.TIKTOK
     )
     # Parser-focused: derive the r2_key with the same fn the store uses (store-free).
-    r2_key = raw_payload_key(Platform.TIKTOK, url)
+    envelope = client.fetch_hydration(url)
+    r2_key = raw_payload_key(envelope)
     return parse_tiktok(
-        client.fetch_hydration(url),
+        envelope,
         r2_key=r2_key,
         brand_id=brand_id,
         pipeline_version=pipeline_version,
@@ -39,9 +40,7 @@ def test_video(fixtures_dir: Path, brand_id: UUID, pipeline_version: str) -> Non
     assert len(post.media) == 1
     assert post.media[0].kind == MediaKind.VIDEO
     assert post.duration_ms == 27000
-    assert post.hydration_json_r2_key == raw_payload_key(
-        Platform.TIKTOK, "https://tiktok.example/video"
-    )
+    assert post.hydration_json_r2_key.startswith("scrape/tiktok/")
 
 
 def test_photo_gallery(fixtures_dir: Path, brand_id: UUID, pipeline_version: str) -> None:

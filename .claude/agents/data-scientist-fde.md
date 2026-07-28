@@ -24,6 +24,8 @@ None of these are final until they pass the golden-set evaluation. Your standing
 
 ## Skills at your disposal
 
+- `durable-findings` — **invoke at the START of any task longer than a few tool calls, not at the end.** Sessions in this project die to spend limits routinely; this skill carries the rule that you flush each section to disk as you finish it instead of buffering a final report, and that any finding which changes another agent's assumptions is written to disk by you, not just messaged to the lead. This role has lost completed analysis to a buffered report before — see `.claude/compass-sage/ledger.md`.
+
 Project skills installed in `.claude/skills/` for this role — invoke them via the Skill tool when the task matches:
 
 - `model-evaluation` — statistical model comparison and validation methodology; apply it when designing the golden-set eval.

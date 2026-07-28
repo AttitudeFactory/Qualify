@@ -20,6 +20,19 @@ class TranscriptionProvider(Protocol):
     def transcribe(self, audio_path: Path) -> tuple[str, str | None]: ...
 
 
+class SentimentProvider(Protocol):
+    """Text polarity classification. Returns (label, score).
+
+    Added so the sentiment stage can be exercised without weights or network:
+    `run_sentiment` previously constructed a `transformers.pipeline` inline,
+    which made every test of it a network test on a cold cache.
+    """
+
+    model_id: str
+
+    def classify(self, text: str) -> tuple[str, float]: ...
+
+
 def _image_to_data_uri(image_path: Path) -> str:
     encoded = base64.b64encode(image_path.read_bytes()).decode("utf-8")
     suffix = image_path.suffix.lstrip(".") or "jpeg"
@@ -131,6 +144,33 @@ class HFInferenceVisionProvider:
             model=self.model_id,
         )
         return completion.choices[0].message.content or ""
+
+
+class LocalRobertuitoSentimentProvider:
+    """Runs robertuito locally via transformers (CPU-friendly, ~109M params).
+
+    Spanish social-media polarity, 3-class (POS/NEG/NEU). This is the default
+    and — on the OAuth/CRM path — currently the only model in the day-one
+    increment, so note that the Hub declares NO LICENSE for the
+    `pysentimiento/robertuito-*` repos (re-verified 2026-07-23). That caveat is
+    inherited, not new: see docs/modelos-multimodal-fase1.md:91 and
+    NOTES_fase0_oauth_crm.md §4 for why the concentration changes its weight.
+    """
+
+    def __init__(self, model_id: str = "pysentimiento/robertuito-sentiment-analysis") -> None:
+        self.model_id = model_id
+        self._pipeline: Any = None
+
+    def _get_pipeline(self) -> Any:
+        if self._pipeline is None:
+            from transformers import pipeline
+
+            self._pipeline = pipeline(task="text-classification", model=self.model_id)
+        return self._pipeline
+
+    def classify(self, text: str) -> tuple[str, float]:
+        output = self._get_pipeline()(text)[0]
+        return str(output["label"]), float(output["score"])
 
 
 class HFInferenceTranscriptionProvider:

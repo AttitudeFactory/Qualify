@@ -1,5 +1,75 @@
+[project]
+# Aggregator name is deliberately DISTINCT from every member (ADR 26): the root is
+# the workspace, not a package. `package = false` (below) keeps it virtual — it is
+# never built or installed; it only owns the shared lock, venv and dev tooling.
+name = "qualify-workspace"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false
+# Default sync = backend + CRM + dev tooling. `ml` is intentionally EXCLUDED so a
+# plain `uv sync` never pulls torch/transformers (they live in qualify-models's tree).
+# Backend-only work stays light; run `uv sync --group ml` when you need the models.
+default-groups = ["backend", "crm", "dev"]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+# Workspace sources declared once at the root apply across every member: any member
+# depending on these names resolves to the in-tree package, no index publish needed.
+[tool.uv.sources]
+qualify-api = { workspace = true }
+qualify-shared = { workspace = true }
+qualify-scraper = { workspace = true }
+qualify-models = { workspace = true }
+
 [dependency-groups]
+backend = ["qualify-api", "qualify-shared", "qualify-scraper"]
+crm = ["reflex>=0.9.7", "sqlmodel>=0.0.39"]
+# Heavy ML tree (torch/transformers via qualify-models) — kept out of default-groups.
+ml = ["qualify-models"]
 dev = [
-    "reflex>=0.9.7",
-    "sqlmodel>=0.0.39",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.15.22",
+    "pre-commit>=4.0.0",
 ]
+
+[tool.pytest.ini_options]
+# importlib import mode + zero __init__.py under any tests/ dir: lets same-named test
+# modules coexist across packages (e.g. several test_shared.py) without sys.path hacks.
+# Default excludes `integration` (external network / paid vendors / model weights).
+addopts = "--import-mode=importlib -m 'not integration'"
+# C-04's FastAPI callback tests are async (httpx.AsyncClient against the app); auto mode
+# runs any `async def test_*` without requiring per-test event_loop plumbing.
+asyncio_mode = "auto"
+# Root collection covers the backend packages owned here; qualify-models runs its own
+# suite under its `ml` group (torch), so it is not collected by a default `uv run pytest`.
+# Qualify/ added 2026-07-26 at reflex-ui's request (C-06 tests existed but were never
+# collected by a bare `uv run pytest` — only `uv run pytest Qualify` found them).
+testpaths = [
+    "packages/api/tests",
+    "packages/shared/tests",
+    "packages/scraper/tests",
+    "Qualify",
+]
+# Belt-and-suspenders: put each member's src on the path directly so collection does
+# not depend on the editable install surviving (the shared workspace .venv can be
+# disrupted by concurrent `uv sync` runs from other packages).
+pythonpath = [
+    "packages/api/src",
+    "packages/shared/src",
+    "packages/scraper/src",
+]
+markers = [
+    "integration: hits an external network / paid vendor / downloads model weights (Zyte, HF, Meta) — NEVER in CI",
+    "db: needs the local Postgres/Redis from docker-compose — runs in CI via service containers",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

@@ -4,8 +4,8 @@
 1.0), so this talks to SQLModel/SQLAlchemy directly instead.
 """
 
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 from sqlmodel import Session, SQLModel, create_engine
 

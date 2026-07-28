@@ -29,6 +29,16 @@ Cada specialist tiene una sección "Skills at your disposal" en su archivo de ag
 | `product-owner` | `docs/backlog-*.md` | Conversión research → backlog | — |
 | `reflex-ui-engineer` | `Qualify/` (app Reflex) | Dashboard CRM — hoy scaffold Fase 1, crecerá en Fase 2 (dashboards), Fase 4 (CRM de creators), Fase 6 | `reflex-docs`, `setup-python-env`, `reflex-process-management` (obligatorios, ver `CLAUDE.md` §Agents), `dataviz` |
 
+### Skill transversal: `durable-findings`
+
+`durable-findings` (`.claude/skills/durable-findings/`) no pertenece a un specialist — **aplica a todos**. Sintetizado vía COMPASS el 2026-07-26 tras la cuarta ocurrencia del mismo modo de fallo en el ledger: las sesiones aquí mueren por límite de gasto de forma rutinaria, y todo lo que existe solo en una ventana de contexto se pierde. Codifica dos reglas y su corolario:
+
+1. **Volcar por secciones, nunca bufferear un informe final.** El registro es inequívoco: los agentes que escribieron incrementalmente no perdieron nada; los que bufferearon lo perdieron todo.
+2. **Un hallazgo que cambia los supuestos de otro agente lo escribe a disco su descubridor**, no se entrega solo por mensaje al lead — la ventana del lead es igual de mortal, y retransmitir no es persistir.
+3. **Corolario:** toda afirmación sobre disco se verifica contra disco antes de darla por buena.
+
+Incluye `scripts/record_finding.py` (append-only, por lo que cualquier agente puede registrar un hallazgo en un fichero cuyas otras secciones no le pertenecen sin riesgo de pisarlas). **Mantenimiento:** `qualify-second-brain` (dueño de `.claude/` y del ledger). **Ejecutores por defecto:** los tres leads y los specialists con historial de pérdida (`pipeline-engineer`, `data-scientist-fde`, `gtm-specialist`).
+
 ### Agentes de utilidad (fuera de los squads de producción)
 
 - `linkedin-bitacora` — ghostwriter de marca personal de Herwin. Genera un post diario en inglés (días de semana) sobre sus aprendizajes como FDE + CTA suave de coaching neurocientífico / transformación de carrera, y lo entrega como borrador de Gmail a `hlrd1993+qualify@gmail.com`. Vive solo en `bitacora/` y su propio archivo; **no toca producto, docs ni el org de squads**. Regla dura: denylist anti-filtración (nunca nombre de producto, competidores, vendors/costos, modelos, esquema de datos ni roadmap; nunca cita commits). Automatizado vía routine cloud `trig_01SHp5v6tsxFtpRjazgF49Cq` (`0 11 * * 1-5` UTC = 8:00 Montevideo). No es un cuarto squad ni parte del pipeline de Qualify.
