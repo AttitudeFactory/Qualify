@@ -1,0 +1,36 @@
+"""Runtime DSNs for the two application roles, read from the environment.
+
+Roles are created by Alembic migration 0001 with dev passwords, so the local
+docker-compose defaults and the CI service-container DSNs coincide. Production
+overrides both via env (and rotates the passwords out-of-band with `ALTER ROLE`).
+
+There is deliberately NO owner/migration DSN here — that belongs to Alembic
+(`QUALIFY_MIGRATION_DSN`, see migrations/postgres/env.py). Application code must
+never connect as the object owner.
+"""
+
+from __future__ import annotations
+
+import os
+
+# `qualify_app`: the request-path role — subject to RLS, no BYPASSRLS, no superuser.
+DEFAULT_APP_DSN = "postgresql+psycopg://qualify_app:app_dev@localhost:5432/qualify"
+# `qualify_admin`: cross-tenant provisioning/seed only — BYPASSRLS, never the request path.
+DEFAULT_ADMIN_DSN = "postgresql+psycopg://qualify_admin:admin_dev@localhost:5432/qualify"
+# `qualify_credential`: the ONLY role granted `oauth_credentials.ciphertext` (R3). Used
+# solely by the CredentialResolver to decrypt in-memory; RLS-subject, so in-tenant only.
+DEFAULT_CREDENTIAL_DSN = (
+    "postgresql+psycopg://qualify_credential:credential_dev@localhost:5432/qualify"
+)
+
+
+def app_dsn() -> str:
+    return os.environ.get("QUALIFY_APP_DSN", DEFAULT_APP_DSN)
+
+
+def admin_dsn() -> str:
+    return os.environ.get("QUALIFY_ADMIN_DSN", DEFAULT_ADMIN_DSN)
+
+
+def credential_dsn() -> str:
+    return os.environ.get("QUALIFY_CREDENTIAL_DSN", DEFAULT_CREDENTIAL_DSN)
