@@ -1,60 +1,126 @@
 {
   "_fixture_kind": "SYNTHETIC",
-  "_warning": "SYNTHETIC FIXTURE - NOT REAL INSTAGRAM DATA. Every comment below was written by hand for testing. No Instagram Graph API response was captured, no real account was connected, and no real user's comment or username appears here. Do not cite this file as evidence of real payload shapes, real comment-volume distributions, or real sentiment distributions.",
-  "_provisional_shape": "Field names follow docs/fase0-zernio-mercado.md 4.1 (GET /{ig-media-id}/comments) and are NOT grounded in the harvested Meta reference. Task D1 owns the real contract; when the harvest lands, re-derive this shape against it rather than trusting this file.",
-  "_purpose": "Exercises qualify_models.social.ig_comments end-to-end offline: mixed polarity, a threaded reply, an empty-text comment, and a whitespace-only comment.",
+  "_warning": "SYNTHETIC FIXTURE - NOT REAL INSTAGRAM DATA. Every comment below was written by hand for testing. No Instagram Graph API response was captured, no real account was connected, and no real user's comment, username or IGSID appears here. Do not cite this file as evidence of real payload shapes, real comment-volume distributions, or real sentiment distributions.",
+  "_provisional_shape": "SHAPE: grounded. DATA: still invented. As of QUA-67 the field shapes below are no longer guessed - they are a valid instance of qualify_models.social.ig_shapes.IGComment, which is fixed against the harvested Meta corpus in reference/meta-instagram-platform/ and whose citations are verified line-by-line by tests/test_ig_shapes.py. What remains provisional is the CONTENT: these are hand-written Spanish comments, not captured payloads. Substituting real captured payloads is QUA-21's criterion and is blocked on QUA-20.",
+  "_shape_version": "ig-comment-shapes-1.0.0",
+  "_purpose": "Exercises qualify_models.social.ig_comments end-to-end offline: mixed polarity, a threaded reply, an empty-text comment, and a whitespace-only comment. Field shapes additionally exercise the ig_shapes contract (from/IGSID, media, hidden, parent_id).",
   "_language": "es - robertuito is a Spanish social-media model, so fixture text is Spanish.",
+  "_field_notes": "Every comment carries `username` and NOT `user`: the two are mutually exclusive per ig-comment.md:81 (`user` is returned only when the app user authored the comment, otherwise `username` is returned instead). `replies` is deliberately absent everywhere - it is expansion-only, so its absence is the realistic default and does NOT mean these comments have no replies. Note that `from` and `username` both require instagram_manage_comments, which is NOT currently granted, so a real payload captured today would omit them entirely.",
   "_created": "2026-07-24",
+  "_regenerated": "2026-07-29",
   "data": [
     {
       "id": "synthetic_comment_0001",
       "text": "Me encanta este producto, la calidad superó mis expectativas",
       "timestamp": "2026-07-20T10:14:00+0000",
+      "from": {
+        "id": "SYNTHETIC_IGSID_0001",
+        "username": "synthetic_user_a"
+      },
       "username": "synthetic_user_a",
-      "like_count": 12
+      "like_count": 12,
+      "hidden": false,
+      "media": {
+        "id": "synthetic_media_0001",
+        "media_product_type": "FEED"
+      }
     },
     {
       "id": "synthetic_comment_0002",
       "text": "Llevo tres semanas esperando mi pedido y nadie responde",
       "timestamp": "2026-07-20T11:02:00+0000",
+      "from": {
+        "id": "SYNTHETIC_IGSID_0002",
+        "username": "synthetic_user_b"
+      },
       "username": "synthetic_user_b",
-      "like_count": 4
+      "like_count": 4,
+      "hidden": false,
+      "media": {
+        "id": "synthetic_media_0001",
+        "media_product_type": "FEED"
+      }
     },
     {
       "id": "synthetic_comment_0003",
       "text": "Alguien sabe si hacen envíos a Colombia?",
       "timestamp": "2026-07-20T11:40:00+0000",
+      "from": {
+        "id": "SYNTHETIC_IGSID_0003",
+        "username": "synthetic_user_c"
+      },
       "username": "synthetic_user_c",
-      "like_count": 0
+      "like_count": 0,
+      "hidden": false,
+      "media": {
+        "id": "synthetic_media_0001",
+        "media_product_type": "FEED"
+      }
     },
     {
       "id": "synthetic_comment_0004",
       "text": "Sí, envían a toda Latinoamérica",
       "timestamp": "2026-07-20T12:05:00+0000",
+      "from": {
+        "id": "SYNTHETIC_IGSID_0004",
+        "username": "synthetic_user_d"
+      },
       "username": "synthetic_user_d",
       "like_count": 1,
-      "parent_id": "synthetic_comment_0003"
+      "hidden": false,
+      "parent_id": "synthetic_comment_0003",
+      "media": {
+        "id": "synthetic_media_0001",
+        "media_product_type": "FEED"
+      }
     },
     {
       "id": "synthetic_comment_0005",
       "text": "Pésima atención al cliente, no vuelvo a comprar",
       "timestamp": "2026-07-20T13:11:00+0000",
+      "from": {
+        "id": "SYNTHETIC_IGSID_0005",
+        "username": "synthetic_user_e"
+      },
       "username": "synthetic_user_e",
-      "like_count": 7
+      "like_count": 7,
+      "hidden": false,
+      "media": {
+        "id": "synthetic_media_0001",
+        "media_product_type": "FEED"
+      }
     },
     {
       "id": "synthetic_comment_0006",
       "text": "",
       "timestamp": "2026-07-20T13:30:00+0000",
+      "from": {
+        "id": "SYNTHETIC_IGSID_0006",
+        "username": "synthetic_user_f"
+      },
       "username": "synthetic_user_f",
-      "like_count": 0
+      "like_count": 0,
+      "hidden": false,
+      "media": {
+        "id": "synthetic_media_0001",
+        "media_product_type": "FEED"
+      }
     },
     {
       "id": "synthetic_comment_0007",
       "text": "   ",
       "timestamp": "2026-07-20T13:32:00+0000",
+      "from": {
+        "id": "SYNTHETIC_IGSID_0007",
+        "username": "synthetic_user_g"
+      },
       "username": "synthetic_user_g",
-      "like_count": 0
+      "like_count": 0,
+      "hidden": false,
+      "media": {
+        "id": "synthetic_media_0001",
+        "media_product_type": "FEED"
+      }
     }
   ]
 }
