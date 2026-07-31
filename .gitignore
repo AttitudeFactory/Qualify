@@ -8,3 +8,11 @@ assets/external/
 packages/models/tests/fixtures/sample_source.mp4
 .claude/settings.local.json
 reflex.log
+
+# Secrets — never commit. Holds QUALIFY_META_APP_SECRET and friends.
+.env
+.env.*
+!.env.example
+
+# MkDocs build output — generated from docs/, never source.
+site/

@@ -1,0 +1,79 @@
+site_name: Qualify — Docs
+site_description: Arquitectura, investigación de mercado y backlog de Qualify
+docs_dir: docs
+
+theme:
+  name: material
+  language: es
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Modo oscuro
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Modo claro
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - toc.follow
+
+markdown_extensions:
+  - tables
+  - toc:
+      permalink: true
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Inicio: index.md
+  - Investigación de mercado:
+      - Proceso para futuras investigaciones: proceso-investigacion-oportunidades.md
+      - Registro de validación de features: registro-validacion-features.md
+      - Nicho — Inmobiliario:
+          - Oferta: oferta-mercado-inmobiliario.md
+          - Oportunidad: oportunidades-mercado-inmobiliario.md
+          - Demanda (hipótesis): demanda-ventas-inmobiliario.md
+      - Nicho — Marca regulada:
+          - Oferta: oferta-mercado-marca-regulada.md
+          - Oportunidad: oportunidades-mercado-marca-regulada.md
+      - Nicho — Qualify como agencia: oferta-mercado-agencia-gestionada.md
+      - Pipeline de candidatos (screening): oportunidades-mercado-pipeline-candidatos.md
+      - Investigaciones previas:
+          - Zernio / Fase 0: fase0-zernio-mercado.md
+          - Modelo de acceso Tech Provider: research-modelo-acceso-tech-provider.md
+          - Dolores creadores/podcasters: dolores-creadores-podcasters.md
+          - Research features GTM: research-features-gtm.md
+          - Ingeniería inversa — stack GTM: ingenieria-inversa-stack-gtm.md
+          - Ingeniería inversa — ManyChat: ingenieria-inversa-manychat.md
+          - Ingeniería inversa — Sortfeed: ingenieria-inversa-sortfeed.md
+          - Alternativas Fase 1: alternativas-fase1.md
+  - Arquitectura:
+      - Arquitectura general: arquitectura.md
+      - Integración cuentas conectadas (Meta): integracion-cuentas-conectadas-meta.md
+      - Plan de ingesta social: plan-ingesta-social.md
+      - Modelos multimodal Fase 1: modelos-multimodal-fase1.md
+      - Refinamiento Sprint 1: refinamiento-sprint1.md
+  - Backlog:
+      - CRM Workflows: backlog-crm-workflows.md
+      - Features GTM: backlog-features-gtm.md
+      - Parking lot (inventario): inventario-parking-lot.md
+  - Equipo de agentes: equipo-agentes.md
