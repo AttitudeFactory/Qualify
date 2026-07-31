@@ -265,24 +265,30 @@ async def test_verification_runs_through_the_resolver_seam() -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_linked_page_yields_link_required_and_persists_nothing() -> None:
+async def test_zero_pages_yields_page_access_required_and_persists_nothing() -> None:
+    """R9(f): zero Pages is NOT `link_required`.
+
+    Meta filters `/me/accounts` by TASKS, not ownership, so an operator who administers the
+    Business Portfolio owning the Page still sees nothing here. Telling them to "link your
+    Instagram" would send them to a setting that is already correct; they need Page access.
+    """
     harness = build_harness(pages=())
 
     result = await harness.service.complete_connect(
         code="c", state=start_and_extract_state(harness)
     )
 
-    assert result.outcome is ConnectOutcome.LINK_REQUIRED
+    assert result.outcome is ConnectOutcome.PAGE_ACCESS_REQUIRED
     assert result.connection_id is None
-    # The invariant R4 preserves: zero connection, zero credential, token dropped.
+    # The invariant R4 preserves, unchanged by the split: zero connection, zero credential.
     assert harness.repo.connections == {}
     assert harness.repo.credentials == []
     assert harness.publisher.events == []
 
 
 @pytest.mark.asyncio
-async def test_page_without_linked_instagram_also_yields_link_required() -> None:
-    """Administering a Page is not enough — it must have an IG account linked to it."""
+async def test_page_without_linked_instagram_yields_link_required() -> None:
+    """The genuine R4 case: the Page IS reachable, it just has no IG account linked."""
     harness = build_harness(pages=(PAGE_WITHOUT_IG,))
     result = await harness.service.complete_connect(
         code="c", state=start_and_extract_state(harness)
@@ -292,8 +298,63 @@ async def test_page_without_linked_instagram_also_yields_link_required() -> None
 
 
 @pytest.mark.asyncio
-async def test_link_required_still_consumes_the_jti() -> None:
-    """R4: the state is spent either way, so recovery means starting a fresh flow."""
+async def test_the_two_dead_ends_are_distinguishable() -> None:
+    """The whole point of R9(f), asserted directly: these two situations demand OPPOSITE
+    instructions from the operator, so they must not compare equal."""
+    empty = build_harness(pages=())
+    no_pages = await empty.service.complete_connect(code="c", state=start_and_extract_state(empty))
+
+    unlinked_harness = build_harness(pages=(PAGE_WITHOUT_IG,))
+    unlinked = await unlinked_harness.service.complete_connect(
+        code="c", state=start_and_extract_state(unlinked_harness)
+    )
+
+    assert no_pages.outcome is not unlinked.outcome
+    # Both are still dead ends — the split must not have accidentally made one succeed.
+    assert no_pages.connection_id is None and unlinked.connection_id is None
+
+
+@pytest.mark.asyncio
+async def test_counts_are_recorded_for_zero_pages() -> None:
+    """R9(e.1): the two integers that let step 1 of the empirical test conclude."""
+    harness = build_harness(pages=())
+    result = await harness.service.complete_connect(
+        code="c", state=start_and_extract_state(harness)
+    )
+    assert (result.page_count, result.linked_page_count) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_counts_distinguish_pages_present_from_pages_linked() -> None:
+    """Two Pages reachable, neither linked — the counts say so without a second live run."""
+    harness = build_harness(pages=(PAGE_WITHOUT_IG, PAGE_WITHOUT_IG))
+    result = await harness.service.complete_connect(
+        code="c", state=start_and_extract_state(harness)
+    )
+    assert (result.page_count, result.linked_page_count) == (2, 0)
+
+
+@pytest.mark.asyncio
+async def test_dead_end_log_carries_counts_but_no_identifiers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The log is evidence for the empirical test, so it must contain the counts — and it
+    must NOT contain the token, page id, page name or username, which are all in scope at
+    that point in the flow."""
+    harness = build_harness(pages=(PAGE_WITHOUT_IG,))
+    with caplog.at_level("WARNING"):
+        await harness.service.complete_connect(code="c", state=start_and_extract_state(harness))
+
+    text = caplog.text
+    assert "pages=1" in text and "pages_with_ig=0" in text
+    assert TOKEN not in text
+    assert PAGE_WITHOUT_IG.page_id not in text
+    assert PAGE_WITHOUT_IG.page_name not in text
+
+
+@pytest.mark.asyncio
+async def test_a_dead_end_still_consumes_the_jti() -> None:
+    """R4: the state is spent on every path, so recovery means starting a fresh flow."""
     harness = build_harness(pages=())
     state = start_and_extract_state(harness)
     await harness.service.complete_connect(code="c", state=state)
@@ -475,10 +536,36 @@ def test_callback_route_rejects_bad_state_with_403(
     assert TOKEN not in response.text
 
 
-def test_callback_route_link_required_has_no_connection_id(
+def test_callback_route_zero_pages_reports_page_access_required_with_counts(
     client_and_harness: tuple[TestClient, Harness],
 ) -> None:
+    """The response the operator will actually be looking at during step 1 of R9(e)."""
     harness = build_harness(pages=())
+    app = create_app(configure_production=False)
+    app.dependency_overrides[connections_routes.get_connect_service] = lambda: harness.service
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/connections/callback",
+        params={"code": "c", "state": start_and_extract_state(harness)},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "outcome": "page_access_required",
+        "connection_id": None,
+        "external_username": None,
+        "page_count": 0,
+        "linked_page_count": 0,
+    }
+
+
+def test_callback_route_unlinked_page_reports_link_required_with_counts(
+    client_and_harness: tuple[TestClient, Harness],
+) -> None:
+    """The counts are what tell these two apart on the wire, so they are asserted on the
+    wire and not only on the service result."""
+    harness = build_harness(pages=(PAGE_WITHOUT_IG,))
     app = create_app(configure_production=False)
     app.dependency_overrides[connections_routes.get_connect_service] = lambda: harness.service
     client = TestClient(app)
@@ -493,6 +580,8 @@ def test_callback_route_link_required_has_no_connection_id(
         "outcome": "link_required",
         "connection_id": None,
         "external_username": None,
+        "page_count": 1,
+        "linked_page_count": 0,
     }
 
 

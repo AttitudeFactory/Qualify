@@ -52,6 +52,19 @@ class MetaOAuthSettings:
     # ADR 22(a): access level is data. Development Mode is the honest default for customer
     # zero; Advanced Access flips this to 'live' without a code change.
     access_posture: str = "development"
+    # R12: the `Authorization` SCHEME is data, for the same reason the scopes are. The corpus
+    # contradicts itself — and not only across documents: `resumable-uploads.md` uses `Bearer`
+    # for the container on `graph.facebook.com` (:41) and `OAuth` for the carousel container
+    # and `media_publish` on that SAME host (:137, :147, :160), while `content-publishing.md`
+    # uses `Bearer` throughout its graph examples (:84, :212, :272). So "scheme follows host"
+    # is not a documented rule at all; it holds in one file and is violated in the other.
+    #
+    # The ONE invariant across the whole corpus is that `rupload` is NEVER shown with
+    # `Bearer`. These defaults sit where the corpus is unanimous, and both are env-overridable
+    # so a live call can settle it without a code change. Deleting a field later is free;
+    # finding a hardcoded literal wrong in production is not.
+    graph_auth_scheme: str = "Bearer"
+    rupload_auth_scheme: str = "OAuth"
 
     @property
     def graph_url(self) -> str:
@@ -77,6 +90,8 @@ class MetaOAuthSettings:
             ),
             requested_scopes=scopes,
             access_posture=os.environ.get("QUALIFY_META_ACCESS_POSTURE", "development"),
+            graph_auth_scheme=os.environ.get("QUALIFY_META_GRAPH_AUTH_SCHEME", "Bearer"),
+            rupload_auth_scheme=os.environ.get("QUALIFY_META_RUPLOAD_AUTH_SCHEME", "OAuth"),
         )
 
 

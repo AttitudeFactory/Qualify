@@ -12,7 +12,7 @@ from qualify_api.connections.crypto import DevEncryptor
 from qualify_api.connections.resolver import (
     EncryptedCredential,
     InjectingCredentialResolver,
-    _BearerClient,
+    _InjectedAuthClient,
 )
 
 CONN = UUID("33333333-3333-3333-3333-333333333333")
@@ -35,7 +35,7 @@ class FakeReader:
 def test_resolver_returns_client_not_token() -> None:
     enc = DevEncryptor()
     resolver = InjectingCredentialResolver(FakeReader(enc), enc)
-    client = asyncio.run(resolver.client_for(CONN))
+    client = asyncio.run(resolver.client_for(CONN, scheme="Bearer"))
     # No supported path back to the token: not in repr, no token-ish attribute.
     assert TOKEN not in repr(client)
     assert not hasattr(client, "token")
@@ -50,7 +50,7 @@ def test_resolver_injects_bearer_token_into_requests() -> None:
         return httpx.Response(200, json={"ok": True})
 
     async def run() -> None:
-        client = _BearerClient(TOKEN, transport=httpx.MockTransport(handler))
+        client = _InjectedAuthClient(TOKEN, scheme="Bearer", transport=httpx.MockTransport(handler))
         resp = await client.get("https://graph.facebook.com/v21.0/me")
         assert resp.status_code == 200
         await client.aclose()
@@ -64,5 +64,5 @@ def test_resolver_decrypts_via_encryptor() -> None:
     enc = DevEncryptor()
     reader = FakeReader(enc)
     resolver = InjectingCredentialResolver(reader, enc)
-    client = asyncio.run(resolver.client_for(CONN))
-    assert isinstance(client, _BearerClient)
+    client = asyncio.run(resolver.client_for(CONN, scheme="Bearer"))
+    assert isinstance(client, _InjectedAuthClient)

@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from qualify_shared.dev import get_dev_tenant
 
-from qualify_api.connections.service import ConnectOutcome, ConnectService
+from qualify_api.connections.service import ConnectService
 from qualify_api.connections.state_token import InvalidState
 
 router = APIRouter(prefix="/api/connections", tags=["connections"])
@@ -49,11 +49,19 @@ class StartConnectResponse(BaseModel):
 
 
 class CallbackResponse(BaseModel):
-    """`connection_id` is null for `link_required`: no row was created (R4)."""
+    """`connection_id` is null for both dead-end outcomes: no row was created (R4).
+
+    `page_count`/`linked_page_count` are the two integers R9(e.1) ordered recorded. They are
+    returned as well as logged so step 1 of the empirical test can be read straight off the
+    callback response — the operator running it is looking at a browser, not at a log tail.
+    Counts carry no ids, no names and no token, so exposing them costs nothing.
+    """
 
     outcome: str
     connection_id: UUID | None = None
     external_username: str | None = None
+    page_count: int = 0
+    linked_page_count: int = 0
 
 
 @router.post("/start", response_model=StartConnectResponse)
@@ -86,7 +94,10 @@ async def oauth_callback(
     return CallbackResponse(
         outcome=str(result.outcome),
         connection_id=result.connection_id,
-        external_username=result.external_username
-        if result.outcome is not ConnectOutcome.LINK_REQUIRED
-        else None,
+        # Keyed off `connection_id` rather than off a list of dead-end outcomes: R9(f) added
+        # one such outcome and a future ruling may add another, and an enum check would have
+        # to be remembered each time. No connection, no username — that holds by definition.
+        external_username=result.external_username if result.connection_id is not None else None,
+        page_count=result.page_count,
+        linked_page_count=result.linked_page_count,
     )
