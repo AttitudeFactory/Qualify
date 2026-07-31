@@ -340,7 +340,22 @@ Encadenadas: si el único usuario de la app es alguien con **rol en la app** (ad
 
 El fundador cumple la condición por partida doble: es admin de la app *y* administrador de la cuenta profesional de Instagram de la tienda. **No hay trámite. No hay reloj. No hay entidad legal en la ruta crítica de cliente cero.**
 
-Y lo que se publica es contenido **real y público**. Es el punto que decide toda la sección: en la doc de [Content Publishing](https://developers.facebook.com/docs/instagram-platform/content-publishing) **no existe ningún mecanismo por el que el nivel de acceso o el estado de revisión degraden la visibilidad del post**. No es que no lo hayamos encontrado: es que Meta no tiene esa palanca. Un reel publicado por una app en Development Mode es un reel público normal.
+> **CORRECCIÓN 2026-07-29 (architect, vía ADR 29 — `arquitectura.md` §6, enmienda del 2026-07-29). La cadena de arriba está INCOMPLETA: la cita 1 es una DISYUNCIÓN de dos términos y aquí sólo consta el primero.** La redacción real de Meta, en dos ficheros del corpus cosechado el 2026-07-24 y no leídos hasta hoy — `documentation/resp-plat-initiatives/individual-processes/app-review.md:7` y `documentation/instagram-platform/overview.md:107` — es: *"if your app will be used by anyone without a **Role on the app** **or a role in a Business that has claimed the app**"*. **Segundo término: un rol en un Business que ha *reclamado* la app.** No cambia nada del razonamiento de cliente cero (el fundador cumple el primer término), pero **abarata la variante de dar acceso a personas del cliente uno**: no exige una fila por persona en la consola de desarrollador, sino gestión de personas en Business Settings. Sigue descartada para GA por una razón peor que la escala — un rol en el Business Portfolio de Qualify concede acceso a los **activos** de ese portfolio, no sólo a la app. **Pendiente V-TP-1: precondiciones del *claim* de una app por un portfolio; si exigiese Business Verification, el segundo término colapsa sobre el trámite que evita.**
+>
+> **Y el HECHO NUEVO que reencuadra §3.7 y §6.5: el fundador es además el constructor y administrador del SaaS inmobiliario del cliente uno** (aportado por él el 2026-07-29). El cliente uno **no es de brazo extendido**. Consecuencia sobre §424 más abajo: la frontera no separa *cliente cero / cliente uno*, separa **activos que el fundador administra / activos que no** — y el primero del lado caro es el **cliente dos**. Detalle completo, veredictos sobre las variantes de app-por-tenant y el ruling de que `platform_apps` sigue global: **ADR 29**.
+
+Y lo que se publica es contenido **real y público**. Es el punto que decide toda la sección: en la doc de [Content Publishing](https://developers.facebook.com/docs/instagram-platform/content-publishing) **no existe ningún mecanismo por el que el nivel de acceso o el estado de revisión degraden la visibilidad del post**. No es que no lo hayamos encontrado: es que Meta no tiene esa palanca. ~~Un reel publicado por una app en Development Mode es un reel público normal.~~
+
+> ⚠ **LA ÚLTIMA FRASE QUEDA RETIRADA — 2026-07-29 (architect; error mío). Está CONTESTADA por doble fuente primaria, y es la premisa sobre la que se apoya ADR 21.** Ruling completo en `arquitectura.md` §6, enmienda del 2026-07-29 apartado **(i.2)**.
+>
+> - [P] Meta, [App Modes](https://developers.facebook.com/docs/development/build-and-test/app-modes), accedido 2026-07-29: *"Any data generated while an app is in Development mode, such as test posts, **can only be seen by role users**"* / *"…**will become visible to all app users once you switch**"*.
+> - [P] campo independiente, [docs.postiz.com/providers/facebook](https://docs.postiz.com/providers/facebook) paso 8, accedido 2026-07-29: *"If you do not do this then posts made via the API will display for yourself but **will not be visible for other users**"* / *"**posts with media are only visible to app developers/testers** — everyone else sees the post without the image"*. (Ambas aportadas por `gtm-specialist` en `docs/research-modelo-acceso-tech-provider.md` §7.2.)
+>
+> **La primera mitad del párrafo SIGUE EN PIE:** sobre el eje **nivel de acceso** (Standard/Advanced) no hay degradación de visibilidad, y §1.1-bis de `fase0-zernio-mercado.md` no se toca. **El error fue de eje**: concluí *"Meta no tiene esa palanca"* al no encontrarla en la doc de **Content Publishing**, cuando vive en la de **App Modes** — que es un eje distinto y sí degrada, y degrada **la media**, justo lo que publica la Parte 4-A.
+>
+> **Consecuencia de ruta crítica: para publicar un reel público real la app tiene que estar en LIVE MODE**, luego *"Development Mode y no hay trámite"* deja de ser funcionalmente suficiente para publicar — el límite que §7.6 declaró de forma inespecífica, ahora con mecanismo y nombre. **La pregunta que decide ADR 21 pasa a ser: ¿pasar a Live Mode exige App Review y/o Business Verification, o es un toggle self-serve?** Si exigiera Business Verification, el reloj **sí** bloquea a cliente cero y el ruling central de esta sección se cae.
+>
+> **Calibración: contestada, no refutada** — la carga de la prueba se ha invertido y ya no se puede apoyar ADR 21 en ella sin prueba empírica. **V-TP-2 (A5-5) queda promovida a BLOQUEANTE.**
 
 Capacidades confirmadas en esa misma doc para lo que el fundador pidió textualmente:
 
@@ -475,6 +490,7 @@ La restricción del fundador —*"yo no les voy a pedir o regalar mi inteligenci
 | A5-1 | Confirmar contra el corpus cosechado si `instagram_business_content_publish` y `instagram_business_manage_messages` son **Advanced-only por naturaleza**, pese a la regla general de auto-aprobación del acceso estándar | architect, sobre `reference/` | **Todo §3.1.** Si son Advanced-only, la mitad Meta de la asimetría se cae y hay que re-abrir la secuenciación |
 | A5-2 | ~~Propiedad del Business Portfolio de la cuenta de la tienda~~ **CERRADO 2026-07-24: el fundador posee el Business Portfolio bajo su propia entidad** → custodia de tokens sin cautividad de vendor/partner, frontera de IP limpia, `key_id` deja de estar forzado por incertidumbre de propiedad (enmienda a ADR 22/23 en `arquitectura.md` §6) | fundador | ~~Custodia de tokens (§2.3), frontera de IP (§3.7)~~ — desbloqueado |
 | A5-3 | ~~Firma del fundador sobre la reclasificación de §3.6~~ **FIRMADO 2026-07-24 (B0-6)** → ADRs 21/24 a APROBADO, `CLAUDE.md` y §6.2 actualizados | fundador | ~~Aplicar cambios a `CLAUDE.md`~~ — aplicado |
+| A5-5 | **[NUEVO 2026-07-29 — la más bloqueante del expediente Meta]** **V-TP-2, promovida a bloqueante:** una sola prueba empírica contra una cuenta real que responda **(a)** ¿el toggle a **Live Mode** exige App Review y/o Business Verification, o es self-serve?, **(b)** ¿un permiso en Standard Access sigue funcionando para un titular de rol tras pasar a Live Mode? (ver la contradicción de `graph-api/changelog/version3.0.md:128` en `arquitectura.md` §6 enmienda 2026-07-29 (d)), **(c)** ¿es visible para un tercero un reel publicado con la app en Development Mode? Fusiona la prueba que §7.6 ya reclamaba, la retirada de §3.1 (arriba) y el pendiente #1 de `research-modelo-acceso-tech-provider.md`. Las otras cuatro (**V-TP-1**, **V-TP-3…V-TP-5**) no bloquean y están en `arquitectura.md` §6 enmienda 2026-07-29 (h) | **fundador** (es empírica, no documental) | **ADR 21 entera.** Si el paso a Live Mode exigiese Business Verification, el reloj administrativo **sí** bloquea a cliente cero y el ruling central de §3.1 se cae. Todo lo demás del expediente Meta está resuelto o no bloquea |
 | A5-4 | WhatsApp Business como canal de DM | investigación | *"Todos los canales de DM"* incluye WhatsApp. `fase0-zernio-mercado.md` §1.1 lo marca **"no verificado — pendiente"**. Es el único canal de la prioridad declarada sobre el que no tenemos **ninguna** evidencia primaria |
 
 A5-4 merece énfasis: la Cloud API de WhatsApp exige Business Verification, verificación del número y plantillas aprobadas — es decir, **es plausible que WhatsApp NO herede la exención de §3.1**, porque su gate no es de acceso a permisos sino de verificación de la entidad y del número. Si es así, "todos los canales de DM atendidos" se parte en dos: Instagram ✅ ahora, WhatsApp ⏳ tras trámite. No se afirma aquí porque no está verificado; se marca como la siguiente pregunta de investigación más valiosa.
@@ -901,3 +917,278 @@ Luego un carrusel de 10 imágenes es **1** post contra el límite de 100 y **11*
 > **El acceso estándar está probado como libre-de-revisión; NO está probado como funcionalmente completo para publicar.**
 
 `overview.md:43`: *"because of the limited scope of Standard Access, some features might not work properly until your app has been granted Advanced Access."* Es una salvedad del propio Meta, **inespecífica y no testeable desde la documentación**. ADR 21 y la reclasificación de §3.6 se apoyan en el acceso estándar, así que el límite va **dentro de la ADR**, no sólo en la nota de §6.1. **Resolución honesta: una prueba empírica contra una cuenta real** — tarea del fundador, no de documentación.
+
+---
+
+## 8. Los términos de Meta en lenguaje llano — sección escrita PARA EL FUNDADOR
+
+**Estado:** EN CURSO (`principal-architect`, 2026-07-30). Encargo del fundador: *"lo que quiero es entender los términos y condiciones"*. **Esto es una sección de comprensión, no de decisión.** No hay nada que firmar aquí. Se puede leer de una pasada sin abrir el documento original de Meta.
+
+**Fuente única de las citas de esta sección:** [Meta Platform Terms](https://developers.facebook.com/terms/dfc_platform_terms/), accedidas 2026-07-29 / 2026-07-30. Cada obligación lleva su número de sección para que se pueda comprobar.
+
+### 8.0 El modelo mental, en cinco líneas
+
+Si sólo se lee esto, es suficiente para tener el modelo correcto:
+
+1. **Hay DOS regímenes, no uno, y se confunden con facilidad.** Uno es el **gate administrativo** (niveles de acceso, App Review, Business Verification, App Mode): decide **qué puede hacer técnicamente la app y a quién puede pedirle permisos**. El otro son las **Platform Terms**: un contrato que decide **qué podemos hacer con los datos**. Pasar el primero no es cumplir el segundo, y estar exento del primero **no exime del segundo**.
+2. **Somos Tech Provider desde el primer cliente**, no desde el cliente número diez. La definición de Meta cubre *"a single integration on behalf of an individual client"*. Con eso se activa la sección §5.b entera.
+3. **"Platform Data" incluye lo derivado.** Un score, un sentimiento, un embedding o un resumen de IA calculado sobre un DM **sigue siendo dato de Meta**. No se sale del contrato transformando el dato.
+4. **La arquitectura ya cumple lo difícil; falta lo fácil.** El aislamiento entre clientes, la custodia de tokens y la mecánica de borrado están **bien resueltos por diseño** (§8.3.1). Lo que falta son cinco piezas de superficie: una política de privacidad, un endpoint de borrado, una política de retención, un canal de vulnerabilidades y una cláusula en nuestros términos de servicio (§8.3.2).
+5. **Hay una cláusula que sí es un problema de producto, no de cumplimiento, y es del cliente uno:** §3.a.ii prohíbe usar datos de Meta para **determinaciones de elegibilidad sobre personas, y nombra explícitamente la vivienda** (§8.3.3). No invalida el producto, pero sí condiciona qué puede hacer el scoring en el vertical inmobiliario, y es decisión del fundador, no de ingeniería.
+
+**Lo que NO hay que hacer con esta sección:** tratarla como una lista de tareas de última hora antes del App Review. El disparador de las obligaciones es **que alguien ajeno use el producto**, y eso —por la reclasificación de ADR 21— ocurre **antes** de cualquier trámite ante Meta (§8.6).
+
+### 8.1 Las cinco definiciones que gobiernan todo, literales — **cierra V-TP-3**
+
+En ADR 29 marqué estas definiciones como **[P] parafraseado** porque el primer intento de extracción las resumió. Aquí van **literales, en inglés, del glosario oficial** (accedido 2026-07-30 con el locale forzado a `en_US`; la versión en español de Meta existe y es igual de oficial, pero traduce los términos y eso arruina la precisión que se busca en un glosario).
+
+| Término del glosario | Definición literal |
+|---|---|
+| **Tech Provider** | *"A Developer of an App whose primary purpose is to enable Users thereof to access and use Platform or Platform Data."* |
+| **Client** | *"The User of a Tech Provider's App."* |
+| **Service Provider** | *"An entity you use to provide you services in connection with Platform or any Platform Data."* |
+| **App** | *"Any technical integration with Platform or to which we have assigned an App identification number. **Any code, APIs, SDKs, tools, plugins, bots, websites, applications, specifications, and other technology made available by you or on your behalf** in connection with Platform is considered part of your App."* |
+| **Platform Data** | *"Any information, data, or other content you obtain from us, through Platform or through your App, whether directly or indirectly and whether before, on, or after the date you agree to these Terms, **including data anonymized, aggregated, or derived from such data**."* |
+
+**Tres precisiones que salen de tener el literal delante y que cambian cosas:**
+
+1. **El término del glosario es "Tech Provider", no "Technology Provider".** Es el mismo concepto, pero al citarlo en cualquier acuerdo o correspondencia con Meta hay que usar la grafía del glosario. (Corrección a mi propio texto en ADR 29, que usa las dos.)
+2. **"App" es mucho más ancha de lo que suena, y esto sí nos afecta.** No es "el registro en el App Dashboard": es *"any code… tools… bots, websites, applications… made available by you or on your behalf"*. Es decir, **la app de Meta de Qualify incluye a Qualify entero** — la UI de Reflex, los workers de Celery, los prompts, todo lo que toque la plataforma. Consecuencia práctica: cuando los términos dicen *"tu App"*, no hay una frontera cómoda donde escudarse; lo que hagamos en el pipeline es conducta de la App.
+3. **"Platform Data" incluye explícitamente lo derivado, lo agregado y lo anonimizado.** Esto es lo más importante de las cinco definiciones para Qualify y es fácil de pasar por alto: **un embedding, un sentimiento, una señal tipada o un resumen de LLM calculado sobre un DM de Instagram sigue siendo Platform Data.** No se "sale" de los términos por transformarlo. Toda la capa de señales de la Fase 3 sobre datos de cuentas conectadas nace dentro de este régimen. (Nótese que esto **no** afecta al plano *earned* de scraping, que no viene de la plataforma vía App.)
+
+**Tres definiciones más, del mismo glosario, que cierran la cadena:**
+
+| Término | Definición literal |
+|---|---|
+| **User** | *"the end user of an App (whether a person or an entity)"* |
+| **Developer** | *"the person or entity that creates or operates an App"* |
+| **Platform** | *"the set of APIs, SDKs, tools, plugins, code, technology, content, and services that enables others…"* (entrada truncada en la extracción — ver el aviso de §8.6) |
+
+**Esto resuelve la cadena de figuras sin ambigüedad:** *Client* = *User* de la app de un Tech Provider, y *User* puede ser **una persona O UNA ENTIDAD**. Luego **la inmobiliaria, como negocio, es un *Client* perfectamente bien formado** — no hace falta forzar nada, y la relación de §5.b encaja de forma natural. (Corrijo aquí una lectura mía anterior de esta misma sección, que dijo que *Client* era necesariamente una persona: la definición de *User* dice explícitamente lo contrario.) Donde sí hay un hueco no es en **quién** es el Client, sino en la confusión entre el gate administrativo y las obligaciones contractuales — **§8.6**.
+
+### 8.2 El mapa de obligaciones, en lenguaje llano
+
+Cuatro grupos. Cada fila lleva su sección para poder comprobarla, pero está redactada para entenderse sin abrir el original. **He marcado con 🔴 las que tienen consecuencia real para Qualify y con ⚪ las que se cumplen solas o son burocracia de fondo.** No están todas las obligaciones del documento: están las que muerden.
+
+#### (A) Lo que Qualify DEBE HACER
+
+| | Obligación, en llano | §|
+|---|---|---|
+| 🔴 | **Tener una política de privacidad pública**, accesible, no geobloqueada, que explique qué datos tratamos, para qué, y cómo pedir su borrado | 4.a, 4.b |
+| 🔴 | **Dar un mecanismo accesible para que una persona pida el borrado de sus datos**, y borrarlos cuando lo pida | 3.d.i.1 |
+| 🔴 | **Borrar los datos cuando dejen de ser necesarios** para un propósito legítimo, cuando dejemos de operar el producto, cuando Meta lo pida para proteger a un usuario, o cuando el usuario pierda acceso a su cuenta | 3.d.i.2.a–e |
+| 🔴 | **Tratar los datos sólo como diga nuestra política de privacidad.** La política no es un trámite: es el límite de lo que legalmente podemos hacer con los datos | 4.c |
+| 🔴 | **Como Tech Provider: mantener una lista actualizada de Clients con sus datos de contacto**, y entregarla a Meta si la pide | 5.b.ii.3 |
+| 🔴 | **Medidas de seguridad administrativas, físicas y técnicas** a la altura del estándar de la industria | 6.a.i |
+| 🔴 | **Un canal accesible para que alguien nos reporte una vulnerabilidad**, y corregir lo que reporte | 6.a.ii |
+| 🔴 | **Notificar a Meta** —por su formulario— cualquier tratamiento no autorizado de datos o incidente de seguridad, empezar la remediación de inmediato y cooperar | 6.b.i, 6.b.ii |
+| ⚪ | Cooperar con revisiones de cumplimiento y con la **monitorización periódica** que Meta hace de la app | 7.a, 7.b |
+| 🔴 | **Cooperar con auditorías de Meta, dando acceso a nuestros sistemas y registros**; corregir lo que revele; y **reembolsar a Meta el coste de la auditoría si encuentra incumplimiento** | 7.c.iii–vi |
+| ⚪ | Mantener el contacto de la cuenta de la app al día | 8 |
+| ⚪ | Si hay transferencia de datos al EEE/UK, aplicar las medidas técnicas y organizativas de Meta | 10A.d, 10B.c.iii |
+| 🔴 | **No transferir derechos ni obligaciones sin consentimiento de Meta — y eso incluye fusiones y adquisiciones** | 11.a |
+
+#### (B) Lo que Qualify NO PUEDE HACER
+
+| | Prohibición, en llano | §|
+|---|---|---|
+| 🔴🔴 | **Tratar datos de plataforma para tomar determinaciones de elegibilidad sobre personas, incluida la VIVIENDA.** Literal: *"Processing Platform Data to make eligibility determinations about people, including for **housing**, employment, insurance, education opportunities, credit, government benefits, or immigration status."* Aplica a **todo** Platform Data, no a un subconjunto. **Ver §8.3, es el hallazgo más serio de esta sección** | 3.a.ii |
+| 🔴 | **Tratar datos para discriminar** o fomentar discriminación que perjudique a personas por raza, etnia, color, origen nacional, religión, edad, sexo, orientación sexual, identidad de género, **situación familiar**, discapacidad, condición médica o genética, o cualquier otra categoría protegida | 3.a.i |
+| 🔴 | **Construir o enriquecer perfiles de usuario sin consentimiento válido del usuario**, para cualquier propósito. Literal: *"Processing Platform Data without valid User consent in order to build or augment user profiles for any purpose."* | 3.a.v |
+| 🔴 | **Vender, licenciar o comprar Platform Data** | 3.a.iv |
+| ⚪ | Tratar datos para vigilancia o para fines policiales | 3.a.iii |
+| 🔴 | **Descodificar, sortear, re-identificar, des-anonimizar o hacer ingeniería inversa** sobre Platform Data | 3.a.vi |
+| 🔴 | **Cambiar la función principal de la app o el alcance del tratamiento de datos sin volver a pasar App Review** | 3.a.vii |
+| 🔴 | **Tratar datos para fines que no estén entre los usos permitidos** en la documentación de Meta | 3.a.viii |
+| 🔴 | **Compartir datos con terceros sin salvaguardas contractuales** | 3.c.iv.4 |
+| ⚪ | Pedir o recoger por separado las credenciales de login de Meta de un usuario | 6.a.iii |
+| 🔴 | **Transferir, compartir o solicitar identificadores de usuario de Meta, access tokens o app secrets** — con una única excepción: el Service Provider que nos ayuda a desarrollar u operar la app | 6.a.iv |
+| ⚪ | Vender, transferir o sublicenciar la Plataforma | 2.a |
+
+#### (C) Lo que Qualify DEBE GARANTIZAR (declaraciones y garantías)
+
+| | En llano | §|
+|---|---|---|
+| 🔴 | Que **hemos obtenido todos los consentimientos, permisos y avisos** necesarios para el contenido que compartimos | 2.b.i.1 |
+| 🔴 | Que el tratamiento de datos **coincide con lo que dice nuestra política de privacidad** | 4.c |
+| 🔴 | Que los datos que **retenemos** cumplen la ley aplicable | 3.d.i |
+| ⚪ | Que tenemos los derechos necesarios sobre el contenido de la app | 2.c.ii |
+| ⚪ | **Certificar por escrito a Meta, si lo pide, que cumplimos** los términos y que el propósito para el que pedimos datos es conforme | 7.d |
+| ⚪ | Que quien acepta en nombre de una entidad tiene poder para obligarla | 1.d |
+
+#### (D) Lo que Qualify DEBE TENER POR ESCRITO con terceros
+
+**Ésta es la categoría que el fundador entendió como "papeleo" y no lo es.** Ninguna de estas filas es RUT, dominio ni Business Verification: son **cláusulas en contratos**, no trámites ante un registro.
+
+| | Con quién, y qué | §|
+|---|---|---|
+| 🔴 | **Con cada Service Provider (proveedor que trata datos por cuenta nuestra): un acuerdo escrito, ACEPTADO ANTES de usarlo**, por el que se compromete a usar los datos sólo para el servicio que le pedimos y **no para sus propios fines** | 5.a.i.1 |
+| 🔴 | Que sus **sub-proveedores** queden obligados por escrito a lo mismo | 5.a.ii, 5.a.i.2 |
+| 🔴 | Que **cesen el uso y borren los datos** cuando termine la relación | 5.a.iii |
+| 🔴 | Poder **entregar a Meta la lista de proveedores y sub-proveedores** cuando la pida, con prueba de esos acuerdos | 5.a.iv |
+| 🔴🔴 | **Como Tech Provider: prohibir CONTRACTUALMENTE a cada Client que viole los términos o las políticas de Meta.** Es decir: **nuestros propios Términos de Servicio con cada tenant deben incluir esa cláusula.** No es papeleo externo — es una línea en nuestro contrato de cliente | 5.b.ii.4.a |
+| 🔴 | **Instrucción escrita expresa del Client** para compartir sus datos con un proveedor del propio Client | 5.b.ii.4.d |
+| ⚪ | Un proceso escrito de notificación y retirada para reclamaciones de infracción sobre contenido de usuario | 2.c.iii |
+
+#### (E) Qué pasa si esto termina
+
+- Al terminar, **todos los derechos cesan de inmediato** y hay que dejar de usar la Plataforma (§11.h).
+- **Sobreviven a la terminación** las secciones 2.b, 2.c, 3, 4, 5, 6, 7, 9, 10, 10A, 11 y 12 — es decir, **las obligaciones de datos, seguridad y auditoría no se extinguen con el contrato** (§11.h).
+- El **derecho de auditoría de Meta sobrevive un año** después de que dejemos de tratar Platform Data, y **hasta que hayamos borrado afirmativamente todas las copias** (§7.c.vii). Traducción práctica: **borrar de verdad es lo que cierra la ventana de auditoría.** Guardar "por si acaso" la alarga.
+
+### 8.3 Qué ya cumplimos y qué no — **verificado contra el repo el 2026-07-30**, no supuesto
+
+#### 8.3.1 Lo que ya cumplimos, y en tres casos por diseño
+
+| Obligación | Estado | Evidencia en el repo |
+|---|---|---|
+| §5.b.ii — *"Platform Data de un Client independiente del de otros Clients"* | ✅ **Cumplido estructuralmente** | RLS de ADR 24 en las 7 políticas + `UNIQUE(id, tenant_id)` con FK compuesta (R2) → un tenant cruzado es **inconstruible**, no sólo prohibido |
+| §6.a.iv — no compartir access tokens ni app secrets | ✅ **Cumplido estructuralmente** | GRANTs a nivel de columna (R3): `qualify_app` **nunca** recibe `SELECT` sobre `oauth_credentials.ciphertext`; sólo el rol estrecho `qualify_credential` lo lee. Y `platform_apps.secret_ref` guarda una **referencia**, nunca el secreto |
+| §3.d.i.2 — borrar datos cuando haga falta | ✅ **Mecánica ya resuelta** | El keying de R2 de la Parte 4 es `t/{tenant_id}/fp/{platform}/{connection_id}/{object_id}` → el borrado de un tenant es un **delete-by-prefix**. `packages/scraper/src/qualify_scraper/shared.py:252-262` lo documenta explícitamente |
+| §5.b.ii.6 — cortar a un Client si Meta lo pide | ✅ **Existe** | `packages/api/src/qualify_api/connections/revoke.py` (idempotente), publicado en el seam de `connections/__init__.py` |
+| §5.b.ii.3 — lista de Clients | 🟡 **Parcial** | Existe `tenants` (`name`, `country`, `timezone`, `currency`) y el contacto se alcanza vía `tenant_members` → `users.email`. **No hay un contacto de facturación/responsable en `tenants`**; hoy es una consulta, no un campo |
+| §7.b — cooperar con monitorización | ✅ Nada que construir | `connection_events` es auditoría append-only |
+
+> **Corrección a `CLAUDE.md`, verificada hoy:** `CLAUDE.md` afirma en la sección de estado del Sprint 1 que *"`revoke_connection` service — does not exist; C-06 needs it"*. **Eso está obsoleto**: `packages/api/src/qualify_api/connections/revoke.py` existe desde el 2026-07-28. La regla de la casa aplica —el sistema de ficheros es la verdad, los docs describen el estado objetivo— y esta fila es un ejemplo de por qué.
+
+#### 8.3.2 Lo que hoy NO cumplimos. Cinco huecos, y ninguno es difícil
+
+Ninguno bloquea a cliente cero (la exención de rol nos cubre mientras la app la use sólo el fundador). **Los cinco vinculan en cuanto haya un Client de verdad**, es decir en el mismo envío de App Review.
+
+| # | Hueco | § | Estado verificado | Coste |
+|---|---|---|---|---|
+| 1 | **No hay política de privacidad.** Ninguna URL, ni en `config.py` ni en ningún sitio del repo | 4.a, 4.b, 4.c | `grep` sobre `packages/`, `Qualify/`, `migrations/`: **cero** ocurrencias | Bajo, pero **es un entregable del App Review**, no opcional |
+| 2 | **No hay mecanismo de borrado para el usuario final**, ni endpoint de *data deletion callback*, ni endpoint de *deauthorize* | 3.d.i.1 | **cero** ocurrencias de `deauthorize` / `data_deletion` / `deletion_callback` | Bajo — la mecánica de borrado ya existe (delete-by-prefix); falta la **puerta** |
+| 3 | **No hay política de retención.** Nada decide cuándo un dato "deja de ser necesario" | 3.d.i.2.a | **cero** ocurrencias de `retention` / `ttl` / `purge` en `packages/` | Bajo en código, **decisión de producto** en realidad |
+| 4 | **No hay canal de reporte de vulnerabilidades.** No existe `SECURITY.md` ni `.well-known/` | 6.a.ii | verificado por `ls` | Trivial |
+| 5 | **Nuestros Términos de Servicio con el tenant no existen**, luego no pueden contener la cláusula que §5.b.ii.4.a exige (prohibir contractualmente al Client violar los términos de Meta) | 5.b.ii.4.a | no hay ToS en el repo | Bajo — **una cláusula**, no un contrato nuevo |
+
+**El patrón que conviene ver:** los cinco huecos son de **superficie de cumplimiento** (una URL, un endpoint, un fichero, una cláusula), no de arquitectura. La arquitectura ya está bien: el aislamiento, la custodia y la mecánica de borrado se construyeron correctos por diseño. **Es la mejor forma posible de que aparezca esta lista.**
+
+#### 8.3.3 🔴🔴 El hallazgo serio, y es de producto, no de cumplimiento: §3.a.ii dice **housing**
+
+Éste no es un hueco que se tape con un fichero. **El cliente uno es una inmobiliaria**, y §3.a.ii prohíbe literalmente:
+
+> *"Processing Platform Data to make eligibility determinations about people, including for **housing**, employment, insurance, education opportunities, credit, government benefits, or immigration status."*
+
+Y aplica a **todo** Platform Data — que por §8.1 incluye **lo derivado**: un score, una señal tipada, un sentimiento o un resumen calculado sobre un DM de Instagram sigue siendo Platform Data.
+
+**Lo que hay que separar con cuidado, porque la respuesta no es "esto es ilegal":**
+
+| Uso | Lectura |
+|---|---|
+| Priorizar a qué lead llamar primero, resumir su conversación, redactar un borrador de respuesta | **Fuera del ámbito de §3.a.ii en mi lectura.** No es una determinación sobre la *elegibilidad* de la persona; es gestión de la cola de trabajo del vendedor |
+| Puntuar leads y usar ese score para decidir **a quién se le muestra una vivienda, a quién se le contesta y a quién no** | **Aquí es donde se cruza.** Deja de ser priorización y empieza a parecer una determinación sobre la persona respecto de una vivienda |
+| Que el score se calcule con señales correlacionadas con atributos protegidos —nombre, barrio, forma de hablar, foto— | **Aquí además entra §3.a.i** (situación familiar y origen nacional están nombrados). Y un modelo no necesita recibir el atributo protegido para acabar usándolo |
+
+**Tres consecuencias que sí son accionables hoy:**
+
+1. **La Fase 4 (scoring de leads/creadores) y la Fase 5 (plays de activación) heredan una restricción que el mapa de fases no registra**, y la heredan **sólo en el vertical inmobiliario**, que es justo el del cliente uno. No es un problema de la Fase 1.
+2. **§3.a.v muerde antes que §3.a.ii y es más fácil de incumplir sin darse cuenta:** *"Processing Platform Data without valid User consent in order to build or augment user profiles for any purpose."* El `crm.creators` de la Fase 4, con centroides de embeddings de contenido, **es literalmente construcción de perfiles**. Sobre el plano *owned*, la persona que manda un DM consintió ante **Meta**, no ante nosotros. **Ese consentimiento hay que tenerlo o no se puede perfilar.** Sobre el plano *earned* (scraping) la aplicabilidad es discutible porque el dato no viene de la Plataforma vía App — **y eso es una ambigüedad, no una vía libre; ver §8.6**.
+3. **Hay un problema de óptica, independiente del fondo jurídico, y conviene decirlo:** el producto se llama **Qualify** y su promesa es *qualification/scoring*. Presentar a App Review una app llamada Qualify, que puntúa personas, para un cliente inmobiliario, invita exactamente a la pregunta de §3.a.ii. **Puede ser perfectamente conforme y aun así costar un ciclo de revisión** por cómo se lee. Merece pensarse cómo se describe la app en el envío.
+
+**Calibración, con el mismo estándar que usé en la variante B: esto es una LECTURA, no un veredicto.** La cláusula es literal y verificada; la aplicación a un CRM de ventas inmobiliarias es **interpretación mía**, y no la resuelvo por inferencia. Lo que la resolvería: **una decisión de alcance del fundador** (que el scoring nunca alimente decisiones de acceso a vivienda, y que se documente así) **o asesoría legal**. Lo que **no** debe pasar es que llegue al backlog de la Fase 4 como si nadie lo hubiera visto.
+
+### 8.4 El "papeleo" que el fundador descartó: ¿nos obliga hoy el par §6.a.iv / §5.a.i?
+
+**Respuesta corta: no es el papeleo que él pensaba, no es un no-issue, y ya aplica hoy — pero se cumple eligiendo proveedores, no rellenando formularios.**
+
+**Primero, qué NO es.** El fundador interpretó "acuerdo escrito de Service Provider" como **RUT + dominio + Business Verification**. No tiene nada que ver: eso son trámites ante Meta para subir de nivel de acceso. §5.a.i es **una cláusula en el contrato con un proveedor nuestro**. Son ejes distintos y descartar uno no descarta el otro.
+
+**Segundo, a quién obliga exactamente.** El par funciona así:
+
+- **§6.a.iv** nos prohíbe compartir identificadores de usuario de Meta, access tokens y app secrets — **con una excepción**: el *Service Provider* que nos ayuda a desarrollar u operar la app.
+- **§5.a.i** dice que si usamos un Service Provider, **tiene que haber aceptado por escrito, ANTES de usarlo**, que usará esos datos sólo para el servicio que le pedimos y **nunca para sus propios fines**.
+
+Es decir: §6.a.iv abre la puerta y §5.a.i pone la condición de la puerta. **La obligación se dispara por tener proveedores que tocan datos, no por vender a nadie.**
+
+**Tercero, y esto es lo que hay que saber: ya aplica hoy.** Qualify ya tiene o va a tener proveedores que tratan Platform Data:
+
+| Proveedor | ¿Toca Platform Data? | ¿Es Service Provider? |
+|---|---|---|
+| **Cloudflare R2** | Sí — guarda los payloads crudos de primera parte (`t/{tenant_id}/fp/…`) | **Sí** |
+| **Hetzner VPS** | Sí — aloja el Postgres donde vive `oauth_credentials` | **Sí** |
+| **HF Inference Providers / featherless-ai** | Sí, en cuanto la Parte 4 lea contenido: recibe frames, audio y texto | **Sí** |
+| **Proveedor de LLM** (LangGraph, respuestas asistidas) | Sí — recibe el contenido de los DMs | **Sí** |
+| **Zyte** | Plano *earned*; **discutible** — ver §8.6 | Ambiguo |
+
+**Y aquí está la parte tranquilizadora, que es real:** el "acuerdo escrito" **no se negocia uno a uno**. Se cumple con el **DPA / los términos de tratamiento de datos que el propio proveedor publica** — Cloudflare, Hetzner y Hugging Face los tienen. Es el mecanismo estándar con el que cumple cualquier SaaS. Luego la obligación práctica se reduce a tres cosas:
+
+1. **Usar proveedores que tengan DPA** (los cuatro de arriba lo tienen).
+2. **Mantener la lista**, porque §5.a.iv obliga a entregarla a Meta si la pide. Hoy no existe esa lista; es un fichero, no un proyecto.
+3. **No inventar un camino de datos hacia algo que no tenga DPA.** Ésta es la única de las tres que se puede incumplir por accidente.
+
+**Cuarto — el caso concreto que el lead señala, y sí activa la cláusula: el SaaS inmobiliario que el fundador construye y administra.**
+
+Ese sistema es **un tercero a efectos de estos términos**, aunque lo escriba la misma persona. Los términos no conocen "la misma persona": conocen entidades y sistemas. Dos escenarios:
+
+- **Si el SaaS inmobiliario NUNCA recibe datos de Meta ni credenciales** → la cláusula no se activa y no hay nada que hacer. Es el escenario limpio, y es el que ya anticipa §3.7 punto 1 (*"la app de Meta se registra bajo el portfolio del fundador, nunca bajo el de PuntoServis; sin integración, sin export, sin cuenta compartida"*). **Recomendación: mantenerlo así por defecto.**
+- **Si en algún momento se le pasan datos** —un lead, un resumen de conversación, un contacto extraído de un DM— **la cláusula deja de ser teórica**, y hay **dos rutas sancionadas, no una**:
+  - tratarlo como **Service Provider nuestro** (§5.a.i): acuerdo escrito previo, sólo para el servicio pedido, nunca para sus fines; o
+  - **la ruta más limpia, y existe exactamente para esto:** el SaaS inmobiliario es **el proveedor del propio Client**, y **§5.b.ii.4.d** permite compartir con él mediando **instrucción escrita expresa del Client**. Como el Client es la inmobiliaria, basta que la inmobiliaria lo pida por escrito.
+
+**Ruling: no es un bloqueo, es un camino con nombre.** Lo que no vale es el camino intermedio —pasar datos porque es la misma persona y no consta en ningún sitio—, que es precisamente lo que §3.c.iv.4 (compartir con terceros sin salvaguardas contractuales) prohíbe.
+
+**Un cabo suelto declarado:** no he verificado si el SaaS inmobiliario **hoy** toca credenciales o datos de plataforma. No es una pregunta de ingeniería sobre este repo — no hay ningún camino de datos hacia él en el código (verificado: cero referencias). Es una pregunta para el fundador sobre el otro sistema.
+
+### 8.5 ¿Los programas de partner cambian alguna obligación o algún gate?
+
+**Respuesta: no. Son comerciales; no tocan ni el régimen de obligaciones ni el gate de acceso.** El fundador pregunta esto porque Zernio se declara partner de Meta y de TikTok.
+
+Lo que sostiene la respuesta, por mi lado (el de los términos):
+
+1. **Las Platform Terms no condicionan nada a un estatus de partner.** Las obligaciones se enganchan a dos figuras: *Developer* y *Tech Provider*. Recorridas las secciones 1–11, **ningún deber se activa, se relaja ni se exime por pertenecer a un programa**. Un partner de Meta tiene exactamente las mismas obligaciones de §3, §4, §5, §6 y §7 que nosotros.
+2. **El gate de acceso tampoco se mueve.** Lo que gobierna el acceso es el par (nivel de acceso, permiso) más el App Mode, y las exenciones se definen sobre *rol en la app* o *rol en un Business que ha reclamado la app* (§3.1 y su corrección). **Ser partner no es ninguna de esas dos cosas.**
+3. **La única "designación" que sí concede algo técnico no es un programa de partner: es ser Tech Provider**, que habilita los tokens BISU (*"Tech Providers only"*, ADR 29 §5.2). Y eso no se solicita ni se gana — **Meta te clasifica así por lo que hace tu app**, según el cuestionario de Data Access Renewal.
+4. **El único contraste de figuras que encontré en doc primaria es de facturación, no de acceso:** en el corpus de WhatsApp, la diferencia entre *Tech Provider* y *Solution Partner* es si necesitas línea de crédito y facturar a tus clientes el uso de la API. **Marcado [S]** — viene del corpus de WhatsApp y no he verificado que se generalice a Instagram.
+
+**Traducción para el fundador: que Zernio se anuncie como partner de Meta no significa que tenga una puerta que nosotros no tengamos.** Significa que está en un programa comercial. La puerta que sí importa —Advanced Access sobre los permisos que necesita— la pasó por App Review, igual que tendremos que pasarla nosotros.
+
+#### 8.5-bis Actualización 2026-07-30 — el pendiente se cierra, y la premisa de la pregunta era inexacta
+
+Tres datos de `gtm-accessmodel` ([P], accedidos 2026-07-30), y los tres apuntan en la misma dirección que la respuesta de arriba.
+
+**(1) El status formal de Tech Provider **exige** el trámite completo; es su resultado, no un atajo.** [P] [Get Started for Tech Providers](https://developers.facebook.com/documentation/business-messaging/whatsapp/solution-providers/get-started-for-tech-providers): concede *"Advanced access to `whatsapp_business_messaging`"* y *"…`whatsapp_business_management`"*, y exige verificación del negocio + App Review, con la frase que fija el orden: *"**Your business must be verified before you can start the app review process.**"*
+
+> **Esto es lo más útil de los tres para el fundador: no existe la ruta "hazte partner o Tech Provider para ahorrarte la revisión".** El status llega **después** de la revisión. Cualquier plan que dependa de conseguirlo antes está mal ordenado.
+>
+> (Nota técnica, no de comprensión: esto pone en tensión la *etapa 0-bis* de ADR 29 — mi afirmación de que el flujo BISU se puede probar antes del trámite. Registrada como tensión sin resolver y como **V-TP-7** en `arquitectura.md` §6 apartado (j); **no afecta al ruling de ADR 29**, sólo a su calendario.)
+
+**(2) El otro programa —Meta Business Partner— sí es esencialmente un badge.** [P] [Meta Business Partner Program Policies](https://www.facebook.com/business/marketing-partners/become-a-partner/fmp-product-policies): único requisito explícito, *"todos los participantes del Programa deben tener un negocio verificado"*. El documento **no menciona** App Review, niveles de acceso, permisos, cuotas ni tipos de token; su contenido son obligaciones, uso del badge/logo, confidencialidad y *Advertiser Rewards*. **Ausencia registrada como ausencia** (es gtm quien la registra así, y es la forma correcta). **Confirma el punto 1 de §8.5 desde el lado del programa: pertenecer no mueve el régimen de acceso.**
+
+**(3) Y la premisa de la pregunta era inexacta — esto conviene decírselo al fundador tal cual: Zernio casi no se declara partner.** Cero ocurrencias de *partner*, *badge*, *certified* o *Tech Provider* en su home, en `zernio.com/social-media-api`, en 25 KB de su documentación de API y en su página de WhatsApp. Su única declaración está en una FAQ **de su propio blog** [S] y es **de publicidad**: *"Zernio is an approved Meta Marketing Partner, so its Ads API lets you create, pause, edit, and delete Meta campaigns"*. **La lista amplia que circula —"partner oficial de Meta, TikTok, LinkedIn, Pinterest, X"— sale de una reseña de un tercero, no de Zernio.**
+
+**Y el remate, que es la mejor evidencia posible de toda esta sección:** el acceso de Zernio a publicación y mensajería de Instagram está **probado por su propia documentación técnica, sin depender de ningún partnership**. Es decir: un competidor vivo, con acceso demostrado, y **cuya única declaración de partner es sobre otra superficie (ads)**. Si el partnership fuese la llave del acceso, ahí se vería. No se ve.
+
+**Pendiente que se cierra como NO VERIFICABLE, no como no verificado:** el **Meta Business Partner Directory exige login** (`facebook.com/business/partner-directory/search` → *"Debes iniciar sesión para continuar"*, incluso con user-agent de navegador). Consecuencia de campo que merece registrarse: **la afirmación de partner de un proveedor no es verificable de forma anónima por un comprador.** Ni el *"Meta Business Partner"* de ManyChat ni el *"approved Meta Marketing Partner"* de Zernio pudieron confirmarse ni desmentirse. **Queda como límite del método, no como hecho en ninguna dirección** — y refuerza la cautela ya registrada: ManyChat se declara Meta Business Partner y **no** aparece en la lista oficial de Messaging Partners de TikTok pese a integrarlo (`ingenieria-inversa-manychat.md` §2.4).
+
+### 8.6 La pregunta que no formuló: ¿cambian los términos si el Client es un negocio que administra el propio proveedor?
+
+**Respuesta: los términos NO cambian, y no hacía falta que cambiaran — pero hay un vacío real, y no está donde parecía.**
+
+**Lo que NO es un problema, y conviene quitarlo de la mesa.** Cabía temer que administrar el stack del cliente uno colapsase las dos partes —proveedor y Client— en una sola, dejando sin sentido cláusulas que asumen dos partes (*"at the Client's request"*, *"contractually prohibit your Client"*, *"the Client's express written direction"*). **No colapsa.** La inmobiliaria es una entidad legal distinta, con su propio personal, y §8.1 confirma que *User* —y por tanto *Client*— puede ser *"a person or an entity"*. Que el fundador administre sus sistemas lo convierte en **su proveedor**, no en ella. Las cláusulas de §5.b siguen teniendo dos partes y siguen funcionando.
+
+**Dónde SÍ está el vacío, y es exactamente el error que un fundador cometería.** Hay dos regímenes distintos, escritos en documentos distintos, que **describen la misma situación a la vez y nadie los reconcilia**:
+
+| | Régimen del **gate administrativo** | Régimen de las **obligaciones contractuales** |
+|---|---|---|
+| Dónde vive | Developer Docs (Access Levels, App Review, App Modes) | Platform Terms §5.b |
+| Qué dice del cliente uno | *"My app is only for a business I own **or manage**"* → acceso estándar → **App Review no requerido** | Una app que sirve a un *Client* → **eres Tech Provider** → §5.b entera te obliga |
+| Qué pasa con el cliente uno | **Exento** | **Plenamente obligado** |
+
+**El cliente uno satisface las dos descripciones al mismo tiempo, y nada dice que sean excluyentes.** La conclusión que se deriva es la que importa:
+
+> **La exención es del TRÁMITE, no de las OBLIGACIONES.** No necesitar App Review no significa que las Platform Terms no apliquen todavía. Aplican desde el momento en que alguien que no eres tú usa la app — y la inmobiliaria son **agentes humanos**, no el fundador.
+
+**Consecuencia concreta y accionable, que corrige la planificación:** los cinco huecos de §8.3.2 (política de privacidad, mecanismo de borrado, retención, canal de vulnerabilidades, cláusula en nuestros ToS) **no vinculan "cuando llegue el App Review". Vinculan cuando el primer agente de la inmobiliaria use el producto**, que por la reclasificación de ADR 21 es *ahora*, y que puede ocurrir **sin ningún trámite ante Meta**. Es decir: **el hito que activa las obligaciones llega ANTES que el hito que activa el papeleo**, y el mapa de fases no lo registra en ningún sitio.
+
+Eso es el vacío, y merece nombrarse antes de firmar cualquier cosa, no después. **No es un incumplimiento hoy** —hoy sólo lo usa el fundador— pero el disparador está mucho más cerca de lo que sugiere "el reloj de 2-4 meses".
+
+> **Confirmación desde un tercer sitio (2026-07-30) — y de paso resuelve una contradicción aparente del corpus.** `gtm-accessmodel` encontró dos textos de Meta que parecían decir cosas opuestas sobre el cliente único: el cuestionario de Data Protection Assessment dice *"Because this app allows people or businesses (clients) to access and use Platform Data, **it means that you are a Tech Provider**"* (basta **un** cliente), mientras que la tabla de App Review sólo exige Advanced Access para *"I am a Tech Provider and my app serves **multiple businesses**"* — **y no tiene fila para "Tech Provider con un solo cliente"**. **No se contradicen: gobiernan cosas distintas, y son exactamente los dos regímenes de esta sección.** El primero clasifica para **obligaciones**; el segundo para el **trámite**. Es decir, se puede ser Tech Provider a efectos de obligaciones —donde un solo cliente basta— sin disparar Advanced Access. La distinción de §8.6 no era una lectura forzada: es la que hace consistentes dos documentos de Meta que de otro modo se pelean.
+>
+> ⚠ **Pero el mismo hallazgo destapa un hueco en mi razonamiento, y es del fundador resolverlo (V-TP-8).** El cliente uno **no encaja en ninguna** de las dos filas de esa tabla: no es *"a business I own or manage"* y no es *"multiple businesses"*. Al comprobar por qué, aparece el defecto: sostuve que el fundador tiene *"full control of the client business"* de la inmobiliaria, apoyándome en que **construye y administra su SaaS**. **Administrar el stack de software de alguien no te hace admin de su Business Portfolio de Meta.** Son dos cosas distintas y he tratado una como la otra. **Pregunta concreta para el fundador: ¿eres admin del Business Portfolio de Meta de la inmobiliaria —de sus Páginas y su cuenta profesional de Instagram— o sólo administras su software?** Si es lo segundo, el cliente uno **no** está en el lado barato de la frontera, el default prudente es asumir que Advanced Access vincula, y la ventaja de secuenciación que celebré en §8.0 y en ADR 29 desaparece. **Es la verificación más barata de toda la lista y la que más cambia el calendario** — es la misma pregunta que §3.7 punto 2 ya dejó abierta para la tienda y que nadie hizo para la inmobiliaria. Detalle en `arquitectura.md` §6 enmienda 2026-07-29 apartado (j.8).
+
+**Dos ambigüedades que dejo declaradas y NO resuelvo por inferencia:**
+
+1. 🔴 **¿Los datos scrapeados son *Platform Data*?** Decide si todo el plano *earned* (ADR 18, Zyte, la Fase 1 entera) está dentro o fuera de este régimen — es decir, si §3.a.v (no perfilar sin consentimiento) alcanza al `crm.creators` construido sobre scraping. La definición de *Platform Data* es *"any information… you obtain from us, through Platform or through your App"*, y la de *Platform* incluye *"…technology, **content**, and services…"*. **La extracción de esa entrada me llegó truncada, y el extractor añadió por su cuenta que "no incluye los sitios web de Meta ni su contenido públicamente visible" — eso es lectura del extractor, NO texto de Meta, y no la adopto.** Con *"content"* dentro de la definición de *Platform*, la lectura de que scrapear el sitio público queda fuera **no está sostenida**. Lo que lo resolvería: la entrada completa de *Platform* verbatim (V-TP-6) y, si sigue ambigua, asesoría legal. **Lo que no vale es asumir que el plano earned está fuera porque nos conviene.**
+2. **¿Se puede ser Tech Provider "de uno mismo"?** Si el único Client fuese una entidad del propio fundador, las cláusulas de dos partes quedarían vacías. **No es el caso del cliente uno** (la inmobiliaria es ajena) y por eso no bloquea nada, pero sí lo sería si el fundador constituyese una sociedad propia como tenant. Lo señalo para que no se descubra en ese momento.
