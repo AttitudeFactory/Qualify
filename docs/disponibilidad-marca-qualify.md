@@ -10,6 +10,8 @@
 
 > **AVISO LEGAL.** La sección 4 (marcas registradas) es una búsqueda **razonable pero no exhaustiva**. **NO sustituye una búsqueda de marca formal hecha por un abogado de propiedad industrial.** Un registro de marca puede existir en clases y jurisdicciones que esta búsqueda no cubre.
 
+> **AVISO LEGAL 2 (§6-§7).** La sección 6 compara **proveedores y tasas oficiales publicadas**. No es asesoría legal, no recomienda un abogado concreto por su calidad jurídica, y **no sustituye** la búsqueda formal cuya contratación describe. El autor no puede contratar abogados ni presentar ante USPTO/SIC/IMPI/INPI.
+
 ## Estado de secciones
 
 | # | Sección | Estado |
@@ -19,6 +21,8 @@
 | 3 | Conflictos de producto/empresa en CRM/GTM/sales-tech | **LISTA** — 🔴 **5 actores; el mayor es «Qualified», de Salesforce, en la MISMA categoría agentiva de GTM** |
 | 4 | Marca registrada (nivel básico, no legal) | **LISTA** — 🔴 **«QUALIFIED» está REGISTRADA en clase 42 (software) por Qualified, Inc.** |
 | 5 | Tabla de síntesis + recomendación | **LISTA** — recomendación: **«Qualify» tal cual NO es viable para salida pública en GTM** |
+| 6 | Proveedores de búsqueda formal (LATAM + EE. UU.) | **LISTA** — un solo proveedor cubre las 4 jurisdicciones con precio publicado (~US$ 400); el gasto grande es EE. UU. (~US$ 3.350) |
+| 7 | Veredicto final + próximos pasos | **LISTA** — contratar la búsqueda sobre un **nombre nuevo**, empezando por Colombia. ~US$ 300 |
 
 ---
 
@@ -418,3 +422,190 @@ Tres caminos, con lo que cada uno realmente cuesta:
 | Textos de **productos y servicios** de los registros de marca | Páginas de detalle de TMview con protección anti-bot | Búsqueda formal de abogado (necesaria de todos modos) |
 | Estado procesal de **ALPHASIX 99222183** y **Telestream 99009932** | TMview solo dice «Filed» | USPTO TSDR con clave de API, o el abogado |
 | Titularidad real de `qualify.ai`, `getqualify.com`, `qualifyapp.com` | Privacidad de registrador | Broker de dominios, si alguno interesara |
+
+---
+
+## 6. Proveedores de búsqueda formal de marca (clearance search) — LATAM + EE. UU.
+
+**Encargo:** el fundador eligió la opción (a) de §5.3 — contratar una búsqueda legal formal antes de comprometerse a un nombre. Esta sección **no decide el nombre**: compara proveedores reales para que el fundador contrate directamente.
+**Autor:** `gtm-specialist` · **Añadida:** 2026-07-31
+
+> **Lo que yo NO puedo hacer y no hice:** contratar a un abogado, presentar ante USPTO/SIC/IMPI/INPI, ni dar asesoría legal. Lo que sigue es investigación de proveedores y de tasas oficiales publicadas.
+
+> **Regla de precios en esta sección:** si no vi un precio publicado, digo «no publicado». No hay ni una cifra estimada por mí. Las tasas oficiales sí son verificables y están marcadas `[V]`.
+
+### 6.0 Jurisdicciones que la búsqueda debe cubrir, y por qué
+
+| Jurisdicción | Oficina | Por qué entra | Señal ya detectada (§4) |
+|---|---|---|---|
+| **Colombia** | SIC | Sede real del fundador y del cliente uno | `QUALIFY U` cl. 41, solicitada 2017 |
+| **México** | IMPI | Mercado hispano nº 1 | 🔴 `QUALIFY` **registrada** cl. 9 (reg. 1677033) |
+| **Brasil** | INPI | Mercado LATAM nº 1 | 🔴 `QUALIFY` **registrada** cl. 42 (reg. 907901255) |
+| **EE. UU.** | USPTO | Conflicto con Qualified Inc. (Salesforce) + ambición internacional | 🔴 `QUALIFIED` **registrada** cl. 42 (reg. 6182886) |
+
+### 6.1 El mercado de la búsqueda de marca tiene tres niveles, no uno
+
+Antes de la tabla conviene entender que «búsqueda de marca» nombra tres productos con precios que se diferencian en dos órdenes de magnitud. Contratar el nivel equivocado es la forma más fácil de gastar mal este dinero.
+
+| Nivel | Qué es | Quién lo vende | Rango de precio |
+|---|---|---|---|
+| **1. Knock-out / identidad** | Cotejo contra la base oficial buscando idénticos y casi-idénticos. Es, esencialmente, **lo que ya hice yo en §4 vía TMview**. | Gratis en las oficinas; incluido de regalo por casi todos los proveedores | US$ 0 |
+| **2. Búsqueda de anterioridad + opinión de abogado** | Idénticos **y confundibles** (fonética, gráfica, conceptual), clases relacionadas, y un **dictamen de registrabilidad** firmado por un abogado de PI. **Este es el producto que el fundador necesita.** | Boutiques de PI multi-país y firmas locales | US$ 90–400 por país/clase (proveedor online) · varios miles (firma tradicional) |
+| **3. Full clearance corporativo** | Nivel 2 + *common law*, nombres comerciales, dominios, redes, vigilancia continua, cobertura mundial. Es lo que compra una multinacional antes de un lanzamiento global. | Corsearch, Clarivate/CompuMark | Suscripción empresarial — **desde £5.000/usuario/mes** según el agregador Software Finder `[S]` (Corsearch no publica precio propio) |
+
+**Lectura:** el nivel 3 está fuera de escala para una empresa preproducto y **no lo recomiendo**; lo cito solo para que el fundador reconozca la oferta si se la ofrecen. El nivel 1 ya está hecho y agotado — es lo que produjo §4 y por eso sabemos que hay conflicto. **La decisión real es a quién comprarle el nivel 2.**
+
+### 6.2 Proveedores candidatos — alcance, precio y plazo
+
+**Método:** consulta a las páginas de precio y servicio de cada proveedor, más directorios de ranking (IP STARS, Chambers) para las firmas tradicionales. **Todo consultado el 2026-07-31.** Donde el sitio bloqueó la consulta o no publica tarifa, lo digo — no hay ninguna cifra inventada.
+
+#### A. Boutiques online multi-jurisdicción (precio publicado)
+
+| Proveedor | Cobertura de las 4 jurisdicciones | Qué incluye la búsqueda | Precio búsqueda | Precio registro | Plazo |
+|---|---|---|---|---|---|
+| **iGERENT** ([igerent.com](https://igerent.com/pricing)) | ✅ **Las 4, con un único punto de contacto** (declara 180+ países) | Idénticos **y confundibles** (fonética/gráfica/conceptual), denominativa **y logo**, clases relacionadas, **informe revisado por abogado de PI con calificación de riesgo y motivos de posible denegación** | **US$ 100** 1ª clase + **US$ 80** clase adicional, **por país**. Rango declarado global: **US$ 90–200/jurisdicción**. Tasas oficiales incluidas | CO **US$ 720** · MX **US$ 600** · BR **US$ 600** · US **US$ 650** | **Hasta 3 días hábiles** (multi-país puede ser más, lo confirman antes) |
+| **Marcaria** ([marcaria.com](https://trademark-search.marcaria.com/en/america)) | ✅ Declara América + Europa | «Trademark Comprehensive Study»: idénticas y similares + **opinión formal de abogado** con probabilidad de aceptación | ⚠️ **No verificado.** El sitio devolvió **HTTP 403** a la consulta de la tabla de precios el 2026-07-31. Declaran «precios fijos que incluyen tasas oficiales y legales» | No verificado (mismo 403) | No publicado |
+
+> **Precio de referencia total, iGERENT, las 4 jurisdicciones, 1 clase:** 4 × US$ 100 = **US$ 400**. `[V]` sobre precio unitario publicado; la suma es aritmética mía.
+
+#### B. Firma de PI tradicional con red propia en LATAM
+
+| Proveedor | Cobertura | Nota | Precio |
+|---|---|---|---|
+| **ClarkeModet** ([clarkemodet.com](https://www.clarkemodet.com/en/global-presence/colombia/)) | **Compañías propias en 13 países**, incluidas **Colombia** (Bogotá, Cra 11 Nº 86), **México** (Insurgentes Sur 1647) y **Brasil** (São Paulo, Río, São José dos Campos). **EE. UU. no es oficina propia** → iría por corresponsal | Fundada en 1879; el mayor grupo de PI de LATAM. Rankeada en IP STARS Colombia. **Es la opción que mejor resuelve «una sola firma coordina CO+MX+BR»** | ❌ **No publica tarifas.** Requiere pedir presupuesto |
+| **Firmas colombianas de primer nivel** — **Cavelier Abogados** y **OlarteMoure** (ambas **Banda 1** en Chambers IP Colombia 2026), **Brigard Castro** (Banda 2), Lloreda Camacho, Triana Uribe & Michelsen ([IP STARS Colombia](https://www.ipstars.com/countries/colombia/co)) | Colombia directa; MX/BR/US **por corresponsal** (práctica estándar del sector) | La vía clásica: un despacho colombiano como punto único que instruye corresponsales. Máxima calidad, máxima fricción de contratación | ❌ **Ninguna publica tarifas** |
+| **SPI Americas** ([spiamericas.com](https://spiamericas.com/registro-de-marca-en-colombia/)) | Colombia + sistema de Madrid | Proveedor colombiano de gama media que **sí publica rango** | **Honorarios COP 1.500.000–5.000.000** según complejidad y **según incluya o no la búsqueda de antecedentes**. Total típico 1 clase con tasa oficial: **COP 2.600.000–6.100.000** |
+
+#### C. EE. UU. — el caso especial que justifica un proveedor propio
+
+En EE. UU. hay un riesgo que **ninguna búsqueda registral detecta**: los derechos de *common law* por uso previo no registrado (§4.4 lo dejó explícitamente abierto). Ese es exactamente el flanco por el que un actor como Qualified/Salesforce podría actuar.
+
+| Proveedor | Qué incluye | Precio | Plazo |
+|---|---|---|---|
+| **Gerben IP** ([gerbenlaw.com](https://www.gerbenlaw.com/trademark-services/trademark-search-and-registration/)) | Búsqueda **federal + estatal + *common law***, dos motores profesionales, 2-3 h de analista, **carta de opinión de abogado** + llamada de revisión | **US$ 3.000** de honorarios fijos + **US$ 350** de tasa oficial = **US$ 3.350** (1 clase, búsqueda **y** presentación) | **10 días hábiles** para la búsqueda |
+| **Trademark Factory** ([trademarkfactory.com](https://trademarkfactory.com/blog/trademark-search-cost-and-clearance-options/)) | «Single Search First»: búsqueda preliminar + chequeo de registrabilidad | **US$ 199** (búsqueda suelta) · **US$ 995** paquete búsqueda+registro (sin tasas oficiales) | No publicado |
+
+#### D. Nivel empresarial — citado solo para que se reconozca y se descarte
+
+| Proveedor | Precio | Veredicto |
+|---|---|---|
+| **Corsearch** ([corsearch.com](https://corsearch.com/trademark-solutions/trademark-clearance)) — y su equivalente **Clarivate/CompuMark** | No publica precio propio. El agregador Software Finder indica **desde £5.000/usuario/mes** `[S]` | ❌ **Fuera de escala.** Es infraestructura de departamento legal corporativo, no una compra puntual |
+
+#### Lecturas de §6.2
+
+1. **Solo un proveedor cubre las 4 jurisdicciones con precio publicado y punto único de contacto: iGERENT** (~US$ 400 por las cuatro, 1 clase). Eso lo convierte en el suelo de precio del mercado, no necesariamente en la mejor compra.
+2. **ClarkeModet es el único con oficina propia en 3 de las 4** (CO, MX, BR) — pero **no publica precio**, así que compararlo exige pedir presupuesto. `[H]` Mi expectativa es que su precio esté un orden de magnitud por encima del de iGERENT; **no lo verifiqué y el fundador no debe presupuestar sobre esa expectativa.**
+3. **EE. UU. no se puede comprar al mismo precio que LATAM**, y no por codicia del proveedor: la búsqueda de *common law* es trabajo humano de horas. US$ 100 compran una búsqueda registral en EE. UU.; **no compran el análisis que importa frente a Qualified/Salesforce.**
+4. **Nadie vende «las 4 jurisdicciones» como un paquete con precio de catálogo.** Todos los multi-país cotizan a medida. Esperar un presupuesto, no un carrito de compra.
+
+### 6.3 Coste de **registrar** (no solo buscar) — la comparación que la decisión de negocio necesita
+
+El encargo pide esto explícitamente: si ya sabemos que «Qualify» tiene conflicto, la decisión real no es «¿busco o no busco?» sino **«¿peleo por Qualify o registro un nombre limpio desde cero?»**. Esa comparación exige el coste de registro, no solo el de búsqueda.
+
+#### 6.3.1 Tasas oficiales por jurisdicción — 1 marca, 1 clase
+
+| Oficina | Tasa oficial 2026, 1 clase | Clase adicional | Tarifa reducida (si aplica) | Fuente + fecha |
+|---|---|---|---|---|
+| **SIC** (Colombia) | **COP 1.348.500** (en línea) | COP 674.000 | **COP 970.000** Mipyme en línea `[S]` | [Ramos Abogados](https://www.ramosabogados.co/uncategorized/tasas-actualizadas-sic-2026-cuanto-cuestan-los-tramites-de-propiedad-industrial-en-colombia/) · 2026-07-31 |
+| **IMPI** (México) | **MXN 3.126,41** con IVA 16% (MXN 2.695,18 sin IVA) | por clase | **MXN 312,64** bajo convocatoria de precio diferencial (microempresa, artesanos, jóvenes, comunidades indígenas, cooperativas) | [Simetría Legal](https://www.simetrialegal.mx/negocio-sin-riesgo/registro-de-marca-impi-2026-guia-precios-requisitos) + [Convocatoria Sec. Economía Chiapas 2026](https://economiaytrabajo.chiapas.gob.mx/convocatorias/convocatoria-precio-diferencial-de-tarifas-para-el-registro-de-marcas-2026-l/) · 2026-07-31 |
+| **INPI** (Brasil) | **R$ 880** por clase | por clase | **R$ 440** (−50%: MEI, ME, EPP, persona física) | Tabela de Retribuições, Portaria GM/MDIC nº 110/2025 + Portaria INPI/PR nº 10/2025, vigente desde 2025-09-20 · [gov.br/inpi](https://www.gov.br/inpi/pt-br/central-de-conteudo/noticias/inpi-fixa-descontos-para-a-nova-tabela-de-retribuicoes-pelos-seus-servicos) · 2026-07-31 |
+| **USPTO** (EE. UU.) | **US$ 350** por clase (base, §1/§44) | US$ 350 | — | [USPTO fee restructure 2025-01-18](https://tmarkmetric.com/insights/uspto-trademark-fees-2026) · 2026-07-31 |
+
+**Tres avisos sobre esta tabla, y son importantes:**
+
+1. ⚠️ **Discrepancia no resuelta en la tasa colombiana.** Dos fuentes secundarias dan cifras y normas distintas: **COP 1.348.500 / Resolución 77243 de 2025** (Ramos Abogados) frente a **COP 1.347.500 / Resolución 6167 del 2026-01-30** ([registro-marcas-colombia.com](https://registro-marcas-colombia.com/cuanto-cuesta-registrar-marca-colombia/)). **No consulté la fuente primaria de la SIC.** La diferencia es de COP 1.000 — irrelevante para presupuestar, pero **el número exacto debe confirmarse contra la SIC antes de pagar.**
+2. ⚠️ **Brasil unificó el cobro.** Según la nueva tabla, el pago **cubre pedido + concesión + los 10 primeros años** en un solo acto — a diferencia del esquema anterior, que cobraba concesión aparte. `[S]` No verificado contra el PDF de la Portaria.
+3. ⚠️ **Los recargos del USPTO son reales y evitables.** +US$ 100 por información insuficiente, +US$ 200 por descripción libre de productos/servicios fuera del ID Manual, +US$ 200 por cada 1.000 caracteres extra. Una descripción mal redactada **duplica** la tasa base. Es un argumento directo a favor de pagar abogado en EE. UU.
+
+#### 6.3.2 Total en dólares — las 4 jurisdicciones
+
+> **Tipos de cambio usados** (declarados para que la cuenta sea auditable, todos de **julio 2026**): **COP 3.220/USD** ([TRM ~3.221, Infobae 2026-07-16](https://www.infobae.com/colombia/2026/07/16/precio-del-dolar-hoy-en-colombia-cotizacion-de-cierre-del-16-de-julio/)) · **MXN 17,34/USD** ([El Financiero 2026-07-30](https://www.elfinanciero.com.mx/mercados/2026/07/30/peso-dolar-precio-hoy-30-de-julio-de-2026/)) · **BRL 5,07/USD** ([Investing.com](https://es.investing.com/currencies/usd-brl)). **Las conversiones son aritmética mía, no cifras publicadas.**
+
+| Concepto | Colombia | México | Brasil | EE. UU. | **Total** |
+|---|---|---|---|---|---|
+| **Tasa oficial, 1 clase, tarifa plena** | US$ ~419 | US$ ~180 | US$ ~174 | US$ 350 | **US$ ~1.123** |
+| Tasa oficial, 1 clase, tarifa reducida (si se califica) | US$ ~301 | US$ ~18 | US$ ~87 | US$ 350 | **US$ ~756** |
+| **Honorarios vía iGERENT** (registro llave en mano) | US$ 720 | US$ 600 | US$ 600 | US$ 650 | **US$ 2.570** |
+| **Búsqueda previa vía iGERENT** | US$ 100 | US$ 100 | US$ 100 | US$ 100 | **US$ 400** |
+
+⚠️ **No verifiqué si los precios de registro de iGERENT incluyen la tasa oficial.** Su página de precios no lo dice; su página de búsqueda sí declara «official fees included». `[H]` El patrón de las cuatro cifras (720/600/600/650 frente a tasas de ~419/180/174/350) es consistente con «tasa incluida + US$ 300-425 de honorarios», pero **es una inferencia mía y hay que preguntárselo antes de contratar.** Si NO estuvieran incluidas, el total de registro sube a ~US$ 3.693.
+
+#### 6.3.3 Los tres multiplicadores que convierten esto en una cifra mayor
+
+1. **Clases.** Todo lo anterior es **una clase**. Qualify realista necesita **clase 42** (SaaS) y muy probablemente **clase 35** (publicidad, gestión comercial, servicios de marketing) — que es exactamente donde vive la mitad GTM del producto. Dos clases **casi duplican** la tasa oficial en las cuatro oficinas. `[H]` Cuál es el juego de clases correcto **es precisamente una de las cosas que se le compra al abogado**; no lo decido yo.
+2. **Renovación.** La marca no es un pago único: se renueva cada 10 años en las cuatro jurisdicciones. No es un coste de esta decisión, pero sí del modelo.
+3. **La vía Madrid.** **Colombia, México, Brasil y EE. UU. son los cuatro miembros del Protocolo de Madrid** ([USPTO](https://www.uspto.gov/ip-policy/international-protection/madrid-protocol)). Eso permite una solicitud única, en una oficina, en un idioma y en una moneda, designando los otros tres países. ⚠️ **No verifiqué las tasas de la OMPI** — se calculan con el simulador oficial de tasas de la OMPI y dependen de la marca (denominativa/figurativa) y del número de clases. **Es la primera pregunta a hacerle al proveedor**, porque puede cambiar la aritmética de §6.3.2 por completo. Nota: la vía Madrid exige una **solicitud o registro base** en la oficina de origen (Colombia), lo que hace de Colombia el primer paso natural también por esta razón.
+
+#### 6.3.4 La comparación que el fundador pidió
+
+| Escenario | Búsqueda | Registro (tasas, 1 clase, plena) | Honorarios | **Orden de magnitud** |
+|---|---|---|---|---|
+| **Pelear por «Qualify»** | Igual que abajo | Igual que abajo | Igual que abajo **+ riesgo de oposición** | **US$ ~3.000 + un riesgo que no se puede presupuestar** |
+| **Registrar un nombre limpio** | US$ 400 (4 juris.) | US$ ~1.123 | US$ ~2.570 llave en mano | **US$ ~3.000** |
+
+> **El hallazgo incómodo: registrar un nombre limpio y pelear por «Qualify» cuestan prácticamente lo mismo en tasas y honorarios.** La diferencia entera está en el riesgo, y el riesgo va todo en contra de «Qualify»:
+> - En **Brasil** y **México** hay registros vivos de «QUALIFY» a secas en las clases del software (§4.3). No es riesgo de oposición: es **causal de denegación de oficio**. `[H]` El dinero de la solicitud se gasta igual y **no se reembolsa** — el IMPI lo dice explícitamente: se paga el estudio, no el registro.
+> - En **EE. UU.** está **Qualified, Inc. (Salesforce)** con registro vivo en clase 42 (§4.1), es decir, el titular con más capacidad de oponerse que existe en software empresarial.
+> - Una oposición o un procedimiento de nulidad **sí** cuesta un orden de magnitud más que todo lo anterior, y su precio no es presupuestable de antemano.
+>
+> **Es decir: el coste de un nombre limpio no es un sobrecoste. Es el mismo coste con la probabilidad de éxito invertida.**
+
+### 6.4 Alcance mínimo viable — qué contratar PRIMERO y qué puede esperar
+
+El encargo pide un orden con lógica explícita. La lógica arranca de una observación que ahorra dinero de verdad:
+
+> **Para el nombre «Qualify», las búsquedas en Brasil y México ya están hechas y ya dieron «no».** §4.3 encontró registros **vivos y concedidos** de «QUALIFY» a secas en INPI clase 42 y en IMPI clase 9. **Pagar una búsqueda formal en esas dos oficinas para «Qualify» es comprar una respuesta que ya tenemos.** Solo tienen sentido sobre un **nombre nuevo**.
+
+De ahí sale que el orden no es geográfico sino **por profundidad**: comprar **amplitud barata** en todas partes y **profundidad cara en un solo sitio, una sola vez.**
+
+#### El orden recomendado
+
+| Fase | Qué contratar | Jurisdicciones | Coste | Por qué **este** orden |
+|---|---|---|---|---|
+| **0 — gratis, antes de pagar nada** | Repetir el chequeo de nivel 1 de §5.3 sobre la lista corta de candidatos | Las 4 (TMview cubre US, MX, BR, CO) | **US$ 0** | El precio de búsqueda es **por nombre y por país**. Tres finalistas × 4 países = US$ 1.200, no US$ 400. **Filtrar gratis antes de pagar es el mayor ahorro disponible en toda esta sección.** |
+| **1 — primero** | Búsqueda de nivel 2 con opinión de abogado, **sobre el finalista** | **Colombia + México + Brasil** | **~US$ 300** (iGERENT, 1 clase) | **Colombia porque es donde está el negocio hoy** — sede del fundador y del cliente uno (`docs/oferta-mercado-agencia-gestionada.md`) — y porque el Protocolo de Madrid exige una **solicitud base en la oficina de origen**, así que Colombia es el primer trámite sí o sí. MX y BR entran aquí y no después **porque cuestan US$ 100 cada uno**: diferirlos no ahorra dinero, solo retrasa el descubrimiento de un bloqueo. Y ya sabemos que esas dos oficinas **bloquean nombres de esta familia** |
+| **2 — solo para el finalista, y solo una vez** | Búsqueda **exhaustiva** EE. UU.: federal + estatal + ***common law*** + carta de opinión | **EE. UU.** | **~US$ 3.000-3.350** (Gerben IP o equivalente) | Es el único gasto grande, y se justifica por dos motivos que no aplican en LATAM: (a) **es la jurisdicción del único adversario capaz de actuar**, Qualified/Salesforce (§4.1); (b) **en EE. UU. los derechos de uso previo no registrado son vinculantes y son invisibles para cualquier búsqueda registral** — §4.4 lo dejó abierto y **US$ 100 no lo cierran** |
+| **3 — al decidir registrar** | Presupuesto Madrid vs. cuatro nacionales | — | Consultar | Puede cambiar toda la aritmética de §6.3.2. **Pregunta obligatoria al proveedor**, antes de pagar la primera solicitud nacional |
+| **Aplazable** | Firma tradicional de banda 1 (Cavelier, OlarteMoure, ClarkeModet) | — | No publicado | Se contrata cuando hay **conflicto real** — oposición, requerimiento, negociación de coexistencia. Comprarla hoy es pagar capacidad de litigio antes de tener litigio |
+
+#### Qué NO contratar, y por qué
+
+- ❌ **Nivel 3 corporativo (Corsearch / CompuMark).** Desde £5.000/usuario/mes `[S]`. Es un contrato de suscripción para un departamento legal. No es esta compra.
+- ❌ **Búsqueda formal en MX/BR sobre el nombre «Qualify».** Ya contestada por §4.3, gratis.
+- ❌ **Registrar antes de buscar.** El IMPI **no reembolsa** si deniega: se paga el estudio, no el resultado. `[V]`
+- ❌ **Búsqueda cara (nivel 2/3) sobre más de un nombre.** El coste escala linealmente con el número de candidatos. Reducir a uno **antes** de comprar profundidad.
+
+#### El brief que el fundador debe mandar al proveedor
+
+Copiable tal cual, y deliberadamente corto:
+
+> Necesito una **búsqueda de anterioridad con opinión de registrabilidad** para la marca **«[NOMBRE]»**, denominativa, en **clases 42 y 35** (plataforma SaaS de escucha social y CRM/GTM con IA), para **Colombia, México y Brasil**. Necesito: (1) idénticas y confundibles, incluidas clases relacionadas; (2) **dictamen de riesgo firmado**; (3) recomendación de si conviene la vía **Protocolo de Madrid** con base en Colombia o cuatro solicitudes nacionales, **con presupuesto de ambas**. Aparte, presupuesto para **EE. UU. con búsqueda de *common law*** incluida. Indíquenme si sus honorarios de registro **incluyen o no las tasas oficiales**.
+
+Las tres preguntas que el fundador **debe** hacer y que separan un buen proveedor de un formulario web: **¿la opinión la firma un abogado de PI colegiado en cada jurisdicción?** · **¿la búsqueda de EE. UU. incluye *common law* y bases estatales, o solo el registro federal?** · **¿el precio incluye las tasas oficiales?**
+
+---
+
+## 7. Veredicto final del documento y próximos pasos
+
+> ## **«Qualify» está bloqueado por registros vivos en 2 de las 4 jurisdicciones que importan y colisiona en la misma categoría con una marca de Salesforce en la tercera: la búsqueda formal debe contratarse sobre un nombre nuevo, no sobre «Qualify», y cuesta ~US$ 300 empezar.**
+
+### Los tres pasos concretos de esta semana
+
+| # | Acción | Coste | Quién |
+|---|---|---|---|
+| **1** | **Decidir el nombre de salida al mercado** — o al menos una lista corta de 3 finalistas. **Todo lo demás está bloqueado por esta decisión**, y no cuesta dinero. Recordatorio de §5.3: **no se toca el código**; «Qualify» sigue siendo el nombre interno del repo sin coste ni riesgo | US$ 0 | Fundador |
+| **2** | **Filtrar la lista corta gratis** con el procedimiento ya documentado en §5.3 (WHOIS · `dig` A/MX · códigos HTTP en X/YouTube con la calibración de §2.1 · `linkedin.com/company/<slug>` · TMview en US/EM/ES/MX/BR/CO filtrando clases 9/35/42). Reduce a **un** finalista | US$ 0 | Reproducible con lo hecho en §1-§4 |
+| **3** | **Pedir presupuesto a dos proveedores en paralelo**, con el brief de §6.4: **iGERENT** (precio publicado, ~US$ 300 por CO+MX+BR, 3 días hábiles) y **ClarkeModet Colombia** (oficina propia en CO/MX/BR, sin precio publicado). Comparar. Presupuestar **US$ 300-500** para esta primera compra | ~US$ 0 pedirlo · **US$ 300-500** ejecutarlo | Fundador |
+
+**Y una cuarta acción que NO es de esta semana pero debe quedar en el calendario:** la búsqueda exhaustiva de EE. UU. (~**US$ 3.000-3.350**, con *common law*). Se contrata **solo sobre el nombre final**, y antes de cualquier gasto serio de marca —  dominio premium, publicidad pagada o presentación ante App Review de Meta. **Ese es el momento en que el riesgo de §5.3 camino C deja de ser teórico.**
+
+### Lo que sigue sin cerrarse tras esta sección
+
+| Hueco | Estado |
+|---|---|
+| Tasas de la **vía Madrid** | No verificadas. Simulador oficial de la OMPI o el proveedor |
+| Precio de **ClarkeModet**, **Marcaria** (HTTP 403) y de **todas** las firmas de banda 1 | No publicado. Solo por presupuesto |
+| Si los precios de registro de **iGERENT incluyen tasas oficiales** | No verificado. Pregunta directa (§6.3.2) |
+| Cifra exacta de la **tasa SIC 2026** y su resolución | Dos fuentes secundarias discrepan en COP 1.000 (§6.3.1). Confirmar contra la SIC |
+| **Juego de clases correcto** (¿42? ¿42+35? ¿+9?) | **Es parte de lo que se le compra al abogado.** No lo decide este documento |
+| Todos los huecos de §5.4 | Siguen abiertos; los de marca los absorbe la búsqueda formal |
