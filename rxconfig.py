@@ -5,8 +5,6 @@ config = rx.Config(
     db_url="sqlite:///reflex.db",
     plugins=[
         rx.plugins.SitemapPlugin(),
-        rx.plugins.RadixThemesPlugin(
-            theme=rx.theme(accent_color="violet", radius="medium")
-        ),
+        rx.plugins.RadixThemesPlugin(theme=rx.theme(accent_color="violet", radius="medium")),
     ],
 )

@@ -106,6 +106,20 @@ ever asserts against a shared contract, it must move into the gate."""
 
 [tool.ruff]
 line-length = 100
+# `.claude/` and `.agents/` hold agent infrastructure, not this project's source:
+# vendored third-party skills (replaced wholesale on update via the skills-lock
+# manifest) and agent working buffers (sprint-state notes whose Markdown carries
+# illustrative Python that ruff would reformat as if it were code).
+#
+# CI was red from 2026-07-28 to 2026-08-03 for exactly this — 12 ruff errors, every
+# one in a vendored skill, none in our own tree — and because `ruff check` runs
+# before `pytest` in the workflow, nobody had a real test signal for that whole week.
+# A gate that fails on files we do not own is a gate that gets ignored.
+# `docs/` is Spanish prose whose Markdown quotes illustrative Python; ruff would
+# rewrite those snippets as if they were source, silently editing a document's
+# argument. Real project code under `packages/`, `Qualify/` and the repo root is
+# still linted and format-checked.
+extend-exclude = [".claude", ".agents", "docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
