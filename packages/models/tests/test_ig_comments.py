@@ -22,7 +22,18 @@ from qualify_models.social.ig_comments import (
     parse_comments_payload,
 )
 
-FIXTURE = Path(__file__).parent / "fixtures" / "synthetic_ig_comments.json"
+# The fixture lives with the contract it instantiates (R11a), not here. This test is the
+# CONSUMER, so reaching toward `packages/shared` is the permitted direction —
+# `qualify_models` depends on `qualify_shared`, never the reverse. Keeping the fixture here
+# and having the contract's own conformance test reach in would invert that.
+FIXTURE = (
+    Path(__file__).resolve().parents[3]
+    / "packages"
+    / "shared"
+    / "tests"
+    / "fixtures"
+    / "synthetic_ig_comments.json"
+)
 
 
 class StubSentimentProvider:

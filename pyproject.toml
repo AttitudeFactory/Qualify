@@ -49,6 +49,13 @@ asyncio_mode = "auto"
 # suite under its `ml` group (torch), so it is not collected by a default `uv run pytest`.
 # Qualify/ added 2026-07-26 at reflex-ui's request (C-06 tests existed but were never
 # collected by a bare `uv run pytest` — only `uv run pytest Qualify` found them).
+#
+# R11: this list is an ALLOW-list by pytest's design, and an allow-list is why two test
+# directories silently fell out of the gate in a single turn (and a third, docs-harvester,
+# was found only by reading the list). It is now AUDITED: `packages/shared/tests/
+# test_gate_coverage.py` fails if any `packages/*/tests` directory is neither listed here
+# nor in the justified deny-list below. New directories therefore have to be decided on,
+# not merely forgotten.
 testpaths = [
     "packages/api/tests",
     "packages/shared/tests",
@@ -62,14 +69,57 @@ pythonpath = [
     "packages/api/src",
     "packages/shared/src",
     "packages/scraper/src",
+    "packages/models/src",
 ]
 markers = [
     "integration: hits an external network / paid vendor / downloads model weights (Zyte, HF, Meta) — NEVER in CI",
     "db: needs the local Postgres/Redis from docker-compose — runs in CI via service containers",
 ]
 
+# R11(d): the deny-list half of the audited gate. Every `packages/*/tests` directory must
+# appear either in `testpaths` above or here, with a reason. `test_gate_coverage.py`
+# enforces it. A directory that is merely forgotten now fails the suite instead of going
+# quiet, which is the whole point — the previous mechanism was "remember to update a list",
+# and that mechanism is exactly what failed three times.
+[[tool.qualify.test-gate.excluded]]
+path = "packages/models/tests"
+reason = """R11(b): collecting this would pull the heavy `ml` suite (torch) into the default
+gate and make it depend on the `ml` dependency group — the very mechanism CLAUDE.md documents
+as corrupting the shared venv when alternating `uv sync` and `uv sync --group ml`. A gate that
+fails for infrastructure reasons teaches the team to ignore it, which is worse than a gap.
+Run it explicitly: `uv run --no-sync pytest packages/models/tests`.
+
+This exclusion is legitimate ONLY because what remains here is model/inference work whose
+failure concerns this package alone. That became true on 2026-07-29 with R11(a): until then
+this directory also held the QUA-67 fixture-conformance tests, which fail when the SHARED
+contract moves and therefore belonged in the gate by R11's positive invariant. They now live
+in `packages/shared/tests/`. If a shared-contract assertion ever lands here again, the fix is
+to move the test out — not to widen this reason."""
+
+[[tool.qualify.test-gate.excluded]]
+path = "packages/docs-harvester/tests"
+reason = """Tooling for harvesting the Meta doc corpus. Its tests exercise only its own
+harvesting logic, so under R11's positive invariant — every test that can fail because of a
+change OUTSIDE its own package belongs in the gate — it qualifies for exclusion. NOTE: this is
+the third instance R11 found, and it was never a deliberate decision until now. If this package
+ever asserts against a shared contract, it must move into the gate."""
+
 [tool.ruff]
 line-length = 100
+# `.claude/` and `.agents/` hold agent infrastructure, not this project's source:
+# vendored third-party skills (replaced wholesale on update via the skills-lock
+# manifest) and agent working buffers (sprint-state notes whose Markdown carries
+# illustrative Python that ruff would reformat as if it were code).
+#
+# CI was red from 2026-07-28 to 2026-08-03 for exactly this — 12 ruff errors, every
+# one in a vendored skill, none in our own tree — and because `ruff check` runs
+# before `pytest` in the workflow, nobody had a real test signal for that whole week.
+# A gate that fails on files we do not own is a gate that gets ignored.
+# `docs/` is Spanish prose whose Markdown quotes illustrative Python; ruff would
+# rewrite those snippets as if they were source, silently editing a document's
+# argument. Real project code under `packages/`, `Qualify/` and the repo root is
+# still linted and format-checked.
+extend-exclude = [".claude", ".agents", "docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

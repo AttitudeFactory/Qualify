@@ -1,5 +1,7 @@
 # Backlog — Features GTM (teardown Fases 3-5)
 
+> ⚠ **ARCHIVADO como backlog accionable, 2026-07-28.** El backlog vive únicamente en Linear (equipo `Qualify-market`). Los items de este doc ya están seedeados como issues en el proyecto Linear "Parking lot — features analizadas (no planificadas)" (p.ej. P3-0 → `QUA-24`, P3-2 → `QUA-25`). Las correcciones de coste F1-C1/F1-C2 (§ inicial) ya están RESUELTAS y aplicadas en `docs/alternativas-fase1.md`/`README.md` — no requieren issue. **Lo que sigue siendo válido aquí:** la evidencia del teardown y el razonamiento de fase-mapping; para prioridad/estado, Linear gana.
+
 **Fecha:** 2026-07-18
 **Fuente de evidencia:** `docs/research-features-gtm.md` (teardown de Modash/Kuli/Upfluence/Syncly, Clay/BetterContact/Prospeo, Trigify/Warmly, Instantly/Smartlead/HeyReach).
 **Autor:** product-owner (sesión /team-po).

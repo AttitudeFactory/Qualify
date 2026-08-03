@@ -32,6 +32,7 @@ and it is what lets the UI ask for a reconnect instead of silently showing stale
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -64,13 +65,25 @@ from qualify_api.connections.state_token import (
 _PLATFORM = "instagram"
 _ACCOUNT_TYPE = "business"
 
+# Module logger. This flow deliberately logs COUNTS and outcomes only: the objects in scope
+# here are a token, page ids and usernames, and none of those belong in a log aggregator.
+_LOGGER = logging.getLogger(__name__)
+
 
 class ConnectOutcome(StrEnum):
     ACTIVE = "active"
     DEGRADED = "degraded"
-    # No Facebook Page with a linked Instagram account. Not an error and not a connection —
-    # a third outcome, which is why this is not a bool.
+    # `/me/accounts` returned Pages, but none has a linked Instagram account. The genuine R4
+    # case. Operator instruction: "link your Instagram account to your Page."
     LINK_REQUIRED = "link_required"
+    # `/me/accounts` returned NOTHING. A different problem with an OPPOSITE instruction:
+    # "give the app access to your Page." R9(f) split this out of `link_required`, which
+    # had been carrying both. Meta filters that edge by TASKS, not ownership
+    # (`business-login-for-instagram.md:118`: "Pages that the user can perform tasks on"),
+    # so administering the Business Portfolio that owns a Page is NOT the same as holding a
+    # task on it — telling such an operator to "link your Instagram" sends them to a setting
+    # that is already correct.
+    PAGE_ACCESS_REQUIRED = "page_access_required"
 
 
 @dataclass(frozen=True)
@@ -78,6 +91,12 @@ class ConnectResult:
     outcome: ConnectOutcome
     connection_id: UUID | None
     external_username: str | None
+    # The two integers R9(e.1) orders recorded, so the empirical test can distinguish
+    # "the edge returned nothing" from "it returned Pages that carry no IG account"
+    # WITHOUT a second live run. Counts only: no ids, no names, no token — nothing here is
+    # PII, which is what makes them safe to log and to return.
+    page_count: int = 0
+    linked_page_count: int = 0
 
 
 class ConnectionVerifier(Protocol):
@@ -106,6 +125,16 @@ def _first_linked_page(pages: tuple[LinkedPage, ...]) -> LinkedPage | None:
     and have linked none of them, which is exactly the `link_required` case R4 describes.
     """
     return next((page for page in pages if page.instagram_account_id), None)
+
+
+def _no_connection_outcome(pages: tuple[LinkedPage, ...]) -> ConnectOutcome:
+    """Which of the two dead ends this is (R9f).
+
+    Zero Pages and "Pages but none linked" are not degrees of the same problem: they need
+    opposite instructions from the operator, so they are separate outcomes rather than one
+    outcome with a detail field somebody might not read.
+    """
+    return ConnectOutcome.PAGE_ACCESS_REQUIRED if not pages else ConnectOutcome.LINK_REQUIRED
 
 
 class ConnectService:
@@ -147,12 +176,29 @@ class ConnectService:
         grant = await self._oauth.exchange_code(code)
 
         # --- R4: the binding gate. Post-consent enumeration, pre-persistence. ---
-        page = _first_linked_page(await self._oauth.list_linked_pages(grant.access_token))
+        pages = await self._oauth.list_linked_pages(grant.access_token)
+        page_count = len(pages)
+        linked_page_count = sum(1 for candidate in pages if candidate.instagram_account_id)
+        page = _first_linked_page(pages)
         if page is None or page.instagram_account_id is None:
+            outcome = _no_connection_outcome(pages)
+            # Counts only — never a page id, page name, username or token. This is the
+            # observation R9(e.1) needs, and logging it here means the first real run
+            # produces the evidence instead of prompting a second run to go get it.
+            _LOGGER.warning(
+                "connect flow ended without a connection: outcome=%s pages=%d pages_with_ig=%d",
+                outcome,
+                page_count,
+                linked_page_count,
+            )
             # `grant` goes out of scope unpersisted. The jti stays spent, so recovering
-            # means starting a fresh flow — which is correct: the user must go link a Page.
+            # means starting a fresh flow — which is correct: the user must go fix access.
             return ConnectResult(
-                outcome=ConnectOutcome.LINK_REQUIRED, connection_id=None, external_username=None
+                outcome=outcome,
+                connection_id=None,
+                external_username=None,
+                page_count=page_count,
+                linked_page_count=linked_page_count,
             )
 
         granted_scopes = await self._oauth.list_granted_scopes(grant.access_token)

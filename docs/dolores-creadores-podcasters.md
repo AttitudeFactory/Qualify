@@ -6,6 +6,15 @@
 
 > **Convención de motions** (heredada de [research-features-gtm.md](research-features-gtm.md)): **listening** (entender la conversación, equipos de marca) vs **activation** (actuar sobre ella, growth/sales). Cada dolor se etiqueta con la motion que un producto tendría que servir para resolverlo.
 
+> ⚠ **ANOTACIÓN DE ALCANCE GEOGRÁFICO (añadida 2026-07-30 por `gtm`, sin re-investigar).** Todo este documento es **de fuente estadounidense/anglosajona**: CreatorIQ, Gigapay, Influencer Marketing Hub y Alitu son encuestas de industria centradas en EE. UU./UE, y ninguno de los porcentajes citados abajo fue medido en LATAM. **Ningún equivalente LATAM está confirmado para ninguno de los dolores de este doc.**
+>
+> Importa porque el trabajo de 2026-07-29/30 estableció que **los dos clientes reales de Qualify son LATAM** (`docs/backlog-crm-workflows.md:22`: tienda en Cúcuta, Colombia; inmobiliaria en Uruguay) y que **asumir una forma de mercado estadounidense para un comprador LATAM ya obligó una vez a corregir un documento entero** (`docs/oferta-mercado-inmobiliario.md` §5.0). Reglas de uso:
+> - **Tratar todo porcentaje de abajo como `[EE.UU./UE]`**, no como global.
+> - **La economía del creador LATAM no está medida aquí.** Órdenes de magnitud de rate-card, tasas de monetización y penetración de herramientas **no son trasladables** sin verificación.
+> - **Lo que sí es plausiblemente universal** es la *forma* del dolor (opacidad de rate-card, prueba de ROI); lo que **no** lo es son las magnitudes ni la disposición a pagar. En inmobiliario esa diferencia fue de **~10-20×** entre regímenes.
+>
+> **No es una re-investigación**: es una anotación de alcance. Cerrar el hueco exigiría fuentes LATAM que en esa pasada no se buscaron.
+
 > **Nota de encuadre.** Qualify se vende hoy a **marcas** (equipos de marketing/growth), no a creadores ni podcasters directamente. Este doc investiga los dolores de creadores/podcasters porque (a) son el *objeto* del producto de la marca — la marca los descubre, califica y activa — y muchos de sus dolores (opacidad de rate-card, prueba de ROI) son el reflejo del dolor de la marca; (b) abren una posible expansión de público (vender a creadores/podcasters como usuarios), que se marca abajo como **fuera del phase map actual**. No confundir "dolor del creador" con "feature que Qualify le vende al creador" — la mayoría se monetizan resolviéndoselos a la marca.
 
 ---

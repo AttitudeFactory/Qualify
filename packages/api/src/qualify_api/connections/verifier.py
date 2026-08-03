@@ -34,7 +34,12 @@ class ResolverConnectionVerifier:
     async def verify(self, *, tenant_id: UUID, connection_id: UUID) -> bool:
         resolver = InjectingCredentialResolver(DbCredentialReader(tenant_id), self._encryptor)
         try:
-            client = await resolver.client_for(connection_id)
+            # `/me` is a graph call, so it takes the graph scheme (R12). Named explicitly
+            # because `client_for` has no default — the value is contested in the corpus and
+            # must be stated by whoever knows which host they are about to call.
+            client = await resolver.client_for(
+                connection_id, scheme=self._settings.graph_auth_scheme
+            )
         except Exception:
             # Missing row, RLS-filtered row, unknown key_id, decrypt failure — to the FSM
             # these are one thing: this credential does not work.

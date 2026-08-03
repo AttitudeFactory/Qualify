@@ -25,33 +25,26 @@ another would be the same defect with better optics.
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 import pytest
 
 from qualify_models.filter import DEFAULT_LABELS, run_filter
 
-# Trained constants read off `SiglipModel` for google/siglip2-base-patch16-224,
-# measured 2026-07-23. Hard-coded so this test needs no weights and no network.
-SIGLIP2_LOGIT_SCALE = 112.66890716552734
-SIGLIP2_LOGIT_BIAS = -16.771724700927734
-
-# Best cosine similarity achieved on tests/fixtures/sample_frame.jpg across a
-# hand-tuned label sweep ("text overlay on a video"), measured 2026-07-23.
-BEST_MEASURED_COS_SIM = 0.1034
+# The trained constants and the sigmoid arithmetic now live in `filter_decision`
+# (QUA-23): they are a property of the checkpoint, not of this test, and having
+# two copies invited them to drift apart. Same values, same maths, one home.
+from qualify_models.filter_decision import (
+    BEST_MEASURED_COS_SIM,
+    SIGLIP2_LOGIT_BIAS,
+    SIGLIP2_LOGIT_SCALE,
+)
+from qualify_models.filter_decision import cosine_for_score as _required_cos_sim
+from qualify_models.filter_decision import score_for_cosine as _score_for_cos_sim
 
 FIXTURE_FRAME = Path(__file__).parent / "fixtures" / "sample_frame.jpg"
 
-
-def _required_cos_sim(probability: float) -> float:
-    """Invert SigLIP's sigmoid head: what cosine similarity yields this score?"""
-    logit = math.log(probability / (1.0 - probability))
-    return (logit - SIGLIP2_LOGIT_BIAS) / SIGLIP2_LOGIT_SCALE
-
-
-def _score_for_cos_sim(cos_sim: float) -> float:
-    return 1.0 / (1.0 + math.exp(-(cos_sim * SIGLIP2_LOGIT_SCALE + SIGLIP2_LOGIT_BIAS)))
+__all__ = ["SIGLIP2_LOGIT_SCALE", "SIGLIP2_LOGIT_BIAS", "BEST_MEASURED_COS_SIM"]
 
 
 def test_default_threshold_is_unchanged() -> None:

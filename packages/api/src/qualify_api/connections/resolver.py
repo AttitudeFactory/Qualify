@@ -47,19 +47,36 @@ class AuthenticatedClient(Protocol):
 
 
 class CredentialResolver(Protocol):
-    async def client_for(self, connection_id: UUID) -> AuthenticatedClient: ...
+    """`scheme` has NO default, deliberately (R12).
+
+    A default of `Bearer` would make the safe case invisible and the dangerous one opt-in:
+    anyone who forgot the argument would get `Bearer` against `rupload` and discover it in
+    production. Forcing every caller to name the scheme is the same discipline as refusing to
+    hardcode a Meta scope spelling — the value is contested, so it must be stated, not
+    assumed.
+    """
+
+    async def client_for(self, connection_id: UUID, *, scheme: str) -> AuthenticatedClient: ...
 
 
-class _BearerClient:
-    """Wraps `httpx.AsyncClient`, injecting the token as a Bearer header (kept out of the
-    URL, so it does not leak into request logs). The token is NOT stored as an attribute
-    and repr redacts it — there is no supported path from this object back to the token."""
+class _InjectedAuthClient:
+    """Wraps `httpx.AsyncClient`, injecting the token as an `Authorization` header (kept out
+    of the URL, so it does not leak into request logs). The token is NOT stored as an
+    attribute and repr redacts it — there is no supported path from this object back to the
+    token.
 
-    def __init__(self, token: str, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    Named for what it does, not for one scheme: it used to be `_BearerClient`, which became a
+    lie the moment R12 established that `rupload.facebook.com` requires `OAuth`. A stale name
+    on the credential door misleads whoever audits it, and this door gets audited.
+    """
+
+    def __init__(
+        self, token: str, *, scheme: str, transport: httpx.AsyncBaseTransport | None = None
+    ) -> None:
         # The token goes straight into the client's default headers; it is not retained on
         # `self` under any other name.
         self._client = httpx.AsyncClient(
-            headers={"Authorization": f"Bearer {token}"}, transport=transport
+            headers={"Authorization": f"{scheme} {token}"}, transport=transport
         )
 
     async def get(self, url: str, **kwargs: Any) -> httpx.Response:
@@ -83,7 +100,10 @@ class InjectingCredentialResolver:
         self._reader = reader
         self._encryptor = encryptor
 
-    async def client_for(self, connection_id: UUID) -> AuthenticatedClient:
+    async def client_for(self, connection_id: UUID, *, scheme: str) -> AuthenticatedClient:
         credential = self._reader.read_current(connection_id)
         token = self._encryptor.decrypt(credential.ciphertext, key_id=credential.key_id)
-        return _BearerClient(token)
+        # The resolver does NOT learn what `rupload` is. Which scheme a given host needs is
+        # publishing knowledge; putting it here would be the mirror image of the coupling
+        # this parameter exists to avoid.
+        return _InjectedAuthClient(token, scheme=scheme)

@@ -5,6 +5,14 @@
 **Método:** investigación de escritorio con web en vivo, 2026-07-20/21. Todas las fechas de acceso son 2026-07-21 salvo indicación contraria.
 **Autor:** agente `gtm`.
 
+> ⚠ **ANOTACIÓN DE ALCANCE GEOGRÁFICO (añadida 2026-07-30 por `gtm`, sin re-investigar).** Este documento se divide en dos mitades con exposición geográfica **muy distinta**, y conviene no tratarlas igual:
+>
+> - **§1 (acceso a APIs de plataforma) es globalmente válido.** Los gates de Meta, TikTok, YouTube y LinkedIn **no varían por país del desarrollador** en lo esencial; App Review y las auditorías aplican igual. Lo que **sí** es local es el trámite de **Business Verification**, que exige entidad legal con NIF/domicilio/web coincidentes **de la jurisdicción donde se constituya** — para un fundador con operación en Colombia/Uruguay eso cambia el papeleo, no el calendario.
+> - **§5 (disposición a pagar) es la mitad expuesta, y ya está etiquetada como hispanohablante** — Metricool como suelo de precio, €300/mes por gestión de redes. **Esa mitad es la única del doc medida sobre mercado hispanohablante, y es la que hay que preservar.** Aun así: *hispanohablante* incluye España, y **España no es LATAM en poder de compra**. Los €300/mes de §5.2 **no están verificados para Uruguay ni Colombia**, donde el techo medido para PYME es **US$50-185/mes de software total** (`docs/oferta-mercado-inmobiliario.md` §2.4).
+> - **§2 (agregadores) es de precio en USD y términos de EE. UU.** Ayrshare, bundle.social, Blotato y Zernio son productos angloparlantes; sus ToS se interpretan bajo derecho estadounidense. **Ningún equivalente LATAM de agregador se buscó.**
+>
+> **No es una re-investigación**: es una anotación de alcance. Ver también §2.1-bis, corrección de fuente sobre Zernio.
+
 ## Nota de calidad de fuentes (leer antes que las tablas)
 
 La mayor parte del contenido indexable sobre "APIs de publicación social" en 2026 es **marketing de contenidos de los propios competidores** (Blotato, Postproxy, PostPeer, Netrows, SocialCrawl y el propio Zernio publican guías de "API pricing 2026"). Tienen incentivo directo en exagerar la fricción de la integración nativa, porque su producto es precisamente evitarla. Clasifico las fuentes:
@@ -81,11 +89,29 @@ Formulado como regla: **la dificultad de acceso a la API correlaciona con el val
 
 ## 2. Agregadores: precio, cobertura y — lo decisivo — derechos de reventa (Tarea 2)
 
+> **Complemento (2026-07-29):** este capítulo analiza los **plazos** de acceso por plataforma, no cómo cada agregador resuelve su propio cumplimiento. Eso está en `docs/research-modelo-acceso-tech-provider.md`, que verifica en doc técnica que Zernio, Ayrshare y ManyChat operan **apps propias revisadas** (Patrón 1) y que el modelo BYO-app solo aparece en herramientas self-hosted.
+
 ### 2.1 Hallazgo previo que cambia el encuadre: **Zernio ES Late (getlate.dev)**
 
-Múltiples fuentes [S/T] indican que **getlate.dev se renombró a Zernio y migró de dominio** ([Stackademic, mayo 2026](https://blog.stackademic.com/top-5-social-media-apis-for-developers-in-2026-aa8aa2981b28), [Postproxy](https://postproxy.dev/blog/best-social-media-scheduling-apis-compared/)). La página de precios actual de Zernio no menciona el nombre anterior (verificado 2026-07-21), así que lo trato como **muy probable pero no confirmado por fuente primaria**.
+Múltiples fuentes [S/T] indican que **getlate.dev se renombró a Zernio y migró de dominio** ([Stackademic, mayo 2026](https://blog.stackademic.com/top-5-social-media-apis-for-developers-in-2026-aa8aa2981b28), [Postproxy](https://postproxy.dev/blog/best-social-media-scheduling-apis-compared/)). La página de precios actual de Zernio no menciona el nombre anterior (verificado 2026-07-21), así que lo trato como ~~muy probable pero no confirmado por fuente primaria~~ → **CONFIRMADO, ver §2.1-bis**.
 
 Importa por dos razones: (1) el "modelo a copiar" no es una empresa consolidada sino un **producto indie reciente que ya ha rebrandeado una vez**; (2) su precio (abajo) sugiere una guerra de precios a la baja, no un mercado con margen holgado.
+
+### 2.1-bis CORRECCIÓN DE FUENTE (2026-07-30) — la doc que usé era parcial
+
+> **Hallazgo del `architect`**, write-up completo en `docs/arquitectura.md` §6, *"Revisión 2026-07-30"* al final de la nota de soporte de ADR 19. Lo recojo aquí porque **este documento es mío y era este documento el que citaba la fuente mala.**
+
+**La fuente que usé en §2.2 está obsoleta y no debe volver a citarse.** `https://zernio.com/llms.txt` (25 KB) es un volcado **parcial y desactualizado**: enumera ~40 endpoints (profiles, accounts, connect, posts, media, api-keys, groups, usage) y por eso **hace parecer a Zernio "un scheduler"**. La referencia real es **`https://docs.zernio.com/llms-full.txt`** (3,6 MB, generado de su OpenAPI) más `docs.zernio.com/sitemap.xml` (~600 páginas).
+
+Lo que la doc completa documenta y mi inventario **no recogía**: analytics (25 endpoints), inbox/comments (11), conversations/DMs, mentions, ads en 6 redes, **WhatsApp (65 endpoints)**, SMS/voz/números de teléfono, workflows, sequences, broadcasts, contacts, lead-gen, reviews, un modelo multi-tenant explícito *"Build a Platform"*, y MCP.
+
+**Tres consecuencias, y una de ellas cierra una pregunta abierta de mi §6.4:**
+
+1. **`Zernio = Late/getlate.dev` queda CONFIRMADO por fuente primaria** — su propio doc de SDK: *«Both `from zernio import ...` and `from late import ...` work identically. The `LATE_API_KEY` environment variable is also still supported»*, y el enum `source: "late"` (*«posted via Zernio API»*) está vivo en cuatro endpoints de analytics. **§6.4 pierde esa fila.** `[P]`
+2. **La reventa de Zernio se resuelve hacia PERMITIDA** (§2.2 decía *"No verificado"*): documentan perfil-por-cliente como frontera de tenant, API keys con alcance, y white-label de la página de connect (`branding`, `headless=true`) — **el mismo estándar por el que §2.2 aceptó a bundle.social**. ⚠ **Caveat que no se puede saltar:** no hay ToS publicados — `/terms`, `/terms-of-service` y `/legal/terms` devuelven **404**. Así que la verificación por escrito del §6.3 punto 1 **sigue siendo obligatoria**, ahora también para Zernio.
+3. **El titular para el escuadrón, y es el dato que más importa a Qualify:** **Zernio tiene CERO lectura de earned media en TikTok e Instagram.** Sus únicas lecturas de terceros son búsqueda en X (ventana de 7 días, solo texto) y búsqueda en Reddit. **Por tanto Zernio sustituye a la Parte 4 (cuentas conectadas / medio propio), NO a las Partes 1-3 (ingesta de medio ajeno).** No es un competidor del diferenciador de Qualify; es un posible proveedor de la mitad *write*.
+
+**Qué NO cambia:** las conclusiones de `docs/research-modelo-acceso-tech-provider.md` sobre el Patrón 1 (app propia revisada) **siguen bien fundadas** — lo que se quedó corto fue el inventario de capacidades, no el razonamiento.
 
 ### 2.2 Tabla comparativa
 
@@ -93,7 +119,7 @@ Precios verificados 2026-07-21 salvo indicación. "Reventa" = ¿los términos pe
 
 | Vendor | Precio | Cobertura | Open source | MCP | **Reventa / white-label** | Fuente |
 |---|---|---|---|---|---|---|
-| **Zernio** (el modelo) | **2 primeras cuentas gratis**; cuentas 3–10 **$6/mes** c/u; 11–100 **$3/mes**; 101+ **$1/mes**. Enterprise >2.000 cuentas | 12 redes (X, IG, TikTok, LinkedIn, FB, YouTube, Threads, Reddit, Pinterest, Bluesky, Snapchat, Google Business) + 3 mensajería (WhatsApp, Telegram, Discord) + 6 redes de Ads | No | **Sí** (mcp.zernio.com) | No verificado | [P] [zernio.com/pricing](https://zernio.com/pricing) |
+| **Zernio** (el modelo) | **2 primeras cuentas gratis**; cuentas 3–10 **$6/mes** c/u; 11–100 **$3/mes**; 101+ **$1/mes**. Enterprise >2.000 cuentas | 12 redes (X, IG, TikTok, LinkedIn, FB, YouTube, Threads, Reddit, Pinterest, Bluesky, Snapchat, Google Business) + 3 mensajería (WhatsApp, Telegram, Discord) + 6 redes de Ads. **⚠ Este inventario está incompleto — ver §2.1-bis** | No | **Sí** (mcp.zernio.com) | ~~No verificado~~ → **resuelve hacia PERMITIDA** (perfil-por-cliente, keys con alcance, white-label de connect), **pero sin ToS publicados (404)** — §2.1-bis | [P] [zernio.com/pricing](https://zernio.com/pricing) · **⚠ la fuente de capacidades `zernio.com/llms.txt` es parcial; usar `docs.zernio.com/llms-full.txt`** |
 | **Ayrshare** | Premium **$149/mes** (1 perfil) · Launch **$299/mes** (hasta 10) · Business **$599/mes** (30 incl.); overage 31–100 **$8,99**, 101–500 **$3,49**, 500+ **$2,49**/perfil/mes. Anual −17% ($7,99/$2,99/$1,99). Plan multi-usuario "desde $499/mes" | 13+ redes | No | No verificado | **⚠️ PROHIBIDA por los términos publicados** — ver §2.3 | [P] [pricing](https://www.ayrshare.com/pricing/) · [P] [terms](https://www.ayrshare.com/terms/) |
 | **bundle.social** | **$100/mes, cuentas ilimitadas** + API | Unificada, orientada a devs | No | No verificado | **Permitida explícitamente** — se comercializa para "your own SaaS, client portal, AI tool, **reseller platform**, or internal system" | [S/P] [bundle.social](https://bundle.social/) |
 | **Blotato** | Desde **$29/mes** (API sólo en planes de pago) | 9 plataformas | No | **Sí** (MCP hosted) | No verificado | [S] [Blotato blog](https://www.blotato.com/blog/best-social-media-api-tools) — **hipótesis** |
@@ -323,10 +349,11 @@ Antes de escribir código de Fase 0, dos verificaciones de días, no semanas:
 
 ### 6.4 Preguntas abiertas que esta investigación no cerró
 
-- Términos de reventa de **Blotato, Zernio y upload-post** (no verificados; la página de precios de upload-post devolvió 404).
+- Términos de reventa de **Blotato y upload-post** (no verificados; la página de precios de upload-post devolvió 404). **Zernio sale de esta fila** (resuelto hacia permitido, §2.1-bis) **pero entra en una nueva de abajo**, porque no publica ToS.
+- **[NUEVA, 2026-07-30] Zernio no publica Terms of Service** — `/terms`, `/terms-of-service` y `/legal/terms` devuelven **404**. La permisividad de reventa se infiere de su doc técnica, no de términos contractuales. **Obtenerlos por escrito sigue siendo requisito del §6.3 punto 1.**
 - Requisitos de entidad empresarial de la **auditoría de TikTok** — la documentación pública no los detalla; hay que abrir el formulario de solicitud.
 - Tarifa unitaria oficial de la **API de X**: la doc primaria confirma el modelo pay-per-use pero no publica el importe; $0,015/post procede sólo de fuentes [S].
-- Confirmación primaria de que **Zernio = Late/getlate.dev**.
+- ~~Confirmación primaria de que **Zernio = Late/getlate.dev**~~ → **CERRADA AFIRMATIVAMENTE 2026-07-30** por su propio doc de SDK (`from late import ...` sigue funcionando; enum `source: "late"` vivo en analytics). Ver §2.1-bis. `[P]`
 - Profundidad histórica exacta de **Insights y Mentions de Instagram** (retención documentada, no encontrada en fuentes accesibles).
 - Snapchat, Google Business Profile, Reddit y WhatsApp Business: vías de acceso no verificadas en esta pasada.
 

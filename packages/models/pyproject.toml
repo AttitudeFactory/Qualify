@@ -8,6 +8,10 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    # Payload-shape contracts (qualify_shared.social.ig_shapes) live in the shared
+    # package by the architect's ruling: a payload contract must not drag the `ml`
+    # group's heavy deps into qualify_api. Same direction as qualify-api -> shared.
+    "qualify-shared",
     "accelerate>=1.14.0",
     "huggingface-hub>=1.24.0",
     "pillow>=12.3.0",
@@ -41,7 +45,13 @@ markers = [
     "integration: hits the network (hosted HF Inference Provider, model download, or Hub metadata)",
 ]
 addopts = "-m 'not integration'"
-pythonpath = ["src"]
+# `../shared/src` mirrors the root config's belt-and-suspenders: qualify_shared is
+# NOT importable from the shared .venv right now (the editable install is broken —
+# see the `uv sync` trap in CLAUDE.md), and test_ig_fixture_shape.py imports the
+# QUA-67 contract from qualify_shared.social.ig_shapes. Declaring the dependency in
+# [project].dependencies is correct but cannot take effect without a sync, which is
+# unsafe while the workspace is shared.
+pythonpath = ["src", "../shared/src"]
 
 [tool.ruff]
 line-length = 100

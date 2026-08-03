@@ -71,3 +71,36 @@ does not gate customer zero. It gates any future scheduling or multi-account fea
 The actual app-creation walkthrough lives under `/documentation/development`, which is outside
 the founder-approved harvest scope. Anything relying on app-creation steps is **not** grounded
 by this corpus. Flagged rather than silently scope-crept.
+
+## 4. The `Authorization` scheme has two values, and the split is NOT "one per host"
+
+Recorded by `pipeline` 2026-07-29 while building the resumable upload path (QUA-19). Ruled as
+**R12** in `docs/arquitectura.md` §6.
+
+Meta's examples use two different `Authorization` schemes, and the obvious rule — "`Bearer` on
+`graph.facebook.com`, `OAuth` on `rupload.facebook.com`" — **is not what the corpus says.** The
+contradiction is not only between documents; it is *inside one file*:
+
+| Where | Host | Scheme shown |
+|---|---|---|
+| `content-publishing/resumable-uploads.md:41` | `graph.facebook.com` (create container) | `Bearer` |
+| `content-publishing/resumable-uploads.md:137` | `graph.facebook.com` (`media_publish`) | **`OAuth`** |
+| `content-publishing/resumable-uploads.md:92,102` | `rupload.facebook.com` | `OAuth` |
+| `content-publishing.md:84,212,272` | `graph.facebook.com` | `Bearer` |
+| `content-publishing.md:164,174` | `rupload.facebook.com` | `OAuth` |
+
+So `resumable-uploads.md` shows the SAME host with BOTH schemes, while `content-publishing.md`
+shows that host with only `Bearer`. Reading either file alone yields a confident and different
+rule.
+
+**The single invariant across the whole corpus:** `rupload.facebook.com` is **never** shown
+with `Bearer`.
+
+**Consequence, same as §1:** neither value may be hardcoded from documentation. The scheme is
+configuration — `MetaOAuthSettings.graph_auth_scheme` / `.rupload_auth_scheme`, overridable via
+`QUALIFY_META_GRAPH_AUTH_SCHEME` / `QUALIFY_META_RUPLOAD_AUTH_SCHEME` — with defaults placed
+where the corpus is unanimous. `CredentialResolver.client_for` takes `scheme` with **no
+default**, so a caller cannot get one by forgetting.
+
+**Not resolvable by reading.** One live call against a connected account settles it. Until
+then, treat both values as `[V]`.

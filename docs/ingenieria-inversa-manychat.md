@@ -186,6 +186,8 @@ franqueado del todo**.
 
 ### 2.2 El hallazgo central: el gate es de **dos pisos**, y solo el piso de abajo se paga una vez
 
+> **Ampliación (2026-07-29):** el flujo de onboarding de ManyChat, verificado paso a paso, confirma que opera bajo **app propia revisada** y no bajo apps de sus clientes — ver `docs/research-modelo-acceso-tech-provider.md` §2, que además compara el patrón con Zernio, Ayrshare, Mixpost y Postiz.
+
 ManyChat es **Meta Business Partner** y lo declara explícitamente:
 
 > "Manychat está aprobado por Meta […] nuestra asociación con Meta significa que trabajamos

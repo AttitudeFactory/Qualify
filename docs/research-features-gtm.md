@@ -6,6 +6,13 @@
 
 > **Convención de motions:** distinguimos las dos motions que Qualify fusiona: **listening** (entender la conversación, equipos de marca/marketing) y **activation** (actuar sobre ella, equipos de growth/sales). Cada hallazgo se etiqueta con la motion que sirve.
 
+> ⚠ **ANOTACIÓN DE ALCANCE GEOGRÁFICO (añadida 2026-07-30 por `gtm`, sin re-investigar).** Los vendors auditados abajo (Clay, Instantly, HeyReach, Smartlead, Zapmail, Prospeo, BetterContact, Trigify, PredictLeads, Warmly…) son **productos angloparlantes con precio en USD y bases de contactos B2B centradas en EE. UU./UE**. Tres consecuencias que **no** se verificaron en esa pasada y que hay que asumir abiertas:
+> - **Cobertura de datos en LATAM no verificada.** Las bases B2B y los waterfalls de enriquecimiento tienen cobertura muy desigual fuera de EE. UU./UE; **ningún hit-rate LATAM está medido en este documento**. Un waterfall con 70 % de acierto en EE. UU. puede rendir mucho menos en Colombia o Uruguay, y aquí no se comprobó.
+> - **Los precios en USD chocan con techos de gasto locales.** El trabajo de 2026-07-30 midió el techo de software de una PYME inmobiliaria LATAM en **US$50-185/mes para toda la empresa** (`docs/oferta-mercado-inmobiliario.md` §2.4) — **por debajo de una sola licencia** de varias herramientas de este doc. Los precios de abajo son correctos; lo que no está establecido es que sean pagables por un comprador LATAM.
+> - **Outreach por email frío tiene supuestos legales por jurisdicción** (CAN-SPAM en EE. UU., GDPR en UE) y **Uruguay tiene protección de datos de grado GDPR** — Ley 18.331, adecuación UE reaffirmada 2024-01-15 `[S]`, hallazgo de `market-opportunity-analyst`. **La viabilidad legal del outreach frío en LATAM no se analizó aquí.**
+>
+> **No es una re-investigación**: es una anotación de alcance. Las cifras de vendor siguen siendo válidas **para su mercado de origen**.
+
 ---
 
 ## Hallazgo central (leer esto primero)
