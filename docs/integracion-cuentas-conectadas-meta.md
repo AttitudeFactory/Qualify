@@ -442,7 +442,7 @@ Que las tres fronteras coincidan es una propiedad valiosa: da **un único dispar
 
 **(d) Smart replies: enmienda concreta, no reversión.**
 
-A1 las dejó fuera. Se corrige a: **respuestas asistidas con aprobación humana, DENTRO de alcance; respuestas autónomas, FUERA.** El fundamento es numérico y ya estaba en disco: `NOTES_manychat_activation_layer.md` §2.2 mide precisión ≈65 % en tasas base de media propia (π≈10 %), frente al 7,9 % de media ajena. 65 % significa que **1 de cada 3 borradores está mal** — inaceptable para responder solo, perfectamente utilizable como borrador que un humano acepta o descarta. Es exactamente el bucle de aprobación humana (layer 5) que A1 §1.6 ya decía que había que **diseñar desde el día uno**. El diseño era correcto; la etiqueta de fase estaba mal.
+A1 las dejó fuera. Se corrige a: **respuestas asistidas con aprobación humana, DENTRO de alcance; respuestas autónomas, FUERA.** ~~El fundamento es numérico y ya estaba en disco: `NOTES_manychat_activation_layer.md` §2.2 mide precisión ≈65 % en tasas base de media propia (π≈10 %), frente al 7,9 % de media ajena. 65 % significa que **1 de cada 3 borradores está mal**~~ **[FUNDAMENTO SUSTITUIDO 2026-07-31 — `arquitectura.md` §6 enmienda (m). El 65 % no se midió: es una precisión bayesiana sobre TPR/FPR/π SUPUESTOS, y describe un DETECTOR DE INTENCIÓN, no la calidad de un texto generado. La regla no cambia; su base pasa a ser (a) cero mediciones de calidad de borrador en este repo, (b) asimetría irreversible del coste del error, (c) vertical regulada.]** — inaceptable para responder solo, perfectamente utilizable como borrador que un humano acepta o descarta. Es exactamente el bucle de aprobación humana (layer 5) que A1 §1.6 ya decía que había que **diseñar desde el día uno**. El diseño era correcto; la etiqueta de fase estaba mal.
 
 Nota heredada del mismo teardown y que conviene no perder: la superficie de triggers de ManyChat es un **clasificador zero-shot NLI, no un LLM** (`ingenieria-inversa-manychat.md` §1.1), y auto-genera respuestas **sólo para comentarios positivos** — gestión de riesgo disfrazada de feature. Ambas cosas apuntan al mismo sitio: el primitivo de detección propuesto (`bge-m3-zeroshot-v2.0`) gana un segundo rol como trigger de activación, no sólo como detector de señales.
 
@@ -467,7 +467,7 @@ El mapa de `CLAUDE.md` ordena **el producto** (SaaS multi-tenant sobre media aje
 |---|---|---|---|
 | Publicar reels/stories en cuentas propias | Fase 5 | **Parte 4-A, ahora** | Los tres problemas duros de ADR 19 no vinculan a N=1 (§3.4a). Sin App Review (§3.1) |
 | Bandeja de DMs + comentarios de cuentas propias | Fase 6 (inbox unificado) | **Parte 4-B, ahora** | Plano Postgres, mínimamente bloqueada; es donde está la diferenciación |
-| Respuestas **asistidas** (borrador + aprobación humana) | Fase 5 | **Parte 4-B, ahora** | 65 % de precisión en media propia: shippable con humano en el bucle, no sin él |
+| Respuestas **asistidas** (borrador + aprobación humana) | Fase 5 | **Parte 4-B, ahora** | ~~65 % de precisión en media propia~~ **[cifra retirada, enmienda (m)]**: shippable con humano en el bucle, no sin él — por ausencia de evidencia de calidad de borrador, asimetría del coste del error y vertical regulada |
 | Respuestas **autónomas** | Fase 5 | **Sigue fuera** | 1 de cada 3 mal. No es cuestión de fase, es cuestión de que no funciona |
 | Publicación programada en TikTok | — | **Bloqueado, no planificado** | Auditoría; sin mitigación de ingeniería (§3.2). No poner fecha |
 | Gestión de asientos multi-agente | Sin fase | **Sigue sin fase** | Es cliente uno (inmobiliaria), fuera de este sprint por instrucción explícita |
@@ -517,6 +517,16 @@ Regla de producto que se deriva: mientras `access_posture='development'`, la UI 
 
 ### 4.2 Publicación — la máquina de estados, y por qué el problema real no es el que parece
 
+> 🔴 **CORRECCIÓN 2026-07-31 (K3) — ESTA SECCIÓN CONTRADICE EL DDL YA APLICADO EN TRES PUNTOS. Escrita por `principal-architect`, `[PROPUESTO]`, sin firmar.** El texto de abajo se conserva porque su **razonamiento** sigue siendo correcto y es el que originó las migraciones; lo que caducó son los **nombres y un requisito de infraestructura**. Un equipo que herede la letra sin esta corrección construye cosas que no existen y, peor, infraestructura que nadie va a visitar.
+>
+> **(K3.1) La tabla se llama `publish_attempts`, no `publish_jobs`.** `migrations/postgres/versions/0003_publishing.py:72`. Los `GRANT`, las políticas RLS, el trigger `publish_attempts_settle_once` y el índice `ix_attempt_reconcile` usan ese nombre. `publish_jobs` **no existe en ninguna parte del repositorio**.
+>
+> **(K3.2) La máquina de estados de abajo NO es la que impone la base.** El diagrama `DRAFT → CONTAINER_CREATED → CONTAINER_READY → PUBLISHED / AMBIGUOUS` es conceptual. El `CHECK ck_attempt_status` aplicado admite **exactamente cinco valores**: `pending`, `uploading`, `processing`, `published`, `failed` (`0003_publishing.py:116`). **Un servicio no puede inventar un sexto**, y `AMBIGUOUS` en particular **no es un estado persistible**: es una *situación* que se resuelve por reconciliación mientras la fila sigue en `processing`. Además dos invariantes que el texto de abajo no menciona y que la base sí impone: el trigger rechaza **cualquier** `UPDATE` sobre una fila con `settled_at IS NOT NULL`, y `ck_attempt_settled_matches_status` obliga a escribir sello y estado terminal **en la misma sentencia**.
+>
+> **(K3.3) LA MÁS CARA DE LAS TRES: "alojar el media en una URL pública" está MUERTO desde ADR 28a, y no aparece tachado en ningún sitio de este documento.** La ruta vigente es **subida resumable de bytes** a `rupload.facebook.com` (`packages/api/src/qualify_api/publishing/client.py:287-311`, cabeceras `offset`/`file_size`). **Meta nunca hace `cURL` de una URL nuestra en la rama de vídeo.** Consecuencia para quien planifique: **no hay que emitir URLs firmadas, ni verificar si el fetcher de Meta acepta query strings, ni razonar sobre TTL de firma, ni exponer superficie HTTP pública alguna.** `ObjectGate` **omite `presign_get` deliberadamente** por esto (ADR 28b). Un equipo que herede la línea vieja construye un subsistema de URLs firmadas completo —con su superficie de ataque— para un cliente que no va a llamar. La excepción sigue siendo **imagen**, que no tiene variante resumable y por eso está diferida a **QUA-68**.
+>
+> **(K3.4) Bloqueante descubierto el 2026-07-31 que esta sección tampoco contempla: el token.** `content-publishing.md:30` exige **Facebook Page access token** en la columna de la rama firmada; hoy persistimos el de **usuario**. Y `content-publishing.md:19-21` añade una precondición **indetectable por API**: una Página que exija *Page Publishing Authorization* **no admite publicación** hasta completarla. Detalle en `.claude/sprint-state-2026-07-31-po-sprint3.md`.
+
 La publicación en Instagram es un proceso **de dos llamadas con una fase asíncrona en medio**, no un POST:
 
 1. `POST /{ig-user-id}/media` → devuelve un `creation_id` (contenedor). Meta procesa el media de forma asíncrona.
@@ -535,7 +545,7 @@ DRAFT → CONTAINER_CREATED → CONTAINER_READY → PUBLISHED
 
 **Reglas vinculantes:**
 
-1. **Write-ahead del `creation_id`.** La fila de `publish_jobs` con el `creation_id` se persiste **antes** de llamar a `media_publish`. Es la misma disciplina que la regla *raw-antes-de-parsear* de ADR 18: si no está escrito, la llamada no ocurre. Sin esto, un crash entre la llamada y el registro pierde el ancla y el estado se vuelve irrecuperable.
+1. **Write-ahead del `creation_id`.** La fila de ~~`publish_jobs`~~ **`publish_attempts`** (K3.1) con el `creation_id` se persiste **antes** de llamar a `media_publish`. Es la misma disciplina que la regla *raw-antes-de-parsear* de ADR 18: si no está escrito, la llamada no ocurre. Sin esto, un crash entre la llamada y el registro pierde el ancla y el estado se vuelve irrecuperable.
 2. **`media_publish` nunca se reintenta a ciegas.** Un fallo ambiguo entra en `AMBIGUOUS` y sale por **reconciliación**, jamás por reintento. Es la única transición del sistema que tiene prohibido el retry con backoff.
 3. **La reconciliación consulta a Meta, no a nuestra base de datos.** Es la aplicación directa de §3.7(3): otra herramienta de marketing publica en la misma cuenta, luego **el estado local no es autoritativo sobre qué hay publicado**. Se reconcilia listando el media reciente de la cuenta y buscando el resultado del contenedor.
 4. **Provenance de efecto externo** (ADR 20): todo publicado lleva `connection_id`, `creation_id`, `access_posture`, `api_version` y una `idempotency_key` propia. Un efecto externo es una escritura derivada y la regla de `CLAUDE.md` no distingue entre derivar una fila y derivar un post.
@@ -544,16 +554,26 @@ DRAFT → CONTAINER_CREATED → CONTAINER_READY → PUBLISHED
 
 ### 4.3 Bandeja de DMs y comentarios — plano Postgres
 
+> 🔴 **CORRECCIÓN 2026-07-31 (K3, continuación) — cuatro puntos de esta sección están superados por el DDL aplicado o por hallazgos posteriores.** `[PROPUESTO]`, sin firmar.
+>
+> **(K3.5) Las tablas se llaman `threads` y `messages`**, no `inbox_threads`/`inbox_messages` (`0004_inbox.py:57` y `:106`).
+>
+> **(K3.6) La fecha de expiración de ventana NO es una columna, y es deliberado.** El bullet de abajo pide *"cada hilo lleva su fecha de expiración de ventana como columna"*. **Rechazado y aplicado como rechazo** (condición B2 del architect, `0004_inbox.py:16-19`): una copia materializada de (base + política) **se queda rancia, y su modo de fallo rancio es exactamente "enviado fuera de ventana"** — es decir, el fallo que la columna pretendía evitar. Se **calcula** desde `last_inbound_at`, y **nunca** desde `last_message_at` (por eso las dos columnas existen separadas: `last_message_at` es orden de bandeja, jamás base de ventana).
+>
+> **(K3.7) El intake es POLL-FIRST, no webhook.** El bucle de abajo empieza *"llega evento (webhook, §2.6)"*. **Los webhooks no son alcanzables para cliente cero**: exigen app en Live + Advanced Access + Business Verification (`webhooks.md:60-73`), y `ig_shapes.UNCOVERED_SURFACES["webhook_payloads"]` lo registra como superficie no cubierta. **El poll no es red de seguridad: en Development Mode es el único camino que existe.** Lo que sí se construye es la costura que admitirá el webhook después. Y como `COMMENT_LIMITS.filterable_by_timestamp is False`, **el poll no puede ser incremental por tiempo**: la de-duplicación es por id, apoyada en `UNIQUE(connection_id, external_message_id)` — **sin Redis `SETNX`**, decisión explícita de `0004_inbox.py:136-138`.
+>
+> **(K3.8) La mitad de DM de esta sección no es construible hoy, por dos verjas independientes.** Standard Access sólo permite interactuar con quien tiene **rol en la app** (un cliente real que manda un DM no lo tiene), y además el titular debe activar a mano *Ajustes > Mensajes > Herramientas conectadas*, acción humana **no concedible programáticamente**. Coste conocido de la rama firmada, ya registrado como **(O8)** en `arquitectura.md` §6. **La bandeja construible ahora es de COMENTARIOS sobre media propia**, cuyo nivel de acceso se determina por propiedad de la cuenta y no por el rol de la contraparte (`comment-moderation.md:25-26`).
+
 Confirmado por §3.5 y por ADR 20 (que ya lo dictaminó para el plano de conversaciones): **hilos y mensajes viven en Postgres; su cara analítica va a ClickHouse.** Aquí sólo se añade lo que la prioridad del fundador obliga a tener el día uno.
 
 **La ventana de mensajería es estado transaccional de primer orden, no un detalle.** Meta sólo permite responder dentro de una ventana desde el último mensaje del usuario, y Private Replies sobre un comentario permite **un** mensaje, sobre media propio, ≤7 días (ADR 20, fuente primaria 2026-07-23). Consecuencias:
 
-- Cada hilo lleva su **fecha de expiración de ventana** como columna, no como cálculo en la UI. Es lo que decide si el botón de responder está activo, y una respuesta enviada fuera de ventana falla en la plataforma.
+- ~~Cada hilo lleva su **fecha de expiración de ventana** como columna, no como cálculo en la UI.~~ **[RECHAZADO — ver K3.6. Se calcula desde `last_inbound_at`; no hay columna.]** Sigue en pie el porqué: es lo que decide si el botón de responder está activo, y una respuesta enviada fuera de ventana falla en la plataforma.
 - Cada oportunidad de Private Reply lleva un flag de **consumida/no consumida**. Es un recurso de un solo uso; gastarlo por accidente es irreversible.
 
-**Triaje — aquí está la inversión.** El bucle es: llega evento (webhook, §2.6) → se clasifica → se prioriza en la bandeja → el operador responde, opcionalmente sobre un borrador. La clasificación es el trabajo diferenciado y es un **clasificador zero-shot NLI, no un LLM** (§3.4d): intención, urgencia y sentimiento sobre el mensaje, con `label_set_version` (ADR 16) y `connection_id` como provenance.
+**Triaje — aquí está la inversión.** El bucle es: llega evento (~~webhook, §2.6~~ **poll — ver K3.7; el webhook no es alcanzable para cliente cero**) → se clasifica → se prioriza en la bandeja → el operador responde, opcionalmente sobre un borrador. La clasificación es el trabajo diferenciado y es un **clasificador zero-shot NLI, no un LLM** (§3.4d): intención, urgencia y sentimiento sobre el mensaje, con `label_set_version` (ADR 16) y `connection_id` como provenance.
 
-**Respuestas asistidas, con la restricción de §3.4(d) escrita en el diseño y no sólo en el roadmap:** el sistema produce **borradores**, nunca envíos autónomos. A 65 % de precisión, 1 de cada 3 borradores está mal; con humano en el bucle eso es un ahorro de tiempo, y sin él es un incidente recurrente en público. La decisión de enviar es siempre una acción explícita de un humano.
+**Respuestas asistidas, con la restricción de §3.4(d) escrita en el diseño y no sólo en el roadmap:** el sistema produce **borradores**, nunca envíos autónomos. ~~A 65 % de precisión, 1 de cada 3 borradores está mal;~~ **[cifra retirada, enmienda (m); el fundamento correcto es (a)/(b)/(c) de allí]** con humano en el bucle eso es un ahorro de tiempo, y sin él es un incidente recurrente en público — **irrecuperable y capturable en pantalla, que es la razón que no depende de ninguna medición.** La decisión de enviar es siempre una acción explícita de un humano.
 
 **Fuera de alcance, explícitamente:** asientos multi-agente, asignación y handover bot↔humano. Son necesarios para el cliente uno (la inmobiliaria) y **no** para el cliente cero, que es un operador solo. Se diseña la tabla de hilos de forma que admita una columna `assigned_to` más adelante, y no se construye nada de asignación ahora.
 
