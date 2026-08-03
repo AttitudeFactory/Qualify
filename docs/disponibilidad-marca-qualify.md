@@ -12,6 +12,13 @@
 
 > **AVISO LEGAL 2 (§6-§7).** La sección 6 compara **proveedores y tasas oficiales publicadas**. No es asesoría legal, no recomienda un abogado concreto por su calidad jurídica, y **no sustituye** la búsqueda formal cuya contratación describe. El autor no puede contratar abogados ni presentar ante USPTO/SIC/IMPI/INPI.
 
+> **ESTADO DE LA INVESTIGACIÓN: PAUSADA (cerrada por el fundador 2026-08-03, sin resolver — se retoma cuando el fundador lo decida, no hay fecha fijada).** Todo lo de abajo (§1-§7) está terminado y no necesita más trabajo de investigación de mercado. Lo que falta para avanzar es **decisión del fundador**, no research:
+> 1. Elegir/generar una lista corta de nombres alternativos (esto no se investigó — "Qualify" tal cual quedó descartado, pero no se buscaron candidatos de reemplazo).
+> 2. Correr el filtro gratuito de §5.3 sobre esa lista corta (costo US$0, el mayor ahorro disponible antes de pagar nada).
+> 3. Recién ahí, pedir cotización en paralelo a iGERENT y ClarkeModet Colombia (brief ya redactado en §6.4) sobre el finalista.
+>
+> Nadie debe re-investigar disponibilidad de marca desde cero sin releer este documento primero — ya está todo verificado contra fuente primaria a 2026-07-31 (dominios/redes/USPTO) y no caduca de un día para otro. Si retoma este frente una sesión futura, empezar releyendo esta nota, no repitiendo §1-§4.
+
 ## Estado de secciones
 
 | # | Sección | Estado |
