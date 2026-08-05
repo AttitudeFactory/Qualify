@@ -66,7 +66,7 @@ Cross-check de las 7 contradicciones de `research-features-gtm.md` (líneas 114-
 
 ## Parking lot — Fase 3 (Señales / intent + visual listening)
 
-> No entra a sprint hasta que el roadmap abra Fase 3. Todos estos dependen de que exista `search.content_index` + comentarios en ClickHouse (Fase 1 Parte 3, aún no construida).
+> No entra a sprint hasta que el roadmap abra Fase 3. Todos estos dependen de que exista `search.content_index` + comentarios en el plano analítico (Fase 1 Parte 3, aún no construida; **Postgres desde ADR 31**, no ClickHouse).
 
 ### P3-0 — Primitiva de clasificación zero-shot de texto (topic/intent/stance) + extensión del golden-set
 

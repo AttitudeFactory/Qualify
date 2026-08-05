@@ -539,6 +539,8 @@ volumes:
 
 ### T2.2 — Herramienta de migraciones — **RULING: Alembic (Postgres) + SQL versionado (ClickHouse).** (ADR 27)
 
+> ⚠ **SUPERADO EN SU MITAD CLICKHOUSE por ADR 31 (2026-08-05):** el plano analítico pasó a Postgres, luego **`migrations/clickhouse/` no existe y todo va por Alembic**. Lo que sigue es el registro del ruling tal como se tomó, y su mitad Postgres continúa vigente palabra por palabra. Ver `arquitectura.md` §6, nota de soporte A5.
+
 | Plano | Herramienta | Motivo |
 |---|---|---|
 | **Postgres** (C-01/C-03) | **Alembic** | Grafo de revisiones con `upgrade`/`downgrade` (criterio "migración reversible"), integración con SQLAlchemy que el CRM ya usa (Reflex/SQLModel). **RLS, roles y `FORCE ROW LEVEL SECURITY` van como SQL a mano dentro de `op.execute()`** — **autogenerate NO se usa para RLS/roles/políticas** (no las detecta; se escriben en `upgrade`/`downgrade` explícitos). Las migraciones corren como **`qualify_owner`**, nunca como `qualify_app` |

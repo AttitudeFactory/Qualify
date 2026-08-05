@@ -103,7 +103,7 @@ Los tres bloques de la Fase 1 tienen alternativas maduras ya desarrolladas — l
 ## Recomendaciones para la Fase 1
 
 1. **Alta — Comprar la ingesta:** EnsembleData primario + Data365 fallback; Zyte solo para scrapers propios que decidas operar. Bright Data como plan B premium anti-bloqueos.
-2. **Alta — Filtro 1 con Groq Whisper-v3 o AssemblyAI**, indexando transcripciones en ClickHouse desde el día uno.
+2. **Alta — Filtro 1 con Groq Whisper-v3 o AssemblyAI**, indexando transcripciones en el plano analítico desde el día uno (Postgres desde ADR 31).
 3. **Alta — Outreach sobre Smartlead (white label/API) + Zapmail (mailboxes) + Prospeo (email finding):** cero infraestructura propia de deliverability.
 4. **Media — Gemini Flash directo para el Filtro 3** (frames muestreados); POC vs Twelve Labs solo si falla la precisión.
 5. **Baja — No comprar HypeAuditor/Brandwatch**; usarlos en trial como baseline de calidad.

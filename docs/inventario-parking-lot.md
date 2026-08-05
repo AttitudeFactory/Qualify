@@ -36,7 +36,7 @@
 | **Listening de competidores, discovery, lookalike** | Fases 1(P2/P3)–4 | *«Estructuralmente inalcanzable por OAuth»* — exige scraping. *«Cualquier material de producto que insinúe monitorización de competidores desde cuentas conectadas es falso»* | **Inbound** |
 | **Señales tipadas + zero-shot NLI** | Fase 3 (P3-0/P3-1) | *«Hueco real contra la cascada comprometida»*, pero C-09/C-10 no lo necesitan | **Inbound** |
 | **Billing por créditos** | Fase 5 | *«No copiar el precio por contacto de ManyChat, copiar su cascada»* | Monetización |
-| **Insights / `ingestion.owned_metrics`** | Frontera Fase 1/2 | *«Duro-bloqueado por la Parte 3»* | **Outbound** (medio propio) |
+| **Insights / `ingestion.owned_metrics`** | Frontera Fase 1/2 | *«Duro-bloqueado por la Parte 3»*. Regla de keying heredada (`plan-ingesta-social.md` §3.12/§3.15): tenant-keyed con RLS | **Outbound** (medio propio) |
 
 ## 3. `packages/models/NOTES_research_parking_lot.md`
 
@@ -59,7 +59,7 @@ Solo lo que saltó a la vista durante la tabulación — **no se rebuscó**.
 | **Listening de competidores / lookalike** | `inmobiliario.md` §4 (nadie ofrece listening de contenido primario a inmobiliario) **vs** `marca-regulada.md` §2.1/§2.5 (**sí lo ofrecen**, dos veces falsado). **El mismo ítem tiene respuesta opuesta según el nicho** |
 | **Sindicación a portales** | `inmobiliario.md` §1.5: los portales son **el gasto obligatorio** del nicho (InfoCasas US$92-196/mes); §1.4(a): **no hay MLS en LATAM**, los portales ocupan ese hueco |
 | **P4-4 waterfall** · **P5-2 outreach** | Anotación geográfica en `research-features-gtm.md`: **cobertura de datos B2B en LATAM no medida** y **legalidad del email frío en LATAM no analizada** (Uruguay con protección de datos de grado GDPR) |
-| **Insights / `owned_metrics`** | `agencia-gestionada.md` §4.2: sin ClickHouse **el reporting al cliente sigue siendo manual** — carga directa sobre las horas por cliente de §2.3 |
+| **Insights / `owned_metrics`** | `agencia-gestionada.md` §4.2: sin plano analítico (ClickHouse cuando se escribió; Postgres desde ADR 31) **el reporting al cliente sigue siendo manual** — carga directa sobre las horas por cliente de §2.3 |
 | **Publicidad pagada / Marketing API** | `agencia-gestionada.md` §1.2: *«si incluye pauta publicitaria»* es uno de los factores citados que **suben la tarifa** por cliente |
 
 ## 5. Dos observaciones de la extracción (sin evaluar)

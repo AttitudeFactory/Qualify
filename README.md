@@ -32,14 +32,14 @@ Las marcas hoy usan dos mundos separados: herramientas de social listening para 
 
 Arquitectura completa en [docs/arquitectura.md](docs/arquitectura.md) (diagramas, esquemas de datos, ADRs). Resumen:
 
-**Monolito modular + workers asíncronos**, con dos planos de datos: **PostgreSQL** (estado transaccional del CRM: pipelines, campañas, gifting, agent runs) y **ClickHouse** (hechos analíticos: métricas, transcripciones, embeddings). Los módulos se comunican por eventos de dominio (`mention.detected`, `trend.spike`, `creator.enriched`), nunca por llamadas directas.
+**Monolito modular + workers asíncronos**, con dos planos LÓGICOS de datos sobre **un solo motor PostgreSQL** (ADR 31): el schema `public` para el estado transaccional del CRM (pipelines, campañas, gifting, agent runs) y los schemas `ingestion`/`search`/`signals` para los hechos analíticos: métricas, transcripciones, embeddings). Los módulos se comunican por eventos de dominio (`mention.detected`, `trend.spike`, `creator.enriched`), nunca por llamadas directas.
 
 Módulos:
 
 | Módulo | Responsabilidad |
 |---|---|
 | Core CRM | Workspaces, pipelines de creators, campañas, gifting (Postgres) |
-| Listening & Ingesta *(Fase 1, en curso)* | Pipeline Zyte → Redis/Celery → workers CPU (ffmpeg, CLIP, sentiment) → GPU serverless (vision + whisper) → ClickHouse + R2 — ver [docs/plan-ingesta-social.md](docs/plan-ingesta-social.md) |
+| Listening & Ingesta *(Fase 1, en curso)* | Pipeline Zyte → Redis/Celery → workers CPU (ffmpeg, CLIP, sentiment) → GPU serverless (vision + whisper) → Postgres analítico + R2 — ver [docs/plan-ingesta-social.md](docs/plan-ingesta-social.md) |
 | Cascada Multimodal | 3 filtros de costo creciente: transcripción → CLIP/OCR → VLM solo para pre-calificados |
 | Waterfall Enrichment | Perfil on-demand: cache → scrape directo → APIs fallback, con TTL por tipo de dato |
 | Orquestador Agentivo | Grafos LangGraph que convierten eventos en workflows (prospección autónoma) con checkpoints humanos y presupuestos |
@@ -90,7 +90,7 @@ Principio: en Fase 1 solo se construye la **orquestación** (Celery/LangGraph) y
 ### Fase 6 — Hardening y escala
 - Multi-tenant, roles y permisos por marca/agencia
 - Observabilidad completa, SLAs, load testing
-- Migración de infra según volumen (ClickHouse Cloud, GPU dedicada)
+- Migración de infra según volumen: el plano analítico a **ClickHouse** cuando se cruce el umbral de ADR 31 (>100 M filas, p95 > 2 s, o un cliente con >5 000 posts/día), GPU dedicada
 
 ## Estructura del repo
 
@@ -101,12 +101,12 @@ Qualify/
 │   ├── arquitectura.md                   # Arquitectura del sistema: módulos, datos, ADRs
 │   ├── plan-ingesta-social.md            # Plan de implementación Fase 1
 │   └── ingenieria-inversa-stack-gtm.md   # Análisis del stack Viralnetix + roadmap priorizado
-├── docker-compose.yml            # (Fase 1) ClickHouse, Redis, api, workers
+├── docker-compose.yml            # (Fase 1) Postgres (pgvector), Redis, api, workers
 ├── packages/                     # (Fase 1) shared, scraper, pipeline, models, gpu-service
-├── migrations/clickhouse/        # DDL versionado
+├── migrations/postgres/          # Alembic — todo el esquema, transaccional y analítico
 └── scripts/
 ```
 
 ## Stack
 
-Python 3.11+ · FastAPI · Celery + Redis 7 · PostgreSQL · ClickHouse · Cloudflare R2 · Zyte API · CLIP · Moondream2 / Qwen2.5-VL · faster-whisper · robertuito · sentence-transformers · LangGraph · RunPod/Modal (GPU serverless) · Hetzner VPS
+Python 3.11+ · FastAPI · Celery + Redis 7 · PostgreSQL (ambos planos) · pgvector · Cloudflare R2 · Zyte API · SigLIP2 · Qwen3-VL · faster-whisper · robertuito · sentence-transformers · LangGraph · RunPod/Modal (GPU serverless) · Hetzner VPS

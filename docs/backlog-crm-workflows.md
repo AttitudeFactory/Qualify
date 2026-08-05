@@ -57,7 +57,7 @@ Dirección declarada: **TikTok**. Ver §3.4 — está bloqueado por auditoría y
 | `packages/models/` | Existe. Cascada multimodal + `eval/` + `oauth_scope.py` **con tests** (`test_oauth_scope.py`, 15 tests) + `test_filter_calibration.py` (6) + `test_ig_comments.py` (12) + 4 `NOTES_*.md` incl. `NOTES_fase0_oauth_crm.md` |
 | `packages/scraper/` | Existe. `shared.py` (`RawPayloadEnvelope`, `canonical_bytes`, `content_signature`), parsers TikTok/IG, `client.py` Zyte |
 | `packages/shared`, `packages/pipeline`, `packages/gpu-service` | **NO existen** |
-| ClickHouse, Postgres, Redis, `docker-compose.yml`, `migrations/` | **NO existen** |
+| Postgres, Redis, `docker-compose.yml`, `migrations/` | **NO existen** — y desde ADR 31 (2026-08-05) tampoco hay ClickHouse que crear: el plano analítico son schemas de Postgres |
 | `Qualify/` (Reflex) | Existe. SQLite + `Mention` de seed; **sin conexión al pipeline** |
 | `reference/meta-instagram-platform/` | **Aterrizando** (cosecha en curso). Ya citables: `app-review.md`, `conversations-api.md`, `webhooks.md`. **Ausencia en un corpus parcial no es ausencia en la API** |
 | **`tenant_id` / `tenant_id` en el código** | **CERO ocurrencias en todo el repo.** Lo único que existe es `brand_id` (`packages/scraper/src/qualify_scraper/schemas.py:76`, `shared.py:37`) |
@@ -129,7 +129,7 @@ Sigue la regla de dos planos de `docs/arquitectura.md` §1.3/§2 — Postgres es
 | Plano / almacén | Cómo viaja el tenant | Nota |
 |---|---|---|
 | **Postgres** | Columna `tenant_id` NOT NULL en **toda** tabla de negocio + índice encabezado por ella | Plano del CRM: conexiones, credenciales, usuarios, hilos de DM, intentos de publicación |
-| **ClickHouse** | `tenant_id` como columna y **en el prefijo del `ORDER BY`** | ⚠ **El architect no fija ningún `ORDER BY` este sprint** (requiere el gate `clickhouse-architecture-advisor`; es inmutable una vez creado). Se presenta como candidato PROPUESTO-NO-LOCKEADO |
+| **Plano analítico** *(ClickHouse cuando se escribió; Postgres desde ADR 31)* | `tenant_id` como columna y **en el prefijo del `ORDER BY`** | ⚠ **El architect no fija ningún `ORDER BY` este sprint** (requiere el gate `clickhouse-architecture-advisor`; es inmutable una vez creado). Se presenta como candidato PROPUESTO-NO-LOCKEADO |
 | **R2 (payloads crudos)** | `tenant_id` **obligatorio en el prefijo de la clave** cuando `source_class='first_party_api'` | Ver §1.4. Esto **invierte** el keying de ADR 18 |
 | **Redis** | Namespace por tenant en colas, locks de refresh, dedupe de webhooks y contadores de rate limit | Efímero, pero un lock sin namespace es una colisión cross-tenant |
 | **Provenance de señales** | Toda señal derivada lleva `tenant_id` + `connection_id` además de `source_id` + `detector_version`/`pipeline_version` | `CLAUDE.md` lo exige para señales; `integracion-cuentas-conectadas-meta.md` §2.4c añade el eje "base legal de adquisición" |
@@ -1007,7 +1007,7 @@ Bloqueos abiertos que el sprint debe respetar sin resolver por su cuenta:
 ### 6.3 Qué NO va en el prompt, y por qué
 
 - **`CLAUDE.md` no se toca.** La reclasificación de fases (ADR 21, §3.6) sigue **PROPUESTA** hasta la firma del fundador (B0-6). El sprint construye contra las ADRs; el mapa se actualiza cuando él firme.
-- **No se fija ningún `ORDER BY` de ClickHouse.** Es inmutable una vez creado y requiere el gate `clickhouse-architecture-advisor`. El Tramo 1 es Postgres puro, así que la cuestión ni se plantea — y ésa es otra razón para hacer este tramo primero.
+- **No se fija ningún `ORDER BY` de ClickHouse.** *(Nota 2026-08-05: la cuestión quedó disuelta por ADR 31 — no hay plano ClickHouse, y los índices de Postgres no son inmutables.)* Es inmutable una vez creado y requiere el gate `clickhouse-architecture-advisor`. El Tramo 1 es Postgres puro, así que la cuestión ni se plantea — y ésa es otra razón para hacer este tramo primero.
 - **No se mintea `billing.usage_events`** ni ninguna tabla de Fase 5.
 
 ---
