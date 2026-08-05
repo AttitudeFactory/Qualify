@@ -23,7 +23,7 @@ Cada specialist tiene una sección "Skills at your disposal" en su archivo de ag
 | Specialist | Dueño de (paths) | Fase(s) | Skills clave asignadas |
 |---|---|---|---|
 | `principal-architect` | `docs/`, `CLAUDE.md` | Todas — diseña y audita | `develop-adr`, `architecture-patterns`, `improve-codebase-architecture`, `clickhouse-architecture-advisor`, `clickhouse-best-practices` |
-| `pipeline-engineer` | `packages/scraper/`, `packages/pipeline/`, `packages/shared/`, `docker-compose.yml`, `migrations/` | Fase 1 Parte 2/3 | `scrape`, `scrape-analyze-page`, `scrape-spec`/`scrape-define`, `scrape-create-spider`, `scrape-zyte-login` (plugin `zyte-web-data`), `clickhousectl-local-dev`, `clickhouse-best-practices` |
+| `pipeline-engineer` | `packages/scraper/`, `packages/pipeline/`, `packages/shared/`, `docker-compose.yml`, `migrations/postgres/` (todo el esquema desde ADR 31) | Fase 1 Parte 2/3 | `scrape`, `scrape-analyze-page`, `scrape-spec`/`scrape-define`, `scrape-create-spider`, `scrape-zyte-login` (plugin `zyte-web-data`), `clickhousectl-local-dev`, `clickhouse-best-practices` |
 | `data-scientist-fde` | `packages/models/` | Fase 1 Parte 1 (y eval continua) | `model-evaluation`, `eval-driven-dev`, `exploratory-data-analysis`, `hf-cli` |
 | `gtm-specialist` | `docs/*research*`, `docs/*alternativas*`, `docs/ingenieria-inversa-*`, `docs/dolores-*`, `docs/fase0-*` | Mercado: eje **oferta** — todas las fases | `competitor-profiling`, `customer-research`, `positioning`, `pricing` |
 | `market-opportunity-analyst` | `docs/oportunidades-mercado-*.md` | Mercado: eje **vector** — todas las fases | `customer-research`, `competitor-profiling` (consulta puntual), `positioning`/`pricing` como lentes analíticas |

@@ -6,6 +6,8 @@
 **ADRs que produce:** ~~ADR 20 / 21 / 22~~ → **ADR 21** (ubicación en el mapa + ruling read/write), **ADR 22** (arquitectura de conexión + provenance de primera parte), **ADR 23** (build nativo Meta vs. agregador embebido). Ver `docs/arquitectura.md` §6.
 **[Corrección de numeración, architect-r 2026-07-24]** La numeración original colisionaba: **ADR 20 ya estaba ocupada** en `arquitectura.md` §6 (superficie de activación conversacional, sesión ManyChat del 2026-07-23). Todo se desplaza +1. Las referencias a "ADR 20" en §4.2 y §4.3 de este documento **sí apuntan a la ADR 20 existente** (la de activación conversacional) y son correctas tal cual.
 
+> ⚠ **NOTA DE MOTOR (2026-08-05, ADR 31).** Este documento se escribió cuando el plano analítico era ClickHouse. **Ya no lo es: es PostgreSQL** (schemas `ingestion`/`search`/`signals`, misma base que el CRM). Donde el texto diga *«ClickHouse»*, léase *«el plano analítico»* — la separación de preocupaciones que este doc establece **sobrevive intacta**, porque era de dominio y no de motor. Tres consecuencias sí cambian de signo y están corregidas en línea abajo: la supresión dirigida deja de ser cara (§2.6), el `ORDER BY` deja de ser inmutable (§4, §5.2), y las tablas de primera parte llevan RLS igual que el CRM.
+
 ---
 
 ## 0. Encuadre — qué cambió hoy y por qué invalida parte del análisis en disco
@@ -142,11 +144,11 @@ Por la regla de `CLAUDE.md` de no colar scope de fases posteriores en silencio:
 |---|---|---|
 | Estado de la conexión (quién conectó qué, con qué scopes, salud, historial) | **Postgres** | `social_connections`, `connection_events` |
 | **Material criptográfico** (access/refresh tokens de terceros) | **Postgres cifrado + KMS externo** | `oauth_credentials` (ciphertext), master key **nunca** en la base ni en el repo |
-| Hechos observados (posts, comentarios, menciones, métricas) | **ClickHouse** | `ingestion.*`, `search.content_index`, `signals.events` |
+| Hechos observados (posts, comentarios, menciones, métricas) | **Postgres, schemas analíticos** *(ClickHouse cuando se escribió — ADR 31)* | `ingestion.*`, `search.content_index`, `signals.events` |
 | Payload crudo verbatim de cada respuesta de la API | **R2** | `RawPayloadEnvelope` (ADR 18, extendido — §2.4) |
 | Colas, locks de refresh, dedupe de webhooks, contadores de rate limit | **Redis** | efímero |
 
-La regla de no-cruce se mantiene: el CRM escribe Postgres, los workers escriben ClickHouse y R2, y el join se hace en lectura. `connection_id` (UUID de Postgres) viaja como **columna de provenance** en ClickHouse — es un identificador, no una escritura cruzada.
+La regla de no-cruce se mantiene, pero cambia de naturaleza con ADR 31: el CRM escribe el schema `public`, los workers escriben los schemas analíticos y R2. **Antes era imposible cruzar (motores distintos); ahora es disciplina de módulo** — y la lectura sí puede hacer un `JOIN` real en vez de una reconciliación en aplicación. `connection_id` (UUID de Postgres) viaja como **columna de provenance** en ClickHouse — es un identificador, no una escritura cruzada.
 
 ### 2.2 Modelo de datos de la conexión (Postgres) — PROPUESTO
 
@@ -247,7 +249,7 @@ La ingesta de primera parte reutiliza el envelope de ADR 18, y ese reuso obliga 
 
 Razón: un dato adquirido por consentimiento es **revocable por quien lo concedió**. Cuando una conexión pasa a `revoked`, o el tenant ejerce supresión (GDPR), hay que poder localizar toda fila derivada de esa conexión. Sin `connection_id` como columna de provenance eso es imposible de responder, y la respuesta "no sabemos qué borrar" no es aceptable. Esto **generaliza** la regla de `CLAUDE.md`, no la contradice: *toda señal derivada lleva su origen técnico **y** su base de adquisición*.
 
-**Consecuencia operativa que hay que aceptar de frente:** ClickHouse es append-only por diseño (§1.3 de `arquitectura.md`) y el borrado dirigido es una mutación cara. Es aceptable porque la **frecuencia es baja** (revocación y supresión son eventos raros), pero exige que el diseño de particionado permita acotar la mutación. Es una de las razones por las que el `ORDER BY` y el `PARTITION BY` de estas tablas **no se fijan en este documento** (§4).
+~~**Consecuencia operativa que hay que aceptar de frente:** ClickHouse es append-only por diseño y el borrado dirigido es una mutación cara…~~ → **RETIRADA POR ADR 31 (2026-08-05), y en la dirección buena.** En Postgres la supresión dirigida es un `DELETE ... WHERE tenant_id = ?` sobre una tabla con RLS, más `ON DELETE CASCADE` hacia las hijas: **deja de ser una mutación cara que había que acotar con particionado y pasa a ser una operación ordinaria.** Esto importa más de lo que parece porque la supresión aquí **no es una optimización, es una obligación** (ADR 22(2)): el argumento que sostenía el prefijo de tenant en la clave de R2 era precisamente que borrar tenía que ser barato. Sigue siéndolo en R2 (borrado por prefijo) y ahora también en el plano analítico. Lo que sí queda pendiente y no lo resuelve el motor: **decidir y documentar el alcance exacto de una supresión** (qué se borra, qué se conserva anonimizado, y qué pasa con el raw en R2 del que se puede reconstruir).
 
 ### 2.5 Mapeo: superficie de lectura → entidad de Qualify
 
