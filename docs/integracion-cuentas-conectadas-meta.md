@@ -346,7 +346,7 @@ El fundador cumple la condición por partida doble: es admin de la app *y* admin
 >
 > **Y el HECHO NUEVO que reencuadra §3.7 y §6.5: el fundador es además el constructor y administrador del SaaS inmobiliario del cliente uno** (aportado por él el 2026-07-29). El cliente uno **no es de brazo extendido**. Consecuencia sobre §424 más abajo: la frontera no separa *cliente cero / cliente uno*, separa **activos que el fundador administra / activos que no** — y el primero del lado caro es el **cliente dos**. Detalle completo, veredictos sobre las variantes de app-por-tenant y el ruling de que `platform_apps` sigue global: **ADR 29**.
 
-Y lo que se publica es contenido **real y público**. Es el punto que decide toda la sección: en la doc de [Content Publishing](https://developers.facebook.com/docs/instagram-platform/content-publishing) **no existe ningún mecanismo por el que el nivel de acceso o el estado de revisión degraden la visibilidad del post**. No es que no lo hayamos encontrado: es que Meta no tiene esa palanca. ~~Un reel publicado por una app en Development Mode es un reel público normal.~~
+~~Y lo que se publica es contenido **real y público**.~~ **[Frase de apertura retirada junto con la de cierre — 2026-07-29; ver el bloque inmediatamente debajo. Sobre el eje App Mode sí hay degradación.]** Lo que sí sobrevive es el eje **nivel de acceso**: en la doc de [Content Publishing](https://developers.facebook.com/docs/instagram-platform/content-publishing) **no existe ningún mecanismo por el que el nivel de acceso o el estado de revisión degraden la visibilidad del post**. No es que no lo hayamos encontrado: es que Meta no tiene esa palanca **en ese eje**. ~~Un reel publicado por una app en Development Mode es un reel público normal.~~
 
 > ⚠ **LA ÚLTIMA FRASE QUEDA RETIRADA — 2026-07-29 (architect; error mío). Está CONTESTADA por doble fuente primaria, y es la premisa sobre la que se apoya ADR 21.** Ruling completo en `arquitectura.md` §6, enmienda del 2026-07-29 apartado **(i.2)**.
 >
@@ -600,9 +600,26 @@ Confirmado por §3.5 y por ADR 20 (que ya lo dictaminó para el plano de convers
 
 Aceptado ese hallazgo, la conclusión para cliente cero es inmediata:
 
-> **§3.1 demuestra que, en Meta, para cliente cero no hay ninguna aprobación que saltarse.** Development Mode + rol en la app = publicar hoy, gratis, contenido público. Luego **el único gran driver de valor del agregador vale exactamente cero** en esta superficie.
+> ~~**§3.1 demuestra que, en Meta, para cliente cero no hay ninguna aprobación que saltarse.** Development Mode + rol en la app = publicar hoy, gratis, contenido público. Luego **el único gran driver de valor del agregador vale exactamente cero** en esta superficie.~~
 
-No es que el build salga algo mejor en la comparación. Es que **el producto del agregador es la solución a un problema que cliente cero no tiene.**
+~~No es que el build salga algo mejor en la comparación. Es que **el producto del agregador es la solución a un problema que cliente cero no tiene.**~~
+
+> ⚠ **RETIRADO — 2026-08-06 (architect). Conflicto KC-1: este párrafo contradecía frontalmente la corrección de §3.1 del 2026-07-29, que es posterior y trae doble fuente primaria.** El barrido del 29-07 corrigió §3.1 y no bajó hasta aquí; esta sección quedó apoyada en una premisa ya retirada dos veces en el mismo documento (§3.1, párrafo del *"contenido real y público"*, y su frase de cierre tachada).
+>
+> **Cuál de las dos gana, y por qué:** gana §3.1 corregida. *"Development Mode + rol en la app = publicar contenido público"* es **falso** sobre el eje **App Mode**: [P] Meta, [App Modes](https://developers.facebook.com/docs/development/build-and-test/app-modes) — *"Any data generated while an app is in Development mode, such as test posts, **can only be seen by role users**"*; y [P] campo, [docs.postiz.com/providers/facebook](https://docs.postiz.com/providers/facebook) — *"**posts with media are only visible to app developers/testers**"*. Ambas citadas en `:353-354`. Lo que se publica hoy en Development Mode **el fundador lo ve y un tercero desconectado no**, y lo que degrada es precisamente **la media**, que es lo único que publica la Parte 4-A. `docs/backlog-sprint3-mvp-demo.md` §1.2 ya está escrito contra esta lectura y **no promete visibilidad pública**: no hay que reencuadrar ese backlog.
+>
+> **Qué se lleva por delante la retirada, y qué no.** La premisa muerta era el **primer** argumento de §5, no el único:
+>
+> | Argumento de §5 | Estado tras la retirada |
+> |---|---|
+> | §5.1 — *"el driver de valor del agregador vale cero"* | ❌ **Cae, y queda condicionado a V-TP-2.** Si pasar a Live Mode exige App Review y/o Business Verification, el agregador vende exactamente eso: operar bajo una app ya aprobada. Su valor entonces **no es cero, es el reloj entero** |
+> | §5.2 razón 1 — coste recurrente por cuenta vs. coste de construcción único | ✅ **Intacta.** Aritmética, independiente del App Mode |
+> | §5.2 razón 2 (**dirimente**) — comprar enruta los DMs de la tienda y de sus clientes por un tercero, contra la restricción de IP del fundador (§3.7) | ✅ **Intacta e independiente de toda aprobación.** Es la razón que sostiene el ruling por sí sola |
+> | §5.2 asimetría — los agregadores son herramientas de **publicación**; la bandeja de DMs/comentarios, donde está la diferenciación, no es su superficie | ✅ **Intacta** |
+>
+> **Ruling: BUILD NATIVO sobrevive, pero cambia de fundamento.** Ya no se sostiene en *"no hay aprobación que comprar"* (indecidible hasta V-TP-2), sino en la razón dirimente de §5.2 y en la asimetría de cobertura. **Consecuencia operativa que sí cambia:** el agregador deja de ser *"solución a un problema que no tenemos"* y pasa a ser **una salida evaluable si V-TP-2 resuelve que Live Mode exige trámite** — no para la bandeja (§3.7 lo prohíbe), sí como puente de publicación pública mientras corre el reloj. Registrarlo como opción viva, no descartada.
+>
+> **No se abre ADR nueva:** ADR 23 (build nativo Meta vs. agregador embebido) conserva su decisión; lo que cambia es la justificación y aparece una condición de revisión. Reabrir ADR 23 es lo correcto **sólo si V-TP-2 vuelve con "Live Mode exige Business Verification"** — el mismo disparador que §3.1 ya declara como capaz de tumbar su propio ruling central.
 
 ### 5.2 Lo que queda en cada lado de la balanza, en Meta
 
@@ -615,7 +632,7 @@ No es que el build salga algo mejor en la comparación. Es que **el producto del
 
 **Y hay una asimetría que hace la comparación aún más desigual: los agregadores no cubren la mitad que importa.** Son herramientas de **publicación**. La bandeja de DMs y comentarios —el bucle leer→clasificar→responder de §3.4(b), donde está toda la diferenciación— **no es su superficie**. (Zernio lista WhatsApp/Telegram/Discord, pero como canales de *envío*, no como bandeja de entrada con estado, ventana de mensajería y triaje.) Comprar no ahorra nada del trabajo diferenciado; sólo del commodity, que es justo la parte que §3.4(b) ya dictamina construir delgada.
 
-**Ruling Meta: BUILD NATIVO. Decisivo, no marginal.**
+**Ruling Meta: BUILD NATIVO. Decisivo, no marginal.** **[Matizado 2026-08-06 — ver la retirada de §5.1: el ruling se mantiene, pero apoyado en la razón 2 (dirimente) y en la asimetría de cobertura, no en "no hay aprobación que comprar". La comparación deja de ser *desigual* y pasa a ser *decidida por una sola razón*, que además es la que no depende de V-TP-2.]**
 
 ### 5.3 TikTok — el único sitio donde comprar compra algo real, y es el inverso exacto
 
