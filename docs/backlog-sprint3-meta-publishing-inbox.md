@@ -1,5 +1,11 @@
 # Backlog Sprint 3 — Publicación y bandeja de Meta sobre cuenta conectada
 
+> 🔴 **ALCANCE SUPERADO EL 2026-08-05 — este documento es ahora REFERENCIA, no plan ejecutable.**
+> El fundador rechazó **tanto la Forma A como la Forma B** de §6.3 y pidió un tercer corte: el mínimo demostrable.
+> **El alcance vigente está en `docs/backlog-sprint3-mvp-demo.md` (Forma C — MVP demo, 9 items, una sola developer).**
+> Lo que sigue siendo válido aquí y NO se ha duplicado allí: §1.3 (decisiones invalidadas — no reimplementar), §2 (verificación de código), §4 (épica B, aparcada al Sprint 4), §7 (parking lot con fase propietaria) y §8 (conflictos abiertos).
+> Correcciones verificadas contra disco el 2026-08-05: **C0 está parcialmente obsoleto** (la suite offline corre 298/298), **A2 ya está resuelta** fuera de ingeniería, y **A6 se difiere salvo su núcleo**, que allí se llama `A6-min`. Detalle en §2 y §6.2 del fichero nuevo.
+
 > **Estado: BORRADOR DE TRABAJO.** Nada aquí está `[APROBADO]` ni firmado. Ningún commit, ningún push.
 > Autor: product-owner de la sesión `po-sprint3` (2026-07-31).
 > Fichero de estado de la sesión: `.claude/sprint-state-2026-07-31-po-sprint3.md`.
