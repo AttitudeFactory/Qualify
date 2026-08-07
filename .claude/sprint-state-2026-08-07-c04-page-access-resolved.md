@@ -156,6 +156,46 @@ reintentar; el código de A5/A6-min tiene que hacer exactamente eso.
 `_parse_status_response` (`FINISHED`, `PUBLISHED`). `_parse_publish_response` sigue `[V]`
 (el timeout impidió ver el body de éxito; la publicación se confirmó por reconciliación).
 
+## Sesión nocturna 2026-08-07: Sprint 3 ejecutado hasta 8 de 9 items
+
+Tras el smoke, la misma sesión ejecutó la cadena del backlog (`docs/backlog-sprint3-mvp-demo.md`
+§3) de corrido. En `main`, un commit por item:
+
+| Item | Commit | Nota |
+|---|---|---|
+| A0 token de Página | `2a1db36` | `[V]`×2 cerrados en vivo |
+| A1 `config_id` | `7541466` | falta el paso manual del dashboard + `QUALIFY_META_CONFIG_ID` |
+| C1 `Principal` | `c897b50` | `QUALIFY_DEV_PRINCIPALS` ya en `.env` con token para el founder |
+| A3 staging | `0376939` | |
+| A4 repositorio write-ahead | `93546f9` | + `MemoryPublishAttemptRepository` en código prod (precedente `InMemoryEventPublisher`; `--import-mode=importlib` impide imports entre tests) |
+| A5+A6-min servicio | `279a472` | un solo commit: se entrelazan en `advance()` |
+| A7 rutas | `408ea05` | la cadena demo §1.1 corre entera en la suite sin red/DB |
+
+**Estado de suites al cierre: offline 398/398 · db 40/40.**
+
+Decisiones tomadas durante la ejecución que el lector debe conocer:
+
+- **El cliente QUA-19 se corrigió hacia lo medido**, revirtiendo un test commiteado:
+  upload con cuerpo dimensionado (`Content-Length`) en vez del streaming chunked que
+  `rupload` rechaza; timeouts explícitos (`UPLOAD_TIMEOUT` 600 s, `GRAPH_WRITE_TIMEOUT`
+  60 s); `PublishError` gana `platform_code`/`platform_subcode` numéricos (códigos, nunca
+  cuerpos). `_achunks` eliminado — su argumento de memoria perdió contra una medición.
+- **Agujero encontrado y cerrado durante la implementación** (con test de regresión): el
+  marcador de rechazo-con-código sobreescribía `publish_sent_awaiting_confirmation`, y un
+  `advance()` posterior con `FINISHED` habría reenviado. `_send_was_emitted` acepta ambas
+  grafías.
+- **El ceiling de 300 s nunca liquida un intento cuyo envío ya salió** — liquidar `failed`
+  sobre una publicación que aterrizó sería la mentira irreversible; con marcador, solo el
+  veredicto del contenedor termina el intento.
+
+**Lo único que queda del sprint: C3** (declarar `boto3`+`uvicorn`, ritual del venv
+`rm -rf .venv && uv sync --group ml`). **Deliberadamente NO ejecutado esta noche:** muta
+`uv.lock` y el ritual tiene dos precedentes de corromper el venv compartido — si falla
+sin nadie despierto, el workspace amanece roto. Sin C3 el camino REAL de R2 no se puede
+instanciar (las credenciales `QUALIFY_R2_*` tampoco están en `.env` aún), pero toda la
+cadena de código y tests está verde con dobles. C3 + credenciales R2 + un vídeo real por
+las rutas = la demo del §1.1 completa.
+
 ## Deuda que esta nota NO resuelve
 
 - La conexión activa quedó bajo el tenant **PuntoServis** con un túnel efímero ya muerto o
