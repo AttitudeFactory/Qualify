@@ -35,7 +35,7 @@ from qualify_api.connections.meta_oauth import (
 from qualify_api.connections.repository import ConnectionRecord, GrantInput
 from qualify_api.connections.service import ConnectOutcome, ConnectService
 from qualify_api.connections.state_token import InvalidState, JtiStore, new_payload, sign_state
-from qualify_api.http import connections_routes
+from qualify_api.http import connections_routes, deps
 from qualify_api.http.app import create_app
 
 TENANT = UUID("11111111-1111-4111-8111-111111111111")
@@ -715,15 +715,21 @@ def test_callback_route_unlinked_page_reports_link_required_with_counts(
     }
 
 
-def test_start_route_requires_an_active_tenant(
-    client_and_harness: tuple[TestClient, Harness],
-) -> None:
-    """The tenant comes from the session/dev selector, never from the request body."""
-    client, _ = client_and_harness
-    response = client.post("/api/connections/start", json={"user_id": str(USER)})
-    assert response.status_code == 409
+def test_start_route_rejects_unauthenticated_with_401() -> None:
+    """C1: identity comes from the authenticated Principal. No credential -> 401 — "you
+    are not authenticated" is a fact about the request, not a 409 about server state."""
+    harness = build_harness()
+    app = create_app(configure_production=False)
+    app.dependency_overrides[connections_routes.get_connect_service] = lambda: harness.service
+    app.dependency_overrides[deps.current_principal] = deps.build_dev_principal_dependency()
+    client = TestClient(app)
+
+    response = client.post("/api/connections/start", json={})
+    assert response.status_code == 401
 
 
-def test_start_request_model_has_no_tenant_field() -> None:
-    """Structural: there is no field through which a client could name its own tenant."""
+def test_start_request_model_has_no_identity_fields() -> None:
+    """Structural: no field through which a client could name its own tenant OR choose
+    the user the connection is attributed to (C1 removed `user_id` — same bypass)."""
     assert "tenant_id" not in connections_routes.StartConnectRequest.model_fields
+    assert "user_id" not in connections_routes.StartConnectRequest.model_fields

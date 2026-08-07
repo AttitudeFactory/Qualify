@@ -6,6 +6,11 @@ lands. The Reflex UI reads `dev_available_tenants()` to render a picker, calls
 This is a dev crutch, not production auth: the selection is process-local (a module
 global), so it is unsuitable for a real multi-user server. Real session-derived tenancy
 replaces `get_dev_tenant` when authentication exists.
+
+C1: the in-process Reflex UI is the ONE legitimate consumer of this module. HTTP routes
+must never call `get_dev_tenant` — an external client has no way to set a process-local
+global, and HTTP identity comes from the authenticated `Principal` (`qualify_api.http.deps`).
+A static test enforces the absence of this import from `http/`.
 """
 
 from __future__ import annotations

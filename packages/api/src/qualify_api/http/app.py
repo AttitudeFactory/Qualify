@@ -17,7 +17,7 @@ from fastapi import FastAPI
 
 from qualify_api.connections.composition import production_connect_service
 from qualify_api.connections.service import ConnectService
-from qualify_api.http import connections_routes
+from qualify_api.http import connections_routes, deps
 
 
 def build_production_service() -> ConnectService:
@@ -30,4 +30,7 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
     app.include_router(connections_routes.router)
     if configure_production:
         app.dependency_overrides[connections_routes.get_connect_service] = build_production_service
+        # C1: parsed at assembly so a malformed QUALIFY_DEV_PRINCIPALS fails the boot,
+        # not the first request.
+        app.dependency_overrides[deps.current_principal] = deps.build_dev_principal_dependency()
     return app
