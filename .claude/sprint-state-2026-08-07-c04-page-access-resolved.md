@@ -107,6 +107,55 @@ Con el túnel aún vivo se ejecutó el item 1 del Sprint 3 (`docs/backlog-sprint
   `target_ids=[17841448653847824]` (el IG de `@qualifymkt.co`) — la concesión de
   publicación es por cuenta, y está.
 
+## Smoke de publicación end-to-end — EL PRIMER REEL PUBLICADO POR QUALIFY (2026-08-07 06:05 UTC)
+
+Con el token de Página de A0 en custodia se corrió un smoke manual de la vía resumable
+completa (script en scratchpad, usando el `HttpPublishClient` commiteado + el resolver
+real): contenedor → upload a `rupload` → poll → `media_publish`.
+
+**Resultado: publicado.** Media `18087084638657399`, `media_product_type=REELS`,
+`https://www.instagram.com/reel/Dbump-jElJz/`, cuenta `@qualifymkt.co` (visible solo para
+usuarios con rol — Development Mode). Vídeo: el fixture `sample_source.mp4` (HEVC
+1080×1920, 61 s, 9.3 MB) — **HEVC aceptado**, contenedor `FINISHED` en el primer sondeo.
+
+### La pregunta cara, cerrada gratis
+
+**`ads_management`/`ads_read` NO hacen falta para publicar** en este escenario — Página
+propiedad de un Business Portfolio, exactamente el escenario del fundador que el PO marcó
+el 2026-08-05 como *"medible en una tarde; decidirlo a ciegas cuesta un App Review"*. El
+token custodiado no lleva ningún `ads_*` y el publish salió. Queda medido, no inferido.
+
+### Tres defectos reales del cliente commiteado, invisibles para la suite offline
+
+1. **`WriteTimeout` en el upload:** `InjectingCredentialResolver` construye el
+   `httpx.AsyncClient` con timeouts por defecto (5 s de write) — imposible subir 9 MB.
+   El upload necesita timeout explícito (funcionó con 600 s).
+2. **`_achunks` → `Transfer-Encoding: chunked` sin `Content-Length` → 
+   `ParameterValidationError` (retriable=false) de `rupload`.** Con cuerpo dimensionado
+   (httpx emite `Content-Length`) el mismo upload devuelve `success=true`. El streaming
+   del cliente commiteado (`client.py:216-228`) no puede funcionar tal cual contra
+   `rupload`; hay que aportar `Content-Length` (se conoce: es `file_size`).
+3. **`ReadTimeout` en `media_publish`:** la llamada tarda más que los 5 s por defecto.
+
+Los tres son insumos directos de A5 (servicio) y de la composición: timeouts como dato,
+`Content-Length` en el upload.
+
+### A6-min, demostrado en vivo antes de existir
+
+El `media_publish` del smoke **murió por `ReadTimeout` y aun así publicó** — la
+reconciliación de solo-lectura posterior encontró el contenedor en `PUBLISHED` y el reel
+en `/media`. Es letra por letra el modo de fallo irreversible por el que el PO metió
+A6-min como P0 (*"la publicación sí ocurrió y el estado no ha propagado → segunda
+llamada → dos reels públicos"*). El smoke lo esquivó reconciliando a mano en vez de
+reintentar; el código de A5/A6-min tiene que hacer exactamente eso.
+
+### Parsers `[V]` de QUA-19 que tocaron realidad hoy
+
+`_parse_container_response` (id+uri, uri en `rupload.facebook.com`), 
+`_parse_upload_response` (ambas formas: `debug_info` y `success:true`),
+`_parse_status_response` (`FINISHED`, `PUBLISHED`). `_parse_publish_response` sigue `[V]`
+(el timeout impidió ver el body de éxito; la publicación se confirmó por reconciliación).
+
 ## Deuda que esta nota NO resuelve
 
 - La conexión activa quedó bajo el tenant **PuntoServis** con un túnel efímero ya muerto o
