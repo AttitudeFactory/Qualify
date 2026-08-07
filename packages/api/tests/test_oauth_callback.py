@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID, uuid4
 
 import httpx
@@ -247,7 +248,13 @@ async def test_successful_connect_becomes_active() -> None:
 
 @pytest.mark.asyncio
 async def test_connect_records_granted_literals_verbatim() -> None:
-    """C-04.3: what was GRANTED, not what was requested, and uninterpreted."""
+    """C-04.3: what was GRANTED, not what was requested, and uninterpreted.
+
+    Also A1's shield: with `config_id`, what the dialog asks for is decided by a console
+    artifact outside version control, so `/me/permissions` → `granted_scopes` persistence
+    is the only in-repo truth about what was conceded. If this stops persisting, that
+    truth is gone — this test failing is the alarm.
+    """
     partial = ("scope_alpha",)  # user declined the rest
     harness = build_harness(scopes=partial)
     result = await harness.service.complete_connect(
@@ -590,6 +597,36 @@ async def test_live_accounts_request_asks_for_the_access_token_field() -> None:
     )
     await client.list_linked_pages("user-token")
     assert "access_token" in seen["fields"].split(",")
+
+
+def _dialog_params(*, config_id: str | None) -> dict[str, str]:
+    client = HttpMetaOAuthClient(
+        MetaOAuthSettings(
+            app_id="a",
+            app_secret="s",
+            redirect_uri="https://cb",
+            state_secret="k",
+            requested_scopes=("scope_alpha", "scope_beta"),
+            config_id=config_id,
+        )
+    )
+    query = urlsplit(client.authorization_url(state="st")).query
+    return dict(parse_qsl(query))
+
+
+def test_authorization_url_carries_config_id_alongside_scope() -> None:
+    """A1: `config_id` and `scope` coexist — neither cancels the other."""
+    params = _dialog_params(config_id="cfg-from-env")
+    assert params["config_id"] == "cfg-from-env"
+    assert params["scope"] == "scope_alpha,scope_beta"
+
+
+def test_authorization_url_omits_config_id_entirely_when_unset() -> None:
+    """A1: absent means ABSENT — an empty `config_id=` is not equivalent to omission
+    for an authorization endpoint (same rule the scope already follows)."""
+    params = _dialog_params(config_id=None)
+    assert "config_id" not in params
+    assert params["scope"] == "scope_alpha,scope_beta"
 
 
 # --------------------------------------------------------------------------------------

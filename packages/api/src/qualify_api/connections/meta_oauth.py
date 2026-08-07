@@ -183,6 +183,11 @@ class HttpMetaOAuthClient:
         # are not equivalent to an authorization endpoint.
         if self._settings.requested_scopes:
             params["scope"] = ",".join(self._settings.requested_scopes)
+        # Same omission rule for `config_id` (A1). When present it coexists with `scope`:
+        # the configuration decides what the dialog asks for, and `/me/permissions` stays
+        # the only in-repo truth about what was granted.
+        if self._settings.config_id:
+            params["config_id"] = self._settings.config_id
         return f"{self._settings.authorize_url}?{urlencode(params)}"
 
     async def _get(self, path: str, params: dict[str, str]) -> dict[str, Any]:
