@@ -22,10 +22,10 @@ them, not to re-implement or dodge them:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
@@ -107,6 +107,10 @@ class PublishAttemptRepository(Protocol):
         retriable: bool | None = None,
     ) -> None: ...
 
+    def record_publish_sent(self, *, tenant_id: UUID, attempt_id: UUID, marker: str) -> None: ...
+
+    def get_attempt(self, *, tenant_id: UUID, attempt_id: UUID) -> AttemptRecord | None: ...
+
     def find_by_idempotency_key(
         self, *, tenant_id: UUID, connection_id: UUID, idempotency_key: str
     ) -> AttemptRecord | None: ...
@@ -132,6 +136,99 @@ def _snapshot(row: PublishAttempt) -> AttemptRecord:
 
 def _is_settle_once_violation(exc: DBAPIError) -> bool:
     return getattr(exc.orig, "sqlstate", None) == _CHECK_VIOLATION
+
+
+class MemoryPublishAttemptRepository:
+    """In-memory implementation mirroring the two database-owned invariants — duplicate
+    keys return the existing attempt, and a settled row refuses every update. Lives in
+    production code for the same reason `InMemoryEventPublisher` does: the offline suite
+    and the in-process dev path both need it, and two copies would drift."""
+
+    def __init__(self) -> None:
+        self.rows: dict[UUID, AttemptRecord] = {}
+
+    def start_attempt(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        idempotency_key: str,
+        media_product_type: str,
+        adapter_version: str,
+        scheduled_post_id: UUID | None = None,
+    ) -> AttemptStart:
+        existing = self.find_by_idempotency_key(
+            tenant_id=tenant_id, connection_id=connection_id, idempotency_key=idempotency_key
+        )
+        if existing is not None:
+            return AttemptStart(record=existing, created=False)
+        record = AttemptRecord(
+            id=uuid4(),
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            idempotency_key=idempotency_key,
+            media_product_type=media_product_type,
+            adapter_version=adapter_version,
+            status="pending",
+            creation_id=None,
+            platform_error_code=None,
+            retriable=None,
+            published_media_id=None,
+            started_at=datetime.now(UTC),
+            settled_at=None,
+        )
+        self.rows[record.id] = record
+        return AttemptStart(record=record, created=True)
+
+    def record_creation_id(self, *, tenant_id: UUID, attempt_id: UUID, creation_id: str) -> None:
+        self._mutate(attempt_id, creation_id=creation_id)
+
+    def advance_status(self, *, tenant_id: UUID, attempt_id: UUID, status: str) -> None:
+        if status in TERMINAL_STATUSES:
+            raise ValueError(f"terminal status {status!r} must go through settle()")
+        self._mutate(attempt_id, status=status)
+
+    def settle(
+        self,
+        *,
+        tenant_id: UUID,
+        attempt_id: UUID,
+        status: str,
+        published_media_id: str | None = None,
+        platform_error_code: str | None = None,
+        retriable: bool | None = None,
+    ) -> None:
+        if status not in TERMINAL_STATUSES:
+            raise ValueError(f"settle() requires a terminal status, got {status!r}")
+        self._mutate(
+            attempt_id,
+            status=status,
+            settled_at=datetime.now(UTC),
+            published_media_id=published_media_id,
+            platform_error_code=platform_error_code,
+            retriable=retriable,
+        )
+
+    def record_publish_sent(self, *, tenant_id: UUID, attempt_id: UUID, marker: str) -> None:
+        self._mutate(attempt_id, platform_error_code=marker)
+
+    def get_attempt(self, *, tenant_id: UUID, attempt_id: UUID) -> AttemptRecord | None:
+        record = self.rows.get(attempt_id)
+        return record if record is not None and record.tenant_id == tenant_id else None
+
+    def find_by_idempotency_key(
+        self, *, tenant_id: UUID, connection_id: UUID, idempotency_key: str
+    ) -> AttemptRecord | None:
+        for record in self.rows.values():
+            if record.connection_id == connection_id and record.idempotency_key == idempotency_key:
+                return record
+        return None
+
+    def _mutate(self, attempt_id: UUID, **changes: object) -> None:
+        record = self.rows[attempt_id]
+        if record.settled_at is not None:  # the in-memory settle_once trigger
+            raise AlreadySettled(str(attempt_id))
+        self.rows[attempt_id] = replace(record, **changes)  # type: ignore[arg-type]
 
 
 class PostgresPublishAttemptRepository:
@@ -207,6 +304,16 @@ class PostgresPublishAttemptRepository:
                 "retriable": retriable,
             },
         )
+
+    def record_publish_sent(self, *, tenant_id: UUID, attempt_id: UUID, marker: str) -> None:
+        """A6-min: written BEFORE `publish_container` goes out — the write-ahead of the
+        send itself. Mark after sending and a crash in between resurrects the double-post."""
+        self._update(tenant_id, attempt_id, {"platform_error_code": marker})
+
+    def get_attempt(self, *, tenant_id: UUID, attempt_id: UUID) -> AttemptRecord | None:
+        with tenant_session(tenant_id) as session:
+            row = session.get(PublishAttempt, attempt_id)
+            return _snapshot(row) if row is not None else None
 
     def find_by_idempotency_key(
         self, *, tenant_id: UUID, connection_id: UUID, idempotency_key: str
