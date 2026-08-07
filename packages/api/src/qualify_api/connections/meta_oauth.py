@@ -19,10 +19,11 @@ from `/me/permissions` as raw strings that this module does not interpret.
 
 ## Token discipline
 
-The access token appears in exactly two places: the `access_token` query parameter of a
-Graph request, and the return value of `exchange_code`. It is never logged, never stored
-on an instance attribute, and never put in an exception message — a token in a traceback
-is a token in a log aggregator.
+Tokens appear in exactly three places: the `access_token` query parameter of a Graph
+request, the return value of `exchange_code`, and `LinkedPage.page_access_token` (A0 —
+the Page credential publishing requires). They are never logged, never stored on a
+client instance attribute, and never put in an exception message — a token in a
+traceback is a token in a log aggregator. Both carriers redact themselves in `repr`.
 """
 
 from __future__ import annotations
@@ -62,12 +63,24 @@ class LinkedPage:
     are exclusive to the Facebook Login path, and losing them would erase the multimodal
     cascade's reach on the connected route. `instagram_account_id` is None for a Page with
     no linked IG account, which is the `link_required` case.
+
+    `page_access_token` is the credential Meta actually accepts for publishing on the
+    Instagram-API-with-Facebook-Login fork (A0): the USER token the code exchange yields
+    is not it. `[V]` None until observed live — the field only comes back when asked for.
     """
 
     page_id: str
     page_name: str
     instagram_account_id: str | None
     instagram_username: str | None
+    page_access_token: str | None = None
+
+    def __repr__(self) -> str:  # same discipline as TokenGrant: never a token in a log
+        return (
+            f"<LinkedPage page_id={self.page_id!r} page_name={self.page_name!r} "
+            f"instagram_account_id={self.instagram_account_id!r} "
+            f"instagram_username={self.instagram_username!r} page_access_token=redacted>"
+        )
 
 
 class MetaOAuthClient(Protocol):
@@ -98,11 +111,13 @@ def _parse_token_response(payload: dict[str, Any]) -> TokenGrant:
 
 def _parse_accounts_response(payload: dict[str, Any]) -> tuple[LinkedPage, ...]:
     """[V] Expected shape of `/me/accounts`:
-    {"data": [{"id", "name", "instagram_business_account": {"id", "username"}}]}.
+    {"data": [{"id", "name", "access_token", "instagram_business_account": {"id", "username"}}]}.
 
     Tolerant by intent: a Page with no `instagram_business_account` is a REAL case (the
     fork R4 exists to catch), not a parse error, so it yields a LinkedPage with
-    `instagram_account_id=None` rather than raising.
+    `instagram_account_id=None` rather than raising. Same treatment for a missing
+    `access_token` (A0): its absence is an observation the service must handle, not a
+    reason to lose the whole enumeration.
     """
     entries = payload.get("data")
     if not isinstance(entries, list):
@@ -113,12 +128,14 @@ def _parse_accounts_response(payload: dict[str, Any]) -> tuple[LinkedPage, ...]:
             continue
         ig = entry.get("instagram_business_account")
         ig = ig if isinstance(ig, dict) else {}
+        token = entry.get("access_token")
         pages.append(
             LinkedPage(
                 page_id=str(entry.get("id", "")),
                 page_name=str(entry.get("name", "")),
                 instagram_account_id=str(ig["id"]) if ig.get("id") else None,
                 instagram_username=str(ig["username"]) if ig.get("username") else None,
+                page_access_token=token if isinstance(token, str) and token else None,
             )
         )
     return tuple(pages)
@@ -195,7 +212,9 @@ class HttpMetaOAuthClient:
                 "/me/accounts",
                 {
                     "access_token": access_token,
-                    "fields": "id,name,instagram_business_account{id,username}",
+                    # `access_token` (the Page's own) comes back ONLY if asked for — no
+                    # tolerant parser could recover a field Meta never sent (A0).
+                    "fields": "id,name,access_token,instagram_business_account{id,username}",
                 },
             )
         )

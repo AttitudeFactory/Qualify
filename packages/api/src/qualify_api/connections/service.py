@@ -203,6 +203,18 @@ class ConnectService:
 
         granted_scopes = await self._oauth.list_granted_scopes(grant.access_token)
 
+        # --- A0: custody the PAGE token, not the user one. ---
+        # The Instagram-API-with-Facebook-Login fork publishes with a Facebook Page access
+        # token (content-publishing.md:30); the user token `exchange_code` yields is not
+        # it. `/me/permissions` above still uses the in-memory user token — that read
+        # needs no custody. `[V]` fallback: if the Page carried no token, the user token
+        # is persisted as before, distinguishable forever by `token_type`.
+        page_token = page.page_access_token
+        if page_token is None:
+            _LOGGER.warning(
+                "page access_token absent from /me/accounts; persisting USER token as fallback"
+            )
+
         now = datetime.now(UTC)
         record = self._repo.persist_grant(
             GrantInput(
@@ -220,10 +232,12 @@ class ConnectService:
                 granted_scopes=granted_scopes,
                 access_posture=self._settings.access_posture,
                 # Encrypted HERE. Past this line the plaintext is unreferenced.
-                ciphertext=self._encryptor.encrypt(grant.access_token),
+                ciphertext=self._encryptor.encrypt(page_token or grant.access_token),
                 key_id=self._encryptor.key_id,
-                token_type=grant.token_type,
+                token_type="page" if page_token is not None else grant.token_type,
                 issued_at=now,
+                # `[V]` conservative: the page token's real lifetime is unobserved, so the
+                # user grant's expiry stands in — it can only under-promise, never over.
                 expires_at=now + timedelta(seconds=grant.expires_in) if grant.expires_in else None,
             )
         )

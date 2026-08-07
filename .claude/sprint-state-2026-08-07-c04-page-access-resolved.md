@@ -80,6 +80,33 @@ PYTHONPATH=... uv run --no-sync --with uvicorn \
 La redirect URI se registra en el App Dashboard: **Facebook Login for Business → Settings →
 Valid OAuth Redirect URIs** (`developers.facebook.com/apps/<app_id>/fb-login/settings/`).
 
+## A0 (Sprint 3) — ENTREGADO el mismo día, con los dos `[V]` cerrados en vivo
+
+Con el túnel aún vivo se ejecutó el item 1 del Sprint 3 (`docs/backlog-sprint3-mvp-demo.md`
+§3/A0): custodiar el token de **Página** en vez del de usuario.
+
+- **Código:** `meta_oauth.py` pide `access_token` en los `fields` de `/me/accounts`;
+  `LinkedPage.page_access_token` (repr redactado, misma disciplina que `TokenGrant`);
+  `service.py` cifra el token de Página con `token_type='page'` y cae al de usuario con
+  warning si faltara. Suite offline **343/343**, ruff limpio.
+- **Reconnect en vivo:** misma conexión (`18b0355f…`), credencial **versión 2,
+  `token_type='page'`**, evento `reconnected` + `granted`, verify (`/me`) en verde con el
+  token de Página — el round-trip cifrar→custodiar→leer como `qualify_credential`→
+  descifrar→autenticar funciona con la credencial nueva.
+- **`[V]` (i) — CERRADO:** `debug_token` sobre la credencial custodiada:
+  `type=PAGE`, `is_valid=true`, **`expires_at=0` (no expira)** sin intercambio previo a
+  long-lived del token de usuario. No hace falta ningún paso extra.
+  **Matiz nuevo: `data_access_expires_at` ≈ +90 días (2026-11-05)** — la ventana de
+  acceso a datos sí caduca aunque el token no; es lo que un refresco futuro debe vigilar.
+  El `expires_at` en base (el del grant de usuario, ~2026-10-06) queda como aproximación
+  conservadora: promete de menos, nunca de más.
+- **`[V]` (ii) — CERRADO: una sola credencial por conexión.** `/me/permissions` se lee en
+  vuelo con el token de usuario en memoria y nada vuelve a leerlo tras el callback. No hay
+  segunda custodia que elevar al architect.
+- **Bonus observado:** `granular_scopes` devuelve `instagram_content_publish` con
+  `target_ids=[17841448653847824]` (el IG de `@qualifymkt.co`) — la concesión de
+  publicación es por cuenta, y está.
+
 ## Deuda que esta nota NO resuelve
 
 - La conexión activa quedó bajo el tenant **PuntoServis** con un túnel efímero ya muerto o
