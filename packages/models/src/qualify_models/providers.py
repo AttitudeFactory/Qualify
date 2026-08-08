@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from huggingface_hub import InferenceClient
 from PIL import Image
@@ -70,10 +70,19 @@ class LocalMoondreamVisionProvider:
 class LocalQwenVisionProvider:
     """Runs a Qwen VL model locally via transformers' native (non-remote-code)
     model class — avoids the trust_remote_code compatibility issues that hit
-    LocalMoondreamVisionProvider. Default vision provider: no Inference
-    Provider currently serves a working, account-enabled chat VLM for us
-    (hf-inference has none; featherless-ai rejects this account) — see
-    docs/modelos-multimodal-fase1.md."""
+    LocalMoondreamVisionProvider.
+
+    The offline path, not the fast one: measured >20 min for a single hook call
+    on this machine with the weights offloaded to disk (NOTES_hook_pattern_spike.md
+    §B.5), against 14.6 s end-to-end for HFInferenceVisionProvider. Use it when
+    the run must not touch the network or a vendor; use the hosted provider for
+    anything corpus-shaped.
+
+    Correction (measured 2026-08-06): an earlier version of this docstring said no
+    Inference Provider serves an account-enabled chat VLM because "featherless-ai
+    rejects this account". That is false. featherless-ai serves Qwen3-VL for this
+    account and answers in seconds when named explicitly; what fails is
+    provider="auto" resolution. See HFInferenceVisionProvider below."""
 
     def __init__(self, model_id: str = "Qwen/Qwen3-VL-4B-Instruct") -> None:
         self.model_id = model_id
@@ -118,11 +127,19 @@ class HFInferenceVisionProvider:
     """Calls a hosted VLM via HF Inference Providers. Swap for a self-hosted
     provider (same Protocol) once GPU serverless infra exists (Fase 1 Parte 3).
 
-    provider="featherless-ai" is explicit, not "auto": for this model/account,
-    "auto" resolves to `400 model_not_supported` ("not supported by any
-    provider you have enabled") even though featherless-ai is the live,
-    account-enabled provider and works when named directly — see
-    docs/modelos-multimodal-fase1.md."""
+    provider="featherless-ai" is explicit, not "auto", and the distinction is the
+    whole reason this class works. Re-measured 2026-08-06 for Qwen3-VL-4B on this
+    account:
+
+    * provider="featherless-ai" -> HTTP 200, correct answer, seconds. The Hub
+      reports featherless-ai as `live` for both Qwen3-VL-4B and -8B.
+    * provider="auto"           -> `400 model_not_supported` ("is not supported by
+      any provider you have enabled").
+
+    So the account is fine and the provider is fine; only "auto" resolution is
+    broken for it. Do not read the 400 as an access problem — that misreading cost
+    this repo a documented "hosted VLM is blocked" conclusion that was never true.
+    Never drop the explicit provider argument here."""
 
     def __init__(
         self, model_id: str = "Qwen/Qwen3-VL-4B-Instruct", provider: str = "featherless-ai"
@@ -144,6 +161,54 @@ class HFInferenceVisionProvider:
             model=self.model_id,
         )
         return completion.choices[0].message.content or ""
+
+
+VisionBackend = Literal["hosted", "local", "none"]
+"""The vision backends a caller may ask for by name.
+
+`"none"` is a first-class choice, not an error case: the deterministic and lexical
+tiers of the hook extractor run without any model, so "no VLM" is a real, useful mode
+and deserves a name instead of a negative flag."""
+
+VisionBackendLabel = Literal["hosted", "local", "injected"]
+"""What actually ran, recorded in output rows. `"injected"` covers a caller-supplied
+provider that is neither of the two known classes (a fake in tests, a future
+self-hosted endpoint) — labelling it honestly beats guessing it into one of the others."""
+
+
+def build_vision_provider(
+    backend: VisionBackend, model_id: str = "Qwen/Qwen3-VL-4B-Instruct"
+) -> VisionProvider | None:
+    """Resolve a backend name to a provider. `"none"` returns None.
+
+    Neither branch touches the network or the disk at construction time: the hosted
+    client is lazy about requests and the local one is lazy about weights, so picking a
+    backend is free and only using it costs anything.
+    """
+    if backend == "none":
+        return None
+    if backend == "hosted":
+        return HFInferenceVisionProvider(model_id=model_id)
+    if backend == "local":
+        return LocalQwenVisionProvider(model_id=model_id)
+    raise ValueError(f"unknown vision backend: {backend!r}")
+
+
+def label_vision_backend(provider: VisionProvider | None) -> VisionBackendLabel | None:
+    """Which backend a provider instance represents, for provenance.
+
+    Recorded per row because "the VLM said `urban_street`" means different things
+    depending on whether that came from a vendor endpoint or from offloaded local
+    weights — and that difference is invisible from the model id alone, which is
+    identical for both.
+    """
+    if provider is None:
+        return None
+    if isinstance(provider, HFInferenceVisionProvider):
+        return "hosted"
+    if isinstance(provider, LocalQwenVisionProvider | LocalMoondreamVisionProvider):
+        return "local"
+    return "injected"
 
 
 class LocalRobertuitoSentimentProvider:

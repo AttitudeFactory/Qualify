@@ -29,6 +29,22 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from qualify_models.hooks.spec import HookType, Setting, TextDensity
+from qualify_models.providers import VisionBackendLabel
+
+SecondPersonRegister = Literal["tu", "usted", "ambiguous", "none"]
+"""How the opening addresses the viewer, when it does.
+
+Kept as a register rather than folded into `has_second_person` because the corpus spans
+the Venezuela-Colombia border, where *usted* and *tú* are both live and the choice is
+regional and social, not stylistic. Two consequences that a boolean would hide:
+
+* *usted* address is **grammatically ambiguous with the third person** ("¿Está cansado?"
+  addresses the viewer; "El apartamento está listo" does not). `"ambiguous"` is the honest
+  label for an opening carrying an *usted*-shaped verb with nothing to disambiguate it —
+  it is neither a detection nor a denial.
+* the *usted*/*tú* split is itself a candidate confounder for Fase D (see falsification
+  test F5): it tracks country, and country tracks market, prices and algorithm.
+"""
 
 HookTypeSource = Literal["vlm", "lexical", "unknown"]
 """Which tier produced the resolved `hook_type`. Recorded per row because a corpus where
@@ -52,6 +68,10 @@ class SpokenHook(BaseModel):
     has_question_mark: bool
     has_numeral: bool
     has_second_person: bool  # tú/te/tu/usted/vuestro... -> speaks *to* the viewer
+    # Which register that address is in. "ambiguous" means an usted-shaped verb with no
+    # disambiguating evidence, and does NOT set has_second_person: on a two-country corpus
+    # guessing here would manufacture direct address that may not exist.
+    second_person_register: SecondPersonRegister = "none"
     has_negation: bool
     has_imperative_marker: bool
     has_price_token: bool  # "€", "euros", "90.000"
@@ -117,6 +137,11 @@ class HookFeatures(BaseModel):
     asr_model_revision: str | None = None
     vlm_model_id: str | None = None
     vlm_model_revision: str | None = None
+    # Which backend produced the model-derived tier: "hosted", "local" or "injected".
+    # The model id is the same string for hosted and local Qwen3-VL, so without this the
+    # row cannot say whether a value came from a vendor endpoint or from local weights —
+    # and those differ in latency, cost, quantization and vendor exposure.
+    vlm_backend: VisionBackendLabel | None = None
 
     windows: list[HookWindowFeatures]
 
@@ -147,6 +172,7 @@ class HookFeatures(BaseModel):
             "has_question_mark": w.spoken.has_question_mark,
             "has_numeral": w.spoken.has_numeral,
             "has_second_person": w.spoken.has_second_person,
+            "second_person_register": w.spoken.second_person_register,
             "has_negation": w.spoken.has_negation,
             "has_imperative_marker": w.spoken.has_imperative_marker,
             "has_price_token": w.spoken.has_price_token,
@@ -172,6 +198,7 @@ class HookFeatures(BaseModel):
             "asr_model_revision": self.asr_model_revision,
             "vlm_model_id": self.vlm_model_id,
             "vlm_model_revision": self.vlm_model_revision,
+            "vlm_backend": self.vlm_backend,
             "video_sha256": self.video_sha256,
             "extracted_at": self.extracted_at.isoformat(),
         }
@@ -191,6 +218,7 @@ FLAT_ROW_COLUMNS: tuple[str, ...] = (
     "has_question_mark",
     "has_numeral",
     "has_second_person",
+    "second_person_register",
     "has_negation",
     "has_imperative_marker",
     "has_price_token",
@@ -214,6 +242,7 @@ FLAT_ROW_COLUMNS: tuple[str, ...] = (
     "asr_model_revision",
     "vlm_model_id",
     "vlm_model_revision",
+    "vlm_backend",
     "video_sha256",
     "extracted_at",
 )
