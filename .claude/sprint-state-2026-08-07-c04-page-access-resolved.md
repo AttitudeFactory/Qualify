@@ -114,8 +114,11 @@ completa (script en scratchpad, usando el `HttpPublishClient` commiteado + el re
 real): contenedor → upload a `rupload` → poll → `media_publish`.
 
 **Resultado: publicado.** Media `18087084638657399`, `media_product_type=REELS`,
-`https://www.instagram.com/reel/Dbump-jElJz/`, cuenta `@qualifymkt.co` (visible solo para
-usuarios con rol — Development Mode). Vídeo: el fixture `sample_source.mp4` (HEVC
+`https://www.instagram.com/reel/Dbump-jElJz/`, cuenta `@qualifymkt.co` (~~visible solo para
+usuarios con rol — Development Mode~~ **corregido 2026-08-08: FALSO — el reel es públicamente
+visible sin sesión, verificado en incógnito por el fundador y por fetch anónimo del embed;
+KC-1 queda invertido por medición. Ver `docs/integracion-cuentas-conectadas-meta.md` §3.1,
+bloque 2026-08-08**). Vídeo: el fixture `sample_source.mp4` (HEVC
 1080×1920, 61 s, 9.3 MB) — **HEVC aceptado**, contenedor `FINISHED` en el primer sondeo.
 
 ### La pregunta cara, cerrada gratis
