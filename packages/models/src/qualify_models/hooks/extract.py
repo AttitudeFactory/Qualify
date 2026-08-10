@@ -46,7 +46,13 @@ from qualify_models.hooks.spec import (
 )
 from qualify_models.hooks.visual import analyze_frames
 from qualify_models.hooks.vlm import VlmReading, read_visual_hook
-from qualify_models.providers import TranscriptionProvider, VisionProvider
+from qualify_models.providers import (
+    TranscriptionProvider,
+    VisionBackend,
+    VisionProvider,
+    build_vision_provider,
+    label_vision_backend,
+)
 
 DETECTOR_VERSION = "hook-v1"
 
@@ -67,6 +73,7 @@ def extract_hook_features(
     windows: Sequence[float] = WINDOW_SECONDS,
     vlm_windows: Sequence[float] = (PRIMARY_WINDOW_SECONDS,),
     vision_provider: VisionProvider | None = None,
+    vision_backend: VisionBackend = "hosted",
     transcription_provider: TranscriptionProvider | None = None,
     use_vlm: bool = True,
     use_asr: bool = True,
@@ -76,9 +83,24 @@ def extract_hook_features(
 ) -> HookFeatures:
     """Extract the hook of `video_path` at every window in `windows`.
 
-    `use_vlm=False, use_asr=False` runs the deterministic tier only: no network, no
-    weights, a couple of seconds per video. That mode is what makes the extractor
+    `vision_backend` picks which VLM runs when no `vision_provider` is injected:
+
+    * `"hosted"` (default) — HF Inference Providers, ~15 s per video, measured.
+    * `"local"` — local Qwen3-VL weights: no vendor, but >20 min per video on this
+      machine (NOTES_hook_pattern_spike.md §B.5), i.e. viable for one video and not
+      for a corpus.
+    * `"none"` — deterministic + lexical tiers only.
+
+    Hosted is the default because this function's other model call (ASR) is already
+    hosted, so local-by-default made one half of the extractor quietly 80x slower than
+    the other for no stated reason. `"local"` stays one argument away for offline runs.
+
+    `vision_backend="none", use_asr=False` runs the deterministic tier only: no network,
+    no weights, a couple of seconds per video. That mode is what makes the extractor
     runnable before any model decision is settled.
+
+    `use_vlm=False` is the older spelling of `vision_backend="none"` and still works;
+    when it is False the backend argument is ignored.
 
     `artifacts_dir` keeps the sampled frames and the contact sheets on disk instead of in
     a temp directory — worth passing the first few times, because looking at the contact
@@ -90,10 +112,10 @@ def extract_hook_features(
         raise ValueError("at least one window is required")
 
     vision = vision_provider
-    if use_vlm and vision is None:
-        from qualify_models.providers import LocalQwenVisionProvider
-
-        vision = LocalQwenVisionProvider()
+    if not use_vlm:
+        vision = None
+    elif vision is None:
+        vision = build_vision_provider(vision_backend)
 
     transcriber = transcription_provider
     if use_asr and transcriber is None:
@@ -142,6 +164,7 @@ def extract_hook_features(
         ),
         vlm_model_id=vision.model_id if vision is not None else None,
         vlm_model_revision=revision_resolver(vision.model_id) if vision is not None else None,
+        vlm_backend=label_vision_backend(vision),
         windows=window_features,
     )
 

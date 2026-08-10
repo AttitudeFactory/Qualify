@@ -17,7 +17,9 @@ from fastapi import FastAPI
 
 from qualify_api.connections.composition import production_connect_service
 from qualify_api.connections.service import ConnectService
-from qualify_api.http import connections_routes
+from qualify_api.http import connections_routes, deps, publishing_routes
+from qualify_api.publishing.service import PublishService
+from qualify_api.publishing.staging import MediaStagingService
 
 
 def build_production_service() -> ConnectService:
@@ -25,9 +27,35 @@ def build_production_service() -> ConnectService:
     return production_connect_service()
 
 
+def build_production_publish_service() -> PublishService:
+    """Lazy on purpose: constructing it needs the R2 env, and an app booted without R2
+    should fail the PUBLISHING request loudly, not the whole boot."""
+    from qualify_api.publishing.composition import production_publish_service  # noqa: PLC0415
+
+    return production_publish_service()
+
+
+def build_production_staging_service() -> MediaStagingService:
+    from qualify_shared.objects.config import R2Settings  # noqa: PLC0415
+    from qualify_shared.objects.gate import ObjectGate  # noqa: PLC0415
+    from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
+
+    return MediaStagingService(ObjectGate(R2ObjectStore(R2Settings.from_env())))
+
+
 def create_app(*, configure_production: bool = True) -> FastAPI:
     app = FastAPI(title="Qualify API", version="0.1.0")
     app.include_router(connections_routes.router)
+    app.include_router(publishing_routes.router)
     if configure_production:
         app.dependency_overrides[connections_routes.get_connect_service] = build_production_service
+        app.dependency_overrides[publishing_routes.get_publish_service] = (
+            build_production_publish_service
+        )
+        app.dependency_overrides[publishing_routes.get_staging_service] = (
+            build_production_staging_service
+        )
+        # C1: parsed at assembly so a malformed QUALIFY_DEV_PRINCIPALS fails the boot,
+        # not the first request.
+        app.dependency_overrides[deps.current_principal] = deps.build_dev_principal_dependency()
     return app

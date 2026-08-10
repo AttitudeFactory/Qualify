@@ -19,7 +19,6 @@ from qualify_api.publishing.client import (
     CONTAINER_POLL_CEILING_SECONDS,
     CONTAINER_POLL_INTERVAL_SECONDS,
     RESUMABLE_MEDIA_TYPES,
-    UPLOAD_CHUNK_BYTES,
     ContainerStatus,
     HttpPublishClient,
     PublishError,
@@ -178,38 +177,32 @@ async def test_upload_posts_to_the_uri_meta_supplied_verbatim() -> None:
     assert seen["url"] == UPLOAD_URI
 
 
-async def test_upload_streams_in_chunks_instead_of_buffering_the_whole_file() -> None:
-    """The reason `_achunks` exists. A 300 MB reel must not be materialised in memory, so the
-    client must call `read(size)` repeatedly rather than `read()` once.
-
-    Asserted by recording the sizes requested: a single unbounded read (`size` of -1 or None)
-    would mean the streaming claim in the docstring is false.
+async def test_upload_sends_a_sized_body_not_a_chunked_stream() -> None:
+    """REVERSED from the original streaming assertion, on measurement (2026-08-07, live
+    `rupload`): a chunked body — Transfer-Encoding, no Content-Length — is refused with a
+    non-retriable `ParameterValidationError`, and the identical bytes sent sized succeed.
+    The old test froze the memory argument into the suite; reality voted the other way.
+    The buffer is bounded by the gate's `MAX_MEDIA_BYTES` ceiling upstream.
     """
-    reads: list[int] = []
-
-    class RecordingStream(io.BytesIO):
-        def read(self, size: int = -1) -> bytes:
-            reads.append(size)
-            return super().read(size)
+    seen: dict[str, str] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        seen.update({key.lower(): value for key, value in request.headers.items()})
         return _json({"success": True})
 
-    body = RecordingStream(b"a" * (UPLOAD_CHUNK_BYTES * 2 + 10))
+    payload = b"a" * 4096
     await _client(handler).upload_bytes(
-        upload_uri=UPLOAD_URI, fileobj=body, file_size=UPLOAD_CHUNK_BYTES * 2 + 10
+        upload_uri=UPLOAD_URI, fileobj=io.BytesIO(payload), file_size=len(payload)
     )
 
-    assert reads, "the stream was never read"
-    assert all(size == UPLOAD_CHUNK_BYTES for size in reads), reads
-    # Three full chunks' worth of calls plus the final empty read that stops the loop.
-    assert len(reads) == 4
+    assert seen.get("content-length") == str(len(payload))
+    assert "transfer-encoding" not in seen
 
 
 async def test_upload_sends_every_byte_it_was_given() -> None:
-    """Chunking must not lose or reorder the tail — the failure mode would be a container
+    """Buffering must not lose or reorder the tail — the failure mode would be a container
     that processes and then errors much later, far from its cause."""
-    payload = b"".join(bytes([i % 256]) for i in range(UPLOAD_CHUNK_BYTES + 1234))
+    payload = b"".join(bytes([i % 256]) for i in range(65536 + 1234))
     seen: dict[str, bytes] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:

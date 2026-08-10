@@ -10,11 +10,12 @@ Dependencies are injected through FastAPI's `dependency_overrides` seam rather t
 imported at module scope, so the tests substitute a fully faked service and run the entire
 callback with no network and no database.
 
-**Tenant provenance.** `start` takes the tenant from the dev selector
-(`qualify_shared.dev`), never from the request body — a tenant id accepted from a client
-is an authorization bypass with extra steps. The callback does not read tenant from the
-request at all; it reconstitutes it from the signed `state`. Real session-derived tenancy
-replaces the dev stub at QUA-66.
+**Identity provenance (C1).** `start` takes BOTH the tenant and the acting user from the
+authenticated `Principal` — never from the request body. A tenant id accepted from a
+client is an authorization bypass with extra steps, and a body-supplied `user_id` is the
+same bypass one layer down: the caller choosing who the connection is attributed to, an
+id that ends up in `connection_events` as the actor. The callback reads neither from the
+request; it reconstitutes them from the signed `state`.
 """
 
 from __future__ import annotations
@@ -23,10 +24,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from qualify_shared.dev import get_dev_tenant
 
 from qualify_api.connections.service import ConnectService
 from qualify_api.connections.state_token import InvalidState
+from qualify_api.http.deps import Principal, current_principal
 
 router = APIRouter(prefix="/api/connections", tags=["connections"])
 
@@ -38,10 +39,10 @@ def get_connect_service() -> ConnectService:
 
 
 class StartConnectRequest(BaseModel):
-    """Note the absence of `tenant_id` — it is deliberate, not an oversight."""
+    """Note the absence of BOTH `tenant_id` and `user_id` — deliberate, not an oversight:
+    identity comes from the authenticated `Principal` (C1), never from the body."""
 
     brand_id: UUID | None = None
-    user_id: UUID
 
 
 class StartConnectResponse(BaseModel):
@@ -67,14 +68,12 @@ class CallbackResponse(BaseModel):
 @router.post("/start", response_model=StartConnectResponse)
 def start_connect(
     body: StartConnectRequest,
+    principal: Principal = Depends(current_principal),
     service: ConnectService = Depends(get_connect_service),
 ) -> StartConnectResponse:
-    tenant_id = get_dev_tenant()
-    if tenant_id is None:
-        raise HTTPException(status_code=409, detail="no active tenant selected")
     return StartConnectResponse(
         authorization_url=service.start_connect(
-            tenant_id=tenant_id, brand_id=body.brand_id, user_id=body.user_id
+            tenant_id=principal.tenant_id, brand_id=body.brand_id, user_id=principal.user_id
         )
     )
 

@@ -1,18 +1,22 @@
 """`python -m qualify_models.hooks` — run the hook extractor over one or more videos.
 
-Two shapes of run, and the difference matters:
+Three shapes of run, chosen with `--vision`, and the difference is 80x of wall clock:
+
+    # hosted VLM (default) + hosted whisper: ~15 s per video, measured
+    PYTHONPATH=packages/models/src uv run --no-sync python -m qualify_models.hooks \\
+        --video packages/models/tests/fixtures/sample_source.mp4 \\
+        --keep-artifacts --out-dir /tmp/hooks
 
     # deterministic only: no network, no weights, seconds per video
     PYTHONPATH=packages/models/src uv run --no-sync python -m qualify_models.hooks \\
         --video packages/models/tests/fixtures/sample_source.mp4 \\
-        --no-vlm --no-asr --out-dir /tmp/hooks
+        --vision none --no-asr --out-dir /tmp/hooks
 
-    # full: local Qwen3-VL for the frames + hosted whisper for the audio.
-    # NOTE: the local VLM measured >20 min per video on an offloaded CPU setup — fine for
-    # one video, not for a corpus. See NOTES_hook_pattern_spike.md §B.5.
+    # local weights: no vendor, but >20 min per video on this machine. One video, never
+    # a corpus. See NOTES_hook_pattern_spike.md §B.5.
     PYTHONPATH=packages/models/src uv run --no-sync python -m qualify_models.hooks \\
         --video packages/models/tests/fixtures/sample_source.mp4 \\
-        --keep-artifacts --out-dir /tmp/hooks
+        --vision local --out-dir /tmp/hooks
 
 The explicit PYTHONPATH works around the shared venv's broken editable install, which
 `CLAUDE.md` documents; it is not part of the design.
@@ -31,10 +35,25 @@ from pathlib import Path
 from qualify_models.hooks.extract import extract_hook_features
 from qualify_models.hooks.schema import FLAT_ROW_COLUMNS, HookFeatures
 from qualify_models.hooks.spec import PRIMARY_WINDOW_SECONDS, WINDOW_SECONDS
+from qualify_models.providers import VisionBackend
 
 
 def _parse_windows(raw: str) -> tuple[float, ...]:
     return tuple(sorted(float(part) for part in raw.split(",") if part.strip()))
+
+
+def resolve_backend(vision: str, no_vlm: bool) -> VisionBackend:
+    """Fold the deprecated `--no-vlm` flag into the `--vision` choice.
+
+    `--no-vlm` wins on purpose: it is the older, negative spelling, and a documented
+    command that still carries it must not be silently upgraded into a paid hosted run
+    just because the default moved.
+    """
+    if no_vlm:
+        return "none"
+    if vision not in ("hosted", "local", "none"):
+        raise ValueError(f"unknown vision backend: {vision!r}")
+    return vision  # type: ignore[return-value]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,7 +88,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=(PRIMARY_WINDOW_SECONDS,),
         help="which windows get a VLM call (default: the primary window only — one call per video)",
     )
-    parser.add_argument("--no-vlm", action="store_true", help="skip the vision model entirely")
+    parser.add_argument(
+        "--vision",
+        choices=("hosted", "local", "none"),
+        default="hosted",
+        help=(
+            "which vision backend runs. hosted = HF Inference Providers, ~15 s/video "
+            "(default); local = local Qwen3-VL weights, >20 min/video on CPU, offline; "
+            "none = deterministic and lexical tiers only"
+        ),
+    )
+    parser.add_argument(
+        "--no-vlm",
+        action="store_true",
+        help="deprecated alias for --vision none (kept so older documented commands run)",
+    )
     parser.add_argument("--no-asr", action="store_true", help="skip transcription entirely")
     parser.add_argument(
         "--online",
@@ -101,9 +134,11 @@ def main(argv: list[str] | None = None) -> int:
     out_dir: Path = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    backend = resolve_backend(args.vision, args.no_vlm)
+
     results: list[HookFeatures] = []
     for video, source_id in zip(args.video, source_ids):
-        print(f"[hooks] {source_id}: {video}", file=sys.stderr)
+        print(f"[hooks] {source_id}: {video} (vision={backend})", file=sys.stderr)
         kwargs = {}
         if resolver is not None:
             kwargs["revision_resolver"] = resolver
@@ -112,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
             source_id=source_id,
             windows=args.windows,
             vlm_windows=args.vlm_windows,
-            use_vlm=not args.no_vlm,
+            vision_backend=backend,
             use_asr=not args.no_asr,
             artifacts_dir=(out_dir / "artifacts" / source_id) if args.keep_artifacts else None,
             **kwargs,

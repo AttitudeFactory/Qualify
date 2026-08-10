@@ -304,6 +304,12 @@ Meta typo; every other corpus occurrence is `pages_read_engagement`.
 - Live-verified: OAuth code exchange works with the current `.env`; do not doubt the credentials.
   `/me/accounts` returning `{"data": []}` is still open with the architect — if my work reaches
   IG-account-resolution через the Page, STOP and ask.
+  - **RESUELTO 2026-08-07, empíricamente:** `/me/accounts` no devuelve Pages propiedad de un
+    Business Portfolio sin el scope **`business_management`** (comportamiento de Meta desde
+    v18, confirmado en el foro de developers). Añadido al `.env` y verificado con un connect
+    completo: `outcome=active`, IG `@qualifymkt.co`, `linked_page_id=1618064151381022`, sin
+    Business Verification ni App Review (usuario con rol en la app, Development Mode).
+    Evidencia completa: `.claude/sprint-state-2026-08-07-c04-page-access-resolved.md`.
 
 ---
 

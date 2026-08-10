@@ -125,3 +125,95 @@ downstream by `packages/models`, not here.
   eventual `ingestion.posts` ClickHouse DDL. Open deltas vs. §3.2: nested
   `metrics`/`media` submodels, the new `content_type` discriminator, and whether
   multi-media posts stay one row + a child media table.
+
+## Known issues (measured 2026-08-06, not yet fixed)
+
+Three defects found while checking whether the corpus runner could reuse the
+production path. All were verified against the live web on 2026-08-06 from a
+residential IP; none is fixed here, and each needs its own task.
+
+1. **`MediaItem.url` is not fetchable, on any platform.** `parsers/tiktok.py`
+   puts `video.playAddr` into `MediaItem.url`. That URL returns **HTTP 403** to a
+   plain `GET` and also to a `GET` carrying a real browser `User-Agent` plus the
+   correct `Referer`. TikTok gates its CDN behind a JS anti-bot challenge whose
+   solution becomes a cookie, so no header combination opens it. Nothing in the
+   suite ever exercised the field, which is why this went unnoticed. Treat
+   `MediaItem.url` as an identifier, **not** as something you can download —
+   anything needing the bytes must go through `qualify_scraper.research.harvest`.
+
+2. **`extract_instagram_hydration` targets a payload Instagram no longer ships.**
+   It regexes `window._sharedData` (`extract.py`). A live logged-out
+   `instagram.com` page fetched on 2026-08-06 returned HTTP 200 with ~610 KB of
+   HTML containing **zero** occurrences of `_sharedData` — and zero occurrences of
+   `og:title`, `"username"`, `"video_versions"` or `edge_owner_to_timeline_media`.
+   Meta serves anonymous visitors a `PolarisLoggedOut` shell with no content at
+   all. Against any real 2026 page this extractor raises
+   `HydrationExtractionError`; it passes its test only because the fixture encodes
+   the dead format. Anonymous Instagram ingestion is not currently possible —
+   fixing the regex is not enough, the data is not in the response.
+
+3. **The HTML fixtures are synthetic, so neither extractor has met a real page.**
+   `tests/fixtures/html/instagram_reel.html` is **815 bytes** and
+   `tiktok_video.html` is **687 bytes**; real hydration pages are hundreds of KB.
+   "The extractors are tested" currently means "tested against hand-written
+   minimal HTML". Capturing one real page per platform as a fixture would convert
+   both extractor tests from shape-checks into evidence — and would have caught
+   issue 2 when it first broke.
+
+## Research corpus runner (`qualify_scraper.research`)
+
+`research/harvest.py` downloads a corpus of videos + engagement metrics for the
+hook-pattern spike. It is **not** part of the production ingestion path and
+nothing under `client.py` / `parsers/` / `extract.py` may import it.
+
+**Running it needs no sync.** `yt-dlp` is invoked as a *binary* via subprocess,
+never imported, so it does not have to be in the workspace venv:
+
+```bash
+uv run --no-sync pytest packages/scraper/tests   # tests need no yt-dlp at all
+```
+
+**Do not run `uv sync --group corpus`.** `CLAUDE.md` records a measured trap:
+alternating `uv sync` between dependency groups corrupts the shared workspace
+`.venv` editable installs (seen twice in one day with a single agent; only
+`rm -rf .venv && uv sync --group ml` recovered it). A third group in that
+rotation is the same hazard and would break the venv for other agents working in
+the repo. The `corpus` group declares intent and pins a floor — it is not an
+install step. If the `yt-dlp` binary is missing, install it isolated with
+`uv tool install yt-dlp`.
+
+The 16 runner tests drive `harvest_corpus` through a `FixtureFetcher` implementing
+the `VideoFetcher` Protocol, so they touch neither the network nor `yt-dlp`.
+
+### Reading the pilot's output
+
+**A null result may mean "we could not see it", not "it is not there."** Two
+measured reasons, both reported by `HarvestReport`:
+
+- **Three accounts, zero margin.** A hook type must appear in ≥3 accounts to
+  count as a pattern rather than one advertiser's house style, and this niche
+  yields exactly three usable TikTok accounts — so a type must appear in *all
+  three*, and one account not using it erases it from the study.
+- **Achieved span can be far narrower than requested.** Measured: a run asking
+  for 365 days returned 98. `span_coverage` reports it. The effect is
+  **asymmetric** — a *positive* finding survives low coverage, a *negative* one
+  does not, since a hook type used only in the unsampled months reads as "this
+  account does not vary".
+
+The pilot exists to falsify "this niche never varies", so an uninterpretable
+negative is its worst outcome: it looks decisive and is not. Check
+`span_coverage` and the account count before reading any null as a verdict.
+
+### A guard needs a test that makes it fire
+
+Four defects landed on 2026-08-06 across this package and `packages/models`,
+**every one under a green suite**: a metric-missing guard that made the blank
+impossible to emit; a variety sampler that could only see one ~3-month window; a
+`separation > 0.5` threshold where 0.5 is the *maximum* attainable; and a
+Spearman check that reads ~0 against exactly the drift it was built to detect.
+
+The shared shape is **a guard aimed at the right hazard, positioned where it can
+never fire** — and a test that merely passes with the guard present cannot see
+it. Write the test that makes the guard *trip*: feed it the input that should
+trigger it and assert it did. If you cannot construct that input, that is the
+finding.

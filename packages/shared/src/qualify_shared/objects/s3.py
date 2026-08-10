@@ -1,29 +1,20 @@
 """The real R2-backed `ObjectStore`. The ONLY module permitted to build an S3 client.
 
-`boto3` is imported lazily, inside the factory, for a specific reason: it is not yet declared
-as a dependency of `qualify-shared`, because declaring it mutates `uv.lock` and forces a
-`uv sync` — the operation documented in CLAUDE.md as the one that corrupts this workspace's
-shared venv. A module-level import would make `qualify_shared.objects` unimportable, and with
-it the gate's entire test suite, until that sync happens. With the import deferred, the gate
-and its tests run today against an in-memory double, and only constructing the real store
-needs the package present.
-
 The static guard in `tests/test_object_store_sanctity.py` names this file as the sole
-exception. When `boto3` is declared, move the import to module level and delete this note —
-but leave the guard.
+exception.
 """
 
 from __future__ import annotations
 
 from typing import IO, Any
 
+import boto3
+from botocore.config import Config
+
 from qualify_shared.objects.config import R2Settings
 
 
 def _build_client(settings: R2Settings) -> Any:
-    import boto3  # noqa: PLC0415 — deliberate, see module docstring
-    from botocore.config import Config  # noqa: PLC0415 — deliberate, see module docstring
-
     return boto3.client(
         "s3",
         endpoint_url=settings.endpoint_url,

@@ -1,0 +1,8 @@
+# Generated/local graphify artifacts — regenerate with `graphify update .`
+graph.json
+GRAPH_REPORT.md
+manifest.json
+.graphify_labels.json
+cache/ast/
+cache/last_query_stamp
+20*/

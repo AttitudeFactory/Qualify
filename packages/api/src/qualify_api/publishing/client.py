@@ -41,10 +41,11 @@ publish response routinely echoes request parameters.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import IO, Any, Protocol
+
+import httpx
 
 from qualify_api.connections.resolver import AuthenticatedClient
 
@@ -64,7 +65,25 @@ RESUMABLE_MEDIA_TYPES = frozenset({MEDIA_TYPE_REELS, MEDIA_TYPE_STORIES, MEDIA_T
 
 
 class PublishError(Exception):
-    """A publishing call failed. Never carries the token or the response body."""
+    """A publishing call failed. Never carries the token or the response body.
+
+    `platform_code`/`platform_subcode` are Meta's NUMERIC error identifiers when the
+    failed response carried them — codes, not messages, so nothing credential-bearing can
+    ride along. They are what lets the service map a specific refusal (e.g. a Page
+    Publishing Authorization gate) to a distinguishable outcome instead of a generic
+    `failed` that costs hours chasing a bug that does not exist.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        platform_code: int | None = None,
+        platform_subcode: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.platform_code = platform_code
+        self.platform_subcode = platform_subcode
 
 
 class ContainerStatus(StrEnum):
@@ -140,6 +159,25 @@ class PublishClient(Protocol):
 # --- [V] response parsing. One function per endpoint; the only place reality lands. ---
 
 
+def _error_codes(response: httpx.Response) -> tuple[int | None, int | None]:
+    """Meta's numeric `error.code`/`error.error_subcode` from a failed response, or Nones.
+
+    Integers only, extracted defensively: everything else in an error body (message,
+    fbtrace_id, nested JSON) stays where it is. A number cannot leak a credential."""
+    try:
+        error = dict(response.json()).get("error")
+    except ValueError:
+        return None, None
+    if not isinstance(error, dict):
+        return None, None
+    code = error.get("code")
+    subcode = error.get("error_subcode")
+    return (
+        code if isinstance(code, int) else None,
+        subcode if isinstance(subcode, int) else None,
+    )
+
+
 def _parse_container_response(payload: dict[str, Any]) -> ResumableContainer:
     """[V] `resumable-uploads.md:58-65`: {"id": ..., "uri": ...}.
 
@@ -208,24 +246,12 @@ def _parse_publish_response(payload: dict[str, Any]) -> str:
     return media_id
 
 
-# Read size for streaming the body. Big enough that a 300 MB reel is not thousands of
-# round-trips through the loop, small enough that memory stays flat regardless of file size.
-UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
-
-
-async def _achunks(fileobj: IO[bytes]) -> AsyncIterator[bytes]:
-    """Adapt a SYNCHRONOUS byte stream into the async iterable `httpx.AsyncClient` requires.
-
-    Not incidental plumbing — it is the seam between two worlds. `qualify_shared.objects`
-    hands out `IO[bytes]` (boto3's `get_object()["Body"]` is a sync stream), and passing that
-    straight to an async client raises `RuntimeError: Attempted to send an sync request with
-    an AsyncClient instance`. The obvious workaround — `content=fileobj.read()` — would hold
-    an entire 300 MB reel in memory, converting a streaming upload into a buffered one and
-    putting the process one concurrent publish away from trouble. Yielding fixed chunks keeps
-    memory flat.
-    """
-    while chunk := fileobj.read(UPLOAD_CHUNK_BYTES):
-        yield chunk
+# Timeouts, measured rather than defaulted (live smoke, 2026-08-07): httpx's 5 s defaults
+# fail BOTH heavy calls — a 9 MB upload dies on write, and `media_publish` takes longer
+# than 5 s to answer (and, measured the same day, may have SUCCEEDED by the time the
+# timeout fires — the exact ambiguity A6-min exists for).
+UPLOAD_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
+GRAPH_WRITE_TIMEOUT = httpx.Timeout(60.0, connect=30.0)
 
 
 class HttpPublishClient:
@@ -249,10 +275,18 @@ class HttpPublishClient:
         self._graph_url = graph_url.rstrip("/")
 
     async def _post_graph(self, path: str, params: dict[str, str]) -> dict[str, Any]:
-        response = await self._graph.post(f"{self._graph_url}{path}", params=params)
+        response = await self._graph.post(
+            f"{self._graph_url}{path}", params=params, timeout=GRAPH_WRITE_TIMEOUT
+        )
         if response.status_code != 200:
-            # Status only. A failed publish body routinely echoes the request parameters.
-            raise PublishError(f"POST {path} failed with HTTP {response.status_code}")
+            # Status and NUMERIC platform codes only. A failed publish body routinely
+            # echoes the request parameters, so the message/body never travels.
+            code, subcode = _error_codes(response)
+            raise PublishError(
+                f"POST {path} failed with HTTP {response.status_code}",
+                platform_code=code,
+                platform_subcode=subcode,
+            )
         return dict(response.json())
 
     async def create_container(
@@ -287,10 +321,15 @@ class HttpPublishClient:
     async def upload_bytes(
         self, *, upload_uri: str, fileobj: IO[bytes], file_size: int
     ) -> UploadOutcome:
-        """Stream the body to `rupload`. `offset` is 0 because this client does not resume a
-        partial upload — a fresh attempt starts a fresh container, which the write-ahead
-        record makes safe. Resumption would need the offset Meta reports, and inventing one
-        risks a corrupt object that only shows up as a container ERROR much later."""
+        """Send the body to `rupload` SIZED, not chunked. Measured 2026-08-07: a chunked
+        body (Transfer-Encoding, no Content-Length) is refused with a non-retriable
+        `ParameterValidationError`; the identical sized body succeeds. So the earlier
+        streaming adapter is gone — its memory argument lost to a measured rejection, and
+        the buffer is bounded by the gate's `MAX_MEDIA_BYTES` ceiling. A stream that
+        preserves Content-Length is Sprint 4 work if concurrency ever demands it.
+
+        `offset` is 0 because this client does not resume a partial upload — a fresh
+        attempt starts a fresh container, which the write-ahead record makes safe."""
         response = await self._rupload.post(
             upload_uri,
             # Per-request headers MERGE with the client's default `Authorization` in httpx;
@@ -298,7 +337,8 @@ class HttpPublishClient:
             # upload would go out unauthenticated and the failure would look like a Meta
             # problem.
             headers={"offset": "0", "file_size": str(file_size)},
-            content=_achunks(fileobj),
+            content=fileobj.read(),
+            timeout=UPLOAD_TIMEOUT,
         )
         try:
             payload = dict(response.json())

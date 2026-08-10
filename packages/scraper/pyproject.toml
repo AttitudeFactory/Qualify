@@ -21,6 +21,24 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.15.22",
 ]
+# Research-corpus tooling only (`qualify_scraper.research`). Deliberately NOT a
+# default group: yt-dlp tracks an adversarial, undocumented target and will break
+# without warning, so no production import path may depend on it.
+#
+# DO NOT run `uv sync --group corpus` in this repo. CLAUDE.md records a measured
+# trap: alternating `uv sync` between dependency groups corrupts the shared
+# workspace `.venv` editable installs (observed twice in one day, single agent;
+# only `rm -rf .venv && uv sync --group ml` recovered it). Adding a third group to
+# that rotation is the same hazard and would break the venv for other agents.
+#
+# No sync is needed anyway. `research/harvest.py` shells out to the `yt-dlp`
+# BINARY, so it never imports this package and never has to be in the venv —
+# `uv run --no-sync` is sufficient. If the binary is missing, install it as an
+# isolated CLI with `uv tool install yt-dlp`, never via a group sync.
+# This entry therefore declares intent and pins a floor; it is not an install step.
+corpus = [
+    "yt-dlp>=2026.7.4",
+]
 
 [tool.pytest.ini_options]
 markers = ["integration: hits a live scraping vendor over the network"]
