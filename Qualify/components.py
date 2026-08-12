@@ -7,6 +7,7 @@ from .state import DashboardState, MentionRow
 _NAV_ITEMS = [
     ("Menciones", "message-circle", "/", True),
     ("Conexiones", "link", "/connections", True),
+    ("Publicar", "upload", "/publish", True),
     ("Creadores", "users", "#", False),
     ("Señales", "bell", "#", False),
     ("Configuración", "settings", "#", False),

@@ -6,6 +6,7 @@ exception.
 
 from __future__ import annotations
 
+import io
 from typing import IO, Any
 
 import boto3
@@ -46,6 +47,16 @@ class R2ObjectStore:
         )
 
     def open(self, key: str) -> IO[bytes]:
+        # `response["Body"]` is a boto3 `StreamingBody` — it inherits `io.IOBase.seek()`
+        # unoverridden, which raises `io.UnsupportedOperation` (a `ValueError` subclass) the
+        # moment a caller seeks it. `PublishService._length()` seeks to measure the upload
+        # size before streaming to Meta, so a raw `StreamingBody` here breaks every real
+        # publish at the read-back step (measured live 2026-08-11 — offline/db tests never
+        # caught it because every test double's `open()` already returns `io.BytesIO`, the
+        # same shape this now returns for real). Buffering the whole body is bounded by the
+        # same ceiling already enforced at write time (`ObjectGate.MAX_MEDIA_BYTES`, 300 MB —
+        # a single reel, not a queue of them), so this stays a plain read, not a streaming
+        # concern.
         response = self._client.get_object(Bucket=self._settings.bucket, Key=key)
         body: IO[bytes] = response["Body"]
-        return body
+        return io.BytesIO(body.read())

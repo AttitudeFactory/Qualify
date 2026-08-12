@@ -3,6 +3,10 @@
 Video only: reel, video story and carousel video, via the resumable byte upload to
 `rupload.facebook.com` (ADR 28a). Image publishing needs a public HTTP surface and is
 deferred to QUA-68 — nothing here should grow an `image_url` path.
+
+`stage_and_start_publish` / `advance_publish` are the **published seam for the Reflex
+CRM** — direct async Python calls over ids, no HTTP hop. Same role as
+`connections.start_connect` / `connections.revoke_connection`. See `composition.py`.
 """
 
 from qualify_api.publishing.client import (
@@ -19,6 +23,7 @@ from qualify_api.publishing.client import (
     ResumableContainer,
     UploadOutcome,
 )
+from qualify_api.publishing.composition import advance_publish, stage_and_start_publish
 
 __all__ = [
     "CONTAINER_POLL_CEILING_SECONDS",
@@ -33,4 +38,6 @@ __all__ = [
     "PublishError",
     "ResumableContainer",
     "UploadOutcome",
+    "advance_publish",
+    "stage_and_start_publish",
 ]
