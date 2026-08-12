@@ -1,0 +1,93 @@
+"""The seam between the publish screen and the real publishing backend (A5).
+
+Mirrors `connections_provider.py`'s split between reads this module owns/reuses and
+writes it delegates:
+
+- **Reads this module reuses.** `active_connections` reuses `connections_provider.
+  connections_for` exactly as it is — the tenant's connections come from the same
+  Postgres query C-06 already runs; this module adds zero new database access, only a
+  filter and a narrower projection.
+- **Writes this module delegates.** `start_publish`/`poll_publish` are thin async
+  projections over `qualify_api.publishing`'s published seam (`stage_and_start_publish`/
+  `advance_publish`). Those are already `async def` (they `await` an `httpx.AsyncClient`
+  and wrap their one blocking call in `asyncio.to_thread` INSIDE the seam), so this
+  module — and `publishing_state.py` above it — never needs `asyncio.to_thread` for
+  publishing, unlike `connections_provider`'s synchronous `begin_connect`/`disconnect`.
+
+`UnknownConnection`/`UnknownAttempt` are NOT caught here — they propagate to the caller,
+same posture as `connections_provider.disconnect` letting `ConnectionNotFound` through.
+"""
+
+from __future__ import annotations
+
+from typing import IO
+from uuid import UUID
+
+from qualify_api.publishing import advance_publish, stage_and_start_publish
+from qualify_api.publishing.service import PublishState as ServicePublishState
+
+from .connections_provider import connections_for
+from .publishing_vm import ConnectionOptionVM, PublishAttemptVM
+
+
+def active_connections(tenant_id: UUID) -> list[ConnectionOptionVM]:
+    """The tenant's connections that can actually receive a publish right now.
+
+    Blocking DB call (via `connections_for`) — callers on the event loop must run it
+    off-thread, same as `connections_for` itself.
+    """
+    return [
+        ConnectionOptionVM(
+            id=connection.id,
+            external_username=connection.external_username,
+            platform=connection.platform,
+        )
+        for connection in connections_for(tenant_id)
+        if connection.status == "active"
+    ]
+
+
+def _to_vm(state: ServicePublishState) -> PublishAttemptVM:
+    return PublishAttemptVM(
+        attempt_id=str(state.attempt_id),
+        status=state.status,
+        settled=state.settled,
+        published_media_id=state.published_media_id or "",
+        reason=state.reason or "",
+        awaiting_confirmation=state.awaiting_confirmation,
+        poll_interval_seconds=state.poll_interval_seconds,
+    )
+
+
+async def start_publish(
+    *,
+    tenant_id: UUID,
+    connection_id: UUID,
+    fileobj: IO[bytes],
+    content_type: str,
+    caption: str,
+    idempotency_key: str,
+) -> PublishAttemptVM:
+    """Stage the uploaded video and start a publish attempt.
+
+    `media_product_type` is fixed to `"REELS"` in this slice — there is no Stories/
+    carousel selector in the UI yet (decision 1 of the approved plan). An empty caption
+    is sent as `None`, matching what a caption-less publish means to `PublishService`.
+    """
+    state = await stage_and_start_publish(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        fileobj=fileobj,
+        content_type=content_type,
+        media_product_type="REELS",
+        idempotency_key=idempotency_key,
+        caption=caption or None,
+    )
+    return _to_vm(state)
+
+
+async def poll_publish(*, tenant_id: UUID, attempt_id: UUID) -> PublishAttemptVM:
+    """One `advance()` step. The caller is the client that drives the cadence — see
+    `PublishService.advance` for why there is no loop on the backend side."""
+    state = await advance_publish(tenant_id=tenant_id, attempt_id=attempt_id)
+    return _to_vm(state)

@@ -4,6 +4,8 @@ from .components import filter_bar, mentions_table, sidebar, stats_row, topbar
 from .connections_page import connections_index
 from .connections_state import ConnectionsState
 from .db import create_db_and_tables
+from .publishing_page import publish_index
+from .publishing_state import PublishState
 from .state import DashboardState
 
 create_db_and_tables()
@@ -34,4 +36,10 @@ app.add_page(
     route="/connections",
     on_load=ConnectionsState.load_connections,
     title="Qualify · Conexiones",
+)
+app.add_page(
+    publish_index,
+    route="/publish",
+    on_load=PublishState.load_active_connections,
+    title="Qualify · Publicar",
 )
