@@ -31,10 +31,20 @@ Los tres bloques de la Fase 1 tienen alternativas maduras ya desarrolladas — l
 |---|---|---|---|
 | **EnsembleData** | API por unidades | $100–$1,400/mes | TikTok, IG, YouTube, X, Reddit, Threads, Pinterest, FB. Usado por plataformas de influencer marketing — el fit más directo |
 | **Data365** | API por registros | Desde ~$0.60/1K registros | Precio transparente, bajo la media del mercado (~$0.98/1K) |
-| **Apify** | Marketplace de actors | ~$1.70/1K (variable) | 24,000+ actors listos; ideal para prototipar |
+| **Apify** | Marketplace de actors (pay-per-event) | **Metadata $1.50–$2.70/1K · vídeo espejado +$61–$123/1K** | Corregido 2026-08-12 (medido vía `api.apify.com/v2/acts`, ver nota abajo). La cifra anterior de "~$1.70/1K" no corresponde a ningún tier actual |
 | **Phyllo / InsightIQ** | Data gateway consentido | Desde ~$199/mes (custom) | 25+ plataformas, esquema unificado; complementario post-outreach (datos first-party) |
 
 **Implicación:** el waterfall enrichment de Qualify se arma en Fase 1 encadenando EnsembleData → Data365 como fallback, sin escribir scrapers propios. Scrapers sobre Zyte cuando el volumen justifique internalizar.
+
+> **Nota Apify — corrección de precio y hallazgo crítico para el Motor de Ángulos (2026-08-12, gtm-specialist).**
+> Precios **medidos** contra `https://api.apify.com/v2/acts/apify~instagram-scraper` y `.../apify~instagram-reel-scraper` (objeto `pricingInfos`, modelo `PAY_PER_EVENT`; tiers `FREE`/`BRONZE`=Starter/`SILVER`=Scale/`GOLD`=Business):
+> - `apify/instagram-scraper`, evento `result`: $0.0027 / $0.0023 / $0.0019 / $0.0015 por ítem → **$2.70 / $2.30 / $1.90 / $1.50 por 1K**. No expone descarga de vídeo.
+> - `apify/instagram-reel-scraper`, evento `reel`: **$2.60 / $2.30 / $1.40 / $1.00 por 1K**, más add-ons: `video-download` **$0.020/$0.015/$0.012/$0.010 por MB iniciado** y `transcript` $0.048/$0.041/$0.034/$0.027 por minuto iniciado.
+> - **El add-on de vídeo domina el coste**: a ~6 MB por reel de 30 s, mirroring = **$90/1K en Starter** vs $2.30/1K de metadata (39×). Equivale a **$15.36/GB**, casi **2× el precio del propio proxy residencial de Apify ($8/GB)**.
+> - **Techo de cobertura permanente:** el actor NO expone el GraphQL/hydration crudo de Instagram (33 campos camelCase normalizados; snake_case sólo en sub-objetos `musicInfo`/`owner`). Incompatible con la regla de re-parseo sin re-scrapear (ADR 18/22).
+> - Apify **documenta él mismo** que las URLs de CDN de Instagram "expire unpredictably, are region-restricted, cause IP blocks on large runs" — el `videoUrl` viene firmado con `oh=` + `oe=` (epoch de expiración explícito).
+>
+> Detalle completo, escenarios de coste a 1K/10K y el test decisivo de ~$0.61 sobre el free tier: ver el informe de vendor deep-dive de Apify (sesión 2026-08-12).
 
 ### 2b. Filtro 1 — transcripción de audio
 
