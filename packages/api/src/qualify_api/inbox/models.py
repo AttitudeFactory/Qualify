@@ -1,0 +1,134 @@
+"""ORM models for the inbox module (B2/B3 + monitored-media). DDL/RLS/grants are the
+migrations' job (0004 for `threads`/`messages`, 0005 for `monitored_media`); these mirror
+them for typed access via the sanctioned sessions — same relationship
+`publishing/models.py` has to `0003`.
+
+All three tables carry the composite FK `(connection_id, tenant_id) -> social_connections`
+(R2 discipline), so a child row whose tenant disagrees with its parent connection is
+structurally unbuildable.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from uuid import UUID
+
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy import (
+    text as sql_now,
+)
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy.orm import Mapped, mapped_column
+
+from qualify_api.tenancy.models import Base
+
+
+class MonitoredMedia(Base):
+    __tablename__ = "monitored_media"
+    __table_args__ = (
+        UniqueConstraint(
+            "connection_id", "external_media_id", name="uq_monitored_media_natural_key"
+        ),
+        ForeignKeyConstraint(
+            ["connection_id", "tenant_id"],
+            ["social_connections.id", "social_connections.tenant_id"],
+            name="fk_monitored_media_conn_tenant",
+        ),
+        Index("ix_monitored_media_tenant", "tenant_id"),
+        Index("ix_monitored_media_active", "connection_id", "is_monitored"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sql_now("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    connection_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    external_media_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # A column, not row presence — toggling is an UPDATE, never a delete+reinsert. See
+    # the migration's docstring for why.
+    is_monitored: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
+
+
+class Thread(Base):
+    __tablename__ = "threads"
+    __table_args__ = (
+        UniqueConstraint(
+            "connection_id", "channel", "external_thread_id", name="uq_thread_natural_key"
+        ),
+        UniqueConstraint("id", "tenant_id", name="uq_thread_id_tenant"),
+        ForeignKeyConstraint(
+            ["connection_id", "tenant_id"],
+            ["social_connections.id", "social_connections.tenant_id"],
+            name="fk_thread_conn_tenant",
+        ),
+        CheckConstraint("channel IN ('comment','dm')", name="ck_thread_channel"),
+        CheckConstraint("status IN ('open','closed')", name="ck_thread_status"),
+        Index("ix_thread_tenant", "tenant_id"),
+        Index("ix_thread_inbox_order", "tenant_id", "last_message_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sql_now("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    connection_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    channel: Mapped[str] = mapped_column(Text, nullable=False)
+    external_thread_id: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    assigned_agent_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    # Inbox ordering only. NEVER the basis of a messaging window (0004's B2 condition).
+    last_message_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_inbound_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
+
+
+class Message(Base):
+    __tablename__ = "messages"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "external_message_id", name="uq_message_external_id"),
+        ForeignKeyConstraint(
+            ["thread_id", "tenant_id"],
+            ["threads.id", "threads.tenant_id"],
+            name="fk_message_thread_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["connection_id", "tenant_id"],
+            ["social_connections.id", "social_connections.tenant_id"],
+            name="fk_message_conn_tenant",
+        ),
+        CheckConstraint("direction IN ('inbound','outbound')", name="ck_message_direction"),
+        Index("ix_message_tenant", "tenant_id"),
+        Index("ix_message_thread", "thread_id", "posted_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sql_now("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    thread_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    connection_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    external_message_id: Mapped[str] = mapped_column(Text, nullable=False)
+    direction: Mapped[str] = mapped_column(Text, nullable=False)
+    # An IGSID: stable per app/account, NOT a portable user identity
+    # (`ig_shapes.IGSID_IS_PORTABLE_IDENTITY is False`). Never join it against another
+    # person identifier.
+    author_external_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    author_username: Mapped[str | None] = mapped_column(Text, nullable=True)
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    posted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
+    raw_payload_r2_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Which version of the QUA-67 contract parsed this row.
+    shape_version: Mapped[str] = mapped_column(Text, nullable=False)
