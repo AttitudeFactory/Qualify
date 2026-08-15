@@ -5,10 +5,15 @@ Same visual language as `connections_page.py`/`publishing_page.py`: badges/callo
 the shared color-scheme convention, the shared sidebar/topbar shape. Adds the `/inbox`
 route only; does not touch `connections_page.py` or `publishing_page.py`.
 
-Deliberately minimal for this slice: no comment/thread view, no "sync now" button (see
-`inbox_provider.py`'s module docstring — `sync_comments` is not wired here), no rich
-media preview beyond a thumbnail + caption snippet. The goal is to make the monitoring
-decision visible and actionable, not to redesign the screen.
+Deliberately minimal for this slice: no comment/thread view, no rich media preview beyond
+a thumbnail + caption snippet. The goal is to make the monitoring decision visible and
+actionable, not to redesign the screen.
+
+`_sync_section()` (2026-08-15) is a TEMPORARY manual trigger for `InboxService.
+sync_comments` — see `inbox_state.py`'s module docstring for why. It exists to prove the
+Meta → Postgres round trip end-to-end before any scheduler/Celery wiring exists, and is
+styled like `connections_page.py`'s `dev_tenant_selector()` (dashed border + a "TEMPORAL"
+badge) specifically so it reads as scaffolding, not a shipped feature.
 """
 
 from __future__ import annotations
@@ -296,6 +301,83 @@ def _body() -> rx.Component:
     )
 
 
+def _sync_now_button() -> rx.Component:
+    return rx.button(
+        rx.cond(
+            InboxState.is_syncing,
+            rx.spinner(size="2"),
+            rx.icon("refresh-cw", size=16),
+        ),
+        rx.cond(InboxState.is_syncing, "Sincronizando...", "Sincronizar comentarios"),
+        on_click=InboxState.sync_comments,
+        disabled=~InboxState.can_sync,
+        size="2",
+        variant="surface",
+        color_scheme="orange",
+    )
+
+
+def _sync_result_block() -> rx.Component:
+    return rx.cond(
+        InboxState.sync_result,
+        rx.callout(
+            (
+                "Reels revisados: "
+                + InboxState.sync_result.media_checked.to_string()
+                + " · Comentarios nuevos: "
+                + InboxState.sync_result.new_comments.to_string()
+            ),
+            icon="check",
+            color_scheme="grass",
+            width="100%",
+        ),
+        rx.fragment(),
+    )
+
+
+def _sync_error_block() -> rx.Component:
+    return rx.cond(
+        InboxState.sync_error != "",
+        rx.callout(
+            InboxState.sync_error, icon="triangle-alert", color_scheme="tomato", width="100%"
+        ),
+        rx.fragment(),
+    )
+
+
+def _sync_section() -> rx.Component:
+    """TEMPORARY manual sync affordance — see this module's docstring. Deliberately
+    styled like `connections_page.py`'s `dev_tenant_selector()` so it visually reads as
+    scaffolding rather than a shipped feature."""
+    return rx.box(
+        rx.vstack(
+            rx.hstack(
+                rx.badge("TEMPORAL", color_scheme="orange", variant="solid", size="1"),
+                rx.text(
+                    "Disparador manual de sync_comments — solo para pruebas end-to-end.",
+                    size="2",
+                    color=rx.color("gray", 10),
+                ),
+                rx.spacer(),
+                _sync_now_button(),
+                spacing="2",
+                align="center",
+                width="100%",
+            ),
+            _sync_result_block(),
+            _sync_error_block(),
+            spacing="2",
+            width="100%",
+        ),
+        padding="0.75rem 1rem",
+        border=f"1px dashed {rx.color('orange', 7)}",
+        border_radius="0.5rem",
+        background=rx.color("orange", 2),
+        margin="0 2rem 1.5rem 2rem",
+        width="calc(100% - 4rem)",
+    )
+
+
 def inbox_topbar() -> rx.Component:
     return rx.hstack(
         rx.vstack(
@@ -322,6 +404,7 @@ def inbox_index() -> rx.Component:
         sidebar(),
         rx.vstack(
             inbox_topbar(),
+            rx.cond(InboxState.has_connections, _sync_section(), rx.fragment()),
             _body(),
             width="100%",
             spacing="4",

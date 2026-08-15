@@ -9,10 +9,18 @@ Sync/polling is scoped to a tenant-chosen watchlist, not every Reel on the accou
 
 `composition.py` (2026-08-14, B2 UI slice) wires the real credential-resolved clients
 together and is the published seam for the Reflex CRM — `list_candidate_media`/
-`set_media_monitored` below, plain async functions over ids, no HTTP hop, same role
-`publishing.composition.stage_and_start_publish`/`advance_publish` have for publishing.
-Still not here: `sync_comments` wired to any caller (next slice — the thread/comments
-view), `MonitoringLimitPolicy`/billing, HTTP routes.
+`set_media_monitored`/`sync_comments` below, plain async functions over ids, no HTTP
+hop, same role `publishing.composition.stage_and_start_publish`/`advance_publish` have
+for publishing.
+
+`sync_comments` (2026-08-15) now has a real caller: `qualify_api.http.inbox_routes`'s
+`POST /api/inbox/sync` (the B2 acceptance-criterion route). A temporary Reflex
+manual-trigger button (`Qualify/inbox_state.py`) reaches this SAME function through that
+SAME route too, via an in-process ASGI transport rather than a second, parallel
+in-process call — see `Qualify/inbox_provider.py`'s docstring for why and for the one
+dev-only limitation that comes with it (a single authenticated tenant). No scheduler
+exists yet; that remains the next slice, along with the thread/comments view and
+`MonitoringLimitPolicy`/billing.
 """
 
 from qualify_api.inbox.client import (
@@ -25,6 +33,7 @@ from qualify_api.inbox.composition import (
     UnknownInboxConnection,
     list_candidate_media,
     set_media_monitored,
+    sync_comments,
 )
 from qualify_api.inbox.media_client import (
     MEDIA_FIELDS,
@@ -67,4 +76,5 @@ __all__ = [
     "UnknownInboxConnection",
     "list_candidate_media",
     "set_media_monitored",
+    "sync_comments",
 ]

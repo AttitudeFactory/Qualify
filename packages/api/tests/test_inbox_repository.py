@@ -151,9 +151,23 @@ def _comment(comment_id: str, *, text_value: str = "hi") -> IGComment:
     return IGComment.model_validate({"id": comment_id, "text": text_value})
 
 
+def _thread_last_message_at(connection_id: UUID, media_id: str):
+    with tenant_session(TENANT_I) as session:
+        return session.execute(
+            text(
+                "SELECT last_message_at FROM threads "
+                "WHERE connection_id = :cid AND external_thread_id = :mid"
+            ),
+            {"cid": str(connection_id), "mid": media_id},
+        ).scalar_one()
+
+
 def test_the_same_comment_synced_twice_does_not_duplicate(
     seeded_connection: tuple[UUID, UUID],
 ) -> None:
+    """B2's acceptance criterion, both halves: re-syncing the same comment creates no
+    new row (already covered below) AND does not alter `last_message_at` — a duplicate
+    is not a new event, so the thread's ordering clock must not move for it either."""
     tenant_id, connection_id = seeded_connection
     repo = PostgresInboxRepository()
     media_id = f"media-{uuid4()}"
@@ -165,16 +179,20 @@ def test_the_same_comment_synced_twice_does_not_duplicate(
         external_media_id=media_id,
         comment=comment,
     )
+    last_message_at_after_first = _thread_last_message_at(connection_id, media_id)
+
     second = repo.upsert_comment(
         tenant_id=tenant_id,
         connection_id=connection_id,
         external_media_id=media_id,
         comment=comment,
     )
+    last_message_at_after_second = _thread_last_message_at(connection_id, media_id)
 
     assert first is True
     assert second is False
     assert _message_row_count(connection_id, comment.id) == 1
+    assert last_message_at_after_second == last_message_at_after_first
 
 
 def test_two_comments_on_the_same_media_share_one_thread(

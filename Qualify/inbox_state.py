@@ -13,13 +13,25 @@ explicit product decision (not just this module's default), same "reload so the 
 the reconciled state" posture `ConnectionsState.disconnect_connection` already
 established for revoke.
 
-`sync_comments` is deliberately not called anywhere in this file — the next slice's job.
+**`sync_comments` (the event handler below) is a TEMPORARY manual trigger**, added
+2026-08-15 to demonstrate the B2 flow end to end (monitored Reel → click → Meta →
+Postgres) before a real scheduler exists — see `inbox_page.py`'s module docstring for the
+UI half. It adds no sync logic of its own: `InboxService.sync_comments` already reads
+only `is_monitored=True` media, so which Reels get synced is entirely decided by the
+toggle above it, not by this handler. As of 2026-08-16 it reaches that service through
+the real `POST /api/inbox/sync` route (B2's acceptance criterion) rather than calling
+`composition.sync_comments` in-process — see `inbox_provider.sync_now`'s docstring for
+how and for the one consequence worth knowing here: the bridge only authenticates ONE
+dev tenant (PuntoServis), so `sync_now` raises `UnknownInboxConnection` for any other
+selected tenant, surfacing as this handler's ordinary `_UNKNOWN_CONNECTION` message —
+not a new failure mode this handler needs to special-case.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from uuid import UUID
 
 import reflex as rx
@@ -27,8 +39,8 @@ from qualify_api.inbox import MediaNotEligible, UnknownInboxConnection
 from sqlalchemy.exc import SQLAlchemyError
 
 from .connections_state import ConnectionsState
-from .inbox_provider import candidate_media, instagram_connections, toggle_monitoring
-from .inbox_vm import CandidateMediaVM
+from .inbox_provider import candidate_media, instagram_connections, sync_now, toggle_monitoring
+from .inbox_vm import CandidateMediaVM, SyncSummaryVM
 from .publishing_vm import ConnectionOptionVM
 from .tenant import tenant_uuid
 
@@ -43,6 +55,14 @@ _NOT_ELIGIBLE = (
     "No se pudo verificar este contenido contra Instagram. Actualiza la lista e intenta de nuevo."
 )
 _UNKNOWN_CONNECTION = "Esa cuenta ya no está disponible. Actualiza la lista e intenta de nuevo."
+_SYNC_FAILED = "No se pudo sincronizar los comentarios. Intenta de nuevo."
+# Turning monitoring OFF never calls Meta (InboxService.set_media_monitored only
+# re-validates against Meta when monitored=True — see its docstring); a straight Postgres
+# UPDATE + reload can settle in well under 50ms, too fast for the card skeleton to ever
+# be perceived. Turning ON's real Meta round-trip is not. Padding BOTH to at least this
+# long makes the skeleton behave identically regardless of direction — a pure UI-timing
+# floor, not a change to how fast the real operation is.
+_MIN_TOGGLE_ANIMATION_SECONDS = 0.5
 
 
 class InboxState(rx.State):
@@ -66,9 +86,19 @@ class InboxState(rx.State):
     # own operation instead of being silently ignored.
     toggling_media_ids: list[str] = []
 
+    # TEMPORARY manual-sync affordance (see module docstring). Screen-wide, not per-row —
+    # unlike toggling_media_ids, a sync pass has no single Reel it belongs to.
+    is_syncing: bool = False
+    sync_error: str = ""
+    sync_result: SyncSummaryVM | None = None
+
     @rx.var
     def has_connections(self) -> bool:
         return len(self.connections) > 0
+
+    @rx.var
+    def can_sync(self) -> bool:
+        return bool(self.selected_connection_id) and not self.is_syncing
 
     @rx.var
     def show_empty_state(self) -> bool:
@@ -197,6 +227,7 @@ class InboxState(rx.State):
             connection_id = self.selected_connection_id
             connections_state = await self.get_state(ConnectionsState)
             session_tenant_id = connections_state.session_tenant_id
+        started_at = time.monotonic()
 
         tenant_id = tenant_uuid(session_tenant_id)
         resolved_connection: UUID | None = None
@@ -230,6 +261,13 @@ class InboxState(rx.State):
             async with self:
                 self.action_error = _TOGGLE_FAILED
         finally:
+            # Pad OUT here, before clearing `toggling_media_ids` — this is what makes
+            # OFF (a bare Postgres write) show the same card skeleton for the same
+            # minimum duration as ON (a real Meta round-trip), see
+            # `_MIN_TOGGLE_ANIMATION_SECONDS`'s docstring.
+            remaining = _MIN_TOGGLE_ANIMATION_SECONDS - (time.monotonic() - started_at)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
             async with self:
                 self.toggling_media_ids.remove(external_media_id)
 
@@ -239,3 +277,55 @@ class InboxState(rx.State):
         # =False: this reload must NOT blank the other rows' switches — only THIS row's
         # own `toggling_media_ids` membership (already cleared above) controls its state.
         await self._load_candidates(tenant_id, connection_id, show_loading=False)
+
+    @rx.event(background=True)
+    async def sync_comments(self) -> None:
+        """TEMPORARY manual trigger for `InboxService.sync_comments` (B2) — see the
+        module docstring. Never touches `candidates`/`toggling_media_ids`: a sync pass
+        writes to `threads`/`messages`, never to `monitored_media`, so the Reel list has
+        nothing to reload afterward — unlike `toggle_monitored`, this handler's only
+        externally visible effect is `sync_result`/`sync_error`.
+        """
+        async with self:
+            if self.is_syncing:
+                return  # a sync is already in flight; ignore a rapid double-click
+            self.is_syncing = True
+            self.sync_error = ""
+            self.sync_result = None
+            connection_id = self.selected_connection_id
+            connections_state = await self.get_state(ConnectionsState)
+            session_tenant_id = connections_state.session_tenant_id
+
+        tenant_id = tenant_uuid(session_tenant_id)
+        resolved_connection: UUID | None = None
+        if connection_id:
+            try:
+                resolved_connection = UUID(connection_id)
+            except ValueError:
+                resolved_connection = None
+
+        if tenant_id is None or resolved_connection is None:
+            async with self:
+                self.is_syncing = False
+                self.sync_error = _NO_TENANT
+            return
+
+        try:
+            result = await sync_now(tenant_id=tenant_id, connection_id=resolved_connection)
+        except UnknownInboxConnection:
+            async with self:
+                self.sync_error = _UNKNOWN_CONNECTION
+            return
+        except Exception as exc:
+            # Only the exception TYPE is logged — same posture as every other handler in
+            # this file for infrastructure/Meta errors that may carry connection details.
+            logger.error("sync_now failed: %s", type(exc).__name__)
+            async with self:
+                self.sync_error = _SYNC_FAILED
+            return
+        else:
+            async with self:
+                self.sync_result = result
+        finally:
+            async with self:
+                self.is_syncing = False

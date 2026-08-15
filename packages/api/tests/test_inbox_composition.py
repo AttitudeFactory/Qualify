@@ -1,13 +1,13 @@
 """Offline tests for the inbox composition seam added for the Reflex vertical slice
-(`list_candidate_media`/`set_media_monitored` — the inbox analogue of
+(`list_candidate_media`/`set_media_monitored`/`sync_comments` — the inbox analogue of
 `publishing/composition.py`'s `stage_and_start_publish`/`advance_publish`).
 
 Fully offline: `production_inbox_service_for`/`production_ig_user_id_for` are
 monkeypatched to return a real `InboxService` wired to in-memory/fake doubles, same
 posture `test_publishing_composition.py` already establishes for its own seam. This file
 proves the NEW seam wires `InboxService` correctly (ig_user_id resolved before Meta is
-asked, an unknown connection is refused consistently by both entry points) — not
-`InboxService`'s internal logic again (`test_inbox_service.py` already covers that).
+asked, an unknown connection is refused consistently across all three entry points) —
+not `InboxService`'s internal logic again (`test_inbox_service.py` already covers that).
 """
 
 from __future__ import annotations
@@ -16,12 +16,13 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
+from qualify_shared.social.ig_shapes import IGComment, IGCommentsPage
 
 from qualify_api.inbox import composition
 from qualify_api.inbox.composition import UnknownInboxConnection
 from qualify_api.inbox.media_client import MediaReadError, MediaSummary
 from qualify_api.inbox.repository import MemoryInboxRepository
-from qualify_api.inbox.service import InboxService, MediaNotEligible
+from qualify_api.inbox.service import InboxService, MediaNotEligible, SyncSummary
 
 TENANT = UUID("99999999-9999-4999-8999-999999999999")
 CONNECTION = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
@@ -31,8 +32,15 @@ NOW = datetime(2026, 8, 14, 12, 0, 0, tzinfo=UTC)
 
 
 class FakeCommentsClient:
+    """Returns one fixed page per media id — same shape as `test_inbox_service.py`'s
+    double, kept local rather than imported (that file's double is not part of any
+    package's public surface)."""
+
+    def __init__(self, comments_by_media: dict[str, list[IGComment]] | None = None) -> None:
+        self._comments_by_media = comments_by_media or {}
+
     async def list_comments(self, *, ig_media_id: str, after: str | None = None):
-        raise AssertionError("this slice never calls sync_comments")
+        return IGCommentsPage(data=self._comments_by_media.get(ig_media_id, []))
 
 
 class FakeMediaClient:
@@ -51,12 +59,15 @@ class FakeMediaClient:
 
 
 def _wire(
-    monkeypatch: pytest.MonkeyPatch, *, media: dict[str, MediaSummary] | None = None
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    media: dict[str, MediaSummary] | None = None,
+    comments_by_media: dict[str, list[IGComment]] | None = None,
 ) -> tuple[InboxService, MemoryInboxRepository]:
     repository = MemoryInboxRepository()
     service = InboxService(
         repository=repository,
-        comments_client=FakeCommentsClient(),
+        comments_client=FakeCommentsClient(comments_by_media),
         media_client=FakeMediaClient(media or {}),
     )
 
@@ -146,3 +157,54 @@ async def test_set_media_monitored_propagates_media_not_eligible(
             external_media_id="DOES_NOT_EXIST",
             monitored=True,
         )
+
+
+@pytest.mark.asyncio
+async def test_sync_comments_delegates_to_the_wired_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, repository = _wire(
+        monkeypatch,
+        comments_by_media={"A": [IGComment.model_validate({"id": "c1", "text": "hi"})]},
+    )
+    repository.set_media_monitored(
+        tenant_id=TENANT, connection_id=CONNECTION, external_media_id="A", monitored=True
+    )
+
+    summary = await composition.sync_comments(tenant_id=TENANT, connection_id=CONNECTION)
+
+    assert summary == SyncSummary(media_checked=1, new_comments=1)
+
+
+@pytest.mark.asyncio
+async def test_sync_comments_is_idempotent_through_the_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same guarantee `test_inbox_service.py` already pins on `InboxService` directly —
+    proven again here through the seam, since the seam is a new caller of it."""
+    _, repository = _wire(
+        monkeypatch,
+        comments_by_media={"A": [IGComment.model_validate({"id": "c1", "text": "hi"})]},
+    )
+    repository.set_media_monitored(
+        tenant_id=TENANT, connection_id=CONNECTION, external_media_id="A", monitored=True
+    )
+
+    first = await composition.sync_comments(tenant_id=TENANT, connection_id=CONNECTION)
+    second = await composition.sync_comments(tenant_id=TENANT, connection_id=CONNECTION)
+
+    assert first.new_comments == 1
+    assert second.new_comments == 0
+
+
+@pytest.mark.asyncio
+async def test_sync_comments_propagates_unknown_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same exception, checked the same way (`production_ig_user_id_for` first), as
+    `list_candidate_media`/`set_media_monitored` — all three seam functions in this
+    module now fail identically for an unknown connection."""
+    _wire(monkeypatch)
+
+    with pytest.raises(UnknownInboxConnection):
+        await composition.sync_comments(tenant_id=TENANT, connection_id=UNKNOWN_CONNECTION)

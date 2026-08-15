@@ -21,6 +21,11 @@ Pins:
 5. The provider's VM projection coerces the service's nullable fields (`caption`,
    `permalink`, `thumbnail_url`) to `""`, never lets a raw `None` reach a `str` field.
 6. Candidates come back newest-first.
+7. `sync_now` (2026-08-15, TEMPORARY manual-sync affordance; wired to HTTP 2026-08-16)
+   reaches `POST /api/inbox/sync` — NOT `composition.sync_comments` in-process, unlike
+   `candidate_media`/`toggle_monitoring` — projects the route's JSON response into
+   `SyncSummaryVM` field-for-field, and raises `UnknownInboxConnection` both for a 404
+   from the route and for a tenant the temporary dev bridge cannot authenticate as.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from collections.abc import Callable, Coroutine, Iterator
 from datetime import UTC, datetime
 from uuid import UUID
 
+import httpx
 from qualify_api.inbox import UnknownInboxConnection
 from qualify_api.inbox.service import CandidateMedia, MediaNotEligible
 
@@ -121,6 +127,17 @@ def test_provider_calls_the_real_inbox_seam() -> None:
     source = inspect.getsource(inbox_provider)
     assert "list_candidate_media(" in source
     assert "set_media_monitored(" in source
+
+
+def test_sync_now_goes_through_the_http_route_not_composition_directly() -> None:
+    """B2's acceptance criterion is `POST /api/inbox/sync` — `sync_now` must reach it,
+    not call `composition.sync_comments` in-process the way the other two provider
+    functions deliberately still do (see the module docstring for why sync is the one
+    exception)."""
+    source = inspect.getsource(inbox_provider.sync_now)
+    assert '"/api/inbox/sync"' in source
+    assert "composition.sync_comments(" not in source
+    assert "await sync_comments(" not in source  # the old in-process call shape
 
 
 def test_instagram_connections_requires_active_instagram_and_read_comments() -> None:
@@ -218,6 +235,84 @@ def test_toggle_monitoring_propagates_media_not_eligible() -> None:
             assert exc.reason == "too_old"
         else:
             raise AssertionError("toggle_monitoring must not swallow MediaNotEligible")
+
+
+def _mock_asgi_client(status_code: int, json_body: dict) -> httpx.AsyncClient:
+    """A fake in-process ASGI client for `sync_now` — no FastAPI app involved, just the
+    HTTP contract `sync_now` actually depends on (status code + JSON body). Lighter than
+    building a real `create_app()`, and keeps this file's "never a database, never the
+    API package's internals" posture (see the module docstring) even though
+    `inbox_provider.py` itself now imports `qualify_api.http.app` lazily."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/inbox/sync"
+        assert request.headers["authorization"] == f"Bearer {inbox_provider._DEV_SYNC_BEARER_TOKEN}"
+        return httpx.Response(status_code, json=json_body)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test")
+
+
+def test_sync_now_rejects_a_tenant_the_dev_bridge_is_not_wired_for() -> None:
+    """The guard that runs BEFORE any HTTP call — a mismatched dev tenant must never
+    silently sync against the one tenant the bridge actually authenticates as."""
+    other_tenant = UUID("00000000-0000-4000-8000-000000000099")
+    assert other_tenant != inbox_provider._DEV_SYNC_TENANT_ID  # sanity on the fixture itself
+
+    try:
+        _run_coro(inbox_provider.sync_now(tenant_id=other_tenant, connection_id=_CONNECTION))
+    except UnknownInboxConnection:
+        pass
+    else:
+        raise AssertionError("sync_now must refuse a tenant the dev bridge cannot authenticate as")
+
+
+def test_sync_now_projects_summary_fields() -> None:
+    client = _mock_asgi_client(200, {"media_checked": 3, "new_comments": 7})
+
+    with _patched(_inbox_sync_asgi_client=lambda: client):
+        vm = _run_coro(
+            inbox_provider.sync_now(
+                tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
+            )
+        )
+    assert vm.media_checked == 3
+    assert vm.new_comments == 7
+
+
+def test_sync_now_propagates_unknown_connection_on_a_404() -> None:
+    client = _mock_asgi_client(404, {"detail": "unknown connection"})
+
+    with _patched(_inbox_sync_asgi_client=lambda: client):
+        try:
+            _run_coro(
+                inbox_provider.sync_now(
+                    tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
+                )
+            )
+        except UnknownInboxConnection:
+            pass
+        else:
+            raise AssertionError("sync_now must not swallow a 404 as success")
+
+
+def test_sync_now_raises_for_a_failed_meta_call() -> None:
+    """A 502 (the route's mapping for `CommentsReadError`) is deliberately NOT collapsed
+    into `UnknownInboxConnection` — it is a different failure the caller should be able
+    to tell apart, same as `httpx.HTTPStatusError` already lets `InboxState.sync_comments`
+    tell apart via its blanket `except Exception` branch."""
+    client = _mock_asgi_client(502, {"detail": "GET /m/comments failed with HTTP 500"})
+
+    with _patched(_inbox_sync_asgi_client=lambda: client):
+        try:
+            _run_coro(
+                inbox_provider.sync_now(
+                    tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
+                )
+            )
+        except httpx.HTTPStatusError:
+            pass
+        else:
+            raise AssertionError("sync_now must not swallow a failed Meta call as success")
 
 
 def _run() -> int:

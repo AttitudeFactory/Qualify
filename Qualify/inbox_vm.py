@@ -31,3 +31,16 @@ class CandidateMediaVM:
     caption: str
     permalink: str
     thumbnail_url: str
+
+
+@dataclass(frozen=True)
+class SyncSummaryVM:
+    """Display-ready projection of `qualify_api.inbox.service.SyncSummary` — the result of
+    one manual "Sincronizar comentarios" click (temporary, see `inbox_page.py`'s module
+    docstring). Both fields are plain counts; nothing here can carry a token or comment
+    text, so this needs no whitelist scrutiny beyond what `test_inbox_ui.py` already
+    applies uniformly to every VM in this module.
+    """
+
+    media_checked: int
+    new_comments: int

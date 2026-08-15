@@ -39,7 +39,7 @@ from qualify_api.connections.resolver import InjectingCredentialResolver
 from qualify_api.inbox.client import HttpCommentsClient
 from qualify_api.inbox.media_client import HttpMediaClient
 from qualify_api.inbox.repository import PostgresInboxRepository
-from qualify_api.inbox.service import CandidateMedia, InboxService
+from qualify_api.inbox.service import CandidateMedia, InboxService, SyncSummary
 
 
 class UnknownInboxConnection(Exception):
@@ -131,3 +131,25 @@ async def set_media_monitored(
         external_media_id=external_media_id,
         monitored=monitored,
     )
+
+
+async def sync_comments(*, tenant_id: UUID, connection_id: UUID) -> SyncSummary:
+    """The published seam for a sync pass — the third and last of this module's seam
+    functions, completing the trio alongside `list_candidate_media`/`set_media_monitored`.
+
+    This is ONLY the wiring: `InboxService.sync_comments` (already real, already tested
+    against a live comment in `packages/api/tests/test_inbox_service.py`) becomes
+    reachable through the same credential-resolved seam its siblings use. Its caller is
+    `qualify_api.http.inbox_routes.sync_inbox` (`POST /api/inbox/sync`, B2's
+    acceptance-criterion route) — no scheduler exists yet; that remains out of scope
+    here.
+
+    Raises `UnknownInboxConnection` when the connection id is not visible to this tenant,
+    checked the same way `set_media_monitored` does (via `production_ig_user_id_for`,
+    even though `sync_comments` itself never needs `ig_user_id` — B1's comments edge is
+    addressed directly by media id, not by IG user), so all three seam functions in this
+    module fail identically for the same unknown-connection condition.
+    """
+    production_ig_user_id_for(tenant_id=tenant_id, connection_id=connection_id)
+    service = await production_inbox_service_for(tenant_id=tenant_id, connection_id=connection_id)
+    return await service.sync_comments(tenant_id=tenant_id, connection_id=connection_id)

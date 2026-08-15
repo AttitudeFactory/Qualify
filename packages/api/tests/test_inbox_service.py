@@ -120,6 +120,79 @@ async def test_sync_comments_with_no_monitored_media_touches_nothing() -> None:
     assert comments_client.calls == []
 
 
+class PaginatedFakeCommentsClient:
+    """Unlike `FakeCommentsClient` (always one fixed page, `after` ignored), this walks a
+    real `after`-cursor chain — the B2 acceptance criterion's "a new comment mid-pagination
+    shifts the window" scenario, `ig_shapes.INCREMENTAL_POLLING_NOTE`. Records every
+    `after` value it was called with, so a test can assert the service actually followed
+    the cursor rather than only reading page one."""
+
+    def __init__(self, pages_by_media: dict[str, dict[str | None, IGCommentsPage]]) -> None:
+        self._pages_by_media = pages_by_media
+        self.after_values_seen: list[str | None] = []
+
+    async def list_comments(self, *, ig_media_id: str, after: str | None = None) -> IGCommentsPage:
+        self.after_values_seen.append(after)
+        return self._pages_by_media[ig_media_id][after]
+
+
+async def test_sync_comments_walks_multiple_pages_via_the_after_cursor() -> None:
+    """Two pages, a real cursor between them: both pages' comments must land, and the
+    service must have actually asked for page two with the cursor page one returned —
+    not just read page one and stopped."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+    )
+    page_one = IGCommentsPage(
+        data=[_comment("c1"), _comment("c2")], paging={"cursors": {"after": "CURSOR_1"}}
+    )
+    page_two = IGCommentsPage(data=[_comment("c3")], paging=None)  # terminal: no cursor
+    comments_client = PaginatedFakeCommentsClient({"A": {None: page_one, "CURSOR_1": page_two}})
+    service = InboxService(
+        repository=repository, comments_client=comments_client, media_client=FakeMediaClient({})
+    )
+
+    summary = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert comments_client.after_values_seen == [None, "CURSOR_1"]
+    assert summary.media_checked == 1
+    assert summary.new_comments == 3  # c1 + c2 (page one) + c3 (page two)
+
+    # Re-running must find all three already known (no duplicates), proving they were
+    # actually persisted — not merely counted — from BOTH pages, not just page one.
+    second = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+    assert second.new_comments == 0
+
+
+async def test_sync_comments_stops_paginating_once_a_page_is_fully_known() -> None:
+    """The other half of the same criterion: a re-sync where page one has NOTHING new
+    must not walk into page two at all — `page_had_new=False` breaks the loop
+    immediately (`service.py`'s early-stop, since there is no since-cursor to lean on
+    instead per `INCREMENTAL_POLLING_NOTE`). Proven by a media id whose SECOND page is
+    intentionally missing from the fake: if the service tried to fetch it, this test
+    would raise `KeyError`, not merely assert something wrong."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+    )
+    page_one = IGCommentsPage(data=[_comment("c1")], paging={"cursors": {"after": "CURSOR_1"}})
+    page_two = IGCommentsPage(data=[_comment("c2")], paging=None)
+    comments_client = PaginatedFakeCommentsClient({"A": {None: page_one, "CURSOR_1": page_two}})
+    service = InboxService(
+        repository=repository, comments_client=comments_client, media_client=FakeMediaClient({})
+    )
+    await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)  # primes c1, c2
+    # A resync's PaginatedFakeCommentsClient here reuses the same two pages: page one is
+    # now fully known (c1 already stored), so the service must stop right there.
+    comments_client.after_values_seen.clear()
+
+    summary = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert comments_client.after_values_seen == [None]  # page two never requested
+    assert summary.new_comments == 0
+
+
 # --------------------------------------------------------------------------------------
 # set_media_monitored — the 2-week re-validation, live against Meta, every time
 # --------------------------------------------------------------------------------------

@@ -28,8 +28,8 @@ again, there is nothing here that sleeps or polls on its own.
 
 All three take already-constructed `MediaClient`/`CommentsClient` — this service does not
 build them and does not resolve credentials. Composition (which client for which
-connection) is deliberately not built yet; the temporary smoke script plays that role
-until an HTTP route or Reflex handler is the real caller.
+connection) lives in `composition.py`; `sync_comments`'s real caller is `qualify_api.
+http.inbox_routes.sync_inbox` (`POST /api/inbox/sync`, B2's acceptance-criterion route).
 """
 
 from __future__ import annotations
