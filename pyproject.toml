@@ -27,7 +27,7 @@ qualify-models = { workspace = true }
 
 [dependency-groups]
 backend = ["qualify-api", "qualify-shared", "qualify-scraper"]
-crm = ["reflex>=0.9.7", "sqlmodel>=0.0.39"]
+crm = ["reflex>=0.9.7", "sqlmodel>=0.0.39", "python-dotenv>=1.1.0"]
 # Heavy ML tree (torch/transformers via qualify-models) — kept out of default-groups.
 ml = ["qualify-models"]
 dev = [
