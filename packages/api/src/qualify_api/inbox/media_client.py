@@ -33,6 +33,22 @@ directly. `get_media` asks Meta fresh, every time, addressed directly by id
 path). `timestamp` is documented `Public` on this node (`instagram-media.md:98`) — no
 `instagram_manage_comments` gate, unlike a comment's `username`/`from`.
 
+## Fields added for the Reflex picker (2026-08-14, B2 UI slice)
+
+`MEDIA_FIELDS` originally carried only `id,timestamp` — enough to decide the 2-week rule,
+nothing to render. The picker UI needs to show a human something they can recognize, so
+`media_product_type`, `caption`, `permalink` and `thumbnail_url` were added — all four
+documented `Public` on `instagram-media.md:81,91,95,97` and all four already available
+under the signed login fork (ADR 25), no new scope required. Deliberately still not here:
+`media_url`, `like_count`, `comments_count`, `view_count` — none of them help identify
+*which* piece of content a switch controls, which is the only job this field list has.
+
+`media_product_type` also carries the "Reels only" product rule (same
+"AD"/"FEED"/"STORY"/"REELS" vocabulary `instagram-media.md:91` documents) — filtering to
+`REELS` happens in `service.py`, next to the 2-week window rule it sits beside, not here:
+this module stays a faithful mirror of what Meta returns, same separation of concerns the
+module docstring above already draws between this file and the window/eligibility rules.
+
 ## Token discipline
 
 Same as every other client in this package: no token appears in this file, error messages
@@ -50,18 +66,27 @@ from qualify_shared.social.ig_shapes import parse_meta_timestamp
 
 from qualify_api.connections.resolver import AuthenticatedClient
 
-# Minimal by design: only what the toggle/sync flow needs (id + creation time). Richer
-# fields (caption, thumbnail, permalink) are a UI-rendering concern for whenever that UI
-# gets built — adding them is a one-line change to this constant, not a schema change.
-MEDIA_FIELDS: Final = "id,timestamp"
+# `id,timestamp` decide the toggle/sync flow; the rest identify the content for a human
+# picking what to monitor (see the module docstring's "Fields added for the Reflex
+# picker" section for why exactly these four and no more).
+MEDIA_FIELDS: Final = "id,timestamp,media_product_type,caption,permalink,thumbnail_url"
 
 
 @dataclass(frozen=True)
 class MediaSummary:
-    """One IG Media object, reduced to what monitoring needs to decide anything."""
+    """One IG Media object, reduced to what monitoring needs to decide anything plus what
+    a picker UI needs to identify it. The four new fields are all optional: `get_media`'s
+    fixture payloads and `list_recent_media`'s pre-2026-08-14 tests never carried them,
+    and a real Meta response can still omit `thumbnail_url` (video-only) or `caption`
+    (none set) — `None` there is a legitimate value, not a parse failure.
+    """
 
     id: str
     timestamp: datetime
+    media_product_type: str | None = None
+    caption: str | None = None
+    permalink: str | None = None
+    thumbnail_url: str | None = None
 
 
 class MediaReadError(Exception):
@@ -109,15 +134,33 @@ def _error_codes(response: httpx.Response) -> tuple[int | None, int | None]:
     )
 
 
+def _optional_str(payload: dict[str, Any], field: str) -> str | None:
+    """A `Public` field Meta may legitimately omit (no caption set, non-video media, an
+    older API version). Anything present but not a non-empty string is treated the same
+    as absent — never a parse failure over a rendering-only field."""
+    value = payload.get(field)
+    return value if isinstance(value, str) and value else None
+
+
 def _parse_media_summary(payload: dict[str, Any]) -> MediaSummary:
-    """[V] `instagram-media.md:98,125,138`: `{"id": ..., "timestamp": "2019-...+0000"}`."""
+    """[V] `instagram-media.md:81,91,95,97,98,125,138`: `{"id": ..., "timestamp":
+    "2019-...+0000", "media_product_type": "REELS", "caption": ..., "permalink": ...,
+    "thumbnail_url": ...}`. Only `id`/`timestamp` are required — the rest are display
+    fields and missing means "not shown", not "malformed"."""
     media_id = payload.get("id")
     raw_timestamp = payload.get("timestamp")
     if not isinstance(media_id, str) or not media_id:
         raise MediaReadError("media response carried no id")
     if not isinstance(raw_timestamp, str) or not raw_timestamp:
         raise MediaReadError("media response carried no timestamp")
-    return MediaSummary(id=media_id, timestamp=parse_meta_timestamp(raw_timestamp))
+    return MediaSummary(
+        id=media_id,
+        timestamp=parse_meta_timestamp(raw_timestamp),
+        media_product_type=_optional_str(payload, "media_product_type"),
+        caption=_optional_str(payload, "caption"),
+        permalink=_optional_str(payload, "permalink"),
+        thumbnail_url=_optional_str(payload, "thumbnail_url"),
+    )
 
 
 def _parse_media_list_response(payload: dict[str, Any]) -> tuple[MediaSummary, ...]:

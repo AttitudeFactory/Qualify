@@ -8,7 +8,13 @@ again, there is nothing here that sleeps or polls on its own.
 
 - `list_candidate_media` — what the "pick what to monitor" UI would call. Reads Meta
   (last 2 weeks, via `MediaClient.list_recent_media`) and cross-references what is
-  already monitored, so the caller sees both in one shape.
+  already monitored, so the caller sees both in one shape. Also enforces "Reels only"
+  (2026-08-14, same session as the 2-week rule): the rest of the product only ever
+  operates on `media_product_type == "REELS"` (`publishing_provider.start_publish` fixes
+  the same value for the opposite direction), so a picker offering photos/carousels to
+  "monitor" would offer something nothing downstream is built for. Filtered HERE, not in
+  `media_client.py`, which stays a faithful mirror of whatever Meta returns — same
+  separation of concerns `MONITORING_WINDOW` already establishes for the time rule.
 - `set_media_monitored` — the toggle. **Re-validates the 2-week window against Meta
   itself before allowing `monitored=True`** (product decision, 2026-08-14): a caller
   that bypasses the candidate-listing UI and calls this directly with an old media_id
@@ -40,14 +46,28 @@ from qualify_api.inbox.repository import InboxRepository
 # monitoring, and re-enforced here — not merely in what the candidate list returns.
 MONITORING_WINDOW = timedelta(days=14)
 
+# The only media type this product's monitoring (and publishing — see
+# `publishing_provider.start_publish`) ever operates on.
+_MONITORABLE_MEDIA_PRODUCT_TYPE = "REELS"
+
 
 @dataclass(frozen=True)
 class CandidateMedia:
-    """One piece of recent content, with whether the tenant already monitors it."""
+    """One piece of recent content, with whether the tenant already monitors it.
+
+    `caption`/`permalink`/`thumbnail_url` are carried through verbatim from
+    `MediaSummary` (may be `None`) — this dataclass is still the service's internal
+    shape, not a client-facing one; coercing `None` to `""` is a display concern that
+    belongs to whatever UI projects this next (Reflex's `inbox_provider.py`), same
+    division `publishing_provider._to_vm` already draws for `PublishState`.
+    """
 
     external_media_id: str
     timestamp: datetime
     is_monitored: bool
+    caption: str | None = None
+    permalink: str | None = None
+    thumbnail_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -95,8 +115,12 @@ class InboxService:
                 external_media_id=media.id,
                 timestamp=media.timestamp,
                 is_monitored=media.id in monitored_ids,
+                caption=media.caption,
+                permalink=media.permalink,
+                thumbnail_url=media.thumbnail_url,
             )
             for media in recent
+            if media.media_product_type == _MONITORABLE_MEDIA_PRODUCT_TYPE
         )
 
     async def set_media_monitored(

@@ -7,9 +7,12 @@ Sync/polling is scoped to a tenant-chosen watchlist, not every Reel on the accou
 (product decision, 2026-08-14): `monitored_media` is the persisted toggle,
 `InboxService.sync_comments` only ever processes what is marked there.
 
-Still not here: `composition.py` (no real caller yet — same posture B1 shipped with),
-`MonitoringLimitPolicy`/billing, HTTP routes. This package grows into the shape of
-`qualify_api.publishing` as those land, not before.
+`composition.py` (2026-08-14, B2 UI slice) wires the real credential-resolved clients
+together and is the published seam for the Reflex CRM — `list_candidate_media`/
+`set_media_monitored` below, plain async functions over ids, no HTTP hop, same role
+`publishing.composition.stage_and_start_publish`/`advance_publish` have for publishing.
+Still not here: `sync_comments` wired to any caller (next slice — the thread/comments
+view), `MonitoringLimitPolicy`/billing, HTTP routes.
 """
 
 from qualify_api.inbox.client import (
@@ -17,6 +20,11 @@ from qualify_api.inbox.client import (
     CommentsClient,
     CommentsReadError,
     HttpCommentsClient,
+)
+from qualify_api.inbox.composition import (
+    UnknownInboxConnection,
+    list_candidate_media,
+    set_media_monitored,
 )
 from qualify_api.inbox.media_client import (
     MEDIA_FIELDS,
@@ -56,4 +64,7 @@ __all__ = [
     "MemoryInboxRepository",
     "PostgresInboxRepository",
     "SyncSummary",
+    "UnknownInboxConnection",
+    "list_candidate_media",
+    "set_media_monitored",
 ]

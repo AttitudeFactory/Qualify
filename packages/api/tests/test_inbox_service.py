@@ -228,8 +228,12 @@ async def test_list_candidate_media_marks_already_monitored_items() -> None:
     )
     media_client = FakeMediaClient(
         {
-            "A": MediaSummary(id="A", timestamp=NOW - timedelta(days=1)),
-            "B": MediaSummary(id="B", timestamp=NOW - timedelta(days=2)),
+            "A": MediaSummary(
+                id="A", timestamp=NOW - timedelta(days=1), media_product_type="REELS"
+            ),
+            "B": MediaSummary(
+                id="B", timestamp=NOW - timedelta(days=2), media_product_type="REELS"
+            ),
         }
     )
     service = InboxService(
@@ -243,3 +247,54 @@ async def test_list_candidate_media_marks_already_monitored_items() -> None:
     by_id = {c.external_media_id: c for c in candidates}
     assert by_id["A"].is_monitored is True
     assert by_id["B"].is_monitored is False
+
+
+async def test_list_candidate_media_carries_display_fields_through() -> None:
+    repository = MemoryInboxRepository()
+    media_client = FakeMediaClient(
+        {
+            "A": MediaSummary(
+                id="A",
+                timestamp=NOW - timedelta(days=1),
+                media_product_type="REELS",
+                caption="hello world",
+                permalink="https://instagram.com/reel/A",
+                thumbnail_url="https://cdn/A.jpg",
+            )
+        }
+    )
+    service = InboxService(
+        repository=repository, comments_client=FakeCommentsClient({}), media_client=media_client
+    )
+
+    (candidate,) = await service.list_candidate_media(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, ig_user_id=IG_USER_ID, now=NOW
+    )
+
+    assert candidate.caption == "hello world"
+    assert candidate.permalink == "https://instagram.com/reel/A"
+    assert candidate.thumbnail_url == "https://cdn/A.jpg"
+
+
+async def test_list_candidate_media_excludes_non_reel_media() -> None:
+    """Feed photos/carousels are real Meta media but nothing downstream of this screen
+    (monitoring, publishing) operates on them — only REELS is offered."""
+    repository = MemoryInboxRepository()
+    media_client = FakeMediaClient(
+        {
+            "A": MediaSummary(
+                id="A", timestamp=NOW - timedelta(days=1), media_product_type="REELS"
+            ),
+            "B": MediaSummary(id="B", timestamp=NOW - timedelta(days=1), media_product_type="FEED"),
+            "C": MediaSummary(id="C", timestamp=NOW - timedelta(days=1), media_product_type=None),
+        }
+    )
+    service = InboxService(
+        repository=repository, comments_client=FakeCommentsClient({}), media_client=media_client
+    )
+
+    candidates = await service.list_candidate_media(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, ig_user_id=IG_USER_ID, now=NOW
+    )
+
+    assert [c.external_media_id for c in candidates] == ["A"]

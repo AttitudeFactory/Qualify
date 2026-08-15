@@ -70,6 +70,48 @@ async def test_list_recent_media_parses_the_page() -> None:
     assert len(results) == 1
     assert results[0].id == "1"
     assert results[0].timestamp == datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)
+    # The four display fields are legitimately absent from this fixture — None, not a
+    # parse failure (see the module docstring's "Fields added for the Reflex picker").
+    assert results[0].media_product_type is None
+    assert results[0].caption is None
+    assert results[0].permalink is None
+    assert results[0].thumbnail_url is None
+
+
+async def test_list_recent_media_parses_the_display_fields_when_present() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _json(
+            {
+                "data": [
+                    {
+                        "id": "1",
+                        "timestamp": "2026-08-10T12:00:00+0000",
+                        "media_product_type": "REELS",
+                        "caption": "a real caption",
+                        "permalink": "https://www.instagram.com/reel/abc/",
+                        "thumbnail_url": "https://cdn.example/thumb.jpg",
+                    }
+                ]
+            }
+        )
+
+    (media,) = await _client(handler).list_recent_media(ig_user_id=IG_USER, since=datetime.now(UTC))
+    assert media.media_product_type == "REELS"
+    assert media.caption == "a real caption"
+    assert media.permalink == "https://www.instagram.com/reel/abc/"
+    assert media.thumbnail_url == "https://cdn.example/thumb.jpg"
+
+
+async def test_list_recent_media_requests_the_full_field_list() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["fields"] = request.url.params["fields"]
+        return _json({"data": []})
+
+    await _client(handler).list_recent_media(ig_user_id=IG_USER, since=datetime.now(UTC))
+    for field in ("id", "timestamp", "media_product_type", "caption", "permalink", "thumbnail_url"):
+        assert field in seen["fields"]
 
 
 async def test_list_recent_media_follows_the_cursor_across_pages() -> None:
