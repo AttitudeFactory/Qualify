@@ -59,13 +59,16 @@ def _thumbnail(candidate: CandidateMediaVM) -> rx.Component:
 
 
 def _monitoring_switch(candidate: CandidateMediaVM) -> rx.Component:
+    """Per-row control: just the switch and its status label. Whether THIS row is
+    mid-toggle is decided one level up, by `_candidate_card` — see its docstring for why
+    the loading state lives there now (the whole card skeletons, not just this control).
+    """
     return rx.vstack(
         rx.switch(
             checked=candidate.is_monitored,
             on_change=lambda checked: InboxState.toggle_monitored(
                 candidate.external_media_id, checked
             ),
-            disabled=InboxState.toggling_media_id == candidate.external_media_id,
             size="2",
         ),
         rx.text(
@@ -78,7 +81,7 @@ def _monitoring_switch(candidate: CandidateMediaVM) -> rx.Component:
     )
 
 
-def _candidate_card(candidate: CandidateMediaVM) -> rx.Component:
+def _candidate_card_content(candidate: CandidateMediaVM) -> rx.Component:
     return rx.box(
         rx.hstack(
             _thumbnail(candidate),
@@ -122,6 +125,27 @@ def _candidate_card(candidate: CandidateMediaVM) -> rx.Component:
         border_radius="0.75rem",
         background=rx.color("gray", 2),
         width="100%",
+    )
+
+
+def _candidate_card(candidate: CandidateMediaVM) -> rx.Component:
+    """One Reel's card, or — while THIS row's toggle is in flight — the SAME shimmering
+    `_card_skeleton()` the initial-load state uses, in this card's place only.
+
+    Gated on `toggling_media_ids.contains(candidate.external_media_id)` — the per-row
+    set `InboxState.toggle_monitored` already maintains. `rx.foreach(InboxState.
+    candidates, _candidate_card)` in `_candidates_body()` is untouched: every OTHER card
+    keeps rendering `_candidate_card_content` normally, because their own id is never in
+    `toggling_media_ids`. This is deliberately NOT `is_loading_candidates` (that flag
+    stays reserved for the initial load / a connection switch, where there is nothing
+    valid to show yet at all — see `_load_candidates`'s `show_loading` param) — a single
+    row toggling must never blank or skeleton any OTHER row, and never has to since this
+    condition is local to `candidate.external_media_id`.
+    """
+    return rx.cond(
+        InboxState.toggling_media_ids.contains(candidate.external_media_id),
+        _card_skeleton(),
+        _candidate_card_content(candidate),
     )
 
 

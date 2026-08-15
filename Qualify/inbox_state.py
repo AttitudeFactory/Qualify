@@ -60,9 +60,11 @@ class InboxState(rx.State):
     # Errors from the toggle action, kept apart from `load_error`: a refused toggle must
     # not blank the list the operator is looking at.
     action_error: str = ""
-    # Which media's switch is mid-flight, so its row can disable itself against a
-    # double-click rather than firing two toggles for the same id.
-    toggling_media_id: str = ""
+    # Media ids whose switch is mid-flight, so each row can disable itself against a
+    # double-click on ITSELF while staying independent of every other row — a list
+    # (not a single id) so toggling Reel B while Reel A is still in flight starts its
+    # own operation instead of being silently ignored.
+    toggling_media_ids: list[str] = []
 
     @rx.var
     def has_connections(self) -> bool:
@@ -77,13 +79,24 @@ class InboxState(rx.State):
             and len(self.candidates) == 0
         )
 
-    async def _load_candidates(self, tenant_id: UUID, connection_id: str) -> None:
+    async def _load_candidates(
+        self, tenant_id: UUID, connection_id: str, *, show_loading: bool = True
+    ) -> None:
         """Shared by the initial load, a connection switch, and every toggle's
         post-action reload. Private (not `@rx.event`) — same role `PublishState.
         _fail_pending_attempt` has, a helper called FROM background handlers, not one
-        itself."""
+        itself.
+
+        `show_loading=False` is what `toggle_monitored` passes: `is_loading_candidates`
+        drives `_candidates_body()`'s full-list skeleton swap in `inbox_page.py`, which
+        is correct for the initial load / a connection switch (nothing valid to show
+        yet) but was WRONG for a toggle's reload — it blanked every row's switch, not
+        just the one being toggled, which is what a per-row `disabled` binding
+        (`toggling_media_ids`) already exists to do on its own.
+        """
         async with self:
-            self.is_loading_candidates = True
+            if show_loading:
+                self.is_loading_candidates = True
             self.load_error = ""
 
         try:
@@ -163,9 +176,10 @@ class InboxState(rx.State):
             self.selected_connection_id = connection_id
             self.candidates = []
             self.action_error = ""
+            connections_state = await self.get_state(ConnectionsState)
+            session_tenant_id = connections_state.session_tenant_id
 
-        connections_state = await self.get_state(ConnectionsState)
-        tenant_id = tenant_uuid(connections_state.session_tenant_id)
+        tenant_id = tenant_uuid(session_tenant_id)
         if tenant_id is None:
             return
         await self._load_candidates(tenant_id, connection_id)
@@ -176,14 +190,15 @@ class InboxState(rx.State):
         reload the whole candidate list from the backend — see the module docstring for
         why this is never an optimistic local update."""
         async with self:
-            if self.toggling_media_id:
-                return  # a toggle is already in flight; ignore a rapid double-click
-            self.toggling_media_id = external_media_id
+            if external_media_id in self.toggling_media_ids:
+                return  # THIS row already has a toggle in flight; ignore a double-click
+            self.toggling_media_ids.append(external_media_id)
             self.action_error = ""
             connection_id = self.selected_connection_id
+            connections_state = await self.get_state(ConnectionsState)
+            session_tenant_id = connections_state.session_tenant_id
 
-        connections_state = await self.get_state(ConnectionsState)
-        tenant_id = tenant_uuid(connections_state.session_tenant_id)
+        tenant_id = tenant_uuid(session_tenant_id)
         resolved_connection: UUID | None = None
         if connection_id:
             try:
@@ -193,7 +208,7 @@ class InboxState(rx.State):
 
         if tenant_id is None or resolved_connection is None:
             async with self:
-                self.toggling_media_id = ""
+                self.toggling_media_ids.remove(external_media_id)
                 self.action_error = _NO_TENANT
             return
 
@@ -216,9 +231,11 @@ class InboxState(rx.State):
                 self.action_error = _TOGGLE_FAILED
         finally:
             async with self:
-                self.toggling_media_id = ""
+                self.toggling_media_ids.remove(external_media_id)
 
         # Reload from the backend regardless of outcome, so the switch reflects reality —
         # success, a refused toggle, and an infrastructure failure all leave the DB in
-        # SOME real state, and only a fresh read shows what it actually is.
-        await self._load_candidates(tenant_id, connection_id)
+        # SOME real state, and only a fresh read shows what it actually is. show_loading
+        # =False: this reload must NOT blank the other rows' switches — only THIS row's
+        # own `toggling_media_ids` membership (already cleared above) controls its state.
+        await self._load_candidates(tenant_id, connection_id, show_loading=False)
