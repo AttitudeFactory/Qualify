@@ -12,7 +12,8 @@ Las marcas hoy usan dos mundos separados: herramientas de social listening para 
 2. **Transformar millones de datos en insights claros con un clic**: sentiment, temas, relaciones entre términos, resúmenes cualitativos generados por IA (AI Insights).
 3. **Prevenir crisis de reputación** con alertas automáticas sobre menciones, picos de sentiment negativo y menciones dentro de videos/audios.
 4. **Mapear públicos e influencers**: características de audiencia (idioma, ubicación, intereses), scoring de creators y gestión de relaciones tipo CRM.
-5. **Activar revenue**: pasar del insight a la acción — outbound automatizado a creators/leads calificados, smart replies con RAG, reporting de campañas en tiempo real y CRM siempre limpio y enriquecido.
+5. **Servir al operador multi-emprendimiento**: N negocios propios (locales, inmobiliaria, agencia…) sobre la misma instalación, cada uno como tenant aislado con su propio login (`1 login = 1 tenant = 1 negocio`) — ver [`docs/modelo-negocio-operador-multi-emprendimiento.md`](docs/modelo-negocio-operador-multi-emprendimiento.md).
+6. **Activar revenue**: pasar del insight a la acción — outbound automatizado a creators/leads calificados, smart replies con RAG, reporting de campañas en tiempo real y CRM siempre limpio y enriquecido.
 
 ## Características principales
 
