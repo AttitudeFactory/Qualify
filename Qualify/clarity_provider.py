@@ -57,8 +57,7 @@ _FRICTION_METRICS: dict[str, tuple[str, str, str]] = {
     "ExcessiveScroll": (
         "Scroll excesivo",
         "Desplazamiento de más buscando algo que no aparece.",
-        "Lo que buscan está muy abajo o no está. Sube el contenido clave "
-        "o añade accesos directos.",
+        "Lo que buscan está muy abajo o no está. Sube el contenido clave o añade accesos directos.",
     ),
 }
 
