@@ -17,8 +17,15 @@ from fastapi import FastAPI
 
 from qualify_api.connections.composition import production_connect_service
 from qualify_api.connections.service import ConnectService
-from qualify_api.http import connections_routes, deps, inbox_routes, publishing_routes
+from qualify_api.http import (
+    connections_routes,
+    deps,
+    inbox_routes,
+    leads_routes,
+    publishing_routes,
+)
 from qualify_api.http.inbox_routes import SyncComments
+from qualify_api.leads.service import LeadIntakeService
 from qualify_api.publishing.service import PublishService
 from qualify_api.publishing.staging import MediaStagingService
 
@@ -52,11 +59,20 @@ def build_production_inbox_sync() -> SyncComments:
     return sync_comments
 
 
+def build_production_leads_service() -> LeadIntakeService:
+    """Lazy import like the publishing builders: the leads module needs Redis only at
+    the first intake, and an app booted without one should fail THAT request loudly."""
+    from qualify_api.leads.composition import production_leads_service  # noqa: PLC0415
+
+    return production_leads_service()
+
+
 def create_app(*, configure_production: bool = True) -> FastAPI:
     app = FastAPI(title="Qualify API", version="0.1.0")
     app.include_router(connections_routes.router)
     app.include_router(publishing_routes.router)
     app.include_router(inbox_routes.router)
+    app.include_router(leads_routes.router)
     if configure_production:
         app.dependency_overrides[connections_routes.get_connect_service] = build_production_service
         app.dependency_overrides[publishing_routes.get_publish_service] = (
@@ -66,6 +82,7 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
             build_production_staging_service
         )
         app.dependency_overrides[inbox_routes.get_sync_comments] = build_production_inbox_sync
+        app.dependency_overrides[leads_routes.get_leads_service] = build_production_leads_service
         # C1: parsed at assembly so a malformed QUALIFY_DEV_PRINCIPALS fails the boot,
         # not the first request.
         app.dependency_overrides[deps.current_principal] = deps.build_dev_principal_dependency()
