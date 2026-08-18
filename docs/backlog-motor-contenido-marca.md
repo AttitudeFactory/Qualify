@@ -200,6 +200,12 @@ Convención de IDs: `MC-##` para lo nuevo; `F5-MA-##` cuando la historia **ya ex
 | **F5-MA-02** | `CreativeRouter` con cadenas de fallback: **(F)** fallo/timeout → siguiente, y el *primer* salto es **mismo modelo, otro agregador** (fal→Replicate); **(P)** coste proyectado > cap restante → downgrade o bloqueo; **(Q)** score < umbral → siguiente. Todo salto logueado con motivo. | F5-MA-01, -03 | pipeline | M |
 | **MC-07** | `creative_engine_config` por brand (cap mensual, tier, cadenas por tarea, `hitl_required=true`, `hard_stop_on_cap`, `on_credential_failure`) + contabilidad en `creative_usage_events`. Para copy se registran las **cuatro** cifras de `usage` (input, output, `cache_read_input_tokens`, `cache_creation_input_tokens`) y el `(P)` pre-vuelo estima con `count_tokens()`. El admin debe explicar que bajo BYOK el cap es guardarraíl de producto, no tope de gasto de Qualify. Migrable a `billing.usage_events` cuando exista. | MC-01, F5-MA-03 | pipeline | M |
 
+### Slice 2-bis — Sustrato de foto
+
+| ID | Historia | Dep. | Dueño | Tamaño |
+|---|---|---|---|---|
+| **MC-16** | **`photo_recipe`** (`qualify_creative.photo`): normalización (EXIF/HEIC/P3/export — los 4 fallos silenciosos, corren siempre) → segmentación local `birefnet-general-lite` con **máscara persistida junto al asset** → derivados que la consumen (recorte, sombra sintética, preset cálido solo-sujeto). Parámetros por marca en `brand_kit.photo_recipe`, calibrados una vez. Tests: normalización con fixtures de iPhone (HEIC girado), derivados deterministas contra máscara grabada (la segmentación en sí bajo marcador `integration`). Veto de licencia en test estático: `bria-rmbg` prohibido. | MC-01 | pipeline | M |
+
 ### Slice 3 — Generación on-brand
 
 | ID | Historia | Dep. | Dueño | Tamaño |
@@ -221,7 +227,7 @@ Convención de IDs: `MC-##` para lo nuevo; `F5-MA-##` cuando la historia **ya ex
 
 | ID | Historia | Dueño | Tamaño |
 |---|---|---|---|
-| **MC-15** | **Kill criterion.** Golden set de tono por marca + prueba ciega: copy generado *con* voice profile vs. copy generado con prompt libre del marketer, juzgado a ciegas por el propio marketer sobre N piezas. Umbral y ventana explícitos. Si el perfil no gana, el sustrato de marca no tiene foso y el módulo se reduce a un wrapper — y se apaga o se rediseña. | datasci + fundador | S |
+| **MC-15** | **Kill criterion — confirmado por el fundador 2026-08-18: a los DOS MESES de la apertura.** La pregunta es una y no necesita golden set: *¿sigues publicando con el módulo, o volviste a hacer los posts a mano?* Si volviste a mano, el módulo falló y se apaga o se rediseña. Se sustituye así la prueba ciega con umbral que heredaba de ADR 32: esa ceremonia existía porque el Motor de Ángulos se vendía como foso frente a competidores; este módulo es para los negocios propios del operador, y el uso real es la única señal que importa. **Métrica auxiliar, gratis:** piezas publicadas desde Qualify / piezas publicadas en total, medido en la semana 8. | fundador | S |
 
 ---
 

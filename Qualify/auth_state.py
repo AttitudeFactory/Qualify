@@ -189,6 +189,7 @@ class AuthState(rx.State):
             # modules read AuthState, and a top-level import would be circular.
             from .clarity_state import ClarityState
             from .connections_state import ConnectionsState
+            from .creative_state import CreativeState
             from .inbox_state import InboxState
             from .leads_state import LeadsState
             from .publishing_state import PublishState
@@ -201,6 +202,7 @@ class AuthState(rx.State):
                 InboxState,
                 PublishState,
                 DashboardState,
+                CreativeState,
             ):
                 substate = await self.get_state(state_cls)
                 substate.reset()

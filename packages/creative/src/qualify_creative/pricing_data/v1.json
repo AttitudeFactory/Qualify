@@ -1,0 +1,24 @@
+{
+  "version": "v1",
+  "sources": {
+    "claude-opus-5": "skill claude-api 2026-08 (per-MTok list prices)",
+    "flux2_pro": "docs/comparativa-apis-creativo-motor-angulos.md §2.1",
+    "seedream_v4": "docs/comparativa-apis-creativo-motor-angulos.md §2.1",
+    "ideogram_v3_default": "docs/comparativa-apis-creativo-motor-angulos.md §2.1"
+  },
+  "entries": {
+    "claude-opus-5": {
+      "per_mtok_in": "5.00",
+      "per_mtok_out": "25.00"
+    },
+    "flux2_pro": {
+      "per_piece": "0.03"
+    },
+    "seedream_v4": {
+      "per_piece": "0.03"
+    },
+    "ideogram_v3_default": {
+      "per_piece": "0.06"
+    }
+  }
+}

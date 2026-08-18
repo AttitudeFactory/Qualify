@@ -7,6 +7,13 @@ from .clarity_state import ClarityState
 from .components import filter_bar, mentions_table, sidebar, stats_row, topbar
 from .connections_page import connections_index
 from .connections_state import ConnectionsState
+from .creative_pages import (
+    brand_index,
+    create_index,
+    draft_detail_index,
+    drafts_index,
+)
+from .creative_state import CreativeState
 from .db import create_db_and_tables
 from .inbox_page import inbox_index
 from .inbox_state import InboxState
@@ -91,6 +98,33 @@ app.add_page(
     route="/clarity",
     on_load=[AuthState.require_login, ClarityState.load],
     title="Qualify · Clarity",
+)
+# Brand Content Engine (design §6): /brand is the default entry when the brand is not
+# ready; /create is gated server-side by BrandReadiness (the load stores the verdict).
+app.add_page(
+    brand_index,
+    route="/brand",
+    on_load=[AuthState.require_login, CreativeState.load_brand, CreativeState.load_voice],
+    title="Qualify · Brand Kit",
+)
+
+app.add_page(
+    create_index,
+    route="/create",
+    on_load=[AuthState.require_login, CreativeState.load_create],
+    title="Qualify · Nuevo encargo",
+)
+app.add_page(
+    drafts_index,
+    route="/drafts",
+    on_load=[AuthState.require_login, CreativeState.load_drafts],
+    title="Qualify · Borradores",
+)
+app.add_page(
+    draft_detail_index,
+    route="/drafts/[draft_id]",
+    on_load=[AuthState.require_login, CreativeState.load_draft],
+    title="Qualify · Borrador",
 )
 # UI demo, no backend: nothing to load, but the session gate still applies.
 app.add_page(

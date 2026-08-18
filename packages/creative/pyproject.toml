@@ -1,0 +1,37 @@
+[project]
+name = "qualify-creative"
+version = "0.1.0"
+description = "Brand Content Engine: brand kit, voice profile, deterministic composition and the GenerationProvider seam over creative vendors"
+readme = "README.md"
+authors = [
+    { name = "Herwin Rey", email = "hlrd1993@gmail.com" }
+]
+requires-python = ">=3.12"
+# Deliberately minimal. Vendor SDKs (fal, replicate, anthropic) are NOT declared here:
+# adapters live behind the `GenerationProvider` protocol and are imported lazily, so a
+# caller that only needs the schemas never drags a network client into its tree.
+# Pillow arrives with the composition module, not before it exists.
+dependencies = [
+    "pydantic>=2.13.4",
+    "pillow>=11.0",
+    "pillow-heif>=0.18",
+]
+# rembg stays OUT of dependencies on purpose: onnxruntime + model weights are the heavy
+# tree, and segmentation sits behind the `Segmenter` Protocol with a lazy import — the
+# same rule as the vendor SDKs. Install for real segmentation: `rembg[cpu]`.
+
+[build-system]
+requires = ["uv_build>=0.11.29,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+# The anthropic SDK stays OUT of main dependencies (same rule as fal/replicate/rembg):
+# the copy adapter imports it lazily inside the client-building method, so only deploys
+# that actually generate copy need it. Install with: `qualify-creative[llm]`.
+[project.optional-dependencies]
+llm = ["anthropic>=0.40"]
