@@ -1,16 +1,14 @@
 """Reflex state for the connections screen (C-06).
 
 Holds only whitelisted `ConnectionVM`s (never ORM rows), so nothing credential-bearing
-can be serialized to the client. `session_tenant_id` lives per-session: each Reflex
-websocket session gets its own State instance, so two browser sessions selecting
-different dev tenants naturally see disjoint data — that is what makes the
-"session A never paints tenant B" criterion (QUA-18) exercisable from the UI today.
+can be serialized to the client. The active tenant comes from `AuthState` — set only
+by a real login (QUA-66), per-session, so two browser sessions logged into different
+businesses naturally see disjoint data — that is what makes the "session A never
+paints tenant B" criterion (QUA-18) exercisable from the UI.
 
-Both the tenant roster and the connections come from Postgres, so both are loaded in a
-background event and run off the event loop (`asyncio.to_thread`) — SQLAlchemy here is
-synchronous, and a blocking call inside a background task would stall every other
-session's websocket. Loading the roster at runtime rather than at import time also
-keeps `reflex run` from requiring a live database just to compile the page.
+The connections come from Postgres, so they are loaded in a background event and run
+off the event loop (`asyncio.to_thread`) — SQLAlchemy here is synchronous, and a
+blocking call inside a background task would stall every other session's websocket.
 """
 
 from __future__ import annotations
@@ -25,14 +23,15 @@ from qualify_api.connections import ConnectionNotFound
 from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
 
+from .auth_state import AuthState
 from .connections_provider import NoActingUser, begin_connect, connections_for, disconnect
 from .connections_vm import ConnectionVM
-from .tenant import TenantChoice, available_tenants, tenant_uuid
+from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
 
 _LOAD_FAILED = "No se pudieron cargar las conexiones. Revisa la conexión con la base de datos."
-_NO_TENANTS = "No hay ningún tenant aprovisionado todavía."
+_NO_TENANTS = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _DISCONNECT_FAILED = "No se pudo desconectar la cuenta. Revisa la conexión con la base de datos."
 # Deliberately says "not found", never "revoked": `ConnectionNotFound` also covers
 # "belongs to another tenant" (RLS makes them the same read), and answering "listo,
@@ -44,10 +43,6 @@ _NO_ACTING_USER = "Este tenant no tiene ningún usuario al que atribuir la conex
 
 class ConnectionsState(rx.State):
     """State for the tenant's connected-accounts screen."""
-
-    # Dev tenant selection (founder decision 2). Real login is a fast-follow (QUA-66).
-    tenant_options: list[TenantChoice] = []
-    session_tenant_id: str = ""
 
     connections: list[ConnectionVM] = []
     is_loading: bool = False
@@ -67,32 +62,22 @@ class ConnectionsState(rx.State):
 
     @rx.event(background=True)
     async def load_connections(self) -> None:
-        """Load the roster (first visit) and the session tenant's connections."""
+        """Load the authenticated tenant's connections."""
         async with self:
             self.is_loading = True
             self.load_error = ""
             self.connections = []
-            options = self.tenant_options
-            tenant_id = self.session_tenant_id
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+
+        resolved = tenant_uuid(session_tenant_id) if session_tenant_id else None
+        if resolved is None:
+            async with self:
+                self.is_loading = False
+                self.load_error = _NO_TENANTS
+            return
 
         try:
-            if not options:
-                options = await asyncio.to_thread(available_tenants)
-                async with self:
-                    self.tenant_options = options
-
-            if not tenant_id:
-                tenant_id = options[0].id if options else ""
-                async with self:
-                    self.session_tenant_id = tenant_id
-
-            resolved = tenant_uuid(tenant_id) if tenant_id else None
-            if resolved is None:
-                async with self:
-                    self.is_loading = False
-                    self.load_error = _NO_TENANTS
-                return
-
             data = await asyncio.to_thread(connections_for, resolved)
         except SQLAlchemyError as exc:
             # Only the exception type is logged: a SQLAlchemy error's text can carry
@@ -104,20 +89,11 @@ class ConnectionsState(rx.State):
             return
 
         async with self:
-            # Guard against a tenant switch that raced this load.
-            if tenant_id == self.session_tenant_id:
+            # Guard against a logout/login that raced this load.
+            auth = await self.get_state(AuthState)
+            if session_tenant_id == auth.session_tenant_id:
                 self.connections = data
                 self.is_loading = False
-
-    @rx.event
-    def switch_tenant(self, tenant_id: str) -> rx.event.EventSpec | None:
-        """Dev-only: enter as a different tenant and reload its connections."""
-        if not any(option.id == tenant_id for option in self.tenant_options):
-            return None
-        self.session_tenant_id = tenant_id
-        # An action error from the previous tenant means nothing here.
-        self.action_error = ""
-        return ConnectionsState.load_connections
 
     @rx.event(background=True)
     async def start_connect_flow(self) -> AsyncIterator[rx.event.EventSpec]:
@@ -128,10 +104,11 @@ class ConnectionsState(rx.State):
         the operator actually clicks. Blocking (Redis + Postgres), hence off-thread.
         """
         async with self:
-            tenant_id = self.session_tenant_id
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
             self.action_error = ""
 
-        resolved_tenant = tenant_uuid(tenant_id)
+        resolved_tenant = tenant_uuid(session_tenant_id)
         if resolved_tenant is None:
             async with self:
                 self.action_error = _NO_TENANTS
@@ -168,9 +145,10 @@ class ConnectionsState(rx.State):
         show.
         """
         async with self:
-            tenant_id = self.session_tenant_id
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
 
-        resolved_tenant = tenant_uuid(tenant_id)
+        resolved_tenant = tenant_uuid(session_tenant_id)
         if resolved_tenant is None:
             return
         try:

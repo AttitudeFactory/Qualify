@@ -30,6 +30,18 @@ migrate-down:
 seed:
     uv run python -m qualify_api.seed
 
+# QUA-66: register a new business (assigns a tenant_id automatically) — same service
+# the /signup page uses. Prompts for the password. Example:
+#   just register-business "Polet Bubble Tea" hlrd1993+polet@gmail.com VE America/Caracas USD
+register-business name email country timezone currency:
+    uv run python -m qualify_api.auth.provision register \
+        --name "{{name}}" --email "{{email}}" --country "{{country}}" \
+        --timezone "{{timezone}}" --currency "{{currency}}"
+
+# QUA-66: attach a login to an EXISTING tenant (e.g. the seeded ones).
+link-login tenant email:
+    uv run python -m qualify_api.auth.provision link --tenant "{{tenant}}" --email "{{email}}"
+
 # Default test pass: unit + db, never external network. Mirrors CI.
 test:
     uv run pytest -m "not integration"

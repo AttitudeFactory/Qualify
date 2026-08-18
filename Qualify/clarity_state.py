@@ -1,9 +1,10 @@
 """Reflex state for the Clarity analytics screen.
 
-Mirrors `LeadsState`'s custody rules: session tenant per-session, roster via the dev
-tenant adapter, blocking work off the event loop, only VM whitelists serialized. The
-one extra rule here: the API-token form field is write-only — it is sent to the
-service on save and immediately cleared; it never round-trips from the server.
+Mirrors `LeadsState`'s custody rules: the active tenant comes from `AuthState` (set
+only by a real login — QUA-66), blocking work off the event loop, only VM whitelists
+serialized. The one extra rule here: the API-token form field is write-only — it is
+sent to the service on save and immediately cleared; it never round-trips from the
+server.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from qualify_api.clarity import (
 )
 from sqlalchemy.exc import SQLAlchemyError
 
+from .auth_state import AuthState
 from .clarity_provider import (
     ClarityConfigVM,
     SnapshotVM,
@@ -29,12 +31,12 @@ from .clarity_provider import (
     refresh_snapshot,
     save_config,
 )
-from .tenant import TenantChoice, available_tenants, tenant_uuid
+from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
 
 _LOAD_FAILED = "No se pudo cargar Clarity. Revisa la conexión con la base de datos."
-_NO_TENANTS = "No hay ningún tenant aprovisionado todavía."
+_NO_TENANTS = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _SAVE_FAILED = "No se pudo guardar la configuración."
 _SAVE_BLANK = "El ID de proyecto y el token son obligatorios."
 _TOKEN_REJECTED = "Clarity rechazó el token. Genera uno nuevo en Settings → Data Export."
@@ -50,9 +52,6 @@ DAYS_CHOICES = ["1", "2", "3"]
 
 class ClarityState(rx.State):
     """State for the tenant's web-analytics (Clarity) screen."""
-
-    tenant_options: list[TenantChoice] = []
-    session_tenant_id: str = ""
 
     config: ClarityConfigVM = ClarityConfigVM(configured=False, project_id="", remaining_budget=0)
     snapshot: SnapshotVM = SnapshotVM(fetched_at="", window="", dimensions="")
@@ -90,34 +89,25 @@ class ClarityState(rx.State):
 
     @rx.event(background=True)
     async def load(self) -> None:
-        """Load the roster (first visit), the config status, and the cached snapshot.
-        Never spends an API request — that is `refresh_from_clarity`'s job alone."""
+        """Load the config status and the cached snapshot for the authenticated
+        tenant. Never spends an API request — that is `refresh_from_clarity`'s job
+        alone."""
         async with self:
             self.is_loading = True
             self.load_error = ""
             self.action_error = ""
             self.action_notice = ""
-            options = self.tenant_options
-            tenant_id = self.session_tenant_id
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+
+        resolved = tenant_uuid(session_tenant_id) if session_tenant_id else None
+        if resolved is None:
+            async with self:
+                self.is_loading = False
+                self.load_error = _NO_TENANTS
+            return
 
         try:
-            if not options:
-                options = await asyncio.to_thread(available_tenants)
-                async with self:
-                    self.tenant_options = options
-
-            if not tenant_id:
-                tenant_id = options[0].id if options else ""
-                async with self:
-                    self.session_tenant_id = tenant_id
-
-            resolved = tenant_uuid(tenant_id) if tenant_id else None
-            if resolved is None:
-                async with self:
-                    self.is_loading = False
-                    self.load_error = _NO_TENANTS
-                return
-
             config = await asyncio.to_thread(config_for, resolved)
             snapshot = await asyncio.to_thread(latest_snapshot_for, resolved)
         except SQLAlchemyError as exc:
@@ -129,7 +119,9 @@ class ClarityState(rx.State):
             return
 
         async with self:
-            if tenant_id == self.session_tenant_id:
+            # Guard against a logout/login that raced this load.
+            auth = await self.get_state(AuthState)
+            if session_tenant_id == auth.session_tenant_id:
                 self.config = config
                 self.form_project_id = config.project_id
                 self.snapshot = snapshot or SnapshotVM(fetched_at="", window="", dimensions="")
@@ -139,7 +131,8 @@ class ClarityState(rx.State):
     @rx.event(background=True)
     async def save_settings(self) -> None:
         async with self:
-            tenant_id = self.session_tenant_id
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
             project_id = self.form_project_id.strip()
             api_token = self.form_api_token.strip()
             self.action_error = ""
@@ -149,7 +142,7 @@ class ClarityState(rx.State):
                 return
             self.is_saving = True
 
-        resolved = tenant_uuid(tenant_id)
+        resolved = tenant_uuid(session_tenant_id)
         if resolved is None:
             async with self:
                 self.is_saving = False
@@ -169,7 +162,8 @@ class ClarityState(rx.State):
             return
 
         async with self:
-            if tenant_id == self.session_tenant_id:
+            auth = await self.get_state(AuthState)
+            if session_tenant_id == auth.session_tenant_id:
                 self.config = config
                 self.action_notice = "Configuración guardada."
             # Write-only: the token never lingers in state after the save.
@@ -180,14 +174,15 @@ class ClarityState(rx.State):
     async def refresh_from_clarity(self) -> None:
         """Spend ONE live Data Export request and repaint from the fresh snapshot."""
         async with self:
-            tenant_id = self.session_tenant_id
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
             days = int(self.refresh_days)
             dimension = "" if self.refresh_dimension == _DIMENSION_NONE else self.refresh_dimension
             self.action_error = ""
             self.action_notice = ""
             self.is_refreshing = True
 
-        resolved = tenant_uuid(tenant_id)
+        resolved = tenant_uuid(session_tenant_id)
         if resolved is None:
             async with self:
                 self.is_refreshing = False
@@ -215,7 +210,8 @@ class ClarityState(rx.State):
         config = await asyncio.to_thread(config_for, resolved)
 
         async with self:
-            if tenant_id == self.session_tenant_id:
+            auth = await self.get_state(AuthState)
+            if session_tenant_id == auth.session_tenant_id:
                 self.config = config
                 if snapshot is not None:
                     self.snapshot = snapshot
@@ -223,15 +219,6 @@ class ClarityState(rx.State):
                     self.action_notice = "Datos actualizados desde Clarity."
                 self.action_error = error
             self.is_refreshing = False
-
-    @rx.event
-    def switch_tenant(self, tenant_id: str) -> rx.event.EventSpec | None:
-        """Dev-only: enter as a different tenant and reload its analytics."""
-        if not any(option.id == tenant_id for option in self.tenant_options):
-            return None
-        self.session_tenant_id = tenant_id
-        self.form_api_token = ""
-        return ClarityState.load
 
     @rx.event
     def set_form_project_id(self, value: str) -> None:

@@ -1,5 +1,7 @@
 import reflex as rx
 
+from .auth_pages import login_index, signup_index
+from .auth_state import AuthState
 from .clarity_page import clarity_index
 from .clarity_state import ClarityState
 from .components import filter_bar, mentions_table, sidebar, stats_row, topbar
@@ -37,36 +39,63 @@ def index() -> rx.Component:
 
 
 app = rx.App()
-app.add_page(index, on_load=DashboardState.load_mentions, title="Qualify · Menciones")
+
+# Auth screens (QUA-66). An authenticated session skips them straight to the app.
+app.add_page(
+    login_index,
+    route="/login",
+    on_load=AuthState.redirect_if_authenticated,
+    title="Qualify · Entrar",
+)
+app.add_page(
+    signup_index,
+    route="/signup",
+    on_load=AuthState.redirect_if_authenticated,
+    title="Qualify · Registrar negocio",
+)
+
+# Every business page requires a session: `require_login` runs FIRST in each on_load
+# chain and redirects to /login when there is none. The loads behind it also refuse on
+# their own when no tenant is present — the guard is UX, RLS + AuthState is the wall.
+app.add_page(
+    index,
+    on_load=[AuthState.require_login, DashboardState.load_mentions],
+    title="Qualify · Menciones",
+)
 app.add_page(
     connections_index,
     route="/connections",
-    on_load=ConnectionsState.load_connections,
+    on_load=[AuthState.require_login, ConnectionsState.load_connections],
     title="Qualify · Conexiones",
 )
 app.add_page(
     publish_index,
     route="/publish",
-    on_load=PublishState.load_active_connections,
+    on_load=[AuthState.require_login, PublishState.load_active_connections],
     title="Qualify · Publicar",
 )
 app.add_page(
     inbox_index,
     route="/inbox",
-    on_load=InboxState.load_screen,
+    on_load=[AuthState.require_login, InboxState.load_screen],
     title="Qualify · Contenido",
 )
 app.add_page(
     leads_index,
     route="/leads",
-    on_load=LeadsState.load_leads,
+    on_load=[AuthState.require_login, LeadsState.load_leads],
     title="Qualify · Leads",
 )
 app.add_page(
     clarity_index,
     route="/clarity",
-    on_load=ClarityState.load,
+    on_load=[AuthState.require_login, ClarityState.load],
     title="Qualify · Clarity",
 )
-# UI demo, no backend: no on_load because there is nothing to load.
-app.add_page(vitrina_index, route="/vitrina", title="Qualify · Vitrina de locales")
+# UI demo, no backend: nothing to load, but the session gate still applies.
+app.add_page(
+    vitrina_index,
+    route="/vitrina",
+    on_load=AuthState.require_login,
+    title="Qualify · Vitrina de locales",
+)

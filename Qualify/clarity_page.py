@@ -15,32 +15,7 @@ import reflex as rx
 
 from .clarity_provider import ActionItemVM, FrictionCardVM, MetricTableVM
 from .clarity_state import DAYS_CHOICES, DIMENSION_CHOICES, ClarityState
-from .components import sidebar
-from .tenant import TenantChoice
-
-
-def _tenant_item(tenant: TenantChoice) -> rx.Component:
-    return rx.select.item(tenant.label, value=tenant.id)
-
-
-def _dev_tenant_selector() -> rx.Component:
-    return rx.hstack(
-        rx.badge("DEV", color_scheme="orange", variant="solid", size="1"),
-        rx.text("Sesión como:", size="2", color=rx.color("gray", 10)),
-        rx.select.root(
-            rx.select.trigger(placeholder="Elige un tenant"),
-            rx.select.content(rx.foreach(ClarityState.tenant_options, _tenant_item)),
-            value=ClarityState.session_tenant_id,
-            on_change=ClarityState.switch_tenant,
-            size="2",
-        ),
-        spacing="2",
-        align="center",
-        padding="0.5rem 0.75rem",
-        border=f"1px dashed {rx.color('orange', 7)}",
-        border_radius="0.5rem",
-        background=rx.color("orange", 2),
-    )
+from .components import session_badge, sidebar
 
 
 def _topbar() -> rx.Component:
@@ -56,7 +31,7 @@ def _topbar() -> rx.Component:
             align_items="start",
         ),
         rx.spacer(),
-        _dev_tenant_selector(),
+        session_badge(),
         rx.color_mode.button(),
         width="100%",
         padding="1.5rem 2rem 1rem 2rem",

@@ -1,5 +1,6 @@
 import reflex as rx
 
+from .auth_state import AuthState
 from .state import DashboardState, MentionRow
 
 # (label, icon, route, enabled). Enabled items navigate; disabled show a "pronto"
@@ -74,6 +75,29 @@ def sidebar() -> rx.Component:
     )
 
 
+def session_badge() -> rx.Component:
+    """The authenticated business + logout. Replaces the dev tenant selector: there is
+    no switch (`1 login = 1 tenant`); changing business = logout + login."""
+    return rx.hstack(
+        rx.icon("store", size=16, color=rx.color("accent", 9)),
+        rx.text(AuthState.business_name, size="2", weight="medium"),
+        rx.button(
+            rx.icon("log-out", size=14),
+            "Salir",
+            variant="soft",
+            color_scheme="gray",
+            size="1",
+            on_click=AuthState.logout,
+        ),
+        spacing="2",
+        align="center",
+        padding="0.4rem 0.75rem",
+        border=f"1px solid {rx.color('gray', 5)}",
+        border_radius="0.5rem",
+        background=rx.color("gray", 2),
+    )
+
+
 def topbar() -> rx.Component:
     return rx.hstack(
         rx.vstack(
@@ -87,6 +111,7 @@ def topbar() -> rx.Component:
             align_items="start",
         ),
         rx.spacer(),
+        session_badge(),
         rx.color_mode.button(),
         width="100%",
         padding="1.5rem 2rem 1rem 2rem",

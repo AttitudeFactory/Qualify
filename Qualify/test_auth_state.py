@@ -1,0 +1,203 @@
+"""Tests for the auth screens' state (QUA-66) and the logout-hygiene criteria of
+`docs/modelo-negocio-operador-multi-emprendimiento.md` §6.1.
+
+Same harness split the other state tests document: behavior that stops before any
+`get_state`/DB touch runs against a real `AuthState` instance via the handler's `.fn`;
+behavior bound to a live EventContext (the `get_state` calls in logout) is pinned by
+source inspection — the pattern `test_publishing_state.py`/`test_inbox_state.py`
+established. The full login round-trip against Postgres lives in the `db`-marked
+backend suite (`packages/api/tests/test_auth_register_db.py`).
+"""
+
+from __future__ import annotations
+
+import inspect
+import pathlib
+import re
+
+from qualify_api.auth import FakeAuthProvider
+
+from . import auth_state as auth_state_module
+from .auth_state import AuthState
+
+_QUALIFY_DIR = pathlib.Path(__file__).resolve().parent
+
+
+def _state() -> AuthState:
+    return AuthState()
+
+
+def _use_fake_provider(monkeypatch, provider: FakeAuthProvider) -> None:
+    monkeypatch.setattr(auth_state_module, "default_auth_provider", lambda: provider)
+
+
+# --------------------------------------------------------------------------------------
+# Guards
+# --------------------------------------------------------------------------------------
+
+
+def test_require_login_redirects_when_unauthenticated() -> None:
+    state = _state()
+    spec = AuthState.require_login.fn(state)
+    assert spec is not None  # a redirect EventSpec, not a pass-through
+
+
+def test_require_login_passes_when_authenticated() -> None:
+    state = _state()
+    state.session_tenant_id = "a0000000-0000-4000-8000-000000000001"
+    assert AuthState.require_login.fn(state) is None
+
+
+def test_login_screens_bounce_an_authenticated_session() -> None:
+    state = _state()
+    state.session_tenant_id = "a0000000-0000-4000-8000-000000000001"
+    assert AuthState.redirect_if_authenticated.fn(state) is not None
+    state.session_tenant_id = ""
+    assert AuthState.redirect_if_authenticated.fn(state) is None
+
+
+# --------------------------------------------------------------------------------------
+# Login refusals (they fire before any DB touch, so they run offline)
+# --------------------------------------------------------------------------------------
+
+
+async def test_wrong_credentials_show_one_generic_message(monkeypatch) -> None:
+    _use_fake_provider(monkeypatch, FakeAuthProvider())  # empty: every login fails
+    state = _state()
+    async for _ in AuthState.handle_login.fn(state, {"email": "a@b.co", "password": "x" * 8}):
+        raise AssertionError("a failed login must not emit navigation events")
+    assert state.session_tenant_id == ""
+    assert state.auth_error != ""
+    assert state.is_authenticating is False
+
+
+async def test_unstamped_identity_is_refused_never_guessed(monkeypatch) -> None:
+    provider = FakeAuthProvider()
+    provider.seed_user("stray@b.co", "password-123", tenant_id=None)
+    _use_fake_provider(monkeypatch, provider)
+    state = _state()
+    async for _ in AuthState.handle_login.fn(
+        state, {"email": "stray@b.co", "password": "password-123"}
+    ):
+        raise AssertionError("an incomplete registration must not emit navigation events")
+    assert state.session_tenant_id == ""
+    assert state.auth_error != ""
+
+
+# --------------------------------------------------------------------------------------
+# Logout hygiene (criteria 1-4) — source-inspection pins for the EventContext-bound part
+# --------------------------------------------------------------------------------------
+
+
+def test_logout_revokes_server_side_before_destroying_state() -> None:
+    source = inspect.getsource(AuthState.logout.fn)
+    revoke_at = source.index("_sign_out_blocking")
+    reset_at = source.index("substate.reset()")
+    redirect_at = source.index('rx.redirect("/login")')
+    assert revoke_at < reset_at < redirect_at, (
+        "criterion 1 ordering: revoke the session token server-side first, then destroy "
+        "Reflex state, then leave via redirect — never 'clean the UI in place'"
+    )
+    assert "self.reset()" in source
+
+
+def test_logout_resets_every_business_state() -> None:
+    """Every state module that reads the tenant must be reset on logout. Enumerated
+    here so ADDING a new tenant-reading state without wiring its reset fails a test
+    instead of leaking stale data into the next login."""
+    source = inspect.getsource(AuthState.logout.fn)
+    for state_name in (
+        "ConnectionsState",
+        "LeadsState",
+        "ClarityState",
+        "InboxState",
+        "PublishState",
+        "DashboardState",
+    ):
+        assert state_name in source, f"logout does not reset {state_name}"
+
+
+def test_every_tenant_reading_state_is_covered_by_logout() -> None:
+    """The inverse direction: scan the UI package for states that read AuthState and
+    assert each one appears in logout's reset list."""
+    logout_source = inspect.getsource(AuthState.logout.fn)
+    for path in _QUALIFY_DIR.glob("*_state.py"):
+        if path.name == "auth_state.py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        if "get_state(AuthState)" not in source:
+            continue
+        class_names = re.findall(r"class (\w+)\(rx\.State\)", source)
+        for name in class_names:
+            assert name in logout_source, (
+                f"{path.name} defines {name}, which reads AuthState but is not reset "
+                "by AuthState.logout — stale tenant data would survive a logout"
+            )
+
+
+# --------------------------------------------------------------------------------------
+# Criterion 2: no client-persisted business data outside tenant-namespaced keys
+# --------------------------------------------------------------------------------------
+
+
+def test_no_client_persistence_without_tenant_namespace() -> None:
+    """Hygiene criterion 2, enforced structurally: today the app persists NOTHING in
+    the client, which satisfies the criterion trivially. The moment someone introduces
+    `rx.LocalStorage` / `rx.Cookie` / `rx.SessionStorage`, this test fails and forces
+    the conversation: the key MUST be namespaced by tenant_id and purged on logout."""
+    offenders: list[str] = []
+    for path in _QUALIFY_DIR.glob("*.py"):
+        if path.name.startswith("test_"):
+            continue
+        source = path.read_text(encoding="utf-8")
+        for pattern in ("rx.LocalStorage", "rx.Cookie", "rx.SessionStorage"):
+            if pattern in source:
+                offenders.append(f"{path.name}: {pattern}")
+    assert offenders == [], (
+        "client-side persistence found; every key must be tenant-namespaced and purged "
+        f"on logout (criterion 2/3 of the signed logout-hygiene doc): {offenders}"
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Single writer: only auth_state.py assigns session_tenant_id
+# --------------------------------------------------------------------------------------
+
+
+def test_session_tenant_id_is_written_only_by_auth_state() -> None:
+    assignment = re.compile(r"\.session_tenant_id\s*=|self\.session_tenant_id\s*=")
+    offenders = [
+        path.name
+        for path in _QUALIFY_DIR.glob("*.py")
+        if path.name not in ("auth_state.py",)
+        and not path.name.startswith("test_")
+        and assignment.search(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == [], f"session_tenant_id must be set only by a real login: {offenders}"
+
+
+def test_no_module_imports_the_dev_roster_anymore() -> None:
+    """The dev tenant selector is dead (QUA-66): no UI module may import the roster or
+    ship a switch. Changing business = logout + login, by signed ruling."""
+    for path in _QUALIFY_DIR.glob("*.py"):
+        if path.name.startswith("test_"):
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert "available_tenants" not in source, f"{path.name} resurrects the dev roster"
+        assert "switch_tenant" not in source, f"{path.name} resurrects the tenant switch"
+
+
+def test_access_token_is_backend_only() -> None:
+    """The provider session token must never be a client-serialized var: leading
+    underscore is Reflex's backend-only convention."""
+    annotations = AuthState.__annotations__
+    assert "_access_token" in annotations
+    assert "access_token" not in annotations
+
+
+def test_login_form_uses_literal_email() -> None:
+    """Criterion 6: no email normalization anywhere in the auth path — the `+alias`
+    IS the business disambiguation."""
+    source = pathlib.Path(auth_state_module.__file__).read_text(encoding="utf-8")
+    assert ".lower()" not in source
+    assert 'replace("+"' not in source

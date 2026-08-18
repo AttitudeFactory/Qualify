@@ -1,6 +1,6 @@
 """Reflex state for the publish screen (A5 vertical slice).
 
-Reads the active tenant from `ConnectionsState.session_tenant_id` (via `self.get_state`)
+Reads the active tenant from `AuthState.session_tenant_id` (via `self.get_state`)
 rather than duplicating the dev tenant selector — one source of truth for "which tenant"
 (decision 7 of the approved plan).
 
@@ -43,7 +43,7 @@ from qualify_shared.objects.config import R2ConfigurationError
 from qualify_shared.objects.gate import ObjectSizeExceeded, UnsizedStream
 from qualify_shared.objects.keys import TenantPrefixViolation
 
-from .connections_state import ConnectionsState
+from .auth_state import AuthState
 from .publishing_provider import PublishAttemptVM, active_connections, poll_publish, start_publish
 from .publishing_vm import ConnectionOptionVM
 from .tenant import tenant_uuid
@@ -104,8 +104,8 @@ class PublishState(rx.State):
             self.load_error = ""
 
         async with self:
-            connections_state = await self.get_state(ConnectionsState)
-            session_tenant_id = connections_state.session_tenant_id
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
         tenant_id = tenant_uuid(session_tenant_id)
         if tenant_id is None:
             async with self:
@@ -216,8 +216,8 @@ class PublishState(rx.State):
             content_type = self._pending_content_type
 
         async with self:
-            connections_state = await self.get_state(ConnectionsState)
-            session_tenant_id = connections_state.session_tenant_id
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
         tenant_id = tenant_uuid(session_tenant_id)
         if tenant_id is None:
             await self._fail_pending_attempt(idempotency_key, _NO_TENANT)

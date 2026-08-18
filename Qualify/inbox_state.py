@@ -1,7 +1,7 @@
 """Reflex state for the inbox content screen — pick which recent Reels to monitor
 (Fase 1 Parte 4-B, B2 UI slice).
 
-Reads the active tenant from `ConnectionsState.session_tenant_id` (via `self.get_state`),
+Reads the active tenant from `AuthState.session_tenant_id` (via `self.get_state`),
 same single-source-of-truth decision `publishing_state.py` already documents — one place
 answers "which tenant", not a second selector duplicating it.
 
@@ -38,7 +38,7 @@ import reflex as rx
 from qualify_api.inbox import MediaNotEligible, UnknownInboxConnection
 from sqlalchemy.exc import SQLAlchemyError
 
-from .connections_state import ConnectionsState
+from .auth_state import AuthState
 from .inbox_provider import candidate_media, instagram_connections, sync_now, toggle_monitoring
 from .inbox_vm import CandidateMediaVM, SyncSummaryVM
 from .publishing_vm import ConnectionOptionVM
@@ -169,8 +169,8 @@ class InboxState(rx.State):
             self.connections_error = ""
 
         async with self:
-            connections_state = await self.get_state(ConnectionsState)
-            session_tenant_id = connections_state.session_tenant_id
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
         tenant_id = tenant_uuid(session_tenant_id)
         if tenant_id is None:
             async with self:
@@ -206,8 +206,8 @@ class InboxState(rx.State):
             self.selected_connection_id = connection_id
             self.candidates = []
             self.action_error = ""
-            connections_state = await self.get_state(ConnectionsState)
-            session_tenant_id = connections_state.session_tenant_id
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
 
         tenant_id = tenant_uuid(session_tenant_id)
         if tenant_id is None:
@@ -225,8 +225,8 @@ class InboxState(rx.State):
             self.toggling_media_ids.append(external_media_id)
             self.action_error = ""
             connection_id = self.selected_connection_id
-            connections_state = await self.get_state(ConnectionsState)
-            session_tenant_id = connections_state.session_tenant_id
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
         started_at = time.monotonic()
 
         tenant_id = tenant_uuid(session_tenant_id)
@@ -293,8 +293,8 @@ class InboxState(rx.State):
             self.sync_error = ""
             self.sync_result = None
             connection_id = self.selected_connection_id
-            connections_state = await self.get_state(ConnectionsState)
-            session_tenant_id = connections_state.session_tenant_id
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
 
         tenant_id = tenant_uuid(session_tenant_id)
         resolved_connection: UUID | None = None

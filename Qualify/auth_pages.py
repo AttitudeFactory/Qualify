@@ -1,0 +1,154 @@
+"""Login and signup screens (QUA-66).
+
+Deliberately plain forms: native `rx.form` + named, typed inputs (`type=email` /
+`type=password`) so the browser's password manager autofills and offers to save — saved
+credentials per business alias ARE the founder's business switcher (signed ruling §6.1).
+Nothing here may interfere with autocomplete."""
+
+from __future__ import annotations
+
+import reflex as rx
+
+from .auth_state import AuthState
+
+
+def _auth_card(*children: rx.Component) -> rx.Component:
+    return rx.center(
+        rx.vstack(
+            rx.hstack(
+                rx.icon("radar", size=26, color=rx.color("accent", 9)),
+                rx.heading("Qualify", size="7"),
+                align_items="center",
+            ),
+            *children,
+            spacing="4",
+            width="380px",
+            padding="2rem",
+            border=f"1px solid {rx.color('gray', 5)}",
+            border_radius="0.75rem",
+            background=rx.color("gray", 2),
+        ),
+        height="100vh",
+        width="100%",
+    )
+
+
+def _error_banner() -> rx.Component:
+    return rx.cond(
+        AuthState.auth_error != "",
+        rx.callout(
+            AuthState.auth_error, icon="triangle_alert", color_scheme="tomato", width="100%"
+        ),
+    )
+
+
+def login_index() -> rx.Component:
+    return _auth_card(
+        rx.heading("Entrar a tu negocio", size="4"),
+        rx.text(
+            "Un login = un negocio. Para cambiar de negocio, cierra sesión y entra "
+            "con las credenciales de ese negocio.",
+            size="2",
+            color=rx.color("gray", 10),
+        ),
+        _error_banner(),
+        rx.form(
+            rx.vstack(
+                rx.input(
+                    placeholder="Email",
+                    name="email",
+                    type="email",
+                    required=True,
+                    width="100%",
+                ),
+                rx.input(
+                    placeholder="Contraseña",
+                    name="password",
+                    type="password",
+                    required=True,
+                    width="100%",
+                ),
+                rx.button(
+                    "Entrar",
+                    type="submit",
+                    width="100%",
+                    loading=AuthState.is_authenticating,
+                ),
+                spacing="3",
+                width="100%",
+            ),
+            on_submit=AuthState.handle_login,
+            width="100%",
+        ),
+        rx.text(
+            "¿Negocio nuevo? ",
+            rx.link("Regístralo aquí", href="/signup"),
+            size="2",
+        ),
+    )
+
+
+def signup_index() -> rx.Component:
+    return _auth_card(
+        rx.heading("Registrar un negocio", size="4"),
+        rx.text(
+            "Al registrar se crea el negocio con su propio espacio (tenant) y entras "
+            "directamente como él.",
+            size="2",
+            color=rx.color("gray", 10),
+        ),
+        _error_banner(),
+        rx.form(
+            rx.vstack(
+                rx.input(
+                    placeholder="Nombre del negocio",
+                    name="business_name",
+                    required=True,
+                    width="100%",
+                ),
+                rx.input(
+                    placeholder="Email (un alias por negocio)",
+                    name="email",
+                    type="email",
+                    required=True,
+                    width="100%",
+                ),
+                rx.input(
+                    placeholder="Contraseña (mínimo 8 caracteres)",
+                    name="password",
+                    type="password",
+                    required=True,
+                    width="100%",
+                ),
+                rx.hstack(
+                    rx.input(placeholder="País", name="country", default_value="VE", width="100%"),
+                    rx.input(
+                        placeholder="Zona horaria",
+                        name="timezone",
+                        default_value="America/Caracas",
+                        width="100%",
+                    ),
+                    rx.input(
+                        placeholder="Moneda", name="currency", default_value="USD", width="100%"
+                    ),
+                    spacing="2",
+                    width="100%",
+                ),
+                rx.button(
+                    "Registrar y entrar",
+                    type="submit",
+                    width="100%",
+                    loading=AuthState.is_authenticating,
+                ),
+                spacing="3",
+                width="100%",
+            ),
+            on_submit=AuthState.handle_signup,
+            width="100%",
+        ),
+        rx.text(
+            "¿Ya registrado? ",
+            rx.link("Inicia sesión", href="/login"),
+            size="2",
+        ),
+    )

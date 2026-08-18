@@ -1,42 +1,17 @@
 """Leads screen — the people this tenant has converted through its capture funnel.
 
 Read-only for now: capture happens on the public form, analysis grows here later
-(sources, interests, RFM). Reuses the scaffold's sidebar and the dev tenant selector
-pattern from the connections page.
+(sources, interests, RFM). Reuses the scaffold's sidebar; the active tenant
+comes from the login session (QUA-66).
 """
 
 from __future__ import annotations
 
 import reflex as rx
 
-from .components import sidebar
+from .components import session_badge, sidebar
 from .leads_provider import LeadVM
 from .leads_state import LeadsState
-from .tenant import TenantChoice
-
-
-def _tenant_item(tenant: TenantChoice) -> rx.Component:
-    return rx.select.item(tenant.label, value=tenant.id)
-
-
-def _dev_tenant_selector() -> rx.Component:
-    return rx.hstack(
-        rx.badge("DEV", color_scheme="orange", variant="solid", size="1"),
-        rx.text("Sesión como:", size="2", color=rx.color("gray", 10)),
-        rx.select.root(
-            rx.select.trigger(placeholder="Elige un tenant"),
-            rx.select.content(rx.foreach(LeadsState.tenant_options, _tenant_item)),
-            value=LeadsState.session_tenant_id,
-            on_change=LeadsState.switch_tenant,
-            size="2",
-        ),
-        spacing="2",
-        align="center",
-        padding="0.5rem 0.75rem",
-        border=f"1px dashed {rx.color('orange', 7)}",
-        border_radius="0.5rem",
-        background=rx.color("orange", 2),
-    )
 
 
 def _topbar() -> rx.Component:
@@ -58,7 +33,7 @@ def _topbar() -> rx.Component:
             color_scheme="grass",
             size="2",
         ),
-        _dev_tenant_selector(),
+        session_badge(),
         rx.color_mode.button(),
         width="100%",
         padding="1.5rem 2rem 1rem 2rem",

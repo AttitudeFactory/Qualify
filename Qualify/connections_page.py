@@ -10,10 +10,9 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .components import sidebar
+from .components import session_badge, sidebar
 from .connections_state import ConnectionsState
 from .connections_vm import CapabilityVM, ConnectionVM
-from .tenant import TenantChoice
 
 
 def status_badge(status: rx.Var[str]) -> rx.Component:
@@ -348,38 +347,6 @@ def empty_state() -> rx.Component:
     )
 
 
-def _tenant_item(tenant: TenantChoice) -> rx.Component:
-    return rx.select.item(tenant.label, value=tenant.id)
-
-
-def dev_tenant_selector() -> rx.Component:
-    """Dev-only tenant switch (founder decision 2). Makes A/B isolation exercisable.
-
-    The roster is a state var, not a compile-time list: it comes from the real
-    `tenants` table, so building it at import time would make the page uncompilable
-    without a database.
-    """
-    return rx.hstack(
-        rx.badge("DEV", color_scheme="orange", variant="solid", size="1"),
-        rx.text("Sesión como:", size="2", color=rx.color("gray", 10)),
-        rx.select.root(
-            rx.select.trigger(placeholder="Elige un tenant"),
-            rx.select.content(
-                rx.foreach(ConnectionsState.tenant_options, _tenant_item),
-            ),
-            value=ConnectionsState.session_tenant_id,
-            on_change=ConnectionsState.switch_tenant,
-            size="2",
-        ),
-        spacing="2",
-        align="center",
-        padding="0.5rem 0.75rem",
-        border=f"1px dashed {rx.color('orange', 7)}",
-        border_radius="0.5rem",
-        background=rx.color("orange", 2),
-    )
-
-
 def connections_topbar() -> rx.Component:
     return rx.hstack(
         rx.vstack(
@@ -393,7 +360,7 @@ def connections_topbar() -> rx.Component:
             align_items="start",
         ),
         rx.spacer(),
-        dev_tenant_selector(),
+        session_badge(),
         rx.color_mode.button(),
         width="100%",
         padding="1.5rem 2rem 1rem 2rem",
