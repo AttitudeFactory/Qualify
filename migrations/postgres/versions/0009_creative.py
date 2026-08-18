@@ -1,7 +1,7 @@
 """creative: brand content engine data model (MC-01, ADR 32 / design doc)
 
-Revision ID: 0008
-Revises: 0007
+Revision ID: 0009
+Revises: 0008
 Create Date: 2026-08-18
 
 Implements MC-01 with the amendments the design carries after the 2026-08-18 decisions
@@ -39,10 +39,13 @@ unlike `ingestion.raw_payloads` (ADR 18), everything in this module is first-par
 so the draft-side FK is added AFTER `copy_variants` exists and dropped first on the way
 down.
 
-Note on numbering: the backlog wrote this migration down as `0005_creative`, and the
-file keeps that name, but revisions `0005` (monitored_media), `0006` (leads) and `0007`
-(clarity) landed on `main` first — so this revision chains onto `0007` as `0008`. The
-filesystem, not the backlog, is authoritative for what exists.
+Note on numbering: the backlog wrote this migration down as `0005_creative`, but
+revisions `0005` (monitored_media), `0006` (leads), `0007` (clarity) and `0008`
+(auth_identity, QUA-66) landed on `main` first — so this revision chains onto `0008` as
+`0009`. It briefly shipped as a second `0008` (PR #15, same morning as QUA-66), which
+made Alembic reject the whole chain ("revision 0008 is present more than once"); fixed
+in place per ADR 27 R8a since nothing is deployed. The filesystem, not the backlog, is
+authoritative for what exists.
 """
 
 from __future__ import annotations
@@ -52,8 +55,8 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0008"
-down_revision = "0007"
+revision = "0009"
+down_revision = "0008"
 branch_labels = None
 depends_on = None
 
