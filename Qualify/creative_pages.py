@@ -524,7 +524,7 @@ def _voice_empty_state() -> rx.Component:
                 align_items="start",
                 width="100%",
             ),
-    _voice_section(),
+            _voice_section(),
         ),
     )
 
@@ -550,29 +550,29 @@ def _voice_section() -> rx.Component:
 
 def _voice_body() -> rx.Component:
     return rx.vstack(
-            rx.cond(CreativeState.voice_error != "", _error_callout(CreativeState.voice_error)),
-            rx.cond(
-                CreativeState.voice_active,
-                rx.callout(
-                    rx.text(
-                        "Perfil activo: v",
-                        CreativeState.voice_active.version.to_string(),
-                        ". Aprobar una nueva propuesta lo reemplaza.",
-                    ),
-                    icon="badge-check",
-                    color_scheme="grass",
-                    width="100%",
+        rx.cond(CreativeState.voice_error != "", _error_callout(CreativeState.voice_error)),
+        rx.cond(
+            CreativeState.voice_active,
+            rx.callout(
+                rx.text(
+                    "Perfil activo: v",
+                    CreativeState.voice_active.version.to_string(),
+                    ". Aprobar una nueva propuesta lo reemplaza.",
                 ),
+                icon="badge-check",
+                color_scheme="grass",
+                width="100%",
             ),
+        ),
+        rx.cond(
+            CreativeState.voice_loading,
+            rx.skeleton(rx.box(height="14rem", width="100%")),
             rx.cond(
-                CreativeState.voice_loading,
-                rx.skeleton(rx.box(height="14rem", width="100%")),
-                rx.cond(
-                    CreativeState.voice_proposal,
-                    _voice_profile_card(),
-                    _voice_empty_state(),
-                ),
+                CreativeState.voice_proposal,
+                _voice_profile_card(),
+                _voice_empty_state(),
             ),
+        ),
         spacing="3",
         width="100%",
     )
