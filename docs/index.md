@@ -4,10 +4,15 @@ Plataforma agentiva de CRM/GTM para social listening sobre TikTok/IG Reels. Tesi
 
 ## Empezar por acá
 
+- 🔴 **[PRIORIDAD — despliegue en `qualify.attitudefactory.co`](prioridad-despliegue-subdominio.md)** — el dominio ya está comprado y vivo (2026-08-12); falta desplegar Qualify para tener un redirect URI de OAuth estable. Bloquea toda la cadena hacia Business Verification y Tech Provider. **Una sola decisión abierta: dónde se aloja.**
+- **Motor de Contenido de Marca** (track paralelo, 2026-08-16) — generación de copy + imagen con la voz de la marca del cliente: [backlog](backlog-motor-contenido-marca.md) · [diseño técnico cerrado](diseno-motor-contenido-marca.md).
 - **[Registro de validación de features](registro-validacion-features.md)** — qué feature está respaldada por qué investigación de mercado, organizada por eje (inbound/outbound) y nicho. El árbol visual de todo el trabajo de investigación está ahí.
 - **[Proceso para futuras investigaciones](proceso-investigacion-oportunidades.md)** — cómo y cuándo se dispara una nueva investigación de nicho.
 - **[Arquitectura general](arquitectura.md)** — decisiones de sistema, ADRs, reglas arquitectónicas duras.
-- **[Exploración de naming y dominios](naming-dominios-exploracion.md)** — candidatos de marca validados (disponibilidad, SEO, audiencia), podio al cierre y la decisión interina de desplegar bajo el dominio de Attitude (2026-08-10).
+- **[Modelo de negocio — operador multi-emprendimiento](modelo-negocio-operador-multi-emprendimiento.md)** — `[FIRMADO 2026-08-16]` N negocios propios sobre la misma instalación, **`1 login = 1 tenant = 1 negocio`, sin switch** (se cambia de negocio con logout + login). Fija para QUA-66 la higiene de logout: estado Reflex destruido, token de sesión rotado, y todo lo persistido en el cliente namespaced por `tenant_id`.
+- **[Iniciativa Loyalty — sellos + cupones](backlog-loyalty-sellos-cupones.md)** — retención para clientes que ya compraron: tarjeta de sellos por compra (los dos locales) y cupones/promociones por comunidad, enviados asistido por `wa.me` sin WhatsApp Business API. Gate: LOY-00 (los dos locales = un tenant; consentimiento promocional; qué POS hay).
+- **[Retención de datos y coste de R2](backlog-retencion-datos-r2.md)** — la regla de guardar los binarios de earned media 7 días (techo 30) y purgar lo demás, con el modelo de coste y la única pregunta abierta al fundador (`RET-08`: si la purga alcanza también a las filas de Postgres).
+- **[Exploración de naming y dominios](naming-dominios-exploracion.md)** — candidatos de marca validados (disponibilidad, SEO, audiencia) y podio al cierre. Su decisión interina (desplegar bajo el dominio de Attitude) ya se concretó: ver el documento de prioridad de arriba.
 
 ## Los dos ejes de producto
 

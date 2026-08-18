@@ -1,8 +1,12 @@
 # Exploración de naming y dominios — sesión 2026-08-10
 
-> **DECISIÓN INTERINA (fundador, 2026-08-10):** por ahora el producto se despliega **bajo el dominio del sitio de Attitude** (el portfolio `Attitude.org.ve`, ya documentado en `docs/arquitectura.md` §6 R9 como Business Portfolio `218896178911983`). La decisión de marca/dominio propio queda **abierta** — este documento preserva la exploración para retomarla sin repetir el trabajo.
+> **⚠️ ACTUALIZACIÓN (2026-08-12): la decisión interina ya se concretó.** El dominio de Attitude existe y está operativo: **`attitudefactory.co`**, comprado el 2026-08-12 y sirviendo el sitio de Attitude sobre HTTPS. Qualify vivirá en **`qualify.attitudefactory.co`**. Ver **[`prioridad-despliegue-subdominio.md`](prioridad-despliegue-subdominio.md)** para el estado verificado, la bifurcación de hosting pendiente y la cadena hacia Business Verification / Tech Provider.
 >
-> **No se compró ningún dominio en esta sesión.** Toda disponibilidad y precio de abajo es un snapshot del 2026-08-10 vía Cloudflare Registrar (precios al costo, USD/año) y **caduca**: cualquier candidato serio debe re-validarse antes de decidir.
+> Se eligió `.co` (ccTLD de Colombia, coherente con el RUT de Cúcuta con el que se hará la verificación) sobre `.ai`: US$4.99 el primer año frente a ~US$160/2 años, y Meta no restringe TLDs. La marca y el dominio **propios de Qualify** siguen **abiertos** — todo lo de abajo se conserva para retomarlos sin repetir el trabajo.
+>
+> **DECISIÓN INTERINA ORIGINAL (fundador, 2026-08-10):** por ahora el producto se despliega **bajo el dominio del sitio de Attitude** (el portfolio `Attitude.org.ve`, ya documentado en `docs/arquitectura.md` §6 R9 como Business Portfolio `218896178911983`). La decisión de marca/dominio propio queda **abierta** — este documento preserva la exploración para retomarla sin repetir el trabajo.
+>
+> **No se compró ningún dominio en esa sesión.** Toda disponibilidad y precio de abajo es un snapshot del 2026-08-10 vía Cloudflare Registrar (precios al costo, USD/año) y **caduca**: cualquier candidato serio debe re-validarse antes de decidir. (El snapshot del `.ai` en particular ya caducó: Identity Digital subió el precio mayorista en marzo de 2026.)
 
 ## 1. Contexto y método
 
