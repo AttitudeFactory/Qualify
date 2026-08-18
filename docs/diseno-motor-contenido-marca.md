@@ -39,24 +39,42 @@ Lo mismo aplica a la imagen: Ads pide otras relaciones de aspecto. El MVP genera
 | D7 | **Sin R2 en el MVP**: se vive sobre la URL del proveedor, con contador de caducidad en la UI. R2 como deuda. | Viable porque fal da **≥7 días** y permite fijar el lifecycle por request; Replicate da **1 hora**. La ventana es por proveedor, no constante. §5.1 y §7.6. |
 | D8 | **Solo 4:5 en el MVP.** `REELS_9_16` visible y **deshabilitado** en `/create`, con tooltip. | El recordatorio vive donde se va a necesitar. Nunca se implementará como recorte del 4:5. §1.5. |
 | D9 | **Composición con Pillow**, plantilla autoría en Canva exportada a PNG. No se usa la API de imagen para poner texto. | §1.4. Un modelo generativo no garantiza tu cadena exacta ni deja la foto intacta — y ambas cosas son requisitos, no preferencias. |
+| D10 | **`RESTYLE_UPLOAD` se parte en `RESTYLE_ENHANCE` y `RESTYLE_SCENE`.** `ENHANCE` entra al MVP. | La frontera de etiquetado de IA de Meta pasa entre las dos. `ENHANCE` es además la ruta nº2 real de los dos negocios del operador: fotos de teléfono en local pequeño. |
+| D11 | **Las rutas son submódulos en un acordeón, en orden fijo**, y `GENERATE` va la última con aviso **«NO RECOMENDADA»**. | El orden de la UI *es* la recomendación. Un desplegable neutro las presentaría como equivalentes, que es justo lo que la evidencia dice que no son. §6.4 |
+| D12 | **`brand_kit.image_policy` + `ContentDraft.requires_ai_disclosure`.** | La política deja de depender de la memoria de quien redacta el brief, y la obligación de etiquetar viaja con el artefacto hasta el módulo de Ads. |
+| D13 | **Vídeo: efectos deterministas sobre metraje propio (ffmpeg), declarados en el brief.** Vídeo generado queda como última opción, igual que `GENERATE`. | §1.7. Retroceso y cámara lenta sobre tu propio vídeo son gratis, instantáneos y no requieren etiqueta. |
+| D14 | **`1 tenant = 1 brand`.** *(Fundador, 2026-08-18 — «multibrand es complicado ahora».)* Bianki y Polet son **dos tenants**, con login propio cada uno. | Coherente con el ruling firmado `1 login = 1 tenant = 1 negocio`, sin switch. **Simplifica el módulo:** no hay selector de marca en ninguna pantalla, `brand_kit` es único por tenant y `readiness` deja de necesitar un `brand_id` de entrada. Contrapartida en §7.7. |
+| D15 | **Bucle LLM→render→visión para autoría de plantillas** (N1 en MVP; N2+N3 después). El LLM diseña *dentro* del kit; lo aprobado se congela. | §1.9. El render gratis es lo que hace viable el bucle: iterar cuesta solo los tokens del LLM. |
+| D16 | **`template_id`+`template_version` en la provenance de cada pieza** → rendimiento por plantilla medible con insights de owned media. | §1.9. «La v2 rinde 40% más que la v1» se vuelve una frase calculable. Loop de ADR 32 D16 sobre datos que ya existen. |
+| D17 | **`brand_kit.photo_recipe`**: parámetros de tratamiento de foto descubiertos una vez (con LLM + visión), aplicados gratis para siempre. | §1.9. «Se paga por descubrir, no por repetir» — fundador, 2026-08-18. |
+| D18 | **`photo_recipe` produce `(foto, máscara)`, no una foto recortada.** Segmentación local con `birefnet-general-lite` (MIT); la máscara se persiste y cinco features la consumen. | §1.10. Una inferencia, muchos usos. Veto de licencia: nunca `bria-rmbg`. Upgrade a `fal-ai/birefnet/v2` por el `FalAdapter` existente. |
 
-### 1.3 Tres rutas de imagen (dos en el MVP)
+### 1.3 Las cuatro rutas de imagen, en orden fijo de preferencia
 
-Una imagen **generada** de un apartamento que no existe no es un detalle estético para una inmobiliaria: es engañoso y, según cómo se anuncie, puede tener consecuencias legales. Ese cliente no necesita que le inventemos la foto — necesita que **su** foto real salga con la identidad visual de su marca. Una agencia de viajes, en cambio, sí puede usar una imagen de concepto generada de cero.
+**El orden es la decisión de producto, no una lista de opciones equivalentes.** Va de "no se toca ni un píxel del sujeto" a "el sujeto es inventado", y la UI lo presenta exactamente en ese orden (§6.4). El criterio que lo gobierna es uno solo:
 
-El MVP soporta ambas y el brief lo declara:
+> **¿La imagen representa algo concreto que la persona va a recibir?**
+> Si sí, los píxeles de esa cosa no se inventan.
 
-| Ruta | `image_source` | Qué hace | Cómo |
-|---|---|---|---|
-| Generada | `GENERATE` | Text-to-image desde el brief + `reference_images` del kit. Para concepto/ambiente — la agencia de viajes | FLUX.2 [pro] → Seedream 4.0 |
-| **Compuesta sobre foto propia** | `FROM_UPLOAD` | La foto real del cliente dentro de su marco de marca: paleta, logo, banda de titular, márgenes. **Determinista, sin modelo** | Composición en código (Pillow) sobre una plantilla del brand kit |
-| Estilizada sobre foto propia | `RESTYLE_UPLOAD` | Image-to-image real: transferencia de estilo sobre la foto | FLUX.2 [pro] → FLUX.1 Kontext. **Fuera del MVP** |
+| # | Ruta | Qué hace | ¿Etiqueta IA de Meta? | Coste | MVP |
+|---|---|---|---|---|---|
+| **1º** | **`FROM_UPLOAD`** | Tu foto real, intacta, dentro del marco de marca. Composición determinista | **No** — no interviene IA | **$0** | ✅ |
+| **2º** | **`RESTYLE_ENHANCE`** | Luz, color, contraste, limpieza de fondo, upscaling **sobre tu foto real** | **No** — Meta exime corrección de color, recorte, limpieza y upscaling | ~$0.03 | ✅ |
+| 3º | `RESTYLE_SCENE` | Tu producto real llevado a un fondo o contexto nuevo | **Sí** — compone/modifica sustancialmente | ~$0.03 | ⬜ |
+| 4º | `GENERATE` | Text-to-image: el sujeto lo crea el modelo | **Sí** — genera el sujeto | $0.03–0.09 | ⚠️ con aviso |
 
-**Por qué `FROM_UPLOAD` no usa un modelo de imagen, que es el cambio importante.** Meter la foto de un inmueble por un modelo image-to-image es pedirle a un generador que reinterprete un activo que debe ser fiel. Aunque el 95% de las veces salga bien, el 5% restante es una fachada que cambió, una ventana que no existe o un metraje que parece otro — publicado a nombre de una inmobiliaria. Una plantilla compuesta en código **no puede inventar**: pone la foto tal cual dentro del marco de la marca. Además es gratis, instantánea y reproducible byte a byte.
+**Por qué `FROM_UPLOAD` no usa un modelo de imagen.** Meter la foto de un producto o un inmueble por un modelo image-to-image es pedirle a un generador que reinterprete un activo que debe ser fiel. Aunque el 95% de las veces salga bien, el 5% restante es una fachada que cambió o un plato que no es el que sirves — publicado a nombre de tu marca. Una plantilla compuesta en código **no puede inventar**: pone la foto tal cual dentro del marco. Además es gratis, instantánea y reproducible byte a byte.
 
-`RESTYLE_UPLOAD` queda declarado en el enum pero sin implementar: cuando aparezca un caso legítimo de estilizado (una marca de moda, no una inmobiliaria) se enchufa en el mismo seam.
+**Por qué la frontera entre `ENHANCE` y `SCENE` no es cosmética.** Pasa exactamente por donde Meta traza la suya (§3 de [`estrategia-contenido-bianki-polet.md`](estrategia-contenido-bianki-polet.md)): corregir luz y color no requiere etiqueta; componer una escena nueva sí. Tenerlas como una sola ruta obligaría a decidir caso por caso si la pieza necesita divulgación — y «Undisclosed AI Content» es en 2026 la tercera causa de rechazo de anuncios en Meta, con el 14% del total. La distinción vive en el enum para que no dependa de que alguien se acuerde.
 
-La foto se sube por `rx.upload` y se estaciona en R2 con el `MediaStagingService` que ya existe (`stage_media`), bajo el prefijo del tenant. No hace falta ruta HTTP nueva.
+**`GENERATE` no se elimina, se degrada.** Sigue siendo legítima para piezas **sin producto**: una promo de catering, una placa de horarios, un fondo abstracto. Pero aparece la última y con aviso explícito, porque en las categorías reales del operador —comida y bebida— la imagen generada de producto es activamente contraproducente.
+
+**Dos campos que esto obliga:**
+
+- **`brand_kit.image_policy`** — qué rutas están permitidas *para esa marca*. Para Bianki y Polet, `GENERATE` de producto queda bloqueado por política, no por criterio del momento. La capa 1 del gate rechaza un brief que pida una ruta bloqueada **antes de gastar**.
+- **`ContentDraft.requires_ai_disclosure`** — derivado de la ruta usada y propagado en `ApprovedCreative`. Cuando la pieza vaya a un anuncio, el módulo de Ads tiene que saber que hay que marcarla.
+
+La foto se sube por `rx.upload` y se estaciona con el `MediaStagingService` que ya existe (`stage_media`), bajo el prefijo del tenant. No hace falta ruta HTTP nueva.
 
 ### 1.4 Canva — evaluado, descartado, y por qué la primera razón que di era la equivocada
 
@@ -89,6 +107,111 @@ No es adorno: la opción deshabilitada es el recordatorio de que la promesa exis
 El MVP está hecho cuando un cliente puede, **solo desde la UI y sin ayuda**: cargar su brand kit → aprobar su perfil de voz → pedir una pieza → recibir 3 variantes de copy + 1 imagen on-brand → editar, aprobar y descargar. Y cuando `MC-15` (kill criterion) puede medirse: el copy con perfil vence al copy con prompt libre en juicio ciego del propio cliente.
 
 ---
+
+### 1.7 Vídeo — un editor ligero sobre TU metraje, no un generador
+
+**Aclaración del fundador (2026-08-18):** no se trata de generar vídeo. Se trata de **cargar el clip ya grabado con el teléfono** y que el módulo lo vista: efectos de velocidad, textos y promociones que entran con *fade in* y salen con *fade out*, y cierre de marca.
+
+Eso es exactamente el paralelo de `FROM_UPLOAD` en imagen: **tu material real, tratado de forma determinista, sin que ningún modelo lo reinterprete.** Es gratis, es instantáneo, no requiere etiqueta de IA de Meta y es lo que la categoría premia.
+
+#### Lo que hace el submódulo
+
+| Capa | Qué | Cómo |
+|---|---|---|
+| **Velocidad** | Cámara lenta (0.5× / 0.25×), retroceso, boomerang (ida+vuelta en bucle), rampa de velocidad, congelado de fotograma | `ffmpeg` — `setpts`, `reverse`, `concat` |
+| **Encuadre** | Recorte a 4:5 o 9:16, corte a 7–10 s | `crop` + `trim` |
+| **Marco de marca** | El mismo PNG de plantilla que usa `FROM_UPLOAD`, superpuesto durante todo el clip | `overlay` |
+| **Textos y promos** | Tarjetas de texto que **entran con fade y salen con fade**: gancho al principio, precio o promo en medio | PNG renderizado con **Pillow** + `overlay` con `enable='between(t,a,b)'` y alpha animado |
+| **Cierre** | Tarjeta final con logo y CTA, 2 s | `concat` |
+
+**La reutilización que hace esto barato:** el PNG que enmarca una foto en `FROM_UPLOAD` **es el mismo PNG** que se superpone al vídeo, y las tarjetas de texto se renderizan con la misma maquinaria de Pillow. Una plantilla de marca, dos salidas. No hay un sistema de vídeo separado que mantener.
+
+#### Cómo se declara, sin construir una línea de tiempo
+
+Un editor con *timeline* es un producto en sí mismo y no es lo que necesitas. El MVP usa **franjas fijas**, que es un formulario y cubre el 90% de un Reel promocional:
+
+```
+  [ intro 0–1.5s ]  opcional · tarjeta de marca
+  [ ────────── clip completo con marco de marca ────────── ]
+       [ texto 1: entra 1.0s, dura 2.5s ]   fade 0.3s
+                        [ texto 2: entra 5.0s, dura 2.5s ]  fade 0.3s
+                                          [ outro 2s ] opcional · logo + CTA
+```
+
+Todo se elige **antes** de procesar, con vista previa, y se puede reprocesar cuantas veces haga falta: es determinista y cuesta $0.
+
+#### Dos advertencias que no son técnicas
+
+- **El retroceso funciona sobre un vertido y es desagradable sobre alguien comiendo.** Es criterio; por eso ningún efecto se aplica por defecto.
+- **Música y audio quedan fuera a propósito.** Instagram penaliza el audio externo frente a su propia biblioteca, y se pone en la app en dos toques. Generar o montar audio sería gastar en algo que la plataforma prefiere que no lleves puesto.
+
+#### Vídeo generado: última opción
+
+Igual que `GENERATE` en imagen y por la misma razón. En comida y bebida un producto sintético **en movimiento** es aún más delator que uno estático. Queda declarado, con aviso, y fuera del MVP.
+
+### 1.8 Las tres salidas de una pieza — y qué NO existe en Instagram
+
+**Verificado contra el corpus de Meta en el repo (`reference/meta-instagram-platform/.../content-publishing.md`, 2026-08-18):**
+
+**No existe «pre-publicar en Instagram para terminar de editarlo allí».** La API publica en dos pasos —crear un *media container* (`POST /{ig-id}/media`) y publicarlo (`POST /{ig-id}/media_publish`)— pero **ese contenedor no es un borrador de la app**: es un objeto de servidor que no se puede abrir ni editar en Instagram, y que **caduca a las 24 horas** si no se publica (`status_code = EXPIRED`). Los borradores que ves en la app de Instagram son una función del cliente móvil y la API no los expone. Cerrado: no se puede.
+
+Lo que sí da el contenedor es un **punto de verificación propio**: se crea, se consulta su `status_code` hasta `FINISHED`, y solo entonces se publica. Eso convierte «publicar» en dos estados nuestros, no de Meta.
+
+**Dato operativo del mismo documento:** una cuenta de Instagram admite **100 publicaciones por API en una ventana móvil de 24 horas** (un carrusel cuenta como una), y Meta recomienda que la propia app haga cumplir el límite. Para dos negocios que publican 3–4 veces por semana sobra por dos órdenes de magnitud; importa el día que exista programación automática.
+
+#### Las tres salidas reales
+
+| Salida | Qué hace | Cuándo |
+|---|---|---|
+| **Publicar** | Crea contenedor → verifica `FINISHED` → publica. La pieza queda `PUBLISHED` con su `media_id` | El camino normal |
+| **Preparar** (staging propio) | Crea el contenedor y lo deja verificado, sin publicar. **Caduca en 24 h** y la UI lo dice | Cuando se quiere dejar listo y apretar el botón en otro momento |
+| **Descargar → reeditar fuera → recargar** | Descarga imagen y copy; el operador los retoca en Canva u otra app; **vuelve a subir el archivo al mismo draft** y publica desde Qualify | Cuando la última milla necesita una mano humana |
+
+**La tercera es la que devuelve la descarga que D1 había quitado**, pero con una condición que la hace distinta de «bajar el zip y arreglárselas»: **el archivo reeditado vuelve al mismo `ContentDraft`**. Sustituye la imagen, conserva el brief, el perfil de voz, la provenance y el coste, y publica desde Qualify.
+
+Sin ese retorno se pierde lo que hace medible al módulo: si el operador edita fuera y publica a mano, Qualify no sabe qué se publicó, y `MC-15` —el kill criterion, ¿gana el contenido con perfil de voz al manual?— deja de poder calcularse. Por eso la pieza vuelve a casa antes de salir.
+
+Esto añade un estado a la FSM, `STAGED`, entre `APPROVED` y `PUBLISHED`, con su `staged_expires_at`.
+
+### 1.9 Submódulo de plantillas — el molde es el activo
+
+**Validado con POC el 2026-08-18** (tres piezas de Polet con su branding real, renderizadas en 56 ms/pieza, $0, byte a byte reproducibles — `packages/creative/src/qualify_creative/templates/`). El principio que gobierna todo el submódulo, en palabras del fundador: **se paga por descubrir, no por repetir.**
+
+| Concepto | Qué es |
+|---|---|
+| `BrandTemplate` | Layout declarativo en **coordenadas normalizadas 0..1** (~1,7 KB de JSON): cajas de foto, formas, zonas de texto con rol/peso/alineación. Una definición sirve a 4:5 y 9:16 |
+| Render | Pillow, determinista: misma entrada → mismos bytes. 0 tokens, $0, ~56 ms |
+| Autoría | Visual (Canva → PNG con hueco) o **generada por LLM** — ver el bucle abajo |
+
+**El bucle LLM → render → visión (D15).** Como la plantilla es JSON pequeño y el render es gratis, un LLM puede *diseñar* plantillas nuevas: propone el JSON → Pillow renderiza (gratis) → un modelo de visión critica el PNG → corrige coordenadas → repite. Tres iteraciones cuestan céntimos de LLM y cero de render. Tres niveles, en orden de construcción:
+
+1. **N1 — elegir y rellenar** (MVP): el LLM lee el brief y decide qué plantilla y qué valor va en cada hueco.
+2. **N2 — diseñar plantillas nuevas**: «una para producto agotado, más atrevida» → JSON nuevo → se renderiza → se aprueba → **queda en la biblioteca para siempre**.
+3. **N3 — auto-corrección con visión**: el bucle automatizado. N2 no es viable sin N3 — los LLM son malos con coordenadas a ciegas (solapan texto); la visión es lo que lo corrige.
+
+Dos contenciones no negociables: el LLM compone **dentro** del `BrandKit` (paleta y tipografías salen del kit, no las elige él — sin esto, en un mes hay veinte estilos y ninguna marca), y **las plantillas que funcionan se congelan** — la pieza de cada día quiere estabilidad, no novedad.
+
+**Plantillas × métricas (D16) — el oro.** Cada `ApprovedCreative` lleva `template_id` + `template_version` en su provenance. Cuando las métricas de owned media vuelvan por la conexión Meta (insights de la cuenta propia — no necesita Parte 3), la frase «la plantilla de precio v2 rinde 40% mejor que la v1» se vuelve **calculable**. Es la ventaja estructural de las plantillas sobre la imagen generada: las piezas de un mismo molde son comparables entre sí; cada imagen de IA es única y no hay nada que comparar. Este es el loop de aprendizaje de ADR 32 D16, aterrizado en el único plano de datos que ya existe.
+
+**Tratamiento de foto como receta (D17).** El mismo patrón aplicado a la foto: los parámetros de recorte de producto (chroma key o segmentación, tolerancia, suavizado, sombra) se **descubren una vez** —con ayuda del LLM, mirando el resultado— y se guardan como `brand_kit.photo_recipe`. A partir de ahí el pipeline los aplica gratis en cada foto. Investigación de qué técnicas entran: `docs/research-features-tratamiento-foto.md` (en curso).
+
+### 1.10 `photo_recipe` — el sustrato de foto
+
+**Decidido 2026-08-18 (D18), validado con producto real el mismo día** (recorte BiRefNet sobre foto de mesa desordenada → pieza publicable, $0). Es el módulo que convierte la foto del teléfono en material de composición, y su contrato tiene una regla central:
+
+> **La salida no es "la foto recortada" — es `(foto_normalizada, máscara)`.** La segmentación se corre **una vez** por foto y la máscara se persiste junto al asset. Cinco features la consumen sin volver a inferir: recorte, sombra sintética, preset de comida aplicado solo al sujeto, reencuadre 4:5→9:16 que nunca corta el producto, y colocación de texto que no lo tapa. Una inferencia, muchos usos — «se paga por descubrir, no por repetir» aplicado al píxel.
+
+**Etapas del pipeline** (investigación: [`research-features-tratamiento-foto.md`](research-features-tratamiento-foto.md)):
+
+| # | Etapa | Con qué | Nota |
+|---|---|---|---|
+| 1 | **Normalización** — los 4 fallos silenciosos: `exif_transpose`, HEIC, Display P3→sRGB, y export final con `UnsharpMask` + JPEG q85 | Pillow + `pillow-heif` | Sin esto, fotos de iPhone llegan giradas y con colores lavados. **Corre siempre**, incluso si el resto se desactiva |
+| 2 | **Segmentación** → máscara persistida | `rembg[birefnet-general-lite]` (MIT — **nunca** el default `bria-rmbg`, licencia comercial de pago) | Local, ~2s CPU. Upgrade path sin arquitectura nueva: `fal-ai/birefnet/v2` por el mismo `FalAdapter`. Halo en cristal/espuma → escalada `-matting` → `_HR` → fal |
+| 3 | **Derivados** — recorte, sombra (blur del alfa), preset cálido por marca (WB + CLAHE + saturación ≤+10 **solo sobre el sujeto**) | Pillow + OpenCV | Todos leen la máscara de la etapa 2; ninguno re-infiere |
+
+Los parámetros de 1 y 3 viven en `brand_kit.photo_recipe` (D17): se calibran una vez por marca —con LLM + visión mirando el resultado— y el pipeline los aplica gratis para siempre.
+
+**Extensión futura ya habilitada (v2, no se construye ahora):** secuencias animadas desde fotos — el recorte flotando con su sombra, fondo con parallax, textos con fade, ensamblado a MP4 9:16 por ffmpeg y audio puesto en la app de IG. La única primitiva nueva son **keyframes** sobre las mismas cajas normalizadas (`Box` como función del tiempo); todo lo demás — máscara persistida, composición declarativa, `TextOverlay` con timing, ffmpeg — ya está decidido y es exactamente lo que hace viable la extensión a ~15s de render y $0 por Reel, sin tocar un píxel del producto con un modelo. Para este efecto la ruta determinista no es la barata: es la mejor (fidelidad + reproducible + sin etiqueta de IA).
 
 ## 2. Flujo end-to-end
 
@@ -724,10 +847,31 @@ Formulario corto a propósito. El valor está en el sustrato, no en que el clien
 - **Tema o producto** (texto libre, el único campo obligatorio largo)
 - **Plataforma y formato**: Instagram · post de feed **4:5** (activo) · *Anuncio en Reels 9:16* **visible y deshabilitado**, con el tooltip de §1.5 (D8)
 - **Destino**: orgánico · anuncio · ambos → mapea a `intent` y decide si se piden los campos de Ads
-- **La imagen** (§1.3), dos botones grandes y excluyentes:
-  - *Genérala tú* → `GENERATE`
-  - *Usa mi foto* → `FROM_UPLOAD`, abre el `rx.upload` y no deja enviar sin foto
-  Para marcas con `forbidden_claims` de tipo inmobiliario/regulado, `FROM_UPLOAD` va preseleccionado y la otra opción lleva un aviso: *"la imagen sería ilustrativa, no el inmueble real"*.
+- **La imagen — acordeón de tres submódulos en orden fijo** (D11). No es un desplegable: el orden *es* la recomendación, y presentarlas como equivalentes sería contradecir la evidencia.
+
+```
+  ┌─ Tu foto, con tu marca ──────────────── RECOMENDADO ─┐
+  │  Sube la foto y la ponemos en tu marco.               │  ← abierto por defecto
+  │  Sin retoque de IA. Gratis. [ Subir foto ]            │
+  └───────────────────────────────────────────────────────┘
+  ┌─ Tu foto, mejorada ──────────────────────────────────┐
+  │  Corregimos luz y color sobre TU foto real.           │
+  │  No requiere etiqueta de IA en anuncios. ~$0.03       │
+  └───────────────────────────────────────────────────────┘
+  ┌─ Tu producto, en otro fondo ───────── requiere etiqueta ─┐
+  │  Lleva tu producto real a un contexto nuevo.          │
+  │  Meta obliga a marcarlo como IA en anuncios. ~$0.03   │
+  └───────────────────────────────────────────────────────┘
+  ┌─ Generar desde cero ─────────────────  NO RECOMENDADA ─┐
+  │  ⚠ La imagen no será tu producto. En comida y bebida  │
+  │  esto destruye confianza y Meta obliga a etiquetarlo.  │
+  │  Úsalo solo para piezas SIN producto (horarios,        │
+  │  promos, fondos). ~$0.03–0.09                          │
+  └───────────────────────────────────────────────────────┘
+```
+
+  Reglas de la pantalla: el primer submódulo va **abierto por defecto**; las rutas que `brand_kit.image_policy` bloquee para esa marca aparecen **visibles y deshabilitadas** con el motivo (no se ocultan — ocultarlas invita a preguntar por qué no están); y las dos últimas muestran el aviso de etiquetado **antes** de elegir, no después de generar.
+- **Vídeo** (§1.7), cuando el formato lo admita: sube tu clip y elige efectos —cámara lenta, retroceso, boomerang, congelado— **antes** de procesar, con vista previa. Gratis y sin etiqueta de IA.
 - **Restricciones opcionales**: debe mencionar / debe evitar
 
 Al enviar: navega a `/drafts/{id}` con el estado en `DRAFTING` y un indicador de progreso real por etapa (copy → imagen → verificación), no un spinner ciego. Una espera de 40 segundos sin información se percibe como una caída.
@@ -898,6 +1042,16 @@ class CeleryDispatcher:
 - `MediaStagingService` (`publishing/staging.py`) ya existe y ya sabe estacionar media bajo el prefijo del tenant. La migración es llamarlo, no escribirlo.
 
 **Lo que NO se debe hacer mientras tanto:** pintar `media_url` en un `<img src>` desde el componente Reflex, guardarla en el estado del cliente, o pasarla a `publishing` en vez del `draft_id`. Cualquiera de las tres convierte una línea en una cacería.
+
+### 7.7 La contrapartida de `1 tenant = 1 brand`
+
+La decisión simplifica este módulo y cierra una puerta fuera de él. Conviene que esté escrito para que nadie la redescubra por sorpresa:
+
+**El programa de fidelidad conjunto entre Bianki y Polet queda descartado.** El [backlog de Loyalty](backlog-loyalty-sellos-cupones.md) bloquea el cupón cross-negocio **por diseño**, no por olvido: cruzar tenants exigiría la identidad de operador que el ruling del 2026-08-16 descartó a sabiendas. Con dos tenants, «compra pizza en Bianki, suma sello para un bubble tea en Polet» no es implementable sin reabrir esa puerta.
+
+**Lo que sí sobrevive:** el **Combo Vecino** ($6, bebida + pizza) sigue funcionando como promoción y como pieza de contenido cruzada — se publica en las dos cuentas, cada una desde su tenant. Lo que se pierde es la acumulación automática de sellos entre los dos, no la venta cruzada.
+
+**Esto cierra `LOY-00.1`** con la respuesta contraria a la que ese backlog asumía: **dos programas de sellos separados**, uno por negocio. Conviene anotarlo allí antes de que arranque.
 
 ### 7.5 Lo que D4 traslada: el coste pasa a ser tuyo
 

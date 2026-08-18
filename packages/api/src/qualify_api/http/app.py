@@ -17,8 +17,10 @@ from fastapi import FastAPI
 
 from qualify_api.connections.composition import production_connect_service
 from qualify_api.connections.service import ConnectService
+from qualify_api.creative.service import ContentService
 from qualify_api.http import (
     connections_routes,
+    creative_routes,
     deps,
     inbox_routes,
     leads_routes,
@@ -67,12 +69,32 @@ def build_production_leads_service() -> LeadIntakeService:
     return production_leads_service()
 
 
+def build_production_content_service() -> ContentService:
+    """Lazy on purpose, like the publishing builders: composing the creative service
+    builds the real Anthropic router, and an app booted without the creative env should
+    fail the CREATIVE request loudly, not the whole boot."""
+    from qualify_api.creative.composition import production_content_service  # noqa: PLC0415
+
+    return production_content_service()
+
+
+def build_production_draft_image_reader() -> creative_routes.DraftImageReader:
+    return creative_routes.read_draft_image
+
+
+def build_production_approved_creative_reader() -> creative_routes.ApprovedCreativeReader:
+    from qualify_api.creative.read import approved_creative  # noqa: PLC0415
+
+    return approved_creative
+
+
 def create_app(*, configure_production: bool = True) -> FastAPI:
     app = FastAPI(title="Qualify API", version="0.1.0")
     app.include_router(connections_routes.router)
     app.include_router(publishing_routes.router)
     app.include_router(inbox_routes.router)
     app.include_router(leads_routes.router)
+    app.include_router(creative_routes.router)
     if configure_production:
         app.dependency_overrides[connections_routes.get_connect_service] = build_production_service
         app.dependency_overrides[publishing_routes.get_publish_service] = (
@@ -83,6 +105,15 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
         )
         app.dependency_overrides[inbox_routes.get_sync_comments] = build_production_inbox_sync
         app.dependency_overrides[leads_routes.get_leads_service] = build_production_leads_service
+        app.dependency_overrides[creative_routes.get_content_service] = (
+            build_production_content_service
+        )
+        app.dependency_overrides[creative_routes.get_draft_image_reader] = (
+            build_production_draft_image_reader
+        )
+        app.dependency_overrides[creative_routes.get_approved_creative_reader] = (
+            build_production_approved_creative_reader
+        )
         # C1: parsed at assembly so a malformed QUALIFY_DEV_PRINCIPALS fails the boot,
         # not the first request.
         app.dependency_overrides[deps.current_principal] = deps.build_dev_principal_dependency()

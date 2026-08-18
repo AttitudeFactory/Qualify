@@ -1,0 +1,954 @@
+"""Reflex state for the Brand Content Engine screens (design §6).
+
+Custody rules inherited from `connections_state.py` / `publishing_state.py`:
+
+- Holds only whitelisted `creative_vm` dataclasses, never ORM rows or service records.
+- The active tenant comes from `AuthState.session_tenant_id` (set only by login) and is
+  parsed through `tenant.tenant_uuid` immediately before it reaches the provider.
+- Every provider call is blocking (SQLAlchemy is synchronous here), so state events run
+  them off the event loop with `asyncio.to_thread` inside `background=True` handlers.
+- The upload handler (`handle_photo_upload`) is FOREGROUND on purpose: Reflex forbids
+  `background=True` on a handler that receives `list[rx.UploadFile]` (same constraint
+  `publishing_state.py` documents). It only writes the bytes locally — quick local I/O.
+
+Polling (§6.6): `poll_draft` backs off 1s → 2s → 4s, caps at 5s, and gives up at 5
+minutes with an explicit timeout state — an infinite spinner is a lie about the system.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections.abc import AsyncIterator
+from uuid import UUID, uuid4
+
+import reflex as rx
+from pydantic import ValidationError
+from qualify_api.creative.service import (
+    BrandNotReady,
+    RouteBlockedByPolicy,
+    UnknownDraft,
+    UnknownVariant,
+)
+from qualify_api.creative.voice_service import NotProposed, UnknownBrandKit, UnknownVersion
+from qualify_creative.enums import ContentType
+from sqlalchemy.exc import SQLAlchemyError
+
+from .auth_state import AuthState
+from .creative_provider import (
+    acting_user_id,
+    approve_draft,
+    approve_voice,
+    brand_readiness,
+    default_brand_id,
+    draft_detail,
+    edit_variant,
+    list_drafts,
+    load_kit_form,
+    load_voice_screen,
+    propose_voice,
+    reject_draft,
+    route_options_for,
+    save_kit,
+    submit_brief,
+)
+from .creative_vm import (
+    CopyVariantVM,
+    DraftSummaryVM,
+    DraftVM,
+    KitFormVM,
+    ReadinessVM,
+    RouteOptionVM,
+    VoiceProposalVM,
+    content_type_options,
+)
+from .tenant import tenant_uuid
+
+logger = logging.getLogger(__name__)
+
+_NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
+_NO_BRAND = "Este negocio no tiene ninguna marca provisionada todavía."
+_NO_USER = "Este negocio no tiene ningún usuario al que atribuir la acción."
+_DB_ERROR = "No se pudo hablar con la base de datos. Inténtalo de nuevo en un momento."
+_KIT_SAVED = "Brand kit guardado."
+_KIT_INVALID = "Revisa los campos del kit: "
+_NO_KIT_TO_PROPOSE = (
+    "Aún no hay un brand kit del que destilar la voz. Complétalo primero en /brand."
+)
+_STALE_PROPOSAL = "Esa propuesta ya no está vigente. Recargamos el estado real."
+_BRIEF_NOT_READY = "La marca aún no está lista para generar. Completa lo que falta en /brand."
+_ROUTE_BLOCKED = "Esa ruta de imagen está bloqueada para esta marca: "
+_BRIEF_INVALID = "El encargo no se puede ejecutar: "
+_UPLOAD_FAILED = "No se pudo leer la foto subida. Intenta con otro archivo."
+_UPLOAD_REQUIRED = "Esta ruta trabaja sobre tu foto: súbela antes de enviar el encargo."
+_TOPIC_REQUIRED = "Describe el tema o producto del encargo."
+_DRAFT_GONE = "Ese borrador no existe o ya no es visible para este negocio."
+_VARIANT_REQUIRED = "Elige una variante antes de aprobar."
+_POLL_TIMEOUT = (
+    "La generación lleva más de 5 minutos sin terminar. La bandeja mostrará el "
+    "estado real cuando el sistema la marque como fallida."
+)
+
+#: §6.6 polling schedule: backoff 1s → 2s → 4s, cap 5s, give up at 5 minutes.
+_POLL_DELAYS = (1.0, 2.0, 4.0)
+_POLL_CAP_SECONDS = 5.0
+_POLL_BUDGET_SECONDS = 300.0
+
+#: The generation stages the progress indicator names (§6.4: a real per-stage
+#: indicator, not a blind spinner). The MVP pipeline generates copy, then verifies.
+GENERATION_STAGES = ("Copy", "Imagen", "Verificación")
+
+
+class CreativeState(rx.State):
+    """State for /brand, /brand/voice, /create, /drafts and /drafts/[draft_id]."""
+
+    # -- shared -------------------------------------------------------------
+    readiness: ReadinessVM | None = None
+    _brand_id: str = ""
+
+    # -- /brand -------------------------------------------------------------
+    kit_loading: bool = False
+    kit_error: str = ""
+    kit_notice: str = ""
+    kit_positioning: str = ""
+    kit_audience: str = ""
+    kit_regional_variant: str = "es-CO"
+    tone_formal_casual: int = 50
+    tone_sober_enthusiastic: int = 50
+    tone_technical_plain: int = 50
+    tone_brief_elaborate: int = 50
+    kit_do_examples: str = ""
+    kit_dont_examples: str = ""
+    kit_banned_words: str = ""
+    kit_forbidden_claims: str = ""
+    kit_cta_patterns: str = ""
+    kit_palette: str = ""
+
+    # -- /brand/voice -------------------------------------------------------
+    voice_loading: bool = False
+    voice_error: str = ""
+    voice_proposal: VoiceProposalVM | None = None
+    voice_active: VoiceProposalVM | None = None
+
+    # -- /create ------------------------------------------------------------
+    create_loading: bool = False
+    create_error: str = ""
+    brief_objective: str = "consideration"
+    brief_content_type: str = "product"
+    brief_topic: str = ""
+    brief_product_ref: str = ""
+    brief_intent: str = "organic"
+    brief_must_mention: str = ""
+    brief_must_avoid: str = ""
+    route_options: list[RouteOptionVM] = []
+    selected_route: str = "from_upload"
+    staged_media_key: str = ""
+    staged_media_name: str = ""
+    upload_error: str = ""
+    is_submitting: bool = False
+
+    # -- /drafts ------------------------------------------------------------
+    drafts: list[DraftSummaryVM] = []
+    drafts_loading: bool = False
+    drafts_error: str = ""
+
+    # -- /drafts/[draft_id] -------------------------------------------------
+    draft: DraftVM | None = None
+    detail_loading: bool = False
+    detail_error: str = ""
+    selected_variant_id: str = ""
+    edit_hook: str = ""
+    edit_caption: str = ""
+    edit_hashtags: str = ""
+    edit_cta: str = ""
+    edit_blocking: list[str] = []
+    edit_saving: bool = False
+    action_error: str = ""
+    poll_timed_out: bool = False
+    poll_elapsed_label: str = ""
+    _polling_draft_id: str = ""
+
+    # -- computed -----------------------------------------------------------
+
+    @rx.var
+    def content_type_choices(self) -> list[list[str]]:
+        return [[opt.value, opt.label] for opt in content_type_options()]
+
+    @rx.var
+    def selected_variant(self) -> CopyVariantVM | None:
+        if self.draft is None:
+            return None
+        for variant in self.draft.variants:
+            if variant.variant_id == self.selected_variant_id:
+                return variant
+        return None
+
+    @rx.var
+    def can_approve_now(self) -> bool:
+        """§6.5: approve needs a GENERATED draft, a selected variant that passes layer
+        1, and no blocking edit failure on screen."""
+        variant = self.selected_variant
+        return (
+            self.draft is not None
+            and self.draft.can_approve
+            and variant is not None
+            and variant.passed
+            and not self.edit_blocking
+        )
+
+    @rx.var
+    def selected_needs_upload(self) -> bool:
+        for option in self.route_options:
+            if option.key == self.selected_route:
+                return option.needs_upload
+        return False
+
+    # -- helpers ------------------------------------------------------------
+
+    async def _session_ids(self) -> tuple[UUID, UUID, UUID] | None:
+        """(tenant, brand, acting user) for the current session, or None (with the
+        reason already stored) when any of the three cannot be resolved."""
+        async with self:
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+            cached_brand_id = self._brand_id
+        tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
+        if tenant_id is None:
+            return None
+        brand_id: UUID | None
+        if cached_brand_id:
+            brand_id = UUID(cached_brand_id)
+        else:
+            brand_id = await asyncio.to_thread(default_brand_id, tenant_id)
+            if brand_id is not None:
+                async with self:
+                    self._brand_id = str(brand_id)
+        if brand_id is None:
+            return None
+        user_id = await asyncio.to_thread(acting_user_id, tenant_id)
+        if user_id is None:
+            return None
+        return tenant_id, brand_id, user_id
+
+    def _apply_kit_form(self, form: KitFormVM) -> None:
+        self.kit_positioning = form.positioning
+        self.kit_audience = form.audience
+        self.kit_regional_variant = form.regional_variant
+        self.tone_formal_casual = form.tone_formal_casual
+        self.tone_sober_enthusiastic = form.tone_sober_enthusiastic
+        self.tone_technical_plain = form.tone_technical_plain
+        self.tone_brief_elaborate = form.tone_brief_elaborate
+        self.kit_do_examples = form.do_examples
+        self.kit_dont_examples = form.dont_examples
+        self.kit_banned_words = form.banned_words
+        self.kit_forbidden_claims = form.forbidden_claims
+        self.kit_cta_patterns = form.cta_patterns
+        self.kit_palette = form.palette_rgb
+
+    def _kit_form(self) -> KitFormVM:
+        return KitFormVM(
+            positioning=self.kit_positioning,
+            audience=self.kit_audience,
+            regional_variant=self.kit_regional_variant,
+            tone_formal_casual=self.tone_formal_casual,
+            tone_sober_enthusiastic=self.tone_sober_enthusiastic,
+            tone_technical_plain=self.tone_technical_plain,
+            tone_brief_elaborate=self.tone_brief_elaborate,
+            do_examples=self.kit_do_examples,
+            dont_examples=self.kit_dont_examples,
+            banned_words=self.kit_banned_words,
+            forbidden_claims=self.kit_forbidden_claims,
+            cta_patterns=self.kit_cta_patterns,
+            palette_rgb=self.kit_palette,
+        )
+
+    # -- explicit setters (this Reflex version generates none) ----------------
+
+    @rx.event
+    def set_kit_positioning(self, value: str) -> None:
+        self.kit_positioning = value
+
+    @rx.event
+    def set_kit_audience(self, value: str) -> None:
+        self.kit_audience = value
+
+    @rx.event
+    def set_kit_regional_variant(self, value: str) -> None:
+        self.kit_regional_variant = value
+
+    @rx.event
+    def set_kit_do_examples(self, value: str) -> None:
+        self.kit_do_examples = value
+
+    @rx.event
+    def set_kit_dont_examples(self, value: str) -> None:
+        self.kit_dont_examples = value
+
+    @rx.event
+    def set_kit_banned_words(self, value: str) -> None:
+        self.kit_banned_words = value
+
+    @rx.event
+    def set_kit_forbidden_claims(self, value: str) -> None:
+        self.kit_forbidden_claims = value
+
+    @rx.event
+    def set_kit_cta_patterns(self, value: str) -> None:
+        self.kit_cta_patterns = value
+
+    @rx.event
+    def set_kit_palette(self, value: str) -> None:
+        self.kit_palette = value
+
+    @rx.event
+    def set_brief_topic(self, value: str) -> None:
+        self.brief_topic = value
+
+    @rx.event
+    def set_brief_product_ref(self, value: str) -> None:
+        self.brief_product_ref = value
+
+    @rx.event
+    def set_brief_must_mention(self, value: str) -> None:
+        self.brief_must_mention = value
+
+    @rx.event
+    def set_brief_must_avoid(self, value: str) -> None:
+        self.brief_must_avoid = value
+
+    @rx.event
+    def set_edit_hook(self, value: str) -> None:
+        self.edit_hook = value
+
+    @rx.event
+    def set_edit_caption(self, value: str) -> None:
+        self.edit_caption = value
+
+    @rx.event
+    def set_edit_hashtags(self, value: str) -> None:
+        self.edit_hashtags = value
+
+    @rx.event
+    def set_edit_cta(self, value: str) -> None:
+        self.edit_cta = value
+
+    # -- /brand -------------------------------------------------------------
+
+    # Slider setters: the radix slider reports `list[int | float]`, so the
+    # auto-generated scalar setters cannot receive it — these overrides unpack it.
+    @rx.event
+    def set_tone_formal_casual(self, value: list[int | float]) -> None:
+        self.tone_formal_casual = int(value[0])
+
+    @rx.event
+    def set_tone_sober_enthusiastic(self, value: list[int | float]) -> None:
+        self.tone_sober_enthusiastic = int(value[0])
+
+    @rx.event
+    def set_tone_technical_plain(self, value: list[int | float]) -> None:
+        self.tone_technical_plain = int(value[0])
+
+    @rx.event
+    def set_tone_brief_elaborate(self, value: list[int | float]) -> None:
+        self.tone_brief_elaborate = int(value[0])
+
+    @rx.event(background=True)
+    async def load_brand(self) -> None:
+        async with self:
+            self.kit_loading = True
+            self.kit_error = ""
+            self.kit_notice = ""
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.kit_loading = False
+                self.kit_error = _NO_SESSION if not self._brand_id else _NO_BRAND
+            return
+        tenant_id, brand_id, _ = ids
+        try:
+            verdict = await asyncio.to_thread(brand_readiness, tenant_id, brand_id)
+            form = await asyncio.to_thread(load_kit_form, tenant_id, brand_id)
+        except SQLAlchemyError as exc:
+            logger.error("brand load failed: %s", type(exc).__name__)
+            async with self:
+                self.kit_loading = False
+                self.kit_error = _DB_ERROR
+            return
+        async with self:
+            self.readiness = verdict
+            if form is not None:
+                self._apply_kit_form(form)
+            self.kit_loading = False
+
+    @rx.event(background=True)
+    async def save_kit_form(self) -> None:
+        async with self:
+            self.kit_error = ""
+            self.kit_notice = ""
+            form = self._kit_form()
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.kit_error = _NO_SESSION
+            return
+        tenant_id, brand_id, user_id = ids
+        try:
+            await asyncio.to_thread(save_kit, tenant_id, brand_id, user_id, form)
+            verdict = await asyncio.to_thread(brand_readiness, tenant_id, brand_id)
+        except ValidationError as exc:
+            first = exc.errors()[0]
+            async with self:
+                self.kit_error = _KIT_INVALID + str(first.get("msg", ""))
+            return
+        except SQLAlchemyError as exc:
+            logger.error("kit save failed: %s", type(exc).__name__)
+            async with self:
+                self.kit_error = _DB_ERROR
+            return
+        async with self:
+            self.readiness = verdict
+            self.kit_notice = _KIT_SAVED
+
+    # -- /brand/voice (HITL #0) ---------------------------------------------
+
+    @rx.event(background=True)
+    async def load_voice(self) -> None:
+        async with self:
+            self.voice_loading = True
+            self.voice_error = ""
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.voice_loading = False
+                self.voice_error = _NO_SESSION
+            return
+        tenant_id, brand_id, _ = ids
+        try:
+            verdict = await asyncio.to_thread(brand_readiness, tenant_id, brand_id)
+            proposal, active = await asyncio.to_thread(load_voice_screen, tenant_id, brand_id)
+        except SQLAlchemyError as exc:
+            logger.error("voice load failed: %s", type(exc).__name__)
+            async with self:
+                self.voice_loading = False
+                self.voice_error = _DB_ERROR
+            return
+        async with self:
+            self.readiness = verdict
+            self.voice_proposal = proposal
+            self.voice_active = active
+            self.voice_loading = False
+
+    @rx.event(background=True)
+    async def distill_voice(self) -> AsyncIterator[None]:
+        """S1 'destilar': propose the next profile from the kit, then reload."""
+        async with self:
+            self.voice_error = ""
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.voice_error = _NO_SESSION
+            return
+        tenant_id, brand_id, user_id = ids
+        try:
+            await asyncio.to_thread(propose_voice, tenant_id, brand_id, user_id)
+        except UnknownBrandKit:
+            async with self:
+                self.voice_error = _NO_KIT_TO_PROPOSE
+            return
+        except SQLAlchemyError as exc:
+            logger.error("voice propose failed: %s", type(exc).__name__)
+            async with self:
+                self.voice_error = _DB_ERROR
+            return
+        yield CreativeState.load_voice
+
+    @rx.event(background=True)
+    async def approve_voice_version(self, version: int) -> AsyncIterator[None]:
+        async with self:
+            self.voice_error = ""
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.voice_error = _NO_SESSION
+            return
+        tenant_id, brand_id, user_id = ids
+        try:
+            await asyncio.to_thread(approve_voice, tenant_id, brand_id, int(version), user_id)
+        except (UnknownVersion, NotProposed):
+            async with self:
+                self.voice_error = _STALE_PROPOSAL
+            yield CreativeState.load_voice
+            return
+        except SQLAlchemyError as exc:
+            logger.error("voice approve failed: %s", type(exc).__name__)
+            async with self:
+                self.voice_error = _DB_ERROR
+            return
+        yield CreativeState.load_voice
+
+    # -- /create ------------------------------------------------------------
+
+    @rx.event(background=True)
+    async def load_create(self) -> None:
+        async with self:
+            self.create_loading = True
+            self.create_error = ""
+            self.upload_error = ""
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.create_loading = False
+                self.create_error = _NO_SESSION
+            return
+        tenant_id, brand_id, _ = ids
+        async with self:
+            content_type = self.brief_content_type
+        try:
+            verdict = await asyncio.to_thread(brand_readiness, tenant_id, brand_id)
+            options = await asyncio.to_thread(route_options_for, tenant_id, brand_id, content_type)
+        except SQLAlchemyError as exc:
+            logger.error("create load failed: %s", type(exc).__name__)
+            async with self:
+                self.create_loading = False
+                self.create_error = _DB_ERROR
+            return
+        async with self:
+            self.readiness = verdict
+            self.route_options = list(options)
+            self._select_default_route()
+            self.create_loading = False
+
+    def _select_default_route(self) -> None:
+        """Preset the accordion on the content type's default route (§6.4: the first
+        submodule open by default), falling back to the first enabled one."""
+        try:
+            default = ContentType(self.brief_content_type).default_image_route.value
+        except ValueError:
+            default = "from_upload"
+        enabled = {opt.key for opt in self.route_options if opt.enabled}
+        if default in enabled:
+            self.selected_route = default
+        elif enabled:
+            self.selected_route = next(opt.key for opt in self.route_options if opt.enabled)
+
+    @rx.event
+    def set_objective(self, value: str) -> None:
+        self.brief_objective = value
+
+    @rx.event
+    def set_intent(self, value: str) -> None:
+        self.brief_intent = value
+
+    @rx.event(background=True)
+    async def set_content_type(self, value: str) -> None:
+        """Content type presets the image route (ContentType.default_image_route) and
+        re-derives the accordion (GENERATE defensibility depends on the type)."""
+        async with self:
+            self.brief_content_type = value
+        ids = await self._session_ids()
+        if ids is None:
+            return
+        tenant_id, brand_id, _ = ids
+        try:
+            options = await asyncio.to_thread(route_options_for, tenant_id, brand_id, value)
+        except SQLAlchemyError as exc:
+            logger.error("route options failed: %s", type(exc).__name__)
+            return
+        async with self:
+            self.route_options = list(options)
+            self._select_default_route()
+
+    @rx.event
+    def select_route(self, key: str) -> None:
+        for option in self.route_options:
+            if option.key == key and option.enabled:
+                self.selected_route = key
+                self.upload_error = ""
+                return
+
+    @rx.event
+    async def handle_photo_upload(self, files: list[rx.UploadFile]) -> None:
+        """Receive the FROM_UPLOAD photo. FOREGROUND on purpose (Reflex forbids
+        background handlers that receive uploads). The file lands under a
+        tenant-namespaced key — the logout-hygiene rule of §6."""
+        if not files:
+            return
+        auth = await self.get_state(AuthState)
+        tenant_id = tenant_uuid(auth.session_tenant_id)
+        if tenant_id is None:
+            self.upload_error = _NO_SESSION
+            return
+        upload = files[0]
+        try:
+            data = await upload.read()
+        except Exception:
+            self.upload_error = _UPLOAD_FAILED
+            return
+        name = upload.name or "photo"
+        key = f"uploads/{tenant_id}/{uuid4().hex}_{name}"
+        target = rx.get_upload_dir() / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        self.staged_media_key = key
+        self.staged_media_name = name
+        self.upload_error = ""
+
+    @rx.event(background=True)
+    async def submit_brief_form(self) -> AsyncIterator[rx.event.EventSpec]:
+        async with self:
+            if self.is_submitting:
+                return
+            if not self.brief_topic.strip():
+                self.create_error = _TOPIC_REQUIRED
+                return
+            if self.selected_needs_upload and not self.staged_media_key:
+                self.create_error = _UPLOAD_REQUIRED
+                return
+            self.is_submitting = True
+            self.create_error = ""
+            form = {
+                "objective": self.brief_objective,
+                "content_type": self.brief_content_type,
+                "topic": self.brief_topic,
+                "product_ref": self.brief_product_ref,
+                "intent": self.brief_intent,
+                "image_route": self.selected_route,
+                "source_media_key": self.staged_media_key,
+                "must_mention": self.brief_must_mention,
+                "must_avoid": self.brief_must_avoid,
+            }
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.is_submitting = False
+                self.create_error = _NO_SESSION
+            return
+        tenant_id, brand_id, user_id = ids
+        try:
+            draft_id = await asyncio.to_thread(
+                lambda: submit_brief(tenant_id, brand_id, user_id, **form)
+            )
+        except BrandNotReady:
+            async with self:
+                self.is_submitting = False
+                self.create_error = _BRIEF_NOT_READY
+            return
+        except RouteBlockedByPolicy as exc:
+            async with self:
+                self.is_submitting = False
+                self.create_error = _ROUTE_BLOCKED + exc.detail
+            return
+        except (ValidationError, ValueError) as exc:
+            async with self:
+                self.is_submitting = False
+                self.create_error = _BRIEF_INVALID + str(exc).splitlines()[0]
+            return
+        except SQLAlchemyError as exc:
+            logger.error("submit brief failed: %s", type(exc).__name__)
+            async with self:
+                self.is_submitting = False
+                self.create_error = _DB_ERROR
+            return
+        async with self:
+            self.is_submitting = False
+            self.brief_topic = ""
+            self.staged_media_key = ""
+            self.staged_media_name = ""
+        yield rx.redirect(f"/drafts/{draft_id}")
+
+    # -- /drafts ------------------------------------------------------------
+
+    @rx.event(background=True)
+    async def load_drafts(self) -> None:
+        async with self:
+            self.drafts_loading = True
+            self.drafts_error = ""
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.drafts_loading = False
+                self.drafts_error = _NO_SESSION
+            return
+        tenant_id, brand_id, _ = ids
+        try:
+            # Through the service: its listing runs the reaper first (§7.4).
+            data = await asyncio.to_thread(list_drafts, tenant_id, brand_id)
+        except SQLAlchemyError as exc:
+            logger.error("drafts load failed: %s", type(exc).__name__)
+            async with self:
+                self.drafts_loading = False
+                self.drafts_error = _DB_ERROR
+            return
+        async with self:
+            self.drafts = list(data)
+            self.drafts_loading = False
+
+    # -- /drafts/[draft_id] (HITL #2) ----------------------------------------
+
+    def _route_draft_id(self) -> UUID | None:
+        """The dynamic route arg, parsed. Refuses junk rather than querying with it."""
+        raw = getattr(self, "draft_id", "")
+        try:
+            return UUID(str(raw))
+        except (ValueError, AttributeError):
+            return None
+
+    def _apply_detail(self, vm: DraftVM) -> None:
+        self.draft = vm
+        current = {v.variant_id for v in vm.variants}
+        if self.selected_variant_id not in current:
+            self.selected_variant_id = vm.variants[0].variant_id if vm.variants else ""
+        self._fill_edit_fields()
+
+    def _fill_edit_fields(self) -> None:
+        for variant in self.draft.variants if self.draft is not None else ():
+            if variant.variant_id == self.selected_variant_id:
+                self.edit_hook = variant.hook
+                self.edit_caption = variant.caption
+                self.edit_hashtags = variant.hashtags_text
+                self.edit_cta = variant.cta
+                self.edit_blocking = list(variant.failure_labels)
+                return
+
+    @rx.event(background=True)
+    async def load_draft(self) -> AsyncIterator[None]:
+        async with self:
+            self.detail_loading = True
+            self.detail_error = ""
+            self.action_error = ""
+            self.poll_timed_out = False
+            draft_id = self._route_draft_id()
+        if draft_id is None:
+            async with self:
+                self.detail_loading = False
+                self.detail_error = _DRAFT_GONE
+            return
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.detail_loading = False
+                self.detail_error = _NO_SESSION
+            return
+        tenant_id, _, _ = ids
+        try:
+            vm = await asyncio.to_thread(draft_detail, tenant_id, draft_id)
+        except SQLAlchemyError as exc:
+            logger.error("draft load failed: %s", type(exc).__name__)
+            async with self:
+                self.detail_loading = False
+                self.detail_error = _DB_ERROR
+            return
+        async with self:
+            self.detail_loading = False
+            if vm is None:
+                self.detail_error = _DRAFT_GONE
+                return
+            self._apply_detail(vm)
+            should_poll = vm.is_drafting and self._polling_draft_id != str(draft_id)
+            if should_poll:
+                self._polling_draft_id = str(draft_id)
+        if should_poll:
+            yield CreativeState.poll_draft
+
+    @rx.event(background=True)
+    async def poll_draft(self) -> None:
+        """Poll while DRAFTING. Backs off 1s → 2s → 4s, caps at 5s, gives up at 5 min
+        with a visible timeout state (§6.6)."""
+        async with self:
+            polling_id = self._polling_draft_id
+        draft_id = tenant_uuid(polling_id)  # UUID-or-None parse, same shape as tenants
+        if draft_id is None:
+            return
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self._polling_draft_id = ""
+            return
+        tenant_id, _, _ = ids
+        started = time.monotonic()
+        attempt = 0
+        try:
+            while True:
+                elapsed = time.monotonic() - started
+                if elapsed >= _POLL_BUDGET_SECONDS:
+                    async with self:
+                        if self._polling_draft_id == polling_id:
+                            self.poll_timed_out = True
+                            self.detail_error = _POLL_TIMEOUT
+                    return
+                delay = _POLL_DELAYS[attempt] if attempt < len(_POLL_DELAYS) else _POLL_CAP_SECONDS
+                attempt += 1
+                await asyncio.sleep(delay)
+                async with self:
+                    # The operator navigated to another draft or away: stop quietly.
+                    if self._polling_draft_id != polling_id:
+                        return
+                try:
+                    vm = await asyncio.to_thread(draft_detail, tenant_id, draft_id)
+                except SQLAlchemyError as exc:
+                    logger.error("draft poll failed: %s", type(exc).__name__)
+                    continue  # transient; the budget above still bounds the loop
+                async with self:
+                    if self._polling_draft_id != polling_id:
+                        return
+                    self.poll_elapsed_label = f"{int(time.monotonic() - started)} s"
+                    if vm is not None:
+                        self._apply_detail(vm)
+                        if not vm.is_drafting:
+                            return
+        finally:
+            async with self:
+                if self._polling_draft_id == polling_id:
+                    self._polling_draft_id = ""
+
+    @rx.event
+    def select_variant(self, variant_id: str) -> None:
+        self.selected_variant_id = variant_id
+        self._fill_edit_fields()
+
+    @rx.event(background=True)
+    async def save_edit(self) -> None:
+        """Re-run layer 1 over the edit IN THE ACT (§6.5): blocking failures render and
+        keep the approve button disabled with the reason."""
+        async with self:
+            if self.edit_saving or not self.selected_variant_id:
+                return
+            self.edit_saving = True
+            self.action_error = ""
+            variant_id = self.selected_variant_id
+            hook, caption = self.edit_hook, self.edit_caption
+            hashtags, cta = self.edit_hashtags, self.edit_cta
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.edit_saving = False
+                self.action_error = _NO_SESSION
+            return
+        tenant_id, _, user_id = ids
+        try:
+            failures = await asyncio.to_thread(
+                lambda: edit_variant(
+                    tenant_id,
+                    UUID(variant_id),
+                    user_id,
+                    hook=hook,
+                    caption=caption,
+                    hashtags=hashtags,
+                    cta=cta,
+                )
+            )
+        except (UnknownVariant, UnknownDraft):
+            async with self:
+                self.edit_saving = False
+                self.action_error = _DRAFT_GONE
+            return
+        except SQLAlchemyError as exc:
+            logger.error("edit failed: %s", type(exc).__name__)
+            async with self:
+                self.edit_saving = False
+                self.action_error = _DB_ERROR
+            return
+        async with self:
+            self.edit_saving = False
+            self.edit_blocking = list(failures)
+        if not failures:
+            await self._reload_detail()
+
+    async def _reload_detail(self) -> None:
+        async with self:
+            draft_id = self._route_draft_id()
+        ids = await self._session_ids()
+        if ids is None or draft_id is None:
+            return
+        tenant_id, _, _ = ids
+        try:
+            vm = await asyncio.to_thread(draft_detail, tenant_id, draft_id)
+        except SQLAlchemyError as exc:
+            logger.error("detail reload failed: %s", type(exc).__name__)
+            return
+        async with self:
+            if vm is not None:
+                self._apply_detail(vm)
+
+    @rx.event(background=True)
+    async def approve_selected(self) -> AsyncIterator[rx.event.EventSpec]:
+        """Approve the selected variant (the FSM guard requires one) and hand the
+        operator the paste-ready caption — 'Aprobar y descargar'."""
+        async with self:
+            draft = self.draft
+            variant = self.selected_variant
+            if draft is None or variant is None:
+                self.action_error = _VARIANT_REQUIRED
+                return
+            if not self.can_approve_now:
+                return
+            self.action_error = ""
+            draft_uuid = self._route_draft_id()
+        if draft_uuid is None:
+            return
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.action_error = _NO_SESSION
+            return
+        tenant_id, _, user_id = ids
+        try:
+            vm = await asyncio.to_thread(
+                approve_draft, tenant_id, draft_uuid, UUID(variant.variant_id), user_id
+            )
+        except (UnknownDraft, UnknownVariant):
+            async with self:
+                self.action_error = _DRAFT_GONE
+            return
+        except SQLAlchemyError as exc:
+            logger.error("approve failed: %s", type(exc).__name__)
+            async with self:
+                self.action_error = _DB_ERROR
+            return
+        async with self:
+            self._apply_detail(vm)
+        yield rx.download(
+            data=variant.rendered_caption,
+            filename=f"qualify-copy-{draft.draft_id[:8]}.txt",
+        )
+
+    @rx.event(background=True)
+    async def reject_current(self, regenerate: bool) -> AsyncIterator[None]:
+        async with self:
+            self.action_error = ""
+            draft_uuid = self._route_draft_id()
+        if draft_uuid is None:
+            return
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.action_error = _NO_SESSION
+            return
+        tenant_id, _, user_id = ids
+        try:
+            vm = await asyncio.to_thread(
+                lambda: reject_draft(
+                    tenant_id,
+                    draft_uuid,
+                    user_id,
+                    reason="rejected from HITL #2",
+                    regenerate=bool(regenerate),
+                )
+            )
+        except UnknownDraft:
+            async with self:
+                self.action_error = _DRAFT_GONE
+            return
+        except SQLAlchemyError as exc:
+            logger.error("reject failed: %s", type(exc).__name__)
+            async with self:
+                self.action_error = _DB_ERROR
+            return
+        async with self:
+            self._apply_detail(vm)
+            should_poll = vm.is_drafting and self._polling_draft_id != vm.draft_id
+            if should_poll:
+                self._polling_draft_id = vm.draft_id
+        if should_poll:
+            yield CreativeState.poll_draft
