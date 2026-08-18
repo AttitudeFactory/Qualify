@@ -252,11 +252,7 @@ class ContentType(StrEnum):
         """What the accordion opens on for this type. A piece that depicts a real item
         opens on the operator's own photo; a menu, an hours card or an FAQ opens on the
         pure template, because there is nothing to photograph."""
-        return (
-            ImageRoute.FROM_UPLOAD
-            if self.depicts_sellable_item
-            else ImageRoute.TEMPLATE_ONLY
-        )
+        return ImageRoute.FROM_UPLOAD if self.depicts_sellable_item else ImageRoute.TEMPLATE_ONLY
 
     @property
     def allows_generate(self) -> bool:

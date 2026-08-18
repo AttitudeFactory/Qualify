@@ -163,7 +163,6 @@ GAP_LABELS: dict[str, tuple[str, str]] = {
 
 _FIX_LABELS: dict[str, str] = {
     "/brand": "Completar en el Brand Kit",
-    
 }
 
 

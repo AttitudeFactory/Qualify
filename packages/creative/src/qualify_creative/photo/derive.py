@@ -46,8 +46,8 @@ class FoodPreset:
     research is unambiguous that past ~+10% food starts reading as fake — the opposite
     of appetizing. Applied THROUGH THE MASK so the plate pops without cooking the table."""
 
-    warmth: float = 1.04          # red channel gain; >1 warms
-    saturation: float = 1.08      # ≤ 1.10 per research
+    warmth: float = 1.04  # red channel gain; >1 warms
+    saturation: float = 1.08  # ≤ 1.10 per research
     contrast: float = 1.05
 
     def __post_init__(self) -> None:

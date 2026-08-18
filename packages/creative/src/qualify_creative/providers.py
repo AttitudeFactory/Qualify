@@ -114,9 +114,7 @@ class GenerationProvider(Protocol):
 
     def generate(self, request: GenerationRequest, *, api_key: str) -> GenerationResult: ...
 
-    def estimate_cost_usd(
-        self, request: GenerationRequest, pricing: PricingTable
-    ) -> Decimal:
+    def estimate_cost_usd(self, request: GenerationRequest, pricing: PricingTable) -> Decimal:
         """Pre-flight estimate for the router's budget check. For token-priced models this
         MUST call the vendor's own counter rather than a heuristic: tiktoken-style
         estimators undercount Claude tokens by 15-20%, and more on code and Spanish."""

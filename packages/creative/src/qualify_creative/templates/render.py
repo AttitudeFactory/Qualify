@@ -122,9 +122,7 @@ def render(
     if template.photo_slot is not None:
         if photo is None:
             raise MissingValue(f"template {template.name!r} requires a photo")
-        left, top, right, bottom = template.photo_slot.box.pixels(
-            template.width, template.height
-        )
+        left, top, right, bottom = template.photo_slot.box.pixels(template.width, template.height)
         slot_w, slot_h = right - left, bottom - top
         image = Image.open(io.BytesIO(photo)).convert("RGB")
         fitted = _fit_photo(image, slot_w, slot_h, template.photo_slot.fit)
