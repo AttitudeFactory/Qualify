@@ -19,7 +19,8 @@ Chart decisions worth keeping if this ever grows a backend:
 import reflex as rx
 
 from . import vitrina_data as D
-from .components import sidebar
+from .ui import app_shell, page_header
+from .ui import tokens as T
 from .vitrina_state import (
     HuecoRow,
     LocalCard,
@@ -29,33 +30,27 @@ from .vitrina_state import (
     VitrinaState,
 )
 
+# Same recipe as `ui.card`, spread into `rx.box(**_CARD)` because these blocks build
+# their children before the container.
 _CARD = {
-    "border": f"1px solid {rx.color('gray', 5)}",
-    "border_radius": "0.75rem",
-    "background": rx.color("gray", 2),
+    "border": T.BORDER,
+    "border_radius": T.RADIUS_CARD,
+    "background": T.SURFACE_BG,
     "padding": "1.25rem",
     "width": "100%",
 }
 
+# Every block below the header shares the page gutter; the vertical rhythm is per block.
+_GUTTER_TOP = f"1rem {T.PAGE_X} 0 {T.PAGE_X}"
+_GUTTER_TOP_LG = f"1.5rem {T.PAGE_X} 0 {T.PAGE_X}"
+_GUTTER_BOTTOM = f"1rem {T.PAGE_X} 2rem {T.PAGE_X}"
+
 
 def _topbar() -> rx.Component:
-    return rx.hstack(
-        rx.vstack(
-            rx.hstack(
-                rx.heading(D.MICROCENTRO, size="6"),
-                rx.badge("demo", color_scheme="amber", variant="soft", size="1"),
-                align="center",
-                spacing="2",
-            ),
-            rx.text(f"{D.LEMA} · {D.DIRECCION}", size="2", color=rx.color("gray", 10)),
-            spacing="1",
-            align_items="start",
-        ),
-        rx.spacer(),
-        rx.color_mode.button(),
-        width="100%",
-        padding="1.5rem 2rem 0.5rem 2rem",
-        align_items="start",
+    return page_header(
+        D.MICROCENTRO,
+        f"{D.LEMA} · {D.DIRECCION}",
+        badge=rx.badge("demo", color_scheme="amber", variant="soft", size="1"),
     )
 
 
@@ -68,16 +63,16 @@ def _disclaimer() -> rx.Component:
             variant="surface",
             size="1",
         ),
-        padding="0.5rem 2rem 0 2rem",
+        padding=f"0 {T.PAGE_X}",
         width="100%",
     )
 
 
 def _resumen_card(row: PublicoRow) -> rx.Component:
     return rx.box(
-        rx.text(row.nombre, size="2", color=rx.color("gray", 10)),
-        rx.heading(row.share_label, size="6"),
-        rx.text(row.nota, size="1", color=rx.color("gray", 9)),
+        rx.text(row.nombre, size="2", color=T.TEXT_MUTED),
+        rx.text(row.share_label, size="6", weight="bold", class_name="q-nums"),
+        rx.text(row.nota, size="1", color=T.TEXT_FAINT),
         **_CARD,
     )
 
@@ -88,7 +83,7 @@ def _resumen() -> rx.Component:
         columns=rx.breakpoints(initial="1", sm="2", lg="4"),
         spacing="3",
         width="100%",
-        padding="1rem 2rem 0 2rem",
+        padding=_GUTTER_TOP,
     )
 
 
@@ -121,7 +116,7 @@ def _local_card(card: LocalCard) -> rx.Component:
     return rx.box(
         rx.vstack(
             rx.hstack(
-                rx.heading(card.nombre, size="4"),
+                rx.heading(card.nombre, size="4", as_="h3"),
                 rx.spacer(),
                 _apto_badge(card.apto, card.apto_label),
                 width="100%",
@@ -130,9 +125,9 @@ def _local_card(card: LocalCard) -> rx.Component:
             rx.text(card.ubicacion, size="2", color=rx.color("gray", 11)),
             rx.hstack(
                 rx.text(card.area, size="2"),
-                rx.text("·", color=rx.color("gray", 8)),
+                rx.text("·", color=T.TEXT_FAINT),
                 rx.text(card.canon, size="2"),
-                rx.text("·", color=rx.color("gray", 8)),
+                rx.text("·", color=T.TEXT_FAINT),
                 rx.text(card.flujo, size="2", color=rx.color("accent", 11)),
                 spacing="2",
                 wrap="wrap",
@@ -159,8 +154,8 @@ def _local_card(card: LocalCard) -> rx.Component:
 def _selector() -> rx.Component:
     return rx.vstack(
         rx.hstack(
-            rx.heading("Locales disponibles", size="4"),
-            rx.text("elegí uno para ver su ficha", size="2", color=rx.color("gray", 10)),
+            rx.heading("Locales disponibles", size="4", as_="h2"),
+            rx.text("elegí uno para ver su ficha", size="2", color=T.TEXT_MUTED),
             align="baseline",
             spacing="3",
         ),
@@ -171,7 +166,7 @@ def _selector() -> rx.Component:
             width="100%",
         ),
         width="100%",
-        padding="1.5rem 2rem 0 2rem",
+        padding=_GUTTER_TOP_LG,
         spacing="3",
         align_items="start",
     )
@@ -184,12 +179,12 @@ def _flujo() -> rx.Component:
     return rx.box(
         rx.hstack(
             rx.vstack(
-                rx.heading("Quién pasa por esta puerta, y a qué hora", size="4"),
+                rx.heading("Quién pasa por esta puerta, y a qué hora", size="4", as_="h2"),
                 rx.text(
                     "Gasto capturado por hora, no personas: son cosas distintas y el "
                     "ticket promedio las separa.",
                     size="2",
-                    color=rx.color("gray", 10),
+                    color=T.TEXT_MUTED,
                 ),
                 spacing="1",
                 align_items="start",
@@ -224,13 +219,13 @@ def _flujo() -> rx.Component:
                     data_key="hora",
                     tick_line=False,
                     axis_line=False,
-                    stroke=rx.color("gray", 9),
+                    stroke=T.TEXT_FAINT,
                 ),
                 rx.recharts.y_axis(
                     tick_line=False,
                     axis_line=False,
                     width=34,
-                    stroke=rx.color("gray", 9),
+                    stroke=T.TEXT_FAINT,
                 ),
                 data=VitrinaState.flujo,
                 bar_category_gap="16%",
@@ -249,7 +244,7 @@ def _flujo() -> rx.Component:
                 color_scheme="violet",
                 variant="soft",
             ),
-            rx.text(VitrinaState.flujo_nota, size="1", color=rx.color("gray", 10)),
+            rx.text(VitrinaState.flujo_nota, size="1", color=T.TEXT_MUTED),
             spacing="3",
             align="start",
             width="100%",
@@ -273,7 +268,7 @@ def _publico_row(row: PublicoRow) -> rx.Component:
         rx.progress(value=row.share, max=100, color_scheme="violet", size="1", width="100%"),
         rx.hstack(
             rx.badge(row.pico, variant="outline", color_scheme="gray", size="1"),
-            rx.text(row.nota, size="1", color=rx.color("gray", 10)),
+            rx.text(row.nota, size="1", color=T.TEXT_MUTED),
             spacing="2",
             align="center",
             wrap="wrap",
@@ -286,11 +281,11 @@ def _publico_row(row: PublicoRow) -> rx.Component:
 
 def _publicos() -> rx.Component:
     return rx.box(
-        rx.heading("Qué público ya viene", size="4"),
+        rx.heading("Qué público ya viene", size="4", as_="h2"),
         rx.text(
             "Repartición de los visitantes de la semana. Cada segmento trae su hora.",
             size="2",
-            color=rx.color("gray", 10),
+            color=T.TEXT_MUTED,
         ),
         rx.vstack(
             rx.foreach(VitrinaState.publicos, _publico_row),
@@ -327,7 +322,7 @@ def _requisito_row(row: RequisitoRow) -> rx.Component:
                 spacing="2",
                 align="center",
             ),
-            rx.text(row.nota, size="1", color=rx.color("gray", 10)),
+            rx.text(row.nota, size="1", color=T.TEXT_MUTED),
             spacing="0",
             align_items="start",
         ),
@@ -367,13 +362,13 @@ def _cocina() -> rx.Component:
     )
     return rx.box(
         rx.hstack(
-            rx.heading("Cocina caliente", size="4"),
+            rx.heading("Cocina caliente", size="4", as_="h2"),
             rx.spacer(),
             veredicto,
             width="100%",
             align="center",
         ),
-        rx.text(VitrinaState.cocina_detalle, size="2", color=rx.color("gray", 10)),
+        rx.text(VitrinaState.cocina_detalle, size="2", color=T.TEXT_MUTED),
         rx.vstack(
             rx.foreach(VitrinaState.cocina, _requisito_row),
             spacing="3",
@@ -409,11 +404,11 @@ def _vecino_row(row: VecinoRow) -> rx.Component:
 
 def _vecinos() -> rx.Component:
     return rx.box(
-        rx.heading("Qué venden los vecinos", size="4"),
+        rx.heading("Qué venden los vecinos", size="4", as_="h2"),
         rx.text(
             "No cuántos hay: qué despachan, a qué precio y a qué hora cierran.",
             size="2",
-            color=rx.color("gray", 10),
+            color=T.TEXT_MUTED,
         ),
         rx.box(
             rx.table.root(
@@ -445,7 +440,7 @@ def _hueco_card(row: HuecoRow) -> rx.Component:
         rx.icon("target", size=18, color=rx.color("accent", 9)),
         rx.vstack(
             rx.text(row.titulo, size="2", weight="medium"),
-            rx.text(row.detalle, size="1", color=rx.color("gray", 10)),
+            rx.text(row.detalle, size="1", color=T.TEXT_MUTED),
             spacing="0",
             align_items="start",
         ),
@@ -457,12 +452,12 @@ def _hueco_card(row: HuecoRow) -> rx.Component:
 
 def _huecos() -> rx.Component:
     return rx.box(
-        rx.heading("Lo que nadie está vendiendo", size="4"),
+        rx.heading("Lo que nadie está vendiendo", size="4", as_="h2"),
         rx.text(
             "El flujo que llega y se va sin encontrar lo que buscaba. Es la parte que "
             "le interesa al emprendedor.",
             size="2",
-            color=rx.color("gray", 10),
+            color=T.TEXT_MUTED,
         ),
         rx.vstack(
             rx.foreach(VitrinaState.huecos, _hueco_card),
@@ -481,20 +476,20 @@ def _ficha_header() -> rx.Component:
     return rx.hstack(
         rx.vstack(
             rx.hstack(
-                rx.heading(VitrinaState.local_nombre, size="5"),
-                rx.text("·", color=rx.color("gray", 8)),
+                rx.heading(VitrinaState.local_nombre, size="5", as_="h2"),
+                rx.text("·", color=T.TEXT_FAINT),
                 rx.text(VitrinaState.local_ubicacion, size="3", color=rx.color("gray", 11)),
                 spacing="2",
                 align="baseline",
                 wrap="wrap",
             ),
-            rx.text(VitrinaState.local_ficha, size="2", color=rx.color("gray", 10)),
+            rx.text(VitrinaState.local_ficha, size="2", color=T.TEXT_MUTED),
             rx.text(VitrinaState.local_resumen, size="2"),
             spacing="1",
             align_items="start",
         ),
         width="100%",
-        padding="1.5rem 2rem 0 2rem",
+        padding=_GUTTER_TOP_LG,
     )
 
 
@@ -502,12 +497,12 @@ def _cta() -> rx.Component:
     return rx.box(
         rx.hstack(
             rx.vstack(
-                rx.heading("¿Te sirve este local?", size="4"),
+                rx.heading("¿Te sirve este local?", size="4", as_="h2"),
                 rx.text(
                     "En la versión real, acá el emprendedor deja sus datos y el "
                     "microcentro recibe el contacto con el local ya elegido.",
                     size="2",
-                    color=rx.color("gray", 10),
+                    color=T.TEXT_MUTED,
                 ),
                 spacing="1",
                 align_items="start",
@@ -524,37 +519,28 @@ def _cta() -> rx.Component:
 
 
 def vitrina_index() -> rx.Component:
-    return rx.hstack(
-        sidebar(),
-        rx.vstack(
-            _topbar(),
-            _disclaimer(),
-            _resumen(),
-            _selector(),
-            _ficha_header(),
-            rx.grid(
-                _flujo(),
-                _publicos(),
-                columns=rx.breakpoints(initial="1", lg="2"),
-                spacing="3",
-                width="100%",
-                padding="1rem 2rem 0 2rem",
-            ),
-            rx.grid(
-                _cocina(),
-                _huecos(),
-                columns=rx.breakpoints(initial="1", lg="2"),
-                spacing="3",
-                width="100%",
-                padding="1rem 2rem 0 2rem",
-            ),
-            rx.box(_vecinos(), width="100%", padding="1rem 2rem 0 2rem"),
-            rx.box(_cta(), width="100%", padding="1rem 2rem 2rem 2rem"),
+    return app_shell(
+        _topbar(),
+        _disclaimer(),
+        _resumen(),
+        _selector(),
+        _ficha_header(),
+        rx.grid(
+            _flujo(),
+            _publicos(),
+            columns=rx.breakpoints(initial="1", lg="2"),
+            spacing="3",
             width="100%",
-            spacing="0",
-            align_items="start",
+            padding=_GUTTER_TOP,
         ),
-        width="100%",
-        spacing="0",
-        align_items="start",
+        rx.grid(
+            _cocina(),
+            _huecos(),
+            columns=rx.breakpoints(initial="1", lg="2"),
+            spacing="3",
+            width="100%",
+            padding=_GUTTER_TOP,
+        ),
+        rx.box(_vecinos(), width="100%", padding=_GUTTER_TOP),
+        rx.box(_cta(), width="100%", padding=_GUTTER_BOTTOM),
     )

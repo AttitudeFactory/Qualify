@@ -11,6 +11,17 @@ config = rx.Config(
     env_file=".env",
     plugins=[
         rx.plugins.SitemapPlugin(),
-        rx.plugins.RadixThemesPlugin(theme=rx.theme(accent_color="violet", radius="medium")),
+        # The visual identity is a theme decision, made once here (docs/design-system.md §3):
+        # teal accent (far from the semantic grass/amber/tomato and from the platform
+        # colours), slate gray (cool neutral that keeps green unambiguous), medium radius.
+        rx.plugins.RadixThemesPlugin(
+            theme=rx.theme(
+                accent_color="teal",
+                gray_color="slate",
+                radius="medium",
+                scaling="100%",
+                panel_background="solid",
+            )
+        ),
     ],
 )
