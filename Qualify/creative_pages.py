@@ -2,16 +2,15 @@
 /drafts and /drafts/[draft_id].
 
 Views only — every fact they render arrives pre-computed in a `creative_vm` dataclass,
-and every action goes through `CreativeState`. Reuses the scaffold's sidebar and the
-session badge; status colors follow the same reserved-hue convention as the connections
-screen (icon + label, never color alone).
+and every action goes through `CreativeState`. Built on the `ui` shell (`app_shell` /
+`page_header` / `page_body`, docs/design-system.md §4); status colors follow the
+design-system tones (icon + label, never color alone).
 """
 
 from __future__ import annotations
 
 import reflex as rx
 
-from .components import session_badge, sidebar
 from .creative_state import GENERATION_STAGES, CreativeState
 from .creative_vm import (
     CopyVariantVM,
@@ -21,58 +20,30 @@ from .creative_vm import (
     SourceVM,
     ToneRowVM,
 )
+from .ui import app_shell, callout, card, empty_state, page_body, page_header
+from .ui import tokens as T
 
 # ---------------------------------------------------------------------------
 # Shared scaffolding
 
 
 def _screen(topbar_title: str, topbar_subtitle: str, *body: rx.Component) -> rx.Component:
-    return rx.hstack(
-        sidebar(),
-        rx.vstack(
-            rx.hstack(
-                rx.vstack(
-                    rx.heading(topbar_title, size="6"),
-                    rx.text(topbar_subtitle, size="2", color=rx.color("gray", 10)),
-                    spacing="0",
-                    align_items="start",
-                ),
-                rx.spacer(),
-                session_badge(),
-                rx.color_mode.button(),
-                width="100%",
-                padding="1.5rem 2rem 1rem 2rem",
-                align="center",
-            ),
-            *body,
-            width="100%",
-            spacing="4",
-            align_items="start",
-        ),
-        width="100%",
-        spacing="0",
-        align_items="start",
-    )
+    return app_shell(page_header(topbar_title, topbar_subtitle), *body)
 
 
 def _padded(*children: rx.Component) -> rx.Component:
-    return rx.vstack(
-        *children, width="100%", spacing="4", padding="0 2rem 2rem 2rem", align_items="start"
-    )
+    return page_body(*children)
 
 
 def _error_callout(message: rx.Var[str]) -> rx.Component:
-    return rx.callout(message, icon="triangle-alert", color_scheme="tomato", width="100%")
+    return callout(message, "error")
 
 
 def _card(*children: rx.Component, **props) -> rx.Component:
-    return rx.box(
+    """`ui.card` with the children stacked — every creative panel is a vertical stack."""
+    return card(
         rx.vstack(*children, spacing="3", align_items="start", width="100%"),
         padding="1.25rem 1.5rem",
-        border=f"1px solid {rx.color('gray', 5)}",
-        border_radius="0.75rem",
-        background=rx.color("gray", 2),
-        width="100%",
         **props,
     )
 
@@ -120,7 +91,7 @@ def readiness_panel() -> rx.Component:
                     CreativeState.readiness.completeness_pct.to_string(),
                     "%",
                     size="2",
-                    color=rx.color("gray", 10),
+                    color=T.TEXT_MUTED,
                 ),
                 width="100%",
                 align="center",
@@ -130,12 +101,12 @@ def readiness_panel() -> rx.Component:
                 "Los ejemplos de copy pesan más que la paleta: completa primero lo que "
                 "mueve el resultado.",
                 size="1",
-                color=rx.color("gray", 10),
+                color=T.TEXT_MUTED,
             ),
             rx.cond(
                 CreativeState.readiness.gaps.length() > 0,
                 rx.vstack(
-                    rx.text("Qué falta", size="1", color=rx.color("gray", 10)),
+                    rx.text("Qué falta", size="1", color=T.TEXT_MUTED),
                     rx.foreach(CreativeState.readiness.gaps, _gap_row),
                     spacing="2",
                     align_items="start",
@@ -161,13 +132,13 @@ def _tone_slider(
 ) -> rx.Component:
     return rx.vstack(
         rx.hstack(
-            rx.text(left, size="1", color=rx.color("gray", 10)),
+            rx.text(left, size="1", color=T.TEXT_MUTED),
             rx.spacer(),
-            rx.text(right, size="1", color=rx.color("gray", 10)),
+            rx.text(right, size="1", color=T.TEXT_MUTED),
             width="100%",
         ),
         rx.slider(value=[value], on_change=handler, min=0, max=100, step=1, width="100%"),
-        rx.text(value.to_string(), size="1", color=rx.color("gray", 9)),
+        rx.text(value.to_string(), size="1", color=T.TEXT_FAINT),
         spacing="1",
         width="100%",
         align_items="start",
@@ -286,7 +257,7 @@ def _kit_accordion() -> rx.Component:
                     "El logo, la plantilla de marca y las imágenes de referencia se "
                     "gestionan aparte (subida a R2 pendiente en este corte).",
                     size="1",
-                    color=rx.color("gray", 10),
+                    color=T.TEXT_MUTED,
                 ),
                 spacing="3",
                 width="100%",
@@ -392,9 +363,9 @@ def _tone_row(row: ToneRowVM) -> rx.Component:
 
 def _source_row(source: SourceVM) -> rx.Component:
     return rx.hstack(
-        rx.icon("file-text", size=14, color=rx.color("gray", 9)),
+        rx.icon("file-text", size=14, color=T.TEXT_FAINT),
         rx.text(source.kind_label, size="2", weight="medium"),
-        rx.text("«", source.excerpt, "»", size="2", color=rx.color("gray", 10)),
+        rx.text("«", source.excerpt, "»", size="2", color=T.TEXT_MUTED),
         spacing="2",
         align="center",
         width="100%",
@@ -409,7 +380,9 @@ def _voice_profile_card() -> rx.Component:
     proposal = CreativeState.voice_proposal
     return _card(
         rx.hstack(
-            rx.heading("Perfil de voz propuesto · v", proposal.version.to_string(), size="4"),
+            rx.heading(
+                "Perfil de voz propuesto · v", proposal.version.to_string(), size="4", as_="h2"
+            ),
             rx.spacer(),
             rx.badge(proposal.status_label, color_scheme="amber", variant="soft", size="2"),
             width="100%",
@@ -431,7 +404,7 @@ def _voice_profile_card() -> rx.Component:
         rx.cond(
             proposal.lexicon.length() > 0,
             rx.vstack(
-                rx.text("Léxico propio", size="1", color=rx.color("gray", 10)),
+                rx.text("Léxico propio", size="1", color=T.TEXT_MUTED),
                 rx.hstack(rx.foreach(proposal.lexicon, _chip), spacing="2", wrap="wrap"),
                 spacing="1",
                 align_items="start",
@@ -441,7 +414,7 @@ def _voice_profile_card() -> rx.Component:
         rx.cond(
             proposal.avoid_lexicon.length() > 0,
             rx.vstack(
-                rx.text("Léxico a evitar", size="1", color=rx.color("gray", 10)),
+                rx.text("Léxico a evitar", size="1", color=T.TEXT_MUTED),
                 rx.hstack(rx.foreach(proposal.avoid_lexicon, _chip), spacing="2", wrap="wrap"),
                 spacing="1",
                 align_items="start",
@@ -451,7 +424,7 @@ def _voice_profile_card() -> rx.Component:
         rx.cond(
             proposal.sources.length() > 0,
             rx.vstack(
-                rx.text("Fuentes", size="1", color=rx.color("gray", 10)),
+                rx.text("Fuentes", size="1", color=T.TEXT_MUTED),
                 rx.foreach(proposal.sources, _source_row),
                 spacing="2",
                 align_items="start",
@@ -490,7 +463,7 @@ def _voice_empty_state() -> rx.Component:
     """No proposal yet. When the kit is not distillable, say WHAT is missing and where
     to fix it (the §6.3 InsufficientEvidence posture) instead of a bare button."""
     return _card(
-        rx.heading("Aún no hay un perfil de voz propuesto", size="4"),
+        rx.heading("Aún no hay un perfil de voz propuesto", size="4", as_="h2"),
         rx.cond(
             CreativeState.readiness & CreativeState.readiness.can_distill,
             rx.vstack(
@@ -498,7 +471,7 @@ def _voice_empty_state() -> rx.Component:
                     "El brand kit tiene evidencia suficiente. Destila la primera "
                     "propuesta y revísala antes de aprobar.",
                     size="2",
-                    color=rx.color("gray", 10),
+                    color=T.TEXT_MUTED,
                 ),
                 rx.button(
                     rx.icon("sparkles", size=15),
@@ -514,7 +487,7 @@ def _voice_empty_state() -> rx.Component:
                     "No hay evidencia suficiente para proponer una voz sin inventarla. "
                     "Completa esto primero:",
                     size="2",
-                    color=rx.color("gray", 10),
+                    color=T.TEXT_MUTED,
                 ),
                 rx.cond(
                     CreativeState.readiness,
@@ -535,11 +508,11 @@ def _voice_section() -> rx.Component:
     approval (HITL #0) survives as an ACTION here; a separate evidence screen returns
     with LLM distillation (S2/S3), where there is real evidence to review."""
     return rx.vstack(
-        rx.heading("Voz de marca", size="5"),
+        rx.heading("Voz de marca", size="5", as_="h2"),
         rx.text(
             "Se activa con tu aprobación; es la voz con la que se escribe cada pieza.",
             size="2",
-            color=rx.color("gray", 10),
+            color=T.TEXT_MUTED,
         ),
         _voice_body(),
         spacing="3",
@@ -600,7 +573,7 @@ def _route_option(option: RouteOptionVM) -> rx.Component:
         rx.cond(
             selected,
             rx.icon("circle-dot", size=16, color=rx.color("accent", 9)),
-            rx.icon("circle", size=16, color=rx.color("gray", 8)),
+            rx.icon("circle", size=16, color=T.TEXT_FAINT),
         ),
         rx.text(option.title, size="2", weight="medium"),
         rx.cond(
@@ -608,7 +581,7 @@ def _route_option(option: RouteOptionVM) -> rx.Component:
             rx.badge(option.badge, color_scheme=option.badge_tone, variant="soft", size="1"),
         ),
         rx.spacer(),
-        rx.text(option.cost_label, size="1", color=rx.color("gray", 10)),
+        rx.text(option.cost_label, size="1", color=T.TEXT_MUTED),
         width="100%",
         align="center",
     )
@@ -623,7 +596,7 @@ def _route_option(option: RouteOptionVM) -> rx.Component:
             rx.vstack(
                 rx.upload(
                     rx.vstack(
-                        rx.icon("image-up", size=22, color=rx.color("gray", 9)),
+                        rx.icon("image-up", size=22, color=T.TEXT_FAINT),
                         rx.text("Arrastra tu foto o haz clic para elegirla", size="2"),
                         align="center",
                         spacing="2",
@@ -680,7 +653,7 @@ def _route_option(option: RouteOptionVM) -> rx.Component:
         ),
         rx.box(
             header,
-            rx.text(option.disabled_reason, size="1", color=rx.color("gray", 10)),
+            rx.text(option.disabled_reason, size="1", color=T.TEXT_MUTED),
             padding="1rem 1.25rem",
             border=f"1px dashed {rx.color('gray', 5)}",
             border_radius="0.75rem",
@@ -772,7 +745,7 @@ def _create_form() -> rx.Component:
             rx.text(
                 "El orden ES la recomendación: de «ningún píxel se toca» a «la imagen se inventa».",
                 size="1",
-                color=rx.color("gray", 10),
+                color=T.TEXT_MUTED,
             ),
             rx.foreach(CreativeState.route_options, _route_option),
         ),
@@ -810,12 +783,12 @@ def _create_form() -> rx.Component:
 def _create_blocked() -> rx.Component:
     """§6.1: never a disabled generate button without an explanation + the fix link."""
     return _card(
-        rx.heading("La marca aún no está lista para generar", size="4"),
+        rx.heading("La marca aún no está lista para generar", size="4", as_="h2"),
         rx.text(
             "Antes de encargar contenido hay que completar el sustrato: es lo que hace "
             "que cada pieza suene a TU marca.",
             size="2",
-            color=rx.color("gray", 10),
+            color=T.TEXT_MUTED,
         ),
         rx.cond(
             CreativeState.readiness,
@@ -912,19 +885,15 @@ def drafts_index() -> rx.Component:
                         overflow_x="auto",
                         width="100%",
                     ),
-                    rx.center(
-                        rx.vstack(
-                            rx.icon("inbox", size=40, color=rx.color("gray", 8)),
-                            rx.heading("Todavía no hay borradores", size="5"),
-                            rx.link(
-                                rx.button(rx.icon("plus", size=16), "Crear el primero", size="3"),
-                                href="/create",
-                            ),
-                            spacing="3",
-                            align="center",
+                    empty_state(
+                        "inbox",
+                        "Todavía no hay borradores",
+                        "Cada pieza que encargues aparece aquí para tu revisión antes de "
+                        "publicarse.",
+                        action=rx.link(
+                            rx.button(rx.icon("plus", size=16), "Crear el primero", size="3"),
+                            href="/create",
                         ),
-                        padding="4rem 2rem",
-                        width="100%",
                     ),
                 ),
             ),
@@ -965,9 +934,9 @@ def _drafting_panel() -> rx.Component:
     return _card(
         rx.hstack(
             rx.spinner(size="3"),
-            rx.heading("Generando tu pieza…", size="4"),
+            rx.heading("Generando tu pieza…", size="4", as_="h2"),
             rx.spacer(),
-            rx.text(CreativeState.poll_elapsed_label, size="1", color=rx.color("gray", 10)),
+            rx.text(CreativeState.poll_elapsed_label, size="1", color=T.TEXT_MUTED),
             width="100%",
             align="center",
         ),
@@ -981,7 +950,7 @@ def _drafting_panel() -> rx.Component:
         rx.text(
             "Copy → imagen → verificación. La pantalla se actualiza sola.",
             size="1",
-            color=rx.color("gray", 10),
+            color=T.TEXT_MUTED,
         ),
     )
 
@@ -992,7 +961,7 @@ def _failed_panel() -> rx.Component:
     return _card(
         rx.hstack(
             rx.icon("triangle-alert", size=18, color=rx.color("tomato", 9)),
-            rx.heading("La generación falló", size="4"),
+            rx.heading("La generación falló", size="4", as_="h2"),
             width="100%",
             align="center",
         ),
@@ -1030,27 +999,27 @@ def _variant_editor() -> rx.Component:
                     variant.was_edited,
                     rx.badge("editada por ti", color_scheme="iris", variant="soft", size="1"),
                 ),
-                rx.text("Gancho", size="1", color=rx.color("gray", 10)),
+                rx.text("Gancho", size="1", color=T.TEXT_MUTED),
                 rx.input(
                     value=CreativeState.edit_hook,
                     on_change=CreativeState.set_edit_hook,
                     max_length=60,
                     width="100%",
                 ),
-                rx.text("Caption", size="1", color=rx.color("gray", 10)),
+                rx.text("Caption", size="1", color=T.TEXT_MUTED),
                 rx.text_area(
                     value=CreativeState.edit_caption,
                     on_change=CreativeState.set_edit_caption,
                     width="100%",
                     rows="6",
                 ),
-                rx.text("Hashtags", size="1", color=rx.color("gray", 10)),
+                rx.text("Hashtags", size="1", color=T.TEXT_MUTED),
                 rx.input(
                     value=CreativeState.edit_hashtags,
                     on_change=CreativeState.set_edit_hashtags,
                     width="100%",
                 ),
-                rx.text("CTA", size="1", color=rx.color("gray", 10)),
+                rx.text("CTA", size="1", color=T.TEXT_MUTED),
                 rx.input(
                     value=CreativeState.edit_cta,
                     on_change=CreativeState.set_edit_cta,
@@ -1060,7 +1029,7 @@ def _variant_editor() -> rx.Component:
                     variant.has_ads,
                     rx.vstack(
                         rx.divider(),
-                        rx.text("Ads", size="1", color=rx.color("gray", 10)),
+                        rx.text("Ads", size="1", color=T.TEXT_MUTED),
                         rx.text(variant.ads_headline, size="2", weight="medium"),
                         rx.text(variant.ads_description, size="2"),
                         spacing="1",
@@ -1109,11 +1078,11 @@ def _review_panel() -> rx.Component:
                 ),
                 rx.center(
                     rx.vstack(
-                        rx.icon("image-off", size=26, color=rx.color("gray", 8)),
+                        rx.icon("image-off", size=26, color=T.TEXT_FAINT),
                         rx.text(
                             "Pieza solo de copy: adjunta tu foto al publicar.",
                             size="1",
-                            color=rx.color("gray", 10),
+                            color=T.TEXT_MUTED,
                             text_align="center",
                         ),
                         spacing="2",
@@ -1132,7 +1101,7 @@ def _review_panel() -> rx.Component:
         ),
         rx.divider(),
         rx.hstack(
-            rx.text("Fidelidad de marca:", size="2", color=rx.color("gray", 10)),
+            rx.text("Fidelidad de marca:", size="2", color=T.TEXT_MUTED),
             rx.text(draft.fidelity_summary, size="2"),
             rx.cond(
                 draft.requires_ai_disclosure,
@@ -1143,7 +1112,7 @@ def _review_panel() -> rx.Component:
             wrap="wrap",
         ),
         # §6.5: the cost is shown ALWAYS — hiding it is what produces the loop.
-        rx.text("Coste: ", draft.cost_label, size="2", color=rx.color("gray", 10)),
+        rx.text("Coste: ", draft.cost_label, size="2", color=T.TEXT_MUTED),
         rx.cond(
             draft.blocking_reason,
             _error_callout(draft.blocking_reason),

@@ -1,0 +1,70 @@
+"""Qualify design system — the one import a screen needs.
+
+    from .ui import app_shell, page_header, page_body, card, signal_pill, ...
+
+Tokens live in ``ui.tokens`` (imported as ``T`` by convention), layout in ``ui.layout``,
+primitives in ``ui.primitives``. The living style guide that renders all of it is the
+``/design`` route (``Qualify/styleguide_page.py``). Full text: docs/design-system.md.
+"""
+
+from . import tokens
+from .layout import (
+    LANDING_URL,
+    NAV_ITEMS,
+    app_shell,
+    brand_mark,
+    logout_action,
+    page_body,
+    page_header,
+    section,
+    session_badge,
+    sidebar,
+    tenant_block,
+)
+from .primitives import (
+    callout,
+    card,
+    demo_notice,
+    empty_state,
+    kv,
+    mono,
+    platform_badge,
+    sentiment_badge,
+    signal_pill,
+    skeleton_card,
+    skeleton_rows,
+    stat_card,
+    status_dot,
+    tag,
+    tone_badge,
+)
+
+__all__ = [
+    "LANDING_URL",
+    "NAV_ITEMS",
+    "app_shell",
+    "brand_mark",
+    "callout",
+    "card",
+    "demo_notice",
+    "empty_state",
+    "kv",
+    "logout_action",
+    "mono",
+    "page_body",
+    "page_header",
+    "platform_badge",
+    "section",
+    "sentiment_badge",
+    "session_badge",
+    "sidebar",
+    "signal_pill",
+    "skeleton_card",
+    "skeleton_rows",
+    "stat_card",
+    "status_dot",
+    "tag",
+    "tenant_block",
+    "tokens",
+    "tone_badge",
+]

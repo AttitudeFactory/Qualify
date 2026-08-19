@@ -10,36 +10,30 @@ from __future__ import annotations
 import reflex as rx
 
 from .auth_state import AuthState
+from .ui import brand_mark, callout, card
+from .ui import tokens as T
 
 
 def _auth_card(*children: rx.Component) -> rx.Component:
     return rx.center(
-        rx.vstack(
-            rx.hstack(
-                rx.icon("radar", size=26, color=rx.color("accent", 9)),
-                rx.heading("Qualify", size="7"),
-                align_items="center",
+        card(
+            rx.vstack(
+                brand_mark(size=26, heading_size="7"),
+                *children,
+                spacing="4",
+                width="100%",
             ),
-            *children,
-            spacing="4",
-            width="380px",
+            width="min(380px, calc(100% - 2rem))",
             padding="2rem",
-            border=f"1px solid {rx.color('gray', 5)}",
-            border_radius="0.75rem",
-            background=rx.color("gray", 2),
         ),
-        height="100vh",
+        min_height="100vh",
         width="100%",
+        padding="2rem 0",
     )
 
 
 def _error_banner() -> rx.Component:
-    return rx.cond(
-        AuthState.auth_error != "",
-        rx.callout(
-            AuthState.auth_error, icon="triangle_alert", color_scheme="tomato", width="100%"
-        ),
-    )
+    return rx.cond(AuthState.auth_error != "", callout(AuthState.auth_error, "error"))
 
 
 def login_index() -> rx.Component:
@@ -49,7 +43,7 @@ def login_index() -> rx.Component:
             "Un login = un negocio. Para cambiar de negocio, cierra sesión y entra "
             "con las credenciales de ese negocio.",
             size="2",
-            color=rx.color("gray", 10),
+            color=T.TEXT_MUTED,
         ),
         _error_banner(),
         rx.form(
@@ -95,7 +89,7 @@ def signup_index() -> rx.Component:
             "Al registrar se crea el negocio con su propio espacio (tenant) y entras "
             "directamente como él.",
             size="2",
-            color=rx.color("gray", 10),
+            color=T.TEXT_MUTED,
         ),
         _error_banner(),
         rx.form(

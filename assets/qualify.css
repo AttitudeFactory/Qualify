@@ -1,0 +1,68 @@
+/*
+ * Qualify design tokens, layered on top of Radix Themes.
+ *
+ * Everything colour-related stays in Radix (accent/gray scales, semantic scales,
+ * light/dark) and is configured in `rxconfig.py`. This file only carries what
+ * Radix does not expose as a theme prop: type faces, the page gutter, and a few
+ * accessibility guarantees. Python-side tokens live in `Qualify/ui/tokens.py`
+ * and reference the `--q-*` variables declared here — change a value once, here.
+ *
+ * Reference: docs/design-system.md
+ */
+
+.radix-themes {
+  /* Type. Plex Sans for UI, Plex Mono for identifiers, handles and figures. */
+  --default-font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, sans-serif;
+  --heading-font-family: var(--default-font-family);
+  --code-font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
+  --heading-letter-spacing: -0.012em;
+
+  /* Layout tokens (mirrored by Qualify/ui/tokens.py). */
+  --q-page-x: 2rem;          /* horizontal gutter of every business page */
+  --q-sidebar-w: 220px;      /* fixed sidebar width */
+  --q-radius-card: 0.75rem;  /* cards, panels, callouts */
+  --q-radius-control: 0.5rem;/* nav items, thumbnails, small containers */
+  --q-content-max: 1440px;   /* body column cap on very wide screens */
+}
+
+@media (max-width: 900px) {
+  .radix-themes {
+    --q-page-x: 1rem;
+  }
+}
+
+/* Figures line up in tables and stat cards. Opt in with class="q-nums". */
+.q-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Identifiers (handles, ids, keys) use the mono face at the surrounding size. */
+.q-mono {
+  font-family: var(--code-font-family);
+  font-size: 0.92em;
+}
+
+/* Keyboard focus is always visible and always the accent, never the browser blue. */
+.radix-themes :focus-visible {
+  outline: 2px solid var(--accent-8);
+  outline-offset: 2px;
+}
+
+/* Sidebar nav items get a hover surface without a Python-side handler. */
+.q-nav-item:hover {
+  background: var(--gray-a3);
+}
+
+/* Motion is decorative here, never informational, so it can be turned off. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

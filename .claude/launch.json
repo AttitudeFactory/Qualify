@@ -19,6 +19,25 @@
       },
       "port": 3100,
       "autoPort": false
+    },
+    {
+      "name": "qualify-crm-worktree",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "run",
+        "--no-sync",
+        "reflex",
+        "run",
+        "--frontend-port",
+        "3300",
+        "--backend-port",
+        "8300"
+      ],
+      "env": {
+        "PYTHONPATH": "packages/api/src:packages/shared/src:packages/scraper/src:packages/creative/src:packages/models/src"
+      },
+      "port": 3300,
+      "autoPort": false
     }
   ]
 }

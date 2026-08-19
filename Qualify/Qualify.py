@@ -4,7 +4,7 @@ from .auth_pages import login_index, signup_index
 from .auth_state import AuthState
 from .clarity_page import clarity_index
 from .clarity_state import ClarityState
-from .components import filter_bar, mentions_table, sidebar, stats_row, topbar
+from .components import filter_bar, mentions_table, stats_row, topbar
 from .connections_page import connections_index
 from .connections_state import ConnectionsState
 from .creative_pages import (
@@ -22,30 +22,33 @@ from .leads_state import LeadsState
 from .publishing_page import publish_index
 from .publishing_state import PublishState
 from .state import DashboardState
+from .styleguide_page import styleguide_index
+from .ui import app_shell, page_body
 from .vitrina_page import vitrina_index
 
 create_db_and_tables()
 
 
 def index() -> rx.Component:
-    return rx.hstack(
-        sidebar(),
-        rx.vstack(
-            topbar(),
-            stats_row(),
-            filter_bar(),
-            mentions_table(),
-            width="100%",
-            spacing="4",
-            align_items="start",
-        ),
-        width="100%",
-        spacing="0",
-        align_items="start",
+    return app_shell(
+        topbar(),
+        page_body(stats_row(), filter_bar(), mentions_table()),
     )
 
 
-app = rx.App()
+# Type faces + the `--q-*` tokens (assets/qualify.css) layer on top of the Radix theme
+# configured in rxconfig.py. See docs/design-system.md.
+_FONTS = (
+    "https://fonts.googleapis.com/css2"
+    "?family=IBM+Plex+Mono:wght@400;500"
+    "&family=IBM+Plex+Sans:wght@400;500;600;700"
+    "&display=swap"
+)
+app = rx.App(stylesheets=[_FONTS, "/qualify.css"], html_lang="es")
+
+# Living style guide: static, no tenant data, so it needs no session. Not linked from
+# the sidebar on purpose — it is for whoever builds screens, not for the business.
+app.add_page(styleguide_index, route="/design", title="Qualify · Design system")
 
 # Auth screens (QUA-66). An authenticated session skips them straight to the app.
 app.add_page(
