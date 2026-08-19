@@ -42,7 +42,12 @@ from functools import lru_cache
 from uuid import UUID
 
 import httpx
-from qualify_api.inbox import list_candidate_media, set_media_monitored
+from qualify_api.inbox import (
+    CommentsPermissionMissing,
+    SyncBudgetExhausted,
+    list_candidate_media,
+    set_media_monitored,
+)
 from qualify_api.inbox.composition import UnknownInboxConnection
 from qualify_api.inbox.service import CandidateMedia
 
@@ -174,6 +179,13 @@ async def sync_now(*, tenant_id: UUID, connection_id: UUID) -> SyncSummaryVM:
       tenant) — the same condition `candidate_media`/`toggle_monitoring` already raise
       this for.
 
+    Raises `CommentsPermissionMissing` (403 — `cannot_observe`, QUA-88) and
+    `SyncBudgetExhausted` (429 — the real Meta call budget is spent, QUA-88), same
+    "reconstruct a typed exception from the status code" posture the 404 branch below
+    already establishes for `UnknownInboxConnection`. Neither carries the server's exact
+    message back through: `InboxState.sync_comments` only branches on exception TYPE to
+    pick a Spanish message, the same way it already does for `UnknownInboxConnection`.
+
     Any other non-2xx response (401 if the token were ever wrong, 502 from a failed Meta
     call, 500 from anything unexpected) raises `httpx.HTTPStatusError` via
     `raise_for_status()` — an ordinary exception `InboxState.sync_comments`'s blanket
@@ -193,6 +205,16 @@ async def sync_now(*, tenant_id: UUID, connection_id: UUID) -> SyncSummaryVM:
     )
     if response.status_code == 404:
         raise UnknownInboxConnection(str(connection_id))
+    if response.status_code == 403:
+        raise CommentsPermissionMissing(connection_id=connection_id)
+    if response.status_code == 429:
+        # The route's exact needed/remaining are not reconstructed here — the caller
+        # only branches on exception TYPE, same posture as the 404/403 cases above.
+        raise SyncBudgetExhausted(needed=0, remaining=0)
     response.raise_for_status()
     data = response.json()
-    return SyncSummaryVM(media_checked=data["media_checked"], new_comments=data["new_comments"])
+    return SyncSummaryVM(
+        media_checked=data["media_checked"],
+        new_comments=data["new_comments"],
+        truncated=data.get("truncated", False),
+    )

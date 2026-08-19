@@ -66,3 +66,21 @@ def list_connections(tenant_id: UUID) -> tuple[ConnectionSummary, ...]:
             )
             for row in rows
         )
+
+
+def connection_scopes(*, tenant_id: UUID, connection_id: UUID) -> tuple[str, ...] | None:
+    """The raw `granted_scopes` literals for one connection, or `None` if it is not
+    visible to this tenant (RLS filters the row out before this query ever sees it,
+    same ambiguity `inbox.composition.PostgresIgUserIdReader` already collapses for
+    "does not exist" vs. "belongs to another tenant").
+
+    Single-column read, same shape as `list_connections` narrowed to one row —
+    exists so a caller that only needs the permission check (e.g.
+    `inbox.composition.production_inbox_service_for`) does not have to build a full
+    `ConnectionSummary` first.
+    """
+    with tenant_session(tenant_id) as session:
+        scopes = session.scalar(
+            select(SocialConnection.granted_scopes).where(SocialConnection.id == connection_id)
+        )
+    return tuple(scopes) if scopes is not None else None

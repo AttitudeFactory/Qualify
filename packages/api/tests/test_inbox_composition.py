@@ -16,13 +16,18 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
-from qualify_shared.social.ig_shapes import IGComment, IGCommentsPage
+from qualify_shared.social.ig_shapes import COMMENTS_EDGE_PERMISSIONS, IGComment, IGCommentsPage
 
 from qualify_api.inbox import composition
 from qualify_api.inbox.composition import UnknownInboxConnection
 from qualify_api.inbox.media_client import MediaReadError, MediaSummary
 from qualify_api.inbox.repository import MemoryInboxRepository
 from qualify_api.inbox.service import InboxService, MediaNotEligible, SyncSummary
+
+# `sync_comments` fails closed without a granted scope (QUA-88) — this file's `_wire`
+# always grants it, same posture `test_inbox_service.py`'s `GRANTED` establishes; the
+# permission gate itself is `InboxService`'s job and is tested there, not re-tested here.
+GRANTED = frozenset(COMMENTS_EDGE_PERMISSIONS)
 
 TENANT = UUID("99999999-9999-4999-8999-999999999999")
 CONNECTION = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
@@ -69,6 +74,7 @@ def _wire(
         repository=repository,
         comments_client=FakeCommentsClient(comments_by_media),
         media_client=FakeMediaClient(media or {}),
+        granted_scopes=GRANTED,
     )
 
     def ig_user_id_for(*, tenant_id: UUID, connection_id: UUID) -> str:

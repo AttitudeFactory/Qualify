@@ -37,10 +37,14 @@ class CandidateMediaVM:
 class SyncSummaryVM:
     """Display-ready projection of `qualify_api.inbox.service.SyncSummary` — the result of
     one manual "Sincronizar comentarios" click (temporary, see `inbox_page.py`'s module
-    docstring). Both fields are plain counts; nothing here can carry a token or comment
+    docstring). Fields are plain counts/flags; nothing here can carry a token or comment
     text, so this needs no whitelist scrutiny beyond what `test_inbox_ui.py` already
     applies uniformly to every VM in this module.
+
+    `truncated` (QUA-88): the budget ran out mid-sync — still a success (whatever synced
+    is real), just a partial one. Never conflated with an error.
     """
 
     media_checked: int
     new_comments: int
+    truncated: bool = False

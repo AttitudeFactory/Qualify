@@ -266,6 +266,9 @@ def _sync_now_button() -> rx.Component:
 
 
 def _sync_result_block() -> rx.Component:
+    # `truncated` (QUA-88): the Meta call budget ran out mid-sync. Still a success —
+    # whatever synced is real — so this stays the "grass" callout, just with a qualifier
+    # appended, never the error callout below.
     return rx.cond(
         InboxState.sync_result,
         rx.callout(
@@ -274,6 +277,12 @@ def _sync_result_block() -> rx.Component:
                 + InboxState.sync_result.media_checked.to_string()
                 + " · Comentarios nuevos: "
                 + InboxState.sync_result.new_comments.to_string()
+                + rx.cond(
+                    InboxState.sync_result.truncated,
+                    " · Sincronización parcial: se alcanzó el límite de llamadas, "
+                    "sincroniza de nuevo en unos minutos para completar.",
+                    "",
+                )
             ),
             icon="check",
             color_scheme="grass",

@@ -35,7 +35,12 @@ import time
 from uuid import UUID
 
 import reflex as rx
-from qualify_api.inbox import MediaNotEligible, UnknownInboxConnection
+from qualify_api.inbox import (
+    CommentsPermissionMissing,
+    MediaNotEligible,
+    SyncBudgetExhausted,
+    UnknownInboxConnection,
+)
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
@@ -56,6 +61,14 @@ _NOT_ELIGIBLE = (
 )
 _UNKNOWN_CONNECTION = "Esa cuenta ya no está disponible. Actualiza la lista e intenta de nuevo."
 _SYNC_FAILED = "No se pudo sincronizar los comentarios. Intenta de nuevo."
+# cannot_observe (QUA-88): the connection cannot read the comments edge AT ALL — never
+# shown as if it were a normal zero-comments result.
+_COMMENTS_PERMISSION_MISSING = (
+    "Falta un permiso para leer comentarios en esta cuenta. Reconéctala para concederlo."
+)
+_SYNC_BUDGET_EXHAUSTED = (
+    "Se hicieron demasiadas sincronizaciones recientes. Espera unos minutos e intenta de nuevo."
+)
 # Turning monitoring OFF never calls Meta (InboxService.set_media_monitored only
 # re-validates against Meta when monitored=True — see its docstring); a straight Postgres
 # UPDATE + reload can settle in well under 50ms, too fast for the card skeleton to ever
@@ -315,6 +328,14 @@ class InboxState(rx.State):
         except UnknownInboxConnection:
             async with self:
                 self.sync_error = _UNKNOWN_CONNECTION
+            return
+        except CommentsPermissionMissing:
+            async with self:
+                self.sync_error = _COMMENTS_PERMISSION_MISSING
+            return
+        except SyncBudgetExhausted:
+            async with self:
+                self.sync_error = _SYNC_BUDGET_EXHAUSTED
             return
         except Exception as exc:
             # Only the exception TYPE is logged — same posture as every other handler in

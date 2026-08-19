@@ -1,10 +1,10 @@
-"""Persistence for the inbox: the monitored-media toggle and idempotent comment storage,
-in one file by deliberate choice — same precedent `connections/repository.py` sets by
-persisting multiple related entities (`SocialConnection`, `OAuthCredential`,
-`ConnectionEvent`, `PlatformApp`) in a single module per domain. Split into two files if
-this one grows unwieldy; not before.
+"""Persistence for the inbox: the monitored-media toggle, idempotent comment storage, and
+the Meta call ledger (QUA-88), in one file by deliberate choice — same precedent
+`connections/repository.py` sets by persisting multiple related entities
+(`SocialConnection`, `OAuthCredential`, `ConnectionEvent`, `PlatformApp`) in a single
+module per domain. Split into two files if this one grows unwieldy; not before.
 
-Two invariants live here, both database-owned, both merely TRANSLATED by this code:
+Three invariants live here, all database-owned, all merely TRANSLATED by this code:
 
 **Monitoring is a toggle, never a second row.** `uq_monitored_media_natural_key
 (connection_id, external_media_id)` — `set_media_monitored` is a get-or-create-then-UPDATE,
@@ -15,20 +15,26 @@ the same "reconnect = UPDATE" discipline `connections/repository.py` already use
 — `upsert_comment` returns `False` on a duplicate rather than raising; the sync service
 (B2) uses that boolean to know what's actually new, and running it twice on the same page
 must be silently correct, not merely non-crashing.
+
+**A Meta call, once made, is a permanent fact.** `calls_in_last_hour`/`record_call`
+(QUA-88) are append-only — see `InboxMetaCallLog`'s docstring and migration `0010`.
+Both `PostgresInboxRepository`'s and `MemoryInboxRepository`'s halves are real production
+code (same reasoning as everything else in this class); the former is exercised by
+`db`-marked tests, the latter by the offline suite.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
 from qualify_shared.social.ig_shapes import SHAPE_VERSION, IGComment
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
-from qualify_api.inbox.models import Message, MonitoredMedia, Thread
+from qualify_api.inbox.models import InboxMetaCallLog, Message, MonitoredMedia, Thread
 
 _COMMENT_CHANNEL = "comment"
 
@@ -51,6 +57,17 @@ class InboxRepository(Protocol):
         comment: IGComment,
     ) -> bool: ...
 
+    def calls_in_last_hour(self, *, tenant_id: UUID, connection_id: UUID, now: datetime) -> int:
+        """How many Meta calls this connection has logged in the hour ending at `now` —
+        a true sliding window (`called_at > now - 1h`), not a calendar-hour bucket."""
+        ...
+
+    def record_call(self, *, tenant_id: UUID, connection_id: UUID, called_at: datetime) -> None:
+        """Log one real Meta call. Called immediately BEFORE the call it accounts for,
+        never after — a call that Meta counted against the quota but that failed on our
+        side must still be counted."""
+        ...
+
 
 class MemoryInboxRepository:
     """In-memory implementation mirroring the two database-owned invariants above.
@@ -62,6 +79,7 @@ class MemoryInboxRepository:
         self._monitored: dict[tuple[UUID, str], bool] = {}
         self._threads: dict[tuple[UUID, str], UUID] = {}  # (connection_id, media_id) -> thread_id
         self._messages: set[tuple[UUID, str]] = set()  # (connection_id, external_message_id)
+        self._calls: list[tuple[UUID, datetime]] = []  # (connection_id, called_at)
 
     def list_monitored_media_ids(self, *, tenant_id: UUID, connection_id: UUID) -> frozenset[str]:
         return frozenset(
@@ -89,6 +107,17 @@ class MemoryInboxRepository:
             return False
         self._messages.add(key)
         return True
+
+    def calls_in_last_hour(self, *, tenant_id: UUID, connection_id: UUID, now: datetime) -> int:
+        window_start = now - timedelta(hours=1)
+        return sum(
+            1
+            for conn_id, called_at in self._calls
+            if conn_id == connection_id and called_at > window_start
+        )
+
+    def record_call(self, *, tenant_id: UUID, connection_id: UUID, called_at: datetime) -> None:
+        self._calls.append((connection_id, called_at))
 
 
 class PostgresInboxRepository:
@@ -187,3 +216,27 @@ class PostgresInboxRepository:
             # The comment already exists (uq_message_external_id) or, less likely, a
             # concurrent insert won the thread's natural key. Either way: not new.
             return False
+
+    def calls_in_last_hour(self, *, tenant_id: UUID, connection_id: UUID, now: datetime) -> int:
+        """Backed by migration `0010` (`inbox_meta_call_log`)."""
+        window_start = now - timedelta(hours=1)
+        with tenant_session(tenant_id) as session:
+            count = session.scalar(
+                select(func.count())
+                .select_from(InboxMetaCallLog)
+                .where(
+                    InboxMetaCallLog.connection_id == connection_id,
+                    InboxMetaCallLog.called_at > window_start,
+                )
+            )
+            return int(count or 0)
+
+    def record_call(self, *, tenant_id: UUID, connection_id: UUID, called_at: datetime) -> None:
+        """Backed by migration `0010` — see `calls_in_last_hour`."""
+        with tenant_session(tenant_id) as session:
+            session.add(
+                InboxMetaCallLog(
+                    tenant_id=tenant_id, connection_id=connection_id, called_at=called_at
+                )
+            )
+            session.flush()

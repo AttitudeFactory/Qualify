@@ -26,6 +26,10 @@ Pins:
    `candidate_media`/`toggle_monitoring` — projects the route's JSON response into
    `SyncSummaryVM` field-for-field, and raises `UnknownInboxConnection` both for a 404
    from the route and for a tenant the temporary dev bridge cannot authenticate as.
+8. `sync_now` (2026-08-18, QUA-88) raises `CommentsPermissionMissing` on a 403 and
+   `SyncBudgetExhausted` on a 429 — both reconstructed from the status code alone, same
+   posture as the 404 case, and both distinct from the 502/`httpx.HTTPStatusError` a
+   failed Meta call raises.
 """
 
 from __future__ import annotations
@@ -39,7 +43,11 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import httpx
-from qualify_api.inbox import UnknownInboxConnection
+from qualify_api.inbox import (
+    CommentsPermissionMissing,
+    SyncBudgetExhausted,
+    UnknownInboxConnection,
+)
 from qualify_api.inbox.service import CandidateMedia, MediaNotEligible
 
 from . import inbox_provider
@@ -267,7 +275,7 @@ def test_sync_now_rejects_a_tenant_the_dev_bridge_is_not_wired_for() -> None:
 
 
 def test_sync_now_projects_summary_fields() -> None:
-    client = _mock_asgi_client(200, {"media_checked": 3, "new_comments": 7})
+    client = _mock_asgi_client(200, {"media_checked": 3, "new_comments": 7, "truncated": False})
 
     with _patched(_inbox_sync_asgi_client=lambda: client):
         vm = _run_coro(
@@ -277,6 +285,21 @@ def test_sync_now_projects_summary_fields() -> None:
         )
     assert vm.media_checked == 3
     assert vm.new_comments == 7
+    assert vm.truncated is False
+
+
+def test_sync_now_projects_a_truncated_summary() -> None:
+    """QUA-88: a budget that ran out mid-sync is still a 200 with the flag set — must
+    reach the VM, not be lost in translation."""
+    client = _mock_asgi_client(200, {"media_checked": 1, "new_comments": 1, "truncated": True})
+
+    with _patched(_inbox_sync_asgi_client=lambda: client):
+        vm = _run_coro(
+            inbox_provider.sync_now(
+                tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
+            )
+        )
+    assert vm.truncated is True
 
 
 def test_sync_now_propagates_unknown_connection_on_a_404() -> None:
@@ -293,6 +316,40 @@ def test_sync_now_propagates_unknown_connection_on_a_404() -> None:
             pass
         else:
             raise AssertionError("sync_now must not swallow a 404 as success")
+
+
+def test_sync_now_raises_permission_missing_on_a_403() -> None:
+    """`cannot_observe` (QUA-88) — distinct from a 404 (unknown connection) and from a
+    502 (a call that was attempted and failed)."""
+    client = _mock_asgi_client(403, {"detail": "missing scope"})
+
+    with _patched(_inbox_sync_asgi_client=lambda: client):
+        try:
+            _run_coro(
+                inbox_provider.sync_now(
+                    tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
+                )
+            )
+        except CommentsPermissionMissing:
+            pass
+        else:
+            raise AssertionError("sync_now must not swallow a 403 as success")
+
+
+def test_sync_now_raises_budget_exhausted_on_a_429() -> None:
+    client = _mock_asgi_client(429, {"detail": "sync needs at least 5 Meta call(s)"})
+
+    with _patched(_inbox_sync_asgi_client=lambda: client):
+        try:
+            _run_coro(
+                inbox_provider.sync_now(
+                    tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
+                )
+            )
+        except SyncBudgetExhausted:
+            pass
+        else:
+            raise AssertionError("sync_now must not swallow a 429 as success")
 
 
 def test_sync_now_raises_for_a_failed_meta_call() -> None:

@@ -21,6 +21,14 @@ in-process call — see `Qualify/inbox_provider.py`'s docstring for why and for 
 dev-only limitation that comes with it (a single authenticated tenant). No scheduler
 exists yet; that remains the next slice, along with the thread/comments view and
 `MonitoringLimitPolicy`/billing.
+
+`sync_comments` (2026-08-18, QUA-88) is now gated by two pre-flight checks, both raised
+BEFORE any Meta call: `CommentsPermissionMissing` (the connection lacks a scope the
+comments edge requires at all — `cannot_observe`, never confused with a genuinely empty
+result) and `SyncBudgetExhausted` (not enough of the real 200-calls/hour Meta budget
+remains for the calls this sync would need, tracked by a Postgres ledger —
+`InboxRepository.calls_in_last_hour`/`record_call`, backed by migration `0010`). A budget
+that runs out mid-pagination instead stops and returns `SyncSummary(truncated=True)`.
 """
 
 from qualify_api.inbox.client import (
@@ -48,19 +56,24 @@ from qualify_api.inbox.repository import (
     PostgresInboxRepository,
 )
 from qualify_api.inbox.service import (
+    META_CALL_BUDGET_PER_HOUR,
     MONITORING_WINDOW,
     CandidateMedia,
+    CommentsPermissionMissing,
     InboxService,
     MediaNotEligible,
+    SyncBudgetExhausted,
     SyncSummary,
 )
 
 __all__ = [
     "COMMENT_FIELDS",
     "MEDIA_FIELDS",
+    "META_CALL_BUDGET_PER_HOUR",
     "MONITORING_WINDOW",
     "CandidateMedia",
     "CommentsClient",
+    "CommentsPermissionMissing",
     "CommentsReadError",
     "HttpCommentsClient",
     "HttpMediaClient",
@@ -72,6 +85,7 @@ __all__ = [
     "MediaSummary",
     "MemoryInboxRepository",
     "PostgresInboxRepository",
+    "SyncBudgetExhausted",
     "SyncSummary",
     "UnknownInboxConnection",
     "list_candidate_media",

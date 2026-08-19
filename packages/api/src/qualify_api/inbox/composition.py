@@ -35,6 +35,7 @@ from qualify_api.config import MetaOAuthSettings
 from qualify_api.connections.credential_reader import DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor
 from qualify_api.connections.models import SocialConnection
+from qualify_api.connections.read import connection_scopes
 from qualify_api.connections.resolver import InjectingCredentialResolver
 from qualify_api.inbox.client import HttpCommentsClient
 from qualify_api.inbox.media_client import HttpMediaClient
@@ -82,15 +83,26 @@ def production_ig_user_id_for(*, tenant_id: UUID, connection_id: UUID) -> str:
 async def production_inbox_service_for(*, tenant_id: UUID, connection_id: UUID) -> InboxService:
     """Build an `InboxService` with credentials resolved fresh for THIS connection. See
     the module docstring for why this cannot be `@cache`d the way `production_publish_
-    service()` is."""
+    service()` is.
+
+    `granted_scopes` (QUA-88) is resolved here too, from the same connection row — a
+    second, independent Postgres read alongside the credential one, same "cheap,
+    un-wrapped single-row read" posture the module docstring already establishes for
+    `PostgresIgUserIdReader.read`. `connection_scopes` returning `None` (connection not
+    visible — should not happen here, `production_ig_user_id_for` already checked this
+    same condition in every seam caller) degrades to an empty scope set, which
+    `InboxService` already treats as fail-closed rather than crashing.
+    """
     settings = MetaOAuthSettings.from_env()
     encryptor = DevEncryptor()
     resolver = InjectingCredentialResolver(DbCredentialReader(tenant_id), encryptor)
     graph_client = await resolver.client_for(connection_id, scheme=settings.graph_auth_scheme)
+    scopes = connection_scopes(tenant_id=tenant_id, connection_id=connection_id)
     return InboxService(
         repository=PostgresInboxRepository(),
         comments_client=HttpCommentsClient(graph_client=graph_client, graph_url=settings.graph_url),
         media_client=HttpMediaClient(graph_client=graph_client, graph_url=settings.graph_url),
+        granted_scopes=frozenset(scopes or ()),
     )
 
 

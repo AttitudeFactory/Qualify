@@ -1,10 +1,11 @@
-"""`db`-marked tests for `PostgresInboxRepository` — the two idempotency guarantees this
-module translates, exercised against the real constraints from 0004/0005. Same
-`seeded_connection` shape as `test_publishing_inbox_schema.py`.
+"""`db`-marked tests for `PostgresInboxRepository` — the three idempotency/accounting
+guarantees this module translates, exercised against the real constraints from
+0004/0005/0010. Same `seeded_connection` shape as `test_publishing_inbox_schema.py`.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -63,6 +64,40 @@ def seeded_connection() -> tuple[UUID, UUID]:
         session.flush()
         connection_id = conn.id
     return TENANT_I, connection_id
+
+
+def _second_connection(tenant_id: UUID) -> UUID:
+    """A second `social_connections` row under the SAME tenant — for the ledger's
+    per-connection isolation test, where `seeded_connection`'s single row is not enough.
+    Mirrors `seeded_connection`'s own setup rather than factoring it out, matching this
+    file's existing amount of duplication between its two connection-creation blocks."""
+    with admin_session() as session:
+        app = PlatformApp(app_id=f"app-{uuid4()}", secret_ref="ref", api_version="v21.0")
+        session.add(app)
+        session.flush()
+        user = User(tenant_id=tenant_id, email=f"u-{uuid4()}@i.co", display_name="U2")
+        session.add(user)
+        session.flush()
+        app_id = app.id
+        user_id = user.id
+
+    with tenant_session(tenant_id) as session:
+        conn = SocialConnection(
+            tenant_id=tenant_id,
+            platform_app_id=app_id,
+            platform="instagram",
+            account_type="business",
+            external_account_id=f"ig-{uuid4()}",
+            linked_page_id="page-2",
+            granted_scopes=["basic"],
+            status="active",
+            access_posture="development",
+            current_credential_version=0,
+            connected_by_user_id=user_id,
+        )
+        session.add(conn)
+        session.flush()
+        return conn.id
 
 
 def _monitored_row_count(connection_id: UUID, media_id: str) -> int:
@@ -274,3 +309,98 @@ def test_a_comment_without_author_or_timestamp_still_persists(
         comment=comment,
     )
     assert created is True
+
+
+# --------------------------------------------------------------------------------------
+# inbox_meta_call_log — the Meta call budget ledger (QUA-88, migration 0010)
+# --------------------------------------------------------------------------------------
+
+
+def _call_log_row_count(connection_id: UUID) -> int:
+    with tenant_session(TENANT_I) as session:
+        return session.execute(
+            text("SELECT count(*) FROM inbox_meta_call_log WHERE connection_id = :cid"),
+            {"cid": str(connection_id)},
+        ).scalar_one()
+
+
+def test_record_call_appends_a_row_never_updates_one(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    """A logged call is a permanent fact — three calls must leave three rows, never
+    collapse into one the way `monitored_media`'s toggle deliberately does."""
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresInboxRepository()
+    now = datetime(2026, 8, 18, 12, 0, 0, tzinfo=UTC)
+
+    repo.record_call(tenant_id=tenant_id, connection_id=connection_id, called_at=now)
+    repo.record_call(tenant_id=tenant_id, connection_id=connection_id, called_at=now)
+    repo.record_call(tenant_id=tenant_id, connection_id=connection_id, called_at=now)
+
+    assert _call_log_row_count(connection_id) == 3
+
+
+def test_calls_in_last_hour_counts_what_was_recorded(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresInboxRepository()
+    now = datetime(2026, 8, 18, 12, 0, 0, tzinfo=UTC)
+
+    for _ in range(5):
+        repo.record_call(tenant_id=tenant_id, connection_id=connection_id, called_at=now)
+
+    assert repo.calls_in_last_hour(tenant_id=tenant_id, connection_id=connection_id, now=now) == 5
+
+
+def test_calls_in_last_hour_is_a_true_sliding_window_against_real_timestamps(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    """The same guarantee `test_inbox_service.py`'s offline test pins on
+    `MemoryInboxRepository` — re-verified here against real Postgres `TIMESTAMPTZ`
+    comparison, not Python datetime arithmetic."""
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresInboxRepository()
+    reference_now = datetime(2026, 8, 18, 12, 0, 0, tzinfo=UTC)
+    just_inside = reference_now - timedelta(minutes=59)
+    just_outside = reference_now - timedelta(hours=1, minutes=1)
+
+    repo.record_call(tenant_id=tenant_id, connection_id=connection_id, called_at=just_inside)
+    repo.record_call(tenant_id=tenant_id, connection_id=connection_id, called_at=just_outside)
+
+    assert (
+        repo.calls_in_last_hour(tenant_id=tenant_id, connection_id=connection_id, now=reference_now)
+        == 1
+    )
+
+
+def test_calls_in_last_hour_is_scoped_to_one_connection(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    """Two connections under the SAME tenant must not share a budget — a busy connection
+    must never exhaust a quiet one's."""
+    tenant_id, connection_a = seeded_connection
+    connection_b = _second_connection(tenant_id)
+    repo = PostgresInboxRepository()
+    now = datetime(2026, 8, 18, 12, 0, 0, tzinfo=UTC)
+
+    for _ in range(10):
+        repo.record_call(tenant_id=tenant_id, connection_id=connection_a, called_at=now)
+    repo.record_call(tenant_id=tenant_id, connection_id=connection_b, called_at=now)
+
+    assert repo.calls_in_last_hour(tenant_id=tenant_id, connection_id=connection_a, now=now) == 10
+    assert repo.calls_in_last_hour(tenant_id=tenant_id, connection_id=connection_b, now=now) == 1
+
+
+def test_calls_in_last_hour_is_zero_for_a_connection_with_no_calls(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresInboxRepository()
+
+    assert (
+        repo.calls_in_last_hour(
+            tenant_id=tenant_id, connection_id=connection_id, now=datetime.now(UTC)
+        )
+        == 0
+    )

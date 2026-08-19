@@ -1,9 +1,9 @@
-"""ORM models for the inbox module (B2/B3 + monitored-media). DDL/RLS/grants are the
-migrations' job (0004 for `threads`/`messages`, 0005 for `monitored_media`); these mirror
-them for typed access via the sanctioned sessions — same relationship
-`publishing/models.py` has to `0003`.
+"""ORM models for the inbox module (B2/B3 + monitored-media + the Meta call ledger).
+DDL/RLS/grants are the migrations' job (0004 for `threads`/`messages`, 0005 for
+`monitored_media`, 0010 for `inbox_meta_call_log`); these mirror them for typed access via
+the sanctioned sessions — same relationship `publishing/models.py` has to `0003`.
 
-All three tables carry the composite FK `(connection_id, tenant_id) -> social_connections`
+All four tables carry the composite FK `(connection_id, tenant_id) -> social_connections`
 (R2 discipline), so a child row whose tenant disagrees with its parent connection is
 structurally unbuildable.
 """
@@ -132,3 +132,41 @@ class Message(Base):
     raw_payload_r2_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Which version of the QUA-67 contract parsed this row.
     shape_version: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class InboxMetaCallLog(Base):
+    """One row per real Meta Graph API call made by `InboxService.sync_comments` — the
+    ledger `InboxRepository.calls_in_last_hour`/`record_call` count against (QUA-88).
+
+    Append-only by design, same posture `ClaritySnapshot` already establishes for
+    budgeting a vendor call from a ledger of rows rather than a counter that could drift
+    from reality: one row IS one spent call, so counting rows counts spent budget. No
+    `UPDATE`/`DELETE` grant is expected — a call, once made, was made.
+
+    Deliberately narrow scope: only `CommentsClient.list_comments` calls made inside
+    `sync_comments` are logged here, not `MediaClient` calls made by
+    `list_candidate_media`/`set_media_monitored` (the picker and the toggle). QUA-88
+    scopes the budget to the manual sync path specifically; widening it to every Meta
+    call this module makes is a known, disclosed gap, not an oversight.
+
+    No retention/pruning implemented yet — same deferred posture `clarity_snapshots` has.
+    At today's scale (manual trigger, one tenant) row growth is trivial; revisit if this
+    ever becomes automated/scheduled.
+    """
+
+    __tablename__ = "inbox_meta_call_log"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["connection_id", "tenant_id"],
+            ["social_connections.id", "social_connections.tenant_id"],
+            name="fk_inbox_meta_call_log_conn_tenant",
+        ),
+        Index("ix_inbox_meta_call_log_conn_called", "connection_id", "called_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sql_now("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    connection_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    called_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
