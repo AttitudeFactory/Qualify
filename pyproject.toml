@@ -71,6 +71,7 @@ pythonpath = [
     "packages/api/src",
     "packages/shared/src",
     "packages/scraper/src",
+    "packages/creative/src",
     "packages/models/src",
 ]
 markers = [
