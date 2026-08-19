@@ -15,28 +15,14 @@ import reflex as rx
 
 from .clarity_provider import ActionItemVM, FrictionCardVM, MetricTableVM
 from .clarity_state import DAYS_CHOICES, DIMENSION_CHOICES, ClarityState
-from .components import session_badge, sidebar
+from .ui import app_shell, callout, empty_state, page_body, page_header, skeleton_rows
+from .ui import tokens as T
 
 
 def _topbar() -> rx.Component:
-    return rx.hstack(
-        rx.vstack(
-            rx.heading("Clarity", size="6"),
-            rx.text(
-                "Comportamiento web del sitio de este negocio, vía Microsoft Clarity",
-                size="2",
-                color=rx.color("gray", 10),
-            ),
-            spacing="0",
-            align_items="start",
-        ),
-        rx.spacer(),
-        session_badge(),
-        rx.color_mode.button(),
-        width="100%",
-        padding="1.5rem 2rem 1rem 2rem",
-        align="center",
-        spacing="3",
+    return page_header(
+        "Clarity",
+        "Comportamiento web del sitio de este negocio, vía Microsoft Clarity",
     )
 
 
@@ -45,7 +31,7 @@ def _config_card() -> rx.Component:
         rx.vstack(
             rx.hstack(
                 rx.icon("settings-2", size=16),
-                rx.heading("Proyecto de Clarity", size="3"),
+                rx.heading("Proyecto de Clarity", size="3", as_="h2"),
                 rx.cond(
                     ClarityState.config.configured,
                     rx.badge("conectado", color_scheme="grass", variant="soft", size="1"),
@@ -59,7 +45,7 @@ def _config_card() -> rx.Component:
                 "(Clarity → Settings → Data Export → Generate new API token). "
                 "El token se guarda cifrado y no vuelve a mostrarse.",
                 size="1",
-                color=rx.color("gray", 10),
+                color=T.TEXT_MUTED,
             ),
             rx.hstack(
                 rx.input(
@@ -95,7 +81,7 @@ def _config_card() -> rx.Component:
 
 def _refresh_controls() -> rx.Component:
     return rx.hstack(
-        rx.text("Ventana:", size="2", color=rx.color("gray", 10)),
+        rx.text("Ventana:", size="2", color=T.TEXT_MUTED),
         rx.select(
             DAYS_CHOICES,
             value=ClarityState.refresh_days,
@@ -103,7 +89,7 @@ def _refresh_controls() -> rx.Component:
             size="2",
             width="4.5rem",
         ),
-        rx.text("días · Dimensión:", size="2", color=rx.color("gray", 10)),
+        rx.text("días · Dimensión:", size="2", color=T.TEXT_MUTED),
         rx.select(
             DIMENSION_CHOICES,
             value=ClarityState.refresh_dimension,
@@ -135,8 +121,8 @@ def _refresh_controls() -> rx.Component:
 def _stat_card(stat: list[str]) -> rx.Component:
     return rx.card(
         rx.vstack(
-            rx.text(stat[0], size="1", color=rx.color("gray", 10)),
-            rx.heading(stat[1], size="6"),
+            rx.text(stat[0], size="1", color=T.TEXT_MUTED),
+            rx.text(stat[1], size="6", weight="bold", class_name="q-nums"),
             spacing="1",
             align_items="start",
         ),
@@ -168,16 +154,16 @@ def _friction_card(card: FrictionCardVM) -> rx.Component:
                 spacing="2",
             ),
             rx.hstack(
-                rx.heading(card.total, size="6"),
+                rx.text(card.total, size="6", weight="bold", class_name="q-nums"),
                 rx.cond(
                     card.affected != "",
-                    rx.text(card.affected, size="1", color=rx.color("gray", 10)),
+                    rx.text(card.affected, size="1", color=T.TEXT_MUTED),
                     rx.fragment(),
                 ),
                 spacing="2",
                 align="baseline",
             ),
-            rx.text(card.hint, size="1", color=rx.color("gray", 9)),
+            rx.text(card.hint, size="1", color=T.TEXT_FAINT),
             spacing="1",
             align_items="start",
             width="100%",
@@ -197,7 +183,7 @@ def _action_item(item: ActionItemVM) -> rx.Component:
             ),
             rx.vstack(
                 rx.text(item.title, size="2", weight="medium"),
-                rx.text(item.detail, size="1", color=rx.color("gray", 10)),
+                rx.text(item.detail, size="1", color=T.TEXT_MUTED),
                 spacing="1",
                 align_items="start",
             ),
@@ -213,7 +199,7 @@ def _actions_section() -> rx.Component:
     return rx.vstack(
         rx.hstack(
             rx.icon("list-checks", size=16),
-            rx.heading("Qué atender ahora", size="4"),
+            rx.heading("Qué atender ahora", size="4", as_="h2"),
             rx.spacer(),
             rx.cond(
                 ClarityState.clarity_dashboard_url != "",
@@ -258,7 +244,7 @@ def _health_section() -> rx.Component:
     return rx.vstack(
         rx.hstack(
             rx.icon("heart-pulse", size=16),
-            rx.heading("Salud del sitio", size="4"),
+            rx.heading("Salud del sitio", size="4", as_="h2"),
             spacing="2",
             align="center",
         ),
@@ -292,14 +278,14 @@ def _health_section() -> rx.Component:
 
 def _snapshot_caption() -> rx.Component:
     return rx.hstack(
-        rx.icon("clock", size=14, color=rx.color("gray", 9)),
+        rx.icon("clock", size=14, color=T.TEXT_FAINT),
         rx.text(
             "Snapshot del "
             + ClarityState.snapshot.fetched_at
             + " · "
             + ClarityState.snapshot.window,
             size="1",
-            color=rx.color("gray", 10),
+            color=T.TEXT_MUTED,
         ),
         rx.cond(
             ClarityState.snapshot.dimensions != "",
@@ -326,7 +312,7 @@ def _metric_row(row: list[str]) -> rx.Component:
 def _metric_table(table: MetricTableVM) -> rx.Component:
     return rx.card(
         rx.vstack(
-            rx.heading(table.name, size="3"),
+            rx.heading(table.name, size="3", as_="h3"),
             rx.box(
                 rx.table.root(
                     rx.table.header(rx.table.row(rx.foreach(table.columns, _metric_header_cell))),
@@ -347,24 +333,12 @@ def _metric_table(table: MetricTableVM) -> rx.Component:
 
 
 def _empty_state() -> rx.Component:
-    return rx.center(
-        rx.vstack(
-            rx.icon("bar-chart-3", size=40, color=rx.color("gray", 8)),
-            rx.heading("Todavía no hay datos de Clarity", size="5"),
-            rx.text(
-                "Configura el proyecto y pulsa «Actualizar desde Clarity». "
-                "Cada actualización gasta 1 de las 10 llamadas diarias que permite "
-                "Microsoft, así que el panel siempre muestra el último snapshot guardado.",
-                size="2",
-                color=rx.color("gray", 10),
-                text_align="center",
-                max_width="460px",
-            ),
-            spacing="3",
-            align="center",
-        ),
-        padding="3rem 2rem",
-        width="100%",
+    return empty_state(
+        "bar-chart-3",
+        "Todavía no hay datos de Clarity",
+        "Configura el proyecto y pulsa «Actualizar desde Clarity». "
+        "Cada actualización gasta 1 de las 10 llamadas diarias que permite "
+        "Microsoft, así que el panel siempre muestra el último snapshot guardado.",
     )
 
 
@@ -436,51 +410,21 @@ def _config_section() -> rx.Component:
 
 
 def _body() -> rx.Component:
-    return rx.box(
-        rx.vstack(
-            _config_section(),
-            _refresh_controls(),
-            _messages(),
+    return page_body(
+        _config_section(),
+        _refresh_controls(),
+        _messages(),
+        rx.cond(
+            ClarityState.load_error != "",
+            callout(ClarityState.load_error, "error"),
             rx.cond(
-                ClarityState.load_error != "",
-                rx.callout(
-                    ClarityState.load_error,
-                    icon="triangle-alert",
-                    color_scheme="tomato",
-                    width="100%",
-                ),
-                rx.cond(
-                    ClarityState.is_loading,
-                    rx.vstack(
-                        rx.skeleton(rx.box(height="2.5rem", width="100%")),
-                        rx.skeleton(rx.box(height="2.5rem", width="100%")),
-                        rx.skeleton(rx.box(height="2.5rem", width="100%")),
-                        spacing="3",
-                        width="100%",
-                    ),
-                    rx.cond(ClarityState.show_empty_state, _empty_state(), _snapshot_view()),
-                ),
+                ClarityState.is_loading,
+                skeleton_rows(3),
+                rx.cond(ClarityState.show_empty_state, _empty_state(), _snapshot_view()),
             ),
-            spacing="4",
-            align_items="start",
-            width="100%",
         ),
-        padding="0 2rem 2rem 2rem",
-        width="100%",
     )
 
 
 def clarity_index() -> rx.Component:
-    return rx.hstack(
-        sidebar(),
-        rx.vstack(
-            _topbar(),
-            _body(),
-            width="100%",
-            spacing="4",
-            align_items="start",
-        ),
-        width="100%",
-        spacing="0",
-        align_items="start",
-    )
+    return app_shell(_topbar(), _body())

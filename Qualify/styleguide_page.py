@@ -1,0 +1,584 @@
+"""`/design` — the living style guide.
+
+Renders every token and primitive of ``Qualify/ui`` with the real theme, so a change to
+``rxconfig.py``, ``assets/qualify.css`` or ``ui/*`` is visible here first. Static and
+tenant-free (no state, no session), which is why it is not behind ``require_login`` and
+not in the sidebar. The written rules live in docs/design-system.md; this page is the
+proof they render.
+"""
+
+from __future__ import annotations
+
+import reflex as rx
+
+from .ui import (
+    app_shell,
+    callout,
+    card,
+    demo_notice,
+    empty_state,
+    kv,
+    mono,
+    page_body,
+    page_header,
+    platform_badge,
+    section,
+    signal_pill,
+    skeleton_card,
+    skeleton_rows,
+    stat_card,
+    tag,
+    tone_badge,
+)
+from .ui import tokens as T
+
+_TONES = ["accent", "ok", "warn", "error", "info", "neutral"]
+_TONE_MEANING = {
+    "accent": "acción principal, marca",
+    "ok": "sano, positivo, entregado",
+    "warn": "atención, degradado, demo",
+    "error": "fallo, revocado, negativo",
+    "info": "informativo, en curso",
+    "neutral": "desconocido, pendiente",
+}
+
+
+# ---------------------------------------------------------------------------------------
+# Colour
+# ---------------------------------------------------------------------------------------
+
+
+def _scale_row(name: str, scale: str) -> rx.Component:
+    """The 12 steps of a Radix scale, labelled by their role bands."""
+    return rx.vstack(
+        rx.hstack(
+            rx.text(name, size="2", weight="medium", min_width="6rem"),
+            rx.text(
+                "1-2 fondos · 3-5 superficies interactivas · 6-8 bordes · 9-10 sólidos · "
+                "11-12 texto",
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            align="baseline",
+            spacing="3",
+        ),
+        rx.hstack(
+            *[
+                rx.box(
+                    rx.text(str(step), size="1", color=rx.color(scale, 12 if step < 9 else 1)),
+                    background=rx.color(scale, step),
+                    height="2.5rem",
+                    flex="1",
+                    display="flex",
+                    align_items="end",
+                    justify_content="center",
+                    padding_bottom="0.2rem",
+                )
+                for step in range(1, 13)
+            ],
+            spacing="0",
+            width="100%",
+            border_radius=T.RADIUS_CONTROL,
+            overflow="hidden",
+            border=T.BORDER,
+        ),
+        width="100%",
+        spacing="1",
+        align_items="start",
+    )
+
+
+def _tone_row(tone: str) -> rx.Component:
+    return rx.hstack(
+        rx.box(
+            width="1.25rem",
+            height="1.25rem",
+            border_radius="9999px",
+            background=T.tone_color(tone, 9),
+        ),
+        rx.text(tone, size="2", weight="medium", min_width="4.5rem", class_name="q-mono"),
+        rx.text(T.tone_scale(tone), size="2", color=T.TEXT_MUTED, min_width="4rem"),
+        rx.text(_TONE_MEANING[tone], size="2"),
+        rx.spacer(),
+        signal_pill("estado", tone),
+        tone_badge("verdicto", tone, icon="circle"),
+        align="center",
+        spacing="3",
+        width="100%",
+    )
+
+
+def _colour_section() -> rx.Component:
+    return section(
+        "Color",
+        rx.text(
+            "Todo color sale de una escala Radix. El acento y el gris se fijan una vez en "
+            "rxconfig.py; los tonos semánticos se piden por rol (ok/warn/error), nunca por "
+            "matiz. Un estado siempre lleva punto o icono + palabra.",
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
+        card(
+            rx.vstack(
+                _scale_row("accent (teal)", "accent"),
+                _scale_row("gray (slate)", "gray"),
+                spacing="4",
+                width="100%",
+            )
+        ),
+        card(
+            rx.vstack(
+                rx.text("Tonos semánticos", size="2", weight="medium"),
+                *[_tone_row(t) for t in _TONES],
+                spacing="2",
+                width="100%",
+            )
+        ),
+        card(
+            rx.vstack(
+                rx.text(
+                    "Identidad de plataforma — siempre outline, nunca parece un estado",
+                    size="2",
+                    weight="medium",
+                ),
+                rx.hstack(
+                    *[platform_badge(p) for p in T.PLATFORM_SCALE],
+                    tag("etiqueta / categoría"),
+                    spacing="2",
+                    wrap="wrap",
+                ),
+                spacing="2",
+                width="100%",
+            )
+        ),
+        description="Escalas, tonos e identidad.",
+    )
+
+
+# ---------------------------------------------------------------------------------------
+# Type
+# ---------------------------------------------------------------------------------------
+
+
+def _type_section() -> rx.Component:
+    sample = "Qué dicen de tu negocio, y qué haces ahora"
+    return section(
+        "Tipografía",
+        card(
+            rx.vstack(
+                rx.hstack(
+                    rx.text("heading 8", size="1", color=T.TEXT_MUTED, min_width="6rem"),
+                    rx.text(sample, size="8", weight="bold"),
+                    align="baseline",
+                    spacing="3",
+                ),
+                rx.hstack(
+                    rx.text("heading 6 · h1", size="1", color=T.TEXT_MUTED, min_width="6rem"),
+                    rx.text(sample, size="6", weight="bold"),
+                    align="baseline",
+                    spacing="3",
+                ),
+                rx.hstack(
+                    rx.text("heading 4 · h2", size="1", color=T.TEXT_MUTED, min_width="6rem"),
+                    rx.text(sample, size="4", weight="bold"),
+                    align="baseline",
+                    spacing="3",
+                ),
+                rx.hstack(
+                    rx.text("text 3", size="1", color=T.TEXT_MUTED, min_width="6rem"),
+                    rx.text(sample, size="3"),
+                    align="baseline",
+                    spacing="3",
+                ),
+                rx.hstack(
+                    rx.text("text 2 · cuerpo", size="1", color=T.TEXT_MUTED, min_width="6rem"),
+                    rx.text(sample, size="2"),
+                    align="baseline",
+                    spacing="3",
+                ),
+                rx.hstack(
+                    rx.text("text 2 · muted", size="1", color=T.TEXT_MUTED, min_width="6rem"),
+                    rx.text(sample, size="2", color=T.TEXT_MUTED),
+                    align="baseline",
+                    spacing="3",
+                ),
+                rx.hstack(
+                    rx.text("text 1 · meta", size="1", color=T.TEXT_MUTED, min_width="6rem"),
+                    rx.text(sample, size="1", color=T.TEXT_MUTED),
+                    align="baseline",
+                    spacing="3",
+                ),
+                rx.divider(),
+                rx.hstack(
+                    rx.text("mono", size="1", color=T.TEXT_MUTED, min_width="6rem"),
+                    mono("@lacasadelcafe · conn_7f3a · 2026-08-18 14:02"),
+                    align="baseline",
+                    spacing="3",
+                ),
+                rx.hstack(
+                    rx.text("q-nums", size="1", color=T.TEXT_MUTED, min_width="6rem"),
+                    rx.text("1.204  ·  38  ·  12.988  ·  0,7 %", size="2", class_name="q-nums"),
+                    align="baseline",
+                    spacing="3",
+                ),
+                spacing="3",
+                width="100%",
+                align_items="start",
+            )
+        ),
+        description=(
+            "IBM Plex Sans para interfaz, IBM Plex Mono para identificadores. Escala Radix "
+            "1-9; una página usa h1=6, h2=4, cuerpo=2, meta=1."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------------------
+# Spacing / shape
+# ---------------------------------------------------------------------------------------
+
+
+def _space_section() -> rx.Component:
+    steps = [("1", "4"), ("2", "8"), ("3", "12"), ("4", "16"), ("5", "24"), ("6", "32")]
+    return section(
+        "Espacio y forma",
+        card(
+            rx.vstack(
+                rx.hstack(
+                    *[
+                        rx.vstack(
+                            rx.box(
+                                width=f"{px}px",
+                                height=f"{px}px",
+                                background=rx.color("accent", 6),
+                                border_radius="2px",
+                            ),
+                            rx.text(f"{n} · {px}px", size="1", color=T.TEXT_MUTED),
+                            align="center",
+                            spacing="1",
+                        )
+                        for n, px in steps
+                    ],
+                    spacing="5",
+                    align="end",
+                ),
+                rx.divider(),
+                rx.hstack(
+                    kv("gutter de página", "var(--q-page-x) = 2rem / 1rem < 900px", mono=True),
+                    width="100%",
+                ),
+                kv("sidebar", "220px", mono=True),
+                kv("radio tarjeta", "0.75rem", mono=True),
+                kv("radio control", "0.5rem", mono=True),
+                kv("borde", "1px gray-5 (fuerte: gray-7)", mono=True),
+                kv("elevación", "ninguna: superficies planas, gray-2 sobre gray-1", mono=True),
+                spacing="3",
+                width="100%",
+                align_items="start",
+            )
+        ),
+        description="Escala Radix (spacing 1-9). El gutter horizontal es un token CSS.",
+    )
+
+
+# ---------------------------------------------------------------------------------------
+# Components
+# ---------------------------------------------------------------------------------------
+
+
+def _buttons() -> rx.Component:
+    return card(
+        rx.vstack(
+            rx.text("Botones — un solo solid por pantalla", size="2", weight="medium"),
+            rx.hstack(
+                rx.button(rx.icon("plus", size=16), "Acción principal", size="2"),
+                rx.button("Secundaria", variant="soft", size="2"),
+                rx.button("Terciaria", variant="outline", size="2"),
+                rx.button("Fantasma", variant="ghost", size="2"),
+                rx.button(
+                    rx.icon("trash-2", size=16),
+                    "Destructiva",
+                    color_scheme=T.tone_scale("error"),
+                    variant="soft",
+                    size="2",
+                ),
+                rx.button("Cargando", loading=True, size="2"),
+                rx.button("Deshabilitado", disabled=True, size="2"),
+                spacing="2",
+                wrap="wrap",
+            ),
+            rx.hstack(
+                rx.button("size 1", size="1"),
+                rx.button("size 2 (por defecto)", size="2"),
+                rx.button("size 3 (empty states)", size="3"),
+                spacing="2",
+                align="center",
+                wrap="wrap",
+            ),
+            spacing="3",
+            width="100%",
+            align_items="start",
+        )
+    )
+
+
+def _forms() -> rx.Component:
+    return card(
+        rx.vstack(
+            rx.text("Formularios", size="2", weight="medium"),
+            rx.grid(
+                rx.vstack(
+                    rx.text("Email", size="2", weight="medium"),
+                    rx.input(placeholder="nombre@negocio.com", type="email", width="100%"),
+                    rx.text("Un alias por negocio.", size="1", color=T.TEXT_MUTED),
+                    spacing="1",
+                    align_items="start",
+                    width="100%",
+                ),
+                rx.vstack(
+                    rx.text("Cuenta conectada", size="2", weight="medium"),
+                    rx.select(
+                        ["@lacasadelcafe · instagram", "@cafeteria · facebook"], width="100%"
+                    ),
+                    spacing="1",
+                    align_items="start",
+                    width="100%",
+                ),
+                rx.vstack(
+                    rx.text("Buscar", size="2", weight="medium"),
+                    rx.input(
+                        rx.input.slot(rx.icon("search", size=T.ICON_SM)),
+                        placeholder="Buscar por caption o creador",
+                        width="100%",
+                    ),
+                    spacing="1",
+                    align_items="start",
+                    width="100%",
+                ),
+                rx.vstack(
+                    rx.text("Monitorear", size="2", weight="medium"),
+                    rx.hstack(
+                        rx.switch(default_checked=True),
+                        rx.text("Activo", size="2"),
+                        align="center",
+                        spacing="2",
+                    ),
+                    spacing="1",
+                    align_items="start",
+                    width="100%",
+                ),
+                columns=rx.breakpoints(initial="1", md="2"),
+                spacing="4",
+                width="100%",
+            ),
+            spacing="3",
+            width="100%",
+            align_items="start",
+        )
+    )
+
+
+def _feedback() -> rx.Component:
+    return rx.vstack(
+        rx.text("Feedback en línea", size="2", weight="medium"),
+        callout("No se pudo cargar la lista. Recarga la página o vuelve más tarde.", "error"),
+        callout("La conexión dejó de responder. Reconéctala para restaurar el acceso.", "warn"),
+        callout("Cada actualización gasta 1 de las 10 llamadas diarias.", "info"),
+        callout("Publicado. El reel ya está en tu cuenta.", "ok"),
+        demo_notice("Datos de demostración: los números son ilustrativos."),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _stats() -> rx.Component:
+    return rx.grid(
+        stat_card("Total menciones", "1.204", "accent", hint="últimos 14 días"),
+        stat_card("Positivas", "812", "ok"),
+        stat_card("Neutras", "354", "neutral"),
+        stat_card("Negativas", "38", "error", hint="3 sin responder"),
+        columns=rx.breakpoints(initial="2", md="4"),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _table() -> rx.Component:
+    def row(date: str, plat: str, handle: str, caption: str, sent: str, tone: str, n: str):
+        return rx.table.row(
+            rx.table.cell(date, white_space="nowrap", class_name="q-nums"),
+            rx.table.cell(platform_badge(plat)),
+            rx.table.cell(mono(handle)),
+            rx.table.cell(caption, max_width="320px", overflow="hidden", text_overflow="ellipsis"),
+            rx.table.cell(signal_pill(sent, tone)),
+            rx.table.cell(n, text_align="right", class_name="q-nums"),
+        )
+
+    return rx.box(
+        rx.table.root(
+            rx.table.header(
+                rx.table.row(
+                    rx.table.column_header_cell("Fecha"),
+                    rx.table.column_header_cell("Plataforma"),
+                    rx.table.column_header_cell("Creador"),
+                    rx.table.column_header_cell("Caption"),
+                    rx.table.column_header_cell("Sentimiento"),
+                    rx.table.column_header_cell("Vistas", text_align="right"),
+                )
+            ),
+            rx.table.body(
+                row(
+                    "2026-08-17",
+                    "tiktok",
+                    "@anaviaja",
+                    "El mejor café de la 5ta",
+                    "Positiva",
+                    "ok",
+                    "12.988",
+                ),
+                row(
+                    "2026-08-16",
+                    "instagram",
+                    "@cucutafoodie",
+                    "Fui y me atendieron regular",
+                    "Neutra",
+                    "neutral",
+                    "1.204",
+                ),
+                row(
+                    "2026-08-15",
+                    "instagram",
+                    "@juanp",
+                    "Nunca más, 40 min esperando",
+                    "Negativa",
+                    "error",
+                    "388",
+                ),
+            ),
+            variant="surface",
+            width="100%",
+        ),
+        overflow_x="auto",
+        width="100%",
+    )
+
+
+def _card_sample() -> rx.Component:
+    return card(
+        rx.vstack(
+            rx.hstack(
+                platform_badge("instagram"),
+                rx.heading("@lacasadelcafe", size="4", as_="h3"),
+                rx.spacer(),
+                tone_badge("Activa", "ok", icon="circle-check", size="2"),
+                width="100%",
+                align="center",
+            ),
+            rx.hstack(
+                rx.icon("building-2", size=14, color=T.TEXT_FAINT),
+                rx.text("La Casa del Café", size="2", color=T.TEXT_MUTED),
+                rx.text("·", color=T.TEXT_FAINT),
+                rx.icon("clock", size=14, color=T.TEXT_FAINT),
+                rx.text("Verificada: hace 2 h", size="2", color=T.TEXT_MUTED),
+                spacing="2",
+                align="center",
+            ),
+            rx.hstack(tag("instagram_basic"), tag("pages_show_list"), spacing="2", wrap="wrap"),
+            rx.divider(),
+            kv("Conexión", "conn_7f3a9c", mono=True),
+            kv("Marca", "La Casa del Café"),
+            rx.hstack(
+                rx.spacer(),
+                rx.button(
+                    rx.icon("unplug", size=15),
+                    "Desconectar",
+                    variant="soft",
+                    color_scheme="gray",
+                    size="2",
+                ),
+                width="100%",
+            ),
+            spacing="3",
+            align_items="start",
+            width="100%",
+        ),
+        padding="1.25rem 1.5rem",
+    )
+
+
+def _states() -> rx.Component:
+    return rx.grid(
+        card(
+            rx.vstack(
+                rx.text("Cargando", size="2", weight="medium"),
+                skeleton_card(),
+                skeleton_rows(2),
+                spacing="3",
+                width="100%",
+                align_items="start",
+            )
+        ),
+        card(
+            rx.vstack(
+                rx.text("Vacío", size="2", weight="medium"),
+                empty_state(
+                    "link-2-off",
+                    "Aún no conectas ninguna cuenta",
+                    "Conecta tu primera cuenta de Instagram o Facebook para empezar a "
+                    "escuchar y responder desde Qualify.",
+                    action=rx.button(rx.icon("plus", size=16), "Conectar cuenta", size="3"),
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+            padding="1.25rem 1.25rem 0",
+        ),
+        columns=rx.breakpoints(initial="1", lg="2"),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _components_section() -> rx.Component:
+    return section(
+        "Componentes",
+        _buttons(),
+        _forms(),
+        card(_feedback()),
+        rx.text("Cifras", size="2", weight="medium"),
+        _stats(),
+        rx.text(
+            "Tarjeta de entidad (card + platform_badge + tone_badge + tag + kv)",
+            size="2",
+            weight="medium",
+        ),
+        _card_sample(),
+        rx.text(
+            "Tabla (surface, cifras tabulares, identificadores mono)", size="2", weight="medium"
+        ),
+        _table(),
+        rx.text("Estados de pantalla", size="2", weight="medium"),
+        _states(),
+        description="Cada bloque es una primitiva de Qualify/ui o una composición documentada.",
+        spacing="4",
+    )
+
+
+def styleguide_index() -> rx.Component:
+    return app_shell(
+        page_header(
+            "Design system",
+            "Tokens y primitivas de Qualify/ui, renderizados con el tema real. "
+            "Reglas escritas: docs/design-system.md",
+            badge=rx.badge("interno", variant="soft", color_scheme="gray", size="1"),
+        ),
+        page_body(
+            _colour_section(),
+            _type_section(),
+            _space_section(),
+            _components_section(),
+            spacing="6",
+        ),
+    )

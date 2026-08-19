@@ -1,9 +1,8 @@
 """Inbox content screen (Fase 1 Parte 4-B, B2 UI slice) — Reels from the last 2 weeks,
 with a switch to turn monitoring on/off per Reel.
 
-Same visual language as `connections_page.py`/`publishing_page.py`: badges/callouts from
-the shared color-scheme convention, the shared sidebar/topbar shape. Adds the `/inbox`
-route only; does not touch `connections_page.py` or `publishing_page.py`.
+Built on the `ui` shell (`app_shell` / `page_header` / `page_body`); badges and callouts
+follow the design-system tones (docs/design-system.md). Adds the `/inbox` route only.
 
 Deliberately minimal for this slice: no comment/thread view, no rich media preview beyond
 a thumbnail + caption snippet. The goal is to make the monitoring decision visible and
@@ -12,7 +11,7 @@ actionable, not to redesign the screen.
 `_sync_section()` (2026-08-15) is a TEMPORARY manual trigger for `InboxService.
 sync_comments` — see `inbox_state.py`'s module docstring for why. It exists to prove the
 Meta → Postgres round trip end-to-end before any scheduler/Celery wiring exists, and is
-styled like `connections_page.py`'s `dev_tenant_selector()` (dashed border + a "TEMPORAL"
+styled with the design system's `demo_notice` shape (dashed warn border + a "TEMPORAL"
 badge) specifically so it reads as scaffolding, not a shipped feature.
 """
 
@@ -20,10 +19,11 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .components import sidebar
 from .inbox_state import InboxState
 from .inbox_vm import CandidateMediaVM
 from .publishing_vm import ConnectionOptionVM
+from .ui import app_shell, callout, empty_state, page_body, page_header
+from .ui import tokens as T
 
 
 def _connection_item(conn: ConnectionOptionVM) -> rx.Component:
@@ -53,11 +53,11 @@ def _thumbnail(candidate: CandidateMediaVM) -> rx.Component:
             border_radius="0.5rem",
         ),
         rx.center(
-            rx.icon("film", size=26, color=rx.color("gray", 8)),
+            rx.icon("film", size=26, color=T.TEXT_FAINT),
             width="72px",
             height="72px",
             border_radius="0.5rem",
-            background=rx.color("gray", 3),
+            background=T.SURFACE_BG_RAISED,
             flex_shrink="0",
         ),
     )
@@ -79,7 +79,7 @@ def _monitoring_switch(candidate: CandidateMediaVM) -> rx.Component:
         rx.text(
             rx.cond(candidate.is_monitored, "Monitoreado", "No monitoreado"),
             size="1",
-            color=rx.cond(candidate.is_monitored, rx.color("grass", 10), rx.color("gray", 9)),
+            color=rx.cond(candidate.is_monitored, T.tone_color("ok", 10), T.TEXT_FAINT),
         ),
         spacing="1",
         align="center",
@@ -101,8 +101,8 @@ def _candidate_card_content(candidate: CandidateMediaVM) -> rx.Component:
                     white_space="nowrap",
                 ),
                 rx.hstack(
-                    rx.icon("clock", size=13, color=rx.color("gray", 9)),
-                    rx.text(candidate.posted_at, size="1", color=rx.color("gray", 10)),
+                    rx.icon("clock", size=13, color=T.TEXT_FAINT),
+                    rx.text(candidate.posted_at, size="1", color=T.TEXT_MUTED),
                     rx.cond(
                         candidate.permalink != "",
                         rx.link(
@@ -126,9 +126,9 @@ def _candidate_card_content(candidate: CandidateMediaVM) -> rx.Component:
             width="100%",
         ),
         padding="1rem 1.25rem",
-        border=f"1px solid {rx.color('gray', 5)}",
-        border_radius="0.75rem",
-        background=rx.color("gray", 2),
+        border=T.BORDER,
+        border_radius=T.RADIUS_CARD,
+        background=T.SURFACE_BG,
         width="100%",
     )
 
@@ -157,7 +157,7 @@ def _candidate_card(candidate: CandidateMediaVM) -> rx.Component:
 def _card_skeleton() -> rx.Component:
     return rx.box(
         rx.hstack(
-            rx.skeleton(rx.box(width="72px", height="72px", border_radius="0.5rem")),
+            rx.skeleton(rx.box(width="72px", height="72px", border_radius=T.RADIUS_CONTROL)),
             rx.vstack(
                 rx.skeleton(rx.box(height="1.25rem", width="220px")),
                 rx.skeleton(rx.box(height="1rem", width="140px")),
@@ -168,101 +168,52 @@ def _card_skeleton() -> rx.Component:
             align="center",
         ),
         padding="1rem 1.25rem",
-        border=f"1px solid {rx.color('gray', 5)}",
-        border_radius="0.75rem",
+        border=T.BORDER,
+        border_radius=T.RADIUS_CARD,
         width="100%",
+        aria_busy="true",
     )
 
 
 def _no_connections_state() -> rx.Component:
-    return rx.center(
-        rx.vstack(
-            rx.icon("link-2-off", size=40, color=rx.color("gray", 8)),
-            rx.heading("No hay cuentas de Instagram listas para monitorear", size="5"),
-            rx.text(
-                "Conecta una cuenta de Instagram con el permiso de comentarios en "
-                "Conexiones para elegir qué contenido monitorear.",
-                size="2",
-                color=rx.color("gray", 10),
-                text_align="center",
-                max_width="420px",
-            ),
-            rx.link(
-                rx.button(rx.icon("link", size=16), "Ir a Conexiones", size="3"),
-                href="/connections",
-            ),
-            spacing="3",
-            align="center",
+    return empty_state(
+        "link-2-off",
+        "No hay cuentas de Instagram listas para monitorear",
+        "Conecta una cuenta de Instagram con el permiso de comentarios en "
+        "Conexiones para elegir qué contenido monitorear.",
+        action=rx.link(
+            rx.button(rx.icon("link", size=16), "Ir a Conexiones", size="3"),
+            href="/connections",
         ),
-        padding="4rem 2rem",
-        width="100%",
     )
 
 
 def _empty_candidates_state() -> rx.Component:
-    return rx.center(
-        rx.vstack(
-            rx.icon("film", size=40, color=rx.color("gray", 8)),
-            rx.heading("Sin Reels en las últimas 2 semanas", size="5"),
-            rx.text(
-                "Esta cuenta no publicó Reels en los últimos 14 días.",
-                size="2",
-                color=rx.color("gray", 10),
-                text_align="center",
-            ),
-            spacing="3",
-            align="center",
-        ),
-        padding="4rem 2rem",
-        width="100%",
+    return empty_state(
+        "film",
+        "Sin Reels en las últimas 2 semanas",
+        "Esta cuenta no publicó Reels en los últimos 14 días.",
     )
 
 
 def _connections_error() -> rx.Component:
-    return rx.box(
-        rx.callout(
-            InboxState.connections_error,
-            icon="triangle-alert",
-            color_scheme="tomato",
-            width="100%",
-        ),
-        padding="0 2rem 2rem 2rem",
-        width="100%",
-    )
+    return callout(InboxState.connections_error, "error")
 
 
 def _load_error() -> rx.Component:
-    return rx.box(
-        rx.callout(
-            InboxState.load_error, icon="triangle-alert", color_scheme="tomato", width="100%"
-        ),
-        padding="0 2rem 2rem 2rem",
-        width="100%",
-    )
+    return callout(InboxState.load_error, "error")
 
 
 def _action_error() -> rx.Component:
     """Error from a toggle action, shown ABOVE the list rather than replacing it: the
     Reels on screen are still valid, one toggle failed."""
-    return rx.box(
-        rx.callout(
-            InboxState.action_error, icon="triangle-alert", color_scheme="amber", width="100%"
-        ),
-        padding="0 2rem 1rem 2rem",
-        width="100%",
-    )
+    return callout(InboxState.action_error, "warn")
 
 
 def _candidates_body() -> rx.Component:
     return rx.cond(
         InboxState.is_loading_candidates,
-        rx.vstack(
-            _card_skeleton(),
-            _card_skeleton(),
-            spacing="3",
-            width="100%",
-            padding="0 2rem 2rem 2rem",
-        ),
+        rx.vstack(_card_skeleton(), _card_skeleton(), spacing="3", width="100%"),
         rx.cond(
             InboxState.show_empty_state,
             _empty_candidates_state(),
@@ -270,21 +221,20 @@ def _candidates_body() -> rx.Component:
                 rx.foreach(InboxState.candidates, _candidate_card),
                 spacing="3",
                 width="100%",
-                padding="0 2rem 2rem 2rem",
             ),
         ),
     )
 
 
 def _body() -> rx.Component:
-    return rx.vstack(
+    return page_body(
         rx.cond(InboxState.action_error != "", _action_error(), rx.fragment()),
         rx.cond(
             InboxState.connections_error != "",
             _connections_error(),
             rx.cond(
                 InboxState.is_loading_connections,
-                rx.box(_card_skeleton(), padding="0 2rem 2rem 2rem", width="100%"),
+                _card_skeleton(),
                 rx.cond(
                     ~InboxState.has_connections,
                     _no_connections_state(),
@@ -296,8 +246,6 @@ def _body() -> rx.Component:
                 ),
             ),
         ),
-        width="100%",
-        spacing="0",
     )
 
 
@@ -313,7 +261,7 @@ def _sync_now_button() -> rx.Component:
         disabled=~InboxState.can_sync,
         size="2",
         variant="surface",
-        color_scheme="orange",
+        color_scheme="amber",
     )
 
 
@@ -356,16 +304,16 @@ def _sync_error_block() -> rx.Component:
 
 def _sync_section() -> rx.Component:
     """TEMPORARY manual sync affordance — see this module's docstring. Deliberately
-    styled like `connections_page.py`'s `dev_tenant_selector()` so it visually reads as
-    scaffolding rather than a shipped feature."""
+    styled with the design system's `demo_notice` shape (dashed warn border) so it visually
+    reads as scaffolding rather than a shipped feature."""
     return rx.box(
         rx.vstack(
             rx.hstack(
-                rx.badge("TEMPORAL", color_scheme="orange", variant="solid", size="1"),
+                rx.badge("TEMPORAL", color_scheme="amber", variant="solid", size="1"),
                 rx.text(
                     "Disparador manual de sync_comments — solo para pruebas end-to-end.",
                     size="2",
-                    color=rx.color("gray", 10),
+                    color=T.TEXT_MUTED,
                 ),
                 rx.spacer(),
                 _sync_now_button(),
@@ -379,47 +327,25 @@ def _sync_section() -> rx.Component:
             width="100%",
         ),
         padding="0.75rem 1rem",
-        border=f"1px dashed {rx.color('orange', 7)}",
-        border_radius="0.5rem",
-        background=rx.color("orange", 2),
-        margin="0 2rem 1.5rem 2rem",
-        width="calc(100% - 4rem)",
+        border=f"1px dashed {T.tone_color('warn', 7)}",
+        border_radius=T.RADIUS_CONTROL,
+        background=T.tone_color("warn", 2),
+        margin=f"0 {T.PAGE_X} 1.5rem {T.PAGE_X}",
+        width=f"calc(100% - 2 * {T.PAGE_X})",
     )
 
 
 def inbox_topbar() -> rx.Component:
-    return rx.hstack(
-        rx.vstack(
-            rx.heading("Contenido de Instagram", size="6"),
-            rx.text(
-                "Reels de las últimas 2 semanas — elige cuáles monitorear",
-                size="2",
-                color=rx.color("gray", 10),
-            ),
-            spacing="0",
-            align_items="start",
-        ),
-        rx.spacer(),
+    return page_header(
+        "Contenido de Instagram",
+        "Reels de las últimas 2 semanas — elige cuáles monitorear",
         rx.cond(InboxState.has_connections, _connection_selector(), rx.fragment()),
-        rx.color_mode.button(),
-        width="100%",
-        padding="1.5rem 2rem 1rem 2rem",
-        align="center",
     )
 
 
 def inbox_index() -> rx.Component:
-    return rx.hstack(
-        sidebar(),
-        rx.vstack(
-            inbox_topbar(),
-            rx.cond(InboxState.has_connections, _sync_section(), rx.fragment()),
-            _body(),
-            width="100%",
-            spacing="4",
-            align_items="start",
-        ),
-        width="100%",
-        spacing="0",
-        align_items="start",
+    return app_shell(
+        inbox_topbar(),
+        rx.cond(InboxState.has_connections, _sync_section(), rx.fragment()),
+        _body(),
     )

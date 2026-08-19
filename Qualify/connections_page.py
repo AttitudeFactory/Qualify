@@ -1,68 +1,44 @@
 """Connections screen components + page (C-06).
 
-Status colors follow the dataviz status palette: reserved good/warning/critical
-hues, each shipped with an icon AND a text label (never color-alone). Reuses the
-scaffold's sidebar/topbar. Adds the `/connections` route; does not touch the
-mentions dashboard.
+Status colors follow the design-system tones (docs/design-system.md §3.2): reserved
+ok/warn/error hues, each shipped with an icon AND a text label (never color-alone).
+Built on the `ui` shell (`app_shell` / `page_header` / `page_body`).
 """
 
 from __future__ import annotations
 
 import reflex as rx
 
-from .components import session_badge, sidebar
 from .connections_state import ConnectionsState
 from .connections_vm import CapabilityVM, ConnectionVM
+from .ui import (
+    app_shell,
+    callout,
+    card,
+    empty_state,
+    page_body,
+    page_header,
+    platform_badge,
+    skeleton_card,
+    tag,
+    tone_badge,
+)
+from .ui import tokens as T
 
 
 def status_badge(status: rx.Var[str]) -> rx.Component:
     """active | degraded | revoked — icon + label, never color alone."""
     return rx.match(
         status,
-        (
-            "active",
-            rx.badge(
-                rx.icon("circle-check", size=14),
-                "Activa",
-                color_scheme="grass",
-                variant="soft",
-                size="2",
-            ),
-        ),
-        (
-            "degraded",
-            rx.badge(
-                rx.icon("triangle-alert", size=14),
-                "Degradada",
-                color_scheme="amber",
-                variant="soft",
-                size="2",
-            ),
-        ),
-        (
-            "revoked",
-            rx.badge(
-                rx.icon("circle-x", size=14),
-                "Revocada",
-                color_scheme="tomato",
-                variant="soft",
-                size="2",
-            ),
-        ),
-        rx.badge(status, color_scheme="gray", variant="soft", size="2"),
-    )
-
-
-def _platform_badge(platform: rx.Var[str]) -> rx.Component:
-    return rx.match(
-        platform,
-        ("facebook", rx.badge("Facebook", variant="outline", color_scheme="blue")),
-        rx.badge("Instagram", variant="outline", color_scheme="pink"),
+        ("active", tone_badge("Activa", "ok", icon="circle-check", size="2")),
+        ("degraded", tone_badge("Degradada", "warn", icon="triangle-alert", size="2")),
+        ("revoked", tone_badge("Revocada", "error", icon="circle-x", size="2")),
+        tone_badge(status, "neutral", size="2"),
     )
 
 
 def _scope_chip(label: rx.Var[str]) -> rx.Component:
-    return rx.badge(label, variant="surface", color_scheme="gray", size="1")
+    return tag(label)
 
 
 def _provisional_mark() -> rx.Component:
@@ -84,7 +60,7 @@ def _provisional_mark() -> rx.Component:
 
 def _enabled_capability(cap: CapabilityVM) -> rx.Component:
     return rx.hstack(
-        rx.icon("circle-check", size=15, color=rx.color("grass", 9)),
+        rx.icon("circle-check", size=15, color=T.tone_color("ok", 9)),
         rx.text(cap.label, size="2"),
         rx.cond(cap.provisional, _provisional_mark(), rx.fragment()),
         spacing="2",
@@ -95,7 +71,7 @@ def _enabled_capability(cap: CapabilityVM) -> rx.Component:
 
 def _disabled_capability(cap: CapabilityVM) -> rx.Component:
     return rx.hstack(
-        rx.icon("circle-x", size=15, color=rx.color("gray", 8)),
+        rx.icon("circle-x", size=15, color=T.TEXT_FAINT),
         rx.vstack(
             rx.hstack(
                 rx.text(cap.label, size="2", color=rx.color("gray", 11)),
@@ -103,7 +79,7 @@ def _disabled_capability(cap: CapabilityVM) -> rx.Component:
                 spacing="2",
                 align="center",
             ),
-            rx.text(cap.reason, size="1", color=rx.color("gray", 10)),
+            rx.text(cap.reason, size="1", color=T.TEXT_MUTED),
             spacing="0",
             align_items="start",
         ),
@@ -213,27 +189,27 @@ def disconnect_action(conn: ConnectionVM) -> rx.Component:
 
 
 def connection_card(conn: ConnectionVM) -> rx.Component:
-    return rx.box(
+    return card(
         rx.vstack(
             # Header: platform + username + status
             rx.hstack(
-                _platform_badge(conn.platform),
-                rx.heading(conn.external_username, size="4"),
+                platform_badge(conn.platform),
+                rx.heading(conn.external_username, size="4", as_="h2"),
                 rx.spacer(),
                 status_badge(conn.status),
                 width="100%",
                 align="center",
             ),
             rx.hstack(
-                rx.icon("building-2", size=14, color=rx.color("gray", 9)),
-                rx.text(conn.brand, size="2", color=rx.color("gray", 10)),
-                rx.text("·", color=rx.color("gray", 8)),
-                rx.icon("clock", size=14, color=rx.color("gray", 9)),
+                rx.icon("building-2", size=14, color=T.TEXT_FAINT),
+                rx.text(conn.brand, size="2", color=T.TEXT_MUTED),
+                rx.text("·", color=T.TEXT_FAINT),
+                rx.icon("clock", size=14, color=T.TEXT_FAINT),
                 rx.text(
                     "Verificada: ",
                     conn.last_verified_at,
                     size="2",
-                    color=rx.color("gray", 10),
+                    color=T.TEXT_MUTED,
                 ),
                 spacing="2",
                 align="center",
@@ -245,7 +221,7 @@ def connection_card(conn: ConnectionVM) -> rx.Component:
             rx.cond(
                 conn.granted_scopes.length() > 0,
                 rx.vstack(
-                    rx.text("Permisos concedidos", size="1", color=rx.color("gray", 10)),
+                    rx.text("Permisos concedidos", size="1", color=T.TEXT_MUTED),
                     rx.hstack(
                         rx.foreach(conn.granted_scopes, _scope_chip),
                         spacing="2",
@@ -262,7 +238,7 @@ def connection_card(conn: ConnectionVM) -> rx.Component:
             rx.cond(
                 conn.enabled_capabilities.length() > 0,
                 rx.vstack(
-                    rx.text("Disponible", size="1", color=rx.color("gray", 10)),
+                    rx.text("Disponible", size="1", color=T.TEXT_MUTED),
                     rx.foreach(conn.enabled_capabilities, _enabled_capability),
                     spacing="2",
                     align_items="start",
@@ -276,7 +252,7 @@ def connection_card(conn: ConnectionVM) -> rx.Component:
                     rx.text(
                         "Deshabilitado",
                         size="1",
-                        color=rx.color("gray", 10),
+                        color=T.TEXT_MUTED,
                     ),
                     rx.foreach(conn.disabled_capabilities, _disabled_capability),
                     spacing="2",
@@ -296,153 +272,64 @@ def connection_card(conn: ConnectionVM) -> rx.Component:
             width="100%",
         ),
         padding="1.25rem 1.5rem",
-        border=f"1px solid {rx.color('gray', 5)}",
-        border_radius="0.75rem",
-        background=rx.color("gray", 2),
-        width="100%",
     )
 
 
-def _card_skeleton() -> rx.Component:
-    return rx.box(
-        rx.vstack(
-            rx.skeleton(rx.box(height="1.5rem", width="40%")),
-            rx.skeleton(rx.box(height="1rem", width="60%")),
-            rx.skeleton(rx.box(height="3rem", width="100%")),
-            spacing="3",
-            width="100%",
+def _empty_state() -> rx.Component:
+    return empty_state(
+        "link-2-off",
+        "Aún no conectas ninguna cuenta",
+        "Conecta tu primera cuenta de Instagram o Facebook para empezar a "
+        "escuchar y responder desde Qualify.",
+        action=rx.button(
+            rx.icon("plus", size=16),
+            "Conectar cuenta",
+            on_click=ConnectionsState.start_connect_flow,
+            size="3",
+            margin_top="0.5rem",
         ),
-        padding="1.25rem 1.5rem",
-        border=f"1px solid {rx.color('gray', 5)}",
-        border_radius="0.75rem",
-        width="100%",
-    )
-
-
-def empty_state() -> rx.Component:
-    return rx.center(
-        rx.vstack(
-            rx.icon("link-2-off", size=40, color=rx.color("gray", 8)),
-            rx.heading("Aún no conectas ninguna cuenta", size="5"),
-            rx.text(
-                "Conecta tu primera cuenta de Instagram o Facebook para empezar a "
-                "escuchar y responder desde Qualify.",
-                size="2",
-                color=rx.color("gray", 10),
-                text_align="center",
-                max_width="420px",
-            ),
-            rx.button(
-                rx.icon("plus", size=16),
-                "Conectar cuenta",
-                on_click=ConnectionsState.start_connect_flow,
-                size="3",
-                margin_top="0.5rem",
-            ),
-            spacing="3",
-            align="center",
-        ),
-        padding="4rem 2rem",
-        width="100%",
     )
 
 
 def connections_topbar() -> rx.Component:
-    return rx.hstack(
-        rx.vstack(
-            rx.heading("Cuentas conectadas", size="6"),
-            rx.text(
-                "Estado de salud y permisos de tus cuentas de Instagram y Facebook",
-                size="2",
-                color=rx.color("gray", 10),
-            ),
-            spacing="0",
-            align_items="start",
-        ),
-        rx.spacer(),
-        session_badge(),
-        rx.color_mode.button(),
-        width="100%",
-        padding="1.5rem 2rem 1rem 2rem",
-        align="center",
-    )
-
-
-def _load_error() -> rx.Component:
-    return rx.box(
-        rx.callout(
-            ConnectionsState.load_error,
-            icon="triangle-alert",
-            color_scheme="tomato",
-            width="100%",
-        ),
-        padding="0 2rem 2rem 2rem",
-        width="100%",
+    return page_header(
+        "Cuentas conectadas",
+        "Estado de salud y permisos de tus cuentas de Instagram y Facebook",
     )
 
 
 def _action_error() -> rx.Component:
     """Error from a connect/disconnect action, shown ABOVE the list rather than
     replacing it: the connections on screen are still valid, one action failed."""
-    return rx.box(
-        rx.callout(
-            ConnectionsState.action_error,
-            icon="triangle-alert",
-            color_scheme="amber",
-            width="100%",
-        ),
-        padding="0 2rem 1rem 2rem",
-        width="100%",
-    )
+    return callout(ConnectionsState.action_error, "warn")
 
 
 def _connections_body() -> rx.Component:
-    return rx.vstack(
+    return page_body(
         rx.cond(ConnectionsState.action_error != "", _action_error(), rx.fragment()),
         rx.cond(
             ConnectionsState.load_error != "",
-            _load_error(),
+            callout(ConnectionsState.load_error, "error"),
             _loaded_body(),
         ),
-        width="100%",
-        spacing="0",
     )
 
 
 def _loaded_body() -> rx.Component:
     return rx.cond(
         ConnectionsState.is_loading,
-        rx.vstack(
-            _card_skeleton(),
-            _card_skeleton(),
-            spacing="4",
-            width="100%",
-            padding="0 2rem 2rem 2rem",
-        ),
+        rx.vstack(skeleton_card(), skeleton_card(), spacing="4", width="100%"),
         rx.cond(
             ConnectionsState.show_empty_state,
-            empty_state(),
+            _empty_state(),
             rx.vstack(
                 rx.foreach(ConnectionsState.connections, connection_card),
                 spacing="4",
                 width="100%",
-                padding="0 2rem 2rem 2rem",
             ),
         ),
     )
 
 
 def connections_index() -> rx.Component:
-    return rx.hstack(
-        sidebar(),
-        rx.vstack(
-            connections_topbar(),
-            _connections_body(),
-            width="100%",
-            spacing="4",
-            align_items="start",
-        ),
-        width="100%",
-        spacing="0",
-        align_items="start",
-    )
+    return app_shell(connections_topbar(), _connections_body())

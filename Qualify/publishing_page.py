@@ -1,17 +1,17 @@
 """Publish screen (A5 vertical slice) — upload a reel, pick a connected account, publish.
 
-Same visual language as `connections_page.py`: badges/callouts drawn from the shared
-color-scheme convention, the shared sidebar/topbar shape. Adds the `/publish` route only;
-does not touch `connections_page.py` or the mentions dashboard.
+Built on the `ui` shell (`app_shell` / `page_header` / `page_body`); badges and callouts
+follow the design-system tones (docs/design-system.md). Adds the `/publish` route only.
 """
 
 from __future__ import annotations
 
 import reflex as rx
 
-from .components import sidebar
 from .publishing_state import PublishState
 from .publishing_vm import ConnectionOptionVM
+from .ui import app_shell, callout, page_body, page_header
+from .ui import tokens as T
 
 _UPLOAD_ID = "publish_upload"
 
@@ -36,12 +36,12 @@ def _connection_selector() -> rx.Component:
 def _upload_zone() -> rx.Component:
     return rx.upload(
         rx.vstack(
-            rx.icon("upload", size=28, color=rx.color("gray", 9)),
+            rx.icon("upload", size=28, color=T.TEXT_FAINT),
             rx.text("Arrastra un video o haz clic para elegirlo", size="2"),
             rx.text(
                 rx.selected_files(_UPLOAD_ID),
                 size="1",
-                color=rx.color("gray", 10),
+                color=T.TEXT_MUTED,
             ),
             spacing="2",
             align="center",
@@ -151,53 +151,18 @@ def _form() -> rx.Component:
 
 
 def _load_error() -> rx.Component:
-    return rx.callout(
-        PublishState.load_error,
-        icon="triangle-alert",
-        color_scheme="tomato",
-        width="100%",
-    )
+    return callout(PublishState.load_error, "error")
 
 
 def publish_topbar() -> rx.Component:
-    return rx.hstack(
-        rx.vstack(
-            rx.heading("Publicar", size="6"),
-            rx.text(
-                "Sube un reel y publícalo en una de tus cuentas de Instagram conectadas",
-                size="2",
-                color=rx.color("gray", 10),
-            ),
-            spacing="0",
-            align_items="start",
-        ),
-        rx.spacer(),
-        rx.color_mode.button(),
-        width="100%",
-        padding="1.5rem 2rem 1rem 2rem",
-        align="center",
+    return page_header(
+        "Publicar",
+        "Sube un reel y publícalo en una de tus cuentas de Instagram conectadas",
     )
 
 
 def publish_index() -> rx.Component:
-    return rx.hstack(
-        sidebar(),
-        rx.vstack(
-            publish_topbar(),
-            rx.box(
-                rx.cond(
-                    PublishState.load_error != "",
-                    _load_error(),
-                    _form(),
-                ),
-                padding="0 2rem 2rem 2rem",
-                width="100%",
-            ),
-            width="100%",
-            spacing="4",
-            align_items="start",
-        ),
-        width="100%",
-        spacing="0",
-        align_items="start",
+    return app_shell(
+        publish_topbar(),
+        page_body(rx.cond(PublishState.load_error != "", _load_error(), _form())),
     )
