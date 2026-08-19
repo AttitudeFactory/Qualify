@@ -17,7 +17,7 @@ from qualify_api.http import deps, inbox_routes
 from qualify_api.http.app import create_app
 from qualify_api.inbox.client import CommentsReadError
 from qualify_api.inbox.composition import UnknownInboxConnection
-from qualify_api.inbox.service import SyncSummary
+from qualify_api.inbox.service import CommentsPermissionMissing, SyncBudgetExhausted, SyncSummary
 
 TENANT = UUID("44444444-4444-4444-8444-444444444444")
 USER = UUID("55555555-5555-4555-8555-555555555555")
@@ -55,7 +55,7 @@ def test_sync_returns_the_summary(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"media_checked": 2, "new_comments": 3}
+    assert response.json() == {"media_checked": 2, "new_comments": 3, "truncated": False}
 
 
 def test_sync_passes_the_principals_tenant_id_not_a_client_supplied_one(
@@ -103,6 +103,54 @@ def test_a_failed_meta_call_is_502_never_a_body(monkeypatch: pytest.MonkeyPatch)
     assert "GET /" in response.json()["detail"]
 
 
+def test_missing_comments_permission_is_403(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`cannot_observe` (QUA-88) — distinct from the 502 above (a call that failed) and
+    from a normal 200 with zero new comments (a call that succeeded and found nothing)."""
+
+    async def fn(*, tenant_id: UUID, connection_id: UUID) -> SyncSummary:
+        raise CommentsPermissionMissing(connection_id=connection_id)
+
+    harness = Harness(monkeypatch, fn)
+
+    response = harness.http.post(
+        "/api/inbox/sync", json={"connection_id": str(CONNECTION)}, headers=AUTH
+    )
+
+    assert response.status_code == 403
+
+
+def test_exhausted_budget_is_429(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fn(*, tenant_id: UUID, connection_id: UUID) -> SyncSummary:
+        raise SyncBudgetExhausted(needed=5, remaining=2)
+
+    harness = Harness(monkeypatch, fn)
+
+    response = harness.http.post(
+        "/api/inbox/sync", json={"connection_id": str(CONNECTION)}, headers=AUTH
+    )
+
+    assert response.status_code == 429
+    assert "5" in response.json()["detail"]
+    assert "2" in response.json()["detail"]
+
+
+def test_truncated_sync_is_still_a_200_with_the_flag_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A budget that ran out mid-pagination is a partial success, not a failure — see
+    `SyncSummary.truncated`'s docstring."""
+
+    async def fn(*, tenant_id: UUID, connection_id: UUID) -> SyncSummary:
+        return SyncSummary(media_checked=1, new_comments=1, truncated=True)
+
+    harness = Harness(monkeypatch, fn)
+
+    response = harness.http.post(
+        "/api/inbox/sync", json={"connection_id": str(CONNECTION)}, headers=AUTH
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"media_checked": 1, "new_comments": 1, "truncated": True}
+
+
 def test_the_route_requires_the_principal(monkeypatch: pytest.MonkeyPatch) -> None:
     harness = Harness(monkeypatch, _fixed_summary())
 
@@ -146,8 +194,8 @@ def test_the_seam_does_not_depend_on_the_transport(monkeypatch: pytest.MonkeyPat
         "/api/inbox/sync", json={"connection_id": str(CONNECTION)}, headers=AUTH
     )
 
-    assert empty_response.json() == {"media_checked": 0, "new_comments": 0}
-    assert busy_response.json() == {"media_checked": 5, "new_comments": 5}
+    assert empty_response.json() == {"media_checked": 0, "new_comments": 0, "truncated": False}
+    assert busy_response.json() == {"media_checked": 5, "new_comments": 5, "truncated": False}
 
 
 def test_malformed_connection_id_is_422(monkeypatch: pytest.MonkeyPatch) -> None:

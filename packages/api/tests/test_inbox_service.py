@@ -11,14 +11,17 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
-from qualify_shared.social.ig_shapes import IGComment, IGCommentsPage
+from qualify_shared.social.ig_shapes import COMMENTS_EDGE_PERMISSIONS, IGComment, IGCommentsPage
 
 from qualify_api.inbox.media_client import MediaReadError, MediaSummary
 from qualify_api.inbox.repository import MemoryInboxRepository
 from qualify_api.inbox.service import (
+    META_CALL_BUDGET_PER_HOUR,
     MONITORING_WINDOW,
+    CommentsPermissionMissing,
     InboxService,
     MediaNotEligible,
+    SyncBudgetExhausted,
     SyncSummary,
 )
 
@@ -26,6 +29,11 @@ TENANT_ID = UUID("f0000000-0000-4000-8000-000000000001")
 CONNECTION_ID = UUID("f0000000-0000-4000-8000-000000000002")
 IG_USER_ID = "17841400000000000"
 NOW = datetime(2026, 8, 14, 12, 0, 0, tzinfo=UTC)
+
+# `sync_comments` fails closed without this — every test below that calls it must opt in
+# explicitly, same discipline `FakeMediaClient({})` already uses to prove a code path
+# never reached Meta (QUA-88: an unwired service must refuse, not silently allow).
+GRANTED = frozenset(COMMENTS_EDGE_PERMISSIONS)
 
 
 class FakeCommentsClient:
@@ -81,6 +89,7 @@ async def test_sync_comments_only_processes_monitored_media() -> None:
         repository=repository,
         comments_client=comments_client,
         media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
     )
 
     summary = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
@@ -97,7 +106,10 @@ async def test_sync_comments_is_idempotent_across_two_runs() -> None:
     )
     comments_client = FakeCommentsClient({"A": [_comment("c1"), _comment("c2")]})
     service = InboxService(
-        repository=repository, comments_client=comments_client, media_client=FakeMediaClient({})
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
     )
 
     first = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
@@ -111,7 +123,10 @@ async def test_sync_comments_with_no_monitored_media_touches_nothing() -> None:
     repository = MemoryInboxRepository()
     comments_client = FakeCommentsClient({})
     service = InboxService(
-        repository=repository, comments_client=comments_client, media_client=FakeMediaClient({})
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
     )
 
     summary = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
@@ -150,7 +165,10 @@ async def test_sync_comments_walks_multiple_pages_via_the_after_cursor() -> None
     page_two = IGCommentsPage(data=[_comment("c3")], paging=None)  # terminal: no cursor
     comments_client = PaginatedFakeCommentsClient({"A": {None: page_one, "CURSOR_1": page_two}})
     service = InboxService(
-        repository=repository, comments_client=comments_client, media_client=FakeMediaClient({})
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
     )
 
     summary = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
@@ -180,7 +198,10 @@ async def test_sync_comments_stops_paginating_once_a_page_is_fully_known() -> No
     page_two = IGCommentsPage(data=[_comment("c2")], paging=None)
     comments_client = PaginatedFakeCommentsClient({"A": {None: page_one, "CURSOR_1": page_two}})
     service = InboxService(
-        repository=repository, comments_client=comments_client, media_client=FakeMediaClient({})
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
     )
     await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)  # primes c1, c2
     # A resync's PaginatedFakeCommentsClient here reuses the same two pages: page one is
@@ -371,3 +392,159 @@ async def test_list_candidate_media_excludes_non_reel_media() -> None:
     )
 
     assert [c.external_media_id for c in candidates] == ["A"]
+
+
+# --------------------------------------------------------------------------------------
+# sync_comments — cannot_observe vs observed_zero (QUA-88)
+# --------------------------------------------------------------------------------------
+
+
+async def test_sync_refuses_without_comments_permission() -> None:
+    """No scope granted -> CommentsPermissionMissing, raised before Meta is ever
+    touched. This is `cannot_observe` — must never look like a normal empty result."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+    )
+    comments_client = FakeCommentsClient({"A": [_comment("c1")]})
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=frozenset(),  # nothing granted
+    )
+
+    with pytest.raises(CommentsPermissionMissing) as exc_info:
+        await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID, now=NOW)
+
+    assert exc_info.value.connection_id == CONNECTION_ID
+    assert comments_client.calls == []
+
+
+async def test_sync_with_permission_and_no_new_comments_is_observed_zero_not_an_error() -> None:
+    """The other half of the distinction: correctly permitted, genuinely nothing new to
+    sync — an ordinary `SyncSummary`, never an exception. `observed_zero`."""
+    repository = MemoryInboxRepository()
+    comments_client = FakeCommentsClient({})
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+
+    summary = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID, now=NOW)
+
+    assert summary == SyncSummary(media_checked=0, new_comments=0)
+
+
+# --------------------------------------------------------------------------------------
+# sync_comments — the real Meta call budget, 200/hour sliding window (QUA-88)
+# --------------------------------------------------------------------------------------
+
+
+async def test_sync_refuses_when_budget_insufficient_for_needed_calls() -> None:
+    """Two monitored media, only one call left in the budget -> `SyncBudgetExhausted`
+    BEFORE any Meta call at all — the floor estimate alone is enough to refuse."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+    )
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="B", monitored=True
+    )
+    for _ in range(META_CALL_BUDGET_PER_HOUR - 1):
+        repository.record_call(tenant_id=TENANT_ID, connection_id=CONNECTION_ID, called_at=NOW)
+    comments_client = FakeCommentsClient({"A": [_comment("c1")], "B": [_comment("c2")]})
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+
+    with pytest.raises(SyncBudgetExhausted) as exc_info:
+        await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID, now=NOW)
+
+    assert exc_info.value.needed == 2
+    assert exc_info.value.remaining == 1
+    assert comments_client.calls == []
+
+
+async def test_calls_older_than_one_hour_do_not_count_against_the_budget() -> None:
+    """A true sliding window, not a calendar bucket: calls from over an hour before `now`
+    must not still be counted against the budget."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+    )
+    stale_call = NOW - timedelta(hours=1, minutes=1)
+    for _ in range(META_CALL_BUDGET_PER_HOUR):
+        repository.record_call(
+            tenant_id=TENANT_ID, connection_id=CONNECTION_ID, called_at=stale_call
+        )
+    comments_client = FakeCommentsClient({"A": [_comment("c1")]})
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+
+    summary = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID, now=NOW)
+
+    assert summary.new_comments == 1
+    assert comments_client.calls == ["A"]
+
+
+async def test_sync_records_one_ledger_entry_per_real_call_not_per_sync() -> None:
+    """Pagination matters: a media whose comments span two pages must log TWO calls, not
+    one — the ledger counts Meta calls, not sync invocations."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+    )
+    page_one = IGCommentsPage(data=[_comment("c1")], paging={"cursors": {"after": "CURSOR_1"}})
+    page_two = IGCommentsPage(data=[_comment("c2")], paging=None)
+    comments_client = PaginatedFakeCommentsClient({"A": {None: page_one, "CURSOR_1": page_two}})
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+
+    await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID, now=NOW)
+
+    assert (
+        repository.calls_in_last_hour(tenant_id=TENANT_ID, connection_id=CONNECTION_ID, now=NOW)
+        == 2
+    )
+
+
+async def test_budget_exhausted_mid_pagination_stops_and_returns_partial() -> None:
+    """The floor estimate (1 call) fit the budget, but this media's comments paginate
+    into a second page and the budget runs out exactly there: the sync must stop, keep
+    what it already synced (idempotent, nothing lost), and say so via `truncated=True`
+    — not raise and discard already-useful work."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+    )
+    for _ in range(META_CALL_BUDGET_PER_HOUR - 1):  # exactly 1 call left
+        repository.record_call(tenant_id=TENANT_ID, connection_id=CONNECTION_ID, called_at=NOW)
+    page_one = IGCommentsPage(data=[_comment("c1")], paging={"cursors": {"after": "CURSOR_1"}})
+    page_two = IGCommentsPage(data=[_comment("c2")], paging=None)
+    comments_client = PaginatedFakeCommentsClient({"A": {None: page_one, "CURSOR_1": page_two}})
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+
+    summary = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID, now=NOW)
+
+    assert summary.truncated is True
+    assert summary.new_comments == 1  # page one landed
+    assert comments_client.after_values_seen == [None]  # page two was never requested
