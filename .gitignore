@@ -17,3 +17,7 @@ reflex.log
 
 # MkDocs build output — generated from docs/, never source.
 site/
+
+# Playwright E2E harness (tests/e2e): boot log of the self-started reflex + traces
+.e2e-reflex.log
+test-results/

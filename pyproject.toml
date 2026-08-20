@@ -37,6 +37,13 @@ dev = [
     "ruff>=0.15.22",
     "pre-commit>=4.0.0",
 ]
+# Browser E2E suite (`tests/e2e`, marker `e2e`): drives the compiled Reflex app with
+# Playwright. Kept OUT of default-groups so a plain `uv sync` and the CI unit gate never
+# need a browser; opt in with `uv sync --group e2e` + `uv run playwright install chromium`.
+e2e = [
+    "pytest-playwright>=0.7.0",
+    "pytest-base-url>=2.1.0",
+]
 
 [tool.pytest.ini_options]
 # importlib import mode + zero __init__.py under any tests/ dir: lets same-named test
@@ -76,6 +83,7 @@ pythonpath = [
 markers = [
     "integration: hits an external network / paid vendor / downloads model weights (Zyte, HF, Meta) — NEVER in CI",
     "db: needs the local Postgres/Redis from docker-compose — runs in CI via service containers",
+    "e2e: drives the compiled Reflex app in a real browser (tests/e2e; needs the `e2e` group + Postgres)",
 ]
 
 # R11(d): the deny-list half of the audited gate. Every `packages/*/tests` directory must

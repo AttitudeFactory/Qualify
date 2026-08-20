@@ -50,6 +50,20 @@ test:
 test-db:
     uv run pytest -m "db"
 
+# Browser E2E suite (Playwright) — tests/e2e, organised by module × market niche.
+# Boots its own `reflex run` in fake-auth mode (QUALIFY_AUTH_FAKE=1) on 3390/8390 and
+# needs the compose Postgres up (`just up`). One-time setup:
+#   uv sync --group e2e && uv run playwright install chromium
+# To reuse an app you already have running in fake-auth mode (launch.json
+# `qualify-crm-fake-auth`, port 3400): QUALIFY_E2E_BASE_URL=http://localhost:3400 just e2e
+e2e *ARGS:
+    PYTHONPATH=packages/api/src:packages/shared/src:packages/scraper/src:packages/creative/src:packages/models/src \
+        uv run --no-sync pytest tests/e2e -o addopts="" -p no:cacheprovider --browser chromium {{ARGS}}
+
+# Same, watching the browser (debug a flaky selector).
+e2e-headed *ARGS:
+    just e2e --headed --slowmo 250 {{ARGS}}
+
 lint:
     uv run ruff check .
 

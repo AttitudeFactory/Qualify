@@ -19,6 +19,27 @@
       },
       "port": 3100,
       "autoPort": false
+    },
+    {
+      "name": "qualify-crm-fake-auth",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "run",
+        "--no-sync",
+        "reflex",
+        "run",
+        "--frontend-port",
+        "3400",
+        "--backend-port",
+        "8400"
+      ],
+      "env": {
+        "PYTHONPATH": "packages/api/src:packages/shared/src:packages/scraper/src:packages/creative/src:packages/models/src",
+        "QUALIFY_AUTH_FAKE": "1",
+        "REFLEX_HOT_RELOAD_OVERRIDE_PATHS": "Qualify"
+      },
+      "port": 3400,
+      "autoPort": false
     }
   ]
 }
