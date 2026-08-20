@@ -43,6 +43,7 @@ from uuid import UUID
 
 import httpx
 from qualify_api.inbox import (
+    CommentsAuthExpired,
     CommentsPermissionMissing,
     SyncBudgetExhausted,
     list_candidate_media,
@@ -186,11 +187,16 @@ async def sync_now(*, tenant_id: UUID, connection_id: UUID) -> SyncSummaryVM:
     message back through: `InboxState.sync_comments` only branches on exception TYPE to
     pick a Spanish message, the same way it already does for `UnknownInboxConnection`.
 
-    Any other non-2xx response (401 if the token were ever wrong, 502 from a failed Meta
-    call, 500 from anything unexpected) raises `httpx.HTTPStatusError` via
-    `raise_for_status()` — an ordinary exception `InboxState.sync_comments`'s blanket
-    `except Exception` already catches, same as it already did for whatever
-    `composition.sync_comments` could raise directly before this change.
+    Raises `CommentsAuthExpired` (401 — a real runtime auth failure against Meta, QUA-90),
+    same reconstruct-from-status-code posture as the other three. By the time this status
+    code reaches here the connection has already been degraded server-side
+    (`InboxService.sync_comments`); this is only the client-visible signal of that.
+
+    Any other non-2xx response (502 from a failed Meta call, 500 from anything
+    unexpected) raises `httpx.HTTPStatusError` via `raise_for_status()` — an ordinary
+    exception `InboxState.sync_comments`'s blanket `except Exception` already catches,
+    same as it already did for whatever `composition.sync_comments` could raise directly
+    before this change.
     """
     if tenant_id != _DEV_SYNC_TENANT_ID:
         raise UnknownInboxConnection(
@@ -205,6 +211,8 @@ async def sync_now(*, tenant_id: UUID, connection_id: UUID) -> SyncSummaryVM:
     )
     if response.status_code == 404:
         raise UnknownInboxConnection(str(connection_id))
+    if response.status_code == 401:
+        raise CommentsAuthExpired(connection_id=connection_id)
     if response.status_code == 403:
         raise CommentsPermissionMissing(connection_id=connection_id)
     if response.status_code == 429:

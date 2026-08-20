@@ -59,6 +59,7 @@ class FakePublishClient:
         self.create_error: Exception | None = None
         self.upload_outcome = UploadOutcome(success=True)
         self.status_script: list[ContainerStatus] = []
+        self.status_error: Exception | None = None
         self.publish_error: Exception | None = None
         self.publish_media_id = "media-1"
         self.calls = {"create": 0, "upload": 0, "status": 0, "publish": 0}
@@ -77,6 +78,8 @@ class FakePublishClient:
 
     async def container_status(self, *, container_id: str) -> ContainerStatus:
         self.calls["status"] += 1
+        if self.status_error is not None:
+            raise self.status_error
         return self.status_script.pop(0)
 
     async def publish_container(self, *, ig_user_id: str, creation_id: str) -> str:
@@ -109,12 +112,18 @@ class Harness:
             async def client_for(self, *, tenant_id: UUID, connection_id: UUID):
                 return harness.client
 
+        self.degrade_calls: list[tuple[UUID, UUID]] = []
+
+        def degrader(*, tenant_id: UUID, connection_id: UUID) -> None:
+            harness.degrade_calls.append((tenant_id, connection_id))
+
         self.service = PublishService(
             repository=self.repo,
             gate=ObjectGate(self.store),
             connections=Connections(),
             client_factory=Factory(),
             clock=lambda: datetime.now(UTC) + timedelta(seconds=clock_offset_seconds),
+            connection_degrader=degrader,
         )
         self.media_key = f"t/{TENANT}/media/{CONNECTION}/m-1"
         self.store.objects[self.media_key] = (b"reel-bytes", "video/mp4")
@@ -354,6 +363,108 @@ async def test_coded_publish_refusal_is_recorded_distinguishably_but_not_settled
     record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=attempt_id)
     assert record is not None
     assert record.platform_error_code == "platform_error_code:200.1363057"
+
+
+@pytest.mark.asyncio
+async def test_401_settles_failed_not_awaiting_and_degrades_the_connection() -> None:
+    """QUA-90: NOT the same ambiguity as a coded refusal or a timeout — a 401 means the
+    send never went out, so unlike every test above this settles `failed` immediately,
+    and the connection is degraded so Conexiones can offer 'reconnect'."""
+    h = Harness()
+    attempt_id = await _started(h)
+    h.client.status_script = [ContainerStatus.FINISHED]
+    h.client.publish_error = PublishError(
+        "POST /media_publish failed with HTTP 401", http_status=401
+    )
+
+    state = await h.advance(attempt_id)
+
+    assert state.settled and state.status == "failed"
+    assert not state.awaiting_confirmation
+    assert h.degrade_calls == [(TENANT, CONNECTION)]
+
+
+@pytest.mark.asyncio
+async def test_code_190_settles_failed_even_without_a_401_status() -> None:
+    """The ticket's detection condition is HTTP 401 **or** `error.code=190` — code 190
+    alone (no captured HTTP status) must trigger the same path."""
+    h = Harness()
+    attempt_id = await _started(h)
+    h.client.status_script = [ContainerStatus.FINISHED]
+    h.client.publish_error = PublishError(
+        "POST /media_publish failed with HTTP 400", platform_code=190
+    )
+
+    state = await h.advance(attempt_id)
+
+    assert state.settled and state.status == "failed"
+    assert h.degrade_calls == [(TENANT, CONNECTION)]
+
+
+@pytest.mark.asyncio
+async def test_other_coded_refusals_do_not_degrade_the_connection() -> None:
+    """Regression: only 401/190 triggers QUA-90's path — every other coded refusal keeps
+    its pre-existing awaiting-confirmation behavior untouched."""
+    h = Harness()
+    attempt_id = await _started(h)
+    h.client.status_script = [ContainerStatus.FINISHED]
+    h.client.publish_error = PublishError(
+        "POST /media_publish failed with HTTP 400", platform_code=200, platform_subcode=1363057
+    )
+
+    state = await h.advance(attempt_id)
+
+    assert not state.settled
+    assert h.degrade_calls == []
+
+
+# --------------------------------------------------------------------------------------
+# QUA-90 — the same 401/190 detection on the container_status() POLL inside advance(),
+# not just on the publish_container() SEND inside _publish_once()
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_container_status_401_degrades_the_connection_but_settles_nothing() -> None:
+    """Unlike a 401/190 on the SEND (`publish_container`), a 401/190 on the STATUS POLL
+    says nothing about whether the container ever published — A6-min means this must NOT
+    settle the attempt, only degrade the connection so Conexiones can offer reconnect."""
+    h = Harness()
+    attempt_id = await _started(h)
+    h.client.status_error = PublishError("GET /c-1 failed with HTTP 401", http_status=401)
+
+    with pytest.raises(PublishError):
+        await h.advance(attempt_id)
+
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=attempt_id)
+    assert record is not None and not record.is_settled
+    assert h.degrade_calls == [(TENANT, CONNECTION)]
+
+
+@pytest.mark.asyncio
+async def test_container_status_code_190_degrades_even_without_a_401_status() -> None:
+    h = Harness()
+    attempt_id = await _started(h)
+    h.client.status_error = PublishError("GET /c-1 failed with HTTP 400", platform_code=190)
+
+    with pytest.raises(PublishError):
+        await h.advance(attempt_id)
+
+    assert h.degrade_calls == [(TENANT, CONNECTION)]
+
+
+@pytest.mark.asyncio
+async def test_container_status_other_errors_do_not_degrade() -> None:
+    """Regression: a transient 5xx on the status poll must not degrade a healthy
+    connection — only 401/190 is an auth signal."""
+    h = Harness()
+    attempt_id = await _started(h)
+    h.client.status_error = PublishError("GET /c-1 failed with HTTP 500")
+
+    with pytest.raises(PublishError):
+        await h.advance(attempt_id)
+
+    assert h.degrade_calls == []
 
 
 @pytest.mark.asyncio

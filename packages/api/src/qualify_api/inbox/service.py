@@ -36,12 +36,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Final
+from typing import Final, Protocol
 from uuid import UUID
 
 from qualify_shared.social.ig_shapes import COMMENTS_EDGE_PERMISSIONS
 
-from qualify_api.inbox.client import CommentsClient
+from qualify_api.inbox.client import CommentsClient, CommentsReadError
 from qualify_api.inbox.media_client import MediaClient, MediaReadError
 from qualify_api.inbox.repository import InboxRepository
 
@@ -133,6 +133,34 @@ class MediaNotEligible(Exception):
         self.reason = reason
 
 
+class CommentsAuthExpired(Exception):
+    """A `list_comments` call failed on auth grounds (HTTP 401 and/or `error.code=190`,
+    QUA-90) — distinct from `CommentsReadError`'s generic 502 the same way
+    `CommentsPermissionMissing`/`SyncBudgetExhausted` are distinct from it: a caller
+    should tell an operator "reconnect your account", not "something went wrong". Raised
+    AFTER the connection has already been degraded (`ACTIVE -> DEGRADED`, see
+    `sync_comments`) — by the time this reaches a caller, Conexiones already has
+    something real to show."""
+
+    def __init__(self, *, connection_id: UUID) -> None:
+        super().__init__(f"connection {connection_id} failed auth on a runtime comments call")
+        self.connection_id = connection_id
+
+
+class ConnectionDegrader(Protocol):
+    """QUA-90: degrades a connection to `degraded` after a runtime 401/190. Same shape as
+    `qualify_api.connections.composition.degrade_connection_on_auth_error` — synchronous
+    and never-raising, so `sync_comments` calls it directly without `await`/try-except."""
+
+    def __call__(self, *, tenant_id: UUID, connection_id: UUID) -> object | None: ...
+
+
+def _no_op_degrader(*, tenant_id: UUID, connection_id: UUID) -> None:
+    """Default for callers (mostly tests) that do not care about QUA-90's auth-error
+    path — production composition always injects the real one."""
+    return None
+
+
 class InboxService:
     def __init__(
         self,
@@ -141,6 +169,7 @@ class InboxService:
         comments_client: CommentsClient,
         media_client: MediaClient,
         granted_scopes: frozenset[str] = frozenset(),
+        connection_degrader: ConnectionDegrader | None = None,
     ) -> None:
         self._repository = repository
         self._comments_client = comments_client
@@ -150,6 +179,7 @@ class InboxService:
         # same fail-closed posture `AllowAllLimiter` in `leads/rate_limit.py` makes
         # opt-in rather than default.
         self._granted_scopes = granted_scopes
+        self._degrade = connection_degrader or _no_op_degrader
 
     async def list_candidate_media(
         self, *, tenant_id: UUID, connection_id: UUID, ig_user_id: str, now: datetime | None = None
@@ -254,7 +284,19 @@ class InboxService:
                     tenant_id=tenant_id, connection_id=connection_id, called_at=reference_now
                 )
                 remaining -= 1
-                page = await self._comments_client.list_comments(ig_media_id=media_id, after=after)
+                try:
+                    page = await self._comments_client.list_comments(
+                        ig_media_id=media_id, after=after
+                    )
+                except CommentsReadError as exc:
+                    if exc.http_status == 401 or exc.platform_code == 190:
+                        # QUA-90: degrade before re-raising, so by the time the caller
+                        # (the HTTP route, then Reflex) sees `CommentsAuthExpired`,
+                        # Conexiones already has the real "reconnect" state to show —
+                        # not a race the UI has to paper over.
+                        self._degrade(tenant_id=tenant_id, connection_id=connection_id)
+                        raise CommentsAuthExpired(connection_id=connection_id) from exc
+                    raise
                 page_had_new = False
                 for comment in page.data:
                     if self._repository.upsert_comment(

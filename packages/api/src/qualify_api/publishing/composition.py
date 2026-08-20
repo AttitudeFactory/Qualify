@@ -18,6 +18,7 @@ from qualify_shared.objects.gate import ObjectGate
 from sqlalchemy import select
 
 from qualify_api.config import MetaOAuthSettings
+from qualify_api.connections.composition import degrade_connection_on_auth_error
 from qualify_api.connections.credential_reader import DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor, Encryptor
 from qualify_api.connections.models import SocialConnection
@@ -71,6 +72,7 @@ def production_publish_service() -> PublishService:
         gate=ObjectGate(R2ObjectStore(R2Settings.from_env())),
         connections=PostgresConnectionTargetReader(),
         client_factory=ResolverPublishClientFactory(settings, DevEncryptor()),
+        connection_degrader=degrade_connection_on_auth_error,
     )
 
 

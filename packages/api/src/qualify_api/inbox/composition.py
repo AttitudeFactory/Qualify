@@ -32,6 +32,7 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
 from qualify_api.config import MetaOAuthSettings
+from qualify_api.connections.composition import degrade_connection_on_auth_error
 from qualify_api.connections.credential_reader import DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor
 from qualify_api.connections.models import SocialConnection
@@ -103,6 +104,7 @@ async def production_inbox_service_for(*, tenant_id: UUID, connection_id: UUID) 
         comments_client=HttpCommentsClient(graph_client=graph_client, graph_url=settings.graph_url),
         media_client=HttpMediaClient(graph_client=graph_client, graph_url=settings.graph_url),
         granted_scopes=frozenset(scopes or ()),
+        connection_degrader=degrade_connection_on_auth_error,
     )
 
 

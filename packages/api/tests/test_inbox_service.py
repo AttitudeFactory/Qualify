@@ -13,11 +13,13 @@ from uuid import UUID
 import pytest
 from qualify_shared.social.ig_shapes import COMMENTS_EDGE_PERMISSIONS, IGComment, IGCommentsPage
 
+from qualify_api.inbox.client import CommentsReadError
 from qualify_api.inbox.media_client import MediaReadError, MediaSummary
 from qualify_api.inbox.repository import MemoryInboxRepository
 from qualify_api.inbox.service import (
     META_CALL_BUDGET_PER_HOUR,
     MONITORING_WINDOW,
+    CommentsAuthExpired,
     CommentsPermissionMissing,
     InboxService,
     MediaNotEligible,
@@ -38,14 +40,25 @@ GRANTED = frozenset(COMMENTS_EDGE_PERMISSIONS)
 
 class FakeCommentsClient:
     """Returns one fixed page per media id, and records which ids were actually queried —
-    the assertion surface for "only monitored media gets synced"."""
+    the assertion surface for "only monitored media gets synced". `error_by_media`
+    (QUA-90) lets a test inject a `CommentsReadError` for one specific media id instead
+    of a page — everything else about the fake is unchanged."""
 
-    def __init__(self, comments_by_media: dict[str, list[IGComment]]) -> None:
+    def __init__(
+        self,
+        comments_by_media: dict[str, list[IGComment]],
+        *,
+        error_by_media: dict[str, Exception] | None = None,
+    ) -> None:
         self._comments_by_media = comments_by_media
+        self._error_by_media = error_by_media or {}
         self.calls: list[str] = []
 
     async def list_comments(self, *, ig_media_id: str, after: str | None = None) -> IGCommentsPage:
         self.calls.append(ig_media_id)
+        error = self._error_by_media.get(ig_media_id)
+        if error is not None:
+            raise error
         return IGCommentsPage(data=self._comments_by_media.get(ig_media_id, []))
 
 
@@ -97,6 +110,94 @@ async def test_sync_comments_only_processes_monitored_media() -> None:
     assert comments_client.calls == ["A"]
     assert summary.media_checked == 1
     assert summary.new_comments == 1
+
+
+# --------------------------------------------------------------------------------------
+# QUA-90 — a runtime 401/190 degrades the connection and raises CommentsAuthExpired
+# --------------------------------------------------------------------------------------
+
+
+async def test_401_degrades_the_connection_and_raises_comments_auth_expired() -> None:
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+    )
+    comments_client = FakeCommentsClient(
+        {},
+        error_by_media={
+            "A": CommentsReadError("GET /A/comments failed with HTTP 401", http_status=401)
+        },
+    )
+    degrade_calls: list[tuple[UUID, UUID]] = []
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+        connection_degrader=lambda *, tenant_id, connection_id: degrade_calls.append(
+            (tenant_id, connection_id)
+        ),
+    )
+
+    with pytest.raises(CommentsAuthExpired) as exc_info:
+        await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert exc_info.value.connection_id == CONNECTION_ID
+    assert degrade_calls == [(TENANT_ID, CONNECTION_ID)]
+
+
+async def test_code_190_degrades_even_without_a_401_status() -> None:
+    """The ticket's detection condition is HTTP 401 **or** `error.code=190` — code 190
+    alone (no captured HTTP status) must trigger the same path."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+    )
+    comments_client = FakeCommentsClient(
+        {}, error_by_media={"A": CommentsReadError("boom", platform_code=190)}
+    )
+    degrade_calls: list[tuple[UUID, UUID]] = []
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+        connection_degrader=lambda *, tenant_id, connection_id: degrade_calls.append(
+            (tenant_id, connection_id)
+        ),
+    )
+
+    with pytest.raises(CommentsAuthExpired):
+        await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert degrade_calls == [(TENANT_ID, CONNECTION_ID)]
+
+
+async def test_other_comments_read_errors_do_not_degrade_or_change_type() -> None:
+    """Regression: only 401/190 triggers QUA-90's path — any other `CommentsReadError`
+    (a bad media id, a transient 5xx) propagates exactly as it already did."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+    )
+    original = CommentsReadError("GET /A/comments failed with HTTP 500", http_status=500)
+    comments_client = FakeCommentsClient({}, error_by_media={"A": original})
+    degrade_calls: list[tuple[UUID, UUID]] = []
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+        connection_degrader=lambda *, tenant_id, connection_id: degrade_calls.append(
+            (tenant_id, connection_id)
+        ),
+    )
+
+    with pytest.raises(CommentsReadError) as exc_info:
+        await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert exc_info.value is original  # the SAME exception, not re-wrapped
+    assert degrade_calls == []
 
 
 async def test_sync_comments_is_idempotent_across_two_runs() -> None:

@@ -22,6 +22,7 @@ from functools import cache
 from uuid import UUID
 
 from qualify_api.config import MetaOAuthSettings, redis_url
+from qualify_api.connections.auth_error import ConnectionStatus, degrade_on_auth_error
 from qualify_api.connections.crypto import DevEncryptor
 from qualify_api.connections.events import EventPublisher, InMemoryEventPublisher
 from qualify_api.connections.meta_oauth import HttpMetaOAuthClient
@@ -105,4 +106,27 @@ def revoke_connection(*, tenant_id: UUID, connection_id: UUID, actor: str = "use
     """
     return production_revoke_service().revoke(
         tenant_id=tenant_id, connection_id=connection_id, actor=actor
+    )
+
+
+def degrade_connection_on_auth_error(
+    *, tenant_id: UUID, connection_id: UUID
+) -> ConnectionStatus | None:
+    """QUA-90's published seam — the degrade analogue of `revoke_connection` above.
+    Publishing and inbox call this by name (injected as their `connection_degrader`
+    dependency, see `publishing/composition.py`/`inbox/composition.py`) when a call they
+    were already making to Meta comes back 401/190.
+
+    Reuses the same repositories `production_connect_service`/`production_revoke_service`
+    build from, and the same shared `production_event_publisher()` — no separate publisher
+    instance, for the reason `production_event_publisher`'s own docstring already gives.
+    Never raises; see `degrade_on_auth_error`'s docstring. Blocking — call it off the
+    event loop, same as `revoke_connection`.
+    """
+    return degrade_on_auth_error(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        reader=PostgresRevocationRepository(),
+        writer=PostgresConnectionRepository(),
+        publisher=production_event_publisher(),
     )
