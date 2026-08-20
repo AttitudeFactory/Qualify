@@ -8,11 +8,15 @@ Deliberately minimal for this slice: no comment/thread view, no rich media previ
 a thumbnail + caption snippet. The goal is to make the monitoring decision visible and
 actionable, not to redesign the screen.
 
-`_sync_section()` (2026-08-15) is a TEMPORARY manual trigger for `InboxService.
-sync_comments` — see `inbox_state.py`'s module docstring for why. It exists to prove the
-Meta → Postgres round trip end-to-end before any scheduler/Celery wiring exists, and is
-styled with the design system's `demo_notice` shape (dashed warn border + a "TEMPORAL"
-badge) specifically so it reads as scaffolding, not a shipped feature.
+`_sync_section()` (2026-08-15, promoted to permanent architecture 2026-08-19 — QUA-89)
+renders the comment-sync controls: a manual "Sincronizar comentarios" button plus a
+hidden `rx.moment` heartbeat that calls the SAME `InboxState.sync_comments` every 5
+minutes while this screen is mounted. See `inbox_state.py`'s module docstring for why one
+handler backing both triggers is what gives them a single shared loading state and
+re-entrancy guard for free. The polling timer is deliberately a client-side interval
+(`_polling_timer()` below), not a server-side background loop — see its docstring for why
+that is what makes cleanup on navigation/tab-close unconditional rather than something
+that has to be cancelled.
 """
 
 from __future__ import annotations
@@ -302,21 +306,52 @@ def _sync_error_block() -> rx.Component:
     )
 
 
+# QUA-89: automatic comment-sync cadence while `/inbox` is open, in milliseconds
+# (`rx.moment`'s `interval` prop). 5 minutes — see the ticket's acceptance criteria.
+_POLL_INTERVAL_MS = 5 * 60 * 1000
+
+
+def _polling_timer() -> rx.Component:
+    """The automatic half of QUA-89 — a client-side heartbeat, not a server loop.
+
+    `rx.moment`'s `interval` prop is `react-moment`'s own `setInterval`, running entirely
+    in the browser; this app never starts or stops it server-side. React unmounts this
+    component — stopping the interval with it — the instant this tree leaves the DOM:
+    navigating off `/inbox` internally, or `has_connections` going false, same as every
+    other component behind `_sync_section()`'s `rx.cond` gate in `inbox_index()`. On a
+    tab close/hard refresh the whole JS runtime is torn down anyway, so there is nothing
+    left running either way — no persistent task is ever created server-side for this to
+    leak, only the same bounded, self-terminating `sync_comments()` pass the button
+    already makes (see `inbox_state.py`'s module docstring).
+
+    `on_change` calls the exact same `InboxState.sync_comments` `_sync_now_button` calls —
+    not a copy, not a variant — so a tick and a click share one `is_syncing` guard and one
+    loading/result/error state by construction, never two independent ones to keep in
+    sync. Rendered hidden: only the tick's side effect matters, never the clock face.
+    """
+    return rx.moment(
+        interval=_POLL_INTERVAL_MS,
+        on_change=lambda _tick: InboxState.sync_comments(),
+        display="none",
+    )
+
+
 def _sync_section() -> rx.Component:
-    """TEMPORARY manual sync affordance — see this module's docstring. Deliberately
-    styled with the design system's `demo_notice` shape (dashed warn border) so it visually
-    reads as scaffolding rather than a shipped feature."""
+    """Comment-sync controls (QUA-89): automatic polling every 5 minutes while this
+    screen is open, plus a manual trigger for an immediate pass — see `_polling_timer`'s
+    docstring for why both are safe to run side by side."""
     return rx.box(
         rx.vstack(
             rx.hstack(
-                rx.badge("TEMPORAL", color_scheme="amber", variant="solid", size="1"),
                 rx.text(
-                    "Disparador manual de sync_comments — solo para pruebas end-to-end.",
+                    "Los comentarios se sincronizan automáticamente cada 5 minutos "
+                    "mientras estás en esta pantalla.",
                     size="2",
                     color=T.TEXT_MUTED,
                 ),
                 rx.spacer(),
                 _sync_now_button(),
+                _polling_timer(),
                 spacing="2",
                 align="center",
                 width="100%",
@@ -327,9 +362,9 @@ def _sync_section() -> rx.Component:
             width="100%",
         ),
         padding="0.75rem 1rem",
-        border=f"1px dashed {T.tone_color('warn', 7)}",
-        border_radius=T.RADIUS_CONTROL,
-        background=T.tone_color("warn", 2),
+        border=T.BORDER,
+        border_radius=T.RADIUS_CARD,
+        background=T.SURFACE_BG,
         margin=f"0 {T.PAGE_X} 1.5rem {T.PAGE_X}",
         width=f"calc(100% - 2 * {T.PAGE_X})",
     )

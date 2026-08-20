@@ -23,9 +23,9 @@ Same split `publishing_provider.py` documents, with one deliberate exception:
   below for what that buys and what it costs (a single dev-tenant scope, see its
   docstring).
 
-`sync_now` (2026-08-15, wired to HTTP 2026-08-16) is the manual-trigger half of a
-TEMPORARY affordance — see `inbox_page.py`'s module docstring for the UI side and why it
-is explicitly temporary. It adds no sync logic of its own: `InboxService.sync_comments`
+`sync_now` (2026-08-15, wired to HTTP 2026-08-16) is the transport both the manual button
+and the automatic poll share (QUA-89, 2026-08-19) — see `inbox_page.py`'s module
+docstring for the UI side. It adds no sync logic of its own: `InboxService.sync_comments`
 already reads ONLY `InboxRepository.list_monitored_media_ids` (media with
 `is_monitored=True`), so which Reels get synced is entirely decided by the toggle, not
 by anything in this module.

@@ -13,18 +13,25 @@ explicit product decision (not just this module's default), same "reload so the 
 the reconciled state" posture `ConnectionsState.disconnect_connection` already
 established for revoke.
 
-**`sync_comments` (the event handler below) is a TEMPORARY manual trigger**, added
-2026-08-15 to demonstrate the B2 flow end to end (monitored Reel → click → Meta →
-Postgres) before a real scheduler exists — see `inbox_page.py`'s module docstring for the
-UI half. It adds no sync logic of its own: `InboxService.sync_comments` already reads
-only `is_monitored=True` media, so which Reels get synced is entirely decided by the
-toggle above it, not by this handler. As of 2026-08-16 it reaches that service through
-the real `POST /api/inbox/sync` route (B2's acceptance criterion) rather than calling
-`composition.sync_comments` in-process — see `inbox_provider.sync_now`'s docstring for
-how and for the one consequence worth knowing here: the bridge only authenticates ONE
-dev tenant (PuntoServis), so `sync_now` raises `UnknownInboxConnection` for any other
-selected tenant, surfacing as this handler's ordinary `_UNKNOWN_CONNECTION` message —
-not a new failure mode this handler needs to special-case.
+**`sync_comments` (the event handler below) is the one sync trigger** both the manual
+"Sincronizar comentarios" button and the automatic 5-minute poll call — added 2026-08-15
+as a manual-only demo of the B2 flow (monitored Reel → click → Meta → Postgres), promoted
+2026-08-19 (QUA-89) to the permanent trigger for both paths. It adds no sync logic of its
+own: `InboxService.sync_comments` already reads only `is_monitored=True` media, so which
+Reels get synced is entirely decided by the toggle above it, not by this handler. Because
+BOTH callers (`inbox_page.py`'s button and its hidden `rx.moment` heartbeat — see that
+module's docstring) invoke this exact same handler, the `is_syncing` guard below is a
+single re-entrancy lock shared by both — a tick that lands while the button's click is
+still in flight (or vice versa) is a no-op, not a second concurrent sync. There is no
+separate scheduler process anywhere: the "automatic" half is a client-side timer, not a
+server-side loop — see `inbox_page.py::_polling_timer`'s docstring for why that is what
+makes it safe to leave running with nothing to cancel. As of 2026-08-16 it reaches that
+service through the real `POST /api/inbox/sync` route (B2's acceptance criterion) rather
+than calling `composition.sync_comments` in-process — see `inbox_provider.sync_now`'s
+docstring for how and for the one consequence worth knowing here: the bridge only
+authenticates ONE dev tenant (PuntoServis), so `sync_now` raises `UnknownInboxConnection`
+for any other selected tenant, surfacing as this handler's ordinary `_UNKNOWN_CONNECTION`
+message — not a new failure mode this handler needs to special-case.
 """
 
 from __future__ import annotations
@@ -99,8 +106,9 @@ class InboxState(rx.State):
     # own operation instead of being silently ignored.
     toggling_media_ids: list[str] = []
 
-    # TEMPORARY manual-sync affordance (see module docstring). Screen-wide, not per-row —
-    # unlike toggling_media_ids, a sync pass has no single Reel it belongs to.
+    # Shared by the manual button AND the automatic poll (QUA-89) — see module docstring.
+    # Screen-wide, not per-row — unlike toggling_media_ids, a sync pass has no single Reel
+    # it belongs to.
     is_syncing: bool = False
     sync_error: str = ""
     sync_result: SyncSummaryVM | None = None
@@ -293,11 +301,13 @@ class InboxState(rx.State):
 
     @rx.event(background=True)
     async def sync_comments(self) -> None:
-        """TEMPORARY manual trigger for `InboxService.sync_comments` (B2) — see the
-        module docstring. Never touches `candidates`/`toggling_media_ids`: a sync pass
-        writes to `threads`/`messages`, never to `monitored_media`, so the Reel list has
-        nothing to reload afterward — unlike `toggle_monitored`, this handler's only
-        externally visible effect is `sync_result`/`sync_error`.
+        """The one trigger for `InboxService.sync_comments` (B2/QUA-89) — called by both
+        the manual button and the automatic 5-minute poll, see the module docstring for
+        why that is what keeps them sharing one guard/loading state instead of two. Never
+        touches `candidates`/`toggling_media_ids`: a sync pass writes to `threads`/
+        `messages`, never to `monitored_media`, so the Reel list has nothing to reload
+        afterward — unlike `toggle_monitored`, this handler's only externally visible
+        effect is `sync_result`/`sync_error`.
         """
         async with self:
             if self.is_syncing:
