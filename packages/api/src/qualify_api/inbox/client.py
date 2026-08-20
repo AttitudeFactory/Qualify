@@ -62,6 +62,10 @@ class CommentsReadError(Exception):
     when the failed response carried them — same discipline as `publishing.client.PublishError`,
     for the same reason: a numeric code lets a future caller distinguish a missing-permission
     refusal from a bad media id without a body ever traveling.
+
+    `http_status` (QUA-90) is the raw HTTP status, captured alongside the platform code —
+    same reasoning as `PublishError.http_status`: detecting a runtime auth failure is HTTP
+    401 **or** code 190, and the code alone cannot express that "or".
     """
 
     def __init__(
@@ -70,10 +74,12 @@ class CommentsReadError(Exception):
         *,
         platform_code: int | None = None,
         platform_subcode: int | None = None,
+        http_status: int | None = None,
     ) -> None:
         super().__init__(message)
         self.platform_code = platform_code
         self.platform_subcode = platform_subcode
+        self.http_status = http_status
 
 
 class CommentsClient(Protocol):
@@ -160,5 +166,6 @@ class HttpCommentsClient:
                 f"GET /{ig_media_id}/comments failed with HTTP {response.status_code}",
                 platform_code=code,
                 platform_subcode=subcode,
+                http_status=response.status_code,
             )
         return _parse_comments_response(dict(response.json()))

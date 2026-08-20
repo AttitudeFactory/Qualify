@@ -72,6 +72,12 @@ class PublishError(Exception):
     ride along. They are what lets the service map a specific refusal (e.g. a Page
     Publishing Authorization gate) to a distinguishable outcome instead of a generic
     `failed` that costs hours chasing a bug that does not exist.
+
+    `http_status` (QUA-90) is the raw HTTP status of the failed response — captured
+    alongside the platform code, not instead of it, because Meta's auth rejection
+    (`error.code=190`) is not guaranteed to always ride a 401: the ticket's detection
+    condition is HTTP 401 **or** code 190, and only having the numeric code on this
+    exception cannot express the "or".
     """
 
     def __init__(
@@ -80,10 +86,12 @@ class PublishError(Exception):
         *,
         platform_code: int | None = None,
         platform_subcode: int | None = None,
+        http_status: int | None = None,
     ) -> None:
         super().__init__(message)
         self.platform_code = platform_code
         self.platform_subcode = platform_subcode
+        self.http_status = http_status
 
 
 class ContainerStatus(StrEnum):
@@ -286,6 +294,7 @@ class HttpPublishClient:
                 f"POST {path} failed with HTTP {response.status_code}",
                 platform_code=code,
                 platform_subcode=subcode,
+                http_status=response.status_code,
             )
         return dict(response.json())
 
@@ -355,7 +364,15 @@ class HttpPublishClient:
             f"{self._graph_url}/{container_id}", params={"fields": "status_code"}
         )
         if response.status_code != 200:
-            raise PublishError(f"status check failed with HTTP {response.status_code}")
+            # QUA-90: bring this in line with `_post_graph` — a poll can 401/190 exactly
+            # as the initial calls can, and `advance()` needs the code to notice.
+            code, subcode = _error_codes(response)
+            raise PublishError(
+                f"status check failed with HTTP {response.status_code}",
+                platform_code=code,
+                platform_subcode=subcode,
+                http_status=response.status_code,
+            )
         return _parse_status_response(dict(response.json()))
 
     async def publish_container(self, *, ig_user_id: str, creation_id: str) -> str:

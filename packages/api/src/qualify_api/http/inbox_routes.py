@@ -29,7 +29,12 @@ from pydantic import BaseModel
 from qualify_api.http.deps import Principal, current_principal
 from qualify_api.inbox.client import CommentsReadError
 from qualify_api.inbox.composition import UnknownInboxConnection
-from qualify_api.inbox.service import CommentsPermissionMissing, SyncBudgetExhausted, SyncSummary
+from qualify_api.inbox.service import (
+    CommentsAuthExpired,
+    CommentsPermissionMissing,
+    SyncBudgetExhausted,
+    SyncSummary,
+)
 
 router = APIRouter(prefix="/api", tags=["inbox"])
 
@@ -73,6 +78,12 @@ async def sync_inbox(
     call budget remains for this sync). Both detail messages carry only numbers
     (needed/remaining) or a connection id — never a Meta response body, same discipline
     `CommentsReadError` already established.
+
+    `CommentsAuthExpired` (QUA-90) -> 401: a real runtime 401/190 from Meta on an
+    already-`active` connection, distinct from `CommentsReadError`'s generic 502 the same
+    way the two refusals above already are — by the time this reaches the caller the
+    connection has already been degraded (`InboxService.sync_comments`), so 401 here is
+    "your session expired", not "something went wrong".
     """
     try:
         summary = await sync_comments(
@@ -84,6 +95,8 @@ async def sync_inbox(
         raise HTTPException(status_code=403, detail=str(exc)) from None
     except SyncBudgetExhausted as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from None
+    except CommentsAuthExpired as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from None
     except CommentsReadError as exc:
         # Status and numeric platform codes only — same reason as PublishError: a failed
         # Graph call's body can echo request parameters or user-generated text.

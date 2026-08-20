@@ -43,6 +43,7 @@ from uuid import UUID
 
 import reflex as rx
 from qualify_api.inbox import (
+    CommentsAuthExpired,
     CommentsPermissionMissing,
     MediaNotEligible,
     SyncBudgetExhausted,
@@ -75,6 +76,12 @@ _COMMENTS_PERMISSION_MISSING = (
 )
 _SYNC_BUDGET_EXHAUSTED = (
     "Se hicieron demasiadas sincronizaciones recientes. Espera unos minutos e intenta de nuevo."
+)
+# QUA-90: a real runtime 401/190 — the connection is already `degraded` server-side by
+# the time this reaches the UI (Conexiones already shows "Reconectar"), so this message
+# points there instead of repeating the generic sync-failed copy.
+_CONNECTION_AUTH_EXPIRED = (
+    "Tu conexión con Instagram dejó de funcionar. Reconéctala en Conexiones e intenta de nuevo."
 )
 # Turning monitoring OFF never calls Meta (InboxService.set_media_monitored only
 # re-validates against Meta when monitored=True — see its docstring); a straight Postgres
@@ -338,6 +345,10 @@ class InboxState(rx.State):
         except UnknownInboxConnection:
             async with self:
                 self.sync_error = _UNKNOWN_CONNECTION
+            return
+        except CommentsAuthExpired:
+            async with self:
+                self.sync_error = _CONNECTION_AUTH_EXPIRED
             return
         except CommentsPermissionMissing:
             async with self:

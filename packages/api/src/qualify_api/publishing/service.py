@@ -83,6 +83,20 @@ class PublishClientFactory(Protocol):
     async def client_for(self, *, tenant_id: UUID, connection_id: UUID) -> PublishClient: ...
 
 
+class ConnectionDegrader(Protocol):
+    """QUA-90: degrades a connection to `degraded` after a runtime 401/190. Same shape as
+    `qualify_api.connections.composition.degrade_connection_on_auth_error` — synchronous
+    and never-raising, so `_publish_once` calls it directly without `await`/try-except."""
+
+    def __call__(self, *, tenant_id: UUID, connection_id: UUID) -> object | None: ...
+
+
+def _no_op_degrader(*, tenant_id: UUID, connection_id: UUID) -> None:
+    """Default for callers (mostly tests) that do not care about QUA-90's auth-error
+    path — production composition always injects the real one."""
+    return None
+
+
 @dataclass(frozen=True)
 class PublishState:
     """What the caller (the HTTP route, and transitively the operator's polling client)
@@ -141,6 +155,7 @@ class PublishService:
         client_factory: PublishClientFactory,
         adapter_version: str = "qua19.1",
         clock: Callable[[], datetime] | None = None,
+        connection_degrader: ConnectionDegrader | None = None,
     ) -> None:
         self._repo = repository
         self._gate = gate
@@ -148,6 +163,7 @@ class PublishService:
         self._clients = client_factory
         self._adapter_version = adapter_version
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._degrade = connection_degrader or _no_op_degrader
 
     async def start(
         self,
@@ -252,7 +268,18 @@ class PublishService:
         client = await self._clients.client_for(
             tenant_id=tenant_id, connection_id=record.connection_id
         )
-        container_status = await client.container_status(container_id=record.creation_id)
+        try:
+            container_status = await client.container_status(container_id=record.creation_id)
+        except PublishError as exc:
+            if exc.http_status == 401 or exc.platform_code == 190:
+                # QUA-90: unlike `_publish_once`'s own 401/190 branch, this is a POLL, not
+                # a send — the failure says nothing about whether the container ever
+                # published, so (A6-min) nothing here is settled, only the connection is
+                # degraded. The attempt stays exactly as unsettled as it already was;
+                # Conexiones now has "reconnect" to show instead of a silent poll that
+                # would otherwise keep failing the same way forever.
+                self._degrade(tenant_id=tenant_id, connection_id=record.connection_id)
+            raise
 
         if container_status is ContainerStatus.PUBLISHED:
             # Reconciliation's happy ending — success WITHOUT calling publish_container
@@ -314,6 +341,22 @@ class PublishService:
                 ig_user_id=ig_user_id, creation_id=record.creation_id or ""
             )
         except PublishError as exc:
+            if exc.http_status == 401 or exc.platform_code == 190:
+                # QUA-90: NOT the same ambiguity as a coded refusal below or a timeout.
+                # Meta rejected the call on auth grounds — the send did not go out, so
+                # unlike every other branch here there is nothing to reconcile, and
+                # settling `failed` is not a lie. Degrade the connection so the operator
+                # sees "reconnect" (Conexiones already renders that state) instead of a
+                # publish stuck "awaiting" a confirmation that will never come.
+                self._degrade(tenant_id=tenant_id, connection_id=record.connection_id)
+                self._repo.settle(
+                    tenant_id=tenant_id,
+                    attempt_id=record.id,
+                    status="failed",
+                    platform_error_code=f"{PLATFORM_CODE_PREFIX}:{exc.platform_code}"
+                    + (f".{exc.platform_subcode}" if exc.platform_subcode is not None else ""),
+                )
+                return _state(self._require(tenant_id, record.id))
             if exc.platform_code is not None:
                 # A NAMED refusal (e.g. a PPA gate) — recorded distinguishably, but NOT
                 # settled: a coded refusal after the send went out is still not proof the

@@ -8,7 +8,11 @@ migration 0002. The credential resolver returns an authenticated client, never a
 `list_connections`, `start_connect` and `revoke_connection` are the **published seam for
 the Reflex CRM** — direct Python calls over ids, no HTTP hop. See `composition.py`."""
 
-from qualify_api.connections.composition import revoke_connection, start_connect
+from qualify_api.connections.composition import (
+    degrade_connection_on_auth_error,
+    revoke_connection,
+    start_connect,
+)
 from qualify_api.connections.crypto import DevEncryptor, Encryptor
 from qualify_api.connections.events import (
     DomainEvent,
@@ -67,6 +71,7 @@ __all__ = [
     "RevokeService",
     "Trigger",
     "apply_transition",
+    "degrade_connection_on_auth_error",
     "list_connections",
     "next_status",
     "revoke_connection",
