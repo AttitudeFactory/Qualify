@@ -14,15 +14,26 @@ credential-bearing in or out. `list_connections` completes the trio and already 
 Everything here is **blocking** (Postgres, Redis, and — for the connect flow — a Meta call
 in the callback, not in `start_connect`). A Reflex event handler must run them off the
 event loop, exactly as `connections_for` already does.
+
+**QUA-91 addendum — what a health-check persists vs. only validates.** `is_valid`,
+`expires_at` and `scopes` from `/debug_token` (`token_health.py`) are read and used to
+decide the outcome in `check_connection_health` below, but only `data_access_expires_at`
+(plus our own `last_health_checked_at` timestamp) is ever written to
+`social_connections`. `is_valid` drives a decision, not a column; `expires_at` already
+lives on `oauth_credentials` from grant time and a live check confirmed it is stable
+(`0`, never); `scopes` are compared against nothing and stored nowhere — they exist on
+the report purely for a caller that wants to log/inspect them.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from functools import cache
 from uuid import UUID
 
 from qualify_api.config import MetaOAuthSettings, redis_url
 from qualify_api.connections.auth_error import ConnectionStatus, degrade_on_auth_error
+from qualify_api.connections.credential_reader import DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor
 from qualify_api.connections.events import EventPublisher, InMemoryEventPublisher
 from qualify_api.connections.meta_oauth import HttpMetaOAuthClient
@@ -34,6 +45,7 @@ from qualify_api.connections.revoke import (
 )
 from qualify_api.connections.service import ConnectService
 from qualify_api.connections.state_token import JtiStore
+from qualify_api.connections.token_health import HttpMetaTokenHealthClient, TokenHealthChecker
 from qualify_api.connections.verifier import ResolverConnectionVerifier
 
 
@@ -130,3 +142,48 @@ def degrade_connection_on_auth_error(
         writer=PostgresConnectionRepository(),
         publisher=production_event_publisher(),
     )
+
+
+def check_connection_health(*, tenant_id: UUID, connection_id: UUID) -> bool:
+    """QUA-91's published seam — the on-demand health-check analogue of
+    `revoke_connection`/`degrade_connection_on_auth_error` above. The Reflex "Verificar
+    ahora" button is the ONLY caller; nothing in this codebase calls it on a timer, and
+    none should be added without a separate, explicit design decision.
+
+    Calls Meta's `/debug_token` once. Two outcomes, both already-existing machinery:
+
+    - `is_valid=True`: writes `data_access_expires_at`/`last_health_checked_at` via
+      `record_health_check` (`repository.py`) — no FSM transition, no `oauth_credentials`
+      write.
+    - `is_valid=False`: delegates to `degrade_connection_on_auth_error` above, UNCHANGED
+      — same `ACTIVE -> DEGRADED` edge a real 401/190 from publish/comments already
+      drives (QUA-90). This function adds no new FSM edge and touches neither `fsm.py`
+      nor `auth_error.py`.
+
+    Returns the report's `is_valid` — the one thing a caller needs to decide what to tell
+    the operator. Raises `CredentialNotFound`/`TokenHealthError`/`httpx.HTTPError` on a
+    transport or credential-lookup failure; these are infrastructure problems, not a
+    verdict about the token, so unlike `degrade_on_auth_error` this function does NOT
+    swallow them — the Reflex caller surfaces them as an action error, same posture
+    `start_connect`/`revoke_connection` already have for their own infra exceptions.
+    Blocking (Postgres, plus a Meta call) — call it off the event loop.
+    """
+    settings = MetaOAuthSettings.from_env()
+    checker = TokenHealthChecker(
+        reader=DbCredentialReader(tenant_id),
+        encryptor=DevEncryptor(),
+        client=HttpMetaTokenHealthClient(settings),
+    )
+    report = checker.check(connection_id)
+
+    if not report.is_valid:
+        degrade_connection_on_auth_error(tenant_id=tenant_id, connection_id=connection_id)
+        return False
+
+    PostgresConnectionRepository().record_health_check(
+        connection_id=connection_id,
+        tenant_id=tenant_id,
+        data_access_expires_at=report.data_access_expires_at,
+        checked_at=datetime.now(UTC),
+    )
+    return True

@@ -18,13 +18,22 @@ import logging
 from collections.abc import AsyncIterator
 from uuid import UUID
 
+import httpx
 import reflex as rx
 from qualify_api.connections import ConnectionNotFound
+from qualify_api.connections.credential_reader import CredentialNotFound
+from qualify_api.connections.token_health import TokenHealthError
 from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
-from .connections_provider import NoActingUser, begin_connect, connections_for, disconnect
+from .connections_provider import (
+    NoActingUser,
+    begin_connect,
+    check_health,
+    connections_for,
+    disconnect,
+)
 from .connections_vm import ConnectionVM
 from .tenant import tenant_uuid
 
@@ -39,6 +48,9 @@ _DISCONNECT_FAILED = "No se pudo desconectar la cuenta. Revisa la conexión con 
 _NOT_FOUND = "Esa conexión ya no existe. Actualizamos la lista con el estado real."
 _CONNECT_FAILED = "No se pudo iniciar la conexión con Meta. Vuelve a intentarlo en un momento."
 _NO_ACTING_USER = "Este tenant no tiene ningún usuario al que atribuir la conexión."
+_HEALTH_CHECK_FAILED = (
+    "No se pudo verificar el estado de la conexión con Meta. Vuelve a intentarlo en un momento."
+)
 
 
 class ConnectionsState(rx.State):
@@ -168,6 +180,44 @@ class ConnectionsState(rx.State):
             logger.error("disconnect failed: %s", type(exc).__name__)
             async with self:
                 self.action_error = _DISCONNECT_FAILED
+            return
+
+        async with self:
+            self.action_error = ""
+        yield ConnectionsState.load_connections
+
+    @rx.event(background=True)
+    async def check_health_now(self, connection_id: str) -> AsyncIterator[rx.event.EventSpec]:
+        """ "Verificar ahora" (QUA-91): one on-demand `/debug_token` call, then reload so
+        the list reflects whatever it found — a fresh `data_access_expires_at`, or a
+        `degraded` status if Meta reported the token invalid.
+
+        This is the ONLY trigger for a real health-check in this codebase — there is no
+        timer, no auto-check on page load, nothing else that calls `check_health`. See
+        `token_health.py`'s module docstring for why.
+        """
+        async with self:
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+            self.action_error = ""
+
+        resolved_tenant = tenant_uuid(session_tenant_id)
+        if resolved_tenant is None:
+            return
+        try:
+            resolved_connection = UUID(connection_id)
+        except ValueError:
+            return  # the id arrived over the wire; refuse junk rather than query with it
+
+        try:
+            await asyncio.to_thread(check_health, resolved_tenant, resolved_connection)
+        except (CredentialNotFound, TokenHealthError, httpx.HTTPError, SQLAlchemyError) as exc:
+            # Infra/lookup failures, not a verdict about the token — same posture
+            # `start_connect_flow` already has for its own infra exceptions. Only the
+            # exception TYPE is logged; a Meta error body can echo request parameters.
+            logger.error("check_health_now failed: %s", type(exc).__name__)
+            async with self:
+                self.action_error = _HEALTH_CHECK_FAILED
             return
 
         async with self:

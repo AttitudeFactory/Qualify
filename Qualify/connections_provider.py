@@ -22,10 +22,15 @@ columns (migration 0002, R3), so there is no route from this screen to a token.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
-from qualify_api.connections import revoke_connection, start_connect
+from qualify_api.connections import (
+    DATA_ACCESS_WARNING_THRESHOLD,
+    check_connection_health,
+    revoke_connection,
+    start_connect,
+)
 from qualify_api.connections.models import SocialConnection
 from qualify_api.tenancy.models import Brand, TenantMember, User
 from qualify_shared.db.session import tenant_session
@@ -44,6 +49,34 @@ def _format_verified_at(value: datetime | None) -> str:
     return value.strftime("%d %b %Y, %H:%M")
 
 
+def _data_access_warning(
+    data_access_expires_at: datetime | None, *, now: datetime
+) -> tuple[str, str]:
+    """QUA-91: (`data_access_state`, `data_access_message`) for the VM, pre-formatted
+    server-side. Deliberately independent of `status`/the FSM — a near or passed
+    `data_access_expires_at` NEVER implies `degraded`; only a real `is_valid=false` from
+    `/debug_token` does that (see `composition.py::check_connection_health`). Wording is
+    chosen to never imply the connection itself is broken (see the QUA-91 design note on
+    why "Degradada" + `triangle-alert` are reserved for that real case and never reused
+    here).
+    """
+    if data_access_expires_at is None:
+        return "", ""
+    remaining = data_access_expires_at - now
+    if remaining.total_seconds() <= 0:
+        return "warning_overdue", "Acceso a datos vencido"
+    if remaining > DATA_ACCESS_WARNING_THRESHOLD:
+        return "", ""
+    days_left = int(remaining.total_seconds() // 86400)
+    if days_left <= 0:
+        message = "Acceso a datos vence hoy"
+    elif days_left == 1:
+        message = "Acceso a datos vence mañana"
+    else:
+        message = f"Acceso a datos vence en {days_left} días"
+    return "warning_soon", message
+
+
 def _scope_labels(granted_literals: list[str]) -> tuple[list[str], frozenset[ScopeKey]]:
     """Granted Meta scope strings -> (chip labels, resolved abstract keys).
 
@@ -60,6 +93,9 @@ def _scope_labels(granted_literals: list[str]) -> tuple[list[str], frozenset[Sco
 
 def _to_vm(row: SocialConnection, brand_name: str | None) -> ConnectionVM:
     scope_labels, resolved = _scope_labels(row.granted_scopes)
+    data_access_state, data_access_message = _data_access_warning(
+        row.data_access_expires_at, now=datetime.now(UTC)
+    )
     return build_connection_vm(
         connection_id=str(row.id),
         platform=row.platform,
@@ -69,6 +105,8 @@ def _to_vm(row: SocialConnection, brand_name: str | None) -> ConnectionVM:
         last_verified_at=_format_verified_at(row.last_verified_at),
         granted_scope_labels=scope_labels,
         verdicts=assess_capabilities(resolved),
+        data_access_state=data_access_state,
+        data_access_message=data_access_message,
     )
 
 
@@ -135,6 +173,24 @@ def begin_connect(tenant_id: UUID) -> str:
     if user_id is None:
         raise NoActingUser(f"tenant {tenant_id} has no user to attribute the grant to")
     return start_connect(tenant_id=tenant_id, brand_id=None, user_id=user_id)
+
+
+def check_health(tenant_id: UUID, connection_id: UUID) -> bool:
+    """QUA-91: run a real, on-demand `/debug_token` check for one connection.
+
+    Thin adapter over `qualify_api.connections.check_connection_health` — same pattern
+    `disconnect`/`begin_connect` already use for their own seams. Manual-trigger-only:
+    this function is called from exactly one place, the "Verificar ahora" button's event
+    handler (`connections_state.py`) — nothing in this module calls it on a schedule.
+
+    Returns whether the token was still valid. Raises on a lookup/transport failure
+    (`CredentialNotFound`, `TokenHealthError`, `httpx.HTTPError`) rather than swallowing
+    it — the caller surfaces these as an action error, same posture `begin_connect`
+    already has for its own infra exceptions.
+
+    Blocking DB call (plus a Meta call) — callers on the event loop must run it off-thread.
+    """
+    return check_connection_health(tenant_id=tenant_id, connection_id=connection_id)
 
 
 def disconnect(tenant_id: UUID, connection_id: UUID) -> bool:

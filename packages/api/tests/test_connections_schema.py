@@ -5,6 +5,7 @@ FK makes a drifted tenant unbuildable, and RLS isolates connections. Run in CI."
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -16,6 +17,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
+from qualify_api.connections.repository import PostgresConnectionRepository
 from qualify_api.tenancy.models import Tenant, User
 
 pytestmark = pytest.mark.db
@@ -182,3 +184,63 @@ def test_rls_isolates_connections(seeded_connection: tuple[UUID, UUID]) -> None:
         seen = session.scalars(select(SocialConnection)).all()
     assert all(row.tenant_id == TENANT_B for row in seen)
     assert tenant_a not in {row.tenant_id for row in seen}
+
+
+def test_health_check_columns_are_updatable_unlike_oauth_credentials(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    """QUA-91: `data_access_expires_at`/`last_health_checked_at` deliberately live on
+    `social_connections`, not `oauth_credentials` — the direct contrast with
+    `test_credentials_are_append_only_no_update` above. `qualify_app` already has
+    UPDATE on this table (`last_verified_at`/`status` prove it); this asserts the two
+    new columns are not somehow excluded from that grant."""
+    tenant_a, connection_id = seeded_connection
+    with tenant_session(tenant_a) as session:
+        connection = session.get(SocialConnection, connection_id)
+        assert connection is not None
+        connection.data_access_expires_at = datetime(2026, 11, 18, tzinfo=UTC)
+        connection.last_health_checked_at = datetime(2026, 8, 20, tzinfo=UTC)
+
+    with tenant_session(tenant_a) as session:
+        connection = session.get(SocialConnection, connection_id)
+        assert connection is not None
+        assert connection.data_access_expires_at == datetime(2026, 11, 18, tzinfo=UTC)
+        assert connection.last_health_checked_at == datetime(2026, 8, 20, tzinfo=UTC)
+
+
+def test_record_health_check_writes_columns_and_an_audit_row(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    """Exercises `PostgresConnectionRepository.record_health_check` itself (QUA-91),
+    not just the raw column grant above."""
+    tenant_a, connection_id = seeded_connection
+    checked_at = datetime(2026, 8, 21, 9, 0, tzinfo=UTC)
+    expiry = datetime(2026, 11, 18, 20, 57, tzinfo=UTC)
+
+    PostgresConnectionRepository().record_health_check(
+        connection_id=connection_id,
+        tenant_id=tenant_a,
+        data_access_expires_at=expiry,
+        checked_at=checked_at,
+    )
+
+    with tenant_session(tenant_a) as session:
+        connection = session.get(SocialConnection, connection_id)
+        assert connection is not None
+        assert connection.data_access_expires_at == expiry
+        assert connection.last_health_checked_at == checked_at
+        events = session.execute(
+            text("SELECT event_type, actor FROM connection_events WHERE connection_id = :cid"),
+            {"cid": str(connection_id)},
+        ).all()
+    assert ("health_checked", "user") in events
+
+
+def test_record_health_check_on_unknown_connection_is_a_silent_no_op() -> None:
+    """RLS-filtered or gone — same posture `record_status` already has for this case."""
+    PostgresConnectionRepository().record_health_check(
+        connection_id=uuid4(),
+        tenant_id=TENANT_A,
+        data_access_expires_at=None,
+        checked_at=datetime(2026, 8, 21, tzinfo=UTC),
+    )  # must not raise

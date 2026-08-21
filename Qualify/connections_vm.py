@@ -55,6 +55,14 @@ class ConnectionVM:
     granted_scopes: list[str]  # human-readable scope labels, never the raw token
     enabled_capabilities: list[CapabilityVM] = field(default_factory=list)
     disabled_capabilities: list[CapabilityVM] = field(default_factory=list)
+    # QUA-91: the data-access-window warning, INDEPENDENT of `status`/the FSM. Empty
+    # string means "nothing to show" — never confuse this with `status == "degraded"`,
+    # which is the real, evidence-based (401/190) case. `data_access_state` is a closed
+    # vocabulary ("" | "warning_soon" | "warning_overdue") so the page can pick the icon
+    # without re-deriving it; `data_access_message` is pre-formatted, same discipline as
+    # `last_verified_at`.
+    data_access_state: str = ""
+    data_access_message: str = ""
     # NOTE: there is deliberately no `auth_url` field. The C-04 authorization URL is
     # minted by `start_connect`, which registers a one-shot `state` jti in Redis per
     # call; precomputing one per row at page load would burn a token for every
@@ -91,6 +99,8 @@ def build_connection_vm(
     last_verified_at: str,
     granted_scope_labels: list[str],
     verdicts: tuple[CapabilityVerdict, ...],
+    data_access_state: str = "",
+    data_access_message: str = "",
 ) -> ConnectionVM:
     """Assemble a whitelisted VM, partitioning capabilities enabled/disabled here.
 
@@ -117,4 +127,6 @@ def build_connection_vm(
         enabled_capabilities=enabled,
         disabled_capabilities=disabled,
         has_provisional_capabilities=provisional_shown,
+        data_access_state=data_access_state,
+        data_access_message=data_access_message,
     )

@@ -37,6 +37,35 @@ def status_badge(status: rx.Var[str]) -> rx.Component:
     )
 
 
+def _data_access_badge(state: rx.Var[str], message: rx.Var[str]) -> rx.Component:
+    """QUA-91: the data-access-window warning — deliberately independent of
+    `status_badge` above. Never implies the connection itself is broken (that is
+    `status == "degraded"`, a real evidence-based `is_valid=false`, rendered
+    separately); distinct icons on purpose (`hourglass`/`calendar-x`, never
+    `triangle-alert`) so the two signals are never visually conflated."""
+    return rx.match(
+        state,
+        ("warning_soon", tone_badge(message, "warn", icon="hourglass", size="1")),
+        ("warning_overdue", tone_badge(message, "warn", icon="calendar-x", size="1")),
+        rx.fragment(),
+    )
+
+
+def verify_now_button(conn: ConnectionVM) -> rx.Component:
+    """QUA-91: one on-demand `/debug_token` check. Shown only for an `active`
+    connection — a `degraded` one already shows "Reconectar" as its primary action, and
+    the whole point of this button is to catch a problem BEFORE it degrades. Manual
+    only: nothing renders or fires this on a timer."""
+    return rx.button(
+        rx.icon("shield-check", size=14),
+        "Verificar ahora",
+        on_click=ConnectionsState.check_health_now(conn.id),
+        variant="soft",
+        color_scheme="gray",
+        size="1",
+    )
+
+
 def _scope_chip(label: rx.Var[str]) -> rx.Component:
     return tag(label)
 
@@ -196,6 +225,7 @@ def connection_card(conn: ConnectionVM) -> rx.Component:
                 platform_badge(conn.platform),
                 rx.heading(conn.external_username, size="4", as_="h2"),
                 rx.spacer(),
+                rx.cond(conn.status == "active", verify_now_button(conn), rx.fragment()),
                 status_badge(conn.status),
                 width="100%",
                 align="center",
@@ -214,6 +244,9 @@ def connection_card(conn: ConnectionVM) -> rx.Component:
                 spacing="2",
                 align="center",
             ),
+            # QUA-91: independent of the FSM-driven banners below — never shown at the
+            # same time as claiming the connection is `degraded`.
+            _data_access_badge(conn.data_access_state, conn.data_access_message),
             # Actionable banners per state.
             rx.cond(conn.status == "degraded", degraded_banner(), rx.fragment()),
             rx.cond(conn.status == "revoked", revoked_banner(), rx.fragment()),

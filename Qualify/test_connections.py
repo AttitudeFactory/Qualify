@@ -33,10 +33,10 @@ import dataclasses
 import inspect
 import pathlib
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from qualify_api.connections import ConnectionNotFound, RevokeResult
+from qualify_api.connections import DATA_ACCESS_WARNING_THRESHOLD, ConnectionNotFound, RevokeResult
 from qualify_api.connections.fsm import ConnectionStatus as FsmStatus
 from qualify_api.connections.models import SocialConnection
 
@@ -51,7 +51,7 @@ from .capabilities import (
     assess_capabilities,
     resolve_scope_keys,
 )
-from .connections_provider import NoActingUser, _scope_labels, _to_vm
+from .connections_provider import NoActingUser, _data_access_warning, _scope_labels, _to_vm
 from .connections_vm import CapabilityVM, ConnectionVM
 
 # Field-name fragments that must never appear on a client-serialized view-model.
@@ -226,6 +226,84 @@ def test_vm_falls_back_when_username_or_brand_is_missing() -> None:
 def test_never_verified_connection_reads_honestly() -> None:
     vm = _to_vm(_row(last_verified_at=None), "PuntoServis")
     assert vm.last_verified_at == "Nunca verificada"
+
+
+# --- QUA-91: data-access-window warning, deliberately independent of status/the FSM -----
+
+_NOW = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+
+
+def test_data_access_warning_empty_when_never_checked() -> None:
+    assert _data_access_warning(None, now=_NOW) == ("", "")
+
+
+def test_data_access_warning_empty_when_far() -> None:
+    far = _NOW + DATA_ACCESS_WARNING_THRESHOLD + timedelta(days=1)
+    assert _data_access_warning(far, now=_NOW) == ("", "")
+
+
+def test_data_access_warning_soon_within_threshold() -> None:
+    delta = DATA_ACCESS_WARNING_THRESHOLD - timedelta(days=4)
+    state, message = _data_access_warning(_NOW + delta, now=_NOW)
+    assert state == "warning_soon"
+    assert message == f"Acceso a datos vence en {delta.days} días"
+
+
+def test_data_access_warning_today_and_tomorrow_read_naturally() -> None:
+    assert _data_access_warning(_NOW + timedelta(hours=2), now=_NOW) == (
+        "warning_soon",
+        "Acceso a datos vence hoy",
+    )
+    assert _data_access_warning(_NOW + timedelta(days=1, hours=2), now=_NOW) == (
+        "warning_soon",
+        "Acceso a datos vence mañana",
+    )
+
+
+def test_data_access_warning_overdue_when_passed() -> None:
+    state, message = _data_access_warning(_NOW - timedelta(days=1), now=_NOW)
+    assert state == "warning_overdue"
+    assert message == "Acceso a datos vencido"
+
+
+def test_data_access_warning_never_implies_the_connection_is_broken() -> None:
+    """The wording must never be confusable with the real, evidence-based `degraded`
+    case (401/190 from `/debug_token`, QUA-90) — that is a separate, unrelated signal."""
+    for expiry in (_NOW + timedelta(days=5), _NOW - timedelta(days=5)):
+        _, message = _data_access_warning(expiry, now=_NOW)
+        lowered = message.lower()
+        for forbidden in ("inválid", "invalid", "degradad", "rota", "desconectad"):
+            assert forbidden not in lowered, f"{message!r} reads as broken, not as a warning"
+
+
+def test_vm_has_no_data_access_warning_by_default() -> None:
+    """`_row()` sets no `data_access_expires_at` — the honest state before any
+    "Verificar ahora" click has ever happened."""
+    vm = _to_vm(_row(), "PuntoServis")
+    assert vm.data_access_state == ""
+    assert vm.data_access_message == ""
+
+
+def test_vm_wires_the_data_access_warning_from_the_row() -> None:
+    vm_overdue = _to_vm(
+        _row(data_access_expires_at=datetime.now(UTC) - timedelta(days=1)), "PuntoServis"
+    )
+    assert vm_overdue.data_access_state == "warning_overdue"
+    assert vm_overdue.data_access_message == "Acceso a datos vencido"
+    # The warning never touches status — that is the whole point of keeping it separate.
+    assert vm_overdue.status == "active"
+
+
+def test_check_health_delegates_to_the_real_seam() -> None:
+    seen: dict[str, object] = {}
+
+    def _capture(*, tenant_id: UUID, connection_id: UUID) -> bool:
+        seen.update(tenant_id=tenant_id, connection_id=connection_id)
+        return True
+
+    with _patched(check_connection_health=_capture):
+        assert connections_provider.check_health(_TENANT, _CONNECTION) is True
+    assert seen == {"tenant_id": _TENANT, "connection_id": _CONNECTION}
 
 
 def test_disconnect_surfaces_not_found_instead_of_reporting_success() -> None:
