@@ -468,6 +468,29 @@ def test_provider_reaches_postgres_only_through_tenant_session() -> None:
     assert source.count("tenant_session(") >= 2, "every DB access must open a tenant_session"
 
 
+def test_verify_now_button_wires_a_per_card_loading_indicator() -> None:
+    """QUA-91 UX follow-up: a manual validation found the click gave no visible
+    feedback while a real `/debug_token` call ran. `connections_page.py` is read from
+    disk rather than imported — same reason `test_the_oauth_placeholder_route_is_gone`
+    does — so this stays Reflex-free.
+
+    Pins that `loading=` is keyed to THIS card's id (`.contains(conn.id)`, the same
+    per-row pattern `InboxState.toggling_media_ids` uses), not a page-wide flag — a
+    single `ConnectionsState.is_loading`-style bool here would freeze every OTHER
+    card's button too. No separate `disabled=` is expected: Radix's `loading` prop
+    already covers both the spinner and the disabled state in one prop.
+    """
+    here = pathlib.Path(__file__).parent
+    source = (here / "connections_page.py").read_text(encoding="utf-8")
+    button_start = source.index("def verify_now_button")
+    return_start = source.index("return rx.button(", button_start)
+    button_call = source[return_start : source.index("\n\n\n", return_start)]
+    assert "loading=ConnectionsState.checking_connection_ids.contains(conn.id)" in button_call
+    assert "disabled=" not in button_call, (
+        "loading= already disables the button; a separate disabled= would be redundant"
+    )
+
+
 def _run() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0

@@ -55,11 +55,19 @@ def verify_now_button(conn: ConnectionVM) -> rx.Component:
     """QUA-91: one on-demand `/debug_token` check. Shown only for an `active`
     connection — a `degraded` one already shows "Reconectar" as its primary action, and
     the whole point of this button is to catch a problem BEFORE it degrades. Manual
-    only: nothing renders or fires this on a timer."""
+    only: nothing renders or fires this on a timer.
+
+    `loading=` is keyed to THIS card's id (`checking_connection_ids.contains(conn.id)`,
+    same per-row pattern `InboxState.toggling_media_ids` already uses) — not a
+    page-wide flag, so a click on one connection's button never shows every other
+    card's button as busy too. Radix's `loading` prop is what gives the spinner AND
+    the disabled-while-in-flight state in one prop; no separate `disabled=` needed.
+    """
     return rx.button(
         rx.icon("shield-check", size=14),
         "Verificar ahora",
         on_click=ConnectionsState.check_health_now(conn.id),
+        loading=ConnectionsState.checking_connection_ids.contains(conn.id),
         variant="soft",
         color_scheme="gray",
         size="1",

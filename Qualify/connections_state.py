@@ -62,6 +62,12 @@ class ConnectionsState(rx.State):
     # Errors from an ACTION (connect / disconnect), kept apart from `load_error`:
     # a failed disconnect must not blank the list the operator is looking at.
     action_error: str = ""
+    # QUA-91: per-connection, NOT page-wide (unlike `is_loading` above) — multiple
+    # cards render at once, and only the ONE "Verificar ahora" actually in flight may
+    # show its spinner. Same shape and the same reason `InboxState.toggling_media_ids`
+    # is per-row: `.contains(conn.id)` on the frontend, `list[str]` (not `bool`) because
+    # more than one card exists on screen simultaneously.
+    checking_connection_ids: list[str] = []
 
     @rx.var
     def has_connections(self) -> bool:
@@ -195,18 +201,33 @@ class ConnectionsState(rx.State):
         This is the ONLY trigger for a real health-check in this codebase — there is no
         timer, no auto-check on page load, nothing else that calls `check_health`. See
         `token_health.py`'s module docstring for why.
+
+        `checking_connection_ids` drives the button's own `loading=` (spinner + disabled,
+        `connections_page.py::verify_now_button`) and doubles as the double-click guard —
+        membership is checked and appended in the SAME `async with self` block below, so
+        a second click that arrives before the first `async with` releases sees itself
+        already present and returns immediately. Removed on every exit path BEFORE any
+        `yield`, never after — same convention `action_error` already follows in this
+        method, so the spinner never lingers past its own reload.
         """
         async with self:
+            if connection_id in self.checking_connection_ids:
+                return  # THIS card already has a check in flight; ignore a double-click
+            self.checking_connection_ids.append(connection_id)
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
             self.action_error = ""
 
         resolved_tenant = tenant_uuid(session_tenant_id)
         if resolved_tenant is None:
+            async with self:
+                self.checking_connection_ids.remove(connection_id)
             return
         try:
             resolved_connection = UUID(connection_id)
         except ValueError:
+            async with self:
+                self.checking_connection_ids.remove(connection_id)
             return  # the id arrived over the wire; refuse junk rather than query with it
 
         try:
@@ -217,9 +238,11 @@ class ConnectionsState(rx.State):
             # exception TYPE is logged; a Meta error body can echo request parameters.
             logger.error("check_health_now failed: %s", type(exc).__name__)
             async with self:
+                self.checking_connection_ids.remove(connection_id)
                 self.action_error = _HEALTH_CHECK_FAILED
             return
 
         async with self:
+            self.checking_connection_ids.remove(connection_id)
             self.action_error = ""
         yield ConnectionsState.load_connections
