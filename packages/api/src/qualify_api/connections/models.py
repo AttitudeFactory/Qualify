@@ -85,6 +85,15 @@ class SocialConnection(Base):
     connected_at: Mapped[datetime] = mapped_column(nullable=False, server_default=text("now()"))
     last_verified_at: Mapped[datetime | None] = mapped_column(nullable=True)
     disconnected_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # QUA-91: Meta's data-access window (~90 days), independent of the token's own
+    # `expires_at` (which lives on `oauth_credentials` and is set once at grant time).
+    # Lives here, not on `oauth_credentials`, because `qualify_app` holds only INSERT on
+    # that table (migration 0011's docstring) — a re-observed, mutated-in-place fact
+    # cannot live on an append-only row without writing a spurious credential version.
+    data_access_expires_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # When a "Verificar ahora" click last ran /debug_token against this connection.
+    # Manual-trigger-only (QUA-91) — never written by a scheduler; there isn't one.
+    last_health_checked_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
 class OAuthCredential(Base):

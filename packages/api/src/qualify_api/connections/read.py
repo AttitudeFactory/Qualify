@@ -41,6 +41,11 @@ class ConnectionSummary:
     access_posture: str
     last_verified_at: datetime | None
     connected_at: datetime
+    # QUA-91: Meta's data-access window and when we last asked `/debug_token` about it.
+    # Both `None` until the first manual "Verificar ahora" — there is no scheduler that
+    # would have populated them earlier.
+    data_access_expires_at: datetime | None
+    last_health_checked_at: datetime | None
 
 
 def list_connections(tenant_id: UUID) -> tuple[ConnectionSummary, ...]:
@@ -63,6 +68,8 @@ def list_connections(tenant_id: UUID) -> tuple[ConnectionSummary, ...]:
                 access_posture=row.access_posture,
                 last_verified_at=row.last_verified_at,
                 connected_at=row.connected_at,
+                data_access_expires_at=row.data_access_expires_at,
+                last_health_checked_at=row.last_health_checked_at,
             )
             for row in rows
         )

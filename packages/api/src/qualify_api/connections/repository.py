@@ -101,6 +101,15 @@ class ConnectionRepository(Protocol):
         credential_version: int,
     ) -> None: ...
 
+    def record_health_check(
+        self,
+        *,
+        connection_id: UUID,
+        tenant_id: UUID,
+        data_access_expires_at: datetime | None,
+        checked_at: datetime,
+    ) -> None: ...
+
 
 class PostgresConnectionRepository:
     """Writes through `tenant_session` — RLS scopes every statement to the grant's tenant,
@@ -215,6 +224,37 @@ class PostgresConnectionRepository:
                     credential_version=credential_version,
                     event_type=event_type,
                     actor="system",
+                )
+            )
+            session.flush()
+
+    def record_health_check(
+        self,
+        *,
+        connection_id: UUID,
+        tenant_id: UUID,
+        data_access_expires_at: datetime | None,
+        checked_at: datetime,
+    ) -> None:
+        """QUA-91: a manual "Verificar ahora" came back `is_valid=true`. Mutates
+        `social_connections` in place — same door `record_status`'s `last_verified_at`
+        write already uses — and never touches `oauth_credentials` (see that column's
+        comment in `models.py` for why it cannot). Writes an audit row for the same
+        reason every other observed fact about a connection gets one; `credential_version`
+        is informational provenance, not a state change."""
+        with tenant_session(tenant_id) as session:
+            connection = session.get(SocialConnection, connection_id)
+            if connection is None:  # RLS-filtered or gone; nothing to record
+                return
+            connection.data_access_expires_at = data_access_expires_at
+            connection.last_health_checked_at = checked_at
+            session.add(
+                ConnectionEvent(
+                    connection_id=connection_id,
+                    tenant_id=tenant_id,
+                    credential_version=connection.current_credential_version,
+                    event_type="health_checked",
+                    actor="user",
                 )
             )
             session.flush()

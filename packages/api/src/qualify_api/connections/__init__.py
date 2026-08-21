@@ -9,6 +9,7 @@ migration 0002. The credential resolver returns an authenticated client, never a
 the Reflex CRM** — direct Python calls over ids, no HTTP hop. See `composition.py`."""
 
 from qualify_api.connections.composition import (
+    check_connection_health,
     degrade_connection_on_auth_error,
     revoke_connection,
     start_connect,
@@ -46,8 +47,10 @@ from qualify_api.connections.service import (
     ConnectResult,
     ConnectService,
 )
+from qualify_api.connections.token_health import DATA_ACCESS_WARNING_THRESHOLD
 
 __all__ = [
+    "DATA_ACCESS_WARNING_THRESHOLD",
     "AuthenticatedClient",
     "ConnectOutcome",
     "ConnectResult",
@@ -71,6 +74,7 @@ __all__ = [
     "RevokeService",
     "Trigger",
     "apply_transition",
+    "check_connection_health",
     "degrade_connection_on_auth_error",
     "list_connections",
     "next_status",

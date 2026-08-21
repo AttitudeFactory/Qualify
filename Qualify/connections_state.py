@@ -18,13 +18,22 @@ import logging
 from collections.abc import AsyncIterator
 from uuid import UUID
 
+import httpx
 import reflex as rx
 from qualify_api.connections import ConnectionNotFound
+from qualify_api.connections.credential_reader import CredentialNotFound
+from qualify_api.connections.token_health import TokenHealthError
 from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
-from .connections_provider import NoActingUser, begin_connect, connections_for, disconnect
+from .connections_provider import (
+    NoActingUser,
+    begin_connect,
+    check_health,
+    connections_for,
+    disconnect,
+)
 from .connections_vm import ConnectionVM
 from .tenant import tenant_uuid
 
@@ -39,6 +48,9 @@ _DISCONNECT_FAILED = "No se pudo desconectar la cuenta. Revisa la conexión con 
 _NOT_FOUND = "Esa conexión ya no existe. Actualizamos la lista con el estado real."
 _CONNECT_FAILED = "No se pudo iniciar la conexión con Meta. Vuelve a intentarlo en un momento."
 _NO_ACTING_USER = "Este tenant no tiene ningún usuario al que atribuir la conexión."
+_HEALTH_CHECK_FAILED = (
+    "No se pudo verificar el estado de la conexión con Meta. Vuelve a intentarlo en un momento."
+)
 
 
 class ConnectionsState(rx.State):
@@ -50,6 +62,12 @@ class ConnectionsState(rx.State):
     # Errors from an ACTION (connect / disconnect), kept apart from `load_error`:
     # a failed disconnect must not blank the list the operator is looking at.
     action_error: str = ""
+    # QUA-91: per-connection, NOT page-wide (unlike `is_loading` above) — multiple
+    # cards render at once, and only the ONE "Verificar ahora" actually in flight may
+    # show its spinner. Same shape and the same reason `InboxState.toggling_media_ids`
+    # is per-row: `.contains(conn.id)` on the frontend, `list[str]` (not `bool`) because
+    # more than one card exists on screen simultaneously.
+    checking_connection_ids: list[str] = []
 
     @rx.var
     def has_connections(self) -> bool:
@@ -171,5 +189,60 @@ class ConnectionsState(rx.State):
             return
 
         async with self:
+            self.action_error = ""
+        yield ConnectionsState.load_connections
+
+    @rx.event(background=True)
+    async def check_health_now(self, connection_id: str) -> AsyncIterator[rx.event.EventSpec]:
+        """ "Verificar ahora" (QUA-91): one on-demand `/debug_token` call, then reload so
+        the list reflects whatever it found — a fresh `data_access_expires_at`, or a
+        `degraded` status if Meta reported the token invalid.
+
+        This is the ONLY trigger for a real health-check in this codebase — there is no
+        timer, no auto-check on page load, nothing else that calls `check_health`. See
+        `token_health.py`'s module docstring for why.
+
+        `checking_connection_ids` drives the button's own `loading=` (spinner + disabled,
+        `connections_page.py::verify_now_button`) and doubles as the double-click guard —
+        membership is checked and appended in the SAME `async with self` block below, so
+        a second click that arrives before the first `async with` releases sees itself
+        already present and returns immediately. Removed on every exit path BEFORE any
+        `yield`, never after — same convention `action_error` already follows in this
+        method, so the spinner never lingers past its own reload.
+        """
+        async with self:
+            if connection_id in self.checking_connection_ids:
+                return  # THIS card already has a check in flight; ignore a double-click
+            self.checking_connection_ids.append(connection_id)
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+            self.action_error = ""
+
+        resolved_tenant = tenant_uuid(session_tenant_id)
+        if resolved_tenant is None:
+            async with self:
+                self.checking_connection_ids.remove(connection_id)
+            return
+        try:
+            resolved_connection = UUID(connection_id)
+        except ValueError:
+            async with self:
+                self.checking_connection_ids.remove(connection_id)
+            return  # the id arrived over the wire; refuse junk rather than query with it
+
+        try:
+            await asyncio.to_thread(check_health, resolved_tenant, resolved_connection)
+        except (CredentialNotFound, TokenHealthError, httpx.HTTPError, SQLAlchemyError) as exc:
+            # Infra/lookup failures, not a verdict about the token — same posture
+            # `start_connect_flow` already has for its own infra exceptions. Only the
+            # exception TYPE is logged; a Meta error body can echo request parameters.
+            logger.error("check_health_now failed: %s", type(exc).__name__)
+            async with self:
+                self.checking_connection_ids.remove(connection_id)
+                self.action_error = _HEALTH_CHECK_FAILED
+            return
+
+        async with self:
+            self.checking_connection_ids.remove(connection_id)
             self.action_error = ""
         yield ConnectionsState.load_connections
