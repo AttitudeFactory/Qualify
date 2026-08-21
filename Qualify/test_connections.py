@@ -213,6 +213,7 @@ def test_vm_shows_a_spanish_reason_only_when_disabled() -> None:
 def test_vm_serializes_only_plain_values() -> None:
     vm = _to_vm(_row(), "PuntoServis")
     assert isinstance(vm.last_verified_at, str), "no raw datetime may reach the client"
+    assert isinstance(vm.last_health_checked_at, str), "no raw datetime may reach the client"
     assert isinstance(vm.id, str)
     assert vm.external_username == "@puntoservis"
 
@@ -226,6 +227,49 @@ def test_vm_falls_back_when_username_or_brand_is_missing() -> None:
 def test_never_verified_connection_reads_honestly() -> None:
     vm = _to_vm(_row(last_verified_at=None), "PuntoServis")
     assert vm.last_verified_at == "Nunca verificada"
+
+
+def test_never_health_checked_connection_reads_honestly() -> None:
+    """QUA-91: `_row()` sets no `last_health_checked_at` — the honest state before any
+    "Verificar ahora" click has ever happened. Distinct fallback copy from
+    `last_verified_at`'s own — the two must never be conflated."""
+    vm = _to_vm(_row(), "PuntoServis")
+    assert vm.last_health_checked_at == "Sin verificar"
+    assert vm.last_health_checked_at != vm.last_verified_at
+
+
+def test_health_checked_at_is_formatted_like_verified_at() -> None:
+    """Same pre-format discipline, same pattern, a different concept and a different
+    stored column (`last_health_checked_at`, not `last_verified_at`)."""
+    checked_at = datetime(2026, 8, 21, 16, 33, tzinfo=UTC)
+    vm = _to_vm(_row(last_health_checked_at=checked_at), "PuntoServis")
+    assert vm.last_health_checked_at == "21 Aug 2026, 16:33"
+
+
+def test_health_check_click_is_visible_even_when_last_verified_at_is_unchanged() -> None:
+    """The exact UX gap this field closes: a "Verificar ahora" click updates
+    `last_health_checked_at` only — `last_verified_at` legitimately stays untouched. The
+    VM must still show something changed."""
+    unchanged_verified_at = datetime(2026, 8, 20, 20, 57, tzinfo=UTC)
+    vm = _to_vm(
+        _row(last_verified_at=unchanged_verified_at, last_health_checked_at=None),
+        "PuntoServis",
+    )
+    assert vm.last_health_checked_at == "Sin verificar"
+
+    vm_after_click = _to_vm(
+        _row(
+            last_verified_at=unchanged_verified_at,
+            last_health_checked_at=datetime(2026, 8, 21, 16, 33, tzinfo=UTC),
+        ),
+        "PuntoServis",
+    )
+    assert vm_after_click.last_verified_at == vm.last_verified_at, (
+        "last_verified_at is untouched by a health-check, by design"
+    )
+    assert vm_after_click.last_health_checked_at != vm.last_health_checked_at, (
+        "the click must be visible somewhere on the VM even though last_verified_at isn't"
+    )
 
 
 # --- QUA-91: data-access-window warning, deliberately independent of status/the FSM -----

@@ -49,6 +49,15 @@ def _format_verified_at(value: datetime | None) -> str:
     return value.strftime("%d %b %Y, %H:%M")
 
 
+def _format_health_checked_at(value: datetime | None) -> str:
+    """QUA-91: same pre-format discipline as `_format_verified_at`, distinct fallback
+    copy — "Sin verificar" reads as "nobody has run a health-check yet", never as
+    "Nunca verificada" (which is `last_verified_at`'s own, unrelated concept)."""
+    if value is None:
+        return "Sin verificar"
+    return value.strftime("%d %b %Y, %H:%M")
+
+
 def _data_access_warning(
     data_access_expires_at: datetime | None, *, now: datetime
 ) -> tuple[str, str]:
@@ -105,6 +114,7 @@ def _to_vm(row: SocialConnection, brand_name: str | None) -> ConnectionVM:
         last_verified_at=_format_verified_at(row.last_verified_at),
         granted_scope_labels=scope_labels,
         verdicts=assess_capabilities(resolved),
+        last_health_checked_at=_format_health_checked_at(row.last_health_checked_at),
         data_access_state=data_access_state,
         data_access_message=data_access_message,
     )

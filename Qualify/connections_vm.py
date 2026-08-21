@@ -53,6 +53,12 @@ class ConnectionVM:
     status: ConnectionStatus
     last_verified_at: str  # PRE-FORMATTED server-side (never a raw datetime var)
     granted_scopes: list[str]  # human-readable scope labels, never the raw token
+    # QUA-91: distinct from `last_verified_at` above — that one reflects the connect-flow
+    # verification (QUA-16), this one reflects the LAST manual "Verificar ahora" click.
+    # Conflating the two is exactly the UX gap this field closes: before it existed, a
+    # click ran /debug_token for real but nothing on screen changed. PRE-FORMATTED
+    # server-side, same discipline as `last_verified_at`.
+    last_health_checked_at: str = "Sin verificar"
     enabled_capabilities: list[CapabilityVM] = field(default_factory=list)
     disabled_capabilities: list[CapabilityVM] = field(default_factory=list)
     # QUA-91: the data-access-window warning, INDEPENDENT of `status`/the FSM. Empty
@@ -99,6 +105,7 @@ def build_connection_vm(
     last_verified_at: str,
     granted_scope_labels: list[str],
     verdicts: tuple[CapabilityVerdict, ...],
+    last_health_checked_at: str = "Sin verificar",
     data_access_state: str = "",
     data_access_message: str = "",
 ) -> ConnectionVM:
@@ -127,6 +134,7 @@ def build_connection_vm(
         enabled_capabilities=enabled,
         disabled_capabilities=disabled,
         has_provisional_capabilities=provisional_shown,
+        last_health_checked_at=last_health_checked_at,
         data_access_state=data_access_state,
         data_access_message=data_access_message,
     )

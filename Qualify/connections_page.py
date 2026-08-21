@@ -244,6 +244,21 @@ def connection_card(conn: ConnectionVM) -> rx.Component:
                 spacing="2",
                 align="center",
             ),
+            # QUA-91: distinct from "Verificada:" above (that is `last_verified_at`, the
+            # connect-flow verification, QUA-16) — this is the last manual "Verificar
+            # ahora" click. Without this line a click ran /debug_token for real but
+            # nothing on screen ever showed it happened.
+            rx.hstack(
+                rx.icon("shield-check", size=14, color=T.TEXT_FAINT),
+                rx.text(
+                    "Última verificación de acceso: ",
+                    conn.last_health_checked_at,
+                    size="2",
+                    color=T.TEXT_MUTED,
+                ),
+                spacing="2",
+                align="center",
+            ),
             # QUA-91: independent of the FSM-driven banners below — never shown at the
             # same time as claiming the connection is `degraded`.
             _data_access_badge(conn.data_access_state, conn.data_access_message),
