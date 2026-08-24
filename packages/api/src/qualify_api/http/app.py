@@ -25,8 +25,10 @@ from qualify_api.http import (
     inbox_routes,
     leads_routes,
     publishing_routes,
+    sentiment_routes,
 )
 from qualify_api.http.inbox_routes import SyncComments
+from qualify_api.http.sentiment_routes import AnalyzePendingComments
 from qualify_api.leads.service import LeadIntakeService
 from qualify_api.publishing.service import PublishService
 from qualify_api.publishing.staging import MediaStagingService
@@ -59,6 +61,15 @@ def build_production_inbox_sync() -> SyncComments:
     from qualify_api.inbox.composition import sync_comments  # noqa: PLC0415
 
     return sync_comments
+
+
+def build_production_analyze_pending_comments() -> AnalyzePendingComments:
+    """Lazy import like `build_production_inbox_sync`: keeps importing this module
+    from requiring the sentiment stack (transformers) unless the route is actually
+    exercised."""
+    from qualify_api.sentiment.composition import analyze_pending_comments  # noqa: PLC0415
+
+    return analyze_pending_comments
 
 
 def build_production_leads_service() -> LeadIntakeService:
@@ -95,6 +106,7 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
     app.include_router(inbox_routes.router)
     app.include_router(leads_routes.router)
     app.include_router(creative_routes.router)
+    app.include_router(sentiment_routes.router)
     if configure_production:
         app.dependency_overrides[connections_routes.get_connect_service] = build_production_service
         app.dependency_overrides[publishing_routes.get_publish_service] = (
@@ -104,6 +116,9 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
             build_production_staging_service
         )
         app.dependency_overrides[inbox_routes.get_sync_comments] = build_production_inbox_sync
+        app.dependency_overrides[sentiment_routes.get_analyze_pending_comments] = (
+            build_production_analyze_pending_comments
+        )
         app.dependency_overrides[leads_routes.get_leads_service] = build_production_leads_service
         app.dependency_overrides[creative_routes.get_content_service] = (
             build_production_content_service

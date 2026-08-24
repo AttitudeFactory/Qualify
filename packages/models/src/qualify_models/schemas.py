@@ -40,3 +40,9 @@ class SentimentResult(Provenance):
     # Optional for backwards compatibility with results produced before the
     # SentimentProvider seam existed; populated by run_sentiment from here on.
     model_id: str | None = None
+    # QUA-21. NULL is the honest value today: `LocalRobertuitoSentimentProvider`
+    # calls `transformers.pipeline(model=model_id)` without pinning `revision=`,
+    # so no checkpoint revision is available to record without inventing one.
+    # Populate this once a provider actually exposes a real revision/commit hash
+    # — do not fabricate a value here to fill the column.
+    model_revision: str | None = None
