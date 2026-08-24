@@ -14,12 +14,15 @@ import pytest
 
 from qualify_models.providers import SentimentProvider
 from qualify_models.social.ig_comments import (
+    COMMENT_LENGTH_BUCKETS,
     OWNED_COMMENTS_PIPELINE_VERSION,
     CommentSentimentSummary,
     InstagramComment,
     analyze_comment,
     analyze_comments,
+    analyze_text,
     parse_comments_payload,
+    stratify_by_length,
 )
 
 # The fixture lives with the contract it instantiates (R11a), not here. This test is the
@@ -171,6 +174,84 @@ def test_empty_comment_list_yields_no_net_sentiment() -> None:
     assert summary.analyzed_comments == 0
     assert summary.net_sentiment is None
     assert summary.negative_share is None
+
+
+def test_analyze_text_is_the_primitive_analyze_comment_wraps() -> None:
+    """QUA-21: the real service calls this directly against `Message.text` +
+    `external_message_id` — never a reconstructed `IGComment`."""
+    provider = StubSentimentProvider()
+    result = analyze_text(
+        "Me encanta este producto", source_id="real_message_id_123", provider=provider
+    )
+
+    assert result.source_id == "real_message_id_123"
+    assert result.label in {"POS", "NEG", "NEU"}
+
+
+def test_analyze_comment_delegates_to_analyze_text() -> None:
+    provider = StubSentimentProvider()
+    comment = InstagramComment(id="c1", text="Pésima atención")
+    via_comment = analyze_comment(comment, provider=provider)
+    via_text = analyze_text("Pésima atención", source_id="c1", provider=StubSentimentProvider())
+
+    assert via_comment.source_id == via_text.source_id == "c1"
+    assert via_comment.label == via_text.label
+
+
+def test_sentiment_result_carries_model_revision_field() -> None:
+    """QUA-21: the field exists and defaults to None — LocalRobertuitoSentimentProvider
+    does not pin a `revision=`, so no real value can be recorded without inventing one."""
+    provider = StubSentimentProvider()
+    result = analyze_text("hola", source_id="c1", provider=provider)
+
+    assert result.model_revision is None
+
+
+def test_stratify_by_length_buckets_by_documented_boundaries() -> None:
+    provider = StubSentimentProvider()
+    short_text = "hola"  # len 4, well under the 39-char "short" ceiling
+    medium_text = "a" * 80  # inside 40-120
+    long_text = "a" * 200  # over 120
+
+    pairs = [
+        (short_text, analyze_text(short_text, source_id="s1", provider=provider)),
+        (medium_text, analyze_text(medium_text, source_id="m1", provider=provider)),
+        (long_text, analyze_text(long_text, source_id="l1", provider=provider)),
+    ]
+    buckets = stratify_by_length(pairs)
+
+    assert set(buckets) == {name for name, _, _ in COMMENT_LENGTH_BUCKETS}
+    assert sum(sum(counts.values()) for counts in buckets.values()) == 3
+    assert sum(buckets["short"].values()) == 1
+    assert sum(buckets["medium"].values()) == 1
+    assert sum(buckets["long"].values()) == 1
+
+
+def test_stratify_by_length_boundary_exact_39_is_short_40_is_medium() -> None:
+    """Pins the exact edge the boundaries claim, not just 'somewhere in the middle'."""
+    provider = StubSentimentProvider()
+    at_39 = "a" * 39
+    at_40 = "a" * 40
+
+    buckets = stratify_by_length(
+        [
+            (at_39, analyze_text(at_39, source_id="x1", provider=provider)),
+            (at_40, analyze_text(at_40, source_id="x2", provider=provider)),
+        ]
+    )
+
+    assert sum(buckets["short"].values()) == 1
+    assert sum(buckets["medium"].values()) == 1
+
+
+def test_analyze_comments_summary_includes_length_stratified() -> None:
+    provider = StubSentimentProvider()
+    comments = parse_comments_payload(_load_fixture())
+    summary = analyze_comments(comments, provider=provider)
+
+    assert sum(sum(counts.values()) for counts in summary.length_stratified.values()) == (
+        summary.analyzed_comments
+    )
 
 
 @pytest.mark.integration
