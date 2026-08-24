@@ -35,7 +35,8 @@ from .vitrina_state import (
 _CARD = {
     "border": T.BORDER,
     "border_radius": T.RADIUS_CARD,
-    "background": T.SURFACE_BG,
+    "background": T.CARD_BG,
+    "box_shadow": T.ELEV_ISLAND,
     "padding": "1.25rem",
     "width": "100%",
 }

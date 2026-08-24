@@ -29,14 +29,14 @@
         "reflex",
         "run",
         "--frontend-port",
-        "3300",
+        "3320",
         "--backend-port",
-        "8300"
+        "8320"
       ],
       "env": {
         "PYTHONPATH": "packages/api/src:packages/shared/src:packages/scraper/src:packages/creative/src:packages/models/src"
       },
-      "port": 3300,
+      "port": 3320,
       "autoPort": false
     }
   ]

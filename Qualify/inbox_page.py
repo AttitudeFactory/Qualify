@@ -132,7 +132,7 @@ def _candidate_card_content(candidate: CandidateMediaVM) -> rx.Component:
         padding="1rem 1.25rem",
         border=T.BORDER,
         border_radius=T.RADIUS_CARD,
-        background=T.SURFACE_BG,
+        background=T.CARD_BG,
         width="100%",
     )
 
