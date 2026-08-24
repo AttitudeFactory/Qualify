@@ -31,6 +31,7 @@ from .ui import (
     tone_badge,
 )
 from .ui import tokens as T
+from .ui.state import NavState
 
 _TONES = ["accent", "ok", "warn", "error", "info", "neutral"]
 _TONE_MEANING = {
@@ -278,6 +279,106 @@ def _space_section() -> rx.Component:
             )
         ),
         description="Escala Radix (spacing 1-9). El gutter horizontal es un token CSS.",
+    )
+
+
+# ---------------------------------------------------------------------------------------
+# Motion and elevation
+# ---------------------------------------------------------------------------------------
+
+
+def _motion_row(name: str, value: str, use: str) -> rx.Component:
+    return rx.hstack(
+        rx.text(name, size="2", weight="medium", min_width="7rem", class_name="q-mono"),
+        rx.text(value, size="1", color=T.TEXT_MUTED, min_width="11rem", class_name="q-mono"),
+        rx.text(use, size="2"),
+        align="center",
+        spacing="3",
+        width="100%",
+    )
+
+
+def _motion_section() -> rx.Component:
+    return section(
+        "Movimiento y elevación",
+        rx.text(
+            "Dos curvas y tres duraciones, no más. El muelle es para lo que cambia de "
+            "tamaño o de forma; el ease, para lo que cambia de color u opacidad. La "
+            "elevación significa «esto responde»: una tarjeta se levanta al pasar el "
+            "ratón sólo si al pulsarla ocurre algo.",
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
+        card(
+            rx.vstack(
+                _motion_row("--q-spring", "cubic-bezier(.34,1.4,.5,1)", "ancho, forma, colapso"),
+                _motion_row("--q-ease", "cubic-bezier(.22,.8,.25,1)", "color, opacidad, máscara"),
+                _motion_row("--q-dur-fast", "140ms", "hover, foco, cambio de color"),
+                _motion_row("--q-dur", "240ms", "elevación, entrada de un bloque"),
+                _motion_row("--q-dur-slow", "380ms", "colapso del rail, revelado de etiqueta"),
+                spacing="2",
+                width="100%",
+            )
+        ),
+        rx.grid(
+            card(
+                rx.vstack(
+                    rx.text("Isla en reposo", size="2", weight="medium"),
+                    rx.text(
+                        "Toda superficie flota sobre el fondo con --q-elev-island. Es el "
+                        "estado por defecto: no se mueve.",
+                        size="1",
+                        color=T.TEXT_MUTED,
+                    ),
+                    spacing="1",
+                    align_items="start",
+                )
+            ),
+            card(
+                rx.vstack(
+                    rx.text("Tarjeta interactiva", size="2", weight="medium"),
+                    rx.text(
+                        "Pasa el ratón: sube 2 px y gana sombra. Sólo para tarjetas que "
+                        "hacen algo al pulsarlas — card(interactive=True).",
+                        size="1",
+                        color=T.TEXT_MUTED,
+                    ),
+                    spacing="1",
+                    align_items="start",
+                ),
+                interactive=True,
+            ),
+            card(
+                rx.vstack(
+                    rx.text("Modo zen", size="2", weight="medium"),
+                    rx.text(
+                        "El menú se contrae a 72 px con muelle y las etiquetas se "
+                        "revelan con máscara, no con fundido.",
+                        size="1",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.button(
+                        rx.icon(
+                            rx.cond(NavState.zen, "panel-left-open", "panel-left-close"),
+                            size=T.ICON_SM,
+                        ),
+                        rx.cond(NavState.zen, "Expandir el menú", "Contraer el menú"),
+                        on_click=NavState.toggle_zen,
+                        variant="soft",
+                        size="2",
+                        margin_top="0.25rem",
+                    ),
+                    rx.text("Atajo: ⌘ .", size="1", color=T.TEXT_FAINT),
+                    spacing="1",
+                    align_items="start",
+                )
+            ),
+            columns=rx.breakpoints(initial="1", md="3"),
+            spacing="3",
+            width="100%",
+        ),
+        description="Las mismas curvas en todo el producto; la elevación no decora.",
+        spacing="4",
     )
 
 
@@ -578,6 +679,7 @@ def styleguide_index() -> rx.Component:
             _colour_section(),
             _type_section(),
             _space_section(),
+            _motion_section(),
             _components_section(),
             spacing="6",
         ),

@@ -1,11 +1,11 @@
 /*
  * Qualify design tokens, layered on top of Radix Themes.
  *
- * Everything colour-related stays in Radix (accent/gray scales, semantic scales,
- * light/dark) and is configured in `rxconfig.py`. This file only carries what
- * Radix does not expose as a theme prop: type faces, the page gutter, and a few
- * accessibility guarantees. Python-side tokens live in `Qualify/ui/tokens.py`
- * and reference the `--q-*` variables declared here — change a value once, here.
+ * Colour stays in Radix (accent/gray scales, semantic scales, light/dark) and is
+ * configured in `rxconfig.py`. This file carries what Radix does not expose as a theme
+ * prop: type faces, the page gutter, elevation, and the motion language. Python-side
+ * tokens live in `Qualify/ui/tokens.py` and reference the `--q-*` variables declared
+ * here — change a value once, here.
  *
  * Reference: docs/design-system.md
  */
@@ -19,30 +19,44 @@
     monospace;
   --heading-letter-spacing: -0.012em;
 
-  /* Layout tokens (mirrored by Qualify/ui/tokens.py). */
-  --q-page-x: 2rem;          /* horizontal gutter of every business page */
-  --q-sidebar-w: 220px;      /* fixed sidebar width */
-  --q-radius-card: 0.75rem;  /* cards, panels, callouts */
-  --q-radius-control: 0.5rem;/* nav items, thumbnails, small containers */
-  --q-content-max: 1440px;   /* body column cap on very wide screens */
+  /* Layout (mirrored by Qualify/ui/tokens.py). */
+  --q-page-x: 2rem;           /* horizontal gutter inside a page panel */
+  --q-sidebar-w: 232px;       /* sidebar, expanded */
+  --q-sidebar-zen-w: 72px;    /* sidebar, zen (icons only) */
+  --q-gap: 10px;              /* air between the floating blocks */
+  --q-content-max: 1440px;
+
+  /* Shape. An island is the product's surface unit; a control is anything inside it. */
+  --q-radius-island: 0.875rem;
+  --q-radius-card: 0.75rem;
+  --q-radius-control: 0.5rem;
+  --q-radius-island-zen: 1rem;
+
+  /* Elevation. Radix's own shadow ramp, so it adapts to light/dark for free. */
+  --q-elev-island: var(--shadow-2);
+  --q-elev-lift: var(--shadow-3);
+  --q-elev-overlay: var(--shadow-5);
+
+  /* Motion. Two curves only: `ease` for opacity/colour, `spring` for size and shape. */
+  --q-ease: cubic-bezier(0.22, 0.8, 0.25, 1);
+  --q-spring: cubic-bezier(0.34, 1.4, 0.5, 1);
+  --q-dur-fast: 140ms;
+  --q-dur: 240ms;
+  --q-dur-slow: 380ms;
 }
 
 @media (max-width: 900px) {
   .radix-themes {
     --q-page-x: 1rem;
+    --q-gap: 6px;
   }
 }
 
 /* Figures line up in tables and stat cards. Opt in with class="q-nums". */
-.q-nums {
-  font-variant-numeric: tabular-nums;
-}
+.q-nums { font-variant-numeric: tabular-nums; }
 
 /* Identifiers (handles, ids, keys) use the mono face at the surrounding size. */
-.q-mono {
-  font-family: var(--code-font-family);
-  font-size: 0.92em;
-}
+.q-mono { font-family: var(--code-font-family); font-size: 0.92em; }
 
 /* Keyboard focus is always visible and always the accent, never the browser blue. */
 .radix-themes :focus-visible {
@@ -50,12 +64,133 @@
   outline-offset: 2px;
 }
 
-/* Sidebar nav items get a hover surface without a Python-side handler. */
-.q-nav-item:hover {
-  background: var(--gray-a3);
+/* ── Islands ──────────────────────────────────────────────────────────────────
+   Every surface floats on the app ground with air around it. The shape morphs
+   with the spring curve so a collapse reads as one movement, not two. */
+
+.q-island,
+.q-panel {
+  border-radius: var(--q-radius-island);
+  box-shadow: var(--q-elev-island);
+  transition:
+    border-radius var(--q-dur-slow) var(--q-spring),
+    padding var(--q-dur-slow) var(--q-spring),
+    box-shadow var(--q-dur) var(--q-ease);
 }
 
-/* Motion is decorative here, never informational, so it can be turned off. */
+/* A surface that responds to the pointer rises; a static one never does. */
+.q-lift {
+  transition:
+    transform var(--q-dur) var(--q-spring),
+    box-shadow var(--q-dur) var(--q-ease),
+    border-color var(--q-dur-fast) var(--q-ease);
+}
+.q-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--q-elev-lift);
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────────────────────
+   Zen mode is a class on the nav root; everything below reacts to it, so the
+   whole collapse is one CSS transition instead of a dozen conditional styles. */
+
+.q-sidebar {
+  width: var(--q-sidebar-w);
+  min-width: var(--q-sidebar-w);
+  transition:
+    width var(--q-dur-slow) var(--q-spring),
+    min-width var(--q-dur-slow) var(--q-spring);
+}
+.q-sidebar.q-zen {
+  width: var(--q-sidebar-zen-w);
+  min-width: var(--q-sidebar-zen-w);
+}
+.q-sidebar.q-zen .q-island { border-radius: var(--q-radius-island-zen); }
+
+.q-nav-item {
+  overflow: hidden;
+  position: relative;
+  justify-content: flex-start;
+  transition:
+    background var(--q-dur-fast) var(--q-ease),
+    color var(--q-dur-fast) var(--q-ease),
+    gap var(--q-dur-slow) var(--q-spring);
+}
+.q-nav-item:hover { background: var(--gray-a3); }
+
+/* The label is revealed with a mask, not a fade: it reads as material sliding out
+   from behind the icon rather than as something switching on. */
+.q-label {
+  max-width: 12rem;
+  clip-path: inset(0 0 0 0);
+  transition:
+    max-width var(--q-dur-slow) var(--q-spring),
+    clip-path var(--q-dur-slow) var(--q-ease),
+    opacity var(--q-dur-fast) var(--q-ease);
+}
+.q-zen .q-label {
+  max-width: 0;
+  clip-path: inset(0 100% 0 0);
+  opacity: 0;
+}
+
+/* Collapsed, nothing but the icon takes part in the flow — and every island shares
+   one horizontal padding so the icons land in a single column, whatever block they
+   belong to. */
+.q-zen .q-island { padding-left: 0.35rem; padding-right: 0.35rem; }
+.q-zen .q-nav-item {
+  gap: 0;
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+.q-zen .q-soon { display: none; }
+.q-zen .q-dot { position: absolute; top: 7px; right: 12px; }
+.q-zen .q-biz-row { flex-direction: column; gap: 6px; }
+.q-zen .q-zone-head { justify-content: center; }
+
+/* Name on hover only while collapsed — expanded, the label is already there. */
+.q-zen .q-nav-item[data-label]::after {
+  content: attr(data-label);
+  position: absolute;
+  left: calc(100% + 14px);
+  top: 50%;
+  transform: translateY(-50%) translateX(-4px);
+  background: var(--gray-12);
+  color: var(--gray-1);
+  font-size: 12px;
+  font-weight: 550;
+  padding: 4px 9px;
+  border-radius: var(--q-radius-control);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--q-dur-fast) var(--q-ease), transform var(--q-dur-fast) var(--q-ease);
+  z-index: 30;
+}
+.q-zen .q-nav-item:hover::after { opacity: 1; transform: translateY(-50%) translateX(0); }
+
+/* ── Entrance ─────────────────────────────────────────────────────────────────
+   One orchestrated moment per screen: blocks settle in from below, staggered by
+   depth. Applied by `page_body`, never by hand. */
+
+/* Deliberately animates transform only, never opacity: an entrance must not be the
+   only path to visible content. If the animation is frozen, throttled or unsupported,
+   the worst case is a block sitting 8 px low — not a blank page. */
+@keyframes q-settle {
+  from { transform: translateY(8px); }
+  to   { transform: none; }
+}
+.q-settle > * {
+  animation: q-settle var(--q-dur-slow) var(--q-ease) both;
+}
+.q-settle > *:nth-child(1) { animation-delay: 0ms; }
+.q-settle > *:nth-child(2) { animation-delay: 40ms; }
+.q-settle > *:nth-child(3) { animation-delay: 80ms; }
+.q-settle > *:nth-child(4) { animation-delay: 120ms; }
+.q-settle > *:nth-child(n + 5) { animation-delay: 160ms; }
+
+/* Motion here is decorative, never informational, so it can be turned off whole. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -65,4 +200,5 @@
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+  .q-lift:hover { transform: none; }
 }

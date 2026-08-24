@@ -23,15 +23,27 @@ from . import tokens as T
 # ---------------------------------------------------------------------------------------
 
 
-def card(*children: rx.Component, padding: str = "1.25rem", **props) -> rx.Component:
-    """The flat surface everything sits on: gray-2 fill, gray-5 hairline, card radius."""
+def card(
+    *children: rx.Component,
+    padding: str = "1.25rem",
+    interactive: bool = False,
+    **props,
+) -> rx.Component:
+    """The surface everything sits on: gray-2 fill, gray-5 hairline, card radius and the
+    resting elevation of the system. ``interactive=True`` adds the hover lift — only for
+    a card that actually does something when clicked, so elevation keeps meaning
+    'this responds to you' rather than being decoration."""
     style = {
         "border": T.BORDER,
         "border_radius": T.RADIUS_CARD,
-        "background": T.SURFACE_BG,
+        "background": T.CARD_BG,
+        "box_shadow": T.ELEV_ISLAND,
         "padding": padding,
         "width": "100%",
     }
+    if interactive:
+        style["class_name"] = "q-lift"
+        style["cursor"] = "pointer"
     style.update(props)
     return rx.box(*children, **style)
 

@@ -5,13 +5,19 @@
         page_body(...),
     )
 
-Three guarantees the shell gives a screen for free, so no page re-implements them:
+The shell is built as **islands floating on the app ground** (design decision C,
+docs/design-system.md §4 and §10.7): the sidebar is a stack of surfaces separated by
+air, the page is another, and the ground shows between them. Grouping is done by the
+gap, not by a rule.
 
-* the sidebar (with the active item derived from the route),
-* the header row with the session badge + colour-mode toggle in a fixed position,
-* the horizontal gutter (``tokens.PAGE_X``), responsive through CSS.
+Four guarantees a screen gets for free, so no page re-implements them:
 
-Reference: docs/design-system.md §4.
+* the sidebar — business on top, zones in the middle, sales metrics and Salir at the
+  bottom — with the active item derived from the route;
+* zen mode: one class on the nav root collapses every island to a 72 px rail, with the
+  labels revealed by mask and the width springing (``assets/qualify.css``);
+* the page panel, its gutter (``tokens.PAGE_X``) and its entrance;
+* the header row with page actions and the colour-mode toggle in a fixed position.
 """
 
 from __future__ import annotations
@@ -21,26 +27,76 @@ from collections.abc import Sequence
 import reflex as rx
 
 from ..auth_state import AuthState
-from ..state import DashboardState
 from . import tokens as T
+from .state import NavState
 
-# (label, lucide icon, route, enabled). Enabled items navigate; disabled ones show a
-# "pronto" badge. The active item is derived from the current route, never hardcoded.
-NAV_ITEMS: list[tuple[str, str, str, bool]] = [
-    ("Menciones", "message-circle", "/", True),
-    ("Conexiones", "link", "/connections", True),
-    ("Publicar", "upload", "/publish", True),
-    ("Marca", "palette", "/brand", True),
-    ("Crear pieza", "wand-sparkles", "/create", True),
-    ("Borradores", "layout-list", "/drafts", True),
-    ("Contenido", "film", "/inbox", True),
-    ("Leads", "user-plus", "/leads", True),
+LANDING_URL = "https://attitudefactory.co/qualify"
+
+# An item is (label, lucide icon, route, enabled). Enabled items navigate; disabled ones
+# show a "pronto" badge. The active item is derived from the current route, never
+# hardcoded.
+Item = tuple[str, str, str, bool]
+
+# Order follows the operator's flow, and the two tinted zones are the product's own two
+# axes (docs/index.md): what the market says, and what the business says. Connections is
+# the base of both, so it sits above them, untinted. The "Negocio" foot block is sales
+# measurement — deliberately outside the colour zones.
+NAV_BASE: list[Item] = [("Conexiones", "link", "/connections", True)]
+
+NAV_ZONES: list[tuple[str, str, list[Item]]] = [
+    (
+        "listen",
+        "Escuchas",
+        [
+            ("Menciones", "message-circle", "/", True),
+            ("Contenido", "film", "/inbox", True),
+            ("Creadores", "users", "#", False),
+            ("Señales", "bell", "#", False),
+        ],
+    ),
+    (
+        "publish",
+        "Publicas",
+        [
+            ("Marca", "palette", "/brand", True),
+            ("Crear pieza", "wand-sparkles", "/create", True),
+            ("Borradores", "layout-list", "/drafts", True),
+            ("Publicar", "upload", "/publish", True),
+        ],
+    ),
+]
+
+NAV_LOOSE: list[Item] = [("Leads", "user-plus", "/leads", True)]
+
+NAV_BUSINESS: list[Item] = [
     ("Clarity", "activity", "/clarity", True),
     ("Vitrina", "store", "/vitrina", True),
-    ("Creadores", "users", "#", False),
-    ("Señales", "bell", "#", False),
     ("Configuración", "settings", "#", False),
 ]
+
+# Flat view of the whole menu, in visual order. Kept because it is the cheapest thing to
+# assert against in a test and the shape older code imported.
+NAV_ITEMS: list[Item] = [
+    *NAV_BASE,
+    *[item for _zone, _label, items in NAV_ZONES for item in items],
+    *NAV_LOOSE,
+    *NAV_BUSINESS,
+]
+
+# `⌘ .` / `Ctrl .` toggles zen. Registered once per document: the sidebar mounts on every
+# page, so the guard is what keeps it from stacking listeners.
+_ZEN_SHORTCUT = """
+if (!window.__qZenKey) {
+  window.__qZenKey = true;
+  document.addEventListener('keydown', function (e) {
+    if ((e.metaKey || e.ctrlKey) && e.key === '.') {
+      e.preventDefault();
+      var b = document.getElementById('q-zen-toggle');
+      if (b) b.click();
+    }
+  });
+}
+"""
 
 
 def brand_mark(size: int = 22, heading_size: str = "5") -> rx.Component:
@@ -54,33 +110,66 @@ def brand_mark(size: int = 22, heading_size: str = "5") -> rx.Component:
     )
 
 
+def _nav_row(
+    icon: str,
+    label: str,
+    *,
+    active: rx.Var | bool = False,
+    disabled: bool = False,
+    trailing: rx.Component | None = None,
+    tooltip: str | None = None,
+) -> rx.Component:
+    """The geometry of every sidebar row, whatever wraps it.
+
+    Kept in one place because zen centres the icon by collapsing the label to zero
+    width: if a link row and a button row had different padding, their icons would land
+    in different columns the moment the rail collapses. The wrapper (``rx.link`` or
+    ``rx.el.button``) carries no padding of its own.
+    """
+    return rx.hstack(
+        rx.icon(icon, size=T.ICON_MD),
+        rx.el.span(
+            label,
+            class_name="q-label",
+            style={"whiteSpace": "nowrap", "fontSize": "var(--font-size-3)"},
+        ),
+        *([trailing] if trailing is not None else []),
+        width="100%",
+        gap="0.6rem",
+        padding="0.5rem 0.6rem",
+        border_radius=T.RADIUS_CONTROL,
+        background=rx.cond(active, rx.color("accent", 5), "transparent"),
+        color=rx.cond(active, rx.color("accent", 11), rx.color("gray", 11)),
+        font_weight=rx.cond(active, "600", "400"),
+        opacity="0.55" if disabled else "1",
+        class_name="q-nav-item",
+        custom_attrs={"data-label": tooltip or label},
+        **({"aria_disabled": "true"} if disabled else {}),
+    )
+
+
 def _nav_item(label: str, icon: str, route: str, enabled: bool) -> rx.Component:
+    """One menu entry. Disabled entries render the row without a link, so they cannot be
+    tabbed to or followed."""
     if not enabled:
-        return rx.hstack(
-            rx.icon(icon, size=T.ICON_MD),
-            rx.text(label, size="3"),
-            rx.spacer(),
-            rx.badge("pronto", variant="soft", color_scheme="gray", size="1"),
-            width="100%",
-            padding="0.5rem 0.75rem",
-            border_radius=T.RADIUS_CONTROL,
-            color=T.TEXT_MUTED,
-            opacity="0.6",
-            aria_disabled="true",
+        return _nav_row(
+            icon,
+            label,
+            disabled=True,
+            tooltip=f"{label} · pronto",
+            trailing=rx.badge(
+                "pronto",
+                variant="soft",
+                color_scheme="gray",
+                size="1",
+                class_name="q-soon",
+                margin_left="auto",
+            ),
         )
 
-    active = DashboardState.router.page.path == route
+    active = NavState.router.page.path == route
     return rx.link(
-        rx.hstack(
-            rx.icon(icon, size=T.ICON_MD),
-            rx.text(label, size="3", weight=rx.cond(active, "medium", "regular")),
-            width="100%",
-            padding="0.5rem 0.75rem",
-            border_radius=T.RADIUS_CONTROL,
-            background=rx.cond(active, rx.color("accent", 4), "transparent"),
-            color=rx.cond(active, rx.color("accent", 11), rx.color("gray", 11)),
-            class_name="q-nav-item",
-        ),
+        _nav_row(icon, label, active=active),
         href=route,
         width="100%",
         underline="none",
@@ -88,32 +177,63 @@ def _nav_item(label: str, icon: str, route: str, enabled: bool) -> rx.Component:
     )
 
 
-LANDING_URL = "https://attitudefactory.co/qualify"
+def _island(*children: rx.Component, tint: str | None = None, **props) -> rx.Component:
+    """A floating block of the sidebar. `tint` names a zone; without one it is neutral."""
+    style = {
+        "background": T.zone_tint(tint) if tint else T.SURFACE_BG,
+        "border": T.zone_line(tint) if tint else T.BORDER,
+        "padding": "0.4rem 0.35rem 0.5rem",
+        "width": "100%",
+        "class_name": "q-island",
+    }
+    style.update(props)
+    return rx.vstack(*children, spacing="1", align_items="stretch", **style)
+
+
+def _zone_head(label: str, zone: str) -> rx.Component:
+    return rx.hstack(
+        rx.text(
+            label,
+            size="1",
+            weight="medium",
+            color=T.zone_ink(zone),
+            class_name="q-label q-mono",
+            style={"letterSpacing": "0.09em", "textTransform": "uppercase"},
+            white_space="nowrap",
+        ),
+        width="100%",
+        padding="0.15rem 0.6rem 0.1rem",
+        class_name="q-zone-head",
+        height="1.35rem",
+        align="center",
+    )
 
 
 def tenant_block() -> rx.Component:
-    """Top of the sidebar: the business owns the screen. Its name first, then the
-    "Supported by Qualify" line with the mark, linking to the landing. When there is no
-    session (e.g. `/design`) the name falls back to "Qualify" so the block never reads
-    empty."""
+    """Top island: the business owns the screen. Its name first, then "Supported by
+    Qualify" linking to the landing, and the control that collapses the rail. Without a
+    session (e.g. `/design`) the name falls back to "Qualify" so it never reads empty."""
     name = rx.cond(AuthState.business_name != "", AuthState.business_name, "Qualify")
-    return rx.vstack(
+    return _island(
         rx.hstack(
             rx.icon("store", size=T.ICON_MD, color=rx.color("accent", 9)),
-            # A text, not a heading: the wordmark must not enter the page outline.
             rx.text(
                 name,
                 size="4",
                 weight="bold",
                 letter_spacing="-0.02em",
+                class_name="q-label",
                 overflow="hidden",
                 text_overflow="ellipsis",
                 white_space="nowrap",
             ),
+            rx.spacer(),
+            _zen_toggle(),
             align="center",
             spacing="2",
             width="100%",
             min_width="0",
+            class_name="q-biz-row",
         ),
         rx.link(
             rx.hstack(
@@ -122,64 +242,75 @@ def tenant_block() -> rx.Component:
                 rx.text("Qualify", size="1", weight="medium", color=rx.color("accent", 11)),
                 align="center",
                 spacing="1",
+                white_space="nowrap",
             ),
             href=LANDING_URL,
             is_external=True,
             underline="none",
+            class_name="q-label",
             aria_label="Qualify — ir al sitio",
         ),
-        spacing="1",
-        align_items="start",
-        padding="1rem 0.75rem 0.75rem",
-        width="100%",
+        padding="0.7rem 0.75rem",
+    )
+
+
+def _zen_toggle() -> rx.Component:
+    return rx.button(
+        rx.icon(rx.cond(NavState.zen, "panel-left-open", "panel-left-close"), size=T.ICON_SM),
+        id="q-zen-toggle",
+        variant="ghost",
+        color_scheme="gray",
+        size="1",
+        on_click=NavState.toggle_zen,
+        aria_label=rx.cond(NavState.zen, "Expandir el menú", "Contraer el menú"),
+        title="⌘ .",
     )
 
 
 def logout_action() -> rx.Component:
     """Bottom of the sidebar. There is no tenant switch (`1 login = 1 tenant`): changing
     business = logout + login, so this is the only session control in the app."""
-    return rx.box(
-        rx.button(
-            rx.icon("log-out", size=T.ICON_MD),
-            "Salir",
-            variant="ghost",
-            color_scheme="gray",
-            size="2",
-            width="100%",
-            justify_content="start",
-            on_click=AuthState.logout,
-        ),
+    return rx.el.button(
+        _nav_row("log-out", "Salir"),
+        on_click=AuthState.logout,
         width="100%",
-        padding="0.75rem 0.5rem",
-        border_top=T.BORDER,
+        padding="0",
+        border="none",
+        background="transparent",
+        cursor="pointer",
+        text_align="left",
+        font="inherit",
     )
 
 
 def sidebar() -> rx.Component:
     return rx.el.nav(
-        rx.vstack(
-            tenant_block(),
-            rx.vstack(
-                *[_nav_item(*item) for item in NAV_ITEMS],
-                width="100%",
-                spacing="1",
-                padding="0 0.5rem",
-            ),
-            rx.spacer(),
+        rx.script(_ZEN_SHORTCUT),
+        tenant_block(),
+        _island(*[_nav_item(*item) for item in NAV_BASE]),
+        *[
+            _island(_zone_head(label, zone), *[_nav_item(*i) for i in items], tint=zone)
+            for zone, label, items in NAV_ZONES
+        ],
+        _island(*[_nav_item(*item) for item in NAV_LOOSE]),
+        rx.spacer(),
+        _island(
+            _zone_head("Negocio", "business"),
+            *[_nav_item(*item) for item in NAV_BUSINESS],
+            rx.divider(margin="0.15rem 0"),
             logout_action(),
-            width="100%",
-            height="100%",
-            align_items="start",
-            spacing="0",
         ),
         aria_label="Secciones",
-        width=T.SIDEBAR_W,
-        min_width=T.SIDEBAR_W,
+        class_name=rx.cond(NavState.zen, "q-sidebar q-zen", "q-sidebar"),
+        display="flex",
+        flex_direction="column",
+        gap=T.GAP,
+        padding=T.GAP,
         height="100vh",
-        border_right=T.BORDER,
         position="sticky",
         top="0",
         flex_shrink="0",
+        overflow="hidden auto",
     )
 
 
@@ -201,7 +332,7 @@ def page_header(
     ``actions`` render right-aligned, in the order given, before the colour-mode toggle.
     ``badge`` sits next to the title — for a state that describes the whole page ("demo",
     a count), never for an action. ``show_session`` is accepted for compatibility and
-    ignored: the session lives in the sidebar (name on top, "Salir" at the bottom).
+    ignored: the session lives in the sidebar.
     """
     title_row = rx.hstack(
         rx.heading(title, size="6", as_="h1"),
@@ -215,12 +346,11 @@ def page_header(
         spacing="1",
         align_items="start",
     )
-    right: list[rx.Component] = list(actions)
-    right.append(rx.color_mode.button())
     return rx.hstack(
         title_block,
         rx.spacer(),
-        *right,
+        *actions,
+        rx.color_mode.button(),
         width="100%",
         padding=T.PAD_HEADER,
         align="center",
@@ -230,7 +360,8 @@ def page_header(
 
 
 def page_body(*children: rx.Component, spacing: str = "4") -> rx.Component:
-    """The gutter every block below the header shares. Stack children vertically."""
+    """The gutter every block below the header shares. Children settle in on load,
+    staggered by position — one orchestrated entrance per screen, never per component."""
     return rx.vstack(
         *children,
         width="100%",
@@ -238,11 +369,13 @@ def page_body(*children: rx.Component, spacing: str = "4") -> rx.Component:
         spacing=spacing,
         align_items="start",
         padding=T.PAD_BODY,
+        class_name="q-settle",
     )
 
 
 def app_shell(*children: rx.Component, spacing: str = "0") -> rx.Component:
-    """Sidebar + main column. Pass ``page_header`` first, then the body blocks."""
+    """Sidebar + page panel, floating on the app ground. Pass ``page_header`` first,
+    then the body blocks."""
     return rx.hstack(
         sidebar(),
         rx.el.main(
@@ -252,12 +385,20 @@ def app_shell(*children: rx.Component, spacing: str = "0") -> rx.Component:
                 spacing=spacing,
                 align_items="start",
             ),
+            background=T.SURFACE_BG,
+            border=T.BORDER,
+            class_name="q-panel",
             flex="1",
             min_width="0",
+            min_height=f"calc(100vh - 2 * {T.GAP})",
+            margin=f"{T.GAP} {T.GAP} {T.GAP} 0",
+            overflow="hidden",
         ),
         width="100%",
         spacing="0",
         align_items="start",
+        background=T.GROUND,
+        min_height="100vh",
     )
 
 

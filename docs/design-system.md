@@ -1,6 +1,6 @@
 # Qualify — UX/UI y Design System
 
-`[v1 — 2026-08-18]` · Aplica a la app Reflex en `Qualify/` · Código: `Qualify/ui/`, `assets/qualify.css`, `rxconfig.py` · Guía viva: ruta `/design`
+`[v2 — 2026-08-19]` · Aplica a la app Reflex en `Qualify/` · Código: `Qualify/ui/`, `assets/qualify.css`, `rxconfig.py` · Guía viva: ruta `/design`
 
 > **Regla de la casa:** el sistema vive en el código, no en este documento. Este doc explica *por qué* y *cuándo*; `Qualify/ui/` dice *cómo*, y `/design` lo demuestra renderizado con el tema real. Si algo aquí contradice a `Qualify/ui/`, gana el código y hay que corregir el doc.
 
@@ -27,11 +27,12 @@ Este documento cubre: principios (§1), auditoría del estado previo (§2), fund
 | P1 | **Estado = color + icono/punto + palabra** | Nunca color solo. Sentimiento, salud de conexión, intento de publicación, sync: siempre `signal_pill`/`tone_badge` con la palabra escrita. El caso de tres estados ("desconocido") es la razón: color-solo lee como un "no" suave. |
 | P2 | **La variante codifica la categoría** | Badge `soft` = estado · `outline` = identidad (plataforma, entidad) · `surface` = etiqueta/categoría · `solid` = solo la acción principal (botones). Ver §5.3. |
 | P3 | **Una acción principal por pantalla** | Un solo botón `solid`; lo demás `soft`/`outline`/`ghost`. Si hay dos "principales", falta decidir. |
-| P4 | **Superficies planas** | Tarjeta = borde 1px `gray-5` sobre `gray-2`, sin sombra. La elevación la reservan diálogos y popovers (Radix). Se lee como formulario impreso, no como app de vidrio. |
+| P4 | **Islas flotantes** | Toda superficie flota sobre el fondo de la app con la elevación de reposo (`T.ELEV_ISLAND`). Los grupos se separan por **aire**, no por líneas. Y la elevación **significa** «esto responde»: sólo sube al hover lo que hace algo al pulsarlo (`card(interactive=True)`). |
 | P5 | **Vacío y error dirigen** | Un estado vacío es una invitación a actuar (hecho + siguiente paso). Un error dice qué pasó y cómo se arregla; no se disculpa ni es vago. |
 | P6 | **Cifras e identificadores tienen su tipografía** | Números tabulares (`q-nums`) en tablas y stat cards; `@handles`, ids y timestamps en mono (`q-mono`). El producto es señales y métricas; que se lean como tales. |
 | P7 | **Tokens por rol, nunca por valor** | Una pantalla pide `T.TEXT_MUTED`, `tone="error"`, `T.PAGE_X`; no pide `"tomato"` ni `"2rem"`. Así el sistema se mueve una vez y en todos lados. |
-| P8 | **Español, tú, sentence case** | La UI habla al operador de tú, en español latino neutro, con verbos concretos. Ver §7. |
+| P8 | **Dos curvas, tres duraciones** | Muelle (`T.SPRING`) para lo que cambia de tamaño o de forma; ease (`T.EASE`) para color, opacidad y máscara. Si un movimiento pide otra curva, es que no encaja en el sistema. |
+| P9 | **Español, tú, sentence case** | La UI habla al operador de tú, en español latino neutro, con verbos concretos. Ver §7. |
 
 ---
 
@@ -117,13 +118,22 @@ Regla de degradación: un tono no mapeado cae en `neutral`, nunca en `accent` ni
 | `T.PAD_HEADER` | `1.5rem PAGE_X 1rem PAGE_X` | bloque del título |
 | `T.PAD_BODY` | `0 PAGE_X 2rem PAGE_X` | todo lo demás |
 | `T.PAD_EMPTY` | `4rem PAGE_X` | empty states |
-| `T.SIDEBAR_W` | 220px | sidebar fija |
+| `T.SIDEBAR_W` / `T.SIDEBAR_ZEN_W` | 232px / 72px | sidebar expandida · rail zen |
+| `T.GAP` | 10px (6px < 900px) | aire entre islas, panel y borde de pantalla |
 | `T.CONTENT_MAX` | 1440px | tope del cuerpo en pantallas muy anchas |
 | Espaciado interno | escala Radix `spacing` 1-9 (4/8/12/16/24/32…) | `spacing="3"` dentro de tarjetas, `"4"` entre bloques |
+| `T.RADIUS_ISLAND` | 0.875rem (1rem en zen) | islas del sidebar, panel de página |
 | `T.RADIUS_CARD` | 0.75rem | tarjetas, callouts |
 | `T.RADIUS_CONTROL` | 0.5rem | nav, thumbnails, bandas |
-| Elevación | ninguna en superficies | sombras solo en overlays Radix |
-| Movimiento | el de Radix (hover/press) | `prefers-reduced-motion` respetado globalmente |
+| `T.ELEV_ISLAND` | `--shadow-2` | reposo de toda superficie flotante |
+| `T.ELEV_LIFT` | `--shadow-3` | hover de una tarjeta **interactiva** |
+| `T.ELEV_OVERLAY` | `--shadow-5` | diálogos, popovers |
+| `T.SPRING` | `cubic-bezier(.34,1.4,.5,1)` | ancho, forma, colapso del rail |
+| `T.EASE` | `cubic-bezier(.22,.8,.25,1)` | color, opacidad, máscara |
+| `T.DUR_FAST` · `T.DUR` · `T.DUR_SLOW` | 140 · 240 · 380 ms | hover · elevación · colapso |
+| `T.GROUND` / `T.SURFACE_BG` / `T.CARD_BG` | `--color-background` / `--color-panel-solid` / gray-2 | fondo de la app · isla · tarjeta dentro del panel |
+
+Las sombras salen de la rampa propia de Radix (`--shadow-1..6`), ya calibrada para claro y oscuro: por eso la elevación no necesita una definición por tema. Lo mismo con el par fondo/isla (`--color-background` / `--color-panel-solid`), que Radix garantiza que se lean como «isla sobre fondo» en ambos. `prefers-reduced-motion` apaga todo el movimiento de golpe, elevación al hover incluida.
 
 Iconos: lucide, tres tamaños (`ICON_SM`=14 dentro de badges/botones size 1, `ICON_MD`=18 en nav y botones size 2, `ICON_LG`=40 en empty states). Nada intermedio.
 
@@ -131,25 +141,42 @@ Iconos: lucide, tres tamaños (`ICON_SM`=14 dentro de badges/botones size 1, `IC
 
 ## 4. Layout
 
-### 4.1 El shell
+### 4.1 El shell: islas sobre el fondo
 
 ```
-┌──────────┬──────────────────────────────────────────────────────┐
-│🏪 Negocio│  Título de página  [badge]                [acciones] [◐] │  ← page_header
-│Supported │  subtítulo muted                                      │
-│by ◎Qualify─────────────────────────────────────────────────────┤
-│ Menciones│                                                       │
-│ Conexion.│  ┌────────────┐ ┌────────────┐ ┌────────────┐          │
-│ Publicar │  │ stat_card  │ │ stat_card  │ │ stat_card  │  ← page_body (gutter PAGE_X)
-│ Contenido│  └────────────┘ └────────────┘ └────────────┘          │
-│ Leads    │  callout (si hay error de acción)                       │
-│ Clarity  │  ┌──────────────────────────────────────────────┐      │
-│ Vitrina  │  │ card / tabla / lista …                        │      │
-│ ─────    │  └──────────────────────────────────────────────┘      │
-│ Creadores·pronto                                                  │
-│ ─────    │                                                       │
-│ ⇥ Salir  │                                                       │  ← logout_action (pie del sidebar)
-└──────────┴──────────────────────────────────────────────────────┘
+  ┌────────────┐ ┌────────────────────────────────────────────────┐
+  │🏪 Negocio ⇤│ │ Título de página [badge]        [acciones] [◐] │ ← page_header
+  │Supported by│ │ subtítulo muted                                │
+  │  ◎ Qualify │ │                                                │
+  └────────────┘ │ ┌──────────┐ ┌──────────┐ ┌──────────┐         │
+  ┌────────────┐ │ │stat_card │ │stat_card │ │stat_card │  ← page_body (gutter PAGE_X)
+  │ Conexiones │ │ └──────────┘ └──────────┘ └──────────┘         │
+  └────────────┘ │ callout (si hay error de acción)               │
+  ┌────────────┐ │ ┌────────────────────────────────────────────┐ │
+  │ ESCUCHAS   │ │ │ card / tabla / lista …                     │ │
+  │ Menciones  │ │ └────────────────────────────────────────────┘ │
+  │ Contenido  │ │                                                │
+  │ Creadores ·│ │                                                │
+  │ Señales   ·│ │                                                │
+  └────────────┘ │                                                │
+  ┌────────────┐ │                                                │
+  │ PUBLICAS   │ │                                                │
+  │ Marca      │ │                                                │
+  │ Crear pieza│ │                                                │
+  │ Borradores │ │                                                │
+  │ Publicar   │ │                                                │
+  └────────────┘ │                                                │
+  ┌────────────┐ │                                                │
+  │ Leads      │ │                                                │
+  └────────────┘ │                                                │
+  ┌────────────┐ │                                                │
+  │ NEGOCIO    │ │                                                │
+  │ Clarity    │ │                                                │
+  │ Vitrina    │ │                                                │
+  │ Config.   ·│ │                                                │
+  │ ───────────│ │                                                │
+  │ ⇥ Salir    │ │                                                │
+  └────────────┘ └────────────────────────────────────────────────┘
 ```
 
 ```python
@@ -162,18 +189,39 @@ def leads_index() -> rx.Component:
     )
 ```
 
-- `app_shell(*children)`: sidebar sticky (220px, `nav` con `aria-label`) + columna `main`. El ítem activo se deriva de la ruta.
-- **Sidebar** = `tenant_block` (nombre del negocio + «Supported by ◎ Qualify» → `LANDING_URL`) · navegación · `rx.spacer()` · `logout_action` («Salir», ghost, pegado al pie con borde superior). Es el único control de sesión de la app (`1 login = 1 negocio`, sin switch). Sin sesión (`/design`) el nombre cae a «Qualify».
-- `page_header(title, subtitle=None, *actions, badge=None)`: h1 + subtítulo; a la derecha, en este orden: `actions` (selectores, botones de la página) y el toggle de modo. `badge` va **junto al título** y describe la página ("demo", un conteo), nunca es una acción.
-- `page_body(*children, spacing="4")`: aplica el gutter y el tope de ancho. Los hijos **no** llevan padding horizontal propio.
+- `app_shell(*children)`: el fondo de la app (`T.GROUND`) con dos cosas flotando encima — el sidebar (`nav` sticky) y el panel de página (`main`), ambos con `T.RADIUS_ISLAND` y `T.ELEV_ISLAND`. El ítem activo se deriva de la ruta.
+- `page_header(title, subtitle=None, *actions, badge=None)`: h1 + subtítulo; a la derecha, `actions` (selectores, botones de la página) y el toggle de modo. `badge` va **junto al título** y describe la página ("demo", un conteo), nunca es una acción.
+- `page_body(*children, spacing="4")`: aplica el gutter y el tope de ancho, y hace **entrar los bloques escalonados** al cargar (`.q-settle`, 40 ms entre hijos, tope a partir del quinto). Los hijos **no** llevan padding horizontal propio.
 - `section(title, *children, description=None, actions=())`: h2 con descripción y acciones para dividir un cuerpo largo.
 
-### 4.2 Reglas de página
+### 4.2 El sidebar: zonas y modo zen
 
-1. Toda página de negocio lleva el sidebar completo (negocio arriba, Salir abajo — §0 pregunta 1) y el toggle de modo en el header. Solo `/login` y `/signup` no llevan sidebar.
+El menú está ordenado por el flujo de trabajo, y las dos zonas teñidas son los dos ejes del producto (`docs/index.md`): lo que dice el mercado y lo que dice el negocio.
+
+| Isla | Contiene | Tinte |
+|---|---|---|
+| Negocio (arriba) | nombre del tenant, «Supported by ◎ Qualify» → `LANDING_URL`, control de zen | neutra |
+| Base | Conexiones — habilita las dos zonas, así que no pertenece a ninguna | neutra |
+| **Escuchas** (inbound) | Menciones · Contenido · Creadores · Señales | `accent` paso 2 |
+| **Publicas** (outbound) | Marca · Crear pieza · Borradores · Publicar | `iris` paso 2 |
+| Suelta | Leads | neutra |
+| **Negocio** (pie) | Clarity · Vitrina · Configuración · Salir | neutra |
+
+Tres reglas que sostienen esto:
+
+1. **El tinte es superficie, no señal.** Se queda en el paso 2 de la escala: agrupa, pero no puede confundirse con un estado (P1/P2). Subirlo es una decisión consciente, no un ajuste.
+2. **Vitrina y Clarity viven fuera de las zonas de color**, en el pie: miden ventas y comportamiento web, no conversación.
+3. **Salir es el único control de sesión** (`1 login = 1 negocio`, sin switch). Sin sesión (`/design`) el nombre cae a «Qualify».
+
+**Zen** (`NavState.zen`, botón en la isla del negocio o `⌘ .`): el rail se contrae a 72 px con muelle, cada isla redondea un poco más, las etiquetas se **revelan con máscara** (`clip-path`) en vez de fundirse y el nombre aparece en un tooltip al pasar el ratón. Todo el colapso es **una clase** (`q-zen`) en el `nav`: las reglas viven en `assets/qualify.css`, no en condicionales de Python — así el navegador puede animarlo y no hay dos árboles que mantener. El estado vive en la sesión del servidor, nunca en el navegador: persistir en el cliente exigiría clave namespaced por tenant y purga en logout (regla firmada), y para un modo de vista no compensa.
+
+### 4.3 Reglas de página
+
+1. Toda página de negocio lleva el sidebar completo y el toggle de modo en el header. Solo `/login` y `/signup` no llevan sidebar.
 2. El header no scrollea con contenido pesado: lo que "vive" arriba son controles de página (selector de cuenta, botón de actualizar), no contenido.
 3. Densidad: tablas para listas homogéneas y comparables (leads, menciones); tarjetas para entidades con estados y acciones propias (conexiones, reels). No mezclar en la misma lista.
-4. Responsive: el gutter baja a 1rem < 900px; grids usan `rx.breakpoints(initial=…, md=…, lg=…)`; tablas envuelven en `overflow_x="auto"` (lo hace `mentions_table`/`_leads_table`). El sidebar es fijo hoy — colapsarlo en móvil es trabajo pendiente (§9.3).
+4. Responsive: el gutter baja a 1rem y el aire entre islas a 6px por debajo de 900px; grids usan `rx.breakpoints(…)`; tablas envuelven en `overflow_x="auto"`. El colapso automático del rail en móvil sigue pendiente (§9.3).
+5. **Toda fila del sidebar usa la misma geometría** (`_nav_row`): el envoltorio — link o botón — no lleva padding. Es lo que garantiza que en zen todos los iconos caigan en la misma columna.
 
 ---
 
@@ -185,7 +233,7 @@ Todo en `Qualify/ui/primitives.py` salvo lo indicado. Radix (`rx.button`, `rx.in
 
 | Primitiva | Cuándo | Notas |
 |---|---|---|
-| `card(*children, padding="1.25rem", **props)` | cualquier bloque delimitado | flat; acepta overrides |
+| `card(*children, padding="1.25rem", interactive=False, **props)` | cualquier bloque delimitado | fondo `CARD_BG`, hairline y `ELEV_ISLAND`. `interactive=True` añade el ascenso al hover — sólo si al pulsarla pasa algo |
 | `stat_card(label, value, tone="accent", hint=None)` | una cifra con su etiqueta | tono solo en la cifra; `q-nums` |
 | `kv(label, value, mono=False)` | par etiqueta/valor en un panel de detalle | `mono=True` para ids |
 | `mono(text)` | identificador inline | handles, ids, timestamps |
@@ -338,6 +386,7 @@ Qué pasó (en términos del operador) + qué hacer. Nunca el stack trace, nunca
 4. Estados con `signal_pill`/`tone_badge`; identidad con `platform_badge`; etiquetas con `tag`.
 5. Una sola acción `solid`. Verbos del glosario §7.2.
 6. Cifras con `q-nums`; ids con `mono`.
+6.b Movimiento sólo con `T.SPRING`/`T.EASE` y las tres duraciones; elevación sólo `ELEV_*`. Si una tarjeta no hace nada al pulsarla, no se levanta.
 7. Ábrela en `/design` mentalmente: si tuviste que inventar una primitiva, añádela a `Qualify/ui/primitives.py`, muéstrala en `styleguide_page.py` y documéntala en §5.
 8. `just lint` + `just test` (los tests puros no importan páginas; el compilador de Reflex es la prueba de que renderiza).
 
@@ -349,7 +398,7 @@ Qué pasó (en términos del operador) + qué hacer. Nunca el stack trace, nunca
 - Después de cualquier cambio: abrir `/design` en claro y oscuro.
 
 ### 9.3 Deuda conocida (ordenada)
-1. **Sidebar en móvil**: fija a 220px; hace falta colapsar a icon-rail o drawer < 900px.
+1. **Sidebar en móvil**: el rail zen existe pero no se activa solo; falta colapsarlo automáticamente por debajo de 900px (y decidir si allí debe ser drawer en vez de rail).
 2. **Verificación visual de páginas de negocio con sesión real**: `/design` y `/login` se verificaron en claro/oscuro y a 820px; las páginas tras `require_login` se verificaron por render de componentes (misma `app_shell`), no con una sesión Supabase viva.
 3. `vitrina_page` conserva su `_CARD` dict y voseo (demo); si deja de ser demo, migrar a `card` y a la voz §7.1.
 4. `clarity_page` usa `rx.card` de Radix en algunos bloques y `card` de Qualify en otros; unificar cuando se toque.
@@ -379,6 +428,16 @@ Qué pasó (en términos del operador) + qué hacer. Nunca el stack trace, nunca
 
 ### 10.5 `/design` sin login y sin enlace en el sidebar
 - No contiene datos de tenant y sirve a quien construye pantallas, no al operador. Estar fuera del sidebar evita confundirlo con producto.
+
+### 10.7 Islas flotantes y muelle (propuesta C, elegida 2026-08-19)
+
+Se prototiparon tres menús — dos planos con tinte, un ciclo numerado en tres etapas, e islas flotantes — y se eligió el tercero. Lo que se compró con esa elección, y por qué:
+
+- **La separación la hace el aire, no una línea.** Un sidebar con reglas horizontales pide una jerarquía que este menú no tiene (ninguna zona manda sobre otra). Bloques separados por hueco agrupan igual de bien sin inventar orden.
+- **El muelle es la firma.** El colapso del rail es el movimiento más frecuente de la app, así que es el que define cómo se siente: `cubic-bezier(.34,1.4,.5,1)` sobrepasa ligeramente y asienta. Se extiende a todo lo que cambia de tamaño o forma; lo demás se queda en `ease`.
+- **La etiqueta se revela con máscara.** Un fundido dice «apareció»; una máscara dice «estaba ahí detrás del icono». Es más caro de percibir y más barato de ejecutar (`clip-path` sobre una sola propiedad).
+- **La elevación gana significado al restringirla.** Al pasar de «superficies planas» (v1) a islas, la sombra dejaría de decir nada si todo la tuviera: por eso el reposo es una sola sombra baja y el ascenso al hover está reservado a `card(interactive=True)`.
+- **Lo que se descartó:** la numeración de etapas de la propuesta B (enseña el método el primer día, estorba los demás) y su panel flotante al hover en zen — buena idea, pero pendiente hasta que el rail automático en móvil esté decidido, para no diseñar dos veces el mismo hueco.
 
 ### 10.6 Migración en el mismo cambio
 - Un design system que solo existe en un doc y en una carpeta nueva no cambia nada. Se migraron las 8 páginas para que la próxima pantalla copie del código vigente, no del viejo.
