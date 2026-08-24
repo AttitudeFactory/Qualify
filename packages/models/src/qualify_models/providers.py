@@ -4,7 +4,6 @@ import base64
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from huggingface_hub import InferenceClient
 from PIL import Image
 
 
@@ -144,6 +143,12 @@ class HFInferenceVisionProvider:
     def __init__(
         self, model_id: str = "Qwen/Qwen3-VL-4B-Instruct", provider: str = "featherless-ai"
     ) -> None:
+        # Lazy on purpose: `huggingface_hub` lives in the `ml` dependency group,
+        # deliberately excluded from the default `backend` install (CI included).
+        # Importing `qualify_models.providers` for an unrelated provider (e.g.
+        # `SentimentProvider`, from `qualify_api.sentiment`) must not require it.
+        from huggingface_hub import InferenceClient  # noqa: PLC0415
+
         self.model_id = model_id
         self._client = InferenceClient(model=model_id, provider=provider)
 
@@ -243,6 +248,9 @@ class HFInferenceTranscriptionProvider:
     faster-whisper self-hosted once GPU serverless infra exists (Parte 3)."""
 
     def __init__(self, model_id: str = "openai/whisper-large-v3-turbo") -> None:
+        # Lazy on purpose — same reason as `HFInferenceVisionProvider.__init__`.
+        from huggingface_hub import InferenceClient  # noqa: PLC0415
+
         self.model_id = model_id
         self._client = InferenceClient(model=model_id, provider="auto")
 

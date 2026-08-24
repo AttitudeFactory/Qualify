@@ -16,12 +16,19 @@ see `connections_routes.start_connect` for the precedent this mirrors.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from uuid import UUID
 
-from qualify_models.providers import SentimentProvider
-from qualify_models.social.ig_comments import analyze_text
-
 from qualify_api.sentiment.repository import AnalysisVersion, SentimentRepository
+
+if TYPE_CHECKING:
+    # `qualify_models` lives in the `ml` dependency group, deliberately excluded from
+    # the default `backend` install (CI included) — see `composition.py`'s
+    # `current_analysis_version` docstring. This import is type-checking-only: with
+    # `from __future__ import annotations` active, the `provider: SentimentProvider |
+    # None` annotation below is never evaluated at runtime, so no real import is
+    # needed to run this module — only for mypy/pyright.
+    from qualify_models.providers import SentimentProvider
 
 
 @dataclass(frozen=True)
@@ -46,6 +53,12 @@ class SentimentService:
         self._provider = provider
 
     def analyze_pending_comments(self, *, tenant_id: UUID, connection_id: UUID) -> AnalysisSummary:
+        # Lazy on purpose, same reason `SentimentProvider` above is TYPE_CHECKING-only:
+        # this is the one real runtime dependency this module has on `qualify_models`
+        # (the `ml` group), deferred to the moment analysis actually runs rather than
+        # to module import time.
+        from qualify_models.social.ig_comments import analyze_text  # noqa: PLC0415
+
         pending = self._repository.list_pending_for_analysis(
             tenant_id=tenant_id, connection_id=connection_id, version=self._version
         )

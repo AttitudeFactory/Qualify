@@ -14,9 +14,9 @@ model/type layer is `qualify_models.social.ig_comments.analyze_text`.
 """
 
 from qualify_api.sentiment.composition import (
-    CURRENT_ANALYSIS_VERSION,
     UnknownSentimentConnection,
     analyze_pending_comments,
+    current_analysis_version,
 )
 from qualify_api.sentiment.repository import (
     AnalysisVersion,
@@ -28,7 +28,6 @@ from qualify_api.sentiment.repository import (
 from qualify_api.sentiment.service import AnalysisSummary, SentimentService
 
 __all__ = [
-    "CURRENT_ANALYSIS_VERSION",
     "AnalysisSummary",
     "AnalysisVersion",
     "MemorySentimentRepository",
@@ -38,4 +37,5 @@ __all__ = [
     "SentimentService",
     "UnknownSentimentConnection",
     "analyze_pending_comments",
+    "current_analysis_version",
 ]
