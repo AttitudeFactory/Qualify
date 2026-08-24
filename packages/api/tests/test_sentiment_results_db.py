@@ -1,19 +1,27 @@
-"""End-to-end `db` test against the REAL comments already ingested into Postgres by the
-2026-08-21 live Meta validation (tenant PuntoServis, `@qualifymkt.co`) — not a fixture,
-not synthetic data. Uses a stub provider (fast, deterministic, no weights) under a
-test-only `AnalysisVersion` so it never collides with `CURRENT_ANALYSIS_VERSION` (the
-real robertuito checkpoint).
+"""`db`-marked end-to-end test for QUA-21: the full stack (`list_pending_for_analysis`
+→ `analyze_text` → `record_sentiment_result`) against a self-seeded, disposable
+tenant/connection/thread/messages — never real Meta data, never a specific tenant.
+Same seeding pattern as `test_sentiment_repository.py::_seed_message`, extended to two
+messages under one thread (one Reel, two comments — the shape QUA-88/89 produce).
 
-**No cleanup — by design, confirmed with the founder 2026-08-22.** `comment_sentiment_
-results` grants `qualify_app`/`qualify_admin` only `SELECT, INSERT` (migration 0012) —
-the same append-only enforcement "versionar, no sobrescribir" requires. That means
-there is structurally no sanctioned way for this test to DELETE its own rows without
-either weakening the grant (which would defeat the point of the grant) or reaching for
-an unsanctioned privileged connection (which the static Engine/Session guard exists to
-prevent). The rows this test writes are permanently marked as test data —
-`detector_version="test-e2e-stub-v1"`, `model_id="test/e2e-deterministic-stub"` — and
-can never be mistaken for, or interfere with, a real production analysis pass. Nothing
-about the two real `messages` rows or the connection is touched.
+**Why not the real Meta data from the 2026-08-21 live validation.** That validation
+(a real positive and a real negative comment, published on the real `@qualifymkt.co`
+Reel, synced via QUA-89, analyzed via `POST /api/sentiment/analyze`, confirmed under
+`CURRENT_ANALYSIS_VERSION` in Postgres — see the QUA-21 Linear comment history for the
+evidence) is real and stays the record of truth for "does this work against live
+Meta". It is **not reproducible in CI**: CI spins up a fresh, empty `postgres:16`
+service container every run, with only `alembic upgrade head` applied — the specific
+tenant/connection/message rows that session created only ever existed in the local
+dev database. Hardcoding those real IDs here made this file pass locally and fail in
+CI 100% of the time. This file now validates the same code path with data any
+environment can create for itself; the live-Meta validation stays a manual,
+separate exercise, not a dependency of the automated suite.
+
+**No cleanup — same reasoning as before, still applies.** `comment_sentiment_results`
+grants `qualify_app`/`qualify_admin` only `SELECT, INSERT` (migration 0012) — the
+append-only enforcement "versionar, no sobrescribir" requires. There is structurally
+no sanctioned way for this test to DELETE its own rows. Harmless here: the tenant
+this file seeds is itself disposable test data, not a real production connection.
 """
 
 from __future__ import annotations
@@ -21,24 +29,35 @@ from __future__ import annotations
 from uuid import UUID, uuid4
 
 import pytest
+from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import text
 
+from qualify_api.connections.models import PlatformApp, SocialConnection
+from qualify_api.inbox.models import Message, Thread
 from qualify_api.sentiment.repository import AnalysisVersion, PostgresSentimentRepository
 from qualify_api.sentiment.service import SentimentService
+from qualify_api.tenancy.models import Tenant, User
 
 pytestmark = pytest.mark.db
 
-# The real, live-validated connection from the 2026-08-21 Meta audit session.
-TENANT_ID = UUID("a0000000-0000-4000-8000-000000000001")  # PuntoServis
-CONNECTION_ID = UUID("ce99a28c-f875-4af1-8147-2a671124ce2d")
+TENANT_E2E = UUID("e0000000-0000-4000-8000-0000000000f6")
+
+
+class StubProvider:
+    """Deterministic, no weights — same discipline every other sentiment test in this
+    package uses; this file's job is proving the pipeline wiring, not the model."""
+
+    model_id = "test/e2e-deterministic-stub"
+
+    def classify(self, text: str) -> tuple[str, float]:
+        return ("NEG", 0.9) if any(w in text.lower() for w in ("mal", "pésim")) else ("POS", 0.9)
 
 
 def _fresh_test_version() -> AnalysisVersion:
-    """A unique version per call, not per module — two test functions in this file must
-    not share one (the first would consume the second's "pending" comments). Since
-    nothing is ever deleted (see module docstring), uniqueness per test is what keeps
-    this file safely re-runnable against the same persistent dev database."""
+    """Unique per call — two test functions in this file must not share one (the
+    first would consume the second's "pending" comments), and nothing here is ever
+    deleted (see module docstring)."""
     run_id = uuid4().hex[:8]
     return AnalysisVersion(
         detector_version=f"test-e2e-stub-v1-{run_id}",
@@ -48,27 +67,102 @@ def _fresh_test_version() -> AnalysisVersion:
     )
 
 
-class StubProvider:
-    model_id = "test/e2e-deterministic-stub"
+def _seed_two_comments() -> tuple[UUID, tuple[str, str]]:
+    """(connection_id, (source_id_pos, source_id_neg)) — one positive-leaning comment,
+    one negative-leaning, both real `messages` rows on a real `comment`-channel
+    thread. Same seeding pattern as `test_sentiment_repository.py::_seed_message`:
+    `admin_session` for the tenant/app/user (cross-tenant provisioning), `tenant_session`
+    for the connection/thread/messages (RLS-scoped, matches production)."""
+    with admin_session() as session:
+        if session.get(Tenant, TENANT_E2E) is None:
+            session.add(
+                Tenant(
+                    id=TENANT_E2E,
+                    name="t-sentiment-e2e",
+                    country="CO",
+                    timezone="America/Bogota",
+                    currency="COP",
+                )
+            )
+            session.flush()
+        app = PlatformApp(app_id=f"app-{uuid4()}", secret_ref="ref", api_version="v21.0")
+        session.add(app)
+        session.flush()
+        user = User(tenant_id=TENANT_E2E, email=f"u-{uuid4()}@e2e.co", display_name="U")
+        session.add(user)
+        session.flush()
+        app_id, user_id = app.id, user.id
 
-    def classify(self, text: str) -> tuple[str, float]:
-        return ("NEG", 0.9) if any(w in text.lower() for w in ("mal", "pésim")) else ("NEU", 0.7)
+    with tenant_session(TENANT_E2E) as session:
+        conn = SocialConnection(
+            tenant_id=TENANT_E2E,
+            platform_app_id=app_id,
+            platform="instagram",
+            account_type="business",
+            external_account_id=f"ig-{uuid4()}",
+            linked_page_id="page-1",
+            granted_scopes=["basic"],
+            status="active",
+            access_posture="development",
+            current_credential_version=0,
+            connected_by_user_id=user_id,
+        )
+        session.add(conn)
+        session.flush()
+        connection_id = conn.id
+
+        thread = Thread(
+            tenant_id=TENANT_E2E,
+            connection_id=connection_id,
+            channel="comment",
+            external_thread_id=f"media-{uuid4()}",
+            status="open",
+        )
+        session.add(thread)
+        session.flush()
+
+        source_pos = f"comment-pos-{uuid4()}"
+        source_neg = f"comment-neg-{uuid4()}"
+        session.add_all(
+            [
+                Message(
+                    tenant_id=TENANT_E2E,
+                    thread_id=thread.id,
+                    connection_id=connection_id,
+                    external_message_id=source_pos,
+                    direction="inbound",
+                    text="Me encanta este producto, excelente",
+                    shape_version="ig-comment-shapes-1.0.0",
+                ),
+                Message(
+                    tenant_id=TENANT_E2E,
+                    thread_id=thread.id,
+                    connection_id=connection_id,
+                    external_message_id=source_neg,
+                    direction="inbound",
+                    text="Qué mal servicio, pésima atención",
+                    shape_version="ig-comment-shapes-1.0.0",
+                ),
+            ]
+        )
+        session.flush()
+
+    return connection_id, (source_pos, source_neg)
 
 
-def test_real_comments_already_in_postgres_get_analyzed_with_provenance() -> None:
+def test_seeded_comments_get_analyzed_with_provenance() -> None:
+    connection_id, (source_pos, source_neg) = _seed_two_comments()
     version = _fresh_test_version()
-    repository = PostgresSentimentRepository()
-    service = SentimentService(repository=repository, version=version, provider=StubProvider())
+    service = SentimentService(
+        repository=PostgresSentimentRepository(), version=version, provider=StubProvider()
+    )
 
-    summary = service.analyze_pending_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+    summary = service.analyze_pending_comments(tenant_id=TENANT_E2E, connection_id=connection_id)
 
-    # The two real comments validated live on 2026-08-21 (17963827341154600,
-    # 18107136746160164) are the known floor — more may exist if the account was synced
-    # again since, which is fine, this asserts "at least", not "exactly".
-    assert summary.comments_checked >= 2
-    assert summary.new_results >= 2
+    assert summary.comments_checked == 2
+    assert summary.new_results == 2
 
-    with tenant_session(TENANT_ID) as session:
+    with tenant_session(TENANT_E2E) as session:
         rows = session.execute(
             text(
                 "SELECT source_id, tenant_id, connection_id, detector_version, "
@@ -76,39 +170,41 @@ def test_real_comments_already_in_postgres_get_analyzed_with_provenance() -> Non
                 "FROM comment_sentiment_results "
                 "WHERE connection_id = :cid AND detector_version = :dv"
             ),
-            {"cid": str(CONNECTION_ID), "dv": version.detector_version},
+            {"cid": str(connection_id), "dv": version.detector_version},
         ).all()
 
-    source_ids = {row.source_id for row in rows}
-    assert {"17963827341154600", "18107136746160164"} <= source_ids
+    by_source = {row.source_id: row for row in rows}
+    assert set(by_source) == {source_pos, source_neg}
+    assert by_source[source_pos].label == "POS"
+    assert by_source[source_neg].label == "NEG"
     for row in rows:
-        assert str(row.tenant_id) == str(TENANT_ID)
-        assert str(row.connection_id) == str(CONNECTION_ID)
+        assert str(row.tenant_id) == str(TENANT_E2E)
+        assert str(row.connection_id) == str(connection_id)
         assert row.detector_version == version.detector_version
         assert row.pipeline_version == version.pipeline_version
         assert row.model_id == version.model_id
         assert row.model_revision is None  # honest value, not invented
-        assert row.label in {"POS", "NEG", "NEU"}
 
 
 def test_running_it_twice_is_idempotent_no_duplicates() -> None:
+    connection_id, _ = _seed_two_comments()
     version = _fresh_test_version()
-    repository = PostgresSentimentRepository()
-    service = SentimentService(repository=repository, version=version, provider=StubProvider())
+    service = SentimentService(
+        repository=PostgresSentimentRepository(), version=version, provider=StubProvider()
+    )
 
-    first = service.analyze_pending_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
-    second = service.analyze_pending_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+    first = service.analyze_pending_comments(tenant_id=TENANT_E2E, connection_id=connection_id)
+    second = service.analyze_pending_comments(tenant_id=TENANT_E2E, connection_id=connection_id)
 
-    assert first.new_results >= 2
+    assert first.new_results == 2
     assert second.comments_checked == 0  # nothing left pending under this version
 
-    with tenant_session(TENANT_ID) as session:
+    with tenant_session(TENANT_E2E) as session:
         count = session.execute(
             text(
                 "SELECT count(*) FROM comment_sentiment_results "
-                "WHERE connection_id = :cid AND detector_version = :dv "
-                "AND source_id IN ('17963827341154600', '18107136746160164')"
+                "WHERE connection_id = :cid AND detector_version = :dv"
             ),
-            {"cid": str(CONNECTION_ID), "dv": version.detector_version},
+            {"cid": str(connection_id), "dv": version.detector_version},
         ).scalar_one()
-    assert count == 2  # one row per real comment, not duplicated by the second run
+    assert count == 2  # one row per seeded comment, not duplicated by the second run
