@@ -189,6 +189,28 @@ def test_reel_summary_vm_has_no_credential_fields() -> None:
             )
 
 
+def test_reel_summary_vm_has_only_scalar_summary_fields() -> None:
+    """QUA-93 scale invariant, VM layer: same guarantee
+    `test_reel_summary_domain_object_has_only_scalar_roll_up_fields` (packages/api/
+    tests/test_sentiment_service.py) pins for the domain `ReelSummary`, one layer up —
+    the main view's Reflex state can never hold a full comment list disguised as a Reel
+    summary. A whitelist: a newly added field forces a conscious look here."""
+    fields = {f.name: f.type for f in dataclasses.fields(ReelSummaryVM)}
+    assert fields == {
+        "thread_id": "str",
+        "external_thread_id": "str",
+        "last_message_at": "str",
+        "total": "int",
+        "positive": "int",
+        "neutral": "int",
+        "negative": "int",
+        "not_analyzed": "int",
+        "thumbnail_url": "str",
+        "caption": "str",
+        "permalink": "str",
+    }
+
+
 def test_provider_calls_the_real_inbox_seam() -> None:
     source = inspect.getsource(inbox_provider)
     assert "list_candidate_media(" in source

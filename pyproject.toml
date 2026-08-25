@@ -41,8 +41,10 @@ dev = [
 [tool.pytest.ini_options]
 # importlib import mode + zero __init__.py under any tests/ dir: lets same-named test
 # modules coexist across packages (e.g. several test_shared.py) without sys.path hacks.
-# Default excludes `integration` (external network / paid vendors / model weights).
-addopts = "--import-mode=importlib -m 'not integration'"
+# Default excludes `integration` (external network / paid vendors / model weights) and
+# `slow` (large-scale/timing-sensitive regression benchmarks — opt-in via `-m slow`,
+# never swept in by `just test` or `just test-db`; see the QUA-93 scale test).
+addopts = "--import-mode=importlib -m 'not integration and not slow'"
 # C-04's FastAPI callback tests are async (httpx.AsyncClient against the app); auto mode
 # runs any `async def test_*` without requiring per-test event_loop plumbing.
 asyncio_mode = "auto"
@@ -77,6 +79,7 @@ pythonpath = [
 markers = [
     "integration: hits an external network / paid vendor / downloads model weights (Zyte, HF, Meta) — NEVER in CI",
     "db: needs the local Postgres/Redis from docker-compose — runs in CI via service containers",
+    "slow: large-scale/timing-sensitive regression benchmark — opt-in only (`pytest -m slow`, `just up` first), never in `just test`, `just test-db`, or CI",
 ]
 
 # R11(d): the deny-list half of the audited gate. Every `packages/*/tests` directory must

@@ -247,6 +247,18 @@ def test_background_event_handler_count_is_ten_after_qua_93() -> None:
     assert source.count("@rx.event(background=True)") == 10
 
 
+def test_reel_summaries_state_never_holds_a_comment_list() -> None:
+    """QUA-93 scale invariant, state layer: exactly one field in `InboxState` holds a
+    `list[CommentVM]` (`thread_comments`, for the ONE open Reel's detail view) —
+    `reel_summaries` (the main view) is a list of `ReelSummaryVM`, pure per-Reel
+    roll-ups, never a list of comments. A second `CommentVM`-list field (e.g. a
+    per-thread cache/dict) would silently reintroduce the unbounded-read shape QUA-93
+    removed, without ever showing up as a wrong count in a normal behavioral test."""
+    source = inspect.getsource(inbox_state)
+    assert source.count("list[CommentVM]") == 1
+    assert "reel_summaries: list[ReelSummaryVM]" in source
+
+
 def test_poll_interval_is_five_minutes() -> None:
     """Pins QUA-89's acceptance criterion: comments sync automatically every 5 minutes
     while `/inbox` is open."""

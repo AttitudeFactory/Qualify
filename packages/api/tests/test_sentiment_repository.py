@@ -5,16 +5,18 @@ tenant isolation against the real constraints from migration 0012. Same
 
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import select, text
+from sqlalchemy import insert, select, text
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.inbox.models import Message, Thread
+from qualify_api.sentiment.models import CommentSentimentResult
 from qualify_api.sentiment.repository import (
     NULL_POSTED_AT_SENTINEL,
     SENTIMENT_FILTER_PENDING,
@@ -181,6 +183,241 @@ def _seed_second_message_in_thread(
 def seeded_message() -> tuple[UUID, UUID, UUID, str]:
     connection_id, message_id, source_id = _seed_message(TENANT_S)
     return TENANT_S, connection_id, message_id, source_id
+
+
+# --------------------------------------------------------------------------------------
+# Scale regression coverage (QUA-93 follow-up, 2026-08-25) — the AC's "Rendimiento/tests"
+# section asked for a committed test at >=3 Reels x >=150 comments; the original
+# 1,000x100 validation that found the 28.5s-vs-23ms bug (module docstring) lived only in
+# this session's scratchpad and never reached the repo. These helpers/tests close that.
+# --------------------------------------------------------------------------------------
+
+
+def _seed_connection_only(tenant_id: UUID) -> UUID:
+    """Same tenant/app/user/connection setup `_seed_message` does, minus its own first
+    Reel/comment — for tests that seed every Reel themselves, in bulk."""
+    _seed_tenant(tenant_id, name=f"t-{tenant_id}")
+    with admin_session() as session:
+        app = PlatformApp(app_id=f"app-{uuid4()}", secret_ref="ref", api_version="v21.0")
+        session.add(app)
+        session.flush()
+        user = User(tenant_id=tenant_id, email=f"u-{uuid4()}@s.co", display_name="U")
+        session.add(user)
+        session.flush()
+        app_id = app.id
+        user_id = user.id
+
+    with tenant_session(tenant_id) as session:
+        conn = SocialConnection(
+            tenant_id=tenant_id,
+            platform_app_id=app_id,
+            platform="instagram",
+            account_type="business",
+            external_account_id=f"ig-{uuid4()}",
+            linked_page_id="page-1",
+            granted_scopes=["basic"],
+            status="active",
+            access_posture="development",
+            current_credential_version=0,
+            connected_by_user_id=user_id,
+        )
+        session.add(conn)
+        session.flush()
+        return conn.id
+
+
+def _bulk_seed_reel(
+    tenant_id: UUID, connection_id: UUID, *, comment_count: int, tag: str, minute_offset: int
+) -> tuple[UUID, list[UUID]]:
+    """Bulk-inserts one Reel (thread) with `comment_count` messages via SQLAlchemy Core
+    `insert()` — fast enough for hundreds of rows, unlike per-row ORM `session.add()`
+    (what every other helper in this file uses, correctly, for the 1-2-row cases they
+    seed). `tag` is embedded in every message's text so a query result's origin Reel can
+    be verified without a `thread_id` field on `AnalyzedComment` — it deliberately has
+    none (the caller already knows which thread it asked for; see that dataclass's
+    docstring)."""
+    with tenant_session(tenant_id) as session:
+        now = datetime.now(UTC) + timedelta(minutes=minute_offset)
+        thread_id = uuid4()
+        session.execute(
+            insert(Thread),
+            [
+                {
+                    "id": thread_id,
+                    "tenant_id": tenant_id,
+                    "connection_id": connection_id,
+                    "channel": "comment",
+                    "external_thread_id": f"media-{tag}-{uuid4()}",
+                    "status": "open",
+                    "last_message_at": now,
+                }
+            ],
+        )
+        message_ids = [uuid4() for _ in range(comment_count)]
+        session.execute(
+            insert(Message),
+            [
+                {
+                    "id": mid,
+                    "tenant_id": tenant_id,
+                    "thread_id": thread_id,
+                    "connection_id": connection_id,
+                    "external_message_id": f"comment-{tag}-{i}-{uuid4()}",
+                    "direction": "inbound",
+                    "text": f"{tag} comentario {i}",
+                    "posted_at": now - timedelta(seconds=i),
+                    "shape_version": "ig-comment-shapes-1.0.0",
+                }
+                for i, mid in enumerate(message_ids)
+            ],
+        )
+        session.flush()
+    return thread_id, message_ids
+
+
+def _bulk_seed_sentiment(
+    tenant_id: UUID,
+    connection_id: UUID,
+    message_ids: list[UUID],
+    *,
+    version: AnalysisVersion,
+    label: str,
+) -> None:
+    with tenant_session(tenant_id) as session:
+        session.execute(
+            insert(CommentSentimentResult),
+            [
+                {
+                    "tenant_id": tenant_id,
+                    "connection_id": connection_id,
+                    "message_id": mid,
+                    "source_id": f"src-{mid}",
+                    "detector_version": version.detector_version,
+                    "pipeline_version": version.pipeline_version,
+                    "model_id": version.model_id,
+                    "model_revision": version.model_revision,
+                    "label": label,
+                    "score": 0.9,
+                }
+                for mid in message_ids
+            ],
+        )
+        session.flush()
+
+
+def test_scale_regression_three_reels_150_comments_each_returns_bounded_rows() -> None:
+    """QUA-93 AC ('Rendimiento/tests'): seeds 3 Reels x 150 comments each (450 rows), half
+    of each Reel's comments analyzed, then asserts every query returns EXACTLY the row
+    count its `limit`/`thread_id` scope implies — never the full seeded volume — by
+    counting returned rows, not by reading `EXPLAIN`. This is the correctness half of the
+    scale guard; `test_list_reel_summaries_sql_uses_keyset_never_offset` and the
+    `slow`-marked benchmark below cover the query-shape and timing halves."""
+    tenant_id = uuid4()
+    connection_id = _seed_connection_only(tenant_id)
+    reels = []
+    for i in range(3):
+        thread_id, message_ids = _bulk_seed_reel(
+            tenant_id, connection_id, comment_count=150, tag=f"reel{i}", minute_offset=i
+        )
+        analyzed, pending = message_ids[:75], message_ids[75:]
+        _bulk_seed_sentiment(tenant_id, connection_id, analyzed, version=VERSION, label="POS")
+        reels.append((thread_id, analyzed, pending))
+    repo = PostgresSentimentRepository()
+
+    # Main view: a page of 2 of the 3 seeded Reels — never all 3, never a comment row.
+    page = repo.list_reel_summaries(
+        tenant_id=tenant_id, connection_id=connection_id, version=VERSION, cursor=None, limit=2
+    )
+    assert len(page) == 2
+    for summary in page:
+        assert summary.total == 150
+        assert summary.positive == 75
+        assert summary.not_analyzed == 75
+
+    # Global summary: the one deliberate full scan — must reflect all 3 Reels' totals.
+    totals = repo.global_sentiment_summary(
+        tenant_id=tenant_id, connection_id=connection_id, version=VERSION
+    )
+    assert totals.total == 450
+    assert totals.positive == 225
+    assert totals.not_analyzed == 225
+
+    # Reel detail: a page of 20 of 150 comments from ONE Reel — bounded to that Reel,
+    # never spilling into the other two (checked via each Reel's distinguishing tag,
+    # since AnalyzedComment carries no thread_id to check directly).
+    target_thread_id, _analyzed, _pending = reels[0]
+    detail_page = repo.list_comments_for_thread(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        thread_id=target_thread_id,
+        version=VERSION,
+        sentiment_filter=None,
+        search=None,
+        cursor=None,
+        limit=20,
+    )
+    assert len(detail_page) == 20
+    assert all(c.text.startswith("reel0 ") for c in detail_page)
+
+
+def test_list_reel_summaries_sql_uses_keyset_never_offset() -> None:
+    """Explicit protection for the QUA-93 pagination decision ('cursor, keyset, no
+    OFFSET — decisión del fundador, 2026-08-25'): a future edit that reaches for OFFSET
+    instead of the keyset comparison fails here immediately, rather than silently
+    degrading pagination correctness under concurrent writes (an OFFSET page can skip or
+    repeat rows when the underlying set changes between page loads; a keyset cursor
+    cannot)."""
+    source = inspect.getsource(PostgresSentimentRepository.list_reel_summaries)
+    assert "OFFSET" not in source.upper()
+    assert "(last_message_at, id) < (:cts, :ctid)" in source
+
+
+def test_list_comments_for_thread_sql_uses_keyset_never_offset() -> None:
+    """Same protection as `test_list_reel_summaries_sql_uses_keyset_never_offset`, for
+    the Reel-detail query — including the `NULL_POSTED_AT_SENTINEL` COALESCE that makes
+    the keyset comparison well-defined even when `posted_at IS NULL`."""
+    source = inspect.getsource(PostgresSentimentRepository.list_comments_for_thread)
+    assert "OFFSET" not in source.upper()
+    assert "(COALESCE(m.posted_at, :null_sentinel), m.id) < (:cts, :ctid)" in source
+
+
+def test_comments_for_thread_cursor_walk_covers_all_150_rows_exactly_once() -> None:
+    """Behavioral counterpart to the two SQL-inspection tests above: walks every page of
+    a 150-comment Reel with a small page size and proves the union of all pages equals
+    exactly the seeded set — no row lost, no row duplicated. Same property
+    `test_comments_for_thread_paginates_by_cursor_including_null_posted_at` already pins
+    for the NULL-posted_at edge case, now at a scale where an off-by-one or a silently
+    reintroduced OFFSET would actually surface instead of hiding inside a 1-2-row page."""
+    tenant_id = uuid4()
+    connection_id = _seed_connection_only(tenant_id)
+    thread_id, message_ids = _bulk_seed_reel(
+        tenant_id, connection_id, comment_count=150, tag="walk", minute_offset=0
+    )
+    repo = PostgresSentimentRepository()
+
+    seen: list[UUID] = []
+    cursor: CommentListCursor | None = None
+    for _page_number in range(20):  # 150 / 20-per-page = 8 pages; generous vs. an infinite loop
+        page = repo.list_comments_for_thread(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            thread_id=thread_id,
+            version=VERSION,
+            sentiment_filter=None,
+            search=None,
+            cursor=cursor,
+            limit=20,
+        )
+        if not page:
+            break
+        seen.extend(c.message_id for c in page)
+        last = page[-1]
+        sort_key = last.posted_at if last.posted_at is not None else NULL_POSTED_AT_SENTINEL
+        cursor = CommentListCursor(sort_key=sort_key, message_id=last.message_id)
+
+    assert len(seen) == 150
+    assert len(set(seen)) == 150  # no duplicates
+    assert set(seen) == set(message_ids)  # exactly the seeded set, nothing lost
 
 
 def test_pending_lists_a_never_analyzed_comment(

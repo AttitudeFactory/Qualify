@@ -4,6 +4,7 @@ model weights. Mirrors `test_inbox_service.py`'s fake-repository style.
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from qualify_api.sentiment.repository import (
     AnalysisVersion,
     MemorySentimentRepository,
     ReelListCursor,
+    ReelSummary,
 )
 from qualify_api.sentiment.service import SentimentService
 
@@ -368,3 +370,22 @@ def test_comments_for_thread_search_is_accent_and_case_insensitive() -> None:
     assert "llegó" in no_accent[0].text
     assert len(upper_with_accent) == 1
     assert upper_with_accent[0].message_id == no_accent[0].message_id
+
+
+def test_reel_summary_domain_object_has_only_scalar_roll_up_fields() -> None:
+    """QUA-93 scale invariant, domain layer: `ReelSummary` (what `list_reel_summaries`
+    returns) must stay a pure per-Reel roll-up — no field can hold a list of comments,
+    which is exactly what would let the main view accidentally materialize more than one
+    Reel's comments at once. A whitelist, not a substring scan: a newly added field
+    forces a conscious look here rather than silently passing."""
+    fields = {f.name: f.type for f in dataclasses.fields(ReelSummary)}
+    assert fields == {
+        "thread_id": "UUID",
+        "external_thread_id": "str",
+        "last_message_at": "datetime",
+        "total": "int",
+        "positive": "int",
+        "neutral": "int",
+        "negative": "int",
+        "not_analyzed": "int",
+    }
