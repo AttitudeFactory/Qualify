@@ -3,6 +3,9 @@ import reflex as rx
 config = rx.Config(
     app_name="Qualify",
     db_url="sqlite:///reflex.db",
+    # Bug reported 2026-08-25: the sticky "Built with Reflex" badge is dev-tooling
+    # branding, not something a shipped product screen should show.
+    show_built_with_reflex=False,
     # Local dev secrets (Meta OAuth, R2) live in .env, gitignored, never committed — see
     # its own header comment. Reflex only loads a dotenv file when told to; without this,
     # every setting that reads os.environ (MetaOAuthSettings.from_env, R2Settings.from_env)

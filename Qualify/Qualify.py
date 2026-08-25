@@ -44,7 +44,17 @@ _FONTS = (
     "&family=IBM+Plex+Sans:wght@400;500;600;700"
     "&display=swap"
 )
-app = rx.App(stylesheets=[_FONTS, "/qualify.css"], html_lang="es")
+app = rx.App(
+    stylesheets=[_FONTS, "/qualify.css"],
+    html_lang="es",
+    # Bug reported 2026-08-25, revised same day: bottom-right (Sonner's own default)
+    # is the preferred position after all — the actual complaint was that it was easy
+    # to miss there, not that the corner itself was wrong. Fixed two ways instead of
+    # by relocating it: the "Built with Reflex" badge that used to sit in the same
+    # corner is now disabled (rxconfig.py), and the toast itself gets an attention
+    # cue on entrance — see `q-toast-pop`/`[data-sonner-toast]` in assets/qualify.css.
+    toaster=rx.toast.provider(position="bottom-right", close_button=True),
+)
 
 # Living style guide: static, no tenant data, so it needs no session. Not linked from
 # the sidebar on purpose — it is for whoever builds screens, not for the business.

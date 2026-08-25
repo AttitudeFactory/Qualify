@@ -147,6 +147,17 @@ _MIN_TOGGLE_ANIMATION_SECONDS = 0.5
 # real filter (`inbox_provider.thread_comments_page` maps it to `None`).
 FILTER_ALL = "ALL"
 
+# Bug fix (2026-08-25): a successful sync/analysis pass used to render its confirmation
+# as a persistent `callout` — the same primitive `_sync_error_block`/`_analyze_error_
+# block` correctly use for errors — which meant it never went away on its own. Per
+# docs/design-system.md §5.4 ("confirmaciones transitorias → rx.toast") and §9.3's own
+# known-debt item 5, a SUCCESS confirmation is exactly the transient case a toast is for;
+# errors stay persistent callouts, unchanged. `sync_result`/`analyze_result` themselves
+# are untouched (still set on every success, still readable by anything that wants the
+# last outcome) — only the visible confirmation moves from "rendered forever in
+# `inbox_page.py`" to "a toast that dismisses itself after this many milliseconds".
+_RESULT_TOAST_DURATION_MS = 6000
+
 
 class InboxState(rx.State):
     """State for the "Contenido" screen: pick an Instagram connection, see its Reels
@@ -602,14 +613,15 @@ class InboxState(rx.State):
         await self._load_candidates(tenant_id, connection_id, show_loading=False)
 
     @rx.event(background=True)
-    async def sync_comments(self) -> None:
+    async def sync_comments(self) -> rx.event.EventSpec | None:
         """The one trigger for `InboxService.sync_comments` (B2/QUA-89) — called by both
         the manual button and the automatic 5-minute poll, see the module docstring for
         why that is what keeps them sharing one guard/loading state instead of two. Never
         touches `candidates`/`toggling_media_ids`: a sync pass writes to `threads`/
         `messages`, never to `monitored_media`, so the Reel list has nothing to reload
         afterward — unlike `toggle_monitored`, this handler's only externally visible
-        effect is `sync_result`/`sync_error`.
+        effect is `sync_result`/`sync_error` (plus, on success, a transient
+        `rx.toast.success` — see `_RESULT_TOAST_DURATION_MS`'s docstring).
         """
         async with self:
             if self.is_syncing:
@@ -671,8 +683,22 @@ class InboxState(rx.State):
         # additive.
         await self._refresh_after_write(tenant_id, connection_id)
 
+        # A plain `return` of an `EventSpec` from an async (non-generator) background
+        # handler is dispatched exactly like an event chain — no `yield` needed, and this
+        # function stays a plain coroutine (load-bearing: `sync_comments.fn` is called
+        # directly and awaited in tests — see the double-click guard test above).
+        message = (
+            f"Reels revisados: {result.media_checked} · Comentarios nuevos: {result.new_comments}"
+        )
+        if result.truncated:
+            message += (
+                " · Sincronización parcial: se alcanzó el límite de llamadas, "
+                "sincroniza de nuevo en unos minutos para completar."
+            )
+        return rx.toast.success(message, duration=_RESULT_TOAST_DURATION_MS)
+
     @rx.event(background=True)
-    async def analyze_sentiment(self) -> None:
+    async def analyze_sentiment(self) -> rx.event.EventSpec | None:
         """The "Analizar sentimiento" button (QUA-92) — the ONLY trigger for QUA-21's
         analysis pass this screen exposes. Deliberately independent of `sync_comments`
         in both directions: never called FROM `sync_comments` (QUA-21 stays manual-only,
@@ -727,6 +753,18 @@ class InboxState(rx.State):
         # structure `sync_comments` already established for its own success-only
         # refresh above.
         await self._refresh_after_write(tenant_id, connection_id)
+
+        # Same plain-`return`-of-an-`EventSpec` shape `sync_comments` uses above, and for
+        # the same reason (`analyze_sentiment.fn` is called directly and awaited in
+        # tests — this must stay a plain coroutine, never an async generator).
+        if result.comments_checked == 0:
+            message = "No hay comentarios pendientes de análisis."
+        else:
+            message = (
+                f"Comentarios revisados: {result.comments_checked} · "
+                f"Analizados: {result.new_results} · Vacíos omitidos: {result.skipped_empty}"
+            )
+        return rx.toast.success(message, duration=_RESULT_TOAST_DURATION_MS)
 
     @rx.event(background=True)
     async def select_reel(self, thread_id: str) -> None:

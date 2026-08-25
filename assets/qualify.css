@@ -190,6 +190,22 @@
 .q-settle > *:nth-child(4) { animation-delay: 120ms; }
 .q-settle > *:nth-child(n + 5) { animation-delay: 160ms; }
 
+/* ── Toast focus cue ──────────────────────────────────────────────────────────
+   Bug reported 2026-08-25: Sonner's own default entrance (a quiet slide+fade) was
+   easy to miss in the bottom-right corner — the position stays (revised same day),
+   but the appearance itself needs to be evident. A springy overshoot pop, layered on
+   TOP of Sonner's own animation, not replacing it: this deliberately animates the
+   independent `scale` property, never `transform` — Sonner itself animates
+   `transform` for slide-in and for stacking multiple toasts, so animating that
+   property here would fight it. `scale` composes with `transform` for free. */
+@keyframes q-toast-pop {
+  from { scale: 0.82; }
+  to   { scale: 1; }
+}
+[data-sonner-toast] {
+  animation: q-toast-pop var(--q-dur) var(--q-spring) both;
+}
+
 /* Motion here is decorative, never informational, so it can be turned off whole. */
 @media (prefers-reduced-motion: reduce) {
   *,

@@ -385,7 +385,17 @@ def _global_summary_error_block() -> rx.Component:
 
 
 def _global_summary_widget() -> rx.Component:
+    # Explicit label (bug reported 2026-08-25): with nothing distinguishing this from
+    # the per-Reel chips further down, a single monitored Reel makes the two numbers
+    # look identical and it read as ambiguous which one this was. This widget is always
+    # the connection-wide total, across every monitored Reel — never one Reel's count.
     return rx.vstack(
+        rx.text(
+            "Resumen general — todos los Reels monitoreados",
+            size="2",
+            weight="medium",
+            color=T.TEXT_MUTED,
+        ),
         rx.cond(
             InboxState.global_summary_error != "",
             _global_summary_error_block(),
@@ -736,7 +746,7 @@ def _comments_section() -> rx.Component:
         rx.cond(InboxState.is_showing_reel_detail, _reel_detail_view(), _reel_summaries_list()),
         description=(
             "Comentarios sincronizados de tus Reels monitoreados, agrupados por Reel, "
-            "con el sentimiento ya analizado (QUA-21) cuando existe."
+            "con el sentimiento ya analizado cuando existe."
         ),
         actions=[_analyze_now_button()],
     )
