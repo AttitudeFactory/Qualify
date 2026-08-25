@@ -19,7 +19,17 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from qualify_api.sentiment.repository import AnalysisVersion, SentimentRepository
+from qualify_api.sentiment.repository import (
+    DEFAULT_COMMENT_PAGE_SIZE,
+    DEFAULT_REEL_PAGE_SIZE,
+    AnalysisVersion,
+    AnalyzedComment,
+    CommentListCursor,
+    GlobalSentimentSummary,
+    ReelListCursor,
+    ReelSummary,
+    SentimentRepository,
+)
 
 if TYPE_CHECKING:
     # `qualify_models` lives in the `ml` dependency group, deliberately excluded from
@@ -96,4 +106,56 @@ class SentimentService:
 
         return AnalysisSummary(
             comments_checked=checked, new_results=new_results, skipped_empty=skipped
+        )
+
+    def list_reel_summaries(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        cursor: ReelListCursor | None = None,
+        limit: int = DEFAULT_REEL_PAGE_SIZE,
+    ) -> tuple[ReelSummary, ...]:
+        """QUA-93's read seam for the summary-card list: a page of Reels with their
+        sentiment counts. Pure passthrough — no model, no network, no write — kept as a
+        method for the same reason `list_pending_for_analysis` is: only
+        `production_sentiment_service()` decides which `AnalysisVersion` backs it."""
+        return self._repository.list_reel_summaries(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            version=self._version,
+            cursor=cursor,
+            limit=limit,
+        )
+
+    def global_sentiment_summary(
+        self, *, tenant_id: UUID, connection_id: UUID
+    ) -> GlobalSentimentSummary:
+        """QUA-93's read seam for the top-of-page summary widget."""
+        return self._repository.global_sentiment_summary(
+            tenant_id=tenant_id, connection_id=connection_id, version=self._version
+        )
+
+    def list_comments_for_thread(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        thread_id: UUID,
+        sentiment_filter: str | None = None,
+        search: str | None = None,
+        cursor: CommentListCursor | None = None,
+        limit: int = DEFAULT_COMMENT_PAGE_SIZE,
+    ) -> tuple[AnalyzedComment, ...]:
+        """QUA-93's read seam for the Reel detail view: one Reel's comments, filtered,
+        searched, paginated."""
+        return self._repository.list_comments_for_thread(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            thread_id=thread_id,
+            version=self._version,
+            sentiment_filter=sentiment_filter,
+            search=search,
+            cursor=cursor,
+            limit=limit,
         )
