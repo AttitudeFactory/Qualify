@@ -30,6 +30,22 @@ Pins:
    `SyncBudgetExhausted` on a 429 — both reconstructed from the status code alone, same
    posture as the 404 case, and both distinct from the 502/`httpx.HTTPStatusError` a
    failed Meta call raises.
+9. `analyze_sentiment_now` (QUA-92, "Analizar sentimiento" button) reaches
+   `POST /api/sentiment/analyze` — QUA-21's existing, already-wired route — and never
+   calls `analyze_pending_comments`/`composition.analyze_pending_comments` directly (no
+   second analysis engine). Projects `comments_checked`/`new_results`/`skipped_empty`
+   field-for-field, including the all-zero "nothing pending" case, and raises
+   `UnknownSentimentConnection` for both the dev-bridge tenant mismatch and a 404.
+10. `reel_summaries_page`/`global_summary_vm`/`thread_comments_page` (QUA-93) call the
+    real read seams (`qualify_api.sentiment.list_reel_summaries`/
+    `global_sentiment_summary`/`list_comments_for_thread`), none `async def` (ordinary
+    blocking Postgres access — `InboxState` is responsible for `asyncio.to_thread`).
+    `reel_summaries_page` enriches thumbnail/caption/permalink from the ALREADY-loaded
+    `CandidateMediaVM` list it's handed (opción A, zero extra Meta call) and builds a
+    `ReelPageCursorVM` from the last row of a non-empty page. `thread_comments_page`
+    maps `"ALL"`/blank search to `None` before calling the repository, passes any other
+    filter/search value straight through. All three propagate
+    `UnknownSentimentConnection` rather than swallowing it.
 """
 
 from __future__ import annotations
@@ -49,10 +65,17 @@ from qualify_api.inbox import (
     UnknownInboxConnection,
 )
 from qualify_api.inbox.service import CandidateMedia, MediaNotEligible
+from qualify_api.sentiment import UnknownSentimentConnection
+from qualify_api.sentiment.repository import (
+    DEFAULT_REEL_PAGE_SIZE,
+    AnalyzedComment,
+    GlobalSentimentSummary,
+    ReelSummary,
+)
 
 from . import inbox_provider
 from .connections_vm import CapabilityVM, ConnectionVM
-from .inbox_vm import CandidateMediaVM
+from .inbox_vm import CandidateMediaVM, CommentVM, ReelSummaryVM
 
 _FORBIDDEN_FIELD_FRAGMENTS = (
     "token",
@@ -121,12 +144,47 @@ def _media(**overrides: object) -> CandidateMedia:
     return CandidateMedia(**defaults)
 
 
+def _comment(**overrides: object) -> AnalyzedComment:
+    defaults: dict[str, object] = {
+        "message_id": UUID("d0000000-0000-4000-8000-000000000001"),
+        "source_id": "comment-1",
+        "text": "me encanta",
+        "author_username": "cliente_feliz",
+        "posted_at": datetime(2026, 8, 20, 10, 0, tzinfo=UTC),
+        "external_thread_id": "media-1",
+        "label": None,
+        "score": None,
+    }
+    defaults.update(overrides)
+    return AnalyzedComment(**defaults)
+
+
 def test_vm_has_no_credential_fields() -> None:
     for f in dataclasses.fields(CandidateMediaVM):
         lowered = f.name.lower()
         for fragment in _FORBIDDEN_FIELD_FRAGMENTS:
             assert fragment not in lowered, (
                 f"CandidateMediaVM.{f.name} looks credential-bearing "
+                f"(matched '{fragment}') — the VM is the security boundary."
+            )
+
+
+def test_comment_vm_has_no_credential_fields() -> None:
+    for f in dataclasses.fields(CommentVM):
+        lowered = f.name.lower()
+        for fragment in _FORBIDDEN_FIELD_FRAGMENTS:
+            assert fragment not in lowered, (
+                f"CommentVM.{f.name} looks credential-bearing "
+                f"(matched '{fragment}') — the VM is the security boundary."
+            )
+
+
+def test_reel_summary_vm_has_no_credential_fields() -> None:
+    for f in dataclasses.fields(ReelSummaryVM):
+        lowered = f.name.lower()
+        for fragment in _FORBIDDEN_FIELD_FRAGMENTS:
+            assert fragment not in lowered, (
+                f"ReelSummaryVM.{f.name} looks credential-bearing "
                 f"(matched '{fragment}') — the VM is the security boundary."
             )
 
@@ -245,15 +303,19 @@ def test_toggle_monitoring_propagates_media_not_eligible() -> None:
             raise AssertionError("toggle_monitoring must not swallow MediaNotEligible")
 
 
-def _mock_asgi_client(status_code: int, json_body: dict) -> httpx.AsyncClient:
-    """A fake in-process ASGI client for `sync_now` — no FastAPI app involved, just the
-    HTTP contract `sync_now` actually depends on (status code + JSON body). Lighter than
-    building a real `create_app()`, and keeps this file's "never a database, never the
-    API package's internals" posture (see the module docstring) even though
-    `inbox_provider.py` itself now imports `qualify_api.http.app` lazily."""
+def _mock_asgi_client(
+    status_code: int, json_body: dict, *, expected_path: str = "/api/inbox/sync"
+) -> httpx.AsyncClient:
+    """A fake in-process ASGI client for `sync_now`/`analyze_sentiment_now` — no FastAPI
+    app involved, just the HTTP contract each function actually depends on (status code +
+    JSON body). Lighter than building a real `create_app()`, and keeps this file's "never
+    a database, never the API package's internals" posture (see the module docstring)
+    even though `inbox_provider.py` itself now imports `qualify_api.http.app` lazily.
+    `expected_path` defaults to sync's route; QUA-92's analyze tests pass
+    `"/api/sentiment/analyze"`."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/inbox/sync"
+        assert request.url.path == expected_path
         assert request.headers["authorization"] == f"Bearer {inbox_provider._DEV_SYNC_BEARER_TOKEN}"
         return httpx.Response(status_code, json=json_body)
 
@@ -370,6 +432,365 @@ def test_sync_now_raises_for_a_failed_meta_call() -> None:
             pass
         else:
             raise AssertionError("sync_now must not swallow a failed Meta call as success")
+
+
+# --------------------------------------------------------------------------------------
+# analyze_sentiment_now (QUA-92) — the "Analizar sentimiento" button's transport.
+# Reuses QUA-21's existing route rather than a second analysis engine: pinned below by
+# asserting the real path AND that `analyze_pending_comments` never appears in this
+# module's source (no in-process shortcut around the route).
+# --------------------------------------------------------------------------------------
+
+
+def test_analyze_sentiment_now_calls_the_real_route_not_a_second_engine() -> None:
+    source = inspect.getsource(inbox_provider.analyze_sentiment_now)
+    assert '"/api/sentiment/analyze"' in source
+    assert "analyze_pending_comments(" not in source  # no in-process shortcut around it
+
+
+def test_analyze_sentiment_now_rejects_a_tenant_the_dev_bridge_is_not_wired_for() -> None:
+    other_tenant = UUID("00000000-0000-4000-8000-000000000099")
+    assert other_tenant != inbox_provider._DEV_SYNC_TENANT_ID
+
+    try:
+        _run_coro(
+            inbox_provider.analyze_sentiment_now(tenant_id=other_tenant, connection_id=_CONNECTION)
+        )
+    except UnknownSentimentConnection:
+        pass
+    else:
+        raise AssertionError(
+            "analyze_sentiment_now must refuse a tenant the dev bridge cannot authenticate as"
+        )
+
+
+def test_analyze_sentiment_now_projects_summary_fields() -> None:
+    client = _mock_asgi_client(
+        200,
+        {"comments_checked": 3, "new_results": 2, "skipped_empty": 1},
+        expected_path="/api/sentiment/analyze",
+    )
+
+    with _patched(_inbox_sync_asgi_client=lambda: client):
+        vm = _run_coro(
+            inbox_provider.analyze_sentiment_now(
+                tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
+            )
+        )
+    assert vm.comments_checked == 3
+    assert vm.new_results == 2
+    assert vm.skipped_empty == 1
+
+
+def test_analyze_sentiment_now_projects_nothing_pending() -> None:
+    """QUA-92's requirement: nothing pending is a normal, all-zero success — the caller
+    (`InboxState.analyze_sentiment`) is what turns `comments_checked == 0` into "No hay
+    comentarios pendientes de análisis" (as a toast message), not this function."""
+    client = _mock_asgi_client(
+        200,
+        {"comments_checked": 0, "new_results": 0, "skipped_empty": 0},
+        expected_path="/api/sentiment/analyze",
+    )
+
+    with _patched(_inbox_sync_asgi_client=lambda: client):
+        vm = _run_coro(
+            inbox_provider.analyze_sentiment_now(
+                tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
+            )
+        )
+    assert vm.comments_checked == 0
+    assert vm.new_results == 0
+    assert vm.skipped_empty == 0
+
+
+def test_analyze_sentiment_now_propagates_unknown_connection_on_a_404() -> None:
+    client = _mock_asgi_client(
+        404, {"detail": "unknown connection"}, expected_path="/api/sentiment/analyze"
+    )
+
+    with _patched(_inbox_sync_asgi_client=lambda: client):
+        try:
+            _run_coro(
+                inbox_provider.analyze_sentiment_now(
+                    tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
+                )
+            )
+        except UnknownSentimentConnection:
+            pass
+        else:
+            raise AssertionError("analyze_sentiment_now must not swallow a 404 as success")
+
+
+def test_analyze_sentiment_now_raises_for_a_failed_call() -> None:
+    client = _mock_asgi_client(
+        500, {"detail": "unexpected"}, expected_path="/api/sentiment/analyze"
+    )
+
+    with _patched(_inbox_sync_asgi_client=lambda: client):
+        try:
+            _run_coro(
+                inbox_provider.analyze_sentiment_now(
+                    tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
+                )
+            )
+        except httpx.HTTPStatusError:
+            pass
+        else:
+            raise AssertionError("analyze_sentiment_now must not swallow a failed call as success")
+
+
+def _reel_summary(**overrides: object) -> ReelSummary:
+    defaults: dict[str, object] = {
+        "thread_id": UUID("e0000000-0000-4000-8000-000000000001"),
+        "external_thread_id": "media-1",
+        "last_message_at": datetime(2026, 8, 20, 10, 0, tzinfo=UTC),
+        "total": 3,
+        "positive": 1,
+        "neutral": 1,
+        "negative": 0,
+        "not_analyzed": 1,
+    }
+    defaults.update(overrides)
+    return ReelSummary(**defaults)
+
+
+def _global_summary(**overrides: object) -> GlobalSentimentSummary:
+    defaults: dict[str, object] = {
+        "positive": 5,
+        "neutral": 3,
+        "negative": 2,
+        "not_analyzed": 1,
+        "total": 11,
+    }
+    defaults.update(overrides)
+    return GlobalSentimentSummary(**defaults)
+
+
+# --------------------------------------------------------------------------------------
+# reel_summaries_page (QUA-93)
+# --------------------------------------------------------------------------------------
+
+
+def test_reel_summaries_page_calls_the_real_seam() -> None:
+    source = inspect.getsource(inbox_provider.reel_summaries_page)
+    assert "_list_reel_summaries(" in source
+
+
+def test_reel_summaries_page_is_synchronous_not_async() -> None:
+    assert not inspect.iscoroutinefunction(inbox_provider.reel_summaries_page)
+
+
+def test_reel_summaries_page_enriches_from_already_loaded_candidates() -> None:
+    """Opción A: thumbnail/caption/permalink come from `CandidateMediaVM`s the CALLER
+    already loaded — zero extra query, zero extra Meta call inside this function."""
+    candidate = CandidateMediaVM(
+        external_media_id="media-1",
+        posted_at="20 ago 2026, 09:00",
+        is_monitored=True,
+        caption="Mi Reel",
+        permalink="https://instagram.com/reel/media-1",
+        thumbnail_url="https://cdn/media-1.jpg",
+    )
+    with _patched(_list_reel_summaries=lambda **kwargs: (_reel_summary(),)):
+        items, _cursor, _has_more = inbox_provider.reel_summaries_page(
+            tenant_id=_TENANT, connection_id=_CONNECTION, cursor=None, candidates=[candidate]
+        )
+    assert items[0].thumbnail_url == "https://cdn/media-1.jpg"
+    assert items[0].caption == "Mi Reel"
+    assert items[0].permalink == "https://instagram.com/reel/media-1"
+
+
+def test_reel_summaries_page_no_enrichment_for_a_reel_outside_the_candidate_list() -> None:
+    """A Reel monitored longer than 2 weeks ago has no matching `CandidateMediaVM` —
+    falls back to `""` for all three, never crashes on the missing lookup."""
+    with _patched(_list_reel_summaries=lambda **kwargs: (_reel_summary(),)):
+        items, _cursor, _has_more = inbox_provider.reel_summaries_page(
+            tenant_id=_TENANT, connection_id=_CONNECTION, cursor=None, candidates=[]
+        )
+    assert items[0].thumbnail_url == ""
+    assert items[0].caption == ""
+    assert items[0].permalink == ""
+
+
+def test_reel_summaries_page_carries_counts_through() -> None:
+    with _patched(
+        _list_reel_summaries=lambda **kwargs: (
+            _reel_summary(total=10, positive=4, neutral=3, negative=2, not_analyzed=1),
+        )
+    ):
+        items, _cursor, _has_more = inbox_provider.reel_summaries_page(
+            tenant_id=_TENANT, connection_id=_CONNECTION, cursor=None, candidates=[]
+        )
+    assert items[0].total == 10
+    assert items[0].positive == 4
+    assert items[0].neutral == 3
+    assert items[0].negative == 2
+    assert items[0].not_analyzed == 1
+
+
+def test_reel_summaries_page_has_more_when_page_is_full() -> None:
+    full_page = tuple(
+        _reel_summary(thread_id=UUID(int=i), external_thread_id=f"media-{i}")
+        for i in range(DEFAULT_REEL_PAGE_SIZE)
+    )
+    with _patched(_list_reel_summaries=lambda **kwargs: full_page):
+        _items, cursor, has_more = inbox_provider.reel_summaries_page(
+            tenant_id=_TENANT, connection_id=_CONNECTION, cursor=None, candidates=[]
+        )
+    assert has_more is True
+    assert cursor is not None
+    assert cursor.thread_id == str(full_page[-1].thread_id)
+
+
+def test_reel_summaries_page_has_no_more_when_page_is_short() -> None:
+    with _patched(_list_reel_summaries=lambda **kwargs: (_reel_summary(),)):
+        _items, _cursor, has_more = inbox_provider.reel_summaries_page(
+            tenant_id=_TENANT, connection_id=_CONNECTION, cursor=None, candidates=[]
+        )
+    assert has_more is False
+
+
+def test_reel_summaries_page_returns_no_cursor_on_an_empty_page() -> None:
+    with _patched(_list_reel_summaries=lambda **kwargs: ()):
+        items, cursor, has_more = inbox_provider.reel_summaries_page(
+            tenant_id=_TENANT, connection_id=_CONNECTION, cursor=None, candidates=[]
+        )
+    assert items == []
+    assert cursor is None
+    assert has_more is False
+
+
+def test_reel_summaries_page_propagates_unknown_connection() -> None:
+    def _raise(**kwargs: object) -> tuple[ReelSummary, ...]:
+        raise UnknownSentimentConnection(str(_CONNECTION))
+
+    with _patched(_list_reel_summaries=_raise):
+        try:
+            inbox_provider.reel_summaries_page(
+                tenant_id=_TENANT, connection_id=_CONNECTION, cursor=None, candidates=[]
+            )
+        except UnknownSentimentConnection:
+            pass
+        else:
+            raise AssertionError("reel_summaries_page must not swallow UnknownSentimentConnection")
+
+
+# --------------------------------------------------------------------------------------
+# global_summary_vm (QUA-93)
+# --------------------------------------------------------------------------------------
+
+
+def test_global_summary_vm_calls_the_real_seam() -> None:
+    source = inspect.getsource(inbox_provider.global_summary_vm)
+    assert "_global_sentiment_summary(" in source
+
+
+def test_global_summary_vm_projects_fields() -> None:
+    with _patched(_global_sentiment_summary=lambda **kwargs: _global_summary(positive=7)):
+        vm = inbox_provider.global_summary_vm(tenant_id=_TENANT, connection_id=_CONNECTION)
+    assert vm.positive == 7
+    assert vm.total == 11
+
+
+def test_global_summary_vm_propagates_unknown_connection() -> None:
+    def _raise(**kwargs: object) -> GlobalSentimentSummary:
+        raise UnknownSentimentConnection(str(_CONNECTION))
+
+    with _patched(_global_sentiment_summary=_raise):
+        try:
+            inbox_provider.global_summary_vm(tenant_id=_TENANT, connection_id=_CONNECTION)
+        except UnknownSentimentConnection:
+            pass
+        else:
+            raise AssertionError("global_summary_vm must not swallow UnknownSentimentConnection")
+
+
+# --------------------------------------------------------------------------------------
+# thread_comments_page (QUA-93)
+# --------------------------------------------------------------------------------------
+
+
+def test_thread_comments_page_calls_the_real_seam() -> None:
+    source = inspect.getsource(inbox_provider.thread_comments_page)
+    assert "_list_comments_for_thread(" in source
+
+
+def test_thread_comments_page_is_synchronous_not_async() -> None:
+    assert not inspect.iscoroutinefunction(inbox_provider.thread_comments_page)
+
+
+def test_thread_comments_page_maps_all_filter_and_blank_search_to_none() -> None:
+    captured: dict[str, object] = {}
+
+    def _capture(**kwargs: object) -> tuple[AnalyzedComment, ...]:
+        captured.update(kwargs)
+        return ()
+
+    with _patched(_list_comments_for_thread=_capture):
+        inbox_provider.thread_comments_page(
+            tenant_id=_TENANT,
+            connection_id=_CONNECTION,
+            thread_id=UUID(int=1),
+            sentiment_filter="ALL",
+            search="   ",
+            cursor=None,
+        )
+    assert captured["sentiment_filter"] is None
+    assert captured["search"] is None
+
+
+def test_thread_comments_page_passes_through_a_real_filter_and_search() -> None:
+    captured: dict[str, object] = {}
+
+    def _capture(**kwargs: object) -> tuple[AnalyzedComment, ...]:
+        captured.update(kwargs)
+        return ()
+
+    with _patched(_list_comments_for_thread=_capture):
+        inbox_provider.thread_comments_page(
+            tenant_id=_TENANT,
+            connection_id=_CONNECTION,
+            thread_id=UUID(int=1),
+            sentiment_filter="PENDING",
+            search="  precio  ",
+            cursor=None,
+        )
+    assert captured["sentiment_filter"] == "PENDING"
+    assert captured["search"] == "precio"  # stripped
+
+
+def test_thread_comments_page_shows_pending_as_empty_label_never_neu() -> None:
+    with _patched(_list_comments_for_thread=lambda **kwargs: (_comment(),)):
+        (vm,) = inbox_provider.thread_comments_page(
+            tenant_id=_TENANT,
+            connection_id=_CONNECTION,
+            thread_id=UUID(int=1),
+            sentiment_filter="ALL",
+            search="",
+            cursor=None,
+        )[0]
+    assert vm.sentiment_label == ""
+    assert vm.sentiment_label != "NEU"
+
+
+def test_thread_comments_page_propagates_unknown_connection() -> None:
+    def _raise(**kwargs: object) -> tuple[AnalyzedComment, ...]:
+        raise UnknownSentimentConnection(str(_CONNECTION))
+
+    with _patched(_list_comments_for_thread=_raise):
+        try:
+            inbox_provider.thread_comments_page(
+                tenant_id=_TENANT,
+                connection_id=_CONNECTION,
+                thread_id=UUID(int=1),
+                sentiment_filter="ALL",
+                search="",
+                cursor=None,
+            )
+        except UnknownSentimentConnection:
+            pass
+        else:
+            raise AssertionError("thread_comments_page must not swallow UnknownSentimentConnection")
 
 
 def _run() -> int:
