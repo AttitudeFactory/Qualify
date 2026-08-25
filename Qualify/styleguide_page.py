@@ -23,6 +23,7 @@ from .ui import (
     page_header,
     platform_badge,
     section,
+    sentiment_badge,
     signal_pill,
     skeleton_card,
     skeleton_rows,
@@ -642,6 +643,19 @@ def _states() -> rx.Component:
     )
 
 
+def _sentiment_badges() -> rx.Component:
+    """QUA-92: the four states `sentiment_badge` renders for the pipeline vocabulary
+    (`POS`/`NEG`/`NEU`/`""`) — `""` is "Sin analizar", never NEU."""
+    return rx.hstack(
+        sentiment_badge(rx.Var.create("POS")),
+        sentiment_badge(rx.Var.create("NEG")),
+        sentiment_badge(rx.Var.create("NEU")),
+        sentiment_badge(rx.Var.create("")),
+        spacing="2",
+        wrap="wrap",
+    )
+
+
 def _components_section() -> rx.Component:
     return section(
         "Componentes",
@@ -650,6 +664,12 @@ def _components_section() -> rx.Component:
         card(_feedback()),
         rx.text("Cifras", size="2", weight="medium"),
         _stats(),
+        rx.text(
+            "Sentimiento (sentiment_badge — POS/NEG/NEU + sin analizar, QUA-92)",
+            size="2",
+            weight="medium",
+        ),
+        _sentiment_badges(),
         rx.text(
             "Tarjeta de entidad (card + platform_badge + tone_badge + tag + kv)",
             size="2",

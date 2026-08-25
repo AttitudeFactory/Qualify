@@ -245,7 +245,7 @@ Todo en `Qualify/ui/primitives.py` salvo lo indicado. Radix (`rx.button`, `rx.in
 | `signal_pill(label, tone)` | **default** para cualquier cosa con ciclo de vida: sentimiento, sync, intento de publicación | punto tono-9 + palabra, badge `soft` `radius=full` |
 | `tone_badge(label, tone, icon=None, size="1")` | verdicto a nivel tarjeta o celda que debe escanearse | icono 12px + palabra, `soft` |
 | `status_dot(tone)` | solo como parte de otra composición | nunca solo (P1) |
-| `sentiment_badge(var)` | sentimiento | `positive→ok`, `negative→error`, resto `neutral` |
+| `sentiment_badge(var)` | sentimiento | `positive`/`POS→ok`, `negative`/`NEG→error`, `NEU→neutral`, `""→"Sin analizar"` (QUA-92: pendiente de análisis, nunca se confunde con NEU), resto `neutral` |
 
 ### 5.3 Identidad y etiquetas
 
