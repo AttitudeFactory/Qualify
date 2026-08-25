@@ -7,6 +7,7 @@ own Meta client.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -125,3 +126,119 @@ def test_full_seam_analyzes_a_real_message_end_to_end() -> None:
         tenant_id=TENANT_C, connection_id=connection_id
     )
     assert summary_again.comments_checked == 0
+
+
+# --- list_reel_summaries / global_sentiment_summary / list_comments_for_thread (QUA-93) --
+
+
+def _seed_connection_with_message(*, text: str) -> tuple[UUID, UUID]:
+    """(connection_id, message_id) — a real connection + comment-channel thread + one
+    message under TENANT_C, same shape the two seams above already seed inline."""
+    with admin_session() as session:
+        if session.get(Tenant, TENANT_C) is None:
+            session.add(
+                Tenant(
+                    id=TENANT_C,
+                    name="t-sentiment-comp",
+                    country="CO",
+                    timezone="America/Bogota",
+                    currency="COP",
+                )
+            )
+            session.flush()
+        app = PlatformApp(app_id=f"app-{uuid4()}", secret_ref="ref", api_version="v21.0")
+        session.add(app)
+        session.flush()
+        user = User(tenant_id=TENANT_C, email=f"u-{uuid4()}@c.co", display_name="U")
+        session.add(user)
+        session.flush()
+        app_id, user_id = app.id, user.id
+
+    with tenant_session(TENANT_C) as session:
+        conn = SocialConnection(
+            tenant_id=TENANT_C,
+            platform_app_id=app_id,
+            platform="instagram",
+            account_type="business",
+            external_account_id=f"ig-{uuid4()}",
+            linked_page_id="page-1",
+            granted_scopes=["basic"],
+            status="active",
+            access_posture="development",
+            current_credential_version=0,
+            connected_by_user_id=user_id,
+        )
+        session.add(conn)
+        session.flush()
+        connection_id = conn.id
+
+        thread = Thread(
+            tenant_id=TENANT_C,
+            connection_id=connection_id,
+            channel="comment",
+            external_thread_id=f"media-{uuid4()}",
+            status="open",
+            last_message_at=datetime.now(UTC),
+        )
+        session.add(thread)
+        session.flush()
+        message = Message(
+            tenant_id=TENANT_C,
+            thread_id=thread.id,
+            connection_id=connection_id,
+            external_message_id=f"comment-{uuid4()}",
+            direction="inbound",
+            text=text,
+            shape_version="ig-comment-shapes-1.0.0",
+        )
+        session.add(message)
+        session.flush()
+        message_id = message.id
+
+    return connection_id, message_id
+
+
+def test_reel_summaries_read_seam_refuses_an_unknown_connection() -> None:
+    with pytest.raises(UnknownSentimentConnection):
+        composition.list_reel_summaries(tenant_id=TENANT_C, connection_id=UNKNOWN_CONNECTION)
+
+
+def test_global_summary_read_seam_refuses_an_unknown_connection() -> None:
+    with pytest.raises(UnknownSentimentConnection):
+        composition.global_sentiment_summary(tenant_id=TENANT_C, connection_id=UNKNOWN_CONNECTION)
+
+
+def test_comments_for_thread_read_seam_refuses_an_unknown_connection() -> None:
+    with pytest.raises(UnknownSentimentConnection):
+        composition.list_comments_for_thread(
+            tenant_id=TENANT_C, connection_id=UNKNOWN_CONNECTION, thread_id=uuid4()
+        )
+
+
+def test_reel_summaries_reflect_analysis_without_running_it() -> None:
+    connection_id, message_id = _seed_connection_with_message(text="que buen servicio")
+
+    # Before any analysis: the read seam shows it as not_analyzed, never NEU — and,
+    # crucially, does NOT trigger analysis as a side effect of being called.
+    before = composition.list_reel_summaries(tenant_id=TENANT_C, connection_id=connection_id)
+    assert before[0].not_analyzed == 1
+    assert before[0].positive == 0
+
+    summary = composition.analyze_pending_comments(tenant_id=TENANT_C, connection_id=connection_id)
+    assert summary.comments_checked == 1  # confirms the read above never consumed it
+
+    after = composition.list_reel_summaries(tenant_id=TENANT_C, connection_id=connection_id)
+    assert after[0].positive == 1
+    assert after[0].not_analyzed == 0
+
+    global_summary = composition.global_sentiment_summary(
+        tenant_id=TENANT_C, connection_id=connection_id
+    )
+    assert global_summary.positive == 1
+    assert global_summary.total == 1
+
+    comments = composition.list_comments_for_thread(
+        tenant_id=TENANT_C, connection_id=connection_id, thread_id=after[0].thread_id
+    )
+    assert [c.message_id for c in comments] == [message_id]
+    assert comments[0].label == "POS"
