@@ -843,3 +843,192 @@ def test_reel_read_is_tenant_isolated() -> None:
 
     assert not any(s.thread_id == _thread_id_for(TENANT_S, message_a) for s in summaries_for_s2)
     assert any(s.thread_id == _thread_id_for(TENANT_S2, message_b) for s in summaries_for_s2)
+
+
+def test_comment_sentiment_results_has_no_standalone_tenant_index() -> None:
+    """QUA-93 follow-up (the ~25s regression that survived `csr.tenant_id = :tenant_id`
+    alone): `ix_comment_sentiment_tenant` was dropped in migration 0012 because it
+    competed with `uq_comment_sentiment_analysis` for the per-message LATERAL lookup —
+    see that migration's `upgrade()` comment. A future edit that re-adds a tenant_id-only
+    index on this specific table (unlike every sibling RLS table, which legitimately
+    wants one) should fail here rather than silently reopening the regression."""
+    with admin_session() as session:
+        names = {
+            row[0]
+            for row in session.execute(
+                text(
+                    "SELECT indexname FROM pg_indexes WHERE tablename = 'comment_sentiment_results'"
+                )
+            ).all()
+        }
+    assert "ix_comment_sentiment_tenant" not in names
+    # The two indexes the per-message lookup actually needs must still be there.
+    assert "ix_comment_sentiment_message" in names
+    assert "uq_comment_sentiment_analysis" in names
+
+
+def _explain_reel_summaries_lateral(
+    tenant_id: UUID, thread_ids: list[UUID], version: AnalysisVersion
+) -> str:
+    """Re-runs `list_reel_summaries`'s aggregation SQL verbatim (copied from
+    `repository.py` — same character-for-character discipline its module docstring
+    already demands for these raw-SQL strings) under `EXPLAIN (ANALYZE, BUFFERS)`, to
+    assert on the actual index Postgres chooses for the per-message LATERAL lookup —
+    the `slow` benchmark covers wall-clock time; this covers the plan shape directly, at
+    a scale where a bad plan is a source of truth about *which* index was used, not
+    about how many minutes it costs."""
+    agg_sql = """
+        EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+        SELECT m.thread_id,
+          count(*) AS total,
+          count(*) FILTER (WHERE csr.label = 'POS') AS positive,
+          count(*) FILTER (WHERE csr.label = 'NEU') AS neutral,
+          count(*) FILTER (WHERE csr.label = 'NEG') AS negative,
+          count(*) FILTER (WHERE csr.label IS NULL) AS not_analyzed
+        FROM messages m
+        LEFT JOIN LATERAL (
+          SELECT label
+          FROM comment_sentiment_results csr
+          WHERE csr.message_id = m.id
+            AND csr.tenant_id = :tenant_id
+            AND csr.detector_version = :dv AND csr.pipeline_version = :pv
+            AND csr.model_id = :mid
+            AND COALESCE(csr.model_revision, '') = COALESCE(:mrev, '')
+          LIMIT 1
+        ) csr ON true
+        WHERE m.thread_id = ANY(:tids) AND m.direction = 'inbound'
+        GROUP BY m.thread_id
+    """
+    with tenant_session(tenant_id) as session:
+        rows = session.execute(
+            text(agg_sql),
+            {
+                "tids": [str(t) for t in thread_ids],
+                "tenant_id": str(tenant_id),
+                "dv": version.detector_version,
+                "pv": version.pipeline_version,
+                "mid": version.model_id,
+                "mrev": version.model_revision,
+            },
+        ).all()
+    return "\n".join(row[0] for row in rows)
+
+
+def _explain_comments_for_thread_lateral(
+    tenant_id: UUID, connection_id: UUID, thread_id: UUID, version: AnalysisVersion
+) -> str:
+    """Same discipline as `_explain_reel_summaries_lateral`, for `list_comments_for_thread`'s
+    LATERAL — copied verbatim from `repository.py`."""
+    sql = """
+        EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+        SELECT m.id, m.external_message_id, m.text, m.author_username, m.posted_at,
+               csr.label, csr.score
+        FROM messages m
+        LEFT JOIN LATERAL (
+          SELECT label, score
+          FROM comment_sentiment_results csr
+          WHERE csr.message_id = m.id
+            AND csr.tenant_id = :tenant_id
+            AND csr.detector_version = :dv AND csr.pipeline_version = :pv
+            AND csr.model_id = :mid
+            AND COALESCE(csr.model_revision, '') = COALESCE(:mrev, '')
+          LIMIT 1
+        ) csr ON true
+        WHERE m.thread_id = :tid AND m.connection_id = :cid AND m.direction = 'inbound'
+        ORDER BY COALESCE(m.posted_at, :null_sentinel) DESC, m.id DESC
+        LIMIT 20
+    """
+    with tenant_session(tenant_id) as session:
+        rows = session.execute(
+            text(sql),
+            {
+                "tid": str(thread_id),
+                "cid": str(connection_id),
+                "tenant_id": str(tenant_id),
+                "dv": version.detector_version,
+                "pv": version.pipeline_version,
+                "mid": version.model_id,
+                "mrev": version.model_revision,
+                "null_sentinel": NULL_POSTED_AT_SENTINEL,
+            },
+        ).all()
+    return "\n".join(row[0] for row in rows)
+
+
+def test_list_reel_summaries_lateral_avoids_tenant_only_index_scan() -> None:
+    """The exact adversarial shape that exposed the ~22-25s regression (QUA-93
+    follow-up): half a Reel's comments analyzed, half still pending — a "miss" on the
+    pending half is what forced a tenant-only index into a full tenant-partition scan.
+    With `ix_comment_sentiment_tenant` dropped, the LATERAL's only remaining candidates
+    are the two `message_id`-first indexes."""
+    tenant_id = uuid4()
+    connection_id = _seed_connection_only(tenant_id)
+    thread_id, message_ids = _bulk_seed_reel(
+        tenant_id, connection_id, comment_count=40, tag="explain-reel", minute_offset=0
+    )
+    _bulk_seed_sentiment(
+        tenant_id, connection_id, message_ids[:20], version=VERSION, label="POS"
+    )  # other 20 stay unanalyzed — the "miss" case
+
+    plan = _explain_reel_summaries_lateral(tenant_id, [thread_id], VERSION)
+
+    assert "ix_comment_sentiment_tenant" not in plan
+    assert "uq_comment_sentiment_analysis" in plan or "ix_comment_sentiment_message" in plan
+
+
+def test_list_comments_for_thread_lateral_avoids_tenant_only_index_scan() -> None:
+    """Same adversarial shape and assertion as
+    `test_list_reel_summaries_lateral_avoids_tenant_only_index_scan`, for the sibling
+    LATERAL in `list_comments_for_thread`."""
+    tenant_id = uuid4()
+    connection_id = _seed_connection_only(tenant_id)
+    thread_id, message_ids = _bulk_seed_reel(
+        tenant_id, connection_id, comment_count=40, tag="explain-thread", minute_offset=0
+    )
+    _bulk_seed_sentiment(tenant_id, connection_id, message_ids[:20], version=VERSION, label="POS")
+
+    plan = _explain_comments_for_thread_lateral(tenant_id, connection_id, thread_id, VERSION)
+
+    assert "ix_comment_sentiment_tenant" not in plan
+    assert "uq_comment_sentiment_analysis" in plan or "ix_comment_sentiment_message" in plan
+
+
+def test_global_sentiment_summary_sql_binds_tenant_id_on_every_table() -> None:
+    """QUA-93 follow-up: `global_sentiment_summary` never bound `tenant_id` as a literal
+    (relying only on RLS's opaque `current_setting('app.tenant_id')`), which was measured
+    to make Postgres misestimate `messages`/`threads`/`comment_sentiment_results` row
+    counts as ~1 each and pick Nested Loop joins over Hash Join — a ~24-minute regression
+    at 1,000 Reels x 100 comments. Source-inspection, not `EXPLAIN`, because join-algorithm
+    choice at this test file's small seed sizes is legitimately Nested Loop either way
+    (correct at that scale) — the `slow` benchmark is what proves the timing outcome at
+    the scale where it matters."""
+    source = inspect.getsource(PostgresSentimentRepository.global_sentiment_summary)
+    assert "m.tenant_id = :tenant_id" in source
+    assert "t.tenant_id = :tenant_id" in source
+    assert "csr.tenant_id = :tenant_id" in source
+    assert '"tenant_id": str(tenant_id)' in source
+
+
+def test_list_pending_for_analysis_has_no_tenant_only_index_to_fall_back_on() -> None:
+    """`list_pending_for_analysis`'s `EXISTS` subquery shares the same `message_id`-
+    correlated shape as the two LATERAL queries above (see its `already_analyzed`
+    construction), so it was exposed to the same `ix_comment_sentiment_tenant` risk even
+    though QUA-93's own scale investigation never measured it directly. Dropping the
+    index (asserted by `test_comment_sentiment_results_has_no_standalone_tenant_index`)
+    removes that risk for every correlated-by-message_id query on this table at once,
+    this one included — pinned here as a correctness/behavior check, not a plan
+    inspection, since it is ORM-built and not one of this module's raw-SQL strings."""
+    tenant_id = uuid4()
+    connection_id = _seed_connection_only(tenant_id)
+    thread_id, message_ids = _bulk_seed_reel(
+        tenant_id, connection_id, comment_count=10, tag="pending", minute_offset=0
+    )
+    analyzed, pending = message_ids[:6], message_ids[6:]
+    _bulk_seed_sentiment(tenant_id, connection_id, analyzed, version=VERSION, label="NEG")
+
+    repo = PostgresSentimentRepository()
+    result = repo.list_pending_for_analysis(
+        tenant_id=tenant_id, connection_id=connection_id, version=VERSION
+    )
+
+    assert {c.message_id for c in result} == set(pending)

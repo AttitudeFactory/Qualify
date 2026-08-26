@@ -196,32 +196,47 @@ def test_scale_benchmark_1000_reels_100_comments_stays_fast_opt_in() -> None:
     that cost, not a correctness concern, is why this is opt-in rather than part of the
     default suite.
 
-    KNOWN FAILING (intermittently) as of 2026-08-25 (see the QUA-93 scale-follow-up
-    conversation): this test found a SECOND scale regression beyond the one the
-    docstring above describes — `list_reel_summaries` measured ~29-30s here on several
-    runs, not ~23ms, under real `tenant_session` (RLS). Root-caused via `EXPLAIN
-    (ANALYZE, BUFFERS)`: the LATERAL subquery's `WHERE` relies on RLS's
-    `current_setting('app.tenant_id')` alone to scope `tenant_id`, and Postgres's
-    planner does not always reason about that opaque runtime expression well enough to
-    pick `uq_comment_sentiment_analysis` (the ideal, message_id-first composite unique
-    index) — it sometimes falls back to `ix_comment_sentiment_tenant` instead, filtering
-    out tens of thousands of rows per outer loop iteration. Confirmed fix (not yet
-    applied — see the follow-up commit that lands right after this one): repeat
-    `csr.tenant_id = :tenant_id` as an explicit, bound-parameter condition inside each
-    LATERAL subquery, redundant with RLS but enough for the planner to reliably choose
-    the composite index — this was measured at ~21ms under RLS, matching the
-    BYPASSRLS/`admin_session` baseline.
+    SECOND regression found and fixed 2026-08-25/26 (QUA-93 scale-follow-up): this test
+    found `list_reel_summaries` measuring ~29-30s here on several runs, not ~23ms, under
+    real `tenant_session` (RLS). Root-caused via `EXPLAIN (ANALYZE, BUFFERS)`: the
+    LATERAL subquery's `WHERE` relies on RLS's `current_setting('app.tenant_id')` alone
+    to scope `tenant_id`, and Postgres's planner does not always reason about that opaque
+    runtime expression well enough to pick `uq_comment_sentiment_analysis` (the ideal,
+    message_id-first composite unique index) — it sometimes fell back to
+    `ix_comment_sentiment_tenant` instead, filtering out tens of thousands of rows per
+    outer loop iteration.
 
-    Deliberately NOT deterministic in this repo's shared dev Postgres: across repeated
-    runs while developing this test, `list_reel_summaries` failed some runs (~29-30s)
-    and passed others (comparable to the clean baseline) with byte-identical code and
-    query text — the planner's choice between the two candidate plans is sensitive to
-    statistics/cache state that this session's heavy, cumulative test traffic keeps
-    disturbing. That is not a reason to distrust the finding; a regression that only
-    shows up for SOME tenants/data distributions and not others is a worse production
-    risk than a deterministic one, not a smaller one — it is exactly why this guard
-    belongs in the suite even though it cannot promise to fail on every single run
-    before the fix lands.
+    First attempted fix — `csr.tenant_id = :tenant_id` as an explicit, bound-parameter
+    condition inside each LATERAL subquery — was measured at ~21ms in some runs but was
+    NOT sufficient on its own: re-verified with `EXPLAIN (ANALYZE, BUFFERS)` *with that
+    literal already in place*, Postgres still chose `ix_comment_sentiment_tenant` on
+    other runs (~22-25s), because the `LIMIT 1` collapses the row estimate to 1 for BOTH
+    candidate indexes, leaving the choice a near-tied coin flip. The actual fix:
+    `ix_comment_sentiment_tenant` was DROPPED (migration 0012) — see that migration's
+    `upgrade()` comment and `test_sentiment_repository.py`'s
+    `test_comment_sentiment_results_has_no_standalone_tenant_index` /
+    `test_list_reel_summaries_lateral_avoids_tenant_only_index_scan`. Removing the
+    competing index is what makes this deterministic, not the literal alone — the literal
+    stays (harmless, still-correct) but is no longer load-bearing for this specific query.
+
+    A SEPARATE, independent pathology was found in `global_sentiment_summary` (below):
+    it never bound `tenant_id` as a literal on any of its three tables, so RLS's opaque
+    `current_setting()` made Postgres estimate ~1 row on `messages`/`threads`/
+    `comment_sentiment_results` alike (real: tens of thousands) — not a competing-index
+    problem, a cardinality-misestimate one, and it picked Nested Loop joins in cascade
+    over what should be a Hash Join. Measured once at ~1,427s (~23.8 minutes) via a
+    reproduction script; `EXPLAIN` (planning-only, not executed) confirmed the Nested
+    Loop plan and a bounded `EXPLAIN ANALYZE` with a 45s `statement_timeout` did not
+    complete. Fixed the same way as the other two: `tenant_id = :tenant_id` bound
+    literally on `messages`, `threads`, and `comment_sentiment_results` — giving the
+    planner real per-value selectivity from `pg_stats` instead of the opaque default.
+
+    Deliberately NOT deterministic in this repo's shared dev Postgres even pre-fix: across
+    repeated runs, `list_reel_summaries` failed some runs and passed others with
+    byte-identical code — the planner's tie-break is sensitive to statistics/cache state
+    that this session's heavy, cumulative test traffic keeps disturbing. That intermittency
+    is exactly why the fix had to be verified by dropping the competing index and
+    confirming via repeated `EXPLAIN`, not by one passing timing run.
     """
     tenant_id = uuid4()
     connection_id = _seed_connection_only(tenant_id)
@@ -275,9 +290,13 @@ def test_scale_benchmark_1000_reels_100_comments_stays_fast_opt_in() -> None:
     # Postgres has accumulated from unrelated test runs, not just this test's own 100k
     # rows (measured at 5.5-6.4s against ~300k+ accumulated rows during this test's own
     # development, vs. the original clean-slate 268ms at ~100k rows). 15s is still ~55x
-    # that clean measurement and nowhere near the LATERAL-vs-plain-JOIN pathology the
-    # other two thresholds guard against (that pathology is specific to a per-row
-    # correlated LATERAL subquery choosing the wrong index — this query has none; it is
-    # one hash join over the full set, so a bad index choice here would look like whole
-    # seconds-to-minutes, not a 3x threshold miss).
+    # that clean measurement. NOT exempt from a catastrophic-plan regression, though —
+    # unlike the two LATERAL queries above, this one has no competing index to pick the
+    # wrong side of; its own failure mode is an RLS row-count MISESTIMATE across all
+    # three joined tables forcing Nested Loop over Hash Join, measured once at ~1,427s
+    # (see this test's docstring). 15s stays generous rather than tightened to the
+    # clean-baseline single-digit-seconds range, specifically so this assertion does not
+    # itself start flaking as this shared dev Postgres keeps accumulating rows from
+    # unrelated work — but it is still ~3.5 orders of magnitude short of the pathological
+    # 1,427s, so a real regression back to Nested Loop cannot pass unnoticed either.
     assert global_seconds < 15.0, f"global_sentiment_summary took {global_seconds:.2f}s at scale"
