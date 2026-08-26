@@ -210,6 +210,100 @@ def test_reel_summary_isolated_by_connection() -> None:
     assert summaries == ()
 
 
+# --- monitored_media decoration, never a filter (QUA-94) -------------------------------
+
+
+def test_reel_summary_reports_is_monitored_true_for_an_actively_monitored_reel() -> None:
+    service, repo = _service()
+    repo.seed_message(
+        message_id=uuid4(),
+        connection_id=CONNECTION_ID,
+        source_id="c1",
+        text="a",
+        external_thread_id="media-1",
+    )
+    repo.seed_monitored_media(
+        connection_id=CONNECTION_ID, external_media_id="media-1", is_monitored=True
+    )
+
+    (summary,) = service.list_reel_summaries(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert summary.is_monitored is True
+
+
+def test_desmonitored_reel_keeps_its_history_flagged_not_monitored() -> None:
+    """The QUA-94 rule end to end: turning monitoring off never hides or drops a Reel's
+    comment history — `list_reel_summaries` still returns it, just decorated
+    `is_monitored=False`."""
+    service, repo = _service()
+    repo.seed_message(
+        message_id=uuid4(),
+        connection_id=CONNECTION_ID,
+        source_id="c1",
+        text="a",
+        external_thread_id="media-1",
+    )
+    repo.seed_monitored_media(
+        connection_id=CONNECTION_ID, external_media_id="media-1", is_monitored=True
+    )
+    repo.seed_monitored_media(
+        connection_id=CONNECTION_ID, external_media_id="media-1", is_monitored=False
+    )
+
+    (summary,) = service.list_reel_summaries(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert summary.is_monitored is False
+    assert summary.total == 1  # the history is still there, not filtered out
+
+
+def test_reel_with_no_monitored_media_row_defaults_is_monitored_false() -> None:
+    """A thread can exist without ever having a `monitored_media` row (e.g. seeded
+    directly in a test, or a pre-QUA-94 legacy row) — the absence must read as "not
+    currently monitored", the same default the Postgres `COALESCE(mm.is_monitored,
+    false)` produces."""
+    service, repo = _service()
+    repo.seed_message(
+        message_id=uuid4(),
+        connection_id=CONNECTION_ID,
+        source_id="c1",
+        text="a",
+        external_thread_id="media-1",
+    )
+
+    (summary,) = service.list_reel_summaries(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert summary.is_monitored is False
+
+
+def test_remonitoring_a_reel_flips_is_monitored_back_without_duplicating_history() -> None:
+    """Re-monitoring the same `external_media_id` is a toggle (UPDATE), never a second
+    row — `list_reel_summaries` must keep returning exactly ONE summary for the Reel,
+    with its full original comment count, now flagged monitored again."""
+    service, repo = _service()
+    repo.seed_message(
+        message_id=uuid4(),
+        connection_id=CONNECTION_ID,
+        source_id="c1",
+        text="a",
+        external_thread_id="media-1",
+    )
+    repo.seed_monitored_media(
+        connection_id=CONNECTION_ID, external_media_id="media-1", is_monitored=True
+    )
+    repo.seed_monitored_media(
+        connection_id=CONNECTION_ID, external_media_id="media-1", is_monitored=False
+    )
+    repo.seed_monitored_media(
+        connection_id=CONNECTION_ID, external_media_id="media-1", is_monitored=True
+    )
+
+    summaries = service.list_reel_summaries(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert len(summaries) == 1
+    assert summaries[0].is_monitored is True
+    assert summaries[0].total == 1
+
+
 def test_global_summary_totals_across_all_reels() -> None:
     service, repo = _service()
     repo.seed_message(
@@ -233,6 +327,52 @@ def test_global_summary_totals_across_all_reels() -> None:
     assert summary.total == 2
     assert summary.positive == 1
     assert summary.not_analyzed == 1
+
+
+def test_global_summary_keeps_counting_a_desmonitored_reels_comments() -> None:
+    """QUA-94 semantics pin: `global_sentiment_summary` is explicitly NOT filtered by
+    `monitored_media.is_monitored` — see its docstring. This test locks that decision
+    in so a future change cannot silently narrow the widget to monitored-only without
+    a test failing to announce it."""
+    service, repo = _service()
+    repo.seed_message(
+        message_id=uuid4(),
+        connection_id=CONNECTION_ID,
+        source_id="c1",
+        text="me encanta",
+        external_thread_id="media-1",
+    )
+    repo.seed_monitored_media(
+        connection_id=CONNECTION_ID, external_media_id="media-1", is_monitored=False
+    )
+
+    service.analyze_pending_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+    summary = service.global_sentiment_summary(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert summary.total == 1
+    assert summary.positive == 1
+
+
+def test_pending_analysis_still_offers_a_desmonitored_reels_unanalyzed_comments() -> None:
+    """QUA-94 product decision: desmonitorear stops future ingestion, it does not make
+    already-synced comments un-analyzable. `analyze_pending_comments` must still pick
+    up an unanalyzed comment that belongs to a Reel with `is_monitored=False`."""
+    service, repo = _service()
+    repo.seed_message(
+        message_id=uuid4(),
+        connection_id=CONNECTION_ID,
+        source_id="c1",
+        text="me encanta",
+        external_thread_id="media-1",
+    )
+    repo.seed_monitored_media(
+        connection_id=CONNECTION_ID, external_media_id="media-1", is_monitored=False
+    )
+
+    summary = service.analyze_pending_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert summary.comments_checked == 1
+    assert summary.new_results == 1
 
 
 def test_comments_for_thread_scoped_to_one_reel() -> None:
@@ -388,4 +528,5 @@ def test_reel_summary_domain_object_has_only_scalar_roll_up_fields() -> None:
         "neutral": "int",
         "negative": "int",
         "not_analyzed": "int",
+        "is_monitored": "bool",
     }

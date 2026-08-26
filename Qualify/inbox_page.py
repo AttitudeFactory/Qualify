@@ -388,10 +388,18 @@ def _global_summary_widget() -> rx.Component:
     # Explicit label (bug reported 2026-08-25): with nothing distinguishing this from
     # the per-Reel chips further down, a single monitored Reel makes the two numbers
     # look identical and it read as ambiguous which one this was. This widget is always
-    # the connection-wide total, across every monitored Reel — never one Reel's count.
+    # the connection-wide total, across every Reel with synced comments — never one
+    # Reel's count.
+    #
+    # Copy corrected (QUA-94): this used to say "todos los Reels monitoreados", which
+    # was already inaccurate — `global_sentiment_summary` (see its docstring) counts
+    # every comment in the connection, including Reels no longer monitored. Renamed to
+    # describe what the query actually computes rather than change the query to match
+    # the old label; see the docstring for why a monitored/historical split is a
+    # fast-follow, not done here.
     return rx.vstack(
         rx.text(
-            "Resumen general — todos los Reels monitoreados",
+            "Resumen general — todos los comentarios sincronizados",
             size="2",
             weight="medium",
             color=T.TEXT_MUTED,
@@ -436,6 +444,20 @@ def _reel_thumbnail(reel: ReelSummaryVM) -> rx.Component:
     )
 
 
+def _reel_monitoring_badge(reel: ReelSummaryVM) -> rx.Component:
+    """QUA-94: distinguishes a Reel actively monitored today from one whose comment
+    history is purely historical (`monitored_media.is_monitored=False` — either
+    explicitly turned off, or never monitored at all). Same `tone_badge` primitive
+    `_reel_sentiment_chips` below already uses, so it reads as one family of badges on
+    the card, not a bespoke control. Decoration only — never hides the card, never
+    changes what's inside it; see `inbox_vm.ReelSummaryVM.is_monitored`'s docstring."""
+    return rx.cond(
+        reel.is_monitored,
+        tone_badge("Monitoreado", "ok", icon="eye"),
+        tone_badge("No monitoreado · histórico", "neutral", icon="eye-off"),
+    )
+
+
 def _reel_sentiment_chips(reel: ReelSummaryVM) -> rx.Component:
     return rx.hstack(
         tone_badge("Positivos " + reel.positive.to_string(), "ok"),
@@ -462,6 +484,7 @@ def _reel_summary_card(reel: ReelSummaryVM) -> rx.Component:
                     white_space="nowrap",
                 ),
                 rx.hstack(
+                    _reel_monitoring_badge(reel),
                     rx.icon("clock", size=13, color=T.TEXT_FAINT),
                     rx.text(reel.last_message_at, size="1", color=T.TEXT_MUTED),
                     rx.icon("film", size=13, color=T.TEXT_FAINT),
@@ -745,8 +768,9 @@ def _comments_section() -> rx.Component:
         rx.cond(~InboxState.is_showing_reel_detail, _global_summary_widget(), rx.fragment()),
         rx.cond(InboxState.is_showing_reel_detail, _reel_detail_view(), _reel_summaries_list()),
         description=(
-            "Comentarios sincronizados de tus Reels monitoreados, agrupados por Reel, "
-            "con el sentimiento ya analizado cuando existe."
+            "Comentarios sincronizados, agrupados por Reel, con el sentimiento ya "
+            "analizado cuando existe. Incluye Reels que ya no están monitoreados — "
+            'su historial se conserva, marcado como "No monitoreado · histórico".'
         ),
         actions=[_analyze_now_button()],
     )

@@ -208,6 +208,7 @@ def test_reel_summary_vm_has_only_scalar_summary_fields() -> None:
         "thumbnail_url": "str",
         "caption": "str",
         "permalink": "str",
+        "is_monitored": "bool",
     }
 
 
@@ -571,6 +572,7 @@ def _reel_summary(**overrides: object) -> ReelSummary:
         "neutral": 1,
         "negative": 0,
         "not_analyzed": 1,
+        "is_monitored": True,
     }
     defaults.update(overrides)
     return ReelSummary(**defaults)
@@ -648,6 +650,21 @@ def test_reel_summaries_page_carries_counts_through() -> None:
     assert items[0].neutral == 3
     assert items[0].negative == 2
     assert items[0].not_analyzed == 1
+
+
+def test_reel_summaries_page_carries_is_monitored_through() -> None:
+    """QUA-94: `is_monitored` is a straight pass-through from `ReelSummary`, no lookup
+    against `candidates` — must survive both `True` and `False` unchanged."""
+    with _patched(_list_reel_summaries=lambda **kwargs: (_reel_summary(is_monitored=True),)):
+        monitored_items, _cursor, _has_more = inbox_provider.reel_summaries_page(
+            tenant_id=_TENANT, connection_id=_CONNECTION, cursor=None, candidates=[]
+        )
+    with _patched(_list_reel_summaries=lambda **kwargs: (_reel_summary(is_monitored=False),)):
+        desmonitored_items, _cursor, _has_more = inbox_provider.reel_summaries_page(
+            tenant_id=_TENANT, connection_id=_CONNECTION, cursor=None, candidates=[]
+        )
+    assert monitored_items[0].is_monitored is True
+    assert desmonitored_items[0].is_monitored is False
 
 
 def test_reel_summaries_page_has_more_when_page_is_full() -> None:
