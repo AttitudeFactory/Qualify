@@ -634,7 +634,17 @@ class PostgresSentimentRepository:
             # LATERAL: forces one indexed lookup per message via
             # ix_comment_sentiment_message, independent of total table size — see the
             # module docstring for the 28.5s-vs-23ms measurement that makes this
-            # non-negotiable.
+            # non-negotiable. `csr.tenant_id = :tenant_id` below is REDUNDANT with RLS
+            # (RLS already scopes every read of this table) — it exists purely as a
+            # planner hint: `current_setting('app.tenant_id')`, RLS's own predicate, is
+            # opaque at plan time, and at real scale (1,000 Reels x 100 comments) that
+            # opacity was measured to make Postgres pick `ix_comment_sentiment_tenant`
+            # (filtering tens of thousands of rows per outer row) over the far cheaper
+            # `uq_comment_sentiment_analysis` (message_id-first, a guaranteed single-row
+            # lookup) — 29s vs 23ms for the identical rows, identical RLS policy. A
+            # literal bound parameter gives the planner something concrete to combine
+            # with `message_id = m.id` when choosing an index; see this method's sibling
+            # `list_comments_for_thread` for the second, identically-reasoned instance.
             agg_sql = """
                 SELECT m.thread_id,
                   count(*) AS total,
@@ -647,6 +657,7 @@ class PostgresSentimentRepository:
                   SELECT label
                   FROM comment_sentiment_results csr
                   WHERE csr.message_id = m.id
+                    AND csr.tenant_id = :tenant_id
                     AND csr.detector_version = :dv AND csr.pipeline_version = :pv
                     AND csr.model_id = :mid
                     AND COALESCE(csr.model_revision, '') = COALESCE(:mrev, '')
@@ -659,6 +670,7 @@ class PostgresSentimentRepository:
                 text(agg_sql),
                 {
                     "tids": thread_ids,
+                    "tenant_id": str(tenant_id),
                     "dv": version.detector_version,
                     "pv": version.pipeline_version,
                     "mid": version.model_id,
@@ -740,6 +752,14 @@ class PostgresSentimentRepository:
         if sentiment_filter is not None and sentiment_filter not in _VALID_SENTIMENT_FILTERS:
             raise ValueError(f"invalid sentiment_filter: {sentiment_filter!r}")
 
+        # `csr.tenant_id = :tenant_id` in the LATERAL below is REDUNDANT with RLS (RLS
+        # already scopes every read of comment_sentiment_results) — a planner hint, same
+        # reasoning `list_reel_summaries`'s identical LATERAL carries: RLS's own
+        # `current_setting('app.tenant_id')` predicate is opaque at plan time, and that
+        # opacity was measured (at 1,000 Reels x 100 comments) to make Postgres prefer
+        # `ix_comment_sentiment_tenant` over the far cheaper, message_id-first
+        # `uq_comment_sentiment_analysis`. See that method's comment for the full
+        # before/after measurement.
         sql = """
             SELECT m.id, m.external_message_id, m.text, m.author_username, m.posted_at,
                    csr.label, csr.score
@@ -748,6 +768,7 @@ class PostgresSentimentRepository:
               SELECT label, score
               FROM comment_sentiment_results csr
               WHERE csr.message_id = m.id
+                AND csr.tenant_id = :tenant_id
                 AND csr.detector_version = :dv AND csr.pipeline_version = :pv
                 AND csr.model_id = :mid
                 AND COALESCE(csr.model_revision, '') = COALESCE(:mrev, '')
@@ -758,6 +779,7 @@ class PostgresSentimentRepository:
         params: dict[str, object] = {
             "tid": str(thread_id),
             "cid": str(connection_id),
+            "tenant_id": str(tenant_id),
             "dv": version.detector_version,
             "pv": version.pipeline_version,
             "mid": version.model_id,
