@@ -641,10 +641,13 @@ class PostgresSentimentRepository:
             # opacity was measured to make Postgres pick `ix_comment_sentiment_tenant`
             # (filtering tens of thousands of rows per outer row) over the far cheaper
             # `uq_comment_sentiment_analysis` (message_id-first, a guaranteed single-row
-            # lookup) — 29s vs 23ms for the identical rows, identical RLS policy. A
-            # literal bound parameter gives the planner something concrete to combine
-            # with `message_id = m.id` when choosing an index; see this method's sibling
-            # `list_comments_for_thread` for the second, identically-reasoned instance.
+            # lookup) — 29s vs 23ms for the identical rows, identical RLS policy. This
+            # literal alone was NOT a reliable fix (still measured 22-30s intermittently
+            # afterward, with the literal already in place) — `ix_comment_sentiment_tenant`
+            # itself was dropped in migration 0012 (QUA-93) so the ambiguity no longer
+            # exists; the literal stays here as a harmless, still-correct filter and as
+            # the same planner-hint pattern `global_sentiment_summary` also carries. See
+            # this method's sibling `list_comments_for_thread` for the second instance.
             agg_sql = """
                 SELECT m.thread_id,
                   count(*) AS total,
@@ -702,6 +705,15 @@ class PostgresSentimentRepository:
         # Plain JOIN, NOT lateral — the module docstring's measurement showed LATERAL is
         # ~7x SLOWER here (1.95s vs 268ms at 100k rows): this query deliberately scans
         # the whole connection, so a hash join over the full sets beats a per-row loop.
+        #
+        # `tenant_id = :tenant_id` on all three tables below is REDUNDANT with RLS, same
+        # planner-hint reasoning as `list_reel_summaries`/`list_comments_for_thread` — but
+        # here the opaque `current_setting('app.tenant_id')` RLS predicate was measured
+        # (QUA-93) to make Postgres estimate ~1 row on `messages`/`threads`/
+        # `comment_sentiment_results` alike (real: tens of thousands), which picks Nested
+        # Loop joins over Hash Join and regresses to ~24 minutes at 1,000 Reels x 100
+        # comments. A literal bound parameter lets the planner use real per-value
+        # selectivity (pg_stats) instead of that opaque default.
         sql = """
             SELECT
               count(*) FILTER (WHERE csr.label = 'POS') AS positive,
@@ -710,18 +722,21 @@ class PostgresSentimentRepository:
               count(*) FILTER (WHERE csr.label IS NULL) AS not_analyzed,
               count(*) AS total
             FROM messages m
-            JOIN threads t ON t.id = m.thread_id
+            JOIN threads t ON t.id = m.thread_id AND t.tenant_id = :tenant_id
             LEFT JOIN comment_sentiment_results csr
               ON csr.message_id = m.id
+              AND csr.tenant_id = :tenant_id
               AND csr.detector_version = :dv AND csr.pipeline_version = :pv
               AND csr.model_id = :mid
               AND COALESCE(csr.model_revision, '') = COALESCE(:mrev, '')
-            WHERE t.connection_id = :cid AND t.channel = 'comment' AND m.direction = 'inbound'
+            WHERE m.tenant_id = :tenant_id
+              AND t.connection_id = :cid AND t.channel = 'comment' AND m.direction = 'inbound'
         """
         with tenant_session(tenant_id) as session:
             row = session.execute(
                 text(sql),
                 {
+                    "tenant_id": str(tenant_id),
                     "cid": str(connection_id),
                     "dv": version.detector_version,
                     "pv": version.pipeline_version,
@@ -758,8 +773,9 @@ class PostgresSentimentRepository:
         # `current_setting('app.tenant_id')` predicate is opaque at plan time, and that
         # opacity was measured (at 1,000 Reels x 100 comments) to make Postgres prefer
         # `ix_comment_sentiment_tenant` over the far cheaper, message_id-first
-        # `uq_comment_sentiment_analysis`. See that method's comment for the full
-        # before/after measurement.
+        # `uq_comment_sentiment_analysis`. That index was since dropped (migration 0012,
+        # QUA-93) because the literal alone did not reliably prevent the bad plan — see
+        # `list_reel_summaries`'s comment for the full before/after measurement.
         sql = """
             SELECT m.id, m.external_message_id, m.text, m.author_username, m.posted_at,
                    csr.label, csr.score

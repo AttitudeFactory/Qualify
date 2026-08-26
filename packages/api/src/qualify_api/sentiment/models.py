@@ -39,7 +39,10 @@ class CommentSentimentResult(Base):
             ["social_connections.id", "social_connections.tenant_id"],
             name="fk_comment_sentiment_conn_tenant",
         ),
-        Index("ix_comment_sentiment_tenant", "tenant_id"),
+        # No standalone tenant_id index, unlike sibling RLS tables — see 0012's upgrade()
+        # comment: it competes with uq_comment_sentiment_analysis for this table's only
+        # read pattern (a message_id-correlated lookup) and was measured to cost 22-25s
+        # per page at scale (QUA-93).
         Index("ix_comment_sentiment_message", "message_id"),
         # The idempotency/versioning unique index (over COALESCE(model_revision, ''))
         # is created via raw SQL in the migration — SQLAlchemy's declarative Index

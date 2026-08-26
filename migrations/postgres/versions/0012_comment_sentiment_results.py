@@ -104,7 +104,18 @@ def upgrade() -> None:
         ),
     )
 
-    op.create_index("ix_comment_sentiment_tenant", "comment_sentiment_results", ["tenant_id"])
+    # No standalone `tenant_id` index here, unlike every other RLS table in this schema
+    # (`ix_users_tenant`, `ix_thread_tenant`, etc.) — deliberate exception, not an omission.
+    # This table's only read pattern is a per-row lookup correlated on `message_id`
+    # (`list_reel_summaries`/`list_comments_for_thread`'s LATERAL, `list_pending_for_analysis`'s
+    # EXISTS); nothing scans it by `tenant_id` alone. QUA-93's scale investigation found a
+    # tenant_id-only index here actively competes with `uq_comment_sentiment_analysis`
+    # (message_id-first) for that lookup: with a `LIMIT 1`, Postgres estimates ~1 row for
+    # both candidate index scans and can pick either — the tenant-only index, unable to seek
+    # on `message_id`, must scan the whole tenant-scoped range to rule out a "not yet
+    # analyzed" comment, measured at 22-25s per page at 1,000 Reels x 100 comments (RLS still
+    # enforces isolation via the policy regardless of this index; see repository.py's module
+    # docstring for the measurement).
     op.create_index("ix_comment_sentiment_message", "comment_sentiment_results", ["message_id"])
 
     # Idempotency + versioning key: see module docstring for why COALESCE is load-bearing here.
@@ -128,6 +139,5 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS uq_comment_sentiment_analysis;")
     op.drop_index("ix_comment_sentiment_message", table_name="comment_sentiment_results")
-    op.drop_index("ix_comment_sentiment_tenant", table_name="comment_sentiment_results")
     op.drop_table("comment_sentiment_results")
     op.drop_constraint("uq_message_id_tenant", "messages", type_="unique")
