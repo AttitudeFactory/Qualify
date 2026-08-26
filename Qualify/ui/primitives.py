@@ -166,11 +166,23 @@ def tag(label: str | rx.Var, size: str = "1") -> rx.Component:
 
 
 def sentiment_badge(sentiment: rx.Var[str]) -> rx.Component:
-    """Sentiment is a state: positive=ok, negative=error, anything else neutral."""
+    """Sentiment is a state: positive=ok, negative=error, anything else neutral.
+
+    Matches two vocabularies that coexist in the product: the Mentions dashboard's own
+    ``"positive"``/``"negative"`` values, and the QUA-21/QUA-92 pipeline's ``POS``/
+    ``NEG``/``NEU`` — the literal values ``comment_sentiment_results.label``'s CHECK
+    constraint allows. ``""`` matches explicitly to "Sin analizar": the QUA-92 state for
+    a comment with no ``comment_sentiment_results`` row yet under the current model
+    version, which must never render as NEU (docs/design-system.md §6.1/§7.2 — a comment
+    pending analysis and one classified neutral are different facts)."""
     return rx.match(
         sentiment,
         ("positive", signal_pill("Positiva", "ok")),
         ("negative", signal_pill("Negativa", "error")),
+        ("POS", signal_pill("Positiva", "ok")),
+        ("NEG", signal_pill("Negativa", "error")),
+        ("NEU", signal_pill("Neutra", "neutral")),
+        ("", signal_pill("Sin analizar", "neutral")),
         signal_pill("Neutra", "neutral"),
     )
 

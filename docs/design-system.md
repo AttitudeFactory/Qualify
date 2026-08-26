@@ -245,7 +245,7 @@ Todo en `Qualify/ui/primitives.py` salvo lo indicado. Radix (`rx.button`, `rx.in
 | `signal_pill(label, tone)` | **default** para cualquier cosa con ciclo de vida: sentimiento, sync, intento de publicación | punto tono-9 + palabra, badge `soft` `radius=full` |
 | `tone_badge(label, tone, icon=None, size="1")` | verdicto a nivel tarjeta o celda que debe escanearse | icono 12px + palabra, `soft` |
 | `status_dot(tone)` | solo como parte de otra composición | nunca solo (P1) |
-| `sentiment_badge(var)` | sentimiento | `positive→ok`, `negative→error`, resto `neutral` |
+| `sentiment_badge(var)` | sentimiento | `positive`/`POS→ok`, `negative`/`NEG→error`, `NEU→neutral`, `""→"Sin analizar"` (QUA-92: pendiente de análisis, nunca se confunde con NEU), resto `neutral` |
 
 ### 5.3 Identidad y etiquetas
 
@@ -402,7 +402,7 @@ Qué pasó (en términos del operador) + qué hacer. Nunca el stack trace, nunca
 2. **Verificación visual de páginas de negocio con sesión real**: `/design` y `/login` se verificaron en claro/oscuro y a 820px; las páginas tras `require_login` se verificaron por render de componentes (misma `app_shell`), no con una sesión Supabase viva.
 3. `vitrina_page` conserva su `_CARD` dict y voseo (demo); si deja de ser demo, migrar a `card` y a la voz §7.1.
 4. `clarity_page` usa `rx.card` de Radix en algunos bloques y `card` de Qualify en otros; unificar cuando se toque.
-5. Toasts (`rx.toast`) aún no se usan para confirmaciones; hoy son callouts persistentes. Adoptarlos según §5.4.
+5. Toasts (`rx.toast`) — adoptados en `/inbox` (sincronizar comentarios, analizar sentimiento: un callout persistente se quedaba en pantalla indefinidamente) 2026-08-25; el resto de confirmaciones transitorias de la app (p. ej. "Publicado" en `/publish`, ver §7.3) siguen como callouts persistentes. Migrarlas según §5.4 cuando se toquen.
 6. Fuentes desde Google Fonts: mover a `assets/fonts/` (self-host) antes del despliegue en `qualify.attitudefactory.co` si se quiere evitar la dependencia externa.
 
 ---

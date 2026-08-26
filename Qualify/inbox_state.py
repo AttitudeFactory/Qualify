@@ -32,6 +32,31 @@ docstring for how and for the one consequence worth knowing here: the bridge onl
 authenticates ONE dev tenant (PuntoServis), so `sync_now` raises `UnknownInboxConnection`
 for any other selected tenant, surfacing as this handler's ordinary `_UNKNOWN_CONNECTION`
 message — not a new failure mode this handler needs to special-case.
+
+**`analyze_sentiment` is QUA-21's manual trigger, made visible as a button (QUA-92).** It
+is the only place in this file that calls `qualify_api.sentiment` for a WRITE —
+`sync_comments` above never mentions it, in either direction (pinned by
+`test_analyze_sentiment_is_independent_of_sync_comments_in_both_directions` and
+`test_sync_comments_never_runs_sentiment_analysis`).
+
+**QUA-93 replaces the flat `comments` list with a two-level read: Reel summary cards
+(`reel_summaries`, paginated) + a global widget (`global_summary`) at the top level, and
+one Reel's comments (`thread_comments`, paginated/filtered/searched) in a detail view
+toggled by `selected_thread_id`.** Nothing in this file ever holds more than one page of
+either list at a time — see `qualify_api.sentiment.repository`'s module docstring for why
+that bound is load-bearing, not a style choice (a naive unbounded read regressed to a
+28.5-SECOND query at 1,000 Reels x 100 comments).
+
+`_refresh_after_write` is what `sync_comments`/`analyze_sentiment` call in their tail,
+reached ONLY on success (every failure branch `return`s before it — see each handler's
+own comment for why that structural placement is what makes "only on success" true
+without an extra flag). It always refreshes `global_summary`; if a Reel's detail is open
+it refreshes that Reel's comments (so "Sin analizar" flips to POS/NEG/NEU in place) plus
+a best-effort refresh of that Reel's summary chips from the reloaded first page of
+`reel_summaries` (a Reel that fell off page 1 keeps stale chips until the operator
+scrolls to it — a known, accepted gap, not a second backend method for one edge case);
+otherwise it refreshes the Reel list's first page. Neither branch re-runs analysis or
+sync — this is a pure re-read.
 """
 
 from __future__ import annotations
@@ -49,11 +74,30 @@ from qualify_api.inbox import (
     SyncBudgetExhausted,
     UnknownInboxConnection,
 )
+from qualify_api.sentiment import UnknownSentimentConnection
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
-from .inbox_provider import candidate_media, instagram_connections, sync_now, toggle_monitoring
-from .inbox_vm import CandidateMediaVM, SyncSummaryVM
+from .inbox_provider import (
+    analyze_sentiment_now,
+    candidate_media,
+    global_summary_vm,
+    instagram_connections,
+    reel_summaries_page,
+    sync_now,
+    thread_comments_page,
+    toggle_monitoring,
+)
+from .inbox_vm import (
+    AnalysisSummaryVM,
+    CandidateMediaVM,
+    CommentPageCursorVM,
+    CommentVM,
+    GlobalSentimentSummaryVM,
+    ReelPageCursorVM,
+    ReelSummaryVM,
+    SyncSummaryVM,
+)
 from .publishing_vm import ConnectionOptionVM
 from .tenant import tenant_uuid
 
@@ -83,6 +127,14 @@ _SYNC_BUDGET_EXHAUSTED = (
 _CONNECTION_AUTH_EXPIRED = (
     "Tu conexión con Instagram dejó de funcionar. Reconéctala en Conexiones e intenta de nuevo."
 )
+_ANALYZE_FAILED = "No se pudo analizar el sentimiento. Intenta de nuevo."
+# QUA-93 — each of the three new sections has its own load error, same "independent
+# §6.1 lifecycle per section" posture the design doc documents.
+_REEL_SUMMARIES_LOAD_FAILED = "No se pudieron cargar los Reels con comentarios. Intenta de nuevo."
+_GLOBAL_SUMMARY_LOAD_FAILED = "No se pudo cargar el resumen de sentimiento. Intenta de nuevo."
+_THREAD_COMMENTS_LOAD_FAILED = (
+    "No se pudieron cargar los comentarios de este Reel. Intenta de nuevo."
+)
 # Turning monitoring OFF never calls Meta (InboxService.set_media_monitored only
 # re-validates against Meta when monitored=True — see its docstring); a straight Postgres
 # UPDATE + reload can settle in well under 50ms, too fast for the card skeleton to ever
@@ -91,10 +143,26 @@ _CONNECTION_AUTH_EXPIRED = (
 # floor, not a change to how fast the real operation is.
 _MIN_TOGGLE_ANIMATION_SECONDS = 0.5
 
+# QUA-93: the sentiment filter's "no filter" value — never sent to the repository as a
+# real filter (`inbox_provider.thread_comments_page` maps it to `None`).
+FILTER_ALL = "ALL"
+
+# Bug fix (2026-08-25): a successful sync/analysis pass used to render its confirmation
+# as a persistent `callout` — the same primitive `_sync_error_block`/`_analyze_error_
+# block` correctly use for errors — which meant it never went away on its own. Per
+# docs/design-system.md §5.4 ("confirmaciones transitorias → rx.toast") and §9.3's own
+# known-debt item 5, a SUCCESS confirmation is exactly the transient case a toast is for;
+# errors stay persistent callouts, unchanged. `sync_result`/`analyze_result` themselves
+# are untouched (still set on every success, still readable by anything that wants the
+# last outcome) — only the visible confirmation moves from "rendered forever in
+# `inbox_page.py`" to "a toast that dismisses itself after this many milliseconds".
+_RESULT_TOAST_DURATION_MS = 6000
+
 
 class InboxState(rx.State):
     """State for the "Contenido" screen: pick an Instagram connection, see its Reels
-    from the last 2 weeks, toggle which ones are monitored."""
+    from the last 2 weeks, toggle which ones are monitored, and browse their comments'
+    sentiment two levels deep (Reel summary list -> one Reel's comments)."""
 
     connections: list[ConnectionOptionVM] = []
     selected_connection_id: str = ""
@@ -120,6 +188,43 @@ class InboxState(rx.State):
     sync_error: str = ""
     sync_result: SyncSummaryVM | None = None
 
+    # QUA-92 — the manual "Analizar sentimiento" button. Its own guard/loading state,
+    # same reasoning `is_syncing` has: one screen-wide flag (not per-comment), since one
+    # click analyzes every pending comment for the connection at once, not a single row.
+    is_analyzing: bool = False
+    analyze_error: str = ""
+    analyze_result: AnalysisSummaryVM | None = None
+
+    # QUA-93 — the Reel summary-card list (top level of "Comentarios"). Never holds more
+    # than one page; `load_more_reels` appends, it never re-fetches everything.
+    reel_summaries: list[ReelSummaryVM] = []
+    is_loading_reel_summaries: bool = False
+    reel_summaries_error: str = ""
+    reel_summaries_cursor: ReelPageCursorVM | None = None
+    has_more_reels: bool = False
+    is_loading_more_reels: bool = False
+
+    # QUA-93 — the 5-number global sentiment widget. Independent load/error state, same
+    # reasoning every other section in this file has.
+    global_summary: GlobalSentimentSummaryVM | None = None
+    is_loading_global_summary: bool = False
+    global_summary_error: str = ""
+
+    # QUA-93 — the Reel detail view. `selected_thread_id == ""` means "showing the
+    # summary-card list"; non-empty means "showing this Reel's comments". A cursor is
+    # valid only under the `sentiment_filter`/`search_query` that produced it — both
+    # setters reset pagination to a fresh first page.
+    selected_thread_id: str = ""
+    selected_reel_summary: ReelSummaryVM | None = None
+    thread_comments: list[CommentVM] = []
+    is_loading_thread_comments: bool = False
+    thread_comments_error: str = ""
+    thread_comments_cursor: CommentPageCursorVM | None = None
+    has_more_thread_comments: bool = False
+    is_loading_more_thread_comments: bool = False
+    sentiment_filter: str = FILTER_ALL
+    search_query: str = ""
+
     @rx.var
     def has_connections(self) -> bool:
         return len(self.connections) > 0
@@ -129,12 +234,37 @@ class InboxState(rx.State):
         return bool(self.selected_connection_id) and not self.is_syncing
 
     @rx.var
+    def can_analyze(self) -> bool:
+        return bool(self.selected_connection_id) and not self.is_analyzing
+
+    @rx.var
     def show_empty_state(self) -> bool:
         return (
             not self.is_loading_candidates
             and not self.load_error
             and bool(self.selected_connection_id)
             and len(self.candidates) == 0
+        )
+
+    @rx.var
+    def is_showing_reel_detail(self) -> bool:
+        return bool(self.selected_thread_id)
+
+    @rx.var
+    def show_empty_reel_summaries(self) -> bool:
+        return (
+            not self.is_loading_reel_summaries
+            and not self.reel_summaries_error
+            and bool(self.selected_connection_id)
+            and len(self.reel_summaries) == 0
+        )
+
+    @rx.var
+    def show_empty_thread_comments(self) -> bool:
+        return (
+            not self.is_loading_thread_comments
+            and not self.thread_comments_error
+            and len(self.thread_comments) == 0
         )
 
     async def _load_candidates(
@@ -186,6 +316,169 @@ class InboxState(rx.State):
                 self.candidates = items
                 self.is_loading_candidates = False
 
+    async def _load_reel_summaries_first_page(self, tenant_id: UUID, connection_id: str) -> None:
+        """QUA-93: loads (or reloads) the FIRST page of Reel summary cards. Reuses
+        `self.candidates` (already loaded by `_load_candidates`, called just before this
+        in every caller) for opción A's thumbnail/caption/permalink enrichment — zero
+        extra query, zero extra Meta call. Same connection-switch race guard as
+        `_load_candidates`."""
+        async with self:
+            self.is_loading_reel_summaries = True
+            self.reel_summaries_error = ""
+            candidates = list(self.candidates)
+
+        try:
+            resolved_connection = UUID(connection_id)
+        except ValueError:
+            async with self:
+                self.is_loading_reel_summaries = False
+            return
+
+        try:
+            items, next_cursor, has_more = await asyncio.to_thread(
+                reel_summaries_page,
+                tenant_id=tenant_id,
+                connection_id=resolved_connection,
+                cursor=None,
+                candidates=candidates,
+            )
+        except UnknownSentimentConnection:
+            async with self:
+                self.is_loading_reel_summaries = False
+                self.reel_summaries_error = _UNKNOWN_CONNECTION
+            return
+        except Exception as exc:
+            logger.error("reel_summaries_page failed: %s", type(exc).__name__)
+            async with self:
+                self.is_loading_reel_summaries = False
+                self.reel_summaries_error = _REEL_SUMMARIES_LOAD_FAILED
+            return
+
+        async with self:
+            if connection_id == self.selected_connection_id:
+                self.reel_summaries = items
+                self.reel_summaries_cursor = next_cursor
+                self.has_more_reels = has_more
+                self.is_loading_reel_summaries = False
+
+    async def _load_global_summary(self, tenant_id: UUID, connection_id: str) -> None:
+        """QUA-93: the 5-number widget — one aggregate query, independent load/error
+        state from every other section."""
+        async with self:
+            self.is_loading_global_summary = True
+            self.global_summary_error = ""
+
+        try:
+            resolved_connection = UUID(connection_id)
+        except ValueError:
+            async with self:
+                self.is_loading_global_summary = False
+            return
+
+        try:
+            summary = await asyncio.to_thread(
+                global_summary_vm, tenant_id=tenant_id, connection_id=resolved_connection
+            )
+        except UnknownSentimentConnection:
+            async with self:
+                self.is_loading_global_summary = False
+                self.global_summary_error = _UNKNOWN_CONNECTION
+            return
+        except Exception as exc:
+            logger.error("global_summary_vm failed: %s", type(exc).__name__)
+            async with self:
+                self.is_loading_global_summary = False
+                self.global_summary_error = _GLOBAL_SUMMARY_LOAD_FAILED
+            return
+
+        async with self:
+            if connection_id == self.selected_connection_id:
+                self.global_summary = summary
+                self.is_loading_global_summary = False
+
+    async def _load_thread_comments_first_page(self, tenant_id: UUID | None) -> None:
+        """QUA-93: the FIRST page of the currently `selected_thread_id`'s comments,
+        honoring `sentiment_filter`/`search_query`. Called by `select_reel`,
+        `set_sentiment_filter`, `set_search_query` and `_refresh_after_write` — always
+        resets the cursor, since a cursor is only valid under the filter/search that
+        produced it.
+
+        `tenant_id` is a PARAMETER, not resolved internally via `self.get_state(
+        AuthState)` — same shape `_load_reel_summaries_first_page`/`_load_global_summary`
+        already use, and for the same reason: it lets every CALLER resolve the tenant
+        once (where a live `EventContext` is available) and this helper run standalone
+        in tests, exactly like those two already do.
+        """
+        async with self:
+            self.is_loading_thread_comments = True
+            self.thread_comments_error = ""
+            thread_id = self.selected_thread_id
+            connection_id = self.selected_connection_id
+            sentiment_filter = self.sentiment_filter
+            search_query = self.search_query
+
+        resolved_connection = _try_uuid(connection_id)
+        resolved_thread = _try_uuid(thread_id)
+
+        if tenant_id is None or resolved_connection is None or resolved_thread is None:
+            async with self:
+                self.is_loading_thread_comments = False
+                self.thread_comments_error = _NO_TENANT
+            return
+
+        try:
+            items, next_cursor, has_more = await asyncio.to_thread(
+                thread_comments_page,
+                tenant_id=tenant_id,
+                connection_id=resolved_connection,
+                thread_id=resolved_thread,
+                sentiment_filter=sentiment_filter,
+                search=search_query,
+                cursor=None,
+            )
+        except UnknownSentimentConnection:
+            async with self:
+                self.is_loading_thread_comments = False
+                self.thread_comments_error = _UNKNOWN_CONNECTION
+            return
+        except Exception as exc:
+            logger.error("thread_comments_page failed: %s", type(exc).__name__)
+            async with self:
+                self.is_loading_thread_comments = False
+                self.thread_comments_error = _THREAD_COMMENTS_LOAD_FAILED
+            return
+
+        async with self:
+            # Guard against the operator navigating away or changing filter/search
+            # again while this was in flight — same race-guard shape every loader in
+            # this file already uses, just against three fields instead of one.
+            if (
+                thread_id == self.selected_thread_id
+                and sentiment_filter == self.sentiment_filter
+                and search_query == self.search_query
+            ):
+                self.thread_comments = items
+                self.thread_comments_cursor = next_cursor
+                self.has_more_thread_comments = has_more
+                self.is_loading_thread_comments = False
+
+    async def _refresh_after_write(self, tenant_id: UUID, connection_id: str) -> None:
+        """QUA-93: what a successful sync (QUA-89) or analysis (QUA-21) pass refreshes —
+        see the module docstring for the exact rule and its one accepted gap. Never
+        re-runs analysis or sync itself."""
+        await self._load_global_summary(tenant_id, connection_id)
+        async with self:
+            thread_id = self.selected_thread_id
+        if thread_id:
+            await self._load_thread_comments_first_page(tenant_id)
+            await self._load_reel_summaries_first_page(tenant_id, connection_id)
+            async with self:
+                match = next((r for r in self.reel_summaries if r.thread_id == thread_id), None)
+                if match is not None:
+                    self.selected_reel_summary = match
+        else:
+            await self._load_reel_summaries_first_page(tenant_id, connection_id)
+
     @rx.event(background=True)
     async def load_screen(self) -> None:
         """Load the operator's eligible Instagram connections, then the last-2-weeks
@@ -224,6 +517,8 @@ class InboxState(rx.State):
 
         if connection_id:
             await self._load_candidates(tenant_id, connection_id)
+            await self._load_reel_summaries_first_page(tenant_id, connection_id)
+            await self._load_global_summary(tenant_id, connection_id)
 
     @rx.event(background=True)
     async def select_connection(self, connection_id: str) -> None:
@@ -234,6 +529,20 @@ class InboxState(rx.State):
             self.selected_connection_id = connection_id
             self.candidates = []
             self.action_error = ""
+            # QUA-93: reset every comments-related section — same "don't show the
+            # previous connection's data while the new one loads" reasoning
+            # `candidates`/`action_error` above already follow. Also closes any open
+            # Reel detail: a Reel from a different connection cannot stay open.
+            self.reel_summaries = []
+            self.reel_summaries_error = ""
+            self.reel_summaries_cursor = None
+            self.has_more_reels = False
+            self.global_summary = None
+            self.global_summary_error = ""
+            self.selected_thread_id = ""
+            self.selected_reel_summary = None
+            self.thread_comments = []
+            self.thread_comments_error = ""
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
 
@@ -241,6 +550,8 @@ class InboxState(rx.State):
         if tenant_id is None:
             return
         await self._load_candidates(tenant_id, connection_id)
+        await self._load_reel_summaries_first_page(tenant_id, connection_id)
+        await self._load_global_summary(tenant_id, connection_id)
 
     @rx.event(background=True)
     async def toggle_monitored(self, external_media_id: str, monitored: bool) -> None:
@@ -258,12 +569,7 @@ class InboxState(rx.State):
         started_at = time.monotonic()
 
         tenant_id = tenant_uuid(session_tenant_id)
-        resolved_connection: UUID | None = None
-        if connection_id:
-            try:
-                resolved_connection = UUID(connection_id)
-            except ValueError:
-                resolved_connection = None
+        resolved_connection = _try_uuid(connection_id)
 
         if tenant_id is None or resolved_connection is None:
             async with self:
@@ -307,14 +613,15 @@ class InboxState(rx.State):
         await self._load_candidates(tenant_id, connection_id, show_loading=False)
 
     @rx.event(background=True)
-    async def sync_comments(self) -> None:
+    async def sync_comments(self) -> rx.event.EventSpec | None:
         """The one trigger for `InboxService.sync_comments` (B2/QUA-89) — called by both
         the manual button and the automatic 5-minute poll, see the module docstring for
         why that is what keeps them sharing one guard/loading state instead of two. Never
         touches `candidates`/`toggling_media_ids`: a sync pass writes to `threads`/
         `messages`, never to `monitored_media`, so the Reel list has nothing to reload
         afterward — unlike `toggle_monitored`, this handler's only externally visible
-        effect is `sync_result`/`sync_error`.
+        effect is `sync_result`/`sync_error` (plus, on success, a transient
+        `rx.toast.success` — see `_RESULT_TOAST_DURATION_MS`'s docstring).
         """
         async with self:
             if self.is_syncing:
@@ -327,12 +634,7 @@ class InboxState(rx.State):
             session_tenant_id = auth.session_tenant_id
 
         tenant_id = tenant_uuid(session_tenant_id)
-        resolved_connection: UUID | None = None
-        if connection_id:
-            try:
-                resolved_connection = UUID(connection_id)
-            except ValueError:
-                resolved_connection = None
+        resolved_connection = _try_uuid(connection_id)
 
         if tenant_id is None or resolved_connection is None:
             async with self:
@@ -371,3 +673,261 @@ class InboxState(rx.State):
         finally:
             async with self:
                 self.is_syncing = False
+
+        # QUA-93: refresh — reached ONLY on a successful sync. Every failure branch
+        # above `return`s before this point (the `finally` still ran either way,
+        # resetting `is_syncing`); this line is therefore never executed unless
+        # `sync_now` returned normally. A pure re-read via `_refresh_after_write` — this
+        # does NOT run sentiment analysis (QUA-21 stays manual-only, unchanged) and does
+        # not modify `sync_comments`'s own logic above it in any way; it is purely
+        # additive.
+        await self._refresh_after_write(tenant_id, connection_id)
+
+        # A plain `return` of an `EventSpec` from an async (non-generator) background
+        # handler is dispatched exactly like an event chain — no `yield` needed, and this
+        # function stays a plain coroutine (load-bearing: `sync_comments.fn` is called
+        # directly and awaited in tests — see the double-click guard test above).
+        message = (
+            f"Reels revisados: {result.media_checked} · Comentarios nuevos: {result.new_comments}"
+        )
+        if result.truncated:
+            message += (
+                " · Sincronización parcial: se alcanzó el límite de llamadas, "
+                "sincroniza de nuevo en unos minutos para completar."
+            )
+        return rx.toast.success(message, duration=_RESULT_TOAST_DURATION_MS)
+
+    @rx.event(background=True)
+    async def analyze_sentiment(self) -> rx.event.EventSpec | None:
+        """The "Analizar sentimiento" button (QUA-92) — the ONLY trigger for QUA-21's
+        analysis pass this screen exposes. Deliberately independent of `sync_comments`
+        in both directions: never called FROM `sync_comments` (QUA-21 stays manual-only,
+        unchanged by QUA-89's polling) and never calls `sync_now` itself. Same
+        double-click guard / `finally`-based reset shape as `sync_comments` above, over
+        `inbox_provider.analyze_sentiment_now` — see that function's docstring for why
+        it reuses `POST /api/sentiment/analyze` rather than a second analysis engine.
+        """
+        async with self:
+            if self.is_analyzing:
+                return  # an analysis pass is already in flight; ignore a rapid double-click
+            self.is_analyzing = True
+            self.analyze_error = ""
+            self.analyze_result = None
+            connection_id = self.selected_connection_id
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+
+        tenant_id = tenant_uuid(session_tenant_id)
+        resolved_connection = _try_uuid(connection_id)
+
+        if tenant_id is None or resolved_connection is None:
+            async with self:
+                self.is_analyzing = False
+                self.analyze_error = _NO_TENANT
+            return
+
+        try:
+            result = await analyze_sentiment_now(
+                tenant_id=tenant_id, connection_id=resolved_connection
+            )
+        except UnknownSentimentConnection:
+            async with self:
+                self.analyze_error = _UNKNOWN_CONNECTION
+            return
+        except Exception as exc:
+            # Only the exception TYPE is logged — same posture as every other handler in
+            # this file for infrastructure errors.
+            logger.error("analyze_sentiment_now failed: %s", type(exc).__name__)
+            async with self:
+                self.analyze_error = _ANALYZE_FAILED
+            return
+        else:
+            async with self:
+                self.analyze_result = result
+        finally:
+            async with self:
+                self.is_analyzing = False
+
+        # QUA-93: refresh so "Sin analizar" flips to POS/NEG/NEU — reached ONLY on a
+        # successful analysis, same "after the whole try/except/else/finally block"
+        # structure `sync_comments` already established for its own success-only
+        # refresh above.
+        await self._refresh_after_write(tenant_id, connection_id)
+
+        # Same plain-`return`-of-an-`EventSpec` shape `sync_comments` uses above, and for
+        # the same reason (`analyze_sentiment.fn` is called directly and awaited in
+        # tests — this must stay a plain coroutine, never an async generator).
+        if result.comments_checked == 0:
+            message = "No hay comentarios pendientes de análisis."
+        else:
+            message = (
+                f"Comentarios revisados: {result.comments_checked} · "
+                f"Analizados: {result.new_results} · Vacíos omitidos: {result.skipped_empty}"
+            )
+        return rx.toast.success(message, duration=_RESULT_TOAST_DURATION_MS)
+
+    @rx.event(background=True)
+    async def select_reel(self, thread_id: str) -> None:
+        """QUA-93: enter the Reel detail view. Always resets to a clean first page —
+        filter "Todos", no search, no cursor — a detail view never opens mid-scroll of
+        a previous Reel's state."""
+        async with self:
+            self.selected_thread_id = thread_id
+            self.selected_reel_summary = next(
+                (r for r in self.reel_summaries if r.thread_id == thread_id), None
+            )
+            self.thread_comments = []
+            self.thread_comments_error = ""
+            self.thread_comments_cursor = None
+            self.has_more_thread_comments = False
+            self.sentiment_filter = FILTER_ALL
+            self.search_query = ""
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+
+        await self._load_thread_comments_first_page(tenant_uuid(session_tenant_id))
+
+    @rx.event
+    def back_to_reel_list(self) -> None:
+        """QUA-93: "← Volver" — synchronous, no reload. The AC's explicit requirement:
+        the Reel list already in state stays exactly as it was, no wasted round-trip."""
+        self.selected_thread_id = ""
+        self.selected_reel_summary = None
+
+    @rx.event(background=True)
+    async def set_sentiment_filter(self, value: str) -> None:
+        """QUA-93: the filter select (Todos/Positivos/Neutros/Negativos/Sin analizar).
+        A no-op if unchanged (avoids a wasted reload on a re-selected value); otherwise
+        resets to a fresh first page under the new filter."""
+        async with self:
+            if value == self.sentiment_filter:
+                return
+            self.sentiment_filter = value
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+        await self._load_thread_comments_first_page(tenant_uuid(session_tenant_id))
+
+    @rx.event(background=True)
+    async def set_search_query(self, value: str) -> None:
+        """QUA-93: the search box. Fires on every keystroke (`on_change`) rather than on
+        blur/Enter — deliberately simple: `list_comments_for_thread` is already bounded
+        to one Reel's rows (validated at ~1ms even at 100 comments/Reel), so a query per
+        keystroke is cheap. Debouncing is easy to add later if that stops being true; it
+        is not built preemptively here."""
+        async with self:
+            if value == self.search_query:
+                return
+            self.search_query = value
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+        await self._load_thread_comments_first_page(tenant_uuid(session_tenant_id))
+
+    @rx.event(background=True)
+    async def load_more_reels(self) -> None:
+        """QUA-93: "Cargar más Reels" — appends the next page, never re-fetches what is
+        already shown. `is_loading_more_reels` is separate from `is_loading_reel_
+        summaries` so this shows its own small spinner without blanking the list already
+        on screen (same reasoning `toggling_media_ids` keeps per-row, not screen-wide)."""
+        async with self:
+            if self.is_loading_more_reels or not self.has_more_reels:
+                return
+            self.is_loading_more_reels = True
+            connection_id = self.selected_connection_id
+            cursor = self.reel_summaries_cursor
+            candidates = list(self.candidates)
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+
+        tenant_id = tenant_uuid(session_tenant_id)
+        resolved_connection = _try_uuid(connection_id)
+        if tenant_id is None or resolved_connection is None:
+            async with self:
+                self.is_loading_more_reels = False
+            return
+
+        try:
+            items, next_cursor, has_more = await asyncio.to_thread(
+                reel_summaries_page,
+                tenant_id=tenant_id,
+                connection_id=resolved_connection,
+                cursor=cursor,
+                candidates=candidates,
+            )
+        except Exception as exc:
+            logger.error("load_more_reels failed: %s", type(exc).__name__)
+            async with self:
+                self.is_loading_more_reels = False
+                self.reel_summaries_error = _REEL_SUMMARIES_LOAD_FAILED
+            return
+
+        async with self:
+            if connection_id == self.selected_connection_id:
+                self.reel_summaries.extend(items)
+                self.reel_summaries_cursor = next_cursor
+                self.has_more_reels = has_more
+            self.is_loading_more_reels = False
+
+    @rx.event(background=True)
+    async def load_more_thread_comments(self) -> None:
+        """QUA-93: "Cargar más comentarios" — appends the next page of the OPEN Reel's
+        comments under the current filter/search, never re-fetches what is already
+        shown."""
+        async with self:
+            if self.is_loading_more_thread_comments or not self.has_more_thread_comments:
+                return
+            self.is_loading_more_thread_comments = True
+            thread_id = self.selected_thread_id
+            connection_id = self.selected_connection_id
+            sentiment_filter = self.sentiment_filter
+            search_query = self.search_query
+            cursor = self.thread_comments_cursor
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+
+        tenant_id = tenant_uuid(session_tenant_id)
+        resolved_connection = _try_uuid(connection_id)
+        resolved_thread = _try_uuid(thread_id)
+        if tenant_id is None or resolved_connection is None or resolved_thread is None:
+            async with self:
+                self.is_loading_more_thread_comments = False
+            return
+
+        try:
+            items, next_cursor, has_more = await asyncio.to_thread(
+                thread_comments_page,
+                tenant_id=tenant_id,
+                connection_id=resolved_connection,
+                thread_id=resolved_thread,
+                sentiment_filter=sentiment_filter,
+                search=search_query,
+                cursor=cursor,
+            )
+        except Exception as exc:
+            logger.error("load_more_thread_comments failed: %s", type(exc).__name__)
+            async with self:
+                self.is_loading_more_thread_comments = False
+                self.thread_comments_error = _THREAD_COMMENTS_LOAD_FAILED
+            return
+
+        async with self:
+            if (
+                thread_id == self.selected_thread_id
+                and sentiment_filter == self.sentiment_filter
+                and search_query == self.search_query
+            ):
+                self.thread_comments.extend(items)
+                self.thread_comments_cursor = next_cursor
+                self.has_more_thread_comments = has_more
+            self.is_loading_more_thread_comments = False
+
+
+def _try_uuid(value: str) -> UUID | None:
+    """Shared by every handler in this file that resolves a Reflex string field to a
+    UUID before calling the backend — a malformed/empty string is a "nothing selected"
+    state, never a crash."""
+    if not value:
+        return None
+    try:
+        return UUID(value)
+    except ValueError:
+        return None

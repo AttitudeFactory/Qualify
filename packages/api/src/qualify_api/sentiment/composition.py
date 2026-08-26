@@ -17,7 +17,17 @@ from uuid import UUID
 from qualify_shared.db.session import tenant_session
 
 from qualify_api.connections.models import SocialConnection
-from qualify_api.sentiment.repository import AnalysisVersion, PostgresSentimentRepository
+from qualify_api.sentiment.repository import (
+    DEFAULT_COMMENT_PAGE_SIZE,
+    DEFAULT_REEL_PAGE_SIZE,
+    AnalysisVersion,
+    AnalyzedComment,
+    CommentListCursor,
+    GlobalSentimentSummary,
+    PostgresSentimentRepository,
+    ReelListCursor,
+    ReelSummary,
+)
 from qualify_api.sentiment.service import AnalysisSummary, SentimentService
 
 
@@ -88,4 +98,52 @@ def analyze_pending_comments(*, tenant_id: UUID, connection_id: UUID) -> Analysi
     _require_connection_visible(tenant_id=tenant_id, connection_id=connection_id)
     return production_sentiment_service().analyze_pending_comments(
         tenant_id=tenant_id, connection_id=connection_id
+    )
+
+
+def list_reel_summaries(
+    *,
+    tenant_id: UUID,
+    connection_id: UUID,
+    cursor: ReelListCursor | None = None,
+    limit: int = DEFAULT_REEL_PAGE_SIZE,
+) -> tuple[ReelSummary, ...]:
+    """QUA-93's published read seam for the Reel summary-card list — in-process, no HTTP
+    hop, same role `analyze_pending_comments` has for the write side. Read-only: never
+    analyzes, never calls Meta, never chains after a sync. Raises
+    `UnknownSentimentConnection` if the connection id is not visible to this tenant."""
+    _require_connection_visible(tenant_id=tenant_id, connection_id=connection_id)
+    return production_sentiment_service().list_reel_summaries(
+        tenant_id=tenant_id, connection_id=connection_id, cursor=cursor, limit=limit
+    )
+
+
+def global_sentiment_summary(*, tenant_id: UUID, connection_id: UUID) -> GlobalSentimentSummary:
+    """QUA-93's published read seam for the top-of-page summary widget."""
+    _require_connection_visible(tenant_id=tenant_id, connection_id=connection_id)
+    return production_sentiment_service().global_sentiment_summary(
+        tenant_id=tenant_id, connection_id=connection_id
+    )
+
+
+def list_comments_for_thread(
+    *,
+    tenant_id: UUID,
+    connection_id: UUID,
+    thread_id: UUID,
+    sentiment_filter: str | None = None,
+    search: str | None = None,
+    cursor: CommentListCursor | None = None,
+    limit: int = DEFAULT_COMMENT_PAGE_SIZE,
+) -> tuple[AnalyzedComment, ...]:
+    """QUA-93's published read seam for the Reel detail view."""
+    _require_connection_visible(tenant_id=tenant_id, connection_id=connection_id)
+    return production_sentiment_service().list_comments_for_thread(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        thread_id=thread_id,
+        sentiment_filter=sentiment_filter,
+        search=search,
+        cursor=cursor,
+        limit=limit,
     )

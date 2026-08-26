@@ -4,9 +4,9 @@ with a switch to turn monitoring on/off per Reel.
 Built on the `ui` shell (`app_shell` / `page_header` / `page_body`); badges and callouts
 follow the design-system tones (docs/design-system.md). Adds the `/inbox` route only.
 
-Deliberately minimal for this slice: no comment/thread view, no rich media preview beyond
-a thumbnail + caption snippet. The goal is to make the monitoring decision visible and
-actionable, not to redesign the screen.
+No rich media preview beyond a thumbnail + caption snippet on the Reels list — the goal
+there is to make the monitoring decision visible and actionable, not to redesign the
+screen.
 
 `_sync_section()` (2026-08-15, promoted to permanent architecture 2026-08-19 — QUA-89)
 renders the comment-sync controls: a manual "Sincronizar comentarios" button plus a
@@ -17,16 +17,57 @@ re-entrancy guard for free. The polling timer is deliberately a client-side inte
 (`_polling_timer()` below), not a server-side background loop — see its docstring for why
 that is what makes cleanup on navigation/tab-close unconditional rather than something
 that has to be cancelled.
+
+`_comments_section()` (QUA-92, restructured QUA-93) adds the comment/thread view this
+file's docstring used to say was out of scope: synced comments with their persisted
+sentiment (QUA-21), stacked below the Reels list inside the same `page_body` — not a new
+route, not a tabs pattern (no precedent for `rx.tabs` anywhere in this app). It never
+syncs on its own (`InboxState.sync_comments`/QUA-89 is unchanged).
+
+**QUA-93 replaced the flat comment list with two levels, still inside this one
+`section()`, still no new route:** a global sentiment widget + a page of Reel
+summary-cards (`_reel_summaries_list`) at the top level, and one Reel's comments
+(`_reel_detail_view`, paginated/filtered/searched) behind a "Ver comentarios" click —
+toggled by `InboxState.is_showing_reel_detail`, the same `rx.cond`-swap idiom every other
+section of this screen already uses, not a second routing mechanism. `_comment_card`
+itself is UNCHANGED from QUA-92 — it moved one level down (the detail view), not
+redesigned. Opción A for the Reel reference (founder decision, 2026-08-24, reapplied
+per-Reel in QUA-93): a Reel still inside the Reels-monitoring list's 2-week window shows
+its real thumbnail/caption/permalink (cross-referenced from `CandidateMediaVM`, ZERO
+extra Meta calls — see `inbox_provider.reel_summaries_page`'s docstring); an older
+monitored Reel falls back to `external_thread_id` only, same as QUA-92's original scope.
+
+`_analyze_now_button()` (QUA-92) makes QUA-21's existing manual trigger visible on
+screen: it calls `InboxState.analyze_sentiment`, which reaches the real
+`POST /api/sentiment/analyze` route (see `inbox_provider.analyze_sentiment_now`'s
+docstring for why HTTP — reusing that route, never a second analysis engine). Same
+"button + `rx.cond` loading label" shape `_sync_now_button()` already establishes, kept
+as its own control rather than merged into `_sync_now_button()`: syncing and analyzing
+are two independent actions with two independent guards (`is_syncing`/`is_analyzing`),
+and QUA-92's own requirement is that neither ever triggers the other. It stays the ONE
+button for both levels — `InboxState._refresh_after_write` decides what it refreshes.
 """
 
 from __future__ import annotations
 
 import reflex as rx
 
-from .inbox_state import InboxState
-from .inbox_vm import CandidateMediaVM
+from .inbox_state import FILTER_ALL, InboxState
+from .inbox_vm import CandidateMediaVM, CommentVM, ReelSummaryVM
 from .publishing_vm import ConnectionOptionVM
-from .ui import app_shell, callout, empty_state, page_body, page_header
+from .ui import (
+    app_shell,
+    callout,
+    card,
+    empty_state,
+    mono,
+    page_body,
+    page_header,
+    section,
+    sentiment_badge,
+    stat_card,
+    tone_badge,
+)
 from .ui import tokens as T
 
 
@@ -250,6 +291,464 @@ def _body() -> rx.Component:
                 ),
             ),
         ),
+        rx.cond(InboxState.has_connections, _comments_section(), rx.fragment()),
+    )
+
+
+# ------------------------------------------------------------------------------------
+# Comments section (QUA-92, restructured QUA-93) — read-only view of synced comments +
+# their persisted sentiment (QUA-21), grouped by Reel. Stacked below the Reels list in
+# the SAME page_body, not a separate route or a tabs pattern (no precedent for tabs in
+# this app) — see the module docstring for why. Every sub-section owns its own §6.1
+# lifecycle, independent of every other: the Reels-monitoring list above, the global
+# summary widget, the Reel summary-card list, and the Reel detail view all have their
+# own `*_error`/`is_loading_*`/`show_empty_*` triplet that never cross-talks.
+# ------------------------------------------------------------------------------------
+
+
+def _comment_card(comment: CommentVM) -> rx.Component:
+    return card(
+        rx.vstack(
+            rx.hstack(
+                rx.text(
+                    rx.cond(
+                        comment.author_username != "", comment.author_username, "Autor desconocido"
+                    ),
+                    size="2",
+                    weight="medium",
+                ),
+                rx.spacer(),
+                sentiment_badge(comment.sentiment_label),
+                rx.cond(
+                    comment.score_display != "",
+                    mono(comment.score_display, size="1"),
+                    rx.fragment(),
+                ),
+                align="center",
+                spacing="2",
+                width="100%",
+            ),
+            rx.text(
+                rx.cond(comment.text != "", comment.text, "Sin texto"),
+                size="2",
+            ),
+            rx.hstack(
+                rx.icon("clock", size=13, color=T.TEXT_FAINT),
+                rx.text(comment.posted_at, size="1", color=T.TEXT_MUTED),
+                rx.icon("film", size=13, color=T.TEXT_FAINT),
+                mono(comment.external_thread_id, size="1"),
+                spacing="2",
+                align="center",
+            ),
+            spacing="2",
+            align_items="start",
+            width="100%",
+        ),
+        padding="1rem 1.25rem",
+    )
+
+
+# --- Global sentiment summary widget (QUA-93) ---------------------------------------
+
+
+def _global_summary_stats() -> rx.Component:
+    return rx.cond(
+        InboxState.global_summary,
+        rx.grid(
+            stat_card("Total", InboxState.global_summary.total, "accent"),
+            stat_card("Positivos", InboxState.global_summary.positive, "ok"),
+            stat_card("Neutros", InboxState.global_summary.neutral, "neutral"),
+            stat_card("Negativos", InboxState.global_summary.negative, "error"),
+            stat_card("Sin analizar", InboxState.global_summary.not_analyzed, "neutral"),
+            columns=rx.breakpoints(initial="2", md="5"),
+            spacing="3",
+            width="100%",
+        ),
+        rx.fragment(),
+    )
+
+
+def _global_summary_skeleton() -> rx.Component:
+    return rx.grid(
+        *[
+            rx.skeleton(rx.box(height="5.5rem", width="100%", border_radius=T.RADIUS_CARD))
+            for _ in range(5)
+        ],
+        columns=rx.breakpoints(initial="2", md="5"),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _global_summary_error_block() -> rx.Component:
+    return callout(InboxState.global_summary_error, "error")
+
+
+def _global_summary_widget() -> rx.Component:
+    # Explicit label (bug reported 2026-08-25): with nothing distinguishing this from
+    # the per-Reel chips further down, a single monitored Reel makes the two numbers
+    # look identical and it read as ambiguous which one this was. This widget is always
+    # the connection-wide total, across every monitored Reel — never one Reel's count.
+    return rx.vstack(
+        rx.text(
+            "Resumen general — todos los Reels monitoreados",
+            size="2",
+            weight="medium",
+            color=T.TEXT_MUTED,
+        ),
+        rx.cond(
+            InboxState.global_summary_error != "",
+            _global_summary_error_block(),
+            rx.cond(
+                InboxState.is_loading_global_summary,
+                _global_summary_skeleton(),
+                _global_summary_stats(),
+            ),
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+# --- Reel summary-card list (QUA-93 — the level QUA-92's flat list used to be) -------
+
+
+def _reel_thumbnail(reel: ReelSummaryVM) -> rx.Component:
+    """Same shape as `_thumbnail(candidate)` above, over `ReelSummaryVM`'s own
+    thumbnail_url — opción A enrichment, `""` for a Reel outside the 2-week window."""
+    return rx.cond(
+        reel.thumbnail_url != "",
+        rx.image(
+            src=reel.thumbnail_url,
+            width="72px",
+            height="72px",
+            object_fit="cover",
+            border_radius="0.5rem",
+        ),
+        rx.center(
+            rx.icon("film", size=26, color=T.TEXT_FAINT),
+            width="72px",
+            height="72px",
+            border_radius="0.5rem",
+            background=T.SURFACE_BG_RAISED,
+            flex_shrink="0",
+        ),
+    )
+
+
+def _reel_sentiment_chips(reel: ReelSummaryVM) -> rx.Component:
+    return rx.hstack(
+        tone_badge("Positivos " + reel.positive.to_string(), "ok"),
+        tone_badge("Neutros " + reel.neutral.to_string(), "neutral"),
+        tone_badge("Negativos " + reel.negative.to_string(), "error"),
+        tone_badge("Sin analizar " + reel.not_analyzed.to_string(), "neutral"),
+        spacing="2",
+        wrap="wrap",
+    )
+
+
+def _reel_summary_card(reel: ReelSummaryVM) -> rx.Component:
+    return card(
+        rx.hstack(
+            _reel_thumbnail(reel),
+            rx.vstack(
+                rx.text(
+                    rx.cond(reel.caption != "", reel.caption, "Sin caption"),
+                    size="2",
+                    weight="medium",
+                    max_width="380px",
+                    overflow="hidden",
+                    text_overflow="ellipsis",
+                    white_space="nowrap",
+                ),
+                rx.hstack(
+                    rx.icon("clock", size=13, color=T.TEXT_FAINT),
+                    rx.text(reel.last_message_at, size="1", color=T.TEXT_MUTED),
+                    rx.icon("film", size=13, color=T.TEXT_FAINT),
+                    mono(reel.external_thread_id, size="1"),
+                    rx.text(reel.total.to_string() + " comentarios", size="1", color=T.TEXT_MUTED),
+                    rx.cond(
+                        reel.permalink != "",
+                        rx.link("Ver en Instagram", href=reel.permalink, target="_blank", size="1"),
+                        rx.fragment(),
+                    ),
+                    spacing="2",
+                    align="center",
+                    wrap="wrap",
+                ),
+                _reel_sentiment_chips(reel),
+                spacing="2",
+                align_items="start",
+            ),
+            rx.spacer(),
+            rx.button(
+                "Ver comentarios",
+                on_click=lambda: InboxState.select_reel(reel.thread_id),
+                size="2",
+                variant="surface",
+            ),
+            spacing="3",
+            align="center",
+            width="100%",
+        ),
+        padding="1rem 1.25rem",
+    )
+
+
+def _reel_summaries_empty_state() -> rx.Component:
+    return empty_state(
+        "message-circle",
+        "Aún no hay comentarios sincronizados",
+        "Sincroniza comentarios arriba para ver aquí qué Reels tienen comentarios, con "
+        "su sentimiento cuando esté analizado.",
+    )
+
+
+def _reel_summaries_error_block() -> rx.Component:
+    return callout(InboxState.reel_summaries_error, "error")
+
+
+def _load_more_reels_button() -> rx.Component:
+    return rx.cond(
+        InboxState.has_more_reels,
+        rx.center(
+            rx.button(
+                rx.cond(
+                    InboxState.is_loading_more_reels,
+                    rx.spinner(size="2"),
+                    rx.text("Cargar más Reels"),
+                ),
+                on_click=InboxState.load_more_reels,
+                disabled=InboxState.is_loading_more_reels,
+                variant="surface",
+                size="2",
+            ),
+            width="100%",
+            padding_top="0.5rem",
+        ),
+        rx.fragment(),
+    )
+
+
+def _reel_summaries_list() -> rx.Component:
+    return rx.cond(
+        InboxState.reel_summaries_error != "",
+        _reel_summaries_error_block(),
+        rx.cond(
+            InboxState.is_loading_reel_summaries,
+            rx.vstack(_card_skeleton(), _card_skeleton(), spacing="3", width="100%"),
+            rx.cond(
+                InboxState.show_empty_reel_summaries,
+                _reel_summaries_empty_state(),
+                rx.vstack(
+                    rx.foreach(InboxState.reel_summaries, _reel_summary_card),
+                    _load_more_reels_button(),
+                    spacing="3",
+                    width="100%",
+                ),
+            ),
+        ),
+    )
+
+
+# --- Reel detail view (QUA-93) — one Reel's comments, filtered, searched, paginated --
+
+
+def _reel_detail_header() -> rx.Component:
+    reel = InboxState.selected_reel_summary
+    return rx.vstack(
+        rx.button(
+            rx.icon("arrow-left", size=16),
+            "Volver",
+            on_click=InboxState.back_to_reel_list,
+            variant="ghost",
+            size="2",
+        ),
+        rx.cond(
+            reel,
+            rx.hstack(
+                _reel_thumbnail(reel),
+                rx.vstack(
+                    rx.text(
+                        rx.cond(reel.caption != "", reel.caption, "Sin caption"),
+                        size="3",
+                        weight="medium",
+                    ),
+                    mono(reel.external_thread_id, size="1"),
+                    _reel_sentiment_chips(reel),
+                    spacing="1",
+                    align_items="start",
+                ),
+                spacing="3",
+                align="center",
+                width="100%",
+            ),
+            rx.fragment(),
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+# QUA-93: filter values match `qualify_api.sentiment.repository`'s own constants
+# (`"POS"`/`"NEG"`/`"NEU"`/`"PENDING"`) exactly — same "no translation table" convention
+# `CommentVM.sentiment_label` already follows for `sentiment_badge`. `FILTER_ALL` is the
+# one value the backend never sees (`inbox_provider.thread_comments_page` maps it to
+# "no filter").
+_SENTIMENT_FILTER_OPTIONS = [
+    (FILTER_ALL, "Todos"),
+    ("POS", "Positivos"),
+    ("NEU", "Neutros"),
+    ("NEG", "Negativos"),
+    ("PENDING", "Sin analizar"),
+]
+
+
+def _sentiment_filter_item(value: str, label: str) -> rx.Component:
+    return rx.select.item(label, value=value)
+
+
+def _sentiment_filter_select() -> rx.Component:
+    return rx.select.root(
+        rx.select.trigger(width="180px"),
+        rx.select.content(
+            *[_sentiment_filter_item(value, label) for value, label in _SENTIMENT_FILTER_OPTIONS]
+        ),
+        value=InboxState.sentiment_filter,
+        on_change=InboxState.set_sentiment_filter,
+        size="2",
+    )
+
+
+def _comment_search_input() -> rx.Component:
+    return rx.input(
+        rx.input.slot(rx.icon("search", size=T.ICON_SM)),
+        placeholder="Buscar en los comentarios...",
+        value=InboxState.search_query,
+        on_change=InboxState.set_search_query,
+        size="2",
+        width="260px",
+    )
+
+
+def _thread_comments_empty_state() -> rx.Component:
+    return empty_state(
+        "message-circle",
+        "Sin comentarios para este filtro",
+        "Prueba con otro filtro de sentimiento o borra la búsqueda.",
+    )
+
+
+def _thread_comments_error_block() -> rx.Component:
+    return callout(InboxState.thread_comments_error, "error")
+
+
+def _load_more_thread_comments_button() -> rx.Component:
+    return rx.cond(
+        InboxState.has_more_thread_comments,
+        rx.center(
+            rx.button(
+                rx.cond(
+                    InboxState.is_loading_more_thread_comments,
+                    rx.spinner(size="2"),
+                    rx.text("Cargar más comentarios"),
+                ),
+                on_click=InboxState.load_more_thread_comments,
+                disabled=InboxState.is_loading_more_thread_comments,
+                variant="surface",
+                size="2",
+            ),
+            width="100%",
+            padding_top="0.5rem",
+        ),
+        rx.fragment(),
+    )
+
+
+def _thread_comments_list() -> rx.Component:
+    return rx.cond(
+        InboxState.thread_comments_error != "",
+        _thread_comments_error_block(),
+        rx.cond(
+            InboxState.is_loading_thread_comments,
+            rx.vstack(_card_skeleton(), _card_skeleton(), spacing="3", width="100%"),
+            rx.cond(
+                InboxState.show_empty_thread_comments,
+                _thread_comments_empty_state(),
+                rx.vstack(
+                    rx.foreach(InboxState.thread_comments, _comment_card),
+                    _load_more_thread_comments_button(),
+                    spacing="3",
+                    width="100%",
+                ),
+            ),
+        ),
+    )
+
+
+def _reel_detail_view() -> rx.Component:
+    return rx.vstack(
+        _reel_detail_header(),
+        rx.hstack(
+            _sentiment_filter_select(),
+            _comment_search_input(),
+            spacing="3",
+            align="center",
+            width="100%",
+            wrap="wrap",
+        ),
+        _thread_comments_list(),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _analyze_now_button() -> rx.Component:
+    """The visible trigger for QUA-21's existing manual analysis pass — see the module
+    docstring for why this stays a control of its own rather than merging into
+    `_sync_now_button()`."""
+    return rx.button(
+        rx.cond(
+            InboxState.is_analyzing,
+            rx.spinner(size="2"),
+            rx.icon("sparkles", size=16),
+        ),
+        rx.cond(InboxState.is_analyzing, "Analizando...", "Analizar sentimiento"),
+        on_click=InboxState.analyze_sentiment,
+        disabled=~InboxState.can_analyze,
+        size="2",
+        variant="surface",
+        color_scheme="iris",
+    )
+
+
+def _analyze_error_block() -> rx.Component:
+    # The success side (`analyze_result`) has no render block here on purpose — it is a
+    # transient `rx.toast.success`, dispatched by `InboxState.analyze_sentiment` itself
+    # (see that handler's docstring), not a persistent callout. Only the error stays a
+    # persistent `callout`, per docs/design-system.md §5.4.
+    return rx.cond(
+        InboxState.analyze_error != "",
+        rx.callout(
+            InboxState.analyze_error, icon="triangle-alert", color_scheme="tomato", width="100%"
+        ),
+        rx.fragment(),
+    )
+
+
+def _comments_section() -> rx.Component:
+    return section(
+        "Comentarios",
+        _analyze_error_block(),
+        rx.cond(~InboxState.is_showing_reel_detail, _global_summary_widget(), rx.fragment()),
+        rx.cond(InboxState.is_showing_reel_detail, _reel_detail_view(), _reel_summaries_list()),
+        description=(
+            "Comentarios sincronizados de tus Reels monitoreados, agrupados por Reel, "
+            "con el sentimiento ya analizado cuando existe."
+        ),
+        actions=[_analyze_now_button()],
     )
 
 
@@ -269,34 +768,9 @@ def _sync_now_button() -> rx.Component:
     )
 
 
-def _sync_result_block() -> rx.Component:
-    # `truncated` (QUA-88): the Meta call budget ran out mid-sync. Still a success —
-    # whatever synced is real — so this stays the "grass" callout, just with a qualifier
-    # appended, never the error callout below.
-    return rx.cond(
-        InboxState.sync_result,
-        rx.callout(
-            (
-                "Reels revisados: "
-                + InboxState.sync_result.media_checked.to_string()
-                + " · Comentarios nuevos: "
-                + InboxState.sync_result.new_comments.to_string()
-                + rx.cond(
-                    InboxState.sync_result.truncated,
-                    " · Sincronización parcial: se alcanzó el límite de llamadas, "
-                    "sincroniza de nuevo en unos minutos para completar.",
-                    "",
-                )
-            ),
-            icon="check",
-            color_scheme="grass",
-            width="100%",
-        ),
-        rx.fragment(),
-    )
-
-
 def _sync_error_block() -> rx.Component:
+    # Same "success is a toast, error is a persistent callout" split as
+    # `_analyze_error_block` above — see that function's comment.
     return rx.cond(
         InboxState.sync_error != "",
         rx.callout(
@@ -356,7 +830,6 @@ def _sync_section() -> rx.Component:
                 align="center",
                 width="100%",
             ),
-            _sync_result_block(),
             _sync_error_block(),
             spacing="2",
             width="100%",
