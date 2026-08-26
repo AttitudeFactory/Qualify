@@ -64,6 +64,15 @@ call for it. A Reel outside that list's 2-week window simply gets `""` for all t
 see `qualify_api.sentiment.repository`'s module docstring for why enriching those too
 is explicit fast-follow work, not silently attempted here.
 
+`ReelSummaryVM.is_monitored` (QUA-94) is a straight pass-through of `ReelSummary.
+is_monitored` — no lookup against `candidates_by_media_id` needed (unlike the
+thumbnail/caption/permalink trio above), because `_list_reel_summaries` already
+decorates each row with its current `monitored_media` state via a LEFT JOIN. A Reel
+outside the 2-week candidate window can still be `is_monitored=True` (it was turned on
+before it aged out — see the `list_candidate_media` vs `monitored_media` distinction in
+`qualify_api.inbox.service`'s module docstring); the two flags are independent and both
+already correct at the repository layer, so this function only ever forwards the value.
+
 `analyze_sentiment_now` (QUA-92) is the manual "Analizar sentimiento" button's transport
 — see above for why it goes through `POST /api/sentiment/analyze` rather than calling
 `qualify_api.sentiment.composition.analyze_pending_comments` in process. It adds no
@@ -231,6 +240,7 @@ def _to_reel_summary_vm(
         thumbnail_url=enrichment.thumbnail_url if enrichment else "",
         caption=enrichment.caption if enrichment else "",
         permalink=enrichment.permalink if enrichment else "",
+        is_monitored=summary.is_monitored,
     )
 
 

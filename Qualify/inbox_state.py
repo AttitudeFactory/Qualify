@@ -6,12 +6,12 @@ same single-source-of-truth decision `publishing_state.py` already documents —
 answers "which tenant", not a second selector duplicating it.
 
 **The monitoring toggle never updates local state optimistically.** `toggle_monitored`
-always re-fetches the full candidate list from the real backend after `set_media_
-monitored` settles — success OR the caller-visible `MediaNotEligible` refusal — so the
-switch on screen can never show a state Postgres does not actually hold. This is an
-explicit product decision (not just this module's default), same "reload so the UI shows
-the reconciled state" posture `ConnectionsState.disconnect_connection` already
-established for revoke.
+always re-fetches from the real backend after `set_media_monitored` settles — success OR
+the caller-visible `MediaNotEligible` refusal — so neither the switch on screen nor the
+"Comentarios" section's monitoring badge (`reel_summaries[*].is_monitored`, QUA-94) can
+ever show a state Postgres does not actually hold. This is an explicit product decision
+(not just this module's default), same "reload so the UI shows the reconciled state"
+posture `ConnectionsState.disconnect_connection` already established for revoke.
 
 **`sync_comments` (the event handler below) is the one sync trigger** both the manual
 "Sincronizar comentarios" button and the automatic 5-minute poll call — added 2026-08-15
@@ -47,16 +47,21 @@ either list at a time — see `qualify_api.sentiment.repository`'s module docstr
 that bound is load-bearing, not a style choice (a naive unbounded read regressed to a
 28.5-SECOND query at 1,000 Reels x 100 comments).
 
-`_refresh_after_write` is what `sync_comments`/`analyze_sentiment` call in their tail,
-reached ONLY on success (every failure branch `return`s before it — see each handler's
-own comment for why that structural placement is what makes "only on success" true
-without an extra flag). It always refreshes `global_summary`; if a Reel's detail is open
-it refreshes that Reel's comments (so "Sin analizar" flips to POS/NEG/NEU in place) plus
-a best-effort refresh of that Reel's summary chips from the reloaded first page of
+`_refresh_after_write` is the one post-write re-read THREE handlers call. `sync_comments`
+and `analyze_sentiment` call it in their tail, reached ONLY on success (every failure
+branch `return`s before it — see each handler's own comment for why that structural
+placement is what makes "only on success" true without an extra flag). `toggle_monitored`
+(QUA-94) calls it unconditionally, right after `_load_candidates` — see its own comment
+for why "regardless of outcome" is correct there too: a refused or failed toggle still
+leaves the DB in SOME real state, and only a fresh read shows what it actually is, same
+reasoning that already governs `_load_candidates` itself. Whichever caller reaches it,
+`_refresh_after_write` always refreshes `global_summary`; if a Reel's detail is open it
+refreshes that Reel's comments (so "Sin analizar" flips to POS/NEG/NEU in place) plus a
+best-effort refresh of that Reel's summary chips from the reloaded first page of
 `reel_summaries` (a Reel that fell off page 1 keeps stale chips until the operator
 scrolls to it — a known, accepted gap, not a second backend method for one edge case);
-otherwise it refreshes the Reel list's first page. Neither branch re-runs analysis or
-sync — this is a pure re-read.
+otherwise it refreshes the Reel list's first page. None of the three callers' branches
+re-runs analysis or sync — this is always a pure re-read.
 """
 
 from __future__ import annotations
@@ -611,6 +616,15 @@ class InboxState(rx.State):
         # =False: this reload must NOT blank the other rows' switches — only THIS row's
         # own `toggling_media_ids` membership (already cleared above) controls its state.
         await self._load_candidates(tenant_id, connection_id, show_loading=False)
+
+        # QUA-94: `reel_summaries` carries its own `is_monitored` now (the "Comentarios"
+        # section's badge), a fact `_load_candidates` above does NOT refresh — that call
+        # only ever touched `self.candidates`, the "Contenido de Instagram" list. Reuses
+        # the SAME post-write re-read `sync_comments`/`analyze_sentiment` already call on
+        # success (`_refresh_after_write`'s own docstring) rather than inventing a second
+        # refresh mechanism — same "known, accepted gap" applies here too: a Reel past
+        # page 1 of `reel_summaries` keeps a stale badge until the operator scrolls back.
+        await self._refresh_after_write(tenant_id, connection_id)
 
     @rx.event(background=True)
     async def sync_comments(self) -> rx.event.EventSpec | None:

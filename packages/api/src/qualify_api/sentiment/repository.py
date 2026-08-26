@@ -156,7 +156,16 @@ class ReelSummary:
     """One Reel's comment-sentiment roll-up (QUA-93) — what a summary card in `/inbox`
     shows. `total` always equals `positive + neutral + negative + not_analyzed`.
     `last_message_at` is never `None` in practice: a `Thread` row is only created inside
-    `InboxRepository.upsert_comment`, which always sets it (`posted_at or now`)."""
+    `InboxRepository.upsert_comment`, which always sets it (`posted_at or now`).
+
+    `is_monitored` (QUA-94) is a DECORATION, not a filter: it reflects the CURRENT
+    `monitored_media.is_monitored` for this Reel's `(connection_id, external_thread_id)`
+    at read time, `False` when no `monitored_media` row exists at all (e.g. a thread from
+    before the table existed, or a natural-key mismatch). This dataclass — and every
+    `list_reel_summaries` implementation below — is deliberately unfiltered by monitoring
+    state, per migration `0005`'s own ruling that `threads` and `monitored_media` are
+    orthogonal facts: a Reel a tenant stopped monitoring keeps its thread, its messages,
+    and its place in this list, just flagged as no longer actively synced."""
 
     thread_id: UUID
     external_thread_id: str
@@ -166,6 +175,7 @@ class ReelSummary:
     neutral: int
     negative: int
     not_analyzed: int
+    is_monitored: bool
 
 
 @dataclass(frozen=True)
@@ -204,7 +214,15 @@ class CommentListCursor:
 class SentimentRepository(Protocol):
     def list_pending_for_analysis(
         self, *, tenant_id: UUID, connection_id: UUID, version: AnalysisVersion
-    ) -> tuple[PendingComment, ...]: ...
+    ) -> tuple[PendingComment, ...]:
+        """Every un-analyzed inbound comment for the connection, current `version`,
+        regardless of `monitored_media.is_monitored` (QUA-94, confirmed product
+        decision: desmonitorear stops future ingestion, it does not invalidate
+        comments already synced — they stay real, analyzable data). Analysis is driven
+        entirely by `qualify_api.sentiment.service.analyze_pending_comments`
+        (the manual "Analizar sentimiento" trigger, QUA-21/QUA-92) — nothing here
+        needs to change for a Reel that stops being monitored, and nothing does."""
+        ...
 
     def record_sentiment_result(
         self,
@@ -232,14 +250,33 @@ class SentimentRepository(Protocol):
     ) -> tuple[ReelSummary, ...]:
         """A page of Reels with comments, newest-active first, each with its
         CURRENT-version sentiment counts. Bounded by `limit` — never returns, and never
-        internally computes over, more than this page's Reels' comments (QUA-93)."""
+        internally computes over, more than this page's Reels' comments (QUA-93).
+
+        Never filtered by `monitored_media.is_monitored` (QUA-94) — a Reel the tenant
+        stopped monitoring still has a real comment history and stays in this list,
+        decorated with `ReelSummary.is_monitored=False` rather than removed."""
         ...
 
     def global_sentiment_summary(
         self, *, tenant_id: UUID, connection_id: UUID, version: AnalysisVersion
     ) -> GlobalSentimentSummary:
         """The one query in this module that deliberately touches every comment in the
-        connection — a pure aggregate for the summary widget, never a list."""
+        connection — a pure aggregate for the summary widget, never a list.
+
+        **Semantics (QUA-94, explicit product decision, kept unchanged on purpose):**
+        this counts every comment across the connection, monitored Reels and
+        desmonitoreados alike — it does NOT filter by `monitored_media.is_monitored`.
+        Splitting it into a monitored/historical pair would mean joining
+        `monitored_media` into the one query this module already documents as
+        deliberately full-scan (100k-row scale, `global_sentiment_summary`'s Postgres
+        docstring) — real added query cost for a number nobody asked to split yet.
+        The UI copy was the actual bug (QUA-94): it claimed "todos los Reels
+        monitoreados" while already counting historical Reels too, before this widget
+        had any way to know the difference. Fixed by naming what this already
+        computes ("todos los comentarios sincronizados") rather than by changing what
+        it computes. A monitored/historical breakdown is a fast-follow if product
+        wants it, same posture QUA-92 gave Reel-thumbnail enrichment — not silently
+        assumed here."""
         ...
 
     def list_comments_for_thread(
@@ -277,6 +314,22 @@ class MemorySentimentRepository:
         self._messages: dict[
             UUID, tuple[UUID, str, str | None, str | None, datetime | None, str, UUID]
         ] = {}
+        # (connection_id, external_media_id) -> is_monitored. Mirrors `monitored_media`
+        # (QUA-94) — test-only, same reasoning `seed_message` gives for having no
+        # Postgres analogue: production rows come from the real `InboxRepository.
+        # set_media_monitored`, this module only ever READS the flag (decoration, never
+        # a filter). Absence of a key means "no monitored_media row for this media",
+        # same `False` default `list_reel_summaries`'s Postgres LEFT JOIN produces via
+        # `COALESCE(mm.is_monitored, false)`.
+        self._monitored: dict[tuple[UUID, str], bool] = {}
+
+    def seed_monitored_media(
+        self, *, connection_id: UUID, external_media_id: str, is_monitored: bool
+    ) -> None:
+        """Test-only helper mirroring `InboxRepository.set_media_monitored` — a toggle,
+        not an event log: calling this twice for the same `(connection_id,
+        external_media_id)` overwrites, it never accumulates history."""
+        self._monitored[(connection_id, external_media_id)] = is_monitored
 
     def seed_message(
         self,
@@ -421,6 +474,9 @@ class MemorySentimentRepository:
                     neutral=neutral,
                     negative=negative,
                     not_analyzed=not_analyzed,
+                    is_monitored=self._monitored.get(
+                        (connection_id, thread_external_id[thread_id]), False
+                    ),
                 )
             )
         summaries.sort(key=lambda s: (s.last_message_at, s.thread_id), reverse=True)
@@ -614,17 +670,40 @@ class PostgresSentimentRepository:
         limit: int = DEFAULT_REEL_PAGE_SIZE,
     ) -> tuple[ReelSummary, ...]:
         with tenant_session(tenant_id) as session:
+            # LEFT JOIN monitored_media, QUA-94: DECORATIVE, never filtering — a Reel
+            # the tenant stopped monitoring keeps its thread in this list (migration
+            # 0005's "orthogonal facts" ruling — see `ReelSummary.is_monitored`'s
+            # docstring). The join is on `uq_monitored_media_natural_key
+            # (connection_id, external_media_id)`, a UNIQUE index — this can only ever
+            # match zero or one `monitored_media` row per thread, so it cannot fan out
+            # the `threads` row count the way a one-to-many join would; `COALESCE(...,
+            # false)` covers "never monitored at all" the same as "explicitly off".
+            # `mm.tenant_id = :tenant_id` is the SAME literal-planner-hint pattern the
+            # LATERAL below already carries for `comment_sentiment_results` — RLS's
+            # `current_setting('app.tenant_id')` predicate is opaque to the planner,
+            # this is a real bound value it can use for selectivity instead. Validated
+            # (QUA-94) with `EXPLAIN (ANALYZE, BUFFERS)` at the same 1,000x100 seed
+            # QUA-93 used — see this method's benchmark test for the measured plan.
             thread_sql = """
-                SELECT id, external_thread_id, last_message_at
-                FROM threads
-                WHERE connection_id = :cid AND channel = 'comment'
+                SELECT t.id, t.external_thread_id, t.last_message_at,
+                  COALESCE(mm.is_monitored, false) AS is_monitored
+                FROM threads t
+                LEFT JOIN monitored_media mm
+                  ON mm.connection_id = t.connection_id
+                  AND mm.external_media_id = t.external_thread_id
+                  AND mm.tenant_id = :tenant_id
+                WHERE t.connection_id = :cid AND t.channel = 'comment'
             """
-            params: dict[str, object] = {"cid": str(connection_id), "limit": limit}
+            params: dict[str, object] = {
+                "cid": str(connection_id),
+                "tenant_id": str(tenant_id),
+                "limit": limit,
+            }
             if cursor is not None:
-                thread_sql += " AND (last_message_at, id) < (:cts, :ctid)"
+                thread_sql += " AND (t.last_message_at, t.id) < (:cts, :ctid)"
                 params["cts"] = cursor.last_message_at
                 params["ctid"] = str(cursor.thread_id)
-            thread_sql += " ORDER BY last_message_at DESC, id DESC LIMIT :limit"
+            thread_sql += " ORDER BY t.last_message_at DESC, t.id DESC LIMIT :limit"
 
             thread_rows = session.execute(text(thread_sql), params).all()
             if not thread_rows:
@@ -695,6 +774,7 @@ class PostgresSentimentRepository:
                         neutral=counts.neutral if counts else 0,
                         negative=counts.negative if counts else 0,
                         not_analyzed=counts.not_analyzed if counts else 0,
+                        is_monitored=bool(row.is_monitored),
                     )
                 )
             return tuple(summaries)

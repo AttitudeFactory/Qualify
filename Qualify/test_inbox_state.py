@@ -175,6 +175,28 @@ def test_sync_comments_never_touches_the_candidate_list() -> None:
     assert "self.toggling_media_ids" not in source
 
 
+def test_toggle_monitored_refreshes_reel_summaries_after_reloading_candidates() -> None:
+    """QUA-94 fix: the "Comentarios" section's badge (`reel_summaries[*].is_monitored`)
+    must update the moment a Reel is (un)monitored, not only after the operator reloads
+    the page. Before this fix, `toggle_monitored` only called `_load_candidates` — which
+    refreshes `self.candidates` (the "Contenido de Instagram" list), never
+    `self.reel_summaries`. Reuses the SAME post-write re-read `sync_comments`/
+    `analyze_sentiment` already call on success (`_refresh_after_write`) rather than a
+    second refresh mechanism. Ordering matters: it must run AFTER `_load_candidates`, so
+    the reel-summaries reload's opción-A enrichment (`Qualify.inbox_provider.
+    reel_summaries_page`'s `candidates` param) sees the freshly-reloaded candidates list,
+    not the pre-toggle one."""
+    source = inspect.getsource(InboxState.toggle_monitored.fn)
+    assert source.count("await self._refresh_after_write(tenant_id, connection_id)") == 1
+    load_candidates_index = source.index(
+        "await self._load_candidates(tenant_id, connection_id, show_loading=False)"
+    )
+    refresh_index = source.index("await self._refresh_after_write(tenant_id, connection_id)")
+    assert refresh_index > load_candidates_index, (
+        "the refresh must run AFTER _load_candidates, so it sees the reloaded candidates"
+    )
+
+
 def test_analyze_sentiment_resolves_tenant_and_connection_before_calling_the_route() -> None:
     source = inspect.getsource(InboxState.analyze_sentiment.fn)
     assert "tenant_uuid(session_tenant_id)" in source
@@ -332,6 +354,7 @@ async def test_load_reel_summaries_populates_state_on_success(
         thumbnail_url="",
         caption="",
         permalink="",
+        is_monitored=True,
     )
     monkeypatch.setattr(inbox_state, "reel_summaries_page", lambda **kwargs: ([vm], None, False))
     state = InboxState()
@@ -379,6 +402,7 @@ async def test_load_reel_summaries_discards_a_stale_result_after_a_connection_sw
         thumbnail_url="",
         caption="",
         permalink="",
+        is_monitored=True,
     )
     monkeypatch.setattr(inbox_state, "reel_summaries_page", lambda **kwargs: ([vm], None, False))
     state = InboxState()
@@ -568,6 +592,65 @@ def test_refresh_after_write_refreshes_thread_or_list_depending_on_what_is_open(
     assert "await self._load_reel_summaries_first_page(tenant_id, connection_id)" in source
 
 
+@pytest.mark.asyncio
+async def test_refresh_after_write_updates_reel_summaries_is_monitored_without_a_page_reload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """QUA-94 fix, functional half: `_refresh_after_write` — what `toggle_monitored` now
+    calls (see `test_toggle_monitored_refreshes_reel_summaries_after_reloading_
+    candidates`) — actually flips a stale `is_monitored` already sitting in
+    `state.reel_summaries` to the fresh value from a re-read, with no `select_connection`/
+    `load_screen`/manual page reload involved. `_refresh_after_write` calls no
+    `self.get_state(...)` (see the module docstring), so it runs end to end here exactly
+    like the other direct `_load_reel_summaries_first_page`/`_load_global_summary` tests
+    above."""
+    stale = ReelSummaryVM(
+        thread_id="t-1",
+        external_thread_id="media-1",
+        last_message_at="20 ago 2026, 10:00",
+        total=1,
+        positive=0,
+        neutral=0,
+        negative=0,
+        not_analyzed=1,
+        thumbnail_url="",
+        caption="",
+        permalink="",
+        is_monitored=False,  # what the operator saw BEFORE toggling monitoring back on
+    )
+    fresh = ReelSummaryVM(
+        thread_id="t-1",
+        external_thread_id="media-1",
+        last_message_at="20 ago 2026, 10:00",
+        total=1,
+        positive=0,
+        neutral=0,
+        negative=0,
+        not_analyzed=1,
+        thumbnail_url="",
+        caption="",
+        permalink="",
+        is_monitored=True,  # what a re-read now returns, after the toggle
+    )
+    monkeypatch.setattr(
+        inbox_state,
+        "global_summary_vm",
+        lambda **kwargs: GlobalSentimentSummaryVM(
+            positive=0, neutral=0, negative=0, not_analyzed=1, total=1
+        ),
+    )
+    monkeypatch.setattr(inbox_state, "reel_summaries_page", lambda **kwargs: ([fresh], None, False))
+    state = InboxState()
+    state.selected_connection_id = str(_CONNECTION)
+    state.reel_summaries = [stale]
+    state.selected_thread_id = ""  # no Reel detail open -> the "reload the list" branch
+
+    await state._refresh_after_write(_TENANT, str(_CONNECTION))
+
+    assert state.reel_summaries == [fresh]
+    assert state.reel_summaries[0].is_monitored is True
+
+
 def test_polling_timer_only_mounts_inside_the_gated_inbox_tree() -> None:
     """The timer must live inside `_sync_section()`, itself only rendered behind
     `InboxState.has_connections` in `inbox_index()` — the same gate the manual button
@@ -626,6 +709,7 @@ def test_back_to_reel_list_clears_selection_without_being_a_background_event() -
         thumbnail_url="",
         caption="",
         permalink="",
+        is_monitored=True,
     )
 
     InboxState.back_to_reel_list.fn(state)

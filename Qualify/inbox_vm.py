@@ -87,6 +87,12 @@ class ReelSummaryVM:
     extra Meta calls) when this Reel is still inside that list's 2-week window — `""` for
     a Reel monitored longer ago, same "no raw nullable reaching a `str` field" convention
     every VM in this module follows.
+
+    `is_monitored` (QUA-94) mirrors `qualify_api.sentiment.repository.ReelSummary.
+    is_monitored` verbatim — a DECORATION, never a filter: this Reel is still listed and
+    its historical comments/sentiment are still fully visible when `False`, only the
+    badge in `inbox_page.py` changes. `False` means "not currently monitored", which
+    covers both "explicitly turned off" and "no `monitored_media` row at all".
     """
 
     thread_id: str
@@ -100,6 +106,7 @@ class ReelSummaryVM:
     thumbnail_url: str
     caption: str
     permalink: str
+    is_monitored: bool
 
 
 @dataclass(frozen=True)
