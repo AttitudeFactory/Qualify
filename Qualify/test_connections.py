@@ -195,6 +195,33 @@ def test_unrecognized_scope_is_surfaced_not_swallowed() -> None:
     assert resolved == frozenset({ScopeKey.BASIC})
 
 
+def test_known_infrastructure_scopes_are_labeled_distinctly() -> None:
+    # QUA-96: the four scopes Meta grants to complete the OAuth/Page-enumeration flow
+    # (ADR 25/R4) or automatically (`public_profile`) must read as "Infraestructura: …",
+    # never as "Sin reconocer: …" — that text is reserved for a genuinely unknown scope.
+    infra_literals = [
+        "business_management",
+        "pages_read_engagement",
+        "pages_show_list",
+        "public_profile",
+    ]
+    labels, resolved = _scope_labels(["instagram_business_basic", *infra_literals])
+    for literal in infra_literals:
+        assert f"Infraestructura: {literal}" in labels, f"{literal} not labeled as infra"
+        assert f"Sin reconocer: {literal}" not in labels, f"{literal} still reads as unrecognized"
+    assert resolved == frozenset({ScopeKey.BASIC})
+
+
+def test_known_infrastructure_and_genuinely_unknown_scopes_coexist() -> None:
+    # A known-infra literal and a truly unknown one in the same grant must not bleed
+    # into each other's classification.
+    labels, _resolved = _scope_labels(["business_management", "instagram_future_scope"])
+    assert "Infraestructura: business_management" in labels
+    assert "Sin reconocer: instagram_future_scope" in labels
+    assert "Sin reconocer: business_management" not in labels
+    assert "Infraestructura: instagram_future_scope" not in labels
+
+
 def test_vm_shows_a_spanish_reason_only_when_disabled() -> None:
     vm = _to_vm(_row(granted_scopes=["instagram_business_basic"]), "PuntoServis")
     for cap in vm.enabled_capabilities:
