@@ -25,47 +25,51 @@ and the QUA-17 refinement comment):
   `CapabilityVerdict`, so a stored verdict records which matrix produced it, not
   just which module happened to be imported at read time.
 
-## PESSIMISTIC encoding of the comment ladder (founder decision, 2026-07-25)
+## Comment ladder: CONFIRMED pessimistic by Meta's own docs (QUA-95, 2026-08-27)
 
 The strongest onboarding claim (`§2.5`) was "reading/analyzing comments does not
-depend on being able to reply". The harvested corpus does NOT support it: Meta's
-`ig-media/comments.md` puts read (GET) and reply (POST) under the *same*
-`manage_comments` requirement at the edge level, and the only reading path that
-would rescue the ladder (inline field-expansion under `basic`) is unconfirmed in
-the corpus. Per the founder ruling (QUA-17), the ladder is therefore encoded
-CONSERVATIVELY: `READ_COMMENTS` and `ANALYZE_COMMENTS` both `requires=MANAGE_COMMENTS`
-and are flagged `provisional=True`. The UI (C-06) shows "needs this permission",
-never a runtime 403. If the live check below proves reading is reachable with a
-lesser grant, relax these two rows to the optimistic model and clear the flag.
+depend on being able to reply". Founder ruling 2026-07-25 (QUA-17) encoded this
+CONSERVATIVELY pending verification: `READ_COMMENTS` and `ANALYZE_COMMENTS` both
+`requires=MANAGE_COMMENTS`, flagged `provisional=True`, with a live-probe plan to
+settle it (a token connected through C-04, missing `manage_comments` on purpose,
+tested against the two reading endpoints below).
 
-## LIVE VERIFICATION PLAN (follow-up, does NOT block C-05)
+**That live probe never ran — it turned out to be unnecessary.** Re-verified
+2026-08-27 against Meta's official documentation (re-fetched live that day, zero
+drift from the corpus harvested 2026-07-28), specific to **Instagram API with
+Facebook Login** (our fork, ADR 25) — never mixed with the Instagram Login column:
 
-Goal: settle whether *reading/analyzing* IG comments is reachable without the
-`manage_comments` grant, i.e. whether the pessimistic rows above can be relaxed.
+- **Explicit**: `ig-media/comments.md`'s own "Reading" section (`GET
+  /<IG_MEDIA_ID>/comments`) carries its own `#### Permissions` subsection, separate
+  from the `POST` (create) one: "An access token from a User who created the IG
+  Media object, with the following permissions: `instagram_basic`,
+  `instagram_manage_comments`."
+  https://developers.facebook.com/documentation/instagram-platform/instagram-graph-api/reference/ig-media/comments
+- **Explicit**: `comment-moderation.md`, the official read/reply guide, requires the
+  same permission set for its whole endpoint list, which opens with
+  `GET /<IG_MEDIA_ID>/comments`.
+  https://developers.facebook.com/documentation/instagram-platform/comment-moderation
+- **Explicit**: `ig-comment.md` (the `IG Comment` object itself) states the same
+  requirement.
+  https://developers.facebook.com/documentation/instagram-platform/instagram-graph-api/reference/ig-comment
+- **Inferred, not literal**: `reference/instagram-media.md`'s `GET /<IG_MEDIA_ID>`
+  Fields table does NOT list `comments` among the public fields (unlike `caption`,
+  `media_url`, `timestamp`...) — `comments` appears only in the Edges table,
+  pointing back at the gated endpoint above. The inline field-expansion form
+  (`?fields=comments{text,username,timestamp}`) is inferred to cross the same gate,
+  since it is documented as an Edge, not a public Field — there is no rescue path
+  under `basic` alone.
+  https://developers.facebook.com/documentation/instagram-platform/reference/instagram-media
+- **Not established by Meta's docs**: the exact HTTP status / `error_subcode` a
+  missing-permission call would return. Immaterial to this decision; would only
+  matter for finer error handling.
 
-1. Prereq: the founder's own IG Business/Creator account is connected through the
-   Sprint-1 OAuth flow (C-04), producing a real access token. Use a token that
-   was granted `instagram_business_basic` but NOT `instagram_business_manage_comments`
-   -- i.e. re-run the consent screen and decline the comments permission, so the
-   token genuinely lacks it. (A token that holds every scope cannot answer this.)
-2. Take one of the account's own media ids (`GET /me/media`).
-3. Probe reading two ways against the live Graph API:
-   a. edge read:   `GET /<IG_MEDIA_ID>/comments`
-   b. inline read: `GET /<IG_MEDIA_ID>?fields=comments{text,username,timestamp}`
-   Record HTTP status + error subcode for each.
-4. Interpretation:
-   - Both 200 with the basic-only token  -> reading is NOT gated by manage_comments.
-     Relax `READ_COMMENTS`/`ANALYZE_COMMENTS` to `requires=BASIC`, clear
-     `provisional`, bump `ASSESSMENT_VERSION`, and notify the PO to restore the
-     `§2.5` onboarding claim.
-   - Either returns 403 / OAuthException (missing-permission subcode) -> the
-     pessimistic encoding is correct as-is; keep it and mark `§2.5` false.
-   - `4b` succeeds where `4a` fails -> the field-expansion rescue path is real;
-     model it explicitly (a distinct read path under BASIC) before relaxing.
-5. This is an authorization-behavior probe, not a model/network test in this
-   package's test suite. It runs by hand (or a marked integration script that
-   holds a real token) and its outcome edits `SCOPE_LITERALS`/the rules here --
-   the pure logic and its offline tests stay untouched either way.
+**Verdict: the pessimistic encoding is CONFIRMED correct, not relaxed.**
+`requires=MANAGE_COMMENTS` is unchanged on both rows; `provisional` drops to
+`False` because the gate is now backed by explicit, live-reconfirmed, fork-specific
+evidence rather than resting unverified. `§2.5`'s onboarding claim is FALSE for our
+flow — read, analyze and reply all share the same `manage_comments` gate — flagged
+to the PO to correct `docs/backlog-crm-workflows.md` §2.5 (QUA-95).
 
 The scope literals below are seeded from the harvested Meta corpus
 (`reference/meta-instagram-platform/DISCREPANCIES.md` §1 and
@@ -80,7 +84,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
-ASSESSMENT_VERSION = "perm-capability-v1"
+ASSESSMENT_VERSION = "perm-capability-v2"
 
 
 class ScopeKey(StrEnum):
@@ -182,9 +186,12 @@ class CapabilityVerdict(BaseModel):
     `reason` is the human-readable explanation of a DISABLED capability (why the
     feature is greyed out), following `oauth_scope.py`'s convention that every
     record always carries a populated reason. `provisional` marks a verdict whose
-    gating is not yet confirmed against a second source / the live endpoint (see
-    the module docstring: the comment-ladder rows). `assessment_version` is
-    stamped from `ASSESSMENT_VERSION` so a persisted verdict is self-describing.
+    gating is not yet confirmed against a second source / the live endpoint —
+    currently no row in `CAPABILITY_RULES` sets it (the comment-ladder rows that
+    once did were confirmed by documentary evidence, QUA-95, 2026-08-27); it stays
+    available for a future capability whose gate is added under genuine
+    uncertainty. `assessment_version` is stamped from `ASSESSMENT_VERSION` so a
+    persisted verdict is self-describing.
     """
 
     capability: Capability
@@ -228,24 +235,24 @@ CAPABILITY_RULES: tuple[_CapabilityRule, ...] = (
     _CapabilityRule(
         capability=Capability.READ_COMMENTS,
         requires=ScopeKey.MANAGE_COMMENTS,
-        provisional=True,
+        provisional=False,
         disabled_reason=(
             "Reading comments is off because the comments permission was not granted. "
-            "PROVISIONAL: encoded pessimistically (founder ruling 2026-07-25). The "
-            "corpus puts comment read and reply under the same manage_comments gate; "
-            "whether basic-only reading exists is pending a live-endpoint check "
-            "(see module docstring). Until confirmed, reading is gated with reply."
+            "CONFIRMED (QUA-95, 2026-08-27) against Meta's own documentation for "
+            "Instagram API with Facebook Login: GET /<IG_MEDIA_ID>/comments requires "
+            "instagram_basic AND instagram_manage_comments (see module docstring for "
+            "the cited URLs). Reading is gated with reply, not a pessimistic guess."
         ),
     ),
     _CapabilityRule(
         capability=Capability.ANALYZE_COMMENTS,
         requires=ScopeKey.MANAGE_COMMENTS,
-        provisional=True,
+        provisional=False,
         disabled_reason=(
             "Sentiment/topic/intent analysis of comments is off because the comments "
-            "permission was not granted. PROVISIONAL: analysis reads the same comment "
-            "data as READ_COMMENTS, so it inherits that row's pessimistic, "
-            "not-yet-verified gate (founder ruling 2026-07-25)."
+            "permission was not granted. CONFIRMED (QUA-95, 2026-08-27): analysis "
+            "reads the same comment data as READ_COMMENTS, so it inherits that row's "
+            "now-confirmed manage_comments gate (see module docstring)."
         ),
     ),
     _CapabilityRule(

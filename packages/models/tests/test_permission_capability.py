@@ -121,11 +121,13 @@ def test_empty_grant_disables_everything() -> None:
 
 
 def test_basic_only_enables_only_connection_pessimistic() -> None:
-    """PESSIMISTIC ladder (founder 2026-07-25): basic alone unlocks connection ONLY.
+    """PESSIMISTIC ladder (founder 2026-07-25, CONFIRMED by QUA-95, 2026-08-27):
+    basic alone unlocks connection ONLY.
 
-    This is the row that inverts the doc's optimistic §2.5 claim: with basic but
-    no manage_comments, reading and analysis are OFF. If the live-endpoint check
-    later proves basic-only reading works, this test flips with the encoding.
+    This is the row that inverts the doc's optimistic §2.5 claim: with basic but no
+    manage_comments, reading and analysis are OFF. Meta's own documentation confirms
+    this gate directly (see the module docstring), so this encoding is settled --
+    it does not "flip" on a future live-endpoint check.
     """
     enabled = _verdict(frozenset({ScopeKey.BASIC}))
     assert enabled[Capability.CONNECT_ACCOUNT] is True
@@ -137,23 +139,29 @@ def test_basic_only_enables_only_connection_pessimistic() -> None:
     assert enabled[Capability.READ_INSIGHTS] is False
 
 
-def test_comment_capabilities_are_flagged_provisional() -> None:
-    """READ/ANALYZE_COMMENTS carry provisional=True; REPLY does not."""
+def test_comment_capabilities_are_confirmed_not_provisional() -> None:
+    """QUA-95 (2026-08-27): READ/ANALYZE_COMMENTS's manage_comments gate is CONFIRMED
+    by Meta's own documentation (see module docstring for the cited URLs), so neither
+    carries provisional=True anymore -- same as REPLY_COMMENTS, which was never
+    provisional. The gate itself (requires=MANAGE_COMMENTS) is unchanged."""
     by_cap = {v.capability: v for v in assess_capabilities(frozenset(ScopeKey))}
-    assert by_cap[Capability.READ_COMMENTS].provisional is True
-    assert by_cap[Capability.ANALYZE_COMMENTS].provisional is True
+    assert by_cap[Capability.READ_COMMENTS].provisional is False
+    assert by_cap[Capability.ANALYZE_COMMENTS].provisional is False
     assert by_cap[Capability.REPLY_COMMENTS].provisional is False
     # requires wiring: the ladder is gated on manage_comments, not basic.
     assert by_cap[Capability.READ_COMMENTS].requires is ScopeKey.MANAGE_COMMENTS
     assert by_cap[Capability.ANALYZE_COMMENTS].requires is ScopeKey.MANAGE_COMMENTS
 
 
-def test_assessment_is_provisional_tracks_the_flag() -> None:
-    """Any provisional verdict makes the whole assessment provisional (for C-06)."""
-    assert assessment_is_provisional(assess_capabilities(frozenset(ScopeKey))) is True
-    # A grant set that lights no provisional-bearing capability is still provisional
-    # because the verdict tuple always CONTAINS the (disabled) provisional rows.
-    assert assessment_is_provisional(assess_capabilities(frozenset())) is True
+def test_assessment_is_provisional_is_false_with_no_provisional_rows_today() -> None:
+    """QUA-95 (2026-08-27): READ/ANALYZE_COMMENTS were the only two `provisional=True`
+    rows in the whole matrix; now that they're confirmed, NO row is provisional, so
+    `assessment_is_provisional` is False for every grant set. This does not retire the
+    mechanism -- `assessment_is_provisional`/`CapabilityVerdict.provisional` stay wired
+    for a future capability whose gate is added under genuine uncertainty; this test
+    just pins today's honest state instead of a stale `is True`."""
+    assert assessment_is_provisional(assess_capabilities(frozenset(ScopeKey))) is False
+    assert assessment_is_provisional(assess_capabilities(frozenset())) is False
 
 
 def test_denying_reply_does_not_disable_publish_dms_or_insights() -> None:
