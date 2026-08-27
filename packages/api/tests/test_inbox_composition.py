@@ -120,9 +120,17 @@ async def test_list_candidate_media_propagates_unknown_connection(
 async def test_set_media_monitored_delegates_to_the_wired_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # `composition.set_media_monitored` has no `now` passthrough (by design — the
+    # production seam always re-verifies against the real clock, see its docstring),
+    # so `InboxService.set_media_monitored` compares this fixture against
+    # `datetime.now(UTC)` at call time, not against the fixed module-level `NOW`. A
+    # fixture pinned to `NOW - 1 day` rots the moment real time drifts `NOW` more than
+    # `MONITORING_WINDOW` (14 days) into the past — exactly what happened here. Anchor
+    # to the real clock instead so "one day old" stays true regardless of when the
+    # suite runs.
     _, repository = _wire(
         monkeypatch,
-        media={"A": MediaSummary(id="A", timestamp=NOW - timedelta(days=1))},
+        media={"A": MediaSummary(id="A", timestamp=datetime.now(UTC) - timedelta(days=1))},
     )
 
     await composition.set_media_monitored(
