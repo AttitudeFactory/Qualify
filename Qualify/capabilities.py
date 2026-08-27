@@ -16,6 +16,15 @@ persisted verdict and wrong for a shop owner reading a screen. The *decision*
 `CAPABILITY_LABELS` / `CAPABILITY_DISABLED_REASONS` are asserted exhaustive against
 the real `Capability` enum by `tests_connections.py`, so a capability added upstream
 fails a test instead of raising `KeyError` in a running page.
+
+`KNOWN_INFRASTRUCTURE_SCOPES` (QUA-96) is a second, orthogonal presentation table: it
+does NOT feed `resolve_scope_keys` and is never merged into `SCOPE_LITERALS`/`ScopeKey`
+upstream. Those model OAuth-plumbing scopes — granted by Meta to complete the login/
+Page-enumeration flow (ADR 25/R4), not because they gate a product capability — so
+`resolve_scope_keys` correctly reports them as unrecognized. Without this table, the
+screen shows that unrecognized status with the same "Sin reconocer" alarm text it uses
+for a genuinely new/renamed Meta scope. This table only softens that wording for the
+four literals already confirmed as expected plumbing; it changes no logic upstream.
 """
 
 from __future__ import annotations
@@ -34,6 +43,7 @@ __all__ = [
     "ASSESSMENT_VERSION",
     "CAPABILITY_DISABLED_REASONS",
     "CAPABILITY_LABELS",
+    "KNOWN_INFRASTRUCTURE_SCOPES",
     "SCOPE_KEY_LABELS",
     "Capability",
     "CapabilityVerdict",
@@ -88,4 +98,18 @@ SCOPE_KEY_LABELS: dict[ScopeKey, str] = {
     ScopeKey.MANAGE_COMMENTS: "Comentarios",
     ScopeKey.MANAGE_MESSAGES: "Mensajes",
     ScopeKey.MANAGE_INSIGHTS: "Métricas",
+}
+
+# Scopes Meta grants as a side effect of completing the OAuth/Page-enumeration flow
+# (ADR 25/R4) or automatically with Facebook Login (`public_profile`) — never because
+# they gate a product capability. Confirmed granted on the real `qualifymkt.co`
+# connection (2026-08-27). Deliberately separate from `SCOPE_LITERALS`/`ScopeKey`: those
+# model (granted scope -> product capability), this models (unrecognized literal ->
+# "expected OAuth plumbing" vs. "genuinely unknown"). `_scope_labels` in
+# `connections_provider.py` is the only reader.
+KNOWN_INFRASTRUCTURE_SCOPES: dict[str, str] = {
+    "business_management": "requerido para enumerar Páginas de un Business Portfolio (ADR 25)",
+    "pages_read_engagement": "requerido para enumerar las Páginas del usuario (ADR 25)",
+    "pages_show_list": "requerido para enumerar las Páginas del usuario (ADR 25)",
+    "public_profile": "Meta lo concede automáticamente con Facebook Login, no se pide",
 }

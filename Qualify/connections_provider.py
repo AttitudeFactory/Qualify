@@ -36,7 +36,13 @@ from qualify_api.tenancy.models import Brand, TenantMember, User
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
-from .capabilities import SCOPE_KEY_LABELS, ScopeKey, assess_capabilities, resolve_scope_keys
+from .capabilities import (
+    KNOWN_INFRASTRUCTURE_SCOPES,
+    SCOPE_KEY_LABELS,
+    ScopeKey,
+    assess_capabilities,
+    resolve_scope_keys,
+)
 from .connections_vm import ConnectionVM, build_connection_vm
 
 _NO_BRAND_LABEL = "Sin marca"
@@ -93,10 +99,20 @@ def _scope_labels(granted_literals: list[str]) -> tuple[list[str], frozenset[Sco
     `resolve_scope_keys` surfaces them precisely so a renamed or brand-new Meta scope
     appears as "unknown" instead of a phantom denial. A scope name is a permission
     name, not credential material, so it is safe to render.
+
+    QUA-96: an unrecognized literal is further split by `KNOWN_INFRASTRUCTURE_SCOPES` —
+    expected OAuth plumbing (Page enumeration, ADR 25/R4) reads as "Infraestructura: …"
+    instead of the "Sin reconocer: …" alarm text, which stays reserved for a literal
+    that is genuinely new or renamed. `resolve_scope_keys` itself is untouched; this is
+    a presentation-only split of its `unrecognized` output.
     """
     resolved, unrecognized = resolve_scope_keys(frozenset(granted_literals))
     labels = [label for key, label in SCOPE_KEY_LABELS.items() if key in resolved]
-    labels += [f"Sin reconocer: {literal}" for literal in sorted(unrecognized)]
+    for literal in sorted(unrecognized):
+        if literal in KNOWN_INFRASTRUCTURE_SCOPES:
+            labels.append(f"Infraestructura: {literal}")
+        else:
+            labels.append(f"Sin reconocer: {literal}")
     return labels, resolved
 
 
