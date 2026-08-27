@@ -8,10 +8,11 @@ label and reason for each capability.
 
 Why the reason is re-worded here instead of rendered from the verdict: the real
 `CapabilityVerdict.reason` is engineering prose in English that cites the founder
-ruling and the harvested Meta corpus ("PROVISIONAL: encoded pessimistically
-(founder ruling 2026-07-25)..."). That text is correct for a developer reading a
-persisted verdict and wrong for a shop owner reading a screen. The *decision*
-(enabled/disabled, provisional) is never restated here — only its wording.
+ruling and the QUA-95 documentary evidence ("CONFIRMED (QUA-95, 2026-08-27)
+against Meta's own documentation..."). That text is correct for a developer
+reading a persisted verdict and wrong for a shop owner reading a screen. The
+*decision* (enabled/disabled, provisional) is never restated here — only its
+wording.
 
 `CAPABILITY_LABELS` / `CAPABILITY_DISABLED_REASONS` are asserted exhaustive against
 the real `Capability` enum by `tests_connections.py`, so a capability added upstream

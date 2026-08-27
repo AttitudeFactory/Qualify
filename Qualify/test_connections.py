@@ -18,9 +18,9 @@ They pin six invariants:
 2. The screen's Spanish copy covers the real C-05 matrix exhaustively — a capability
    added upstream fails here instead of raising KeyError in a running page.
 3. The C-05 capability matrix is PESSIMISTIC: reading AND analyzing comments both
-   require MANAGE_COMMENTS (provisional); denying MANAGE_MESSAGES does NOT turn them
-   off. This is the real matrix now, so the test also guards against a silent
-   upstream relaxation.
+   require MANAGE_COMMENTS — CONFIRMED by Meta's own docs (QUA-95, 2026-08-27), no
+   longer provisional; denying MANAGE_MESSAGES does NOT turn them off. This is the
+   real matrix now, so the test also guards against a silent upstream relaxation.
 4. The provider reaches Postgres only through `tenant_session` — the tenant-isolation
    guarantee is structural, not a property of any one query.
 5. No trace of the pre-C-04 `/oauth/start` placeholder survives anywhere in the screen.
@@ -142,7 +142,7 @@ def test_ui_copy_covers_every_capability_and_scope() -> None:
 
 
 def test_using_the_real_assessment_not_a_stub() -> None:
-    assert ASSESSMENT_VERSION == "perm-capability-v1"
+    assert ASSESSMENT_VERSION == "perm-capability-v2"
 
 
 def test_matrix_pessimistic_read_analyze_require_manage_comments() -> None:
@@ -151,10 +151,11 @@ def test_matrix_pessimistic_read_analyze_require_manage_comments() -> None:
     assert basic_only[Capability.READ_COMMENTS][0] is False
     assert basic_only[Capability.ANALYZE_COMMENTS][0] is False
     assert basic_only[Capability.REPLY_COMMENTS][0] is False
-    # And they are flagged provisional (rest on the unverified Meta doc row).
-    assert basic_only[Capability.READ_COMMENTS][1] is True
-    assert basic_only[Capability.ANALYZE_COMMENTS][1] is True
-    # Reply is non-provisional.
+    # QUA-95 (2026-08-27): the manage_comments gate is CONFIRMED by Meta's own docs,
+    # not a pessimistic guess pending a live check anymore — none of the three is
+    # provisional.
+    assert basic_only[Capability.READ_COMMENTS][1] is False
+    assert basic_only[Capability.ANALYZE_COMMENTS][1] is False
     assert basic_only[Capability.REPLY_COMMENTS][1] is False
 
 
@@ -234,7 +235,10 @@ def test_vm_shows_a_spanish_reason_only_when_disabled() -> None:
     disabled_keys = {c.key for c in vm.disabled_capabilities}
     assert str(Capability.READ_COMMENTS) in disabled_keys
     assert str(Capability.ANALYZE_COMMENTS) in disabled_keys
-    assert any(c.provisional for c in vm.disabled_capabilities)
+    # QUA-95 (2026-08-27): READ_COMMENTS/ANALYZE_COMMENTS were the only provisional
+    # rows in the matrix; now that their gate is confirmed by Meta's own docs, no
+    # capability shown here is provisional anymore.
+    assert not any(c.provisional for c in vm.disabled_capabilities)
 
 
 def test_vm_serializes_only_plain_values() -> None:
