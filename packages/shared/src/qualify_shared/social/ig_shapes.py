@@ -62,6 +62,13 @@ _APP_REVIEW: Final = "instagram-platform/app-review.md"
 # Read it, never parse it. It is used here only for pages that exist nowhere else.
 _MSG_OVERVIEW: Final = "documentation/business-messaging/instagram-messaging/overview.md"
 _MSG_GET_STARTED: Final = "documentation/business-messaging/instagram-messaging/get-started.md"
+# QUA-49: the formal per-field webhook reference (payload shape) and the older
+# getting-started guide (worked examples, incl. what `entry[].id` identifies).
+# Neither lives under `instagram-platform/`, unlike the endpoints above.
+_WEBHOOKS_INSTAGRAM_REFERENCE: Final = "docs/graph-api/webhooks/reference/instagram.md"
+_WEBHOOKS_GETTING_STARTED: Final = (
+    "docs/graph-api/webhooks/getting-started/webhooks-for-instagram.md"
+)
 
 
 @dataclass(frozen=True)
@@ -746,3 +753,135 @@ REPLY_CREATION_CITATION: Final = Citation(
 silently reparented to the top-level comment. Threading is therefore at most one
 level deep, whatever the UI offers.
 """
+
+# --------------------------------------------------------------------------
+# Mentions webhook envelope (QUA-49)
+# --------------------------------------------------------------------------
+#
+# SCOPE: the `mentions` field's notification envelope only — NOT the `mentioned_media`/
+# `mentioned_comment` read-endpoint response shapes. Those are a separate, still-uncovered
+# contract (see `UNCOVERED_SURFACES["webhook_payloads"]` above, which this section narrows
+# but does not close: the notification can now be parsed, delivery is still unverified for
+# customer zero). Grounded against the formal per-field reference
+# (`docs/graph-api/webhooks/reference/instagram.md`), not the getting-started tutorial's
+# worked example alone — the tutorial is cited only for what `entry[].id` identifies, which
+# the formal reference does not state.
+
+MENTIONS_FIELD_CITATION: Final = Citation(
+    path=_WEBHOOKS_INSTAGRAM_REFERENCE,
+    line=139,
+    quote="@mentions you in a comment or caption on a media object",
+)
+
+MENTIONS_MEDIA_ID_CITATION: Final = Citation(
+    path=_WEBHOOKS_INSTAGRAM_REFERENCE,
+    line=145,
+    quote="ID of media containing comment with mention.",
+)
+
+MENTIONS_COMMENT_ID_CITATION: Final = Citation(
+    path=_WEBHOOKS_INSTAGRAM_REFERENCE,
+    line=146,
+    quote="ID of comment with mention.",
+)
+
+MENTIONS_ENTRY_ID_CITATION: Final = Citation(
+    path=_WEBHOOKS_GETTING_STARTED,
+    line=141,
+    quote="ID of your app user's Instagram professional account",
+)
+"""`entry[].id` is the MENTIONED account's own IG user id — i.e. our
+`external_account_id` — never the id of whoever wrote the mention. The formal
+reference (`MENTIONS_FIELD_CITATION`) does not state this; only the
+getting-started guide's annotated sample payload does.
+"""
+
+
+class MentionsChangeValue(BaseModel):
+    """`entry[].changes[].value` for a `"field": "mentions"` change.
+
+    `media_id` is documented as always present; `comment_id` is present only for a
+    mention inside a comment, absent for one in a caption
+    (`MENTIONS_MEDIA_ID_CITATION`/`MENTIONS_COMMENT_ID_CITATION`). Both are `str`
+    even though Meta calls them numeric strings elsewhere, matching how `IGComment.id`
+    is already typed in this module.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    media_id: str
+    comment_id: str | None = None
+
+
+class MentionsWebhookEntry(BaseModel):
+    """One `entry[]` item: one mentioned account's batch of changes for this delivery.
+
+    `changes` is deliberately left as raw dicts, not a list of a single `changes`
+    model: `webhooks-for-instagram.md`'s own Limitations section documents that a
+    subscribed app "receives notifications for all fields the app is subscribed
+    to", so a real batch can legitimately carry non-`mentions` changes once this
+    app subscribes to more fields. Typing `changes` narrowly would make parsing an
+    unrelated field's change a hard failure instead of a no-op skip.
+
+    Meta's real envelope also carries `entry[].time` (when the notification was
+    sent). Deliberately NOT modeled: nothing downstream consumes it, and
+    declaring it as a typed field would only give a payload we don't care about
+    ANOTHER way to fail validation. `model_config`'s `extra="ignore"` lets it
+    arrive and be silently dropped instead.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    changes: list[dict[str, Any]] = []
+
+
+class MentionsWebhookNotification(BaseModel):
+    """The full `POST` body Meta sends: `{"object": "instagram", "entry": [...]}`."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    object: str
+    entry: list[MentionsWebhookEntry]
+
+
+@dataclass(frozen=True)
+class MentionEvent:
+    """One resolved `mentions` change, flattened so a caller never re-threads the
+    parent `entry` to get at `ig_user_id`. This is the unit `qualify_api.http.
+    mentions_routes` (in `qualify_api`, not here — see
+    `test_the_contract_stays_strictly_a_contract`) consumes; it is deliberately
+    NOT a CRM entity or a persistence row.
+    """
+
+    ig_user_id: str
+    media_id: str
+    comment_id: str | None
+
+
+def parse_mentions_notification(payload: dict[str, Any]) -> tuple[MentionEvent, ...]:
+    """Parse a webhook `POST` body into the `mentions`-field events it carries.
+
+    Silently skips (not an error): an `entry` with no `changes`, and any
+    `changes[]` item whose `field` is not `"mentions"` (see
+    `MentionsWebhookEntry`'s docstring for why that is expected, not a bug).
+
+    Raises `ValueError`/`pydantic.ValidationError` for the envelope itself, or for
+    a `"mentions"` change whose `value` does not match `MentionsChangeValue` — that
+    IS a contract violation on the one field this parser claims to understand.
+    """
+    notification = MentionsWebhookNotification.model_validate(payload)
+    events: list[MentionEvent] = []
+    for entry in notification.entry:
+        for raw_change in entry.changes:
+            if raw_change.get("field") != "mentions":
+                continue
+            value = MentionsChangeValue.model_validate(raw_change.get("value") or {})
+            events.append(
+                MentionEvent(
+                    ig_user_id=entry.id,
+                    media_id=value.media_id,
+                    comment_id=value.comment_id,
+                )
+            )
+    return tuple(events)

@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from qualify_shared.social.ig_shapes import (
     COMMENT_LIMITS,
@@ -24,6 +25,10 @@ from qualify_shared.social.ig_shapes import (
     IGSID_CITATION,
     IGSID_IS_PORTABLE_IDENTITY,
     LOGIN_FORK_CITATION,
+    MENTIONS_COMMENT_ID_CITATION,
+    MENTIONS_ENTRY_ID_CITATION,
+    MENTIONS_FIELD_CITATION,
+    MENTIONS_MEDIA_ID_CITATION,
     REPLY_CREATION_CITATION,
     SIGNED_LOGIN_FORK,
     TIMESTAMP_CITATION_ISO,
@@ -32,8 +37,10 @@ from qualify_shared.social.ig_shapes import (
     Citation,
     IGComment,
     LoginFork,
+    MentionEvent,
     Presence,
     parse_comments_page,
+    parse_mentions_notification,
     parse_meta_timestamp,
 )
 
@@ -54,6 +61,10 @@ def _all_citations() -> list[Citation]:
         LOGIN_FORK_CITATION,
         REPLY_CREATION_CITATION,
         COMMENTS_EDGE_PERMISSIONS_CITATION,
+        MENTIONS_FIELD_CITATION,
+        MENTIONS_MEDIA_ID_CITATION,
+        MENTIONS_COMMENT_ID_CITATION,
+        MENTIONS_ENTRY_ID_CITATION,
         *COMMENT_LIMITS.citations,
         *UNSUPPORTED_FIELDS.values(),
         *(surface.citation for surface in UNCOVERED_SURFACES),
@@ -391,6 +402,125 @@ def test_the_corpus_worked_example_parses() -> None:
 
 # The fixture-instance tests live in `packages/models/tests/test_ig_fixture_shape.py`,
 # next to the fixture they read and to the sentiment path that consumes it.
+
+
+# ---------------------------------------------------------------------------
+# Mentions webhook envelope (QUA-49)
+# ---------------------------------------------------------------------------
+
+
+def test_parses_a_caption_mention_with_no_comment_id() -> None:
+    """`webhooks-for-instagram.md`'s caption-mention sample: `media_id` only."""
+    events = parse_mentions_notification(
+        {
+            "object": "instagram",
+            "entry": [
+                {
+                    "id": "17841405726653026",
+                    "time": 1520622968,
+                    "changes": [{"field": "mentions", "value": {"media_id": "17918195224117851"}}],
+                }
+            ],
+        }
+    )
+    assert events == (
+        MentionEvent(ig_user_id="17841405726653026", media_id="17918195224117851", comment_id=None),
+    )
+
+
+def test_parses_a_comment_mention_with_both_ids() -> None:
+    """`webhooks-for-instagram.md`'s comment-mention sample: `media_id` + `comment_id`."""
+    events = parse_mentions_notification(
+        {
+            "object": "instagram",
+            "entry": [
+                {
+                    "id": "17841405726653026",
+                    "changes": [
+                        {
+                            "field": "mentions",
+                            "value": {
+                                "comment_id": "17894227972186120",
+                                "media_id": "17918195224117851",
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    assert events == (
+        MentionEvent(
+            ig_user_id="17841405726653026",
+            media_id="17918195224117851",
+            comment_id="17894227972186120",
+        ),
+    )
+
+
+def test_parses_a_batch_of_multiple_updates() -> None:
+    """Meta batches up to 1000 updates per delivery; multiple entries must all parse."""
+    events = parse_mentions_notification(
+        {
+            "object": "instagram",
+            "entry": [
+                {
+                    "id": "111",
+                    "changes": [{"field": "mentions", "value": {"media_id": "aaa"}}],
+                },
+                {
+                    "id": "222",
+                    "changes": [{"field": "mentions", "value": {"media_id": "bbb"}}],
+                },
+            ],
+        }
+    )
+    assert {e.ig_user_id for e in events} == {"111", "222"}
+
+
+def test_skips_changes_for_fields_other_than_mentions() -> None:
+    """A subscribed app receives notifications for every field it is subscribed to
+    (`webhooks-for-instagram.md`'s Limitations), so a real batch may carry an
+    unrelated field once this app subscribes to more than `mentions`."""
+    events = parse_mentions_notification(
+        {
+            "object": "instagram",
+            "entry": [
+                {
+                    "id": "111",
+                    "changes": [
+                        {"field": "comments", "value": {"text": "hola"}},
+                        {"field": "mentions", "value": {"media_id": "aaa"}},
+                    ],
+                }
+            ],
+        }
+    )
+    assert len(events) == 1
+    assert events[0].media_id == "aaa"
+
+
+def test_entry_with_no_changes_yields_no_events() -> None:
+    events = parse_mentions_notification({"object": "instagram", "entry": [{"id": "111"}]})
+    assert events == ()
+
+
+def test_malformed_mentions_value_raises() -> None:
+    """A `mentions` change missing the documented-required `media_id` is a real
+    contract violation, unlike an unrelated field — that must fail loudly."""
+    with pytest.raises(ValidationError):
+        parse_mentions_notification(
+            {
+                "object": "instagram",
+                "entry": [{"id": "111", "changes": [{"field": "mentions", "value": {}}]}],
+            }
+        )
+
+
+def test_mentions_entry_id_is_the_mentioned_account_not_the_mentioner() -> None:
+    """Pins the semantics `MENTIONS_ENTRY_ID_CITATION` documents, so a future reader
+    cannot accidentally treat `ig_user_id` as the third party who wrote the mention."""
+    assert "app user's Instagram professional account" in MENTIONS_ENTRY_ID_CITATION.quote
 
 
 # ---------------------------------------------------------------------------
