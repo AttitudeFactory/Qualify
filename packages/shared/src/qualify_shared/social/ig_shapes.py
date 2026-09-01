@@ -62,6 +62,13 @@ _APP_REVIEW: Final = "instagram-platform/app-review.md"
 # Read it, never parse it. It is used here only for pages that exist nowhere else.
 _MSG_OVERVIEW: Final = "documentation/business-messaging/instagram-messaging/overview.md"
 _MSG_GET_STARTED: Final = "documentation/business-messaging/instagram-messaging/get-started.md"
+# QUA-49: the formal per-field webhook reference (payload shape) and the older
+# getting-started guide (worked examples, incl. what `entry[].id` identifies).
+# Neither lives under `instagram-platform/`, unlike the endpoints above.
+_WEBHOOKS_INSTAGRAM_REFERENCE: Final = "docs/graph-api/webhooks/reference/instagram.md"
+_WEBHOOKS_GETTING_STARTED: Final = (
+    "docs/graph-api/webhooks/getting-started/webhooks-for-instagram.md"
+)
 
 
 @dataclass(frozen=True)
@@ -746,3 +753,279 @@ REPLY_CREATION_CITATION: Final = Citation(
 silently reparented to the top-level comment. Threading is therefore at most one
 level deep, whatever the UI offers.
 """
+
+# --------------------------------------------------------------------------
+# Mentions webhook envelope (QUA-49)
+# --------------------------------------------------------------------------
+#
+# SCOPE: the `mentions` field's notification envelope only — NOT the `mentioned_media`/
+# `mentioned_comment` read-endpoint response shapes. Those are a separate, still-uncovered
+# contract (see `UNCOVERED_SURFACES["webhook_payloads"]` above, which this section narrows
+# but does not close: the notification can now be parsed, delivery is still unverified for
+# customer zero). Grounded against the formal per-field reference
+# (`docs/graph-api/webhooks/reference/instagram.md`), not the getting-started tutorial's
+# worked example alone — the tutorial is cited only for what `entry[].id` identifies, which
+# the formal reference does not state.
+
+MENTIONS_FIELD_CITATION: Final = Citation(
+    path=_WEBHOOKS_INSTAGRAM_REFERENCE,
+    line=139,
+    quote="@mentions you in a comment or caption on a media object",
+)
+
+MENTIONS_MEDIA_ID_CITATION: Final = Citation(
+    path=_WEBHOOKS_INSTAGRAM_REFERENCE,
+    line=145,
+    quote="ID of media containing comment with mention.",
+)
+
+MENTIONS_COMMENT_ID_CITATION: Final = Citation(
+    path=_WEBHOOKS_INSTAGRAM_REFERENCE,
+    line=146,
+    quote="ID of comment with mention.",
+)
+
+MENTIONS_ENTRY_ID_CITATION: Final = Citation(
+    path=_WEBHOOKS_GETTING_STARTED,
+    line=141,
+    quote="ID of your app user's Instagram professional account",
+)
+"""`entry[].id` is the MENTIONED account's own IG user id — i.e. our
+`external_account_id` — never the id of whoever wrote the mention. The formal
+reference (`MENTIONS_FIELD_CITATION`) does not state this; only the
+getting-started guide's annotated sample payload does.
+"""
+
+
+class MentionsChangeValue(BaseModel):
+    """`entry[].changes[].value` for a `"field": "mentions"` change.
+
+    `media_id` is documented as always present; `comment_id` is present only for a
+    mention inside a comment, absent for one in a caption
+    (`MENTIONS_MEDIA_ID_CITATION`/`MENTIONS_COMMENT_ID_CITATION`). Both are `str`
+    even though Meta calls them numeric strings elsewhere, matching how `IGComment.id`
+    is already typed in this module.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    media_id: str
+    comment_id: str | None = None
+
+
+class MentionsWebhookEntry(BaseModel):
+    """One `entry[]` item: one mentioned account's batch of changes for this delivery.
+
+    `changes` is deliberately left as raw dicts, not a list of a single `changes`
+    model: `webhooks-for-instagram.md`'s own Limitations section documents that a
+    subscribed app "receives notifications for all fields the app is subscribed
+    to", so a real batch can legitimately carry non-`mentions` changes once this
+    app subscribes to more fields. Typing `changes` narrowly would make parsing an
+    unrelated field's change a hard failure instead of a no-op skip.
+
+    Meta's real envelope also carries `entry[].time` (when the notification was
+    sent). Deliberately NOT modeled: nothing downstream consumes it, and
+    declaring it as a typed field would only give a payload we don't care about
+    ANOTHER way to fail validation. `model_config`'s `extra="ignore"` lets it
+    arrive and be silently dropped instead.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    changes: list[dict[str, Any]] = []
+
+
+class MentionsWebhookNotification(BaseModel):
+    """The full `POST` body Meta sends: `{"object": "instagram", "entry": [...]}`."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    object: str
+    entry: list[MentionsWebhookEntry]
+
+
+@dataclass(frozen=True)
+class MentionEvent:
+    """One resolved `mentions` change, flattened so a caller never re-threads the
+    parent `entry` to get at `ig_user_id`. This is the unit `qualify_api.http.
+    mentions_routes` (in `qualify_api`, not here — see
+    `test_the_contract_stays_strictly_a_contract`) consumes; it is deliberately
+    NOT a CRM entity or a persistence row.
+    """
+
+    ig_user_id: str
+    media_id: str
+    comment_id: str | None
+
+
+def parse_mentions_notification(payload: dict[str, Any]) -> tuple[MentionEvent, ...]:
+    """Parse a webhook `POST` body into the `mentions`-field events it carries.
+
+    Silently skips (not an error): an `entry` with no `changes`, and any
+    `changes[]` item whose `field` is not `"mentions"` (see
+    `MentionsWebhookEntry`'s docstring for why that is expected, not a bug).
+
+    Raises `ValueError`/`pydantic.ValidationError` for the envelope itself, or for
+    a `"mentions"` change whose `value` does not match `MentionsChangeValue` — that
+    IS a contract violation on the one field this parser claims to understand.
+    """
+    notification = MentionsWebhookNotification.model_validate(payload)
+    events: list[MentionEvent] = []
+    for entry in notification.entry:
+        for raw_change in entry.changes:
+            if raw_change.get("field") != "mentions":
+                continue
+            value = MentionsChangeValue.model_validate(raw_change.get("value") or {})
+            events.append(
+                MentionEvent(
+                    ig_user_id=entry.id,
+                    media_id=value.media_id,
+                    comment_id=value.comment_id,
+                )
+            )
+    return tuple(events)
+
+
+# --------------------------------------------------------------------------
+# mentioned_media / mentioned_comment (QUA-49) — the read nodes the `mentions`
+# webhook exists to unlock: the only sanctioned way to read the caption/text of
+# content the connected account does not own (`ig-comment.md:39` — a comment
+# discovered via the Mentions API cannot be read through the ordinary
+# `GET /{ig-comment-id}` node "unless the request is made by the comment
+# owner"). UNVERIFIED LIVE: no successful call has ever been made against
+# either endpoint (Business Verification + Advanced Access still pending —
+# same gate `UNCOVERED_SURFACES["webhook_payloads"]` already names). This is
+# the same honesty discipline `inbox.client`'s `[V]` marker enforces, applied
+# to a still-*un*verified contract: do not read the absence of `[VERIFIED]`
+# below as an oversight.
+# --------------------------------------------------------------------------
+
+_MENTIONED_MEDIA: Final = (
+    "instagram-platform/instagram-graph-api/reference/ig-user/mentioned_media.md"
+)
+_MENTIONED_COMMENT: Final = (
+    "instagram-platform/instagram-graph-api/reference/ig-user/mentioned_comment.md"
+)
+
+MENTIONED_MEDIA_FIELDS: Final = "id,caption,media_type,like_count,timestamp,username"
+"""A subset of `mentioned_media.md`'s Fields table (`#47-60`) — exactly what the
+Dashboard de Menciones (QUA-49) needs. Deliberately excludes `media_url`,
+`owner`, `comments`, `comments_count`: nothing downstream consumes them, and
+requesting fields nobody reads would make a future schema change look
+required instead of opt-in — same discipline `inbox.media_client.MEDIA_FIELDS`
+already documents for its own picker fields.
+"""
+
+MENTIONED_MEDIA_FIELDS_CITATION: Final = Citation(
+    path=_MENTIONED_MEDIA, line=51, quote="The caption text."
+)
+
+MENTIONED_MEDIA_NO_VIEWS_CITATION: Final = Citation(
+    path=_MENTIONED_MEDIA, line=49, quote="| Field | Description |"
+)
+"""Pinned deliberately, not merely absent by omission: `mentioned_media.md`'s
+entire Fields table (lines 49-60) carries no views/plays/impressions field
+under any name. View-count metrics live in Insights, which is scoped to media
+the app user OWNS (`instagram-platform/insights.md`) — a mention on a THIRD
+PARTY's content structurally cannot carry a view count from this node, for any
+future API version, not just today's. `Mention.views` MUST NOT be requested or
+derived; `qualify_api.mentions.meta_client` cites this same absence at its own
+call site so the two do not drift.
+"""
+
+
+def _optional_str(payload: dict[str, Any], field: str) -> str | None:
+    value = payload.get(field)
+    return value if isinstance(value, str) and value else None
+
+
+def _optional_int(payload: dict[str, Any], field: str) -> int | None:
+    """Meta's docs type `like_count` as `*String*` but real payloads have been
+    observed elsewhere in this codebase (`inbox`) returning a JSON integer —
+    accept either rather than trust the docs' own type label."""
+    value = payload.get(field)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value)
+    return None
+
+
+@dataclass(frozen=True)
+class MentionedMedia:
+    """The `mentioned_media` object nested in
+    `GET /{ig-user-id}?fields=mentioned_media.media_id(...)`'s response
+    (`mentioned_media.md:71-79`) — the caption of a media object where the
+    connected account was @mentioned OUTSIDE a comment (no `comment_id` on the
+    triggering `MentionEvent`)."""
+
+    id: str
+    caption: str | None
+    media_type: str | None
+    like_count: int | None
+    timestamp: datetime | None
+    username: str | None
+
+
+def parse_mentioned_media(payload: dict[str, Any]) -> MentionedMedia:
+    """[UNVERIFIED LIVE — see this section's module comment]. Parses the INNER
+    `mentioned_media` object, not the whole response envelope (`{"mentioned_media":
+    {...}, "id": "<ig-user-id>"}` — `mentioned_media.md:71-79`'s Sample Response).
+    Callers pass `response["mentioned_media"]`.
+    """
+    media_id = payload.get("id")
+    if not isinstance(media_id, str) or not media_id:
+        raise ValueError("mentioned_media response carried no id")
+    raw_timestamp = payload.get("timestamp")
+    return MentionedMedia(
+        id=media_id,
+        caption=_optional_str(payload, "caption"),
+        media_type=_optional_str(payload, "media_type"),
+        like_count=_optional_int(payload, "like_count"),
+        timestamp=parse_meta_timestamp(raw_timestamp) if isinstance(raw_timestamp, str) else None,
+        username=_optional_str(payload, "username"),
+    )
+
+
+MENTIONED_COMMENT_FIELDS: Final = "id,text,like_count,timestamp"
+"""A subset of `mentioned_comment.md`'s Fields table (`#47-53`). No `media`
+field expansion: the triggering `MentionEvent` already carries `media_id`, so
+expanding `media` here would be a redundant call for data already in hand."""
+
+MENTIONED_COMMENT_FIELDS_CITATION: Final = Citation(
+    path=_MENTIONED_COMMENT, line=52, quote="Text of the IG Comment."
+)
+
+
+@dataclass(frozen=True)
+class MentionedComment:
+    """The `mentioned_comment` object nested in
+    `GET /{ig-user-id}?fields=mentioned_comment.comment_id(...)`'s response
+    (`mentioned_comment.md:66-76`) — the text of a comment where the connected
+    account was @mentioned."""
+
+    id: str
+    text: str | None
+    like_count: int | None
+    timestamp: datetime | None
+
+
+def parse_mentioned_comment(payload: dict[str, Any]) -> MentionedComment:
+    """[UNVERIFIED LIVE — see this section's module comment]. Parses the INNER
+    `mentioned_comment` object, not the whole response envelope
+    (`mentioned_comment.md:66-76`'s Sample Response). Callers pass
+    `response["mentioned_comment"]`.
+    """
+    comment_id = payload.get("id")
+    if not isinstance(comment_id, str) or not comment_id:
+        raise ValueError("mentioned_comment response carried no id")
+    raw_timestamp = payload.get("timestamp")
+    return MentionedComment(
+        id=comment_id,
+        text=_optional_str(payload, "text"),
+        like_count=_optional_int(payload, "like_count"),
+        timestamp=parse_meta_timestamp(raw_timestamp) if isinstance(raw_timestamp, str) else None,
+    )

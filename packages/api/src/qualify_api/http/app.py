@@ -24,6 +24,7 @@ from qualify_api.http import (
     deps,
     inbox_routes,
     leads_routes,
+    mentions_routes,
     publishing_routes,
     sentiment_routes,
 )
@@ -72,6 +73,45 @@ def build_production_analyze_pending_comments() -> AnalyzePendingComments:
     return analyze_pending_comments
 
 
+def build_production_mentions_settings() -> mentions_routes.MentionsWebhookSettings:
+    """Not lazy, unlike the publish/inbox/creative builders above: reading env vars
+    has no heavy import and no external dependency to fail on, so there is nothing
+    here worth deferring past app boot."""
+    return mentions_routes.MentionsWebhookSettings.from_env()
+
+
+def build_production_tenant_resolver() -> mentions_routes.TenantResolver:
+    """Lazy import: `resolve_external_account` pulls in `qualify_api.connections.models`
+    only when the mentions webhook route is actually exercised, same reasoning
+    `build_production_inbox_sync` gives for deferring its own Meta-touching import."""
+    from qualify_api.mentions.resolve import resolve_external_account  # noqa: PLC0415
+
+    return resolve_external_account
+
+
+def build_production_mention_ingestor() -> mentions_routes.MentionIngestor:
+    """Lazy import: `ingest_mention` builds a credential-resolved Meta client per call,
+    same reasoning `build_production_inbox_sync` gives for its own module."""
+    from qualify_api.mentions.composition import ingest_mention  # noqa: PLC0415
+
+    return ingest_mention
+
+
+def build_production_list_mentions() -> mentions_routes.ListMentions:
+    from qualify_api.mentions.composition import list_mentions_for_tenant  # noqa: PLC0415
+
+    return list_mentions_for_tenant
+
+
+def build_production_analyze_mention_sentiment() -> mentions_routes.AnalyzeMentionSentiment:
+    """Lazy import: keeps `qualify_models` (the `ml` group) out of this route's import
+    graph unless the trigger is actually exercised, same reasoning
+    `build_production_analyze_pending_comments` gives for the comments analogue."""
+    from qualify_api.mentions.composition import analyze_pending_mentions  # noqa: PLC0415
+
+    return analyze_pending_mentions
+
+
 def build_production_leads_service() -> LeadIntakeService:
     """Lazy import like the publishing builders: the leads module needs Redis only at
     the first intake, and an app booted without one should fail THAT request loudly."""
@@ -107,6 +147,7 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
     app.include_router(leads_routes.router)
     app.include_router(creative_routes.router)
     app.include_router(sentiment_routes.router)
+    app.include_router(mentions_routes.router)
     if configure_production:
         app.dependency_overrides[connections_routes.get_connect_service] = build_production_service
         app.dependency_overrides[publishing_routes.get_publish_service] = (
@@ -120,6 +161,19 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
             build_production_analyze_pending_comments
         )
         app.dependency_overrides[leads_routes.get_leads_service] = build_production_leads_service
+        app.dependency_overrides[mentions_routes.get_webhook_settings] = (
+            build_production_mentions_settings
+        )
+        app.dependency_overrides[mentions_routes.get_tenant_resolver] = (
+            build_production_tenant_resolver
+        )
+        app.dependency_overrides[mentions_routes.get_mention_ingestor] = (
+            build_production_mention_ingestor
+        )
+        app.dependency_overrides[mentions_routes.get_list_mentions] = build_production_list_mentions
+        app.dependency_overrides[mentions_routes.get_analyze_mention_sentiment] = (
+            build_production_analyze_mention_sentiment
+        )
         app.dependency_overrides[creative_routes.get_content_service] = (
             build_production_content_service
         )

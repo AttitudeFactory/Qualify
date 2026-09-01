@@ -65,7 +65,7 @@ def filter_bar() -> rx.Component:
             size="2",
         ),
         rx.select(
-            ["Todos", "positive", "neutral", "negative"],
+            ["Todos", "POS", "NEU", "NEG"],
             value=DashboardState.sentiment_filter,
             on_change=DashboardState.set_sentiment_filter,
             size="2",
@@ -98,8 +98,8 @@ def mention_row(mention: MentionRow) -> rx.Component:
             white_space="nowrap",
         ),
         rx.table.cell(sentiment_badge(mention.sentiment)),
-        rx.table.cell(mention.views.to_string(), text_align="right", class_name="q-nums"),
-        rx.table.cell(mention.likes.to_string(), text_align="right", class_name="q-nums"),
+        rx.table.cell(mention.views, text_align="right", class_name="q-nums"),
+        rx.table.cell(mention.likes, text_align="right", class_name="q-nums"),
     )
 
 

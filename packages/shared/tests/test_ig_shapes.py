@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from qualify_shared.social.ig_shapes import (
     COMMENT_LIMITS,
@@ -24,6 +25,13 @@ from qualify_shared.social.ig_shapes import (
     IGSID_CITATION,
     IGSID_IS_PORTABLE_IDENTITY,
     LOGIN_FORK_CITATION,
+    MENTIONED_COMMENT_FIELDS_CITATION,
+    MENTIONED_MEDIA_FIELDS_CITATION,
+    MENTIONED_MEDIA_NO_VIEWS_CITATION,
+    MENTIONS_COMMENT_ID_CITATION,
+    MENTIONS_ENTRY_ID_CITATION,
+    MENTIONS_FIELD_CITATION,
+    MENTIONS_MEDIA_ID_CITATION,
     REPLY_CREATION_CITATION,
     SIGNED_LOGIN_FORK,
     TIMESTAMP_CITATION_ISO,
@@ -32,8 +40,14 @@ from qualify_shared.social.ig_shapes import (
     Citation,
     IGComment,
     LoginFork,
+    MentionedComment,
+    MentionedMedia,
+    MentionEvent,
     Presence,
     parse_comments_page,
+    parse_mentioned_comment,
+    parse_mentioned_media,
+    parse_mentions_notification,
     parse_meta_timestamp,
 )
 
@@ -54,6 +68,13 @@ def _all_citations() -> list[Citation]:
         LOGIN_FORK_CITATION,
         REPLY_CREATION_CITATION,
         COMMENTS_EDGE_PERMISSIONS_CITATION,
+        MENTIONS_FIELD_CITATION,
+        MENTIONS_MEDIA_ID_CITATION,
+        MENTIONS_COMMENT_ID_CITATION,
+        MENTIONS_ENTRY_ID_CITATION,
+        MENTIONED_MEDIA_FIELDS_CITATION,
+        MENTIONED_MEDIA_NO_VIEWS_CITATION,
+        MENTIONED_COMMENT_FIELDS_CITATION,
         *COMMENT_LIMITS.citations,
         *UNSUPPORTED_FIELDS.values(),
         *(surface.citation for surface in UNCOVERED_SURFACES),
@@ -394,6 +415,125 @@ def test_the_corpus_worked_example_parses() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Mentions webhook envelope (QUA-49)
+# ---------------------------------------------------------------------------
+
+
+def test_parses_a_caption_mention_with_no_comment_id() -> None:
+    """`webhooks-for-instagram.md`'s caption-mention sample: `media_id` only."""
+    events = parse_mentions_notification(
+        {
+            "object": "instagram",
+            "entry": [
+                {
+                    "id": "17841405726653026",
+                    "time": 1520622968,
+                    "changes": [{"field": "mentions", "value": {"media_id": "17918195224117851"}}],
+                }
+            ],
+        }
+    )
+    assert events == (
+        MentionEvent(ig_user_id="17841405726653026", media_id="17918195224117851", comment_id=None),
+    )
+
+
+def test_parses_a_comment_mention_with_both_ids() -> None:
+    """`webhooks-for-instagram.md`'s comment-mention sample: `media_id` + `comment_id`."""
+    events = parse_mentions_notification(
+        {
+            "object": "instagram",
+            "entry": [
+                {
+                    "id": "17841405726653026",
+                    "changes": [
+                        {
+                            "field": "mentions",
+                            "value": {
+                                "comment_id": "17894227972186120",
+                                "media_id": "17918195224117851",
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    assert events == (
+        MentionEvent(
+            ig_user_id="17841405726653026",
+            media_id="17918195224117851",
+            comment_id="17894227972186120",
+        ),
+    )
+
+
+def test_parses_a_batch_of_multiple_updates() -> None:
+    """Meta batches up to 1000 updates per delivery; multiple entries must all parse."""
+    events = parse_mentions_notification(
+        {
+            "object": "instagram",
+            "entry": [
+                {
+                    "id": "111",
+                    "changes": [{"field": "mentions", "value": {"media_id": "aaa"}}],
+                },
+                {
+                    "id": "222",
+                    "changes": [{"field": "mentions", "value": {"media_id": "bbb"}}],
+                },
+            ],
+        }
+    )
+    assert {e.ig_user_id for e in events} == {"111", "222"}
+
+
+def test_skips_changes_for_fields_other_than_mentions() -> None:
+    """A subscribed app receives notifications for every field it is subscribed to
+    (`webhooks-for-instagram.md`'s Limitations), so a real batch may carry an
+    unrelated field once this app subscribes to more than `mentions`."""
+    events = parse_mentions_notification(
+        {
+            "object": "instagram",
+            "entry": [
+                {
+                    "id": "111",
+                    "changes": [
+                        {"field": "comments", "value": {"text": "hola"}},
+                        {"field": "mentions", "value": {"media_id": "aaa"}},
+                    ],
+                }
+            ],
+        }
+    )
+    assert len(events) == 1
+    assert events[0].media_id == "aaa"
+
+
+def test_entry_with_no_changes_yields_no_events() -> None:
+    events = parse_mentions_notification({"object": "instagram", "entry": [{"id": "111"}]})
+    assert events == ()
+
+
+def test_malformed_mentions_value_raises() -> None:
+    """A `mentions` change missing the documented-required `media_id` is a real
+    contract violation, unlike an unrelated field — that must fail loudly."""
+    with pytest.raises(ValidationError):
+        parse_mentions_notification(
+            {
+                "object": "instagram",
+                "entry": [{"id": "111", "changes": [{"field": "mentions", "value": {}}]}],
+            }
+        )
+
+
+def test_mentions_entry_id_is_the_mentioned_account_not_the_mentioner() -> None:
+    """Pins the semantics `MENTIONS_ENTRY_ID_CITATION` documents, so a future reader
+    cannot accidentally treat `ig_user_id` as the third party who wrote the mention."""
+    assert "app user's Instagram professional account" in MENTIONS_ENTRY_ID_CITATION.quote
+
+
+# ---------------------------------------------------------------------------
 # The architect's condition on this module's home, enforced rather than trusted
 # ---------------------------------------------------------------------------
 
@@ -433,3 +573,87 @@ def test_the_contract_stays_strictly_a_contract() -> None:
         f"ig_shapes.py must stay a pure contract but imports: {offenders}. "
         "Move whatever needs these into the consumer package."
     )
+
+
+# ---------------------------------------------------------------------------
+# mentioned_media / mentioned_comment (QUA-49)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_mentioned_media_reads_the_documented_sample() -> None:
+    """`mentioned_media.md:71-79`'s own Sample Response, minus the fields this
+    contract does not model (`media_url`, `owner`, `comments*`)."""
+    inner = {
+        "caption": "@bluebottle There can be only one!",
+        "media_type": "IMAGE",
+        "like_count": 12,
+        "timestamp": "2018-03-20T00:05:29+0000",
+        "username": "someoneelse",
+        "id": "17918195224117851",
+    }
+
+    media = parse_mentioned_media(inner)
+
+    assert media == MentionedMedia(
+        id="17918195224117851",
+        caption="@bluebottle There can be only one!",
+        media_type="IMAGE",
+        like_count=12,
+        timestamp=datetime(2018, 3, 20, 0, 5, 29, tzinfo=UTC),
+        username="someoneelse",
+    )
+
+
+def test_parse_mentioned_media_tolerates_missing_display_fields() -> None:
+    """Only `id` is required — everything else is a display field Meta may omit
+    (no caption set, like counts hidden, etc.), same posture
+    `inbox.media_client._parse_media_summary` already takes for its own fields."""
+    media = parse_mentioned_media({"id": "17918195224117851"})
+
+    assert media.id == "17918195224117851"
+    assert media.caption is None
+    assert media.like_count is None
+    assert media.timestamp is None
+
+
+def test_parse_mentioned_media_requires_an_id() -> None:
+    with pytest.raises(ValueError, match="no id"):
+        parse_mentioned_media({"caption": "no id here"})
+
+
+def test_mentioned_media_has_no_views_field_in_its_contract() -> None:
+    """Structural guard for the product rule: `MentionedMedia` must never grow a
+    views/plays field, because Meta's own Fields table for this node never has one
+    (`MENTIONED_MEDIA_NO_VIEWS_CITATION`)."""
+    assert "views" not in MentionedMedia.__dataclass_fields__
+    assert "plays" not in MentionedMedia.__dataclass_fields__
+    assert "view_count" not in MentionedMedia.__dataclass_fields__
+
+
+def test_parse_mentioned_comment_reads_the_documented_sample() -> None:
+    """`mentioned_comment.md:64-76`'s own Sample Response."""
+    inner = {
+        "timestamp": "2017-05-03T16:09:08+0000",
+        "like_count": 185,
+        "text": "Shout out to @metricsaurus",
+        "id": "17873440459141021",
+    }
+
+    comment = parse_mentioned_comment(inner)
+
+    assert comment == MentionedComment(
+        id="17873440459141021",
+        text="Shout out to @metricsaurus",
+        like_count=185,
+        timestamp=datetime(2017, 5, 3, 16, 9, 8, tzinfo=UTC),
+    )
+
+
+def test_parse_mentioned_comment_requires_an_id() -> None:
+    with pytest.raises(ValueError, match="no id"):
+        parse_mentioned_comment({"text": "no id here"})
+
+
+def test_mentioned_comment_has_no_views_field_in_its_contract() -> None:
+    assert "views" not in MentionedComment.__dataclass_fields__
+    assert "plays" not in MentionedComment.__dataclass_fields__
