@@ -14,7 +14,6 @@ from .creative_pages import (
     drafts_index,
 )
 from .creative_state import CreativeState
-from .db import create_db_and_tables
 from .inbox_page import inbox_index
 from .inbox_state import InboxState
 from .leads_page import leads_index
@@ -26,7 +25,10 @@ from .styleguide_page import styleguide_index
 from .ui import app_shell, page_body
 from .vitrina_page import vitrina_index
 
-create_db_and_tables()
+# QUA-49: the Dashboard de Menciones no longer depends on the local SQLite mock
+# (`db.py`/`models.py`/`seed_data.py`) — its data comes from the real `mentions` backend
+# via `state.py`/`mentions_provider.py`. Those files stay on disk (still useful for a
+# quick manual demo or a future fixture), just no longer wired into the app's boot path.
 
 
 def index() -> rx.Component:
