@@ -371,6 +371,9 @@ def test_sync_now_projects_summary_fields() -> None:
     assert vm.media_checked == 3
     assert vm.new_comments == 7
     assert vm.truncated is False
+    # A response shape from BEFORE this bug-fix field existed (no key at all) must not
+    # raise a KeyError — `.get(..., [])` backward-compat, see `sync_now`'s own comment.
+    assert vm.skipped_missing_media == ()
 
 
 def test_sync_now_projects_a_truncated_summary() -> None:
@@ -385,6 +388,31 @@ def test_sync_now_projects_a_truncated_summary() -> None:
             )
         )
     assert vm.truncated is True
+
+
+def test_sync_now_projects_skipped_missing_media_without_raising() -> None:
+    """Bug fix (2026-09-01): a deleted Reel skipped server-side is still a 200 — `sync_
+    now` must return a normal `SyncSummaryVM` (never raise), with the skipped id(s)
+    reaching the VM. This is the exact shape `InboxState.sync_comments` depends on to
+    NEVER set `sync_error` for this case — see that handler's own comment for why."""
+    client = _mock_asgi_client(
+        200,
+        {
+            "media_checked": 2,
+            "new_comments": 0,
+            "truncated": False,
+            "skipped_missing_media": ["18034792133641940"],
+        },
+    )
+
+    with _patched(_inbox_sync_asgi_client=lambda: client):
+        vm = _run_coro(
+            inbox_provider.sync_now(
+                tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
+            )
+        )
+    assert vm.skipped_missing_media == ("18034792133641940",)
+    assert vm.media_checked == 2
 
 
 def test_sync_now_propagates_unknown_connection_on_a_404() -> None:

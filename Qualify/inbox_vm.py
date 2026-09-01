@@ -68,11 +68,18 @@ class SyncSummaryVM:
 
     `truncated` (QUA-88): the budget ran out mid-sync — still a success (whatever synced
     is real), just a partial one. Never conflated with an error.
+
+    `skipped_missing_media` (bug fix, 2026-09-01): external media ids Meta confirmed no
+    longer exist — each one was auto-unmonitored server-side and skipped, never an
+    abort of the whole sync. A non-empty tuple here still means SUCCESS (`InboxState.
+    sync_comments` never sets `sync_error` for this — see that module's docstring);
+    `inbox_page.py` folds it into the success toast, not the error callout.
     """
 
     media_checked: int
     new_comments: int
     truncated: bool = False
+    skipped_missing_media: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

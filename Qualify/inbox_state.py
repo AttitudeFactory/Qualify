@@ -631,11 +631,18 @@ class InboxState(rx.State):
         """The one trigger for `InboxService.sync_comments` (B2/QUA-89) — called by both
         the manual button and the automatic 5-minute poll, see the module docstring for
         why that is what keeps them sharing one guard/loading state instead of two. Never
-        touches `candidates`/`toggling_media_ids`: a sync pass writes to `threads`/
-        `messages`, never to `monitored_media`, so the Reel list has nothing to reload
-        afterward — unlike `toggle_monitored`, this handler's only externally visible
-        effect is `sync_result`/`sync_error` (plus, on success, a transient
-        `rx.toast.success` — see `_RESULT_TOAST_DURATION_MS`'s docstring).
+        touches `candidates`/`toggling_media_ids` ITSELF: a sync pass writes to `threads`/
+        `messages`, and — since the 2026-09-01 bug fix, ONLY for a media_id Meta confirms
+        no longer exists — an auto-unmonitor write to `monitored_media` the service makes
+        on its own (`InboxService.sync_comments`'s `_is_missing_media_error` branch); this
+        handler still never reloads the Reel list itself for that, same "known, accepted
+        gap until the operator revisits the toggle screen" posture already documented
+        elsewhere in this file. Unlike `toggle_monitored`, this handler's only externally
+        visible effect from HERE is `sync_result`/`sync_error` (plus, on success, a
+        transient `rx.toast.success` — see `_RESULT_TOAST_DURATION_MS`'s docstring) —
+        that toast now also names any Reel skipped as no-longer-available, still a
+        SUCCESS, never `sync_error` (see `SyncSummaryVM.skipped_missing_media`'s
+        docstring for why one dead monitored Reel must never fail the whole pass).
         """
         async with self:
             if self.is_syncing:
@@ -704,6 +711,16 @@ class InboxState(rx.State):
         message = (
             f"Reels revisados: {result.media_checked} · Comentarios nuevos: {result.new_comments}"
         )
+        if result.skipped_missing_media:
+            # Bug fix (2026-09-01): a Reel deleted at the source is real, informative
+            # partial-success context — never silent, never the error callout. Still a
+            # `toast.success`: `sync_error` was never set for this case (`sync_now`
+            # returned normally), same "this whole `if` block only runs after a
+            # successful sync" structure this handler already has.
+            message += (
+                f" · {len(result.skipped_missing_media)} Reel(s) ya no disponible(s) en "
+                "Instagram: se dejaron de monitorear."
+            )
         if result.truncated:
             message += (
                 " · Sincronización parcial: se alcanzó el límite de llamadas, "

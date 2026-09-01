@@ -55,7 +55,12 @@ def test_sync_returns_the_summary(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"media_checked": 2, "new_comments": 3, "truncated": False}
+    assert response.json() == {
+        "media_checked": 2,
+        "new_comments": 3,
+        "truncated": False,
+        "skipped_missing_media": [],
+    }
 
 
 def test_sync_passes_the_principals_tenant_id_not_a_client_supplied_one(
@@ -134,6 +139,33 @@ def test_exhausted_budget_is_429(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "2" in response.json()["detail"]
 
 
+def test_skipped_missing_media_is_still_a_200_never_a_502(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bug fix (2026-09-01): `InboxService.sync_comments` already absorbs a deleted-media
+    `CommentsReadError` internally and returns a normal `SyncSummary` — this route must
+    stay a thin passthrough of that, never re-deriving a 502 for it. Distinguishes this
+    from `test_a_failed_meta_call_is_502_never_a_body` above, which is a REAL failure the
+    service still raises and this route still maps to 502, unchanged."""
+
+    async def fn(*, tenant_id: UUID, connection_id: UUID) -> SyncSummary:
+        return SyncSummary(
+            media_checked=2, new_comments=1, skipped_missing_media=("18034792133641940",)
+        )
+
+    harness = Harness(monkeypatch, fn)
+
+    response = harness.http.post(
+        "/api/inbox/sync", json={"connection_id": str(CONNECTION)}, headers=AUTH
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "media_checked": 2,
+        "new_comments": 1,
+        "truncated": False,
+        "skipped_missing_media": ["18034792133641940"],
+    }
+
+
 def test_truncated_sync_is_still_a_200_with_the_flag_set(monkeypatch: pytest.MonkeyPatch) -> None:
     """A budget that ran out mid-pagination is a partial success, not a failure — see
     `SyncSummary.truncated`'s docstring."""
@@ -148,7 +180,12 @@ def test_truncated_sync_is_still_a_200_with_the_flag_set(monkeypatch: pytest.Mon
     )
 
     assert response.status_code == 200
-    assert response.json() == {"media_checked": 1, "new_comments": 1, "truncated": True}
+    assert response.json() == {
+        "media_checked": 1,
+        "new_comments": 1,
+        "truncated": True,
+        "skipped_missing_media": [],
+    }
 
 
 def test_the_route_requires_the_principal(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -194,8 +231,18 @@ def test_the_seam_does_not_depend_on_the_transport(monkeypatch: pytest.MonkeyPat
         "/api/inbox/sync", json={"connection_id": str(CONNECTION)}, headers=AUTH
     )
 
-    assert empty_response.json() == {"media_checked": 0, "new_comments": 0, "truncated": False}
-    assert busy_response.json() == {"media_checked": 5, "new_comments": 5, "truncated": False}
+    assert empty_response.json() == {
+        "media_checked": 0,
+        "new_comments": 0,
+        "truncated": False,
+        "skipped_missing_media": [],
+    }
+    assert busy_response.json() == {
+        "media_checked": 5,
+        "new_comments": 5,
+        "truncated": False,
+        "skipped_missing_media": [],
+    }
 
 
 def test_malformed_connection_id_is_422(monkeypatch: pytest.MonkeyPatch) -> None:
