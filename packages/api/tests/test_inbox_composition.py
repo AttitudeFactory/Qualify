@@ -96,9 +96,16 @@ def _wire(
 async def test_list_candidate_media_resolves_ig_user_id_before_calling_the_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Same class of bug already fixed below for `set_media_monitored`:
+    # `composition.list_candidate_media` has no `now` passthrough (by design — see its
+    # docstring), so `InboxService.list_candidate_media` computes `since` from
+    # `datetime.now(UTC)` at call time, not from the fixed module-level `NOW`. A fixture
+    # pinned to the fixed `NOW` rots the moment real time drifts `NOW` more than
+    # `MONITORING_WINDOW` (14 days) into the past. Anchor to the real clock instead so
+    # the fixture stays "recent enough" regardless of when the suite runs.
     _wire(
         monkeypatch,
-        media={"A": MediaSummary(id="A", timestamp=NOW, media_product_type="REELS")},
+        media={"A": MediaSummary(id="A", timestamp=datetime.now(UTC), media_product_type="REELS")},
     )
 
     candidates = await composition.list_candidate_media(tenant_id=TENANT, connection_id=CONNECTION)
