@@ -9,17 +9,21 @@ import reflex as rx
 
 from .state import DashboardState, MentionRow
 from .ui import (
+    callout,
+    empty_state,
     page_header,
     platform_badge,
     sentiment_badge,
     session_badge,
     sidebar,
+    skeleton_rows,
     stat_card,
 )
 from .ui import tokens as T
 
 __all__ = [
     "filter_bar",
+    "mentions_body",
     "mentions_table",
     "platform_badge",
     "sentiment_badge",
@@ -32,9 +36,16 @@ __all__ = [
 
 
 def topbar() -> rx.Component:
+    # QUA-97 audit (2026-09-01): the previous subtitle ("Menciones de marca en TikTok e
+    # Instagram Reels") was leftover copy from the pre-QUA-97 synthetic/seed dashboard,
+    # which modeled multi-brand competitive listening including TikTok. It overstated
+    # real coverage on two axes at once — TikTok mentions are structurally unavailable
+    # (fase0-zernio-mercado.md §4.1), and even on Instagram this covers only caption and
+    # comment @mentions, not Stories/tags. Say exactly what v1 covers, nothing more.
     return page_header(
         "Dashboard de menciones",
-        "Menciones de marca en TikTok e Instagram Reels",
+        "Instagram — menciones en captions y comentarios de la cuenta conectada "
+        "(no incluye Stories, etiquetados, Facebook, Threads ni TikTok)",
     )
 
 
@@ -126,4 +137,40 @@ def mentions_table() -> rx.Component:
         ),
         overflow_x="auto",
         width="100%",
+    )
+
+
+def _mentions_load_error() -> rx.Component:
+    return callout(DashboardState.mentions_error, "error")
+
+
+def _mentions_empty_state() -> rx.Component:
+    return empty_state(
+        "at-sign",
+        "Aún no hay menciones",
+        "En cuanto alguien mencione a tu cuenta de Instagram conectada en un caption o "
+        "un comentario, aparecerá acá.",
+    )
+
+
+def mentions_body() -> rx.Component:
+    """Loading → error → empty → table, same `rx.cond` composition `inbox_page.py`
+    establishes for its own screen (`is_loading` / `*_error` / `show_empty_state`,
+    never silently overlapping). Distinct from `mentions_table()` (kept as the raw table
+    for whatever still renders it directly) so this module has exactly one place that
+    decides what the user sees before any real mention has ever arrived — which, until
+    Meta Business Verification unblocks Advanced Access, is the state production is in
+    today (QUA-97 §B)."""
+    return rx.cond(
+        DashboardState.is_loading_mentions,
+        skeleton_rows(rows=4, height="2.75rem"),
+        rx.cond(
+            DashboardState.mentions_error != "",
+            _mentions_load_error(),
+            rx.cond(
+                DashboardState.show_empty_state,
+                _mentions_empty_state(),
+                mentions_table(),
+            ),
+        ),
     )

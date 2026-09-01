@@ -4,7 +4,7 @@ from .auth_pages import login_index, signup_index
 from .auth_state import AuthState
 from .clarity_page import clarity_index
 from .clarity_state import ClarityState
-from .components import filter_bar, mentions_table, stats_row, topbar
+from .components import filter_bar, mentions_body, stats_row, topbar
 from .connections_page import connections_index
 from .connections_state import ConnectionsState
 from .creative_pages import (
@@ -34,7 +34,7 @@ from .vitrina_page import vitrina_index
 def index() -> rx.Component:
     return app_shell(
         topbar(),
-        page_body(stats_row(), filter_bar(), mentions_table()),
+        page_body(stats_row(), filter_bar(), mentions_body()),
     )
 
 

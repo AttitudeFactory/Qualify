@@ -4,6 +4,7 @@ Plataforma agentiva de CRM/GTM para social listening sobre TikTok/IG Reels. Tesi
 
 ## Empezar por acá
 
+- **[Runbook — Mentions v1: configuración y prueba E2E](mentions-e2e-runbook.md)** — QUA-97 está Done en código/tests (IG caption/comment); este es el procedimiento corto y accionable para la primera prueba real en cuanto Business Verification desbloquee Advanced Access — no requiere volver a investigar nada.
 - 🔴 **[PRIORIDAD — despliegue en `qualify.attitudefactory.co`](prioridad-despliegue-subdominio.md)** — el dominio ya está comprado y vivo (2026-08-12); falta desplegar Qualify para tener un redirect URI de OAuth estable. Bloquea toda la cadena hacia Business Verification y Tech Provider. **Una sola decisión abierta: dónde se aloja.**
 - **Motor de Contenido de Marca** (track paralelo, 2026-08-16) — generación de copy + imagen con la voz de la marca del cliente: [backlog](backlog-motor-contenido-marca.md) · [diseño técnico cerrado](diseno-motor-contenido-marca.md).
 - **[Registro de validación de features](registro-validacion-features.md)** — qué feature está respaldada por qué investigación de mercado, organizada por eje (inbound/outbound) y nicho. El árbol visual de todo el trabajo de investigación está ahí.

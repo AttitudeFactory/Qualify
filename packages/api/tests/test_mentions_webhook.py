@@ -37,10 +37,12 @@ class Harness:
         self,
         resolver_calls: list[tuple[str, str]] | None = None,
         ingestor_calls: list[tuple[str, str | None, TenantResolution]] | None = None,
+        ingestor_returns: UUID | None = INGESTED_MENTION_ID,
     ) -> None:
         self.resolutions: dict[str, TenantResolution] = {}
         self._calls = resolver_calls
         self._ingestor_calls = ingestor_calls
+        self._ingestor_returns = ingestor_returns
 
         def fake_resolver(*, platform: str, external_account_id: str) -> TenantResolution:
             if self._calls is not None:
@@ -51,10 +53,10 @@ class Harness:
 
         async def fake_ingestor(
             *, media_id: str, comment_id: str | None, resolution: TenantResolution
-        ) -> UUID:
+        ) -> UUID | None:
             if self._ingestor_calls is not None:
                 self._ingestor_calls.append((media_id, comment_id, resolution))
-            return INGESTED_MENTION_ID
+            return self._ingestor_returns
 
         app = create_app(configure_production=False)
         app.dependency_overrides[mentions_routes.get_webhook_settings] = lambda: (
@@ -259,6 +261,38 @@ def test_resolved_external_account_id_is_200_and_ingested(
     # RESOLVED is the one outcome that DOES reach the ingestor, with the exact ids the
     # webhook event carried and the resolution that authorized it.
     assert ingestor_calls == [("aaa", None, resolution)]
+
+
+def test_resolved_but_not_ingested_is_200_and_logs_a_warning_not_a_silent_success(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`ingest` returning `None` is the documented defensive branch
+    (`composition._content_client_for`'s "should not happen in practice"): a tenant WAS
+    resolved but nothing was persisted. This must never read like the happy-path INFO
+    line — an operator grepping logs for a lost mention needs this to stand out."""
+    harness = Harness(ingestor_returns=None)
+    resolution = TenantResolution(
+        outcome=ResolutionOutcome.RESOLVED, tenant_id=TENANT, connection_id=CONNECTION
+    )
+    harness.resolutions["111"] = resolution
+    body = _mentions_body(ig_user_id="111", media_id="aaa")
+
+    with caplog.at_level("INFO"):
+        response = harness.http.post(
+            "/api/mentions/webhook",
+            content=body,
+            headers={"X-Hub-Signature-256": _sign(body), "Content-Type": "application/json"},
+        )
+
+    # Still 200: Meta must not retry an event that was correctly attributed to a tenant —
+    # retrying would not fix a connection with no readable external_account_id.
+    assert response.status_code == 200
+    assert "resolved but NOT persisted" in caplog.text
+    assert str(TENANT) in caplog.text
+    assert str(CONNECTION) in caplog.text
+    # The happy-path phrasing must NOT also appear — this is a distinct log line, not the
+    # same one with mention_id=None interpolated into it.
+    assert "mentions webhook: resolved tenant=" not in caplog.text
 
 
 # ---------------------------------------------------------------------------
