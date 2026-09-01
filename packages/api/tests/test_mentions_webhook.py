@@ -25,6 +25,7 @@ VERIFY_TOKEN = "test-verify-token"
 
 TENANT = UUID("77777777-7777-4777-8777-777777777777")
 CONNECTION = UUID("88888888-8888-4888-8888-888888888888")
+INGESTED_MENTION_ID = UUID("99999999-9999-4999-8999-999999999999")
 
 
 def _sign(body: bytes, *, secret: str = APP_SECRET) -> str:
@@ -32,9 +33,14 @@ def _sign(body: bytes, *, secret: str = APP_SECRET) -> str:
 
 
 class Harness:
-    def __init__(self, resolver_calls: list[tuple[str, str]] | None = None) -> None:
+    def __init__(
+        self,
+        resolver_calls: list[tuple[str, str]] | None = None,
+        ingestor_calls: list[tuple[str, str | None, TenantResolution]] | None = None,
+    ) -> None:
         self.resolutions: dict[str, TenantResolution] = {}
         self._calls = resolver_calls
+        self._ingestor_calls = ingestor_calls
 
         def fake_resolver(*, platform: str, external_account_id: str) -> TenantResolution:
             if self._calls is not None:
@@ -43,11 +49,19 @@ class Harness:
                 external_account_id, TenantResolution(outcome=ResolutionOutcome.ORPHAN)
             )
 
+        async def fake_ingestor(
+            *, media_id: str, comment_id: str | None, resolution: TenantResolution
+        ) -> UUID:
+            if self._ingestor_calls is not None:
+                self._ingestor_calls.append((media_id, comment_id, resolution))
+            return INGESTED_MENTION_ID
+
         app = create_app(configure_production=False)
         app.dependency_overrides[mentions_routes.get_webhook_settings] = lambda: (
             MentionsWebhookSettings(app_secret=APP_SECRET, verify_token=VERIFY_TOKEN)
         )
         app.dependency_overrides[mentions_routes.get_tenant_resolver] = lambda: fake_resolver
+        app.dependency_overrides[mentions_routes.get_mention_ingestor] = lambda: fake_ingestor
         self.http = TestClient(app)
 
 
@@ -185,7 +199,8 @@ def test_orphan_external_account_id_is_200_and_not_resolved(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, str]] = []
-    harness = Harness(resolver_calls=calls)
+    ingestor_calls: list[tuple[str, str | None, TenantResolution]] = []
+    harness = Harness(resolver_calls=calls, ingestor_calls=ingestor_calls)
     body = _mentions_body(ig_user_id="does-not-exist")
 
     response = harness.http.post(
@@ -196,10 +211,14 @@ def test_orphan_external_account_id_is_200_and_not_resolved(
 
     assert response.status_code == 200
     assert calls == [("instagram", "does-not-exist")]
+    # The write-path guard `_resolve_and_ingest` documents: an ORPHAN event must never
+    # reach the ingestor, so it can never become a mention associated with any tenant.
+    assert ingestor_calls == []
 
 
 def test_ambiguous_external_account_id_is_200_and_never_associated() -> None:
-    harness = Harness()
+    ingestor_calls: list[tuple[str, str | None, TenantResolution]] = []
+    harness = Harness(ingestor_calls=ingestor_calls)
     harness.resolutions["ambiguous-id"] = TenantResolution(outcome=ResolutionOutcome.AMBIGUOUS)
     body = _mentions_body(ig_user_id="ambiguous-id")
 
@@ -209,18 +228,22 @@ def test_ambiguous_external_account_id_is_200_and_never_associated() -> None:
         headers={"X-Hub-Signature-256": _sign(body), "Content-Type": "application/json"},
     )
 
-    # 200 (Meta must not retry), and the fake resolver never returned a tenant to
-    # associate — the AMBIGUOUS branch in `_resolve_and_log` carries no tenant_id
-    # to log or act on, by construction of `TenantResolution` itself.
+    # 200 (Meta must not retry), and the ingestor was never called — an AMBIGUOUS event
+    # must never be persisted against any tenant (same guard as ORPHAN's).
     assert response.status_code == 200
+    assert ingestor_calls == []
 
 
-def test_resolved_external_account_id_is_200(caplog: pytest.LogCaptureFixture) -> None:
-    harness = Harness()
-    harness.resolutions["111"] = TenantResolution(
+def test_resolved_external_account_id_is_200_and_ingested(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    ingestor_calls: list[tuple[str, str | None, TenantResolution]] = []
+    harness = Harness(ingestor_calls=ingestor_calls)
+    resolution = TenantResolution(
         outcome=ResolutionOutcome.RESOLVED, tenant_id=TENANT, connection_id=CONNECTION
     )
-    body = _mentions_body(ig_user_id="111")
+    harness.resolutions["111"] = resolution
+    body = _mentions_body(ig_user_id="111", media_id="aaa")
 
     with caplog.at_level("INFO"):
         response = harness.http.post(
@@ -232,6 +255,10 @@ def test_resolved_external_account_id_is_200(caplog: pytest.LogCaptureFixture) -
     assert response.status_code == 200
     assert str(TENANT) in caplog.text
     assert str(CONNECTION) in caplog.text
+    assert str(INGESTED_MENTION_ID) in caplog.text
+    # RESOLVED is the one outcome that DOES reach the ingestor, with the exact ids the
+    # webhook event carried and the resolution that authorized it.
+    assert ingestor_calls == [("aaa", None, resolution)]
 
 
 # ---------------------------------------------------------------------------
