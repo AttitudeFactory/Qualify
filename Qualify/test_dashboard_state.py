@@ -97,3 +97,27 @@ def test_brand_options_are_derived_from_the_loaded_mentions() -> None:
     state.mentions = [_row(brand="b1"), _row(brand="b2")]
 
     assert state.brand_options == ["Todas", "b1", "b2"]
+
+
+def test_show_empty_state_is_true_only_once_loaded_clean_with_zero_rows() -> None:
+    """The three-way split `mentions_body` renders on: loading and an error both
+    suppress the empty state even with zero rows, so a load-in-progress or a failed load
+    never flashes "Aún no hay menciones" before the real reason is known."""
+    state = DashboardState()
+
+    # Default/initial state: not loading, no error, no rows yet.
+    assert state.show_empty_state is True
+
+    state.is_loading_mentions = True
+    assert state.show_empty_state is False
+
+    state.is_loading_mentions = False
+    state.mentions_error = "No se pudieron cargar las menciones."
+    assert state.show_empty_state is False
+
+    state.mentions_error = ""
+    state.mentions = [_row()]
+    assert state.show_empty_state is False
+
+    state.mentions = []
+    assert state.show_empty_state is True

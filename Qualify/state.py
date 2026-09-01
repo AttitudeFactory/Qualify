@@ -101,6 +101,17 @@ class DashboardState(rx.State):
         return rows
 
     @rx.var
+    def show_empty_state(self) -> bool:
+        """True only once loading finished cleanly with zero rows to show — never
+        overlapping with the loading skeleton or the error callout, same three-way split
+        `InboxState.show_empty_state` establishes for its own screen. This is the
+        expected state in production until Meta Business Verification unblocks Advanced
+        Access (QUA-97 §B): zero real mentions have ever been delivered yet."""
+        return (
+            not self.is_loading_mentions and not self.mentions_error and not self.filtered_mentions
+        )
+
+    @rx.var
     def total_mentions(self) -> int:
         return len(self.filtered_mentions)
 

@@ -138,7 +138,9 @@ async def test_comment_mention_calls_mentioned_comment_and_persists_text(
 
 
 async def test_enrichment_failure_is_persisted_with_null_content(
-    monkeypatch: pytest.MonkeyPatch, memory_repo: MemoryMentionsRepository
+    monkeypatch: pytest.MonkeyPatch,
+    memory_repo: MemoryMentionsRepository,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The audit's central ruling for `ingest_mention`: enrichment failing is not
     ingestion failing. Meta erroring on `mentioned_media` (still-pending Advanced
@@ -146,9 +148,10 @@ async def test_enrichment_failure_is_persisted_with_null_content(
     client = FakeContentClient(media_error=MentionedContentReadError("boom", http_status=502))
     _patch_content_client(monkeypatch, client)
 
-    mention_id = await composition.ingest_mention(
-        media_id="media-1", comment_id=None, resolution=RESOLUTION
-    )
+    with caplog.at_level("WARNING"):
+        mention_id = await composition.ingest_mention(
+            media_id="media-1", comment_id=None, resolution=RESOLUTION
+        )
 
     assert mention_id is not None
     records = memory_repo.list_mentions(
@@ -158,6 +161,12 @@ async def test_enrichment_failure_is_persisted_with_null_content(
     assert records[0].enrichment_status == ENRICHMENT_FAILED
     assert records[0].caption is None
     assert records[0].text is None
+    # Diagnostic gap the QUA-97 audit found: an enrichment failure used to be swallowed
+    # with zero log trace. Once real Advanced Access checks start running, this line is
+    # what tells "still not granted" (a stable platform_code) apart from "actual bug".
+    assert "enrichment failed" in caplog.text
+    assert "media-1" in caplog.text
+    assert "http_status=502" in caplog.text
 
 
 async def test_ingesting_the_same_event_twice_is_idempotent(

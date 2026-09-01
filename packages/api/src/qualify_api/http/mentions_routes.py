@@ -184,15 +184,31 @@ async def _resolve_and_ingest(
         mention_id = await ingest(
             media_id=event.media_id, comment_id=event.comment_id, resolution=resolution
         )
-        _LOGGER.info(
-            "mentions webhook: resolved tenant=%s connection=%s media_id=%s comment_id=%s "
-            "mention_id=%s",
-            resolution.tenant_id,
-            resolution.connection_id,
-            event.media_id,
-            event.comment_id,
-            mention_id,
-        )
+        if mention_id is None:
+            # A tenant/connection WAS resolved but the mention was never persisted — the
+            # defensive `None` branch `composition._content_client_for` documents ("should
+            # not happen in practice"). Distinct from the happy path so this never reads
+            # as a success in the logs: nothing was written for this event, and that is
+            # the one thing worth an operator's attention here.
+            _LOGGER.warning(
+                "mentions webhook: tenant=%s connection=%s media_id=%s comment_id=%s "
+                "resolved but NOT persisted — connection has no readable "
+                "external_account_id (see composition._content_client_for)",
+                resolution.tenant_id,
+                resolution.connection_id,
+                event.media_id,
+                event.comment_id,
+            )
+        else:
+            _LOGGER.info(
+                "mentions webhook: resolved tenant=%s connection=%s media_id=%s comment_id=%s "
+                "mention_id=%s",
+                resolution.tenant_id,
+                resolution.connection_id,
+                event.media_id,
+                event.comment_id,
+                mention_id,
+            )
     elif resolution.outcome is ResolutionOutcome.ORPHAN:
         _LOGGER.warning(
             "mentions webhook: orphan event, no connection for external_account_id=%s — "

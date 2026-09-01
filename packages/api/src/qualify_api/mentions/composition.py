@@ -23,6 +23,7 @@ this slice's scope.
 
 from __future__ import annotations
 
+import logging
 from functools import cache
 from uuid import UUID
 
@@ -54,6 +55,8 @@ from qualify_api.mentions.sentiment import (
     MentionSentimentService,
 )
 from qualify_api.sentiment.repository import AnalysisVersion
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class _ConnectionIgUserIdReader:
@@ -143,13 +146,26 @@ async def ingest_mention(
             media_type = media.media_type
             like_count = media.like_count
             content_posted_at = media.timestamp
-    except MentionedContentReadError:
+    except MentionedContentReadError as exc:
         # Never re-raise: the mention itself is still a real fact worth persisting even
-        # when Meta's content endpoint refuses/fails (see module docstring). The specific
-        # error is intentionally swallowed here — a numeric platform code, never a body,
-        # same discipline every sibling client already keeps; a caller wanting that detail
-        # should log it at the client layer, not thread it through this seam.
+        # when Meta's content endpoint refuses/fails (see module docstring). The mention
+        # is still persisted below with ENRICHMENT_FAILED — this log line exists so an
+        # operator can tell WHY without querying the DB and cross-referencing Meta's error
+        # code table by hand; only the numeric platform code/subcode/http_status are
+        # logged, never a body or any user-generated text, same discipline every sibling
+        # client already keeps for its own `*ReadError`.
         enrichment_status = ENRICHMENT_FAILED
+        _LOGGER.warning(
+            "mentions enrichment failed, mention will be persisted as %s: media_id=%s "
+            "comment_id=%s platform_code=%s platform_subcode=%s http_status=%s (%s)",
+            ENRICHMENT_FAILED,
+            media_id,
+            comment_id,
+            exc.platform_code,
+            exc.platform_subcode,
+            exc.http_status,
+            type(exc).__name__,
+        )
 
     mention = NewMention(
         tenant_id=resolution.tenant_id,
