@@ -89,6 +89,15 @@ class SyncSummary:
     # monitored id. Defaults to False so every pre-existing call site/equality check
     # (`SyncSummary(media_checked=X, new_comments=Y)`) is unaffected.
     truncated: bool = False
+    # Media ids Meta confirmed no longer exist (bug fix, 2026-09-01): a monitored Reel
+    # the tenant deleted on Instagram must not abort the WHOLE pass the way any other
+    # `CommentsReadError` still correctly does — see `_is_missing_media_error`'s
+    # docstring for the narrow detection and `sync_comments`'s per-media handling below.
+    # Each such id is also auto-unmonitored (`InboxRepository.set_media_monitored(...,
+    # monitored=False)`) so it stops being retried on every future sync. Defaults to an
+    # empty tuple so every pre-existing call site/equality check is unaffected, same
+    # reasoning `truncated` already documents.
+    skipped_missing_media: tuple[str, ...] = ()
 
 
 class CommentsPermissionMissing(Exception):
@@ -153,6 +162,36 @@ class ConnectionDegrader(Protocol):
     and never-raising, so `sync_comments` calls it directly without `await`/try-except."""
 
     def __call__(self, *, tenant_id: UUID, connection_id: UUID) -> object | None: ...
+
+
+def _is_missing_media_error(exc: CommentsReadError) -> bool:
+    """True only for Meta's well-established Graph API signature for "this node no
+    longer exists (or this app can no longer see it)": HTTP 400, `error.code=100`,
+    `error.error_subcode=33`. That pairing — not `code=100` alone — is the documented,
+    industry-stable Graph API convention for a dead/inaccessible node id across
+    virtually every edge (it is what a real `GET /{id}` returns for a deleted post,
+    comment, page, etc.), and is what motivated this bug fix: a Reel a tenant deletes
+    on Instagram stays `monitored_media.is_monitored=true` here until this fires.
+
+    Deliberately narrower than `platform_code == 100` alone (bug-fix requirement,
+    2026-09-01): `reference/meta-instagram-platform/.../error-codes.md` documents over
+    a dozen UNRELATED validation errors that also carry `code=100` on the Content
+    Publishing edge (bad media type, too many tags, malformed audio-swap params, ...) —
+    matching on code alone would silently swallow those as "the media is gone" and
+    auto-unmonitor a Reel that in fact still exists. Subcode `33` is what narrows it to
+    specifically "object does not exist / not visible", the same way `platform_code ==
+    190` narrows the auth branch above instead of matching on `code` alone.
+
+    **[VERIFIED live 2026-09-01]** against this repo's own comments-read endpoint, same
+    "[V]" discipline `inbox/client.py`'s module docstring already applies to this
+    module: the real post the bug report was filed about (external_media_id
+    `18034792133641940`, deleted from Instagram, `monitored_media.is_monitored` still
+    `true`) was temporarily re-added and synced for real — `GET /18034792133641940/
+    comments` returned exactly `HTTP 400, error.code=100, error.error_subcode=33`,
+    confirming this is not a guess. Same posture `CommentsAuthExpired`'s 401/190 already
+    has (verified live 2026-08-14 per QUA-90's docstring).
+    """
+    return exc.http_status == 400 and exc.platform_code == 100 and exc.platform_subcode == 33
 
 
 def _no_op_degrader(*, tenant_id: UUID, connection_id: UUID) -> None:
@@ -270,6 +309,7 @@ class InboxService:
         media_checked = 0
         new_comments = 0
         truncated = False
+        skipped_missing_media: list[str] = []
         for media_id in monitored_ids:
             if remaining <= 0:
                 truncated = True
@@ -296,6 +336,32 @@ class InboxService:
                         # not a race the UI has to paper over.
                         self._degrade(tenant_id=tenant_id, connection_id=connection_id)
                         raise CommentsAuthExpired(connection_id=connection_id) from exc
+                    if _is_missing_media_error(exc):
+                        # Bug fix (2026-09-01): a Reel deleted at the source must not
+                        # abort the whole pass the way any OTHER `CommentsReadError`
+                        # still correctly does below (`raise`) — one dead monitored id
+                        # used to fail every sync attempt for the connection, forever,
+                        # since it stayed `is_monitored=true` and got retried every
+                        # call/poll tick. Stop paginating THIS media only (`break`,
+                        # never `raise`) and let the outer `for` move on to the next
+                        # monitored id — see `_is_missing_media_error`'s docstring for
+                        # the narrow detection this relies on.
+                        skipped_missing_media.append(media_id)
+                        # Auto-unmonitor: same repository call `set_media_monitored`
+                        # already exposes to the toggle (`InboxState.toggle_monitored`)
+                        # — Meta itself just confirmed this id can never be read again,
+                        # so leaving `is_monitored=true` would only retry it (and burn
+                        # QUA-88 budget on it) on every future sync/poll tick forever.
+                        # `threads`/`messages` already synced for it are untouched —
+                        # same "orthogonal facts" ruling migration 0005 already makes
+                        # for turning monitoring off the ordinary way.
+                        self._repository.set_media_monitored(
+                            tenant_id=tenant_id,
+                            connection_id=connection_id,
+                            external_media_id=media_id,
+                            monitored=False,
+                        )
+                        break
                     raise
                 page_had_new = False
                 for comment in page.data:
@@ -317,5 +383,8 @@ class InboxService:
             if truncated:
                 break
         return SyncSummary(
-            media_checked=media_checked, new_comments=new_comments, truncated=truncated
+            media_checked=media_checked,
+            new_comments=new_comments,
+            truncated=truncated,
+            skipped_missing_media=tuple(skipped_missing_media),
         )

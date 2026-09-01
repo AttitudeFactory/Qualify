@@ -59,6 +59,12 @@ class SyncResponse(BaseModel):
     media_checked: int
     new_comments: int
     truncated: bool = False
+    # Bug fix, 2026-09-01: media ids Meta confirmed no longer exist — see
+    # `InboxService.sync_comments`'s `_is_missing_media_error`. A non-empty list here is
+    # still a 200 (the sync as a whole succeeded), never folded into the 502 branch below
+    # — that branch is reserved for a REAL failed call, not a per-media id Meta confirmed
+    # is gone and the service already handled.
+    skipped_missing_media: list[str] = []
 
 
 @router.post("/inbox/sync", response_model=SyncResponse)
@@ -84,6 +90,12 @@ async def sync_inbox(
     way the two refusals above already are — by the time this reaches the caller the
     connection has already been degraded (`InboxService.sync_comments`), so 401 here is
     "your session expired", not "something went wrong".
+
+    Bug fix (2026-09-01): a monitored medium Meta confirms no longer exists is NOT a
+    502 — `InboxService.sync_comments` already handles it per-medium (skip, auto-
+    unmonitor, keep going) and returns a normal `SyncSummary` with `skipped_missing_
+    media` populated. This route stays a thin passthrough of that field; see
+    `SyncResponse.skipped_missing_media` and `_is_missing_media_error`'s docstring.
     """
     try:
         summary = await sync_comments(
@@ -105,4 +117,5 @@ async def sync_inbox(
         media_checked=summary.media_checked,
         new_comments=summary.new_comments,
         truncated=summary.truncated,
+        skipped_missing_media=list(summary.skipped_missing_media),
     )

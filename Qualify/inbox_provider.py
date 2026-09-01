@@ -435,6 +435,10 @@ async def sync_now(*, tenant_id: UUID, connection_id: UUID) -> SyncSummaryVM:
         media_checked=data["media_checked"],
         new_comments=data["new_comments"],
         truncated=data.get("truncated", False),
+        # `.get(..., [])`, not a required key: keeps this projection backward-compatible
+        # with a response shape from before this field existed (bug fix, 2026-09-01),
+        # same defensive posture `truncated` above already established for itself.
+        skipped_missing_media=tuple(data.get("skipped_missing_media", [])),
     )
 
 

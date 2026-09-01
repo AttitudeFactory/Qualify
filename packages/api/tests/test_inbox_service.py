@@ -200,6 +200,227 @@ async def test_other_comments_read_errors_do_not_degrade_or_change_type() -> Non
     assert degrade_calls == []
 
 
+# --------------------------------------------------------------------------------------
+# Bug fix (2026-09-01): a monitored medium Meta confirms no longer exists must not abort
+# the whole sync — see `InboxService.sync_comments`'s `_is_missing_media_error` branch.
+# --------------------------------------------------------------------------------------
+
+
+def _missing_media_error(media_id: str) -> CommentsReadError:
+    """Meta's real, documented cross-edge "this node no longer exists" signature (HTTP
+    400, `error.code=100`, `error.error_subcode=33`) — see `_is_missing_media_error`'s
+    docstring in `service.py` for why this exact pairing, not `code=100` alone."""
+    return CommentsReadError(
+        f"GET /{media_id}/comments failed with HTTP 400",
+        platform_code=100,
+        platform_subcode=33,
+        http_status=400,
+    )
+
+
+async def test_a_deleted_reel_between_two_healthy_ones_does_not_abort_the_sync() -> None:
+    """The exact shape of the real-world bug: three monitored Reels, the middle one
+    deleted at the source. Both healthy Reels must still sync — the old behavior was
+    that ANY one `CommentsReadError` aborted the entire pass, so neither would."""
+    repository = MemoryInboxRepository()
+    for media_id in ("HEALTHY_1", "DELETED", "HEALTHY_2"):
+        repository.set_media_monitored(
+            tenant_id=TENANT_ID,
+            connection_id=CONNECTION_ID,
+            external_media_id=media_id,
+            monitored=True,
+        )
+    comments_client = FakeCommentsClient(
+        {"HEALTHY_1": [_comment("c1")], "HEALTHY_2": [_comment("c2")]},
+        error_by_media={"DELETED": _missing_media_error("DELETED")},
+    )
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+
+    summary = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    # Both healthy media were actually queried — the deleted one in between never
+    # aborted the loop, regardless of where it fell in iteration order.
+    assert set(comments_client.calls) == {"HEALTHY_1", "DELETED", "HEALTHY_2"}
+    assert summary.new_comments == 2  # c1 + c2 — both healthy Reels' comments landed
+    assert summary.skipped_missing_media == ("DELETED",)
+    assert summary.media_checked == 3  # every monitored id was attempted
+
+
+async def test_sync_with_only_a_deleted_reel_succeeds_with_nothing_new() -> None:
+    """The narrowest case the bug report described: the ONE monitored Reel is the
+    deleted one. Must return normally (no exception) with an informative summary, never
+    raise `CommentsReadError` up to the caller."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="DELETED",
+        monitored=True,
+    )
+    comments_client = FakeCommentsClient(
+        {}, error_by_media={"DELETED": _missing_media_error("DELETED")}
+    )
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+
+    summary = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert summary.new_comments == 0
+    assert summary.skipped_missing_media == ("DELETED",)
+    assert summary.truncated is False
+
+
+async def test_a_deleted_reel_is_auto_unmonitored() -> None:
+    """Meta itself just confirmed the id can never be read again — leaving
+    `is_monitored=true` would only retry it (and burn QUA-88 budget) on every future
+    sync/poll tick forever. Must come out of `list_monitored_media_ids` afterward."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="DELETED",
+        monitored=True,
+    )
+    comments_client = FakeCommentsClient(
+        {}, error_by_media={"DELETED": _missing_media_error("DELETED")}
+    )
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+
+    await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert (
+        repository.list_monitored_media_ids(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+        == frozenset()
+    )
+    # And a re-sync right after must not even attempt it again — it is simply no longer
+    # monitored, the ordinary way `list_monitored_media_ids` already excludes it.
+    comments_client.calls.clear()
+    await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+    assert comments_client.calls == []
+
+
+async def test_a_code_100_error_with_a_different_subcode_is_not_treated_as_deleted() -> None:
+    """Regression guard for the bug-fix requirement to NOT filter on `platform_code ==
+    100` alone: `reference/meta-instagram-platform/.../error-codes.md` documents over a
+    dozen UNRELATED validation errors that also carry `code=100` (bad media type, too
+    many tags, malformed params, ...). A `code=100` error with a subcode OTHER than 33
+    is a real, different failure and must still abort/propagate exactly like any other
+    `CommentsReadError` did before this fix — never silently swallowed as "deleted"."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+    )
+    original = CommentsReadError(
+        "GET /A/comments failed with HTTP 400",
+        platform_code=100,
+        platform_subcode=9050,  # a real, unrelated code-100 error from error-codes.md
+        http_status=400,
+    )
+    comments_client = FakeCommentsClient({}, error_by_media={"A": original})
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+
+    with pytest.raises(CommentsReadError) as exc_info:
+        await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert exc_info.value is original  # propagated, not misclassified as "deleted"
+    # Never auto-unmonitored on a false-positive "deleted" read.
+    assert repository.list_monitored_media_ids(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID
+    ) == {"A"}
+
+
+async def test_a_real_500_between_two_healthy_reels_still_aborts_the_sync() -> None:
+    """Contrast case, same 3-media shape as the "deleted Reel" test above: a genuinely
+    different, real Meta failure (a transient 500, not "does not exist") must NOT be
+    quietly absorbed the same way — it still aborts the pass exactly as before this fix,
+    so it stays visible as a real failure rather than being hidden as a soft skip."""
+    repository = MemoryInboxRepository()
+    for media_id in ("HEALTHY_1", "BROKEN", "HEALTHY_2"):
+        repository.set_media_monitored(
+            tenant_id=TENANT_ID,
+            connection_id=CONNECTION_ID,
+            external_media_id=media_id,
+            monitored=True,
+        )
+    real_error = CommentsReadError("GET /BROKEN/comments failed with HTTP 500", http_status=500)
+    comments_client = FakeCommentsClient(
+        {"HEALTHY_1": [_comment("c1")], "HEALTHY_2": [_comment("c2")]},
+        error_by_media={"BROKEN": real_error},
+    )
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+
+    with pytest.raises(CommentsReadError) as exc_info:
+        await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert exc_info.value is real_error
+    # Never auto-unmonitored on a real, unrelated failure.
+    assert "BROKEN" in repository.list_monitored_media_ids(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID
+    )
+
+
+async def test_a_deleted_reel_does_not_short_circuit_a_401_elsewhere_in_the_batch() -> None:
+    """The auth path (QUA-90) must stay exactly as aborting/degrading as before this fix
+    — a deleted Reel earlier in the same batch must not mask or interfere with a genuine
+    401 on another monitored id."""
+    repository = MemoryInboxRepository()
+    for media_id in ("DELETED", "AUTH_BROKEN"):
+        repository.set_media_monitored(
+            tenant_id=TENANT_ID,
+            connection_id=CONNECTION_ID,
+            external_media_id=media_id,
+            monitored=True,
+        )
+    comments_client = FakeCommentsClient(
+        {},
+        error_by_media={
+            "DELETED": _missing_media_error("DELETED"),
+            "AUTH_BROKEN": CommentsReadError(
+                "GET /AUTH_BROKEN/comments failed with HTTP 401", http_status=401
+            ),
+        },
+    )
+    degrade_calls: list[tuple[UUID, UUID]] = []
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+        connection_degrader=lambda *, tenant_id, connection_id: degrade_calls.append(
+            (tenant_id, connection_id)
+        ),
+    )
+
+    with pytest.raises(CommentsAuthExpired):
+        await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert degrade_calls == [(TENANT_ID, CONNECTION_ID)]
+
+
 async def test_sync_comments_is_idempotent_across_two_runs() -> None:
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
