@@ -8,12 +8,17 @@ from .components import filter_bar, mentions_table, stats_row, topbar
 from .connections_page import connections_index
 from .connections_state import ConnectionsState
 from .creative_pages import (
-    brand_index,
     create_index,
     draft_detail_index,
     drafts_index,
 )
 from .creative_state import CreativeState
+from .creative_wizard_pages import (
+    BrandWizardState,
+    brand_choice_index,
+    brand_connect_index,
+    brand_manual_index,
+)
 from .inbox_page import inbox_index
 from .inbox_state import InboxState
 from .leads_page import leads_index
@@ -116,11 +121,38 @@ app.add_page(
 )
 # Brand Content Engine (design §6): /brand is the default entry when the brand is not
 # ready; /create is gated server-side by BrandReadiness (the load stores the verdict).
+# The entry itself is now a fork (manual vs. lookup); both branches edit the same kit.
 app.add_page(
-    brand_index,
+    brand_choice_index,
     route="/brand",
-    on_load=[AuthState.require_login, CreativeState.load_brand, CreativeState.load_voice],
+    on_load=[AuthState.require_login],
+    title="Qualify · Marca",
+)
+
+# The step wizard is now THE Brand Kit editor. It replaces the accordion screen in
+# routing only: `creative_pages.brand_index` is left untouched in the code and simply no
+# longer has a route — re-adding it is one `app.add_page` call, no rewrite.
+app.add_page(
+    brand_manual_index,
+    route="/brand/manual",
+    # `resume` runs LAST on purpose: it decides the opening step by reading the kit, so
+    # it has to see what `load_brand` just put there.
+    on_load=[
+        AuthState.require_login,
+        CreativeState.load_brand,
+        CreativeState.load_voice,
+        BrandWizardState.resume,
+    ],
     title="Qualify · Brand Kit",
+)
+
+# The «ya tengo redes» path. No `resume` here: its first four screens read a profile
+# rather than the kit, so there is no gap to jump to until the analysis has run.
+app.add_page(
+    brand_connect_index,
+    route="/brand/connect",
+    on_load=[AuthState.require_login, CreativeState.load_brand, CreativeState.load_voice],
+    title="Qualify · Conectar redes",
 )
 
 app.add_page(
