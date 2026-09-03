@@ -31,8 +31,9 @@ from __future__ import annotations
 import inspect
 
 import pytest
+import reflex as rx
 
-from .publishing_state import PublishState
+from .publishing_state import PublishState, _failure_toast, _success_toast
 
 
 class _FakeUpload:
@@ -165,3 +166,62 @@ def test_every_failure_branch_in_publish_background_uses_the_shared_release_help
     assert 'self.phase = "failure"' not in source.replace(
         'self.phase = "success" if attempt.status == "published" else "failure"', ""
     )
+
+
+# --------------------------------------------------------------------------------------
+# QUA-98 — both outcomes now toast (success AND failure), on top of the persistent
+# `error` callout, which is unchanged. A successful publish also clears the form.
+# --------------------------------------------------------------------------------------
+
+
+def test_success_toast_shows_only_the_headline() -> None:
+    """Founder's call after the toast-action investigation: no media id, no
+    "Ver detalles", no description at all — just the confirmation. The full id stays
+    reachable via `PublishState.attempt.published_media_id` for anything that needs it,
+    it just never appears in the toast itself."""
+    toast = _success_toast()
+
+    assert isinstance(toast, rx.event.EventSpec)
+    representation = repr(toast)
+    assert "Publicado correctamente" in representation
+    assert "Media ID" not in representation
+    assert "Instagram" not in representation
+    assert "Ver detalles" not in representation
+
+
+def test_failure_toast_carries_the_same_text_the_callout_shows() -> None:
+    """The toast and the persistent callout must never disagree — same string, two
+    surfaces."""
+    toast = _failure_toast("No se pudo iniciar la publicación. Vuelve a intentarlo.")
+
+    assert isinstance(toast, rx.event.EventSpec)
+    assert "No se pudo iniciar la publicación. Vuelve a intentarlo." in repr(toast)
+
+
+def test_both_settle_paths_wire_the_result_toast_from_the_same_phase_check() -> None:
+    """Structural pin, same technique as the release-helper test above: both places that
+    can settle an attempt (`publish_background`'s no-poll-needed path and `poll_attempt`)
+    must derive `is_success`/`result_toast` from `self.phase == "success"` the same way —
+    never fire a success toast on a failed/still-polling attempt, and never skip the
+    failure toast on a genuine failure."""
+    for fn in (PublishState.publish_background.fn, PublishState.poll_attempt.fn):
+        source = inspect.getsource(fn)
+        assert 'is_success = self.phase == "success"' in source, (
+            f"{fn.__name__} must gate the toast/form-reset on phase == 'success'"
+        )
+        assert "_success_toast()" in source
+        assert "_failure_toast(self.error)" in source
+        assert "rx.clear_selected_files(_UPLOAD_ID)" in source, (
+            f"{fn.__name__} must clear the dropzone selection after a successful publish"
+        )
+        assert 'self.caption = ""' in source, (
+            f"{fn.__name__} must clear the caption after a successful publish"
+        )
+        assert 'self.selected_connection_id = ""' in source, (
+            # Caught during pre-commit review: a `replace_all` edit matched this line
+            # in `publish_background` but silently missed `poll_attempt` because the
+            # two sites are indented differently — the account stayed selected after
+            # the (more common) poll-settle success path. This assertion is what would
+            # have failed instead of a human catching it by eye.
+            f"{fn.__name__} must clear the selected account after a successful publish"
+        )
