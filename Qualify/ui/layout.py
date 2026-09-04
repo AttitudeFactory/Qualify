@@ -359,29 +359,68 @@ def page_header(
     )
 
 
-def page_body(*children: rx.Component, spacing: str = "4") -> rx.Component:
+def page_body(
+    *children: rx.Component, spacing: str = "4", align_items: str = "start"
+) -> rx.Component:
     """The gutter every block below the header shares. Children settle in on load,
-    staggered by position — one orchestrated entrance per screen, never per component."""
+    staggered by position — one orchestrated entrance per screen, never per component.
+
+    ``align_items`` defaults to "start" — every existing page reads left-to-right.
+    Pass "center" for a screen whose body is a single narrow column that should sit
+    in the middle of the panel instead of hugging its left edge (e.g. the Brand Kit
+    wizard steps). Centering is set here, on the flex container, rather than left to
+    a child's own ``align_self`` — the two must agree for a narrower child to
+    actually land in the middle instead of at the container's own start edge.
+    """
     return rx.vstack(
         *children,
         width="100%",
         max_width=T.CONTENT_MAX,
         spacing=spacing,
-        align_items="start",
+        align_items=align_items,
         padding=T.PAD_BODY,
+        # Grow into the panel's spare height, never shrink below the content's own.
+        # This is what lets a page hand a child `flex="1"` and have it reach the panel's
+        # bottom edge without doing any `100vh` arithmetic of its own (see `app_shell`).
+        flex="1 0 auto",
         class_name="q-settle",
     )
 
 
 def app_shell(*children: rx.Component, spacing: str = "0") -> rx.Component:
     """Sidebar + page panel, floating on the app ground. Pass ``page_header`` first,
-    then the body blocks."""
+    then the body blocks.
+
+    **The panel is the scroll container, not the document.** The shell is exactly one
+    viewport tall and clips; the panel is a fixed ``calc(100vh - 2 * gap)`` box that
+    scrolls internally only when its own content is genuinely taller. This replaced a
+    chain of `min-height` arithmetic (shell 100vh → panel 100vh - 2*gap → each page
+    subtracting its own paddings) that had to cancel to the pixel and did not: measured
+    in a browser 2026-09-03, the panel's own 1px top+bottom border was never subtracted
+    anywhere, so every screen overflowed the document by exactly 2px and showed a
+    scrollbar it never needed. Arithmetic that must be exact across four nested boxes
+    breaks whenever any of them gains a border or a padding — a definite height plus
+    ``overflow: auto`` cannot drift, and it matches what the sidebar has always done
+    (`height: 100vh`, `overflow: hidden auto`).
+
+    **A page must fill the panel with ``flex``/``height``, never with its own ``100vh``
+    maths.** This is not a style preference: a page that keeps computing
+    ``calc(100vh - …)`` inside this fixed-height panel is measuring the VIEWPORT while
+    living in a box that is already smaller than it, so its content overshoots and the
+    layout visibly breaks. That exact mismatch happened on 2026-09-03 when
+    `creative_wizard_pages.py` was restored from another worktree while this file kept
+    the new model — if you are reverting one of the two, revert both.
+    """
     return rx.hstack(
         sidebar(),
         rx.el.main(
             rx.vstack(
                 *children,
                 width="100%",
+                # Fills the panel when the page is short (so a page can hand its own
+                # children a real height to grow into) and grows past it when the page
+                # is long (so the panel scrolls instead of clipping).
+                min_height="100%",
                 spacing=spacing,
                 align_items="start",
             ),
@@ -390,15 +429,16 @@ def app_shell(*children: rx.Component, spacing: str = "0") -> rx.Component:
             class_name="q-panel",
             flex="1",
             min_width="0",
-            min_height=f"calc(100vh - 2 * {T.GAP})",
+            height=f"calc(100vh - 2 * {T.GAP})",
             margin=f"{T.GAP} {T.GAP} {T.GAP} 0",
-            overflow="hidden",
+            overflow="hidden auto",
         ),
         width="100%",
         spacing="0",
         align_items="start",
         background=T.GROUND,
-        min_height="100vh",
+        height="100vh",
+        overflow="hidden",
     )
 
 

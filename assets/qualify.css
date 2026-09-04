@@ -52,6 +52,19 @@
   }
 }
 
+/* ── Reset ────────────────────────────────────────────────────────────────────
+   `app_shell` sizes itself to exactly 100vh (its own min-height, plus the panel's
+   `calc(100vh - 2 * gap)`). The browser's default `body` margin (8px a side) adds
+   16px on top of a layout that already fills the viewport — just enough overflow
+   to force a permanent scrollbar and push the panel's border past the fold.
+   Zeroing it here is what keeps the border fully on-screen and the scrollbar
+   absent unless a page's own content is genuinely taller than one viewport. */
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
 /* Figures line up in tables and stat cards. Opt in with class="q-nums". */
 .q-nums { font-variant-numeric: tabular-nums; }
 

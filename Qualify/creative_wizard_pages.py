@@ -41,7 +41,7 @@ import reflex as rx
 from .auth_state import AuthState
 from .creative_state import CreativeState
 from .tenant import tenant_uuid
-from .ui import app_shell, callout, card, page_body
+from .ui import app_shell, callout, card, mono, page_body
 from .ui import tokens as T
 
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
@@ -65,6 +65,27 @@ LAST_STEP = len(STEPS) - 1
 # `rx.upload`'s id must be a string literal or a module-level constant — it is what
 # links the dropzone to `rx.upload_files(upload_id=...)`.
 _LOGO_UPLOAD_ID = "brand_logo"
+
+# One radius, everywhere a real Radix control appears (input/text_area/button) — the
+# whole point is that no two controls in this flow round differently. Box-based
+# "buttons" (choice cards, the fork cards) are a different component family and use
+# `T.RADIUS_CARD`, the app-wide card radius — the two happen to read as the same
+# roundedness at this size, which is the point.
+_CONTROL_RADIUS = "large"
+
+# NO `100vh` ARITHMETIC LIVES HERE — deleted 2026-09-03 after measuring it in a real
+# browser. This module used to carry `_SCREEN_MIN_HEIGHT = calc(100vh - 2 * gap - 2rem)`
+# and it was wrong by exactly 2px: the chain it tried to cancel (shell 100vh → panel
+# `100vh - 2 * gap` → this screen → `page_body`'s 2rem bottom padding) never subtracted
+# the PANEL'S OWN 1px top+bottom border, so every screen overflowed the document by 2px
+# and showed a scrollbar it did not need, on every step, always. The 4rem bottom padding
+# that went with it left the card's border stopping ~97px short of the panel's bottom.
+#
+# `app_shell` now gives the panel a definite height and `overflow: auto`, so a screen
+# fills it with `flex="1"` and cannot drift when some box upstream gains a border or a
+# padding. If you find yourself typing `100vh` in this file, that is the bug coming
+# back — and note the two files move together: restoring an older copy of THIS module
+# on top of the current `ui/layout.py` is what visibly broke the layout once already.
 
 # Placeholder plans. Copy is deliberately lorem — the real tiers are not decided.
 PLANS: tuple[tuple[str, str, str], ...] = (
@@ -101,7 +122,10 @@ class BrandWizardState(rx.State):
     logo_name: str = ""
     logo_error: str = ""
 
-    # -- step 5 ---------------------------------------------------------------
+    # -- step 5 -----------------------------------------------------------------------
+    # The wheel/readout's pending pick. They ONLY ever add a new colour — nothing here
+    # is shared with editing an existing one (see `set_swatch_color`), so there is no
+    # hidden mode to get wrong: the wheel always appends, a swatch always edits itself.
     picker_color: str = "#0A3D2E"
 
     @rx.event
@@ -143,8 +167,13 @@ class BrandWizardState(rx.State):
         self.step = min(self.step + 1, LAST_STEP)
 
     @rx.event
-    def prev_step(self) -> None:
-        self.step = max(self.step - 1, 0)
+    def prev_step(self) -> rx.event.EventSpec | None:
+        """Atrás from the very first step leaves the wizard — there is no step -1 to
+        land on, so "back" means back to the fork, not a disabled button."""
+        if self.step == 0:
+            return rx.redirect("/brand")
+        self.step -= 1
+        return None
 
     @rx.event
     def select_plan(self, key: str) -> None:
@@ -175,16 +204,19 @@ class BrandWizardState(rx.State):
 
     @rx.event
     async def commit_picked_color(self) -> None:
-        """Append the wheel's colour to the palette `CreativeState` already persists.
+        """Append the wheel/readout's pending pick to the palette `CreativeState`
+        already persists. This is the ONLY way a colour gets ADDED — an existing swatch
+        never routes through here, so there is nothing for this to accidentally
+        overwrite (see the module docstring's step-5 note).
 
         Fired on the picker's blur — i.e. when the OS dialog closes — rather than on
         change: `input[type=color]` emits a change per mouse move while dragging, so
         committing on change would push a dozen intermediate colours into the palette.
 
         The palette stays a single comma-separated string in `CreativeState` (that is
-        what `KitFormVM` saves); this handler only appends to it, so the text field and
-        the wheel can never disagree. Joined without spaces so each entry is a clean
-        CSS colour when it comes back out as a swatch.
+        what `KitFormVM` saves), so the readout, the wheel and the swatch strip can
+        never disagree. Joined without spaces so each entry is a clean CSS colour when
+        it comes back out as a swatch.
         """
         colour = self.picker_color.strip()
         if not colour:
@@ -195,6 +227,46 @@ class BrandWizardState(rx.State):
             return
         parts.append(colour)
         creative.kit_palette = ",".join(parts)
+
+    @rx.event
+    async def set_swatch_color(self, index: int, colour: str) -> None:
+        """EDIT an existing palette entry in place — the only way one changes. Bound to
+        that swatch's own colour input (`_swatch`), so the index and the new value
+        arrive together in one call; unlike the wheel there is no separate pending value
+        to stash and no `on_blur` to wire, because there is nothing ambiguous to commit
+        later — this index, this colour, done.
+
+        It also moves `picker_color`, which is what the readout card renders: while you
+        drag inside a swatch's picker, the card below names the colour you are landing
+        on. That is display only — the readout has no picker of its own — so tracking it
+        here cannot add anything to the palette.
+        """
+        colour = colour.strip()
+        if not colour:
+            return
+        self.picker_color = colour
+        creative = await self.get_state(CreativeState)
+        parts = [c.strip() for c in creative.kit_palette.split(",") if c.strip()]
+        if not (0 <= index < len(parts)):
+            return
+        others = [p for i, p in enumerate(parts) if i != index]
+        if colour.lower() in [p.lower() for p in others]:
+            # Edited onto a colour already elsewhere in the palette — drop this entry
+            # rather than leave a literal duplicate behind.
+            parts.pop(index)
+        else:
+            parts[index] = colour
+        creative.kit_palette = ",".join(parts)
+
+    @rx.event
+    async def remove_colour(self, index: int) -> None:
+        """The delete affordance on each swatch — the palette had no way to shrink
+        before this."""
+        creative = await self.get_state(CreativeState)
+        parts = [c.strip() for c in creative.kit_palette.split(",") if c.strip()]
+        if 0 <= index < len(parts):
+            parts.pop(index)
+            creative.kit_palette = ",".join(parts)
 
     @rx.event
     async def handle_logo_upload(self, files: list[rx.UploadFile]) -> None:
@@ -236,6 +308,11 @@ class BrandWizardState(rx.State):
         self.logo_name = ""
         self.logo_error = ""
 
+    @rx.var
+    def picker_color_name(self) -> str:
+        """The wheel's current pick, named — see `_nearest_colour_name`."""
+        return _nearest_colour_name(self.picker_color)
+
 
 # ---------------------------------------------------------------------------
 # Field primitives — local copies of the accordion's, so this module stays standalone
@@ -247,7 +324,12 @@ def _labeled_area(
     return rx.vstack(
         rx.text(label, size="2", weight="medium"),
         rx.text_area(
-            value=value, on_change=handler, placeholder=placeholder, width="100%", rows="3"
+            value=value,
+            on_change=handler,
+            placeholder=placeholder,
+            width="100%",
+            rows="3",
+            radius=_CONTROL_RADIUS,
         ),
         spacing="1",
         width="100%",
@@ -256,11 +338,17 @@ def _labeled_area(
 
 
 def _labeled_input(
-    label: str, value: rx.Var[str], handler: rx.event.EventHandler, placeholder: str = ""
+    label: str,
+    value: rx.Var[str],
+    handler: rx.event.EventHandler,
+    placeholder: str = "",
+    *,
+    height: str = "2.75rem",
 ) -> rx.Component:
     """Radix's default `size="2"` reads cramped once the rest of the flow is set in the
     bigger macOS-setup type scale — `size="3"` plus a touch of extra height matches the
-    weight of the labels and headings around it."""
+    weight of the labels and headings around it. `height` is a keyword so one screen
+    (the logo brief) can ask for more without resizing every other input in the flow."""
     return rx.vstack(
         rx.text(label, size="2", weight="medium"),
         rx.input(
@@ -269,8 +357,8 @@ def _labeled_input(
             placeholder=placeholder,
             width="100%",
             size="3",
-            height="2.75rem",
-            radius="large",
+            height=height,
+            radius=_CONTROL_RADIUS,
         ),
         spacing="2",
         width="100%",
@@ -439,6 +527,7 @@ def _logo_upload_field() -> rx.Component:
                         variant="soft",
                         color_scheme="tomato",
                         size="2",
+                        radius=_CONTROL_RADIUS,
                         on_click=BrandWizardState.clear_logo,
                     ),
                     align="center",
@@ -457,25 +546,29 @@ def _logo_upload_field() -> rx.Component:
 
 def _logo_brief_form() -> rx.Component:
     """Placeholder brief — the three questions are lorem until the logo-generation
-    design lands."""
+    design lands. Slightly taller inputs than the rest of the flow: three fields back
+    to back on one screen read cramped at the default height."""
     return _step_body(
         _labeled_input(
             "Lorem ipsum dolor",
             BrandWizardState.logo_brief_1,
             BrandWizardState.set_logo_brief_1,
             "Consectetur adipiscing elit",
+            height="3.25rem",
         ),
         _labeled_input(
             "Sed do eiusmod tempor",
             BrandWizardState.logo_brief_2,
             BrandWizardState.set_logo_brief_2,
             "Incididunt ut labore et dolore",
+            height="3.25rem",
         ),
         _labeled_input(
             "Ut enim ad minim veniam",
             BrandWizardState.logo_brief_3,
             BrandWizardState.set_logo_brief_3,
             "Quis nostrud exercitation",
+            height="3.25rem",
         ),
     )
 
@@ -490,35 +583,77 @@ def _step_logo() -> rx.Component:
     )
 
 
-def _swatch(colour: rx.Var[str]) -> rx.Component:
-    """One colour already in the palette. Clicking it loads that colour into the wheel,
-    so an existing entry can be re-picked instead of retyped."""
+# A modest reference set for the palette readout's colour name — nearest match by RGB
+# distance. There is no colour-naming service wired in, so this is approximate by
+# design: good enough for a label next to a swatch, not a claim of precision.
+_NAMED_COLOURS: tuple[tuple[str, str], ...] = (
+    ("Negro", "#000000"),
+    ("Gris oscuro", "#333333"),
+    ("Gris", "#808080"),
+    ("Gris claro", "#D3D3D3"),
+    ("Blanco", "#FFFFFF"),
+    ("Rojo", "#E53935"),
+    ("Rojo oscuro", "#8B0000"),
+    ("Vino", "#722F37"),
+    ("Naranja", "#F2994A"),
+    ("Ámbar", "#FFB020"),
+    ("Amarillo", "#F2C94C"),
+    ("Oliva", "#808000"),
+    ("Verde lima", "#9ACD32"),
+    ("Verde", "#27AE60"),
+    ("Verde bosque", "#0A3D2E"),
+    ("Verde azulado", "#0D7D72"),
+    ("Menta", "#2ECC91"),
+    ("Cian", "#00BCD4"),
+    ("Azul cielo", "#56CCF2"),
+    ("Azul", "#2F80ED"),
+    ("Azul marino", "#1B2A4A"),
+    ("Índigo", "#3F51B5"),
+    ("Violeta", "#9B51E0"),
+    ("Púrpura", "#6A1B9A"),
+    ("Magenta", "#D81B60"),
+    ("Rosa", "#F48FB1"),
+    ("Beige", "#E8DCC8"),
+    ("Marrón", "#6D4C33"),
+    ("Terracota", "#C97452"),
+)
+
+
+def _nearest_colour_name(hex_colour: str) -> str:
+    stripped = hex_colour.lstrip("#")
+    if len(stripped) != 6:
+        return "Personalizado"
+    try:
+        r, g, b = (int(stripped[i : i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        return "Personalizado"
+    best_name, best_distance = "Personalizado", float("inf")
+    for name, reference in _NAMED_COLOURS:
+        rr, gg, bb = (int(reference[1:][i : i + 2], 16) for i in (0, 2, 4))
+        distance = (r - rr) ** 2 + (g - gg) ** 2 + (b - bb) ** 2
+        if distance < best_distance:
+            best_name, best_distance = name, distance
+    return best_name
+
+
+def _swatch(colour: rx.Var[str], index: rx.Var[int]) -> rx.Component:
+    """One colour already in the palette. The circle IS the editor: a native
+    `input[type=color]` sits transparent over it (same trick as the wheel), so clicking
+    opens the OS picker seeded with this swatch's own colour, and `set_swatch_color`
+    writes the result straight back into this same slot — there is no detour through the
+    wheel. The small × removes it outright; it needs `stop_propagation` so that click
+    does not also open the picker underneath it.
+
+    `on_click` reads this swatch's colour into the readout card below BEFORE the picker
+    dialog even returns a value, so clicking an existing colour names it immediately —
+    the click alone is the "show me this one" gesture, no change required."""
     return rx.box(
-        on_click=BrandWizardState.set_picker_color(colour),
-        title=colour,
-        cursor="pointer",
-        width="1.75rem",
-        height="1.75rem",
-        border_radius="9999px",
-        background=colour,
-        box_shadow=f"inset 0 0 0 1px {rx.color('gray', 7)}",
-        transition=f"transform {T.DUR} {T.EASE}",
-        _hover={"transform": "scale(1.15)"},
-    )
-
-
-def _colour_wheel() -> rx.Component:
-    """A real colour wheel: the conic gradient is the affordance, and a native
-    `input[type=color]` sits transparent on top of it, so clicking anywhere on the disc
-    opens the OS picker. `on_change` drives the live hub colour; `on_blur` — the dialog
-    closing — is what commits it to the palette."""
-    return rx.vstack(
         rx.box(
             rx.input(
                 type="color",
-                value=BrandWizardState.picker_color,
-                on_change=BrandWizardState.set_picker_color,
-                on_blur=BrandWizardState.commit_picked_color,
+                value=colour,
+                on_click=BrandWizardState.set_picker_color(colour),
+                on_change=BrandWizardState.set_swatch_color(index),
                 position="absolute",
                 top="0",
                 left="0",
@@ -529,43 +664,142 @@ def _colour_wheel() -> rx.Component:
                 border="none",
                 cursor="pointer",
             ),
-            # The hub shows the current pick, so the disc doubles as the swatch.
-            rx.box(
-                position="absolute",
-                top="50%",
-                left="50%",
-                transform="translate(-50%, -50%)",
-                width="45%",
-                height="45%",
-                border_radius="9999px",
-                background=BrandWizardState.picker_color,
-                box_shadow=f"0 0 0 4px {rx.color('gray', 1)}",
-                pointer_events="none",
-            ),
+            title=colour,
             position="relative",
-            width="11rem",
-            height="11rem",
+            cursor="pointer",
+            width="2.25rem",
+            height="2.25rem",
             border_radius="9999px",
-            background=(
-                "conic-gradient(#ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)"
-            ),
-            box_shadow=f"inset 0 0 0 1px {rx.color('gray', 6)}",
+            background=colour,
+            box_shadow=f"inset 0 0 0 1px {rx.color('gray', 7)}",
+            transition=f"transform {T.DUR} {T.EASE}",
+            _hover={"transform": "scale(1.15)"},
         ),
-        rx.text(BrandWizardState.picker_color, size="2", color=T.TEXT_MUTED),
-        spacing="3",
-        align="center",
+        rx.box(
+            rx.icon("x", size=10, color="white"),
+            on_click=BrandWizardState.remove_colour(index).stop_propagation,
+            position="absolute",
+            top="-0.25rem",
+            right="-0.25rem",
+            width="1rem",
+            height="1rem",
+            border_radius="9999px",
+            background=rx.color("tomato", 9),
+            display="flex",
+            align_items="center",
+            justify_content="center",
+            cursor="pointer",
+            box_shadow=f"0 0 0 2px {rx.color('gray', 1)}",
+        ),
+        position="relative",
+        width="2.25rem",
+        height="2.25rem",
+    )
+
+
+def _colour_wheel() -> rx.Component:
+    """Adds a colour — nothing else. The conic gradient is the affordance, and a native
+    `input[type=color]` sits transparent on top of it, so clicking anywhere on the disc
+    opens the OS picker. `on_change` drives the picked colour live; `on_blur` — the
+    dialog closing — is what appends it (`commit_picked_color`, which never edits — see
+    `_swatch` for how an existing colour gets changed instead). No centre hub any more
+    (per request) — the readout below is the single place the current pick is shown."""
+    return rx.box(
+        rx.input(
+            type="color",
+            value=BrandWizardState.picker_color,
+            on_change=BrandWizardState.set_picker_color,
+            on_blur=BrandWizardState.commit_picked_color,
+            position="absolute",
+            top="0",
+            left="0",
+            width="100%",
+            height="100%",
+            opacity="0",
+            padding="0",
+            border="none",
+            cursor="pointer",
+        ),
+        position="relative",
+        width="11rem",
+        height="11rem",
+        border_radius="9999px",
+        background=(
+            "conic-gradient(#ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)"
+        ),
+        box_shadow=f"inset 0 0 0 1px {rx.color('gray', 6)}",
+    )
+
+
+def _colour_readout() -> rx.Component:
+    """The colour currently in focus, read out as a name and its hex code — feedback,
+    not a control. "In focus" means whichever colour you last touched: the wheel's
+    pending pick, or the swatch you just clicked (`_swatch` sets it on click, and keeps
+    it in step while you drag inside that swatch's picker).
+
+    It used to carry its own transparent `input[type=color]`, which made it a SECOND way
+    to add a colour; that was removed 2026-09-03 (per request) so the two jobs stay on
+    exactly one control each: the wheel adds, a swatch edits itself. A card that also
+    added was the third behaviour that made the step confusing.
+
+    `min_width="0"` on the text column is load-bearing, not decorative: a flex item's
+    default `min-width` is `auto`, which lets its content (a long colour name) force
+    the column wider than the card's `max_width` and spill past the border — this is
+    the standard fix, paired with `overflow`/`text_overflow` on the two text lines."""
+    return rx.box(
+        rx.hstack(
+            rx.box(
+                width="2.5rem",
+                height="2.5rem",
+                border_radius=T.RADIUS_CARD,
+                background=BrandWizardState.picker_color,
+                box_shadow=f"inset 0 0 0 1px {rx.color('gray', 7)}",
+                flex_shrink="0",
+            ),
+            rx.vstack(
+                rx.text(
+                    BrandWizardState.picker_color_name,
+                    size="2",
+                    weight="medium",
+                    overflow="hidden",
+                    text_overflow="ellipsis",
+                    white_space="nowrap",
+                    width="100%",
+                ),
+                mono(BrandWizardState.picker_color, size="1"),
+                spacing="0",
+                align_items="start",
+                min_width="0",
+                overflow="hidden",
+            ),
+            spacing="3",
+            align="center",
+            width="100%",
+            min_width="0",
+        ),
+        # No `cursor: pointer` and no `q-lift` any more: this card does nothing when
+        # clicked, so it must not advertise that it does.
+        padding="0.65rem 0.9rem",
+        border=f"1px solid {rx.color('gray', 6)}",
+        border_radius=T.RADIUS_CARD,
+        background=T.CARD_BG,
         width="100%",
+        max_width="16rem",
     )
 
 
 def _step_palette() -> rx.Component:
+    """The old raw-hex text field is gone (per request). Two separate jobs, two
+    separate controls, on purpose (per request 2026-09-03 — the wheel used to also
+    edit an existing swatch, via a shared `editing_index`, which was one hidden mode
+    away from silently overwriting the wrong entry):
+
+    - ADD a colour: the wheel, and only the wheel — `_colour_wheel`. Its readout
+      (`_colour_readout`) just names what was picked; it is not a second way in.
+    - EDIT a colour already in the palette: the swatch itself, in the strip below —
+      `_swatch`. Its own × removes it outright.
+    """
     return _step_body(
-        _labeled_input(
-            "Paleta (hex, separados por coma)",
-            CreativeState.kit_palette,
-            CreativeState.set_kit_palette,
-            "#0A3D2E,#F2C94C",
-        ),
         rx.hstack(
             rx.foreach(CreativeState.kit_palette.split(","), _swatch),
             spacing="2",
@@ -573,7 +807,13 @@ def _step_palette() -> rx.Component:
             justify="center",
             width="100%",
         ),
-        _colour_wheel(),
+        rx.vstack(
+            _colour_wheel(),
+            _colour_readout(),
+            spacing="3",
+            align="center",
+            width="100%",
+        ),
     )
 
 
@@ -714,15 +954,58 @@ def _heading_for(index: int) -> rx.Var[str]:
     )
 
 
+def _flow_header(
+    title: str | rx.Var[str],
+    subtitle: str | rx.Var[str],
+    *,
+    step_label: rx.Component | None = None,
+) -> rx.Component:
+    """The counter (when there is one) and the title/subtitle sit left, the colour-mode
+    toggle sits right — `rx.color_mode.button()` is the exact same call `ui.layout.
+    page_header` uses, so the toggle looks and behaves identically everywhere in the
+    app. Full width on purpose: the narrower reading column is a property of the
+    content below, not of this row."""
+    return rx.hstack(
+        rx.vstack(
+            *([step_label] if step_label is not None else []),
+            rx.heading(title, size="8", weight="bold"),
+            rx.text(subtitle, size="3", color=T.TEXT_MUTED),
+            spacing="1",
+            align_items="start",
+        ),
+        rx.spacer(),
+        rx.color_mode.button(),
+        width="100%",
+        align="center",
+    )
+
+
+def _step_counter(step: rx.Var[int], total: int) -> rx.Component:
+    return rx.text(
+        "Paso ",
+        step + 1,
+        f" de {total}",
+        size="1",
+        color=T.TEXT_MUTED,
+        letter_spacing="0.08em",
+        text_transform="uppercase",
+    )
+
+
 def _controls() -> rx.Component:
     """Small, quiet, at the bottom. The last step swaps Next for Finish — the same
-    `save_kit_form` the accordion always used."""
+    `save_kit_form` the accordion always used, chained with a redirect back to the
+    Brandkit entry so finishing actually lands somewhere instead of sitting on the
+    confirmation screen it just submitted.
+
+    `back` is never disabled any more: `prev_step` itself redirects to `/brand` once
+    the cursor is already at step 0, so the button always does something."""
     back = rx.button(
         rx.icon("chevron-left", size=T.ICON_SM),
         "Atrás",
         variant="ghost",
         size="2",
-        disabled=BrandWizardState.step == 0,
+        radius=_CONTROL_RADIUS,
         on_click=BrandWizardState.prev_step,
     )
     return rx.hstack(
@@ -734,12 +1017,14 @@ def _controls() -> rx.Component:
                 rx.icon("check", size=T.ICON_SM),
                 "Finalizar",
                 size="2",
-                on_click=CreativeState.save_kit_form,
+                radius=_CONTROL_RADIUS,
+                on_click=[CreativeState.save_kit_form, rx.redirect("/brand")],
             ),
             rx.button(
                 "Continuar",
                 rx.icon("chevron-right", size=T.ICON_SM),
                 size="2",
+                radius=_CONTROL_RADIUS,
                 on_click=BrandWizardState.next_step,
             ),
         ),
@@ -750,42 +1035,77 @@ def _controls() -> rx.Component:
 
 
 def brand_manual_index() -> rx.Component:
+    """The header spans the full page width (counter+title left, theme toggle right),
+    and so does the border below it — reaching the same edges the header does, filling
+    down to the panel's bottom (`flex="1"` all the way up through `page_body`, no
+    `100vh` maths — see the note where `_SCREEN_MIN_HEIGHT` used to be) instead of hugging
+    its own content height. Inside that tall frame, the card is itself a flex column
+    with `justify_content="space-between"`: the fields stay in a narrow, readable,
+    centred column at the top (a single-line hex input stretched to 1440px reads worse
+    than the frame around it being that wide), while `_controls()` spans the card's
+    FULL width and sits pinned to its bottom edge — Atrás at the bottom-left corner,
+    Continuar/Finalizar at the bottom-right, not floating just under the fields."""
     return app_shell(
         page_body(
             rx.vstack(
-                rx.text(
-                    "Paso ",
-                    BrandWizardState.step + 1,
-                    f" de {len(STEPS)}",
-                    size="1",
-                    color=T.TEXT_MUTED,
-                    letter_spacing="0.08em",
-                    text_transform="uppercase",
+                _flow_header(
+                    _heading_for(0),
+                    _heading_for(1),
+                    step_label=_step_counter(BrandWizardState.step, len(STEPS)),
                 ),
-                rx.heading(_heading_for(0), size="8", weight="bold", text_align="center"),
-                rx.text(_heading_for(1), size="3", color=T.TEXT_MUTED, text_align="center"),
-                rx.cond(CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")),
-                rx.cond(
-                    CreativeState.kit_notice != "",
-                    rx.callout(
-                        CreativeState.kit_notice,
-                        icon="circle-check",
-                        color_scheme="grass",
-                        width="100%",
+                rx.vstack(
+                    rx.cond(
+                        CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")
                     ),
+                    rx.cond(
+                        CreativeState.kit_notice != "",
+                        rx.callout(
+                            CreativeState.kit_notice,
+                            icon="circle-check",
+                            color_scheme="grass",
+                            width="100%",
+                        ),
+                    ),
+                    spacing="3",
+                    width="100%",
+                    max_width="34rem",
+                    align_self="center",
+                    align_items="center",
                 ),
-                rx.cond(
-                    CreativeState.kit_loading,
-                    rx.skeleton(rx.box(height="18rem", width="100%")),
-                    rx.box(_window(), width="100%", padding="1.5rem 0 0.5rem 0"),
+                card(
+                    rx.vstack(
+                        rx.cond(
+                            CreativeState.kit_loading,
+                            rx.skeleton(rx.box(height="18rem", width="100%")),
+                            _window(),
+                        ),
+                        width="100%",
+                        max_width="34rem",
+                        align_self="center",
+                        align_items="center",
+                        # Takes the card's free height and centres its content in it, so
+                        # a two-field step sits in the middle of its frame instead of
+                        # clinging to the top with a void above the controls.
+                        flex="1",
+                        justify_content="center",
+                    ),
+                    _controls(),
+                    padding="1.75rem",
+                    width="100%",
+                    flex="1",
+                    display="flex",
+                    flex_direction="column",
+                    justify_content="space-between",
                 ),
-                _controls(),
                 spacing="4",
                 width="100%",
-                max_width="34rem",
-                align_self="center",
-                padding="3rem 0 4rem 0",
-                align_items="center",
+                # Fills the panel through `page_body` (`flex: 1 0 auto`) instead of
+                # computing a height. No bottom padding: `PAD_BODY` already leaves the
+                # page's bottom gutter, and stacking 4rem on top of it is what left the
+                # card's border stopping short of the panel's bottom edge.
+                flex="1",
+                min_height="0",
+                padding="3rem 0 0 0",
             ),
         ),
     )
@@ -795,71 +1115,78 @@ def brand_manual_index() -> rx.Component:
 # /brand — the entry fork
 
 
-def _fork_option(icon: str, title: str, description: str, action: rx.Component) -> rx.Component:
-    return card(
-        rx.vstack(
-            rx.icon(icon, size=26, color=rx.color("accent", 10)),
-            rx.heading(title, size="4"),
-            rx.text(description, size="2", color=T.TEXT_MUTED),
-            action,
-            spacing="3",
-            align_items="start",
-            width="100%",
+def _fork_option(icon: str, title: str, description: str, href: str) -> rx.Component:
+    """The whole card is the button now — no separate "Empezar"/"Conectar" element
+    inside it. `card(interactive=True)` gives the hover lift + pointer cursor every
+    other clickable card in the app uses; wrapping it in `rx.link` (rather than an
+    `on_click=rx.redirect(...)`) keeps it a real anchor — middle-click, "open in new
+    tab" and screen readers all keep working. `display="block"` is load-bearing: an
+    `<a>` is inline by default, so `width="100%"` is silently ignored without it and
+    the card inside shrinks to its own content's width instead of the frame's."""
+    return rx.link(
+        card(
+            rx.vstack(
+                rx.icon(icon, size=26, color=rx.color("accent", 10)),
+                rx.heading(title, size="4"),
+                rx.text(description, size="2", color=T.TEXT_MUTED),
+                spacing="3",
+                align_items="start",
+                width="100%",
+            ),
+            padding="1.75rem",
+            interactive=True,
         ),
-        padding="1.75rem",
+        href=href,
+        display="block",
         width="100%",
+        text_decoration="none",
+        color="inherit",
     )
 
 
 def brand_choice_index() -> rx.Component:
-    """The fork the sidebar's «Marca» lands on. «Ya tengo redes» carries no handler
-    yet — by design.
-
-    Same centred chrome as the flow itself: `page_body` aligns its children to the
-    start, so `align_self="center"` is what overrides it (an auto margin would work too,
-    but align-self says the intent out loud)."""
+    """The fork the sidebar's «Marca» lands on. Same framing as the two flows behind
+    it now: a full-width border below the full-width header, rather than a border
+    hugging a narrow centred column — and the border grows to fill the panel
+    (`flex="1"` on the card, `min_height` on this vstack so there is room to grow
+    into) instead of stopping short and leaving bare panel background below it."""
     return app_shell(
         page_body(
             rx.vstack(
-                rx.heading("Brandkit", size="8", weight="bold", text_align="center"),
-                rx.text(
-                    "El sustrato de marca del que sale cada pieza",
-                    size="3",
-                    color=T.TEXT_MUTED,
-                    text_align="center",
-                ),
-                rx.vstack(
-                    _fork_option(
-                        "pencil-line",
-                        "Empezar de cero",
-                        "Te guiamos paso a paso: plan, identidad, logo, colores, voz y "
-                        "restricciones.",
-                        rx.link(
-                            rx.button("Empezar", size="3", width="100%"),
-                            href="/brand/manual",
-                            width="100%",
+                _flow_header("Brandkit", "El sustrato de marca del que sale cada pieza"),
+                card(
+                    rx.vstack(
+                        _fork_option(
+                            "pencil-line",
+                            "Empezar de cero",
+                            "Te guiamos paso a paso: plan, identidad, logo, colores, voz y "
+                            "restricciones.",
+                            "/brand/manual",
                         ),
-                    ),
-                    _fork_option(
-                        "at-sign",
-                        "Ya tengo redes",
-                        "Leemos tu perfil y te proponemos el kit a partir de lo que ya publicas.",
-                        rx.link(
-                            rx.button("Conectar", size="3", variant="soft", width="100%"),
-                            href="/brand/connect",
-                            width="100%",
+                        _fork_option(
+                            "at-sign",
+                            "Ya tengo redes",
+                            "Leemos tu perfil y te proponemos el kit a partir de lo que ya "
+                            "publicas.",
+                            "/brand/connect",
                         ),
+                        spacing="4",
+                        width="100%",
                     ),
-                    spacing="4",
+                    padding="1.75rem",
                     width="100%",
-                    padding_top="1.5rem",
+                    flex="1",
+                    # Same centring as every step screen: the two options sit in the
+                    # middle of the frame rather than at its top.
+                    display="flex",
+                    flex_direction="column",
+                    justify_content="center",
                 ),
-                spacing="3",
+                spacing="4",
                 width="100%",
-                max_width="44rem",
-                align_self="center",
-                align_items="center",
-                padding="3rem 0 4rem 0",
+                flex="1",
+                min_height="0",
+                padding="3rem 0 0 0",
             ),
         ),
     )
@@ -931,8 +1258,13 @@ class BrandConnectState(rx.State):
         self.step = min(self.step + 1, CONNECT_LAST)
 
     @rx.event
-    def prev_step(self) -> None:
-        self.step = max(self.step - 1, 0)
+    def prev_step(self) -> rx.event.EventSpec | None:
+        """Same rule as the manual flow's `BrandWizardState.prev_step`: back from the
+        first step leaves the wizard rather than sitting disabled."""
+        if self.step == 0:
+            return rx.redirect("/brand")
+        self.step -= 1
+        return None
 
     @rx.event
     def choose_network(self, key: str) -> None:
@@ -1151,7 +1483,8 @@ def _connect_loading() -> rx.Component:
 def _connect_controls() -> rx.Component:
     """Same quiet chrome as the manual flow, with two exceptions: the username screen's
     Continue kicks off the analysis instead of stepping, and the recommendations screen
-    offers Cancel rather than Back."""
+    offers Cancel rather than Back. `back` is never disabled: `prev_step` redirects to
+    `/brand` once already at step 0."""
     left = rx.cond(
         BrandConnectState.step == _RECOMMENDATIONS_STEP,
         rx.button(
@@ -1159,6 +1492,7 @@ def _connect_controls() -> rx.Component:
             variant="ghost",
             color_scheme="tomato",
             size="2",
+            radius=_CONTROL_RADIUS,
             on_click=BrandConnectState.restart,
         ),
         rx.button(
@@ -1166,7 +1500,7 @@ def _connect_controls() -> rx.Component:
             "Atrás",
             variant="ghost",
             size="2",
-            disabled=BrandConnectState.step == 0,
+            radius=_CONTROL_RADIUS,
             on_click=BrandConnectState.prev_step,
         ),
     )
@@ -1176,7 +1510,8 @@ def _connect_controls() -> rx.Component:
             rx.icon("check", size=T.ICON_SM),
             "Finalizar",
             size="2",
-            on_click=CreativeState.save_kit_form,
+            radius=_CONTROL_RADIUS,
+            on_click=[CreativeState.save_kit_form, rx.redirect("/brand")],
         ),
         rx.cond(
             BrandConnectState.step == 1,
@@ -1184,12 +1519,14 @@ def _connect_controls() -> rx.Component:
                 "Analizar",
                 rx.icon("chevron-right", size=T.ICON_SM),
                 size="2",
+                radius=_CONTROL_RADIUS,
                 on_click=BrandConnectState.analyze,
             ),
             rx.button(
                 "Continuar",
                 rx.icon("chevron-right", size=T.ICON_SM),
                 size="2",
+                radius=_CONTROL_RADIUS,
                 on_click=BrandConnectState.next_step,
             ),
         ),
@@ -1198,47 +1535,73 @@ def _connect_controls() -> rx.Component:
 
 
 def brand_connect_index() -> rx.Component:
+    """Same shape as `brand_manual_index`: full-width header, full-width border filling
+    down to the panel's bottom, fields in a narrow centred column at the top of the
+    card, and `_connect_controls()` spanning the card's full width, pinned to its
+    bottom corners. The loading card centres its spinner instead — there is no footer
+    row while `analyzing` is true."""
     return app_shell(
         page_body(
             rx.vstack(
-                rx.text(
-                    "Paso ",
-                    BrandConnectState.step + 1,
-                    f" de {len(CONNECT_STEPS)}",
-                    size="1",
-                    color=T.TEXT_MUTED,
-                    letter_spacing="0.08em",
-                    text_transform="uppercase",
+                _flow_header(
+                    _connect_heading_for(0),
+                    _connect_heading_for(1),
+                    step_label=_step_counter(BrandConnectState.step, len(CONNECT_STEPS)),
                 ),
-                rx.heading(_connect_heading_for(0), size="8", weight="bold", text_align="center"),
-                rx.text(_connect_heading_for(1), size="3", color=T.TEXT_MUTED, text_align="center"),
-                rx.cond(CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")),
-                rx.cond(
-                    CreativeState.kit_notice != "",
-                    rx.callout(
-                        CreativeState.kit_notice,
-                        icon="circle-check",
-                        color_scheme="grass",
-                        width="100%",
+                rx.vstack(
+                    rx.cond(
+                        CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")
                     ),
+                    rx.cond(
+                        CreativeState.kit_notice != "",
+                        rx.callout(
+                            CreativeState.kit_notice,
+                            icon="circle-check",
+                            color_scheme="grass",
+                            width="100%",
+                        ),
+                    ),
+                    spacing="3",
+                    width="100%",
+                    max_width="34rem",
+                    align_self="center",
+                    align_items="center",
                 ),
                 rx.cond(
                     BrandConnectState.analyzing,
-                    _connect_loading(),
-                    rx.vstack(
-                        rx.box(_connect_window(), width="100%", padding="1.5rem 0 0.5rem 0"),
-                        _connect_controls(),
-                        spacing="4",
+                    card(
+                        _connect_loading(),
+                        padding="1.75rem",
                         width="100%",
+                        flex="1",
+                        display="flex",
                         align_items="center",
+                        justify_content="center",
+                    ),
+                    card(
+                        rx.vstack(
+                            _connect_window(),
+                            width="100%",
+                            max_width="34rem",
+                            align_self="center",
+                            align_items="center",
+                            flex="1",
+                            justify_content="center",
+                        ),
+                        _connect_controls(),
+                        padding="1.75rem",
+                        width="100%",
+                        flex="1",
+                        display="flex",
+                        flex_direction="column",
+                        justify_content="space-between",
                     ),
                 ),
                 spacing="4",
                 width="100%",
-                max_width="34rem",
-                align_self="center",
-                align_items="center",
-                padding="3rem 0 4rem 0",
+                flex="1",
+                min_height="0",
+                padding="3rem 0 0 0",
             ),
         ),
     )
