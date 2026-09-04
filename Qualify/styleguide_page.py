@@ -18,6 +18,7 @@ from .ui import (
     demo_notice,
     empty_state,
     kv,
+    loading_spinner,
     mono,
     page_body,
     page_header,
@@ -616,6 +617,24 @@ def _states() -> rx.Component:
                 rx.text("Cargando", size="2", weight="medium"),
                 skeleton_card(),
                 skeleton_rows(2),
+                rx.text(
+                    "Espera de página completa — no la forma del contenido",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                rx.hstack(
+                    *(
+                        rx.vstack(
+                            loading_spinner(size),
+                            rx.text(size, size="1", color=T.TEXT_MUTED),
+                            spacing="2",
+                            align="center",
+                        )
+                        for size in ("sm", "md", "lg")
+                    ),
+                    spacing="5",
+                    align="end",
+                ),
                 spacing="3",
                 width="100%",
                 align_items="start",

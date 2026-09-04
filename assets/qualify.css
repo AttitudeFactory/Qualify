@@ -203,6 +203,35 @@ body {
 .q-settle > *:nth-child(4) { animation-delay: 120ms; }
 .q-settle > *:nth-child(n + 5) { animation-delay: 160ms; }
 
+/* ── Spinner ──────────────────────────────────────────────────────────────────
+   The product's own full-panel wait (§5.4: the "spinner de página completa" case
+   `skeleton_card`/`skeleton_rows` explicitly are NOT for) — a gradient ring, not
+   Radix's own dashed `rx.spinner`: a solid arc fading to transparent around the
+   circumference, masked into a ring so the centre stays empty. Colour comes
+   straight off the gray scale (`--gray-12` fading to transparent), so it adapts to
+   light/dark for free — there is no separate light/dark "variant" to pick, only the
+   `size` `ui.loading_spinner()` exposes (sets `--q-spinner-track` + the box's own
+   width/height). Kept simple on purpose: no accent tint, no per-tone colouring —
+   a wait is not a status, so it never borrows the accent/semantic palette. */
+@keyframes q-spin {
+  to { transform: rotate(360deg); }
+}
+.q-spinner {
+  border-radius: 9999px;
+  background: conic-gradient(from 0deg, transparent, var(--gray-12));
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - var(--q-spinner-track, 3px)),
+    #000 calc(100% - var(--q-spinner-track, 3px))
+  );
+  mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - var(--q-spinner-track, 3px)),
+    #000 calc(100% - var(--q-spinner-track, 3px))
+  );
+  animation: q-spin 0.8s linear infinite;
+}
+
 /* ── Toast focus cue ──────────────────────────────────────────────────────────
    Bug reported 2026-08-25: Sonner's own default entrance (a quiet slide+fade) was
    easy to miss in the bottom-right corner — the position stays (revised same day),
