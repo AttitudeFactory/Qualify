@@ -25,6 +25,7 @@ from .leads_page import leads_index
 from .leads_state import LeadsState
 from .publishing_page import publish_index
 from .publishing_state import PublishState
+from .signals_page import signals_index
 from .state import DashboardState
 from .styleguide_page import styleguide_index
 from .ui import app_shell, page_body
@@ -118,6 +119,14 @@ app.add_page(
     route="/clarity",
     on_load=[AuthState.require_login, ClarityState.load],
     title="Qualify · Clarity",
+)
+# Fase 3 placeholder (see signals_page.py's module docstring) — static, no load beyond
+# the session gate. Reached today only from the Brand Kit connect flow's final screen.
+app.add_page(
+    signals_index,
+    route="/signals",
+    on_load=AuthState.require_login,
+    title="Qualify · Señales",
 )
 # Brand Content Engine (design §6): /brand is the default entry when the brand is not
 # ready; /create is gated server-side by BrandReadiness (the load stores the verdict).

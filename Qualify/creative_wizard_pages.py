@@ -31,18 +31,20 @@ Left as a follow-up rather than widening `CreativeState` from this module.
 from __future__ import annotations
 
 import asyncio
-import json
+import logging
 from collections.abc import AsyncIterator
-from pathlib import Path
 from uuid import uuid4
 
 import reflex as rx
 
+from . import scrapecreators_client
 from .auth_state import AuthState
 from .creative_state import CreativeState
 from .tenant import tenant_uuid
-from .ui import app_shell, callout, card, mono, page_body
+from .ui import app_shell, callout, card, loading_spinner, mono, page_body, stat_card, tag
 from .ui import tokens as T
+
+logger = logging.getLogger(__name__)
 
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _UPLOAD_FAILED = "No se pudo leer el archivo. Inténtalo de nuevo."
@@ -59,8 +61,13 @@ STEPS: tuple[tuple[str, str], ...] = (
     ("Enséñale a hablar", "Ejemplos reales valen más que cualquier descripción."),
     ("Lo que nunca debe decir", "Reglas duras: una violación es un rechazo."),
     ("¿Todo correcto?", "Revisa antes de guardar."),
+    ("Resultados e insights", "Tu marca, lista."),
 )
 LAST_STEP = len(STEPS) - 1
+#: ¿Todo correcto? — one before the true final screen. `resume` opens here on a kit
+#: with no gaps, not on `LAST_STEP`: re-entering should offer a review, not skip
+#: straight past it to the "you're done" screen.
+_CONFIRM_STEP = LAST_STEP - 1
 
 # `rx.upload`'s id must be a string literal or a module-level constant — it is what
 # links the dropzone to `rx.upload_files(upload_id=...)`.
@@ -136,7 +143,9 @@ class BrandWizardState(rx.State):
 
         Two steps are never gaps by construction: the tone sliders always hold a value
         (they default to 50), and the restrictions are legitimately optional. A kit with
-        no gaps left opens on the confirmation screen.
+        no gaps left opens on the confirmation screen (`_CONFIRM_STEP`), not on
+        `LAST_STEP` — Resultados e insights is a destination, not something to resume
+        into.
         """
         creative = await self.get_state(CreativeState)
         if not self.subscription:
@@ -154,7 +163,7 @@ class BrandWizardState(rx.State):
         elif not creative.kit_do_examples.strip():
             self.step = 6
         else:
-            self.step = LAST_STEP
+            self.step = _CONFIRM_STEP
 
     @rx.event
     def go_to(self, index: int) -> None:
@@ -174,6 +183,38 @@ class BrandWizardState(rx.State):
             return rx.redirect("/brand")
         self.step -= 1
         return None
+
+    def _reset_fields(self) -> None:
+        """Every wizard-local field back to its default. Plain method, not `@rx.event`
+        — same split `BrandConnectState._reset_fields` uses, kept here for the day
+        this flow grows a second caller (a Cancelar point of its own, say).
+
+        Named via `finish_to_signals` below, not `reset`: `reset` shadows a built-in
+        `rx.State` method (`EventHandlerShadowsBuiltInStateMethodError` at import time
+        if a PUBLIC event handler is named that; this private helper is safe, but the
+        convention is kept anyway so nobody "simplifies" it back into one)."""
+        self.step = 0
+        self.subscription = ""
+        self.has_logo = ""
+        self.logo_brief_1 = ""
+        self.logo_brief_2 = ""
+        self.logo_brief_3 = ""
+        self.logo_key = ""
+        self.logo_name = ""
+        self.logo_error = ""
+        self.picker_color = "#0A3D2E"
+
+    @rx.event
+    def finish_to_signals(self) -> rx.event.EventSpec:
+        """Mejorar tu perfil y posicionamiento, on this flow's own Resultados e
+        insights — the TRUE final screen. Replaces Finalizar entirely (§ request
+        2026-09-05): fired REGARDLESS of what `save_kit_form` does — for now this is
+        the whole "save", simulated (there is no success/failure branch to key off
+        yet). The actual kit content (`CreativeState`'s fields) is untouched; only
+        this screen's own navigation/staging state resets, same shape
+        `BrandConnectState.finish_to_signals` uses for the connect flow."""
+        self._reset_fields()
+        return rx.redirect(_SIGNALS_ROUTE)
 
     @rx.event
     def select_plan(self, key: str) -> None:
@@ -388,8 +429,45 @@ def _tone_slider(
 
 def _step_body(*children: rx.Component) -> rx.Component:
     """Every step centres its content. Fields still span the column, so their labels
-    stay left-read while the block itself sits centred under the title."""
-    return rx.vstack(*children, spacing="4", width="100%", align_items="center")
+    stay left-read while the block itself sits centred under the title.
+
+    `class_name="q-settle"` (the same entrance `page_body` gives a whole page on
+    load — `assets/qualify.css`) so a step's own fields settle in staggered too, not
+    just once at page load. On its own this class does nothing on a step CHANGE:
+    React reuses the surrounding `<div>` across steps (same position, same tag), so
+    the CSS animation never restarts without help — that help is the `key=` on the
+    `card(...)` that WRAPS the whole step (content + `_controls()`/`_connect_
+    controls()`) in `brand_manual_index`/`brand_connect_index`, not on some inner
+    wrapper: keying only the content used to leave the card's own border/shadow
+    node reused across steps (request 2026-09-05 — the frame needs to settle in
+    too, not just what's inside it), so the key sits as high as the whole card."""
+    return rx.vstack(
+        *children, spacing="4", width="100%", align_items="center", class_name="q-settle"
+    )
+
+
+def _loading_view(title: str, subtitle: str = "") -> rx.Component:
+    """The one loading affordance both flows use — a spinner, centred, wherever
+    something is still in flight (`CreativeState.kit_loading` on page load,
+    `BrandConnectState.analyzing` mid-scrape). Centring is the CALLER's job: this
+    returns the content, and every caller places it inside a `card(..., flex="1",
+    display="flex", align_items="center", justify_content="center")` — the exact shape
+    `brand_manual_index`/`brand_connect_index` already give the rest of each step, so a
+    loading screen sits in the middle of the same frame the real content would.
+
+    `loading_spinner("lg")` (design-system §5.4), not `rx.spinner` — bigger ring,
+    smaller text (`size="2"`, not `size="3"`) than a generic loading state: a
+    full-panel wait is the one thing on screen, so the ring can lead and the copy
+    can sit quietly under it instead of competing for size."""
+    return rx.vstack(
+        loading_spinner("lg"),
+        rx.text(title, size="2", weight="medium"),
+        *([rx.text(subtitle, size="1", color=T.TEXT_MUTED)] if subtitle else []),
+        spacing="3",
+        align="center",
+        width="100%",
+        padding="4rem 0",
+    )
 
 
 def _choice_card(
@@ -416,11 +494,103 @@ def _choice_card(
         background=T.CARD_BG,
         box_shadow=rx.cond(
             selected,
-            f"inset 0 0 0 2px {rx.color('accent', 9)}",
+            f"inset 0 0 0 2px {T.tone_color('accent', 9)}",
             f"inset 0 0 0 1px {rx.color('gray', 6)}",
         ),
         transition=f"box-shadow {T.DUR} {T.EASE}",
-        _hover={"box_shadow": f"inset 0 0 0 2px {rx.color('accent', 7)}"},
+        _hover={"box_shadow": f"inset 0 0 0 2px {T.tone_color('accent', 7)}"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# The Resultados e insights building blocks — SHARED by both flows' final screen
+# (`_step_insights` in the manual flow, `_connect_step_insights` in the connect one):
+# same "cuentas parecidas" section either way, so the two paths cannot drift on it.
+
+#: Fase 3 (typed signal detectors, `signals.events` — docs/plan-ingesta-social.md) is
+#: not built yet. `/signals` is a standalone placeholder route (`signals_page.py`) so
+#: the "Mejorar tu perfil y posicionamiento" CTA — final step of BOTH flows — has
+#: somewhere honest to land instead of a dead link or a made-up one.
+_SIGNALS_ROUTE = "/signals"
+
+#: Placeholder competitor/influencer suggestions (handle, role label, blurb).
+#: Placeholder explicit: hardcoded tuple, not a query — no connection to
+#: `search.content_index` / `signals.events` (Fase 2/3) or anything real.
+COMPETITOR_SUGGESTIONS: tuple[tuple[str, str, str], ...] = (
+    ("@competidor.uno", "Competidor", "Mismo nicho, audiencia parecida."),
+    ("@influencer.dos", "Influencer afín", "Podría amplificar tu marca."),
+)
+
+
+def _section_label(text: str) -> rx.Component:
+    return rx.text(
+        text,
+        size="1",
+        weight="bold",
+        color=T.TEXT_MUTED,
+        letter_spacing="0.08em",
+        text_transform="uppercase",
+    )
+
+
+def _competitor_card(handle: str, role: str, blurb: str) -> rx.Component:
+    return card(
+        rx.hstack(
+            rx.box(
+                rx.icon("user-round", size=18, color=T.TEXT_FAINT),
+                width="2.5rem",
+                height="2.5rem",
+                border_radius="9999px",
+                background=T.SURFACE_BG_RAISED,
+                display="flex",
+                align_items="center",
+                justify_content="center",
+                flex_shrink="0",
+            ),
+            rx.vstack(
+                rx.hstack(
+                    mono(handle, size="2"),
+                    tag(role),
+                    spacing="2",
+                    align="center",
+                    wrap="wrap",
+                ),
+                rx.text(blurb, size="2", color=T.TEXT_MUTED),
+                spacing="1",
+                align_items="start",
+                min_width="0",
+            ),
+            spacing="3",
+            align="center",
+            width="100%",
+        ),
+        padding="0.85rem 1rem",
+        width="100%",
+    )
+
+
+def _competitors_section() -> rx.Component:
+    return rx.vstack(
+        _section_label("Cuentas parecidas"),
+        *(_competitor_card(handle, role, blurb) for handle, role, blurb in COMPETITOR_SUGGESTIONS),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _finish_button(on_click: rx.event.EventType[()]) -> rx.Component:
+    """The last control of BOTH flows' Resultados e insights screen — replaces
+    Finalizar entirely (§ request 2026-09-05), it does not sit next to it. `on_click`
+    is each flow's own chain (`[CreativeState.save_kit_form, <flow>.finish_to_signals]`
+    — the reset differs per flow, the button never should), so the two flows share the
+    label/icon while keeping their own state."""
+    return rx.button(
+        "Mejorar tu perfil",
+        rx.icon("arrow-right", size=T.ICON_SM),
+        size="2",
+        radius=_CONTROL_RADIUS,
+        on_click=on_click,
     )
 
 
@@ -525,7 +695,7 @@ def _logo_upload_field() -> rx.Component:
                         rx.icon("trash-2", size=T.ICON_SM),
                         "Quitar",
                         variant="soft",
-                        color_scheme="tomato",
+                        color_scheme=T.tone_scale("error"),
                         size="2",
                         radius=_CONTROL_RADIUS,
                         on_click=BrandWizardState.clear_logo,
@@ -672,7 +842,10 @@ def _swatch(colour: rx.Var[str], index: rx.Var[int]) -> rx.Component:
             border_radius="9999px",
             background=colour,
             box_shadow=f"inset 0 0 0 1px {rx.color('gray', 7)}",
-            transition=f"transform {T.DUR} {T.EASE}",
+            # P8: a transform/scale change is a size change, not a color/opacity one —
+            # `T.SPRING`, not `T.EASE` (same split `.q-lift`'s own transform/box-shadow
+            # pair makes in `assets/qualify.css`).
+            transition=f"transform {T.DUR} {T.SPRING}",
             _hover={"transform": "scale(1.15)"},
         ),
         rx.box(
@@ -684,7 +857,7 @@ def _swatch(colour: rx.Var[str], index: rx.Var[int]) -> rx.Component:
             width="1rem",
             height="1rem",
             border_radius="9999px",
-            background=rx.color("tomato", 9),
+            background=T.tone_color("error", 9),
             display="flex",
             align_items="center",
             justify_content="center",
@@ -878,21 +1051,26 @@ def _step_restrictions() -> rx.Component:
             CreativeState.kit_forbidden_claims,
             CreativeState.set_kit_forbidden_claims,
         ),
-        rx.callout(
+        callout(
             "Esto se comprueba siempre, incluso si desactivas el resto.",
+            "warn",
             icon="shield-alert",
-            color_scheme="amber",
-            width="100%",
         ),
     )
 
 
 def _recap_row(label: str, value: rx.Var[str], fallback: str = "Sin definir") -> rx.Component:
+    """A label + value line. The value column needs `min_width="0"` +
+    `overflow_wrap="anywhere"` — a flex item's default min-width is its content's
+    natural width, so an UNBROKEN value (e.g. two comma-joined hex codes, no spaces to
+    wrap at — `CreativeState.kit_palette` with 2+ colours) pushes the row past the
+    card's edge instead of wrapping onto a second line. Same fix `_colour_readout`
+    documents for the same reason."""
     return rx.hstack(
-        rx.text(label, size="2", color=T.TEXT_MUTED, min_width="9rem"),
+        rx.text(label, size="2", color=T.TEXT_MUTED, min_width="9rem", flex_shrink="0"),
         rx.cond(
             value != "",
-            rx.text(value, size="2"),
+            rx.text(value, size="2", overflow_wrap="anywhere", min_width="0", flex="1"),
             rx.text(fallback, size="2", color=T.TEXT_FAINT),
         ),
         spacing="3",
@@ -902,6 +1080,7 @@ def _recap_row(label: str, value: rx.Var[str], fallback: str = "Sin definir") ->
 
 
 def _step_confirm() -> rx.Component:
+    # No logo row here (per request) — the staged logo isn't part of this recap.
     return _step_body(
         card(
             rx.vstack(
@@ -910,7 +1089,6 @@ def _step_confirm() -> rx.Component:
                 _recap_row("Posicionamiento", CreativeState.kit_positioning),
                 _recap_row("Audiencia", CreativeState.kit_audience),
                 rx.divider(),
-                _recap_row("Logo", BrandWizardState.logo_name, "Sin archivo"),
                 _recap_row("Paleta", CreativeState.kit_palette),
                 rx.divider(),
                 _recap_row("Palabras vetadas", CreativeState.kit_banned_words, "Ninguna"),
@@ -921,6 +1099,40 @@ def _step_confirm() -> rx.Component:
             padding="1.25rem 1.5rem",
             width="100%",
         ),
+    )
+
+
+def _step_insights() -> rx.Component:
+    """The manual flow's own TRUE final screen (§ STEPS, `LAST_STEP`) — mirrors
+    `_connect_step_insights`'s shape (identity block + `_competitors_section`, both
+    ending in `_finish_button`), but with just the uploaded logo standing in for a
+    profile recap — no name, no card chrome around it (per request 2026-09-05: the
+    logo alone, not a bordered identity card) — and NO metrics: a from-scratch kit
+    has no scraped account to report a rate or an average FOR, so this shows none
+    rather than numbers that would not correspond to anything real.
+    """
+    return _step_body(
+        rx.cond(
+            BrandWizardState.logo_key != "",
+            rx.image(
+                src=rx.get_upload_url(BrandWizardState.logo_key),
+                alt="Logo",
+                height="6rem",
+                max_width="100%",
+                object_fit="contain",
+            ),
+            rx.box(
+                rx.icon("image", size=28, color=T.TEXT_FAINT),
+                width="6rem",
+                height="6rem",
+                border_radius="9999px",
+                background=T.SURFACE_BG_RAISED,
+                display="flex",
+                align_items="center",
+                justify_content="center",
+            ),
+        ),
+        _competitors_section(),
     )
 
 
@@ -938,6 +1150,7 @@ def _window() -> rx.Component:
         (6, _step_voice_examples()),
         (7, _step_restrictions()),
         (8, _step_confirm()),
+        (9, _step_insights()),
         _step_subscription(),
     )
 
@@ -993,10 +1206,11 @@ def _step_counter(step: rx.Var[int], total: int) -> rx.Component:
 
 
 def _controls() -> rx.Component:
-    """Small, quiet, at the bottom. The last step swaps Next for Finish — the same
-    `save_kit_form` the accordion always used, chained with a redirect back to the
-    Brandkit entry so finishing actually lands somewhere instead of sitting on the
-    confirmation screen it just submitted.
+    """Small, quiet, at the bottom. The last step (Resultados e insights) swaps
+    Continuar for `_finish_button` — it replaces Finalizar entirely (§ request
+    2026-09-05), `save_kit_form` still chained with it so finishing actually persists
+    before it lands anywhere. ¿Todo correcto? (`_CONFIRM_STEP`) is a plain Continuar
+    now, same as any other step — it no longer sits at the end.
 
     `back` is never disabled any more: `prev_step` itself redirects to `/brand` once
     the cursor is already at step 0, so the button always does something."""
@@ -1013,13 +1227,7 @@ def _controls() -> rx.Component:
         rx.spacer(),
         rx.cond(
             BrandWizardState.step == LAST_STEP,
-            rx.button(
-                rx.icon("check", size=T.ICON_SM),
-                "Finalizar",
-                size="2",
-                radius=_CONTROL_RADIUS,
-                on_click=[CreativeState.save_kit_form, rx.redirect("/brand")],
-            ),
+            _finish_button([CreativeState.save_kit_form, BrandWizardState.finish_to_signals]),
             rx.button(
                 "Continuar",
                 rx.icon("chevron-right", size=T.ICON_SM),
@@ -1059,12 +1267,7 @@ def brand_manual_index() -> rx.Component:
                     ),
                     rx.cond(
                         CreativeState.kit_notice != "",
-                        rx.callout(
-                            CreativeState.kit_notice,
-                            icon="circle-check",
-                            color_scheme="grass",
-                            width="100%",
-                        ),
+                        callout(CreativeState.kit_notice, "ok", icon="circle-check"),
                     ),
                     spacing="3",
                     width="100%",
@@ -1072,30 +1275,61 @@ def brand_manual_index() -> rx.Component:
                     align_self="center",
                     align_items="center",
                 ),
-                card(
-                    rx.vstack(
-                        rx.cond(
-                            CreativeState.kit_loading,
-                            rx.skeleton(rx.box(height="18rem", width="100%")),
-                            _window(),
-                        ),
+                rx.cond(
+                    CreativeState.kit_loading,
+                    # No controls while loading — same shape `brand_connect_index` uses
+                    # for `BrandConnectState.analyzing`: a spinner, centred in the same
+                    # frame the real step would occupy, nothing to click yet.
+                    card(
+                        _loading_view("Cargando tu marca"),
+                        padding="1.75rem",
                         width="100%",
-                        max_width="34rem",
-                        align_self="center",
-                        align_items="center",
-                        # Takes the card's free height and centres its content in it, so
-                        # a two-field step sits in the middle of its frame instead of
-                        # clinging to the top with a void above the controls.
                         flex="1",
+                        display="flex",
+                        align_items="center",
                         justify_content="center",
                     ),
-                    _controls(),
-                    padding="1.75rem",
-                    width="100%",
-                    flex="1",
-                    display="flex",
-                    flex_direction="column",
-                    justify_content="space-between",
+                    card(
+                        rx.vstack(
+                            _window(),
+                            width="100%",
+                            max_width="34rem",
+                            align_self="center",
+                            align_items="center",
+                            # Takes the card's free height and centres its content in it,
+                            # so a two-field step sits in the middle of its frame instead
+                            # of clinging to the top with a void above the controls.
+                            flex="1",
+                            justify_content="center",
+                        ),
+                        _controls(),
+                        padding="1.75rem",
+                        width="100%",
+                        flex="1",
+                        display="flex",
+                        flex_direction="column",
+                        justify_content="space-between",
+                        # `key` on the CARD itself, not just its content — request
+                        # 2026-09-05: the border/frame is part of what should settle in,
+                        # not just what's inside it. Keying only the inner vstack (the
+                        # first cut of this fix) left the card's own DOM node reused
+                        # across steps, so the border/shadow never moved — only the text
+                        # inside it did. Keying the whole `card()` forces IT to remount
+                        # too, which is what makes `page_body`'s own "q-settle" (the
+                        # card is one of ITS direct children) replay on every step
+                        # change, animating the frame and its content as one unit.
+                        key=BrandWizardState.step.to_string(),
+                        # `justify_content="space-between"` alone collapses to ~0 the
+                        # moment the fields fill the card's free height — true on a short
+                        # mobile viewport for most steps (Plan, Paleta, Enséñale a
+                        # hablar, Lo que nunca debe decir, Todo correcto...), pinning
+                        # Atrás/Continuar right under the content. `gap` sets a MINIMUM
+                        # the two flex items are never closer than, regardless of how
+                        # much free space is left — space-between still spreads any
+                        # space beyond it, so a short step still looks exactly as it did
+                        # before.
+                        gap="1.5rem",
+                    ),
                 ),
                 spacing="4",
                 width="100%",
@@ -1126,7 +1360,7 @@ def _fork_option(icon: str, title: str, description: str, href: str) -> rx.Compo
     return rx.link(
         card(
             rx.vstack(
-                rx.icon(icon, size=26, color=rx.color("accent", 10)),
+                rx.icon(icon, size=26, color=T.tone_color("accent", 10)),
                 rx.heading(title, size="4"),
                 rx.text(description, size="2", color=T.TEXT_MUTED),
                 spacing="3",
@@ -1196,15 +1430,12 @@ def brand_choice_index() -> rx.Component:
 # /brand/connect — the "ya tengo redes" flow
 #
 # Screens 5-11 are the SAME renderers the manual flow uses, so the two paths cannot
-# drift: only the first four (network, username, profile, recommendations) are specific
-# to this one.
-
-#: Placeholder analysis source. Real profile reads are Parte 4 work; until then this
-#: fixture stands in, resolved relative to this module so the app finds it from any cwd.
-PROFILE_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "midu.dev_prueba.json"
+# drift: only steps 1-4 (network, username, profile, recommendations) and step 12,
+# Resultados e insights (added 2026-09-04, moved the same day to sit AFTER ¿Todo
+# correcto? instead of before it) are specific to this one.
 
 _USERNAME_REQUIRED = "Escribe tu usuario para continuar."
-_PROFILE_UNAVAILABLE = "No pudimos leer el perfil. Inténtalo de nuevo."
+_PROFILE_UNAVAILABLE = "No pudimos leer el perfil. Revisa el usuario e inténtalo de nuevo."
 
 NETWORKS: tuple[tuple[str, str, str], ...] = (
     ("instagram", "Instagram", "Reels, carruseles y publicaciones."),
@@ -1219,6 +1450,27 @@ RECOMMENDATIONS: tuple[tuple[str, str], ...] = (
     ("Responde los comentarios", "Duis aute irure dolor in reprehenderit in voluptate velit."),
 )
 
+#: Placeholder metric insights (label, target value, suffix, hint) — lorem-shaped, not
+#: derived from any modelled data. The real version reads `search.content_index` /
+#: `signals.events` (Fase 2/3, `docs/plan-ingesta-social.md`), which this UI has no
+#: connection to yet. Only the connect flow has these — the manual flow has no scraped
+#: profile to report a rate or an average FOR, so it shows no metrics at all rather
+#: than a set of numbers that would not correspond to anything.
+METRIC_INSIGHTS: tuple[tuple[str, float, str, str], ...] = (
+    ("Interacción estimada", 3.2, "%", "Likes + comentarios por publicación."),
+    ("Crecimiento mensual", 4.8, "%", "Estimado, últimos 30 días."),
+    ("Alcance promedio", 12.4, "K", "Estimado, por publicación."),
+)
+
+#: The count-up animation (§ request 2026-09-05): `BrandConnectState.metric_values`
+#: ticks from 0 to each target over this many seconds, in this many frames — a
+#: background event walking the value up server-side (`advance_to_insights`), since
+#: there is no client-side animation primitive in play here. ~37ms/frame is smooth
+#: enough for a plain numeric counter without needing more frames than a websocket
+#: update per frame can comfortably carry.
+_METRIC_ANIMATION_SECONDS = 0.9
+_METRIC_ANIMATION_STEPS = 24
+
 CONNECT_STEPS: tuple[tuple[str, str], ...] = (
     ("¿Qué red usas?", "Empezamos por donde ya tienes audiencia."),
     ("¿Cuál es tu usuario?", "Lo leeremos para proponerte el kit."),
@@ -1231,9 +1483,14 @@ CONNECT_STEPS: tuple[tuple[str, str], ...] = (
     ("Enséñale a hablar", "Ejemplos reales valen más que cualquier descripción."),
     ("Lo que nunca debe decir", "Reglas duras: una violación es un rechazo."),
     ("¿Todo correcto?", "Revisa antes de guardar."),
+    ("Resultados e insights", "Cómo se ve tu cuenta hoy."),
 )
 CONNECT_LAST = len(CONNECT_STEPS) - 1
-_RECOMMENDATIONS_STEP = 3
+#: The last screen of this flow's OWN preview stretch (steps 0-3) before it joins the
+#: shared kit-setup steps — where Cancelar makes sense instead of Atrás. Resultados e
+#: insights (the true final screen, CONNECT_LAST) needs neither: Atrás still works
+#: normally there (back to Todo correcto), and Finalizar is the forward action.
+_LAST_PREVIEW_STEP = 3
 
 
 class BrandConnectState(rx.State):
@@ -1250,8 +1507,31 @@ class BrandConnectState(rx.State):
     profile_username: str = ""
     profile_fullname: str = ""
     profile_bio: str = ""
+    profile_category: str = ""
     profile_followers: str = ""
     profile_pic: str = ""
+
+    #: The count-up animation's live values, one per `METRIC_INSIGHTS` entry, ticked by
+    #: `advance_to_insights`. Three fixed slots (`METRIC_INSIGHTS` is a 3-tuple) rather
+    #: than indexing this list from a component — Reflex Vars index cleanly by a
+    #: literal int, but three named computed vars below read just as easily and never
+    #: raise the question.
+    metric_values: list[float] = [0.0, 0.0, 0.0]
+
+    @rx.var
+    def metric_display_0(self) -> str:
+        _, _, suffix, _ = METRIC_INSIGHTS[0]
+        return f"{self.metric_values[0]:.1f}{suffix}"
+
+    @rx.var
+    def metric_display_1(self) -> str:
+        _, _, suffix, _ = METRIC_INSIGHTS[1]
+        return f"{self.metric_values[1]:.1f}{suffix}"
+
+    @rx.var
+    def metric_display_2(self) -> str:
+        _, _, suffix, _ = METRIC_INSIGHTS[2]
+        return f"{self.metric_values[2]:.1f}{suffix}"
 
     @rx.event
     def next_step(self) -> None:
@@ -1278,10 +1558,10 @@ class BrandConnectState(rx.State):
         self.username = value
         self.error = ""
 
-    @rx.event
-    def restart(self) -> rx.event.EventSpec:
-        """Cancel from the recommendations screen: drop what was read and go back to the
-        fork, so the next entry starts clean."""
+    def _reset_fields(self) -> None:
+        """Every wizard-local field back to its default. Plain method, not `@rx.event`
+        — both `restart` and `finish_to_signals` call it and then choose their own
+        destination, so the reset itself lives in exactly one place."""
         self.step = 0
         self.network = ""
         self.username = ""
@@ -1289,9 +1569,51 @@ class BrandConnectState(rx.State):
         self.profile_username = ""
         self.profile_fullname = ""
         self.profile_bio = ""
+        self.profile_category = ""
         self.profile_followers = ""
         self.profile_pic = ""
+        self.metric_values = [0.0, 0.0, 0.0]
+
+    @rx.event
+    def restart(self) -> rx.event.EventSpec:
+        """Cancelar on Lo que te proponemos — the flow's own last preview screen
+        before the shared kit-setup steps begin (§ `_LAST_PREVIEW_STEP`). Drops
+        everything read/entered and goes back to the fork."""
+        self._reset_fields()
         return rx.redirect("/brand")
+
+    @rx.event
+    def finish_to_signals(self) -> rx.event.EventSpec:
+        """Mejorar tu perfil y posicionamiento, on Resultados e insights — the TRUE
+        final screen. Replaces Finalizar entirely (§ request 2026-09-05): same reset
+        `restart` does, but the destination is Señales, not the fork — the same
+        "regardless of the process" way `BrandWizardState.finish_to_signals` fires for
+        the manual flow's own final screen."""
+        self._reset_fields()
+        return rx.redirect(_SIGNALS_ROUTE)
+
+    @rx.event(background=True)
+    async def advance_to_insights(self) -> AsyncIterator[None]:
+        """Continuar from ¿Todo correcto? — the one caller that lands on Resultados e
+        insights (`CONNECT_LAST`) from elsewhere, so it is also the one place that
+        kicks off the metric count-up (§ `METRIC_INSIGHTS`'s docstring): walks
+        `metric_values` from 0 up to each target over `_METRIC_ANIMATION_SECONDS`,
+        `_METRIC_ANIMATION_STEPS` frames. Background because there is no client-side
+        animation primitive here — this is a real per-frame state update, same
+        discipline `CreativeState.poll_draft` already uses for its own loop.
+        """
+        async with self:
+            self.step = CONNECT_LAST
+            self.metric_values = [0.0, 0.0, 0.0]
+        yield
+        targets = [target for _, target, _, _ in METRIC_INSIGHTS]
+        frame_delay = _METRIC_ANIMATION_SECONDS / _METRIC_ANIMATION_STEPS
+        for frame in range(1, _METRIC_ANIMATION_STEPS + 1):
+            await asyncio.sleep(frame_delay)
+            progress = frame / _METRIC_ANIMATION_STEPS
+            async with self:
+                self.metric_values = [round(target * progress, 1) for target in targets]
+            yield
 
     @rx.event(background=True)
     async def analyze(self) -> AsyncIterator[None]:
@@ -1299,34 +1621,68 @@ class BrandConnectState(rx.State):
 
         Background plus an early `yield` so the spinner actually paints before the read
         starts; a foreground handler would block and the user would see nothing until it
-        finished. The file read goes through `asyncio.to_thread` — it is blocking I/O,
-        and the event loop serves every other session.
+        finished. The cache check, the live Scrape Creators call, and the snapshot file
+        I/O all go through `asyncio.to_thread` — all blocking, and the event loop serves
+        every other session.
+
+        Checks the JSON snapshot FIRST (`load_cached_profile`): re-analyzing the same
+        handle costs zero API credits, and only a genuinely new (network, handle) hits
+        Scrape Creators. Not saved to a table on purpose
+        (`scrapecreators_client`'s module docstring) — a fetched read is written to the
+        one generic, overwritable JSON snapshot and then read BACK from that same
+        file, same shape the earlier hardcoded fixture had, now backed by a real
+        profile instead of a demo one.
         """
         async with self:
             if not self.username.strip():
                 self.error = _USERNAME_REQUIRED
                 return
+            if self.network not in scrapecreators_client.SUPPORTED_NETWORKS:
+                # Defensive: step 1 is only reachable via `choose_network`, which sets
+                # `network` and `step` together — this should never fire from a normal
+                # click. Seen in practice after a dev backend restart (session state
+                # resets to defaults) while the client's own `step` survives the
+                # reconnect, landing on the username screen with no network chosen.
+                # Self-heal back to step 0 rather than surface Scrape Creators'
+                # `unsupported network: ''` — an implementation detail, not something
+                # the operator did wrong.
+                self.step = 0
+                self.error = ""
+                return
             self.error = ""
             self.analyzing = True
+            network, handle = self.network, self.username.strip()
         yield
 
         try:
-            raw = await asyncio.to_thread(PROFILE_FIXTURE.read_text, "utf-8")
-            profile = json.loads(raw)["profile"]
-        except (OSError, ValueError, KeyError):
+            profile = await asyncio.to_thread(
+                scrapecreators_client.load_cached_profile, network, handle
+            )
+            if profile is None:
+                profile = await asyncio.to_thread(
+                    scrapecreators_client.fetch_profile, network, handle
+                )
+                await asyncio.to_thread(
+                    scrapecreators_client.save_profile_snapshot, network, handle, profile
+                )
+                profile = await asyncio.to_thread(scrapecreators_client.load_profile_snapshot)
+        except (scrapecreators_client.ScrapeCreatorsError, ValueError, OSError) as exc:
+            # The vendor detail (HTTP status, "insufficient credits", etc. — see
+            # scrapecreators_client._error_detail) is diagnostic, not for the operator:
+            # it stays in the server log. What reaches the screen is the one generic,
+            # translated message every other provider-call failure in this flow uses.
+            logger.warning("brand connect profile read failed: %s", exc)
             async with self:
                 self.analyzing = False
                 self.error = _PROFILE_UNAVAILABLE
             return
-
-        # Stands in for the real analysis, so the loading state is visible at all.
-        await asyncio.sleep(1.2)
 
         followers = profile.get("followers")
         async with self:
             self.profile_username = str(profile.get("username", ""))
             self.profile_fullname = str(profile.get("fullName", ""))
             self.profile_bio = str(profile.get("bio", ""))
+            self.profile_category = str(profile.get("category", ""))
             self.profile_followers = f"{followers:,}".replace(",", ".") if followers else "—"
             self.profile_pic = str(profile.get("profilePicUrl", ""))
             self.analyzing = False
@@ -1357,7 +1713,7 @@ def _connect_step_username() -> rx.Component:
             "Usuario",
             BrandConnectState.username,
             BrandConnectState.set_username,
-            "midu.dev",
+            "username",
         ),
         rx.cond(
             BrandConnectState.error != "",
@@ -1393,6 +1749,10 @@ def _connect_step_profile() -> rx.Component:
                 ),
                 rx.heading(BrandConnectState.profile_username, size="4"),
                 rx.text(BrandConnectState.profile_fullname, size="2", color=T.TEXT_MUTED),
+                rx.cond(
+                    BrandConnectState.profile_category != "",
+                    tag(BrandConnectState.profile_category),
+                ),
                 rx.text(
                     BrandConnectState.profile_followers,
                     " seguidores",
@@ -1420,7 +1780,7 @@ def _connect_step_profile() -> rx.Component:
 def _recommendation_card(title: str, blurb: str) -> rx.Component:
     return card(
         rx.hstack(
-            rx.icon("sparkles", size=18, color=rx.color("accent", 10)),
+            rx.icon("sparkles", size=18, color=T.tone_color("accent", 10)),
             rx.vstack(
                 rx.text(title, size="2", weight="bold"),
                 rx.text(blurb, size="2", color=T.TEXT_MUTED),
@@ -1440,9 +1800,98 @@ def _connect_step_recommendations() -> rx.Component:
     return _step_body(*(_recommendation_card(title, blurb) for title, blurb in RECOMMENDATIONS))
 
 
+def _metric_grid() -> rx.Component:
+    displays = (
+        BrandConnectState.metric_display_0,
+        BrandConnectState.metric_display_1,
+        BrandConnectState.metric_display_2,
+    )
+    return rx.grid(
+        *(
+            stat_card(label, displays[i], hint=hint)
+            for i, (label, _, _, hint) in enumerate(METRIC_INSIGHTS)
+        ),
+        columns=rx.breakpoints(initial="1", sm="3"),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _connect_step_insights() -> rx.Component:
+    """The TRUE final screen of the whole flow (§ CONNECT_STEPS, `CONNECT_LAST`) —
+    after ¿Todo correcto?, not before it: a condensed profile recap, the animated
+    metric grid (`_metric_grid`, counted up by `advance_to_insights` on the way in),
+    and 1-2 placeholder competitor/influencer suggestions (`_competitors_section`,
+    shared with the manual flow's own final screen). Its own Finalizar-replacing CTA
+    (`_finish_button`) lives in `_connect_controls`, not here — the fixed control bar,
+    not the scrolling content, is what both flows' final screen shares that button
+    through.
+
+    Everything below the profile recap is a PLACEHOLDER: no analytical pipeline backs
+    it yet (Fase 2/3, `docs/plan-ingesta-social.md`) — `METRIC_INSIGHTS` and
+    `COMPETITOR_SUGGESTIONS` are hardcoded tuples, not a query.
+    """
+    return _step_body(
+        card(
+            rx.hstack(
+                rx.cond(
+                    BrandConnectState.profile_pic != "",
+                    rx.image(
+                        src=BrandConnectState.profile_pic,
+                        alt="Foto de perfil",
+                        width="3rem",
+                        height="3rem",
+                        border_radius="9999px",
+                        object_fit="cover",
+                        flex_shrink="0",
+                    ),
+                    rx.box(
+                        rx.icon("user", size=18, color=T.TEXT_FAINT),
+                        width="3rem",
+                        height="3rem",
+                        border_radius="9999px",
+                        background=T.SURFACE_BG_RAISED,
+                        display="flex",
+                        align_items="center",
+                        justify_content="center",
+                        flex_shrink="0",
+                    ),
+                ),
+                rx.vstack(
+                    rx.text(BrandConnectState.profile_username, size="3", weight="bold"),
+                    rx.text(
+                        BrandConnectState.profile_followers,
+                        " seguidores",
+                        size="2",
+                        color=T.TEXT_MUTED,
+                    ),
+                    spacing="0",
+                    align_items="start",
+                    min_width="0",
+                ),
+                spacing="3",
+                align="center",
+                width="100%",
+            ),
+            padding="1rem 1.25rem",
+            width="100%",
+        ),
+        rx.vstack(
+            _section_label("Métricas"),
+            _metric_grid(),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        _competitors_section(),
+    )
+
+
 def _connect_window() -> rx.Component:
-    """Screens 1-4 are this flow's own; 5-11 reuse the manual flow's renderers, so the
-    shared half of the two paths is literally the same code."""
+    """Screens 1-4 and 12 (Resultados e insights, the true final screen — moved
+    2026-09-04 to sit AFTER ¿Todo correcto?) are this flow's own; 5-11 in between
+    reuse the manual flow's renderers, so the shared half of the two paths is
+    literally the same code."""
     return rx.match(
         BrandConnectState.step,
         (0, _connect_step_network()),
@@ -1456,6 +1905,7 @@ def _connect_window() -> rx.Component:
         (8, _step_voice_examples()),
         (9, _step_restrictions()),
         (10, _step_confirm()),
+        (11, _connect_step_insights()),
         _connect_step_network(),
     )
 
@@ -1469,28 +1919,26 @@ def _connect_heading_for(index: int) -> rx.Var[str]:
 
 
 def _connect_loading() -> rx.Component:
-    return rx.vstack(
-        rx.spinner(size="3"),
-        rx.text("Analizando perfil", size="3", weight="medium"),
-        rx.text("Esto tarda solo unos segundos.", size="2", color=T.TEXT_MUTED),
-        spacing="3",
-        align="center",
-        width="100%",
-        padding="4rem 0",
-    )
+    return _loading_view("Analizando perfil", "Esto tarda solo unos segundos.")
 
 
 def _connect_controls() -> rx.Component:
-    """Same quiet chrome as the manual flow, with two exceptions: the username screen's
-    Continue kicks off the analysis instead of stepping, and the recommendations screen
-    offers Cancel rather than Back. `back` is never disabled: `prev_step` redirects to
-    `/brand` once already at step 0."""
+    """Same quiet chrome as the manual flow, with three exceptions: the username
+    screen's Continue kicks off the analysis instead of stepping; Lo que te
+    proponemos — the last screen before the shared kit-setup steps begin (§
+    `_LAST_PREVIEW_STEP`) — offers Cancel rather than Back; and ¿Todo correcto?'s
+    Continue kicks off the metric count-up (`advance_to_insights`) instead of a plain
+    step. `right`'s Resultados e insights branch is `_finish_button` — it replaces
+    Finalizar entirely (§ request 2026-09-05), not alongside it. `back` is never
+    disabled: `prev_step` redirects to `/brand` once already at step 0."""
     left = rx.cond(
-        BrandConnectState.step == _RECOMMENDATIONS_STEP,
+        BrandConnectState.step == _LAST_PREVIEW_STEP,
         rx.button(
             "Cancelar",
-            variant="ghost",
-            color_scheme="tomato",
+            # §5.5: destructive is `soft` + the error tone, not `ghost` + a literal
+            # color name — matches "Quitar" on the logo step.
+            variant="soft",
+            color_scheme=T.tone_scale("error"),
             size="2",
             radius=_CONTROL_RADIUS,
             on_click=BrandConnectState.restart,
@@ -1506,13 +1954,7 @@ def _connect_controls() -> rx.Component:
     )
     right = rx.cond(
         BrandConnectState.step == CONNECT_LAST,
-        rx.button(
-            rx.icon("check", size=T.ICON_SM),
-            "Finalizar",
-            size="2",
-            radius=_CONTROL_RADIUS,
-            on_click=[CreativeState.save_kit_form, rx.redirect("/brand")],
-        ),
+        _finish_button([CreativeState.save_kit_form, BrandConnectState.finish_to_signals]),
         rx.cond(
             BrandConnectState.step == 1,
             rx.button(
@@ -1522,12 +1964,22 @@ def _connect_controls() -> rx.Component:
                 radius=_CONTROL_RADIUS,
                 on_click=BrandConnectState.analyze,
             ),
-            rx.button(
-                "Continuar",
-                rx.icon("chevron-right", size=T.ICON_SM),
-                size="2",
-                radius=_CONTROL_RADIUS,
-                on_click=BrandConnectState.next_step,
+            rx.cond(
+                BrandConnectState.step == CONNECT_LAST - 1,
+                rx.button(
+                    "Continuar",
+                    rx.icon("chevron-right", size=T.ICON_SM),
+                    size="2",
+                    radius=_CONTROL_RADIUS,
+                    on_click=BrandConnectState.advance_to_insights,
+                ),
+                rx.button(
+                    "Continuar",
+                    rx.icon("chevron-right", size=T.ICON_SM),
+                    size="2",
+                    radius=_CONTROL_RADIUS,
+                    on_click=BrandConnectState.next_step,
+                ),
             ),
         ),
     )
@@ -1538,8 +1990,8 @@ def brand_connect_index() -> rx.Component:
     """Same shape as `brand_manual_index`: full-width header, full-width border filling
     down to the panel's bottom, fields in a narrow centred column at the top of the
     card, and `_connect_controls()` spanning the card's full width, pinned to its
-    bottom corners. The loading card centres its spinner instead — there is no footer
-    row while `analyzing` is true."""
+    bottom corners. Two loading states, both a centred spinner with no footer row:
+    `CreativeState.kit_loading` on page load, `BrandConnectState.analyzing` mid-scrape."""
     return app_shell(
         page_body(
             rx.vstack(
@@ -1554,12 +2006,7 @@ def brand_connect_index() -> rx.Component:
                     ),
                     rx.cond(
                         CreativeState.kit_notice != "",
-                        rx.callout(
-                            CreativeState.kit_notice,
-                            icon="circle-check",
-                            color_scheme="grass",
-                            width="100%",
-                        ),
+                        callout(CreativeState.kit_notice, "ok", icon="circle-check"),
                     ),
                     spacing="3",
                     width="100%",
@@ -1568,9 +2015,9 @@ def brand_connect_index() -> rx.Component:
                     align_items="center",
                 ),
                 rx.cond(
-                    BrandConnectState.analyzing,
+                    CreativeState.kit_loading,
                     card(
-                        _connect_loading(),
+                        _loading_view("Cargando tu marca"),
                         padding="1.75rem",
                         width="100%",
                         flex="1",
@@ -1578,23 +2025,49 @@ def brand_connect_index() -> rx.Component:
                         align_items="center",
                         justify_content="center",
                     ),
-                    card(
-                        rx.vstack(
-                            _connect_window(),
+                    rx.cond(
+                        BrandConnectState.analyzing,
+                        card(
+                            _connect_loading(),
+                            padding="1.75rem",
                             width="100%",
-                            max_width="34rem",
-                            align_self="center",
-                            align_items="center",
                             flex="1",
+                            display="flex",
+                            align_items="center",
                             justify_content="center",
                         ),
-                        _connect_controls(),
-                        padding="1.75rem",
-                        width="100%",
-                        flex="1",
-                        display="flex",
-                        flex_direction="column",
-                        justify_content="space-between",
+                        card(
+                            rx.vstack(
+                                _connect_window(),
+                                width="100%",
+                                max_width="34rem",
+                                align_self="center",
+                                align_items="center",
+                                flex="1",
+                                justify_content="center",
+                            ),
+                            _connect_controls(),
+                            padding="1.75rem",
+                            width="100%",
+                            flex="1",
+                            display="flex",
+                            flex_direction="column",
+                            justify_content="space-between",
+                            # Same mobile fix as `brand_manual_index`'s card — `gap`
+                            # floors the distance to Atrás/Continuar so it cannot
+                            # collapse to ~0 on a short viewport once the step's content
+                            # fills the free height (Perfil, Lo que te proponemos,
+                            # Resultados e insights, and the shared steps 5-11).
+                            gap="1.5rem",
+                            # `key` on the CARD itself, not just its content — same fix
+                            # `brand_manual_index` gets: keying only the inner vstack
+                            # left the card's own border/shadow node reused across
+                            # steps, so the frame never moved, only the text inside it
+                            # did. Keying the whole `card()` remounts it too, which is
+                            # what makes `page_body`'s own "q-settle" (the card is one
+                            # of its direct children) replay on every step change.
+                            key=BrandConnectState.step.to_string(),
+                        ),
                     ),
                 ),
                 spacing="4",
