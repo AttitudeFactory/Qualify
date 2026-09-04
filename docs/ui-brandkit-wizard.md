@@ -1,7 +1,7 @@
 # UI — Brand Kit por pasos (`Qualify/creative_wizard_pages.py`)
 
-**Estado:** `[EN CURSO]` — funcional y enrutado. El problema de layout que quedó abierto en la primera sesión está **resuelto en código y medido en navegador** (§6), pero falta la confirmación visual final por parte del fundador (§8).
-**Fecha:** sesiones del 2026-09-02 al 2026-09-04.
+**Estado:** `[EN CURSO]` — funcional y enrutado. El problema de layout que quedó abierto en la primera sesión está **resuelto en código y medido en navegador** (§6), pero falta la confirmación visual final por parte del fundador (§8). Todo el trabajo hasta la fecha está **commiteado en `fix/brand-kit-wizard`, bajo la PR #36 ya abierta** — sin pushear todavía, ver §9.
+**Fecha:** sesiones del 2026-09-02 al 2026-09-05.
 **Alcance:** solo UI Reflex. No toca `packages/api/src/qualify_api/creative/`, `packages/creative/`, ni el esquema de `brand_kits` (migración `0009_creative`). El diseño de referencia del Brand Kit como producto sigue siendo `docs/diseno-motor-contenido-marca.md` §6.2 — este documento cubre únicamente la superficie alternativa por pasos construida encima.
 
 ---
@@ -120,6 +120,7 @@ Varias rondas de ajuste visual, en orden:
 8. **Mobile: animación de loading centrada en todas las vistas (2026-09-04)** — nuevo `_loading_view(title, subtitle)`, del que `_connect_loading` ahora es un envoltorio delgado. `CreativeState.kit_loading` ya no muestra un `rx.skeleton` plano junto a los controles (`brand_manual_index`) ni queda sin manejar (`brand_connect_index`, que antes solo reaccionaba a `BrandConnectState.analyzing`): en ambos flujos ahora reemplaza la tarjeta entera (contenido + controles) por una tarjeta centrada con el mismo spinner, sin controles que apunten a nada mientras carga.
 9. **"¿Todo correcto?": fila de paleta que se salía con 2+ colores (2026-09-04)** — `_recap_row` mostraba el valor (ej. `"#0a3d2e,#ff6b35"`) sin punto de quiebre: al ser un string sin espacios, el navegador no tenía dónde envolverlo y la fila se salía de la tarjeta, rompiendo la alineación en tabla del resto de filas. Mismo arreglo que ya documentaba `_colour_readout` para el mismo problema: `min_width="0"` + `overflow_wrap="anywhere"` en la columna del valor.
 10. **"¿Todo correcto?": se quitó la fila "Logo" (2026-09-04)** — a petición, el resumen final ya no muestra `BrandWizardState.logo_name`.
+11. **`BrandConnectState.analyze()` se autocorrige ante un `network` inválido (2026-09-05)** — reportado en vivo: `unsupported network: ''` saliendo de `scrapecreators_client.fetch_profile`. El paso "¿Cuál es tu usuario?" solo debería alcanzarse con una red ya elegida (`choose_network` fija ambas cosas juntas), pero un reinicio del servidor de desarrollo (frecuentes esta sesión, uno por cambio) resetea el estado del backend a sus valores por defecto mientras el navegador conserva el `step` de antes de reconectar — se llega al paso del usuario con `network=""`. Antes eso reventaba con el error crudo de la API; ahora `analyze()` valida `self.network` contra `SUPPORTED_NETWORKS` antes de llamar a nada y, si no es válido, regresa al paso 0 en silencio en vez de tronar.
 
 ### El problema del borde y el scroll — resuelto 2026-09-03
 
@@ -147,7 +148,9 @@ Medición del prototipo antes de escribir el cambio: **0px de desbordamiento de 
 
 A petición: verificar que el wizard **hereda** botones, colores y animaciones de `docs/design-system.md` / `Qualify/ui/tokens.py` en vez de reinventarlos, y buscar si ya existe un componente/animación de carga en el proyecto para replicarlo aquí.
 
-**Loading — ya heredado, nada que cambiar.** `_loading_view()` (spinner centrado + texto) es exactamente el mismo idioma que `creative_pages.py::_drafting_panel` (`rx.spinner` + mensaje) usa para su propio panel de espera de generación — el patrón "spinner centrado reemplaza toda la tarjeta mientras algo carga" ya es el idiom del proyecto (ver también los botones con `loading=` en `connections_page.py`/`auth_pages.py`/`clarity_page.py` para acciones puntuales). No existe ningún otro componente de carga bespoke (nada de shimmer, nada de CSS de progreso) en `assets/qualify.css` ni en ningún `.py` del proyecto — todo el loading de la app es `rx.spinner`/`rx.skeleton` de Radix, sin excepción.
+**Loading — conclusión inicial ("ya heredado, nada que cambiar") superada horas después, ver abajo.** Primera pasada: `_loading_view()` (spinner centrado + texto) es exactamente el mismo idioma que `creative_pages.py::_drafting_panel` (`rx.spinner` + mensaje) usa para su propio panel de espera de generación — el patrón "spinner centrado reemplaza toda la tarjeta mientras algo carga" ya era el idiom del proyecto. No existía ningún componente de carga bespoke (nada de shimmer, nada de CSS de progreso) en `assets/qualify.css` ni en ningún `.py` — todo el loading de la app era `rx.spinner`/`rx.skeleton` de Radix, sin excepción.
+
+**Corregido el mismo día — sí se construyó un componente nuevo.** El fundador pidió específicamente un spinner distinto (un anillo con degradado cónico, referencia visual adjunta), más grande, con texto más chico, **y que viviera en el design system con sus variantes** — no una preferencia estética suelta dentro del wizard. Resultado: `ui.loading_spinner(size="sm"|"md"|"lg")`, nuevo en `Qualify/ui/primitives.py` (`.q-spinner` + `@keyframes q-spin` en `assets/qualify.css`, documentado en `docs/design-system.md` §5.4, demoed en `/design`). La única "variante" real es el tamaño — el color sale de la escala de gris del tema (`--gray-12` sobre transparente), así que se adapta solo a claro/oscuro, sin variante de tema que elegir (confirmado explícitamente al fundador, que preguntó). `_loading_view()` ahora usa `loading_spinner("lg")` en vez de `rx.spinner`, con el texto un tamaño más chico (`size="2"`/`"1"` en vez de `"3"`/`"2"`).
 
 **Encontrados y corregidos — drift real contra reglas documentadas:**
 
@@ -193,16 +196,24 @@ Cerrar esto significa: una migración Alembic para `subscription`/brief (si se d
 
 Nota relacionada: Reflex compila los componentes de página a **`.web/app_components/`**; los `.jsx` de `.web/app/routes/` son envoltorios finos que legítimamente no cambian. Buscar ahí para comprobar si un cambio entró.
 
-## 9. Estado en git al cerrar la sesión
+**Segunda trampa encontrada el 2026-09-05, intentando verificar visualmente el spinner y la animación de entrada: `.claude/launch.json` tenía el `PYTHONPATH` roto en Windows.** Las dos configuraciones (`qualify-crm`, `qualify-crm-worktree`) unían los cinco paths de `pythonpath` con `:` — el separador POSIX. En Windows eso arma UN solo path combinado en vez de cinco reales, así que `reflex run` reventaba de inmediato con `ModuleNotFoundError: qualify_models` al importar `Qualify.py` (nunca llegaba a levantar el server, ni frontend ni backend). Corregido a `;` (el separador real de `os.pathsep` en esta plataforma) en ambos checkouts. Con el arreglo, `reflex compile --dry` y `preview_start` sí compilan — pero el `next dev` del frontend seguía sin terminar de levantar dentro del tiempo de espera disponible en varios intentos (mismo síntoma que el hot-reload de arriba: OneDrive), así que la confirmación visual del spinner/la animación de entrada sigue pendiente del fundador.
 
-Todo **sin commitear**, en el worktree `claude/hola-9922e7` y copiado a mano al checkout principal `work/Qualify` (rama `feature/brand-kit-wizard`), que es el que corre el servidor. Ambas copias están sincronizadas y verificadas idénticas.
+## 9. Estado en git al cerrar la sesión (actualizado 2026-09-05)
 
-El commit `bdb19dc` (empujado a `origin`) contiene una versión **anterior** de `creative_wizard_pages.py`, previa a todo lo de §5 y §6. Archivos modificados sobre él:
+**Todo commiteado.** Rama `fix/brand-kit-wizard` — la misma que ya tiene abierta la **PR #36** (`fix(brand): brand kit wizard layout and palette control split`, `da5d364`, empujada a `origin` el 2026-09-04, checks en verde, todavía sin mergear al momento de escribir esto). El trabajo de esta sesión son 5 commits nuevos encima de `da5d364`, en orden:
 
-| Archivo | Cambio |
+| Commit | Resumen |
 |---|---|
-| `Qualify/creative_wizard_pages.py` | flujo por pasos evolucionado + paleta de §5 + layout de §6 |
-| `Qualify/ui/layout.py` | `app_shell` (panel = contenedor con scroll) y `page_body` (`flex`, y un `align_items` opcional aditivo) |
-| `assets/qualify.css` | reset de `margin`/`padding` en `html, body` |
+| `95d55de` | `feat(brand): scrape TikTok/Instagram profiles via Scrape Creators` — `scrapecreators_client.py` + tests, §4.1 |
+| `8dfd6c0` | `feat(brand): mobile fixes + Resultados e insights final screen for both flows` — §3, §4, §4.1, §6 puntos 7-11 |
+| `c80f002` | `feat(ui): loading_spinner design-system primitive, brand kit token audit` — `loading_spinner`, `docs/design-system.md`, §6.1 |
+| `2e71553` | `fix(dev): correct PYTHONPATH separator in launch.json for Windows` — §8 |
+| `729443d` | `docs(brand): document the Scrape Creators, insights-screen and design-system work` — esta misma actualización de este archivo |
 
-Falta un segundo commit para poner el PR al día. **Al hacerlo, los tres archivos van juntos** — ver la advertencia al final de §6.
+Se hicieron primero en una rama aparte (`feature/brand-kit-connect-insights`, creada desde la punta de `fix/brand-kit-wizard`) tras dudar si este trabajo merecía una PR propia por ser un salto de alcance mucho más grande que "layout y paleta". El fundador consultó y decidió que **sí va bajo la misma PR #36**: `fix/brand-kit-wizard` se adelantó por fast-forward (`git merge --ff-only`, sin conflictos — la rama aparte no tenía ninguna historia que `fix/brand-kit-wizard` no tuviera) a los 5 commits, y la rama aparte quedó redundante (no borrada, por si acaso).
+
+**Verificado antes y después del fast-forward:** `ruff check` limpio, 238/238 tests en verde, `reflex compile --dry` exitoso en ambos checkouts (worktree y `work/Qualify` — este último en la rama vieja `feature/brand-kit-wizard`, desincronizada de `fix/brand-kit-wizard` desde antes de esta sesión; ver la nota siguiente).
+
+**Pendiente al momento de escribir esto:** `git push origin fix/brand-kit-wizard` — preparado, no ejecutado, a la espera de luz verde explícita del fundador antes de tocar la PR abierta.
+
+> ⚠ **Las dos ramas del checkout principal y el worktree NO son la misma, y eso ya mordió una vez esta sesión.** `work/Qualify` (el checkout que corre el servidor de desarrollo) está en `feature/brand-kit-wizard` — la rama VIEJA, ya mergeada a `main` vía PR #34, congelada en `bdb19dc`. El worktree está en `fix/brand-kit-wizard`, que arrancó de `main` DESPUÉS de ese merge y va varios commits adelante (incluida una renombrada de `mentions_table` → `mentions_body` en `components.py`). Copiar un archivo entero del worktree al checkout principal sin revisar esto rompe el checkout principal contra su propio `components.py` — pasó una vez con `Qualify.py` (`ModuleNotFoundError` por el import de `mentions_body`), y el arreglo fue restaurar el `Qualify.py` propio del checkout principal (`git show HEAD:Qualify/Qualify.py`) y aplicarle solo el diff mínimo necesario, no una copia completa. Antes de copiar un archivo compartido entre ambos módulos verbatim, confirmar que las dos ramas no divergieron en él.
