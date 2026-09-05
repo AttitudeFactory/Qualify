@@ -485,7 +485,7 @@ class InboxState(rx.State):
             await self._load_reel_summaries_first_page(tenant_id, connection_id)
 
     @rx.event(background=True)
-    async def load_screen(self) -> None:
+    async def load_screen(self):
         """Load the operator's eligible Instagram connections, then the last-2-weeks
         Reels for the first one — mirrors `ConnectionsState.load_connections`'s single
         combined loader rather than `PublishState`'s separate load+select, since this
@@ -524,9 +524,21 @@ class InboxState(rx.State):
             await self._load_candidates(tenant_id, connection_id)
             await self._load_reel_summaries_first_page(tenant_id, connection_id)
             await self._load_global_summary(tenant_id, connection_id)
+            # QUA-22: the reply-drafts panel is a separate `RepliesState` (own module,
+            # own lifecycle — see its docstring), triggered here via `yield` rather
+            # than a second `on_load` list entry, same reason `AuthState.handle_login`
+            # ends in one `yield rx.redirect(...)`: two independent on_load background
+            # events are not guaranteed ordered, so a load that depends on
+            # `selected_connection_id` being already set must chain from HERE, after
+            # it is. Local import breaks the cycle (`replies_state.py` imports THIS
+            # module for the connection id) — same technique `AuthState.logout` uses
+            # for its own substate imports.
+            from .replies_state import RepliesState  # noqa: PLC0415
+
+            yield RepliesState.load_pending_drafts
 
     @rx.event(background=True)
-    async def select_connection(self, connection_id: str) -> None:
+    async def select_connection(self, connection_id: str):
         """Dev-only-adjacent: switch which connection's content is shown."""
         async with self:
             if not any(option.id == connection_id for option in self.connections):
@@ -557,6 +569,11 @@ class InboxState(rx.State):
         await self._load_candidates(tenant_id, connection_id)
         await self._load_reel_summaries_first_page(tenant_id, connection_id)
         await self._load_global_summary(tenant_id, connection_id)
+        # QUA-22: same reason `load_screen` chains into `RepliesState` at its own
+        # tail — see that comment for why `yield`, not a second `on_load` entry.
+        from .replies_state import RepliesState  # noqa: PLC0415
+
+        yield RepliesState.load_pending_drafts
 
     @rx.event(background=True)
     async def toggle_monitored(self, external_media_id: str, monitored: bool) -> None:

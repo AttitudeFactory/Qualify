@@ -193,6 +193,7 @@ class AuthState(rx.State):
             from .inbox_state import InboxState
             from .leads_state import LeadsState
             from .publishing_state import PublishState
+            from .replies_state import RepliesState
             from .state import DashboardState
 
             for state_cls in (
@@ -203,6 +204,7 @@ class AuthState(rx.State):
                 PublishState,
                 DashboardState,
                 CreativeState,
+                RepliesState,
             ):
                 substate = await self.get_state(state_cls)
                 substate.reset()
