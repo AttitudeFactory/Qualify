@@ -19,6 +19,18 @@ class TranscriptionProvider(Protocol):
     def transcribe(self, audio_path: Path) -> tuple[str, str | None]: ...
 
 
+class ReplyDraftProvider(Protocol):
+    """Text generation for one assisted reply draft (QUA-22, comments tranche).
+    Returns the drafted reply text; grounding (what comment it answers, what business
+    it speaks for) is entirely the caller's prompt-construction job — this Protocol
+    only names the seam, same reasoning `SentimentProvider` documents for why the
+    stage should be exercisable without weights or network."""
+
+    model_id: str
+
+    def draft_reply(self, *, comment_text: str, business_name: str | None = None) -> str: ...
+
+
 class SentimentProvider(Protocol):
     """Text polarity classification. Returns (label, score).
 
@@ -166,6 +178,66 @@ class HFInferenceVisionProvider:
             model=self.model_id,
         )
         return completion.choices[0].message.content or ""
+
+
+DEFAULT_REPLY_DRAFT_MODEL_ID = "Qwen/Qwen3-VL-4B-Instruct"
+"""Module-level so `qualify_api.replies.composition` can stamp `generator_version`
+provenance without constructing an `HFInferenceReplyDraftProvider` (and its
+`InferenceClient`) just to read a default it never otherwise needs."""
+
+_REPLY_SYSTEM_PROMPT = (
+    "Eres quien responde comentarios públicos de Instagram en nombre de un negocio. "
+    "Te llega un comentario con sentimiento POSITIVO. Escribe una respuesta breve (1-2 "
+    "frases), cálida y natural en español, agradeciendo o reaccionando al comentario. "
+    "Básate ÚNICAMENTE en el texto del comentario — nunca inventes datos, promociones, "
+    "precios ni hechos que el comentario no menciona. No uses hashtags ni emojis en "
+    "exceso (máximo uno). Responde solo con el texto de la respuesta, sin comillas ni "
+    "explicaciones."
+)
+
+
+class HFInferenceReplyDraftProvider:
+    """Calls a hosted instruct LLM via HF Inference Providers for QUA-22's draft
+    generator.
+
+    Reuses the exact `(model_id, provider)` pairing `HFInferenceVisionProvider`
+    already validated empirically on this account (2026-08-06, this module's own
+    docstring above) — `Qwen/Qwen3-VL-4B-Instruct` via `provider="featherless-ai"`,
+    explicit rather than `"auto"` for the same documented reason. Qwen3-VL is a
+    chat-instruct model; calling it text-only (no `image_url` content block) is the
+    same `chat_completion` request shape with one fewer content item, not a new
+    integration. Deliberately does NOT introduce an unverified new model/provider pair
+    for this first version — swap for a dedicated text model later via the same
+    `ReplyDraftProvider` Protocol if generation quality warrants it, once real drafts
+    exist to compare against.
+
+    **Not yet exercised against a real Meta comment end-to-end** — same "corpus/design
+    verified, live E2E pending" posture `replies/client.py` documents for the write
+    side. The prompt in `_REPLY_SYSTEM_PROMPT` is this class's whole grounding
+    contract: no comment text ever reaches the model except via this one prompt, and
+    no field except the model's own text response ever leaves it.
+    """
+
+    def __init__(
+        self, model_id: str = DEFAULT_REPLY_DRAFT_MODEL_ID, provider: str = "featherless-ai"
+    ) -> None:
+        # Lazy on purpose — same reason as `HFInferenceVisionProvider.__init__`.
+        from huggingface_hub import InferenceClient  # noqa: PLC0415
+
+        self.model_id = model_id
+        self._client = InferenceClient(model=model_id, provider=provider)
+
+    def draft_reply(self, *, comment_text: str, business_name: str | None = None) -> str:
+        business_line = f" El negocio se llama {business_name}." if business_name else ""
+        completion = self._client.chat_completion(
+            messages=[
+                {"role": "system", "content": _REPLY_SYSTEM_PROMPT + business_line},
+                {"role": "user", "content": comment_text},
+            ],
+            model=self.model_id,
+            max_tokens=120,
+        )
+        return (completion.choices[0].message.content or "").strip()
 
 
 VisionBackend = Literal["hosted", "local", "none"]
