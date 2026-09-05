@@ -452,7 +452,7 @@ class IGComment(BaseModel):
     ] = None
 
     replies: Annotated[
-        list[IGComment] | None,
+        IGCommentRepliesEdge | None,
         FieldPolicy(
             presence=Presence.EXPANSION_ONLY,
             citation=Citation(
@@ -463,7 +463,16 @@ class IGComment(BaseModel):
             note=(
                 "The edge never arrives by default. Absence therefore means 'not asked "
                 "for', NOT 'this comment has no replies' — the two are indistinguishable "
-                "in a payload and must not be conflated by a consumer."
+                "in a payload and must not be conflated by a consumer.\n\n"
+                "[CORRECTED 2026-09-05, against a REAL live comment with a reply, via "
+                "manual QUA-22 smoke testing] Was typed `list[IGComment] | None` — WRONG. "
+                "Like every other Graph API edge in this contract (`IGCommentsPage`), "
+                '`replies` arrives as `{"data": [...], "paging": {...}}`, never a bare '
+                "list. The bare-list guess had never been exercised against a comment "
+                "that actually carries a reply until now; it failed with a pydantic "
+                "`list_type` error the first time it was (a real 502 on `POST "
+                "/api/inbox/sync`, reproduced and root-caused without ever printing "
+                "comment text — see the PR/commit this fix ships in)."
             ),
         ),
     ] = None
@@ -542,6 +551,20 @@ class IGComment(BaseModel):
             if _safe_policy(cls, name) is not None
             and _safe_policy(cls, name).permission == permission  # type: ignore[union-attr]
         )
+
+
+class IGCommentRepliesEdge(BaseModel):
+    """The `replies` edge on one `IGComment`, requested via field expansion
+    (`?fields=comments{...,replies}`): `{"data": [...], "paging": {...}}` — same
+    shape every other Graph API edge in this contract already has (`IGCommentsPage`
+    below). NOT a bare `list[IGComment]` — that was this field's original, wrong
+    type; see `IGComment.replies`'s own field note for the correction.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    data: list[IGComment]
+    paging: dict[str, Any] | None = None
 
 
 def _safe_policy(model: type[IGComment], name: str) -> FieldPolicy | None:

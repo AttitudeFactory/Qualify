@@ -294,15 +294,19 @@ def test_replies_are_expansion_only_so_absence_is_not_emptiness() -> None:
 
 
 def test_replies_parse_recursively_when_expanded() -> None:
+    """`replies` is an EDGE (`{"data": [...]}`), like every other Graph API edge in
+    this contract — not a bare list. Corrected 2026-09-05 against a real Meta
+    response during QUA-22 manual testing; the bare-list shape this test used to
+    assert had never been exercised against a comment with an actual reply."""
     comment = IGComment.model_validate(
         {
             "id": "1",
             "text": "parent",
-            "replies": [{"id": "2", "text": "child", "parent_id": "1"}],
+            "replies": {"data": [{"id": "2", "text": "child", "parent_id": "1"}]},
         }
     )
     assert comment.replies is not None
-    assert comment.replies[0].parent_id == "1"
+    assert comment.replies.data[0].parent_id == "1"
 
 
 # ---------------------------------------------------------------------------
