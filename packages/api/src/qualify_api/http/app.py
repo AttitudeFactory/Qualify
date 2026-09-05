@@ -26,9 +26,16 @@ from qualify_api.http import (
     leads_routes,
     mentions_routes,
     publishing_routes,
+    replies_routes,
     sentiment_routes,
 )
 from qualify_api.http.inbox_routes import SyncComments
+from qualify_api.http.replies_routes import (
+    DecideDraft,
+    GenerateDrafts,
+    ListPendingDrafts,
+    SendDraft,
+)
 from qualify_api.http.sentiment_routes import AnalyzePendingComments
 from qualify_api.leads.service import LeadIntakeService
 from qualify_api.publishing.service import PublishService
@@ -120,6 +127,36 @@ def build_production_leads_service() -> LeadIntakeService:
     return production_leads_service()
 
 
+def build_production_generate_drafts() -> GenerateDrafts:
+    """Lazy import like `build_production_analyze_pending_comments`: keeps
+    `qualify_models` (the `ml` group) out of this route's import graph unless the
+    trigger is actually exercised."""
+    from qualify_api.replies.composition import generate_drafts  # noqa: PLC0415
+
+    return generate_drafts
+
+
+def build_production_list_pending_drafts() -> ListPendingDrafts:
+    from qualify_api.replies.composition import list_pending_drafts  # noqa: PLC0415
+
+    return list_pending_drafts
+
+
+def build_production_decide_draft() -> DecideDraft:
+    from qualify_api.replies.composition import decide_draft  # noqa: PLC0415
+
+    return decide_draft
+
+
+def build_production_send_draft() -> SendDraft:
+    """Lazy import like `build_production_inbox_sync`: resolving credentials needs the
+    Meta env, and an app booted without it should fail the SEND request loudly, not
+    the whole boot."""
+    from qualify_api.replies.composition import send_draft  # noqa: PLC0415
+
+    return send_draft
+
+
 def build_production_content_service() -> ContentService:
     """Lazy on purpose, like the publishing builders: composing the creative service
     builds the real Anthropic router, and an app booted without the creative env should
@@ -148,6 +185,7 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
     app.include_router(creative_routes.router)
     app.include_router(sentiment_routes.router)
     app.include_router(mentions_routes.router)
+    app.include_router(replies_routes.router)
     if configure_production:
         app.dependency_overrides[connections_routes.get_connect_service] = build_production_service
         app.dependency_overrides[publishing_routes.get_publish_service] = (
@@ -174,6 +212,14 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
         app.dependency_overrides[mentions_routes.get_analyze_mention_sentiment] = (
             build_production_analyze_mention_sentiment
         )
+        app.dependency_overrides[replies_routes.get_generate_drafts] = (
+            build_production_generate_drafts
+        )
+        app.dependency_overrides[replies_routes.get_list_pending_drafts] = (
+            build_production_list_pending_drafts
+        )
+        app.dependency_overrides[replies_routes.get_decide_draft] = build_production_decide_draft
+        app.dependency_overrides[replies_routes.get_send_draft] = build_production_send_draft
         app.dependency_overrides[creative_routes.get_content_service] = (
             build_production_content_service
         )
