@@ -374,6 +374,8 @@ def test_sync_now_projects_summary_fields() -> None:
     # A response shape from BEFORE this bug-fix field existed (no key at all) must not
     # raise a KeyError — `.get(..., [])` backward-compat, see `sync_now`'s own comment.
     assert vm.skipped_missing_media == ()
+    # Same backward-compat posture for QUA-101's later field, `.get(..., 0)`.
+    assert vm.deleted_comments == 0
 
 
 def test_sync_now_projects_a_truncated_summary() -> None:
@@ -413,6 +415,31 @@ def test_sync_now_projects_skipped_missing_media_without_raising() -> None:
         )
     assert vm.skipped_missing_media == ("18034792133641940",)
     assert vm.media_checked == 2
+
+
+def test_sync_now_projects_deleted_comments_without_raising() -> None:
+    """QUA-101: a comment soft-deleted server-side is still a 200 — `sync_now` must
+    return a normal `SyncSummaryVM` (never raise), with the count reaching the VM. Same
+    shape as `test_sync_now_projects_skipped_missing_media_without_raising` above, one
+    level down (a comment, not the whole Reel)."""
+    client = _mock_asgi_client(
+        200,
+        {
+            "media_checked": 1,
+            "new_comments": 0,
+            "truncated": False,
+            "skipped_missing_media": [],
+            "deleted_comments": 1,
+        },
+    )
+
+    with _patched(_inbox_sync_asgi_client=lambda: client):
+        vm = _run_coro(
+            inbox_provider.sync_now(
+                tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
+            )
+        )
+    assert vm.deleted_comments == 1
 
 
 def test_sync_now_propagates_unknown_connection_on_a_404() -> None:

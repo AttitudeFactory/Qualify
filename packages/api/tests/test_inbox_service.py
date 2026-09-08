@@ -505,13 +505,13 @@ async def test_sync_comments_walks_multiple_pages_via_the_after_cursor() -> None
     assert second.new_comments == 0
 
 
-async def test_sync_comments_stops_paginating_once_a_page_is_fully_known() -> None:
-    """The other half of the same criterion: a re-sync where page one has NOTHING new
-    must not walk into page two at all — `page_had_new=False` breaks the loop
-    immediately (`service.py`'s early-stop, since there is no since-cursor to lean on
-    instead per `INCREMENTAL_POLLING_NOTE`). Proven by a media id whose SECOND page is
-    intentionally missing from the fake: if the service tried to fetch it, this test
-    would raise `KeyError`, not merely assert something wrong."""
+async def test_sync_comments_still_walks_to_completion_when_a_page_is_fully_known() -> None:
+    """QUA-101 behavior change, superseding the old early-stop: a re-sync where page one
+    has NOTHING new must still walk into page two, all the way to Meta's own end of
+    pagination (`cursor is None`) — stopping at the first fully-known page (the previous
+    design) is structurally blind to a comment disappearing further back in the list, so
+    it cannot coexist with deletion reconciliation. Both pages being fully known and
+    unchanged, nothing is (re)marked deleted."""
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
         tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
@@ -526,14 +526,15 @@ async def test_sync_comments_stops_paginating_once_a_page_is_fully_known() -> No
         granted_scopes=GRANTED,
     )
     await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)  # primes c1, c2
-    # A resync's PaginatedFakeCommentsClient here reuses the same two pages: page one is
-    # now fully known (c1 already stored), so the service must stop right there.
     comments_client.after_values_seen.clear()
 
     summary = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
 
-    assert comments_client.after_values_seen == [None]  # page two never requested
+    assert comments_client.after_values_seen == [None, "CURSOR_1"]  # page two now requested
     assert summary.new_comments == 0
+    assert summary.deleted_comments == 0
+    assert not repository.is_comment_deleted(connection_id=CONNECTION_ID, external_message_id="c1")
+    assert not repository.is_comment_deleted(connection_id=CONNECTION_ID, external_message_id="c2")
 
 
 # --------------------------------------------------------------------------------------
@@ -870,3 +871,208 @@ async def test_budget_exhausted_mid_pagination_stops_and_returns_partial() -> No
     assert summary.truncated is True
     assert summary.new_comments == 1  # page one landed
     assert comments_client.after_values_seen == [None]  # page two was never requested
+
+
+# --------------------------------------------------------------------------------------
+# QUA-101 — reconciliation: a comment Meta stops returning is soft-deleted, restored if
+# it reappears, and a truncated/whole-Reel-deleted walk never reconciles at all.
+# --------------------------------------------------------------------------------------
+
+
+async def test_a_comment_deleted_at_the_source_is_marked_deleted_and_excluded() -> None:
+    """The exact shape of the reported bug (QUA-101): sync a comment, persist it, then
+    Meta simply stops returning it on the next sync (the Reel itself is untouched, no
+    error) — Qualify must mark it deleted rather than leaving it looking active forever."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+    )
+    comments_by_media: dict[str, list[IGComment]] = {"A": [_comment("c1")]}
+    comments_client = FakeCommentsClient(comments_by_media)
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+    first = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+    assert first.new_comments == 1
+    assert not repository.is_comment_deleted(connection_id=CONNECTION_ID, external_message_id="c1")
+
+    # The comment's author deleted it on Instagram: the next poll's response for this
+    # media simply no longer includes it — no error, the Reel itself is fine.
+    comments_by_media["A"] = []
+
+    second = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert second.new_comments == 0
+    assert second.deleted_comments == 1
+    assert repository.is_comment_deleted(connection_id=CONNECTION_ID, external_message_id="c1")
+
+
+async def test_a_comment_still_present_across_syncs_is_never_marked_deleted() -> None:
+    """Guards against a false positive: a comment Meta keeps returning, unchanged,
+    across repeated syncs must never be (mis)marked deleted."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+    )
+    comments_client = FakeCommentsClient({"A": [_comment("c1")]})
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+
+    for _ in range(3):
+        summary = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+        assert summary.deleted_comments == 0
+        assert not repository.is_comment_deleted(
+            connection_id=CONNECTION_ID, external_message_id="c1"
+        )
+
+
+async def test_a_new_comment_alongside_an_existing_one_still_counts_as_new() -> None:
+    """New-comment detection must keep working unchanged: an existing comment staying
+    put and a genuinely new one appearing alongside it in the same sync must both be
+    handled correctly — the existing one untouched, the new one landing as new."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+    )
+    comments_by_media: dict[str, list[IGComment]] = {"A": [_comment("c1")]}
+    comments_client = FakeCommentsClient(comments_by_media)
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+    await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    comments_by_media["A"] = [_comment("c1"), _comment("c2")]  # c2 is genuinely new
+
+    summary = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert summary.new_comments == 1  # only c2
+    assert summary.deleted_comments == 0
+    assert not repository.is_comment_deleted(connection_id=CONNECTION_ID, external_message_id="c1")
+    assert not repository.is_comment_deleted(connection_id=CONNECTION_ID, external_message_id="c2")
+
+
+async def test_a_soft_deleted_comment_that_reappears_is_restored() -> None:
+    """If Meta shows a previously-vanished comment again — most plausibly the
+    pagination-shift race `ig_shapes.INCREMENTAL_POLLING_NOTE` documents, not a real
+    delete-then-undelete on Instagram's side — it must come back as active, not stay
+    soft-deleted forever."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+    )
+    comments_by_media: dict[str, list[IGComment]] = {"A": [_comment("c1")]}
+    comments_client = FakeCommentsClient(comments_by_media)
+    service = InboxService(
+        repository=repository,
+        comments_client=comments_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+    await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+    comments_by_media["A"] = []
+    await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+    assert repository.is_comment_deleted(connection_id=CONNECTION_ID, external_message_id="c1")
+
+    comments_by_media["A"] = [_comment("c1")]  # reappears
+
+    third = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert third.new_comments == 0  # a restore is not "new"
+    assert not repository.is_comment_deleted(connection_id=CONNECTION_ID, external_message_id="c1")
+
+
+async def test_a_deleted_reel_does_not_soft_delete_its_already_synced_comments() -> None:
+    """Differentiates the two deletion shapes explicitly (QUA-101): the WHOLE-REEL case
+    (`_is_missing_media_error`, already auto-unmonitors) must never ALSO run
+    comment-level reconciliation for it — a Reel disappearing is a different, already
+    fully-handled event, not a signal that every comment ever synced under it is now
+    individually "deleted"."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="DELETED",
+        monitored=True,
+    )
+    priming_service = InboxService(
+        repository=repository,
+        comments_client=FakeCommentsClient({"DELETED": [_comment("c1")]}),
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+    await priming_service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    # The Reel itself is deleted at the source on the next sync — a different client,
+    # same shape `test_a_deleted_reel_is_auto_unmonitored` already uses.
+    service = InboxService(
+        repository=repository,
+        comments_client=FakeCommentsClient(
+            {}, error_by_media={"DELETED": _missing_media_error("DELETED")}
+        ),
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+
+    summary = await service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert summary.skipped_missing_media == ("DELETED",)
+    assert summary.deleted_comments == 0
+    assert not repository.is_comment_deleted(connection_id=CONNECTION_ID, external_message_id="c1")
+
+
+async def test_a_truncated_walk_never_reconciles_anything() -> None:
+    """Safety net: a walk that ran out of budget mid-pagination has not seen Meta's
+    complete current list, so it must never conclude a comment is missing — doing so
+    would be a false positive the moment the budget (not a real deletion) was the
+    reason a comment was not (yet) observed this pass."""
+    repository = MemoryInboxRepository()
+    repository.set_media_monitored(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+    )
+    # Prime c1 and c2 in an earlier, unconstrained sync.
+    page_one = IGCommentsPage(data=[_comment("c1")], paging={"cursors": {"after": "CURSOR_1"}})
+    page_two = IGCommentsPage(data=[_comment("c2")], paging=None)
+    priming_client = PaginatedFakeCommentsClient({"A": {None: page_one, "CURSOR_1": page_two}})
+    priming_service = InboxService(
+        repository=repository,
+        comments_client=priming_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+    await priming_service.sync_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID, now=NOW)
+
+    # Now re-sync with only 1 call left in the budget: page one (still just c1) is all
+    # that gets fetched before the budget forces a stop — c2 was never re-observed this
+    # pass, but that must NOT be read as "c2 was deleted". Accounts for the 2 calls the
+    # priming sync above already logged — the budget is a real sliding window, not reset
+    # between syncs.
+    already_logged = repository.calls_in_last_hour(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, now=NOW
+    )
+    for _ in range(META_CALL_BUDGET_PER_HOUR - 1 - already_logged):
+        repository.record_call(tenant_id=TENANT_ID, connection_id=CONNECTION_ID, called_at=NOW)
+    constrained_client = PaginatedFakeCommentsClient({"A": {None: page_one, "CURSOR_1": page_two}})
+    constrained_service = InboxService(
+        repository=repository,
+        comments_client=constrained_client,
+        media_client=FakeMediaClient({}),
+        granted_scopes=GRANTED,
+    )
+
+    summary = await constrained_service.sync_comments(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, now=NOW
+    )
+
+    assert summary.truncated is True
+    assert summary.deleted_comments == 0
+    assert not repository.is_comment_deleted(connection_id=CONNECTION_ID, external_message_id="c2")

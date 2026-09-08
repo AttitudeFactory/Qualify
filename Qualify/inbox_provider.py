@@ -439,6 +439,8 @@ async def sync_now(*, tenant_id: UUID, connection_id: UUID) -> SyncSummaryVM:
         # with a response shape from before this field existed (bug fix, 2026-09-01),
         # same defensive posture `truncated` above already established for itself.
         skipped_missing_media=tuple(data.get("skipped_missing_media", [])),
+        # Same backward-compatible `.get(..., 0)` posture, for the same reason (QUA-101).
+        deleted_comments=data.get("deleted_comments", 0),
     )
 
 

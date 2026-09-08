@@ -65,6 +65,11 @@ class SyncResponse(BaseModel):
     # — that branch is reserved for a REAL failed call, not a per-media id Meta confirmed
     # is gone and the service already handled.
     skipped_missing_media: list[str] = []
+    # QUA-101: individual comments soft-deleted this pass because a COMPLETE walk of
+    # their (still-existing) media no longer returned them — the sibling case to
+    # `skipped_missing_media` above, at the comment level instead of the whole Reel.
+    # Also always a 200, same reasoning.
+    deleted_comments: int = 0
 
 
 @router.post("/inbox/sync", response_model=SyncResponse)
@@ -118,4 +123,5 @@ async def sync_inbox(
         new_comments=summary.new_comments,
         truncated=summary.truncated,
         skipped_missing_media=list(summary.skipped_missing_media),
+        deleted_comments=summary.deleted_comments,
     )

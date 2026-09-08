@@ -20,11 +20,19 @@ again, there is nothing here that sleeps or polls on its own.
   that bypasses the candidate-listing UI and calls this directly with an old media_id
   must be rejected exactly as if the UI had never offered it. Turning monitoring OFF is
   never gated by age — the rule only bounds what can be ADDED.
-- `sync_comments` — B2. Reads ONLY `InboxRepository.list_monitored_media_ids`, never
-  Meta's full media list. Walks comment pages per monitored media until a page adds
-  nothing new or `paging.cursors.after` is absent — the dedup-by-id rule
-  `ig_shapes.INCREMENTAL_POLLING_NOTE` already prescribes, not a persisted cursor (which
-  would go stale between runs regardless).
+- `sync_comments` — B2, extended by QUA-101. Reads ONLY `InboxRepository.
+  list_monitored_media_ids`, never Meta's full media list. Walks EVERY comment page per
+  monitored media to completion — to `paging.cursors.after` being absent, or the QUA-88
+  budget running out — never stopping early just because a page added nothing new (that
+  optimization, correct for "is there anything NEW", cannot tell "did something
+  disappear": a comment deleted on page 3 leaves page 1 looking exactly as fully-known as
+  before). Dedup on insert is still by id (`ig_shapes.INCREMENTAL_POLLING_NOTE`), not a
+  persisted cursor. After a media's walk completes WITHOUT truncation or a missing-media
+  error, its observed comment ids are diffed against storage
+  (`InboxRepository.reconcile_media_comments`, QUA-101): anything stored but no longer
+  returned is soft-deleted, and anything soft-deleted that reappears is restored. A
+  truncated or errored walk never reconciles — it has not seen enough of Meta's current
+  state to prove anything absent.
 
 All three take already-constructed `MediaClient`/`CommentsClient` — this service does not
 build them and does not resolve credentials. Composition (which client for which
@@ -98,6 +106,14 @@ class SyncSummary:
     # empty tuple so every pre-existing call site/equality check is unaffected, same
     # reasoning `truncated` already documents.
     skipped_missing_media: tuple[str, ...] = ()
+    # QUA-101: individual comments newly soft-deleted this pass
+    # (`InboxRepository.reconcile_media_comments`) because a COMPLETE walk of their
+    # media no longer returned them — distinct from `skipped_missing_media` above,
+    # which is the whole Reel disappearing. Restoring an already-deleted comment that
+    # reappears is NOT counted here (it is not new information about a deletion).
+    # Defaults to 0 so every pre-existing call site/equality check is unaffected, same
+    # reasoning `truncated`/`skipped_missing_media` already document.
+    deleted_comments: int = 0
 
 
 class CommentsPermissionMissing(Exception):
@@ -290,6 +306,15 @@ class InboxService:
         paginate deeply can still exhaust the budget mid-walk, in which case the sync
         stops (not raises) and returns a `truncated=True` summary: whatever was already
         synced is real and idempotent, so surfacing it beats discarding it.
+
+        **QUA-101.** A monitored medium's comments are now always walked to Meta's own
+        end of pagination (or until the budget runs out), not just to the first page
+        with nothing new — the trade-off this accepts is more Meta calls per sync for a
+        medium with many comments, in exchange for being able to notice one disappear.
+        A walk that completes cleanly (no truncation, no error) reconciles: anything
+        stored under that medium but no longer returned is soft-deleted, and anything
+        soft-deleted that reappears is restored. See `SyncSummary.deleted_comments` and
+        `InboxRepository.reconcile_media_comments`.
         """
         if not set(COMMENTS_EDGE_PERMISSIONS) <= self._granted_scopes:
             raise CommentsPermissionMissing(connection_id=connection_id)
@@ -308,6 +333,7 @@ class InboxService:
 
         media_checked = 0
         new_comments = 0
+        deleted_comments = 0
         truncated = False
         skipped_missing_media: list[str] = []
         for media_id in monitored_ids:
@@ -316,6 +342,13 @@ class InboxService:
                 break
             media_checked += 1
             after: str | None = None
+            # QUA-101: every comment id actually observed this walk, regardless of
+            # whether `upsert_comment` reported it as new — `reconcile_media_comments`
+            # needs the COMPLETE current set to diff against storage, not just the new
+            # ones. Reconciliation only runs if `walk_completed` ends up `True` below.
+            observed_external_ids: set[str] = set()
+            media_missing = False
+            walk_completed = False
             while True:
                 if remaining <= 0:
                     truncated = True
@@ -354,17 +387,22 @@ class InboxService:
                         # QUA-88 budget on it) on every future sync/poll tick forever.
                         # `threads`/`messages` already synced for it are untouched —
                         # same "orthogonal facts" ruling migration 0005 already makes
-                        # for turning monitoring off the ordinary way.
+                        # for turning monitoring off the ordinary way. QUA-101: this is
+                        # the WHOLE-REEL case, deliberately distinct from an individual
+                        # comment disappearing — never reconciled at the comment level
+                        # below (`media_missing` skips that), the Reel-level unmonitor
+                        # right below is the complete, correct response to it.
                         self._repository.set_media_monitored(
                             tenant_id=tenant_id,
                             connection_id=connection_id,
                             external_media_id=media_id,
                             monitored=False,
                         )
+                        media_missing = True
                         break
                     raise
-                page_had_new = False
                 for comment in page.data:
+                    observed_external_ids.add(comment.id)
                     if self._repository.upsert_comment(
                         tenant_id=tenant_id,
                         connection_id=connection_id,
@@ -372,14 +410,28 @@ class InboxService:
                         comment=comment,
                     ):
                         new_comments += 1
-                        page_had_new = True
                 cursor = ((page.paging or {}).get("cursors") or {}).get("after")
-                # Stop at the first fully-known page or when Meta has no more to offer —
-                # `ig_shapes.INCREMENTAL_POLLING_NOTE`: dedup is by id, there is no
-                # since-cursor to lean on instead.
-                if not cursor or not page_had_new:
+                # QUA-101: stop ONLY when Meta itself signals the end of pagination —
+                # no longer at the first page with nothing new. Detecting a DELETED
+                # comment requires having walked to Meta's complete current list; the
+                # old "stop once a page adds nothing new" shortcut was correct for "is
+                # there anything NEW" (`ig_shapes.INCREMENTAL_POLLING_NOTE`'s dedup-by-id
+                # rule still holds for that question) but is structurally blind to a
+                # comment disappearing further back in an otherwise-unchanged list.
+                if not cursor:
+                    walk_completed = True
                     break
                 after = cursor
+            if walk_completed and not media_missing:
+                # A COMPLETE, untruncated, error-free walk of this media's comments —
+                # the one precondition `reconcile_media_comments`'s docstring requires
+                # before it is safe to conclude anything is actually gone.
+                deleted_comments += self._repository.reconcile_media_comments(
+                    tenant_id=tenant_id,
+                    connection_id=connection_id,
+                    external_media_id=media_id,
+                    current_external_ids=frozenset(observed_external_ids),
+                )
             if truncated:
                 break
         return SyncSummary(
@@ -387,4 +439,5 @@ class InboxService:
             new_comments=new_comments,
             truncated=truncated,
             skipped_missing_media=tuple(skipped_missing_media),
+            deleted_comments=deleted_comments,
         )
