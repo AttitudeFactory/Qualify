@@ -132,6 +132,12 @@ class Message(Base):
     raw_payload_r2_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Which version of the QUA-67 contract parsed this row.
     shape_version: Mapped[str] = mapped_column(Text, nullable=False)
+    # QUA-101: non-NULL means Meta stopped returning this comment on a COMPLETE walk of
+    # its media (`InboxRepository.reconcile_media_comments`) — never a physical DELETE,
+    # so `comment_sentiment_results`/`comment_reply_drafts` FKs (0012/0014) stay intact.
+    # Cleared automatically if Meta shows the comment again (see that method's docstring
+    # for why a restore, not a real delete-then-undelete, is the likely explanation).
+    deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
 class InboxMetaCallLog(Base):

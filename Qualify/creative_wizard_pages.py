@@ -689,7 +689,7 @@ def _step_subscription() -> rx.Component:
                 BrandWizardState.select_plan(key),
             )
             for key, label, blurb in PLANS
-        )
+        ),
     )
 
 
@@ -1642,9 +1642,7 @@ def brand_choice_index() -> rx.Component:
     there is room to grow into) instead of stopping short and leaving bare panel
     background below it."""
     return app_shell(
-        page_header(
-            "Brandkit", "El sustrato de marca del que sale cada pieza", title_size="8"
-        ),
+        page_header("Brandkit", "El sustrato de marca del que sale cada pieza", title_size="8"),
         page_body(
             rx.vstack(
                 card(

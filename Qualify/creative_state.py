@@ -414,8 +414,10 @@ class CreativeState(rx.State):
         tenant_id, brand_id, _ = ids
         try:
             verdict = await asyncio.to_thread(brand_readiness, tenant_id, brand_id)
-            form = None if already_loaded else await asyncio.to_thread(
-                load_kit_form, tenant_id, brand_id
+            form = (
+                None
+                if already_loaded
+                else await asyncio.to_thread(load_kit_form, tenant_id, brand_id)
             )
         except SQLAlchemyError as exc:
             logger.error("brand load failed: %s", type(exc).__name__)

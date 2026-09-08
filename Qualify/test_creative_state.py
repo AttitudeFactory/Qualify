@@ -35,11 +35,18 @@ _BRAND_ID = UUID("b0000000-0000-4000-8000-000000000001")
 _USER_ID = UUID("c0000000-0000-4000-8000-000000000001")
 
 _READY = ReadinessVM(
-    has_kit=True, completeness_pct=100, has_active_voice=False, can_distill=True,
-    can_generate=False, gaps=(),
+    has_kit=True,
+    completeness_pct=100,
+    has_active_voice=False,
+    can_distill=True,
+    can_generate=False,
+    gaps=(),
 )
 _NOT_READY = ReadinessVM(
-    has_kit=True, completeness_pct=40, has_active_voice=False, can_distill=False,
+    has_kit=True,
+    completeness_pct=40,
+    has_active_voice=False,
+    can_distill=False,
     can_generate=False,
     gaps=(
         GapVM(

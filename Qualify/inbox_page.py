@@ -55,6 +55,8 @@ import reflex as rx
 from .inbox_state import FILTER_ALL, InboxState
 from .inbox_vm import CandidateMediaVM, CommentVM, ReelSummaryVM
 from .publishing_vm import ConnectionOptionVM
+from .replies_provider import DraftVM
+from .replies_state import RepliesState
 from .ui import (
     app_shell,
     callout,
@@ -292,6 +294,7 @@ def _body() -> rx.Component:
             ),
         ),
         rx.cond(InboxState.has_connections, _comments_section(), rx.fragment()),
+        rx.cond(InboxState.has_connections, _replies_section(), rx.fragment()),
     )
 
 
@@ -864,6 +867,209 @@ def _sync_section() -> rx.Component:
         background=T.SURFACE_BG,
         margin=f"0 {T.PAGE_X} 1.5rem {T.PAGE_X}",
         width=f"calc(100% - 2 * {T.PAGE_X})",
+    )
+
+
+# ------------------------------------------------------------------------------------
+# Assisted reply drafts (QUA-22, comments tranche only) — a separate `RepliesState`,
+# see that module's docstring for why. DM drafts do not exist anywhere below this
+# line; QUA-20/QUA-69 stay blocked and untouched.
+# ------------------------------------------------------------------------------------
+
+
+def _generate_drafts_button() -> rx.Component:
+    return rx.button(
+        rx.cond(
+            RepliesState.is_generating,
+            rx.spinner(size="2"),
+            rx.icon("sparkles", size=16),
+        ),
+        rx.cond(RepliesState.is_generating, "Generando...", "Generar borradores"),
+        on_click=RepliesState.generate_drafts,
+        disabled=RepliesState.is_generating,
+        size="2",
+        variant="surface",
+        color_scheme="iris",
+    )
+
+
+def _refresh_drafts_button() -> rx.Component:
+    return rx.button(
+        rx.cond(
+            RepliesState.is_loading,
+            rx.spinner(size="2"),
+            rx.icon("refresh-cw", size=16),
+        ),
+        "Actualizar",
+        on_click=RepliesState.load_pending_drafts,
+        disabled=RepliesState.is_loading,
+        size="2",
+        variant="ghost",
+    )
+
+
+def _replies_generate_error_block() -> rx.Component:
+    return rx.cond(
+        RepliesState.generate_error != "",
+        callout(RepliesState.generate_error, "error"),
+        rx.fragment(),
+    )
+
+
+def _replies_action_error_block() -> rx.Component:
+    return rx.cond(
+        RepliesState.action_error != "",
+        callout(RepliesState.action_error, "error"),
+        rx.fragment(),
+    )
+
+
+def _replies_load_error_block() -> rx.Component:
+    return rx.cond(
+        RepliesState.load_error != "",
+        callout(RepliesState.load_error, "error"),
+        rx.fragment(),
+    )
+
+
+def _replies_empty_state() -> rx.Component:
+    return empty_state(
+        "message-square-text",
+        "Sin borradores pendientes",
+        'Haz clic en "Generar borradores" para redactar respuestas a los comentarios '
+        "positivos que todavía no tienen una.",
+    )
+
+
+def _draft_view_mode(draft: DraftVM) -> rx.Component:
+    """Read-only: the generated text plus the two actions that decide it in one click
+    — see `replies_state.py`'s module docstring for why accept/edit and send are
+    folded together in this v1."""
+    is_busy = RepliesState.busy_draft_id == draft.id
+    return rx.vstack(
+        rx.text(draft.generated_text, size="2"),
+        rx.hstack(
+            rx.button(
+                rx.cond(is_busy, rx.spinner(size="1"), rx.icon("check", size=14)),
+                "Aceptar y enviar",
+                on_click=RepliesState.accept_and_send(draft.id),
+                disabled=is_busy,
+                size="1",
+                color_scheme="grass",
+            ),
+            rx.button(
+                rx.icon("pencil", size=14),
+                "Editar",
+                on_click=RepliesState.start_edit(draft.id, draft.generated_text),
+                disabled=is_busy,
+                size="1",
+                variant="surface",
+            ),
+            rx.button(
+                rx.icon("x", size=14),
+                "Descartar",
+                on_click=RepliesState.discard_draft(draft.id),
+                disabled=is_busy,
+                size="1",
+                variant="ghost",
+                color_scheme="tomato",
+            ),
+            spacing="2",
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _draft_edit_mode(draft: DraftVM) -> rx.Component:
+    is_busy = RepliesState.busy_draft_id == draft.id
+    return rx.vstack(
+        rx.text_area(
+            value=RepliesState.edit_text,
+            on_change=RepliesState.set_edit_text,
+            width="100%",
+            rows="3",
+        ),
+        rx.hstack(
+            rx.button(
+                rx.cond(is_busy, rx.spinner(size="1"), rx.icon("send", size=14)),
+                "Guardar y enviar",
+                on_click=RepliesState.save_and_send(draft.id),
+                disabled=is_busy,
+                size="1",
+                color_scheme="grass",
+            ),
+            rx.button(
+                "Cancelar",
+                on_click=RepliesState.cancel_edit,
+                disabled=is_busy,
+                size="1",
+                variant="ghost",
+            ),
+            spacing="2",
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _draft_card(draft: DraftVM) -> rx.Component:
+    is_editing = RepliesState.editing_draft_id == draft.id
+    return card(
+        rx.vstack(
+            rx.hstack(
+                sentiment_badge(draft.sentiment_label),
+                mono(draft.source_id, size="1"),
+                rx.spacer(),
+                rx.text(draft.created_at, size="1", color=T.TEXT_MUTED),
+                align="center",
+                spacing="2",
+                width="100%",
+            ),
+            rx.text(
+                rx.cond(draft.comment_text != "", draft.comment_text, "Sin texto"),
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
+            rx.box(
+                rx.icon("corner-down-right", size=13, color=T.TEXT_FAINT),
+                display="inline-block",
+                padding_left="0.25rem",
+            ),
+            rx.cond(is_editing, _draft_edit_mode(draft), _draft_view_mode(draft)),
+            spacing="2",
+            align_items="start",
+        )
+    )
+
+
+def _replies_list() -> rx.Component:
+    return rx.cond(
+        RepliesState.is_loading,
+        rx.vstack(_card_skeleton(), spacing="3", width="100%"),
+        rx.cond(
+            RepliesState.has_pending_drafts,
+            rx.vstack(rx.foreach(RepliesState.drafts, _draft_card), spacing="3", width="100%"),
+            _replies_empty_state(),
+        ),
+    )
+
+
+def _replies_section() -> rx.Component:
+    return section(
+        "Borradores asistidos",
+        _replies_load_error_block(),
+        _replies_generate_error_block(),
+        _replies_action_error_block(),
+        _replies_list(),
+        description=(
+            "Respuestas ya redactadas para comentarios positivos en contenido propio. "
+            "Nada se envía sin que lo apruebes o edites primero — el borrador nunca "
+            "llega a Instagram por su cuenta."
+        ),
+        actions=[_refresh_drafts_button(), _generate_drafts_button()],
     )
 
 

@@ -310,9 +310,10 @@ class MemorySentimentRepository:
         # unchanged for every caller that only needs membership (list_pending_for_analysis).
         self._results: dict[tuple[UUID, str, str, str, str], tuple[str, float]] = {}
         # message_id -> (connection_id, source_id, text, author_username, posted_at,
-        # external_thread_id, thread_id)
+        # external_thread_id, thread_id, deleted_at)
         self._messages: dict[
-            UUID, tuple[UUID, str, str | None, str | None, datetime | None, str, UUID]
+            UUID,
+            tuple[UUID, str, str | None, str | None, datetime | None, str, UUID, datetime | None],
         ] = {}
         # (connection_id, external_media_id) -> is_monitored. Mirrors `monitored_media`
         # (QUA-94) — test-only, same reasoning `seed_message` gives for having no
@@ -342,13 +343,16 @@ class MemorySentimentRepository:
         posted_at: datetime | None = None,
         external_thread_id: str = "",
         thread_id: UUID | None = None,
+        deleted_at: datetime | None = None,
     ) -> None:
         """Test-only helper — the Postgres implementation has no analogue because
         `messages` rows there come from the real inbox sync, not from this module.
         `thread_id` defaults to a UUID DERIVED from `(connection_id,
         external_thread_id)` (stable, deterministic — same inputs always produce the
         same id) so pre-QUA-93 call sites that never passed one still group correctly
-        by Reel without having to be updated."""
+        by Reel without having to be updated. `deleted_at` mirrors `messages.deleted_at`
+        (QUA-101) — a non-`None` value excludes the message from every read method
+        below, exactly as `WHERE deleted_at IS NULL` does against the real table."""
         resolved_thread_id = thread_id or uuid5(connection_id, external_thread_id or "no-thread")
         self._messages[message_id] = (
             connection_id,
@@ -358,6 +362,7 @@ class MemorySentimentRepository:
             posted_at,
             external_thread_id,
             resolved_thread_id,
+            deleted_at,
         )
 
     def list_pending_for_analysis(
@@ -366,8 +371,14 @@ class MemorySentimentRepository:
         key_suffix = (version.detector_version, version.pipeline_version, version.model_id)
         revision_key = version.model_revision or ""
         pending = []
-        for message_id, (conn_id, source_id, comment_text, *_rest) in self._messages.items():
-            if conn_id != connection_id or comment_text is None:
+        for message_id, (
+            conn_id,
+            source_id,
+            comment_text,
+            *_rest,
+            deleted_at,
+        ) in self._messages.items():
+            if conn_id != connection_id or comment_text is None or deleted_at is not None:
                 continue
             if (message_id, *key_suffix, revision_key) in self._recorded:
                 continue
@@ -441,8 +452,13 @@ class MemorySentimentRepository:
             _posted_at,
             external_thread_id,
             thread_id,
+            deleted_at,
         ) in self._messages.items():
-            if conn_id != connection_id:
+            # QUA-101: a soft-deleted comment is not "content" any more — excluded from
+            # the roll-up exactly as `WHERE m.deleted_at IS NULL` excludes it in the
+            # Postgres `agg_sql` below. The Reel itself still appears (via any other
+            # still-active comment); only its counts move.
+            if conn_id != connection_id or deleted_at is not None:
                 continue
             by_thread.setdefault(thread_id, []).append(message_id)
             thread_external_id[thread_id] = external_thread_id
@@ -492,8 +508,11 @@ class MemorySentimentRepository:
         self, *, tenant_id: UUID, connection_id: UUID, version: AnalysisVersion
     ) -> GlobalSentimentSummary:
         positive = neutral = negative = not_analyzed = 0
-        for message_id, (conn_id, *_rest) in self._messages.items():
-            if conn_id != connection_id:
+        for message_id, (conn_id, *_rest, deleted_at) in self._messages.items():
+            # QUA-101: a soft-deleted comment no longer counts toward "what is out
+            # there right now" — same exclusion the Postgres SQL below applies via
+            # `m.deleted_at IS NULL`.
+            if conn_id != connection_id or deleted_at is not None:
                 continue
             label = self._label_for(message_id, version)
             if label == "POS":
@@ -533,8 +552,11 @@ class MemorySentimentRepository:
             posted_at,
             external_thread_id,
             msg_thread_id,
+            deleted_at,
         ) in self._messages.items():
-            if conn_id != connection_id or msg_thread_id != thread_id:
+            # QUA-101: a soft-deleted comment must not show as active content — same
+            # exclusion the Postgres SQL below applies via `m.deleted_at IS NULL`.
+            if conn_id != connection_id or msg_thread_id != thread_id or deleted_at is not None:
                 continue
             label = self._label_for(message_id, version)
             score = self._score_for(message_id, version)
@@ -617,6 +639,10 @@ class PostgresSentimentRepository:
                     Message.direction == _INBOUND,
                     Message.connection_id == connection_id,
                     Message.text.is_not(None),
+                    # QUA-101: a comment Meta no longer returns is not worth spending
+                    # analysis compute on — same exclusion every other read method here
+                    # applies.
+                    Message.deleted_at.is_(None),
                     ~already_analyzed,
                 )
             ).all()
@@ -727,6 +753,12 @@ class PostgresSentimentRepository:
             # exists; the literal stays here as a harmless, still-correct filter and as
             # the same planner-hint pattern `global_sentiment_summary` also carries. See
             # this method's sibling `list_comments_for_thread` for the second instance.
+            #
+            # `m.deleted_at IS NULL` (QUA-101): a comment Meta no longer returns is
+            # excluded from these counts exactly as `monitored_media.is_monitored`
+            # already decorates (never filters) a Reel — see `ReelSummary`'s own
+            # docstring for why a Reel itself always stays listed even if every one of
+            # its comments is now soft-deleted.
             agg_sql = """
                 SELECT m.thread_id,
                   count(*) AS total,
@@ -746,6 +778,7 @@ class PostgresSentimentRepository:
                   LIMIT 1
                 ) csr ON true
                 WHERE m.thread_id = ANY(:tids) AND m.direction = 'inbound'
+                  AND m.deleted_at IS NULL
                 GROUP BY m.thread_id
             """
             agg_rows = session.execute(
@@ -794,6 +827,9 @@ class PostgresSentimentRepository:
         # Loop joins over Hash Join and regresses to ~24 minutes at 1,000 Reels x 100
         # comments. A literal bound parameter lets the planner use real per-value
         # selectivity (pg_stats) instead of that opaque default.
+        #
+        # `m.deleted_at IS NULL` (QUA-101): the widget counts comments that currently
+        # exist on Instagram, not a comment count the account no longer reflects.
         sql = """
             SELECT
               count(*) FILTER (WHERE csr.label = 'POS') AS positive,
@@ -811,6 +847,7 @@ class PostgresSentimentRepository:
               AND COALESCE(csr.model_revision, '') = COALESCE(:mrev, '')
             WHERE m.tenant_id = :tenant_id
               AND t.connection_id = :cid AND t.channel = 'comment' AND m.direction = 'inbound'
+              AND m.deleted_at IS NULL
         """
         with tenant_session(tenant_id) as session:
             row = session.execute(
@@ -856,6 +893,9 @@ class PostgresSentimentRepository:
         # `uq_comment_sentiment_analysis`. That index was since dropped (migration 0012,
         # QUA-93) because the literal alone did not reliably prevent the bad plan — see
         # `list_reel_summaries`'s comment for the full before/after measurement.
+        #
+        # `m.deleted_at IS NULL` (QUA-101): a comment Meta no longer returns must not
+        # show up as active content in a Reel's comment list.
         sql = """
             SELECT m.id, m.external_message_id, m.text, m.author_username, m.posted_at,
                    csr.label, csr.score
@@ -871,6 +911,7 @@ class PostgresSentimentRepository:
               LIMIT 1
             ) csr ON true
             WHERE m.thread_id = :tid AND m.connection_id = :cid AND m.direction = 'inbound'
+              AND m.deleted_at IS NULL
         """
         params: dict[str, object] = {
             "tid": str(thread_id),

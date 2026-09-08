@@ -134,6 +134,17 @@ def _external_thread_id_for(tenant_id: UUID, thread_id: UUID) -> str:
         ).scalar_one()
 
 
+def _soft_delete_message(tenant_id: UUID, message_id: UUID) -> None:
+    """QUA-101 test helper: sets `messages.deleted_at` directly, the same state
+    `InboxRepository.reconcile_media_comments`/`upsert_comment` set in production —
+    this module only ever READS that column, so its own tests set it up by hand."""
+    with tenant_session(tenant_id) as session:
+        message = session.get(Message, message_id)
+        assert message is not None
+        message.deleted_at = datetime.now(UTC)
+        session.flush()
+
+
 def _seed_monitored_media(
     tenant_id: UUID, connection_id: UUID, external_media_id: str, *, is_monitored: bool
 ) -> None:
@@ -489,6 +500,22 @@ def test_pending_still_lists_a_desmonitored_reels_unanalyzed_comment(
     assert any(p.message_id == message_id and p.source_id == source_id for p in pending)
 
 
+def test_pending_excludes_a_soft_deleted_comment(
+    seeded_message: tuple[UUID, UUID, UUID, str],
+) -> None:
+    """QUA-101: a comment Meta no longer returns is not worth spending analysis
+    compute on."""
+    tenant_id, connection_id, message_id, _source_id = seeded_message
+    _soft_delete_message(tenant_id, message_id)
+    repo = PostgresSentimentRepository()
+
+    pending = repo.list_pending_for_analysis(
+        tenant_id=tenant_id, connection_id=connection_id, version=VERSION
+    )
+
+    assert not any(p.message_id == message_id for p in pending)
+
+
 def test_recorded_result_is_no_longer_pending(
     seeded_message: tuple[UUID, UUID, UUID, str],
 ) -> None:
@@ -672,6 +699,35 @@ def test_reel_summary_counts_by_label_bounded_to_its_own_thread(
     assert summary.not_analyzed == 1
 
 
+def test_reel_summary_excludes_a_soft_deleted_comment_from_counts(
+    seeded_message: tuple[UUID, UUID, UUID, str],
+) -> None:
+    """QUA-101: the Reel itself stays listed (its OTHER comment is still active), but
+    the soft-deleted one must not count toward `total`/`positive`/`not_analyzed`."""
+    tenant_id, connection_id, message_id, source_id = seeded_message
+    thread_id = _thread_id_for(tenant_id, message_id)
+    _seed_second_message_in_thread(tenant_id, connection_id, thread_id, text="que mal")
+    repo = PostgresSentimentRepository()
+    repo.record_sentiment_result(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        message_id=message_id,
+        source_id=source_id,
+        version=VERSION,
+        label="POS",
+        score=0.9,
+    )
+    _soft_delete_message(tenant_id, message_id)  # the POS-analyzed one disappears
+
+    (summary,) = repo.list_reel_summaries(
+        tenant_id=tenant_id, connection_id=connection_id, version=VERSION, cursor=None
+    )
+
+    assert summary.total == 1  # only the still-active second comment
+    assert summary.positive == 0
+    assert summary.not_analyzed == 1
+
+
 def test_reel_summary_paginates_by_cursor_never_offset(seeded_message) -> None:
     tenant_id, connection_id, message_id, _source_id = seeded_message
     second_thread_id = _seed_new_thread(tenant_id, connection_id, text="otro reel")
@@ -804,6 +860,35 @@ def test_global_summary_totals_across_reels(seeded_message) -> None:
     assert summary.not_analyzed == 1
 
 
+def test_global_summary_excludes_a_soft_deleted_comment(
+    seeded_message: tuple[UUID, UUID, UUID, str],
+) -> None:
+    """QUA-101: the 5-number widget must reflect what currently exists on Instagram,
+    not a count that still includes a comment its author deleted."""
+    tenant_id, connection_id, message_id, source_id = seeded_message
+    thread_id = _thread_id_for(tenant_id, message_id)
+    _seed_second_message_in_thread(tenant_id, connection_id, thread_id, text="que mal")
+    repo = PostgresSentimentRepository()
+    repo.record_sentiment_result(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        message_id=message_id,
+        source_id=source_id,
+        version=VERSION,
+        label="POS",
+        score=0.9,
+    )
+    _soft_delete_message(tenant_id, message_id)
+
+    summary = repo.global_sentiment_summary(
+        tenant_id=tenant_id, connection_id=connection_id, version=VERSION
+    )
+
+    assert summary.total == 1
+    assert summary.positive == 0
+    assert summary.not_analyzed == 1
+
+
 def test_global_summary_keeps_counting_a_desmonitored_reels_comments_in_postgres(
     seeded_message: tuple[UUID, UUID, UUID, str],
 ) -> None:
@@ -850,6 +935,29 @@ def test_comments_for_thread_scoped_to_one_reel(seeded_message) -> None:
 
     assert [c.message_id for c in comments] == [message_id]
     assert other_message_id not in [c.message_id for c in comments]
+
+
+def test_comments_for_thread_excludes_a_soft_deleted_comment(
+    seeded_message: tuple[UUID, UUID, UUID, str],
+) -> None:
+    """QUA-101: the exact user-facing symptom of the original bug report — a comment
+    deleted on Instagram must stop appearing as active content in its Reel's list."""
+    tenant_id, connection_id, message_id, _source_id = seeded_message
+    thread_id = _thread_id_for(tenant_id, message_id)
+    _soft_delete_message(tenant_id, message_id)
+    repo = PostgresSentimentRepository()
+
+    comments = repo.list_comments_for_thread(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        thread_id=thread_id,
+        version=VERSION,
+        sentiment_filter=None,
+        search=None,
+        cursor=None,
+    )
+
+    assert comments == ()
 
 
 def test_comments_for_thread_filters_by_sentiment(seeded_message) -> None:

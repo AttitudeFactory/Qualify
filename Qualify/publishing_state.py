@@ -65,6 +65,53 @@ _POLL_FAILED = "No se pudo consultar el estado de la publicación."
 # in case a future response ever advertises an unexpectedly short interval.
 _MAX_POLLS = 30
 
+# The upload widget's id — lives here (not in publishing_page.py) because this module
+# needs it too, to clear the dropzone's client-side selection after a successful publish
+# (`rx.clear_selected_files`). The page imports this constant rather than keeping its own
+# copy, so the two can never drift apart.
+_UPLOAD_ID = "publish_upload"
+
+# QUA-98: both outcomes now get a toast — success AND failure — on top of (never instead
+# of) the existing persistent `error` callout `_status_block` still renders in
+# publishing_page.py. `inbox_state.py`'s convention (docs/design-system.md §5.4:
+# "confirmaciones transitorias → rx.toast") only toasts success and leaves failure as a
+# plain callout; this screen goes one step further at the operator's request — a failure
+# gets an immediate toast too, precisely because the callout alone can be missed if the
+# operator has already looked away from the form. The callout is NOT removed: it is the
+# one place the full error text stays readable after the toast dismisses itself.
+_RESULT_TOAST_DURATION_MS = 6000
+
+
+def _success_toast() -> rx.event.EventSpec:
+    """Deliberately just the headline — no description, no media id, no "Ver detalles".
+
+    Empirically verified (temporary probe on the no-login /design route, removed after)
+    that `ToastProps.action`'s `on_click` — the only way this library exposes a clickable
+    element inside a toast — never reaches ANY handler in this installed version
+    (reflex==0.9.7, reflex_components_sonner==0.9.1): tested both a real state
+    EventHandler and a client-side-only follow-up toast, neither fired, no console error
+    either time. The wrapper also has no `toast.custom` and types `message`/`description`
+    as plain `str`, so there is no way to embed rich/clickable content in a toast body at
+    all here — a hard capability ceiling, not a styling choice. Founder's call, given
+    that: drop the extra info entirely rather than ship something unreliable or a
+    click-target that does nothing. The full id stays on
+    `PublishState.attempt.published_media_id` for anything that needs it."""
+    return rx.toast.success(
+        "¡Publicado correctamente!",
+        duration=_RESULT_TOAST_DURATION_MS,
+    )
+
+
+def _failure_toast(message: str) -> rx.event.EventSpec:
+    """Same text the persistent `error` callout shows, surfaced immediately as a toast
+    too — the callout stays, this just makes sure a failure is never missed because the
+    operator wasn't looking at the form when it happened."""
+    return rx.toast.error(
+        "No se pudo publicar",
+        description=message,
+        duration=_RESULT_TOAST_DURATION_MS,
+    )
+
 
 class PublishState(rx.State):
     """State for the "Publicar" screen: pick a connected account, upload a reel, publish."""
@@ -164,7 +211,7 @@ class PublishState(rx.State):
         if not self.selected_connection_id:
             self.phase = "failure"
             self.error = _NO_CONNECTION_SELECTED
-            return None
+            return _failure_toast(_NO_CONNECTION_SELECTED)
 
         upload = files[0]
         content_type = getattr(upload, "content_type", None) or "video/mp4"
@@ -173,7 +220,7 @@ class PublishState(rx.State):
         except Exception:
             self.phase = "failure"
             self.error = _BAD_MEDIA
-            return None
+            return _failure_toast(_BAD_MEDIA)
 
         self._pending_bytes = data
         self._pending_content_type = content_type
@@ -183,9 +230,13 @@ class PublishState(rx.State):
         self.attempt = None
         return PublishState.publish_background
 
-    async def _fail_pending_attempt(self, idempotency_key: str, message: str) -> None:
+    async def _fail_pending_attempt(
+        self, idempotency_key: str, message: str
+    ) -> rx.event.EventSpec | None:
         """Record a failure for the attempt `idempotency_key` names, and release the
-        buffered upload.
+        buffered upload. Returns the failure toast to yield — or `None` if this call was
+        superseded and applied nothing (see below), so the caller never fires a toast for
+        an attempt that never actually became the failure.
 
         Called from EVERY failure branch in `publish_background` (including the
         pre-staging `tenant_id is None` case) so none of them can leave `_pending_bytes`
@@ -197,10 +248,11 @@ class PublishState(rx.State):
         """
         async with self:
             if self._idempotency_key != idempotency_key:
-                return
+                return None
             self.phase = "failure"
             self.error = message
             self._pending_bytes = b""
+            return _failure_toast(message)
 
     @rx.event(background=True)
     async def publish_background(self) -> AsyncIterator[None]:
@@ -220,7 +272,9 @@ class PublishState(rx.State):
             session_tenant_id = auth.session_tenant_id
         tenant_id = tenant_uuid(session_tenant_id)
         if tenant_id is None:
-            await self._fail_pending_attempt(idempotency_key, _NO_TENANT)
+            toast = await self._fail_pending_attempt(idempotency_key, _NO_TENANT)
+            if toast is not None:
+                yield toast
             return
         async with self:
             self._active_tenant_id = str(tenant_id)
@@ -235,20 +289,30 @@ class PublishState(rx.State):
                 idempotency_key=idempotency_key,
             )
         except R2ConfigurationError:
-            await self._fail_pending_attempt(idempotency_key, _NOT_CONFIGURED)
+            toast = await self._fail_pending_attempt(idempotency_key, _NOT_CONFIGURED)
+            if toast is not None:
+                yield toast
             return
         except (ObjectSizeExceeded, UnsizedStream):
-            await self._fail_pending_attempt(idempotency_key, _TOO_LARGE)
+            toast = await self._fail_pending_attempt(idempotency_key, _TOO_LARGE)
+            if toast is not None:
+                yield toast
             return
         except (TenantPrefixViolation, ValueError):
-            await self._fail_pending_attempt(idempotency_key, _BAD_MEDIA)
+            toast = await self._fail_pending_attempt(idempotency_key, _BAD_MEDIA)
+            if toast is not None:
+                yield toast
             return
         except UnknownConnection:
-            await self._fail_pending_attempt(idempotency_key, _UNKNOWN_CONNECTION)
+            toast = await self._fail_pending_attempt(idempotency_key, _UNKNOWN_CONNECTION)
+            if toast is not None:
+                yield toast
             return
         except Exception as exc:
             logger.error("start_publish failed: %s", type(exc).__name__)
-            await self._fail_pending_attempt(idempotency_key, _START_FAILED)
+            toast = await self._fail_pending_attempt(idempotency_key, _START_FAILED)
+            if toast is not None:
+                yield toast
             return
 
         async with self:
@@ -264,7 +328,26 @@ class PublishState(rx.State):
             else:
                 self.phase = "polling"
             should_poll = self.phase == "polling"
+            is_success = self.phase == "success"
+            if is_success:
+                # QUA-98: clear the whole form after a successful publish, account
+                # included — reported explicitly: leaving the account selected read as
+                # an incomplete reset.
+                self.caption = ""
+                self.selected_connection_id = ""
+            result_toast = (
+                _success_toast()
+                if is_success
+                else _failure_toast(self.error)
+                if self.phase == "failure"
+                else None
+            )
         yield
+
+        if is_success:
+            yield rx.clear_selected_files(_UPLOAD_ID)
+        if result_toast is not None:
+            yield result_toast
 
         if should_poll:
             yield PublishState.poll_attempt
@@ -288,19 +371,27 @@ class PublishState(rx.State):
             try:
                 attempt = await poll_publish(tenant_id=tenant_id, attempt_id=UUID(attempt_id))
             except UnknownAttempt:
+                toast = None
                 async with self:
                     if self._idempotency_key == idempotency_key:
                         self.phase = "failure"
                         self.error = _POLL_FAILED
+                        toast = _failure_toast(_POLL_FAILED)
                 yield
+                if toast is not None:
+                    yield toast
                 return
             except Exception as exc:
                 logger.error("poll_publish failed: %s", type(exc).__name__)
+                toast = None
                 async with self:
                     if self._idempotency_key == idempotency_key:
                         self.phase = "failure"
                         self.error = _POLL_FAILED
+                        toast = _failure_toast(_POLL_FAILED)
                 yield
+                if toast is not None:
+                    yield toast
                 return
 
             async with self:
@@ -313,13 +404,37 @@ class PublishState(rx.State):
                         self.error = attempt.reason or _START_FAILED
                 interval = attempt.poll_interval_seconds
                 settled = attempt.settled
+                is_success = self.phase == "success"
+                if is_success:
+                    # QUA-98: clear the whole form after a successful publish, account
+                    # included — reported explicitly: leaving the account selected read
+                    # as an incomplete reset. Same reset as `publish_background`'s own
+                    # direct-success path above; this is the poll-settle path, the more
+                    # common of the two in practice.
+                    self.caption = ""
+                    self.selected_connection_id = ""
+                result_toast = (
+                    _success_toast()
+                    if is_success
+                    else _failure_toast(self.error)
+                    if self.phase == "failure"
+                    else None
+                )
             yield
+            if is_success:
+                yield rx.clear_selected_files(_UPLOAD_ID)
+            if result_toast is not None:
+                yield result_toast
             if settled:
                 return
             await asyncio.sleep(interval)
 
+        toast = None
         async with self:
             if self._idempotency_key == idempotency_key and self.phase == "polling":
                 self.phase = "failure"
                 self.error = _POLL_FAILED
+                toast = _failure_toast(_POLL_FAILED)
         yield
+        if toast is not None:
+            yield toast

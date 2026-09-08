@@ -4,7 +4,7 @@ the Meta call ledger (QUA-88), in one file by deliberate choice — same precede
 (`SocialConnection`, `OAuthCredential`, `ConnectionEvent`, `PlatformApp`) in a single
 module per domain. Split into two files if this one grows unwieldy; not before.
 
-Three invariants live here, all database-owned, all merely TRANSLATED by this code:
+Four invariants live here, all database-owned, all merely TRANSLATED by this code:
 
 **Monitoring is a toggle, never a second row.** `uq_monitored_media_natural_key
 (connection_id, external_media_id)` — `set_media_monitored` is a get-or-create-then-UPDATE,
@@ -15,6 +15,14 @@ the same "reconnect = UPDATE" discipline `connections/repository.py` already use
 — `upsert_comment` returns `False` on a duplicate rather than raising; the sync service
 (B2) uses that boolean to know what's actually new, and running it twice on the same page
 must be silently correct, not merely non-crashing.
+
+**A comment Meta stops returning is soft-deleted, never physically removed (QUA-101).**
+`reconcile_media_comments` sets `messages.deleted_at`, the same "flag on the row, not a
+deletion" treatment `monitored_media.is_monitored` already gives a desmonitoreado Reel
+(migration 0005) — `comment_sentiment_results`/`comment_reply_drafts` (0012/0014) both FK
+to `messages.id` and must survive. `upsert_comment` clears the flag if the SAME comment id
+reappears — see both methods' docstrings for why a partial comment-page walk must never
+call `reconcile_media_comments`.
 
 **A Meta call, once made, is a permanent fact.** `calls_in_last_hour`/`record_call`
 (QUA-88) are append-only — see `InboxMetaCallLog`'s docstring and migration `0010`.
@@ -55,7 +63,34 @@ class InboxRepository(Protocol):
         connection_id: UUID,
         external_media_id: str,
         comment: IGComment,
-    ) -> bool: ...
+    ) -> bool:
+        """Inserts a new comment, or, on a duplicate `external_message_id`, restores it
+        (QUA-101) if it had been soft-deleted (`reconcile_media_comments`) — Meta showing
+        it again means it was never truly gone. Returns `True` only for a genuine
+        insert; a duplicate (restored or not) returns `False`, same semantics as before
+        this fix."""
+        ...
+
+    def reconcile_media_comments(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        current_external_ids: frozenset[str],
+    ) -> int:
+        """QUA-101: soft-deletes (`messages.deleted_at`) every stored inbound comment for
+        this media whose `external_message_id` is NOT in `current_external_ids`, and
+        restores (clears `deleted_at`) any already-soft-deleted comment that IS in it.
+        Never a physical DELETE — `comment_sentiment_results`/`comment_reply_drafts`
+        (0012/0014) both FK to `messages.id` and must survive a comment's disappearance
+        on Instagram exactly as they survive a Reel being desmonitoreado (0005's
+        "orthogonal facts" ruling, one level down). Callers MUST only call this after a
+        COMPLETE walk of the media's comments (Meta's own cursor exhausted, no
+        `CommentsReadError`, not the missing-media path) — a partial walk cannot prove a
+        comment absent; see `InboxService.sync_comments`. Returns how many were newly
+        marked deleted (a restore does not count)."""
+        ...
 
     def calls_in_last_hour(self, *, tenant_id: UUID, connection_id: UUID, now: datetime) -> int:
         """How many Meta calls this connection has logged in the hour ending at `now` —
@@ -79,6 +114,13 @@ class MemoryInboxRepository:
         self._monitored: dict[tuple[UUID, str], bool] = {}
         self._threads: dict[tuple[UUID, str], UUID] = {}  # (connection_id, media_id) -> thread_id
         self._messages: set[tuple[UUID, str]] = set()  # (connection_id, external_message_id)
+        # (connection_id, external_message_id) -> external_media_id — which media a
+        # stored comment belongs to, so `reconcile_media_comments` can find "every
+        # comment stored for this media" the way the Postgres side does via `Thread`.
+        self._comment_media: dict[tuple[UUID, str], str] = {}
+        # (connection_id, external_message_id) currently soft-deleted (QUA-101) —
+        # mirrors `messages.deleted_at IS NOT NULL` without a database.
+        self._deleted: set[tuple[UUID, str]] = set()
         self._calls: list[tuple[UUID, datetime]] = []  # (connection_id, called_at)
 
     def list_monitored_media_ids(self, *, tenant_id: UUID, connection_id: UUID) -> frozenset[str]:
@@ -104,9 +146,40 @@ class MemoryInboxRepository:
         self._threads.setdefault((connection_id, external_media_id), UUID(int=0))
         key = (connection_id, comment.id)
         if key in self._messages:
+            # QUA-101: reappeared — if it had been soft-deleted, restore it.
+            self._deleted.discard(key)
             return False
         self._messages.add(key)
+        self._comment_media[key] = external_media_id
         return True
+
+    def reconcile_media_comments(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        current_external_ids: frozenset[str],
+    ) -> int:
+        newly_deleted = 0
+        for (conn_id, comment_id), media_id in self._comment_media.items():
+            if conn_id != connection_id or media_id != external_media_id:
+                continue
+            key = (conn_id, comment_id)
+            if comment_id in current_external_ids:
+                self._deleted.discard(key)
+            elif key not in self._deleted:
+                self._deleted.add(key)
+                newly_deleted += 1
+        return newly_deleted
+
+    def is_comment_deleted(self, *, connection_id: UUID, external_message_id: str) -> bool:
+        """Test-only introspection mirroring a `SELECT deleted_at FROM messages ...`
+        against the real table — `InboxRepository`'s protocol has no read methods
+        (`sentiment/repository.py` owns every read path), so tests exercising
+        `InboxService.sync_comments` against this fake need a way to assert the
+        outcome directly."""
+        return (connection_id, external_message_id) in self._deleted
 
     def calls_in_last_hour(self, *, tenant_id: UUID, connection_id: UUID, now: datetime) -> int:
         window_start = now - timedelta(hours=1)
@@ -215,7 +288,61 @@ class PostgresInboxRepository:
         except IntegrityError:
             # The comment already exists (uq_message_external_id) or, less likely, a
             # concurrent insert won the thread's natural key. Either way: not new.
+            #
+            # QUA-101: if the existing row was soft-deleted, Meta returning it again
+            # means it was never truly gone (most likely the pagination-shift race
+            # `ig_shapes.INCREMENTAL_POLLING_NOTE` documents) — restore it. A fresh
+            # `tenant_session`: the one above already rolled back and released its
+            # connection on the `IntegrityError` (`Engine.begin()`'s own contract, see
+            # `qualify_shared.db.session.tenant_session`'s docstring), so this is a
+            # normal second transaction, not a recovery from a broken one.
+            with tenant_session(tenant_id) as session:
+                existing = session.scalar(
+                    select(Message).where(
+                        Message.connection_id == connection_id,
+                        Message.external_message_id == comment.id,
+                    )
+                )
+                if existing is not None and existing.deleted_at is not None:
+                    existing.deleted_at = None
             return False
+
+    def reconcile_media_comments(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        current_external_ids: frozenset[str],
+    ) -> int:
+        now = datetime.now(UTC)
+        with tenant_session(tenant_id) as session:
+            thread = session.scalar(
+                select(Thread).where(
+                    Thread.connection_id == connection_id,
+                    Thread.channel == _COMMENT_CHANNEL,
+                    Thread.external_thread_id == external_media_id,
+                )
+            )
+            if thread is None:
+                # Nothing was ever synced for this media — nothing to reconcile.
+                return 0
+            stored = session.scalars(
+                select(Message).where(
+                    Message.thread_id == thread.id,
+                    Message.direction == "inbound",
+                )
+            ).all()
+            newly_deleted = 0
+            for message in stored:
+                is_present = message.external_message_id in current_external_ids
+                if is_present:
+                    if message.deleted_at is not None:
+                        message.deleted_at = None
+                elif message.deleted_at is None:
+                    message.deleted_at = now
+                    newly_deleted += 1
+            return newly_deleted
 
     def calls_in_last_hour(self, *, tenant_id: UUID, connection_id: UUID, now: datetime) -> int:
         """Backed by migration `0010` (`inbox_meta_call_log`)."""

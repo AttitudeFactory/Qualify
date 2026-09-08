@@ -194,6 +194,7 @@ class AuthState(rx.State):
             from .inbox_state import InboxState
             from .leads_state import LeadsState
             from .publishing_state import PublishState
+            from .replies_state import RepliesState
             from .state import DashboardState
 
             for state_cls in (
@@ -212,6 +213,7 @@ class AuthState(rx.State):
                 # logs in next on this browser.
                 BrandWizardState,
                 BrandConnectState,
+                RepliesState,
             ):
                 substate = await self.get_state(state_cls)
                 substate.reset()
