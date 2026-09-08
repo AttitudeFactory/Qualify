@@ -273,9 +273,12 @@ Todo en `Qualify/ui/primitives.py` salvo lo indicado. Radix (`rx.button`, `rx.in
 | `rx.alert_dialog` | confirmar acciones destructivas o irreversibles (desconectar, borrar) | acciones reversibles |
 | `rx.tooltip` | aclarar un marcador ("por verificar") | contenido esencial |
 | `empty_state(icon, title, description, action=None)` | lista vacía / sin configuración | como error |
-| `skeleton_card(lines=3)` / `skeleton_rows(n)` | carga inicial, con la forma del contenido esperado | spinner de página completa |
+| `skeleton_card(lines=3)` / `skeleton_rows(n)` | carga inicial, con la forma del contenido esperado | espera de página/panel completo |
+| `loading_spinner(size="sm"\|"md"\|"lg")` | espera de página/panel completo — todo el contenido se reemplaza, no hay "forma esperada" que dibujar | carga inicial de una lista/tabla → skeleton; el spinner propio de un botón (`loading=Var`, §5.5) ya lo resuelve Radix solo |
 
 Iconos por defecto del callout: `error`/`warn` → `triangle-alert`, `ok` → `check`, `info` → `info`. Un callout de error lleva `role="alert"`; los demás `role="status"`.
+
+`loading_spinner` (2026-09-05, `Qualify/ui/primitives.py` + `.q-spinner` en `assets/qualify.css`) es un anillo con degradado cónico — no el `rx.spinner` de rayas de Radix. Su color sale de la escala de gris del tema (`--gray-12` sobre transparente), así que **se adapta solo a claro/oscuro: no existe una variante de tema que elegir**. La única variante real es `size` — `sm` en línea junto a texto, `md` (por defecto) una espera aislada, `lg` una espera de panel completo (el que usa el wizard del Brand Kit, `_loading_view`). Demo en vivo: `/design` → sección "Cargando".
 
 ### 5.5 Botones (Radix directo, con reglas)
 

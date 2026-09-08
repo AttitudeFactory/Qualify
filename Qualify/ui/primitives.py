@@ -274,6 +274,35 @@ def skeleton_rows(rows: int = 3, height: str = "2.5rem") -> rx.Component:
     )
 
 
+#: `loading_spinner`'s one real variant — size. There is no light/dark variant to
+#: pick: the ring's colour (`.q-spinner` in `assets/qualify.css`) is built from the
+#: gray scale, so it adapts to the theme on its own. size -> (diameter, ring track).
+_SPINNER_SIZES: dict[str, tuple[str, str]] = {
+    "sm": ("1.25rem", "2px"),  # inline, next to a line of text
+    "md": ("2.25rem", "3px"),  # a standalone wait (default)
+    "lg": ("3.5rem", "4px"),  # a full-panel wait — e.g. the Brand Kit wizard's own
+}
+
+
+def loading_spinner(size: str = "md") -> rx.Component:
+    """The "spinner de página completa" §5.4 already names as `skeleton_card`/
+    `skeleton_rows`'s opposite case — a gradient ring (`.q-spinner`), not Radix's own
+    dashed `rx.spinner`. Use this, not `rx.spinner`, for a full-panel/full-content
+    wait; `rx.spinner` stays fine inline inside a button's own `loading=` state,
+    which already renders correctly on its own."""
+    diameter, track = _SPINNER_SIZES.get(size, _SPINNER_SIZES["md"])
+    return rx.box(
+        class_name="q-spinner",
+        width=diameter,
+        height=diameter,
+        min_width=diameter,
+        min_height=diameter,
+        style={"--q-spinner-track": track},
+        role="status",
+        aria_label="Cargando",
+    )
+
+
 def demo_notice(message: str | rx.Var) -> rx.Component:
     """The "this is a demo / not live" band. Dashed border so it cannot be confused
     with real content or with an error."""

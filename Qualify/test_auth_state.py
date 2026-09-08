@@ -113,16 +113,30 @@ def test_logout_resets_every_business_state() -> None:
         "InboxState",
         "PublishState",
         "DashboardState",
+        "CreativeState",
+        # The Brand Kit wizard's own draft (request 2026-09-08): step, chosen plan,
+        # staged logo, the connect flow's read profile — none of it lives in
+        # CreativeState, so it needs its own line here. See
+        # `creative_state.py`'s `_kit_draft_loaded` for the other half of the
+        # draft/finalized split this closes: CreativeState's kit_* fields are the
+        # in-session draft too, but that half survives a plain page reload/nav on
+        # purpose — only logout (this list) clears it.
+        "BrandWizardState",
+        "BrandConnectState",
     ):
         assert state_name in source, f"logout does not reset {state_name}"
 
 
 def test_every_tenant_reading_state_is_covered_by_logout() -> None:
-    """The inverse direction: scan the UI package for states that read AuthState and
-    assert each one appears in logout's reset list."""
+    """The inverse direction: scan the whole UI package (not just `*_state.py` — that
+    narrower glob is exactly what let `BrandWizardState`/`BrandConnectState` go
+    unnoticed: both live in `creative_wizard_pages.py`, a page module, and reset
+    coverage for them was missing until request 2026-09-08 caught it manually) for
+    `rx.State` subclasses that read AuthState, and assert each one appears in
+    logout's reset list."""
     logout_source = inspect.getsource(AuthState.logout.fn)
-    for path in _QUALIFY_DIR.glob("*_state.py"):
-        if path.name == "auth_state.py":
+    for path in _QUALIFY_DIR.glob("*.py"):
+        if path.name == "auth_state.py" or path.name.startswith("test_"):
             continue
         source = path.read_text(encoding="utf-8")
         if "get_state(AuthState)" not in source:

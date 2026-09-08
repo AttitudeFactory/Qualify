@@ -111,6 +111,23 @@ class CreativeState(rx.State):
     kit_loading: bool = False
     kit_error: str = ""
     kit_notice: str = ""
+    #: Draft vs. finalized (request 2026-09-08): the `brand_kits` row `load_brand`
+    #: reads and `save_kit_form` writes is the ONE finalized copy — there is
+    #: deliberately no separate "draft" table/column. The draft is just these `kit_*`
+    #: fields living in THIS session's state, same as any other Reflex state; the only
+    #: thing that made it feel otherwise was `load_brand` re-fetching and overwriting
+    #: them on every `/brand/manual` `on_load`, which fires on more than a fresh visit
+    #: — a refresh, "Atrás" back out and in, or navigating to another screen and back
+    #: all re-run it too, silently discarding whatever the operator had just typed.
+    #: `_kit_draft_loaded` (backend-only — leading underscore, never serializes to the
+    #: client, same convention as `_brand_id`) makes the fetch-and-apply run exactly
+    #: ONCE per session: `load_brand` only calls `_apply_kit_form` while this is
+    #: False, then flips it. Every later `on_load` this session is a no-op on the kit
+    #: fields — the in-session draft is now the source of truth until either a save
+    #: (which does not need to re-read what it just wrote) or `AuthState.logout`
+    #: (`.reset()`s this whole state, this flag included, so the NEXT session reads
+    #: fresh from the database instead of a stale in-memory draft).
+    _kit_draft_loaded: bool = False
     kit_positioning: str = ""
     kit_audience: str = ""
     kit_regional_variant: str = "es-CO"
@@ -203,6 +220,23 @@ class CreativeState(rx.State):
             if option.key == self.selected_route:
                 return option.needs_upload
         return False
+
+    @rx.var
+    def palette_colors(self) -> list[str]:
+        """Non-empty palette entries, in order — the render-side twin of the filtered
+        `parts` every Brand Kit wizard palette handler (`commit_picked_color`,
+        `set_swatch_color`, `remove_colour` in `creative_wizard_pages.py`) builds from
+        this same string. Rendering `kit_palette.split(",")` directly (the previous
+        approach) desyncs from that filtered index the moment the palette is empty or
+        carries a stray comma — `"".split(",")` is `['']`, not `[]` — which put one
+        phantom swatch on screen for a brand-new kit that no click could ever remove
+        (`remove_colour` filters empty entries out of `parts` before indexing, so
+        index 0 already pointed past the end of the real list)."""
+        return [c.strip() for c in self.kit_palette.split(",") if c.strip()]
+
+    @rx.var
+    def has_palette_colors(self) -> bool:
+        return bool(self.palette_colors)
 
     # -- helpers ------------------------------------------------------------
 
@@ -355,10 +389,22 @@ class CreativeState(rx.State):
 
     @rx.event(background=True)
     async def load_brand(self) -> None:
+        """Runs on every `/brand/manual` and `/brand/connect` `on_load` — not just a
+        fresh visit (see `_kit_draft_loaded`'s own comment on the field). `readiness`
+        is refreshed every time regardless (it is a derived read, not draft data —
+        cheap, and other screens editing the same brand should still be reflected);
+        the kit FORM is only fetched and applied the first time this session, so nothing
+        already typed into the draft this session is ever silently overwritten.
+
+        Errors never set `_kit_draft_loaded`: a failed load must be retryable on the
+        next `on_load` (e.g. re-entering the page), not permanently treated as "already
+        loaded" with nothing actually in state.
+        """
         async with self:
             self.kit_loading = True
             self.kit_error = ""
             self.kit_notice = ""
+            already_loaded = self._kit_draft_loaded
         ids = await self._session_ids()
         if ids is None:
             async with self:
@@ -368,7 +414,11 @@ class CreativeState(rx.State):
         tenant_id, brand_id, _ = ids
         try:
             verdict = await asyncio.to_thread(brand_readiness, tenant_id, brand_id)
-            form = await asyncio.to_thread(load_kit_form, tenant_id, brand_id)
+            form = (
+                None
+                if already_loaded
+                else await asyncio.to_thread(load_kit_form, tenant_id, brand_id)
+            )
         except SQLAlchemyError as exc:
             logger.error("brand load failed: %s", type(exc).__name__)
             async with self:
@@ -377,8 +427,10 @@ class CreativeState(rx.State):
             return
         async with self:
             self.readiness = verdict
-            if form is not None:
-                self._apply_kit_form(form)
+            if not already_loaded:
+                if form is not None:
+                    self._apply_kit_form(form)
+                self._kit_draft_loaded = True
             self.kit_loading = False
 
     @rx.event(background=True)
