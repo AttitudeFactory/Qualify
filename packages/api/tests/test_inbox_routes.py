@@ -60,6 +60,7 @@ def test_sync_returns_the_summary(monkeypatch: pytest.MonkeyPatch) -> None:
         "new_comments": 3,
         "truncated": False,
         "skipped_missing_media": [],
+        "deleted_comments": 0,
     }
 
 
@@ -163,6 +164,33 @@ def test_skipped_missing_media_is_still_a_200_never_a_502(monkeypatch: pytest.Mo
         "new_comments": 1,
         "truncated": False,
         "skipped_missing_media": ["18034792133641940"],
+        "deleted_comments": 0,
+    }
+
+
+def test_deleted_comments_is_passed_through_as_a_normal_200(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """QUA-101: a comment soft-deleted this pass is real, informative SUCCESS context —
+    the sibling case to `skipped_missing_media` above, one level down. This route stays
+    a thin passthrough of `SyncSummary.deleted_comments`, never a 502."""
+
+    async def fn(*, tenant_id: UUID, connection_id: UUID) -> SyncSummary:
+        return SyncSummary(media_checked=1, new_comments=0, deleted_comments=1)
+
+    harness = Harness(monkeypatch, fn)
+
+    response = harness.http.post(
+        "/api/inbox/sync", json={"connection_id": str(CONNECTION)}, headers=AUTH
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "media_checked": 1,
+        "new_comments": 0,
+        "truncated": False,
+        "skipped_missing_media": [],
+        "deleted_comments": 1,
     }
 
 
@@ -185,6 +213,7 @@ def test_truncated_sync_is_still_a_200_with_the_flag_set(monkeypatch: pytest.Mon
         "new_comments": 1,
         "truncated": True,
         "skipped_missing_media": [],
+        "deleted_comments": 0,
     }
 
 
@@ -236,12 +265,14 @@ def test_the_seam_does_not_depend_on_the_transport(monkeypatch: pytest.MonkeyPat
         "new_comments": 0,
         "truncated": False,
         "skipped_missing_media": [],
+        "deleted_comments": 0,
     }
     assert busy_response.json() == {
         "media_checked": 5,
         "new_comments": 5,
         "truncated": False,
         "skipped_missing_media": [],
+        "deleted_comments": 0,
     }
 
 

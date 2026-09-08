@@ -738,6 +738,14 @@ class InboxState(rx.State):
                 f" · {len(result.skipped_missing_media)} Reel(s) ya no disponible(s) en "
                 "Instagram: se dejaron de monitorear."
             )
+        if result.deleted_comments:
+            # QUA-101: a comment borrado en Instagram — still a SUCCESS (`sync_error`
+            # was never set for this either), same "informative, never the error
+            # callout" treatment `skipped_missing_media` above already gets.
+            message += (
+                f" · {result.deleted_comments} comentario(s) eliminado(s) en Instagram: "
+                "se dejaron de mostrar como contenido activo."
+            )
         if result.truncated:
             message += (
                 " · Sincronización parcial: se alcanzó el límite de llamadas, "

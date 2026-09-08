@@ -11,6 +11,7 @@ constraints from migration 0014, RLS isolation between two tenants, and the
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -165,6 +166,28 @@ def test_finds_the_seeded_pos_comment_and_creates_a_draft() -> None:
         tenant_id=TENANT_A, connection_id=connection_id, version=version
     )
     assert remaining == ()
+
+
+def test_a_soft_deleted_comment_is_never_a_draft_candidate() -> None:
+    """QUA-101 regression: a comment Meta no longer returns (`messages.deleted_at` set
+    by `InboxRepository.reconcile_media_comments`) must never surface as a candidate
+    for a NEW reply draft — even though it is still POS-analyzed and has no draft yet.
+    Wasting a generator call and showing a human reviewer a draft for a comment that no
+    longer exists on Instagram was the exact bug this test pins closed."""
+    version = _fresh_version()
+    connection_id, candidate, _user_id = _seed_pos_comment(TENANT_A, version)
+    with tenant_session(TENANT_A) as session:
+        message = session.get(Message, candidate.message_id)
+        assert message is not None
+        message.deleted_at = datetime.now(UTC)
+        session.flush()
+    repo = PostgresReplyRepository()
+
+    candidates = repo.list_positive_comments_without_draft(
+        tenant_id=TENANT_A, connection_id=connection_id, version=version
+    )
+
+    assert candidates == ()
 
 
 def test_unique_message_id_returns_none_not_an_exception() -> None:

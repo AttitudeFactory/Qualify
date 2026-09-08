@@ -1,6 +1,6 @@
-"""`db`-marked tests for `PostgresInboxRepository` — the three idempotency/accounting
+"""`db`-marked tests for `PostgresInboxRepository` — the four idempotency/accounting
 guarantees this module translates, exercised against the real constraints from
-0004/0005/0010. Same `seeded_connection` shape as `test_publishing_inbox_schema.py`.
+0004/0005/0010/0015. Same `seeded_connection` shape as `test_publishing_inbox_schema.py`.
 """
 
 from __future__ import annotations
@@ -66,6 +66,50 @@ def seeded_connection() -> tuple[UUID, UUID]:
     return TENANT_I, connection_id
 
 
+def _seed_connection_for_new_tenant() -> tuple[UUID, UUID]:
+    """A brand-new tenant + connection, for tests that need genuine cross-TENANT
+    isolation (RLS), unlike `_second_connection`'s second connection under the SAME
+    tenant (that one exercises the per-connection budget scoping instead)."""
+    tenant_id = uuid4()
+    with admin_session() as session:
+        session.add(
+            Tenant(
+                id=tenant_id,
+                name=f"t-{tenant_id}",
+                country="CO",
+                timezone="America/Bogota",
+                currency="COP",
+            )
+        )
+        session.flush()
+        app = PlatformApp(app_id=f"app-{uuid4()}", secret_ref="ref", api_version="v21.0")
+        session.add(app)
+        session.flush()
+        user = User(tenant_id=tenant_id, email=f"u-{uuid4()}@i.co", display_name="U")
+        session.add(user)
+        session.flush()
+        app_id = app.id
+        user_id = user.id
+
+    with tenant_session(tenant_id) as session:
+        conn = SocialConnection(
+            tenant_id=tenant_id,
+            platform_app_id=app_id,
+            platform="instagram",
+            account_type="business",
+            external_account_id=f"ig-{uuid4()}",
+            linked_page_id="page-1",
+            granted_scopes=["basic"],
+            status="active",
+            access_posture="development",
+            current_credential_version=0,
+            connected_by_user_id=user_id,
+        )
+        session.add(conn)
+        session.flush()
+        return tenant_id, conn.id
+
+
 def _second_connection(tenant_id: UUID) -> UUID:
     """A second `social_connections` row under the SAME tenant — for the ledger's
     per-connection isolation test, where `seeded_connection`'s single row is not enough.
@@ -116,6 +160,22 @@ def _message_row_count(connection_id: UUID, external_message_id: str) -> int:
         return session.execute(
             text(
                 "SELECT count(*) FROM messages "
+                "WHERE connection_id = :cid AND external_message_id = :mid"
+            ),
+            {"cid": str(connection_id), "mid": external_message_id},
+        ).scalar_one()
+
+
+def _message_deleted_at(tenant_id: UUID, connection_id: UUID, external_message_id: str):
+    """`messages.deleted_at` for one comment, read directly (QUA-101) — `None` means
+    active, a real timestamp means soft-deleted. Takes `tenant_id` (unlike
+    `_message_row_count` above, which is hardcoded to `TENANT_I`) so the cross-tenant
+    isolation test below can read a SECOND tenant's row through its own RLS-scoped
+    session."""
+    with tenant_session(tenant_id) as session:
+        return session.execute(
+            text(
+                "SELECT deleted_at FROM messages "
                 "WHERE connection_id = :cid AND external_message_id = :mid"
             ),
             {"cid": str(connection_id), "mid": external_message_id},
@@ -404,3 +464,188 @@ def test_calls_in_last_hour_is_zero_for_a_connection_with_no_calls(
         )
         == 0
     )
+
+
+# --------------------------------------------------------------------------------------
+# reconcile_media_comments — soft-delete/restore against the real `messages.deleted_at`
+# column (QUA-101, migration 0015)
+# --------------------------------------------------------------------------------------
+
+
+def test_reconcile_marks_a_missing_comment_deleted(seeded_connection: tuple[UUID, UUID]) -> None:
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresInboxRepository()
+    media_id = f"media-{uuid4()}"
+    kept, gone = f"comment-{uuid4()}", f"comment-{uuid4()}"
+    repo.upsert_comment(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        comment=_comment(kept),
+    )
+    repo.upsert_comment(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        comment=_comment(gone),
+    )
+
+    newly_deleted = repo.reconcile_media_comments(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        current_external_ids=frozenset({kept}),  # Meta no longer returns `gone`
+    )
+
+    assert newly_deleted == 1
+    assert _message_deleted_at(tenant_id, connection_id, gone) is not None
+    assert _message_deleted_at(tenant_id, connection_id, kept) is None
+
+
+def test_reconcile_never_touches_a_comment_still_present(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresInboxRepository()
+    media_id = f"media-{uuid4()}"
+    comment_id = f"comment-{uuid4()}"
+    repo.upsert_comment(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        comment=_comment(comment_id),
+    )
+
+    newly_deleted = repo.reconcile_media_comments(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        current_external_ids=frozenset({comment_id}),
+    )
+
+    assert newly_deleted == 0
+    assert _message_deleted_at(tenant_id, connection_id, comment_id) is None
+
+
+def test_reconcile_restores_a_comment_that_reappears(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresInboxRepository()
+    media_id = f"media-{uuid4()}"
+    comment_id = f"comment-{uuid4()}"
+    repo.upsert_comment(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        comment=_comment(comment_id),
+    )
+    repo.reconcile_media_comments(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        current_external_ids=frozenset(),  # marks it deleted
+    )
+    assert _message_deleted_at(tenant_id, connection_id, comment_id) is not None
+
+    newly_deleted = repo.reconcile_media_comments(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        current_external_ids=frozenset({comment_id}),  # Meta shows it again
+    )
+
+    assert newly_deleted == 0  # a restore is not a NEW deletion
+    assert _message_deleted_at(tenant_id, connection_id, comment_id) is None
+
+
+def test_reconcile_returns_zero_for_a_media_never_synced(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    """No `threads` row exists for this media at all — nothing to reconcile, and this
+    must not raise."""
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresInboxRepository()
+
+    newly_deleted = repo.reconcile_media_comments(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=f"media-{uuid4()}",
+        current_external_ids=frozenset(),
+    )
+
+    assert newly_deleted == 0
+
+
+def test_upsert_comment_restores_a_soft_deleted_comment_on_reappearance(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    """The other route back to "active": `upsert_comment` itself (not only
+    `reconcile_media_comments`) must clear `deleted_at` when the same comment id is
+    upserted again — the ordinary path a real `sync_comments` call takes when Meta shows
+    a previously-vanished comment again."""
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresInboxRepository()
+    media_id = f"media-{uuid4()}"
+    comment = _comment(f"comment-{uuid4()}")
+    repo.upsert_comment(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        comment=comment,
+    )
+    repo.reconcile_media_comments(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        current_external_ids=frozenset(),
+    )
+    assert _message_deleted_at(tenant_id, connection_id, comment.id) is not None
+
+    created = repo.upsert_comment(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        comment=comment,
+    )
+
+    assert created is False  # still a duplicate, not a new row
+    assert _message_deleted_at(tenant_id, connection_id, comment.id) is None
+    assert _message_row_count(connection_id, comment.id) == 1  # no second row was created
+
+
+def test_reconcile_media_comments_never_crosses_tenants() -> None:
+    """RLS regression (QUA-101): two tenants each have a comment under the SAME
+    `external_media_id`/`external_message_id` strings (identifiers are per-connection,
+    never globally unique) — reconciling tenant A's media with an EMPTY current set
+    must soft-delete ONLY tenant A's row. Tenant B's row, same string identifiers, must
+    come out completely untouched; if RLS ever stopped scoping this method's queries,
+    this test would catch it by finding tenant B's comment deleted too."""
+    tenant_a, connection_a = _seed_connection_for_new_tenant()
+    tenant_b, connection_b = _seed_connection_for_new_tenant()
+    repo = PostgresInboxRepository()
+    shared_media_id = "media-shared-across-tenants"
+    shared_comment_id = "comment-shared-across-tenants"
+    repo.upsert_comment(
+        tenant_id=tenant_a,
+        connection_id=connection_a,
+        external_media_id=shared_media_id,
+        comment=_comment(shared_comment_id),
+    )
+    repo.upsert_comment(
+        tenant_id=tenant_b,
+        connection_id=connection_b,
+        external_media_id=shared_media_id,
+        comment=_comment(shared_comment_id),
+    )
+
+    newly_deleted = repo.reconcile_media_comments(
+        tenant_id=tenant_a,
+        connection_id=connection_a,
+        external_media_id=shared_media_id,
+        current_external_ids=frozenset(),  # tenant A's comment is gone from Meta
+    )
+
+    assert newly_deleted == 1
+    assert _message_deleted_at(tenant_a, connection_a, shared_comment_id) is not None
+    assert _message_deleted_at(tenant_b, connection_b, shared_comment_id) is None

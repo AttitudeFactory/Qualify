@@ -74,12 +74,18 @@ class SyncSummaryVM:
     abort of the whole sync. A non-empty tuple here still means SUCCESS (`InboxState.
     sync_comments` never sets `sync_error` for this — see that module's docstring);
     `inbox_page.py` folds it into the success toast, not the error callout.
+
+    `deleted_comments` (QUA-101): individual comments soft-deleted this pass because a
+    COMPLETE walk of their (still-existing) media no longer returned them — the sibling
+    case to `skipped_missing_media` above, one level down (a comment, not the whole
+    Reel). Also always SUCCESS, folded into the same toast.
     """
 
     media_checked: int
     new_comments: int
     truncated: bool = False
     skipped_missing_media: tuple[str, ...] = ()
+    deleted_comments: int = 0
 
 
 @dataclass(frozen=True)

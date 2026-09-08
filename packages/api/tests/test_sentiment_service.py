@@ -73,6 +73,25 @@ def test_none_text_never_reaches_the_service_at_all() -> None:
     assert summary.comments_checked == 0
 
 
+def test_a_soft_deleted_comment_never_reaches_the_service_either() -> None:
+    """QUA-101: a comment Meta no longer returns (`deleted_at` set by
+    `InboxRepository.reconcile_media_comments`) is excluded from
+    `list_pending_for_analysis` the same way a `None` text already is — no point
+    spending analysis compute on a comment that no longer exists."""
+    service, repo = _service()
+    repo.seed_message(
+        message_id=uuid4(),
+        connection_id=CONNECTION_ID,
+        source_id="c1",
+        text="me encanta",
+        deleted_at=datetime.now(UTC),
+    )
+
+    summary = service.analyze_pending_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert summary.comments_checked == 0
+
+
 def test_already_analyzed_comment_is_not_reanalyzed() -> None:
     service, repo = _service()
     repo.seed_message(

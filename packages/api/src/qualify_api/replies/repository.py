@@ -90,7 +90,10 @@ class ReplyRepository(Protocol):
         self, *, tenant_id: UUID, connection_id: UUID, version: AnalysisVersion
     ) -> tuple[CandidateComment, ...]:
         """Every inbound, comment-channel message with a CURRENT-version `POS`
-        `comment_sentiment_results` row and no `comment_reply_drafts` row yet."""
+        `comment_sentiment_results` row and no `comment_reply_drafts` row yet — and not
+        soft-deleted (QUA-101, `messages.deleted_at`): a comment Meta no longer returns
+        must never become a NEW draft candidate. Does not retroactively affect a draft
+        already `proposed` before its comment was deleted — see `list_pending_drafts`."""
         ...
 
     def has_draft(self, *, tenant_id: UUID, message_id: UUID) -> bool: ...
@@ -191,6 +194,15 @@ class PostgresReplyRepository:
                     Thread.channel == _COMMENT_CHANNEL,
                     Message.direction == _INBOUND,
                     Message.connection_id == connection_id,
+                    # QUA-101: a comment Meta no longer returns (`InboxRepository.
+                    # reconcile_media_comments`) is not a candidate for a NEW reply
+                    # draft — same exclusion `sentiment/repository.py`'s four read
+                    # methods already apply. Deliberately does NOT touch a draft that
+                    # already exists for a comment deleted AFTER drafting
+                    # (`list_pending_drafts` is unchanged) — hiding/flagging an
+                    # already-proposed draft is a separate product decision, not this
+                    # fix's job.
+                    Message.deleted_at.is_(None),
                     CommentSentimentResult.label == "POS",
                     CommentSentimentResult.detector_version == version.detector_version,
                     CommentSentimentResult.pipeline_version == version.pipeline_version,
@@ -371,7 +383,15 @@ class MemoryReplyRepository:
         self, *, connection_id: UUID, candidates: tuple[CandidateComment, ...]
     ) -> None:
         """Test/dev seam — the Memory repo has no `messages`/`comment_sentiment_results`
-        tables to query, so a caller populates the candidate list directly."""
+        tables to query, so a caller populates the candidate list directly.
+
+        QUA-101: unlike `MemorySentimentRepository` (which mirrors `messages` row-by-row,
+        `deleted_at` included, because it independently re-derives what a real query
+        would compute), this repo works one level of abstraction higher — a caller
+        already hands it the exact `CandidateComment` tuple `list_positive_comments_
+        without_draft` should return. Excluding a soft-deleted comment is therefore the
+        SEEDING caller's job (simply don't include it), not something this method needs
+        to filter — there is no separate "deleted" concept to consult here."""
         self._candidates[connection_id] = candidates
 
     def list_positive_comments_without_draft(
