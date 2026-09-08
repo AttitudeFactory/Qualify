@@ -190,6 +190,7 @@ class AuthState(rx.State):
             from .clarity_state import ClarityState
             from .connections_state import ConnectionsState
             from .creative_state import CreativeState
+            from .creative_wizard_pages import BrandConnectState, BrandWizardState
             from .inbox_state import InboxState
             from .leads_state import LeadsState
             from .publishing_state import PublishState
@@ -203,6 +204,14 @@ class AuthState(rx.State):
                 PublishState,
                 DashboardState,
                 CreativeState,
+                # The Brand Kit wizard's OWN draft fields (request 2026-09-08) — step,
+                # chosen plan, staged logo, the connect flow's read profile. None of
+                # this lives in `CreativeState`, so it was never covered by the reset
+                # above: without these two, a logout still left an in-progress
+                # wizard's cursor and unsaved choices sitting in memory for whoever
+                # logs in next on this browser.
+                BrandWizardState,
+                BrandConnectState,
             ):
                 substate = await self.get_state(state_cls)
                 substate.reset()

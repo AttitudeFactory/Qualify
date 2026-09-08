@@ -103,6 +103,32 @@ body {
   box-shadow: var(--q-elev-lift);
 }
 
+/* The "go somewhere" arrow on a `_fork_option` card (Brand Kit's entry fork,
+   `Qualify/creative_wizard_pages.py`): faint at rest, nudges right and turns accent
+   together with the card's own lift — one hover, two cheap reinforcements. */
+.q-fork-arrow {
+  color: var(--gray-8);
+  transition:
+    color var(--q-dur) var(--q-ease),
+    transform var(--q-dur) var(--q-spring);
+}
+.q-lift:hover .q-fork-arrow {
+  color: var(--accent-9);
+  transform: translateX(3px);
+}
+
+/* A saved palette swatch (`_swatch`, `Qualify/creative_wizard_pages.py`) is what you
+   edit — this dark scrim + pencil says so on hover, reinforcing the same rule the
+   step's own hint text carries in words: a swatch edits itself, only the wheel adds. */
+.q-swatch-edit {
+  opacity: 0;
+  background: rgba(0, 0, 0, 0.35);
+  transition: opacity var(--q-dur) var(--q-ease);
+}
+.q-swatch:hover .q-swatch-edit {
+  opacity: 1;
+}
+
 /* ── Sidebar ──────────────────────────────────────────────────────────────────
    Zen mode is a class on the nav root; everything below reacts to it, so the
    whole collapse is one CSS transition instead of a dozen conditional styles. */

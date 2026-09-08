@@ -325,6 +325,8 @@ def page_header(
     subtitle: str | rx.Var | None = None,
     *actions: rx.Component,
     badge: rx.Component | None = None,
+    kicker: rx.Component | None = None,
+    title_size: str = "6",
     show_session: bool = False,
 ) -> rx.Component:
     """Title row of a business page.
@@ -333,14 +335,26 @@ def page_header(
     ``badge`` sits next to the title — for a state that describes the whole page ("demo",
     a count), never for an action. ``show_session`` is accepted for compatibility and
     ignored: the session lives in the sidebar.
+
+    ``kicker`` and ``title_size`` are additive — every existing call site is unaffected
+    (both default to the plain page style). ``kicker`` is a whole component (same
+    convention as ``badge``, not a raw string) that renders ABOVE the title — pass it
+    already styled as the small-caps eyebrow treatment the sidebar's zone labels and
+    `section` already use elsewhere (uppercase, letter-spaced, muted), for the one case
+    a page needs a label above its title rather than beside it, e.g. a step counter.
+    ``title_size`` lets a page ask for a bigger h1 than the app-wide 6 — the Brand Kit
+    wizard's full-screen, one-decision-per-step flow wants the heavier title weight a
+    macOS-Setup-Assistant-style flow uses. Still exactly one ``h1`` per page (`as_="h1"`
+    unconditionally below), so §8's accessibility rule holds regardless of size.
     """
     title_row = rx.hstack(
-        rx.heading(title, size="6", as_="h1"),
+        rx.heading(title, size=title_size, as_="h1"),
         *([badge] if badge is not None else []),
         align="center",
         spacing="2",
     )
     title_block = rx.vstack(
+        *([kicker] if kicker is not None else []),
         title_row,
         *([rx.text(subtitle, size="2", color=T.TEXT_MUTED)] if subtitle is not None else []),
         spacing="1",

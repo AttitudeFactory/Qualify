@@ -41,7 +41,17 @@ from . import scrapecreators_client
 from .auth_state import AuthState
 from .creative_state import CreativeState
 from .tenant import tenant_uuid
-from .ui import app_shell, callout, card, loading_spinner, mono, page_body, stat_card, tag
+from .ui import (
+    app_shell,
+    callout,
+    card,
+    loading_spinner,
+    mono,
+    page_body,
+    page_header,
+    stat_card,
+    tag,
+)
 from .ui import tokens as T
 
 logger = logging.getLogger(__name__)
@@ -94,12 +104,19 @@ _CONTROL_RADIUS = "large"
 # back — and note the two files move together: restoring an older copy of THIS module
 # on top of the current `ui/layout.py` is what visibly broke the layout once already.
 
-# Placeholder plans. Copy is deliberately lorem — the real tiers are not decided.
+# Placeholder plans — the real tiers/pricing are not decided (see CLAUDE.md), but the
+# copy itself is real Spanish describing plausible scope per tier, not lorem: nothing
+# a first-time user sees should read as unfinished. Revisit the wording once product
+# actually locks the tiers.
 PLANS: tuple[tuple[str, str, str], ...] = (
-    ("basico", "Básico", "Lorem ipsum dolor sit amet, consectetur adipiscing elit."),
-    ("pro", "Pro", "Sed do eiusmod tempor incididunt ut labore et dolore magna."),
-    ("negocio", "Negocio", "Ut enim ad minim veniam, quis nostrud exercitation ullamco."),
-    ("agencia", "Agencia", "Duis aute irure dolor in reprehenderit in voluptate velit."),
+    ("basico", "Básico", "Monitorea tu marca y publica contenido en una cuenta conectada."),
+    ("pro", "Pro", "Suma señales de la competencia y descubre creadores afines a tu marca."),
+    (
+        "negocio",
+        "Negocio",
+        "Varias personas del equipo, más cuentas conectadas y soporte prioritario.",
+    ),
+    ("agencia", "Agencia", "Gestiona la marca de varios clientes desde un mismo lugar."),
 )
 
 
@@ -369,7 +386,7 @@ def _labeled_area(
             on_change=handler,
             placeholder=placeholder,
             width="100%",
-            rows="3",
+            rows="4",
             radius=_CONTROL_RADIUS,
         ),
         spacing="1",
@@ -427,9 +444,31 @@ def _tone_slider(
     )
 
 
-def _step_body(*children: rx.Component) -> rx.Component:
+def _step_icon(name: str) -> rx.Component:
+    """A themed anchor above a step's fields — the same icon-in-a-tinted-circle
+    shape `_fork_option` and the profile/logo avatar placeholders already use
+    elsewhere in this file, just applied to the plainer field steps too (request
+    2026-09-08: a short field list centred in a full-height card read as too sparse
+    on its own — one icon gives the eye something to land on before the small type
+    starts)."""
+    return rx.box(
+        rx.icon(name, size=22, color=T.tone_color("accent", 10)),
+        width="3rem",
+        height="3rem",
+        min_height="3rem",
+        border_radius="9999px",
+        background=T.tone_color("accent", 3),
+        display="flex",
+        align_items="center",
+        justify_content="center",
+    )
+
+
+def _step_body(*children: rx.Component, icon: str | None = None) -> rx.Component:
     """Every step centres its content. Fields still span the column, so their labels
-    stay left-read while the block itself sits centred under the title.
+    stay left-read while the block itself sits centred under the title. `icon` is
+    optional and additive — steps that already show a prominent graphic of their own
+    (the logo preview, a profile avatar) skip it rather than stack two.
 
     `class_name="q-settle"` (the same entrance `page_body` gives a whole page on
     load — `assets/qualify.css`) so a step's own fields settle in staggered too, not
@@ -442,7 +481,12 @@ def _step_body(*children: rx.Component) -> rx.Component:
     node reused across steps (request 2026-09-05 — the frame needs to settle in
     too, not just what's inside it), so the key sits as high as the whole card."""
     return rx.vstack(
-        *children, spacing="4", width="100%", align_items="center", class_name="q-settle"
+        *([_step_icon(icon)] if icon is not None else []),
+        *children,
+        spacing="4",
+        width="100%",
+        align_items="center",
+        class_name="q-settle",
     )
 
 
@@ -476,26 +520,62 @@ def _choice_card(
     selected: rx.Var[bool],
     on_click: rx.event.EventHandler,
 ) -> rx.Component:
-    """A big, quiet button that reads as a card. Selection is a ring, not a fill —
-    the surface stays calm while the choice stays unmistakable."""
-    return rx.box(
-        rx.vstack(
-            rx.text(title, size="3", weight="bold"),
-            rx.text(description, size="2", color=T.TEXT_MUTED),
-            spacing="1",
-            align_items="start",
+    """A big, quiet button that reads as a card. Selection is a ring plus a check mark
+    — never a ring alone (§8: a state must not rely on colour/shape alone), same small
+    circled-icon affordance `_swatch`'s own delete mark already uses elsewhere in this
+    file, so the two "circle in the corner" cues in this flow read as one language.
+
+    A real ``rx.el.button``, not ``rx.box`` + ``on_click`` — §8 forbids that combination
+    outright (`layout.py::logout_action` is the existing precedent for a button reset to
+    look like a plain row/card): a `<div onClick>` is invisible to the keyboard and to a
+    screen reader, and this flow's first two decisions (plan, logo) had no other way to
+    reach them without a mouse."""
+    return rx.el.button(
+        rx.hstack(
+            rx.vstack(
+                rx.text(
+                    title,
+                    size="3",
+                    weight="bold",
+                    color=rx.cond(selected, T.tone_color("accent", 11), T.TEXT_STRONG),
+                ),
+                rx.text(description, size="2", color=T.TEXT_MUTED),
+                spacing="1",
+                align_items="start",
+            ),
+            rx.spacer(),
+            rx.cond(
+                selected,
+                rx.box(
+                    rx.icon("check", size=12, color="white"),
+                    width="1.15rem",
+                    height="1.15rem",
+                    min_width="1.15rem",
+                    border_radius="9999px",
+                    background=T.tone_color("accent", 9),
+                    display="flex",
+                    align_items="center",
+                    justify_content="center",
+                ),
+            ),
             width="100%",
+            align="start",
+            spacing="3",
         ),
         on_click=on_click,
+        type="button",
         cursor="pointer",
         width="100%",
         padding="1rem 1.25rem",
+        border="none",
+        font="inherit",
+        text_align="left",
         border_radius=T.RADIUS_CARD,
         background=T.CARD_BG,
         box_shadow=rx.cond(
             selected,
             f"inset 0 0 0 2px {T.tone_color('accent', 9)}",
-            f"inset 0 0 0 1px {rx.color('gray', 6)}",
+            f"inset 0 0 0 1px {rx.color('gray', 7)}",
         ),
         transition=f"box-shadow {T.DUR} {T.EASE}",
         _hover={"box_shadow": f"inset 0 0 0 2px {T.tone_color('accent', 7)}"},
@@ -600,6 +680,7 @@ def _finish_button(on_click: rx.event.EventType[()]) -> rx.Component:
 
 def _step_subscription() -> rx.Component:
     return _step_body(
+        icon="credit-card",
         *(
             _choice_card(
                 label,
@@ -626,6 +707,7 @@ def _step_identity() -> rx.Component:
             CreativeState.set_kit_audience,
             "A quién le habla",
         ),
+        icon="compass",
     )
 
 
@@ -643,6 +725,7 @@ def _step_has_logo() -> rx.Component:
             BrandWizardState.has_logo == "no",
             BrandWizardState.answer_has_logo("no"),
         ),
+        icon="image",
     )
 
 
@@ -714,32 +797,64 @@ def _logo_upload_field() -> rx.Component:
     )
 
 
+def _hidden_submit() -> rx.Component:
+    """A form's "default button" (WHATWG §4.10.22.2, implicit submission), present so
+    Enter reliably submits — invisible, not removed: `display="none"` still counts as
+    a valid default button in every major browser, it just does not paint. Without ANY
+    submit button, a `<form>` with more than one text field does NOT implicitly submit
+    on Enter in some browsers (verified live 2026-09-08 — `_logo_brief_form`'s three
+    inputs did not advance the wizard until this was added); a form with exactly one
+    field is more forgiving, but this makes every `rx.form` in the wizard behave the
+    same way regardless of how many fields it holds, rather than leaning on a browser
+    quirk that only covers the single-field case."""
+    return rx.el.button(type="submit", tab_index=-1, aria_hidden="true", display="none")
+
+
 def _logo_brief_form() -> rx.Component:
-    """Placeholder brief — the three questions are lorem until the logo-generation
-    design lands. Slightly taller inputs than the rest of the flow: three fields back
-    to back on one screen read cramped at the default height."""
-    return _step_body(
-        _labeled_input(
-            "Lorem ipsum dolor",
-            BrandWizardState.logo_brief_1,
-            BrandWizardState.set_logo_brief_1,
-            "Consectetur adipiscing elit",
-            height="3.25rem",
+    """The three questions behind "te haremos tres preguntas para proponerte uno"
+    (`_step_has_logo`'s own "No, todavía no" copy). These used to be literal lorem
+    ipsum — as actual field LABELS a first-time user would read, not just example
+    input, unlike `PLANS`' pricing copy (real tiers not decided, but that copy is
+    real Spanish too now — see `PLANS`'s own comment). Slightly taller inputs than
+    the rest of the flow: three fields back to back on one screen read cramped at
+    the default height.
+
+    Wrapped in `rx.form` (request 2026-09-08 — same idiom `auth_pages.py`'s login
+    already uses) so Enter in any of the three single-line inputs continues, same
+    as clicking Continuar: `on_submit=BrandWizardState.next_step` fires with no
+    args because `next_step` itself takes none — Reflex picks the matching
+    `on_submit` event-spec variant off the target handler's own signature, the same
+    way `on_click=BrandWizardState.next_step` already works with no args elsewhere
+    in this file. `_labeled_area` (multi-line, "uno por línea") deliberately does
+    NOT get this: Enter there has to stay a newline."""
+    return rx.form(
+        _step_body(
+            _labeled_input(
+                "¿Qué estilo buscas?",
+                BrandWizardState.logo_brief_1,
+                BrandWizardState.set_logo_brief_1,
+                "Minimalista, ilustrado, tipográfico…",
+                height="3.25rem",
+            ),
+            _labeled_input(
+                "¿Qué quieres que transmita?",
+                BrandWizardState.logo_brief_2,
+                BrandWizardState.set_logo_brief_2,
+                "Confianza, cercanía, innovación…",
+                height="3.25rem",
+            ),
+            _labeled_input(
+                "¿Tienes referencias que te gusten?",
+                BrandWizardState.logo_brief_3,
+                BrandWizardState.set_logo_brief_3,
+                "Una marca, un logo o un estilo que admires",
+                height="3.25rem",
+            ),
+            icon="pencil-line",
         ),
-        _labeled_input(
-            "Sed do eiusmod tempor",
-            BrandWizardState.logo_brief_2,
-            BrandWizardState.set_logo_brief_2,
-            "Incididunt ut labore et dolore",
-            height="3.25rem",
-        ),
-        _labeled_input(
-            "Ut enim ad minim veniam",
-            BrandWizardState.logo_brief_3,
-            BrandWizardState.set_logo_brief_3,
-            "Quis nostrud exercitation",
-            height="3.25rem",
-        ),
+        _hidden_submit(),
+        on_submit=BrandWizardState.next_step,
+        width="100%",
     )
 
 
@@ -816,7 +931,18 @@ def _swatch(colour: rx.Var[str], index: rx.Var[int]) -> rx.Component:
 
     `on_click` reads this swatch's colour into the readout card below BEFORE the picker
     dialog even returns a value, so clicking an existing colour names it immediately —
-    the click alone is the "show me this one" gesture, no change required."""
+    the click alone is the "show me this one" gesture, no change required.
+
+    The pencil (`.q-swatch-edit`, ruled in `assets/qualify.css` next to `.q-fork-arrow`)
+    fades in on hover over a dark scrim, `pointer_events="none"` so it never steals the
+    click from the transparent colour input underneath — a second, visual reinforcement
+    of "this circle is what you edit", on top of the text hint `_step_palette` gives
+    the same rule (request 2026-09-08: a swatch reading only as "selected" led a
+    first-time user to reach for the wheel instead, which ADDS rather than edits).
+
+    The delete mark is a real `<button>` (§8 — same reason `_choice_card` moved off
+    `rx.box` + `on_click`), not just for the keyboard: it also carries the accessible
+    name (`aria-label`) the bare colour swap circle has no room for."""
     return rx.box(
         rx.box(
             rx.input(
@@ -824,6 +950,7 @@ def _swatch(colour: rx.Var[str], index: rx.Var[int]) -> rx.Component:
                 value=colour,
                 on_click=BrandWizardState.set_picker_color(colour),
                 on_change=BrandWizardState.set_swatch_color(index),
+                aria_label="Editar este color",
                 position="absolute",
                 top="0",
                 left="0",
@@ -834,7 +961,19 @@ def _swatch(colour: rx.Var[str], index: rx.Var[int]) -> rx.Component:
                 border="none",
                 cursor="pointer",
             ),
+            rx.box(
+                rx.icon("pencil", size=11, color="white"),
+                class_name="q-swatch-edit",
+                position="absolute",
+                inset="0",
+                border_radius="9999px",
+                display="flex",
+                align_items="center",
+                justify_content="center",
+                pointer_events="none",
+            ),
             title=colour,
+            class_name="q-swatch",
             position="relative",
             cursor="pointer",
             width="2.25rem",
@@ -848,9 +987,14 @@ def _swatch(colour: rx.Var[str], index: rx.Var[int]) -> rx.Component:
             transition=f"transform {T.DUR} {T.SPRING}",
             _hover={"transform": "scale(1.15)"},
         ),
-        rx.box(
+        rx.el.button(
             rx.icon("x", size=10, color="white"),
             on_click=BrandWizardState.remove_colour(index).stop_propagation,
+            aria_label="Quitar este color",
+            type="button",
+            border="none",
+            padding="0",
+            font="inherit",
             position="absolute",
             top="-0.25rem",
             right="-0.25rem",
@@ -883,6 +1027,7 @@ def _colour_wheel() -> rx.Component:
             value=BrandWizardState.picker_color,
             on_change=BrandWizardState.set_picker_color,
             on_blur=BrandWizardState.commit_picked_color,
+            aria_label="Añadir un color a la paleta",
             position="absolute",
             top="0",
             left="0",
@@ -900,7 +1045,7 @@ def _colour_wheel() -> rx.Component:
         background=(
             "conic-gradient(#ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)"
         ),
-        box_shadow=f"inset 0 0 0 1px {rx.color('gray', 6)}",
+        box_shadow=f"inset 0 0 0 1px {rx.color('gray', 7)}",
     )
 
 
@@ -953,7 +1098,7 @@ def _colour_readout() -> rx.Component:
         # No `cursor: pointer` and no `q-lift` any more: this card does nothing when
         # clicked, so it must not advertise that it does.
         padding="0.65rem 0.9rem",
-        border=f"1px solid {rx.color('gray', 6)}",
+        border=f"1px solid {rx.color('gray', 7)}",
         border_radius=T.RADIUS_CARD,
         background=T.CARD_BG,
         width="100%",
@@ -971,22 +1116,81 @@ def _step_palette() -> rx.Component:
       (`_colour_readout`) just names what was picked; it is not a second way in.
     - EDIT a colour already in the palette: the swatch itself, in the strip below —
       `_swatch`. Its own × removes it outright.
+
+    Renders `CreativeState.palette_colors` (filtered), not `kit_palette.split(",")`
+    directly — a fresh kit's `kit_palette` is `""`, and `"".split(",")` is `['']`, not
+    `[]`: rendering the raw split put one phantom swatch on screen that no click could
+    ever remove (every handler already filters empty entries before indexing, so that
+    swatch's index pointed past the end of the real list). The empty-state line covers
+    the same gap for a first-time user: an empty step with nothing but a wheel gives no
+    hint that the wheel is what starts the palette.
+
+    The swatches now sit inside their own `card()` (request 2026-09-08) instead of
+    floating loose on the panel background — the same bordered-surface treatment
+    `_colour_readout` already gives the current pick, so "these are your saved
+    colours" and "this is what you're about to add" read as two related but distinct
+    surfaces, not one undifferentiated wash of circles.
+
+    The one-line hint used to live ONLY under the wheel ("toca la rueda para añadir…
+    toca uno ya añadido para editarlo"), which is the correct rule but the wrong
+    place to read it: a first-time user clicks a swatch (which lights up in the
+    readout, reading as "selected"), reaches for the big colourful wheel to change
+    it — the most prominent control on screen — and gets a new colour ADDED instead,
+    the old one untouched (reported live, 2026-09-08). The rule was never wrong, the
+    single caption just wasn't anchored where the mistake actually happens. Split in
+    two, each next to the control it describes: "toca un color para cambiarlo" sits
+    under the swatches themselves, "toca la rueda para añadir uno nuevo" stays under
+    the wheel — so whichever control you're looking at when you reach for it is the
+    one telling you what it does.
     """
     return _step_body(
-        rx.hstack(
-            rx.foreach(CreativeState.kit_palette.split(","), _swatch),
-            spacing="2",
-            wrap="wrap",
-            justify="center",
+        card(
+            rx.vstack(
+                _section_label("Tu paleta"),
+                rx.cond(
+                    CreativeState.has_palette_colors,
+                    rx.fragment(
+                        rx.hstack(
+                            rx.foreach(CreativeState.palette_colors, _swatch),
+                            spacing="3",
+                            wrap="wrap",
+                            justify="center",
+                            width="100%",
+                        ),
+                        rx.text(
+                            "Toca un color para cambiarlo.",
+                            size="1",
+                            color=T.TEXT_FAINT,
+                        ),
+                    ),
+                    rx.text(
+                        "Aún no has añadido ningún color.",
+                        size="2",
+                        color=T.TEXT_MUTED,
+                    ),
+                ),
+                spacing="3",
+                width="100%",
+                align_items="center",
+            ),
+            padding="1.25rem 1.5rem",
             width="100%",
         ),
         rx.vstack(
             _colour_wheel(),
+            rx.text(
+                "Toca la rueda para añadir un color nuevo.",
+                size="1",
+                color=T.TEXT_FAINT,
+                text_align="center",
+                max_width="18rem",
+            ),
             _colour_readout(),
             spacing="3",
             align="center",
             width="100%",
         ),
+        icon="palette",
     )
 
 
@@ -1016,6 +1220,7 @@ def _step_voice_tone() -> rx.Component:
             CreativeState.tone_brief_elaborate,
             CreativeState.set_tone_brief_elaborate,
         ),
+        icon="sliders-horizontal",
     )
 
 
@@ -1036,6 +1241,7 @@ def _step_voice_examples() -> rx.Component:
             CreativeState.kit_cta_patterns,
             CreativeState.set_kit_cta_patterns,
         ),
+        icon="message-square-text",
     )
 
 
@@ -1056,6 +1262,7 @@ def _step_restrictions() -> rx.Component:
             "warn",
             icon="shield-alert",
         ),
+        icon="shield-alert",
     )
 
 
@@ -1079,17 +1286,60 @@ def _recap_row(label: str, value: rx.Var[str], fallback: str = "Sin definir") ->
     )
 
 
+def _plan_label(key: rx.Var[str]) -> rx.Var[str]:
+    """The plan's human label for the recap — `BrandWizardState.subscription` stores
+    the internal `PLANS` key ("basico"), which is what a first-time user would see on
+    ¿Todo correcto? without this: the slug they never typed, not the label they
+    clicked. Falls to "" (unmatched, or nothing chosen yet) so `_recap_row`'s own
+    "Sin definir" still applies — this only ever renames a real value, never invents
+    one for an empty key."""
+    return rx.match(key, *[(k, label) for k, label, _ in PLANS], "")
+
+
+def _palette_recap_row() -> rx.Component:
+    """Same label column `_recap_row` uses, but the value is a row of small swatches —
+    not the raw comma-joined hex string `_recap_row` would otherwise show. A confirm
+    screen exists so the operator can catch a mistake before saving; a colour reads in
+    a glance, six characters of hex do not."""
+    return rx.hstack(
+        rx.text("Paleta", size="2", color=T.TEXT_MUTED, min_width="9rem", flex_shrink="0"),
+        rx.cond(
+            CreativeState.has_palette_colors,
+            rx.hstack(
+                rx.foreach(
+                    CreativeState.palette_colors,
+                    lambda colour: rx.box(
+                        title=colour,
+                        width="1.25rem",
+                        height="1.25rem",
+                        border_radius="9999px",
+                        background=colour,
+                        box_shadow=f"inset 0 0 0 1px {rx.color('gray', 7)}",
+                        flex_shrink="0",
+                    ),
+                ),
+                spacing="2",
+                wrap="wrap",
+            ),
+            rx.text("Sin definir", size="2", color=T.TEXT_FAINT),
+        ),
+        spacing="3",
+        width="100%",
+        align="center",
+    )
+
+
 def _step_confirm() -> rx.Component:
     # No logo row here (per request) — the staged logo isn't part of this recap.
     return _step_body(
         card(
             rx.vstack(
-                _recap_row("Plan", BrandWizardState.subscription),
+                _recap_row("Plan", _plan_label(BrandWizardState.subscription)),
                 rx.divider(),
                 _recap_row("Posicionamiento", CreativeState.kit_positioning),
                 _recap_row("Audiencia", CreativeState.kit_audience),
                 rx.divider(),
-                _recap_row("Paleta", CreativeState.kit_palette),
+                _palette_recap_row(),
                 rx.divider(),
                 _recap_row("Palabras vetadas", CreativeState.kit_banned_words, "Ninguna"),
                 spacing="2",
@@ -1099,6 +1349,7 @@ def _step_confirm() -> rx.Component:
             padding="1.25rem 1.5rem",
             width="100%",
         ),
+        icon="clipboard-check",
     )
 
 
@@ -1167,38 +1418,20 @@ def _heading_for(index: int) -> rx.Var[str]:
     )
 
 
-def _flow_header(
-    title: str | rx.Var[str],
-    subtitle: str | rx.Var[str],
-    *,
-    step_label: rx.Component | None = None,
-) -> rx.Component:
-    """The counter (when there is one) and the title/subtitle sit left, the colour-mode
-    toggle sits right — `rx.color_mode.button()` is the exact same call `ui.layout.
-    page_header` uses, so the toggle looks and behaves identically everywhere in the
-    app. Full width on purpose: the narrower reading column is a property of the
-    content below, not of this row."""
-    return rx.hstack(
-        rx.vstack(
-            *([step_label] if step_label is not None else []),
-            rx.heading(title, size="8", weight="bold"),
-            rx.text(subtitle, size="3", color=T.TEXT_MUTED),
-            spacing="1",
-            align_items="start",
-        ),
-        rx.spacer(),
-        rx.color_mode.button(),
-        width="100%",
-        align="center",
-    )
-
-
 def _step_counter(step: rx.Var[int], total: int) -> rx.Component:
+    """The wizard's `kicker` for `ui.page_header` — "PASO 5 DE 10" above the title,
+    same eyebrow treatment `_section_label`/the sidebar's zone labels already use.
+    Was its own header (`_flow_header`, since removed) built a title row from scratch
+    next to `page_header`'s own, duplicating the exact same title+subtitle+colour-mode
+    scaffold for no reason a shared header couldn't cover — the only real difference
+    the wizard needs is a bigger title and this line above it, and `page_header` now
+    takes both as plain parameters (`title_size`, `kicker`)."""
     return rx.text(
         "Paso ",
         step + 1,
         f" de {total}",
         size="1",
+        weight="bold",
         color=T.TEXT_MUTED,
         letter_spacing="0.08em",
         text_transform="uppercase",
@@ -1243,24 +1476,28 @@ def _controls() -> rx.Component:
 
 
 def brand_manual_index() -> rx.Component:
-    """The header spans the full page width (counter+title left, theme toggle right),
-    and so does the border below it — reaching the same edges the header does, filling
-    down to the panel's bottom (`flex="1"` all the way up through `page_body`, no
-    `100vh` maths — see the note where `_SCREEN_MIN_HEIGHT` used to be) instead of hugging
-    its own content height. Inside that tall frame, the card is itself a flex column
-    with `justify_content="space-between"`: the fields stay in a narrow, readable,
-    centred column at the top (a single-line hex input stretched to 1440px reads worse
-    than the frame around it being that wide), while `_controls()` spans the card's
-    FULL width and sits pinned to its bottom edge — Atrás at the bottom-left corner,
-    Continuar/Finalizar at the bottom-right, not floating just under the fields."""
+    """`page_header` (the app's one standard header, `title_size="8"` + `kicker` — see
+    `_step_counter`'s own docstring for why this no longer builds a header of its own)
+    sits OUTSIDE `page_body`, exactly like every other page in the app: it is a sibling
+    `app_shell` child, not content inside the scrolling panel. The border below it
+    fills down to the panel's bottom (`flex="1"` all the way through `page_body`, no
+    `100vh` maths — see the note where `_SCREEN_MIN_HEIGHT` used to be) instead of
+    hugging its own content height. Inside that tall frame, the card is itself a flex
+    column with `justify_content="space-between"`: the fields stay in a narrow,
+    readable, centred column at the top (a single-line hex input stretched to 1440px
+    reads worse than the frame around it being that wide), while `_controls()` spans
+    the card's FULL width and sits pinned to its bottom edge — Atrás at the
+    bottom-left corner, Continuar/Finalizar at the bottom-right, not floating just
+    under the fields."""
     return app_shell(
+        page_header(
+            _heading_for(0),
+            _heading_for(1),
+            kicker=_step_counter(BrandWizardState.step, len(STEPS)),
+            title_size="8",
+        ),
         page_body(
             rx.vstack(
-                _flow_header(
-                    _heading_for(0),
-                    _heading_for(1),
-                    step_label=_step_counter(BrandWizardState.step, len(STEPS)),
-                ),
                 rx.vstack(
                     rx.cond(
                         CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")
@@ -1334,12 +1571,14 @@ def brand_manual_index() -> rx.Component:
                 spacing="4",
                 width="100%",
                 # Fills the panel through `page_body` (`flex: 1 0 auto`) instead of
-                # computing a height. No bottom padding: `PAD_BODY` already leaves the
-                # page's bottom gutter, and stacking 4rem on top of it is what left the
-                # card's border stopping short of the panel's bottom edge.
+                # computing a height. No top/bottom padding of its own: `page_header`
+                # (now a sibling, not a sibling-turned-first-child) already gives the
+                # standard `PAD_HEADER` gap above, and `PAD_BODY` already leaves the
+                # page's bottom gutter — stacking a manual 3rem on top of that was
+                # only ever compensating for not using `page_header` in the first
+                # place.
                 flex="1",
                 min_height="0",
-                padding="3rem 0 0 0",
             ),
         ),
     )
@@ -1356,12 +1595,29 @@ def _fork_option(icon: str, title: str, description: str, href: str) -> rx.Compo
     `on_click=rx.redirect(...)`) keeps it a real anchor — middle-click, "open in new
     tab" and screen readers all keep working. `display="block"` is load-bearing: an
     `<a>` is inline by default, so `width="100%"` is silently ignored without it and
-    the card inside shrinks to its own content's width instead of the frame's."""
+    the card inside shrinks to its own content's width instead of the frame's.
+
+    The trailing arrow (`.q-fork-arrow`, ruled in `assets/qualify.css` next to `.q-lift`
+    itself) nudges right and turns accent on hover — a second, cheap reinforcement that
+    this whole surface goes somewhere, on top of the lift the card already gets."""
     return rx.link(
         card(
             rx.vstack(
-                rx.icon(icon, size=26, color=T.tone_color("accent", 10)),
-                rx.heading(title, size="4"),
+                rx.hstack(
+                    rx.icon(icon, size=26, color=T.tone_color("accent", 10)),
+                    rx.spacer(),
+                    rx.icon(
+                        "arrow-right",
+                        size=T.ICON_MD,
+                        class_name="q-fork-arrow",
+                    ),
+                    width="100%",
+                    align="center",
+                ),
+                # §8: one h1 per page, owned by `page_header` — an entity title inside
+                # a card is h3 (design-system.md §3.2's own table), never the default h1
+                # `rx.heading` renders without an explicit `as_=`.
+                rx.heading(title, size="4", as_="h3"),
                 rx.text(description, size="2", color=T.TEXT_MUTED),
                 spacing="3",
                 align_items="start",
@@ -1380,14 +1636,17 @@ def _fork_option(icon: str, title: str, description: str, href: str) -> rx.Compo
 
 def brand_choice_index() -> rx.Component:
     """The fork the sidebar's «Marca» lands on. Same framing as the two flows behind
-    it now: a full-width border below the full-width header, rather than a border
-    hugging a narrow centred column — and the border grows to fill the panel
-    (`flex="1"` on the card, `min_height` on this vstack so there is room to grow
-    into) instead of stopping short and leaving bare panel background below it."""
+    it now: `page_header` (§ `_step_counter`'s docstring — the wizard's own header was
+    folded into the standard one) sits outside `page_body`, and the border below it
+    grows to fill the panel (`flex="1"` on the card, `min_height` on this vstack so
+    there is room to grow into) instead of stopping short and leaving bare panel
+    background below it."""
     return app_shell(
+        page_header(
+            "Brandkit", "El sustrato de marca del que sale cada pieza", title_size="8"
+        ),
         page_body(
             rx.vstack(
-                _flow_header("Brandkit", "El sustrato de marca del que sale cada pieza"),
                 card(
                     rx.vstack(
                         _fork_option(
@@ -1420,7 +1679,6 @@ def brand_choice_index() -> rx.Component:
                 width="100%",
                 flex="1",
                 min_height="0",
-                padding="3rem 0 0 0",
             ),
         ),
     )
@@ -1442,16 +1700,31 @@ NETWORKS: tuple[tuple[str, str, str], ...] = (
     ("tiktok", "TikTok", "Vídeos cortos y galerías de fotos."),
 )
 
-#: Placeholder recommendations. Copy is lorem until the analysis actually produces them.
+#: Placeholder recommendations — hardcoded until the real analysis produces them
+#: (no connection to `search.content_index`/`signals.events` yet), but written as
+#: real, generic-but-plausible advice, not lorem: this screen exists to feel like
+#: "we read your profile", and Latin filler text says the opposite.
 RECOMMENDATIONS: tuple[tuple[str, str], ...] = (
-    ("Publica más vídeo corto", "Lorem ipsum dolor sit amet, consectetur adipiscing elit."),
-    ("Refuerza tu llamada a la acción", "Sed do eiusmod tempor incididunt ut labore et dolore."),
-    ("Unifica la paleta", "Ut enim ad minim veniam, quis nostrud exercitation ullamco."),
-    ("Responde los comentarios", "Duis aute irure dolor in reprehenderit in voluptate velit."),
+    (
+        "Publica más vídeo corto",
+        "Es el formato que más se comparte en tu categoría ahora mismo.",
+    ),
+    (
+        "Refuerza tu llamada a la acción",
+        "Cierra cada pieza con una acción clara: seguir, comprar, escribir.",
+    ),
+    (
+        "Unifica la paleta",
+        "Usa los mismos colores en cada publicación para que te reconozcan de inmediato.",
+    ),
+    (
+        "Responde los comentarios",
+        "Contestar rápido mejora tu alcance y la confianza de tu audiencia.",
+    ),
 )
 
-#: Placeholder metric insights (label, target value, suffix, hint) — lorem-shaped, not
-#: derived from any modelled data. The real version reads `search.content_index` /
+#: Placeholder metric insights (label, target value, suffix, hint) — plausible numbers,
+#: not derived from any modelled data. The real version reads `search.content_index` /
 #: `signals.events` (Fase 2/3, `docs/plan-ingesta-social.md`), which this UI has no
 #: connection to yet. Only the connect flow has these — the manual flow has no scraped
 #: profile to report a rate or an average FOR, so it shows no metrics at all rather
@@ -1695,6 +1968,7 @@ class BrandConnectState(rx.State):
 
 def _connect_step_network() -> rx.Component:
     return _step_body(
+        icon="share-2",
         *(
             _choice_card(
                 label,
@@ -1703,22 +1977,33 @@ def _connect_step_network() -> rx.Component:
                 BrandConnectState.choose_network(key),
             )
             for key, label, blurb in NETWORKS
-        )
+        ),
     )
 
 
 def _connect_step_username() -> rx.Component:
-    return _step_body(
-        _labeled_input(
-            "Usuario",
-            BrandConnectState.username,
-            BrandConnectState.set_username,
-            "username",
+    """Wrapped in `rx.form` (same reasoning as `_logo_brief_form`, `_hidden_submit`
+    included) so Enter in the single Usuario field triggers `BrandConnectState.
+    analyze` — the same handler `_connect_controls`'s "Analizar" button already calls
+    on this step, not a plain `next_step` (this step never just advances; it kicks
+    off the profile read)."""
+    return rx.form(
+        _step_body(
+            _labeled_input(
+                "Usuario",
+                BrandConnectState.username,
+                BrandConnectState.set_username,
+                "username",
+            ),
+            rx.cond(
+                BrandConnectState.error != "",
+                callout(BrandConnectState.error, "error"),
+            ),
+            icon="at-sign",
         ),
-        rx.cond(
-            BrandConnectState.error != "",
-            callout(BrandConnectState.error, "error"),
-        ),
+        _hidden_submit(),
+        on_submit=BrandConnectState.analyze,
+        width="100%",
     )
 
 
@@ -1747,7 +2032,9 @@ def _connect_step_profile() -> rx.Component:
                         justify_content="center",
                     ),
                 ),
-                rx.heading(BrandConnectState.profile_username, size="4"),
+                # §8: h3 for an entity title inside a card — `page_header` already
+                # owns this page's one h1.
+                rx.heading(BrandConnectState.profile_username, size="4", as_="h3"),
                 rx.text(BrandConnectState.profile_fullname, size="2", color=T.TEXT_MUTED),
                 rx.cond(
                     BrandConnectState.profile_category != "",
@@ -1797,7 +2084,10 @@ def _recommendation_card(title: str, blurb: str) -> rx.Component:
 
 
 def _connect_step_recommendations() -> rx.Component:
-    return _step_body(*(_recommendation_card(title, blurb) for title, blurb in RECOMMENDATIONS))
+    return _step_body(
+        icon="lightbulb",
+        *(_recommendation_card(title, blurb) for title, blurb in RECOMMENDATIONS),
+    )
 
 
 def _metric_grid() -> rx.Component:
@@ -1987,19 +2277,21 @@ def _connect_controls() -> rx.Component:
 
 
 def brand_connect_index() -> rx.Component:
-    """Same shape as `brand_manual_index`: full-width header, full-width border filling
-    down to the panel's bottom, fields in a narrow centred column at the top of the
-    card, and `_connect_controls()` spanning the card's full width, pinned to its
-    bottom corners. Two loading states, both a centred spinner with no footer row:
+    """Same shape as `brand_manual_index`, `page_header` included (§ `_step_counter`'s
+    docstring): full-width header outside `page_body`, full-width border filling down
+    to the panel's bottom, fields in a narrow centred column at the top of the card,
+    and `_connect_controls()` spanning the card's full width, pinned to its bottom
+    corners. Two loading states, both a centred spinner with no footer row:
     `CreativeState.kit_loading` on page load, `BrandConnectState.analyzing` mid-scrape."""
     return app_shell(
+        page_header(
+            _connect_heading_for(0),
+            _connect_heading_for(1),
+            kicker=_step_counter(BrandConnectState.step, len(CONNECT_STEPS)),
+            title_size="8",
+        ),
         page_body(
             rx.vstack(
-                _flow_header(
-                    _connect_heading_for(0),
-                    _connect_heading_for(1),
-                    step_label=_step_counter(BrandConnectState.step, len(CONNECT_STEPS)),
-                ),
                 rx.vstack(
                     rx.cond(
                         CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")
@@ -2074,7 +2366,6 @@ def brand_connect_index() -> rx.Component:
                 width="100%",
                 flex="1",
                 min_height="0",
-                padding="3rem 0 0 0",
             ),
         ),
     )

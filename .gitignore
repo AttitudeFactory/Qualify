@@ -22,3 +22,8 @@ site/
 # py): overwritten on every profile read, holds whatever real handle a developer last
 # tested with — not a source-controlled fixture like fixtures/midu.dev_prueba.json.
 Qualify/fixtures/brand_connect_profile.json
+
+# Reflex's local upload dir (rx.get_upload_dir()) — whatever a developer staged
+# through the Brand Kit wizard's logo step, tenant-namespaced runtime data, not
+# source.
+uploaded_files/
