@@ -26,13 +26,14 @@ from uuid import UUID
 from qualify_api.publishing import (
     PendingUpload,
     advance_publish,
+    get_child_statuses,
     stage_and_start_many_publish,
     stage_and_start_publish,
 )
 from qualify_api.publishing.service import PublishState as ServicePublishState
 
 from .connections_provider import connections_for
-from .publishing_vm import ConnectionOptionVM, PublishAttemptVM
+from .publishing_vm import ChildStatusVM, ConnectionOptionVM, PublishAttemptVM
 
 
 def active_connections(tenant_id: UUID) -> list[ConnectionOptionVM]:
@@ -129,3 +130,16 @@ async def poll_publish(*, tenant_id: UUID, attempt_id: UUID) -> PublishAttemptVM
     `PublishService.advance` for why there is no loop on the backend side."""
     state = await advance_publish(tenant_id=tenant_id, attempt_id=attempt_id)
     return _to_vm(state)
+
+
+def carousel_children_status(*, tenant_id: UUID, attempt_id: UUID) -> list[ChildStatusVM]:
+    """Read-only carousel-progress projection (QUA-99 UX follow-up) — call this ALONGSIDE
+    `poll_publish`, never instead of it: it changes nothing about the attempt, only lets
+    the polling screen show which child is still uploading/processing instead of one
+    generic spinner. Blocking DB call (via `get_child_statuses`) — same posture
+    `active_connections` already documents for itself; callers on the event loop must run
+    it off-thread."""
+    return [
+        ChildStatusVM(position=c.position, status=c.status)
+        for c in get_child_statuses(tenant_id=tenant_id, attempt_id=attempt_id)
+    ]

@@ -28,6 +28,34 @@ class ConnectionOptionVM:
 
 
 @dataclass(frozen=True)
+class PendingItemVM:
+    """One video buffered locally, not yet published (gallery redesign, QUA-99 follow-up).
+
+    Deliberately NO bytes/content_type here — those stay on `_PendingFile`
+    (`publishing_state.py`, backend-only, never reaches the client). This is the display
+    projection `rx.foreach` renders in the grid: a filename and nothing else. Position in
+    the carousel is NOT a field here — it is the item's index in
+    `PublishState.pending_items`, which `rx.foreach` already hands the renderer, so there
+    is only one place order lives, never two that could drift apart.
+    """
+
+    filename: str
+
+
+@dataclass(frozen=True)
+class ChildStatusVM:
+    """Display projection of one carousel child's progress (QUA-99 UX follow-up) — the
+    Reflex-side counterpart of `qualify_api.publishing.service.ChildStatus`. Same two
+    fields, copied rather than imported: this module stays free of `qualify_api` imports
+    (`connections_vm.py`'s convention), and the whitelist test below pins it stays free of
+    anything credential-bearing as the module grows.
+    """
+
+    position: int
+    status: str
+
+
+@dataclass(frozen=True)
 class PublishAttemptVM:
     """Display-ready projection of a `PublishService` `PublishState`.
 

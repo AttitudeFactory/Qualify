@@ -28,6 +28,7 @@ from qualify_api.publishing.client import MEDIA_TYPE_VIDEO, HttpPublishClient, P
 from qualify_api.publishing.repository import PostgresPublishAttemptRepository
 from qualify_api.publishing.service import (
     MAX_CAROUSEL_ITEMS,
+    ChildStatus,
     ConnectionTarget,
     MediaItem,
     PublishService,
@@ -212,3 +213,16 @@ async def advance_publish(*, tenant_id: UUID, attempt_id: UUID) -> PublishState:
     there is no loop here: the CLIENT (Reflex, for this seam) drives the cadence via
     repeated calls, exactly as the HTTP `GET /api/publishing/attempts/{id}` route does."""
     return await production_publish_service().advance(tenant_id=tenant_id, attempt_id=attempt_id)
+
+
+def get_child_statuses(*, tenant_id: UUID, attempt_id: UUID) -> list[ChildStatus]:
+    """Read-only carousel-progress seam (QUA-99 UX follow-up) — the composition-layer
+    counterpart of `advance_publish`, but for DISPLAY only: it never advances anything,
+    only projects what `PublishService.list_children_status` already reads from Postgres.
+    Synchronous, same convention as `PostgresConnectionTargetReader.read`/
+    `connections_for` — callers on the event loop run it off-thread via
+    `asyncio.to_thread`, same as `active_connections` already does in
+    `publishing_provider.py`."""
+    return production_publish_service().list_children_status(
+        tenant_id=tenant_id, attempt_id=attempt_id
+    )

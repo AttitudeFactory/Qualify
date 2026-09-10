@@ -32,12 +32,17 @@ from collections.abc import Callable, Coroutine, Iterator
 from uuid import UUID
 
 from qualify_api.publishing.composition import PendingUpload
+from qualify_api.publishing.service import (
+    ChildStatus,
+    TooManyItems,
+    UnknownAttempt,
+    UnknownConnection,
+)
 from qualify_api.publishing.service import PublishState as ServicePublishState
-from qualify_api.publishing.service import TooManyItems, UnknownAttempt, UnknownConnection
 
 from . import publishing_provider
 from .connections_vm import ConnectionVM
-from .publishing_vm import ConnectionOptionVM, PublishAttemptVM
+from .publishing_vm import ChildStatusVM, ConnectionOptionVM, PendingItemVM, PublishAttemptVM
 
 _FORBIDDEN_FIELD_FRAGMENTS = (
     "token",
@@ -106,7 +111,7 @@ def _service_state(**overrides: object) -> ServicePublishState:
 
 
 def test_vms_have_no_credential_fields() -> None:
-    for vm_cls in (PublishAttemptVM, ConnectionOptionVM):
+    for vm_cls in (PublishAttemptVM, ConnectionOptionVM, PendingItemVM, ChildStatusVM):
         for f in dataclasses.fields(vm_cls):
             lowered = f.name.lower()
             for fragment in _FORBIDDEN_FIELD_FRAGMENTS:
@@ -338,6 +343,41 @@ def test_start_many_publish_propagates_too_many_items() -> None:
             pass
         else:
             raise AssertionError("start_many_publish must not swallow TooManyItems")
+
+
+# --------------------------------------------------------------------------------------
+# QUA-99 UX follow-up — carousel_children_status, the read-only per-child progress seam
+# --------------------------------------------------------------------------------------
+
+
+def test_provider_calls_the_real_child_status_seam() -> None:
+    """Same pin as the write-path ones above: the read-only carousel-progress projection
+    must delegate to `qualify_api.publishing`, not reimplement the repository read here."""
+    source = inspect.getsource(publishing_provider)
+    assert "get_child_statuses(" in source
+
+
+def test_carousel_children_status_projects_position_and_status_in_order() -> None:
+    def _fake(**kwargs: object) -> list[ChildStatus]:
+        return [
+            ChildStatus(position=0, status="finished"),
+            ChildStatus(position=1, status="uploading"),
+        ]
+
+    with _patched(get_child_statuses=_fake):
+        rows = publishing_provider.carousel_children_status(tenant_id=_TENANT, attempt_id=_ATTEMPT)
+    assert [(r.position, r.status) for r in rows] == [(0, "finished"), (1, "uploading")]
+    assert all(isinstance(r, ChildStatusVM) for r in rows)
+
+
+def test_carousel_children_status_never_calls_meta_or_advance() -> None:
+    """Structural pin: this seam must never CALL `advance_publish`/`poll_publish` — it is
+    a SEPARATE, read-only path, called ALONGSIDE polling, never instead of it or as part
+    of it. Checked as call expressions (the `(` matters) so the docstring's own prose
+    mentioning `poll_publish` by name doesn't trip this."""
+    source = inspect.getsource(publishing_provider.carousel_children_status)
+    assert "advance_publish(" not in source
+    assert "poll_publish(" not in source
 
 
 def _run() -> int:

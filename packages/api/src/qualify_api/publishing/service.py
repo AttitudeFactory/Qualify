@@ -147,6 +147,23 @@ class PublishState:
 
 
 @dataclass(frozen=True)
+class ChildStatus:
+    """A read-only projection of one carousel child's progress (QUA-99 UX follow-up).
+
+    Exists ONLY to let a caller (Reflex's polling UI) show something more honest than a
+    generic spinner while `_advance_children` works through 2-10 items — it changes
+    NOTHING about orchestration: `list_children_status` below is a pure passthrough read
+    over data `_advance_children`/`_poll_child` already write, called independently of
+    `advance()`, never from inside it. `status` is one of `ChildRecord`'s own values
+    (`pending`/`uploading`/`processing`/`finished`/`failed`) — not re-interpreted here,
+    so a caller mapping it to copy is the one place that vocabulary is chosen.
+    """
+
+    position: int
+    status: str
+
+
+@dataclass(frozen=True)
 class MediaItem:
     """One item of a multi-video (carousel) publish request (QUA-99, 4/6) — VIDEO-ONLY.
 
@@ -439,6 +456,18 @@ class PublishService:
             platform_error_code=None,
         )
         return _state(self._require(tenant_id, record.id), container_status="FINISHED")
+
+    def list_children_status(self, *, tenant_id: UUID, attempt_id: UUID) -> list[ChildStatus]:
+        """Read-only projection of a carousel attempt's children, position-ordered (QUA-99
+        UX follow-up). A plain passthrough over `self._repo.list_children` — the exact
+        call `_advance_children`/`_over_ceiling` already make internally — narrowed to the
+        two fields a status label needs. Never called from `advance()`/`_advance_children`
+        itself and never writes anything: this exists purely so a caller can POLL this
+        ALONGSIDE `advance()`, not instead of it, without touching orchestration."""
+        return [
+            ChildStatus(position=c.position, status=c.status)
+            for c in self._repo.list_children(tenant_id=tenant_id, attempt_id=attempt_id)
+        ]
 
     def _require(self, tenant_id: UUID, attempt_id: UUID) -> AttemptRecord:
         record = self._repo.get_attempt(tenant_id=tenant_id, attempt_id=attempt_id)

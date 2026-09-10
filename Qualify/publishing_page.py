@@ -9,28 +9,47 @@ QUA-98 started as a visual-only pass — every original `PublishState` binding (
 narrow, explicitly-authorized addition later touched `publishing_state.py` too (never Meta
 calls/payloads/auth/account selection/video loading/caption logic/the publish button's
 core behavior): the success/failure toasts and the post-success form reset — see
-`_success_toast`/`_failure_toast` and the `self.caption = ""` + `rx.clear_selected_files`
-calls there.
+`_success_toast`/`_failure_toast` and the `self.caption = ""` reset there (the
+gallery-redesign follow-up below replaced QUA-98's original `rx.clear_selected_files`
+reset with clearing `pending_items` directly, since the dropzone's own client-side
+selection state is no longer what the gallery renders from).
 
 QUA-99 (6/6): the dropzone gained `multiple=True`/`max_files` raised from 1 to 10 — the
-SAME `rx.upload` widget, no new upload abstraction. The gallery of selected names reuses
-`rx.selected_files(_UPLOAD_ID)`, the same reactive Var the single-video screen already
-rendered (just iterated with `rx.foreach` now that it can hold more than one name). The
-caption field (`_caption_section`) is completely UNTOUCHED — one field, one source of
-truth, used identically for 1 video or a carousel; only `publishing_state.py` decides
-downstream which provider seam (`start_publish` vs `start_many_publish`) the SAME
-`self.caption` value reaches. VIDEO-ONLY: no image path exists anywhere on this screen,
-not even as a disabled placeholder — `accept` still lists only MP4/MOV.
+SAME `rx.upload` widget, no new upload abstraction. The caption field
+(`_caption_section`) is completely UNTOUCHED — one field, one source of truth, used
+identically for 1 video or a carousel; only `publishing_state.py` decides downstream
+which provider seam (`start_publish` vs `start_many_publish`) the SAME `self.caption`
+value reaches. VIDEO-ONLY: no image path exists anywhere on this screen, not even as a
+disabled placeholder — `accept` still lists only MP4/MOV.
+
+**Gallery redesign (QUA-99 UX follow-up)** replaced the plain list of selected names with
+a grid — see `_pending_tile`'s docstring for the shape. Each tile shows a REAL first-frame
+thumbnail of the video, captured entirely client-side (`ui/video_preview.py` — native
+browser APIs, no library, no backend change), falling back to an icon while a frame has
+not been captured yet (or never could be). The polling status (`_status_block`) also
+stopped being one generic spinner: while a carousel is being assembled it now shows which
+child video is uploading/processing, or that the carousel/final confirmation step is under
+way (`PublishState.carousel_stage_label`), plus how long the wait has been running
+(`PublishState.elapsed_label`) and a plain-language note that Meta's own processing can
+take several minutes — all derived from data the backend already had, nothing invented.
 """
 
 from __future__ import annotations
 
 import reflex as rx
 
-from .publishing_state import _MAX_ITEMS, _UPLOAD_ID, PublishState
-from .publishing_vm import ConnectionOptionVM
+from .publishing_state import _MAX_ITEMS, _UPLOAD_ID, _WAIT_EXPLANATION, PublishState
+from .publishing_vm import ConnectionOptionVM, PendingItemVM
 from .ui import app_shell, callout, card, page_body, page_header, section
 from .ui import tokens as T
+from .ui.video_preview import gallery_preview_capture_anchor, video_frame_preview_src
+
+# Gallery redesign, part 2 (QUA-99 UX follow-up) — a stable DOM id `video_preview.py`
+# listens on (native `drop`/`change` delegation) to find each tile's own `File` for its
+# real thumbnail. Lives here, not there, for the same reason `_UPLOAD_ID` does: this
+# module owns the actual DOM structure, `video_preview.py` stays a plain generic helper
+# with no knowledge of this specific screen's layout.
+_GALLERY_ROOT_ID = "publish-gallery-root"
 
 
 def _connection_item(conn: ConnectionOptionVM) -> rx.Component:
@@ -58,73 +77,131 @@ def _connection_section() -> rx.Component:
     )
 
 
-def _upload_zone() -> rx.Component:
-    # QUA-99 (6/6): `rx.selected_files(_UPLOAD_ID)` is the SAME reactive Var the original
-    # single-video screen already used (client-side, tracks the dropzone's current
-    # selection before any upload) — reused as-is for the gallery below rather than
-    # duplicated into a new state Var. `multiple=True` is the only reason it can now hold
-    # more than one name; the Var itself is untouched machinery.
-    selected = rx.selected_files(_UPLOAD_ID)
-    has_file = selected.length() > 0
-    is_carousel = selected.length() > 1
-    return rx.upload(
+def _pending_tile(item: PendingItemVM, index: rx.Var[int]) -> rx.Component:
+    """One already-selected video (gallery redesign, QUA-99 UX follow-up).
+
+    Shows a REAL first-frame thumbnail (`video_frame_preview_src`, `ui/video_preview.py`
+    — native browser APIs, client-side only, no backend/Meta call) once the gallery's
+    shared capture hook has processed it; falls back to the same icon+filename tile as
+    before while it is not ready yet (a moment, right after the file is picked) or never
+    could be (an unsupported codec — the fallback is not an error state, just what "no
+    frame" always looked like here). `preview_src` is empty in EITHER case, so this Var
+    alone is enough to decide which of the two to render — see that module's docstring
+    for why the capture logic itself has to live in ONE gallery-wide hook rather than
+    one hook per tile (a per-tile hook cannot see `rx.foreach`'s per-item Var at all;
+    `previews[filename]`, a plain lookup rather than a hook, can).
+
+    Rendered as a SIBLING of the dropzone (`_gallery_zone` below), never as its child —
+    that is what makes clicking a tile or its `X` never reopen the file picker; only the
+    `+` tile (the actual `rx.upload` widget) is wired to do that.
+    """
+    preview_src = video_frame_preview_src(filename=item.filename)
+    return rx.box(
         rx.cond(
-            has_file,
-            rx.vstack(
-                rx.icon("circle-check", size=32, color=T.tone_color("ok", 9)),
-                # QUA-99: "Contenido seleccionado" stays for exactly 1 file (today's
-                # unchanged wording); 2+ say explicitly that it is a carousel, never a
-                # singular-sounding "video" label over a multi-item selection.
-                rx.cond(
-                    is_carousel,
-                    rx.text(
-                        f"Carrusel de {selected.length()} elementos", size="3", weight="medium"
-                    ),
-                    rx.text("Contenido seleccionado", size="3", weight="medium"),
-                ),
-                rx.vstack(
-                    rx.foreach(
-                        selected,
-                        lambda name: rx.text(name, size="1", color=T.TEXT_MUTED),
-                    ),
-                    spacing="1",
-                    align="center",
-                    max_height="6rem",
-                    overflow_y="auto",
-                    width="100%",
-                ),
-                rx.text("Cambiar contenido", size="1", color=T.TEXT_FAINT),
-                spacing="2",
-                align="center",
+            preview_src != "",
+            rx.el.img(
+                src=preview_src,
+                alt=item.filename,
+                style={
+                    "width": "100%",
+                    "height": "100%",
+                    "object_fit": "cover",
+                    "display": "block",
+                },
             ),
             rx.vstack(
-                rx.icon("film", size=32, color=T.TEXT_FAINT),
+                rx.icon("film", size=24, color=T.tone_color("ok", 9)),
                 rx.text(
-                    "Arrastra tu contenido aquí o haz clic para elegirlo",
-                    size="3",
-                    weight="medium",
-                ),
-                rx.text(
-                    f"MP4 o MOV · hasta 300 MB por video · hasta {_MAX_ITEMS} videos",
+                    item.filename,
                     size="1",
                     color=T.TEXT_MUTED,
+                    width="100%",
+                    text_align="center",
+                    white_space="nowrap",
+                    overflow="hidden",
+                    text_overflow="ellipsis",
                 ),
-                spacing="2",
+                spacing="1",
                 align="center",
+                justify="center",
+                height="100%",
+                padding="0.4rem",
             ),
         ),
+        rx.badge(
+            index + 1,
+            color_scheme="gray",
+            variant="solid",
+            size="1",
+            position="absolute",
+            top="0.3rem",
+            left="0.3rem",
+        ),
+        rx.button(
+            rx.icon("x", size=14, color="white"),
+            on_click=PublishState.remove_pending_file(index),
+            disabled=~PublishState.can_edit_gallery,
+            title="Quitar este video",
+            size="1",
+            variant="solid",
+            color_scheme="tomato",
+            radius="full",
+            position="absolute",
+            top="0.25rem",
+            right="0.25rem",
+            width="1.6rem",
+            height="1.6rem",
+            padding="0",
+            # A thumbnail can be almost any color underneath this — the white ring plus
+            # a drop shadow is what keeps the X readable regardless (a plain solid red
+            # circle alone was reported hard to notice against a busy first frame).
+            border=f"2px solid {T.CARD_BG}",
+            box_shadow="0 1px 3px rgba(0, 0, 0, 0.35)",
+            cursor="pointer",
+            _hover={"background": rx.color("tomato", 10)},
+        ),
+        position="relative",
+        width="6.5rem",
+        height="6.5rem",
+        overflow="hidden",  # keeps the thumbnail's object-fit:cover inside the rounded tile
+        border=f"1.5px solid {rx.color('grass', 7)}",
+        border_radius=T.RADIUS_CARD,
+        background=T.tone_color("ok", 2),
+    )
+
+
+def _upload_widget(children: rx.Component, *, compact: bool) -> rx.Component:
+    """The ONE actual dropzone (`rx.upload`) on this screen — either the big empty-state
+    prompt (`compact=False`, nothing selected yet) or the small `+` tile that sits inside
+    the grid alongside already-selected tiles (`compact=True`). Same widget, same props,
+    either way: `multiple=True` and a dynamic `max_files` (QUA-99 UX follow-up —
+    `PublishState.remaining_slots`, so a half-full gallery cannot accept more than the
+    10-item cap actually leaves room for) plus the real, server-side invariant in
+    `PublishState.add_files`, which this is only a client-side nicety on top of, same
+    posture the original single-video dropzone already documented for itself.
+    """
+    return rx.upload(
+        children,
         id=_UPLOAD_ID,
         accept={"video/mp4": [".mp4"], "video/quicktime": [".mov"]},
-        # QUA-99 (6/6): multi-select is the only change to the widget itself —
-        # `max_files` is the SAME prop the single-video screen already used, just raised
-        # from 1 to the carousel cap. No new upload abstraction.
         multiple=True,
-        max_files=_MAX_ITEMS,
+        max_files=PublishState.remaining_slots,
         # Client-side mirror of `ObjectGate.MAX_MEDIA_BYTES` (qualify_shared/objects/
         # gate.py) — that server-side ceiling is the real, load-bearing barrier and is
         # untouched; this only lets a too-large file get rejected at selection time
         # instead of after an upload attempt starts.
         max_size=300 * 1024 * 1024,
+        disabled=~PublishState.can_edit_gallery,
+        # QUA-99 UX follow-up: bound to `add_files`, which BUFFERS onto whatever is
+        # already selected (gallery redesign) rather than replacing it — see
+        # `PublishState.add_files`'s docstring for why a plain `rx.selected_files`-driven
+        # gallery cannot support "add more without losing what's there" at all.
+        # `video_frame_preview_src` (`ui/video_preview.py`) gets its own real `File`
+        # access to the SAME dropped files a different way (a native `drop`/`change`
+        # DOM listener on `_GALLERY_ROOT_ID`, never touching this `on_drop` wiring) — see
+        # that module's docstring for why reusing Reflex's own `filesById` Context here
+        # turned out not to be composable with a second handler in this list.
+        on_drop=PublishState.add_files,
         # Replaces Reflex's default English "Files not Accepted" toast
         # (reflex_components_core.core.upload._default_drop_rejected) with one in
         # Spanish, consistent with the rest of Qualify. Static on purpose: it covers
@@ -133,17 +210,17 @@ def _upload_zone() -> rx.Component:
         # APIs.
         on_drop_rejected=rx.toast.error(
             "Formato no permitido",
-            description=f"Solo se aceptan archivos MP4 o MOV, hasta {_MAX_ITEMS} a la vez.",
+            description=f"Solo se aceptan archivos MP4 o MOV, hasta {_MAX_ITEMS} en total.",
         ),
-        border=rx.cond(
-            has_file,
-            f"1.5px solid {rx.color('grass', 8)}",
-            f"1.5px dashed {rx.color('gray', 7)}",
-        ),
+        border=f"1.5px dashed {rx.color('gray', 7)}",
         border_radius=T.RADIUS_CARD,
-        background=rx.cond(has_file, T.tone_color("ok", 2), T.CARD_BG),
-        padding="2.5rem 1.5rem",
-        width="100%",
+        background=T.CARD_BG,
+        width="6.5rem" if compact else "100%",
+        height="6.5rem" if compact else "auto",
+        padding="0" if compact else "2.5rem 1.5rem",
+        display="flex",
+        align_items="center",
+        justify_content="center",
         transition=f"border-color {T.DUR_FAST} {T.EASE}, background {T.DUR_FAST} {T.EASE}",
         _hover={
             "border_color": rx.color("accent", 8),
@@ -152,10 +229,95 @@ def _upload_zone() -> rx.Component:
     )
 
 
+def _add_tile_content() -> rx.Component:
+    return rx.vstack(
+        rx.icon("plus", size=22, color=T.tone_color("accent", 9)),
+        rx.text("Agregar", size="1", color=T.TEXT_MUTED),
+        spacing="1",
+        align="center",
+        justify="center",
+        height="100%",
+    )
+
+
+def _empty_state_content() -> rx.Component:
+    return rx.vstack(
+        rx.icon("film", size=32, color=T.TEXT_FAINT),
+        rx.text(
+            "Arrastra tu contenido aquí o haz clic para elegirlo",
+            size="3",
+            weight="medium",
+        ),
+        rx.text(
+            f"MP4 o MOV · hasta 300 MB por video · hasta {_MAX_ITEMS} videos",
+            size="1",
+            color=T.TEXT_MUTED,
+        ),
+        spacing="2",
+        align="center",
+    )
+
+
+def _preview_capture_anchor() -> rx.Component:
+    """Mounted UNCONDITIONALLY (a sibling of the `rx.cond` below, never inside either
+    branch of it) so the gallery's shared thumbnail-capture listener
+    (`gallery_preview_capture_anchor`, `ui/video_preview.py`) is already attached
+    before the very FIRST file is ever picked — not only once a tile exists to ask for
+    one.
+
+    Without this, the FIRST video (always selected while the gallery still shows the
+    empty-state prompt, since `pending_items` starts empty) never got a real thumbnail
+    while every LATER one did — reported exactly this way, 2026-09-10. The empty-state
+    prompt is one `rx.cond` branch, the tile grid is the other, and the tile grid is
+    the only place a capture listener used to get mounted — so a file dropped while the
+    empty prompt was still showing had nothing listening yet. Renders nothing visible;
+    only the hook's side effect (attaching the listeners) matters here.
+    """
+    return rx.box(gallery_preview_capture_anchor(root_id=_GALLERY_ROOT_ID), display="none")
+
+
+def _gallery_zone() -> rx.Component:
+    """Instagram-carousel-style grid (gallery redesign, QUA-99 UX follow-up) — replaces
+    the old plain list of file names. Each already-selected video is its own tile
+    (`_pending_tile`, position badge + `X`), followed by a `+` tile while there is still
+    room (`PublishState.remaining_slots > 0`); once the gallery is empty, the whole area
+    collapses back to the original big drag-and-drop prompt. Visual order here IS
+    `PublishState.pending_items`' order, which IS the order `publish_background` sends
+    downstream as carousel `position` (`PublishService.start_many`, QUA-99 4/6) —
+    `rx.foreach`'s own index is the only place that order is read from, never a second,
+    separately-tracked position field that could drift from it.
+    """
+    return rx.box(
+        _preview_capture_anchor(),
+        rx.cond(
+            PublishState.pending_items.length() > 0,
+            rx.flex(
+                rx.foreach(PublishState.pending_items, _pending_tile),
+                rx.cond(
+                    PublishState.remaining_slots > 0,
+                    _upload_widget(_add_tile_content(), compact=True),
+                    rx.fragment(),
+                ),
+                wrap="wrap",
+                gap="0.75rem",
+                width="100%",
+            ),
+            _upload_widget(_empty_state_content(), compact=False),
+        ),
+        # QUA-99 UX follow-up: the element `_preview_capture_anchor`/`video_frame_
+        # preview_src` (`ui/video_preview.py`) listen on for native `drop`/`change`
+        # delegation — see `_GALLERY_ROOT_ID`. This wrapping box stays mounted for the
+        # whole time the gallery is on screen, regardless of which `rx.cond` branch
+        # above is currently showing.
+        id=_GALLERY_ROOT_ID,
+        width="100%",
+    )
+
+
 def _content_section() -> rx.Component:
     return section(
         "Contenido",
-        _upload_zone(),
+        _gallery_zone(),
         description="Lo que se publicará en la cuenta elegida arriba.",
     )
 
@@ -177,10 +339,12 @@ def _caption_section() -> rx.Component:
 
 def _status_block() -> rx.Component:
     # QUA-99 (6/6): "el video" (singular) only makes sense while exactly one file is
-    # selected — `rx.selected_files` is still the current selection here too, since
-    # nothing clears it before a successful publish (`rx.clear_selected_files` only
-    # fires on success, never mid-flight).
-    is_carousel = rx.selected_files(_UPLOAD_ID).length() > 1
+    # selected. `pending_items` is still populated during "staging_and_starting" (it is
+    # only released once staging actually succeeds, `publishing_state.py`), so it is a
+    # correct read here — unlike during "polling", where it has already been cleared,
+    # which is exactly why the polling arm below reads `carousel_stage_label` instead
+    # (server-tracked via `_is_carousel`, QUA-99 UX follow-up) rather than this Var.
+    is_carousel = PublishState.pending_items.length() > 1
     return rx.match(
         PublishState.phase,
         (
@@ -206,11 +370,41 @@ def _status_block() -> rx.Component:
         (
             "polling",
             rx.callout(
-                rx.hstack(
-                    rx.spinner(size="2"),
-                    rx.text("Publicando, esperando confirmación de Meta...", size="2"),
-                    spacing="2",
-                    align="center",
+                rx.vstack(
+                    rx.hstack(
+                        rx.spinner(size="2"),
+                        # QUA-99 UX follow-up: `carousel_stage_label` is only non-empty
+                        # for a carousel attempt that has already taken its first poll
+                        # tick — everything else (a single video, or the first tick
+                        # before any child status has been read yet) falls back to the
+                        # original generic message, never a blank line.
+                        rx.cond(
+                            PublishState.carousel_stage_label != "",
+                            rx.text(PublishState.carousel_stage_label, size="2", weight="medium"),
+                            rx.text(
+                                "Publicando, esperando confirmación de Meta...",
+                                size="2",
+                                weight="medium",
+                            ),
+                        ),
+                        rx.cond(
+                            PublishState.elapsed_label != "",
+                            rx.text(
+                                PublishState.elapsed_label,
+                                size="1",
+                                color=T.TEXT_FAINT,
+                                font_family="monospace",
+                            ),
+                            rx.fragment(),
+                        ),
+                        spacing="2",
+                        align="center",
+                        width="100%",
+                    ),
+                    rx.text(_WAIT_EXPLANATION, size="1", color=T.TEXT_MUTED),
+                    spacing="1",
+                    align_items="start",
+                    width="100%",
                 ),
                 icon="clock",
                 color_scheme="amber",
@@ -238,7 +432,10 @@ def _publish_button() -> rx.Component:
     return rx.button(
         rx.icon("send", size=18),
         "Publicar",
-        on_click=PublishState.publish(rx.upload_files(upload_id=_UPLOAD_ID)),
+        # QUA-99 UX follow-up: `add_files` already buffered everything the gallery holds
+        # into `PublishState._pending_files`/`pending_items` — `publish()` no longer
+        # receives the upload directly, so this no longer passes `rx.upload_files(...)`.
+        on_click=PublishState.publish(),
         disabled=~PublishState.can_publish,
         size="4",
         width="100%",
@@ -280,7 +477,7 @@ def _tip_row(icon: str, text: str) -> rx.Component:
 
 def _tips_card() -> rx.Component:
     """Static, informational only — every fact here mirrors an existing constraint
-    already enforced by `PublishState`/`_upload_zone` (accepted formats, size limit,
+    already enforced by `PublishState`/`_gallery_zone` (accepted formats, size limit,
     polling behavior), not a new claim about functionality."""
     return card(
         rx.vstack(

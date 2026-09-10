@@ -1040,6 +1040,53 @@ async def test_start_many_with_one_item_forwards_caption_to_start() -> None:
 
 
 # --------------------------------------------------------------------------------------
+# QUA-99 UX follow-up — list_children_status, a READ-ONLY carousel-progress projection
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_children_status_reflects_a_mixed_in_progress_carousel() -> None:
+    """The exact shape a polling UI needs: which position is finished vs still moving,
+    read at a point mid-assembly — proves this is a live read of `list_children`, not a
+    snapshot taken once at `start_many` time."""
+    h = Harness()
+    items = h.stage_videos(2)
+    h.client.status_script = [ContainerStatus.FINISHED]
+    start_state = await h.start_many(items)
+
+    await h.advance(start_state.attempt_id)  # create+upload child 0
+    await h.advance(start_state.attempt_id)  # create+upload child 1
+    await h.advance(start_state.attempt_id)  # poll child 0 -> finished
+
+    rows = h.service.list_children_status(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+
+    assert [(r.position, r.status) for r in rows] == [(0, "finished"), (1, "processing")]
+
+
+@pytest.mark.asyncio
+async def test_list_children_status_never_calls_the_platform() -> None:
+    """A pure Postgres/memory read — asserted the same way A6-min's own zero-calls
+    properties are, via the client's own call counters."""
+    h = Harness()
+    items = h.stage_videos(2)
+    start_state = await h.start_many(items)
+    before = dict(h.client.calls)
+
+    h.service.list_children_status(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+
+    assert h.client.calls == before
+
+
+def test_list_children_status_is_empty_for_an_unknown_attempt() -> None:
+    """Same posture `list_children` itself already has for a nonexistent attempt_id — an
+    empty list, not an exception; the caller (a polling UI) should never need a
+    try/except around a display-only read."""
+    h = Harness()
+    rows = h.service.list_children_status(tenant_id=TENANT, attempt_id=uuid4())
+    assert rows == []
+
+
+# --------------------------------------------------------------------------------------
 # Static shields
 # --------------------------------------------------------------------------------------
 

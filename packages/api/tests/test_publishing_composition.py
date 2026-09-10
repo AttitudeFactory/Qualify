@@ -429,6 +429,30 @@ async def test_stage_and_start_many_publish_with_one_item_uses_the_single_video_
     assert record is not None and record.media_product_type == "REELS"
 
 
+@pytest.mark.asyncio
+async def test_get_child_statuses_projects_position_and_status_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """QUA-99 UX follow-up — read-only carousel-progress seam. Proves it reads the SAME
+    children `stage_and_start_many_publish` just write-ahead-wrote, position-ordered,
+    without touching the platform at all."""
+    _wire(monkeypatch)
+
+    state = await composition.stage_and_start_many_publish(
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        items=[
+            composition.PendingUpload(fileobj=io.BytesIO(b"a"), content_type="video/mp4"),
+            composition.PendingUpload(fileobj=io.BytesIO(b"b"), content_type="video/mp4"),
+        ],
+        idempotency_key="op-children-status-1",
+    )
+
+    rows = composition.get_child_statuses(tenant_id=TENANT, attempt_id=state.attempt_id)
+
+    assert [(r.position, r.status) for r in rows] == [(0, "pending"), (1, "pending")]
+
+
 def test_production_publish_service_is_cached() -> None:
     # `functools.cache`-wrapped callables expose `cache_clear`/`cache_info` — a plain
     # function does not. Not calling it: no R2 configured in this offline test run.
