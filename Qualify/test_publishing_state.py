@@ -1,6 +1,13 @@
 """Tests for the two concurrency/memory fixes in `publishing_state.py` (found in audit,
-2026-08-11): the server-side double-submit guard in `publish()`, and `_pending_bytes`
+2026-08-11): the server-side double-submit guard in `publish()`, and `_pending_files`
 being released on every failure branch of `publish_background`, not only the success one.
+
+QUA-99 (6/6): `_pending_bytes: bytes` (one buffer) became `_pending_files:
+list[_PendingFile]` (QUA-99, 6/6) — every test below that used to poke `_pending_bytes`
+directly now uses `_pending_files`, same fixes, same guarantees, just a list instead of
+a single buffer. This file also gains coverage for the two genuinely NEW behaviours
+`publish()` picked up: buffering 2-10 files in order, and rejecting more than 10 before
+reading a single one of them.
 
 **Why this file needs pytest and cannot run under the plain `python -m` harness** (unlike
 `test_publishing_ui.py`/`test_connections.py`): Reflex forbids constructing a `State`
@@ -33,7 +40,14 @@ import inspect
 import pytest
 import reflex as rx
 
-from .publishing_state import PublishState, _failure_toast, _success_toast
+from .publishing_state import (
+    _MAX_ITEMS,
+    _TOO_MANY,
+    PublishState,
+    _failure_toast,
+    _PendingFile,
+    _success_toast,
+)
 
 
 class _FakeUpload:
@@ -72,7 +86,8 @@ async def test_publish_rejects_a_resubmit_while_a_previous_attempt_is_in_flight(
     assert second is None, "a resubmit while phase != idle/success/failure must be a no-op"
     assert state.phase == "staging_and_starting"  # untouched by the rejected resubmit
     assert state._idempotency_key == key_after_first  # NOT regenerated
-    assert state._pending_bytes == b"first-video"  # NOT overwritten by the second upload
+    (buffered,) = state._pending_files
+    assert buffered.data == b"first-video"  # NOT overwritten by the second upload
 
 
 @pytest.mark.asyncio
@@ -90,7 +105,7 @@ async def test_publish_rejects_a_resubmit_during_polling_too() -> None:
     assert result is None
     assert state.phase == "polling"
     assert state._idempotency_key == "already-in-flight"
-    assert state._pending_bytes == b""  # never touched
+    assert state._pending_files == []  # never touched
 
 
 @pytest.mark.asyncio
@@ -108,11 +123,80 @@ async def test_publish_accepts_a_new_attempt_once_the_previous_one_has_settled(
 
     assert result is not None
     assert state.phase == "staging_and_starting"
-    assert state._pending_bytes == b"new-video"
+    (buffered,) = state._pending_files
+    assert buffered.data == b"new-video"
 
 
 # --------------------------------------------------------------------------------------
-# Fix 2 — `_pending_bytes` released on every failure branch, not just the success one
+# QUA-99 (6/6) — publish() buffers 2-10 files in order, rejects more than 10 up front
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_publish_buffers_two_files_preserving_order() -> None:
+    """Order here becomes carousel `position` downstream (`PublishService.start_many`,
+    QUA-99 4/6) — must never be re-sorted or reversed."""
+    state = PublishState()
+    state.selected_connection_id = "c-1"
+
+    result = await state.publish(
+        [
+            _FakeUpload(data=b"first", content_type="video/mp4"),
+            _FakeUpload(data=b"second", content_type="video/quicktime"),
+        ]
+    )
+
+    assert result is not None
+    assert state.phase == "staging_and_starting"
+    assert [f.data for f in state._pending_files] == [b"first", b"second"]
+    assert [f.content_type for f in state._pending_files] == ["video/mp4", "video/quicktime"]
+
+
+@pytest.mark.asyncio
+async def test_publish_buffers_exactly_ten_files() -> None:
+    state = PublishState()
+    state.selected_connection_id = "c-1"
+
+    result = await state.publish([_FakeUpload(data=f"v{i}".encode()) for i in range(_MAX_ITEMS)])
+
+    assert result is not None
+    assert len(state._pending_files) == _MAX_ITEMS
+
+
+@pytest.mark.asyncio
+async def test_publish_rejects_more_than_ten_files_before_reading_any_of_them() -> None:
+    """Rejected in `publish()` itself — before a single `upload.read()` call, so no
+    staging, no R2, no Meta call can ever follow an over-the-cap selection."""
+
+    class _ExplodingUpload(_FakeUpload):
+        async def read(self) -> bytes:  # pragma: no cover — must never be called
+            raise AssertionError("read() must not be called when rejecting for count")
+
+    state = PublishState()
+    state.selected_connection_id = "c-1"
+
+    result = await state.publish([_ExplodingUpload() for _ in range(_MAX_ITEMS + 1)])
+
+    assert result is not None  # the failure toast EventSpec, not None (files WAS non-empty)
+    assert state.phase == "failure"
+    assert state.error == _TOO_MANY
+    assert state._pending_files == []
+
+
+def test_publish_background_dispatches_by_item_count_not_a_parallel_machine() -> None:
+    """Structural pin: the ONLY thing that decides which seam `publish_background` calls
+    is `len(pending)` — 1 delegates to the UNCHANGED `start_publish`, 2-10 to
+    `start_many_publish` (QUA-99, 5/6). Everything else in that handler (the try/except
+    tree, phase transitions, toasts, poll handoff) is shared, unified code — not two
+    parallel state machines."""
+    source = inspect.getsource(PublishState.publish_background.fn)
+    assert "len(pending) == 1" in source
+    assert "start_publish(" in source
+    assert "start_many_publish(" in source
+
+
+# --------------------------------------------------------------------------------------
+# Fix 2 — `_pending_files` released on every failure branch, not just the success one
 # --------------------------------------------------------------------------------------
 
 
@@ -121,46 +205,50 @@ async def test_fail_pending_attempt_clears_the_buffer_and_records_the_error() ->
     state = PublishState()
     state.phase = "staging_and_starting"
     state._idempotency_key = "k-1"
-    state._pending_bytes = b"a-whole-reel-worth-of-bytes"
+    state._pending_files = [_PendingFile(content_type="video/mp4", data=b"a-whole-reel")]
 
     await state._fail_pending_attempt("k-1", "algo salió mal")
 
     assert state.phase == "failure"
     assert state.error == "algo salió mal"
-    assert state._pending_bytes == b""  # the fix: released, not left buffered
+    assert state._pending_files == []  # the fix: released, not left buffered
 
 
 @pytest.mark.asyncio
 async def test_fail_pending_attempt_ignores_a_superseded_key() -> None:
     """A stale background task's failure must not clobber a NEWER attempt's in-progress
-    state — and must not free bytes that belong to that newer, still-live attempt."""
+    state — and must not free files that belong to that newer, still-live attempt."""
     state = PublishState()
     state.phase = "polling"  # the newer attempt has already moved past staging
     state._idempotency_key = "k-2"  # the newer attempt's key
-    state._pending_bytes = b"newer-attempts-bytes"
+    newer_files = [_PendingFile(content_type="video/mp4", data=b"newer-attempts-bytes")]
+    state._pending_files = newer_files
     state.error = ""
 
     await state._fail_pending_attempt("k-1-stale", "this must not land")
 
     assert state.phase == "polling"  # untouched
     assert state.error == ""  # untouched
-    assert state._pending_bytes == b"newer-attempts-bytes"  # NOT freed
+    assert state._pending_files == newer_files  # NOT freed
 
 
 def test_every_failure_branch_in_publish_background_uses_the_shared_release_helper() -> None:
-    """Pins the fix structurally: the pre-staging `tenant_id is None` branch plus the 5
-    exception branches (`R2ConfigurationError`, `(ObjectSizeExceeded, UnsizedStream)`,
-    `(TenantPrefixViolation, ValueError)`, `UnknownConnection`, `Exception`) must all
-    route through `_fail_pending_attempt` — that is what makes the release unconditional.
-    A future edit that reintroduces an inline `self.phase = "failure"` in one of them
-    would silently reopen the bytes-retention bug this test guards against.
+    """Pins the fix structurally: the pre-staging `tenant_id is None` branch, the 5
+    original exception branches (`R2ConfigurationError`, `(ObjectSizeExceeded,
+    UnsizedStream)`, `(TenantPrefixViolation, ValueError)`, `UnknownConnection`,
+    `Exception`), plus `TooManyItems` (QUA-99, 6/6, defense-in-depth behind `publish`'s
+    own earlier rejection) — 7 sites total — must all route through
+    `_fail_pending_attempt`. That is what makes the release unconditional. A future edit
+    that reintroduces an inline `self.phase = "failure"` in one of them would silently
+    reopen the buffer-retention bug this test guards against.
     """
     # `PublishState.publish_background` (class-level access) is an `EventHandler`
     # wrapper, not the plain function — `.fn` is the underlying coroutine function
     # `inspect.getsource` needs.
     source = inspect.getsource(PublishState.publish_background.fn)
-    assert source.count("_fail_pending_attempt(idempotency_key,") == 6, (
-        "expected exactly 6 call sites: tenant_id is None + 5 exception branches"
+    assert source.count("_fail_pending_attempt(idempotency_key,") == 7, (
+        "expected exactly 7 call sites: tenant_id is None + 5 original exception "
+        "branches + TooManyItems (QUA-99, 6/6)"
     )
     # No branch may set failure state directly anymore — that was the leaky pattern.
     assert 'self.phase = "failure"' not in source.replace(

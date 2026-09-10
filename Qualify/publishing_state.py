@@ -35,16 +35,24 @@ import asyncio
 import io
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 import reflex as rx
-from qualify_api.publishing.service import UnknownAttempt, UnknownConnection
+from qualify_api.publishing.service import TooManyItems, UnknownAttempt, UnknownConnection
 from qualify_shared.objects.config import R2ConfigurationError
 from qualify_shared.objects.gate import ObjectSizeExceeded, UnsizedStream
 from qualify_shared.objects.keys import TenantPrefixViolation
 
 from .auth_state import AuthState
-from .publishing_provider import PublishAttemptVM, active_connections, poll_publish, start_publish
+from .publishing_provider import (
+    PendingUpload,
+    PublishAttemptVM,
+    active_connections,
+    poll_publish,
+    start_many_publish,
+    start_publish,
+)
 from .publishing_vm import ConnectionOptionVM
 from .tenant import tenant_uuid
 
@@ -59,6 +67,13 @@ _BAD_MEDIA = "No se pudo leer el archivo subido. Intenta con otro video."
 _UNKNOWN_CONNECTION = "Esa cuenta ya no está disponible. Actualiza la lista e intenta de nuevo."
 _START_FAILED = "No se pudo iniciar la publicación. Vuelve a intentarlo en un momento."
 _POLL_FAILED = "No se pudo consultar el estado de la publicación."
+# QUA-99 (6/6): Meta caps a carousel at 10 items (client.py's MAX_CAROUSEL_ITEMS,
+# service.py). Checked HERE too, before a single byte is read off the upload — the
+# dropzone's own `max_files=10` (publishing_page.py) is the client-side nicety on top of
+# this, same "server-side guard is the real invariant" posture the double-submit check
+# below already documents.
+_MAX_ITEMS = 10
+_TOO_MANY = f"Puedes publicar hasta {_MAX_ITEMS} videos a la vez."
 # Client-side safety net only — the SERVER already settles an attempt as 'failed' once
 # CONTAINER_POLL_CEILING_SECONDS (300 s) elapses, at roughly one poll per
 # CONTAINER_POLL_INTERVAL_SECONDS (60 s). This is just the belt on top of that suspenders,
@@ -113,8 +128,21 @@ def _failure_toast(message: str) -> rx.event.EventSpec:
     )
 
 
+@dataclass
+class _PendingFile:
+    """One buffered upload, kept server-side only — never a reactive Var, same posture
+    `_pending_bytes` already had for a single file (QUA-19/QUA-98). A list of these
+    replaces the old single-file buffer (QUA-99, 6/6): position in this list IS the
+    carousel position downstream (`PublishService.start_many`, QUA-99 4/6), so order is
+    preserved end to end, never re-sorted."""
+
+    content_type: str
+    data: bytes
+
+
 class PublishState(rx.State):
-    """State for the "Publicar" screen: pick a connected account, upload a reel, publish."""
+    """State for the "Publicar" screen: pick a connected account, upload 1-10 videos
+    (2-10 publish as one carousel, QUA-99), publish."""
 
     connections: list[ConnectionOptionVM] = []
     is_loading_connections: bool = False
@@ -130,9 +158,11 @@ class PublishState(rx.State):
 
     # Private: bridges the foreground `publish` handler (which alone may receive the
     # upload) to the background `publish_background` handler (which alone may do the
-    # slow staging/publish work) — see the module docstring's deviation note.
-    _pending_bytes: bytes = b""
-    _pending_content_type: str = ""
+    # slow staging/publish work) — see the module docstring's deviation note. A list
+    # (QUA-99, 6/6) rather than a single buffer — how many items it holds is what decides,
+    # inside `publish_background`, whether the existing single-video path or the carousel
+    # path runs; the UI itself never makes that choice.
+    _pending_files: list[_PendingFile] = []
     # Generated once per publish attempt, preserved across its polls, never regenerated
     # by a poll itself. A new click on "Publicar" after a failure generates a fresh one
     # (decision 3 of the approved plan).
@@ -212,18 +242,26 @@ class PublishState(rx.State):
             self.phase = "failure"
             self.error = _NO_CONNECTION_SELECTED
             return _failure_toast(_NO_CONNECTION_SELECTED)
-
-        upload = files[0]
-        content_type = getattr(upload, "content_type", None) or "video/mp4"
-        try:
-            data = await upload.read()
-        except Exception:
+        if len(files) > _MAX_ITEMS:
+            # Rejected BEFORE reading a single byte — no staging, no R2, no Meta call.
+            # The dropzone's max_files=10 already stops this in the common case; this is
+            # the real, server-side invariant behind that client-side nicety.
             self.phase = "failure"
-            self.error = _BAD_MEDIA
-            return _failure_toast(_BAD_MEDIA)
+            self.error = _TOO_MANY
+            return _failure_toast(_TOO_MANY)
 
-        self._pending_bytes = data
-        self._pending_content_type = content_type
+        pending: list[_PendingFile] = []
+        for upload in files:
+            content_type = getattr(upload, "content_type", None) or "video/mp4"
+            try:
+                data = await upload.read()
+            except Exception:
+                self.phase = "failure"
+                self.error = _BAD_MEDIA
+                return _failure_toast(_BAD_MEDIA)
+            pending.append(_PendingFile(content_type=content_type, data=data))
+
+        self._pending_files = pending
         self._idempotency_key = uuid4().hex
         self.phase = "staging_and_starting"
         self.error = ""
@@ -239,33 +277,44 @@ class PublishState(rx.State):
         an attempt that never actually became the failure.
 
         Called from EVERY failure branch in `publish_background` (including the
-        pre-staging `tenant_id is None` case) so none of them can leave `_pending_bytes`
-        holding a full video (up to 300 MB) in this session's memory after a failed
-        attempt — previously only the success path cleared it. Guarded by the
+        pre-staging `tenant_id is None` case) so none of them can leave `_pending_files`
+        holding up to 10 full videos (up to 300 MB each) in this session's memory after a
+        failed attempt — previously only the success path cleared it. Guarded by the
         idempotency key: a stale (superseded) attempt's failure must not clobber a
         newer attempt's in-progress state, and must not clear a newer attempt's
-        `_pending_bytes` out from under it.
+        `_pending_files` out from under it.
         """
         async with self:
             if self._idempotency_key != idempotency_key:
                 return None
             self.phase = "failure"
             self.error = message
-            self._pending_bytes = b""
+            self._pending_files = []
             return _failure_toast(message)
 
     @rx.event(background=True)
     async def publish_background(self) -> AsyncIterator[None]:
         """Stage the bytes `publish` captured and start a publish attempt, then hand off
-        to polling. Reads everything it needs from the private vars `publish` set."""
+        to polling. Reads everything it needs from the private vars `publish` set.
+
+        QUA-99 (6/6): the only new decision here is `len(pending)` — 1 item calls
+        `start_publish` (UNCHANGED code path, byte-for-byte the same call QUA-19 always
+        made), 2-10 calls `start_many_publish` (QUA-99 5/6). Everything AFTER that split
+        — the try/except tree, the phase transitions, the toasts, the poll handoff — is
+        the SAME code for both: one unified machine, not two parallel ones. Both provider
+        functions raise the same exception set (R2ConfigurationError,
+        ObjectSizeExceeded/UnsizedStream, TenantPrefixViolation/ValueError,
+        UnknownConnection), plus `TooManyItems` for the multi path only — a single
+        `except` clause covers it too, as defense-in-depth behind `publish`'s own
+        earlier, cheaper rejection.
+        """
         async with self:
             if self.phase != "staging_and_starting":
                 return  # superseded, or nothing was actually queued
             connection_id = self.selected_connection_id
             caption = self.caption
             idempotency_key = self._idempotency_key
-            data = self._pending_bytes
-            content_type = self._pending_content_type
+            pending = list(self._pending_files)
 
         async with self:
             auth = await self.get_state(AuthState)
@@ -280,14 +329,27 @@ class PublishState(rx.State):
             self._active_tenant_id = str(tenant_id)
 
         try:
-            attempt = await start_publish(
-                tenant_id=tenant_id,
-                connection_id=UUID(connection_id),
-                fileobj=io.BytesIO(data),
-                content_type=content_type,
-                caption=caption,
-                idempotency_key=idempotency_key,
-            )
+            if len(pending) == 1:
+                item = pending[0]
+                attempt = await start_publish(
+                    tenant_id=tenant_id,
+                    connection_id=UUID(connection_id),
+                    fileobj=io.BytesIO(item.data),
+                    content_type=item.content_type,
+                    caption=caption,
+                    idempotency_key=idempotency_key,
+                )
+            else:
+                attempt = await start_many_publish(
+                    tenant_id=tenant_id,
+                    connection_id=UUID(connection_id),
+                    items=[
+                        PendingUpload(fileobj=io.BytesIO(p.data), content_type=p.content_type)
+                        for p in pending
+                    ],
+                    caption=caption,
+                    idempotency_key=idempotency_key,
+                )
         except R2ConfigurationError:
             toast = await self._fail_pending_attempt(idempotency_key, _NOT_CONFIGURED)
             if toast is not None:
@@ -308,6 +370,13 @@ class PublishState(rx.State):
             if toast is not None:
                 yield toast
             return
+        except TooManyItems:
+            # Defense-in-depth: `publish` already rejects >10 before this handler ever
+            # runs. Reached only if that guard and the dropzone's max_files=10 both missed.
+            toast = await self._fail_pending_attempt(idempotency_key, _TOO_MANY)
+            if toast is not None:
+                yield toast
+            return
         except Exception as exc:
             logger.error("start_publish failed: %s", type(exc).__name__)
             toast = await self._fail_pending_attempt(idempotency_key, _START_FAILED)
@@ -319,7 +388,7 @@ class PublishState(rx.State):
             # A newer attempt (a fresh click) superseded this one while we staged.
             if self._idempotency_key != idempotency_key:
                 return
-            self._pending_bytes = b""  # release the buffer, staged copy already in R2
+            self._pending_files = []  # release the buffer(s), staged copies already in R2
             self.attempt = attempt
             if attempt.settled:
                 self.phase = "success" if attempt.status == "published" else "failure"

@@ -1,4 +1,5 @@
-"""Publish screen (A5 vertical slice) — upload a reel, pick a connected account, publish.
+"""Publish screen (A5 vertical slice) — upload 1-10 videos, pick a connected account,
+publish. 2-10 videos publish together as one Instagram carousel (QUA-99).
 
 Built on the `ui` shell (`app_shell` / `page_header` / `page_body`); badges and callouts
 follow the design-system tones (docs/design-system.md). Adds the `/publish` route only.
@@ -9,14 +10,24 @@ narrow, explicitly-authorized addition later touched `publishing_state.py` too (
 calls/payloads/auth/account selection/video loading/caption logic/the publish button's
 core behavior): the success/failure toasts and the post-success form reset — see
 `_success_toast`/`_failure_toast` and the `self.caption = ""` + `rx.clear_selected_files`
-calls there. `publishing_provider.py`/`publishing_vm.py` remain untouched.
+calls there.
+
+QUA-99 (6/6): the dropzone gained `multiple=True`/`max_files` raised from 1 to 10 — the
+SAME `rx.upload` widget, no new upload abstraction. The gallery of selected names reuses
+`rx.selected_files(_UPLOAD_ID)`, the same reactive Var the single-video screen already
+rendered (just iterated with `rx.foreach` now that it can hold more than one name). The
+caption field (`_caption_section`) is completely UNTOUCHED — one field, one source of
+truth, used identically for 1 video or a carousel; only `publishing_state.py` decides
+downstream which provider seam (`start_publish` vs `start_many_publish`) the SAME
+`self.caption` value reaches. VIDEO-ONLY: no image path exists anywhere on this screen,
+not even as a disabled placeholder — `accept` still lists only MP4/MOV.
 """
 
 from __future__ import annotations
 
 import reflex as rx
 
-from .publishing_state import _UPLOAD_ID, PublishState
+from .publishing_state import _MAX_ITEMS, _UPLOAD_ID, PublishState
 from .publishing_vm import ConnectionOptionVM
 from .ui import app_shell, callout, card, page_body, page_header, section
 from .ui import tokens as T
@@ -48,17 +59,40 @@ def _connection_section() -> rx.Component:
 
 
 def _upload_zone() -> rx.Component:
-    # Purely presentational: `rx.selected_files(_UPLOAD_ID)` is the same reactive Var the
-    # original always rendered as plain text — reused here only to switch *how* the
-    # existing value is shown, never to change what triggers the selection itself.
-    has_file = rx.selected_files(_UPLOAD_ID).length() > 0
+    # QUA-99 (6/6): `rx.selected_files(_UPLOAD_ID)` is the SAME reactive Var the original
+    # single-video screen already used (client-side, tracks the dropzone's current
+    # selection before any upload) — reused as-is for the gallery below rather than
+    # duplicated into a new state Var. `multiple=True` is the only reason it can now hold
+    # more than one name; the Var itself is untouched machinery.
+    selected = rx.selected_files(_UPLOAD_ID)
+    has_file = selected.length() > 0
+    is_carousel = selected.length() > 1
     return rx.upload(
         rx.cond(
             has_file,
             rx.vstack(
                 rx.icon("circle-check", size=32, color=T.tone_color("ok", 9)),
-                rx.text("Contenido seleccionado", size="3", weight="medium"),
-                rx.text(rx.selected_files(_UPLOAD_ID), size="1", color=T.TEXT_MUTED),
+                # QUA-99: "Contenido seleccionado" stays for exactly 1 file (today's
+                # unchanged wording); 2+ say explicitly that it is a carousel, never a
+                # singular-sounding "video" label over a multi-item selection.
+                rx.cond(
+                    is_carousel,
+                    rx.text(
+                        f"Carrusel de {selected.length()} elementos", size="3", weight="medium"
+                    ),
+                    rx.text("Contenido seleccionado", size="3", weight="medium"),
+                ),
+                rx.vstack(
+                    rx.foreach(
+                        selected,
+                        lambda name: rx.text(name, size="1", color=T.TEXT_MUTED),
+                    ),
+                    spacing="1",
+                    align="center",
+                    max_height="6rem",
+                    overflow_y="auto",
+                    width="100%",
+                ),
                 rx.text("Cambiar contenido", size="1", color=T.TEXT_FAINT),
                 spacing="2",
                 align="center",
@@ -70,15 +104,22 @@ def _upload_zone() -> rx.Component:
                     size="3",
                     weight="medium",
                 ),
-                rx.text("MP4 o MOV · hasta 300 MB", size="1", color=T.TEXT_MUTED),
+                rx.text(
+                    f"MP4 o MOV · hasta 300 MB por video · hasta {_MAX_ITEMS} videos",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
                 spacing="2",
                 align="center",
             ),
         ),
         id=_UPLOAD_ID,
         accept={"video/mp4": [".mp4"], "video/quicktime": [".mov"]},
-        multiple=False,
-        max_files=1,
+        # QUA-99 (6/6): multi-select is the only change to the widget itself —
+        # `max_files` is the SAME prop the single-video screen already used, just raised
+        # from 1 to the carousel cap. No new upload abstraction.
+        multiple=True,
+        max_files=_MAX_ITEMS,
         # Client-side mirror of `ObjectGate.MAX_MEDIA_BYTES` (qualify_shared/objects/
         # gate.py) — that server-side ceiling is the real, load-bearing barrier and is
         # untouched; this only lets a too-large file get rejected at selection time
@@ -87,11 +128,12 @@ def _upload_zone() -> rx.Component:
         # Replaces Reflex's default English "Files not Accepted" toast
         # (reflex_components_core.core.upload._default_drop_rejected) with one in
         # Spanish, consistent with the rest of Qualify. Static on purpose: it covers
-        # both rejection reasons (wrong format, too large) with one message rather than
-        # inspecting `rejected_files` via undocumented internal Var APIs.
+        # every rejection reason (wrong format, too large, more than the cap) with one
+        # message rather than inspecting `rejected_files` via undocumented internal Var
+        # APIs.
         on_drop_rejected=rx.toast.error(
             "Formato no permitido",
-            description="Solo se aceptan archivos MP4 o MOV.",
+            description=f"Solo se aceptan archivos MP4 o MOV, hasta {_MAX_ITEMS} a la vez.",
         ),
         border=rx.cond(
             has_file,
@@ -134,6 +176,11 @@ def _caption_section() -> rx.Component:
 
 
 def _status_block() -> rx.Component:
+    # QUA-99 (6/6): "el video" (singular) only makes sense while exactly one file is
+    # selected — `rx.selected_files` is still the current selection here too, since
+    # nothing clears it before a successful publish (`rx.clear_selected_files` only
+    # fires on success, never mid-flight).
+    is_carousel = rx.selected_files(_UPLOAD_ID).length() > 1
     return rx.match(
         PublishState.phase,
         (
@@ -141,7 +188,14 @@ def _status_block() -> rx.Component:
             rx.callout(
                 rx.hstack(
                     rx.spinner(size="2"),
-                    rx.text("Subiendo el video y arrancando la publicación...", size="2"),
+                    rx.cond(
+                        is_carousel,
+                        rx.text(
+                            "Subiendo el contenido y arrancando la publicación del carrusel...",
+                            size="2",
+                        ),
+                        rx.text("Subiendo el video y arrancando la publicación...", size="2"),
+                    ),
                     spacing="2",
                     align="center",
                 ),
@@ -238,7 +292,11 @@ def _tips_card() -> rx.Component:
             ),
             rx.vstack(
                 _tip_row("film", "Formatos aceptados: MP4 y MOV."),
-                _tip_row("scale", "Tamaño máximo: 300 MB."),
+                _tip_row("scale", "Tamaño máximo: 300 MB por video."),
+                _tip_row(
+                    "layers",
+                    f"Hasta {_MAX_ITEMS} videos — 2 o más se publican juntos, como un carrusel.",
+                ),
                 _tip_row("at-sign", "Se publica en la cuenta que elijas arriba."),
                 _tip_row("clock", "La confirmación de Meta puede tardar unos minutos."),
                 spacing="3",
@@ -271,7 +329,8 @@ def _load_error() -> rx.Component:
 def publish_topbar() -> rx.Component:
     return page_header(
         "Publicar",
-        "Sube un reel y publícalo en una de tus cuentas de Instagram conectadas",
+        "Sube uno o varios reels y publícalos en una de tus cuentas de Instagram "
+        "conectadas — 2 o más se publican juntos, como un carrusel",
     )
 
 
