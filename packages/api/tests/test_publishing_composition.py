@@ -16,7 +16,7 @@ import io
 from uuid import UUID
 
 import pytest
-from qualify_shared.objects.gate import ObjectGate
+from qualify_shared.objects.gate import ObjectGate, ObjectSizeExceeded
 
 from qualify_api.publishing import composition
 from qualify_api.publishing.client import ContainerStatus, ResumableContainer, UploadOutcome
@@ -319,6 +319,93 @@ async def test_stage_and_start_many_publish_preserves_order_and_content_type(
     (items,) = seen_items
     assert [i.content_type for i in items] == ["video/mp4", "video/quicktime"]
     assert len({i.media_object_key for i in items}) == 2  # two distinct staged keys
+
+
+@pytest.mark.asyncio
+async def test_stage_and_start_many_publish_stages_five_items_preserving_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """QUA-99 latency follow-up: staging now runs CONCURRENTLY (`asyncio.gather`), not
+    one item at a time — with 5 items (enough that an off-by-one swap would actually
+    show up), the result must still land in exactly the order the caller supplied,
+    since that order becomes carousel `position` downstream."""
+    store, _ = _wire(monkeypatch)
+    seen_items: list[list] = []
+    real_start_many = PublishService.start_many
+
+    async def spy_start_many(self, **kwargs):
+        seen_items.append(list(kwargs["items"]))
+        return await real_start_many(self, **kwargs)
+
+    monkeypatch.setattr(PublishService, "start_many", spy_start_many)
+
+    await composition.stage_and_start_many_publish(
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        items=[
+            composition.PendingUpload(
+                fileobj=io.BytesIO(f"video-{i}".encode()), content_type="video/mp4"
+            )
+            for i in range(5)
+        ],
+        idempotency_key="op-concurrent-1",
+    )
+
+    (items,) = seen_items
+    assert len(items) == 5
+    assert len(store.objects) == 5
+    # Each staged object's bytes must match ITS OWN item, in order -- proves position
+    # 0..4 never got swapped by running the uploads concurrently.
+    for i, item in enumerate(items):
+        assert store.objects[item.media_object_key][0] == f"video-{i}".encode()
+
+
+class _OversizedFakeStream:
+    """A stream that REPORTS a size over `ObjectGate.MAX_MEDIA_BYTES` without actually
+    allocating that many bytes — `_stream_length` only ever calls `seek`, never `read`,
+    to measure a stream before the size check."""
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return 300 * 1024 * 1024 + 1 if whence == 2 else 0
+
+    def read(self, *args: object) -> bytes:  # pragma: no cover -- never reached
+        raise AssertionError("read() must not be called once the size ceiling rejects it")
+
+
+@pytest.mark.asyncio
+async def test_stage_and_start_many_publish_propagates_a_staging_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """QUA-99 latency follow-up: concurrent staging uses plain `asyncio.gather` (not
+    `return_exceptions=True`) — nothing has been write-ahead yet at this point (that
+    only happens inside `start_many`, AFTER every item stages), so one item's
+    `ObjectSizeExceeded` must propagate immediately, and no attempt/children row is ever
+    created for this batch."""
+    store, client = _wire(monkeypatch)
+
+    with pytest.raises(ObjectSizeExceeded):
+        await composition.stage_and_start_many_publish(
+            tenant_id=TENANT,
+            connection_id=CONNECTION,
+            items=[
+                composition.PendingUpload(fileobj=io.BytesIO(b"fine"), content_type="video/mp4"),
+                composition.PendingUpload(
+                    fileobj=_OversizedFakeStream(),
+                    content_type="video/mp4",  # type: ignore[arg-type]
+                ),
+            ],
+            idempotency_key="op-oversized-1",
+        )
+
+    assert client.calls == {
+        "create": 0,
+        "upload": 0,
+        "status": 0,
+        "publish": 0,
+        "create_carousel": 0,
+    }
+    # `start_many` (and therefore the write-ahead) was never reached.
+    assert composition.production_publish_service()._repo.rows == {}  # noqa: SLF001
 
 
 @pytest.mark.asyncio

@@ -27,8 +27,9 @@ recorded.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID
@@ -46,6 +47,7 @@ from qualify_api.publishing.client import (
 )
 from qualify_api.publishing.repository import (
     CHILD_TERMINAL_STATUSES,
+    AlreadySettled,
     AttemptRecord,
     ChildRecord,
     PublishAttemptRepository,
@@ -76,6 +78,20 @@ MEDIA_TYPE_CAROUSEL = "CAROUSEL"
 # structurally-impossible REQUESTS, PublishService owns count POLICY).
 MAX_CAROUSEL_ITEMS = 10
 CHILD_ERROR_PREFIX = "carousel_child_failed"
+
+# QUA-99 latency follow-up — carousel poll backoff. INERT for every non-CAROUSEL
+# attempt (single-video behavior is byte-for-byte unchanged, see `_poll_interval`
+# below): the audited real attempt (94e09568-..., 2026-09-10) measured 300 of its 368 s
+# as pure fixed 60 s waiting, most of it "discovery lag" after a container had already
+# finished. Checking sooner while an attempt is still young catches a fast-finishing
+# video early; backing off to Meta's own recommended steady-state cadence
+# (`CONTAINER_POLL_INTERVAL_SECONDS`, `content-publishing.md:324`) once an attempt has
+# run a while keeps the request volume exactly where it already was for anything slow —
+# never faster than every 5 s, never slower than the existing 60 s, so a full CAROUSEL
+# (10 children + 1 carousel container, each polled independently) still stays an order
+# of magnitude under the 200 calls/hour development budget even in the worst case
+# (11 containers x ~7 polls each at the fast end ~= 77 calls for one attempt).
+_CAROUSEL_POLL_BACKOFF_SECONDS: tuple[int, ...] = (5, 10, 20, 40)
 
 
 class UnknownConnection(Exception):
@@ -309,6 +325,27 @@ class PublishService:
         return _state(self._require(tenant_id, attempt.id))
 
     async def advance(self, *, tenant_id: UUID, attempt_id: UUID) -> PublishState:
+        """Public entrypoint — a thin wrapper over `_advance` (QUA-99 latency
+        follow-up). `_advance` below is the ORIGINAL `advance()` body, byte-for-byte
+        unchanged: every settle/branch/decision it makes is untouched. This wrapper adds
+        exactly one thing on the way out — overriding `poll_interval_seconds` with the
+        backed-off carousel cadence (`_poll_interval`) when the attempt is a CAROUSEL —
+        and is a no-op (returns `state` exactly as `_advance` produced it) for every
+        other attempt, settled or not. Doing it here, once, on the way out, is also what
+        lets `_advance_children`'s children-phase ticks inherit the SAME faster cadence
+        without that method (or `_create_and_upload_child`/`_poll_child`) needing to
+        know anything about polling intervals at all — their return values flow back up
+        through `_advance` and out through this one override point.
+        """
+        state = await self._advance(tenant_id=tenant_id, attempt_id=attempt_id)
+        if state.settled:
+            return state
+        record = self._repo.get_attempt(tenant_id=tenant_id, attempt_id=attempt_id)
+        if record is None or record.media_product_type != MEDIA_TYPE_CAROUSEL:
+            return state
+        return replace(state, poll_interval_seconds=self._poll_interval(record))
+
+    async def _advance(self, *, tenant_id: UUID, attempt_id: UUID) -> PublishState:
         """ONE `container_status` read, settling only on something terminal. Idempotent:
         a settled attempt answers from the row without touching the platform."""
         record = self._require(tenant_id, attempt_id)
@@ -475,6 +512,28 @@ class PublishService:
             raise UnknownAttempt(str(attempt_id))
         return record
 
+    def _poll_interval(self, record: AttemptRecord) -> int:
+        """QUA-99 latency follow-up — the backed-off carousel poll cadence. ONLY ever
+        called by `advance()`'s wrapper for a CAROUSEL attempt (that caller already
+        checks `media_product_type`), so this does not re-check it — a single-video
+        attempt never reaches this method at all, which is what makes it byte-for-byte
+        inert for that path rather than merely returning the same number.
+
+        Measured against `started_at` (same "the row survives a process restart, an
+        in-memory tick counter would not" reasoning `_over_ceiling` already documents
+        for itself) — an attempt still within its first ~75 s gets a faster cadence
+        (5 s → 10 s → 20 s → 40 s), then settles into the same steady 60 s
+        (`CONTAINER_POLL_INTERVAL_SECONDS`) every attempt already used before this
+        follow-up. Never faster than 5 s, never slower than 60 s.
+        """
+        elapsed = (self._clock() - record.started_at).total_seconds()
+        cursor = 0.0
+        for step in _CAROUSEL_POLL_BACKOFF_SECONDS:
+            cursor += step
+            if elapsed < cursor:
+                return step
+        return CONTAINER_POLL_INTERVAL_SECONDS
+
     def _over_ceiling(self, record: AttemptRecord) -> bool:
         """Measured against the ROW's `started_at` (not a loop counter, not an in-memory
         clock): the ceiling survives process restarts because the row does.
@@ -592,11 +651,38 @@ class PublishService:
         return _state(self._require(tenant_id, attempt.id))
 
     async def _advance_children(self, *, tenant_id: UUID, record: AttemptRecord) -> PublishState:
-        """ONE unit of work for a CAROUSEL attempt still assembling its children: create
-        the next pending child's container + upload it, OR poll a child already in
-        flight, OR (once every child is finished) create the CAROUSEL container itself.
-        Never more than one Meta call per invocation — the same cadence discipline
-        `advance()` already has for a single video."""
+        """One tick of work for a CAROUSEL attempt still assembling its children.
+
+        QUA-99 latency follow-up: EVERY pending child's container+upload now starts
+        CONCURRENTLY in one tick (`asyncio.gather`), and likewise every in-flight
+        child's poll — no longer one child per `advance()` call. This is what collapses
+        "upload video 1, wait a tick, upload video 2, wait a tick, poll video 1, ..."
+        into "upload both, wait, poll both". Safe because:
+
+        - Each child is its own row, written through its OWN `tenant_session`
+          (`repository.py` opens a fresh session per call, never shares one across
+          calls) — two children's writes can never race on the same row, and there is
+          no other mutable state shared between them.
+        - `client_factory.client_for` is stateless per call (a fresh `httpx.AsyncClient`
+          each time, no shared credential cache — `connections/resolver.py`), so
+          resolving N clients concurrently is exactly N independent objects, not N
+          readers of one.
+        - `return_exceptions=True` lets every concurrent call finish (or fail) on its
+          own — one child's `PublishError` never cancels a sibling's in-flight upload,
+          which would otherwise abandon a container Meta is still processing without
+          this service ever recording what became of it.
+        - A failed child is ONLY EVER settled onto the PARENT row in ONE place —
+          `_settle_parent_if_a_child_failed` below, called HERE, sequentially, after
+          every concurrent call in the batch has already finished — never inside
+          `_create_and_upload_child`/`_poll_child` themselves (which now only ever
+          touch their OWN child row). That is what makes two children failing in the
+          SAME tick race-free without a lock: there being only one caller of `settle()`
+          for the parent, invoked once, after the concurrency has already resolved.
+
+        Position order is untouched by any of this — `position` was fixed once, at
+        `add_child` time (QUA-99, 3/6), and nothing here reads or writes it; `children`
+        stays position-ordered because `list_children` always returns it that way.
+        """
         children = self._repo.list_children(tenant_id=tenant_id, attempt_id=record.id)
 
         failed = next((c for c in children if c.status == "failed"), None)
@@ -621,17 +707,54 @@ class PublishService:
             )
             return _state(self._require(tenant_id, record.id))
 
-        pending = next((c for c in children if c.creation_id is None), None)
-        if pending is not None:
-            return await self._create_and_upload_child(
-                tenant_id=tenant_id, record=record, child=pending
+        pending = [c for c in children if c.creation_id is None]
+        if pending:
+            results = await asyncio.gather(
+                *(
+                    self._create_and_upload_child(tenant_id=tenant_id, record=record, child=c)
+                    for c in pending
+                ),
+                return_exceptions=True,
             )
+            self._settle_parent_if_a_child_failed(tenant_id=tenant_id, record=record)
+            _reraise_first(results)
+            return _state(self._require(tenant_id, record.id))
 
-        in_flight = next((c for c in children if c.status not in CHILD_TERMINAL_STATUSES), None)
-        if in_flight is not None:
-            return await self._poll_child(tenant_id=tenant_id, record=record, child=in_flight)
+        in_flight = [c for c in children if c.status not in CHILD_TERMINAL_STATUSES]
+        if in_flight:
+            results = await asyncio.gather(
+                *(self._poll_child(tenant_id=tenant_id, record=record, child=c) for c in in_flight),
+                return_exceptions=True,
+            )
+            self._settle_parent_if_a_child_failed(tenant_id=tenant_id, record=record)
+            _reraise_first(results)
+            return _state(self._require(tenant_id, record.id))
 
         return await self._create_carousel(tenant_id=tenant_id, record=record, children=children)
+
+    def _settle_parent_if_a_child_failed(self, *, tenant_id: UUID, record: AttemptRecord) -> None:
+        """The ONE place a child failure ever settles the PARENT row (QUA-99 latency
+        follow-up) — called sequentially, once, after a concurrent batch of children has
+        already finished (never from inside `_create_and_upload_child`/`_poll_child`
+        themselves, which would let two children failing in the same batch both attempt
+        it). `AlreadySettled` is caught rather than left to propagate: by the time this
+        runs the outcome may already be recorded (e.g. the top-of-function check in
+        `_advance_children` on a LATER tick), and a retry finding the same terminal
+        outcome it already wrote is success-shaped, not an error — same posture
+        `repository.py`'s own docstring already documents for the settle-once trigger."""
+        children = self._repo.list_children(tenant_id=tenant_id, attempt_id=record.id)
+        failed = next((c for c in children if c.status == "failed"), None)
+        if failed is None:
+            return
+        try:
+            self._repo.settle(
+                tenant_id=tenant_id,
+                attempt_id=record.id,
+                status="failed",
+                platform_error_code=f"{CHILD_ERROR_PREFIX}:{failed.platform_error_code}",
+            )
+        except AlreadySettled:
+            return
 
     async def _create_and_upload_child(
         self, *, tenant_id: UUID, record: AttemptRecord, child: ChildRecord
@@ -643,7 +766,15 @@ class PublishService:
         side, harmless (it expires unpublished on its own), the exact same class of risk
         `start()`'s own `create_container` call already accepts (see that method's
         comment). Nothing here ever calls `media_publish` — only `_publish_once`, later
-        and unchanged, does that — so this retry can never cause a double-post."""
+        and unchanged, does that — so this retry can never cause a double-post.
+
+        QUA-99 latency follow-up: called CONCURRENTLY with sibling children via
+        `asyncio.gather` (`_advance_children`) — touches ONLY this child's own row on
+        failure now (`settle_child`), never the parent's (`_settle_parent_if_a_child_
+        failed` owns that, exactly once, after the whole concurrent batch finishes) —
+        see `_advance_children`'s docstring for why that split is what makes the
+        concurrency race-free.
+        """
         target = self._connections.read(tenant_id=tenant_id, connection_id=record.connection_id)
         if target is None:
             raise UnknownConnection(str(record.connection_id))
@@ -671,20 +802,14 @@ class PublishService:
             )
         elif outcome.retriable is False:
             # Meta's OWN judgement that this media will never be accepted — terminal for
-            # the child, and (nothing irreversible has happened yet) safe to settle the
-            # PARENT failed immediately too, rather than waiting out the ceiling.
-            error_code = outcome.error_type or "upload_failed"
+            # the child. Only the child's OWN row is settled here now — the parent is
+            # settled centrally, once, by `_settle_parent_if_a_child_failed` (see this
+            # method's and `_advance_children`'s docstrings for why).
             self._repo.settle_child(
                 tenant_id=tenant_id,
                 child_id=child.id,
                 status="failed",
-                platform_error_code=error_code,
-            )
-            self._repo.settle(
-                tenant_id=tenant_id,
-                attempt_id=record.id,
-                status="failed",
-                platform_error_code=f"{CHILD_ERROR_PREFIX}:{error_code}",
+                platform_error_code=outcome.error_type or "upload_failed",
             )
         # retriable True or None: unknown is NOT a refusal (R10) — the child stays
         # 'uploading', unsettled; the parent's (scaled) ceiling is the guaranteed exit.
@@ -694,7 +819,11 @@ class PublishService:
         self, *, tenant_id: UUID, record: AttemptRecord, child: ChildRecord
     ) -> PublishState:
         """One `container_status` read for one child — same call `advance()` makes for a
-        single video's own container, just aimed at a child row instead of the attempt."""
+        single video's own container, just aimed at a child row instead of the attempt.
+
+        QUA-99 latency follow-up: called CONCURRENTLY with sibling children via
+        `asyncio.gather` (`_advance_children`) — same split as `_create_and_upload_
+        child`: only this child's OWN row is ever settled here, never the parent's."""
         client = await self._clients.client_for(
             tenant_id=tenant_id, connection_id=record.connection_id
         )
@@ -713,19 +842,14 @@ class PublishService:
         elif container_status in (ContainerStatus.ERROR, ContainerStatus.EXPIRED):
             # A child is never itself published, so PUBLISHED is not a value this branch
             # ever expects to see — deliberately not using `.is_terminal`, which includes
-            # it, to avoid mislabelling that anomaly as a container error.
-            error_code = f"{CONTAINER_ERROR_PREFIX}_{container_status.value.lower()}"
+            # it, to avoid mislabelling that anomaly as a container error. Only the
+            # child's OWN row is settled here now — the parent is settled centrally,
+            # once, by `_settle_parent_if_a_child_failed`.
             self._repo.settle_child(
                 tenant_id=tenant_id,
                 child_id=child.id,
                 status="failed",
-                platform_error_code=error_code,
-            )
-            self._repo.settle(
-                tenant_id=tenant_id,
-                attempt_id=record.id,
-                status="failed",
-                platform_error_code=f"{CHILD_ERROR_PREFIX}:{error_code}",
+                platform_error_code=f"{CONTAINER_ERROR_PREFIX}_{container_status.value.lower()}",
             )
         # IN_PROGRESS (or the never-expected PUBLISHED): nothing to do, the next
         # advance() call re-polls this same child.
@@ -764,6 +888,17 @@ class PublishService:
         )
         self._repo.advance_status(tenant_id=tenant_id, attempt_id=record.id, status="processing")
         return _state(self._require(tenant_id, record.id))
+
+
+def _reraise_first(results: list[object]) -> None:
+    """QUA-99 latency follow-up — after a concurrent `asyncio.gather(..., return_
+    exceptions=True)` batch, surface exactly one of any exceptions that occurred (the
+    same "a PublishError PROPAGATES, the next advance() call retries" contract every
+    other Meta call in this module already has), only once every task in the batch has
+    already finished — never cancelling a sibling's still-in-flight call."""
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
 
 
 def _length(fileobj: object) -> int:

@@ -18,6 +18,7 @@ import pytest
 from qualify_shared.objects.gate import ObjectGate
 
 from qualify_api.publishing.client import (
+    CONTAINER_POLL_INTERVAL_SECONDS,
     ContainerStatus,
     PublishError,
     ResumableContainer,
@@ -67,7 +68,15 @@ class FakePublishClient:
         self.container_sequence: list[ResumableContainer] | None = None
         self.create_container_calls: list[dict[str, object]] = []
         self.create_error: Exception | None = None
+        # QUA-99 latency follow-up: parallel to `container_sequence`/`upload_outcomes`
+        # below, popped in the SAME call order (position order, since children upload
+        # concurrently via asyncio.gather and this fake never actually awaits real I/O,
+        # so calls complete in the order they were scheduled) — lets a test make ONE
+        # specific child in a concurrent batch fail while its siblings succeed. `None`
+        # (the default) preserves every pre-existing test's behaviour byte-for-byte.
+        self.create_errors: list[Exception | None] | None = None
         self.upload_outcome = UploadOutcome(success=True)
+        self.upload_outcomes: list[UploadOutcome] | None = None
         self.status_script: list[ContainerStatus] = []
         self.status_calls: list[str] = []
         self.status_error: Exception | None = None
@@ -88,7 +97,11 @@ class FakePublishClient:
     async def create_container(self, **kwargs: object) -> ResumableContainer:
         self.calls["create"] += 1
         self.create_container_calls.append(kwargs)
-        if self.create_error is not None:
+        if self.create_errors:
+            error = self.create_errors.pop(0)
+            if error is not None:
+                raise error
+        elif self.create_error is not None:
             raise self.create_error
         if self.container_sequence:
             return self.container_sequence.pop(0)
@@ -107,6 +120,8 @@ class FakePublishClient:
     async def upload_bytes(self, *, upload_uri: str, fileobj, file_size: int) -> UploadOutcome:
         self.calls["upload"] += 1
         self.upload_sizes.append(file_size)
+        if self.upload_outcomes:
+            return self.upload_outcomes.pop(0)
         return self.upload_outcome
 
     async def container_status(self, *, container_id: str) -> ContainerStatus:
@@ -666,26 +681,20 @@ async def test_carousel_happy_path_end_to_end(n: int) -> None:
 
 
 @pytest.mark.asyncio
-async def test_advance_makes_exactly_one_unit_of_progress_per_call() -> None:
-    """The service cannot assume everything happens in one call — pinned step by step
-    for a 2-item carousel: create+upload child0, create+upload child1, poll child0, poll
-    child1, create the CAROUSEL, poll it and publish. Six calls, six units of work."""
+async def test_advance_batches_all_pending_or_in_flight_children_per_call() -> None:
+    """QUA-99 latency follow-up: a call no longer advances ONE child at a time — every
+    PENDING child uploads CONCURRENTLY in one call (`asyncio.gather`), then every
+    IN-FLIGHT child polls concurrently in the next. What used to be six calls for a
+    2-item carousel (create+upload child0, create+upload child1, poll child0, poll
+    child1, create the CAROUSEL, poll it and publish) is now four: create+upload BOTH,
+    poll BOTH, create the CAROUSEL, poll it and publish."""
     h = Harness()
     items = h.stage_videos(2)
     h.client.status_script = [ContainerStatus.FINISHED] * 3
     start_state = await h.start_many(items)
     attempt_id = start_state.attempt_id
 
-    await h.advance(attempt_id)
-    assert h.client.calls == {
-        "create": 1,
-        "upload": 1,
-        "status": 0,
-        "publish": 0,
-        "create_carousel": 0,
-    }
-
-    await h.advance(attempt_id)
+    await h.advance(attempt_id)  # create+upload BOTH children concurrently
     assert h.client.calls == {
         "create": 2,
         "upload": 2,
@@ -694,16 +703,7 @@ async def test_advance_makes_exactly_one_unit_of_progress_per_call() -> None:
         "create_carousel": 0,
     }
 
-    await h.advance(attempt_id)
-    assert h.client.calls == {
-        "create": 2,
-        "upload": 2,
-        "status": 1,
-        "publish": 0,
-        "create_carousel": 0,
-    }
-
-    await h.advance(attempt_id)
+    await h.advance(attempt_id)  # poll BOTH children concurrently
     assert h.client.calls == {
         "create": 2,
         "upload": 2,
@@ -712,7 +712,7 @@ async def test_advance_makes_exactly_one_unit_of_progress_per_call() -> None:
         "create_carousel": 0,
     }
 
-    await h.advance(attempt_id)
+    await h.advance(attempt_id)  # create the CAROUSEL container
     assert h.client.calls == {
         "create": 2,
         "upload": 2,
@@ -721,7 +721,7 @@ async def test_advance_makes_exactly_one_unit_of_progress_per_call() -> None:
         "create_carousel": 1,
     }
 
-    final = await h.advance(attempt_id)
+    final = await h.advance(attempt_id)  # poll carousel -> FINISHED -> publish
     assert final.settled and final.status == "published"
     assert h.client.calls == {
         "create": 2,
@@ -733,20 +733,51 @@ async def test_advance_makes_exactly_one_unit_of_progress_per_call() -> None:
 
 
 @pytest.mark.asyncio
-async def test_failing_child_upload_settles_the_attempt_never_touching_later_children() -> None:
+async def test_failing_child_upload_settles_the_attempt() -> None:
+    """QUA-99 latency follow-up: pending children upload CONCURRENTLY now, so a failing
+    upload no longer guarantees a sibling was 'never even created' — both are attempted
+    in the SAME batch (this fake's `upload_outcome` applies to every call alike). What
+    still holds, unchanged: the parent settles failed, and nothing ever reaches
+    media_publish."""
     h = Harness()
     items = h.stage_videos(2)
     h.client.upload_outcome = UploadOutcome(success=False, retriable=False, error_type="boom")
     start_state = await h.start_many(items)
 
-    state = await h.advance(start_state.attempt_id)  # creates+uploads child 0, fails
+    state = await h.advance(start_state.attempt_id)  # creates+uploads BOTH, both fail
 
     assert state.settled and state.status == "failed"
     assert state.reason == f"{CHILD_ERROR_PREFIX}:boom"
-    assert h.client.calls["create"] == 1  # child 1 was never even created
+    assert h.client.calls["create"] == 2  # both attempted concurrently
+    children = h.repo.list_children(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+    assert all(c.status == "failed" and c.platform_error_code == "boom" for c in children)
+    assert h.client.calls["publish"] == 0
+
+
+@pytest.mark.asyncio
+async def test_one_child_failing_does_not_stop_a_sibling_from_advancing_in_the_same_batch() -> None:
+    """QUA-99 latency follow-up, the concurrency-specific case this PR exists for: child
+    0's upload fails while child 1's succeeds, in the SAME concurrent batch. Both are
+    still genuinely attempted (`return_exceptions=True` lets every task in the gather
+    finish on its own); the parent settles failed using child 0's error; child 1's own
+    row still records what actually happened to it (uploaded successfully), never
+    silently discarded just because a sibling failed."""
+    h = Harness()
+    items = h.stage_videos(2)
+    h.client.upload_outcomes = [
+        UploadOutcome(success=False, retriable=False, error_type="boom"),
+        UploadOutcome(success=True),
+    ]
+    start_state = await h.start_many(items)
+
+    state = await h.advance(start_state.attempt_id)
+
+    assert state.settled and state.status == "failed"
+    assert state.reason == f"{CHILD_ERROR_PREFIX}:boom"
     children = h.repo.list_children(tenant_id=TENANT, attempt_id=start_state.attempt_id)
     assert children[0].status == "failed" and children[0].platform_error_code == "boom"
-    assert children[1].status == "pending"  # untouched, and that is fine — nothing published
+    assert children[1].status == "processing"  # genuinely uploaded, not skipped
+    assert h.client.calls["publish"] == 0
 
 
 @pytest.mark.asyncio
@@ -754,11 +785,10 @@ async def test_a_child_container_error_status_settles_the_whole_attempt() -> Non
     h = Harness()
     items = h.stage_videos(2)
     start_state = await h.start_many(items)
-    await h.advance(start_state.attempt_id)  # create+upload child 0
-    await h.advance(start_state.attempt_id)  # create+upload child 1
-    h.client.status_script = [ContainerStatus.ERROR]
+    await h.advance(start_state.attempt_id)  # create+upload BOTH children concurrently
+    h.client.status_script = [ContainerStatus.ERROR, ContainerStatus.FINISHED]
 
-    state = await h.advance(start_state.attempt_id)  # poll child 0 -> ERROR
+    state = await h.advance(start_state.attempt_id)  # poll BOTH: child 0 -> ERROR
 
     assert state.settled and state.status == "failed"
     assert state.reason == f"{CHILD_ERROR_PREFIX}:container_error"
@@ -774,10 +804,8 @@ async def test_carousel_creation_failure_propagates_and_is_safely_retryable() ->
     items = h.stage_videos(2)
     h.client.status_script = [ContainerStatus.FINISHED, ContainerStatus.FINISHED]
     start_state = await h.start_many(items)
-    await h.advance(start_state.attempt_id)  # create+upload child 0
-    await h.advance(start_state.attempt_id)  # create+upload child 1
-    await h.advance(start_state.attempt_id)  # poll child 0 -> finished
-    await h.advance(start_state.attempt_id)  # poll child 1 -> finished
+    await h.advance(start_state.attempt_id)  # create+upload BOTH children concurrently
+    await h.advance(start_state.attempt_id)  # poll BOTH children concurrently -> finished
 
     h.client.carousel_error = PublishError("POST /media failed with HTTP 500")
     with pytest.raises(PublishError):
@@ -853,7 +881,7 @@ async def test_carousel_publish_ambiguity_reuses_publish_once_and_never_resends(
     h.client.publish_error = TimeoutError("read timeout after the request went out")
     start_state = await h.start_many(items)
     attempt_id = start_state.attempt_id
-    for _ in range(5):  # create+upload x2, poll x2, create the carousel
+    for _ in range(3):  # create+upload BOTH, poll BOTH, create the carousel
         await h.advance(attempt_id)
 
     state = await h.advance(attempt_id)  # poll carousel -> FINISHED -> _publish_once -> timeout
@@ -884,8 +912,7 @@ async def test_carousel_children_use_video_media_type_with_is_carousel_item() ->
     h = Harness()
     items = h.stage_videos(2)
     start_state = await h.start_many(items)
-    await h.advance(start_state.attempt_id)
-    await h.advance(start_state.attempt_id)
+    await h.advance(start_state.attempt_id)  # create+upload BOTH children concurrently
     assert len(h.client.create_container_calls) == 2
     for call in h.client.create_container_calls:
         assert call["media_type"] == "VIDEO"
@@ -916,7 +943,9 @@ async def test_ceiling_does_not_fire_prematurely_for_a_ten_item_carousel() -> No
     state = await h.advance(start_state.attempt_id)
     assert not state.settled
     assert state.reason != CEILING_EXCEEDED
-    assert h.client.calls["create"] == 1  # real progress happened, not a ceiling bail-out
+    # QUA-99 latency follow-up: ALL 10 pending children upload concurrently in this one
+    # call now, not just the first — real progress happened, not a ceiling bail-out.
+    assert h.client.calls["create"] == 10
 
 
 @pytest.mark.asyncio
@@ -940,6 +969,125 @@ async def test_single_video_ceiling_is_unaffected_by_the_carousel_scaling() -> N
     h.client.status_script = [ContainerStatus.IN_PROGRESS]
     state = await h.advance(attempt_id)
     assert state.settled and state.status == "failed" and state.reason == CEILING_EXCEEDED
+
+
+# --------------------------------------------------------------------------------------
+# QUA-99 latency follow-up — concurrent children (position mapping + error propagation)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_child_uploads_preserve_position_to_container_id_mapping() -> None:
+    """QUA-99 latency follow-up: with every pending child uploading CONCURRENTLY in one
+    call, each child's OWN creation_id must land on its OWN row — never swapped because
+    two coroutines happened to interleave. Exercised with 4 children (more than 2, so a
+    naive off-by-one swap would actually show up) and confirmed all the way through to
+    what Meta receives for the CAROUSEL itself."""
+    h = Harness()
+    items = h.stage_videos(4)
+    h.client.status_script = [ContainerStatus.FINISHED] * 5  # 4 children + the carousel
+    start_state = await h.start_many(items)
+
+    await h.advance(start_state.attempt_id)  # create+upload all 4 children concurrently
+
+    children = h.repo.list_children(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+    assert [(c.position, c.creation_id) for c in children] == [
+        (0, "child-c-0"),
+        (1, "child-c-1"),
+        (2, "child-c-2"),
+        (3, "child-c-3"),
+    ]
+
+    final = await h.drive_to_settled(start_state.attempt_id)
+    assert final.settled and final.status == "published"
+    assert h.client.carousel_calls == [["child-c-0", "child-c-1", "child-c-2", "child-c-3"]]
+
+
+@pytest.mark.asyncio
+async def test_one_child_create_container_error_propagates_and_preserves_the_sibling() -> None:
+    """A `PublishError` from ONE child's `create_container`, concurrent with a sibling
+    that succeeds, still PROPAGATES — same posture the sequential path always had (see
+    `test_carousel_creation_failure_propagates_and_is_safely_retryable`) — and does NOT
+    cancel or lose the sibling's already-successful work: a retry only needs to redo the
+    failed child (its `creation_id` is still `None`), never re-uploading the one that
+    already has one."""
+    h = Harness()
+    items = h.stage_videos(2)
+    h.client.create_errors = [PublishError("POST /media failed with HTTP 500"), None]
+    h.client.container_sequence = [
+        ResumableContainer(container_id="child-c-1", upload_uri="https://rupload/1")
+    ]
+    start_state = await h.start_many(items)
+
+    with pytest.raises(PublishError):
+        await h.advance(start_state.attempt_id)
+
+    children = h.repo.list_children(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+    assert children[0].creation_id is None  # failed -- retries on the next tick
+    assert children[1].creation_id == "child-c-1"  # the sibling's success was NOT lost
+    assert children[1].status == "processing"
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+    assert record is not None and not record.is_settled  # PROPAGATES, never settled here
+
+    # Retried: only child 0 is still pending, child 1 is left alone.
+    h.client.create_errors = None
+    h.client.container_sequence = [
+        ResumableContainer(container_id="child-c-0", upload_uri="https://rupload/0")
+    ]
+    await h.advance(start_state.attempt_id)
+    assert h.client.calls["create"] == 3  # 2 attempted + 1 retry, never a needless re-upload
+    children2 = h.repo.list_children(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+    assert children2[0].creation_id == "child-c-0"
+    assert children2[1].creation_id == "child-c-1"  # untouched by the retry
+
+
+# --------------------------------------------------------------------------------------
+# QUA-99 latency follow-up — carousel poll backoff (INERT for single-video attempts)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_poll_interval_starts_fast_for_a_fresh_carousel() -> None:
+    h = Harness()
+    items = h.stage_videos(2)
+    h.client.status_script = [ContainerStatus.IN_PROGRESS, ContainerStatus.IN_PROGRESS]
+    start_state = await h.start_many(items)
+    await h.advance(start_state.attempt_id)  # create+upload BOTH children concurrently
+
+    state = await h.advance(start_state.attempt_id)  # poll BOTH -- still IN_PROGRESS
+
+    assert not state.settled
+    assert state.poll_interval_seconds == 5
+
+
+@pytest.mark.asyncio
+async def test_poll_interval_reaches_the_old_steady_state_after_75s() -> None:
+    """Never slower than the original fixed cadence every attempt used before this
+    follow-up — the backoff only ever makes the EARLY checks faster."""
+    h = Harness(clock_offset_seconds=80)
+    items = h.stage_videos(2)
+    h.client.status_script = [ContainerStatus.IN_PROGRESS, ContainerStatus.IN_PROGRESS]
+    start_state = await h.start_many(items)
+    await h.advance(start_state.attempt_id)
+
+    state = await h.advance(start_state.attempt_id)
+
+    assert not state.settled
+    assert state.poll_interval_seconds == CONTAINER_POLL_INTERVAL_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_poll_interval_is_unaffected_for_a_single_video() -> None:
+    """INERT for a single video — media_product_type is never CAROUSEL for that path, so
+    it must keep advertising the exact same fixed cadence it always has."""
+    h = Harness()
+    state = await h.start()
+    h.client.status_script = [ContainerStatus.IN_PROGRESS]
+
+    polled = await h.advance(state.attempt_id)
+
+    assert not polled.settled
+    assert polled.poll_interval_seconds == CONTAINER_POLL_INTERVAL_SECONDS
 
 
 # --------------------------------------------------------------------------------------
@@ -971,8 +1119,8 @@ async def test_create_carousel_sends_the_persisted_caption_to_meta() -> None:
     items = h.stage_videos(2)
     h.client.status_script = [ContainerStatus.FINISHED, ContainerStatus.FINISHED]
     start_state = await h.start_many(items, caption="una descripcion real")
-    for _ in range(4):  # create+upload x2, poll x2
-        await h.advance(start_state.attempt_id)
+    await h.advance(start_state.attempt_id)  # create+upload BOTH children concurrently
+    await h.advance(start_state.attempt_id)  # poll BOTH children concurrently -> finished
 
     await h.advance(start_state.attempt_id)  # creates the CAROUSEL container
 
@@ -988,7 +1136,9 @@ async def test_caption_survives_from_start_many_through_multiple_advance_calls()
     h.client.status_script = [ContainerStatus.IN_PROGRESS, ContainerStatus.IN_PROGRESS]
     start_state = await h.start_many(items, caption="persistent caption")
 
-    for _ in range(4):  # create+upload x2, poll x2 — none of these write caption
+    # QUA-99 latency follow-up: create+upload BOTH concurrently, then poll BOTH
+    # concurrently — two calls now, not four; neither ever writes caption.
+    for _ in range(2):
         await h.advance(start_state.attempt_id)
         record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=start_state.attempt_id)
         assert record is not None and record.caption == "persistent caption"
@@ -1048,15 +1198,18 @@ async def test_start_many_with_one_item_forwards_caption_to_start() -> None:
 async def test_list_children_status_reflects_a_mixed_in_progress_carousel() -> None:
     """The exact shape a polling UI needs: which position is finished vs still moving,
     read at a point mid-assembly — proves this is a live read of `list_children`, not a
-    snapshot taken once at `start_many` time."""
+    snapshot taken once at `start_many` time.
+
+    QUA-99 latency follow-up: children now poll CONCURRENTLY in one call, so 'mixed'
+    here means Meta itself reporting different statuses for each child in the SAME
+    batch — not one child getting ahead of another because of sequential ticks."""
     h = Harness()
     items = h.stage_videos(2)
-    h.client.status_script = [ContainerStatus.FINISHED]
+    h.client.status_script = [ContainerStatus.FINISHED, ContainerStatus.IN_PROGRESS]
     start_state = await h.start_many(items)
 
-    await h.advance(start_state.attempt_id)  # create+upload child 0
-    await h.advance(start_state.attempt_id)  # create+upload child 1
-    await h.advance(start_state.attempt_id)  # poll child 0 -> finished
+    await h.advance(start_state.attempt_id)  # create+upload BOTH children concurrently
+    await h.advance(start_state.attempt_id)  # poll BOTH concurrently: 0->finished, 1->still going
 
     rows = h.service.list_children_status(tenant_id=TENANT, attempt_id=start_state.attempt_id)
 
