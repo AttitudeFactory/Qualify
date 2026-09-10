@@ -28,6 +28,8 @@ recorded.
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -52,6 +54,12 @@ from qualify_api.publishing.repository import (
     ChildRecord,
     PublishAttemptRepository,
 )
+
+# QUA-99 latency follow-up — structured, non-sensitive stage timing (no token, no media
+# bytes, no caption text: ids, positions, durations and status values only). Plain
+# stdlib logging, key=value in the message text so it reads in any log sink without a
+# structured-logging dependency this repo does not otherwise have.
+logger = logging.getLogger(__name__)
 
 # Reserved platform_error_code values (column 0003:95, Text, nullable — no migration).
 # `PUBLISH_SENT_MARKER` is A6-min's whole mechanism; the rest keep failure causes
@@ -223,6 +231,17 @@ def _state(
             else (not record.is_settled and _send_was_emitted(record))
         ),
     )
+
+
+def _log_stage(event: str, *, tenant_id: UUID, attempt_id: UUID, **fields: object) -> None:
+    """QUA-99 latency follow-up — the ONLY logging this package has ever had (verified:
+    zero log lines existed anywhere in it before this). Deliberately plain key=value
+    text, not a structured-logging library this repo does not otherwise depend on.
+    Never carries a token, media bytes, or caption text — ids, positions, statuses and
+    durations only, matching the same "numeric codes, not bodies" discipline `client.py`
+    already documents for its own error messages."""
+    extra = " ".join(f"{key}={value}" for key, value in fields.items())
+    logger.info("publish.%s tenant_id=%s attempt_id=%s %s", event, tenant_id, attempt_id, extra)
 
 
 class PublishService:
@@ -448,6 +467,7 @@ class PublishService:
         self._repo.record_publish_sent(
             tenant_id=tenant_id, attempt_id=record.id, marker=PUBLISH_SENT_MARKER
         )
+        _log_stage("media_publish_start", tenant_id=tenant_id, attempt_id=record.id)
         try:
             media_id = await client.publish_container(
                 ig_user_id=ig_user_id, creation_id=record.creation_id or ""
@@ -491,6 +511,14 @@ class PublishService:
             status="published",
             published_media_id=media_id,
             platform_error_code=None,
+        )
+        total_duration_ms = round((self._clock() - record.started_at).total_seconds() * 1000)
+        _log_stage(
+            "attempt_settled",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            status="published",
+            total_duration_ms=total_duration_ms,
         )
         return _state(self._require(tenant_id, record.id), container_status="FINISHED")
 
@@ -696,6 +724,7 @@ class PublishService:
                 status="failed",
                 platform_error_code=f"{CHILD_ERROR_PREFIX}:{failed.platform_error_code}",
             )
+            self._log_settled(tenant_id=tenant_id, record=record, status="failed")
             return _state(self._require(tenant_id, record.id))
 
         if self._over_ceiling(record):
@@ -705,6 +734,7 @@ class PublishService:
                 status="failed",
                 platform_error_code=CEILING_EXCEEDED,
             )
+            self._log_settled(tenant_id=tenant_id, record=record, status="failed")
             return _state(self._require(tenant_id, record.id))
 
         pending = [c for c in children if c.creation_id is None]
@@ -755,6 +785,21 @@ class PublishService:
             )
         except AlreadySettled:
             return
+        self._log_settled(tenant_id=tenant_id, record=record, status="failed")
+
+    def _log_settled(self, *, tenant_id: UUID, record: AttemptRecord, status: str) -> None:
+        """QUA-99 latency follow-up — the total-duration metric, logged wherever this
+        module settles an attempt's terminal outcome from a CAROUSEL-specific code path
+        (children failing, the ceiling). `_publish_once`'s own success path logs its own
+        (the one both single-video and carousel attempts share)."""
+        total_duration_ms = round((self._clock() - record.started_at).total_seconds() * 1000)
+        _log_stage(
+            "attempt_settled",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            status=status,
+            total_duration_ms=total_duration_ms,
+        )
 
     async def _create_and_upload_child(
         self, *, tenant_id: UUID, record: AttemptRecord, child: ChildRecord
@@ -782,6 +827,14 @@ class PublishService:
             tenant_id=tenant_id, connection_id=record.connection_id
         )
 
+        start_time = time.monotonic()
+        _log_stage(
+            "child_upload_start",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            child_id=child.id,
+            position=child.position,
+        )
         container = await client.create_container(
             ig_user_id=target.ig_user_id, media_type=MEDIA_TYPE_VIDEO, is_carousel_item=True
         )
@@ -795,21 +848,42 @@ class PublishService:
         outcome = await client.upload_bytes(
             upload_uri=container.upload_uri, fileobj=fileobj, file_size=file_size
         )
+        duration_ms = round((time.monotonic() - start_time) * 1000)
 
         if outcome.success:
             self._repo.advance_child_status(
                 tenant_id=tenant_id, child_id=child.id, status="processing"
+            )
+            _log_stage(
+                "child_upload_end",
+                tenant_id=tenant_id,
+                attempt_id=record.id,
+                child_id=child.id,
+                position=child.position,
+                outcome="success",
+                duration_ms=duration_ms,
             )
         elif outcome.retriable is False:
             # Meta's OWN judgement that this media will never be accepted — terminal for
             # the child. Only the child's OWN row is settled here now — the parent is
             # settled centrally, once, by `_settle_parent_if_a_child_failed` (see this
             # method's and `_advance_children`'s docstrings for why).
+            error_code = outcome.error_type or "upload_failed"
             self._repo.settle_child(
                 tenant_id=tenant_id,
                 child_id=child.id,
                 status="failed",
-                platform_error_code=outcome.error_type or "upload_failed",
+                platform_error_code=error_code,
+            )
+            _log_stage(
+                "child_upload_end",
+                tenant_id=tenant_id,
+                attempt_id=record.id,
+                child_id=child.id,
+                position=child.position,
+                outcome="failed",
+                error_code=error_code,
+                duration_ms=duration_ms,
             )
         # retriable True or None: unknown is NOT a refusal (R10) — the child stays
         # 'uploading', unsettled; the parent's (scaled) ceiling is the guaranteed exit.
@@ -839,17 +913,35 @@ class PublishService:
 
         if container_status is ContainerStatus.FINISHED:
             self._repo.settle_child(tenant_id=tenant_id, child_id=child.id, status="finished")
+            _log_stage(
+                "child_processing_end",
+                tenant_id=tenant_id,
+                attempt_id=record.id,
+                child_id=child.id,
+                position=child.position,
+                outcome="finished",
+            )
         elif container_status in (ContainerStatus.ERROR, ContainerStatus.EXPIRED):
             # A child is never itself published, so PUBLISHED is not a value this branch
             # ever expects to see — deliberately not using `.is_terminal`, which includes
             # it, to avoid mislabelling that anomaly as a container error. Only the
             # child's OWN row is settled here now — the parent is settled centrally,
             # once, by `_settle_parent_if_a_child_failed`.
+            error_code = f"{CONTAINER_ERROR_PREFIX}_{container_status.value.lower()}"
             self._repo.settle_child(
                 tenant_id=tenant_id,
                 child_id=child.id,
                 status="failed",
-                platform_error_code=f"{CONTAINER_ERROR_PREFIX}_{container_status.value.lower()}",
+                platform_error_code=error_code,
+            )
+            _log_stage(
+                "child_processing_end",
+                tenant_id=tenant_id,
+                attempt_id=record.id,
+                child_id=child.id,
+                position=child.position,
+                outcome="failed",
+                error_code=error_code,
             )
         # IN_PROGRESS (or the never-expected PUBLISHED): nothing to do, the next
         # advance() call re-polls this same child.
@@ -887,6 +979,12 @@ class PublishService:
             tenant_id=tenant_id, attempt_id=record.id, creation_id=carousel_id
         )
         self._repo.advance_status(tenant_id=tenant_id, attempt_id=record.id, status="processing")
+        _log_stage(
+            "carousel_container_created",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            child_count=len(children),
+        )
         return _state(self._require(tenant_id, record.id))
 
 

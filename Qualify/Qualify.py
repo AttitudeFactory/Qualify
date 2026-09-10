@@ -1,3 +1,5 @@
+import logging
+
 import reflex as rx
 
 from .auth_pages import login_index, signup_index
@@ -30,6 +32,21 @@ from .state import DashboardState
 from .styleguide_page import styleguide_index
 from .ui import app_shell, page_body
 from .vitrina_page import vitrina_index
+
+# QUA-99 latency follow-up: this app never configured Python's logging at all before
+# now — `logging.getLogger(__name__).info(...)` calls anywhere in the codebase (e.g.
+# `qualify_api.publishing.service`'s per-stage timing) were silently dropped, because
+# the root logger's default level is WARNING and nothing had ever attached a handler.
+# Verified 2026-09-10: a real, settled carousel publish left zero trace in the log
+# despite the instrumentation already being in the code. `basicConfig` here is what
+# turns that instrumentation into something actually visible in `reflex_*.log`/stdout.
+# Third-party libraries this app depends on are explicitly quieted back down — without
+# this, INFO-level app visibility comes with httpx logging every Meta request line and
+# botocore/sqlalchemy adding their own noise, drowning out the one thing this exists to
+# surface.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+for _noisy_logger in ("httpx", "httpcore", "botocore", "boto3", "urllib3", "sqlalchemy.engine"):
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
 
 # QUA-49: the Dashboard de Menciones no longer depends on the local SQLite mock
 # (`db.py`/`models.py`/`seed_data.py`) — its data comes from the real `mentions` backend
