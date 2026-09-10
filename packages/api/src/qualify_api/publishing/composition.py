@@ -9,6 +9,7 @@ factory — they inject fakes — which is exactly why the lazy import is safe.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from functools import cache
 from typing import IO
 from uuid import UUID, uuid4
@@ -23,9 +24,16 @@ from qualify_api.connections.credential_reader import DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor, Encryptor
 from qualify_api.connections.models import SocialConnection
 from qualify_api.connections.resolver import InjectingCredentialResolver
-from qualify_api.publishing.client import HttpPublishClient, PublishClient
+from qualify_api.publishing.client import MEDIA_TYPE_VIDEO, HttpPublishClient, PublishClient
 from qualify_api.publishing.repository import PostgresPublishAttemptRepository
-from qualify_api.publishing.service import ConnectionTarget, PublishService, PublishState
+from qualify_api.publishing.service import (
+    MAX_CAROUSEL_ITEMS,
+    ConnectionTarget,
+    MediaItem,
+    PublishService,
+    PublishState,
+    TooManyItems,
+)
 from qualify_api.publishing.staging import MediaStagingService
 
 
@@ -129,6 +137,73 @@ async def stage_and_start_publish(
         idempotency_key=idempotency_key,
         caption=caption,
         thumb_offset=thumb_offset,
+    )
+
+
+@dataclass(frozen=True)
+class PendingUpload:
+    """One not-yet-staged file for a multi-video (carousel) publish request (QUA-99,
+    5/6) — the composition-layer counterpart of `publishing.service.MediaItem`, BEFORE
+    staging turns raw bytes into an R2 object key. VIDEO-ONLY, same posture `MediaItem`
+    already takes: no media_type field — every item is staged and later created as
+    `MEDIA_TYPE_VIDEO`, regardless of what the single-item path would use (`REELS`).
+    """
+
+    fileobj: IO[bytes]
+    content_type: str
+
+
+async def stage_and_start_many_publish(
+    *,
+    tenant_id: UUID,
+    connection_id: UUID,
+    items: list[PendingUpload],
+    idempotency_key: str,
+    caption: str | None = None,
+) -> PublishState:
+    """The multi-video counterpart of `stage_and_start_publish` above (QUA-99, 5/6) —
+    the seam Commit 6 calls once the gallery holds 2-10 items. `stage_and_start_publish`
+    itself is UNCHANGED by this function's existence: this is a new, parallel path, not
+    a rewrite of it.
+
+    Each item is staged SEQUENTIALLY — mirrors `PublishService`'s own no-parallel-Meta-
+    calls posture (QUA-99, 4/6) — always as `MEDIA_TYPE_VIDEO`: a carousel child never
+    uses `REELS`, confirmed against Meta real (2026-09-10 smoke test). Staging happens
+    HERE, in composition, exactly like the single-item path: `PublishService.start_many`
+    never touches R2, same separation `stage_and_start_publish`/`start()` already keep.
+
+    `PublishService.start_many` decides 1-vs-2-10 internally (delegating to `start()` for
+    exactly one item, QUA-99 4/6) — this function does not special-case the count itself,
+    it stages whatever `items` it is given and hands the result to the one seam.
+
+    The `MAX_CAROUSEL_ITEMS` guard is CHECKED HERE TOO, before staging a single byte —
+    `start_many` already refuses the same way, but only after this function would have
+    staged every item to R2 first. Rejecting here as well means "before any platform
+    call" also means before any costly I/O, not just before the Meta call specifically.
+    """
+    if len(items) > MAX_CAROUSEL_ITEMS:
+        raise TooManyItems(len(items))
+
+    staged_items: list[MediaItem] = []
+    for pending in items:
+        staged = await asyncio.to_thread(
+            production_staging_service().stage_media,
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            media_id=uuid4().hex,
+            fileobj=pending.fileobj,
+            content_type=pending.content_type,
+            media_product_type=MEDIA_TYPE_VIDEO,
+        )
+        staged_items.append(
+            MediaItem(media_object_key=staged.media_object_key, content_type=pending.content_type)
+        )
+    return await production_publish_service().start_many(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        items=staged_items,
+        idempotency_key=idempotency_key,
+        caption=caption,
     )
 
 

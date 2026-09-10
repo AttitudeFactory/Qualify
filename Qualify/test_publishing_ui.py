@@ -31,8 +31,9 @@ import inspect
 from collections.abc import Callable, Coroutine, Iterator
 from uuid import UUID
 
+from qualify_api.publishing.composition import PendingUpload
 from qualify_api.publishing.service import PublishState as ServicePublishState
-from qualify_api.publishing.service import UnknownAttempt, UnknownConnection
+from qualify_api.publishing.service import TooManyItems, UnknownAttempt, UnknownConnection
 
 from . import publishing_provider
 from .connections_vm import ConnectionVM
@@ -235,6 +236,108 @@ def test_poll_publish_projects_a_settled_state() -> None:
     assert vm.settled is True
     assert vm.status == "published"
     assert vm.published_media_id == "media-9"
+
+
+# --------------------------------------------------------------------------------------
+# QUA-99 (5/6) — start_many_publish, the multi-video counterpart of start_publish
+# --------------------------------------------------------------------------------------
+
+
+def test_provider_calls_the_real_multi_publishing_seam() -> None:
+    """Same posture as the single-video pin above: the multi-video write path must
+    delegate to `qualify_api.publishing`, not reimplement staging/orchestration here."""
+    source = inspect.getsource(publishing_provider)
+    assert "stage_and_start_many_publish(" in source
+
+
+def test_start_many_publish_projects_null_fields_to_empty_strings() -> None:
+    async def _fake(**kwargs: object) -> ServicePublishState:
+        return _service_state()
+
+    with _patched(stage_and_start_many_publish=_fake):
+        vm = _run_coro(
+            publishing_provider.start_many_publish(
+                tenant_id=_TENANT,
+                connection_id=_CONNECTION,
+                items=[PendingUpload(fileobj=None, content_type="video/mp4")],  # type: ignore[arg-type]
+                caption="",
+                idempotency_key="k-1",
+            )
+        )
+    assert vm.published_media_id == ""
+    assert vm.reason == ""
+    assert vm.attempt_id == str(_ATTEMPT)
+
+
+def test_start_many_publish_forwards_items_caption_and_idempotency_key() -> None:
+    seen: dict[str, object] = {}
+
+    async def _fake(**kwargs: object) -> ServicePublishState:
+        seen.update(kwargs)
+        return _service_state()
+
+    items = [
+        PendingUpload(fileobj=None, content_type="video/mp4"),  # type: ignore[arg-type]
+        PendingUpload(fileobj=None, content_type="video/quicktime"),  # type: ignore[arg-type]
+    ]
+    with _patched(stage_and_start_many_publish=_fake):
+        _run_coro(
+            publishing_provider.start_many_publish(
+                tenant_id=_TENANT,
+                connection_id=_CONNECTION,
+                items=items,
+                caption="hola carrusel",
+                idempotency_key="k-multi-1",
+            )
+        )
+    assert seen["items"] == items  # same list, same order — nothing rebuilt in between
+    assert seen["caption"] == "hola carrusel"
+    assert seen["idempotency_key"] == "k-multi-1"
+
+
+def test_start_many_publish_propagates_unknown_connection() -> None:
+    async def _raise(**kwargs: object) -> ServicePublishState:
+        raise UnknownConnection(str(_CONNECTION))
+
+    with _patched(stage_and_start_many_publish=_raise):
+        try:
+            _run_coro(
+                publishing_provider.start_many_publish(
+                    tenant_id=_TENANT,
+                    connection_id=_CONNECTION,
+                    items=[PendingUpload(fileobj=None, content_type="video/mp4")],  # type: ignore[arg-type]
+                    caption="",
+                    idempotency_key="k-1",
+                )
+            )
+        except UnknownConnection:
+            pass
+        else:
+            raise AssertionError("start_many_publish must not swallow UnknownConnection")
+
+
+def test_start_many_publish_propagates_too_many_items() -> None:
+    """The >10 rejection (QUA-99, 4/6 and 5/6) must reach the caller, not be swallowed —
+    same posture every other domain exception on this seam already has."""
+
+    async def _raise(**kwargs: object) -> ServicePublishState:
+        raise TooManyItems(11)
+
+    with _patched(stage_and_start_many_publish=_raise):
+        try:
+            _run_coro(
+                publishing_provider.start_many_publish(
+                    tenant_id=_TENANT,
+                    connection_id=_CONNECTION,
+                    items=[PendingUpload(fileobj=None, content_type="video/mp4")],  # type: ignore[arg-type]
+                    caption="",
+                    idempotency_key="k-1",
+                )
+            )
+        except TooManyItems:
+            pass
+        else:
+            raise AssertionError("start_many_publish must not swallow TooManyItems")
 
 
 def _run() -> int:
