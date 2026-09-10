@@ -17,6 +17,21 @@ means that when reality lands, it lands in a known place and the service above d
 3. `container_status` — `GET /<ID>?fields=status_code`, polled by the service.
 4. `publish_container` — `POST /<IG_USER_ID>/media_publish?creation_id=<ID>`.
 
+## Carousels (QUA-99) — one extra container, no extra upload
+
+`create_carousel_container` wraps up to 10 already-created children (each made via step 1
+above with `is_carousel_item=True`) into one more container whose `creation_id` is what
+step 4 ultimately publishes. Confirmed against Meta real, 2026-09-10 (two `VIDEO` children,
+both `is_carousel_item=true`, both reached `FINISHED` independently, then grouped): the
+carousel container's response carries `{"id": ...}` **only** — never a `uri`
+(`content-publishing.md:126-132`), because nothing is ever uploaded TO a carousel
+container; it is built entirely from children that are already uploaded. That is why this
+is a distinct method with its own return type rather than a `create_container` overload —
+`ResumableContainer`/`_parse_container_response` require a `uri` unconditionally, and a
+carousel response never has one. `media_publish` (step 4) does not know or care whether the
+`creation_id` it receives names a single video or a carousel — this seam adds no new
+publish path, only a new *shape* of `creation_id` for the existing one to accept.
+
 ## Two hosts, two clients, and no token anywhere here
 
 Meta requires a different `Authorization` scheme per host, and the corpus contradicts itself
@@ -155,6 +170,14 @@ class PublishClient(Protocol):
         is_carousel_item: bool = False,
     ) -> ResumableContainer: ...
 
+    async def create_carousel_container(
+        self,
+        *,
+        ig_user_id: str,
+        children: list[str],
+        caption: str | None = None,
+    ) -> str: ...
+
     async def upload_bytes(
         self, *, upload_uri: str, fileobj: IO[bytes], file_size: int
     ) -> UploadOutcome: ...
@@ -200,6 +223,19 @@ def _parse_container_response(payload: dict[str, Any]) -> ResumableContainer:
     if not isinstance(upload_uri, str) or not upload_uri:
         raise PublishError("container response carried no upload uri")
     return ResumableContainer(container_id=container_id, upload_uri=upload_uri)
+
+
+def _parse_carousel_response(payload: dict[str, Any]) -> str:
+    """[V] confirmed against Meta real 2026-09-10: `{"id": "<IG_CAROUSEL_CONTAINER_ID>"}`
+    only (`content-publishing.md:126-132`). Deliberately NOT `_parse_container_response`:
+    that function requires a `uri` unconditionally, and a carousel container never has
+    one — there is nothing to upload to it, it is built entirely from children that are
+    already uploaded.
+    """
+    container_id = payload.get("id")
+    if not isinstance(container_id, str) or not container_id:
+        raise PublishError("carousel container response carried no id")
+    return container_id
 
 
 def _parse_upload_response(payload: dict[str, Any]) -> UploadOutcome:
@@ -326,6 +362,30 @@ class HttpPublishClient:
         if is_carousel_item:
             params["is_carousel_item"] = "true"
         return _parse_container_response(await self._post_graph(f"/{ig_user_id}/media", params))
+
+    async def create_carousel_container(
+        self,
+        *,
+        ig_user_id: str,
+        children: list[str],
+        caption: str | None = None,
+    ) -> str:
+        """`POST /<IG_ID>/media?media_type=CAROUSEL&children=<id1,id2,...>`.
+
+        No `upload_type`/`is_carousel_item` here — those belong to the CHILD containers
+        (already created via `create_container(..., is_carousel_item=True)`), never to
+        the carousel container itself. Cardinality (Meta allows 2-10) is NOT enforced
+        here — same division of labour as `media_type` in `create_container`: this
+        method rejects only what makes the REQUEST structurally impossible to send (an
+        empty `children` list), and leaves count policy to the caller, which does not
+        exist yet (QUA-99 backend orchestration, a later PR).
+        """
+        if not children:
+            raise PublishError("a carousel container needs at least one child container id")
+        params = {"media_type": "CAROUSEL", "children": ",".join(children)}
+        if caption is not None:
+            params["caption"] = caption
+        return _parse_carousel_response(await self._post_graph(f"/{ig_user_id}/media", params))
 
     async def upload_bytes(
         self, *, upload_uri: str, fileobj: IO[bytes], file_size: int

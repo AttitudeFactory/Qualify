@@ -23,7 +23,14 @@ from qualify_api.publishing.client import (
     ResumableContainer,
     UploadOutcome,
 )
-from qualify_api.publishing.composition import advance_publish, stage_and_start_publish
+from qualify_api.publishing.composition import (
+    PendingUpload,
+    advance_publish,
+    get_child_statuses,
+    stage_and_start_many_publish,
+    stage_and_start_publish,
+)
+from qualify_api.publishing.service import ChildStatus
 
 __all__ = [
     "CONTAINER_POLL_CEILING_SECONDS",
@@ -32,12 +39,16 @@ __all__ = [
     "MEDIA_TYPE_STORIES",
     "MEDIA_TYPE_VIDEO",
     "RESUMABLE_MEDIA_TYPES",
+    "ChildStatus",
     "ContainerStatus",
     "HttpPublishClient",
+    "PendingUpload",
     "PublishClient",
     "PublishError",
     "ResumableContainer",
     "UploadOutcome",
     "advance_publish",
+    "get_child_statuses",
+    "stage_and_start_many_publish",
     "stage_and_start_publish",
 ]

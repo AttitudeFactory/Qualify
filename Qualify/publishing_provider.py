@@ -23,11 +23,17 @@ from __future__ import annotations
 from typing import IO
 from uuid import UUID
 
-from qualify_api.publishing import advance_publish, stage_and_start_publish
+from qualify_api.publishing import (
+    PendingUpload,
+    advance_publish,
+    get_child_statuses,
+    stage_and_start_many_publish,
+    stage_and_start_publish,
+)
 from qualify_api.publishing.service import PublishState as ServicePublishState
 
 from .connections_provider import connections_for
-from .publishing_vm import ConnectionOptionVM, PublishAttemptVM
+from .publishing_vm import ChildStatusVM, ConnectionOptionVM, PublishAttemptVM
 
 
 def active_connections(tenant_id: UUID) -> list[ConnectionOptionVM]:
@@ -86,8 +92,54 @@ async def start_publish(
     return _to_vm(state)
 
 
+async def start_many_publish(
+    *,
+    tenant_id: UUID,
+    connection_id: UUID,
+    items: list[PendingUpload],
+    caption: str,
+    idempotency_key: str,
+) -> PublishAttemptVM:
+    """The multi-video counterpart of `start_publish` above (QUA-99, 5/6) — the interface
+    Commit 6 wires up once the gallery holds 2-10 items. `start_publish` itself is
+    UNCHANGED: a single video keeps using it exactly as before, never this function.
+
+    `PublishService.start_many` (the seam this delegates to) decides internally whether
+    `items` is one video (delegates to `start()`, unchanged) or 2-10 (the carousel path,
+    QUA-99 4/6) — so Commit 6 does not need its own branching here either, only a
+    decision about which of these two provider functions to call. `caption` flows
+    straight through to `start_many(caption=...)`, the same "empty string means no
+    caption" convention `start_publish` already uses — the caption is not silently
+    dropped for a multi-item publish (QUA-99, 4.5/6 persists it end to end).
+
+    `UnknownConnection`/`TooManyItems` are NOT caught here — same posture `start_publish`
+    already has for `UnknownConnection`, propagated to the caller.
+    """
+    state = await stage_and_start_many_publish(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        items=items,
+        idempotency_key=idempotency_key,
+        caption=caption or None,
+    )
+    return _to_vm(state)
+
+
 async def poll_publish(*, tenant_id: UUID, attempt_id: UUID) -> PublishAttemptVM:
     """One `advance()` step. The caller is the client that drives the cadence — see
     `PublishService.advance` for why there is no loop on the backend side."""
     state = await advance_publish(tenant_id=tenant_id, attempt_id=attempt_id)
     return _to_vm(state)
+
+
+def carousel_children_status(*, tenant_id: UUID, attempt_id: UUID) -> list[ChildStatusVM]:
+    """Read-only carousel-progress projection (QUA-99 UX follow-up) — call this ALONGSIDE
+    `poll_publish`, never instead of it: it changes nothing about the attempt, only lets
+    the polling screen show which child is still uploading/processing instead of one
+    generic spinner. Blocking DB call (via `get_child_statuses`) — same posture
+    `active_connections` already documents for itself; callers on the event loop must run
+    it off-thread."""
+    return [
+        ChildStatusVM(position=c.position, status=c.status)
+        for c in get_child_statuses(tenant_id=tenant_id, attempt_id=attempt_id)
+    ]

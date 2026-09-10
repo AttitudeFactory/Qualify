@@ -141,6 +141,165 @@ async def test_container_without_uri_is_rejected() -> None:
 
 
 # --------------------------------------------------------------------------------------
+# create_carousel_container (QUA-99)
+# --------------------------------------------------------------------------------------
+
+CHILD_A = "18000000000000001"
+CHILD_B = "18000000000000002"
+CAROUSEL_CONTAINER = "18900000000000000"
+
+
+def _client_with_transports(graph_handler, rupload_handler=None) -> HttpPublishClient:
+    """Like `_client`, but with an INDEPENDENT transport per host — needed to assert that
+    a call never reaches `rupload` at all (a carousel container has nothing uploaded to
+    it), which a single shared transport/handler could not distinguish."""
+
+    def _refuse(request: httpx.Request) -> httpx.Response:  # pragma: no cover - must not run
+        raise AssertionError("rupload must never be called by create_carousel_container")
+
+    return HttpPublishClient(
+        graph_client=_InjectedAuthClient(
+            TOKEN, scheme=SETTINGS.graph_auth_scheme, transport=httpx.MockTransport(graph_handler)
+        ),
+        rupload_client=_InjectedAuthClient(
+            TOKEN,
+            scheme=SETTINGS.rupload_auth_scheme,
+            transport=httpx.MockTransport(rupload_handler or _refuse),
+        ),
+        graph_url=GRAPH,
+    )
+
+
+async def test_create_carousel_container_builds_the_request_with_children() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith(f"/{IG_USER}/media")
+        assert request.url.params["media_type"] == "CAROUSEL"
+        assert request.url.params["children"] == f"{CHILD_A},{CHILD_B}"
+        return _json({"id": CAROUSEL_CONTAINER})
+
+    container_id = await _client_with_transports(handler).create_carousel_container(
+        ig_user_id=IG_USER, children=[CHILD_A, CHILD_B]
+    )
+    assert container_id == CAROUSEL_CONTAINER
+
+
+async def test_create_carousel_container_includes_caption_when_given() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        return _json({"id": CAROUSEL_CONTAINER})
+
+    await _client_with_transports(handler).create_carousel_container(
+        ig_user_id=IG_USER, children=[CHILD_A, CHILD_B], caption="hola carrusel"
+    )
+    assert seen["caption"] == "hola carrusel"
+
+
+async def test_create_carousel_container_omits_caption_when_not_given() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        return _json({"id": CAROUSEL_CONTAINER})
+
+    await _client_with_transports(handler).create_carousel_container(
+        ig_user_id=IG_USER, children=[CHILD_A, CHILD_B]
+    )
+    assert "caption" not in seen
+
+
+async def test_create_carousel_container_uses_the_bearer_scheme_on_graph() -> None:
+    """Same host, same scheme as `create_container` (`content-publishing.md:84`) — a
+    carousel container is created with the same `POST /<IG_ID>/media` endpoint."""
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers["Authorization"]
+        return _json({"id": CAROUSEL_CONTAINER})
+
+    await _client_with_transports(handler).create_carousel_container(
+        ig_user_id=IG_USER, children=[CHILD_A]
+    )
+    assert seen["auth"] == f"{GRAPH_AUTH_SCHEME} {TOKEN}"
+
+
+async def test_create_carousel_container_never_touches_upload_or_publish() -> None:
+    """The point of this PR: children are already-uploaded containers, so grouping them
+    must not trigger any `rupload` call (nothing to upload) nor a `media_publish` call
+    (that stays a separate, later, explicit step). `_client_with_transports`'s rupload
+    handler raises if it is ever invoked, so this test fails loudly if that changes."""
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert not request.url.path.endswith("media_publish")
+        return _json({"id": CAROUSEL_CONTAINER})
+
+    await _client_with_transports(handler).create_carousel_container(
+        ig_user_id=IG_USER, children=[CHILD_A, CHILD_B]
+    )
+    assert calls == 1  # exactly the one POST that creates the carousel container
+
+
+async def test_create_carousel_container_rejects_an_empty_children_list_before_any_request() -> (
+    None
+):
+    """Mirrors `test_image_media_type_is_refused_before_any_request`: a structurally
+    impossible request is refused locally, never sent."""
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - must not run
+        raise AssertionError("no request should be made for an empty children list")
+
+    with pytest.raises(PublishError, match="at least one child"):
+        await _client_with_transports(handler).create_carousel_container(
+            ig_user_id=IG_USER, children=[]
+        )
+
+
+async def test_create_carousel_container_without_an_id_is_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _json({})
+
+    with pytest.raises(PublishError, match="carousel container response carried no id"):
+        await _client_with_transports(handler).create_carousel_container(
+            ig_user_id=IG_USER, children=[CHILD_A, CHILD_B]
+        )
+
+
+async def test_create_carousel_container_does_not_require_a_uri() -> None:
+    """The finding this PR exists to encode: confirmed against Meta real (2026-09-10),
+    the carousel container response never carries `uri` — unlike `create_container`,
+    whose `_parse_container_response` would reject exactly this payload."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _json({"id": CAROUSEL_CONTAINER})  # note: no "uri" key at all
+
+    container_id = await _client_with_transports(handler).create_carousel_container(
+        ig_user_id=IG_USER, children=[CHILD_A, CHILD_B]
+    )
+    assert container_id == CAROUSEL_CONTAINER
+
+
+async def test_create_carousel_container_error_follows_the_existing_pattern() -> None:
+    """Same posture as every other `_post_graph` caller: HTTP status + numeric platform
+    code only, never the response body (which may echo request parameters), never the
+    token."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {"code": 100, "message": TOKEN}})
+
+    with pytest.raises(PublishError) as excinfo:
+        await _client_with_transports(handler).create_carousel_container(
+            ig_user_id=IG_USER, children=[CHILD_A, CHILD_B]
+        )
+    assert excinfo.value.platform_code == 100
+    assert excinfo.value.http_status == 400
+    assert TOKEN not in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------------------
 # upload_bytes
 # --------------------------------------------------------------------------------------
 

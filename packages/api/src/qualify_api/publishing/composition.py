@@ -9,6 +9,7 @@ factory — they inject fakes — which is exactly why the lazy import is safe.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from functools import cache
 from typing import IO
 from uuid import UUID, uuid4
@@ -23,9 +24,17 @@ from qualify_api.connections.credential_reader import DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor, Encryptor
 from qualify_api.connections.models import SocialConnection
 from qualify_api.connections.resolver import InjectingCredentialResolver
-from qualify_api.publishing.client import HttpPublishClient, PublishClient
+from qualify_api.publishing.client import MEDIA_TYPE_VIDEO, HttpPublishClient, PublishClient
 from qualify_api.publishing.repository import PostgresPublishAttemptRepository
-from qualify_api.publishing.service import ConnectionTarget, PublishService, PublishState
+from qualify_api.publishing.service import (
+    MAX_CAROUSEL_ITEMS,
+    ChildStatus,
+    ConnectionTarget,
+    MediaItem,
+    PublishService,
+    PublishState,
+    TooManyItems,
+)
 from qualify_api.publishing.staging import MediaStagingService
 
 
@@ -132,8 +141,117 @@ async def stage_and_start_publish(
     )
 
 
+@dataclass(frozen=True)
+class PendingUpload:
+    """One not-yet-staged file for a multi-video (carousel) publish request (QUA-99,
+    5/6) — the composition-layer counterpart of `publishing.service.MediaItem`, BEFORE
+    staging turns raw bytes into an R2 object key. VIDEO-ONLY, same posture `MediaItem`
+    already takes: no media_type field — every item is staged and later created as
+    `MEDIA_TYPE_VIDEO`, regardless of what the single-item path would use (`REELS`).
+    """
+
+    fileobj: IO[bytes]
+    content_type: str
+
+
+async def _stage_one(*, tenant_id: UUID, connection_id: UUID, pending: PendingUpload) -> MediaItem:
+    """One item's R2 upload, in its own coroutine so `stage_and_start_many_publish`
+    below can run N of these concurrently via `asyncio.gather`."""
+    staged = await asyncio.to_thread(
+        production_staging_service().stage_media,
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        media_id=uuid4().hex,
+        fileobj=pending.fileobj,
+        content_type=pending.content_type,
+        media_product_type=MEDIA_TYPE_VIDEO,
+    )
+    return MediaItem(media_object_key=staged.media_object_key, content_type=pending.content_type)
+
+
+async def stage_and_start_many_publish(
+    *,
+    tenant_id: UUID,
+    connection_id: UUID,
+    items: list[PendingUpload],
+    idempotency_key: str,
+    caption: str | None = None,
+) -> PublishState:
+    """The multi-video counterpart of `stage_and_start_publish` above (QUA-99, 5/6) —
+    the seam Commit 6 calls once the gallery holds 2-10 items. `stage_and_start_publish`
+    itself is UNCHANGED by this function's existence: this is a new, parallel path, not
+    a rewrite of it.
+
+    QUA-99 latency follow-up (2026-09-10): every item now stages to R2 CONCURRENTLY
+    (`asyncio.gather`) — this was a real, reported bottleneck ("sube exageradamente
+    despacio con más de un video"), and a DIFFERENT one from the Meta-side concurrency
+    this same follow-up already added to `PublishService._advance_children`: that fixed
+    N children moving through Meta's own container pipeline; this fixes N raw uploads to
+    R2 that happen BEFORE any of that even starts — entirely invisible to the earlier
+    fix. Safe for the same class of reasons: `production_staging_service()` wraps ONE
+    shared boto3 S3 client, and boto3 clients are documented thread-safe for concurrent
+    use across threads (`asyncio.to_thread` runs each `stage_media` call in its own
+    thread from the default executor) — each `put_object` call is independent, using its
+    own connection from the client's own pool, touching no shared mutable state between
+    items. Order is preserved by construction: `asyncio.gather` returns results in the
+    SAME order its awaitables were given (`items`' order), never re-sorted afterward —
+    that order becomes carousel `position` downstream (`PublishService.start_many`).
+
+    Plain `gather` (not `return_exceptions=True`, unlike the Meta-side concurrency):
+    nothing has been written to any database row yet at this point — `start_many`'s
+    write-ahead only happens AFTER every item has staged successfully — so there is no
+    partial state to reconcile if one upload fails; the first exception propagating and
+    cancelling any still-running siblings is exactly right here (`stage_and_start_
+    publish`'s single-item path already has this same "no attempt exists yet" posture).
+    `MediaStagingService.stage_media` is always VIDEO — a carousel child never uses
+    `REELS`, confirmed against Meta real (2026-09-10 smoke test). Staging happens HERE,
+    in composition, exactly like the single-item path: `PublishService.start_many` never
+    touches R2, same separation `stage_and_start_publish`/`start()` already keep.
+
+    `PublishService.start_many` decides 1-vs-2-10 internally (delegating to `start()` for
+    exactly one item, QUA-99 4/6) — this function does not special-case the count itself,
+    it stages whatever `items` it is given and hands the result to the one seam.
+
+    The `MAX_CAROUSEL_ITEMS` guard is CHECKED HERE TOO, before staging a single byte —
+    `start_many` already refuses the same way, but only after this function would have
+    staged every item to R2 first. Rejecting here as well means "before any platform
+    call" also means before any costly I/O, not just before the Meta call specifically.
+    """
+    if len(items) > MAX_CAROUSEL_ITEMS:
+        raise TooManyItems(len(items))
+
+    staged_items: list[MediaItem] = list(
+        await asyncio.gather(
+            *(
+                _stage_one(tenant_id=tenant_id, connection_id=connection_id, pending=pending)
+                for pending in items
+            )
+        )
+    )
+    return await production_publish_service().start_many(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        items=staged_items,
+        idempotency_key=idempotency_key,
+        caption=caption,
+    )
+
+
 async def advance_publish(*, tenant_id: UUID, attempt_id: UUID) -> PublishState:
     """One `advance()` step — the seam's poll call. See `PublishService.advance` for why
     there is no loop here: the CLIENT (Reflex, for this seam) drives the cadence via
     repeated calls, exactly as the HTTP `GET /api/publishing/attempts/{id}` route does."""
     return await production_publish_service().advance(tenant_id=tenant_id, attempt_id=attempt_id)
+
+
+def get_child_statuses(*, tenant_id: UUID, attempt_id: UUID) -> list[ChildStatus]:
+    """Read-only carousel-progress seam (QUA-99 UX follow-up) — the composition-layer
+    counterpart of `advance_publish`, but for DISPLAY only: it never advances anything,
+    only projects what `PublishService.list_children_status` already reads from Postgres.
+    Synchronous, same convention as `PostgresConnectionTargetReader.read`/
+    `connections_for` — callers on the event loop run it off-thread via
+    `asyncio.to_thread`, same as `active_connections` already does in
+    `publishing_provider.py`."""
+    return production_publish_service().list_children_status(
+        tenant_id=tenant_id, attempt_id=attempt_id
+    )

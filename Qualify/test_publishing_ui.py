@@ -31,12 +31,18 @@ import inspect
 from collections.abc import Callable, Coroutine, Iterator
 from uuid import UUID
 
+from qualify_api.publishing.composition import PendingUpload
+from qualify_api.publishing.service import (
+    ChildStatus,
+    TooManyItems,
+    UnknownAttempt,
+    UnknownConnection,
+)
 from qualify_api.publishing.service import PublishState as ServicePublishState
-from qualify_api.publishing.service import UnknownAttempt, UnknownConnection
 
 from . import publishing_provider
 from .connections_vm import ConnectionVM
-from .publishing_vm import ConnectionOptionVM, PublishAttemptVM
+from .publishing_vm import ChildStatusVM, ConnectionOptionVM, PendingItemVM, PublishAttemptVM
 
 _FORBIDDEN_FIELD_FRAGMENTS = (
     "token",
@@ -105,7 +111,7 @@ def _service_state(**overrides: object) -> ServicePublishState:
 
 
 def test_vms_have_no_credential_fields() -> None:
-    for vm_cls in (PublishAttemptVM, ConnectionOptionVM):
+    for vm_cls in (PublishAttemptVM, ConnectionOptionVM, PendingItemVM, ChildStatusVM):
         for f in dataclasses.fields(vm_cls):
             lowered = f.name.lower()
             for fragment in _FORBIDDEN_FIELD_FRAGMENTS:
@@ -235,6 +241,143 @@ def test_poll_publish_projects_a_settled_state() -> None:
     assert vm.settled is True
     assert vm.status == "published"
     assert vm.published_media_id == "media-9"
+
+
+# --------------------------------------------------------------------------------------
+# QUA-99 (5/6) — start_many_publish, the multi-video counterpart of start_publish
+# --------------------------------------------------------------------------------------
+
+
+def test_provider_calls_the_real_multi_publishing_seam() -> None:
+    """Same posture as the single-video pin above: the multi-video write path must
+    delegate to `qualify_api.publishing`, not reimplement staging/orchestration here."""
+    source = inspect.getsource(publishing_provider)
+    assert "stage_and_start_many_publish(" in source
+
+
+def test_start_many_publish_projects_null_fields_to_empty_strings() -> None:
+    async def _fake(**kwargs: object) -> ServicePublishState:
+        return _service_state()
+
+    with _patched(stage_and_start_many_publish=_fake):
+        vm = _run_coro(
+            publishing_provider.start_many_publish(
+                tenant_id=_TENANT,
+                connection_id=_CONNECTION,
+                items=[PendingUpload(fileobj=None, content_type="video/mp4")],  # type: ignore[arg-type]
+                caption="",
+                idempotency_key="k-1",
+            )
+        )
+    assert vm.published_media_id == ""
+    assert vm.reason == ""
+    assert vm.attempt_id == str(_ATTEMPT)
+
+
+def test_start_many_publish_forwards_items_caption_and_idempotency_key() -> None:
+    seen: dict[str, object] = {}
+
+    async def _fake(**kwargs: object) -> ServicePublishState:
+        seen.update(kwargs)
+        return _service_state()
+
+    items = [
+        PendingUpload(fileobj=None, content_type="video/mp4"),  # type: ignore[arg-type]
+        PendingUpload(fileobj=None, content_type="video/quicktime"),  # type: ignore[arg-type]
+    ]
+    with _patched(stage_and_start_many_publish=_fake):
+        _run_coro(
+            publishing_provider.start_many_publish(
+                tenant_id=_TENANT,
+                connection_id=_CONNECTION,
+                items=items,
+                caption="hola carrusel",
+                idempotency_key="k-multi-1",
+            )
+        )
+    assert seen["items"] == items  # same list, same order — nothing rebuilt in between
+    assert seen["caption"] == "hola carrusel"
+    assert seen["idempotency_key"] == "k-multi-1"
+
+
+def test_start_many_publish_propagates_unknown_connection() -> None:
+    async def _raise(**kwargs: object) -> ServicePublishState:
+        raise UnknownConnection(str(_CONNECTION))
+
+    with _patched(stage_and_start_many_publish=_raise):
+        try:
+            _run_coro(
+                publishing_provider.start_many_publish(
+                    tenant_id=_TENANT,
+                    connection_id=_CONNECTION,
+                    items=[PendingUpload(fileobj=None, content_type="video/mp4")],  # type: ignore[arg-type]
+                    caption="",
+                    idempotency_key="k-1",
+                )
+            )
+        except UnknownConnection:
+            pass
+        else:
+            raise AssertionError("start_many_publish must not swallow UnknownConnection")
+
+
+def test_start_many_publish_propagates_too_many_items() -> None:
+    """The >10 rejection (QUA-99, 4/6 and 5/6) must reach the caller, not be swallowed —
+    same posture every other domain exception on this seam already has."""
+
+    async def _raise(**kwargs: object) -> ServicePublishState:
+        raise TooManyItems(11)
+
+    with _patched(stage_and_start_many_publish=_raise):
+        try:
+            _run_coro(
+                publishing_provider.start_many_publish(
+                    tenant_id=_TENANT,
+                    connection_id=_CONNECTION,
+                    items=[PendingUpload(fileobj=None, content_type="video/mp4")],  # type: ignore[arg-type]
+                    caption="",
+                    idempotency_key="k-1",
+                )
+            )
+        except TooManyItems:
+            pass
+        else:
+            raise AssertionError("start_many_publish must not swallow TooManyItems")
+
+
+# --------------------------------------------------------------------------------------
+# QUA-99 UX follow-up — carousel_children_status, the read-only per-child progress seam
+# --------------------------------------------------------------------------------------
+
+
+def test_provider_calls_the_real_child_status_seam() -> None:
+    """Same pin as the write-path ones above: the read-only carousel-progress projection
+    must delegate to `qualify_api.publishing`, not reimplement the repository read here."""
+    source = inspect.getsource(publishing_provider)
+    assert "get_child_statuses(" in source
+
+
+def test_carousel_children_status_projects_position_and_status_in_order() -> None:
+    def _fake(**kwargs: object) -> list[ChildStatus]:
+        return [
+            ChildStatus(position=0, status="finished"),
+            ChildStatus(position=1, status="uploading"),
+        ]
+
+    with _patched(get_child_statuses=_fake):
+        rows = publishing_provider.carousel_children_status(tenant_id=_TENANT, attempt_id=_ATTEMPT)
+    assert [(r.position, r.status) for r in rows] == [(0, "finished"), (1, "uploading")]
+    assert all(isinstance(r, ChildStatusVM) for r in rows)
+
+
+def test_carousel_children_status_never_calls_meta_or_advance() -> None:
+    """Structural pin: this seam must never CALL `advance_publish`/`poll_publish` — it is
+    a SEPARATE, read-only path, called ALONGSIDE polling, never instead of it or as part
+    of it. Checked as call expressions (the `(` matters) so the docstring's own prose
+    mentioning `poll_publish` by name doesn't trip this."""
+    source = inspect.getsource(publishing_provider.carousel_children_status)
+    assert "advance_publish(" not in source
+    assert "poll_publish(" not in source
 
 
 def _run() -> int:
