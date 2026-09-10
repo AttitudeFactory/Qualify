@@ -60,6 +60,9 @@ class AttemptRecord:
     tenant_id: UUID
     connection_id: UUID
     idempotency_key: str
+    # QUA-99 (4.5/6) — CAROUSEL-only in practice, NULL for every single-video attempt.
+    # See `PublishAttemptChild`'s sibling comment in models.py for why this bridge exists.
+    caption: str | None
     media_product_type: str
     adapter_version: str
     status: str
@@ -135,6 +138,7 @@ class PublishAttemptRepository(Protocol):
         media_product_type: str,
         adapter_version: str,
         scheduled_post_id: UUID | None = None,
+        caption: str | None = None,
     ) -> AttemptStart: ...
 
     def record_creation_id(
@@ -201,6 +205,7 @@ def _snapshot(row: PublishAttempt) -> AttemptRecord:
         tenant_id=row.tenant_id,
         connection_id=row.connection_id,
         idempotency_key=row.idempotency_key,
+        caption=row.caption,
         media_product_type=row.media_product_type,
         adapter_version=row.adapter_version,
         status=row.status,
@@ -252,6 +257,7 @@ class MemoryPublishAttemptRepository:
         media_product_type: str,
         adapter_version: str,
         scheduled_post_id: UUID | None = None,
+        caption: str | None = None,
     ) -> AttemptStart:
         existing = self.find_by_idempotency_key(
             tenant_id=tenant_id, connection_id=connection_id, idempotency_key=idempotency_key
@@ -263,6 +269,7 @@ class MemoryPublishAttemptRepository:
             tenant_id=tenant_id,
             connection_id=connection_id,
             idempotency_key=idempotency_key,
+            caption=caption,
             media_product_type=media_product_type,
             adapter_version=adapter_version,
             status="pending",
@@ -423,6 +430,7 @@ class PostgresPublishAttemptRepository:
         media_product_type: str,
         adapter_version: str,
         scheduled_post_id: UUID | None = None,
+        caption: str | None = None,
     ) -> AttemptStart:
         try:
             with tenant_session(tenant_id) as session:
@@ -431,6 +439,7 @@ class PostgresPublishAttemptRepository:
                     connection_id=connection_id,
                     scheduled_post_id=scheduled_post_id,
                     idempotency_key=idempotency_key,
+                    caption=caption,
                     media_product_type=media_product_type,
                     adapter_version=adapter_version,
                     status="pending",

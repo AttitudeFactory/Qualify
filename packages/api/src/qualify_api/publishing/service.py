@@ -497,17 +497,21 @@ class PublishService:
         connection_id: UUID,
         items: list[MediaItem],
         idempotency_key: str,
+        caption: str | None = None,
     ) -> PublishState:
         if not items:
             raise ValueError("start_many requires at least one item")
         if len(items) == 1:
-            # Exactly today's single-video path. No new logic, no new state.
+            # Exactly today's single-video path. No new logic, no new state -- caption
+            # forwarded exactly as start() already accepts it (start() itself is
+            # UNCHANGED, QUA-99 4.5/6: it still never persists caption anywhere).
             return await self.start(
                 tenant_id=tenant_id,
                 connection_id=connection_id,
                 media_object_key=items[0].media_object_key,
                 media_product_type=MEDIA_TYPE_REELS,
                 idempotency_key=idempotency_key,
+                caption=caption,
             )
         if len(items) > MAX_CAROUSEL_ITEMS:
             raise TooManyItems(len(items))
@@ -516,12 +520,16 @@ class PublishService:
         if target is None:
             raise UnknownConnection(str(connection_id))
 
+        # QUA-99 (4.5/6): persisted here because _create_carousel (below) needs it much
+        # later, across repeated advance() calls whose signature cannot carry one — see
+        # AttemptRecord.caption's docstring for the full trace of why this bridge exists.
         start = self._repo.start_attempt(
             tenant_id=tenant_id,
             connection_id=connection_id,
             idempotency_key=idempotency_key,
             media_product_type=MEDIA_TYPE_CAROUSEL,
             adapter_version=self._adapter_version,
+            caption=caption,
         )
         attempt = start.record
         if attempt.is_settled:
@@ -720,7 +728,7 @@ class PublishService:
             child_creation_ids.append(c.creation_id)
 
         carousel_id = await client.create_carousel_container(
-            ig_user_id=target.ig_user_id, children=child_creation_ids
+            ig_user_id=target.ig_user_id, children=child_creation_ids, caption=record.caption
         )
         self._repo.record_creation_id(
             tenant_id=tenant_id, attempt_id=record.id, creation_id=carousel_id

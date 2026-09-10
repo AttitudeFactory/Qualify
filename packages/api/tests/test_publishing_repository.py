@@ -556,3 +556,55 @@ def test_real_rls_makes_another_tenants_children_invisible(
 
     assert repo.get_child(tenant_id=OTHER_TENANT, child_id=child.id) is None
     assert repo.list_children(tenant_id=OTHER_TENANT, attempt_id=attempt.id) == []
+
+
+# --------------------------------------------------------------------------------------
+# carousel caption (QUA-99, 4.5/6) — migration 0017, against real Postgres
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.db
+def test_real_start_attempt_persists_and_returns_the_caption(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresPublishAttemptRepository()
+
+    start = repo.start_attempt(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        idempotency_key=f"op-{uuid4()}",
+        media_product_type="CAROUSEL",
+        adapter_version="v1",
+        caption="carrusel real contra Postgres",
+    )
+
+    assert start.record.caption == "carrusel real contra Postgres"
+    reread = repo.get_attempt(tenant_id=tenant_id, attempt_id=start.record.id)
+    assert reread is not None and reread.caption == "carrusel real contra Postgres"
+
+
+@pytest.mark.db
+def test_real_start_attempt_without_a_caption_is_null(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    """The single-video path never sends one — the column (migration 0017) must accept
+    that, not just the carousel path that motivated it."""
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresPublishAttemptRepository()
+
+    start = repo.start_attempt(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        idempotency_key=f"op-{uuid4()}",
+        media_product_type="REELS",
+        adapter_version="v1",
+    )
+
+    assert start.record.caption is None
+    with tenant_session(tenant_id) as session:
+        raw = session.execute(
+            text("SELECT caption FROM publish_attempts WHERE id = :id"),
+            {"id": str(start.record.id)},
+        ).scalar_one()
+    assert raw is None

@@ -79,6 +79,9 @@ class FakePublishClient:
         self.carousel_container_id = "carousel-1"
         self.carousel_error: Exception | None = None
         self.carousel_calls: list[list[str]] = []
+        # QUA-99 (4.5/6): the caption seen on each create_carousel_container call,
+        # recorded separately so tests can assert exactly what was sent to Meta.
+        self.carousel_caption_calls: list[str | None] = []
         self.calls = {"create": 0, "upload": 0, "status": 0, "publish": 0, "create_carousel": 0}
         self.upload_sizes: list[int] = []
 
@@ -96,6 +99,7 @@ class FakePublishClient:
     ) -> str:
         self.calls["create_carousel"] += 1
         self.carousel_calls.append(list(children))
+        self.carousel_caption_calls.append(caption)
         if self.carousel_error is not None:
             raise self.carousel_error
         return self.carousel_container_id
@@ -189,12 +193,15 @@ class Harness:
         self.client.container_sequence = containers
         return items
 
-    async def start_many(self, items: list[MediaItem], key: str = "op-1"):
+    async def start_many(
+        self, items: list[MediaItem], key: str = "op-1", caption: str | None = None
+    ):
         return await self.service.start_many(
             tenant_id=TENANT,
             connection_id=CONNECTION,
             items=items,
             idempotency_key=key,
+            caption=caption,
         )
 
     async def drive_to_settled(self, attempt_id: UUID, *, max_steps: int = 50):
@@ -933,6 +940,103 @@ async def test_single_video_ceiling_is_unaffected_by_the_carousel_scaling() -> N
     h.client.status_script = [ContainerStatus.IN_PROGRESS]
     state = await h.advance(attempt_id)
     assert state.settled and state.status == "failed" and state.reason == CEILING_EXCEEDED
+
+
+# --------------------------------------------------------------------------------------
+# QUA-99 (4.5/6) — carousel caption persistence
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_many_persists_the_caption_on_the_parent_attempt() -> None:
+    h = Harness()
+    items = h.stage_videos(2)
+    state = await h.start_many(items, caption="hola carrusel")
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=state.attempt_id)
+    assert record is not None and record.caption == "hola carrusel"
+
+
+@pytest.mark.asyncio
+async def test_start_many_without_a_caption_keeps_it_null() -> None:
+    h = Harness()
+    items = h.stage_videos(2)
+    state = await h.start_many(items)
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=state.attempt_id)
+    assert record is not None and record.caption is None
+
+
+@pytest.mark.asyncio
+async def test_create_carousel_sends_the_persisted_caption_to_meta() -> None:
+    h = Harness()
+    items = h.stage_videos(2)
+    h.client.status_script = [ContainerStatus.FINISHED, ContainerStatus.FINISHED]
+    start_state = await h.start_many(items, caption="una descripcion real")
+    for _ in range(4):  # create+upload x2, poll x2
+        await h.advance(start_state.attempt_id)
+
+    await h.advance(start_state.attempt_id)  # creates the CAROUSEL container
+
+    assert h.client.carousel_caption_calls == ["una descripcion real"]
+
+
+@pytest.mark.asyncio
+async def test_caption_survives_from_start_many_through_multiple_advance_calls() -> None:
+    """The whole reason this column exists: the caption must still be there several
+    advance() calls after start_many() returned, none of which ever touch it."""
+    h = Harness()
+    items = h.stage_videos(2)
+    h.client.status_script = [ContainerStatus.IN_PROGRESS, ContainerStatus.IN_PROGRESS]
+    start_state = await h.start_many(items, caption="persistent caption")
+
+    for _ in range(4):  # create+upload x2, poll x2 — none of these write caption
+        await h.advance(start_state.attempt_id)
+        record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+        assert record is not None and record.caption == "persistent caption"
+
+
+@pytest.mark.asyncio
+async def test_start_many_retry_same_key_no_second_parent_no_corrupted_caption() -> None:
+    h = Harness()
+    items = h.stage_videos(2)
+    first = await h.start_many(items, key="same-key", caption="original caption")
+    second = await h.start_many(items, key="same-key", caption="a different caption, ignored")
+
+    assert first.attempt_id == second.attempt_id
+    assert len(h.repo.rows) == 1
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=first.attempt_id)
+    # Same idempotency semantics start_attempt already has for every other field: the
+    # SECOND call's caption is not applied, exactly like a second call with a different
+    # media_object_key would not re-stage anything either.
+    assert record is not None and record.caption == "original caption"
+
+
+@pytest.mark.asyncio
+async def test_single_video_caption_still_flows_directly_through_start_unchanged() -> None:
+    """start() is UNCHANGED by QUA-99 (4.5/6) — caption still travels ONLY as a
+    parameter straight into create_container(), and the new column stays NULL for this
+    path: single-video does not depend on it in any way."""
+    h = Harness()
+    state = await h.service.start(
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        media_object_key=h.media_key,
+        media_product_type="REELS",
+        idempotency_key="op-cap-1",
+        caption="video caption",
+    )
+    assert h.client.create_container_calls[-1]["caption"] == "video caption"
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=state.attempt_id)
+    assert record is not None and record.caption is None
+
+
+@pytest.mark.asyncio
+async def test_start_many_with_one_item_forwards_caption_to_start() -> None:
+    """The 1-item delegation branch of start_many must not silently drop a caption the
+    caller supplied — same posture as every other field it forwards unchanged."""
+    h = Harness()
+    items = h.stage_videos(1)
+    await h.start_many(items, caption="single item caption")
+    assert h.client.create_container_calls[-1]["caption"] == "single item caption"
 
 
 # --------------------------------------------------------------------------------------
