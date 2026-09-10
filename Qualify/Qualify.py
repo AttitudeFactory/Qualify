@@ -17,6 +17,7 @@ from .creative_wizard_pages import (
     BrandWizardState,
     brand_choice_index,
     brand_connect_index,
+    brand_connect_setup_index,
     brand_manual_index,
 )
 from .inbox_page import inbox_index
@@ -130,7 +131,8 @@ app.add_page(
 )
 # Brand Content Engine (design §6): /brand is the default entry when the brand is not
 # ready; /create is gated server-side by BrandReadiness (the load stores the verdict).
-# The entry itself is now a fork (manual vs. lookup); both branches edit the same kit.
+# The entry is now a yes/no question (¿tienes redes?, § request 2026-09-09) rather
+# than a manual-vs-lookup fork — "Sí" and "No" both end up scraping a profile.
 app.add_page(
     brand_choice_index,
     route="/brand",
@@ -138,9 +140,21 @@ app.add_page(
     title="Qualify · Marca",
 )
 
-# The step wizard is now THE Brand Kit editor. It replaces the accordion screen in
-# routing only: `creative_pages.brand_index` is left untouched in the code and simply no
-# longer has a route — re-adding it is one `app.add_page` call, no rewrite.
+# The "No, todavía no" answer's detour: instructions for creating an Instagram or
+# TikTok account before the scraper has anything to read. Purely informational, no
+# load beyond the session gate — Continuar hands off to /brand/connect itself.
+app.add_page(
+    brand_connect_setup_index,
+    route="/brand/connect/setup",
+    on_load=[AuthState.require_login],
+    title="Qualify · Crea tu cuenta",
+)
+
+# The nine-step manual flow. No longer linked from the /brand fork (§ request
+# 2026-09-09 — every kit now starts from a scraped profile), left routable directly:
+# it also replaced the accordion screen in routing only (`creative_pages.brand_index`
+# is left untouched in the code and simply has no route — re-adding it is one
+# `app.add_page` call, no rewrite).
 app.add_page(
     brand_manual_index,
     route="/brand/manual",
@@ -155,8 +169,9 @@ app.add_page(
     title="Qualify · Brand Kit",
 )
 
-# The «ya tengo redes» path. No `resume` here: its first four screens read a profile
-# rather than the kit, so there is no gap to jump to until the analysis has run.
+# The scraper flow — reached from BOTH /brand answers now. No `resume` here: its
+# first four screens read a profile rather than the kit, so there is no gap to jump
+# to until the analysis has run.
 app.add_page(
     brand_connect_index,
     route="/brand/connect",
