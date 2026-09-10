@@ -1941,17 +1941,20 @@ RECOMMENDATIONS: tuple[tuple[str, str], ...] = (
     ),
 )
 
-#: Placeholder metric insights (label, target value, suffix, hint) — plausible numbers,
-#: not derived from any modelled data. The real version reads `search.content_index` /
-#: `signals.events` (Fase 2/3, `docs/plan-ingesta-social.md`), which this UI has no
-#: connection to yet. Only the connect flow has these — the manual flow has no scraped
-#: profile to report a rate or an average FOR, so it shows no metrics at all rather
-#: than a set of numbers that would not correspond to anything.
-METRIC_INSIGHTS: tuple[tuple[str, float, str, str], ...] = (
-    ("Interacción estimada", 3.2, "%", "Likes + comentarios por publicación."),
-    ("Crecimiento mensual", 4.8, "%", "Estimado, últimos 30 días."),
-    ("Alcance promedio", 12.4, "K", "Estimado, por publicación."),
-)
+#: Metrics are REAL since 2026-09-10 (§ request "quiero que las métricas sean
+#: reales") and WINDOWED over the last `scrapecreators_client.METRICS_WINDOW_DAYS`
+#: days (§ request, same day: "un tiempo al cual sacarle la métrica, por ahora
+#: semana"): `analyze()` reads the profile AND the user's recent post list
+#: (`fetch_profile_and_posts`, a second Scrape Creators read), and
+#: `profile_metrics` derives up to three figures from the posts inside the window —
+#: publicaciones, interacción (likes + comentarios sobre seguidores) and likes por
+#: publicación/vídeo. What was dropped, on purpose: the old placeholder "Crecimiento
+#: mensual" — a growth figure needs two reads apart in time and this flow keeps one
+#: snapshot with no history, so there is nothing real to put behind it yet. The
+#: eventual version over `search.content_index` / `signals.events` (Fase 2/3,
+#: `docs/plan-ingesta-social.md`) can bring it back. Only the connect flow has
+#: metrics — the manual flow has no scraped profile to report a rate or an average
+#: FOR, so it shows none at all.
 
 #: The count-up animation (§ request 2026-09-05): `BrandConnectState.metric_values`
 #: ticks from 0 to each target over this many seconds, in this many frames — a
@@ -2060,38 +2063,64 @@ class BrandConnectState(rx.State):
     #: against, so it lives here rather than being auto-set like `profile_pic`.
     has_maps: str = ""
 
-    #: The count-up animation's live values, one per `METRIC_INSIGHTS` entry, ticked by
-    #: `advance_to_insights`. Three fixed slots (`METRIC_INSIGHTS` is a 3-tuple) rather
-    #: than indexing this list from a component — Reflex Vars index cleanly by a
-    #: literal int, but three named computed vars below read just as easily and never
-    #: raise the question.
-    metric_values: list[float] = [0.0, 0.0, 0.0]
+    #: The real metrics `analyze()` derived from the profile read
+    #: (`scrapecreators_client.profile_metrics`), as parallel lists — one entry per
+    #: metric, in display order, possibly empty. Parallel typed lists rather than one
+    #: `list[dict]` of mixed value types: Reflex serializes `list[str]`/`list[float]`
+    #: state vars without ceremony, and `metric_cards` below zips them back into the
+    #: one shape the grid renders.
+    metric_labels: list[str] = []
+    metric_hints: list[str] = []
+    metric_suffixes: list[str] = []
+    metric_decimals: list[int] = []
+    metric_targets: list[float] = []
+    #: The count-up animation's live values, same length as `metric_targets`, ticked
+    #: from 0 up to each target by `advance_to_insights`.
+    metric_values: list[float] = []
 
     @rx.var
     def is_new_account(self) -> bool:
         """§ request 2026-09-09: a brand-new account's real follower count (near
-        zero) makes the placeholder metrics below actively misleading — "3.2%
-        interacción estimada" reads as a real measurement, not a demo number, when
-        there is nothing yet to measure. `_connect_step_insights` hides the whole
-        Métricas section below it rather than showing zeroes, same principle
-        `_step_insights` (the manual flow's own final screen) already follows for
-        having no scraped account to report a rate FOR at all."""
+        zero) makes a per-follower rate meaningless — "3.2% interacción" over a
+        handful of followers is noise, not a measurement. `_connect_step_insights`
+        hides the whole Métricas section below it rather than showing that, same
+        principle `_step_insights` (the manual flow's own final screen) already
+        follows for having no scraped account to report a rate FOR at all."""
         return self.profile_followers_count < _NEW_ACCOUNT_FOLLOWER_THRESHOLD
 
     @rx.var
-    def metric_display_0(self) -> str:
-        _, _, suffix, _ = METRIC_INSIGHTS[0]
-        return f"{self.metric_values[0]:.1f}{suffix}"
+    def has_metrics(self) -> bool:
+        """False when `profile_metrics` could derive nothing from the read (private
+        profile, empty post sample, no stats) — the Métricas section is then hidden
+        outright instead of rendering an empty grid."""
+        return len(self.metric_targets) > 0
 
     @rx.var
-    def metric_display_1(self) -> str:
-        _, _, suffix, _ = METRIC_INSIGHTS[1]
-        return f"{self.metric_values[1]:.1f}{suffix}"
+    def metric_cards(self) -> list[dict[str, str]]:
+        """What `_metric_grid` renders: `{label, value, hint}` per metric, `value`
+        already formatted from the live `metric_values` frame (`12.4K`, `3.2%`,
+        `2.5/sem`, `850`) so the component only ever prints a string."""
+        cards: list[dict[str, str]] = []
+        for i, label in enumerate(self.metric_labels):
+            value = self.metric_values[i] if i < len(self.metric_values) else 0.0
+            decimals = self.metric_decimals[i]
+            cards.append(
+                {
+                    "label": label,
+                    "value": f"{value:.{decimals}f}{self.metric_suffixes[i]}",
+                    "hint": self.metric_hints[i],
+                }
+            )
+        return cards
 
-    @rx.var
-    def metric_display_2(self) -> str:
-        _, _, suffix, _ = METRIC_INSIGHTS[2]
-        return f"{self.metric_values[2]:.1f}{suffix}"
+    def _set_metrics(self, metrics: list[dict]) -> None:
+        """Unpack `profile_metrics`' output into the parallel lists above."""
+        self.metric_labels = [str(m["label"]) for m in metrics]
+        self.metric_hints = [str(m["hint"]) for m in metrics]
+        self.metric_suffixes = [str(m["suffix"]) for m in metrics]
+        self.metric_decimals = [int(m["decimals"]) for m in metrics]
+        self.metric_targets = [float(m["target"]) for m in metrics]
+        self.metric_values = [0.0] * len(metrics)
 
     @rx.event
     def next_step(self) -> None:
@@ -2196,7 +2225,7 @@ class BrandConnectState(rx.State):
         self.profile_pic = ""
         self.account_kind = ""
         self.has_maps = ""
-        self.metric_values = [0.0, 0.0, 0.0]
+        self._set_metrics([])
 
     @rx.event
     def restart(self) -> rx.event.EventSpec:
@@ -2220,23 +2249,30 @@ class BrandConnectState(rx.State):
     async def advance_to_insights(self) -> AsyncIterator[None]:
         """Continuar from ¿Todo correcto? — the one caller that lands on Resultados e
         insights (`CONNECT_LAST`) from elsewhere, so it is also the one place that
-        kicks off the metric count-up (§ `METRIC_INSIGHTS`'s docstring): walks
-        `metric_values` from 0 up to each target over `_METRIC_ANIMATION_SECONDS`,
-        `_METRIC_ANIMATION_STEPS` frames. Background because there is no client-side
-        animation primitive here — this is a real per-frame state update, same
-        discipline `CreativeState.poll_draft` already uses for its own loop.
+        kicks off the metric count-up (§ `_METRIC_ANIMATION_SECONDS`): walks
+        `metric_values` from 0 up to each `metric_targets` entry over
+        `_METRIC_ANIMATION_SECONDS`, `_METRIC_ANIMATION_STEPS` frames. Background
+        because there is no client-side animation primitive here — this is a real
+        per-frame state update, same discipline `CreativeState.poll_draft` already
+        uses for its own loop. With no metrics (`has_metrics` False) there is nothing
+        to animate and the loop is skipped.
         """
         async with self:
             self.step = CONNECT_LAST
-            self.metric_values = [0.0, 0.0, 0.0]
+            targets = list(self.metric_targets)
+            decimals = list(self.metric_decimals)
+            self.metric_values = [0.0] * len(targets)
         yield
-        targets = [target for _, target, _, _ in METRIC_INSIGHTS]
+        if not targets:
+            return
         frame_delay = _METRIC_ANIMATION_SECONDS / _METRIC_ANIMATION_STEPS
         for frame in range(1, _METRIC_ANIMATION_STEPS + 1):
             await asyncio.sleep(frame_delay)
             progress = frame / _METRIC_ANIMATION_STEPS
             async with self:
-                self.metric_values = [round(target * progress, 1) for target in targets]
+                self.metric_values = [
+                    round(target * progress, d) for target, d in zip(targets, decimals)
+                ]
             yield
 
     @rx.event(background=True)
@@ -2283,8 +2319,10 @@ class BrandConnectState(rx.State):
                 scrapecreators_client.load_cached_profile, network, handle
             )
             if profile is None:
+                # Profile + the last `METRICS_WINDOW_DAYS` days of posts (two reads,
+                # one normalized dict — the posts are what the metrics are computed on).
                 profile = await asyncio.to_thread(
-                    scrapecreators_client.fetch_profile, network, handle
+                    scrapecreators_client.fetch_profile_and_posts, network, handle
                 )
                 await asyncio.to_thread(
                     scrapecreators_client.save_profile_snapshot, network, handle, profile
@@ -2310,6 +2348,8 @@ class BrandConnectState(rx.State):
             self.profile_followers = f"{followers:,}".replace(",", ".") if followers else "—"
             self.profile_followers_count = int(followers) if followers else 0
             self.profile_pic = str(profile.get("profilePicUrl", ""))
+            # Real figures over the window (`recentPosts` of this same read).
+            self._set_metrics(scrapecreators_client.profile_metrics(network, profile))
             self.analyzing = False
             self.step = 2
 
@@ -2624,17 +2664,16 @@ def _connect_step_maps_setup() -> rx.Component:
     )
 
 
+def _metric_card(item: rx.Var[dict[str, str]]) -> rx.Component:
+    return stat_card(item["label"], item["value"], hint=item["hint"])
+
+
 def _metric_grid() -> rx.Component:
-    displays = (
-        BrandConnectState.metric_display_0,
-        BrandConnectState.metric_display_1,
-        BrandConnectState.metric_display_2,
-    )
+    """One `stat_card` per entry of `BrandConnectState.metric_cards` — real figures,
+    already formatted server-side (see that computed var). Up to three; the column
+    count stays 3 so a two-metric profile leaves a gap rather than stretching."""
     return rx.grid(
-        *(
-            stat_card(label, displays[i], hint=hint)
-            for i, (label, _, _, hint) in enumerate(METRIC_INSIGHTS)
-        ),
+        rx.foreach(BrandConnectState.metric_cards, _metric_card),
         columns=rx.breakpoints(initial="1", sm="3"),
         spacing="3",
         width="100%",
@@ -2651,16 +2690,20 @@ def _connect_step_insights() -> rx.Component:
     not the scrolling content, is what both flows' final screen shares that button
     through.
 
-    Everything below the profile recap is a PLACEHOLDER: no analytical pipeline backs
-    it yet (Fase 2/3, `docs/plan-ingesta-social.md`) — `METRIC_INSIGHTS` and
-    `COMPETITOR_SUGGESTIONS` are hardcoded tuples, not a query.
+    The metrics are REAL (2026-09-10) and cover the last
+    `scrapecreators_client.METRICS_WINDOW_DAYS` days: derived by `profile_metrics`
+    from the post list `analyze()` read alongside the profile — see the comment
+    above `_METRIC_ANIMATION_SECONDS`.
+    The competitor suggestions below them are still a PLACEHOLDER: no analytical
+    pipeline backs them yet (Fase 2/3, `docs/plan-ingesta-social.md`) —
+    `COMPETITOR_SUGGESTIONS` is a hardcoded tuple, not a query.
 
-    The metric grid itself is skipped outright for a brand-new account (§ request
-    2026-09-09, `BrandConnectState.is_new_account`): those placeholder numbers read
-    as a real measurement, and a just-created profile has nothing yet to measure —
-    same "nothing to report a rate FOR" principle the manual flow's `_step_insights`
-    already follows by never showing metrics at all (it has no scraped account,
-    new or old).
+    The metric grid is skipped outright for a brand-new account (§ request
+    2026-09-09, `BrandConnectState.is_new_account`) — a per-follower rate over a
+    handful of followers is noise, not a measurement — and whenever the read yielded
+    no computable metric at all (`has_metrics`). Same "nothing to report a rate FOR"
+    principle the manual flow's `_step_insights` already follows by never showing
+    metrics at all (it has no scraped account, new or old).
     """
     return _step_body(
         card(
@@ -2708,9 +2751,11 @@ def _connect_step_insights() -> rx.Component:
             width="100%",
         ),
         rx.cond(
-            ~BrandConnectState.is_new_account,
+            ~BrandConnectState.is_new_account & BrandConnectState.has_metrics,
             rx.vstack(
-                _section_label("Métricas"),
+                _section_label(
+                    f"Métricas · últimos {scrapecreators_client.METRICS_WINDOW_DAYS} días"
+                ),
                 _metric_grid(),
                 spacing="2",
                 width="100%",
