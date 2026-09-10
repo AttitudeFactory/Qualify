@@ -567,16 +567,28 @@ class PublishState(rx.State):
             if self._idempotency_key != idempotency_key:
                 return
             self._pending_files = []  # release the buffer(s), staged copies already in R2
-            self.pending_items = []  # gallery redesign, QUA-99 UX follow-up — same release
             self.attempt = attempt
             if attempt.settled:
                 self.phase = "success" if attempt.status == "published" else "failure"
                 if self.phase == "failure":
                     self.error = attempt.reason or _START_FAILED
+                # gallery redesign, QUA-99 UX follow-up: the gallery only clears once
+                # there is a final outcome to show INSTEAD of it (a toast) — see the
+                # `else` branch below for why it stays populated through polling.
+                self.pending_items = []
             else:
                 self.phase = "polling"
-                # QUA-99 UX follow-up — starts the clock `elapsed_label` reads. Set here,
-                # not in `poll_attempt`, so it covers the very first poll tick too.
+                # QUA-99 UX follow-up (2/2) — deliberately NOT cleared here, unlike
+                # `_pending_files` above: that buffer holds up to 10 full videos' worth
+                # of BYTES and must be released the moment they are safely in R2, but
+                # `pending_items` is just filenames — keeping it populated through the
+                # whole "polling" phase is what lets the gallery keep showing what is
+                # actually being published (thumbnails, count, order) instead of
+                # reverting to the empty "arrastra tu contenido aquí" prompt while a
+                # real, sometimes multi-minute wait is in progress (reported exactly
+                # this way: "porque no me sale el carrusel mientras esta en este
+                # proceso", 2026-09-10). Cleared once there IS a final outcome to show
+                # instead — see `poll_attempt`'s own settle branch below.
                 self._poll_started_monotonic = time.monotonic()
             should_poll = self.phase == "polling"
             is_success = self.phase == "success"
@@ -626,6 +638,7 @@ class PublishState(rx.State):
                     if self._idempotency_key == idempotency_key:
                         self.phase = "failure"
                         self.error = _POLL_FAILED
+                        self.pending_items = []  # gallery redesign — releases on any final failure
                         toast = _failure_toast(_POLL_FAILED)
                 yield
                 if toast is not None:
@@ -638,6 +651,7 @@ class PublishState(rx.State):
                     if self._idempotency_key == idempotency_key:
                         self.phase = "failure"
                         self.error = _POLL_FAILED
+                        self.pending_items = []  # gallery redesign — releases on any final failure
                         toast = _failure_toast(_POLL_FAILED)
                 yield
                 if toast is not None:
@@ -668,6 +682,12 @@ class PublishState(rx.State):
                     self.phase = "success" if attempt.status == "published" else "failure"
                     if self.phase == "failure":
                         self.error = attempt.reason or _START_FAILED
+                    # gallery redesign, QUA-99 UX follow-up: this is the settle point
+                    # `publish_background`'s own docstring points to — `pending_items`
+                    # stayed populated through the whole polling wait specifically so
+                    # the gallery could keep showing what was being published; now that
+                    # there is a final outcome (a toast) to show instead, it releases.
+                    self.pending_items = []
                 interval = attempt.poll_interval_seconds
                 settled = attempt.settled
                 is_success = self.phase == "success"
@@ -698,6 +718,7 @@ class PublishState(rx.State):
             if self._idempotency_key == idempotency_key and self.phase == "polling":
                 self.phase = "failure"
                 self.error = _POLL_FAILED
+                self.pending_items = []  # gallery redesign — releases on any final failure
                 toast = _failure_toast(_POLL_FAILED)
         yield
         if toast is not None:

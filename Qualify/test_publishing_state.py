@@ -525,10 +525,36 @@ def test_both_settle_paths_wire_the_result_toast_from_the_same_phase_check() -> 
         )
 
 
-def test_publish_background_clears_pending_items_alongside_pending_files() -> None:
-    """Gallery redesign (QUA-99 UX follow-up): the release on a successful staging call
-    must clear BOTH buffers in lockstep — a stale `pending_items` list would leave the
-    grid showing videos that have already started publishing."""
+def test_pending_files_bytes_release_unconditionally_but_pending_items_does_not() -> None:
+    """Gallery redesign, QUA-99 UX follow-up (2/2): `_pending_files` (the BYTES buffer —
+    up to 10 full videos in memory) must still release the MOMENT staging succeeds,
+    unconditionally, same as always. `pending_items` (just filenames) must NOT release
+    at that same point anymore — only once the attempt has a FINAL outcome (`if attempt.
+    settled:`) to show instead of it. Reported exactly this way: a real, multi-minute
+    carousel publish reverted the gallery to the empty "arrastra tu contenido aquí"
+    prompt for the whole wait, with no way to see what was actually being published
+    (2026-09-10). Checked by SOURCE ORDER (not just presence) — the old bug was that
+    both releases sat on adjacent lines, unconditional; the fix moves only one of them
+    inside the settled branch, so order is exactly what distinguishes the two shapes."""
     source = inspect.getsource(PublishState.publish_background.fn)
-    assert "self._pending_files = []" in source
-    assert "self.pending_items = []" in source
+    pending_files_idx = source.index("self._pending_files = []")
+    settled_check_idx = source.index("if attempt.settled:")
+    pending_items_idx = source.index("self.pending_items = []")
+    assert pending_files_idx < settled_check_idx < pending_items_idx, (
+        "_pending_files must release BEFORE the settled check (unconditional); "
+        "pending_items must release INSIDE it (only once there is a final outcome)"
+    )
+
+
+def test_poll_attempt_clears_pending_items_once_settled() -> None:
+    """The other half of the same fix: `pending_items` stayed populated through
+    `publish_background`'s hand-off into polling specifically so `poll_attempt`'s own
+    settle point is where it finally releases — on ANY final outcome (success, a
+    container-side failure, `UnknownAttempt`, a generic poll exception, or the
+    `_MAX_POLLS` ceiling), never left dangling after the gallery has nothing left to
+    show it for."""
+    source = inspect.getsource(PublishState.poll_attempt.fn)
+    assert source.count("self.pending_items = []") == 4, (
+        "expected exactly 4 release sites: the settled branch, UnknownAttempt, the "
+        "generic poll exception, and the _MAX_POLLS-exhausted branch"
+    )
