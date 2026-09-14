@@ -18,13 +18,14 @@ from qualify_shared.db.session import tenant_session
 from qualify_shared.objects.gate import ObjectGate
 from sqlalchemy import select
 
-from qualify_api.config import MetaOAuthSettings
+from qualify_api.config import MetaOAuthSettings, PublicMediaSettings, redis_url
 from qualify_api.connections.composition import degrade_connection_on_auth_error
 from qualify_api.connections.credential_reader import DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor, Encryptor
 from qualify_api.connections.models import SocialConnection
 from qualify_api.connections.resolver import InjectingCredentialResolver
 from qualify_api.publishing.client import MEDIA_TYPE_VIDEO, HttpPublishClient, PublishClient
+from qualify_api.publishing.media_token import MediaTokenStore
 from qualify_api.publishing.repository import PostgresPublishAttemptRepository
 from qualify_api.publishing.service import (
     MAX_CAROUSEL_ITEMS,
@@ -36,6 +37,23 @@ from qualify_api.publishing.service import (
     TooManyItems,
 )
 from qualify_api.publishing.staging import MediaStagingService
+
+
+class TokenPublicMediaLinker:
+    """QUA-68's real `PublicMediaLinker` — mints a token via `MediaTokenStore` and turns it
+    into the full URL Meta's fetcher will `GET`. The one place `/public/media/{token}` and
+    `PublicMediaSettings.public_media_url` are composed together, so `PublishService` itself
+    never needs to know either exists."""
+
+    def __init__(self, store: MediaTokenStore, settings: PublicMediaSettings) -> None:
+        self._store = store
+        self._settings = settings
+
+    def link(self, *, tenant_id: UUID, object_key: str, content_type: str) -> str:
+        token = self._store.issue(
+            tenant_id=tenant_id, object_key=object_key, content_type=content_type
+        )
+        return self._settings.public_media_url(token)
 
 
 class PostgresConnectionTargetReader:
@@ -71,6 +89,42 @@ class ResolverPublishClientFactory:
 
 
 @cache
+def production_media_token_store() -> MediaTokenStore:
+    """QUA-68 — lazy `redis` import for the same reason `production_connect_service`
+    (`connections/composition.py`) already gives: importing this module must not require a
+    Redis to exist, only calling it. Cached for the same reason too: one connection pool,
+    not one per publish attempt."""
+    import redis  # noqa: PLC0415
+
+    return MediaTokenStore(redis.Redis.from_url(redis_url(), decode_responses=True))
+
+
+@cache
+def production_public_media_linker() -> TokenPublicMediaLinker:
+    """`PublicMediaSettings.from_env()` runs INSIDE this cached factory. Never called
+    eagerly by `production_publish_service()` below — see `_LazyPublicMediaLinker`, the
+    thing that IS passed there — so a deployment without `QUALIFY_PUBLIC_MEDIA_BASE_URL`
+    set keeps publishing VIDEO exactly as before, and only fails an actual IMAGE publish."""
+    return TokenPublicMediaLinker(production_media_token_store(), PublicMediaSettings.from_env())
+
+
+class _LazyPublicMediaLinker:
+    """Defers `production_public_media_linker()` — and therefore
+    `PublicMediaSettings.from_env()` and the Redis connection — until `.link()` is actually
+    called. `production_publish_service()` is ONE cached singleton shared by every publish,
+    video included; resolving the public-media settings inside ITS construction would make
+    a missing `QUALIFY_PUBLIC_MEDIA_BASE_URL` break video publishing too, in any environment
+    that has not set it. This keeps that failure exactly where it belongs: the first real
+    IMAGE publish attempt, never the video path, never app boot.
+    """
+
+    def link(self, *, tenant_id: UUID, object_key: str, content_type: str) -> str:
+        return production_public_media_linker().link(
+            tenant_id=tenant_id, object_key=object_key, content_type=content_type
+        )
+
+
+@cache
 def production_publish_service() -> PublishService:
     from qualify_shared.objects.config import R2Settings  # noqa: PLC0415 — see module docstring
     from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
@@ -82,6 +136,7 @@ def production_publish_service() -> PublishService:
         connections=PostgresConnectionTargetReader(),
         client_factory=ResolverPublishClientFactory(settings, DevEncryptor()),
         connection_degrader=degrade_connection_on_auth_error,
+        media_linker=_LazyPublicMediaLinker(),
     )
 
 
@@ -138,6 +193,9 @@ async def stage_and_start_publish(
         idempotency_key=idempotency_key,
         caption=caption,
         thumb_offset=thumb_offset,
+        # QUA-68: only meaningful for IMAGE (`PublishService._start_image` uses it to mint
+        # the public link's Content-Type); the VIDEO path ignores it, unchanged.
+        content_type=staged.content_type,
     )
 
 
