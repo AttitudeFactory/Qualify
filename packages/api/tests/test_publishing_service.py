@@ -19,6 +19,7 @@ from qualify_shared.objects.gate import ObjectGate
 
 from qualify_api.publishing.client import (
     CONTAINER_POLL_INTERVAL_SECONDS,
+    MEDIA_TYPE_IMAGE,
     ContainerStatus,
     PublishError,
     ResumableContainer,
@@ -33,6 +34,7 @@ from qualify_api.publishing.service import (
     PUBLISH_SENT_MARKER,
     ConnectionTarget,
     MediaItem,
+    MissingMediaLinker,
     PublishService,
     TooManyItems,
     UnknownConnection,
@@ -91,6 +93,14 @@ class FakePublishClient:
         # QUA-99 (4.5/6): the caption seen on each create_carousel_container call,
         # recorded separately so tests can assert exactly what was sent to Meta.
         self.carousel_caption_calls: list[str | None] = []
+        # QUA-68 — image container creation, deliberately tracked OUTSIDE `self.calls`
+        # (never added as a `"create_image"` key there): several existing tests assert
+        # `h.client.calls == {...}` by exact dict equality, and adding a key would break
+        # every one of them for a reason that has nothing to do with what they test. This
+        # list is exactly as inspectable — `len(image_container_calls)` is the count.
+        self.image_container_id = "image-container-1"
+        self.create_image_error: Exception | None = None
+        self.image_container_calls: list[dict[str, str]] = []
         self.calls = {"create": 0, "upload": 0, "status": 0, "publish": 0, "create_carousel": 0}
         self.upload_sizes: list[int] = []
 
@@ -117,6 +127,14 @@ class FakePublishClient:
             raise self.carousel_error
         return self.carousel_container_id
 
+    async def create_image_container(
+        self, *, ig_user_id: str, image_url: str, caption: str | None = None
+    ) -> str:
+        self.image_container_calls.append({"ig_user_id": ig_user_id, "image_url": image_url})
+        if self.create_image_error is not None:
+            raise self.create_image_error
+        return self.image_container_id
+
     async def upload_bytes(self, *, upload_uri: str, fileobj, file_size: int) -> UploadOutcome:
         self.calls["upload"] += 1
         self.upload_sizes.append(file_size)
@@ -138,16 +156,36 @@ class FakePublishClient:
         return self.publish_media_id
 
 
+class FakeMediaLinker:
+    """QUA-68 — records every `link()` call so a test can assert exactly which
+    `(tenant_id, object_key, content_type)` was minted into a public URL, and returns a
+    deterministic, inspectable URL rather than a real token."""
+
+    def __init__(self) -> None:
+        self.link_calls: list[dict[str, object]] = []
+
+    def link(self, *, tenant_id: UUID, object_key: str, content_type: str) -> str:
+        self.link_calls.append(
+            {"tenant_id": tenant_id, "object_key": object_key, "content_type": content_type}
+        )
+        return f"https://qualify.example/public/media/tok-for-{object_key.rsplit('/', 1)[-1]}"
+
+
 class Harness:
     def __init__(
         self,
         *,
         connection_status: str = "active",
         clock_offset_seconds: float = 0.0,
+        media_linker: FakeMediaLinker | None = None,
     ) -> None:
         self.repo = MemoryPublishAttemptRepository()
         self.store = MemoryStore()
         self.client = FakePublishClient()
+        # QUA-68 — a real fake by default (never `None`) so every pre-existing VIDEO test
+        # keeps working unchanged AND any future test can still assert on `self.linker`
+        # without needing to remember to pass one in.
+        self.linker = media_linker if media_linker is not None else FakeMediaLinker()
         self.targets = {
             (TENANT, CONNECTION): ConnectionTarget(ig_user_id=IG_USER, status=connection_status)
         }
@@ -173,9 +211,12 @@ class Harness:
             client_factory=Factory(),
             clock=lambda: datetime.now(UTC) + timedelta(seconds=clock_offset_seconds),
             connection_degrader=degrader,
+            media_linker=self.linker,
         )
         self.media_key = f"t/{TENANT}/media/{CONNECTION}/m-1"
         self.store.objects[self.media_key] = (b"reel-bytes", "video/mp4")
+        self.image_key = f"t/{TENANT}/media/{CONNECTION}/img-1"
+        self.store.objects[self.image_key] = (b"\xff\xd8\xff\xe0jpeg-bytes", "image/jpeg")
 
     async def start(self, key: str = "op-1"):
         return await self.service.start(
@@ -188,6 +229,18 @@ class Harness:
 
     async def advance(self, attempt_id: UUID):
         return await self.service.advance(tenant_id=TENANT, attempt_id=attempt_id)
+
+    # --- QUA-68: single-image helper ---
+
+    async def start_image(self, key: str = "op-img-1", *, content_type: str | None = "image/jpeg"):
+        return await self.service.start(
+            tenant_id=TENANT,
+            connection_id=CONNECTION,
+            media_object_key=self.image_key,
+            media_product_type=MEDIA_TYPE_IMAGE,
+            idempotency_key=key,
+            content_type=content_type,
+        )
 
     # --- QUA-99 (4/6): carousel helpers ---
 
@@ -1237,6 +1290,177 @@ def test_list_children_status_is_empty_for_an_unknown_attempt() -> None:
     h = Harness()
     rows = h.service.list_children_status(tenant_id=TENANT, attempt_id=uuid4())
     assert rows == []
+
+
+# --------------------------------------------------------------------------------------
+# IMAGE (QUA-68) — single image, no carousel, no upload phase
+# --------------------------------------------------------------------------------------
+
+
+class _StatusSpyRepository(MemoryPublishAttemptRepository):
+    """Wraps `advance_status` to record every status ever written — the only way to
+    PROVE `'uploading'` is never reached for IMAGE, as opposed to merely observing the
+    final state (which could coincidentally look right even if `'uploading'` flashed by
+    unobserved between two `advance_status` calls in a differently-shaped bug)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.statuses_written: list[str] = []
+
+    def advance_status(self, *, tenant_id: UUID, attempt_id: UUID, status: str) -> None:
+        self.statuses_written.append(status)
+        super().advance_status(tenant_id=tenant_id, attempt_id=attempt_id, status=status)
+
+
+async def test_start_image_creates_an_image_container_and_skips_upload() -> None:
+    h = Harness()
+
+    state = await h.start_image()
+
+    assert state.status == "processing"
+    assert not state.settled
+    assert len(h.client.image_container_calls) == 1
+    assert h.client.calls["create"] == 0  # create_container (VIDEO) never called
+    assert h.client.calls["upload"] == 0  # upload_bytes never called — nothing to upload
+
+
+async def test_start_image_never_writes_status_uploading() -> None:
+    """The direct proof, via a spy on every `advance_status` call — not an inference from
+    the final state alone."""
+    repo = _StatusSpyRepository()
+    linker = FakeMediaLinker()
+    client = FakePublishClient()
+    store = MemoryStore()
+    store.objects[f"t/{TENANT}/media/{CONNECTION}/img-1"] = (b"jpeg-bytes", "image/jpeg")
+
+    class Connections:
+        def read(self, *, tenant_id: UUID, connection_id: UUID) -> ConnectionTarget | None:
+            return ConnectionTarget(ig_user_id=IG_USER, status="active")
+
+    class Factory:
+        async def client_for(self, *, tenant_id: UUID, connection_id: UUID):
+            return client
+
+    service = PublishService(
+        repository=repo,
+        gate=ObjectGate(store),
+        connections=Connections(),
+        client_factory=Factory(),
+        media_linker=linker,
+    )
+
+    await service.start(
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        media_object_key=f"t/{TENANT}/media/{CONNECTION}/img-1",
+        media_product_type=MEDIA_TYPE_IMAGE,
+        idempotency_key="op-img-spy",
+        content_type="image/jpeg",
+    )
+
+    assert "uploading" not in repo.statuses_written
+    assert repo.statuses_written == ["processing"]
+
+
+async def test_start_image_requires_content_type() -> None:
+    h = Harness()
+
+    with pytest.raises(ValueError, match="content_type"):
+        await h.start_image(content_type=None)
+
+
+async def test_start_image_requires_a_configured_media_linker() -> None:
+    """A `PublishService` built WITHOUT `media_linker` (every pre-QUA-68 construction site,
+    and every test in this file that does not explicitly pass one) must fail loudly and
+    distinguishably the moment an IMAGE attempt actually needs it — never fall through to
+    the video branch (which would send `media_type='IMAGE'` to `create_container`, a
+    request `client.py` already refuses for an unrelated reason)."""
+    repo = MemoryPublishAttemptRepository()
+    client = FakePublishClient()
+    store = MemoryStore()
+    store.objects[f"t/{TENANT}/media/{CONNECTION}/img-1"] = (b"jpeg-bytes", "image/jpeg")
+
+    class Connections:
+        def read(self, *, tenant_id: UUID, connection_id: UUID) -> ConnectionTarget | None:
+            return ConnectionTarget(ig_user_id=IG_USER, status="active")
+
+    class Factory:
+        async def client_for(self, *, tenant_id: UUID, connection_id: UUID):
+            return client
+
+    service = PublishService(
+        repository=repo, gate=ObjectGate(store), connections=Connections(), client_factory=Factory()
+    )  # no media_linker passed — the default
+
+    with pytest.raises(MissingMediaLinker):
+        await service.start(
+            tenant_id=TENANT,
+            connection_id=CONNECTION,
+            media_object_key=f"t/{TENANT}/media/{CONNECTION}/img-1",
+            media_product_type=MEDIA_TYPE_IMAGE,
+            idempotency_key="op-img-no-linker",
+            content_type="image/jpeg",
+        )
+    assert client.image_container_calls == []  # refused before any platform call
+
+
+async def test_start_image_mints_the_public_link_with_the_staged_content_type() -> None:
+    h = Harness()
+
+    await h.start_image(content_type="image/jpeg")
+
+    assert len(h.linker.link_calls) == 1
+    call = h.linker.link_calls[0]
+    assert call["tenant_id"] == TENANT
+    assert call["object_key"] == h.image_key
+    assert call["content_type"] == "image/jpeg"
+
+
+async def test_start_image_sends_the_minted_url_to_meta() -> None:
+    h = Harness()
+
+    await h.start_image()
+
+    [call] = h.client.image_container_calls
+    assert call["image_url"] == "https://qualify.example/public/media/tok-for-img-1"
+    assert call["ig_user_id"] == IG_USER
+
+
+async def test_start_image_propagates_a_create_image_container_error() -> None:
+    """Same posture the VIDEO branch's own `create_container` call already has: the
+    write-ahead row survives in 'pending', and the exception propagates rather than
+    being swallowed into a generic failure."""
+    h = Harness()
+    h.client.create_image_error = PublishError("boom")
+
+    with pytest.raises(PublishError, match="boom"):
+        await h.start_image()
+
+
+async def test_image_attempt_settles_through_the_unmodified_advance_machinery() -> None:
+    """The property that matters most: `advance()`/`_publish_once`/reconciliation are
+    UNTOUCHED by QUA-68 — an image attempt, once it has a `creation_id`, is polled and
+    published by exactly the same code a video attempt already uses."""
+    h = Harness()
+    start_state = await h.start_image()
+    h.client.status_script = [ContainerStatus.FINISHED]
+
+    final = await h.drive_to_settled(start_state.attempt_id)
+
+    assert final.settled
+    assert final.status == "published"
+    assert final.published_media_id == h.client.publish_media_id
+    assert h.client.calls["publish"] == 1
+
+
+async def test_video_publish_never_touches_the_media_linker() -> None:
+    """The other direction of the same regression guard: a completely ordinary VIDEO
+    `start()` call must never mint a public link — that machinery is IMAGE-only."""
+    h = Harness()
+
+    await h.start()
+
+    assert h.linker.link_calls == []
 
 
 # --------------------------------------------------------------------------------------
