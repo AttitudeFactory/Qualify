@@ -4,13 +4,16 @@
 Two operations, and deliberately only two:
 
 - `put_media`  — a composed asset goes to durable storage before it is scheduled.
-- `open_object` — the publisher streams those bytes straight to `rupload.facebook.com`.
+- `open_object` — the publisher streams those bytes straight to `rupload.facebook.com`
+  (video) or, since QUA-68, to `GET /public/media/{token}` (image).
 
-**`presign_get` is absent by design, not by omission.** It existed only to serve the image
-branch, where Meta cURLs the media from a public URL; that branch is deferred to QUA-68
-(ADR 28b). The video path uploads bytes directly, so Qualify exposes no public HTTP surface
-and there is nothing here to sign. Adding a signing method back "just in case" would
-re-create the surface the current scope exists to avoid.
+**`presign_get` stays absent — QUA-68 did not add it back.** The image branch (Meta cURLs
+the media from a public URL) is real now, but it is served by STREAMING the existing
+`open_object` through a route in `qualify_api.http.public_media_routes`, not by handing out
+an R2 presigned URL. Reasoning kept from the original ADR 28(e) design: a presigned URL
+leaks the bucket/key structure of R2 to whoever holds the link, and cannot be revoked before
+its own expiry (deleting our own token mapping can). `open_object` needed no change to serve
+this second caller — it already returns a plain seekable `IO[bytes]`.
 
 R2 is still required even with no public hosting: scheduling that survives restarts forces a
 durable store between composing and publishing (ADR 28d). What the resumable path removed is
@@ -49,6 +52,18 @@ class UnsizedStream(Exception):
 
     Refusing is the conservative branch: uploading an unmeasurable stream means the ceiling
     silently stops applying for exactly the inputs most likely to be large.
+    """
+
+
+class ObjectNotFound(Exception):
+    """No object exists at this key (QUA-68).
+
+    Translated by `R2ObjectStore.open()` from the store's own not-found signal (a boto3
+    `ClientError` for a missing S3 key) so callers above the store never need to know that
+    detail. Exists specifically for `public_media_routes.py`: a token can outlive the object
+    it names (nothing deletes R2 objects on this path today), and that case must answer with
+    the SAME 404 as an unknown or expired token — never a distinguishable 500 or a bare
+    `KeyError` leaking past the route.
     """
 
 
