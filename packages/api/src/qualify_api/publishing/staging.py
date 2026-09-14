@@ -13,8 +13,8 @@ Deliberately NOT here:
   gate re-checks the tenant prefix on every operation anyway.
 
 Vocabulary note: what this service accepts, carries and returns is `media_product_type`
-(`REELS`/`STORIES`/`VIDEO` — the same set the publish client's resumable path accepts),
-NEVER `media_type`. Meta's `media_type` reads back `IMAGE`/`VIDEO` even for a story; the
+(`REELS`/`STORIES`/`VIDEO`/`IMAGE` since QUA-68 — see `PUBLISHABLE_MEDIA_TYPES`), NEVER
+`media_type`. Meta's `media_type` reads back `IMAGE`/`VIDEO` even for a story; the
 property that distinguishes a story is `media_product_type`, and persisting the wrong one
 leaves every future "was this a reel or a story?" query silently wrong.
 """
@@ -25,10 +25,16 @@ from dataclasses import dataclass
 from typing import IO
 from uuid import UUID
 
-from qualify_shared.objects.gate import ObjectGate
+from qualify_shared.objects.gate import ObjectGate, ObjectSizeExceeded, UnsizedStream
 from qualify_shared.objects.keys import media_key
 
-from qualify_api.publishing.client import RESUMABLE_MEDIA_TYPES
+from qualify_api.publishing.client import IMAGE_MAX_BYTES, MEDIA_TYPE_IMAGE, RESUMABLE_MEDIA_TYPES
+
+# QUA-68: everything this service will stage for publication — the resumable video types
+# plus the one non-resumable image type. Kept as its own name (not folded into
+# `RESUMABLE_MEDIA_TYPES`, whose meaning stays "accepted by `create_container`") so a
+# reader of `stage_media`'s validation sees the actual, current scope of this service.
+PUBLISHABLE_MEDIA_TYPES = RESUMABLE_MEDIA_TYPES | {MEDIA_TYPE_IMAGE}
 
 
 @dataclass(frozen=True)
@@ -58,17 +64,43 @@ class MediaStagingService:
         media_product_type: str,
     ) -> StagedMedia:
         """Validate, then write. Nothing is uploaded unless every check passes: the
-        product-type vocabulary here, and the tenant prefix / size ceiling / content-type
-        requirement inside the gate."""
-        if media_product_type not in RESUMABLE_MEDIA_TYPES:
+        product-type vocabulary here, the IMAGE-specific size ceiling below, and the
+        tenant prefix / absolute size ceiling / content-type requirement inside the gate.
+        """
+        if media_product_type not in PUBLISHABLE_MEDIA_TYPES:
             raise ValueError(
                 f"media_product_type {media_product_type!r} is not publishable; "
-                f"expected one of {sorted(RESUMABLE_MEDIA_TYPES)}"
+                f"expected one of {sorted(PUBLISHABLE_MEDIA_TYPES)}"
             )
+        if media_product_type == MEDIA_TYPE_IMAGE:
+            # QUA-68: `ig-user/media.md:55` caps a feed/story image at 8 MB — a tenth of
+            # `ObjectGate.MAX_MEDIA_BYTES` (300 MB), which stays the store's own absolute
+            # ceiling for everything else. Checked BEFORE `put_media`, same "reject before
+            # a single byte moves" posture the gate already uses for its own ceiling.
+            _reject_oversized_image(fileobj)
         key = media_key(tenant_id, connection_id, media_id)
         self._gate.put_media(tenant_id, key, fileobj, content_type)
         return StagedMedia(
             media_object_key=key,
             media_product_type=media_product_type,
             content_type=content_type,
+        )
+
+
+def _reject_oversized_image(fileobj: IO[bytes]) -> None:
+    """Measure a seekable stream's length, position restored, and refuse anything over
+    `IMAGE_MAX_BYTES` — same `ObjectSizeExceeded`/`UnsizedStream` vocabulary the gate
+    already raises for its own (looser) ceiling, so a caller has exactly one pair of
+    exceptions to handle regardless of which ceiling tripped."""
+    try:
+        origin = fileobj.seek(0, 1)
+        size = fileobj.seek(0, 2)
+        fileobj.seek(origin, 0)
+    except (AttributeError, OSError) as exc:
+        raise UnsizedStream("stream is not seekable, so its size cannot be checked") from exc
+    length = size - origin
+    if length > IMAGE_MAX_BYTES:
+        raise ObjectSizeExceeded(
+            f"image is {length} bytes, over the {IMAGE_MAX_BYTES}-byte ceiling for IMAGE "
+            "(ig-user/media.md:55) — video's 300 MB ceiling does not apply here"
         )
