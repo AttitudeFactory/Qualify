@@ -3,9 +3,12 @@ the Brand Kit "Ya tengo redes" flow (`creative_wizard_pages.BrandConnectState.an
 `docs/ui-brandkit-wizard.md` §4) to read a public TikTok/Instagram PROFILE by handle.
 
 Scope, deliberately narrow:
-  - Profile reads only (bio, follower count, avatar, ...) — no posts, no video/audio,
-    no comments. That is `packages/scraper` territory (Zyte + the multimodal cascade,
-    Fase 1 Partes 2/3, ADR 17/18) and this module has nothing to do with it: different
+  - Profile reads (bio, follower count, avatar, ...) plus, since 2026-09-10, the
+    user's own recent post LIST (date + like/comment/view counts per post, nothing
+    else) — enough for `profile_metrics` to report real figures over a time window
+    (`METRICS_WINDOW_DAYS`). No video/audio, no comments, no other people's posts.
+    That is `packages/scraper` territory (Zyte + the multimodal cascade, Fase 1
+    Partes 2/3, ADR 17/18) and this module has nothing to do with it: different
     vendor, different data, different lifecycle.
   - Nothing here touches Postgres. The connect flow is not persisted yet — the caller
     writes the normalized result to the one generic, OVERWRITABLE JSON snapshot at
@@ -39,12 +42,15 @@ the observation that promotes this module past "shape from docs only", same disc
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.scrapecreators.com"
 _TIMEOUT_SECONDS = 20.0
@@ -56,6 +62,13 @@ SUPPORTED_NETWORKS = ("instagram", "tiktok")
 #: then reads back from — one profile at a time. Resolved relative to this module so
 #: the app finds it from any cwd (same reasoning the old `PROFILE_FIXTURE` documented).
 PROFILE_SNAPSHOT_PATH = Path(__file__).resolve().parent / "fixtures" / "brand_connect_profile.json"
+
+#: Bumped whenever the normalized profile shape gains a field the wizard depends on,
+#: so a snapshot written by an older normalizer is a cache MISS (one re-fetch, one
+#: credit) instead of a profile silently missing the new fields. 3 = `fetchedAt` +
+#: `recentPosts` from the post-list endpoints (the inputs of `profile_metrics`,
+#: 2026-09-10; 2 was the short-lived profile-inline sample of the same day).
+SNAPSHOT_SCHEMA = 3
 
 
 class ScrapeCreatorsError(Exception):
@@ -199,6 +212,259 @@ def _normalize_tiktok(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Recent posts — the SECOND read per analysis, behind the windowed metrics
+# (§ request 2026-09-10: "que las stats tengan un tiempo al cual sacarle la métrica,
+# por ahora semana"). Neither profile endpoint yields a dated post list (TikTok ships
+# none, Instagram a capped ~12), so a time window needs the per-user post endpoints:
+# `/v2/instagram/user/posts` (`items[]`, `taken_at`, `like_count`, `comment_count`,
+# `play_count`, paginated by `next_max_id`/`more_available`) and
+# `/v3/tiktok/profile/videos` (`aweme_list[]`, `create_time`, `statistics.{digg_count,
+# comment_count,play_count}`, paginated by `max_cursor`/`has_more`). 1 credit per page
+# on both (docs.scrapecreators.com, read 2026-09-10 — [UNVERIFIED LIVE], same marker
+# as the profile shapes above).
+
+#: The window every metric is computed over — "por ahora semana". One knob so the
+#: product can move it later (14, 30) without touching the arithmetic.
+METRICS_WINDOW_DAYS = 7
+_WINDOW_SECONDS = METRICS_WINDOW_DAYS * 24 * 3600
+
+#: Pagination cap for the post list — a hard ceiling on credits per analysis (profile +
+#: up to this many pages). Pages are ~12 (IG) / ~30 (TikTok) items; a week of posting
+#: fits in one page for almost every account, the cap is there for the ones where it
+#: does not (and to stop a runaway cursor loop, ever).
+_MAX_POST_PAGES = 3
+
+_POSTS_ENDPOINT = {
+    "instagram": "/v2/instagram/user/posts",
+    "tiktok": "/v3/tiktok/profile/videos",
+}
+
+
+def _int_or_none(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _post(
+    taken_at: object, likes: object, comments: object, views: object
+) -> dict[str, Any] | None:
+    """One post in the common shape, or None when it has no usable timestamp — an
+    undated post cannot be placed inside or outside the window, so it is dropped."""
+    stamp = _int_or_none(taken_at)
+    if stamp is None:
+        return None
+    return {
+        "takenAt": stamp,
+        "likes": _int_or_none(likes),
+        "comments": _int_or_none(comments),
+        "views": _int_or_none(views),
+    }
+
+
+def _normalize_instagram_posts(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """`(posts, next cursor or None)` from `/v2/instagram/user/posts`."""
+    items = payload.get("items")
+    posts: list[dict[str, Any]] = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        post = _post(
+            item.get("taken_at"),
+            item.get("like_count"),
+            item.get("comment_count"),
+            item.get("play_count", item.get("ig_play_count")),
+        )
+        if post is not None:
+            posts.append(post)
+    cursor = payload.get("next_max_id")
+    return posts, (str(cursor) if payload.get("more_available") and cursor else None)
+
+
+def _normalize_tiktok_videos(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """`(posts, next cursor or None)` from `/v3/tiktok/profile/videos`."""
+    items = payload.get("aweme_list")
+    posts: list[dict[str, Any]] = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        stats = item.get("statistics")
+        stats = stats if isinstance(stats, dict) else {}
+        post = _post(
+            item.get("create_time"),
+            stats.get("digg_count"),
+            stats.get("comment_count"),
+            stats.get("play_count"),
+        )
+        if post is not None:
+            posts.append(post)
+    cursor = payload.get("max_cursor")
+    return posts, (str(cursor) if payload.get("has_more") and cursor else None)
+
+
+def fetch_recent_posts(
+    network: str,
+    handle: str,
+    *,
+    since: float,
+    client: httpx.Client | None = None,
+    max_pages: int = _MAX_POST_PAGES,
+) -> list[dict[str, Any]]:
+    """Every post published at or after `since` (unix seconds), newest first, in the
+    common `{takenAt, likes, comments, views}` shape. Walks the paginated post list
+    newest-to-oldest and stops as soon as a page's LAST item is older than `since` —
+    last, not any: both platforms put pinned posts first, and a pinned post from two
+    years ago on page one must not end the walk. Also stops at `max_pages`, at an
+    empty page, or when the API stops handing back a (new) cursor. Posts older than
+    `since` never make it into the result.
+    """
+    handle = _normalize_handle(handle)
+    if not handle:
+        raise ValueError("handle must not be empty")
+    if network not in _POSTS_ENDPOINT:
+        raise ValueError(f"unsupported network: {network!r}")
+    owns_client = client is None
+    active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
+    normalize = _normalize_instagram_posts if network == "instagram" else _normalize_tiktok_videos
+    cursor_key = "next_max_id" if network == "instagram" else "max_cursor"
+    collected: list[dict[str, Any]] = []
+    cursor: str | None = None
+    try:
+        for _ in range(max_pages):
+            params = {"handle": handle}
+            if network == "tiktok":
+                params["sort_by"] = "latest"
+            if cursor:
+                params[cursor_key] = cursor
+            page, next_cursor = normalize(_get(active, _POSTS_ENDPOINT[network], params))
+            if not page:
+                break
+            collected.extend(p for p in page if p["takenAt"] >= since)
+            if page[-1]["takenAt"] < since or not next_cursor or next_cursor == cursor:
+                break
+            cursor = next_cursor
+    finally:
+        if owns_client:
+            active.close()
+    collected.sort(key=lambda p: p["takenAt"], reverse=True)
+    return collected
+
+
+def fetch_profile_and_posts(
+    network: str, handle: str, *, client: httpx.Client | None = None
+) -> dict[str, Any]:
+    """What `BrandConnectState.analyze` actually calls: the profile read plus the
+    windowed post list, as ONE normalized dict — `fetch_profile`'s shape with two
+    extra keys, `fetchedAt` (unix seconds; the window is anchored here, not at
+    render time, so a cached snapshot keeps reporting the week it was read for) and
+    `recentPosts` (the `fetch_recent_posts` result, or `None` when that second read
+    failed — the profile alone is still worth showing, and `profile_metrics` treats
+    `None` as "unknown", not as "zero posts").
+    """
+    owns_client = client is None
+    active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
+    try:
+        profile = fetch_profile(network, handle, client=active)
+        now = time.time()
+        profile["fetchedAt"] = now
+        try:
+            profile["recentPosts"] = fetch_recent_posts(
+                network, handle, since=now - _WINDOW_SECONDS, client=active
+            )
+        except ScrapeCreatorsError as exc:
+            logger.warning("recent posts read failed, metrics will be unavailable: %s", exc)
+            profile["recentPosts"] = None
+    finally:
+        if owns_client:
+            active.close()
+    return profile
+
+
+# ---------------------------------------------------------------------------
+# The metrics themselves — over the window, from the normalized read above.
+
+
+def _scaled(value: float) -> tuple[float, str, int]:
+    """`(figure, suffix, decimals)` for a count: 12_400 -> (12.4, "K", 1),
+    1_900_000 -> (1.9, "M", 1), 850 -> (850, "", 0)."""
+    if value >= 1_000_000:
+        return round(value / 1_000_000, 1), "M", 1
+    if value >= 1_000:
+        return round(value / 1_000, 1), "K", 1
+    return float(round(value)), "", 0
+
+
+def _metric(label: str, value: float, suffix: str, decimals: int, hint: str) -> dict[str, Any]:
+    return {
+        "label": label,
+        "target": round(value, decimals),
+        "suffix": suffix,
+        "decimals": decimals,
+        "hint": hint,
+    }
+
+
+def profile_metrics(network: str, profile: dict[str, Any]) -> list[dict[str, Any]]:
+    """Up to three REAL figures over the last `METRICS_WINDOW_DAYS` days, each
+    `{label, target, suffix, decimals, hint}`, in display order:
+
+      - Publicaciones: how many posts landed inside the window (0 is a real answer).
+      - Interacción: mean(likes + comments) / followers over those posts, as a
+        percentage — omitted with no followers or no post carrying a like count.
+      - Likes por publicación / por vídeo: mean likes over those posts — same omission.
+
+    The window is anchored at `profile["fetchedAt"]` (when the read happened), falling
+    back to now, so a cached snapshot describes the week it was taken in rather than
+    quietly emptying out as days pass. `recentPosts` missing or `None` means the post
+    read never happened/failed -> no metrics at all (unknown is not zero).
+
+    What is NOT here, on purpose: any growth/trend figure. A follower growth needs
+    two reads apart in time and this flow keeps exactly one snapshot with no history
+    (`save_profile_snapshot`) — a made-up number is worse than no number.
+    """
+    posts = profile.get("recentPosts")
+    if not isinstance(posts, list):
+        return []
+    anchor = profile.get("fetchedAt")
+    now = float(anchor) if isinstance(anchor, (int, float)) else time.time()
+    since = now - _WINDOW_SECONDS
+    in_window = [
+        p
+        for p in posts
+        if isinstance(p, dict) and isinstance(p.get("takenAt"), int) and p["takenAt"] >= since
+    ]
+    window = f"últimos {METRICS_WINDOW_DAYS} días"
+    followers = profile.get("followers")
+    followers = followers if isinstance(followers, int) and followers > 0 else 0
+    unit = "vídeo" if network == "tiktok" else "publicación"
+
+    metrics = [_metric("Publicaciones", len(in_window), "", 0, f"Publicadas en los {window}.")]
+    with_likes = [p for p in in_window if isinstance(p.get("likes"), int)]
+    if not with_likes:
+        return metrics
+    n = len(with_likes)
+    mean_likes = sum(p["likes"] for p in with_likes) / n
+    mean_interactions = sum(p["likes"] + (p.get("comments") or 0) for p in with_likes) / n
+    if followers:
+        metrics.append(
+            _metric(
+                "Interacción",
+                mean_interactions / followers * 100,
+                "%",
+                1,
+                f"Likes + comentarios sobre seguidores, {window}.",
+            )
+        )
+    figure, suffix, decimals = _scaled(mean_likes)
+    metrics.append(
+        _metric(f"Likes por {unit}", figure, suffix, decimals, f"Media por {unit}, {window}.")
+    )
+    return metrics
+
+
 def _normalize_handle(handle: str) -> str:
     """Case-insensitive, leading-"@"-insensitive form of a handle — both platforms
     treat a handle this way for lookups, and it is what lets `load_cached_profile`
@@ -245,6 +511,7 @@ def save_profile_snapshot(
     (`docs/ui-brandkit-wizard.md` §4), so it never accumulates history."""
     path.parent.mkdir(parents=True, exist_ok=True)
     snapshot = {
+        "schema": SNAPSHOT_SCHEMA,
         "network": network,
         "handle": handle,
         "fetched_at": time.time(),
@@ -273,15 +540,18 @@ def load_cached_profile(
     case-insensitive and ignores a leading "@" — the same normalization `fetch_profile`
     applies (`_normalize_handle`).
 
-    Returns `None` for a different profile, a missing file, or a malformed one — never
-    raises. A cache MISS is not an error, it is just "go fetch it for real", so the
-    caller can call this unconditionally without its own try/except.
+    Returns `None` for a different profile, a missing file, a malformed one, or one
+    written by an older normalizer (`schema` != `SNAPSHOT_SCHEMA`) — never raises. A
+    cache MISS is not an error, it is just "go fetch it for real", so the caller can
+    call this unconditionally without its own try/except.
     """
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(raw, dict) or raw.get("network") != network:
+        return None
+    if raw.get("schema") != SNAPSHOT_SCHEMA:
         return None
     if _normalize_handle(str(raw.get("handle", ""))) != _normalize_handle(handle):
         return None
@@ -292,10 +562,15 @@ def load_cached_profile(
 __all__ = [
     "BASE_URL",
     "PROFILE_SNAPSHOT_PATH",
+    "METRICS_WINDOW_DAYS",
+    "SNAPSHOT_SCHEMA",
     "SUPPORTED_NETWORKS",
     "ScrapeCreatorsError",
     "fetch_profile",
+    "fetch_profile_and_posts",
+    "fetch_recent_posts",
     "load_cached_profile",
     "load_profile_snapshot",
+    "profile_metrics",
     "save_profile_snapshot",
 ]
