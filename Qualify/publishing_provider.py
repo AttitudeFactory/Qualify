@@ -71,21 +71,29 @@ async def start_publish(
     connection_id: UUID,
     fileobj: IO[bytes],
     content_type: str,
+    media_product_type: str,
     caption: str,
     idempotency_key: str,
 ) -> PublishAttemptVM:
-    """Stage the uploaded video and start a publish attempt.
+    """Stage the uploaded file and start a publish attempt.
 
-    `media_product_type` is fixed to `"REELS"` in this slice — there is no Stories/
-    carousel selector in the UI yet (decision 1 of the approved plan). An empty caption
-    is sent as `None`, matching what a caption-less publish means to `PublishService`.
+    `media_product_type` (QUA-103) is the caller's to decide — `"REELS"` for the single
+    video that was this slice's only case (decision 1 of the approved plan, still true:
+    there is no Stories/carousel selector in the UI), or `"IMAGE"` for a single JPEG.
+    NEVER hardcoded here anymore: `publishing_state.py` resolves it from the one pending
+    item's own type before calling this, and forwards it verbatim — the exact hardcode
+    this signature used to have (`media_product_type="REELS"`, unconditionally) is what
+    made publishing a single image from `/publish` structurally impossible before this
+    ticket, even though `PublishService._start_image` (QUA-68) already existed. An empty
+    caption is sent as `None`, matching what a caption-less publish means to
+    `PublishService`.
     """
     state = await stage_and_start_publish(
         tenant_id=tenant_id,
         connection_id=connection_id,
         fileobj=fileobj,
         content_type=content_type,
-        media_product_type="REELS",
+        media_product_type=media_product_type,
         idempotency_key=idempotency_key,
         caption=caption or None,
     )

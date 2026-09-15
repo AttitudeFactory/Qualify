@@ -1,4 +1,4 @@
-"""Publish screen (A5 vertical slice) — upload 1-10 videos, pick a connected account,
+"""Publish screen (A5 vertical slice) — upload 1-10 files, pick a connected account,
 publish. 2-10 videos publish together as one Instagram carousel (QUA-99).
 
 Built on the `ui` shell (`app_shell` / `page_header` / `page_body`); badges and callouts
@@ -17,21 +17,28 @@ selection state is no longer what the gallery renders from).
 QUA-99 (6/6): the dropzone gained `multiple=True`/`max_files` raised from 1 to 10 — the
 SAME `rx.upload` widget, no new upload abstraction. The caption field
 (`_caption_section`) is completely UNTOUCHED — one field, one source of truth, used
-identically for 1 video or a carousel; only `publishing_state.py` decides downstream
+identically for 1 file or a carousel; only `publishing_state.py` decides downstream
 which provider seam (`start_publish` vs `start_many_publish`) the SAME `self.caption`
-value reaches. VIDEO-ONLY: no image path exists anywhere on this screen, not even as a
-disabled placeholder — `accept` still lists only MP4/MOV.
+value reaches. QUA-103 then added `image/jpeg` to `accept` — see that ticket's note
+below for the image path this screen gained.
 
 **Gallery redesign (QUA-99 UX follow-up)** replaced the plain list of selected names with
-a grid — see `_pending_tile`'s docstring for the shape. Each tile shows a REAL first-frame
-thumbnail of the video, captured entirely client-side (`ui/video_preview.py` — native
-browser APIs, no library, no backend change), falling back to an icon while a frame has
-not been captured yet (or never could be). The polling status (`_status_block`) also
-stopped being one generic spinner: while a carousel is being assembled it now shows which
-child video is uploading/processing, or that the carousel/final confirmation step is under
-way (`PublishState.carousel_stage_label`), plus how long the wait has been running
+a grid — see `_pending_tile`'s docstring for the shape. Each tile shows a REAL thumbnail,
+captured entirely client-side (a first-frame capture for video, a direct read for image —
+`ui/video_preview.py` / `ui/image_preview.py`, native browser APIs, no library, no backend
+change), falling back to a kind-appropriate icon while nothing has been captured yet (or
+never could be). The polling status (`_status_block`) also stopped being one generic
+spinner: while a carousel is being assembled it now shows which child video is
+uploading/processing, or that the carousel/final confirmation step is under way
+(`PublishState.carousel_stage_label`), plus how long the wait has been running
 (`PublishState.elapsed_label`) and a plain-language note that Meta's own processing can
 take several minutes — all derived from data the backend already had, nothing invented.
+
+**QUA-103** added a single JPEG image as a first-class selection alongside video — the
+`accept` dropzone, the thumbnail strategy per tile (`PendingItemVM.kind`), and the copy
+below all know about both kinds now. A carousel (2-10 items) is still VIDEO-ONLY: the
+gallery lets a JPEG sit alone, but `PublishState`'s own guard refuses to combine an image
+with anything else — see `publishing_state.py`'s `_IMAGE_CAROUSEL_NOT_SUPPORTED`.
 """
 
 from __future__ import annotations
@@ -42,6 +49,7 @@ from .publishing_state import _MAX_ITEMS, _UPLOAD_ID, _WAIT_EXPLANATION, Publish
 from .publishing_vm import ConnectionOptionVM, PendingItemVM
 from .ui import app_shell, callout, card, page_body, page_header, section
 from .ui import tokens as T
+from .ui.image_preview import gallery_image_preview_capture_anchor
 from .ui.video_preview import gallery_preview_capture_anchor, video_frame_preview_src
 
 # Gallery redesign, part 2 (QUA-99 UX follow-up) — a stable DOM id `video_preview.py`
@@ -78,18 +86,20 @@ def _connection_section() -> rx.Component:
 
 
 def _pending_tile(item: PendingItemVM, index: rx.Var[int]) -> rx.Component:
-    """One already-selected video (gallery redesign, QUA-99 UX follow-up).
+    """One already-selected file, image or video (gallery redesign, QUA-99 UX
+    follow-up; image support QUA-103).
 
-    Shows a REAL first-frame thumbnail (`video_frame_preview_src`, `ui/video_preview.py`
-    — native browser APIs, client-side only, no backend/Meta call) once the gallery's
-    shared capture hook has processed it; falls back to the same icon+filename tile as
-    before while it is not ready yet (a moment, right after the file is picked) or never
-    could be (an unsupported codec — the fallback is not an error state, just what "no
-    frame" always looked like here). `preview_src` is empty in EITHER case, so this Var
-    alone is enough to decide which of the two to render — see that module's docstring
-    for why the capture logic itself has to live in ONE gallery-wide hook rather than
-    one hook per tile (a per-tile hook cannot see `rx.foreach`'s per-item Var at all;
-    `previews[filename]`, a plain lookup rather than a hook, can).
+    Shows a REAL thumbnail (`video_frame_preview_src`, `ui/video_preview.py` /
+    `ui/image_preview.py` — native browser APIs, client-side only, no backend/Meta call)
+    once the gallery's shared capture hook has processed it; falls back to a
+    kind-appropriate icon+filename tile while it is not ready yet (a moment, right after
+    the file is picked) or never could be (an unsupported codec for video — the fallback
+    is not an error state, just what "no preview" always looked like here). `preview_src`
+    reads the SAME shared store regardless of which anchor (video or image) wrote it —
+    see `video_frame_preview_src`'s docstring for why the capture logic itself has to
+    live in gallery-wide hooks rather than one hook per tile (a per-tile hook cannot see
+    `rx.foreach`'s per-item Var at all; `previews[filename]`, a plain lookup rather than
+    a hook, can).
 
     Rendered as a SIBLING of the dropzone (`_gallery_zone` below), never as its child —
     that is what makes clicking a tile or its `X` never reopen the file picker; only the
@@ -110,7 +120,11 @@ def _pending_tile(item: PendingItemVM, index: rx.Var[int]) -> rx.Component:
                 },
             ),
             rx.vstack(
-                rx.icon("film", size=24, color=T.tone_color("ok", 9)),
+                rx.cond(
+                    item.kind == "image",
+                    rx.icon("image", size=24, color=T.tone_color("ok", 9)),
+                    rx.icon("film", size=24, color=T.tone_color("ok", 9)),
+                ),
                 rx.text(
                     item.filename,
                     size="1",
@@ -141,7 +155,7 @@ def _pending_tile(item: PendingItemVM, index: rx.Var[int]) -> rx.Component:
             rx.icon("x", size=14, color="white"),
             on_click=PublishState.remove_pending_file(index),
             disabled=~PublishState.can_edit_gallery,
-            title="Quitar este video",
+            title="Quitar este archivo",
             size="1",
             variant="solid",
             color_scheme="tomato",
@@ -183,13 +197,27 @@ def _upload_widget(children: rx.Component, *, compact: bool) -> rx.Component:
     return rx.upload(
         children,
         id=_UPLOAD_ID,
-        accept={"video/mp4": [".mp4"], "video/quicktime": [".mov"]},
+        # QUA-103: JPEG joins the two video containers Meta already accepted here —
+        # JPEG is the ONLY image format Meta's Content Publishing API supports at all
+        # (a platform restriction, not an incomplete whitelist — see
+        # `qualify_api.publishing.client.IMAGE_CONTENT_TYPE`'s docstring). This is a
+        # client-side nicety, same posture as everything else in this widget: the real
+        # gate is `MediaStagingService.stage_media`'s content-type + magic-byte check.
+        accept={
+            "video/mp4": [".mp4"],
+            "video/quicktime": [".mov"],
+            "image/jpeg": [".jpg", ".jpeg"],
+        },
         multiple=True,
         max_files=PublishState.remaining_slots,
         # Client-side mirror of `ObjectGate.MAX_MEDIA_BYTES` (qualify_shared/objects/
-        # gate.py) — that server-side ceiling is the real, load-bearing barrier and is
-        # untouched; this only lets a too-large file get rejected at selection time
-        # instead of after an upload attempt starts.
+        # gate.py) — the video ceiling, and the widest one `rx.upload` can express in one
+        # `max_size` (react-dropzone has no per-accepted-type limit). The real,
+        # load-bearing barriers are server-side and per-format: 300 MB for video, 8 MB
+        # for IMAGE (`MediaStagingService`/`client.IMAGE_MAX_BYTES`) — an oversized JPEG
+        # still passes this client-side check and is rejected there, with a clear toast
+        # (`publishing_state._IMAGE_TOO_LARGE`), same "server-side guard is the real
+        # invariant" posture this widget already documents for everything else.
         max_size=300 * 1024 * 1024,
         disabled=~PublishState.can_edit_gallery,
         # QUA-99 UX follow-up: bound to `add_files`, which BUFFERS onto whatever is
@@ -210,7 +238,7 @@ def _upload_widget(children: rx.Component, *, compact: bool) -> rx.Component:
         # APIs.
         on_drop_rejected=rx.toast.error(
             "Formato no permitido",
-            description=f"Solo se aceptan archivos MP4 o MOV, hasta {_MAX_ITEMS} en total.",
+            description=f"Solo se aceptan archivos MP4, MOV o JPEG, hasta {_MAX_ITEMS} en total.",
         ),
         border=f"1.5px dashed {rx.color('gray', 7)}",
         border_radius=T.RADIUS_CARD,
@@ -249,7 +277,7 @@ def _empty_state_content() -> rx.Component:
             weight="medium",
         ),
         rx.text(
-            f"MP4 o MOV · hasta 300 MB por video · hasta {_MAX_ITEMS} videos",
+            f"MP4, MOV o JPEG · hasta 300 MB (video) / 8 MB (imagen) · hasta {_MAX_ITEMS} archivos",
             size="1",
             color=T.TEXT_MUTED,
         ),
@@ -260,10 +288,10 @@ def _empty_state_content() -> rx.Component:
 
 def _preview_capture_anchor() -> rx.Component:
     """Mounted UNCONDITIONALLY (a sibling of the `rx.cond` below, never inside either
-    branch of it) so the gallery's shared thumbnail-capture listener
-    (`gallery_preview_capture_anchor`, `ui/video_preview.py`) is already attached
-    before the very FIRST file is ever picked — not only once a tile exists to ask for
-    one.
+    branch of it) so the gallery's shared thumbnail-capture listeners
+    (`gallery_preview_capture_anchor` for video, `gallery_image_preview_capture_anchor`
+    for JPEG — QUA-103) are already attached before the very FIRST file is ever picked —
+    not only once a tile exists to ask for one.
 
     Without this, the FIRST video (always selected while the gallery still shows the
     empty-state prompt, since `pending_items` starts empty) never got a real thumbnail
@@ -273,7 +301,14 @@ def _preview_capture_anchor() -> rx.Component:
     empty prompt was still showing had nothing listening yet. Renders nothing visible;
     only the hook's side effect (attaching the listeners) matters here.
     """
-    return rx.box(gallery_preview_capture_anchor(root_id=_GALLERY_ROOT_ID), display="none")
+    return rx.box(
+        gallery_preview_capture_anchor(root_id=_GALLERY_ROOT_ID),
+        # QUA-103: a SECOND, independent capture anchor for JPEG files — mounted
+        # alongside the video one, never replacing it. See `ui/image_preview.py`'s
+        # module docstring for why two listeners on the same root id is safe.
+        gallery_image_preview_capture_anchor(root_id=_GALLERY_ROOT_ID),
+        display="none",
+    )
 
 
 def _gallery_zone() -> rx.Component:
@@ -488,11 +523,12 @@ def _tips_card() -> rx.Component:
                 align="center",
             ),
             rx.vstack(
-                _tip_row("film", "Formatos aceptados: MP4 y MOV."),
-                _tip_row("scale", "Tamaño máximo: 300 MB por video."),
+                _tip_row("film", "Formatos aceptados: MP4, MOV (video) y JPEG (imagen)."),
+                _tip_row("scale", "Tamaño máximo: 300 MB por video, 8 MB por imagen."),
                 _tip_row(
                     "layers",
-                    f"Hasta {_MAX_ITEMS} videos — 2 o más se publican juntos, como un carrusel.",
+                    f"Hasta {_MAX_ITEMS} videos — 2 o más se publican juntos, como un "
+                    "carrusel. Una imagen se publica sola por ahora.",
                 ),
                 _tip_row("at-sign", "Se publica en la cuenta que elijas arriba."),
                 _tip_row("clock", "La confirmación de Meta puede tardar unos minutos."),
@@ -526,8 +562,8 @@ def _load_error() -> rx.Component:
 def publish_topbar() -> rx.Component:
     return page_header(
         "Publicar",
-        "Sube uno o varios reels y publícalos en una de tus cuentas de Instagram "
-        "conectadas — 2 o más se publican juntos, como un carrusel",
+        "Sube una imagen o uno o varios reels y publícalos en una de tus cuentas de "
+        "Instagram conectadas — 2 o más videos se publican juntos, como un carrusel",
     )
 
 

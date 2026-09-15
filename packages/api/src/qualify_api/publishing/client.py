@@ -94,6 +94,26 @@ MEDIA_TYPE_IMAGE = "IMAGE"
 # tighter, format-specific one.
 IMAGE_MAX_BYTES = 8 * 1024 * 1024
 
+# QUA-103 — the ONLY image format Meta's Content Publishing API accepts, for any image
+# content (feed, story, or a carousel child): "JPEG is the only image format supported.
+# Extended JPEG formats such as MPO and JPS are not supported." (`content-publishing.md:53`,
+# re-verified live against developers.facebook.com/docs/instagram-platform/content-publishing
+# on 2026-09-15). This is a hard platform restriction, not an unvalidated gap in our own
+# implementation — PNG/WebP/GIF/HEIC are not "formats to add later", Meta structurally does
+# not accept them via `image_url`. Lives here, alongside `IMAGE_MAX_BYTES`, for the same
+# reason: a Meta-imposed limit on what this client can publish, not a property of the
+# staging/object-store layer.
+IMAGE_CONTENT_TYPE = "image/jpeg"
+
+# The first three bytes of every real JPEG file (the SOI marker `FFD8` followed by the
+# first byte of the next marker, always `FF` — every JPEG variant, including the ones
+# Meta rejects like MPO/JPS, shares this prefix since they ARE JPEG containers underneath).
+# Checked, not just the declared Content-Type: a browser or a renamed file can *say*
+# `image/jpeg` for bytes that are not — this is a real signature check, not another string
+# comparison. Doesn't distinguish MPO/JPS from a plain JPEG (both share this prefix); that
+# is a deliberately accepted gap — see `MediaStagingService._reject_non_jpeg_image`.
+JPEG_MAGIC_BYTES = b"\xff\xd8\xff"
+
 
 class PublishError(Exception):
     """A publishing call failed. Never carries the token or the response body.

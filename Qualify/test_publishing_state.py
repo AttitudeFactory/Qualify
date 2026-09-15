@@ -259,6 +259,154 @@ async def test_add_files_rejects_a_batch_that_exceeds_the_cap_with_existing_item
     assert len(state.pending_items) == 8
 
 
+# --------------------------------------------------------------------------------------
+# QUA-103 — a single JPEG image: `_resolve_media`, `add_files`, and the image+multi guard
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_files_resolves_a_jpeg_as_image_with_the_canonical_content_type() -> None:
+    state = PublishState()
+
+    result = await state.add_files(
+        [_FakeUpload(data=b"jpeg-bytes", content_type="image/jpeg", filename="pic.jpg")]
+    )
+
+    assert result is None
+    (buffered,) = state._pending_files
+    assert buffered.media_type == "IMAGE"
+    assert buffered.content_type == "image/jpeg"
+    (item,) = state.pending_items
+    assert item.kind == "image"
+
+
+@pytest.mark.asyncio
+async def test_add_files_falls_back_to_the_extension_when_content_type_is_missing() -> None:
+    """Some browsers report no (or a generic) `content_type` for a dropped file — the
+    filename extension is the explicit fallback signal, never a default to video."""
+    state = PublishState()
+
+    result = await state.add_files(
+        [_FakeUpload(data=b"jpeg-bytes", content_type="", filename="pic.jpeg")]
+    )
+
+    assert result is None
+    (buffered,) = state._pending_files
+    assert buffered.media_type == "IMAGE"
+    assert buffered.content_type == "image/jpeg"  # normalized, not the empty original
+
+
+@pytest.mark.asyncio
+async def test_add_files_rejects_a_format_it_cannot_resolve_never_assumes_video() -> None:
+    """The whole point of QUA-103's `media_type`: a PNG (or any unresolvable file) must
+    be REJECTED explicitly, never silently buffered as if it were a video."""
+    state = PublishState()
+
+    result = await state.add_files(
+        [_FakeUpload(data=b"png-bytes", content_type="image/png", filename="pic.png")]
+    )
+
+    assert result is not None  # the rejection toast EventSpec
+    assert state._pending_files == []
+    assert state.pending_items == []
+
+
+@pytest.mark.asyncio
+async def test_add_files_rejects_adding_an_image_onto_an_existing_video() -> None:
+    """Carousel-of-image / mixed-carousel is a separate, not-yet-built slice (QUA-103) —
+    the combination must be refused explicitly, not silently reach `start_many` (still
+    VIDEO-only end to end). The existing video must survive untouched."""
+    state = PublishState()
+    await state.add_files([_FakeUpload(data=b"vid", content_type="video/mp4", filename="a.mp4")])
+
+    result = await state.add_files(
+        [_FakeUpload(data=b"img", content_type="image/jpeg", filename="b.jpg")]
+    )
+
+    assert result is not None  # the rejection toast EventSpec
+    assert len(state._pending_files) == 1
+    assert state._pending_files[0].filename == "a.mp4"  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_add_files_rejects_adding_a_video_onto_an_existing_image() -> None:
+    """Same guard, the other direction: an image already alone in the gallery must
+    refuse a video joining it too."""
+    state = PublishState()
+    await state.add_files([_FakeUpload(data=b"img", content_type="image/jpeg", filename="a.jpg")])
+
+    result = await state.add_files(
+        [_FakeUpload(data=b"vid", content_type="video/mp4", filename="b.mp4")]
+    )
+
+    assert result is not None
+    assert len(state._pending_files) == 1
+    assert state._pending_files[0].filename == "a.jpg"  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_add_files_allows_a_single_image_alone() -> None:
+    """The core of this ticket's UI slice: exactly one JPEG, with nothing else selected,
+    is a perfectly valid gallery."""
+    state = PublishState()
+
+    result = await state.add_files(
+        [_FakeUpload(data=b"img", content_type="image/jpeg", filename="solo.jpg")]
+    )
+
+    assert result is None
+    assert len(state._pending_files) == 1
+    assert state._pending_files[0].media_type == "IMAGE"
+
+
+@pytest.mark.asyncio
+async def test_add_files_still_allows_an_all_video_group_of_several() -> None:
+    """Regression: QUA-99's all-video carousel selection must be completely unaffected
+    by the new image+multi guard."""
+    state = PublishState()
+
+    result = await state.add_files(
+        [
+            _FakeUpload(data=b"a", content_type="video/mp4", filename="a.mp4"),
+            _FakeUpload(data=b"b", content_type="video/mp4", filename="b.mp4"),
+            _FakeUpload(data=b"c", content_type="video/quicktime", filename="c.mov"),
+        ]
+    )
+
+    assert result is None
+    assert len(state._pending_files) == 3
+    assert all(f.media_type == "VIDEO" for f in state._pending_files)
+
+
+def test_publish_rejects_a_pending_group_mixing_image_and_video_defense_in_depth() -> None:
+    """`add_files` already refuses to buffer this combination — this is the
+    defense-in-depth recheck inside `publish()` itself, reached only if that guard is
+    ever bypassed (same posture the pre-existing `_MAX_ITEMS` recheck has)."""
+    state = PublishState()
+    state.selected_connection_id = "c-1"
+    state._pending_files = [
+        _PendingFile(content_type="video/mp4", data=b"v", filename="v.mp4", media_type="VIDEO"),
+        _PendingFile(content_type="image/jpeg", data=b"i", filename="i.jpg", media_type="IMAGE"),
+    ]
+
+    result = state.publish()
+
+    assert result is not None
+    assert state.phase == "failure"
+    assert "carrusel" in state.error.lower()
+
+
+def test_publish_background_resolves_media_product_type_from_the_single_items_own_type() -> None:
+    """Structural pin (same technique `test_publish_background_dispatches_by_item_count_
+    not_a_parallel_machine` already uses): the single-item branch must derive
+    `media_product_type` from `item.media_type`, never hardcode `"REELS"` — the exact
+    hardcode QUA-103 removes from `publishing_provider.start_publish`."""
+    source = inspect.getsource(PublishState.publish_background.fn)
+    assert "media_product_type = (" in source
+    assert "MEDIA_TYPE_IMAGE if item.media_type == MEDIA_TYPE_IMAGE else MEDIA_TYPE_REELS" in source
+    assert 'media_product_type="REELS"' not in source  # no hardcode anywhere in this function
+
+
 def test_publish_background_dispatches_by_item_count_not_a_parallel_machine() -> None:
     """Structural pin: the ONLY thing that decides which seam `publish_background` calls
     is `len(pending)` — 1 delegates to the UNCHANGED `start_publish`, 2-10 to
@@ -295,8 +443,10 @@ async def test_remove_pending_file_reindexes_the_remaining_items() -> None:
 
 def test_remove_pending_file_ignores_an_out_of_range_index() -> None:
     state = PublishState()
-    state._pending_files = [_PendingFile(content_type="video/mp4", data=b"a", filename="a.mp4")]
-    state.pending_items = [PendingItemVM(filename="a.mp4")]
+    state._pending_files = [
+        _PendingFile(content_type="video/mp4", data=b"a", filename="a.mp4", media_type="VIDEO")
+    ]
+    state.pending_items = [PendingItemVM(filename="a.mp4", kind="video")]
 
     state.remove_pending_file(5)
 
@@ -307,8 +457,10 @@ def test_remove_pending_file_ignores_an_out_of_range_index() -> None:
 def test_remove_pending_file_is_a_no_op_while_a_publish_is_in_flight() -> None:
     state = PublishState()
     state.phase = "polling"
-    state._pending_files = [_PendingFile(content_type="video/mp4", data=b"a", filename="a.mp4")]
-    state.pending_items = [PendingItemVM(filename="a.mp4")]
+    state._pending_files = [
+        _PendingFile(content_type="video/mp4", data=b"a", filename="a.mp4", media_type="VIDEO")
+    ]
+    state.pending_items = [PendingItemVM(filename="a.mp4", kind="video")]
 
     state.remove_pending_file(0)
 
@@ -328,7 +480,7 @@ def test_can_publish_requires_a_connection_and_at_least_one_pending_item() -> No
     state.selected_connection_id = "c-1"
     assert state.can_publish is False  # connection chosen, still nothing to publish
 
-    state.pending_items = [PendingItemVM(filename="a.mp4")]
+    state.pending_items = [PendingItemVM(filename="a.mp4", kind="video")]
     assert state.can_publish is True
 
     state.phase = "polling"
@@ -339,7 +491,7 @@ def test_remaining_slots_counts_down_from_the_cap() -> None:
     state = PublishState()
     assert state.remaining_slots == _MAX_ITEMS
 
-    state.pending_items = [PendingItemVM(filename=f"{i}.mp4") for i in range(4)]
+    state.pending_items = [PendingItemVM(filename=f"{i}.mp4", kind="video") for i in range(4)]
     assert state.remaining_slots == _MAX_ITEMS - 4
 
 
@@ -410,9 +562,14 @@ async def test_fail_pending_attempt_clears_the_buffer_and_records_the_error() ->
     state.phase = "staging_and_starting"
     state._idempotency_key = "k-1"
     state._pending_files = [
-        _PendingFile(content_type="video/mp4", data=b"a-whole-reel", filename="reel.mp4")
+        _PendingFile(
+            content_type="video/mp4",
+            data=b"a-whole-reel",
+            filename="reel.mp4",
+            media_type="VIDEO",
+        )
     ]
-    state.pending_items = [PendingItemVM(filename="reel.mp4")]
+    state.pending_items = [PendingItemVM(filename="reel.mp4", kind="video")]
 
     await state._fail_pending_attempt("k-1", "algo salió mal")
 
@@ -430,10 +587,15 @@ async def test_fail_pending_attempt_ignores_a_superseded_key() -> None:
     state.phase = "polling"  # the newer attempt has already moved past staging
     state._idempotency_key = "k-2"  # the newer attempt's key
     newer_files = [
-        _PendingFile(content_type="video/mp4", data=b"newer-attempts-bytes", filename="n.mp4")
+        _PendingFile(
+            content_type="video/mp4",
+            data=b"newer-attempts-bytes",
+            filename="n.mp4",
+            media_type="VIDEO",
+        )
     ]
     state._pending_files = newer_files
-    newer_items = [PendingItemVM(filename="n.mp4")]
+    newer_items = [PendingItemVM(filename="n.mp4", kind="video")]
     state.pending_items = newer_items
     state.error = ""
 
@@ -449,19 +611,20 @@ def test_every_failure_branch_in_publish_background_uses_the_shared_release_help
     """Pins the fix structurally: the pre-staging `tenant_id is None` branch, the 5
     original exception branches (`R2ConfigurationError`, `(ObjectSizeExceeded,
     UnsizedStream)`, `(TenantPrefixViolation, ValueError)`, `UnknownConnection`,
-    `Exception`), plus `TooManyItems` (QUA-99, 6/6, defense-in-depth behind `publish`'s
-    own earlier rejection) — 7 sites total — must all route through
-    `_fail_pending_attempt`. That is what makes the release unconditional. A future edit
-    that reintroduces an inline `self.phase = "failure"` in one of them would silently
-    reopen the buffer-retention bug this test guards against.
+    `Exception`), `TooManyItems` (QUA-99, 6/6, defense-in-depth behind `publish`'s own
+    earlier rejection), plus `UnsupportedImageFormat` (QUA-103 — a mislabeled/renamed
+    non-JPEG file caught by the magic-byte check) — 8 sites total — must all route
+    through `_fail_pending_attempt`. That is what makes the release unconditional. A
+    future edit that reintroduces an inline `self.phase = "failure"` in one of them
+    would silently reopen the buffer-retention bug this test guards against.
     """
     # `PublishState.publish_background` (class-level access) is an `EventHandler`
     # wrapper, not the plain function — `.fn` is the underlying coroutine function
     # `inspect.getsource` needs.
     source = inspect.getsource(PublishState.publish_background.fn)
-    assert source.count("_fail_pending_attempt(idempotency_key,") == 7, (
-        "expected exactly 7 call sites: tenant_id is None + 5 original exception "
-        "branches + TooManyItems (QUA-99, 6/6)"
+    assert source.count("_fail_pending_attempt(idempotency_key,") == 8, (
+        "expected exactly 8 call sites: tenant_id is None + 5 original exception "
+        "branches + TooManyItems (QUA-99, 6/6) + UnsupportedImageFormat (QUA-103)"
     )
     # No branch may set failure state directly anymore — that was the leaky pattern.
     assert 'self.phase = "failure"' not in source.replace(

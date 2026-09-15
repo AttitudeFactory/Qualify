@@ -45,7 +45,14 @@ from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 import reflex as rx
+from qualify_api.publishing import (
+    IMAGE_CONTENT_TYPE,
+    MEDIA_TYPE_IMAGE,
+    MEDIA_TYPE_REELS,
+    MEDIA_TYPE_VIDEO,
+)
 from qualify_api.publishing.service import TooManyItems, UnknownAttempt, UnknownConnection
+from qualify_api.publishing.staging import UnsupportedImageFormat
 from qualify_shared.objects.config import R2ConfigurationError
 from qualify_shared.objects.gate import ObjectSizeExceeded, UnsizedStream
 from qualify_shared.objects.keys import TenantPrefixViolation
@@ -70,7 +77,25 @@ _NO_CONNECTIONS = "No se pudieron cargar las cuentas conectadas."
 _NO_CONNECTION_SELECTED = "Elige una cuenta conectada antes de publicar."
 _NOT_CONFIGURED = "El almacenamiento (R2) todavía no está configurado en este entorno."
 _TOO_LARGE = "El video supera el tamaño máximo permitido (300 MB)."
-_BAD_MEDIA = "No se pudo leer el archivo subido. Intenta con otro video."
+_IMAGE_TOO_LARGE = "La imagen supera el tamaño máximo permitido (8 MB)."
+_BAD_MEDIA = "No se pudo leer el archivo subido. Intenta con otro archivo."
+# QUA-103 — `add_files` never guesses a type for a file it cannot resolve (no fallback to
+# VIDEO/REELS); this is what a rejection reads as instead.
+_UNSUPPORTED_FORMAT = "Formato no soportado. Usa JPG/JPEG para imagen, o MP4/MOV para video."
+# QUA-103 — the ONE real content check (magic bytes), server-side, for the case a file
+# passed the extension/content_type check above but its actual bytes are not a JPEG.
+_UNSUPPORTED_IMAGE_FORMAT = (
+    "El archivo no es un JPEG válido. Solo se aceptan imágenes JPEG (.jpg/.jpeg) — "
+    "PNG, WebP, GIF y HEIC no son compatibles con Instagram."
+)
+# QUA-103 — carousel-of-images and mixed image+video carousels are a separate, not-yet-
+# built slice (image support in `_advance_children`/`start_many` is still VIDEO-only) —
+# this blocks the combination explicitly instead of letting it reach a confusing Meta
+# failure. A single image, or any all-video group (1-10), is unaffected.
+_IMAGE_CAROUSEL_NOT_SUPPORTED = (
+    "Los carruseles con imágenes todavía no están soportados. Publica la imagen sola, "
+    "o arma el carrusel solo con videos."
+)
 _UNKNOWN_CONNECTION = "Esa cuenta ya no está disponible. Actualiza la lista e intenta de nuevo."
 _START_FAILED = "No se pudo iniciar la publicación. Vuelve a intentarlo en un momento."
 _POLL_FAILED = "No se pudo consultar el estado de la publicación."
@@ -80,7 +105,7 @@ _POLL_FAILED = "No se pudo consultar el estado de la publicación."
 # this, same "server-side guard is the real invariant" posture the double-submit check
 # below already documents.
 _MAX_ITEMS = 10
-_TOO_MANY = f"Puedes publicar hasta {_MAX_ITEMS} videos a la vez."
+_TOO_MANY = f"Puedes publicar hasta {_MAX_ITEMS} archivos a la vez."
 # QUA-99 UX follow-up: shown next to the polling status so a real, multi-minute wait for
 # Meta reads as "working", not "frozen" — the audit of attempt 94e09568-... (2026-09-10)
 # measured 6 min 8 s end to end for a 2-video carousel with zero errors/retries, entirely
@@ -152,16 +177,70 @@ class _PendingFile:
 
     `filename` (gallery redesign, QUA-99 UX follow-up) exists ONLY to back the matching
     entry in the public `pending_items` — never read by `publish_background`/the Meta
-    call chain, which only ever needed `content_type`/`data`."""
+    call chain, which only ever needed `content_type`/`data`.
+
+    `media_type` (QUA-103) is `MEDIA_TYPE_IMAGE`/`MEDIA_TYPE_VIDEO` — resolved once, in
+    `add_files`, by `_resolve_media` below, and never re-derived or defaulted anywhere
+    downstream. `content_type` is the CANONICAL value for that type (`IMAGE_CONTENT_TYPE`
+    for an image, the matched video MIME for a video) — not necessarily byte-for-byte what
+    the browser reported, since a browser can omit/mangle it; `_resolve_media` is the one
+    place that reconciles the two, explicitly, never silently."""
 
     content_type: str
     data: bytes
     filename: str
+    media_type: str
+
+
+# QUA-103 — the dropzone's own `accept` (`publishing_page.py`) already restricts the
+# picker to these, but a drag-and-drop can still hand `add_files` something else (some
+# browsers report no `content_type` at all for a dropped file, or a generic one) — these
+# are the SAME extensions `accept` advertises, used here only as the explicit fallback
+# signal, never silently assumed.
+_JPEG_EXTENSIONS = (".jpg", ".jpeg")
+_MP4_CONTENT_TYPE = "video/mp4"
+_MOV_CONTENT_TYPE = "video/quicktime"
+_VIDEO_CONTENT_TYPES = {_MP4_CONTENT_TYPE, _MOV_CONTENT_TYPE}
+
+
+def _resolve_media(content_type: str | None, filename: str) -> tuple[str, str] | None:
+    """Resolve `(media_type, canonical_content_type)` for one dropped/picked file
+    (QUA-103) — or `None` if it cannot be resolved at all. The caller MUST reject the
+    file on `None`; there is no default here, and in particular NEVER a fallback to
+    `MEDIA_TYPE_VIDEO` for a file whose type could not be determined — that silent
+    coercion is exactly what QUA-103 forbids (a `.png`/`.heic`/unlabeled file must never
+    quietly become "a video").
+
+    The browser's declared `content_type` is trusted first (`image/jpeg` → IMAGE;
+    `video/mp4`/`video/quicktime` → VIDEO). When it is missing or something else
+    entirely (some browsers report a blank or a generic `application/octet-stream` type
+    for a drag-and-dropped file), the filename extension is the explicit fallback
+    signal — still a real, named check, never a default. This function only decides
+    which Meta call to route to; it is NOT the format's real security boundary — a
+    mislabeled file (right extension, wrong bytes) is caught server-side by
+    `MediaStagingService`'s JPEG magic-byte check regardless of what this returns.
+    """
+    ct = (content_type or "").strip().lower()
+    if ct == IMAGE_CONTENT_TYPE:
+        return MEDIA_TYPE_IMAGE, IMAGE_CONTENT_TYPE
+    if ct in _VIDEO_CONTENT_TYPES:
+        return MEDIA_TYPE_VIDEO, ct
+    name = filename.lower()
+    if name.endswith(_JPEG_EXTENSIONS):
+        return MEDIA_TYPE_IMAGE, IMAGE_CONTENT_TYPE
+    if name.endswith(".mp4"):
+        return MEDIA_TYPE_VIDEO, _MP4_CONTENT_TYPE
+    if name.endswith(".mov"):
+        return MEDIA_TYPE_VIDEO, _MOV_CONTENT_TYPE
+    return None
 
 
 class PublishState(rx.State):
-    """State for the "Publicar" screen: pick a connected account, upload 1-10 videos
-    (2-10 publish as one carousel, QUA-99), publish."""
+    """State for the "Publicar" screen: pick a connected account, upload 1-10 files —
+    JPEG images or MP4/MOV videos — and publish. A single file publishes as-is (an
+    image or a reel, QUA-103); 2-10 files publish together as one carousel, VIDEO-ONLY
+    for now (QUA-99) — a group containing any image is rejected until carousel-of-image
+    support lands (`_IMAGE_CAROUSEL_NOT_SUPPORTED`)."""
 
     connections: list[ConnectionOptionVM] = []
     is_loading_connections: bool = False
@@ -358,10 +437,14 @@ class PublishState(rx.State):
         new_pending: list[_PendingFile] = []
         new_items: list[PendingItemVM] = []
         for upload in files:
-            content_type = getattr(upload, "content_type", None) or "video/mp4"
             filename = (
-                getattr(upload, "filename", None) or getattr(upload, "name", None) or "video.mp4"
+                getattr(upload, "filename", None) or getattr(upload, "name", None) or "archivo"
             )
+            # QUA-103: resolved EXPLICITLY, never defaulted to video — see `_resolve_media`.
+            resolved = _resolve_media(getattr(upload, "content_type", None), filename)
+            if resolved is None:
+                return _failure_toast(_UNSUPPORTED_FORMAT)
+            media_type, content_type = resolved
             try:
                 data = await upload.read()
             except Exception:
@@ -369,11 +452,25 @@ class PublishState(rx.State):
                 # rejected selection — no phase change, existing buffer untouched.
                 return _failure_toast(_BAD_MEDIA)
             new_pending.append(
-                _PendingFile(content_type=content_type, data=data, filename=filename)
+                _PendingFile(
+                    content_type=content_type, data=data, filename=filename, media_type=media_type
+                )
             )
-            new_items.append(PendingItemVM(filename=filename))
+            new_items.append(
+                PendingItemVM(
+                    filename=filename, kind="image" if media_type == MEDIA_TYPE_IMAGE else "video"
+                )
+            )
 
-        self._pending_files = self._pending_files + new_pending
+        # QUA-103: carousel-of-image / mixed-carousel is a separate, not-yet-built slice —
+        # reject the COMBINATION explicitly (checked against what the gallery would hold
+        # AFTER this add) rather than let it silently reach `start_many`, which is still
+        # VIDEO-only end to end. A single image, and any all-video group, is unaffected.
+        combined = self._pending_files + new_pending
+        if len(combined) > 1 and any(f.media_type == MEDIA_TYPE_IMAGE for f in combined):
+            return _failure_toast(_IMAGE_CAROUSEL_NOT_SUPPORTED)
+
+        self._pending_files = combined
         self.pending_items = self.pending_items + new_items
         return None
 
@@ -429,6 +526,14 @@ class PublishState(rx.State):
             self.phase = "failure"
             self.error = _TOO_MANY
             return _failure_toast(_TOO_MANY)
+        if len(self._pending_files) > 1 and any(
+            f.media_type == MEDIA_TYPE_IMAGE for f in self._pending_files
+        ):
+            # Defense-in-depth: `add_files` already refuses to buffer this combination.
+            # Reached only if that guard is ever bypassed.
+            self.phase = "failure"
+            self.error = _IMAGE_CAROUSEL_NOT_SUPPORTED
+            return _failure_toast(_IMAGE_CAROUSEL_NOT_SUPPORTED)
 
         self._idempotency_key = uuid4().hex
         self.phase = "staging_and_starting"
@@ -468,15 +573,17 @@ class PublishState(rx.State):
         """Stage the bytes `publish` captured and start a publish attempt, then hand off
         to polling. Reads everything it needs from the private vars `publish` set.
 
-        QUA-99 (6/6): the only new decision here is `len(pending)` — 1 item calls
-        `start_publish` (UNCHANGED code path, byte-for-byte the same call QUA-19 always
-        made), 2-10 calls `start_many_publish` (QUA-99 5/6). Everything AFTER that split
-        — the try/except tree, the phase transitions, the toasts, the poll handoff — is
-        the SAME code for both: one unified machine, not two parallel ones. Both provider
-        functions raise the same exception set (R2ConfigurationError,
-        ObjectSizeExceeded/UnsizedStream, TenantPrefixViolation/ValueError,
-        UnknownConnection), plus `TooManyItems` for the multi path only — a single
-        `except` clause covers it too, as defense-in-depth behind `publish`'s own
+        QUA-99 (6/6): the first decision here is `len(pending)` — 1 item calls
+        `start_publish`, 2-10 calls `start_many_publish` (QUA-99 5/6, still VIDEO-only —
+        `publish()`'s own guard keeps an IMAGE out of this branch). QUA-103 adds a second
+        decision, only for the single-item path: `media_product_type` is resolved from
+        that one item's own `media_type` (`"IMAGE"` or `"REELS"`), never hardcoded.
+        Everything AFTER either split — the try/except tree, the phase transitions, the
+        toasts, the poll handoff — is the SAME code for every case: one unified machine.
+        Both provider functions raise the same exception set (R2ConfigurationError,
+        UnsupportedImageFormat, ObjectSizeExceeded/UnsizedStream, TenantPrefixViolation/
+        ValueError, UnknownConnection), plus `TooManyItems` for the multi path only — a
+        single `except` clause covers it too, as defense-in-depth behind `publish`'s own
         earlier, cheaper rejection.
         """
         async with self:
@@ -509,11 +616,18 @@ class PublishState(rx.State):
         try:
             if len(pending) == 1:
                 item = pending[0]
+                # QUA-103: resolved from the ONE pending item's own type — never
+                # hardcoded. `start_publish` itself no longer accepts a default; passing
+                # nothing here would be a `TypeError`, not a silent "REELS".
+                media_product_type = (
+                    MEDIA_TYPE_IMAGE if item.media_type == MEDIA_TYPE_IMAGE else MEDIA_TYPE_REELS
+                )
                 attempt = await start_publish(
                     tenant_id=tenant_id,
                     connection_id=UUID(connection_id),
                     fileobj=io.BytesIO(item.data),
                     content_type=item.content_type,
+                    media_product_type=media_product_type,
                     caption=caption,
                     idempotency_key=idempotency_key,
                 )
@@ -522,7 +636,11 @@ class PublishState(rx.State):
                     tenant_id=tenant_id,
                     connection_id=UUID(connection_id),
                     items=[
-                        PendingUpload(fileobj=io.BytesIO(p.data), content_type=p.content_type)
+                        PendingUpload(
+                            fileobj=io.BytesIO(p.data),
+                            content_type=p.content_type,
+                            media_type=p.media_type,
+                        )
                         for p in pending
                     ],
                     caption=caption,
@@ -533,8 +651,24 @@ class PublishState(rx.State):
             if toast is not None:
                 yield toast
             return
+        except UnsupportedImageFormat:
+            # QUA-103: the declared content_type/extension said JPEG, but the actual
+            # bytes are not (magic-byte check, `MediaStagingService`) — a mislabeled or
+            # renamed non-JPEG file, never a silent accept.
+            toast = await self._fail_pending_attempt(idempotency_key, _UNSUPPORTED_IMAGE_FORMAT)
+            if toast is not None:
+                yield toast
+            return
         except (ObjectSizeExceeded, UnsizedStream):
-            toast = await self._fail_pending_attempt(idempotency_key, _TOO_LARGE)
+            # QUA-103: distinguishes the 8 MB IMAGE ceiling from the 300 MB VIDEO one —
+            # both exceptions are shared vocabulary (`gate.py`/`staging.py`), only the
+            # MESSAGE differs, based on what was actually being published.
+            size_message = (
+                _IMAGE_TOO_LARGE
+                if len(pending) == 1 and pending[0].media_type == MEDIA_TYPE_IMAGE
+                else _TOO_LARGE
+            )
+            toast = await self._fail_pending_attempt(idempotency_key, size_message)
             if toast is not None:
                 yield toast
             return

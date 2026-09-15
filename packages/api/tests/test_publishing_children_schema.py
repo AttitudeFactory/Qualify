@@ -1,13 +1,16 @@
-"""`db`-marked schema tests for migration 0016 (QUA-99, 2/6) — `publish_attempt_children`.
+"""`db`-marked schema tests for migrations 0016/0018 — `publish_attempt_children`.
 
 Schema only, same posture `test_publishing_inbox_schema.py` takes for 0003/0004: these
-assert what the DATABASE enforces, not what a repository remembers to do. This table is
-not read or written by any service/repository code yet (that is commits 3/6 and 4/6) —
-these tests insert raw SQL rows directly, the way `test_publishing_inbox_schema.py`
-already does for `publish_attempts`/`messages`.
+assert what the DATABASE enforces, not what a repository remembers to do. This table's
+service/repository wiring lands in QUA-103 — these tests insert raw SQL rows directly, the
+way `test_publishing_inbox_schema.py` already does for `publish_attempts`/`messages`.
 
-VIDEO-ONLY scope, pinned by test: `media_product_type` accepts only the three values
-`publish_attempts` already accepts. No IMAGE value exists in this migration.
+`media_product_type` accepts `REELS`/`STORIES`/`VIDEO` (0016, QUA-99) and, since 0018
+(QUA-103), `IMAGE` too — the CHECK widened, nothing else about this table changed. An
+arbitrary unrecognised value (e.g. `'GIF'`) is still rejected: that test is about the
+`media_product_type` CATEGORY column, unrelated to the JPEG-only MIME whitelist QUA-103
+enforces at the application layer in `MediaStagingService` — this table's `media_content_type`
+column is, and always was, a free `Text` with no CHECK on it.
 """
 
 from __future__ import annotations
@@ -112,26 +115,18 @@ def _insert_child(
 
 
 # --------------------------------------------------------------------------------------
-# VIDEO-ONLY scope
+# media_product_type — REELS/STORIES/VIDEO (0016) + IMAGE (0018, QUA-103)
 # --------------------------------------------------------------------------------------
 
 
-def test_video_media_product_types_are_accepted(seeded_connection: tuple[UUID, UUID]) -> None:
+def test_video_and_image_media_product_types_are_accepted(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
     tenant_id, connection_id = seeded_connection
     with tenant_session(tenant_id) as session:
         attempt_id = _insert_attempt(session, tenant_id, connection_id)
-        for i, media_type in enumerate(("REELS", "STORIES", "VIDEO")):
+        for i, media_type in enumerate(("REELS", "STORIES", "VIDEO", "IMAGE")):
             _insert_child(session, tenant_id, attempt_id, i, media_product_type=media_type)
-
-
-def test_image_media_product_type_is_rejected(seeded_connection: tuple[UUID, UUID]) -> None:
-    """QUA-99 is video-only in this PR — IMAGE has no code path yet, and the schema
-    itself refuses to store one, not just the (nonexistent) service layer."""
-    tenant_id, connection_id = seeded_connection
-    with pytest.raises(IntegrityError):
-        with tenant_session(tenant_id) as session:
-            attempt_id = _insert_attempt(session, tenant_id, connection_id)
-            _insert_child(session, tenant_id, attempt_id, 0, media_product_type="IMAGE")
 
 
 def test_an_unrecognised_media_product_type_is_rejected(

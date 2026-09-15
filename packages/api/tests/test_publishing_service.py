@@ -254,7 +254,9 @@ class Harness:
         for i in range(n):
             key = f"t/{TENANT}/media/{CONNECTION}/child-{i}"
             self.store.objects[key] = (f"video-bytes-{i}".encode(), "video/mp4")
-            items.append(MediaItem(media_object_key=key, content_type="video/mp4"))
+            items.append(
+                MediaItem(media_object_key=key, content_type="video/mp4", media_type="VIDEO")
+            )
             containers.append(
                 ResumableContainer(container_id=f"child-c-{i}", upload_uri=f"https://rupload/{i}")
             )
@@ -668,6 +670,26 @@ async def test_ceiling_never_overrides_a_sent_publish() -> None:
 
     state = await h.advance(attempt_id)
     assert not state.settled and state.awaiting_confirmation
+
+
+# --------------------------------------------------------------------------------------
+# QUA-103 — MediaItem.media_type is required, with no default
+# --------------------------------------------------------------------------------------
+
+
+def test_media_item_requires_media_type_explicitly() -> None:
+    """Constructing a `MediaItem` without `media_type` is a `TypeError` — never a
+    silent `"VIDEO"`. This is the whole point of the field: an unresolvable item must
+    fail loudly at construction, not quietly become a video publish against Meta."""
+    with pytest.raises(TypeError):
+        MediaItem(media_object_key="t/x/media/y/z", content_type="video/mp4")  # type: ignore[call-arg]
+
+
+def test_media_item_accepts_video_and_image_media_type() -> None:
+    video = MediaItem(media_object_key="k1", content_type="video/mp4", media_type="VIDEO")
+    image = MediaItem(media_object_key="k2", content_type="image/jpeg", media_type="IMAGE")
+    assert video.media_type == "VIDEO"
+    assert image.media_type == "IMAGE"
 
 
 # --------------------------------------------------------------------------------------

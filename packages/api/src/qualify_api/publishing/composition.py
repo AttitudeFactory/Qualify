@@ -24,7 +24,7 @@ from qualify_api.connections.credential_reader import DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor, Encryptor
 from qualify_api.connections.models import SocialConnection
 from qualify_api.connections.resolver import InjectingCredentialResolver
-from qualify_api.publishing.client import MEDIA_TYPE_VIDEO, HttpPublishClient, PublishClient
+from qualify_api.publishing.client import HttpPublishClient, PublishClient
 from qualify_api.publishing.media_token import MediaTokenStore
 from qualify_api.publishing.repository import PostgresPublishAttemptRepository
 from qualify_api.publishing.service import (
@@ -201,20 +201,34 @@ async def stage_and_start_publish(
 
 @dataclass(frozen=True)
 class PendingUpload:
-    """One not-yet-staged file for a multi-video (carousel) publish request (QUA-99,
+    """One not-yet-staged file for a multi-item (carousel) publish request (QUA-99,
     5/6) — the composition-layer counterpart of `publishing.service.MediaItem`, BEFORE
-    staging turns raw bytes into an R2 object key. VIDEO-ONLY, same posture `MediaItem`
-    already takes: no media_type field — every item is staged and later created as
-    `MEDIA_TYPE_VIDEO`, regardless of what the single-item path would use (`REELS`).
+    staging turns raw bytes into an R2 object key.
+
+    `media_type` (QUA-103) is **required, with no default** — same posture `MediaItem`
+    takes, and for the same reason: propagated verbatim from `publishing_state.py`,
+    never guessed here. `stage_and_start_many_publish` below still only ever exercises
+    this with `"VIDEO"` items in this PR (`PublishState.publish` refuses a multi-item
+    batch containing an IMAGE — see `publishing_state.py`'s own guard — so the carousel
+    orchestration itself does not need to branch on this value yet).
     """
 
     fileobj: IO[bytes]
     content_type: str
+    media_type: str
 
 
 async def _stage_one(*, tenant_id: UUID, connection_id: UUID, pending: PendingUpload) -> MediaItem:
     """One item's R2 upload, in its own coroutine so `stage_and_start_many_publish`
-    below can run N of these concurrently via `asyncio.gather`."""
+    below can run N of these concurrently via `asyncio.gather`.
+
+    `media_product_type` passed to `stage_media` is `pending.media_type` verbatim, not a
+    hardcoded `MEDIA_TYPE_VIDEO` — QUA-103 requires no implicit IMAGE→VIDEO coercion
+    anywhere in this chain. In practice this is always `"VIDEO"` today (the caller-side
+    guard above keeps IMAGE out of a multi-item batch), but the plumbing itself makes no
+    assumption about that — a stale caller check would fail loudly against Meta's own
+    resumable-upload validation, not silently upload image bytes as a video container.
+    """
     staged = await asyncio.to_thread(
         production_staging_service().stage_media,
         tenant_id=tenant_id,
@@ -222,9 +236,13 @@ async def _stage_one(*, tenant_id: UUID, connection_id: UUID, pending: PendingUp
         media_id=uuid4().hex,
         fileobj=pending.fileobj,
         content_type=pending.content_type,
-        media_product_type=MEDIA_TYPE_VIDEO,
+        media_product_type=pending.media_type,
     )
-    return MediaItem(media_object_key=staged.media_object_key, content_type=pending.content_type)
+    return MediaItem(
+        media_object_key=staged.media_object_key,
+        content_type=pending.content_type,
+        media_type=pending.media_type,
+    )
 
 
 async def stage_and_start_many_publish(

@@ -208,16 +208,23 @@ class ChildStatus:
 
 @dataclass(frozen=True)
 class MediaItem:
-    """One item of a multi-video (carousel) publish request (QUA-99, 4/6) — VIDEO-ONLY.
+    """One item of a multi-item (carousel) publish request (QUA-99, 4/6; `media_type`
+    added QUA-103).
 
-    No media_type field: every carousel child is created with `MEDIA_TYPE_VIDEO`, fixed,
-    the same way `start_many`'s single-item path fixes `MEDIA_TYPE_REELS` below — neither
-    varies per call in this PR. Adding IMAGE later is an additive field on this type, not
-    a rewrite of it — and no such field exists yet, on purpose: QUA-68 has not landed.
+    `media_type` is **required, with no default** — `"VIDEO"` or `"IMAGE"` (the same
+    vocabulary `PublishAttemptChild.media_product_type` accepts since migration 0018).
+    Omitting it is a `TypeError` at construction time, never a silent `"VIDEO"`: a caller
+    that cannot resolve an item's type (e.g. an incomplete deserialization from Reflex)
+    must fail loudly here, not publish the wrong container type against Meta. `start_many`
+    (below) still hardcodes every child to `MEDIA_TYPE_VIDEO` in this PR — this field is
+    plumbed through the type so a caller can construct a correctly-typed item today, but
+    the carousel orchestration itself does not yet read it (that bifurcation is QUA-103's
+    next slice, not this one).
     """
 
     media_object_key: str
     content_type: str
+    media_type: str
 
 
 def _send_was_emitted(record: AttemptRecord) -> bool:
