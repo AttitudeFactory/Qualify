@@ -347,6 +347,36 @@ async def test_create_image_container_omits_caption_when_not_given() -> None:
     assert "caption" not in seen
 
 
+async def test_create_image_container_sends_is_carousel_item_when_true() -> None:
+    """QUA-103, confirmed against Meta real 2026-09-15: an image container accepts
+    `is_carousel_item=true` exactly like `create_container`'s video containers do —
+    same string encoding (`"true"`, not a JSON boolean), same param name."""
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        return _json({"id": IMAGE_CONTAINER})
+
+    await _client(handler).create_image_container(
+        ig_user_id=IG_USER, image_url="https://x/y", is_carousel_item=True
+    )
+    assert seen["is_carousel_item"] == "true"
+
+
+async def test_create_image_container_omits_is_carousel_item_by_default() -> None:
+    """A standalone image post (QUA-68) must not silently start carrying
+    `is_carousel_item` — the default stays `False`, and `False` means the param is
+    absent entirely, not sent as `"false"`."""
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        return _json({"id": IMAGE_CONTAINER})
+
+    await _client(handler).create_image_container(ig_user_id=IG_USER, image_url="https://x/y")
+    assert "is_carousel_item" not in seen
+
+
 async def test_create_image_container_never_touches_rupload() -> None:
     """Nothing is ever uploaded for an image container — Meta fetches `image_url` itself.
     Same posture `test_create_carousel_container_never_touches_upload_or_publish` already

@@ -99,8 +99,13 @@ class FakePublishClient:
         # every one of them for a reason that has nothing to do with what they test. This
         # list is exactly as inspectable — `len(image_container_calls)` is the count.
         self.image_container_id = "image-container-1"
+        # QUA-103 — same shape `container_sequence` gives VIDEO children: a carrousel of
+        # N images needs N DISTINCT container ids, not N copies of `image_container_id`.
+        # `None` (the default) preserves every pre-existing (single-image) test's
+        # behaviour byte-for-byte.
+        self.image_container_sequence: list[str] | None = None
         self.create_image_error: Exception | None = None
-        self.image_container_calls: list[dict[str, str]] = []
+        self.image_container_calls: list[dict[str, object]] = []
         self.calls = {"create": 0, "upload": 0, "status": 0, "publish": 0, "create_carousel": 0}
         self.upload_sizes: list[int] = []
 
@@ -128,11 +133,24 @@ class FakePublishClient:
         return self.carousel_container_id
 
     async def create_image_container(
-        self, *, ig_user_id: str, image_url: str, caption: str | None = None
+        self,
+        *,
+        ig_user_id: str,
+        image_url: str,
+        caption: str | None = None,
+        is_carousel_item: bool = False,
     ) -> str:
-        self.image_container_calls.append({"ig_user_id": ig_user_id, "image_url": image_url})
+        self.image_container_calls.append(
+            {
+                "ig_user_id": ig_user_id,
+                "image_url": image_url,
+                "is_carousel_item": is_carousel_item,
+            }
+        )
         if self.create_image_error is not None:
             raise self.create_image_error
+        if self.image_container_sequence:
+            return self.image_container_sequence.pop(0)
         return self.image_container_id
 
     async def upload_bytes(self, *, upload_uri: str, fileobj, file_size: int) -> UploadOutcome:
@@ -254,11 +272,64 @@ class Harness:
         for i in range(n):
             key = f"t/{TENANT}/media/{CONNECTION}/child-{i}"
             self.store.objects[key] = (f"video-bytes-{i}".encode(), "video/mp4")
-            items.append(MediaItem(media_object_key=key, content_type="video/mp4"))
+            items.append(
+                MediaItem(media_object_key=key, content_type="video/mp4", media_type="VIDEO")
+            )
             containers.append(
                 ResumableContainer(container_id=f"child-c-{i}", upload_uri=f"https://rupload/{i}")
             )
         self.client.container_sequence = containers
+        return items
+
+    def stage_images(self, n: int) -> list[MediaItem]:
+        """IMAGE counterpart of `stage_videos` above (QUA-103) — real JPEG magic bytes
+        (unused by this fake client, but consistent with every other IMAGE fixture in
+        this repo), N distinct object keys, N distinct pre-loaded image container ids
+        (`image_container_sequence`, the IMAGE analogue of `container_sequence`)."""
+        items = []
+        container_ids = []
+        for i in range(n):
+            key = f"t/{TENANT}/media/{CONNECTION}/child-img-{i}"
+            self.store.objects[key] = (f"\xff\xd8\xff-image-bytes-{i}".encode(), "image/jpeg")
+            items.append(
+                MediaItem(media_object_key=key, content_type="image/jpeg", media_type="IMAGE")
+            )
+            container_ids.append(f"child-img-c-{i}")
+        self.client.image_container_sequence = container_ids
+        return items
+
+    def stage_mixed(self, kinds: list[str]) -> list[MediaItem]:
+        """One item per entry in `kinds` (`"VIDEO"`/`"IMAGE"`), in that exact order —
+        QUA-103. Preloads BOTH queues (`container_sequence` for the VIDEO children,
+        `image_container_sequence` for the IMAGE ones) with distinct ids, since a mixed
+        batch's children call two different client methods depending on each child's own
+        type — same reasoning `stage_videos`/`stage_images` already document, just split
+        across two queues instead of one."""
+        items: list[MediaItem] = []
+        video_containers: list[ResumableContainer] = []
+        image_container_ids: list[str] = []
+        for i, kind in enumerate(kinds):
+            key = f"t/{TENANT}/media/{CONNECTION}/child-{i}"
+            if kind == "VIDEO":
+                self.store.objects[key] = (f"video-bytes-{i}".encode(), "video/mp4")
+                items.append(
+                    MediaItem(media_object_key=key, content_type="video/mp4", media_type="VIDEO")
+                )
+                video_containers.append(
+                    ResumableContainer(
+                        container_id=f"child-c-{i}", upload_uri=f"https://rupload/{i}"
+                    )
+                )
+            elif kind == "IMAGE":
+                self.store.objects[key] = (f"\xff\xd8\xff-image-bytes-{i}".encode(), "image/jpeg")
+                items.append(
+                    MediaItem(media_object_key=key, content_type="image/jpeg", media_type="IMAGE")
+                )
+                image_container_ids.append(f"child-img-c-{i}")
+            else:  # pragma: no cover — a test-authoring mistake, not a runtime case
+                raise ValueError(f"unknown kind {kind!r}, expected 'VIDEO' or 'IMAGE'")
+        self.client.container_sequence = video_containers
+        self.client.image_container_sequence = image_container_ids
         return items
 
     async def start_many(
@@ -671,6 +742,26 @@ async def test_ceiling_never_overrides_a_sent_publish() -> None:
 
 
 # --------------------------------------------------------------------------------------
+# QUA-103 — MediaItem.media_type is required, with no default
+# --------------------------------------------------------------------------------------
+
+
+def test_media_item_requires_media_type_explicitly() -> None:
+    """Constructing a `MediaItem` without `media_type` is a `TypeError` — never a
+    silent `"VIDEO"`. This is the whole point of the field: an unresolvable item must
+    fail loudly at construction, not quietly become a video publish against Meta."""
+    with pytest.raises(TypeError):
+        MediaItem(media_object_key="t/x/media/y/z", content_type="video/mp4")  # type: ignore[call-arg]
+
+
+def test_media_item_accepts_video_and_image_media_type() -> None:
+    video = MediaItem(media_object_key="k1", content_type="video/mp4", media_type="VIDEO")
+    image = MediaItem(media_object_key="k2", content_type="image/jpeg", media_type="IMAGE")
+    assert video.media_type == "VIDEO"
+    assert image.media_type == "IMAGE"
+
+
+# --------------------------------------------------------------------------------------
 # QUA-99 (4/6) — multi-video (carousel) orchestration
 # --------------------------------------------------------------------------------------
 
@@ -970,6 +1061,129 @@ async def test_carousel_children_use_video_media_type_with_is_carousel_item() ->
     for call in h.client.create_container_calls:
         assert call["media_type"] == "VIDEO"
         assert call["is_carousel_item"] is True
+
+
+# --------------------------------------------------------------------------------------
+# QUA-103 — carousel-of-image and mixed image+video carousels
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_carousel_image_children_use_is_carousel_item_and_never_upload() -> None:
+    """The IMAGE counterpart of the VIDEO pin above: `create_image_container` (not
+    `create_container`) with `is_carousel_item=True`, and — since there is no upload
+    phase for IMAGE — zero `upload_bytes` calls at all."""
+    h = Harness()
+    items = h.stage_images(2)
+    start_state = await h.start_many(items)
+    await h.advance(start_state.attempt_id)  # create BOTH children concurrently
+    assert len(h.client.image_container_calls) == 2
+    for call in h.client.image_container_calls:
+        assert call["is_carousel_item"] is True
+    assert h.client.calls["upload"] == 0
+    children = h.repo.list_children(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+    assert all(c.status == "processing" for c in children)  # straight to processing, no 'uploading'
+
+
+@pytest.mark.parametrize("n", [2, 5, 10])
+@pytest.mark.asyncio
+async def test_carousel_happy_path_all_images(n: int) -> None:
+    """The IMAGE counterpart of `test_carousel_happy_path_end_to_end` — 2, 5, and 10
+    images each produce ONE settled, published attempt with N children and exactly one
+    CAROUSEL container, same as the all-video case."""
+    h = Harness()
+    items = h.stage_images(n)
+    h.client.status_script = [ContainerStatus.FINISHED] * (n + 1)  # n children + carousel
+
+    start_state = await h.start_many(items)
+    assert not start_state.settled
+    final = await h.drive_to_settled(start_state.attempt_id)
+
+    assert final.settled and final.status == "published"
+    assert h.client.calls["create_carousel"] == 1
+    assert h.client.calls["publish"] == 1
+    assert h.client.calls["upload"] == 0  # never for IMAGE children
+    assert h.client.carousel_calls == [[f"child-img-c-{i}" for i in range(n)]]
+    children = h.repo.list_children(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+    assert all(c.status == "finished" for c in children)
+
+
+@pytest.mark.asyncio
+async def test_carousel_happy_path_mixed_image_and_video() -> None:
+    """The case this whole ticket exists for: one carousel, some children VIDEO, some
+    IMAGE, interleaved — ends published with exactly one CAROUSEL container built from
+    every child's own (correctly distinct) creation_id."""
+    h = Harness()
+    items = h.stage_mixed(["IMAGE", "VIDEO", "IMAGE"])
+    h.client.status_script = [ContainerStatus.FINISHED] * 4  # 3 children + the carousel
+
+    start_state = await h.start_many(items)
+    final = await h.drive_to_settled(start_state.attempt_id)
+
+    assert final.settled and final.status == "published"
+    assert h.client.calls["create"] == 1  # the one VIDEO child
+    assert len(h.client.image_container_calls) == 2  # the two IMAGE children
+    assert h.client.calls["upload"] == 1  # only the VIDEO child ever uploads
+    assert h.client.calls["create_carousel"] == 1
+    # Position order preserved end to end: IMAGE, VIDEO, IMAGE -> their own creation ids,
+    # in that exact order, in the CAROUSEL container's `children` list.
+    assert h.client.carousel_calls == [["child-img-c-0", "child-c-1", "child-img-c-2"]]
+
+
+@pytest.mark.asyncio
+async def test_mixed_children_advance_in_the_same_tick_without_blocking_each_other() -> None:
+    """QUA-103's explicit AC: one VIDEO child and one IMAGE child in the SAME
+    `_advance_children` tick both advance in the same `asyncio.gather` batch — neither
+    the concurrency nor the settlement of one depends on the other's type."""
+    h = Harness()
+    items = h.stage_mixed(["VIDEO", "IMAGE"])
+
+    start_state = await h.start_many(items)
+    await h.advance(start_state.attempt_id)  # one tick: create+upload/create BOTH
+
+    assert len(h.client.create_container_calls) == 1  # the VIDEO child
+    assert len(h.client.image_container_calls) == 1  # the IMAGE child
+    children = h.repo.list_children(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+    by_position = {c.position: c for c in children}
+    assert by_position[0].status == "processing"  # VIDEO: uploaded successfully
+    assert by_position[1].status == "processing"  # IMAGE: straight to processing
+    assert by_position[0].media_product_type == "VIDEO"
+    assert by_position[1].media_product_type == "IMAGE"
+
+
+@pytest.mark.asyncio
+async def test_each_child_persists_its_own_media_type_from_its_own_media_item() -> None:
+    """`add_child`'s `media_product_type` is each item's OWN `media_type` — never a
+    single hardcoded value for the whole batch. Checked directly against the
+    repository, before any platform call (the write-ahead), for a batch where NO two
+    consecutive items share a type."""
+    h = Harness()
+    items = h.stage_mixed(["IMAGE", "VIDEO", "IMAGE", "VIDEO"])
+
+    start_state = await h.start_many(items)
+
+    children = h.repo.list_children(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+    assert [c.media_product_type for c in children] == ["IMAGE", "VIDEO", "IMAGE", "VIDEO"]
+
+
+@pytest.mark.asyncio
+async def test_start_many_with_one_image_item_delegates_to_start_as_image() -> None:
+    """The IMAGE counterpart of `test_start_many_with_one_item_delegates_to_start_
+    unchanged` — the fix to `start_many`'s own len==1 branch: it used to hardcode
+    `MEDIA_TYPE_REELS` regardless of the item's real type, which would have sent an
+    image down the resumable VIDEO path. Not reachable from the Reflex UI today (which
+    calls `start_publish` directly for a lone item), but this is `PublishService`'s own
+    public contract."""
+    h = Harness()
+    items = h.stage_images(1)
+
+    state = await h.start_many(items)
+
+    assert state.status == "processing" and not state.settled
+    assert h.client.image_container_calls  # went through _start_image, not create_container
+    assert h.client.calls["create"] == 0  # never touched the resumable/VIDEO path
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=state.attempt_id)
+    assert record is not None and record.media_product_type == "IMAGE"  # never "REELS"
 
 
 @pytest.mark.asyncio

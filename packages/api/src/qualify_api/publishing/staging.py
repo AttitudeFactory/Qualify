@@ -28,7 +28,13 @@ from uuid import UUID
 from qualify_shared.objects.gate import ObjectGate, ObjectSizeExceeded, UnsizedStream
 from qualify_shared.objects.keys import media_key
 
-from qualify_api.publishing.client import IMAGE_MAX_BYTES, MEDIA_TYPE_IMAGE, RESUMABLE_MEDIA_TYPES
+from qualify_api.publishing.client import (
+    IMAGE_CONTENT_TYPE,
+    IMAGE_MAX_BYTES,
+    JPEG_MAGIC_BYTES,
+    MEDIA_TYPE_IMAGE,
+    RESUMABLE_MEDIA_TYPES,
+)
 
 # QUA-68: everything this service will stage for publication — the resumable video types
 # plus the one non-resumable image type. Kept as its own name (not folded into
@@ -45,6 +51,17 @@ class StagedMedia:
     media_object_key: str
     media_product_type: str
     content_type: str
+
+
+class UnsupportedImageFormat(Exception):
+    """QUA-103: the declared `content_type` is not `image/jpeg`, or the bytes are not
+    actually a JPEG regardless of what was declared.
+
+    Raised instead of silently accepting anything non-empty (`ObjectGate.put_media`'s own,
+    looser check) — JPEG-only is a Meta platform restriction (`content-publishing.md:53`),
+    not an incomplete validation to relax later, so this is a permanent, not provisional,
+    guard.
+    """
 
 
 class MediaStagingService:
@@ -64,8 +81,9 @@ class MediaStagingService:
         media_product_type: str,
     ) -> StagedMedia:
         """Validate, then write. Nothing is uploaded unless every check passes: the
-        product-type vocabulary here, the IMAGE-specific size ceiling below, and the
-        tenant prefix / absolute size ceiling / content-type requirement inside the gate.
+        product-type vocabulary here, the IMAGE-specific format/size checks below, and
+        the tenant prefix / absolute size ceiling / content-type requirement inside the
+        gate.
         """
         if media_product_type not in PUBLISHABLE_MEDIA_TYPES:
             raise ValueError(
@@ -73,17 +91,57 @@ class MediaStagingService:
                 f"expected one of {sorted(PUBLISHABLE_MEDIA_TYPES)}"
             )
         if media_product_type == MEDIA_TYPE_IMAGE:
+            # QUA-103/QUA-68 ordering is deliberate: content-type (a string compare) and
+            # size (`_reject_oversized_image`, `seek`-only, never a real `read`) both
+            # reject WITHOUT touching a single byte of the stream — same "reject before
+            # any byte moves" posture `HugeStream` in this package's tests exists to
+            # prove. The magic-byte check is the one real `read()` in this chain, so it
+            # runs LAST, only once the stream has already earned that read.
+            _reject_non_jpeg_content_type(content_type)
             # QUA-68: `ig-user/media.md:55` caps a feed/story image at 8 MB — a tenth of
             # `ObjectGate.MAX_MEDIA_BYTES` (300 MB), which stays the store's own absolute
-            # ceiling for everything else. Checked BEFORE `put_media`, same "reject before
-            # a single byte moves" posture the gate already uses for its own ceiling.
+            # ceiling for everything else.
             _reject_oversized_image(fileobj)
+            _reject_non_jpeg_bytes(fileobj)
         key = media_key(tenant_id, connection_id, media_id)
         self._gate.put_media(tenant_id, key, fileobj, content_type)
         return StagedMedia(
             media_object_key=key,
             media_product_type=media_product_type,
             content_type=content_type,
+        )
+
+
+def _reject_non_jpeg_content_type(content_type: str) -> None:
+    """QUA-103: exact match against `IMAGE_CONTENT_TYPE` — not a prefix check, not
+    case-insensitive normalization beyond this one comparison. `ObjectGate.put_media`
+    only ever demanded a non-empty string; this is the first real whitelist for IMAGE."""
+    if content_type != IMAGE_CONTENT_TYPE:
+        raise UnsupportedImageFormat(
+            f"content_type {content_type!r} is not supported for IMAGE — "
+            f"only {IMAGE_CONTENT_TYPE!r} is accepted (Meta's Content Publishing API "
+            "supports no other image format)"
+        )
+
+
+def _reject_non_jpeg_bytes(fileobj: IO[bytes]) -> None:
+    """QUA-103: a declared `content_type` is input, not proof — a browser or a renamed
+    file can say `image/jpeg` for bytes that are not. Reads only the first 3 bytes (the
+    JPEG SOI marker, `JPEG_MAGIC_BYTES`), position restored, so this costs nothing
+    against the 8 MB ceiling below. Does NOT distinguish a plain JPEG from an extended
+    variant (MPO/JPS) Meta itself rejects — that would need parsing APP marker segments,
+    a real feature this ticket deliberately does not build; it only closes the cheap,
+    common case of a mislabeled or renamed non-JPEG file."""
+    try:
+        origin = fileobj.seek(0, 1)
+        header = fileobj.read(len(JPEG_MAGIC_BYTES))
+        fileobj.seek(origin, 0)
+    except (AttributeError, OSError) as exc:
+        raise UnsizedStream("stream is not seekable, so its format cannot be checked") from exc
+    if header != JPEG_MAGIC_BYTES:
+        raise UnsupportedImageFormat(
+            "file content is not a JPEG (magic bytes did not match) — a declared "
+            "content_type of image/jpeg is not proof of the actual file format"
         )
 
 

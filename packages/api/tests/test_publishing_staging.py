@@ -20,7 +20,7 @@ from qualify_shared.objects.gate import (
 from qualify_shared.objects.keys import TenantPrefixViolation
 
 from qualify_api.publishing.client import IMAGE_MAX_BYTES
-from qualify_api.publishing.staging import MediaStagingService, StagedMedia
+from qualify_api.publishing.staging import MediaStagingService, StagedMedia, UnsupportedImageFormat
 
 TENANT = UUID("11111111-1111-4111-8111-111111111111")
 CONNECTION = UUID("22222222-2222-4222-8222-222222222222")
@@ -208,7 +208,9 @@ def test_an_image_right_at_the_8mb_ceiling_is_accepted() -> None:
         tenant_id=TENANT,
         connection_id=CONNECTION,
         media_id="m-img-max",
-        fileobj=io.BytesIO(b"x" * IMAGE_MAX_BYTES),
+        # Real JPEG magic bytes (QUA-103's format check runs on every IMAGE, this
+        # fixture is no exception) padded out to exactly the ceiling.
+        fileobj=io.BytesIO(b"\xff\xd8\xff" + b"x" * (IMAGE_MAX_BYTES - 3)),
         content_type="image/jpeg",
         media_product_type="IMAGE",
     )
@@ -275,3 +277,102 @@ def test_an_unseekable_image_stream_raises_unsized_stream() -> None:
             content_type="image/jpeg",
             media_product_type="IMAGE",
         )
+
+
+# --------------------------------------------------------------------------------------
+# JPEG-only whitelist + magic bytes (QUA-103) — a platform restriction, not a partial
+# validation: Meta's Content Publishing API supports no image format other than JPEG.
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_content_type", ["image/png", "image/webp", "image/gif", "image/heic"])
+def test_a_non_jpeg_content_type_is_rejected_before_writing(bad_content_type: str) -> None:
+    """PNG/WebP/GIF/HEIC are not "unvalidated" — Meta's API does not accept them via
+    `image_url` at all (content-publishing.md:53), so this whitelist has exactly one
+    entry and is not expected to grow."""
+    service, store = build()
+
+    with pytest.raises(UnsupportedImageFormat, match="image/jpeg"):
+        service.stage_media(
+            tenant_id=TENANT,
+            connection_id=CONNECTION,
+            media_id="m-bad-format",
+            fileobj=io.BytesIO(b"\xff\xd8\xffwhatever-bytes"),
+            content_type=bad_content_type,
+            media_product_type="IMAGE",
+        )
+    assert store.objects == {}
+
+
+def test_any_non_empty_content_type_is_no_longer_accepted_for_image() -> None:
+    """The gap QUA-68 left open, closed: `ObjectGate.put_media`'s own check (non-empty
+    string) used to be the ONLY gate for IMAGE — this whitelist is stricter than that,
+    on purpose."""
+    service, store = build()
+
+    with pytest.raises(UnsupportedImageFormat):
+        service.stage_media(
+            tenant_id=TENANT,
+            connection_id=CONNECTION,
+            media_id="m-anything",
+            fileobj=io.BytesIO(b"\xff\xd8\xffx"),
+            content_type="anything-non-empty",
+            media_product_type="IMAGE",
+        )
+    assert store.objects == {}
+
+
+def test_a_file_declaring_jpeg_but_with_non_jpeg_bytes_is_rejected() -> None:
+    """The real content check: a declared `content_type` is input, not proof. A PNG
+    signature (`\\x89PNG`) behind a `image/jpeg` label must not reach R2."""
+    service, store = build()
+
+    with pytest.raises(UnsupportedImageFormat, match="magic bytes"):
+        service.stage_media(
+            tenant_id=TENANT,
+            connection_id=CONNECTION,
+            media_id="m-mislabeled",
+            fileobj=io.BytesIO(b"\x89PNG\r\n\x1a\nrest-of-a-real-png"),
+            content_type="image/jpeg",
+            media_product_type="IMAGE",
+        )
+    assert store.objects == {}
+
+
+def test_a_real_jpeg_signature_with_more_bytes_after_it_is_accepted() -> None:
+    """Regression: the magic-byte check must not be so strict it rejects a real JPEG —
+    only the first 3 bytes are checked, whatever legitimately follows them is fine."""
+    service, store = build()
+
+    staged = service.stage_media(
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        media_id="m-real-jpeg",
+        fileobj=io.BytesIO(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00rest-of-a-real-jpeg"),
+        content_type="image/jpeg",
+        media_product_type="IMAGE",
+    )
+
+    assert staged.content_type == "image/jpeg"
+    assert store.objects[staged.media_object_key][0].startswith(b"\xff\xd8\xff")
+
+
+def test_the_size_ceiling_is_checked_before_the_magic_bytes_read() -> None:
+    """Ordering pin: an oversized stream must be rejected by `seek` alone, the SAME
+    "never read an oversized stream" guarantee `test_an_image_over_8mb_is_rejected_
+    without_reading_it` already proves for the size check on its own — the magic-byte
+    check's `read()` must never run first and defeat that guarantee."""
+    service, store = build()
+
+    with pytest.raises(ObjectSizeExceeded):
+        service.stage_media(
+            tenant_id=TENANT,
+            connection_id=CONNECTION,
+            media_id="m-oversized-would-fail-magic-bytes-too",
+            # Reports oversized AND would fail the magic-byte check if ever read —
+            # proves size is checked first, by `seek` alone, never touching bytes.
+            fileobj=HugeStream(IMAGE_MAX_BYTES + 1),  # type: ignore[arg-type]
+            content_type="image/jpeg",
+            media_product_type="IMAGE",
+        )
+    assert store.objects == {}

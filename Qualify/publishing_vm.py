@@ -29,17 +29,25 @@ class ConnectionOptionVM:
 
 @dataclass(frozen=True)
 class PendingItemVM:
-    """One video buffered locally, not yet published (gallery redesign, QUA-99 follow-up).
+    """One file buffered locally, not yet published (gallery redesign, QUA-99 follow-up;
+    `kind` added QUA-103).
 
     Deliberately NO bytes/content_type here — those stay on `_PendingFile`
     (`publishing_state.py`, backend-only, never reaches the client). This is the display
-    projection `rx.foreach` renders in the grid: a filename and nothing else. Position in
-    the carousel is NOT a field here — it is the item's index in
+    projection `rx.foreach` renders in the grid: a filename, a `kind`, and nothing else.
+    Position in the carousel is NOT a field here — it is the item's index in
     `PublishState.pending_items`, which `rx.foreach` already hands the renderer, so there
     is only one place order lives, never two that could drift apart.
+
+    `kind` is `"image"` or `"video"` — the UI's own display vocabulary (lowercase,
+    English words), deliberately NOT the same strings as `MediaItem.media_type`
+    (`"IMAGE"`/`"VIDEO"`, Meta's vocabulary) — this field exists only so the gallery
+    (`publishing_page.py`) knows which thumbnail strategy to use per tile, never reaches
+    a Meta call, and reusing the backend's exact vocabulary here would blur that boundary.
     """
 
     filename: str
+    kind: str
 
 
 @dataclass(frozen=True)

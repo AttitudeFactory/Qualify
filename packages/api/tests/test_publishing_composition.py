@@ -248,6 +248,20 @@ async def test_advance_publish_calls_the_wired_service(monkeypatch: pytest.Monke
 
 
 # --------------------------------------------------------------------------------------
+# QUA-103 — PendingUpload.media_type is required, with no default
+# --------------------------------------------------------------------------------------
+
+
+def test_pending_upload_requires_media_type_explicitly() -> None:
+    """Same guarantee `MediaItem` has (`test_publishing_service.py`): constructing a
+    `PendingUpload` without `media_type` is a `TypeError`, never a silent `"VIDEO"`."""
+    with pytest.raises(TypeError):
+        composition.PendingUpload(  # type: ignore[call-arg]
+            fileobj=io.BytesIO(b"x"), content_type="video/mp4"
+        )
+
+
+# --------------------------------------------------------------------------------------
 # QUA-99 (5/6) — stage_and_start_many_publish, the multi-video counterpart
 # --------------------------------------------------------------------------------------
 
@@ -262,9 +276,13 @@ async def test_stage_and_start_many_publish_stages_every_item_before_the_carouse
         tenant_id=TENANT,
         connection_id=CONNECTION,
         items=[
-            composition.PendingUpload(fileobj=io.BytesIO(b"video-a"), content_type="video/mp4"),
             composition.PendingUpload(
-                fileobj=io.BytesIO(b"video-b"), content_type="video/quicktime"
+                fileobj=io.BytesIO(b"video-a"), content_type="video/mp4", media_type="VIDEO"
+            ),
+            composition.PendingUpload(
+                fileobj=io.BytesIO(b"video-b"),
+                content_type="video/quicktime",
+                media_type="VIDEO",
             ),
         ],
         idempotency_key="op-multi-1",
@@ -308,9 +326,13 @@ async def test_stage_and_start_many_publish_preserves_order_and_content_type(
         tenant_id=TENANT,
         connection_id=CONNECTION,
         items=[
-            composition.PendingUpload(fileobj=io.BytesIO(b"first"), content_type="video/mp4"),
             composition.PendingUpload(
-                fileobj=io.BytesIO(b"second"), content_type="video/quicktime"
+                fileobj=io.BytesIO(b"first"), content_type="video/mp4", media_type="VIDEO"
+            ),
+            composition.PendingUpload(
+                fileobj=io.BytesIO(b"second"),
+                content_type="video/quicktime",
+                media_type="VIDEO",
             ),
         ],
         idempotency_key="op-order-1",
@@ -344,7 +366,9 @@ async def test_stage_and_start_many_publish_stages_five_items_preserving_order(
         connection_id=CONNECTION,
         items=[
             composition.PendingUpload(
-                fileobj=io.BytesIO(f"video-{i}".encode()), content_type="video/mp4"
+                fileobj=io.BytesIO(f"video-{i}".encode()),
+                content_type="video/mp4",
+                media_type="VIDEO",
             )
             for i in range(5)
         ],
@@ -388,10 +412,13 @@ async def test_stage_and_start_many_publish_propagates_a_staging_failure(
             tenant_id=TENANT,
             connection_id=CONNECTION,
             items=[
-                composition.PendingUpload(fileobj=io.BytesIO(b"fine"), content_type="video/mp4"),
+                composition.PendingUpload(
+                    fileobj=io.BytesIO(b"fine"), content_type="video/mp4", media_type="VIDEO"
+                ),
                 composition.PendingUpload(
                     fileobj=_OversizedFakeStream(),
                     content_type="video/mp4",  # type: ignore[arg-type]
+                    media_type="VIDEO",
                 ),
             ],
             idempotency_key="op-oversized-1",
@@ -418,8 +445,12 @@ async def test_stage_and_start_many_publish_forwards_the_caption(
         tenant_id=TENANT,
         connection_id=CONNECTION,
         items=[
-            composition.PendingUpload(fileobj=io.BytesIO(b"a"), content_type="video/mp4"),
-            composition.PendingUpload(fileobj=io.BytesIO(b"b"), content_type="video/mp4"),
+            composition.PendingUpload(
+                fileobj=io.BytesIO(b"a"), content_type="video/mp4", media_type="VIDEO"
+            ),
+            composition.PendingUpload(
+                fileobj=io.BytesIO(b"b"), content_type="video/mp4", media_type="VIDEO"
+            ),
         ],
         idempotency_key="op-caption-1",
         caption="una descripcion del carrusel",
@@ -442,8 +473,12 @@ async def test_stage_and_start_many_publish_is_idempotent_by_key(
         # set (reading a fileobj is destructive), same as a real retry would re-read a
         # fresh upload, not reuse an already-drained buffer.
         return [
-            composition.PendingUpload(fileobj=io.BytesIO(b"a"), content_type="video/mp4"),
-            composition.PendingUpload(fileobj=io.BytesIO(b"b"), content_type="video/mp4"),
+            composition.PendingUpload(
+                fileobj=io.BytesIO(b"a"), content_type="video/mp4", media_type="VIDEO"
+            ),
+            composition.PendingUpload(
+                fileobj=io.BytesIO(b"b"), content_type="video/mp4", media_type="VIDEO"
+            ),
         ]
 
     first = await composition.stage_and_start_many_publish(
@@ -472,7 +507,9 @@ async def test_stage_and_start_many_publish_rejects_more_than_ten_before_staging
     start_many) so an 11-item request never stages a single byte to R2 before failing."""
     store, client = _wire(monkeypatch)
     items = [
-        composition.PendingUpload(fileobj=io.BytesIO(f"v{i}".encode()), content_type="video/mp4")
+        composition.PendingUpload(
+            fileobj=io.BytesIO(f"v{i}".encode()), content_type="video/mp4", media_type="VIDEO"
+        )
         for i in range(11)
     ]
 
@@ -504,7 +541,11 @@ async def test_stage_and_start_many_publish_with_one_item_uses_the_single_video_
     state = await composition.stage_and_start_many_publish(
         tenant_id=TENANT,
         connection_id=CONNECTION,
-        items=[composition.PendingUpload(fileobj=io.BytesIO(b"solo"), content_type="video/mp4")],
+        items=[
+            composition.PendingUpload(
+                fileobj=io.BytesIO(b"solo"), content_type="video/mp4", media_type="VIDEO"
+            )
+        ],
         idempotency_key="op-solo-1",
     )
 
@@ -529,8 +570,12 @@ async def test_get_child_statuses_projects_position_and_status_in_order(
         tenant_id=TENANT,
         connection_id=CONNECTION,
         items=[
-            composition.PendingUpload(fileobj=io.BytesIO(b"a"), content_type="video/mp4"),
-            composition.PendingUpload(fileobj=io.BytesIO(b"b"), content_type="video/mp4"),
+            composition.PendingUpload(
+                fileobj=io.BytesIO(b"a"), content_type="video/mp4", media_type="VIDEO"
+            ),
+            composition.PendingUpload(
+                fileobj=io.BytesIO(b"b"), content_type="video/mp4", media_type="VIDEO"
+            ),
         ],
         idempotency_key="op-children-status-1",
     )
