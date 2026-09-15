@@ -312,10 +312,11 @@ async def test_add_files_rejects_a_format_it_cannot_resolve_never_assumes_video(
 
 
 @pytest.mark.asyncio
-async def test_add_files_rejects_adding_an_image_onto_an_existing_video() -> None:
-    """Carousel-of-image / mixed-carousel is a separate, not-yet-built slice (QUA-103) —
-    the combination must be refused explicitly, not silently reach `start_many` (still
-    VIDEO-only end to end). The existing video must survive untouched."""
+async def test_add_files_allows_adding_an_image_onto_an_existing_video() -> None:
+    """QUA-103: mixed image+video carousels are supported end to end now
+    (`start_many`/`_create_and_upload_child` bifurcate per item) — the combination that
+    used to be refused here is now a perfectly ordinary gallery. Order is preserved:
+    the video added first stays first."""
     state = PublishState()
     await state.add_files([_FakeUpload(data=b"vid", content_type="video/mp4", filename="a.mp4")])
 
@@ -323,15 +324,17 @@ async def test_add_files_rejects_adding_an_image_onto_an_existing_video() -> Non
         [_FakeUpload(data=b"img", content_type="image/jpeg", filename="b.jpg")]
     )
 
-    assert result is not None  # the rejection toast EventSpec
-    assert len(state._pending_files) == 1
-    assert state._pending_files[0].filename == "a.mp4"  # unchanged
+    assert result is None
+    assert len(state._pending_files) == 2
+    assert [f.filename for f in state._pending_files] == ["a.mp4", "b.jpg"]
+    assert [f.media_type for f in state._pending_files] == ["VIDEO", "IMAGE"]
+    assert [it.kind for it in state.pending_items] == ["video", "image"]
 
 
 @pytest.mark.asyncio
-async def test_add_files_rejects_adding_a_video_onto_an_existing_image() -> None:
-    """Same guard, the other direction: an image already alone in the gallery must
-    refuse a video joining it too."""
+async def test_add_files_allows_adding_a_video_onto_an_existing_image() -> None:
+    """Same case, the other order: an image already alone in the gallery accepts a
+    video joining it, order preserved."""
     state = PublishState()
     await state.add_files([_FakeUpload(data=b"img", content_type="image/jpeg", filename="a.jpg")])
 
@@ -339,9 +342,45 @@ async def test_add_files_rejects_adding_a_video_onto_an_existing_image() -> None
         [_FakeUpload(data=b"vid", content_type="video/mp4", filename="b.mp4")]
     )
 
-    assert result is not None
-    assert len(state._pending_files) == 1
-    assert state._pending_files[0].filename == "a.jpg"  # unchanged
+    assert result is None
+    assert len(state._pending_files) == 2
+    assert [f.filename for f in state._pending_files] == ["a.jpg", "b.mp4"]
+    assert [f.media_type for f in state._pending_files] == ["IMAGE", "VIDEO"]
+
+
+@pytest.mark.asyncio
+async def test_add_files_allows_a_full_mixed_group_preserving_selection_order() -> None:
+    """A carousel-sized mixed group (2 images + 3 videos, in an arbitrary interleaved
+    order) — the order the user picked them in is exactly the order that ends up in
+    both `_pending_files` and `pending_items`, since that order becomes carousel
+    `position` downstream (`PublishService.start_many`)."""
+    state = PublishState()
+
+    result = await state.add_files(
+        [
+            _FakeUpload(data=b"1", content_type="image/jpeg", filename="1.jpg"),
+            _FakeUpload(data=b"2", content_type="video/mp4", filename="2.mp4"),
+            _FakeUpload(data=b"3", content_type="video/mp4", filename="3.mp4"),
+            _FakeUpload(data=b"4", content_type="image/jpeg", filename="4.jpg"),
+            _FakeUpload(data=b"5", content_type="video/quicktime", filename="5.mov"),
+        ]
+    )
+
+    assert result is None
+    assert [f.filename for f in state._pending_files] == [
+        "1.jpg",
+        "2.mp4",
+        "3.mp4",
+        "4.jpg",
+        "5.mov",
+    ]
+    assert [f.media_type for f in state._pending_files] == [
+        "IMAGE",
+        "VIDEO",
+        "VIDEO",
+        "IMAGE",
+        "VIDEO",
+    ]
 
 
 @pytest.mark.asyncio
@@ -362,7 +401,7 @@ async def test_add_files_allows_a_single_image_alone() -> None:
 @pytest.mark.asyncio
 async def test_add_files_still_allows_an_all_video_group_of_several() -> None:
     """Regression: QUA-99's all-video carousel selection must be completely unaffected
-    by the new image+multi guard."""
+    by QUA-103's image/mixed support landing alongside it."""
     state = PublishState()
 
     result = await state.add_files(
@@ -378,10 +417,10 @@ async def test_add_files_still_allows_an_all_video_group_of_several() -> None:
     assert all(f.media_type == "VIDEO" for f in state._pending_files)
 
 
-def test_publish_rejects_a_pending_group_mixing_image_and_video_defense_in_depth() -> None:
-    """`add_files` already refuses to buffer this combination — this is the
-    defense-in-depth recheck inside `publish()` itself, reached only if that guard is
-    ever bypassed (same posture the pre-existing `_MAX_ITEMS` recheck has)."""
+def test_publish_accepts_a_pending_group_mixing_image_and_video() -> None:
+    """QUA-103: `publish()` no longer has a type-based rejection at all — a mixed
+    image+video group is dispatched exactly like an all-video one, only `_MAX_ITEMS`
+    (unaffected by this ticket) can still reject a group here."""
     state = PublishState()
     state.selected_connection_id = "c-1"
     state._pending_files = [
@@ -391,9 +430,9 @@ def test_publish_rejects_a_pending_group_mixing_image_and_video_defense_in_depth
 
     result = state.publish()
 
-    assert result is not None
-    assert state.phase == "failure"
-    assert "carrusel" in state.error.lower()
+    assert result is not None  # dispatches to publish_background, not a rejection
+    assert state.phase == "staging_and_starting"
+    assert state.error == ""
 
 
 def test_publish_background_resolves_media_product_type_from_the_single_items_own_type() -> None:

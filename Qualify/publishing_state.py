@@ -88,14 +88,6 @@ _UNSUPPORTED_IMAGE_FORMAT = (
     "El archivo no es un JPEG válido. Solo se aceptan imágenes JPEG (.jpg/.jpeg) — "
     "PNG, WebP, GIF y HEIC no son compatibles con Instagram."
 )
-# QUA-103 — carousel-of-images and mixed image+video carousels are a separate, not-yet-
-# built slice (image support in `_advance_children`/`start_many` is still VIDEO-only) —
-# this blocks the combination explicitly instead of letting it reach a confusing Meta
-# failure. A single image, or any all-video group (1-10), is unaffected.
-_IMAGE_CAROUSEL_NOT_SUPPORTED = (
-    "Los carruseles con imágenes todavía no están soportados. Publica la imagen sola, "
-    "o arma el carrusel solo con videos."
-)
 _UNKNOWN_CONNECTION = "Esa cuenta ya no está disponible. Actualiza la lista e intenta de nuevo."
 _START_FAILED = "No se pudo iniciar la publicación. Vuelve a intentarlo en un momento."
 _POLL_FAILED = "No se pudo consultar el estado de la publicación."
@@ -238,9 +230,9 @@ def _resolve_media(content_type: str | None, filename: str) -> tuple[str, str] |
 class PublishState(rx.State):
     """State for the "Publicar" screen: pick a connected account, upload 1-10 files —
     JPEG images or MP4/MOV videos — and publish. A single file publishes as-is (an
-    image or a reel, QUA-103); 2-10 files publish together as one carousel, VIDEO-ONLY
-    for now (QUA-99) — a group containing any image is rejected until carousel-of-image
-    support lands (`_IMAGE_CAROUSEL_NOT_SUPPORTED`)."""
+    image or a reel, QUA-103); 2-10 files publish together as one carousel, any mix of
+    image and video (QUA-99 for all-video, QUA-103 for image/mixed) — the only limit is
+    `_MAX_ITEMS`."""
 
     connections: list[ConnectionOptionVM] = []
     is_loading_connections: bool = False
@@ -462,15 +454,12 @@ class PublishState(rx.State):
                 )
             )
 
-        # QUA-103: carousel-of-image / mixed-carousel is a separate, not-yet-built slice —
-        # reject the COMBINATION explicitly (checked against what the gallery would hold
-        # AFTER this add) rather than let it silently reach `start_many`, which is still
-        # VIDEO-only end to end. A single image, and any all-video group, is unaffected.
-        combined = self._pending_files + new_pending
-        if len(combined) > 1 and any(f.media_type == MEDIA_TYPE_IMAGE for f in combined):
-            return _failure_toast(_IMAGE_CAROUSEL_NOT_SUPPORTED)
-
-        self._pending_files = combined
+        # QUA-103: carousel-of-image and mixed image+video carousels are supported end
+        # to end now (start_many/_create_and_upload_child bifurcate by each item's own
+        # media_type) — a gallery combining any mix of image/video, up to _MAX_ITEMS, is
+        # a perfectly valid selection. The `_MAX_ITEMS` check above (before this loop)
+        # remains the only count guard; there is no longer a type-based restriction here.
+        self._pending_files = self._pending_files + new_pending
         self.pending_items = self.pending_items + new_items
         return None
 
@@ -526,14 +515,6 @@ class PublishState(rx.State):
             self.phase = "failure"
             self.error = _TOO_MANY
             return _failure_toast(_TOO_MANY)
-        if len(self._pending_files) > 1 and any(
-            f.media_type == MEDIA_TYPE_IMAGE for f in self._pending_files
-        ):
-            # Defense-in-depth: `add_files` already refuses to buffer this combination.
-            # Reached only if that guard is ever bypassed.
-            self.phase = "failure"
-            self.error = _IMAGE_CAROUSEL_NOT_SUPPORTED
-            return _failure_toast(_IMAGE_CAROUSEL_NOT_SUPPORTED)
 
         self._idempotency_key = uuid4().hex
         self.phase = "staging_and_starting"

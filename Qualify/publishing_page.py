@@ -34,11 +34,19 @@ uploading/processing, or that the carousel/final confirmation step is under way
 (`PublishState.elapsed_label`) and a plain-language note that Meta's own processing can
 take several minutes — all derived from data the backend already had, nothing invented.
 
-**QUA-103** added a single JPEG image as a first-class selection alongside video — the
-`accept` dropzone, the thumbnail strategy per tile (`PendingItemVM.kind`), and the copy
-below all know about both kinds now. A carousel (2-10 items) is still VIDEO-ONLY: the
-gallery lets a JPEG sit alone, but `PublishState`'s own guard refuses to combine an image
-with anything else — see `publishing_state.py`'s `_IMAGE_CAROUSEL_NOT_SUPPORTED`.
+**QUA-103** added JPEG images as a first-class selection alongside video — the `accept`
+dropzone, the thumbnail strategy per tile (`PendingItemVM.kind`), and the copy below all
+know about both kinds. A carousel (2-10 items) may now be any mix of image and video —
+`PublishState`/`PublishService` bifurcate per item by its own `media_type`; this screen's
+own code never branches on it beyond picking a thumbnail.
+
+**Known, deliberately unaddressed risk (documented, not fixed, in this ticket):** Meta
+crops every item in a carousel to the aspect ratio of its FIRST item
+(`content-publishing.md:110`) — if a mixed carousel starts with an image, any video(s)
+after it are cropped to that image's ratio, not their own. Neither this screen nor
+`PublishService` does anything about it (no reordering, no warning) — the operator's own
+selection order is respected exactly as given. Any UX mitigation (a warning, a suggested
+reorder) is a follow-up decision, not part of this ticket's scope.
 """
 
 from __future__ import annotations
@@ -527,8 +535,8 @@ def _tips_card() -> rx.Component:
                 _tip_row("scale", "Tamaño máximo: 300 MB por video, 8 MB por imagen."),
                 _tip_row(
                     "layers",
-                    f"Hasta {_MAX_ITEMS} videos — 2 o más se publican juntos, como un "
-                    "carrusel. Una imagen se publica sola por ahora.",
+                    f"Hasta {_MAX_ITEMS} archivos, imágenes y/o videos — 2 o más se "
+                    "publican juntos, como un carrusel.",
                 ),
                 _tip_row("at-sign", "Se publica en la cuenta que elijas arriba."),
                 _tip_row("clock", "La confirmación de Meta puede tardar unos minutos."),
