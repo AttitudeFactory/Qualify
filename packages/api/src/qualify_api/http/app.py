@@ -19,12 +19,14 @@ from qualify_api.connections.composition import production_connect_service
 from qualify_api.connections.service import ConnectService
 from qualify_api.creative.service import ContentService
 from qualify_api.http import (
+    access_log,
     connections_routes,
     creative_routes,
     deps,
     inbox_routes,
     leads_routes,
     mentions_routes,
+    public_media_routes,
     publishing_routes,
     replies_routes,
     sentiment_routes,
@@ -38,6 +40,7 @@ from qualify_api.http.replies_routes import (
 )
 from qualify_api.http.sentiment_routes import AnalyzePendingComments
 from qualify_api.leads.service import LeadIntakeService
+from qualify_api.publishing.media_token import MediaTokenStore
 from qualify_api.publishing.service import PublishService
 from qualify_api.publishing.staging import MediaStagingService
 
@@ -61,6 +64,26 @@ def build_production_staging_service() -> MediaStagingService:
     from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
 
     return MediaStagingService(ObjectGate(R2ObjectStore(R2Settings.from_env())))
+
+
+def build_production_media_token_store() -> MediaTokenStore:
+    """QUA-68 — same cached factory `PublishService` itself uses
+    (`publishing.composition.production_media_token_store`), reused here rather than
+    duplicated so the HTTP route and the Reflex-facing service share one Redis pool."""
+    from qualify_api.publishing.composition import production_media_token_store  # noqa: PLC0415
+
+    return production_media_token_store()
+
+
+def build_production_public_media_gate():  # noqa: ANN201 — see module note below
+    """Lazy on purpose, like `build_production_staging_service`: constructing it needs the
+    R2 env, and an app booted without it should fail the first `/public/media/*` request
+    loudly, not the whole boot."""
+    from qualify_shared.objects.config import R2Settings  # noqa: PLC0415
+    from qualify_shared.objects.gate import ObjectGate  # noqa: PLC0415
+    from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
+
+    return ObjectGate(R2ObjectStore(R2Settings.from_env()))
 
 
 def build_production_inbox_sync() -> SyncComments:
@@ -177,9 +200,15 @@ def build_production_approved_creative_reader() -> creative_routes.ApprovedCreat
 
 
 def create_app(*, configure_production: bool = True) -> FastAPI:
+    # QUA-68: attached unconditionally (not gated on `configure_production`) — a token must
+    # never reach an access log in ANY mode, tests included, and the filter is a no-op
+    # until uvicorn's own protocol layer actually emits an access-log record (which never
+    # happens for the in-process ASGI transport tests in this suite use).
+    access_log.configure_access_log_redaction()
     app = FastAPI(title="Qualify API", version="0.1.0")
     app.include_router(connections_routes.router)
     app.include_router(publishing_routes.router)
+    app.include_router(public_media_routes.router)
     app.include_router(inbox_routes.router)
     app.include_router(leads_routes.router)
     app.include_router(creative_routes.router)
@@ -193,6 +222,12 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
         )
         app.dependency_overrides[publishing_routes.get_staging_service] = (
             build_production_staging_service
+        )
+        app.dependency_overrides[public_media_routes.get_media_token_store] = (
+            build_production_media_token_store
+        )
+        app.dependency_overrides[public_media_routes.get_public_media_gate] = (
+            build_production_public_media_gate
         )
         app.dependency_overrides[inbox_routes.get_sync_comments] = build_production_inbox_sync
         app.dependency_overrides[sentiment_routes.get_analyze_pending_comments] = (

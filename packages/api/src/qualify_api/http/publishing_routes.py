@@ -62,6 +62,10 @@ class StartAttemptRequest(BaseModel):
     idempotency_key: str  # mandatory and client-chosen; its absence is a 422
     caption: str | None = None
     thumb_offset: int | None = None
+    # QUA-68: only meaningful when media_product_type='IMAGE' — PublishService.start()
+    # needs it to mint the public link's Content-Type. Optional and ignored for every
+    # existing (VIDEO) caller, so no pre-existing request body needs to change.
+    content_type: str | None = None
 
 
 class AttemptStateResponse(BaseModel):
@@ -135,11 +139,17 @@ async def start_attempt(
             idempotency_key=body.idempotency_key,
             caption=body.caption,
             thumb_offset=body.thumb_offset,
+            content_type=body.content_type,
         )
     except UnknownConnection:
         raise HTTPException(status_code=404, detail="unknown connection") from None
     except TenantPrefixViolation:
         raise HTTPException(status_code=422, detail="media key outside tenant prefix") from None
+    except ValueError as exc:
+        # QUA-68: today the only source is `_start_image`'s missing-content_type check —
+        # a caller-side mistake (an IMAGE request without content_type), not a platform
+        # or infrastructure failure, so 422 rather than the 502 below.
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     except PublishError as exc:
         # The write-ahead row survives in 'pending' (A4); the message carries status and
         # numeric codes only, never a Meta body.

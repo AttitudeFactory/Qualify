@@ -11,8 +11,15 @@ from typing import IO, Any
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 from qualify_shared.objects.config import R2Settings
+from qualify_shared.objects.gate import ObjectNotFound
+
+# S3/R2 error codes that mean "no object at this key" — as opposed to any other ClientError
+# (bad credentials, wrong bucket, throttling), which must keep propagating as-is rather than
+# being silently reinterpreted as a missing object.
+_NOT_FOUND_CODES = frozenset({"NoSuchKey", "404"})
 
 
 def _build_client(settings: R2Settings) -> Any:
@@ -57,6 +64,18 @@ class R2ObjectStore:
         # same ceiling already enforced at write time (`ObjectGate.MAX_MEDIA_BYTES`, 300 MB —
         # a single reel, not a queue of them), so this stays a plain read, not a streaming
         # concern.
-        response = self._client.get_object(Bucket=self._settings.bucket, Key=key)
+        try:
+            response = self._client.get_object(Bucket=self._settings.bucket, Key=key)
+        except ClientError as exc:
+            # QUA-68: translated to a store-agnostic exception so callers (specifically
+            # `public_media_routes.py`) never need to inspect a boto3-shaped error to
+            # answer their own indistinguishable 404 — a missing-key ClientError becomes
+            # ObjectNotFound; anything else (bad credentials, wrong bucket, throttling)
+            # keeps propagating unchanged, because those are real infrastructure failures,
+            # not "the object is absent".
+            code = exc.response.get("Error", {}).get("Code")
+            if code in _NOT_FOUND_CODES:
+                raise ObjectNotFound(key) from None
+            raise
         body: IO[bytes] = response["Body"]
         return io.BytesIO(body.read())

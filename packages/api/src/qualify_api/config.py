@@ -102,5 +102,54 @@ class MetaOAuthSettings:
 
 
 def redis_url() -> str:
-    """Redis for the one-shot `state` jti (C-04.2) and the refresh lock (C-03.4)."""
+    """Redis for the one-shot `state` jti (C-04.2), the refresh lock (C-03.4), and — since
+    QUA-68 — the public-media token store (`publishing/media_token.py`)."""
     return os.environ.get("QUALIFY_REDIS_URL", "redis://localhost:6379/0")
+
+
+class PublicMediaConfigurationError(Exception):
+    """`QUALIFY_PUBLIC_MEDIA_BASE_URL` is absent or empty. Never carries a value — there is
+    none to leak here, but the pattern matches `R2ConfigurationError`."""
+
+
+@dataclass(frozen=True)
+class PublicMediaSettings:
+    """The base URL Meta's fetcher must be able to reach to `GET /public/media/{token}`
+    (QUA-68 / ADR 28e).
+
+    **No dev fallback, same reasoning as `R2Settings` — not `MetaOAuthSettings`.** A wrong
+    `redirect_uri` fails LOUDLY at Meta's own OAuth dialog (Meta compares it against the
+    registered value and refuses the mismatch). This URL is different: it is embedded
+    *inside* the image container request, and Meta's fetcher will dutifully try to reach
+    whatever string it finds there — `http://localhost:8000` included. A forgotten override
+    does not fail at the platform; it fails minutes later as an opaque container `ERROR`
+    that looks exactly like a transient Meta problem. So, like R2, every field is required
+    and `from_env()` names the missing variable rather than defaulting to something that
+    would merely fail differently.
+
+    Holds ONLY the base origin — never anything `cloudflared`-specific. The value is
+    whatever is currently reachable from the public internet (a `cloudflared` tunnel URL
+    today, `https://qualify.attitudefactory.co` once deployed, `docs/prioridad-despliegue-
+    subdominio.md`); this dataclass does not know or care which.
+    """
+
+    base_url: str
+
+    def __repr__(self) -> str:  # nothing secret here, but matches R2Settings's convention
+        return f"<PublicMediaSettings base_url={self.base_url!r}>"
+
+    def public_media_url(self, token: str) -> str:
+        """`{base_url}/public/media/{token}` — the ONE place this path is assembled, so the
+        route (`public_media_routes.py`) and the URL handed to Meta can never drift apart."""
+        return f"{self.base_url.rstrip('/')}/public/media/{token}"
+
+    @classmethod
+    def from_env(cls) -> PublicMediaSettings:
+        base_url = os.environ.get("QUALIFY_PUBLIC_MEDIA_BASE_URL", "")
+        if not base_url:
+            raise PublicMediaConfigurationError(
+                "missing QUALIFY_PUBLIC_MEDIA_BASE_URL — required to build the image_url "
+                "Meta's fetcher will call; see docs/prioridad-despliegue-subdominio.md for "
+                "what to point it at in dev (a cloudflared tunnel) vs. deployed"
+            )
+        return cls(base_url=base_url)

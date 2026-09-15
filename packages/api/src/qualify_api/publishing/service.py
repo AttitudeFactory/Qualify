@@ -41,6 +41,7 @@ from qualify_shared.objects.gate import ObjectGate
 from qualify_api.publishing.client import (
     CONTAINER_POLL_CEILING_SECONDS,
     CONTAINER_POLL_INTERVAL_SECONDS,
+    MEDIA_TYPE_IMAGE,
     MEDIA_TYPE_REELS,
     MEDIA_TYPE_VIDEO,
     ContainerStatus,
@@ -154,6 +155,24 @@ def _no_op_degrader(*, tenant_id: UUID, connection_id: UUID) -> None:
     return None
 
 
+class PublicMediaLinker(Protocol):
+    """QUA-68: mints the public URL Meta's fetcher will `GET` to retrieve a staged image.
+
+    Kept as a Protocol — same seam shape as `ConnectionTargetReader`/`PublishClientFactory`
+    above — so this module never imports `MediaTokenStore`/Redis directly; production
+    composition wires the real `TokenPublicMediaLinker`, tests inject a fake."""
+
+    def link(self, *, tenant_id: UUID, object_key: str, content_type: str) -> str: ...
+
+
+class MissingMediaLinker(Exception):
+    """`start()` was asked to publish an IMAGE but this service was built without a
+    `media_linker`. Raised rather than silently falling through to the video path (which
+    would call `create_container` with `media_type='IMAGE'` — a request `client.py`'s own
+    `RESUMABLE_MEDIA_TYPES` guard already refuses) — a configuration gap should read as a
+    configuration gap, not as a confusing `PublishError` from deep inside the client."""
+
+
 @dataclass(frozen=True)
 class PublishState:
     """What the caller (the HTTP route, and transitively the operator's polling client)
@@ -255,6 +274,7 @@ class PublishService:
         adapter_version: str = "qua19.1",
         clock: Callable[[], datetime] | None = None,
         connection_degrader: ConnectionDegrader | None = None,
+        media_linker: PublicMediaLinker | None = None,
     ) -> None:
         self._repo = repository
         self._gate = gate
@@ -263,6 +283,12 @@ class PublishService:
         self._adapter_version = adapter_version
         self._clock = clock or (lambda: datetime.now(UTC))
         self._degrade = connection_degrader or _no_op_degrader
+        # QUA-68 — optional on purpose: every VIDEO-only caller (every test predating this
+        # ticket, `start_many`'s carousel-of-video path) never touches it. `None` is not a
+        # silent fallback to anything: `start()` raises `MissingMediaLinker` the moment an
+        # IMAGE attempt actually needs it, rather than this constructor inventing a default
+        # that could route a real image publish somewhere wrong.
+        self._media_linker = media_linker
 
     async def start(
         self,
@@ -274,9 +300,16 @@ class PublishService:
         idempotency_key: str,
         caption: str | None = None,
         thumb_offset: int | None = None,
+        content_type: str | None = None,
     ) -> PublishState:
         """Write-ahead → container → upload. Returns with the row in `processing` on the
-        happy path; the client then drives `advance()` at the recommended cadence."""
+        happy path; the client then drives `advance()` at the recommended cadence.
+
+        `content_type` (QUA-68) is used ONLY by the IMAGE branch below, to mint the public
+        media link with the right `Content-Type` — the VIDEO path ignores it entirely
+        (it already knows its own bytes' shape via `upload_bytes`), so every pre-existing
+        caller omitting it is unaffected.
+        """
         target = self._connections.read(tenant_id=tenant_id, connection_id=connection_id)
         if target is None:
             raise UnknownConnection(str(connection_id))
@@ -303,6 +336,22 @@ class PublishService:
                 platform_error_code=f"{CONNECTION_NOT_ACTIVE_PREFIX}:{target.status}",
             )
             return _state(self._require(tenant_id, attempt.id))
+
+        # QUA-68 — IMAGE never uploads bytes to Meta at all (there is no resumable variant
+        # for it), so it takes a completely separate branch here rather than falling
+        # through into the `create_container`/`upload_bytes` shape below, which is
+        # STRUCTURALLY VIDEO: it would send `media_type='IMAGE'` to `create_container`,
+        # which `client.py`'s own `RESUMABLE_MEDIA_TYPES` guard already refuses. Nothing
+        # below this branch is touched or reordered for the VIDEO path.
+        if media_product_type == MEDIA_TYPE_IMAGE:
+            return await self._start_image(
+                tenant_id=tenant_id,
+                attempt=attempt,
+                target=target,
+                media_object_key=media_object_key,
+                content_type=content_type,
+                caption=caption,
+            )
 
         client = await self._clients.client_for(tenant_id=tenant_id, connection_id=connection_id)
 
@@ -341,6 +390,56 @@ class PublishService:
             )
         # retriable True or None: unknown is NOT a refusal (R10). The row stays
         # 'uploading', unsettled — the ceiling against started_at is the guaranteed exit.
+        return _state(self._require(tenant_id, attempt.id))
+
+    async def _start_image(
+        self,
+        *,
+        tenant_id: UUID,
+        attempt: AttemptRecord,
+        target: ConnectionTarget,
+        media_object_key: str,
+        content_type: str | None,
+        caption: str | None,
+    ) -> PublishState:
+        """QUA-68's whole reason to exist: IMAGE has no upload phase, so this is `start()`'s
+        `create_container`/`upload_bytes` pair collapsed into ONE Meta call plus a status
+        transition — never `'uploading'`, because nothing here is ever uploaded. Once
+        `creation_id` is recorded, this attempt is indistinguishable from a video one to
+        `advance()`/`_publish_once`/reconciliation: they read `creation_id` and
+        `container_status` generically, never `media_product_type`, for exactly this reason.
+        """
+        if self._media_linker is None:
+            raise MissingMediaLinker(
+                "PublishService has no media_linker configured — cannot publish IMAGE"
+            )
+        if not content_type:
+            # Explicit over silent (same posture QUA-103's MediaItem.media_type takes):
+            # guessing a Content-Type for a public URL Meta will actually fetch is exactly
+            # the kind of silent inference that turns into an opaque container ERROR later.
+            raise ValueError("content_type is required to publish an IMAGE")
+
+        image_url = self._media_linker.link(
+            tenant_id=tenant_id, object_key=media_object_key, content_type=content_type
+        )
+        client = await self._clients.client_for(
+            tenant_id=tenant_id, connection_id=attempt.connection_id
+        )
+        # A PublishError here PROPAGATES — same posture as the video branch's own
+        # `create_container` call: the write-ahead row stays 'pending' with creation_id
+        # NULL, and the poll ceiling (never reached, since advance() is never called on an
+        # attempt with no creation_id yet from the CLIENT side either) is not the exit here;
+        # the caller simply sees the exception and the row is there to reconcile from later.
+        container_id = await client.create_image_container(
+            ig_user_id=target.ig_user_id, image_url=image_url, caption=caption
+        )
+        self._repo.record_creation_id(
+            tenant_id=tenant_id, attempt_id=attempt.id, creation_id=container_id
+        )
+        # Straight to 'processing' — there is no 'uploading' phase for IMAGE. Meta already
+        # has everything it needs (the URL); `advance()` picks up from here UNCHANGED,
+        # polling `container_status` exactly as it already does for video.
+        self._repo.advance_status(tenant_id=tenant_id, attempt_id=attempt.id, status="processing")
         return _state(self._require(tenant_id, attempt.id))
 
     async def advance(self, *, tenant_id: UUID, attempt_id: UUID) -> PublishState:
