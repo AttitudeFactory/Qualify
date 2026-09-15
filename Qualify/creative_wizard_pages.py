@@ -23,13 +23,18 @@ Screens:
 Shape of the flow (one decision per screen, macOS-setup style: one big title, a small
 step counter, the content, and small back/next controls at the bottom — no step rail):
 
-    1 Suscripción      2 Identidad     3 ¿Tienes logo?   4 Logo (branches on 3)
-    5 Paleta           6 Voz · tono    7 Voz · ejemplos  8 Restricciones
-    9 Confirmación
+    1 Identidad        2 ¿Tienes logo?  3 Logo (branches on 2)  4 Paleta
+    5 Voz · tono       6 Voz · ejemplos 7 Restricciones         8 Confirmación
+    9 Resultados
+
+"Elige tu plan" was removed from BOTH flows on 2026-09-11 (§ request: "quitemos la
+view de Elige tu plan, independientemente si tenga o no redes") — the plan tiers were
+placeholder copy with no column behind them, so nothing persisted is lost.
 
 NOT YET PERSISTED — several fields here edit state `save_kit_form` does not carry, so
 they survive navigation between steps but not a reload:
-  - `subscription` and the logo-creation brief: placeholder copy, no columns at all.
+  - the logo-creation brief: placeholder copy, no columns at all.
+  - the connect flow's account kind, rubro and location (`BrandConnectState`).
   - the staged logo: `brand_kits.logo_asset_key` DOES exist and `creative_provider.
     save_kit` deliberately preserves whatever is stored (so nothing is lost by saving
     here), but no path writes a NEW key. Wiring it means R2 upload + a `logo_asset_key`
@@ -45,8 +50,11 @@ from collections.abc import AsyncIterator
 from uuid import uuid4
 
 import reflex as rx
+from reflex.constants import Dirs
+from reflex.utils.imports import ImportVar
+from reflex.vars import VarData
 
-from . import scrapecreators_client
+from . import avatar_proxy, creator_discovery, scrapecreators_client
 from .auth_state import AuthState
 from .creative_state import CreativeState
 from .tenant import tenant_uuid
@@ -71,7 +79,6 @@ _UPLOAD_FAILED = "No se pudo leer el archivo. Inténtalo de nuevo."
 # Title + one-line subtitle per step. The index IS the cursor value, so this tuple is
 # the single source of truth for the counter and the heading.
 STEPS: tuple[tuple[str, str], ...] = (
-    ("Elige tu plan", "Puedes cambiarlo más adelante."),
     ("¿Quién es la marca?", "Lo que define su lugar y a quién le habla."),
     ("¿Tienes logo?", "De tu respuesta depende el siguiente paso."),
     ("Tu logo", "Lo usaremos en cada pieza que generemos."),
@@ -113,21 +120,6 @@ _CONTROL_RADIUS = "large"
 # back — and note the two files move together: restoring an older copy of THIS module
 # on top of the current `ui/layout.py` is what visibly broke the layout once already.
 
-# Placeholder plans — the real tiers/pricing are not decided (see CLAUDE.md), but the
-# copy itself is real Spanish describing plausible scope per tier, not lorem: nothing
-# a first-time user sees should read as unfinished. Revisit the wording once product
-# actually locks the tiers.
-PLANS: tuple[tuple[str, str, str], ...] = (
-    ("basico", "Básico", "Monitorea tu marca y publica contenido en una cuenta conectada."),
-    ("pro", "Pro", "Suma señales de la competencia y descubre creadores afines a tu marca."),
-    (
-        "negocio",
-        "Negocio",
-        "Varias personas del equipo, más cuentas conectadas y soporte prioritario.",
-    ),
-    ("agencia", "Agencia", "Gestiona la marca de varios clientes desde un mismo lugar."),
-)
-
 
 class BrandWizardState(rx.State):
     """The cursor, plus the fields this screen adds that `CreativeState` has no home for.
@@ -141,10 +133,7 @@ class BrandWizardState(rx.State):
 
     step: int = 0
 
-    # -- step 1 ---------------------------------------------------------------
-    subscription: str = ""
-
-    # -- step 3/4 -------------------------------------------------------------
+    # -- step 2/3 -------------------------------------------------------------
     has_logo: str = ""  # "si" | "no" | "" (unanswered)
     logo_brief_1: str = ""
     logo_brief_2: str = ""
@@ -174,20 +163,18 @@ class BrandWizardState(rx.State):
         into.
         """
         creative = await self.get_state(CreativeState)
-        if not self.subscription:
+        if not creative.kit_positioning.strip() or not creative.kit_audience.strip():
             self.step = 0
-        elif not creative.kit_positioning.strip() or not creative.kit_audience.strip():
-            self.step = 1
         elif not self.has_logo:
-            self.step = 2
+            self.step = 1
         elif self.has_logo == "si" and not self.logo_key:
-            self.step = 3
+            self.step = 2
         elif self.has_logo == "no" and not self.logo_brief_1.strip():
-            self.step = 3
+            self.step = 2
         elif not creative.kit_palette.strip():
-            self.step = 4
+            self.step = 3
         elif not creative.kit_do_examples.strip():
-            self.step = 6
+            self.step = 5
         else:
             self.step = _CONFIRM_STEP
 
@@ -220,7 +207,6 @@ class BrandWizardState(rx.State):
         if a PUBLIC event handler is named that; this private helper is safe, but the
         convention is kept anyway so nobody "simplifies" it back into one)."""
         self.step = 0
-        self.subscription = ""
         self.has_logo = ""
         self.logo_brief_1 = ""
         self.logo_brief_2 = ""
@@ -243,12 +229,8 @@ class BrandWizardState(rx.State):
         return rx.redirect(_SIGNALS_ROUTE)
 
     @rx.event
-    def select_plan(self, key: str) -> None:
-        self.subscription = key
-
-    @rx.event
     def answer_has_logo(self, value: str) -> None:
-        """Answering step 3 moves straight on — the question has no other content, so
+        """Answering step 2 moves straight on — the question has no other content, so
         making the user press Next again would be a dead click."""
         self.has_logo = value
         self.step = min(self.step + 1, LAST_STEP)
@@ -479,7 +461,9 @@ def _step_icon(name: str | rx.Var[str]) -> rx.Component:
     )
 
 
-def _step_body(*children: rx.Component, icon: str | rx.Var[str] | None = None) -> rx.Component:
+def _step_body(
+    *children: rx.Component, icon: str | rx.Var[str] | None = None, grow: bool = False
+) -> rx.Component:
     """Every step centres its content. Fields still span the column, so their labels
     stay left-read while the block itself sits centred under the title. `icon` is
     optional and additive — steps that already show a prominent graphic of their own
@@ -502,6 +486,9 @@ def _step_body(*children: rx.Component, icon: str | rx.Var[str] | None = None) -
         width="100%",
         align_items="center",
         class_name="q-settle",
+        # `grow` (the deck): take the card's whole height so a child with `flex="1"`
+        # can stretch to it — every other step keeps its natural height, centred.
+        **({"flex": "1", "align_self": "stretch"} if grow else {}),
     )
 
 
@@ -718,21 +705,6 @@ def _finish_button(on_click: rx.event.EventType[()]) -> rx.Component:
 # The nine steps
 
 
-def _step_subscription() -> rx.Component:
-    return _step_body(
-        icon="credit-card",
-        *(
-            _choice_card(
-                label,
-                blurb,
-                BrandWizardState.subscription == key,
-                BrandWizardState.select_plan(key),
-            )
-            for key, label, blurb in PLANS
-        ),
-    )
-
-
 def _step_identity() -> rx.Component:
     return _step_body(
         _labeled_area(
@@ -854,8 +826,8 @@ def _logo_brief_form(next_handler: rx.event.EventHandler) -> rx.Component:
     """The three questions behind "te haremos tres preguntas para proponerte uno"
     (`_step_has_logo`'s own "No, todavía no" copy). These used to be literal lorem
     ipsum — as actual field LABELS a first-time user would read, not just example
-    input, unlike `PLANS`' pricing copy (real tiers not decided, but that copy is
-    real Spanish too now — see `PLANS`'s own comment). Slightly taller inputs than
+    input, unlike placeholder copy elsewhere in this module (the plan tiers, removed
+    2026-09-11, were the last of it). Slightly taller inputs than
     the rest of the flow: three fields back to back on one screen read cramped at
     the default height.
 
@@ -1332,16 +1304,6 @@ def _recap_row(label: str, value: rx.Var[str], fallback: str = "Sin definir") ->
     )
 
 
-def _plan_label(key: rx.Var[str]) -> rx.Var[str]:
-    """The plan's human label for the recap — `BrandWizardState.subscription` stores
-    the internal `PLANS` key ("basico"), which is what a first-time user would see on
-    ¿Todo correcto? without this: the slug they never typed, not the label they
-    clicked. Falls to "" (unmatched, or nothing chosen yet) so `_recap_row`'s own
-    "Sin definir" still applies — this only ever renames a real value, never invents
-    one for an empty key."""
-    return rx.match(key, *[(k, label) for k, label, _ in PLANS], "")
-
-
 def _palette_recap_row() -> rx.Component:
     """Same label column `_recap_row` uses, but the value is a row of small swatches —
     not the raw comma-joined hex string `_recap_row` would otherwise show. A confirm
@@ -1380,8 +1342,6 @@ def _step_confirm() -> rx.Component:
     return _step_body(
         card(
             rx.vstack(
-                _recap_row("Plan", _plan_label(BrandWizardState.subscription)),
-                rx.divider(),
                 _recap_row("Posicionamiento", CreativeState.kit_positioning),
                 _recap_row("Audiencia", CreativeState.kit_audience),
                 rx.divider(),
@@ -1434,21 +1394,20 @@ def _step_insights() -> rx.Component:
 
 
 def _window() -> rx.Component:
-    """One step at a time. `rx.match` on the cursor, with step 1 as the fallback so an
+    """One step at a time. `rx.match` on the cursor, with step 0 as the fallback so an
     out-of-range cursor still renders a form instead of a blank screen."""
     return rx.match(
         BrandWizardState.step,
-        (0, _step_subscription()),
-        (1, _step_identity()),
-        (2, _step_has_logo()),
-        (3, _step_logo(BrandWizardState.next_step)),
-        (4, _step_palette()),
-        (5, _step_voice_tone()),
-        (6, _step_voice_examples()),
-        (7, _step_restrictions()),
-        (8, _step_confirm()),
-        (9, _step_insights()),
-        _step_subscription(),
+        (0, _step_identity()),
+        (1, _step_has_logo()),
+        (2, _step_logo(BrandWizardState.next_step)),
+        (3, _step_palette()),
+        (4, _step_voice_tone()),
+        (5, _step_voice_examples()),
+        (6, _step_restrictions()),
+        (7, _step_confirm()),
+        (8, _step_insights()),
+        _step_identity(),
     )
 
 
@@ -1495,12 +1454,11 @@ def _manual_can_continue() -> rx.Var[bool]:
     (review only)."""
     return rx.match(
         BrandWizardState.step,
-        (0, BrandWizardState.subscription != ""),
-        (1, _identity_complete()),
-        (2, BrandWizardState.has_logo != ""),
-        (3, _logo_step_complete()),
-        (4, CreativeState.kit_palette != ""),
-        (6, CreativeState.kit_do_examples != ""),
+        (0, _identity_complete()),
+        (1, BrandWizardState.has_logo != ""),
+        (2, _logo_step_complete()),
+        (3, CreativeState.kit_palette != ""),
+        (5, CreativeState.kit_do_examples != ""),
         True,
     )
 
@@ -1762,7 +1720,7 @@ def brand_choice_index() -> rx.Component:
 # own step 0, not inside it.
 
 #: (icon, network name, what to do, signup URL). Real Spanish copy, not lorem — same
-#: rule `PLANS`/`RECOMMENDATIONS` follow: a first-time user reads this as the actual
+#: rule `RECOMMENDATIONS` follows: a first-time user reads this as the actual
 #: instructions, not filler.
 #: Lucide has no brand-logo icons (verified against `reflex_components_lucide.icon`
 #: — "instagram"/"tiktok" both fall back to a generic circle-help with a compile
@@ -1867,7 +1825,9 @@ def brand_connect_setup_index() -> rx.Component:
                             rx.icon("chevron-right", size=T.ICON_SM),
                             size="2",
                             radius=_CONTROL_RADIUS,
-                            on_click=rx.redirect("/brand/connect"),
+                            # Flags the walk as a fresh start (§ `is_fresh_start`) on
+                            # its way to the same `/brand/connect` door "Sí" uses.
+                            on_click=BrandConnectState.start_without_socials,
                         ),
                         width="100%",
                         align="center",
@@ -1894,15 +1854,17 @@ def brand_connect_setup_index() -> rx.Component:
 # /brand/connect — the scraper flow, reached from both /brand answers now (§ request
 # 2026-09-09; it used to be only the "ya tengo redes" fork option).
 #
-# Steps 5, 11-15 are the SAME renderers the manual flow uses, so the two paths
-# cannot drift: only steps 0-3 (network, username, profile, recommendations), 6-7
-# (¿Tienes logo?/Tu logo, skipped when the scraped profile already has a picture —
-# own `_connect_step_has_logo` because the choice needs to advance THIS flow's
-# cursor, see its docstring), 8-10 (¿Eres influencer o una marca?/¿Tu negocio está
-# en Google Maps?/Súmate a Google Maps, § request 2026-09-09 — same self-reported,
-# not-scraped reasoning as the logo pair) and CONNECT_LAST, Resultados e insights
-# (added 2026-09-04, moved the same day to sit AFTER ¿Todo correcto? instead of
-# before it) are specific to this one.
+# Steps 6, 11-15 are the SAME renderers the manual flow uses, so the two paths
+# cannot drift. Specific to this flow: 0-3 (network, username, profile,
+# recommendations), 4-5 (¿Eres influencer o una marca? / Tu rubro y ubicación), 7-8
+# (¿Tienes logo?/Tu logo, own `_connect_step_has_logo` because the choice needs to
+# advance THIS flow's cursor), 9-10 (the Google Maps pair) and CONNECT_LAST,
+# Resultados e insights — which now carries the phased creator discovery.
+#
+# Which steps a session actually SEES is decided in one place,
+# `BrandConnectState._is_skipped` (2026-09-11) — every forward and backward move walks
+# over the skipped ones, so a skip can never be honoured going forward and forgotten
+# going back.
 
 _USERNAME_REQUIRED = "Escribe tu usuario para continuar."
 _PROFILE_UNAVAILABLE = "No pudimos leer el perfil. Revisa el usuario e inténtalo de nuevo."
@@ -1974,26 +1936,29 @@ CONNECT_STEPS: tuple[tuple[str, str], ...] = (
     ("¿Qué red usas?", "Empezamos por donde ya tienes audiencia."),
     ("¿Cuál es tu usuario?", "Lo leeremos para proponerte el kit."),
     ("Esto es lo que vemos", "Confirma que es tu perfil."),
+    # Lo que te proponemos — SKIPPED for a fresh start (§ request 2026-09-11: "quitemos
+    # la view de Lo que te proponemos, solo cuando no tenga redes"). See `is_fresh_start`.
     ("Lo que te proponemos", "Podrás ajustarlo todo después."),
-    ("Elige tu plan", "Puedes cambiarlo más adelante."),
+    # "Elige tu plan" sat here until 2026-09-11 — removed from both flows.
+    #
+    # ¿Eres influencer o una marca? now comes BEFORE ¿Quién es la marca? (§ request
+    # 2026-09-11, "invertir" the two). It still gates the Google Maps pair: an
+    # influencer has no local business to list.
+    ("¿Eres influencer o una marca?", "Así te mostramos los pasos que sí aplican para ti."),
+    # Tu rubro y ubicación (2026-09-11) — the input the creator discovery on
+    # Resultados e insights needs. Always shown for a fresh start (no content to read
+    # it from); for an existing account only when the profile read could not detect
+    # what the discovery needs (`needs_rubro_step`).
+    ("Tu rubro y ubicación", "Así buscamos referentes de tu sector, tu país y tu ciudad."),
     ("¿Quién es la marca?", "Lo que define su lugar y a quién le habla."),
-    # ¿Tienes logo? / Tu logo (§ request 2026-09-09) — SKIPPED at runtime (see
-    # `next_step`/`prev_step`) when the scraped profile already has a picture; only
-    # actually shown when `profile_pic` came back empty. Same copy + renderers the
-    # manual flow uses (`_step_has_logo`/`_step_logo`, STEPS[2]/STEPS[3]) via
-    # `_connect_step_has_logo`, so the two flows cannot drift on this question either.
+    # ¿Tienes logo? / Tu logo — SKIPPED when the scraped profile already has a
+    # picture. Same copy + renderers the manual flow uses (`_step_has_logo`/
+    # `_step_logo`) via `_connect_step_has_logo`, so the two flows cannot drift.
     ("¿Tienes logo?", "De tu respuesta depende el siguiente paso."),
     ("Tu logo", "Lo usaremos en cada pieza que generemos."),
-    # ¿Eres influencer o una marca? (§ request 2026-09-09) — gates the Google Maps
-    # pair below: a creator has no "local" business to list, so `answer_account_kind`
-    # skips both of them outright on "influencer". Always asked, self-reported, same
-    # as the Maps question itself.
-    ("¿Eres influencer o una marca?", "Así te mostramos los pasos que sí aplican para ti."),
-    # ¿Estás en Google Maps? / Súmate a Google Maps (§ request 2026-09-09) — SKIPPED
-    # as a pair for "influencer" (above); for "marca" the question is ALWAYS asked
-    # (there is no scraped signal to auto-detect a Maps listing the way `profile_pic`
-    # stands in for a logo) and only the follow-up steps screen is conditional, on
-    # the ANSWER ("no"). See `answer_account_kind` / `answer_has_maps`.
+    # ¿Estás en Google Maps? / Súmate a Google Maps — SKIPPED as a pair for
+    # "influencer"; for "marca"/"ambas" the question is always asked and only the
+    # follow-up screen is conditional, on the answer ("no").
     ("¿Tu negocio está en Google Maps?", "Así te encuentran cuando buscan cerca."),
     ("Súmate a Google Maps", "Son unos minutos y quedas visible en el mapa."),
     ("Paleta de colores", "Los colores con los que se te reconoce."),
@@ -2001,34 +1966,76 @@ CONNECT_STEPS: tuple[tuple[str, str], ...] = (
     ("Enséñale a hablar", "Ejemplos reales valen más que cualquier descripción."),
     ("Lo que nunca debe decir", "Reglas duras: una violación es un rechazo."),
     ("¿Todo correcto?", "Revisa antes de guardar."),
+    # Referente, competencia o detractor (§ request 2026-09-11, "algo divertido antes
+    # del resultado"): the accounts the discovery found, sorted by the operator into
+    # three buckets by drag and drop or a tap. Optional — nothing blocks Continuar.
+    ("Referente, competencia o detractor", "Arrastra cada cuenta a su flecha, o toca la flecha."),
     ("Resultados e insights", "Cómo se ve tu cuenta hoy."),
 )
 CONNECT_LAST = len(CONNECT_STEPS) - 1
-#: The last screen of this flow's OWN preview stretch (steps 0-3) before it joins the
-#: shared kit-setup steps — where Cancelar makes sense instead of Atrás. Resultados e
-#: insights (the true final screen, CONNECT_LAST) needs neither: Atrás still works
-#: normally there (back to Todo correcto), and Finalizar is the forward action.
-_LAST_PREVIEW_STEP = 3
+_SORT_STEP = CONNECT_LAST - 1
+_CONNECT_CONFIRM_STEP = CONNECT_LAST - 2
 
-#: ¿Tienes logo? / Tu logo's indices in `CONNECT_STEPS` — the two steps `next_step`/
-#: `prev_step` jump clean over whenever `profile_pic` is already set. Named rather
-#: than inlined as literal 6/7 so a future reorder of the tuple above cannot silently
-#: desync the skip logic from the steps it is skipping.
-_LOGO_QUESTION_STEP = 6
-_LOGO_UPLOAD_STEP = 7
-
-#: ¿Eres influencer o una marca?'s own index — answering "influencer" here jumps
-#: clean over BOTH Maps steps below (see `answer_account_kind`).
-_ACCOUNT_KIND_STEP = 8
-
-#: ¿Tu negocio está en Google Maps? / Súmate a Google Maps's indices — the pair is
-#: skipped together on "influencer" above; independently, the SECOND one alone is
-#: also skipped on a "sí" answer to the question itself (see `answer_has_maps`).
-#: Neither skip is automatic the way the logo question's is: there is no scraped
-#: signal for either "is this an influencer" or "is there a Maps listing" the way
-#: `profile_pic` stands in for a logo.
+#: Named indices into `CONNECT_STEPS` — every skip, gate and renderer refers to these,
+#: never to a literal, so the next reorder of the tuple is a one-place change.
+_PROFILE_STEP = 2
+_RECOMMENDATIONS_STEP = 3
+_ACCOUNT_KIND_STEP = 4
+_RUBRO_STEP = 5
+_IDENTITY_STEP = 6
+_LOGO_QUESTION_STEP = 7
+_LOGO_UPLOAD_STEP = 8
 _MAPS_QUESTION_STEP = 9
 _MAPS_STEPS_STEP = 10
+_PALETTE_STEP = 11
+_VOICE_TONE_STEP = 12
+_VOICE_EXAMPLES_STEP = 13
+_RESTRICTIONS_STEP = 14
+assert CONNECT_STEPS[_RUBRO_STEP][0] == "Tu rubro y ubicación"
+assert CONNECT_STEPS[_MAPS_STEPS_STEP][0] == "Súmate a Google Maps"
+assert CONNECT_STEPS[_RESTRICTIONS_STEP + 1][0] == "¿Todo correcto?"
+assert CONNECT_STEPS[_SORT_STEP][0] == "Referente, competencia o detractor"
+
+#: The three buckets of the sort step — (key, title, blurb, icon).
+BUCKETS: tuple[tuple[str, str, str, str], ...] = (
+    ("referente", "Referentes", "Te inspiran, te gustaría parecerte.", "star"),
+    ("competencia", "Competencia", "Le hablan a tu misma audiencia.", "swords"),
+    ("detractor", "Detractores", "No van con tu marca.", "thumbs-down"),
+)
+#: Where each bucket sits around the deck — the way the ghost card flies.
+_FLY_DIRECTION = {"referente": "left", "competencia": "right", "detractor": "down"}
+#: How long `advance_stage_if_exhausted` waits before moving the deck on, so the
+#: just-played decision animation (hit-flash ≤0.6s, fly-ghost/drag-release ≤0.5s)
+#: finishes reading first (§ request 2026-09-14).
+_STAGE_ADVANCE_DELAY = 0.65
+
+
+class _DropZone(rx.el.Button):
+    """A panel the deck's card can be dropped on. Reflex's HTML elements declare no
+    `on_drop` trigger of their own, so it is added here. The event is not the
+    browser's HTML5 drop any more: `assets/deck-drag.js` drives the card with pointer
+    events and, on a release over a panel, dispatches a synthetic `drop` on it —
+    React's `onDrop` catches it either way. A real button, not a `div` (§8): the
+    panel IS the tap alternative to dragging (the row of buttons under the card is
+    gone), so it has to be reachable by keyboard and named to a screen reader."""
+
+    on_drop: rx.EventHandler[rx.event.no_args_event_spec]
+
+
+#: ¿Eres influencer o una marca?'s options — (key, title, blurb). "ambas" (§ request
+#: 2026-09-11, "influencer y/o marca") behaves as a brand for every gate: it has a
+#: business to list on Maps and a location the discovery should use.
+ACCOUNT_KINDS: tuple[tuple[str, str, str], ...] = (
+    ("marca", "Soy una marca o negocio", "Te preguntaremos tu rubro y dónde estás."),
+    ("influencer", "Soy creador o influencer", "Buscaremos referentes de tu temática."),
+    ("ambas", "Las dos cosas", "Creas contenido y además tienes un negocio."),
+)
+
+#: Countries the rubro step offers — the same table the discovery detects locations
+#: against, so a chosen country is always one the search knows how to name.
+COUNTRY_OPTIONS: tuple[tuple[str, str], ...] = tuple(
+    (code, name) for code, (name, _cities) in creator_discovery.COUNTRIES.items()
+)
 
 
 class BrandConnectState(rx.State):
@@ -2053,15 +2060,84 @@ class BrandConnectState(rx.State):
     profile_followers_count: int = 0
     profile_pic: str = ""
 
-    #: ¿Eres influencer o una marca?'s answer — "influencer" | "marca" | ""
-    #: (unanswered). Gates whether the Google Maps question even gets asked (see
-    #: `answer_account_kind`) — a creator has no "local" business to list.
+    #: ¿Eres influencer o una marca?'s answer — "marca" | "influencer" | "ambas" | ""
+    #: (unanswered). Gates the Google Maps pair (an influencer has no local business
+    #: to list) and whether the rubro step requires a location.
     account_kind: str = ""
 
     #: ¿Tu negocio está en Google Maps?'s answer — "si" | "no" | "" (unanswered).
     #: Self-reported only: unlike a logo, there is no scraped signal to check this
     #: against, so it lives here rather than being auto-set like `profile_pic`.
     has_maps: str = ""
+
+    #: True when the operator came in through "No, todavía no" → Crea tu cuenta (§
+    #: request 2026-09-11). Set by `start_without_socials`, cleared on every visit to
+    #: the `/brand` fork (`clear_entry`). See `is_fresh_start`.
+    started_without_socials: bool = False
+
+    #: Tu rubro y ubicación — a `creator_discovery.NICHE_TAXONOMY` key, an ISO country
+    #: code and a free-text city. PREFILLED by `analyze()` from what the profile read
+    #: lets `creator_discovery.seed_from_profile` detect (bio, Instagram category, the
+    #: account's own hashtags), editable on the step. Not persisted, like `account_kind`.
+    sector: str = ""
+    #: The rubro in the operator's own words ("peluquería canina") — what the discovery
+    #: searches with for any rubro; `sector` (a taxonomy category) is optional
+    #: vocabulary on top. Either one completes the step.
+    rubro_text: str = ""
+    country_code: str = ""
+    city: str = ""
+
+    #: The phased creator discovery on Resultados e insights (`run_discovery`). One
+    #: list of account cards per phase (`creator_discovery.account_card` shape), plus
+    #: its title and the note shown when it came back empty.
+    discovering: bool = False
+    discovery_ran: bool = False
+    discovery_error: str = ""
+    discovery_signals: list[str] = []
+    sector_title: str = ""
+    sector_note: str = ""
+    sector_accounts: list[dict[str, str]] = []
+    national_title: str = ""
+    national_note: str = ""
+    national_accounts: list[dict[str, str]] = []
+    local_title: str = ""
+    local_note: str = ""
+    local_accounts: list[dict[str, str]] = []
+    #: Which phase is running right now, for the loading line ("" when idle).
+    discovery_running: str = ""
+    #: Run token (§ request 2026-09-11, "que la búsqueda inicie desde que se obtiene
+    #: el perfil"): the search starts as soon as the profile is read and starts AGAIN
+    #: if the rubro step changes what it is seeded with. A superseded run still
+    #: finishes its vendor calls but applies nothing — every write checks the token.
+    discovery_run_id: int = 0
+    #: The rubro answers the running search was seeded with (`_answers`), so leaving
+    #: the rubro step only restarts it when something actually changed.
+    discovery_answers: list[str] = []
+
+    #: Referente, competencia o detractor — bucket per account key
+    #: (`"<network>:@<handle>"`, see `_account_key`). Session-only, like the rest.
+    account_buckets: dict[str, str] = {}
+    #: The card being dragged, same key.
+    dragging: str = ""
+    #: Which category the sort step is on (index into `creator_discovery.PHASES`):
+    #: sector first, then national, then local (§ request 2026-09-11, "por pasos").
+    #: Each category is sorted on its own, so one that failed never blocks the rest.
+    sort_stage: int = 0
+    #: Position in the category's unsorted pool of the account shown in the middle
+    #: (§ request 2026-09-11, "una cuenta en el medio"); Omitir moves it on.
+    stage_cursor: int = 0
+    #: The last account sent to a bucket, for Deshacer.
+    last_assigned: str = ""
+    #: The card that just left the deck and the way it went ("left" / "right" /
+    #: "down") — rendered once more as a ghost that flies out (`.q-fly-*`, keyed by
+    #: `fly_token` so every decision restarts the animation). Pure presentation: the
+    #: assignment itself is immediate and synchronous.
+    fly_card: dict[str, str] = {}
+    fly_direction: str = ""
+    fly_token: int = 0
+    #: The bucket the last decision landed in — the zone that flashes (`.q-deck-zone
+    #: [data-hit]`, re-keyed by `fly_token` so a second hit on the same zone replays).
+    hit_bucket: str = ""
 
     #: The real metrics `analyze()` derived from the profile read
     #: (`scrapecreators_client.profile_metrics`), as parallel lists — one entry per
@@ -2122,45 +2198,154 @@ class BrandConnectState(rx.State):
         self.metric_targets = [float(m["target"]) for m in metrics]
         self.metric_values = [0.0] * len(metrics)
 
+    #: Set when the cursor lands on Tu rubro y ubicación, so a step the operator was
+    #: actually shown stays reachable with Atrás after they complete it — otherwise
+    #: completing it would make `_is_skipped` hide the very screen they just edited.
+    rubro_asked: bool = False
+
+    # -- which steps a session sees ---------------------------------------------------
+    # Plain methods for the backend walk; the `@rx.var`s below repeat the same
+    # expressions over fields directly (computed-var dependency tracking reads field
+    # access, and a helper call would hide it).
+
+    def _is_fresh(self) -> bool:
+        return self.started_without_socials or (
+            self.profile_followers_count < _NEW_ACCOUNT_FOLLOWER_THRESHOLD
+        )
+
+    def _rubro_complete(self) -> bool:
+        if self.account_kind == "influencer":
+            return bool(self.sector)  # category only (§ request 2026-09-11)
+        if not self.sector and not self.rubro_text.strip():
+            return False
+        return bool(self.country_code and self.city.strip())
+
+    def _answers(self) -> list[str]:
+        """What the discovery is seeded with from this state, in one comparable shape."""
+        return [self.sector, self.rubro_text.strip(), self.country_code, self.city.strip()]
+
+    def _is_skipped(self, index: int) -> bool:
+        """THE one place deciding which steps a session sees (2026-09-11):
+        - Lo que te proponemos: skipped on a fresh start — nothing to propose FROM.
+        - Tu rubro y ubicación: ALWAYS shown since 2026-09-11 ("para cuando se es
+          influencer también quiero que me deje escoger rubro y ubicación") — for an
+          existing account it arrives prefilled from the profile read, which is the
+          moment to correct it.
+        - ¿Tienes logo? / Tu logo: skipped when the profile has a picture.
+        - ¿Tu negocio está en Google Maps?: skipped for "influencer".
+        - Súmate a Google Maps: skipped for "influencer" and on a "sí"."""
+        if index == _RECOMMENDATIONS_STEP:
+            return self._is_fresh()
+        if index in (_LOGO_QUESTION_STEP, _LOGO_UPLOAD_STEP):
+            return bool(self.profile_pic.strip())
+        if index == _MAPS_QUESTION_STEP:
+            return self.account_kind == "influencer"
+        if index == _MAPS_STEPS_STEP:
+            return self.account_kind == "influencer" or self.has_maps == "si"
+        return False
+
+    def _walk(self, start: int, direction: int) -> int:
+        """From `start`, keep moving in `direction` past skipped steps. Steps 0 and
+        `CONNECT_LAST` are never skipped, so the walk always ends inside the flow."""
+        target = start
+        while 0 < target < CONNECT_LAST and self._is_skipped(target):
+            target += direction
+        return target
+
+    def _land(self, target: int) -> None:
+        if target == _RUBRO_STEP:
+            self.rubro_asked = True
+        self.step = target
+
+    @rx.var
+    def is_fresh_start(self) -> bool:
+        """Came in through "No, todavía no", or the read account is brand new."""
+        return self.started_without_socials or (
+            self.profile_followers_count < _NEW_ACCOUNT_FOLLOWER_THRESHOLD
+        )
+
+    @rx.var
+    def needs_location(self) -> bool:
+        """A brand (or both) must say where it is; for a creator it is optional."""
+        return self.account_kind != "influencer"
+
+    @rx.var
+    def rubro_complete(self) -> bool:
+        if self.account_kind == "influencer":
+            return self.sector != ""
+        if not self.sector and self.rubro_text.strip() == "":
+            return False
+        return self.country_code != "" and self.city.strip() != ""
+
+    @rx.var
+    def is_influencer(self) -> bool:
+        return self.account_kind == "influencer"
+
+    @rx.var
+    def shows_cancel(self) -> bool:
+        """Cancelar replaces Atrás on the LAST screen of this flow's own preview
+        stretch — Lo que te proponemos, or Esto es lo que vemos when that one is
+        skipped for a fresh start."""
+        fresh = self.started_without_socials or (
+            self.profile_followers_count < _NEW_ACCOUNT_FOLLOWER_THRESHOLD
+        )
+        return self.step == (_PROFILE_STEP if fresh else _RECOMMENDATIONS_STEP)
+
     @rx.event
-    def next_step(self) -> None:
-        """Jumps clean over ¿Tienes logo?/Tu logo (§ `_LOGO_QUESTION_STEP`) when the
-        scraped profile already came back with a picture — that picture stands in
-        for a logo, so asking would be a dead question. A profile with no picture
-        falls through to the question normally, exactly like a from-scratch kit
-        does."""
-        target = self.step + 1
-        if target == _LOGO_QUESTION_STEP and self.profile_pic.strip():
-            target = _LOGO_UPLOAD_STEP + 1
-        self.step = min(target, CONNECT_LAST)
+    def next_step(self) -> rx.event.EventSpec | None:
+        """Continuar. Leaving Tu rubro y ubicación (re)starts the creator discovery
+        when the answers differ from what the running search was seeded with —
+        `run_discovery` handles the token; this only decides whether to fire it."""
+        leaving_rubro = self.step == _RUBRO_STEP
+        self._land(self._walk(min(self.step + 1, CONNECT_LAST), +1))
+        if leaving_rubro and self._answers() != self.discovery_answers:
+            return BrandConnectState.run_discovery
+        # Arriving at the sort step with no search ever started (a backend restart
+        # wiped the session mid-walk, or nothing was detectable to start it from):
+        # start it now, or the loading screen there would wait for nothing.
+        if self.step == _SORT_STEP and not self.discovery_ran and not self.discovering:
+            return BrandConnectState.run_discovery
+        return None
 
     @rx.event
     def prev_step(self) -> rx.event.EventSpec | None:
         """Same rule as the manual flow's `BrandWizardState.prev_step`: back from the
-        first step leaves the wizard rather than sitting disabled. Mirrors three
-        forward skips:
-          - `next_step`'s own: stepping back into the logo steps from ¿Eres
-            influencer o una marca? jumps straight to ¿Quién es la marca? when they
-            were skipped going forward too (neither logo step was ever shown —
-            there is nothing to land ON).
-          - `answer_account_kind`'s "influencer": stepping back from Paleta lands ON
-            ¿Eres influencer o una marca?, not past it — THAT question was shown and
-            answered; the two Maps steps after it were what got skipped.
-          - `answer_has_maps`'s "sí": stepping back from Paleta lands ON ¿Tu negocio
-            está en Google Maps?, not past it — same reasoning, only its follow-up
-            steps screen was skipped."""
+        first step leaves the wizard rather than sitting disabled. Walks back over
+        exactly the steps `next_step` walks forward over (`_is_skipped`)."""
         if self.step == 0:
             return rx.redirect("/brand")
-        target = self.step - 1
-        if target == _LOGO_UPLOAD_STEP and self.profile_pic.strip():
-            target = _LOGO_QUESTION_STEP - 1
-        elif target == _MAPS_STEPS_STEP:
-            if self.account_kind == "influencer":
-                target = _ACCOUNT_KIND_STEP
-            elif self.has_maps == "si":
-                target = _MAPS_QUESTION_STEP
-        self.step = target
+        self._land(self._walk(self.step - 1, -1))
         return None
+
+    @rx.event
+    def start_without_socials(self) -> rx.event.EventSpec:
+        """ "Ya la creé, continuar" on Crea tu cuenta — the "No, todavía no" branch.
+        Starts a clean walk flagged as a fresh start (§ `is_fresh_start`)."""
+        self._reset_fields()
+        self.started_without_socials = True
+        return rx.redirect("/brand/connect")
+
+    @rx.event
+    def clear_entry(self) -> None:
+        """On every visit to the `/brand` fork: whichever answer comes next decides
+        again whether this is a fresh start."""
+        self.started_without_socials = False
+
+    @rx.event
+    def set_sector(self, value: str) -> None:
+        self.sector = value
+
+    @rx.event
+    def set_rubro_text(self, value: str) -> None:
+        self.rubro_text = value
+
+    @rx.event
+    def set_country_code(self, value: str) -> None:
+        self.country_code = value
+
+    @rx.event
+    def set_city(self, value: str) -> None:
+        self.city = value
 
     @rx.event
     def choose_network(self, key: str) -> None:
@@ -2189,24 +2374,19 @@ class BrandConnectState(rx.State):
 
     @rx.event
     def answer_account_kind(self, value: str) -> None:
-        """¿Eres influencer o una marca?'s own choice handler. "Marca" continues
-        normally into ¿Tu negocio está en Google Maps? (`_MAPS_QUESTION_STEP`); an
-        influencer has no local business to list, so this skips BOTH Maps steps
-        outright — straight to Paleta."""
+        """¿Eres influencer o una marca?'s own choice handler — records the answer and
+        moves on; which steps follow is `_is_skipped`'s call (the Maps pair for an
+        influencer, the rubro step when nothing is missing)."""
         self.account_kind = value
-        target = self.step + (3 if value == "influencer" else 1)
-        self.step = min(target, CONNECT_LAST)
+        self.next_step()
 
     @rx.event
     def answer_has_maps(self, value: str) -> None:
-        """¿Tu negocio está en Google Maps?'s own choice handler. Unlike
-        `answer_has_logo`, both answers stay in `BrandConnectState` itself — nothing
-        here is a `CreativeState`/`BrandWizardState` kit field, there is no manual-flow
-        counterpart to share it with. "Sí" has nothing further to say, so it skips
-        straight past Súmate a Google Maps (`_MAPS_STEPS_STEP`); "no" shows it."""
+        """¿Tu negocio está en Google Maps?'s own choice handler. Both answers stay in
+        `BrandConnectState` itself — not a kit field, no manual-flow counterpart. "Sí"
+        makes `_is_skipped` jump Súmate a Google Maps; "no" shows it."""
         self.has_maps = value
-        target = self.step + (2 if value == "si" else 1)
-        self.step = min(target, CONNECT_LAST)
+        self.next_step()
 
     def _reset_fields(self) -> None:
         """Every wizard-local field back to its default. Plain method, not `@rx.event`
@@ -2225,13 +2405,351 @@ class BrandConnectState(rx.State):
         self.profile_pic = ""
         self.account_kind = ""
         self.has_maps = ""
+        self.started_without_socials = False
+        self.sector = ""
+        self.rubro_text = ""
+        self.country_code = ""
+        self.city = ""
+        self.rubro_asked = False
+        self._clear_discovery()
         self._set_metrics([])
+
+    def _clear_discovery(self) -> None:
+        self.discovering = False
+        self.discovery_ran = False
+        self.discovery_error = ""
+        self.discovery_signals = []
+        self.discovery_running = ""
+        self.discovery_answers = []
+        self.account_buckets = {}
+        self.dragging = ""
+        self.sort_stage = 0
+        self.stage_cursor = 0
+        self.last_assigned = ""
+        self.fly_card = {}
+        self.fly_direction = ""
+        self.hit_bucket = ""
+        for key in creator_discovery.PHASES:
+            setattr(self, f"{key}_title", "")
+            setattr(self, f"{key}_note", "")
+            setattr(self, f"{key}_accounts", [])
+
+    def _apply_phase(self, phase: dict) -> None:
+        """One phase's result (`creator_discovery.phase_to_dict` shape, fresh or from
+        the cache) into its three vars. A phase that failed on vendor errors and found
+        nothing says so instead of pretending the sector is empty."""
+        key = str(phase.get("key", ""))
+        if key not in creator_discovery.PHASES:
+            return
+        accounts = [
+            # `avatar_src`: the backend path the card's picture is served from
+            # (`creator_discovery.avatar_path` → `avatar_proxy.py`), resolved here so a
+            # cached result from before pictures existed gets one too.
+            {**a, "avatar_src": creator_discovery.avatar_path(a)}
+            for a in phase.get("accounts") or []
+            if isinstance(a, dict)
+        ]
+        note = str(phase.get("note") or "")
+        if phase.get("errors") and not accounts:
+            note = "No pudimos completar esta búsqueda ahora. Inténtalo más tarde."
+        setattr(self, f"{key}_title", str(phase.get("title") or ""))
+        setattr(self, f"{key}_note", note)
+        setattr(self, f"{key}_accounts", accounts)
+        # Fire-and-forget (§ request 2026-09-14, "más rápido cargar las imágenes"):
+        # download every one of this phase's pictures into the proxy's cache right
+        # now, in parallel, instead of waiting for the browser to ask for each one
+        # as the deck/list renders it. A no-op outside a running loop, so calling
+        # `_apply_phase` directly and synchronously (existing tests do) is unaffected.
+        avatar_proxy.warm_avatars_in_background(accounts)
+
+    # -- Referente, competencia o detractor -------------------------------------------
+
+    # The three readers below load the phase vars by NAME, not through
+    # `getattr(self, f"{key}_…")` — and that is load-bearing, not style. Reflex works
+    # a computed var's dependencies out from its bytecode (`LOAD_ATTR self.<name>`,
+    # recursing into methods called on `self`), so a dynamic `getattr` registers no
+    # dependency at all: the deck's vars used to depend only on `sort_stage`/
+    # `stage_cursor`/`account_buckets`, never on `sector_accounts` & co., and the
+    # step opened EMPTY until Siguiente + Anterior touched `sort_stage` and forced a
+    # recompute (bug reported 2026-09-14). `test_brand_connect_flow` pins the
+    # dependency set so this cannot regress quietly.
+    def _phase_title(self, key: str) -> str:
+        return {
+            "sector": self.sector_title,
+            "national": self.national_title,
+            "local": self.local_title,
+        }[key]
+
+    def _phase_note(self, key: str) -> str:
+        return {
+            "sector": self.sector_note,
+            "national": self.national_note,
+            "local": self.local_note,
+        }[key]
+
+    def _phase_accounts(self, key: str) -> list[dict[str, str]]:
+        return {
+            "sector": self.sector_accounts,
+            "national": self.national_accounts,
+            "local": self.local_accounts,
+        }[key]
+
+    @rx.var
+    def discovered_accounts(self) -> list[dict[str, str]]:
+        """Every account the three phases found, once each, with its bucket key and
+        its current bucket ("" while unsorted) — what the sort step deals out."""
+        out: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for key in creator_discovery.PHASES:
+            for item in self._phase_accounts(key):
+                account_key = _account_key(item)
+                if account_key in seen:
+                    continue
+                seen.add(account_key)
+                bucket = self.account_buckets.get(account_key, "")
+                out.append({**item, "key": account_key, "bucket": bucket})
+        return out
+
+    @rx.var
+    def unsorted_accounts(self) -> list[dict[str, str]]:
+        return [a for a in self.discovered_accounts if a["bucket"] == ""]
+
+    @rx.var
+    def referente_accounts(self) -> list[dict[str, str]]:
+        return [a for a in self.discovered_accounts if a["bucket"] == "referente"]
+
+    @rx.var
+    def competencia_accounts(self) -> list[dict[str, str]]:
+        return [a for a in self.discovered_accounts if a["bucket"] == "competencia"]
+
+    @rx.var
+    def detractor_accounts(self) -> list[dict[str, str]]:
+        return [a for a in self.discovered_accounts if a["bucket"] == "detractor"]
+
+    @rx.var
+    def has_sorted(self) -> bool:
+        return len(self.account_buckets) > 0
+
+    def _phase_cards(self, key: str) -> list[dict[str, str]]:
+        """One category's cards with their bucket key and current bucket."""
+        out: list[dict[str, str]] = []
+        for item in self._phase_accounts(key):
+            account_key = _account_key(item)
+            bucket = self.account_buckets.get(account_key, "")
+            out.append({**item, "key": account_key, "bucket": bucket})
+        return out
+
+    @rx.var
+    def stage_key(self) -> str:
+        return creator_discovery.PHASES[min(self.sort_stage, len(creator_discovery.PHASES) - 1)]
+
+    @rx.var
+    def stage_label(self) -> str:
+        return f"Categoría {self.sort_stage + 1} de {len(creator_discovery.PHASES)}"
+
+    @rx.var
+    def stage_title(self) -> str:
+        titles = {"sector": "Referentes del sector", "national": "Nacionales", "local": "Locales"}
+        return self._phase_title(self.stage_key) or titles[self.stage_key]
+
+    @rx.var
+    def stage_note(self) -> str:
+        return self._phase_note(self.stage_key)
+
+    @rx.var
+    def stage_failed(self) -> bool:
+        """The category's search hit vendor errors and found nothing — offer a retry."""
+        return self.stage_note.startswith("No pudimos")
+
+    @rx.var
+    def stage_pending(self) -> bool:
+        """Nothing landed for this category yet and the search is still running."""
+        key = self.stage_key
+        return self.discovering and not self._phase_title(key) and not self._phase_note(key)
+
+    @rx.var
+    def waiting_for_referentes(self) -> bool:
+        """The sort step is behind a loading screen while the search runs (§ request
+        2026-09-14: "una pantalla de carga antes de Referente, competencia o
+        detractor para obligar al usuario a esperar"). It used to render the deck
+        category by category as each phase landed — and its Continuar let the
+        operator skip straight to Resultados e insights before anything had loaded.
+        Now the whole step, controls included, waits for every phase."""
+        return self.step == _SORT_STEP and self.discovering
+
+    @rx.var
+    def discovery_progress(self) -> list[dict[str, str]]:
+        """One row per category for the loading screen: `done` once its result
+        landed, `running` for the first one still missing (phases run in order —
+        they share the account pool, `creator_discovery.PhasedDiscovery`), `pending`
+        after it. Phase fields are read by NAME (`_phase_title`/`_phase_note`), so
+        each landing recomputes this — see the dependency note above them."""
+        generic = {
+            "sector": "Referentes del sector",
+            "national": "Referentes nacionales",
+            "local": "Referentes locales",
+        }
+        rows: list[dict[str, str]] = []
+        running_taken = False
+        for key in creator_discovery.PHASES:
+            landed_title = self._phase_title(key)
+            if landed_title or self._phase_note(key):
+                rows.append({"title": landed_title or generic[key], "status": "done"})
+            elif not running_taken and self.discovering:
+                running_taken = True
+                rows.append({"title": self.discovery_running or generic[key], "status": "running"})
+            else:
+                rows.append({"title": generic[key], "status": "pending"})
+        return rows
+
+    @rx.var
+    def stage_pool(self) -> list[dict[str, str]]:
+        return [a for a in self._phase_cards(self.stage_key) if a["bucket"] == ""]
+
+    @rx.var
+    def stage_referente(self) -> list[dict[str, str]]:
+        return [a for a in self._phase_cards(self.stage_key) if a["bucket"] == "referente"]
+
+    @rx.var
+    def stage_competencia(self) -> list[dict[str, str]]:
+        return [a for a in self._phase_cards(self.stage_key) if a["bucket"] == "competencia"]
+
+    @rx.var
+    def stage_detractor(self) -> list[dict[str, str]]:
+        return [a for a in self._phase_cards(self.stage_key) if a["bucket"] == "detractor"]
+
+    @rx.var
+    def current_card(self) -> dict[str, str]:
+        """The account in the middle of the deck: the pool entry at `stage_cursor`
+        (wrapping, so Omitir cycles), or an empty dict when the pool is empty."""
+        pool = self.stage_pool
+        if not pool:
+            return {}
+        return pool[self.stage_cursor % len(pool)]
+
+    @rx.var
+    def has_current_card(self) -> bool:
+        return len(self.stage_pool) > 0
+
+    @rx.var
+    def stage_remaining(self) -> int:
+        return len(self.stage_pool)
+
+    @rx.var
+    def is_dragging(self) -> bool:
+        return self.dragging != ""
+
+    @rx.var
+    def can_undo(self) -> bool:
+        return self.last_assigned != "" and self.last_assigned in self.account_buckets
+
+    @rx.event
+    def skip_card(self) -> None:
+        if self.stage_pool:
+            self.stage_cursor = (self.stage_cursor + 1) % len(self.stage_pool)
+
+    @rx.event
+    def send_current(self, bucket: str) -> rx.event.EventSpec | None:
+        """The three arrow buttons under the card — the tap alternative to dragging.
+        Propagates `assign`'s own chained event (§ `advance_stage_if_exhausted`)."""
+        card_ = self.current_card
+        if card_:
+            return self.assign(card_["key"], bucket)
+        return None
+
+    @rx.event
+    def undo_last(self) -> None:
+        if self.last_assigned:
+            self.assign(self.last_assigned, "")
+            self.last_assigned = ""
+
+    @rx.var
+    def is_first_stage(self) -> bool:
+        return self.sort_stage <= 0
+
+    @rx.var
+    def is_last_stage(self) -> bool:
+        return self.sort_stage >= len(creator_discovery.PHASES) - 1
+
+    @rx.event
+    def next_sort_stage(self) -> None:
+        self.sort_stage = min(self.sort_stage + 1, len(creator_discovery.PHASES) - 1)
+        self.stage_cursor = 0
+
+    @rx.event
+    def prev_sort_stage(self) -> None:
+        self.sort_stage = max(self.sort_stage - 1, 0)
+        self.stage_cursor = 0
+
+    @rx.event
+    def start_drag(self, key: str) -> None:
+        self.dragging = key
+
+    @rx.event
+    def end_drag(self) -> None:
+        self.dragging = ""
+
+    @rx.event
+    def drop_into(self, bucket: str) -> rx.event.EventSpec | None:
+        """A card released over a panel. Since 2026-09-14 the drag is pointer-driven
+        (`assets/deck-drag.js`): the card in the middle physically follows the pointer
+        and shrinks into the panel, and the script then dispatches `drop` on the
+        panel — so the card to assign is the one in the middle (`dragging` is only
+        set by the older HTML5 path, kept for the tests), and NO ghost flies: the
+        operator just watched the real card land there. The panel still flashes.
+        Propagates `assign`'s own chained event (§ `advance_stage_if_exhausted`)."""
+        key = self.dragging or (self.current_card.get("key", "") if self.current_card else "")
+        result = self.assign(key, bucket, fly=False) if key else None
+        self.dragging = ""
+        return result
+
+    @rx.event
+    def assign(self, key: str, bucket: str, fly: bool = True) -> rx.event.EventSpec | None:
+        """Tap or drop. An empty bucket puts the account back in the pool. `fly`
+        launches the ghost (`_deck_ghost`) — a tap needs it (the card would just
+        vanish), a pointer drop does not.
+
+        Chains `advance_stage_if_exhausted` (§ request 2026-09-14: "que cuando se
+        acaben los referentes pase a la siguiente categoria y si no hay categorias
+        que vaya a la otra view") whenever THIS decision is the one that empties the
+        current category's pool — not when a `Reintentar`/still-loading category
+        happens to be at zero, and not on the "quitar" branch (reverting only ever
+        grows the pool back)."""
+        buckets = dict(self.account_buckets)
+        chain: rx.event.EventSpec | None = None
+        if bucket in {b for b, _, _, _ in BUCKETS}:
+            buckets[key] = bucket
+            self.last_assigned = key
+            leaving = next((a for a in self.stage_pool if a["key"] == key), None)
+            if leaving is not None and fly:
+                self.fly_card = leaving
+                self.fly_direction = _FLY_DIRECTION[bucket]
+            else:
+                self.fly_direction = ""
+            self.fly_token += 1
+            self.hit_bucket = bucket
+        else:
+            buckets.pop(key, None)
+            self.fly_direction = ""
+            self.hit_bucket = ""
+        self.account_buckets = buckets
+        # the pool just shrank or grew: keep the cursor inside it
+        remaining = len([a for a in self._phase_cards(self.stage_key) if a["bucket"] == ""])
+        self.stage_cursor = min(self.stage_cursor, max(remaining - 1, 0))
+        if (
+            bucket in {b for b, _, _, _ in BUCKETS}
+            and remaining == 0
+            and not self.stage_pending
+            and not self.stage_failed
+        ):
+            chain = BrandConnectState.advance_stage_if_exhausted
+        return chain
 
     @rx.event
     def restart(self) -> rx.event.EventSpec:
-        """Cancelar on Lo que te proponemos — the flow's own last preview screen
-        before the shared kit-setup steps begin (§ `_LAST_PREVIEW_STEP`). Drops
-        everything read/entered and goes back to the fork."""
+        """Cancelar on the last preview screen before the shared kit-setup steps
+        begin (§ `shows_cancel`). Drops everything read/entered and goes back to the
+        fork."""
         self._reset_fields()
         return rx.redirect("/brand")
 
@@ -2244,6 +2762,32 @@ class BrandConnectState(rx.State):
         the manual flow's own final screen."""
         self._reset_fields()
         return rx.redirect(_SIGNALS_ROUTE)
+
+    @rx.event(background=True)
+    async def advance_stage_if_exhausted(self) -> AsyncIterator[None]:
+        """Chained by `assign()` when a decision leaves the current category with
+        nothing left to classify (§ request 2026-09-14: "que cuando se acaben los
+        referentes pase a la siguiente categoria y si no hay categorias que vaya a
+        la otra view"). Waits `_STAGE_ADVANCE_DELAY` — long enough for the panel's
+        hit-flash/the fly-ghost/the drag-release shrink to finish reading before the
+        deck changes under the operator — then re-checks: a `Reintentar` or a slow
+        phase landing more cards in the meantime cancels it. Moves to the next
+        category, or — on the last one (`local`) — to Resultados e insights, reusing
+        `advance_to_insights` exactly as Continuar would (same metric count-up)."""
+        await asyncio.sleep(_STAGE_ADVANCE_DELAY)
+        go_to_insights = False
+        async with self:
+            if self.has_current_card or self.stage_pending or self.stage_failed:
+                return
+            if self.is_last_stage:
+                go_to_insights = True
+            else:
+                self.next_sort_stage()
+        if go_to_insights:
+            # a background handler cannot call another one directly (Reflex raises
+            # `RuntimeError` on that, by design) — `yield` the chain instead, the
+            # same idiom `assign()` uses to hand off to THIS handler.
+            yield BrandConnectState.advance_to_insights
 
     @rx.event(background=True)
     async def advance_to_insights(self) -> AsyncIterator[None]:
@@ -2350,12 +2894,158 @@ class BrandConnectState(rx.State):
             self.profile_pic = str(profile.get("profilePicUrl", ""))
             # Real figures over the window (`recentPosts` of this same read).
             self._set_metrics(scrapecreators_client.profile_metrics(network, profile))
+            # Prefill Tu rubro y ubicación with what the read lets us detect (bio,
+            # Instagram category, the account's own hashtags) — the step then only
+            # shows for an existing account when something is still missing.
+            detected = creator_discovery.seed_from_profile(profile)
+            self.sector = detected.niches[0] if detected.niches else ""
+            self.country_code = detected.country_code
+            self.city = detected.city
+            self.rubro_asked = False
+            self._clear_discovery()
             self.analyzing = False
-            self.step = 2
+            self.step = _PROFILE_STEP
+            # § request 2026-09-11: the search is slow, so it starts NOW, from what the
+            # profile alone says, and runs while the operator walks the kit steps; the
+            # rubro step restarts it only if it changes the seed (`next_step`). A fresh
+            # start has nothing to seed from until that step.
+            start_now = not self._is_fresh() and bool(detected.niches or detected.hashtags)
+        if start_now:
+            yield BrandConnectState.run_discovery
+
+    @rx.event(background=True)
+    async def run_discovery(self) -> AsyncIterator[None]:
+        """The phased creator discovery (§ request 2026-09-11): the sector's most
+        influential accounts, then the country's, then the city's — each phase
+        applied as soon as it lands, so the sort step and the summary fill in that
+        order instead of after one long wait. Starts at the profile read
+        (`analyze`), restarts from the rubro step when the seed changed (`next_step`).
+
+        Seeded from the cached profile snapshot (bio, category, `topHashtags` — zero
+        credits, same file `analyze()` wrote) plus the rubro step's answers, which win
+        over detection. The file first, per phase (`creator_discovery.
+        load_cached_phase`): a remembered phase is applied at once and only the
+        missing ones go to the vendor, in parallel calls, with the profile reads
+        remembered on disk too (`PROFILE_CACHE_PATH`)."""
+        async for _ in self._discovery(None):
+            yield
+
+    @rx.event(background=True)
+    async def retry_phase(self, key: str) -> AsyncIterator[None]:
+        """Reintentar on a category whose search failed (vendor 5xx): that one
+        category again, the vendor's cache skipped, the other two untouched
+        (§ request 2026-09-11: "si falla algún paso se puedan seleccionar el resto")."""
+        if key not in creator_discovery.PHASES:
+            return
+        async for _ in self._discovery([key]):
+            yield
+
+    async def _discovery(self, only: list[str] | None) -> AsyncIterator[None]:
+        """The shared body of `run_discovery` (every phase, cache first) and
+        `retry_phase` (the given phases, cache skipped). Takes the run token either
+        way: a superseded run finishes its vendor calls but applies nothing."""
+        async with self:
+            self.discovery_run_id += 1
+            my_id = self.discovery_run_id
+            if only is None:
+                self._clear_discovery()
+            else:
+                self.discovery_error = ""
+                for key in only:
+                    setattr(self, f"{key}_title", "")
+                    setattr(self, f"{key}_note", "")
+                    setattr(self, f"{key}_accounts", [])
+            self.discovering = True
+            self.discovery_ran = True
+            self.discovery_answers = self._answers()
+            network = self.network
+            handle = self.profile_username or self.username.strip()
+            answers = {
+                "sector": self.sector,
+                "rubro_text": self.rubro_text.strip(),
+                "country_code": self.country_code,
+                "city": self.city.strip(),
+            }
+            fallback = {
+                "username": self.profile_username,
+                "bio": self.profile_bio,
+                "category": self.profile_category,
+            }
+        yield
+
+        runner: creator_discovery.PhasedDiscovery | None = None
+        try:
+            profile = await asyncio.to_thread(
+                scrapecreators_client.load_cached_profile, network, handle
+            )
+            seed = creator_discovery.seed_from_profile(profile or fallback, **answers)
+            async with self:
+                if self.discovery_run_id != my_id:
+                    return
+                self.discovery_signals = seed.chips()
+            yield
+
+            keys = list(creator_discovery.PHASES) if only is None else list(only)
+            if only is None:
+                # The file first, one phase at a time ("de manera provisional por
+                # ahora"): a phase the cache remembers for this seed is applied at
+                # once, and only the missing ones (a new city → the local phase
+                # alone) go to the vendor.
+                for key in keys:
+                    cached = await asyncio.to_thread(creator_discovery.load_cached_phase, key, seed)
+                    if cached is None:
+                        continue
+                    async with self:
+                        if self.discovery_run_id != my_id:
+                            return
+                        self._apply_phase(cached)
+                    yield
+                async with self:
+                    keys = [
+                        key
+                        for key in keys
+                        if not getattr(self, f"{key}_title") and not getattr(self, f"{key}_note")
+                    ]
+            if not keys:
+                return
+
+            runner = creator_discovery.PhasedDiscovery(
+                seed, profile_cache=creator_discovery.PROFILE_CACHE_PATH
+            )
+            for key in keys:
+                async with self:
+                    if self.discovery_run_id != my_id:
+                        return
+                    self.discovery_running = creator_discovery.phase_title(key, seed)
+                yield
+                result = await asyncio.to_thread(runner.run, key)
+                phase = creator_discovery.phase_to_dict(result)
+                if result.errors:
+                    logger.warning("brand discovery %s phase errors: %s", key, result.errors)
+                await asyncio.to_thread(creator_discovery.save_cached_phase, key, seed, phase)
+                async with self:
+                    if self.discovery_run_id != my_id:
+                        return
+                    self._apply_phase(phase)
+                yield
+        except (scrapecreators_client.ScrapeCreatorsError, ValueError, OSError) as exc:
+            logger.warning("brand discovery failed: %s", exc)
+            async with self:
+                if self.discovery_run_id == my_id:
+                    self.discovery_error = (
+                        "No pudimos buscar referentes ahora. Inténtalo más tarde."
+                    )
+        finally:
+            if runner is not None:
+                await asyncio.to_thread(runner.close)
+            async with self:
+                if self.discovery_run_id == my_id:
+                    self.discovering = False
+                    self.discovery_running = ""
 
 
 # ---------------------------------------------------------------------------
-# The four screens specific to this flow
+# The screens specific to this flow
 
 
 def _connect_step_network() -> rx.Component:
@@ -2529,25 +3219,114 @@ def _connect_step_has_logo() -> rx.Component:
 
 def _connect_step_account_kind() -> rx.Component:
     """¿Eres influencer o una marca?. Always shown, self-reported, lives entirely in
-    `BrandConnectState` — same reasoning `_connect_step_has_maps` below already
-    documents for `has_maps` (not a `brand_kits` field, no manual-flow counterpart).
-    Gates the Google Maps pair right after it: "marca" continues into
-    `_connect_step_has_maps` normally, "influencer" skips both Maps steps
-    outright (`answer_account_kind`) — a creator has no local business to list."""
+    `BrandConnectState` (not a `brand_kits` field, no manual-flow counterpart). Since
+    2026-09-11 it comes right after the profile recap — before ¿Quién es la marca? —
+    and offers "Las dos cosas" next to the two single answers (`ACCOUNT_KINDS`)."""
     return _step_body(
-        _choice_card(
-            "Soy una marca o negocio",
-            "Te preguntaremos si ya apareces en Google Maps.",
-            BrandConnectState.account_kind == "marca",
-            BrandConnectState.answer_account_kind("marca"),
-        ),
-        _choice_card(
-            "Soy creador o influencer",
-            "Saltamos directo a la paleta de colores.",
-            BrandConnectState.account_kind == "influencer",
-            BrandConnectState.answer_account_kind("influencer"),
+        *(
+            _choice_card(
+                title,
+                blurb,
+                BrandConnectState.account_kind == key,
+                BrandConnectState.answer_account_kind(key),
+            )
+            for key, title, blurb in ACCOUNT_KINDS
         ),
         icon="user-round",
+    )
+
+
+def _select_field(
+    label: rx.Var[str] | str,
+    value: rx.Var[str],
+    handler: rx.event.EventHandler,
+    options: tuple[tuple[str, str], ...],
+    placeholder: str,
+) -> rx.Component:
+    """A labelled Radix select whose stored value is the option KEY, not its label —
+    same `select.root` + `select.item(value=...)` shape `creative_pages` uses for the
+    content type. Sized like `_labeled_input` so the rubro step reads as one form."""
+    return rx.vstack(
+        rx.text(label, size="2", weight="medium"),
+        rx.select.root(
+            rx.select.trigger(placeholder=placeholder, width="100%", radius=_CONTROL_RADIUS),
+            rx.select.content(
+                *(rx.select.item(option_label, value=key) for key, option_label in options),
+            ),
+            value=value,
+            on_change=handler,
+            size="3",
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _connect_step_rubro() -> rx.Component:
+    """Tu rubro y ubicación (§ request 2026-09-11: "si es marca decidir qué rubro es y
+    dónde se encuentra ubicado"). The three inputs the creator discovery on Resultados
+    e insights is seeded with. A brand (or both) gives the rubro in its own words
+    (any rubro at all: the discovery searches with them) or as a taxonomy category,
+    either one, plus país + ciudad; a creator picks only a category and, optionally,
+    where they are (§ request 2026-09-11: "solo la categoría y la ubicación") — without
+    them the national / local phases simply say what is missing. For an existing account the fields
+    arrive prefilled from the profile read (`analyze()`), which is why the hint
+    changes."""
+    return _step_body(
+        rx.cond(
+            ~BrandConnectState.is_influencer,
+            _labeled_input(
+                "Tu rubro, con tus palabras",
+                BrandConnectState.rubro_text,
+                BrandConnectState.set_rubro_text,
+                "Ej. peluquería canina, fisioterapia deportiva",
+            ),
+        ),
+        _select_field(
+            rx.cond(BrandConnectState.is_influencer, "Categoría", "Categoría (opcional)"),
+            BrandConnectState.sector,
+            BrandConnectState.set_sector,
+            tuple(creator_discovery.NICHE_LABELS.items()),
+            "Elige una categoría",
+        ),
+        _select_field(
+            rx.cond(BrandConnectState.needs_location, "País", "País (opcional)"),
+            BrandConnectState.country_code,
+            BrandConnectState.set_country_code,
+            COUNTRY_OPTIONS,
+            "Elige el país",
+        ),
+        rx.vstack(
+            rx.text(
+                rx.cond(BrandConnectState.needs_location, "Ciudad", "Ciudad (opcional)"),
+                size="2",
+                weight="medium",
+            ),
+            rx.input(
+                value=BrandConnectState.city,
+                on_change=BrandConnectState.set_city,
+                placeholder="Ej. Cúcuta",
+                width="100%",
+                size="3",
+                height="2.75rem",
+                radius=_CONTROL_RADIUS,
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        rx.text(
+            rx.cond(
+                BrandConnectState.is_fresh_start,
+                "Con esto buscamos referentes de tu sector, de tu país y de tu ciudad.",
+                "Lo completamos con lo que leímos de tu perfil. Corrígelo si hace falta.",
+            ),
+            size="2",
+            color=T.TEXT_MUTED,
+            text_align="center",
+        ),
+        icon="map-pin",
     )
 
 
@@ -2578,7 +3357,7 @@ def _connect_step_has_maps() -> rx.Component:
 
 
 #: Real steps for creating a Google Business Profile — not lorem, same rule
-#: `ACCOUNT_SETUP_INFO`/`PLANS` follow: a first-time user reads this as the actual
+#: `ACCOUNT_SETUP_INFO` follows: a first-time user reads this as the actual
 #: instructions. No product-side verification exists for any of this (§
 #: `BrandConnectState.has_maps`'s own docstring) — it is a checklist, not a gate.
 MAPS_SETUP_STEPS: tuple[tuple[str, str], ...] = (
@@ -2684,8 +3463,8 @@ def _connect_step_insights() -> rx.Component:
     """The TRUE final screen of the whole flow (§ CONNECT_STEPS, `CONNECT_LAST`) —
     after ¿Todo correcto?, not before it: a condensed profile recap, the animated
     metric grid (`_metric_grid`, counted up by `advance_to_insights` on the way in),
-    and 1-2 placeholder competitor/influencer suggestions (`_competitors_section`,
-    shared with the manual flow's own final screen). Its own Finalizar-replacing CTA
+    and the phased creator discovery (`_discovery_section`, filled in by
+    `run_discovery` on the way in). Its own Finalizar-replacing CTA
     (`_finish_button`) lives in `_connect_controls`, not here — the fixed control bar,
     not the scrolling content, is what both flows' final screen shares that button
     through.
@@ -2694,9 +3473,8 @@ def _connect_step_insights() -> rx.Component:
     `scrapecreators_client.METRICS_WINDOW_DAYS` days: derived by `profile_metrics`
     from the post list `analyze()` read alongside the profile — see the comment
     above `_METRIC_ANIMATION_SECONDS`.
-    The competitor suggestions below them are still a PLACEHOLDER: no analytical
-    pipeline backs them yet (Fase 2/3, `docs/plan-ingesta-social.md`) —
-    `COMPETITOR_SUGGESTIONS` is a hardcoded tuple, not a query.
+    The referentes below them are REAL since 2026-09-11 (they replaced the
+    `COMPETITOR_SUGGESTIONS` placeholder here; the manual flow still shows it).
 
     The metric grid is skipped outright for a brand-new account (§ request
     2026-09-09, `BrandConnectState.is_new_account`) — a per-follower rate over a
@@ -2762,38 +3540,618 @@ def _connect_step_insights() -> rx.Component:
                 align_items="start",
             ),
         ),
-        _competitors_section(),
+        _discovery_section(),
+    )
+
+
+def _discovery_account(item: rx.Var[dict[str, str]]) -> rx.Component:
+    """One referente: the whole card links to the public profile (new tab). The
+    picture comes through `_avatar` — the backend proxy, never the vendor's signed
+    URL (which expires within hours and would leave a cached result full of broken
+    pictures; see `avatar_proxy.py`)."""
+    return rx.link(
+        card(
+            rx.hstack(
+                _avatar(item, "2.5rem", 18),
+                rx.vstack(
+                    rx.hstack(
+                        mono(item["handle"], size="2"),
+                        tag(item["network"]),
+                        rx.text(item["followers"], " seguidores", size="1", color=T.TEXT_MUTED),
+                        rx.cond(
+                            item["likes"] != "",
+                            rx.text("♥ ", item["likes"], size="1", color=T.TEXT_MUTED),
+                        ),
+                        spacing="2",
+                        align="center",
+                        wrap="wrap",
+                    ),
+                    rx.cond(
+                        item["blurb"] != "",
+                        rx.text(item["blurb"], size="2", color=T.TEXT_MUTED),
+                    ),
+                    spacing="1",
+                    align_items="start",
+                    min_width="0",
+                ),
+                spacing="3",
+                align="center",
+                width="100%",
+            ),
+            padding="0.85rem 1rem",
+            width="100%",
+            interactive=True,
+        ),
+        href=item["url"],
+        is_external=True,
+        display="block",
+        width="100%",
+        text_decoration="none",
+        color="inherit",
+    )
+
+
+def _discovery_phase(
+    title: rx.Var[str] | str,
+    fallback_title: str,
+    note: rx.Var[str] | str,
+    accounts: rx.Var[list[dict[str, str]]],
+) -> rx.Component:
+    """One phase block: its title, then its accounts — or, while nothing has landed
+    yet, a small inline spinner (the run is still on an earlier phase or on this one),
+    or the phase's own note once it finished empty."""
+    return rx.vstack(
+        rx.text(rx.cond(title != "", title, fallback_title), size="2", weight="bold"),
+        rx.cond(
+            accounts.length() > 0,
+            rx.vstack(
+                rx.foreach(accounts, _discovery_account),
+                spacing="2",
+                width="100%",
+            ),
+            rx.cond(
+                note != "",
+                rx.text(note, size="2", color=T.TEXT_FAINT),
+                rx.cond(
+                    BrandConnectState.discovering,
+                    rx.hstack(
+                        loading_spinner("sm"),
+                        rx.text("Buscando…", size="2", color=T.TEXT_MUTED),
+                        spacing="2",
+                        align="center",
+                    ),
+                ),
+            ),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _discovery_section() -> rx.Component:
+    """Referentes para tu marca (§ request 2026-09-11) — the phased search, rendered
+    in the order it runs: sector → country → city. "Buscamos con" lists the signals
+    the seed was built from, so an odd result can be traced to the bio line, category
+    or hashtag that caused it. If the event never ran for this session (a dev reload
+    straight onto this step), a button runs it instead of leaving the section blank."""
+    return rx.vstack(
+        _section_label("Referentes para tu marca"),
+        rx.cond(
+            BrandConnectState.discovery_signals.length() > 0,
+            rx.hstack(
+                rx.text("Buscamos con", size="1", color=T.TEXT_MUTED),
+                rx.foreach(BrandConnectState.discovery_signals, lambda chip: tag(chip)),
+                spacing="2",
+                align="center",
+                wrap="wrap",
+            ),
+        ),
+        rx.cond(
+            BrandConnectState.discovery_error != "",
+            callout(BrandConnectState.discovery_error, "error"),
+        ),
+        rx.cond(
+            ~BrandConnectState.discovery_ran,
+            rx.button(
+                rx.icon("search", size=T.ICON_SM),
+                "Buscar referentes",
+                variant="soft",
+                size="2",
+                radius=_CONTROL_RADIUS,
+                on_click=BrandConnectState.run_discovery,
+            ),
+            rx.cond(
+                BrandConnectState.has_sorted,
+                rx.vstack(
+                    # § request 2026-09-11: the summary is the operator's own sorting —
+                    # referentes and competencia, each only when it has accounts; the
+                    # detractores and whatever was left unsorted are omitted.
+                    *(
+                        rx.cond(
+                            getattr(BrandConnectState, f"{key}_accounts").length() > 0,
+                            _discovery_phase(
+                                title, title, "", getattr(BrandConnectState, f"{key}_accounts")
+                            ),
+                        )
+                        for key, title, _, _ in BUCKETS
+                        if key != "detractor"
+                    ),
+                    spacing="4",
+                    width="100%",
+                ),
+                rx.vstack(
+                    _discovery_phase(
+                        BrandConnectState.sector_title,
+                        "Referentes del sector",
+                        BrandConnectState.sector_note,
+                        BrandConnectState.sector_accounts,
+                    ),
+                    _discovery_phase(
+                        BrandConnectState.national_title,
+                        "Referentes nacionales",
+                        BrandConnectState.national_note,
+                        BrandConnectState.national_accounts,
+                    ),
+                    _discovery_phase(
+                        BrandConnectState.local_title,
+                        "Referentes locales",
+                        BrandConnectState.local_note,
+                        BrandConnectState.local_accounts,
+                    ),
+                    spacing="4",
+                    width="100%",
+                ),
+            ),
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _account_key(card: dict[str, str]) -> str:
+    return f"{card.get('network', '')}:{card.get('handle', '')}"
+
+
+#: The backend's origin, worked out in the browser the same way `rx.get_upload_url`
+#: does (`getBackendURL(env.UPLOAD)` minus its `/_upload` path) — so a card's
+#: `avatar_src` (`creator_discovery.avatar_path`, served by `avatar_proxy.py`) resolves
+#: against whichever backend this frontend actually talks to, dev or deployed.
+_AVATAR_BASE: rx.Var[str] = rx.Var(
+    _js_expr='(String(getBackendURL(env.UPLOAD)).replace(/\\/_upload\\/?$/, ""))',
+    _var_data=VarData(
+        imports={
+            f"$/{Dirs.STATE_PATH}": "getBackendURL",
+            "$/env.json": ImportVar(tag="env", is_default=True),
+        }
+    ),
+).to(str)
+
+
+def _avatar(item: rx.Var[dict[str, str]], size: str, icon_size: int) -> rx.Component:
+    """An account's round picture with the placeholder icon UNDER it: the `<img>`
+    comes from the backend proxy (`item["avatar_src"]`) and carries an empty `alt`,
+    so a picture the proxy cannot find (404) renders as nothing at all and the icon
+    shows through — no broken-image glyph, no handler needed. `draggable="false"` +
+    `pointer-events: none` keep the browser from starting a native IMAGE drag when the
+    operator grabs a deck card by its picture (that would swallow the card's own
+    drag)."""
+    return rx.box(
+        rx.icon("user-round", size=icon_size, color=T.TEXT_FAINT),
+        rx.cond(
+            item["avatar_src"] != "",
+            rx.el.img(
+                src=_AVATAR_BASE + item["avatar_src"],
+                alt="",
+                position="absolute",
+                inset="0",
+                width="100%",
+                height="100%",
+                object_fit="cover",
+                border_radius="9999px",
+                pointer_events="none",
+                custom_attrs={
+                    "loading": "lazy",
+                    "referrerpolicy": "no-referrer",
+                    "draggable": "false",
+                },
+            ),
+        ),
+        position="relative",
+        width=size,
+        height=size,
+        min_width=size,
+        border_radius="9999px",
+        background=T.SURFACE_BG_RAISED,
+        display="flex",
+        align_items="center",
+        justify_content="center",
+        overflow="hidden",
+        flex_shrink="0",
+    )
+
+
+def _deck_face(item: rx.Var[dict[str, str]]) -> rx.Component:
+    """The face of a deck card — shared by the live card and its flying ghost."""
+    return card(
+        rx.vstack(
+            _avatar(item, "4.5rem", 26),
+            mono(item["handle"], size="3"),
+            rx.hstack(
+                tag(item["network"]),
+                rx.text(item["followers"], " seguidores", size="1", color=T.TEXT_MUTED),
+                rx.cond(
+                    item["likes"] != "",
+                    rx.text("♥ ", item["likes"], size="1", color=T.TEXT_MUTED),
+                ),
+                spacing="2",
+                align="center",
+                wrap="wrap",
+                justify="center",
+            ),
+            rx.cond(
+                item["blurb"] != "",
+                rx.text(
+                    item["blurb"],
+                    size="2",
+                    color=T.TEXT_MUTED,
+                    text_align="center",
+                    # clamped to 3 lines on a phone (`assets/qualify.css`)
+                    class_name="q-deck-blurb",
+                ),
+            ),
+            rx.hstack(
+                rx.icon("external-link", size=14, color=T.TEXT_FAINT),
+                rx.text("Toca para ver el perfil", size="1", color=T.TEXT_FAINT),
+                spacing="1",
+                align="center",
+            ),
+            rx.hstack(
+                rx.icon("move", size=14, color=T.TEXT_FAINT),
+                rx.text("Mantén presionado para arrastrar", size="1", color=T.TEXT_FAINT),
+                spacing="1",
+                align="center",
+            ),
+            spacing=rx.breakpoints(initial="2", sm="3"),
+            align="center",
+            width="100%",
+        ),
+        padding=rx.breakpoints(initial="1rem 0.75rem", sm="1.5rem 1.25rem"),
+        width="100%",
+        interactive=True,
+    )
+
+
+def _deck_card(item: rx.Var[dict[str, str]]) -> rx.Component:
+    """The one account in the middle of the deck (§ request 2026-09-14: "dandole
+    click se pueda ir a ver el perfil y el toque largo si el drag and drop"): a
+    quick click/tap opens the profile in a new tab; holding it down arms the drag,
+    and only THEN does moving it drag the card. Both are driven by
+    `assets/deck-drag.js` off the `q-deck-card` class and the `data-profile-url`
+    attribute — neither is something Reflex needs to see: opening the profile is a
+    plain `window.open`, and the drag ends in a synthetic `drop` dispatched on
+    whichever panel it lands on. Keyed by the account so every new card mounts fresh
+    and plays `.q-deck-enter` (a settle plus one nudge left and right — the cue that
+    it moves). `touch-action: none` is what lets a finger hold-and-drag it instead of
+    the browser reading the hold as a page scroll; `user-select: none` keeps the
+    press from selecting the handle's text."""
+    return rx.box(
+        _deck_face(item),
+        class_name="q-deck-card q-deck-enter",
+        key=item["key"],
+        custom_attrs={"data-profile-url": item["url"]},
+        cursor="pointer",
+        touch_action="none",
+        user_select="none",
+        width="100%",
+        max_width="20rem",
+    )
+
+
+def _deck_ghost() -> rx.Component:
+    """The card that just left, flying out the way it went (§ request 2026-09-12,
+    "una animación de drag and click"): mounted over the deck with `.q-fly-<dir>`,
+    re-keyed by `fly_token` so each decision replays it; the animation ends
+    invisible and inert, so nothing is left to clean up."""
+    return rx.cond(
+        BrandConnectState.fly_direction != "",
+        rx.box(
+            _deck_face(BrandConnectState.fly_card),
+            class_name="q-deck-ghost q-fly-" + BrandConnectState.fly_direction,
+            key=BrandConnectState.fly_token.to_string(),
+            position="absolute",
+            inset="0",
+            display="flex",
+            align_items="center",
+            justify_content="center",
+            pointer_events="none",
+            width="100%",
+            max_width="20rem",
+            margin="0 auto",
+        ),
+    )
+
+
+#: The three zones around the card — (bucket, title, blurb, arrow icon, grid area).
+#: Referentes to the LEFT, Competencia to the RIGHT, Detractores BELOW, matching
+#: `_FLY_DIRECTION`.
+_DECK_ZONES: tuple[tuple[str, str, str, str, str], ...] = (
+    ("referente", "Referentes", "Te inspiran", "arrow-left", "left"),
+    ("competencia", "Competencia", "Tu misma audiencia", "arrow-right", "right"),
+    ("detractor", "Detractores", "No van con tu marca", "arrow-down", "down"),
+)
+#: The sort step is not a field list: its three panels reach the card's own edges
+#: (§ request 2026-09-14, "que ocupen hasta los bordes"), so `brand_connect_index`
+#: lifts the 34rem column cap and tightens the card's padding for this one step.
+_SORT_COLUMN_MAX = "100%"
+_SORT_CARD_PADDING = "1rem"
+
+
+def _deck_zone(bucket: str, title: str, blurb: str, arrow: str, area: str) -> rx.Component:
+    """One of the three targets around the card — a whole PANEL, not a small box
+    (§ request 2026-09-14: "que las flechas ocupen todo el espacio"): the arrow fills
+    it, the panel is the drop target AND the tap target — a tap sends the card in the
+    middle there (`send_current`), which is what the old row of buttons under the
+    card did.
+
+    No background at any state (§ request 2026-09-14: "quites el fondo de las
+    opciones… en vez de eso que las letras y flecha sufran un scale"): the panel
+    itself never tints in `assets/qualify.css` (`.q-deck-zone`) — only its text
+    colour does, plus a keyboard `:focus-visible` outline (accessibility, not
+    decoration). What used to be the panel's tint is now the arrow AND the label
+    (`.q-deck-arrow` / `.q-deck-label`, the latter wrapping title + blurb as one
+    block) POPPING — scaling up — while the dragged card is over this panel
+    (`data-over`, set by `deck-drag.js`) and again, bigger, when it lands
+    (`data-hit`, re-keyed by `fly_token` so every landing replays it — a second hit
+    on the same zone included). The arrow's own idle animation is gone (§ request
+    2026-09-14: "no quiero la animacion de las flechas parpadeando… solo quiero el
+    scale cuando esté cerca la card a la opción") — `data-over`/`data-hit`'s pop is
+    the only motion left on it, so `area` no longer needs to reach the CSS as a
+    `data-dir` (it still names the grid cell)."""
+    hit = BrandConnectState.hit_bucket == bucket
+    side = area != "down"
+    return _DropZone.create(
+        rx.vstack(
+            rx.icon(arrow, size=44, class_name="q-deck-arrow"),
+            rx.vstack(
+                rx.text(title, size="2", weight="bold", class_name="q-deck-zone-title"),
+                rx.text(
+                    blurb,
+                    size="1",
+                    color=T.TEXT_MUTED,
+                    text_align="center",
+                    class_name="q-deck-zone-blurb",
+                ),
+                spacing="1",
+                align="center",
+                class_name="q-deck-label",
+            ),
+            spacing="1",
+            align="center",
+            justify="center",
+            width="100%",
+        ),
+        on_click=BrandConnectState.send_current(bucket),
+        on_drop=BrandConnectState.drop_into(bucket),
+        type="button",
+        aria_label=title,
+        # `--side` / `--down` only matter on a phone (`assets/qualify.css`): the side
+        # panels become thin strips with a vertical title, the bottom one a short row.
+        class_name="q-deck-zone q-deck-zone--side" if side else "q-deck-zone q-deck-zone--down",
+        custom_attrs={"data-hit": hit.to_string()},
+        key=rx.cond(hit, "hit-" + BrandConnectState.fly_token.to_string(), bucket),
+        grid_area=area,
+        width="100%",
+        height="100%",
+        min_width="0",
+        min_height=(
+            rx.breakpoints(initial="12rem", sm="14rem")
+            if side
+            else rx.breakpoints(initial="4rem", sm="7rem")
+        ),
+        padding=rx.breakpoints(initial="0.5rem 0.25rem", sm="1rem 0.75rem"),
+        display="flex",
+        align_items="center",
+        justify_content="center",
+        font="inherit",
+        color=T.TEXT_MUTED,
+        border="none",
+        border_radius=T.RADIUS_CARD,
+        cursor="pointer",
+    )
+
+
+def _stage_nav_button(
+    label: str, icon: str, handler: rx.event.EventHandler, **props
+) -> rx.Component:
+    return rx.button(
+        *([rx.icon(icon, size=T.ICON_SM)] if icon == "chevron-left" else []),
+        label,
+        *([rx.icon(icon, size=T.ICON_SM)] if icon == "chevron-right" else []),
+        variant="soft",
+        size="2",
+        radius=_CONTROL_RADIUS,
+        on_click=handler,
+        **props,
+    )
+
+
+def _connect_step_sort() -> rx.Component:
+    """Referente, competencia o detractor (§ request 2026-09-11) as a DECK, one
+    category at a time — the sector's accounts, then the country's, then the city's
+    (`sort_stage`). One account sits in the middle; it goes LEFT to Referentes,
+    RIGHT to Competencia, DOWN to Detractores, by dragging the card onto that side
+    or with the three arrow buttons under it; Omitir shows the next one, Deshacer
+    brings the last one back. Each category is its own deck and its own three
+    buckets, so a category whose search failed shows a Reintentar and never blocks
+    the others. Entirely optional: nothing here gates Continuar."""
+    stage_header = rx.hstack(
+        rx.vstack(
+            _section_label(BrandConnectState.stage_label),
+            rx.text(BrandConnectState.stage_title, size="3", weight="bold"),
+            spacing="1",
+            align_items="start",
+        ),
+        rx.spacer(),
+        rx.cond(
+            ~BrandConnectState.is_first_stage,
+            _stage_nav_button("Anterior", "chevron-left", BrandConnectState.prev_sort_stage),
+        ),
+        rx.cond(
+            ~BrandConnectState.is_last_stage,
+            _stage_nav_button("Siguiente", "chevron-right", BrandConnectState.next_sort_stage),
+        ),
+        spacing="2",
+        align="center",
+        wrap="wrap",
+        width="100%",
+    )
+    middle = rx.cond(
+        BrandConnectState.has_current_card,
+        rx.vstack(
+            _deck_card(BrandConnectState.current_card),
+            rx.text(
+                BrandConnectState.stage_remaining.to_string(),
+                " por ordenar",
+                size="1",
+                color=T.TEXT_FAINT,
+            ),
+            spacing="2",
+            align="center",
+            width="100%",
+        ),
+        rx.cond(
+            BrandConnectState.stage_pending,
+            rx.hstack(
+                loading_spinner("sm"),
+                rx.text("Buscando cuentas de esta categoría…", size="2", color=T.TEXT_MUTED),
+                spacing="2",
+                align="center",
+            ),
+            rx.cond(
+                BrandConnectState.stage_failed,
+                rx.vstack(
+                    rx.text(BrandConnectState.stage_note, size="2", color=T.TEXT_MUTED),
+                    rx.button(
+                        rx.icon("refresh-cw", size=T.ICON_SM),
+                        "Reintentar",
+                        variant="soft",
+                        size="1",
+                        radius=_CONTROL_RADIUS,
+                        on_click=BrandConnectState.retry_phase(BrandConnectState.stage_key),
+                    ),
+                    spacing="2",
+                    align="center",
+                ),
+                rx.cond(
+                    BrandConnectState.stage_note != "",
+                    rx.text(BrandConnectState.stage_note, size="2", color=T.TEXT_MUTED),
+                    rx.text("Todas clasificadas.", size="2", color=T.TEXT_MUTED),
+                ),
+            ),
+        ),
+    )
+    zones = {spec[-1]: _deck_zone(*spec) for spec in _DECK_ZONES}
+    return _step_body(
+        rx.cond(
+            BrandConnectState.discovery_error != "",
+            callout(BrandConnectState.discovery_error, "error"),
+        ),
+        stage_header,
+        # A named-area grid: the two side panels stretch to the card's full height and
+        # the bottom one spans all three columns — every zone is as big as the space
+        # around the card allows. SAME spatial layout at every width (§ request
+        # 2026-09-14, "adáptalo a móviles"): a phone keeps Referentes LEFT, Competencia
+        # RIGHT and Detractores BELOW — the directions the card is dragged in — with the
+        # side panels narrowed to thin strips (vertical label, `assets/qualify.css`)
+        # so the card keeps most of the width. It used to stack everything in one
+        # column below 62em, which put Detractores off-screen and made "drag it down"
+        # impossible on a phone.
+        rx.box(
+            zones["left"],
+            rx.box(
+                middle,
+                _deck_ghost(),
+                grid_area="card",
+                position="relative",
+                display="flex",
+                align_items="center",
+                justify_content="center",
+                width="100%",
+                min_width="0",
+                min_height=rx.breakpoints(initial="12rem", sm="16rem"),
+            ),
+            zones["right"],
+            zones["down"],
+            display="grid",
+            grid_template_columns=rx.breakpoints(
+                initial="2.75rem minmax(0, 1fr) 2.75rem", sm="1fr 1.6fr 1fr"
+            ),
+            grid_template_areas='"left card right" "down down down"',
+            # the first row takes whatever height the card leaves free, so the two
+            # side panels run from the header down to the bottom panel
+            grid_template_rows=rx.breakpoints(
+                initial="minmax(12rem, 1fr) auto", sm="minmax(16rem, 1fr) auto"
+            ),
+            gap=rx.breakpoints(initial="0.5rem", sm="0.75rem"),
+            width="100%",
+            flex="1",
+        ),
+        rx.hstack(
+            rx.button(
+                rx.icon("undo-2", size=T.ICON_SM),
+                "Deshacer",
+                variant="ghost",
+                size="1",
+                radius=_CONTROL_RADIUS,
+                on_click=BrandConnectState.undo_last,
+                disabled=~BrandConnectState.can_undo,
+            ),
+            rx.button(
+                "Omitir",
+                rx.icon("skip-forward", size=T.ICON_SM),
+                variant="ghost",
+                size="1",
+                radius=_CONTROL_RADIUS,
+                on_click=BrandConnectState.skip_card,
+                disabled=~BrandConnectState.has_current_card,
+            ),
+            spacing="2",
+            align="center",
+            justify="center",
+            width="100%",
+        ),
+        icon="layout-grid",
+        grow=True,
     )
 
 
 def _connect_window() -> rx.Component:
-    """Screens 0-3 and CONNECT_LAST (Resultados e insights, the true final screen —
-    moved 2026-09-04 to sit AFTER ¿Todo correcto?) are this flow's own; steps 6-7
-    (¿Tienes logo?/Tu logo) are skipped whenever the scraped profile already has a
-    picture, and steps 9-10 (¿Tu negocio está en Google Maps?/Súmate a Google Maps)
-    are skipped together on "influencer" at step 8, or step 10 alone on a "sí"
-    answer at step 9 (§ request 2026-09-09) — all still need a renderer for the
-    sessions where they are shown. Everything else in between reuses the manual
-    flow's renderers, so the shared half of the two paths is literally the same
-    code."""
+    """One renderer per `CONNECT_STEPS` index, all by name. Which of them a session
+    actually reaches is `BrandConnectState._is_skipped`'s call — every step still
+    needs a renderer for the sessions where it is shown. The kit-setup steps reuse the
+    manual flow's renderers, so the shared half of the two paths is literally the
+    same code."""
     return rx.match(
         BrandConnectState.step,
         (0, _connect_step_network()),
         (1, _connect_step_username()),
-        (2, _connect_step_profile()),
-        (3, _connect_step_recommendations()),
-        (4, _step_subscription()),
-        (5, _step_identity()),
+        (_PROFILE_STEP, _connect_step_profile()),
+        (_RECOMMENDATIONS_STEP, _connect_step_recommendations()),
+        (_ACCOUNT_KIND_STEP, _connect_step_account_kind()),
+        (_RUBRO_STEP, _connect_step_rubro()),
+        (_IDENTITY_STEP, _step_identity()),
         (_LOGO_QUESTION_STEP, _connect_step_has_logo()),
         (_LOGO_UPLOAD_STEP, _step_logo(BrandConnectState.next_step)),
-        (_ACCOUNT_KIND_STEP, _connect_step_account_kind()),
         (_MAPS_QUESTION_STEP, _connect_step_has_maps()),
         (_MAPS_STEPS_STEP, _connect_step_maps_setup()),
-        (11, _step_palette()),
-        (12, _step_voice_tone()),
-        (13, _step_voice_examples()),
-        (14, _step_restrictions()),
-        (15, _step_confirm()),
+        (_PALETTE_STEP, _step_palette()),
+        (_VOICE_TONE_STEP, _step_voice_tone()),
+        (_VOICE_EXAMPLES_STEP, _step_voice_examples()),
+        (_RESTRICTIONS_STEP, _step_restrictions()),
+        (_CONNECT_CONFIRM_STEP, _step_confirm()),
+        (_SORT_STEP, _connect_step_sort()),
         (CONNECT_LAST, _connect_step_insights()),
         _connect_step_network(),
     )
@@ -2809,6 +4167,53 @@ def _connect_heading_for(index: int) -> rx.Var[str]:
 
 def _connect_loading() -> rx.Component:
     return _loading_view("Analizando perfil", "Esto tarda solo unos segundos.")
+
+
+def _discovery_progress_row(row: rx.Var[dict[str, str]]) -> rx.Component:
+    return rx.hstack(
+        rx.match(
+            row["status"],
+            ("done", rx.icon("circle-check", size=16, color=T.tone_color("ok", 10))),
+            ("running", loading_spinner("sm")),
+            rx.icon("circle", size=16, color=T.TEXT_FAINT),
+        ),
+        rx.text(
+            row["title"],
+            size="2",
+            color=rx.cond(row["status"] == "pending", T.TEXT_FAINT, T.TEXT_STRONG),
+            weight=rx.cond(row["status"] == "running", "medium", "regular"),
+        ),
+        spacing="2",
+        align="center",
+    )
+
+
+def _referentes_loading() -> rx.Component:
+    """The loading screen in front of Referente, competencia o detractor while the
+    search is still running (`BrandConnectState.waiting_for_referentes`) — no deck
+    and no Atrás/Continuar under it, so the step cannot be skipped half-loaded. Lists
+    the three categories with a check for each one already found, so a long wait
+    visibly moves. It clears on its own when the last category lands."""
+    return rx.vstack(
+        loading_spinner("lg"),
+        rx.text("Buscando referentes para tu marca", size="2", weight="medium"),
+        rx.text(
+            "En cuanto termine podrás clasificarlos. Puede tardar unos minutos.",
+            size="1",
+            color=T.TEXT_MUTED,
+            text_align="center",
+        ),
+        rx.vstack(
+            rx.foreach(BrandConnectState.discovery_progress, _discovery_progress_row),
+            spacing="2",
+            align_items="start",
+            padding_top="0.5rem",
+        ),
+        spacing="3",
+        align="center",
+        width="100%",
+        padding="3rem 0",
+    )
 
 
 def _identity_complete() -> rx.Var[bool]:
@@ -2848,34 +4253,36 @@ def _connect_can_continue() -> rx.Var[bool]:
     hold a value — they default to 50, see the manual flow's own `resume` docstring),
     Lo que nunca debe decir (`resume`'s docstring: "legitimately optional"), ¿Todo
     correcto? (review only) and Resultados e insights (its own `_finish_button`, not
-    this gate, on step CONNECT_LAST). Shared steps (plan, identidad, logo, paleta,
+    this gate, on step CONNECT_LAST). Shared steps (identidad, logo, paleta,
     voz · ejemplos) read the SAME `BrandWizardState`/`CreativeState` fields the
     manual flow's own `_manual_can_continue` checks — the two functions stay
     side by side with it so a future reorder of either STEPS tuple is easy to keep
-    in sync."""
+    in sync. Tu rubro y ubicación needs a rubro always, and país + ciudad unless the
+    account is a creator (`rubro_complete`)."""
     return rx.match(
         BrandConnectState.step,
         (0, BrandConnectState.network != ""),
         (1, BrandConnectState.username != ""),
-        (4, BrandWizardState.subscription != ""),
-        (5, _identity_complete()),
+        (_ACCOUNT_KIND_STEP, BrandConnectState.account_kind != ""),
+        (_RUBRO_STEP, BrandConnectState.rubro_complete),
+        (_IDENTITY_STEP, _identity_complete()),
         (_LOGO_QUESTION_STEP, BrandWizardState.has_logo != ""),
         (_LOGO_UPLOAD_STEP, _logo_step_complete()),
-        (_ACCOUNT_KIND_STEP, BrandConnectState.account_kind != ""),
         (_MAPS_QUESTION_STEP, BrandConnectState.has_maps != ""),
-        (11, CreativeState.kit_palette != ""),
-        (13, CreativeState.kit_do_examples != ""),
+        (_PALETTE_STEP, CreativeState.kit_palette != ""),
+        (_VOICE_EXAMPLES_STEP, CreativeState.kit_do_examples != ""),
         True,
     )
 
 
 def _connect_controls() -> rx.Component:
     """Same quiet chrome as the manual flow, with three exceptions: the username
-    screen's Continue kicks off the analysis instead of stepping; Lo que te
-    proponemos — the last screen before the shared kit-setup steps begin (§
-    `_LAST_PREVIEW_STEP`) — offers Cancel rather than Back; and ¿Todo correcto?'s
-    Continue kicks off the metric count-up (`advance_to_insights`) instead of a plain
-    step. `right`'s Resultados e insights branch is `_finish_button` — it replaces
+    screen's Continue kicks off the analysis instead of stepping; the last screen
+    before the shared kit-setup steps begin (§ `shows_cancel`) offers Cancel rather
+    than Back; and the sort step's Continue kicks off the metric count-up
+    (`advance_to_insights`) instead of a plain step (the creator discovery itself
+    started long before, at the profile read). `right`'s Resultados e insights branch is
+    `_finish_button` — it replaces
     Finalizar entirely (§ request 2026-09-05), not alongside it. `back` is never
     disabled: `prev_step` redirects to `/brand` once already at step 0.
 
@@ -2885,7 +4292,7 @@ def _connect_controls() -> rx.Component:
     empty, no longer lets Continuar through un-set."""
     forward_disabled = ~_connect_can_continue()
     left = rx.cond(
-        BrandConnectState.step == _LAST_PREVIEW_STEP,
+        BrandConnectState.shows_cancel,
         rx.button(
             "Cancelar",
             # §5.5: destructive is `soft` + the error tone, not `ghost` + a literal
@@ -2919,7 +4326,7 @@ def _connect_controls() -> rx.Component:
                 disabled=forward_disabled,
             ),
             rx.cond(
-                BrandConnectState.step == CONNECT_LAST - 1,
+                BrandConnectState.step == _SORT_STEP,
                 rx.button(
                     "Continuar",
                     rx.icon("chevron-right", size=T.ICON_SM),
@@ -2994,37 +4401,61 @@ def brand_connect_index() -> rx.Component:
                             align_items="center",
                             justify_content="center",
                         ),
-                        card(
-                            rx.vstack(
-                                _connect_window(),
+                        rx.cond(
+                            # The sort step waits for the whole search behind its own
+                            # loading screen — no controls, so it cannot be skipped.
+                            BrandConnectState.waiting_for_referentes,
+                            card(
+                                _referentes_loading(),
+                                padding="1.75rem",
                                 width="100%",
-                                max_width="34rem",
-                                align_self="center",
-                                align_items="center",
                                 flex="1",
+                                display="flex",
+                                align_items="center",
                                 justify_content="center",
                             ),
-                            _connect_controls(),
-                            padding="1.75rem",
-                            width="100%",
-                            flex="1",
-                            display="flex",
-                            flex_direction="column",
-                            justify_content="space-between",
-                            # Same mobile fix as `brand_manual_index`'s card — `gap`
-                            # floors the distance to Atrás/Continuar so it cannot
-                            # collapse to ~0 on a short viewport once the step's content
-                            # fills the free height (Perfil, Lo que te proponemos,
-                            # Resultados e insights, and the shared steps 5-11).
-                            gap="1.5rem",
-                            # `key` on the CARD itself, not just its content — same fix
-                            # `brand_manual_index` gets: keying only the inner vstack
-                            # left the card's own border/shadow node reused across
-                            # steps, so the frame never moved, only the text inside it
-                            # did. Keying the whole `card()` remounts it too, which is
-                            # what makes `page_body`'s own "q-settle" (the card is one
-                            # of its direct children) replay on every step change.
-                            key=BrandConnectState.step.to_string(),
+                            card(
+                                rx.vstack(
+                                    _connect_window(),
+                                    width="100%",
+                                    # The deck (three panels around a card) needs more room
+                                    # than a field list; every other step keeps the 34rem.
+                                    max_width=rx.cond(
+                                        BrandConnectState.step == _SORT_STEP,
+                                        _SORT_COLUMN_MAX,
+                                        "34rem",
+                                    ),
+                                    align_self="center",
+                                    align_items="center",
+                                    flex="1",
+                                    justify_content="center",
+                                ),
+                                _connect_controls(),
+                                padding=rx.cond(
+                                    BrandConnectState.step == _SORT_STEP,
+                                    _SORT_CARD_PADDING,
+                                    "1.75rem",
+                                ),
+                                width="100%",
+                                flex="1",
+                                display="flex",
+                                flex_direction="column",
+                                justify_content="space-between",
+                                # Same mobile fix as `brand_manual_index`'s card — `gap`
+                                # floors the distance to Atrás/Continuar so it cannot
+                                # collapse to ~0 on a short viewport once the step's content
+                                # fills the free height (Perfil, Lo que te proponemos,
+                                # Resultados e insights, and the shared steps 5-11).
+                                gap="1.5rem",
+                                # `key` on the CARD itself, not just its content — same fix
+                                # `brand_manual_index` gets: keying only the inner vstack
+                                # left the card's own border/shadow node reused across
+                                # steps, so the frame never moved, only the text inside it
+                                # did. Keying the whole `card()` remounts it too, which is
+                                # what makes `page_body`'s own "q-settle" (the card is one
+                                # of its direct children) replay on every step change.
+                                key=BrandConnectState.step.to_string(),
+                            ),
                         ),
                     ),
                 ),

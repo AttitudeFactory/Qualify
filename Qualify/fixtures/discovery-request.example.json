@@ -1,0 +1,16 @@
+{
+  "filters": {
+    "location": {
+      "country_code": "CO",
+      "city": "Cucuta"
+    },
+    "niche": ["food_drink", "travel"],
+    "follower_range": {
+      "min": 10000,
+      "max": 100000
+    },
+    "engagement_rate_min": 2.5
+  },
+  "limit": 50,
+  "page": 1
+}
