@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -1356,6 +1357,138 @@ async def test_poll_interval_is_unaffected_for_a_single_video() -> None:
 
     assert not polled.settled
     assert polled.poll_interval_seconds == CONTAINER_POLL_INTERVAL_SECONDS
+
+
+# --------------------------------------------------------------------------------------
+# QUA-102 (opción 1) — polling_baseline_at: the backoff's origin resets away from a stale
+# `started_at`. NOTE on technique: `Harness(clock_offset_seconds=X)` shifts the SERVICE's
+# clock by a constant X for every read — it cannot simulate "started_at is old but the
+# baseline was just reset", because both timestamps are real-clock-stamped at essentially
+# the same instant in a fast test, so a uniform offset reads ~X against EITHER origin.
+# These tests instead backdate `started_at` directly on the in-memory row (`h.repo.rows`)
+# — the only way to decouple "old attempt" from "freshly reset baseline".
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_poll_interval_resets_after_children_upload_even_when_attempt_is_old() -> None:
+    """The bug this fix targets, reproduced directly: before this follow-up, an attempt
+    whose `started_at` was already past the 75s fast-window would get poll_interval=60
+    the moment children finished creating+uploading — even though nothing had been
+    polled yet. `started_at` is backdated 200s (well under this 2-item carousel's 900s
+    ceiling, so it never interferes) to reproduce that condition."""
+    h = Harness()
+    items = h.stage_videos(2)
+    h.client.status_script = [ContainerStatus.IN_PROGRESS, ContainerStatus.IN_PROGRESS]
+    start_state = await h.start_many(items)
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+    assert record is not None
+    h.repo.rows[start_state.attempt_id] = replace(
+        record, started_at=record.started_at - timedelta(seconds=200)
+    )
+
+    await h.advance(start_state.attempt_id)  # create+upload both children -> resets the baseline
+    state = await h.advance(start_state.attempt_id)  # first real poll
+
+    assert not state.settled
+    assert state.poll_interval_seconds == 5
+
+
+@pytest.mark.asyncio
+async def test_poll_interval_resets_after_carousel_created_even_when_attempt_is_old() -> None:
+    """Second reset point: the CAROUSEL parent container is brand new right after
+    `_create_carousel` runs — its own first poll must get the fast cadence too, even
+    though `started_at` (and by then the children-phase baseline) are both stale."""
+    h = Harness()
+    items = h.stage_videos(2)
+    h.client.status_script = [
+        ContainerStatus.FINISHED,
+        ContainerStatus.FINISHED,
+        ContainerStatus.IN_PROGRESS,
+    ]
+    start_state = await h.start_many(items)
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+    assert record is not None
+    h.repo.rows[start_state.attempt_id] = replace(
+        record, started_at=record.started_at - timedelta(seconds=200)
+    )
+
+    await h.advance(start_state.attempt_id)  # create+upload both children (reset #1)
+    await h.advance(start_state.attempt_id)  # poll both children -- FINISHED
+    await h.advance(start_state.attempt_id)  # _create_carousel (reset #2)
+
+    state = await h.advance(start_state.attempt_id)  # first poll of the PARENT
+
+    assert not state.settled
+    assert state.poll_interval_seconds == 5
+
+
+@pytest.mark.asyncio
+async def test_polling_baseline_is_not_reset_on_every_in_flight_tick() -> None:
+    """The reset happens exactly ONCE, when children transition from pending to
+    in-flight — never again while they are merely being re-polled. If a bug moved the
+    `record_polling_baseline` call into the in_flight branch, the backoff would degrade
+    to "always 5s", well past what the QUA-102 budget analysis assumed."""
+    h = Harness()
+    items = h.stage_videos(2)
+    h.client.status_script = [
+        ContainerStatus.IN_PROGRESS,
+        ContainerStatus.IN_PROGRESS,
+        ContainerStatus.IN_PROGRESS,
+        ContainerStatus.IN_PROGRESS,
+    ]
+    start_state = await h.start_many(items)
+    await h.advance(start_state.attempt_id)  # create+upload -> resets the baseline
+
+    await h.advance(start_state.attempt_id)  # first in-flight poll, still IN_PROGRESS
+    first = h.repo.get_attempt(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+
+    await h.advance(start_state.attempt_id)  # second in-flight poll, still IN_PROGRESS
+    second = h.repo.get_attempt(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+
+    assert first is not None and second is not None
+    assert first.polling_baseline_at == second.polling_baseline_at
+
+
+@pytest.mark.asyncio
+async def test_ceiling_is_unaffected_by_the_new_polling_baseline() -> None:
+    """`_over_ceiling` must keep reading ONLY `started_at`, deliberately never
+    `polling_baseline_at` — a recently-reset baseline (children just finished, in the
+    fast-poll zone) must NOT mask a genuinely stuck attempt from the ceiling."""
+    h = Harness()
+    items = h.stage_videos(2)
+    h.client.status_script = [ContainerStatus.IN_PROGRESS, ContainerStatus.IN_PROGRESS]
+    start_state = await h.start_many(items)
+    await h.advance(start_state.attempt_id)  # children created+uploaded, baseline = "now"
+
+    # Backdate ONLY started_at, well past this 2-item carousel's ceiling (300*3=900s) --
+    # polling_baseline_at (just set, real "now") is left untouched.
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+    assert record is not None and record.polling_baseline_at is not None
+    h.repo.rows[start_state.attempt_id] = replace(
+        record, started_at=record.started_at - timedelta(seconds=1000)
+    )
+
+    state = await h.advance(start_state.attempt_id)
+
+    assert state.settled and state.status == "failed"
+    assert state.reason == CEILING_EXCEEDED
+
+
+@pytest.mark.asyncio
+async def test_single_video_never_writes_a_polling_baseline() -> None:
+    """`start()`/`_start_image` never call `record_polling_baseline` — the column stays
+    NULL for the entire lifecycle of a single-video attempt, confirming `_poll_interval`
+    only ever falls back to `started_at` for that path, exactly as before this follow-up."""
+    h = Harness()
+    state = await h.start()
+    h.client.status_script = [ContainerStatus.FINISHED]
+
+    final = await h.drive_to_settled(state.attempt_id)
+
+    assert final.settled and final.status == "published"
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=state.attempt_id)
+    assert record is not None and record.polling_baseline_at is None
 
 
 # --------------------------------------------------------------------------------------

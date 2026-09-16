@@ -696,14 +696,28 @@ class PublishService:
         attempt never reaches this method at all, which is what makes it byte-for-byte
         inert for that path rather than merely returning the same number.
 
-        Measured against `started_at` (same "the row survives a process restart, an
-        in-memory tick counter would not" reasoning `_over_ceiling` already documents
-        for itself) — an attempt still within its first ~75 s gets a faster cadence
-        (5 s → 10 s → 20 s → 40 s), then settles into the same steady 60 s
-        (`CONTAINER_POLL_INTERVAL_SECONDS`) every attempt already used before this
-        follow-up. Never faster than 5 s, never slower than 60 s.
+        QUA-102 (opción 1) — measured against `record.polling_baseline_at` when it is
+        set, falling back to `started_at` otherwise (every single-video attempt, and a
+        carousel attempt still assembling its children, which never writes the baseline
+        — see `_advance_children`/`_create_carousel`). Manual validation against real
+        Meta (2026-09-16, 2/3/5-video carousels) showed staging + the concurrent
+        per-child create+upload tick alone burns 35-90 s of `started_at`-relative elapsed
+        time before a single poll ever happens — already past the 75 s point where this
+        cadence flattens to 60 s, so the fast ramp below was never actually being used to
+        detect a fast-finishing container. `polling_baseline_at` resets to `now()` at the
+        two points where "waiting on Meta" first becomes real (children finish
+        create+upload; the CAROUSEL container is created) — see migration 0019's
+        docstring for the full rationale. `_over_ceiling` is DELIBERATELY untouched: it
+        still measures against `started_at` alone, so the worst-case (an attempt that
+        never resolves) fails at exactly the same absolute point it always has.
+
+        An attempt still within ~75 s of its (possibly reset) origin gets a faster
+        cadence (5 s → 10 s → 20 s → 40 s), then settles into the same steady 60 s
+        (`CONTAINER_POLL_INTERVAL_SECONDS`) every attempt already used before QUA-99.
+        Never faster than 5 s, never slower than 60 s.
         """
-        elapsed = (self._clock() - record.started_at).total_seconds()
+        origin = record.polling_baseline_at or record.started_at
+        elapsed = (self._clock() - origin).total_seconds()
         cursor = 0.0
         for step in _CAROUSEL_POLL_BACKOFF_SECONDS:
             cursor += step
@@ -923,6 +937,14 @@ class PublishService:
                 ),
                 return_exceptions=True,
             )
+            # QUA-102 (opción 1) — this batch of children just finished create+upload
+            # (success or failure per-child); this is the first honest moment "waiting on
+            # Meta" starts meaning anything for them, so the backoff's origin resets HERE,
+            # not back at `record.started_at` (which by now may already be 35-90s stale
+            # from staging + this very batch's own upload time — see migration 0019).
+            # Unconditional, once per batch — never inside `_create_and_upload_child`
+            # itself, which would reset it once per CHILD instead of once per tick.
+            self._repo.record_polling_baseline(tenant_id=tenant_id, attempt_id=record.id)
             self._settle_parent_if_a_child_failed(tenant_id=tenant_id, record=record)
             _reraise_first(results)
             return _state(self._require(tenant_id, record.id))
@@ -1364,6 +1386,11 @@ class PublishService:
             tenant_id=tenant_id, attempt_id=record.id, creation_id=carousel_id
         )
         self._repo.advance_status(tenant_id=tenant_id, attempt_id=record.id, status="processing")
+        # QUA-102 (opción 1) — second reset. The CAROUSEL container is brand new; it
+        # deserves its own fast ramp, not whatever elapsed-since-started_at the children
+        # phase already burned through. Same unconditional-overwrite call as the children
+        # reset above.
+        self._repo.record_polling_baseline(tenant_id=tenant_id, attempt_id=record.id)
         _log_stage(
             "carousel_container_created",
             tenant_id=tenant_id,
