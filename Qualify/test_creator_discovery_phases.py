@@ -31,13 +31,104 @@ def _api_key(monkeypatch: pytest.MonkeyPatch) -> None:
         ("comida rica todos los días", ["cucutafood"], ("CO", "Cúcuta")),
         ("Hecho con amor en 🇲🇽", [], ("MX", "")),
         ("Desde Valencia, España", [], ("ES", "Valencia")),
+        # the same city name, the other country — the country named decides, both ways
+        ("Desde Valencia, Venezuela", [], ("VE", "Valencia")),
         # `cali` is too short to match inside a hashtag — `#calidadtotal` is not Cali
         ("productos de calidad", ["calidadtotal"], ("", "")),
         ("Vivo en Bogotá", [], ("CO", "Bogotá")),
+        # a city only ONE country has still stands on its own
+        ("Delivery en todo Maracaibo", [], ("VE", "Maracaibo")),
+        # the demonym names the country as well as the name does
+        ("cocina venezolana desde siempre", [], ("VE", "")),
+        ("Somos 100% dominicanos", [], ("DO", "")),
     ],
 )
 def test_detect_location(text: str, hashtags: list[str], expected: tuple[str, str]) -> None:
     assert cd.detect_location(text, hashtags) == expected
+
+
+# --------------------------------------------------------------------------------------
+# a shared city name never decides a country (§ 2026-09-15) — the general rule, not a
+# Venezuela patch: it holds for every pair the table happens to contain.
+# --------------------------------------------------------------------------------------
+
+
+def test_the_ambiguous_half_of_the_weak_set_is_derived_from_the_table() -> None:
+    """Nobody has to remember to list a collision: adding a country whose city another
+    country already has makes both weak automatically."""
+    shared = {slug for slug, codes in cd.CITY_COUNTRIES.items() if len(codes) > 1}
+    assert shared <= cd.WEAK_CITY_SLUGS
+    # the ones that exist today, so a table edit that silently drops one is visible
+    assert {"valencia", "barcelona", "merida", "cordoba"} <= shared
+    assert cd.CITY_COUNTRIES["valencia"] == frozenset({"ES", "VE"})
+
+
+@pytest.mark.parametrize("text", ["Vivo en Valencia", "Barcelona vibes ✨", "Desde Córdoba"])
+def test_a_shared_city_name_alone_yields_the_city_but_no_country(text: str) -> None:
+    code, city = cd.detect_location(text)
+    assert code == ""
+    assert city != ""  # the city still scopes a local search; only the country is unknown
+
+
+def test_the_operator_answer_settles_an_ambiguous_city() -> None:
+    """The country the operator already picked on the rubro step disambiguates the bio
+    exactly as naming it in the bio would."""
+    assert cd.detect_location("Vivo en Valencia", country_hint="VE") == ("VE", "Valencia")
+    assert cd.detect_location("Vivo en Valencia", country_hint="ES") == ("ES", "Valencia")
+    # a hint the table does not know is ignored, not trusted
+    assert cd.detect_location("Vivo en Valencia", country_hint="ZZ") == ("", "Valencia")
+    # and a hint never invents a country the text did not place
+    assert cd.detect_location("solo postres", country_hint="VE") == ("", "")
+
+
+def test_an_ordinary_word_city_does_not_decide_a_country_either() -> None:
+    """`salta` is a verb, `rosario` and `david` are names — unique in the table, but
+    they cannot carry a country by themselves."""
+    assert cd.detect_location("la masa salta en el sartén") == ("", "Salta")
+    assert cd.detect_location("la masa salta en el sartén", country_hint="AR") == ("AR", "Salta")
+
+
+def test_every_country_carries_enough_cities_and_a_demonym() -> None:
+    """The guard behind the even-coverage rule: a country entered with one city loses
+    every creator from its second one, and one without a demonym loses every bio that
+    says "venezolana" instead of "Venezuela"."""
+    for code, country in cd.COUNTRIES.items():
+        assert len(country.cities) >= 8, f"{code} has too few cities to detect anything"
+        assert country.aliases, f"{code} has no alias/demonym"
+        assert all(len(cd._fold(a)) >= cd._MIN_ALIAS_LENGTH for a in country.aliases), code
+        assert country.name
+
+
+def test_country_evidence_drops_a_weak_city_when_another_country_is_named() -> None:
+    """The national phase's admission test. A Spanish account that says "Valencia" is
+    not Venezuelan, and the reverse holds too — whichever country the text names wins
+    the shared name."""
+    spanish = cd.Candidate("instagram", "tapas", bio="Tapas en Valencia, España")
+    assert cd._has_country_evidence(spanish, "ES")
+    assert not cd._has_country_evidence(spanish, "VE")
+
+    venezuelan = cd.Candidate("instagram", "arepas", bio="Arepas en Valencia, Venezuela")
+    assert cd._has_country_evidence(venezuelan, "VE")
+    assert not cd._has_country_evidence(venezuelan, "ES")
+
+    # nothing else named: the shared name is still evidence for both — it is all there
+    # is, and the phase is scoped to one country anyway
+    bare = cd.Candidate("instagram", "cafe", bio="Café en Valencia")
+    assert cd._has_country_evidence(bare, "VE")
+    assert cd._has_country_evidence(bare, "ES")
+
+    # an unambiguous city needs no help
+    zulia = cd.Candidate("tiktok", "zulia", bio="Maracaibo, mi ciudad")
+    assert cd._has_country_evidence(zulia, "VE")
+
+
+def test_country_evidence_reads_the_demonym_and_the_flag() -> None:
+    demonym = cd.Candidate("tiktok", "cocina", bio="Cocina venezolana tradicional")
+    flag = cd.Candidate("tiktok", "hecho", bio="Hecho en 🇻🇪")
+    short = cd.Candidate("tiktok", "vzla", bio="Postres vzla 🍰")
+    for candidate in (demonym, flag, short):
+        assert cd._has_country_evidence(candidate, "VE")
+        assert not cd._has_country_evidence(candidate, "CO")
 
 
 def test_seed_reads_bio_category_and_own_hashtags_dropping_generic_and_own_tags() -> None:

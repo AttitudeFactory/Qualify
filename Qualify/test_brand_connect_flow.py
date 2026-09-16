@@ -56,14 +56,26 @@ def test_plan_step_is_gone_from_both_flows() -> None:
     assert "subscription" not in wiz.BrandWizardState.__fields__
 
 
-def test_account_kind_comes_before_identity_and_rubro_sits_between_them() -> None:
+def test_account_kind_comes_before_the_rubro_and_the_maps_pair() -> None:
     titles = _titles(wiz.CONNECT_STEPS)
     kind = titles.index("¿Eres influencer o una marca?")
     assert titles[kind + 1] == "Tu rubro y ubicación"
-    assert titles[kind + 2] == "¿Quién es la marca?"
+    assert titles[kind + 2] == "¿Tu negocio está en Google Maps?"
     assert kind == wiz._ACCOUNT_KIND_STEP
     assert wiz.CONNECT_STEPS[wiz._IDENTITY_STEP][0] == "¿Quién es la marca?"
     assert wiz.CONNECT_STEPS[wiz._RECOMMENDATIONS_STEP][0] == "Lo que te proponemos"
+
+
+def test_the_maps_pair_was_swapped_with_identity() -> None:
+    """§ request 2026-09-15: the Google Maps pair runs where ¿Quién es la marca? used
+    to, and ¿Quién es la marca? closes the block, right before Paleta de colores."""
+    titles = _titles(wiz.CONNECT_STEPS)
+    assert titles[wiz._MAPS_QUESTION_STEP : wiz._MAPS_STEPS_STEP + 1] == [
+        "¿Tu negocio está en Google Maps?",
+        "Súmate a Google Maps",
+    ]
+    assert wiz._MAPS_QUESTION_STEP < wiz._LOGO_QUESTION_STEP < wiz._IDENTITY_STEP
+    assert titles[wiz._IDENTITY_STEP + 1] == "Paleta de colores"
 
 
 def test_account_kind_offers_both_as_a_third_answer() -> None:
@@ -137,7 +149,7 @@ def test_a_brand_without_location_is_asked_and_can_go_back_to_the_rubro() -> Non
     BrandConnectState.set_country_code.fn(state, "CO")
     BrandConnectState.set_city.fn(state, "Cúcuta")
     assert state.rubro_complete is True
-    assert _next(state) == wiz._IDENTITY_STEP
+    assert _next(state) == wiz._MAPS_QUESTION_STEP
     assert _prev(state) == wiz._RUBRO_STEP
 
 
@@ -160,13 +172,15 @@ def test_leaving_the_rubro_step_restarts_the_search_only_when_the_seed_changed()
 
 def test_both_behaves_as_a_brand_for_location_and_maps() -> None:
     state = _existing_account(
-        step=wiz._IDENTITY_STEP, account_kind="ambas", country_code="CO", city="Cúcuta"
+        step=wiz._RUBRO_STEP, account_kind="ambas", country_code="CO", city="Cúcuta"
     )
     assert state.needs_location is True
     assert _next(state) == wiz._MAPS_QUESTION_STEP
 
+    # "sí" skips Súmate a Google Maps; the logo pair is skipped too (profile picture),
+    # so the walk lands on ¿Quién es la marca?, which now closes the block
     BrandConnectState.answer_has_maps.fn(state, "si")
-    assert state.step == wiz._PALETTE_STEP
+    assert state.step == wiz._IDENTITY_STEP
     assert _prev(state) == wiz._MAPS_QUESTION_STEP
 
 

@@ -1184,13 +1184,41 @@ def save_result(result: DiscoveryResult, *, directory: Path = DISCOVERY_DIR) -> 
 #: computed under the old plan is a miss instead of a stale answer.
 PHASED_PLAN_VERSION = 4
 
-#: Countries the location detection and the rubro step know: ISO code → (display
-#: name, display city names). PROVISIONAL, same status as the taxonomy — LatAm first
-#: because that is where the first customers are, plus Spain / US for the
-#: Spanish-speaking accounts a sector search surfaces anyway.
-COUNTRIES: dict[str, tuple[str, tuple[str, ...]]] = {
-    "CO": (
+
+@dataclass(frozen=True)
+class Country:
+    """One country the location detection and the rubro step know.
+
+    `aliases` is what a bio calls the country when it does not spell its name: the
+    demonym above all ("venezolana", "colombiano") plus the short forms people
+    actually type ("vzla", "eeuu"). Matched as whole words and only from four
+    characters up — "col", "mx" and "rd" appear inside too much ordinary text to be
+    evidence of anything. The flag emoji is handled separately, from the ISO code.
+
+    `cities` is the display list AND the evidence list. Keep it to the real metros:
+    every name added is a name that can collide, and the ambiguity indexes below are
+    what keep a collision from inventing a country.
+    """
+
+    name: str
+    aliases: tuple[str, ...]
+    cities: tuple[str, ...]
+
+
+#: Countries the location detection and the rubro step know. PROVISIONAL, same status
+#: as the taxonomy — LatAm first because that is where the first customers are, plus
+#: Spain / US for the Spanish-speaking accounts a sector search surfaces anyway.
+#:
+#: Coverage is deliberately EVEN across countries (§ 2026-09-15): the list used to run
+#: from 15 cities for Colombia down to one for Panamá, which made "is this account
+#: from country X" a question whose answer depended on how well X happened to be
+#: typed up rather than on the account. A country entered with two cities silently
+#: loses every creator from its third city — `test_every_country_carries_enough_cities`
+#: is the guard against adding the next one that way.
+COUNTRIES: dict[str, Country] = {
+    "CO": Country(
         "Colombia",
+        ("colombiano", "colombiana", "colombianos", "colombianas"),
         (
             "Bogotá",
             "Medellín",
@@ -1209,23 +1237,215 @@ COUNTRIES: dict[str, tuple[str, tuple[str, ...]]] = {
             "Neiva",
         ),
     ),
-    "VE": (
+    "VE": Country(
         "Venezuela",
-        ("Caracas", "Maracaibo", "San Cristóbal", "Barquisimeto", "Maracay", "Puerto La Cruz"),
+        ("venezolano", "venezolana", "venezolanos", "venezolanas", "vzla"),
+        (
+            "Caracas",
+            "Maracaibo",
+            "Valencia",
+            "Barquisimeto",
+            "Maracay",
+            "Ciudad Guayana",
+            "Puerto Ordaz",
+            "San Cristóbal",
+            "Puerto La Cruz",
+            "Mérida",
+            "Barcelona",
+            "Maturín",
+            "Barinas",
+            "Cumaná",
+            "Punto Fijo",
+        ),
     ),
-    "MX": (
+    "MX": Country(
         "México",
-        ("Ciudad de México", "Guadalajara", "Monterrey", "Puebla", "Tijuana", "Cancún"),
+        ("mexicano", "mexicana", "mexicanos", "mexicanas"),
+        (
+            "Ciudad de México",
+            "Guadalajara",
+            "Monterrey",
+            "Puebla",
+            "Tijuana",
+            "Cancún",
+            "Mérida",
+            "Querétaro",
+            "León",
+            "Toluca",
+            "Ciudad Juárez",
+            "Mexicali",
+            "Culiacán",
+            "Aguascalientes",
+            "Morelia",
+        ),
     ),
-    "AR": ("Argentina", ("Buenos Aires", "Rosario", "Mendoza", "La Plata")),
-    "CL": ("Chile", ("Santiago de Chile", "Valparaíso", "Viña del Mar", "Concepción")),
-    "PE": ("Perú", ("Lima", "Arequipa", "Cusco", "Trujillo")),
-    "EC": ("Ecuador", ("Quito", "Guayaquil", "Cuenca")),
-    "PA": ("Panamá", ("Ciudad de Panamá",)),
-    "DO": ("República Dominicana", ("Santo Domingo", "Punta Cana")),
-    "ES": ("España", ("Madrid", "Barcelona", "Sevilla", "Valencia", "Málaga", "Bilbao")),
-    "US": ("Estados Unidos", ("Miami", "Nueva York", "Los Ángeles", "Houston")),
+    "AR": Country(
+        "Argentina",
+        ("argentino", "argentina", "argentinos", "argentinas"),
+        (
+            "Buenos Aires",
+            "Córdoba",
+            "Rosario",
+            "Mendoza",
+            "La Plata",
+            "Mar del Plata",
+            "San Miguel de Tucumán",
+            "Salta",
+            "Santa Fe",
+            "Neuquén",
+            "Bariloche",
+        ),
+    ),
+    "CL": Country(
+        "Chile",
+        ("chileno", "chilena", "chilenos", "chilenas"),
+        (
+            "Santiago de Chile",
+            "Valparaíso",
+            "Viña del Mar",
+            "Concepción",
+            "Antofagasta",
+            "La Serena",
+            "Temuco",
+            "Iquique",
+            "Puerto Montt",
+        ),
+    ),
+    "PE": Country(
+        "Perú",
+        ("peruano", "peruana", "peruanos", "peruanas"),
+        (
+            "Lima",
+            "Arequipa",
+            "Cusco",
+            "Trujillo",
+            "Chiclayo",
+            "Piura",
+            "Iquitos",
+            "Huancayo",
+            "Tacna",
+        ),
+    ),
+    "EC": Country(
+        "Ecuador",
+        ("ecuatoriano", "ecuatoriana", "ecuatorianos", "ecuatorianas"),
+        (
+            "Quito",
+            "Guayaquil",
+            "Cuenca",
+            "Ambato",
+            "Manta",
+            "Machala",
+            "Portoviejo",
+            "Loja",
+            "Esmeraldas",
+        ),
+    ),
+    "PA": Country(
+        "Panamá",
+        ("panameño", "panameña", "panameños", "panameñas"),
+        (
+            "Ciudad de Panamá",
+            "Colón",
+            "David",
+            "Chitré",
+            "Penonomé",
+            "Bocas del Toro",
+            "La Chorrera",
+            "Arraiján",
+        ),
+    ),
+    "DO": Country(
+        "República Dominicana",
+        ("dominicano", "dominicana", "dominicanos", "dominicanas", "quisqueya"),
+        (
+            "Santo Domingo",
+            "Santiago de los Caballeros",
+            "Punta Cana",
+            "La Romana",
+            "Puerto Plata",
+            "San Pedro de Macorís",
+            "Bávaro",
+            "San Francisco de Macorís",
+        ),
+    ),
+    "ES": Country(
+        "España",
+        ("español", "española", "españoles", "españolas", "spain"),
+        (
+            "Madrid",
+            "Barcelona",
+            "Sevilla",
+            "Valencia",
+            "Málaga",
+            "Bilbao",
+            "Zaragoza",
+            "Murcia",
+            "Alicante",
+            "Córdoba",
+            "Valladolid",
+            "Granada",
+            "Vigo",
+            "San Sebastián",
+            "Palma de Mallorca",
+        ),
+    ),
+    "US": Country(
+        "Estados Unidos",
+        # NOT "usa": three letters, and in Spanish it is the verb ("usa este código").
+        ("eeuu", "estadounidense", "united states"),
+        (
+            "Miami",
+            "Nueva York",
+            "Los Ángeles",
+            "Houston",
+            "Chicago",
+            "Orlando",
+            "Dallas",
+            "Atlanta",
+            "San Francisco",
+            "Las Vegas",
+            "Phoenix",
+            "Boston",
+            "Seattle",
+            "San Antonio",
+            "San Diego",
+        ),
+    ),
 }
+
+#: City names too generic to name a country BY THEMSELVES — either because more than
+#: one country in the table has them (computed: Valencia and Barcelona are Spanish and
+#: Venezuelan, Mérida is Mexican and Venezuelan, Córdoba is Argentine and Spanish,
+#: Santiago… is three countries' prefix) or because the word is ordinary Spanish or a
+#: person's name (listed: `salta` is a verb, `david` and `rosario` are names, `granada`
+#: and `palma` are fruit and tree, `manta` is a blanket).
+#:
+#: This is THE generalization (§ 2026-09-15): a weak name never decides a country on
+#: its own — it needs the country named alongside it. Adding a country later cannot
+#: reintroduce the bug, because the ambiguous half of this set is DERIVED from the
+#: table rather than listed.
+_COMMON_WORD_CITY_SLUGS = frozenset(
+    {"salta", "david", "colon", "rosario", "mendoza", "manta", "granada", "leon", "concepcion"}
+)
+
+
+def _city_country_index() -> dict[str, frozenset[str]]:
+    index: dict[str, set[str]] = {}
+    for code, country in COUNTRIES.items():
+        for city in country.cities:
+            index.setdefault(_slug(city), set()).add(code)
+    return {slug: frozenset(codes) for slug, codes in index.items()}
+
+
+#: City slug → the countries claiming it. Derived, never hand-maintained.
+CITY_COUNTRIES: dict[str, frozenset[str]] = _city_country_index()
+
+#: The slugs that may not decide a country alone: shared by two countries, or an
+#: ordinary word.
+WEAK_CITY_SLUGS: frozenset[str] = frozenset(
+    {slug for slug, codes in CITY_COUNTRIES.items() if len(codes) > 1} | _COMMON_WORD_CITY_SLUGS
+)
 
 #: Hashtags that say nothing about what an account is about — dropped from the
 #: account's own vocabulary before it seeds a search.
@@ -1334,15 +1554,39 @@ def _flag(code: str) -> str:
 
 
 def country_name(code: str) -> str:
-    return COUNTRIES.get(code.upper(), ("", ()))[0]
+    country = COUNTRIES.get(code.upper())
+    return country.name if country else ""
+
+
+#: Below this, an alias is a substring of too much ordinary text to be evidence —
+#: see `Country.aliases`.
+_MIN_ALIAS_LENGTH = 4
 
 
 def _mentions_country(text: str, code: str) -> bool:
+    """Whether the text names `code` explicitly — by name, by demonym or short form,
+    or by flag emoji. Never by a city: a city is circumstantial (`_city_evidence`),
+    a name is not."""
+    country = COUNTRIES.get(code.upper())
+    if country is None:
+        return False
     folded = _fold(text)
-    name = _fold(country_name(code))
+    name = _fold(country.name)
     if name and (re.search(rf"\b{re.escape(name)}\b", folded) or _slug(name) in _slug(text)):
         return True
-    return bool(code) and _flag(code) in text
+    for alias in country.aliases:
+        folded_alias = _fold(alias)
+        if len(folded_alias) >= _MIN_ALIAS_LENGTH and re.search(
+            rf"\b{re.escape(folded_alias)}\b", folded
+        ):
+            return True
+    return _flag(code) in text
+
+
+def named_countries(text: str) -> list[str]:
+    """Every country the text names explicitly, in table order. Empty for a text that
+    only drops a city name."""
+    return [code for code in COUNTRIES if _mentions_country(text, code)]
 
 
 def _city_in(text: str, tag_slugs: list[str], city: str) -> bool:
@@ -1356,19 +1600,44 @@ def _city_in(text: str, tag_slugs: list[str], city: str) -> bool:
     return len(slug) >= 6 and any(slug in tag for tag in tag_slugs)
 
 
-def detect_location(text: str, hashtags: list[str] | tuple[str, ...] = ()) -> tuple[str, str]:
+def detect_location(
+    text: str,
+    hashtags: list[str] | tuple[str, ...] = (),
+    *,
+    country_hint: str = "",
+) -> tuple[str, str]:
     """`(country code, city)` read from a bio / category / hashtags, `""` for what is
-    not there. A named country narrows the city search to that country (`Valencia`
-    next to "España" is not ambiguous); a city alone implies its country."""
+    not there.
+
+    A named country narrows the city search to that country — `Valencia` next to
+    "España" is not ambiguous, and neither is it next to "Venezuela". A city alone
+    implies its country ONLY when the name belongs to one country and is not an
+    ordinary word (`WEAK_CITY_SLUGS`): a bare "Valencia" yields `("", "Valencia")`,
+    the city kept because it still scopes a local search, the country left blank
+    rather than guessed. Guessing is what used to file Venezuelan accounts under
+    Spain, and it would file Argentine ones under Spain the moment Córdoba appeared
+    in both lists (§ 2026-09-15).
+
+    `country_hint` is the country the OPERATOR already answered. It settles the
+    ambiguity the same way naming the country in the text would — a Venezuelan
+    business that wrote only "Valencia" in its bio is in the Venezuelan Valencia."""
     tag_slugs = [_slug(tag) for tag in hashtags]
-    country = next((code for code in COUNTRIES if _mentions_country(text, code)), "")
-    for code, (_name, cities) in COUNTRIES.items():
-        if country and code != country:
+    named = next(iter(named_countries(text)), "")
+    hint = country_hint.upper() if country_hint.upper() in COUNTRIES else ""
+    scope = named or hint
+    for code, info in COUNTRIES.items():
+        if scope and code != scope:
             continue
-        for city in cities:
-            if _city_in(text, tag_slugs, city):
+        for city in info.cities:
+            if not _city_in(text, tag_slugs, city):
+                continue
+            if scope or _slug(city) not in WEAK_CITY_SLUGS:
                 return code, city
-    return country, ""
+            # An ambiguous name with no country named and none answered: the city is
+            # real, the country is not knowable from this text.
+            return "", city
+    # No city matched — only what the text itself named counts, never the hint.
+    return named, ""
 
 
 @dataclass(frozen=True)
@@ -1473,7 +1742,7 @@ def seed_from_profile(
             or any(stem in _slug(t) for stem in stems)
             or _is_place_tag_anywhere(t)
         )
-    detected_country, detected_city = detect_location(text, tags)
+    detected_country, detected_city = detect_location(text, tags, country_hint=country_code)
     country = (country_code or detected_country).upper()
     if not city and detected_city and detected_country == country:
         city = detected_city
@@ -1506,12 +1775,15 @@ class PhaseResult:
 
 
 def _is_place_tag_anywhere(tag: str) -> bool:
-    """A hashtag naming any known country or city (`#cucutafood`, `#comidacolombia`)."""
+    """A hashtag naming any known country or city (`#cucutafood`, `#comidacolombia`,
+    `#comidavzla`). Aliases count here too — a short form is still a place."""
     slug = _slug(tag)
-    for _code, (name, cities) in COUNTRIES.items():
-        if _slug(name) in slug:
+    for country in COUNTRIES.values():
+        if _slug(country.name) in slug:
             return True
-        if any(len(_slug(city)) >= 6 and _slug(city) in slug for city in cities):
+        if any(len(_slug(a)) >= _MIN_ALIAS_LENGTH and _slug(a) in slug for a in country.aliases):
+            return True
+        if any(len(_slug(city)) >= 6 and _slug(city) in slug for city in country.cities):
             return True
     return False
 
@@ -1630,13 +1902,33 @@ def phase_queries(key: str, seed: DiscoverySeed) -> list[tuple[Query, str | None
 
 
 def _has_country_evidence(candidate: Candidate, code: str) -> bool:
+    """Whether the account's own words place it in `code`.
+
+    Three tiers, strongest first: the structured location an Instagram reel carries,
+    the country named in the text (name, demonym, flag), and finally one of the
+    country's cities. That last tier is the circumstantial one and it is where a
+    shared name used to leak an account into the wrong country — a Spanish account
+    saying "Valencia" counted as Venezuelan and vice versa. So a weak city name
+    (`WEAK_CITY_SLUGS`: shared by two countries, or an ordinary word) is evidence
+    only while no OTHER country is named in the same text; an unambiguous one
+    (Maracaibo, Cúcuta, Guayaquil) still stands on its own."""
+    country = COUNTRIES.get(code.upper())
+    if country is None:
+        return False
     if candidate.country_code and candidate.country_code.upper() == code.upper():
         return True
     text = candidate.evidence_text()
     if _mentions_country(text, code):
         return True
+    named_elsewhere = [c for c in named_countries(text) if c != code.upper()]
     tag_slugs = [_slug(t) for t in candidate.hashtags_seen]
-    return any(_city_in(text, tag_slugs, city) for city in COUNTRIES.get(code, ("", ()))[1])
+    for city in country.cities:
+        if not _city_in(text, tag_slugs, city):
+            continue
+        if _slug(city) in WEAK_CITY_SLUGS and named_elsewhere:
+            continue
+        return True
+    return False
 
 
 _STOPWORDS = frozenset(

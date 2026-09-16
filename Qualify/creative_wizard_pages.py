@@ -1950,17 +1950,19 @@ CONNECT_STEPS: tuple[tuple[str, str], ...] = (
     # it from); for an existing account only when the profile read could not detect
     # what the discovery needs (`needs_rubro_step`).
     ("Tu rubro y ubicación", "Así buscamos referentes de tu sector, tu país y tu ciudad."),
-    ("¿Quién es la marca?", "Lo que define su lugar y a quién le habla."),
+    # ¿Estás en Google Maps? / Súmate a Google Maps — swapped with ¿Quién es la marca?
+    # (§ request 2026-09-15, "intercambiar las views"): the pair now runs right after
+    # Tu rubro y ubicación and ¿Quién es la marca? takes the slot they used to close.
+    # SKIPPED as a pair for "influencer"; for "marca"/"ambas" the question is always
+    # asked and only the follow-up screen is conditional, on the answer ("no").
+    ("¿Tu negocio está en Google Maps?", "Así te encuentran cuando buscan cerca."),
+    ("Súmate a Google Maps", "Son unos minutos y quedas visible en el mapa."),
     # ¿Tienes logo? / Tu logo — SKIPPED when the scraped profile already has a
     # picture. Same copy + renderers the manual flow uses (`_step_has_logo`/
     # `_step_logo`) via `_connect_step_has_logo`, so the two flows cannot drift.
     ("¿Tienes logo?", "De tu respuesta depende el siguiente paso."),
     ("Tu logo", "Lo usaremos en cada pieza que generemos."),
-    # ¿Estás en Google Maps? / Súmate a Google Maps — SKIPPED as a pair for
-    # "influencer"; for "marca"/"ambas" the question is always asked and only the
-    # follow-up screen is conditional, on the answer ("no").
-    ("¿Tu negocio está en Google Maps?", "Así te encuentran cuando buscan cerca."),
-    ("Súmate a Google Maps", "Son unos minutos y quedas visible en el mapa."),
+    ("¿Quién es la marca?", "Lo que define su lugar y a quién le habla."),
     ("Paleta de colores", "Los colores con los que se te reconoce."),
     ("¿Cómo suena?", "Ajusta el tono en cuatro ejes."),
     ("Enséñale a hablar", "Ejemplos reales valen más que cualquier descripción."),
@@ -1982,17 +1984,19 @@ _PROFILE_STEP = 2
 _RECOMMENDATIONS_STEP = 3
 _ACCOUNT_KIND_STEP = 4
 _RUBRO_STEP = 5
-_IDENTITY_STEP = 6
-_LOGO_QUESTION_STEP = 7
-_LOGO_UPLOAD_STEP = 8
-_MAPS_QUESTION_STEP = 9
-_MAPS_STEPS_STEP = 10
+_MAPS_QUESTION_STEP = 6
+_MAPS_STEPS_STEP = 7
+_LOGO_QUESTION_STEP = 8
+_LOGO_UPLOAD_STEP = 9
+_IDENTITY_STEP = 10
 _PALETTE_STEP = 11
 _VOICE_TONE_STEP = 12
 _VOICE_EXAMPLES_STEP = 13
 _RESTRICTIONS_STEP = 14
 assert CONNECT_STEPS[_RUBRO_STEP][0] == "Tu rubro y ubicación"
+assert CONNECT_STEPS[_MAPS_QUESTION_STEP][0] == "¿Tu negocio está en Google Maps?"
 assert CONNECT_STEPS[_MAPS_STEPS_STEP][0] == "Súmate a Google Maps"
+assert CONNECT_STEPS[_IDENTITY_STEP][0] == "¿Quién es la marca?"
 assert CONNECT_STEPS[_RESTRICTIONS_STEP + 1][0] == "¿Todo correcto?"
 assert CONNECT_STEPS[_SORT_STEP][0] == "Referente, competencia o detractor"
 
@@ -2034,7 +2038,7 @@ ACCOUNT_KINDS: tuple[tuple[str, str, str], ...] = (
 #: Countries the rubro step offers — the same table the discovery detects locations
 #: against, so a chosen country is always one the search knows how to name.
 COUNTRY_OPTIONS: tuple[tuple[str, str], ...] = tuple(
-    (code, name) for code, (name, _cities) in creator_discovery.COUNTRIES.items()
+    (code, country.name) for code, country in creator_discovery.COUNTRIES.items()
 )
 
 
@@ -3634,9 +3638,11 @@ def _discovery_section() -> rx.Component:
     in the order it runs: sector → country → city. "Buscamos con" lists the signals
     the seed was built from, so an odd result can be traced to the bio line, category
     or hashtag that caused it. If the event never ran for this session (a dev reload
-    straight onto this step), a button runs it instead of leaving the section blank."""
+    straight onto this step), a button runs it instead of leaving the section blank.
+
+    No "Referentes para tu marca" heading: dropped 2026-09-15 by request — the section
+    opens straight on "Buscamos con"."""
     return rx.vstack(
-        _section_label("Referentes para tu marca"),
         rx.cond(
             BrandConnectState.discovery_signals.length() > 0,
             rx.hstack(
@@ -3986,25 +3992,41 @@ def _connect_step_sort() -> rx.Component:
     brings the last one back. Each category is its own deck and its own three
     buckets, so a category whose search failed shows a Reintentar and never blocks
     the others. Entirely optional: nothing here gates Continuar."""
+    # Anterior/Siguiente sit ON the same line as "Categoría N de 3" + its title, never
+    # under it (§ request 2026-09-15). That means NO `wrap="wrap"` here: the text column
+    # is the one that gives way (`min_width=0`, so the title wraps inside it) while the
+    # buttons keep their intrinsic width (`flex_shrink=0`) — which is what keeps them
+    # from overlapping the text at any width instead of pushing them to a second row.
     stage_header = rx.hstack(
         rx.vstack(
             _section_label(BrandConnectState.stage_label),
             rx.text(BrandConnectState.stage_title, size="3", weight="bold"),
             spacing="1",
             align_items="start",
+            min_width="0",
+            flex="1 1 auto",
         ),
-        rx.spacer(),
         rx.cond(
             ~BrandConnectState.is_first_stage,
-            _stage_nav_button("Anterior", "chevron-left", BrandConnectState.prev_sort_stage),
+            _stage_nav_button(
+                "Anterior",
+                "chevron-left",
+                BrandConnectState.prev_sort_stage,
+                flex_shrink="0",
+            ),
         ),
         rx.cond(
             ~BrandConnectState.is_last_stage,
-            _stage_nav_button("Siguiente", "chevron-right", BrandConnectState.next_sort_stage),
+            _stage_nav_button(
+                "Siguiente",
+                "chevron-right",
+                BrandConnectState.next_sort_stage,
+                flex_shrink="0",
+            ),
         ),
         spacing="2",
         align="center",
-        wrap="wrap",
+        wrap="nowrap",
         width="100%",
     )
     middle = rx.cond(
@@ -4141,11 +4163,11 @@ def _connect_window() -> rx.Component:
         (_RECOMMENDATIONS_STEP, _connect_step_recommendations()),
         (_ACCOUNT_KIND_STEP, _connect_step_account_kind()),
         (_RUBRO_STEP, _connect_step_rubro()),
-        (_IDENTITY_STEP, _step_identity()),
-        (_LOGO_QUESTION_STEP, _connect_step_has_logo()),
-        (_LOGO_UPLOAD_STEP, _step_logo(BrandConnectState.next_step)),
         (_MAPS_QUESTION_STEP, _connect_step_has_maps()),
         (_MAPS_STEPS_STEP, _connect_step_maps_setup()),
+        (_LOGO_QUESTION_STEP, _connect_step_has_logo()),
+        (_LOGO_UPLOAD_STEP, _step_logo(BrandConnectState.next_step)),
+        (_IDENTITY_STEP, _step_identity()),
         (_PALETTE_STEP, _step_palette()),
         (_VOICE_TONE_STEP, _step_voice_tone()),
         (_VOICE_EXAMPLES_STEP, _step_voice_examples()),
@@ -4265,10 +4287,10 @@ def _connect_can_continue() -> rx.Var[bool]:
         (1, BrandConnectState.username != ""),
         (_ACCOUNT_KIND_STEP, BrandConnectState.account_kind != ""),
         (_RUBRO_STEP, BrandConnectState.rubro_complete),
-        (_IDENTITY_STEP, _identity_complete()),
+        (_MAPS_QUESTION_STEP, BrandConnectState.has_maps != ""),
         (_LOGO_QUESTION_STEP, BrandWizardState.has_logo != ""),
         (_LOGO_UPLOAD_STEP, _logo_step_complete()),
-        (_MAPS_QUESTION_STEP, BrandConnectState.has_maps != ""),
+        (_IDENTITY_STEP, _identity_complete()),
         (_PALETTE_STEP, CreativeState.kit_palette != ""),
         (_VOICE_EXAMPLES_STEP, CreativeState.kit_do_examples != ""),
         True,
