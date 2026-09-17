@@ -47,15 +47,24 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import reflex as rx
 from reflex.constants import Dirs
 from reflex.utils.imports import ImportVar
 from reflex.vars import VarData
+from sqlalchemy.exc import SQLAlchemyError
 
-from . import avatar_proxy, creator_discovery, scrapecreators_client
+from . import (
+    avatar_proxy,
+    creator_discovery,
+    logo_palette,
+    referentes_provider,
+    scrapecreators_client,
+)
 from .auth_state import AuthState
+from .connections_provider import acting_user_id
+from .creative_provider import default_brand_id
 from .creative_state import CreativeState
 from .tenant import tenant_uuid
 from .ui import (
@@ -98,6 +107,17 @@ _CONFIRM_STEP = LAST_STEP - 1
 # `rx.upload`'s id must be a string literal or a module-level constant — it is what
 # links the dropzone to `rx.upload_files(upload_id=...)`.
 _LOGO_UPLOAD_ID = "brand_logo"
+
+#: Where a logo's colours came from (`BrandWizardState.logo_source`). GENERATED is
+#: reserved for the logo generator the brief ("No, todavía no") will feed — it does not
+#: exist yet; when it does it hands its image to `apply_logo_colours` with this source.
+LOGO_SOURCE_UPLOAD = "upload"
+LOGO_SOURCE_PROFILE = "profile"
+LOGO_SOURCE_GENERATED = "generated"
+
+#: ¿Tienes logo?'s third answer in the connect flow (§ request 2026-09-16): the scraped
+#: profile picture IS the logo. Alongside "si" (upload one) and "no" (the brief).
+HAS_LOGO_PROFILE = "perfil"
 
 # One radius, everywhere a real Radix control appears (input/text_area/button) — the
 # whole point is that no two controls in this flow round differently. Box-based
@@ -143,6 +163,14 @@ class BrandWizardState(rx.State):
     logo_key: str = ""
     logo_name: str = ""
     logo_error: str = ""
+    #: The colours the staged logo put into the palette (`logo_palette.
+    #: extract_palette`), so replacing or removing the logo takes exactly those back
+    #: out and never a colour picked by hand.
+    logo_colors: list[str] = []
+    #: Where `logo_colors` came from — one of the `LOGO_SOURCE_*` constants, "" when
+    #: nothing contributed any. Drives the palette step's note ("de tu logo" / "de tu
+    #: foto de perfil") and lets choosing another logo source retire them.
+    logo_source: str = ""
 
     # -- step 5 -----------------------------------------------------------------------
     # The wheel/readout's pending pick. They ONLY ever add a new colour — nothing here
@@ -214,6 +242,8 @@ class BrandWizardState(rx.State):
         self.logo_key = ""
         self.logo_name = ""
         self.logo_error = ""
+        self.logo_colors = []
+        self.logo_source = ""
         self.picker_color = "#0A3D2E"
 
     @rx.event
@@ -348,14 +378,48 @@ class BrandWizardState(rx.State):
         self.logo_key = key
         self.logo_name = name
         self.logo_error = ""
+        await self.apply_logo_colours(data, LOGO_SOURCE_UPLOAD)
+
+    async def apply_logo_colours(self, data: bytes, source: str) -> None:
+        """THE one way a logo's colours reach the palette (§ request 2026-09-16), for
+        every source: an uploaded file, the scraped profile picture and — once it
+        exists — a generated logo. Replaces whatever colours a previous logo put there
+        and never touches a hand-picked one (`logo_palette.merge_into_palette`).
+        Extraction runs off the event loop: decoding a large export is CPU work. A
+        format Pillow cannot read (SVG) contributes no colours, and retires the
+        previous ones all the same — that logo is no longer the logo.
+
+        Not an event handler: callers are handlers already running in an event context
+        (it needs `get_state`), including `BrandConnectState.answer_has_logo` through
+        `get_state(BrandWizardState)`."""
+        colours = await asyncio.to_thread(logo_palette.extract_palette, data)
+        creative = await self.get_state(CreativeState)
+        creative.kit_palette = logo_palette.merge_into_palette(
+            creative.kit_palette, self.logo_colors, colours
+        )
+        self.logo_colors = colours
+        self.logo_source = source if colours else ""
+
+    async def retire_logo_colours(self) -> None:
+        """Take the current logo's colours back out of the palette (hand-picked stay)."""
+        if self.logo_colors:
+            creative = await self.get_state(CreativeState)
+            creative.kit_palette = logo_palette.merge_into_palette(
+                creative.kit_palette, self.logo_colors, []
+            )
+        self.logo_colors = []
+        self.logo_source = ""
 
     @rx.event
-    def clear_logo(self) -> None:
-        """Drop the staged logo. The file on disk is left alone — it is namespaced and
-        unreferenced, and deleting it here would race a preview still being fetched."""
+    async def clear_logo(self) -> None:
+        """Drop the staged logo, and the palette colours it contributed (hand-picked
+        ones stay). The file on disk is left alone — it is namespaced and unreferenced,
+        and deleting it here would race a preview still being fetched."""
         self.logo_key = ""
         self.logo_name = ""
         self.logo_error = ""
+        if self.logo_source == LOGO_SOURCE_UPLOAD:
+            await self.retire_logo_colours()
 
     @rx.var
     def picker_color_name(self) -> str:
@@ -1165,6 +1229,27 @@ def _step_palette() -> rx.Component:
         card(
             rx.vstack(
                 _section_label("Tu paleta"),
+                # § request 2026-09-16: say where the colours came from when the logo
+                # step put them there, so a palette the operator never picked does not
+                # read as a bug.
+                rx.cond(
+                    BrandWizardState.logo_colors.length() > 0,
+                    rx.hstack(
+                        rx.icon("sparkles", size=T.ICON_SM, color=T.TEXT_MUTED),
+                        rx.text(
+                            rx.cond(
+                                BrandWizardState.logo_source == LOGO_SOURCE_PROFILE,
+                                "Tomamos estos colores de tu foto de perfil. ",
+                                "Tomamos estos colores de tu logo. ",
+                            ),
+                            "Cámbialos o quítalos si no te convencen.",
+                            size="1",
+                            color=T.TEXT_MUTED,
+                        ),
+                        spacing="2",
+                        align="center",
+                    ),
+                ),
                 rx.cond(
                     CreativeState.has_palette_colors,
                     rx.fragment(
@@ -1957,12 +2042,16 @@ CONNECT_STEPS: tuple[tuple[str, str], ...] = (
     # asked and only the follow-up screen is conditional, on the answer ("no").
     ("¿Tu negocio está en Google Maps?", "Así te encuentran cuando buscan cerca."),
     ("Súmate a Google Maps", "Son unos minutos y quedas visible en el mapa."),
-    # ¿Tienes logo? / Tu logo — SKIPPED when the scraped profile already has a
-    # picture. Same copy + renderers the manual flow uses (`_step_has_logo`/
-    # `_step_logo`) via `_connect_step_has_logo`, so the two flows cannot drift.
+    ("¿Quién es la marca?", "Lo que define su lugar y a quién le habla."),
+    # ¿Tienes logo? / Tu logo — ALWAYS shown, right before Paleta de colores (§ request
+    # 2026-09-16). They used to be skipped whenever the scraped profile had a picture,
+    # which is nearly every account, so uploading a logo or asking for one through the
+    # brief was unreachable. A profile picture is not a logo. An uploaded logo's colours
+    # seed the palette on the next screen (`handle_logo_upload`). Same copy + renderers
+    # the manual flow uses (`_step_has_logo`/`_step_logo`) via `_connect_step_has_logo`,
+    # so the two flows cannot drift.
     ("¿Tienes logo?", "De tu respuesta depende el siguiente paso."),
     ("Tu logo", "Lo usaremos en cada pieza que generemos."),
-    ("¿Quién es la marca?", "Lo que define su lugar y a quién le habla."),
     ("Paleta de colores", "Los colores con los que se te reconoce."),
     ("¿Cómo suena?", "Ajusta el tono en cuatro ejes."),
     ("Enséñale a hablar", "Ejemplos reales valen más que cualquier descripción."),
@@ -1986,9 +2075,9 @@ _ACCOUNT_KIND_STEP = 4
 _RUBRO_STEP = 5
 _MAPS_QUESTION_STEP = 6
 _MAPS_STEPS_STEP = 7
-_LOGO_QUESTION_STEP = 8
-_LOGO_UPLOAD_STEP = 9
-_IDENTITY_STEP = 10
+_IDENTITY_STEP = 8
+_LOGO_QUESTION_STEP = 9
+_LOGO_UPLOAD_STEP = 10
 _PALETTE_STEP = 11
 _VOICE_TONE_STEP = 12
 _VOICE_EXAMPLES_STEP = 13
@@ -1997,6 +2086,10 @@ assert CONNECT_STEPS[_RUBRO_STEP][0] == "Tu rubro y ubicación"
 assert CONNECT_STEPS[_MAPS_QUESTION_STEP][0] == "¿Tu negocio está en Google Maps?"
 assert CONNECT_STEPS[_MAPS_STEPS_STEP][0] == "Súmate a Google Maps"
 assert CONNECT_STEPS[_IDENTITY_STEP][0] == "¿Quién es la marca?"
+assert CONNECT_STEPS[_LOGO_QUESTION_STEP][0] == "¿Tienes logo?"
+assert CONNECT_STEPS[_LOGO_UPLOAD_STEP][0] == "Tu logo"
+assert CONNECT_STEPS[_PALETTE_STEP][0] == "Paleta de colores"
+assert _LOGO_UPLOAD_STEP + 1 == _PALETTE_STEP
 assert CONNECT_STEPS[_RESTRICTIONS_STEP + 1][0] == "¿Todo correcto?"
 assert CONNECT_STEPS[_SORT_STEP][0] == "Referente, competencia o detractor"
 
@@ -2063,6 +2156,16 @@ class BrandConnectState(rx.State):
     #: numeric copy rather than parsing that string back apart.
     profile_followers_count: int = 0
     profile_pic: str = ""
+    #: ¿Tienes logo? answered "Usar mi foto de perfil" (`answer_has_logo`). Mirrored
+    #: here from `BrandWizardState.has_logo` because `_is_skipped` is synchronous and
+    #: cannot `get_state`: it is what skips Tu logo.
+    logo_from_profile: bool = False
+    #: The read's picture is a REAL one: fetched, and not the grey "no picture"
+    #: silhouette Instagram/TikTok show for an account without one
+    #: (`logo_palette.is_placeholder_avatar`, § request 2026-09-16). Only then is
+    #: "Mi foto de perfil es mi logo" offered. Worked out by `analyze` right after the
+    #: read; False until then, and whenever the picture cannot be fetched.
+    profile_pic_is_real: bool = False
 
     #: ¿Eres influencer o una marca?'s answer — "marca" | "influencer" | "ambas" | ""
     #: (unanswered). Gates the Google Maps pair (an influencer has no local business
@@ -2119,8 +2222,17 @@ class BrandConnectState(rx.State):
     discovery_answers: list[str] = []
 
     #: Referente, competencia o detractor — bucket per account key
-    #: (`"<network>:@<handle>"`, see `_account_key`). Session-only, like the rest.
+    #: (`"<network>:@<handle>"`, see `_account_key`). Stored in Postgres per brand
+    #: (`sync_labels`) and restored when a search puts the accounts back on screen.
     account_buckets: dict[str, str] = {}
+    #: Backend-only: the sort as last written to Postgres, what `sync_labels` diffs
+    #: `account_buckets` against.
+    _persisted_buckets: dict[str, str] = {}
+    #: Accounts the operator sorted that this search did NOT find again (a newer
+    #: algorithm dropped them) — their decision still stands, so they stay in their
+    #: bucket, with the card of the newest stored phase that found them. Never dealt
+    #: into the deck: they are sorted already.
+    kept_accounts: list[dict[str, str]] = []
     #: The card being dragged, same key.
     dragging: str = ""
     #: Which category the sort step is on (index into `creator_discovery.PHASES`):
@@ -2235,13 +2347,16 @@ class BrandConnectState(rx.State):
           influencer también quiero que me deje escoger rubro y ubicación") — for an
           existing account it arrives prefilled from the profile read, which is the
           moment to correct it.
-        - ¿Tienes logo? / Tu logo: skipped when the profile has a picture.
+        - ¿Tienes logo?: never skipped since 2026-09-16 (skipping it whenever the
+          profile had a picture hid the logo upload and brief for nearly every account).
+        - Tu logo: skipped only when the answer was "Usar mi foto de perfil" — nothing
+          left to upload or describe.
         - ¿Tu negocio está en Google Maps?: skipped for "influencer".
         - Súmate a Google Maps: skipped for "influencer" and on a "sí"."""
         if index == _RECOMMENDATIONS_STEP:
             return self._is_fresh()
-        if index in (_LOGO_QUESTION_STEP, _LOGO_UPLOAD_STEP):
-            return bool(self.profile_pic.strip())
+        if index == _LOGO_UPLOAD_STEP:
+            return self.logo_from_profile
         if index == _MAPS_QUESTION_STEP:
             return self.account_kind == "influencer"
         if index == _MAPS_STEPS_STEP:
@@ -2371,9 +2486,28 @@ class BrandConnectState(rx.State):
         into `BrandWizardState.has_logo` (cross-state, same idiom `commit_picked_color`
         already uses) while advancing THIS flow's own cursor. Reusing the manual
         flow's handler directly would have advanced `BrandWizardState.step` instead —
-        a cursor nothing in this flow reads."""
+        a cursor nothing in this flow reads.
+
+        "perfil" (§ request 2026-09-16) takes the scraped profile picture as the logo:
+        its colours go to the palette (`BrandWizardState.apply_logo_colours`) and Tu
+        logo is skipped — there is nothing left to upload or describe. The picture comes
+        through `avatar_proxy.resolve_avatar`, which reads it from disk when a previous
+        render already kept it and otherwise fetches it once from the vendor's CDN — no
+        Scrape Creators credit either way. A picture that cannot be fetched just leaves
+        the palette as it is. Any other answer retires colours the picture contributed."""
+        if value == HAS_LOGO_PROFILE and not self.profile_pic_is_real:
+            return  # not offered for a default or missing picture; nothing to take
         wizard = await self.get_state(BrandWizardState)
         wizard.has_logo = value
+        self.logo_from_profile = value == HAS_LOGO_PROFILE
+        if self.logo_from_profile:
+            found = await avatar_proxy.resolve_avatar(
+                self.network, self.profile_username, self.profile_pic
+            )
+            if found is not None:
+                await wizard.apply_logo_colours(found[0], LOGO_SOURCE_PROFILE)
+        elif wizard.logo_source == LOGO_SOURCE_PROFILE:
+            await wizard.retire_logo_colours()
         self.next_step()
 
     @rx.event
@@ -2407,6 +2541,8 @@ class BrandConnectState(rx.State):
         self.profile_followers = ""
         self.profile_followers_count = 0
         self.profile_pic = ""
+        self.logo_from_profile = False
+        self.profile_pic_is_real = False
         self.account_kind = ""
         self.has_maps = ""
         self.started_without_socials = False
@@ -2426,6 +2562,8 @@ class BrandConnectState(rx.State):
         self.discovery_running = ""
         self.discovery_answers = []
         self.account_buckets = {}
+        self._persisted_buckets = {}
+        self.kept_accounts = []
         self.dragging = ""
         self.sort_stage = 0
         self.stage_cursor = 0
@@ -2501,7 +2639,9 @@ class BrandConnectState(rx.State):
     @rx.var
     def discovered_accounts(self) -> list[dict[str, str]]:
         """Every account the three phases found, once each, with its bucket key and
-        its current bucket ("" while unsorted) — what the sort step deals out."""
+        its current bucket ("" while unsorted) — what the sort step deals out — plus
+        the kept accounts (`kept_accounts`, read by name for the dependency tracking
+        explained above), which only ever show inside their bucket."""
         out: list[dict[str, str]] = []
         seen: set[str] = set()
         for key in creator_discovery.PHASES:
@@ -2512,6 +2652,13 @@ class BrandConnectState(rx.State):
                 seen.add(account_key)
                 bucket = self.account_buckets.get(account_key, "")
                 out.append({**item, "key": account_key, "bucket": bucket})
+        for item in self.kept_accounts:
+            account_key = _account_key(item)
+            bucket = self.account_buckets.get(account_key, "")
+            if account_key in seen or not bucket:
+                continue
+            seen.add(account_key)
+            out.append({**item, "key": account_key, "bucket": bucket})
         return out
 
     @rx.var
@@ -2896,6 +3043,9 @@ class BrandConnectState(rx.State):
             self.profile_followers = f"{followers:,}".replace(",", ".") if followers else "—"
             self.profile_followers_count = int(followers) if followers else 0
             self.profile_pic = str(profile.get("profilePicUrl", ""))
+            self.logo_from_profile = False  # a new read: its picture was not chosen yet
+            self.profile_pic_is_real = False  # checked below, once the read is on screen
+            read_pic, read_handle = self.profile_pic, self.profile_username
             # Real figures over the window (`recentPosts` of this same read).
             self._set_metrics(scrapecreators_client.profile_metrics(network, profile))
             # Prefill Tu rubro y ubicación with what the read lets us detect (bio,
@@ -2916,6 +3066,29 @@ class BrandConnectState(rx.State):
             start_now = not self._is_fresh() and bool(detected.niches or detected.hashtags)
         if start_now:
             yield BrandConnectState.run_discovery
+        # After the read is on screen and the search has started: whether its picture
+        # can stand in for a logo. Also leaves the picture on disk, so choosing "Mi foto
+        # de perfil es mi logo" later reads it instantly.
+        is_real = await self._picture_is_real(network, read_handle, read_pic)
+        async with self:
+            if self.profile_pic == read_pic:
+                self.profile_pic_is_real = is_real
+
+    async def _picture_is_real(self, network: str, handle: str, picture_url: str) -> bool:
+        """True when the profile picture exists, can be fetched (`avatar_proxy.
+        resolve_avatar`: disk, then the network's CDN — never a Scrape Creators credit)
+        and is not the default grey silhouette. Never raises: anything unknown is
+        "not real", which only hides an optional choice."""
+        if not picture_url:
+            return False
+        try:
+            found = await avatar_proxy.resolve_avatar(network, handle, picture_url)
+            if found is None:
+                return False
+            return not await asyncio.to_thread(logo_palette.is_placeholder_avatar, found[0])
+        except Exception as exc:  # noqa: BLE001 - an optional choice must never break the read
+            logger.info("brand connect: profile picture check failed: %s", type(exc).__name__)
+            return False
 
     @rx.event(background=True)
     async def run_discovery(self) -> AsyncIterator[None]:
@@ -2978,6 +3151,10 @@ class BrandConnectState(rx.State):
         yield
 
         runner: creator_discovery.PhasedDiscovery | None = None
+        # (tenant, brand, user) when the session has them — then phases and the sort
+        # live in Postgres (`referentes_provider`, migration 0018). Without them (no
+        # login, e.g. the offline tests) the JSON cache is used as before.
+        ids = await self._referentes_ids()
         try:
             profile = await asyncio.to_thread(
                 scrapecreators_client.load_cached_profile, network, handle
@@ -2991,12 +3168,11 @@ class BrandConnectState(rx.State):
 
             keys = list(creator_discovery.PHASES) if only is None else list(only)
             if only is None:
-                # The file first, one phase at a time ("de manera provisional por
-                # ahora"): a phase the cache remembers for this seed is applied at
-                # once, and only the missing ones (a new city → the local phase
-                # alone) go to the vendor.
+                # Stored results first, one phase at a time: a phase already computed
+                # for this seed by THIS algorithm version is applied at once, and only
+                # the missing ones (a new city → the local phase alone) go to the vendor.
                 for key in keys:
-                    cached = await asyncio.to_thread(creator_discovery.load_cached_phase, key, seed)
+                    cached = await self._stored_phase(ids, key, seed)
                     if cached is None:
                         continue
                     async with self:
@@ -3026,7 +3202,7 @@ class BrandConnectState(rx.State):
                 phase = creator_discovery.phase_to_dict(result)
                 if result.errors:
                     logger.warning("brand discovery %s phase errors: %s", key, result.errors)
-                await asyncio.to_thread(creator_discovery.save_cached_phase, key, seed, phase)
+                await self._store_phase(ids, key, seed, result, phase)
                 async with self:
                     if self.discovery_run_id != my_id:
                         return
@@ -3042,10 +3218,123 @@ class BrandConnectState(rx.State):
         finally:
             if runner is not None:
                 await asyncio.to_thread(runner.close)
+            restored, kept = await self._stored_sort(ids, my_id)
             async with self:
                 if self.discovery_run_id == my_id:
+                    if restored:
+                        # A decision made in this session while the search ran wins
+                        # over the stored one; the next `sync_labels` writes it.
+                        self.account_buckets = {**restored, **self.account_buckets}
+                        self._persisted_buckets = {**self._persisted_buckets, **restored}
+                    if ids is not None:
+                        self.kept_accounts = [
+                            {**card, "avatar_src": creator_discovery.avatar_path(card)}
+                            for card in kept
+                        ]
                     self.discovering = False
                     self.discovery_running = ""
+
+    # -- Postgres persistence of phases and the sort (`referentes_provider`) --------
+
+    async def _referentes_ids(self) -> tuple[UUID, UUID, UUID | None] | None:
+        """(tenant, brand, acting user) for the session, or None — no login, no brand,
+        or the database unreachable. Must NOT be called while holding the state lock."""
+        async with self:
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+        tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
+        if tenant_id is None:
+            return None
+        try:
+            brand_id = await asyncio.to_thread(default_brand_id, tenant_id)
+            if brand_id is None:
+                return None
+            user_id = await asyncio.to_thread(acting_user_id, tenant_id)
+        except SQLAlchemyError as exc:
+            logger.warning("referentes: could not resolve the session's brand: %s", exc)
+            return None
+        return tenant_id, brand_id, user_id
+
+    async def _stored_phase(
+        self,
+        ids: tuple[UUID, UUID, UUID | None] | None,
+        key: str,
+        seed: creator_discovery.DiscoverySeed,
+    ) -> dict | None:
+        if ids is None:
+            return await asyncio.to_thread(creator_discovery.load_cached_phase, key, seed)
+        try:
+            return await asyncio.to_thread(
+                referentes_provider.find_phase, ids[0], ids[1], key, seed
+            )
+        except SQLAlchemyError as exc:
+            # A read failure is a cache miss, not a failed search.
+            logger.warning("referentes: stored %s phase unreadable: %s", key, exc)
+            return None
+
+    async def _store_phase(
+        self,
+        ids: tuple[UUID, UUID, UUID | None] | None,
+        key: str,
+        seed: creator_discovery.DiscoverySeed,
+        result: creator_discovery.PhaseResult,
+        phase: dict,
+    ) -> None:
+        if ids is None:
+            await asyncio.to_thread(creator_discovery.save_cached_phase, key, seed, phase)
+            return
+        try:
+            await asyncio.to_thread(
+                referentes_provider.save_phase, ids[0], ids[1], key, seed, result, phase
+            )
+        except SQLAlchemyError as exc:
+            # The operator still sees the result; only the reuse is lost.
+            logger.warning("referentes: could not store the %s phase: %s", key, exc)
+
+    async def _stored_sort(
+        self, ids: tuple[UUID, UUID, UUID | None] | None, run_id: int
+    ) -> tuple[dict[str, str], list[dict[str, str]]]:
+        """The stored sort for this run's accounts, plus the kept cards
+        (`referentes_provider.load_sort`)."""
+        if ids is None:
+            return {}, []
+        async with self:
+            if self.discovery_run_id != run_id:
+                return {}, []
+            cards = [*self.sector_accounts, *self.national_accounts, *self.local_accounts]
+        try:
+            return await asyncio.to_thread(referentes_provider.load_sort, ids[0], ids[1], cards)
+        except SQLAlchemyError as exc:
+            logger.warning("referentes: stored sort unreadable: %s", exc)
+            return {}, []
+
+    @rx.event(background=True)
+    async def sync_labels(self) -> None:
+        """Writes the sort to Postgres. Fired right after every decision (the zones'
+        tap and drop, Deshacer) and diff-based — it stores whatever changed since the
+        last write, so it cannot miss an undo or write one twice. Serialized per brand
+        so two quick taps are stored in the order they were made."""
+        ids = await self._referentes_ids()
+        if ids is None:
+            return
+        tenant_id, brand_id, user_id = ids
+        async with _labels_lock(brand_id):
+            async with self:
+                current = dict(self.account_buckets)
+                persisted = dict(self._persisted_buckets)
+            changes = referentes_provider.label_changes(persisted, current)
+            if not changes:
+                return
+            try:
+                await asyncio.to_thread(
+                    referentes_provider.write_labels, tenant_id, brand_id, user_id, changes
+                )
+            except (SQLAlchemyError, ValueError) as exc:
+                # Left un-persisted: the next decision's sync retries the same diff.
+                logger.warning("referentes: could not store the sort: %s", exc)
+                return
+            async with self:
+                self._persisted_buckets = current
 
 
 # ---------------------------------------------------------------------------
@@ -3198,8 +3487,8 @@ def _connect_step_recommendations() -> rx.Component:
 
 
 def _connect_step_has_logo() -> rx.Component:
-    """Same question and copy as the manual flow's `_step_has_logo`, only shown when
-    the scraped profile came back with no picture (§ `next_step`'s skip). Cannot
+    """Same question and copy as the manual flow's `_step_has_logo`, asked of every
+    account right before Paleta de colores (§ request 2026-09-16). Cannot
     reuse `_step_has_logo` as-is: its choice cards call `BrandWizardState.
     answer_has_logo`, which advances `BrandWizardState.step` — a cursor this flow
     never reads. `BrandConnectState.answer_has_logo` writes the same `has_logo`
@@ -3216,6 +3505,18 @@ def _connect_step_has_logo() -> rx.Component:
             "Te haremos tres preguntas para proponerte uno.",
             BrandWizardState.has_logo == "no",
             BrandConnectState.answer_has_logo("no"),
+        ),
+        # § request 2026-09-16: the profile picture we already read is, for many
+        # brands, the logo itself. Offered only for a REAL picture — not for none, and
+        # not for the default grey silhouette (`profile_pic_is_real`).
+        rx.cond(
+            BrandConnectState.profile_pic_is_real,
+            _choice_card(
+                "Mi foto de perfil es mi logo",
+                "Tomaremos sus colores para tu paleta.",
+                BrandWizardState.has_logo == HAS_LOGO_PROFILE,
+                BrandConnectState.answer_has_logo(HAS_LOGO_PROFILE),
+            ),
         ),
         icon="image",
     )
@@ -3716,6 +4017,16 @@ def _discovery_section() -> rx.Component:
     )
 
 
+#: One lock per brand for `sync_labels`, so the writes of two quick decisions land in
+#: the order they were made. Process-local, which is enough: a brand's sort is written
+#: by the session walking its wizard.
+_LABEL_LOCKS: dict[UUID, asyncio.Lock] = {}
+
+
+def _labels_lock(brand_id: UUID) -> asyncio.Lock:
+    return _LABEL_LOCKS.setdefault(brand_id, asyncio.Lock())
+
+
 def _account_key(card: dict[str, str]) -> str:
     return f"{card.get('network', '')}:{card.get('handle', '')}"
 
@@ -3938,8 +4249,10 @@ def _deck_zone(bucket: str, title: str, blurb: str, arrow: str, area: str) -> rx
             justify="center",
             width="100%",
         ),
-        on_click=BrandConnectState.send_current(bucket),
-        on_drop=BrandConnectState.drop_into(bucket),
+        # `sync_labels` right after the decision: it stores the sort (§ referentes
+        # persistence, migration 0018).
+        on_click=[BrandConnectState.send_current(bucket), BrandConnectState.sync_labels],
+        on_drop=[BrandConnectState.drop_into(bucket), BrandConnectState.sync_labels],
         type="button",
         aria_label=title,
         # `--side` / `--down` only matter on a phone (`assets/qualify.css`): the side
@@ -4127,7 +4440,7 @@ def _connect_step_sort() -> rx.Component:
                 variant="ghost",
                 size="1",
                 radius=_CONTROL_RADIUS,
-                on_click=BrandConnectState.undo_last,
+                on_click=[BrandConnectState.undo_last, BrandConnectState.sync_labels],
                 disabled=~BrandConnectState.can_undo,
             ),
             rx.button(

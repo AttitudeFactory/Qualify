@@ -42,6 +42,13 @@ register-business name email country timezone currency:
 link-login tenant email:
     uv run python -m qualify_api.auth.provision link --tenant "{{tenant}}" --email "{{email}}"
 
+# Recompute stored referentes computed by an older algorithm (PHASED_PLAN_VERSION went up).
+# SPENDS Scrape Creators credits — always look first:
+#   just refresh-referentes --dry-run
+#   just refresh-referentes --max-credits 40 [--tenant <uuid>] [--brand <uuid>]
+refresh-referentes *args:
+    uv run --no-sync python -m Qualify.refresh_referentes {{args}}
+
 # Default test pass: unit + db, never external network. Mirrors CI.
 test:
     uv run pytest -m "not integration"

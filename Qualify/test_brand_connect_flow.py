@@ -68,14 +68,45 @@ def test_account_kind_comes_before_the_rubro_and_the_maps_pair() -> None:
 
 def test_the_maps_pair_was_swapped_with_identity() -> None:
     """§ request 2026-09-15: the Google Maps pair runs where ¿Quién es la marca? used
-    to, and ¿Quién es la marca? closes the block, right before Paleta de colores."""
+    to. § request 2026-09-16: the logo pair sits right before Paleta de colores."""
     titles = _titles(wiz.CONNECT_STEPS)
-    assert titles[wiz._MAPS_QUESTION_STEP : wiz._MAPS_STEPS_STEP + 1] == [
+    assert titles[wiz._MAPS_QUESTION_STEP : wiz._PALETTE_STEP + 1] == [
         "¿Tu negocio está en Google Maps?",
         "Súmate a Google Maps",
+        "¿Quién es la marca?",
+        "¿Tienes logo?",
+        "Tu logo",
+        "Paleta de colores",
     ]
-    assert wiz._MAPS_QUESTION_STEP < wiz._LOGO_QUESTION_STEP < wiz._IDENTITY_STEP
-    assert titles[wiz._IDENTITY_STEP + 1] == "Paleta de colores"
+
+
+def test_the_logo_pair_is_asked_even_when_the_profile_has_a_picture() -> None:
+    """§ request 2026-09-16: a profile picture is not a logo. Skipping the pair on one
+    made uploading a logo (or asking for one through the brief) unreachable."""
+    state = _existing_account(step=wiz._IDENTITY_STEP, account_kind="influencer")
+    assert state.profile_pic != ""
+    assert _next(state) == wiz._LOGO_QUESTION_STEP
+    assert _next(state) == wiz._LOGO_UPLOAD_STEP
+    assert _next(state) == wiz._PALETTE_STEP
+
+
+def test_an_account_without_a_picture_is_asked_about_its_logo_too() -> None:
+    """§ request 2026-09-16: "si la cuenta llega sin logo se muestre la pregunta de
+    tengo logo" — with no profile picture at all (a fresh start, and an existing
+    account whose read carried none), both as a brand and as a creator."""
+    fresh = _state(step=wiz._IDENTITY_STEP, started_without_socials=True, account_kind="marca")
+    assert fresh.profile_pic == ""
+    assert _next(fresh) == wiz._LOGO_QUESTION_STEP
+
+    no_picture = _existing_account(
+        step=wiz._IDENTITY_STEP, profile_pic="", account_kind="influencer"
+    )
+    assert _next(no_picture) == wiz._LOGO_QUESTION_STEP
+    assert _next(no_picture) == wiz._LOGO_UPLOAD_STEP
+    # and back from the palette the walk passes through both logo screens again
+    no_picture.step = wiz._PALETTE_STEP
+    assert _prev(no_picture) == wiz._LOGO_UPLOAD_STEP
+    assert _prev(no_picture) == wiz._LOGO_QUESTION_STEP
 
 
 def test_account_kind_offers_both_as_a_third_answer() -> None:
@@ -133,8 +164,12 @@ def test_existing_influencer_is_still_asked_the_rubro_then_walks_to_identity() -
     assert state.is_influencer is True and state.rubro_complete is True
     assert _next(state) == wiz._IDENTITY_STEP
 
-    # logo pair skipped (profile picture), Maps pair skipped (influencer)
+    # Maps pair skipped (influencer); the logo pair is asked even with a profile picture
+    assert _next(state) == wiz._LOGO_QUESTION_STEP
+    assert _next(state) == wiz._LOGO_UPLOAD_STEP
     assert _next(state) == wiz._PALETTE_STEP
+    assert _prev(state) == wiz._LOGO_UPLOAD_STEP
+    assert _prev(state) == wiz._LOGO_QUESTION_STEP
     assert _prev(state) == wiz._IDENTITY_STEP
     assert _prev(state) == wiz._RUBRO_STEP
     assert _prev(state) == wiz._ACCOUNT_KIND_STEP
@@ -177,8 +212,7 @@ def test_both_behaves_as_a_brand_for_location_and_maps() -> None:
     assert state.needs_location is True
     assert _next(state) == wiz._MAPS_QUESTION_STEP
 
-    # "sí" skips Súmate a Google Maps; the logo pair is skipped too (profile picture),
-    # so the walk lands on ¿Quién es la marca?, which now closes the block
+    # "sí" skips Súmate a Google Maps, so the walk lands on ¿Quién es la marca?
     BrandConnectState.answer_has_maps.fn(state, "si")
     assert state.step == wiz._IDENTITY_STEP
     assert _prev(state) == wiz._MAPS_QUESTION_STEP

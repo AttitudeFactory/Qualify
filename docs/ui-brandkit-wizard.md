@@ -74,10 +74,10 @@ A este flujo llegan **las dos respuestas** de `/brand`. La diferencia: "No, toda
 | 4 | Lo que te proponemos | **arranque en limpio** (pedido 2026-09-11) |
 | 5 | ¿Eres influencer o una marca? | — **movido antes de ¿Quién es la marca?** (pedido 2026-09-11). Tres opciones: marca, influencer, **"Las dos cosas"** (`ambas`, se comporta como marca) |
 | 6 | Tu rubro y ubicación *(nuevo)* | **nunca** (desde el segundo pedido del 2026-09-11: el influencer también elige) — para una cuenta existente llega prellenado |
-| 7 | ¿Quién es la marca? | — |
-| 8-9 | ¿Tienes logo? / Tu logo | el perfil trae foto |
-| 10 | ¿Tu negocio está en Google Maps? | influencer |
-| 11 | Súmate a Google Maps | influencer, o respondió "sí" |
+| 7 | ¿Tu negocio está en Google Maps? | influencer |
+| 8 | Súmate a Google Maps | influencer, o respondió "sí" |
+| 9 | ¿Quién es la marca? | — |
+| 10-11 | ¿Tienes logo? / Tu logo | ¿Tienes logo?: **nunca** (desde 2026-09-16); Tu logo: solo si respondió **"Mi foto de perfil es mi logo"** (no queda nada que subir ni describir). Antes se omitían cuando el perfil traía foto — casi todas las cuentas —, así que subir el logo o pedir uno con el formulario era inalcanzable. Una foto de perfil no es un logo. Van **justo antes de la Paleta**: al subir un logo, sus colores se proponen en la paleta (§4.5) |
 | 12-16 | Paleta … ¿Todo correcto? | — |
 | 17 | Referente, competencia o detractor *(nuevo)* | — las cuentas encontradas se ordenan en tres cubetas arrastrando la tarjeta a un panel-flecha o tocándolo (§4.4); nada obligatorio. Continuar dispara `advance_to_insights` |
 | 18 | Resultados e insights | recap + métricas + **Referentes para tu marca** (§4.3, agrupados por cubeta si se ordenaron) + Mejorar tu perfil |
@@ -201,6 +201,24 @@ La pantalla previa a Resultados e insights (`_connect_step_sort`, `_SORT_STEP`),
 - **Pantalla de carga.** `waiting_for_referentes` (paso de clasificar + `discovering`) sustituye la tarjeta entera del paso — baraja y Atrás/Continuar incluidos — por `_referentes_loading()`: spinner, texto y la lista de las tres categorías con su estado (`discovery_progress`: hecha ✓, buscando, pendiente). Se quita sola cuando termina la última. Antes la baraja se iba llenando por categorías y Continuar dejaba saltar a Resultados e insights con la búsqueda a medias. Si se llega al paso sin que la búsqueda haya arrancado nunca (p. ej. un reinicio del backend a mitad del recorrido), `next_step` la lanza al entrar, para que la carga no espere a nada.
 - **Fotos — diagnóstico en vivo sobre la caché real (150 tarjetas).** (1) 15 traían una URL **HEIC**: TikTok manda `url_list` como `[heic, heic, jpeg]` y se guardaba la primera; el CDN responde `image/heic`, que el proxy rechazaba y que ningún navegador salvo Safari pinta. Cambiar `.heic` por `.jpeg` en la URL da 403 (la firma cubre la extensión). Arreglo doble: `_renderable_url` elige la variante JPEG/WebP de la lista para lo que se busque a partir de ahora, y el proxy **convierte HEIC a JPEG** en el servidor con Pillow + pillow-heif (ya eran dependencias de `packages/creative`) para las URLs ya guardadas — 15 de 15 recuperadas en la prueba. (2) **126 no traen URL de foto** porque se guardaron antes de que existiera el campo; dependen de unavatar.io, que respondió **429** (límite gratuito) en 20 de 21 consultas. Ahora un 429 pausa unavatar una hora para todos en vez de seguir gastando cupo. Esas 126 solo tendrán foto cuando esas búsquedas se repitan (lo que gasta créditos de Scrape Creators) — pendiente de decisión. (3) Algunas URLs firmadas de Instagram ya caducaron (403); mismo caso que el punto 2.
 
+
+### 4.5 Colores del logo → paleta (2026-09-16)
+
+Los colores de un logo **se añaden a la paleta** del paso siguiente, con la nota "Tomamos estos colores de tu logo" (o "…de tu foto de perfil"). Nunca había existido antes (verificado en todo el historial de git). **Un solo camino para todas las fuentes**, `BrandWizardState.apply_logo_colours(bytes, fuente)`:
+
+| Fuente | Cómo llega | Estado |
+|---|---|---|
+| **Archivo subido** (`upload`) | "Sí, ya tengo uno" → Tu logo → `handle_logo_upload` | hecho |
+| **Foto de perfil** (`profile`) | tercera opción de ¿Tienes logo?, **"Mi foto de perfil es mi logo"** — solo en conectar y solo si la foto es **real** (`profile_pic_is_real`): se descarta la silueta gris que Instagram/TikTok muestran cuando la cuenta no tiene foto (`logo_palette.is_placeholder_avatar`, ver abajo). La imagen sale de `avatar_proxy.resolve_avatar` (disco o CDN de la red; **0 créditos**) y Tu logo se omite | hecho |
+| **Logo generado** (`generated`) | el formulario de "No, todavía no" todavía no genera nada; cuando lo haga, entrega su imagen al mismo método | reservado (`LOGO_SOURCE_GENERATED`) |
+
+**Foto por defecto (2026-09-16).** Scrape Creators no trae ningún campo que diga "sin foto" (verificado en su documentación), así que se reconoce por la imagen: sin color, sin zonas oscuras y hecha de solo dos tonos —fondo gris claro y silueta gris media—. Medido contra las 120 fotos de perfil reales en caché (incluidas fotos en blanco y negro): solo la silueta por defecto cumple las cuatro condiciones. La imagen real está en `Qualify/fixtures/instagram_default_avatar.jpg` como test de regresión. La comprobación corre en `analyze` justo después de la lectura (deja la foto en disco para después) y, si la foto no se puede descargar, la opción tampoco se ofrece.
+
+Cambiar de fuente **reemplaza** los colores de la anterior (responder "sí" o "no" después de "foto de perfil" los retira; subir un archivo reemplaza los de la foto).
+
+- **Cómo**: miniatura de 128 px; los píxeles transparentes no cuentan; en una imagen **sin** transparencia se descarta el casi-blanco (es el lienzo de un JPG, no la marca), y en una **con** transparencia el blanco sí cuenta (un logotipo blanco sobre fondo transparente). Los colores a menos de 40 de distancia se funden en el más frecuente —devolviendo el color **exacto**, no uno redondeado— y los que cubren menos del 3 % se descartan. Máximo 5, del más presente al menos.
+- **Nunca pisa lo elegido a mano**: `logo_colors` recuerda qué colores aportó el logo; cambiar el logo quita esos y pone los nuevos, y "Quitar" el logo quita solo esos (`merge_into_palette`).
+- **SVG** (o cualquier archivo que Pillow no abra) no aporta colores: la paleta empieza vacía, como antes.
 
 ## 5. La paleta de colores
 
