@@ -1,0 +1,192 @@
+"""Guard for `creator_discovery.PHASED_PLAN_VERSION` — the number every stored referentes
+result is stamped with, and the one thing that tells a cached or persisted phase it was
+computed by an older algorithm and must be recomputed.
+
+The 2026-09-15 location rework changed the algorithm without bumping it, so cached
+phases kept serving the old answer. This test makes that impossible to repeat: it
+fingerprints the algorithm's CODE (module-level functions, classes, tables and tunables,
+compared as `ast.unparse` output with docstrings dropped — so comments, docstrings and
+formatting never count) and pins one fingerprint per version. Changing the algorithm
+without bumping the version fails here.
+
+What is deliberately NOT part of the fingerprint (`_NOT_ALGORITHM`): caching, retries,
+concurrency, avatars, card presentation and the CLI — changing those does not change
+which accounts a phase finds, so it must not force a recompute that spends credits.
+A NEW top-level name counts by default: forgetting to exclude something only costs an
+unneeded bump, forgetting to include something would hide a real change.
+
+Python is pinned to 3.12.13 locally and in CI (`.python-version`, the workflow), which
+keeps `ast.unparse` output stable.
+"""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+from pathlib import Path
+
+from . import creator_discovery as cd
+
+_MODULE = Path(cd.__file__)
+
+_NOT_ALGORITHM = frozenset(
+    {
+        # the version itself, logging, paths, schema of the CLI output
+        "PHASED_PLAN_VERSION",
+        "logger",
+        "DISCOVERY_DIR",
+        "DISCOVERY_SCHEMA",
+        "DEFAULT_MAX_CREDITS",
+        # transport: timeouts, retries, parallelism, the vendor's own cache age
+        "_DISCOVERY_TIMEOUT_SECONDS",
+        "_RETRY_DELAY_SECONDS",
+        "_get_retry",
+        "_run_parallel",
+        "PARALLEL_CALLS",
+        "_PROFILE_CACHE_MAX_AGE",
+        "_dump_raw",
+        # our caches (JSON files today, Postgres next)
+        "DISCOVERY_CACHE_PATH",
+        "_CACHE_TTL_SECONDS",
+        "_CACHE_MAX_ENTRIES",
+        "PROFILE_CACHE_PATH",
+        "_PROFILE_CACHE_TTL_SECONDS",
+        "ProfileStore",
+        "phase_signature",
+        "_read_cache",
+        "_write_cache",
+        "load_cached_phase",
+        "save_cached_phase",
+        "load_cached_phases",
+        "save_cached_phases",
+        # avatars and card presentation
+        "_tiktok_avatar",
+        "_RENDERABLE_EXTENSIONS",
+        "_renderable_url",
+        "AVATAR_ROUTE",
+        "AVATAR_DIR",
+        "avatar_path",
+        "_compact",
+        "_reason",
+        "_likes_label",
+        "account_card",
+        "phase_to_dict",
+        # the filter-JSON CLI bench
+        "result_path",
+        "save_result",
+        "_load_dotenv",
+        "_print_summary",
+        "main",
+    }
+)
+
+#: One fingerprint per version. When the test below fails because the algorithm
+#: changed: bump `PHASED_PLAN_VERSION` and add the new version's line here (the failure
+#: message prints it). Never edit an existing line — that would be changing what an old
+#: version meant.
+FINGERPRINTS: dict[int, str] = {
+    5: "1bf8506d5df38d5ed0c39769fa5c8b4acaac3735d7ce5c981750ec59eacfca4b",
+}
+
+
+def _names(node: ast.stmt) -> set[str]:
+    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+        return {node.name}
+    if isinstance(node, ast.Assign):
+        return {ast.unparse(target) for target in node.targets}
+    if isinstance(node, ast.AnnAssign):
+        return {ast.unparse(node.target)}
+    return set()
+
+
+def _strip_docstrings(tree: ast.AST) -> None:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            body = node.body
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                node.body = body[1:] or [ast.Pass()]
+
+
+def algorithm_fingerprint(source: str) -> str:
+    tree = ast.parse(source)
+    _strip_docstrings(tree)
+    kept = []
+    for node in tree.body:
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            continue
+        if isinstance(node, ast.If) and "__main__" in ast.unparse(node.test):
+            continue
+        if _names(node) & _NOT_ALGORITHM:
+            continue
+        kept.append(ast.unparse(node))
+    return hashlib.sha256("\n".join(kept).encode("utf-8")).hexdigest()
+
+
+def test_algorithm_changes_bump_the_plan_version() -> None:
+    version = cd.PHASED_PLAN_VERSION
+    current = algorithm_fingerprint(_MODULE.read_text(encoding="utf-8"))
+    pinned = FINGERPRINTS.get(version)
+    assert pinned is not None, (
+        f"PHASED_PLAN_VERSION is {version} but FINGERPRINTS has no entry for it. "
+        f'Add `{version}: "{current}",` to FINGERPRINTS in this file.'
+    )
+    assert current == pinned, (
+        "The referentes algorithm in creator_discovery.py changed but PHASED_PLAN_VERSION "
+        f"is still {version}. Stored results would keep serving the old algorithm's "
+        f"answer. Bump PHASED_PLAN_VERSION to {version + 1} and add "
+        f'`{version + 1}: "{current}",` to FINGERPRINTS. (If the change is not about '
+        "which accounts are found — caching, presentation, CLI — add the name to "
+        "_NOT_ALGORITHM instead.)"
+    )
+
+
+def test_versions_only_move_forward() -> None:
+    assert max(FINGERPRINTS) == cd.PHASED_PLAN_VERSION
+
+
+# --------------------------------------------------------------------------------------
+# the fingerprint itself: blind to prose, sensitive to logic
+# --------------------------------------------------------------------------------------
+
+_SAMPLE = '''
+"""module doc"""
+import re
+
+PHASED_PLAN_VERSION = 1
+MAX_PER_PHASE = 8
+
+
+def pick(items):
+    """doc"""
+    return items[:MAX_PER_PHASE]  # a comment
+
+
+def account_card(item):
+    return {"name": item}
+'''
+
+
+def test_comments_docstrings_and_formatting_do_not_count() -> None:
+    reworded = (
+        _SAMPLE.replace('"""doc"""', '"""a longer, reworded docstring"""')
+        .replace("# a comment", "# another comment")
+        .replace("items[:MAX_PER_PHASE]", "items[ : MAX_PER_PHASE ]")
+    )
+    assert algorithm_fingerprint(reworded) == algorithm_fingerprint(_SAMPLE)
+
+
+def test_a_tunable_or_logic_change_counts() -> None:
+    base = algorithm_fingerprint(_SAMPLE)
+    assert algorithm_fingerprint(_SAMPLE.replace("= 8", "= 10")) != base
+    assert algorithm_fingerprint(_SAMPLE.replace("items[:", "items[1:")) != base
+
+
+def test_excluded_names_and_the_version_itself_do_not_count() -> None:
+    base = algorithm_fingerprint(_SAMPLE)
+    assert algorithm_fingerprint(_SAMPLE.replace("= 1\n", "= 2\n")) == base
+    assert algorithm_fingerprint(_SAMPLE.replace('{"name"', '{"title"')) == base

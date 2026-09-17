@@ -44,7 +44,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -75,7 +77,17 @@ class ScrapeCreatorsError(Exception):
     """A Scrape Creators API call failed — missing key, network error, non-2xx
     response, or a response that did not carry the profile shape we expect. Never
     interpolates the raw response body: a handle a user typed, or their bio, could end
-    up in it, same discipline every sibling `*Error` in this codebase follows."""
+    up in it, same discipline every sibling `*Error` in this codebase follows.
+
+    `status_code` carries the HTTP status when the vendor answered at all (None for a
+    missing key, a network error or a malformed body) — callers that must tell "no
+    results" apart from "broken" read it instead of parsing the message: the search
+    endpoints answer an empty search with HTTP 404 `not_found` (measured 2026-09-11 on
+    `/v2/instagram/reels/search`), which is a result, not a failure."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def _api_key() -> str:
@@ -117,7 +129,8 @@ def _get(client: httpx.Client, path: str, params: dict[str, str]) -> dict[str, A
         # both ride along rather than forcing a trip to the terminal log to see them.
         raise ScrapeCreatorsError(
             f"Scrape Creators {path} failed with HTTP {exc.response.status_code}: "
-            f"{_error_detail(exc.response)}"
+            f"{_error_detail(exc.response)}",
+            status_code=exc.response.status_code,
         ) from exc
     except httpx.HTTPError as exc:
         raise ScrapeCreatorsError(
@@ -181,7 +194,26 @@ def _normalize_instagram(payload: dict[str, Any]) -> dict[str, Any]:
         "isPrivate": bool(user.get("is_private", False)),
         "profilePicUrl": str(user.get("profile_pic_url_hd") or user.get("profile_pic_url") or ""),
         "externalUrl": str(user.get("external_url") or ""),
+        # Instagram's own "similar accounts" chaining, when the vendor carries it
+        # (`edge_related_profiles` — measured 2026-09-11: 6 accounts for `mouredev`,
+        # none for `midu.dev`). Usernames only; the creator discovery reads them.
+        "relatedProfiles": _related_usernames(user.get("edge_related_profiles")),
     }
+
+
+def _related_usernames(edge: object) -> list[str]:
+    edges = edge.get("edges") if isinstance(edge, dict) else None
+    out: list[str] = []
+    for item in edges if isinstance(edges, list) else []:
+        node = item.get("node") if isinstance(item, dict) else None
+        username = node.get("username") if isinstance(node, dict) else None
+        if (
+            isinstance(username, str)
+            and username
+            and not (isinstance(node, dict) and node.get("is_private"))
+        ):
+            out.append(username)
+    return out
 
 
 def _normalize_tiktok(payload: dict[str, Any]) -> dict[str, Any]:
@@ -312,6 +344,7 @@ def fetch_recent_posts(
     since: float,
     client: httpx.Client | None = None,
     max_pages: int = _MAX_POST_PAGES,
+    hashtag_counts: Counter[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Every post published at or after `since` (unix seconds), newest first, in the
     common `{takenAt, likes, comments, views}` shape. Walks the paginated post list
@@ -320,6 +353,12 @@ def fetch_recent_posts(
     years ago on page one must not end the walk. Also stops at `max_pages`, at an
     empty page, or when the API stops handing back a (new) cursor. Posts older than
     `since` never make it into the result.
+
+    `hashtag_counts`, when given, is filled with the hashtags of EVERY post on every
+    page read — not only the windowed ones: a page is ~12-30 posts either way, the
+    credits are already spent, and an account that did not publish this week still
+    says what it is about in last month's captions. It is what the creator discovery
+    reads as the account's own vocabulary (`creator_discovery.seed_from_profile`).
     """
     handle = _normalize_handle(handle)
     if not handle:
@@ -339,7 +378,10 @@ def fetch_recent_posts(
                 params["sort_by"] = "latest"
             if cursor:
                 params[cursor_key] = cursor
-            page, next_cursor = normalize(_get(active, _POSTS_ENDPOINT[network], params))
+            payload = _get(active, _POSTS_ENDPOINT[network], params)
+            if hashtag_counts is not None:
+                hashtag_counts.update(_page_hashtags(network, payload))
+            page, next_cursor = normalize(payload)
             if not page:
                 break
             collected.extend(p for p in page if p["takenAt"] >= since)
@@ -353,30 +395,72 @@ def fetch_recent_posts(
     return collected
 
 
+def _page_hashtags(network: str, payload: dict[str, Any]) -> list[str]:
+    """Lower-cased hashtags of every post on one raw post-list page. Instagram carries
+    them only inline in the caption text (`caption.text`, or a bare string on some
+    shapes); TikTok has them structured in `text_extra[].hashtag_name` AND inline in
+    `desc` — both are read and de-duplicated per post, since either can be missing."""
+    items = payload.get("items" if network == "instagram" else "aweme_list")
+    tags: list[str] = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        if network == "instagram":
+            caption = item.get("caption")
+            text = caption.get("text") if isinstance(caption, dict) else caption
+        else:
+            text = item.get("desc")
+        found = {t.lower() for t in _HASHTAG_RE.findall(text if isinstance(text, str) else "")}
+        for extra in item.get("text_extra") or []:
+            name = extra.get("hashtag_name") if isinstance(extra, dict) else None
+            if isinstance(name, str) and name:
+                found.add(name.lower())
+        tags.extend(sorted(found))
+    return tags
+
+
+_HASHTAG_RE = re.compile(r"#(\w+)")
+
+#: How many of the account's own most-used hashtags the snapshot keeps.
+TOP_HASHTAGS = 12
+
+
 def fetch_profile_and_posts(
     network: str, handle: str, *, client: httpx.Client | None = None
 ) -> dict[str, Any]:
     """What `BrandConnectState.analyze` actually calls: the profile read plus the
-    windowed post list, as ONE normalized dict — `fetch_profile`'s shape with two
+    windowed post list, as ONE normalized dict — `fetch_profile`'s shape with three
     extra keys, `fetchedAt` (unix seconds; the window is anchored here, not at
-    render time, so a cached snapshot keeps reporting the week it was read for) and
+    render time, so a cached snapshot keeps reporting the week it was read for),
     `recentPosts` (the `fetch_recent_posts` result, or `None` when that second read
     failed — the profile alone is still worth showing, and `profile_metrics` treats
-    `None` as "unknown", not as "zero posts").
+    `None` as "unknown", not as "zero posts") and `topHashtags` (the account's most
+    used hashtags across every post those same pages carried, most used first —
+    `[]` when the post read failed or no caption had one).
+
+    `topHashtags` did NOT bump `SNAPSHOT_SCHEMA`: an older snapshot without it reads
+    as "no hashtags" (every reader uses `.get(..., [])`), which only thins the
+    discovery signal for one cached handle — not worth forcing a paid re-read.
     """
     owns_client = client is None
     active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
+    hashtags: Counter[str] = Counter()
     try:
         profile = fetch_profile(network, handle, client=active)
         now = time.time()
         profile["fetchedAt"] = now
         try:
             profile["recentPosts"] = fetch_recent_posts(
-                network, handle, since=now - _WINDOW_SECONDS, client=active
+                network,
+                handle,
+                since=now - _WINDOW_SECONDS,
+                client=active,
+                hashtag_counts=hashtags,
             )
         except ScrapeCreatorsError as exc:
             logger.warning("recent posts read failed, metrics will be unavailable: %s", exc)
             profile["recentPosts"] = None
+        profile["topHashtags"] = [tag for tag, _ in hashtags.most_common(TOP_HASHTAGS)]
     finally:
         if owns_client:
             active.close()

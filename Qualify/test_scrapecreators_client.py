@@ -79,7 +79,32 @@ def test_fetch_profile_instagram_normalizes_the_documented_shape() -> None:
         "isPrivate": False,
         "profilePicUrl": "https://example.com/pic.jpg",
         "externalUrl": "https://scrapecreators.com/",
+        "relatedProfiles": [],
     }
+
+
+def test_fetch_profile_instagram_keeps_public_related_profiles() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _json(
+            {
+                "success": True,
+                "data": {
+                    "user": {
+                        "username": "mouredev",
+                        "edge_related_profiles": {
+                            "edges": [
+                                {"node": {"username": "midu.dev", "is_private": False}},
+                                {"node": {"username": "hidden", "is_private": True}},
+                                {"node": {"id": "1"}},
+                            ]
+                        },
+                    }
+                },
+            }
+        )
+
+    profile = sc.fetch_profile("instagram", "mouredev", client=_client(handler))
+    assert profile["relatedProfiles"] == ["midu.dev"]
 
 
 def test_fetch_profile_instagram_category_falls_back_when_the_primary_field_is_unset() -> None:
@@ -585,3 +610,75 @@ def test_load_cached_profile_misses_a_snapshot_from_an_older_schema(tmp_path) ->
     path.write_text(json.dumps(stale), encoding="utf-8")
 
     assert sc.load_cached_profile("instagram", "midu.dev", path=path) is None
+
+
+# --------------------------------------------------------------------------------------
+# hashtags + status codes (2026-09-11, creator discovery)
+# --------------------------------------------------------------------------------------
+
+
+def test_page_hashtags_reads_instagram_captions_and_tiktok_desc_plus_text_extra() -> None:
+    instagram = {
+        "items": [
+            {"caption": {"text": "Brunch #CucutaFood #brunch"}},
+            {"caption": "plain string caption #brunch"},
+            {"caption": None},
+        ]
+    }
+    tiktok = {
+        "aweme_list": [
+            {"desc": "arepas #cucutafood", "text_extra": [{"hashtag_name": "CucutaFood"}]},
+            {"desc": "", "text_extra": [{"hashtag_name": "postres"}]},
+        ]
+    }
+    assert sc._page_hashtags("instagram", instagram) == ["brunch", "cucutafood", "brunch"]
+    # the same tag in desc and text_extra counts once per post
+    assert sc._page_hashtags("tiktok", tiktok) == ["cucutafood", "postres"]
+
+
+def test_fetch_profile_and_posts_keeps_top_hashtags_from_every_post_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sc.time, "time", lambda: float(_NOW))
+    old = {**_tt_item(_NOW - 40 * _DAY), "desc": "#cucutafood #arepas"}
+    new = {**_tt_item(_NOW - _DAY), "desc": "#cucutafood"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/tiktok/profile":
+            return _json({"success": True, "user": {"uniqueId": "x"}, "stats": {}})
+        return _json({"success": True, "aweme_list": [new, old], "has_more": 0})
+
+    profile = sc.fetch_profile_and_posts("tiktok", "x", client=_client(handler))
+
+    # the 40-day-old post is outside the metrics window but still says what the
+    # account is about
+    assert len(profile["recentPosts"]) == 1
+    assert profile["topHashtags"] == ["cucutafood", "arepas"]
+
+
+def test_top_hashtags_is_empty_when_the_post_read_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sc.time, "time", lambda: float(_NOW))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/instagram/profile":
+            return _json({"success": True, "data": {"user": {"username": "x"}}})
+        return _json({"success": False, "error": "insufficient credits"}, status=402)
+
+    profile = sc.fetch_profile_and_posts("instagram", "x", client=_client(handler))
+    assert profile["topHashtags"] == []
+
+
+def test_error_carries_the_http_status_only_when_the_vendor_answered() -> None:
+    def not_found(request: httpx.Request) -> httpx.Response:
+        return _json({"success": False, "error": "not_found"}, status=404)
+
+    with pytest.raises(sc.ScrapeCreatorsError) as http_error:
+        sc.fetch_profile("instagram", "ghost", client=_client(not_found))
+    assert http_error.value.status_code == 404
+
+    def broken(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom")
+
+    with pytest.raises(sc.ScrapeCreatorsError) as network_error:
+        sc.fetch_profile("instagram", "ghost", client=_client(broken))
+    assert network_error.value.status_code is None

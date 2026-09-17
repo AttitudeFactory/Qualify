@@ -27,3 +27,5 @@ Qualify/fixtures/brand_connect_profile.json
 # through the Brand Kit wizard's logo step, tenant-namespaced runtime data, not
 # source.
 uploaded_files/
+Qualify/fixtures/discovery_*.json
+Qualify/fixtures/discovery_raw/

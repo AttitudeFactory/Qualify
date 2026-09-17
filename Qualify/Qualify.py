@@ -4,6 +4,7 @@ import reflex as rx
 
 from .auth_pages import login_index, signup_index
 from .auth_state import AuthState
+from .avatar_proxy import avatar_api
 from .clarity_page import clarity_index
 from .clarity_state import ClarityState
 from .components import filter_bar, mentions_body, stats_row, topbar
@@ -16,6 +17,7 @@ from .creative_pages import (
 )
 from .creative_state import CreativeState
 from .creative_wizard_pages import (
+    BrandConnectState,
     BrandWizardState,
     brand_choice_index,
     brand_connect_index,
@@ -80,6 +82,12 @@ app = rx.App(
     # corner is now disabled (rxconfig.py), and the toast itself gets an attention
     # cue on entrance — see `q-toast-pop`/`[data-sonner-toast]` in assets/qualify.css.
     toaster=rx.toast.provider(position="bottom-right", close_button=True),
+    # The creator-discovery cards' pictures (`avatar_proxy.py`): a FastAPI app mounted
+    # on the same backend, so the browser never touches a vendor's signed URL.
+    api_transformer=avatar_api,
+    # The Brand Kit deck's pointer drag (`assets/deck-drag.js`): plain DOM, delegated
+    # at the document, so it is loaded once here rather than per page.
+    head_components=[rx.script(src="/deck-drag.js")],
 )
 
 # Living style guide: static, no tenant data, so it needs no session. Not linked from
@@ -150,10 +158,12 @@ app.add_page(
 # ready; /create is gated server-side by BrandReadiness (the load stores the verdict).
 # The entry is now a yes/no question (¿tienes redes?, § request 2026-09-09) rather
 # than a manual-vs-lookup fork — "Sí" and "No" both end up scraping a profile.
+# `clear_entry` forgets a previous "No" answer, so only the answer given NOW decides
+# whether the connect flow treats the walk as a fresh start.
 app.add_page(
     brand_choice_index,
     route="/brand",
-    on_load=[AuthState.require_login],
+    on_load=[AuthState.require_login, BrandConnectState.clear_entry],
     title="Qualify · Marca",
 )
 
