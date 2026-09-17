@@ -300,6 +300,147 @@ async def test_create_carousel_container_error_follows_the_existing_pattern() ->
 
 
 # --------------------------------------------------------------------------------------
+# create_image_container (QUA-68)
+# --------------------------------------------------------------------------------------
+
+IMAGE_CONTAINER = "18800000000000000"
+
+
+async def test_create_image_container_sends_image_url_not_upload_type() -> None:
+    """The whole reason this is a separate method, not a `create_container` overload:
+    `image_url`, no `upload_type`, no `media_type` — a structurally different request."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith(f"/{IG_USER}/media")
+        assert request.url.params["image_url"] == "https://qualify.example/public/media/tok-1"
+        assert "upload_type" not in request.url.params
+        assert "media_type" not in request.url.params
+        return _json({"id": IMAGE_CONTAINER})
+
+    container_id = await _client(handler).create_image_container(
+        ig_user_id=IG_USER, image_url="https://qualify.example/public/media/tok-1"
+    )
+    assert container_id == IMAGE_CONTAINER
+
+
+async def test_create_image_container_includes_caption_when_given() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        return _json({"id": IMAGE_CONTAINER})
+
+    await _client(handler).create_image_container(
+        ig_user_id=IG_USER, image_url="https://x/y", caption="hola imagen"
+    )
+    assert seen["caption"] == "hola imagen"
+
+
+async def test_create_image_container_omits_caption_when_not_given() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        return _json({"id": IMAGE_CONTAINER})
+
+    await _client(handler).create_image_container(ig_user_id=IG_USER, image_url="https://x/y")
+    assert "caption" not in seen
+
+
+async def test_create_image_container_sends_is_carousel_item_when_true() -> None:
+    """QUA-103, confirmed against Meta real 2026-09-15: an image container accepts
+    `is_carousel_item=true` exactly like `create_container`'s video containers do —
+    same string encoding (`"true"`, not a JSON boolean), same param name."""
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        return _json({"id": IMAGE_CONTAINER})
+
+    await _client(handler).create_image_container(
+        ig_user_id=IG_USER, image_url="https://x/y", is_carousel_item=True
+    )
+    assert seen["is_carousel_item"] == "true"
+
+
+async def test_create_image_container_omits_is_carousel_item_by_default() -> None:
+    """A standalone image post (QUA-68) must not silently start carrying
+    `is_carousel_item` — the default stays `False`, and `False` means the param is
+    absent entirely, not sent as `"false"`."""
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        return _json({"id": IMAGE_CONTAINER})
+
+    await _client(handler).create_image_container(ig_user_id=IG_USER, image_url="https://x/y")
+    assert "is_carousel_item" not in seen
+
+
+async def test_create_image_container_never_touches_rupload() -> None:
+    """Nothing is ever uploaded for an image container — Meta fetches `image_url` itself.
+    Same posture `test_create_carousel_container_never_touches_upload_or_publish` already
+    asserts for carousels, for the identical reason."""
+
+    def refuse_rupload(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        raise AssertionError("rupload must never be called by create_image_container")
+
+    def graph_handler(request: httpx.Request) -> httpx.Response:
+        return _json({"id": IMAGE_CONTAINER})
+
+    container_id = await _client_with_transports(
+        graph_handler, refuse_rupload
+    ).create_image_container(ig_user_id=IG_USER, image_url="https://x/y")
+    assert container_id == IMAGE_CONTAINER
+
+
+async def test_create_image_container_uses_the_bearer_scheme_on_graph() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers["Authorization"]
+        return _json({"id": IMAGE_CONTAINER})
+
+    await _client(handler).create_image_container(ig_user_id=IG_USER, image_url="https://x/y")
+    assert seen["auth"] == f"{GRAPH_AUTH_SCHEME} {TOKEN}"
+
+
+async def test_create_image_container_does_not_require_a_uri() -> None:
+    """Same finding as the carousel container's: `_parse_image_container_response` must
+    accept a response with no `uri` — nothing is ever uploaded TO this container."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _json({"id": IMAGE_CONTAINER})  # note: no "uri" key at all
+
+    container_id = await _client(handler).create_image_container(
+        ig_user_id=IG_USER, image_url="https://x/y"
+    )
+    assert container_id == IMAGE_CONTAINER
+
+
+async def test_create_image_container_without_an_id_is_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _json({})
+
+    with pytest.raises(PublishError, match="image container response carried no id"):
+        await _client(handler).create_image_container(ig_user_id=IG_USER, image_url="https://x/y")
+
+
+async def test_create_image_container_error_follows_the_existing_pattern() -> None:
+    """Same posture as every other `_post_graph` caller: status + numeric platform code
+    only, never the response body, never the token."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {"code": 100, "message": TOKEN}})
+
+    with pytest.raises(PublishError) as excinfo:
+        await _client(handler).create_image_container(ig_user_id=IG_USER, image_url="https://x/y")
+    assert excinfo.value.platform_code == 100
+    assert excinfo.value.http_status == 400
+    assert TOKEN not in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------------------
 # upload_bytes
 # --------------------------------------------------------------------------------------
 

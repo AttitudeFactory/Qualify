@@ -20,10 +20,12 @@ means that when reality lands, it lands in a known place and the service above d
 ## Carousels (QUA-99) — one extra container, no extra upload
 
 `create_carousel_container` wraps up to 10 already-created children (each made via step 1
-above with `is_carousel_item=True`) into one more container whose `creation_id` is what
-step 4 ultimately publishes. Confirmed against Meta real, 2026-09-10 (two `VIDEO` children,
-both `is_carousel_item=true`, both reached `FINISHED` independently, then grouped): the
-carousel container's response carries `{"id": ...}` **only** — never a `uri`
+above with `is_carousel_item=True`, or via `create_image_container(..., is_carousel_item=
+True)` for an IMAGE child — QUA-103, confirmed against Meta real 2026-09-15) into one more
+container whose `creation_id` is what step 4 ultimately publishes. Confirmed against Meta
+real, 2026-09-10 (two `VIDEO` children, both `is_carousel_item=true`, both reached
+`FINISHED` independently, then grouped): the carousel container's response carries
+`{"id": ...}` **only** — never a `uri`
 (`content-publishing.md:126-132`), because nothing is ever uploaded TO a carousel
 container; it is built entirely from children that are already uploaded. That is why this
 is a distinct method with its own return type rather than a `create_container` overload —
@@ -72,11 +74,47 @@ CONTAINER_POLL_INTERVAL_SECONDS = 60
 CONTAINER_POLL_CEILING_SECONDS = 300
 
 # `resumable-uploads.md:32`: media_type is REELS, STORIES, or VIDEO (the last for carousel
-# items). Image has NO resumable variant, which is why it is out of scope entirely (QUA-68).
+# items). Image has NO resumable variant — QUA-68 gives it its own container method
+# (`create_image_container`) instead of a fourth entry here, because the REQUEST SHAPE is
+# genuinely different (`image_url`, no `upload_type`), not just a new label on the same call.
 MEDIA_TYPE_REELS = "REELS"
 MEDIA_TYPE_STORIES = "STORIES"
 MEDIA_TYPE_VIDEO = "VIDEO"
 RESUMABLE_MEDIA_TYPES = frozenset({MEDIA_TYPE_REELS, MEDIA_TYPE_STORIES, MEDIA_TYPE_VIDEO})
+
+# QUA-68 — the single-image `media_product_type` this module's callers (staging, the
+# service) use to route to `create_image_container` instead of the resumable path above.
+# Deliberately NOT added to `RESUMABLE_MEDIA_TYPES`: that set's whole purpose is "media
+# types `create_container` accepts", and image never goes through `create_container`.
+MEDIA_TYPE_IMAGE = "IMAGE"
+
+# `ig-user/media.md:55` — feed/story images are capped at 8 MB, a full order of magnitude
+# under the 300 MB video ceiling (`ObjectGate.MAX_MEDIA_BYTES`). Lives here, not in
+# `gate.py`, because it is a Meta-imposed limit on what THIS client can publish, not a
+# property of the object store — the same reasoning that keeps the 300 MB video ceiling in
+# `gate.py` (where it belongs, being the store's own absolute ceiling) separate from this
+# tighter, format-specific one.
+IMAGE_MAX_BYTES = 8 * 1024 * 1024
+
+# QUA-103 — the ONLY image format Meta's Content Publishing API accepts, for any image
+# content (feed, story, or a carousel child): "JPEG is the only image format supported.
+# Extended JPEG formats such as MPO and JPS are not supported." (`content-publishing.md:53`,
+# re-verified live against developers.facebook.com/docs/instagram-platform/content-publishing
+# on 2026-09-15). This is a hard platform restriction, not an unvalidated gap in our own
+# implementation — PNG/WebP/GIF/HEIC are not "formats to add later", Meta structurally does
+# not accept them via `image_url`. Lives here, alongside `IMAGE_MAX_BYTES`, for the same
+# reason: a Meta-imposed limit on what this client can publish, not a property of the
+# staging/object-store layer.
+IMAGE_CONTENT_TYPE = "image/jpeg"
+
+# The first three bytes of every real JPEG file (the SOI marker `FFD8` followed by the
+# first byte of the next marker, always `FF` — every JPEG variant, including the ones
+# Meta rejects like MPO/JPS, shares this prefix since they ARE JPEG containers underneath).
+# Checked, not just the declared Content-Type: a browser or a renamed file can *say*
+# `image/jpeg` for bytes that are not — this is a real signature check, not another string
+# comparison. Doesn't distinguish MPO/JPS from a plain JPEG (both share this prefix); that
+# is a deliberately accepted gap — see `MediaStagingService._reject_non_jpeg_image`.
+JPEG_MAGIC_BYTES = b"\xff\xd8\xff"
 
 
 class PublishError(Exception):
@@ -178,6 +216,15 @@ class PublishClient(Protocol):
         caption: str | None = None,
     ) -> str: ...
 
+    async def create_image_container(
+        self,
+        *,
+        ig_user_id: str,
+        image_url: str,
+        caption: str | None = None,
+        is_carousel_item: bool = False,
+    ) -> str: ...
+
     async def upload_bytes(
         self, *, upload_uri: str, fileobj: IO[bytes], file_size: int
     ) -> UploadOutcome: ...
@@ -235,6 +282,21 @@ def _parse_carousel_response(payload: dict[str, Any]) -> str:
     container_id = payload.get("id")
     if not isinstance(container_id, str) or not container_id:
         raise PublishError("carousel container response carried no id")
+    return container_id
+
+
+def _parse_image_container_response(payload: dict[str, Any]) -> str:
+    """[V] `ig-user/media.md:131-144` (Image Containers): `{"id": "..."}` only — same shape
+    as `_parse_carousel_response`, and for the identical reason: nothing is ever uploaded TO
+    this container (no `upload_type=resumable`, no `uri` in the response), because Meta
+    fetches `image_url` itself. Kept as its OWN function rather than reused, matching this
+    module's own convention of one `_parse_*` per endpoint — an image container and a
+    carousel container happening to share a response shape today is not a guarantee they
+    always will.
+    """
+    container_id = payload.get("id")
+    if not isinstance(container_id, str) or not container_id:
+        raise PublishError("image container response carried no id")
     return container_id
 
 
@@ -386,6 +448,37 @@ class HttpPublishClient:
         if caption is not None:
             params["caption"] = caption
         return _parse_carousel_response(await self._post_graph(f"/{ig_user_id}/media", params))
+
+    async def create_image_container(
+        self,
+        *,
+        ig_user_id: str,
+        image_url: str,
+        caption: str | None = None,
+        is_carousel_item: bool = False,
+    ) -> str:
+        """`POST /<IG_USER_ID>/media?image_url=<URL>` — QUA-68's whole reason to exist as a
+        SEPARATE method rather than an overload of `create_container`: no `upload_type`, no
+        `media_type`, no `thumb_offset`. Meta fetches `image_url` itself; nothing is ever
+        uploaded to this container, which is also why there is no matching `upload_bytes`
+        call anywhere in this image's publish path.
+
+        `is_carousel_item` (QUA-103) — confirmed against Meta real 2026-09-15: an image
+        container accepts `is_carousel_item=true` exactly like `create_container`'s video
+        containers do, same param, same string encoding. Kept as its own parameter here
+        (not merged with `create_container`) because the REQUEST SHAPE otherwise stays
+        genuinely different (`image_url` vs `upload_type=resumable`+`media_type`) — this is
+        the one param the two shapes happen to share, not a sign they should become one
+        method.
+        """
+        params = {"image_url": image_url}
+        if caption is not None:
+            params["caption"] = caption
+        if is_carousel_item:
+            params["is_carousel_item"] = "true"
+        return _parse_image_container_response(
+            await self._post_graph(f"/{ig_user_id}/media", params)
+        )
 
     async def upload_bytes(
         self, *, upload_uri: str, fileobj: IO[bytes], file_size: int

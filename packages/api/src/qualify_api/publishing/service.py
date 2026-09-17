@@ -41,6 +41,7 @@ from qualify_shared.objects.gate import ObjectGate
 from qualify_api.publishing.client import (
     CONTAINER_POLL_CEILING_SECONDS,
     CONTAINER_POLL_INTERVAL_SECONDS,
+    MEDIA_TYPE_IMAGE,
     MEDIA_TYPE_REELS,
     MEDIA_TYPE_VIDEO,
     ContainerStatus,
@@ -154,6 +155,24 @@ def _no_op_degrader(*, tenant_id: UUID, connection_id: UUID) -> None:
     return None
 
 
+class PublicMediaLinker(Protocol):
+    """QUA-68: mints the public URL Meta's fetcher will `GET` to retrieve a staged image.
+
+    Kept as a Protocol — same seam shape as `ConnectionTargetReader`/`PublishClientFactory`
+    above — so this module never imports `MediaTokenStore`/Redis directly; production
+    composition wires the real `TokenPublicMediaLinker`, tests inject a fake."""
+
+    def link(self, *, tenant_id: UUID, object_key: str, content_type: str) -> str: ...
+
+
+class MissingMediaLinker(Exception):
+    """`start()` was asked to publish an IMAGE but this service was built without a
+    `media_linker`. Raised rather than silently falling through to the video path (which
+    would call `create_container` with `media_type='IMAGE'` — a request `client.py`'s own
+    `RESUMABLE_MEDIA_TYPES` guard already refuses) — a configuration gap should read as a
+    configuration gap, not as a confusing `PublishError` from deep inside the client."""
+
+
 @dataclass(frozen=True)
 class PublishState:
     """What the caller (the HTTP route, and transitively the operator's polling client)
@@ -189,16 +208,23 @@ class ChildStatus:
 
 @dataclass(frozen=True)
 class MediaItem:
-    """One item of a multi-video (carousel) publish request (QUA-99, 4/6) — VIDEO-ONLY.
+    """One item of a multi-item (carousel) publish request (QUA-99, 4/6; `media_type`
+    added QUA-103).
 
-    No media_type field: every carousel child is created with `MEDIA_TYPE_VIDEO`, fixed,
-    the same way `start_many`'s single-item path fixes `MEDIA_TYPE_REELS` below — neither
-    varies per call in this PR. Adding IMAGE later is an additive field on this type, not
-    a rewrite of it — and no such field exists yet, on purpose: QUA-68 has not landed.
+    `media_type` is **required, with no default** — `"VIDEO"` or `"IMAGE"` (the same
+    vocabulary `PublishAttemptChild.media_product_type` accepts since migration 0018).
+    Omitting it is a `TypeError` at construction time, never a silent `"VIDEO"`: a caller
+    that cannot resolve an item's type (e.g. an incomplete deserialization from Reflex)
+    must fail loudly here, not publish the wrong container type against Meta. `start_many`
+    (below) still hardcodes every child to `MEDIA_TYPE_VIDEO` in this PR — this field is
+    plumbed through the type so a caller can construct a correctly-typed item today, but
+    the carousel orchestration itself does not yet read it (that bifurcation is QUA-103's
+    next slice, not this one).
     """
 
     media_object_key: str
     content_type: str
+    media_type: str
 
 
 def _send_was_emitted(record: AttemptRecord) -> bool:
@@ -255,6 +281,7 @@ class PublishService:
         adapter_version: str = "qua19.1",
         clock: Callable[[], datetime] | None = None,
         connection_degrader: ConnectionDegrader | None = None,
+        media_linker: PublicMediaLinker | None = None,
     ) -> None:
         self._repo = repository
         self._gate = gate
@@ -263,6 +290,12 @@ class PublishService:
         self._adapter_version = adapter_version
         self._clock = clock or (lambda: datetime.now(UTC))
         self._degrade = connection_degrader or _no_op_degrader
+        # QUA-68 — optional on purpose: every VIDEO-only caller (every test predating this
+        # ticket, `start_many`'s carousel-of-video path) never touches it. `None` is not a
+        # silent fallback to anything: `start()` raises `MissingMediaLinker` the moment an
+        # IMAGE attempt actually needs it, rather than this constructor inventing a default
+        # that could route a real image publish somewhere wrong.
+        self._media_linker = media_linker
 
     async def start(
         self,
@@ -274,9 +307,16 @@ class PublishService:
         idempotency_key: str,
         caption: str | None = None,
         thumb_offset: int | None = None,
+        content_type: str | None = None,
     ) -> PublishState:
         """Write-ahead → container → upload. Returns with the row in `processing` on the
-        happy path; the client then drives `advance()` at the recommended cadence."""
+        happy path; the client then drives `advance()` at the recommended cadence.
+
+        `content_type` (QUA-68) is used ONLY by the IMAGE branch below, to mint the public
+        media link with the right `Content-Type` — the VIDEO path ignores it entirely
+        (it already knows its own bytes' shape via `upload_bytes`), so every pre-existing
+        caller omitting it is unaffected.
+        """
         target = self._connections.read(tenant_id=tenant_id, connection_id=connection_id)
         if target is None:
             raise UnknownConnection(str(connection_id))
@@ -303,6 +343,22 @@ class PublishService:
                 platform_error_code=f"{CONNECTION_NOT_ACTIVE_PREFIX}:{target.status}",
             )
             return _state(self._require(tenant_id, attempt.id))
+
+        # QUA-68 — IMAGE never uploads bytes to Meta at all (there is no resumable variant
+        # for it), so it takes a completely separate branch here rather than falling
+        # through into the `create_container`/`upload_bytes` shape below, which is
+        # STRUCTURALLY VIDEO: it would send `media_type='IMAGE'` to `create_container`,
+        # which `client.py`'s own `RESUMABLE_MEDIA_TYPES` guard already refuses. Nothing
+        # below this branch is touched or reordered for the VIDEO path.
+        if media_product_type == MEDIA_TYPE_IMAGE:
+            return await self._start_image(
+                tenant_id=tenant_id,
+                attempt=attempt,
+                target=target,
+                media_object_key=media_object_key,
+                content_type=content_type,
+                caption=caption,
+            )
 
         client = await self._clients.client_for(tenant_id=tenant_id, connection_id=connection_id)
 
@@ -341,6 +397,56 @@ class PublishService:
             )
         # retriable True or None: unknown is NOT a refusal (R10). The row stays
         # 'uploading', unsettled — the ceiling against started_at is the guaranteed exit.
+        return _state(self._require(tenant_id, attempt.id))
+
+    async def _start_image(
+        self,
+        *,
+        tenant_id: UUID,
+        attempt: AttemptRecord,
+        target: ConnectionTarget,
+        media_object_key: str,
+        content_type: str | None,
+        caption: str | None,
+    ) -> PublishState:
+        """QUA-68's whole reason to exist: IMAGE has no upload phase, so this is `start()`'s
+        `create_container`/`upload_bytes` pair collapsed into ONE Meta call plus a status
+        transition — never `'uploading'`, because nothing here is ever uploaded. Once
+        `creation_id` is recorded, this attempt is indistinguishable from a video one to
+        `advance()`/`_publish_once`/reconciliation: they read `creation_id` and
+        `container_status` generically, never `media_product_type`, for exactly this reason.
+        """
+        if self._media_linker is None:
+            raise MissingMediaLinker(
+                "PublishService has no media_linker configured — cannot publish IMAGE"
+            )
+        if not content_type:
+            # Explicit over silent (same posture QUA-103's MediaItem.media_type takes):
+            # guessing a Content-Type for a public URL Meta will actually fetch is exactly
+            # the kind of silent inference that turns into an opaque container ERROR later.
+            raise ValueError("content_type is required to publish an IMAGE")
+
+        image_url = self._media_linker.link(
+            tenant_id=tenant_id, object_key=media_object_key, content_type=content_type
+        )
+        client = await self._clients.client_for(
+            tenant_id=tenant_id, connection_id=attempt.connection_id
+        )
+        # A PublishError here PROPAGATES — same posture as the video branch's own
+        # `create_container` call: the write-ahead row stays 'pending' with creation_id
+        # NULL, and the poll ceiling (never reached, since advance() is never called on an
+        # attempt with no creation_id yet from the CLIENT side either) is not the exit here;
+        # the caller simply sees the exception and the row is there to reconcile from later.
+        container_id = await client.create_image_container(
+            ig_user_id=target.ig_user_id, image_url=image_url, caption=caption
+        )
+        self._repo.record_creation_id(
+            tenant_id=tenant_id, attempt_id=attempt.id, creation_id=container_id
+        )
+        # Straight to 'processing' — there is no 'uploading' phase for IMAGE. Meta already
+        # has everything it needs (the URL); `advance()` picks up from here UNCHANGED,
+        # polling `container_status` exactly as it already does for video.
+        self._repo.advance_status(tenant_id=tenant_id, attempt_id=attempt.id, status="processing")
         return _state(self._require(tenant_id, attempt.id))
 
     async def advance(self, *, tenant_id: UUID, attempt_id: UUID) -> PublishState:
@@ -586,11 +692,12 @@ class PublishService:
             ceiling = CONTAINER_POLL_CEILING_SECONDS * (child_count + 1)
         return elapsed > ceiling
 
-    # --- QUA-99 (4/6): multi-video (carousel) orchestration ---------------------------
+    # --- QUA-99 (4/6), IMAGE support QUA-103: multi-item (carousel) orchestration -----
     #
-    # start_many() generalizes start() to 2-10 VIDEO items published as one CAROUSEL.
-    # 1 item delegates to start() UNCHANGED (no new logic, no new state, for the case
-    # QUA-19 already covers). 2-10 items write ahead a parent attempt + N child rows,
+    # start_many() generalizes start() to 2-10 items — any mix of IMAGE and VIDEO —
+    # published as one CAROUSEL. 1 item delegates to start() (no new state, for the case
+    # QUA-19 already covers), routed to the right media_product_type from that one
+    # item's own `media_type` (QUA-103). 2-10 items write ahead a parent attempt + N child rows,
     # then return immediately — exactly like start()'s own "return once the write-ahead
     # (plus, for the single case, the container+upload) is done" shape, just extended to
     # N children instead of one container. All container creation/upload/polling for the
@@ -618,16 +725,29 @@ class PublishService:
         if not items:
             raise ValueError("start_many requires at least one item")
         if len(items) == 1:
-            # Exactly today's single-video path. No new logic, no new state -- caption
-            # forwarded exactly as start() already accepts it (start() itself is
-            # UNCHANGED, QUA-99 4.5/6: it still never persists caption anywhere).
+            # Delegates to start() UNCHANGED (QUA-99 4.5/6: it still never persists
+            # caption anywhere) — the only decision THIS call makes is which
+            # media_product_type to hand it, from the one item's own `media_type`
+            # (QUA-103). Hardcoding MEDIA_TYPE_REELS here regardless of type would mean
+            # a caller reaching this method with a single IMAGE (not exercised by the
+            # Reflex UI today, which calls start_publish directly for a lone item, but
+            # a real gap in this method's own contract) would send an image's bytes
+            # down the resumable VIDEO path — client.py's own RESUMABLE_MEDIA_TYPES
+            # guard would then refuse it as a confusing PublishError, not a clean
+            # IMAGE publish. `content_type` is forwarded too — start()'s IMAGE branch
+            # needs it to mint the public link; the VIDEO branch ignores it, unchanged.
+            item = items[0]
+            media_product_type = (
+                MEDIA_TYPE_IMAGE if item.media_type == MEDIA_TYPE_IMAGE else MEDIA_TYPE_REELS
+            )
             return await self.start(
                 tenant_id=tenant_id,
                 connection_id=connection_id,
-                media_object_key=items[0].media_object_key,
-                media_product_type=MEDIA_TYPE_REELS,
+                media_object_key=item.media_object_key,
+                media_product_type=media_product_type,
                 idempotency_key=idempotency_key,
                 caption=caption,
+                content_type=item.content_type if item.media_type == MEDIA_TYPE_IMAGE else None,
             )
         if len(items) > MAX_CAROUSEL_ITEMS:
             raise TooManyItems(len(items))
@@ -667,6 +787,12 @@ class PublishService:
         # (attempt_id, position) (QUA-99, 3/6), so a retry of THIS call (same
         # idempotency_key — e.g. a crash mid-loop, then the caller tries again) safely
         # converges to the same N rows instead of duplicating any of them.
+        #
+        # QUA-103: `media_product_type` is each item's OWN `media_type` — no longer
+        # hardcoded to `MEDIA_TYPE_VIDEO`. Migration 0018 is what makes `'IMAGE'` a
+        # legal value for `publish_attempt_children.media_product_type`; without it this
+        # would fail the CHECK constraint the moment the first image-bearing carousel
+        # was attempted, not silently.
         for position, item in enumerate(items):
             self._repo.add_child(
                 tenant_id=tenant_id,
@@ -674,7 +800,7 @@ class PublishService:
                 position=position,
                 media_object_key=item.media_object_key,
                 media_content_type=item.content_type,
-                media_product_type=MEDIA_TYPE_VIDEO,
+                media_product_type=item.media_type,
             )
         return _state(self._require(tenant_id, attempt.id))
 
@@ -819,6 +945,13 @@ class PublishService:
         failed` owns that, exactly once, after the whole concurrent batch finishes) —
         see `_advance_children`'s docstring for why that split is what makes the
         concurrency race-free.
+
+        QUA-103: bifurcates by `child.media_product_type` right after resolving the
+        shared `target`/`client` — the VIDEO branch below is BYTE-FOR-BYTE the code
+        that existed before this ticket; IMAGE is a separate method entirely
+        (`_create_image_child`), never a second `if` threaded through the middle of
+        this one, so a diff of this method against the pre-QUA-103 version shows
+        exactly one new early-return and nothing else disturbed.
         """
         target = self._connections.read(tenant_id=tenant_id, connection_id=record.connection_id)
         if target is None:
@@ -826,6 +959,11 @@ class PublishService:
         client = await self._clients.client_for(
             tenant_id=tenant_id, connection_id=record.connection_id
         )
+
+        if child.media_product_type == MEDIA_TYPE_IMAGE:
+            return await self._create_image_child(
+                tenant_id=tenant_id, record=record, child=child, target=target, client=client
+            )
 
         start_time = time.monotonic()
         _log_stage(
@@ -887,6 +1025,69 @@ class PublishService:
             )
         # retriable True or None: unknown is NOT a refusal (R10) — the child stays
         # 'uploading', unsettled; the parent's (scaled) ceiling is the guaranteed exit.
+        return _state(self._require(tenant_id, record.id))
+
+    async def _create_image_child(
+        self,
+        *,
+        tenant_id: UUID,
+        record: AttemptRecord,
+        child: ChildRecord,
+        target: ConnectionTarget,
+        client: PublishClient,
+    ) -> PublishState:
+        """The IMAGE sibling of the VIDEO branch above (QUA-103) — same shape
+        `_start_image` already has for a single image: no `upload_bytes` phase at all
+        (Meta fetches `image_url` itself), so the child goes straight from `pending` to
+        `processing` the moment the container exists. `target`/`client` are the SAME
+        ones `_create_and_upload_child` already resolved — passed in rather than
+        re-resolved, so this never opens a second connection lookup or a second
+        credentialed client for the same child.
+
+        Reuses `self._media_linker` — the EXACT seam `_start_image` uses, confirmed
+        working against Meta real (QUA-68) — rather than duplicating any part of the
+        public-URL minting. `is_carousel_item=True` confirmed accepted by Meta for an
+        image container, 2026-09-15 (see the QUA-103 discovery note): `{"id": ...}`,
+        `IN_PROGRESS`, same response shape `create_container` gives a video child.
+
+        A `PublishError` here PROPAGATES to the caller (`_advance_children`'s
+        `asyncio.gather(..., return_exceptions=True)`), same posture the VIDEO branch's
+        `create_container` call already has — the child's `creation_id` stays `None`,
+        so the next `advance()` tick simply retries this same child.
+        """
+        if self._media_linker is None:
+            raise MissingMediaLinker(
+                "PublishService has no media_linker configured — cannot publish IMAGE"
+            )
+        _log_stage(
+            "child_upload_start",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            child_id=child.id,
+            position=child.position,
+        )
+        image_url = self._media_linker.link(
+            tenant_id=tenant_id,
+            object_key=child.media_object_key,
+            content_type=child.media_content_type,
+        )
+        container_id = await client.create_image_container(
+            ig_user_id=target.ig_user_id, image_url=image_url, is_carousel_item=True
+        )
+        self._repo.record_child_creation_id(
+            tenant_id=tenant_id, child_id=child.id, creation_id=container_id
+        )
+        # Straight to 'processing' — there is no 'uploading' phase for IMAGE, same
+        # reasoning `_start_image` documents for the single-item path.
+        self._repo.advance_child_status(tenant_id=tenant_id, child_id=child.id, status="processing")
+        _log_stage(
+            "child_upload_end",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            child_id=child.id,
+            position=child.position,
+            outcome="success",
+        )
         return _state(self._require(tenant_id, record.id))
 
     async def _poll_child(

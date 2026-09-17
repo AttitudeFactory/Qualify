@@ -242,10 +242,12 @@ def test_an_unconfigured_app_cannot_talk_to_meta(monkeypatch: pytest.MonkeyPatch
 
 
 def test_staging_rejections_map_to_client_errors(harness: Harness) -> None:
+    """`PHOTO` is not a real `media_product_type` (QUA-68 legitimises `IMAGE`, not this) —
+    still exactly the unpublishable-type rejection this test exists to exercise."""
     response = harness.http.post(
         "/api/media",
         files={"file": ("r.gif", b"x", "image/gif")},
-        data={"connection_id": str(CONNECTION), "media_product_type": "IMAGE"},
+        data={"connection_id": str(CONNECTION), "media_product_type": "PHOTO"},
         headers=AUTH,
     )
     assert response.status_code == 422

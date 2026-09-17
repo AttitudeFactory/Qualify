@@ -160,6 +160,7 @@ def test_start_publish_projects_null_fields_to_empty_strings() -> None:
                 connection_id=_CONNECTION,
                 fileobj=None,  # type: ignore[arg-type] — never touched by the fake
                 content_type="video/mp4",
+                media_product_type="REELS",
                 caption="",
                 idempotency_key="k-1",
             )
@@ -169,7 +170,13 @@ def test_start_publish_projects_null_fields_to_empty_strings() -> None:
     assert vm.attempt_id == str(_ATTEMPT)
 
 
-def test_start_publish_fixes_media_product_type_to_reels() -> None:
+def test_start_publish_forwards_media_product_type_verbatim() -> None:
+    """QUA-103: `start_publish` no longer hardcodes `"REELS"` — it forwards whatever
+    the caller resolved for the ONE pending item, `"REELS"` for a video or `"IMAGE"`
+    for a JPEG, unchanged either way. This test replaces
+    `test_start_publish_fixes_media_product_type_to_reels`, which pinned the exact
+    hardcode QUA-103 removes — `publishing_state.py`'s own guard is what makes
+    publishing a single image from `/publish` possible at all now."""
     seen: dict[str, object] = {}
 
     async def _fake(**kwargs: object) -> ServicePublishState:
@@ -183,6 +190,7 @@ def test_start_publish_fixes_media_product_type_to_reels() -> None:
                 connection_id=_CONNECTION,
                 fileobj=None,  # type: ignore[arg-type]
                 content_type="video/mp4",
+                media_product_type="REELS",
                 caption="hola",
                 idempotency_key="k-1",
             )
@@ -190,6 +198,21 @@ def test_start_publish_fixes_media_product_type_to_reels() -> None:
     assert seen["media_product_type"] == "REELS"
     assert seen["caption"] == "hola"
     assert seen["idempotency_key"] == "k-1"
+
+    seen.clear()
+    with _patched(stage_and_start_publish=_fake):
+        _run_coro(
+            publishing_provider.start_publish(
+                tenant_id=_TENANT,
+                connection_id=_CONNECTION,
+                fileobj=None,  # type: ignore[arg-type]
+                content_type="image/jpeg",
+                media_product_type="IMAGE",
+                caption="",
+                idempotency_key="k-2",
+            )
+        )
+    assert seen["media_product_type"] == "IMAGE"
 
 
 def test_start_publish_propagates_unknown_connection() -> None:
@@ -204,6 +227,7 @@ def test_start_publish_propagates_unknown_connection() -> None:
                     connection_id=_CONNECTION,
                     fileobj=None,  # type: ignore[arg-type]
                     content_type="video/mp4",
+                    media_product_type="REELS",
                     caption="",
                     idempotency_key="k-1",
                 )
@@ -264,7 +288,11 @@ def test_start_many_publish_projects_null_fields_to_empty_strings() -> None:
             publishing_provider.start_many_publish(
                 tenant_id=_TENANT,
                 connection_id=_CONNECTION,
-                items=[PendingUpload(fileobj=None, content_type="video/mp4")],  # type: ignore[arg-type]
+                items=[
+                    PendingUpload(  # type: ignore[arg-type]
+                        fileobj=None, content_type="video/mp4", media_type="VIDEO"
+                    )
+                ],
                 caption="",
                 idempotency_key="k-1",
             )
@@ -282,8 +310,12 @@ def test_start_many_publish_forwards_items_caption_and_idempotency_key() -> None
         return _service_state()
 
     items = [
-        PendingUpload(fileobj=None, content_type="video/mp4"),  # type: ignore[arg-type]
-        PendingUpload(fileobj=None, content_type="video/quicktime"),  # type: ignore[arg-type]
+        PendingUpload(  # type: ignore[arg-type]
+            fileobj=None, content_type="video/mp4", media_type="VIDEO"
+        ),
+        PendingUpload(  # type: ignore[arg-type]
+            fileobj=None, content_type="video/quicktime", media_type="VIDEO"
+        ),
     ]
     with _patched(stage_and_start_many_publish=_fake):
         _run_coro(
@@ -310,7 +342,11 @@ def test_start_many_publish_propagates_unknown_connection() -> None:
                 publishing_provider.start_many_publish(
                     tenant_id=_TENANT,
                     connection_id=_CONNECTION,
-                    items=[PendingUpload(fileobj=None, content_type="video/mp4")],  # type: ignore[arg-type]
+                    items=[
+                        PendingUpload(  # type: ignore[arg-type]
+                            fileobj=None, content_type="video/mp4", media_type="VIDEO"
+                        )
+                    ],
                     caption="",
                     idempotency_key="k-1",
                 )
@@ -334,7 +370,11 @@ def test_start_many_publish_propagates_too_many_items() -> None:
                 publishing_provider.start_many_publish(
                     tenant_id=_TENANT,
                     connection_id=_CONNECTION,
-                    items=[PendingUpload(fileobj=None, content_type="video/mp4")],  # type: ignore[arg-type]
+                    items=[
+                        PendingUpload(  # type: ignore[arg-type]
+                            fileobj=None, content_type="video/mp4", media_type="VIDEO"
+                        )
+                    ],
                     caption="",
                     idempotency_key="k-1",
                 )

@@ -18,8 +18,10 @@ import io
 from typing import Any
 
 import pytest
+from botocore.exceptions import ClientError
 
 from qualify_shared.objects.config import R2Settings
+from qualify_shared.objects.gate import ObjectNotFound
 from qualify_shared.objects.s3 import R2ObjectStore
 
 _SETTINGS = R2Settings(
@@ -64,6 +66,11 @@ class _FakeS3Client:
         self.stored[Key] = data
 
     def get_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
+        if Key not in self.stored:
+            # The real shape botocore raises for a missing S3/R2 key — reproduced so
+            # `R2ObjectStore.open()`'s translation to `ObjectNotFound` (QUA-68) is
+            # exercised against the actual exception type, not a stand-in.
+            raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "not found"}}, "GetObject")
         return {"Body": _UnseekableStreamingBody(self.stored[Key])}
 
 
@@ -106,3 +113,27 @@ def test_put_then_open_round_trips_through_the_real_client_seam() -> None:
 
     assert stream.read() == b"video-bytes"
     assert client.put_calls == [("t/tenant/media/conn/m-2", b"video-bytes", "video/mp4")]
+
+
+def test_open_on_a_missing_key_raises_object_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    """QUA-68: `public_media_routes.py` needs a store-agnostic signal for "nothing here" —
+    a bare botocore `ClientError` (or its `NoSuchKey` code) must never reach that route."""
+    store = R2ObjectStore(_SETTINGS, client=_FakeS3Client())
+
+    with pytest.raises(ObjectNotFound):
+        store.open("t/tenant/media/conn/does-not-exist")
+
+
+def test_open_reraises_a_client_error_that_is_not_a_missing_key() -> None:
+    """A DIFFERENT ClientError (bad credentials, throttling, wrong bucket) is a real
+    infrastructure failure and must keep propagating — silently reading it as "object
+    missing" would misreport an outage as a 404."""
+
+    class _DenyingClient(_FakeS3Client):
+        def get_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
+            raise ClientError({"Error": {"Code": "AccessDenied", "Message": "nope"}}, "GetObject")
+
+    store = R2ObjectStore(_SETTINGS, client=_DenyingClient())
+
+    with pytest.raises(ClientError):
+        store.open("t/tenant/media/conn/m-1")
