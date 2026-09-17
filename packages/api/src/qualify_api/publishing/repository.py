@@ -72,6 +72,10 @@ class AttemptRecord:
     published_media_id: str | None
     started_at: datetime
     settled_at: datetime | None
+    # QUA-102 (opción 1) — resettable origin for `_poll_interval`'s backoff. `started_at`
+    # keeps driving `_over_ceiling` unchanged; this is deliberately a separate field, not
+    # a repurposing of `started_at` itself.
+    polling_baseline_at: datetime | None
 
     @property
     def is_settled(self) -> bool:
@@ -160,6 +164,11 @@ class PublishAttemptRepository(Protocol):
 
     def record_publish_sent(self, *, tenant_id: UUID, attempt_id: UUID, marker: str) -> None: ...
 
+    # QUA-102 (opción 1) — resets the backoff's origin. Called from `_advance_children`
+    # (once pending children finish) and `_create_carousel` (once the parent container is
+    # created); never from `start()`/`_start_image` (single-video path stays untouched).
+    def record_polling_baseline(self, *, tenant_id: UUID, attempt_id: UUID) -> None: ...
+
     def get_attempt(self, *, tenant_id: UUID, attempt_id: UUID) -> AttemptRecord | None: ...
 
     def find_by_idempotency_key(
@@ -215,6 +224,7 @@ def _snapshot(row: PublishAttempt) -> AttemptRecord:
         published_media_id=row.published_media_id,
         started_at=row.started_at,
         settled_at=row.settled_at,
+        polling_baseline_at=row.polling_baseline_at,
     )
 
 
@@ -279,6 +289,7 @@ class MemoryPublishAttemptRepository:
             published_media_id=None,
             started_at=datetime.now(UTC),
             settled_at=None,
+            polling_baseline_at=None,
         )
         self.rows[record.id] = record
         return AttemptStart(record=record, created=True)
@@ -314,6 +325,9 @@ class MemoryPublishAttemptRepository:
 
     def record_publish_sent(self, *, tenant_id: UUID, attempt_id: UUID, marker: str) -> None:
         self._mutate(attempt_id, platform_error_code=marker)
+
+    def record_polling_baseline(self, *, tenant_id: UUID, attempt_id: UUID) -> None:
+        self._mutate(attempt_id, polling_baseline_at=datetime.now(UTC))
 
     def get_attempt(self, *, tenant_id: UUID, attempt_id: UUID) -> AttemptRecord | None:
         record = self.rows.get(attempt_id)
@@ -497,6 +511,13 @@ class PostgresPublishAttemptRepository:
         """A6-min: written BEFORE `publish_container` goes out — the write-ahead of the
         send itself. Mark after sending and a crash in between resurrects the double-post."""
         self._update(tenant_id, attempt_id, {"platform_error_code": marker})
+
+    def record_polling_baseline(self, *, tenant_id: UUID, attempt_id: UUID) -> None:
+        """QUA-102 (opción 1) — resets `_poll_interval`'s origin. Unconditional overwrite,
+        not a set-once: called twice per carousel lifecycle (once children finish
+        uploading, again once the CAROUSEL container is created), and the second call is
+        meant to replace the first value, not be a no-op against it."""
+        self._update(tenant_id, attempt_id, {"polling_baseline_at": datetime.now().astimezone()})
 
     def get_attempt(self, *, tenant_id: UUID, attempt_id: UUID) -> AttemptRecord | None:
         with tenant_session(tenant_id) as session:

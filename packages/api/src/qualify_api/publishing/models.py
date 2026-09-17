@@ -74,6 +74,12 @@ class PublishAttempt(Base):
     started_at: Mapped[datetime] = mapped_column(server_default=text("now()"), nullable=False)
     # Non-null == terminal; the settle_once trigger makes that one-way.
     settled_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # QUA-102 (opción 1) — a resettable origin for the carousel poll backoff
+    # (`PublishService._poll_interval`), distinct from `started_at` (which keeps driving
+    # `_over_ceiling`, unchanged). NULL for every single-video attempt and for a carousel
+    # attempt still assembling its children — `_poll_interval` falls back to `started_at`
+    # in that case. See migration 0019 for the full rationale.
+    polling_baseline_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
 class PublishAttemptChild(Base):

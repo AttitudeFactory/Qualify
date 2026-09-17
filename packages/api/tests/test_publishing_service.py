@@ -10,6 +10,8 @@ live smoke demonstrated.
 from __future__ import annotations
 
 import io
+import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -1358,6 +1360,138 @@ async def test_poll_interval_is_unaffected_for_a_single_video() -> None:
 
 
 # --------------------------------------------------------------------------------------
+# QUA-102 (opción 1) — polling_baseline_at: the backoff's origin resets away from a stale
+# `started_at`. NOTE on technique: `Harness(clock_offset_seconds=X)` shifts the SERVICE's
+# clock by a constant X for every read — it cannot simulate "started_at is old but the
+# baseline was just reset", because both timestamps are real-clock-stamped at essentially
+# the same instant in a fast test, so a uniform offset reads ~X against EITHER origin.
+# These tests instead backdate `started_at` directly on the in-memory row (`h.repo.rows`)
+# — the only way to decouple "old attempt" from "freshly reset baseline".
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_poll_interval_resets_after_children_upload_even_when_attempt_is_old() -> None:
+    """The bug this fix targets, reproduced directly: before this follow-up, an attempt
+    whose `started_at` was already past the 75s fast-window would get poll_interval=60
+    the moment children finished creating+uploading — even though nothing had been
+    polled yet. `started_at` is backdated 200s (well under this 2-item carousel's 900s
+    ceiling, so it never interferes) to reproduce that condition."""
+    h = Harness()
+    items = h.stage_videos(2)
+    h.client.status_script = [ContainerStatus.IN_PROGRESS, ContainerStatus.IN_PROGRESS]
+    start_state = await h.start_many(items)
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+    assert record is not None
+    h.repo.rows[start_state.attempt_id] = replace(
+        record, started_at=record.started_at - timedelta(seconds=200)
+    )
+
+    await h.advance(start_state.attempt_id)  # create+upload both children -> resets the baseline
+    state = await h.advance(start_state.attempt_id)  # first real poll
+
+    assert not state.settled
+    assert state.poll_interval_seconds == 5
+
+
+@pytest.mark.asyncio
+async def test_poll_interval_resets_after_carousel_created_even_when_attempt_is_old() -> None:
+    """Second reset point: the CAROUSEL parent container is brand new right after
+    `_create_carousel` runs — its own first poll must get the fast cadence too, even
+    though `started_at` (and by then the children-phase baseline) are both stale."""
+    h = Harness()
+    items = h.stage_videos(2)
+    h.client.status_script = [
+        ContainerStatus.FINISHED,
+        ContainerStatus.FINISHED,
+        ContainerStatus.IN_PROGRESS,
+    ]
+    start_state = await h.start_many(items)
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+    assert record is not None
+    h.repo.rows[start_state.attempt_id] = replace(
+        record, started_at=record.started_at - timedelta(seconds=200)
+    )
+
+    await h.advance(start_state.attempt_id)  # create+upload both children (reset #1)
+    await h.advance(start_state.attempt_id)  # poll both children -- FINISHED
+    await h.advance(start_state.attempt_id)  # _create_carousel (reset #2)
+
+    state = await h.advance(start_state.attempt_id)  # first poll of the PARENT
+
+    assert not state.settled
+    assert state.poll_interval_seconds == 5
+
+
+@pytest.mark.asyncio
+async def test_polling_baseline_is_not_reset_on_every_in_flight_tick() -> None:
+    """The reset happens exactly ONCE, when children transition from pending to
+    in-flight — never again while they are merely being re-polled. If a bug moved the
+    `record_polling_baseline` call into the in_flight branch, the backoff would degrade
+    to "always 5s", well past what the QUA-102 budget analysis assumed."""
+    h = Harness()
+    items = h.stage_videos(2)
+    h.client.status_script = [
+        ContainerStatus.IN_PROGRESS,
+        ContainerStatus.IN_PROGRESS,
+        ContainerStatus.IN_PROGRESS,
+        ContainerStatus.IN_PROGRESS,
+    ]
+    start_state = await h.start_many(items)
+    await h.advance(start_state.attempt_id)  # create+upload -> resets the baseline
+
+    await h.advance(start_state.attempt_id)  # first in-flight poll, still IN_PROGRESS
+    first = h.repo.get_attempt(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+
+    await h.advance(start_state.attempt_id)  # second in-flight poll, still IN_PROGRESS
+    second = h.repo.get_attempt(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+
+    assert first is not None and second is not None
+    assert first.polling_baseline_at == second.polling_baseline_at
+
+
+@pytest.mark.asyncio
+async def test_ceiling_is_unaffected_by_the_new_polling_baseline() -> None:
+    """`_over_ceiling` must keep reading ONLY `started_at`, deliberately never
+    `polling_baseline_at` — a recently-reset baseline (children just finished, in the
+    fast-poll zone) must NOT mask a genuinely stuck attempt from the ceiling."""
+    h = Harness()
+    items = h.stage_videos(2)
+    h.client.status_script = [ContainerStatus.IN_PROGRESS, ContainerStatus.IN_PROGRESS]
+    start_state = await h.start_many(items)
+    await h.advance(start_state.attempt_id)  # children created+uploaded, baseline = "now"
+
+    # Backdate ONLY started_at, well past this 2-item carousel's ceiling (300*3=900s) --
+    # polling_baseline_at (just set, real "now") is left untouched.
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+    assert record is not None and record.polling_baseline_at is not None
+    h.repo.rows[start_state.attempt_id] = replace(
+        record, started_at=record.started_at - timedelta(seconds=1000)
+    )
+
+    state = await h.advance(start_state.attempt_id)
+
+    assert state.settled and state.status == "failed"
+    assert state.reason == CEILING_EXCEEDED
+
+
+@pytest.mark.asyncio
+async def test_single_video_never_writes_a_polling_baseline() -> None:
+    """`start()`/`_start_image` never call `record_polling_baseline` — the column stays
+    NULL for the entire lifecycle of a single-video attempt, confirming `_poll_interval`
+    only ever falls back to `started_at` for that path, exactly as before this follow-up."""
+    h = Harness()
+    state = await h.start()
+    h.client.status_script = [ContainerStatus.FINISHED]
+
+    final = await h.drive_to_settled(state.attempt_id)
+
+    assert final.settled and final.status == "published"
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=state.attempt_id)
+    assert record is not None and record.polling_baseline_at is None
+
+
+# --------------------------------------------------------------------------------------
 # QUA-99 (4.5/6) — carousel caption persistence
 # --------------------------------------------------------------------------------------
 
@@ -1675,6 +1809,222 @@ async def test_video_publish_never_touches_the_media_linker() -> None:
     await h.start()
 
     assert h.linker.link_calls == []
+
+
+# --------------------------------------------------------------------------------------
+# QUA-102 discovery follow-up — timing instrumentation. Observability only: these tests
+# assert which EVENTS exist and what FIELDS they carry, never a concrete duration value
+# (durations are real wall-clock/monotonic numbers — asserting on them would make these
+# tests flaky by construction, which is exactly what the ticket asked NOT to do).
+# --------------------------------------------------------------------------------------
+
+
+def _publish_log_events(records: list[logging.LogRecord]) -> list[tuple[str, dict[str, str]]]:
+    """Parses this package's `publish.<event> tenant_id=... attempt_id=... k=v ...` log
+    lines (both `service.py` and `composition.py` use this exact shape) into
+    `(event, fields)` pairs, ignoring any record from another logger."""
+    events: list[tuple[str, dict[str, str]]] = []
+    for record in records:
+        if record.name not in (
+            "qualify_api.publishing.service",
+            "qualify_api.publishing.composition",
+        ):
+            continue
+        message = record.getMessage()
+        if not message.startswith("publish."):
+            continue
+        prefix, _, rest = message.partition(" ")
+        event = prefix.removeprefix("publish.")
+        fields = dict(tok.split("=", 1) for tok in rest.split() if "=" in tok)
+        events.append((event, fields))
+    return events
+
+
+@pytest.mark.asyncio
+async def test_child_and_attempt_events_present_for_a_two_video_carousel(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The minimum QUA-102 discovery instrumentation: every event the ticket asked for
+    must appear for a real 2-video carousel run end to end, one of each per child."""
+    caplog.set_level(logging.INFO, logger="qualify_api.publishing.service")
+    h = Harness()
+    items = h.stage_videos(2)
+    h.client.status_script = [ContainerStatus.FINISHED] * 3  # 2 children + the carousel
+
+    start_state = await h.start_many(items)
+    await h.drive_to_settled(start_state.attempt_id)
+
+    names = [event for event, _ in _publish_log_events(caplog.records)]
+
+    for expected in (
+        "attempt_started",
+        "carousel_create_start",
+        "carousel_create_end",
+        "carousel_poll_status_observed",
+        "carousel_finished_observed",
+        "media_publish_start",
+        "media_publish_end",
+        "attempt_settled",
+    ):
+        assert names.count(expected) >= 1, f"missing {expected} in {names}"
+
+    # Exactly 2 children -> exactly 2 of each per-child event.
+    for expected in (
+        "child_create_start",
+        "child_create_end",
+        "r2_read_start",
+        "r2_read_end",
+        "child_upload_bytes_start",
+        "child_upload_bytes_end",
+        "child_poll_status_observed",
+        "child_settled",
+    ):
+        assert names.count(expected) == 2, f"expected 2x {expected}, saw {names.count(expected)}"
+
+
+@pytest.mark.asyncio
+async def test_child_events_carry_the_expected_correlation_fields(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="qualify_api.publishing.service")
+    h = Harness()
+    items = h.stage_videos(2)
+    h.client.status_script = [ContainerStatus.FINISHED] * 3
+
+    start_state = await h.start_many(items)
+    await h.drive_to_settled(start_state.attempt_id)
+
+    events = _publish_log_events(caplog.records)
+
+    child_create_starts = [f for e, f in events if e == "child_create_start"]
+    assert len(child_create_starts) == 2
+    assert {f["position"] for f in child_create_starts} == {"0", "1"}
+    for fields in child_create_starts:
+        assert fields["attempt_id"] == str(start_state.attempt_id)
+        assert fields["tenant_id"] == str(TENANT)
+        assert "child_id" in fields
+        assert fields["media_type"] == "VIDEO"
+
+    r2_ends = [f for e, f in events if e == "r2_read_end"]
+    assert len(r2_ends) == 2
+    for fields in r2_ends:
+        assert "duration_ms" in fields
+        assert int(fields["file_size_bytes"]) > 0
+
+    settled = [f for e, f in events if e == "child_settled"]
+    assert len(settled) == 2
+    assert all(f["status"] == "finished" for f in settled)
+
+
+@pytest.mark.asyncio
+async def test_child_create_start_precedes_its_own_child_create_end(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Ordering, not just presence: each child's OWN start/end pair must nest correctly
+    relative to its OWN child_id, even though children run concurrently (interleaved log
+    lines across DIFFERENT children are fine and expected)."""
+    caplog.set_level(logging.INFO, logger="qualify_api.publishing.service")
+    h = Harness()
+    items = h.stage_videos(3)
+    h.client.status_script = [ContainerStatus.FINISHED] * 4
+
+    start_state = await h.start_many(items)
+    await h.drive_to_settled(start_state.attempt_id)
+
+    events = _publish_log_events(caplog.records)
+    seen_start_index: dict[str, int] = {}
+    for i, (event, fields) in enumerate(events):
+        if event == "child_create_start":
+            seen_start_index[fields["child_id"]] = i
+        elif event == "child_create_end":
+            assert fields["child_id"] in seen_start_index, "end without a prior start"
+            assert seen_start_index[fields["child_id"]] < i
+
+
+@pytest.mark.asyncio
+async def test_media_publish_end_reports_success_outcome(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="qualify_api.publishing.service")
+    h = Harness()
+    h.client.status_script = [ContainerStatus.FINISHED]
+
+    state = await h.start()
+    await h.drive_to_settled(state.attempt_id)
+
+    events = _publish_log_events(caplog.records)
+    ends = [f for e, f in events if e == "media_publish_end"]
+    assert len(ends) == 1
+    assert ends[0]["outcome"] == "success"
+    assert "duration_ms" in ends[0]
+    # attempt_started (D in the ticket) fires for the single-video path too.
+    assert [e for e, _ in events if e == "attempt_started"] == ["attempt_started"]
+
+
+@pytest.mark.asyncio
+async def test_media_publish_end_reports_ambiguous_outcome_on_transport_exception(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The A6-min critical case — a `media_publish` that raises a bare exception (timeout/
+    transport) must still get a `media_publish_end` log, tagged distinctly from success,
+    without changing the existing "settle nothing" behavior."""
+    caplog.set_level(logging.INFO, logger="qualify_api.publishing.service")
+    h = Harness()
+    h.client.status_script = [ContainerStatus.FINISHED]
+    h.client.publish_error = TimeoutError("boom")
+
+    state = await h.start()
+    result = await h.advance(state.attempt_id)
+
+    assert not result.settled and result.awaiting_confirmation  # unchanged behavior
+    ends = [f for e, f in _publish_log_events(caplog.records) if e == "media_publish_end"]
+    assert len(ends) == 1
+    assert ends[0]["outcome"] == "ambiguous"
+
+
+@pytest.mark.asyncio
+async def test_carousel_poll_events_are_silent_for_single_video_attempts(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """carousel_poll_status_observed/carousel_finished_observed/carousel_create_* are
+    CAROUSEL-only — a single-video attempt must produce none of them, keeping that
+    path's log volume exactly as it was before this instrumentation."""
+    caplog.set_level(logging.INFO, logger="qualify_api.publishing.service")
+    h = Harness()
+    h.client.status_script = [ContainerStatus.FINISHED]
+
+    state = await h.start()
+    await h.drive_to_settled(state.attempt_id)
+
+    names = {event for event, _ in _publish_log_events(caplog.records)}
+    assert "carousel_poll_status_observed" not in names
+    assert "carousel_finished_observed" not in names
+    assert "carousel_create_start" not in names
+    assert "carousel_create_end" not in names
+
+
+@pytest.mark.asyncio
+async def test_instrumentation_does_not_change_the_existing_carousel_happy_path_outcome(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No functional regression: the same assertions `test_carousel_happy_path_end_to_
+    end` already makes, run again with logging captured, to prove the new `_log_stage`
+    calls changed nothing about calls/state/counts."""
+    caplog.set_level(logging.INFO, logger="qualify_api.publishing.service")
+    h = Harness()
+    n = 3
+    items = h.stage_videos(n)
+    h.client.status_script = [ContainerStatus.FINISHED] * (n + 1)
+
+    start_state = await h.start_many(items)
+    final = await h.drive_to_settled(start_state.attempt_id)
+
+    assert final.settled and final.status == "published"
+    assert h.client.calls["create"] == n
+    assert h.client.calls["create_carousel"] == 1
+    assert h.client.calls["publish"] == 1
+    children = h.repo.list_children(tenant_id=TENANT, attempt_id=start_state.attempt_id)
+    assert all(c.status == "finished" for c in children)
 
 
 # --------------------------------------------------------------------------------------

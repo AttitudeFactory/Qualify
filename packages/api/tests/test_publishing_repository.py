@@ -68,6 +68,24 @@ def test_double_settled_row_refuses_every_update() -> None:
         repo.advance_status(tenant_id=TENANT_P, attempt_id=attempt.id, status="processing")
 
 
+def test_double_polling_baseline_starts_null_and_round_trips_once_set() -> None:
+    """QUA-102 (opción 1) — `polling_baseline_at` is `None` until the service explicitly
+    resets it, and `record_polling_baseline` is an unconditional overwrite (called twice
+    per real carousel lifecycle), never a set-once guard."""
+    repo = MemoryPublishAttemptRepository()
+    attempt = _start(repo).record
+    assert attempt.polling_baseline_at is None
+
+    repo.record_polling_baseline(tenant_id=TENANT_P, attempt_id=attempt.id)
+    first = repo.get_attempt(tenant_id=TENANT_P, attempt_id=attempt.id)
+    assert first is not None and first.polling_baseline_at is not None
+
+    repo.record_polling_baseline(tenant_id=TENANT_P, attempt_id=attempt.id)
+    second = repo.get_attempt(tenant_id=TENANT_P, attempt_id=attempt.id)
+    assert second is not None and second.polling_baseline_at is not None
+    assert second.polling_baseline_at >= first.polling_baseline_at
+
+
 def test_terminal_vocabulary_guards_hold_without_a_database() -> None:
     """The guards fire BEFORE any session opens, on the real class too — a terminal status
     through advance_status (or a non-terminal through settle) names the actual mistake
@@ -608,3 +626,99 @@ def test_real_start_attempt_without_a_caption_is_null(
             {"id": str(start.record.id)},
         ).scalar_one()
     assert raw is None
+
+
+# --------------------------------------------------------------------------------------
+# polling_baseline_at (QUA-102, opción 1) — migration 0019, against real Postgres
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.db
+def test_real_start_attempt_leaves_polling_baseline_null(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    """Every attempt starts with no baseline — `_poll_interval` falls back to
+    `started_at` until the service explicitly resets it."""
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresPublishAttemptRepository()
+
+    start = repo.start_attempt(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        idempotency_key=f"op-{uuid4()}",
+        media_product_type="CAROUSEL",
+        adapter_version="v1",
+    )
+
+    assert start.record.polling_baseline_at is None
+    reread = repo.get_attempt(tenant_id=tenant_id, attempt_id=start.record.id)
+    assert reread is not None and reread.polling_baseline_at is None
+
+
+@pytest.mark.db
+def test_real_record_polling_baseline_persists_and_round_trips(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresPublishAttemptRepository()
+    attempt = repo.start_attempt(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        idempotency_key=f"op-{uuid4()}",
+        media_product_type="CAROUSEL",
+        adapter_version="v1",
+    ).record
+
+    repo.record_polling_baseline(tenant_id=tenant_id, attempt_id=attempt.id)
+
+    reread = repo.get_attempt(tenant_id=tenant_id, attempt_id=attempt.id)
+    assert reread is not None and reread.polling_baseline_at is not None
+
+
+@pytest.mark.db
+def test_real_record_polling_baseline_overwrites_a_previous_value(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    """Unconditional overwrite, not set-once — the real trigger/constraint layer must not
+    silently swallow the second reset (`_create_carousel`'s, landing after the children
+    phase's own)."""
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresPublishAttemptRepository()
+    attempt = repo.start_attempt(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        idempotency_key=f"op-{uuid4()}",
+        media_product_type="CAROUSEL",
+        adapter_version="v1",
+    ).record
+
+    repo.record_polling_baseline(tenant_id=tenant_id, attempt_id=attempt.id)
+    first = repo.get_attempt(tenant_id=tenant_id, attempt_id=attempt.id)
+    assert first is not None and first.polling_baseline_at is not None
+
+    repo.record_polling_baseline(tenant_id=tenant_id, attempt_id=attempt.id)
+    second = repo.get_attempt(tenant_id=tenant_id, attempt_id=attempt.id)
+    assert second is not None and second.polling_baseline_at is not None
+    assert second.polling_baseline_at >= first.polling_baseline_at
+
+
+@pytest.mark.db
+def test_real_rls_makes_another_tenants_polling_baseline_write_invisible(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    """Same tenant-isolation posture every other write in this module already has —
+    `record_polling_baseline` goes through `tenant_session`, so it is scoped by
+    construction, not by an extra check this test needs to invent."""
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresPublishAttemptRepository()
+    attempt = repo.start_attempt(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        idempotency_key=f"op-{uuid4()}",
+        media_product_type="CAROUSEL",
+        adapter_version="v1",
+    ).record
+
+    repo.record_polling_baseline(tenant_id=tenant_id, attempt_id=attempt.id)
+
+    assert repo.get_attempt(tenant_id=OTHER_TENANT, attempt_id=attempt.id) is None

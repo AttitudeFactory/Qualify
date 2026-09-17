@@ -13,6 +13,7 @@ the extra layer — not their internal logic again (that is already covered).
 from __future__ import annotations
 
 import io
+import logging
 from uuid import UUID
 
 import pytest
@@ -303,6 +304,51 @@ async def test_stage_and_start_many_publish_stages_every_item_before_the_carouse
         tenant_id=TENANT, attempt_id=state.attempt_id
     )
     assert len(children) == 2
+
+
+@pytest.mark.asyncio
+async def test_stage_and_start_many_publish_logs_staging_start_and_end(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """QUA-102 discovery follow-up — `staging_start` has no `attempt_id` yet (the row
+    does not exist until `start_many` returns), `staging_end` is logged AFTER that call
+    returns so it carries the real one, letting it join the rest of that attempt's
+    per-child/parent events even though the phase it measures happened entirely before
+    the row did. Observability only — asserts structure/fields, never a duration value.
+    """
+    caplog.set_level(logging.INFO, logger="qualify_api.publishing.composition")
+    _wire(monkeypatch)
+
+    state = await composition.stage_and_start_many_publish(
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        items=[
+            composition.PendingUpload(
+                fileobj=io.BytesIO(b"video-a"), content_type="video/mp4", media_type="VIDEO"
+            ),
+            composition.PendingUpload(
+                fileobj=io.BytesIO(b"video-b"), content_type="video/mp4", media_type="VIDEO"
+            ),
+        ],
+        idempotency_key="op-staging-log-1",
+    )
+
+    records = [
+        r
+        for r in caplog.records
+        if r.name == "qualify_api.publishing.composition" and r.getMessage().startswith("publish.")
+    ]
+    messages_by_event = {
+        r.getMessage().split(" ", 1)[0].removeprefix("publish."): r.getMessage() for r in records
+    }
+    assert "staging_start" in messages_by_event
+    assert "staging_end" in messages_by_event
+    assert "attempt_id=None" in messages_by_event["staging_start"]
+    assert "item_count=2" in messages_by_event["staging_start"]
+    assert f"attempt_id={state.attempt_id}" in messages_by_event["staging_end"]
+    assert "item_count=2" in messages_by_event["staging_end"]
+    assert "duration_ms=" in messages_by_event["staging_end"]
 
 
 @pytest.mark.asyncio
