@@ -2,8 +2,8 @@
 Kit's referentes search (`Qualify/creator_discovery.py`, phases sector → national →
 local) and the operator's referente/competencia/detractor sort, persisted per tenant
 
-Revision ID: 0018
-Revises: 0017
+Revision ID: 0019
+Revises: 0018
 Create Date: 2026-09-16
 
 Until now the phases lived in `Qualify/fixtures/discovery_cache.json` and the sort lived
@@ -49,8 +49,8 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0018"
-down_revision = "0017"
+revision = "0019"
+down_revision = "0018"
 branch_labels = None
 depends_on = None
 

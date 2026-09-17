@@ -3152,7 +3152,7 @@ class BrandConnectState(rx.State):
 
         runner: creator_discovery.PhasedDiscovery | None = None
         # (tenant, brand, user) when the session has them — then phases and the sort
-        # live in Postgres (`referentes_provider`, migration 0018). Without them (no
+        # live in Postgres (`referentes_provider`, migration 0019). Without them (no
         # login, e.g. the offline tests) the JSON cache is used as before.
         ids = await self._referentes_ids()
         try:
@@ -4250,7 +4250,7 @@ def _deck_zone(bucket: str, title: str, blurb: str, arrow: str, area: str) -> rx
             width="100%",
         ),
         # `sync_labels` right after the decision: it stores the sort (§ referentes
-        # persistence, migration 0018).
+        # persistence, migration 0019).
         on_click=[BrandConnectState.send_current(bucket), BrandConnectState.sync_labels],
         on_drop=[BrandConnectState.drop_into(bucket), BrandConnectState.sync_labels],
         type="button",

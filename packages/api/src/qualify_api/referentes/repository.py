@@ -1,4 +1,4 @@
-"""Persistence for referentes (migration 0018): discovery phases, the accounts each one
+"""Persistence for referentes (migration 0019): discovery phases, the accounts each one
 found, and the operator's labels. Same two-implementation discipline as
 `mentions/repository.py` — `MemoryReferentesRepository` is real code that mirrors the
 database's invariants, and one contract suite runs against both.
@@ -53,7 +53,7 @@ DEFAULT_SOURCE = "scrapecreators"
 
 def normalize_handle(handle: str) -> str:
     """The one spelling an account is stored under: trimmed, no leading "@", lowercase.
-    Matches migration 0018's CHECK, so a value that passed here cannot be rejected there."""
+    Matches migration 0019's CHECK, so a value that passed here cannot be rejected there."""
     cleaned = handle.strip().lstrip("@").strip().lower()
     if not cleaned:
         raise ValueError("handle is empty")
@@ -271,7 +271,7 @@ class ReferentesRepository(Protocol):
 
 
 class MemoryReferentesRepository:
-    """Mirrors migration 0018's invariants without a database. Brands must be registered
+    """Mirrors migration 0019's invariants without a database. Brands must be registered
     with `add_brand` — the stand-in for the `brands` table and its tenant."""
 
     def __init__(self) -> None:

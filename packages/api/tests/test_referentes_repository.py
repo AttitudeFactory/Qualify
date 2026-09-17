@@ -1,4 +1,4 @@
-"""The referentes repository contract (migration 0018), run against BOTH implementations:
+"""The referentes repository contract (migration 0019), run against BOTH implementations:
 `MemoryReferentesRepository` offline, `PostgresReferentesRepository` against the compose
 Postgres (`db` marker) — so the database's own guarantees (the partial unique index, the
 CHECKs, RLS) are exercised, not just this module's belief in them."""
