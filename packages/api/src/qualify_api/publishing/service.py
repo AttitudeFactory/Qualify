@@ -332,6 +332,13 @@ class PublishService:
             # The idempotent path: same key → the existing outcome, never a second publish.
             return _state(start.record)
         attempt = start.record
+        _log_stage(
+            "attempt_started",
+            tenant_id=tenant_id,
+            attempt_id=attempt.id,
+            media_product_type=media_product_type,
+            item_count=1,
+        )
 
         # Token/connection posture is checked at PUBLISH time, not compose time. A dead
         # connection refuses BEFORE any platform call, with the reason distinguishable.
@@ -518,6 +525,18 @@ class PublishService:
                 self._degrade(tenant_id=tenant_id, connection_id=record.connection_id)
             raise
 
+        # QUA-102 discovery follow-up — CAROUSEL-only (this same generic polling branch
+        # is also every single-video attempt's own poll, which stays byte-for-byte
+        # silent here, unchanged log volume for that path). Same "observed, not Meta's
+        # true timestamp" honesty as child_poll_status_observed.
+        if record.media_product_type == MEDIA_TYPE_CAROUSEL:
+            _log_stage(
+                "carousel_poll_status_observed",
+                tenant_id=tenant_id,
+                attempt_id=attempt_id,
+                status=container_status.value,
+            )
+
         if container_status is ContainerStatus.PUBLISHED:
             # Reconciliation's happy ending — success WITHOUT calling publish_container
             # again. The media id is not in this response; recovering it is full A6.
@@ -541,6 +560,8 @@ class PublishService:
             )
 
         if container_status is ContainerStatus.FINISHED and not sent:
+            if record.media_product_type == MEDIA_TYPE_CAROUSEL:
+                _log_stage("carousel_finished_observed", tenant_id=tenant_id, attempt_id=attempt_id)
             target = self._connections.read(tenant_id=tenant_id, connection_id=record.connection_id)
             if target is None:
                 raise UnknownConnection(str(record.connection_id))
@@ -574,11 +595,19 @@ class PublishService:
             tenant_id=tenant_id, attempt_id=record.id, marker=PUBLISH_SENT_MARKER
         )
         _log_stage("media_publish_start", tenant_id=tenant_id, attempt_id=record.id)
+        publish_start = time.monotonic()
         try:
             media_id = await client.publish_container(
                 ig_user_id=ig_user_id, creation_id=record.creation_id or ""
             )
         except PublishError as exc:
+            _log_stage(
+                "media_publish_end",
+                tenant_id=tenant_id,
+                attempt_id=record.id,
+                outcome="error",
+                duration_ms=round((time.monotonic() - publish_start) * 1000),
+            )
             if exc.http_status == 401 or exc.platform_code == 190:
                 # QUA-90: NOT the same ambiguity as a coded refusal below or a timeout.
                 # Meta rejected the call on auth grounds — the send did not go out, so
@@ -609,8 +638,22 @@ class PublishService:
         except Exception:
             # Timeout/transport — the measured ambiguity: the publish may have landed.
             # Settle NOTHING. The marker keeps every later advance() read-only.
+            _log_stage(
+                "media_publish_end",
+                tenant_id=tenant_id,
+                attempt_id=record.id,
+                outcome="ambiguous",
+                duration_ms=round((time.monotonic() - publish_start) * 1000),
+            )
             return _state(self._require(tenant_id, record.id), awaiting=True)
 
+        _log_stage(
+            "media_publish_end",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            outcome="success",
+            duration_ms=round((time.monotonic() - publish_start) * 1000),
+        )
         self._repo.settle(
             tenant_id=tenant_id,
             attempt_id=record.id,
@@ -653,14 +696,28 @@ class PublishService:
         attempt never reaches this method at all, which is what makes it byte-for-byte
         inert for that path rather than merely returning the same number.
 
-        Measured against `started_at` (same "the row survives a process restart, an
-        in-memory tick counter would not" reasoning `_over_ceiling` already documents
-        for itself) — an attempt still within its first ~75 s gets a faster cadence
-        (5 s → 10 s → 20 s → 40 s), then settles into the same steady 60 s
-        (`CONTAINER_POLL_INTERVAL_SECONDS`) every attempt already used before this
-        follow-up. Never faster than 5 s, never slower than 60 s.
+        QUA-102 (opción 1) — measured against `record.polling_baseline_at` when it is
+        set, falling back to `started_at` otherwise (every single-video attempt, and a
+        carousel attempt still assembling its children, which never writes the baseline
+        — see `_advance_children`/`_create_carousel`). Manual validation against real
+        Meta (2026-09-16, 2/3/5-video carousels) showed staging + the concurrent
+        per-child create+upload tick alone burns 35-90 s of `started_at`-relative elapsed
+        time before a single poll ever happens — already past the 75 s point where this
+        cadence flattens to 60 s, so the fast ramp below was never actually being used to
+        detect a fast-finishing container. `polling_baseline_at` resets to `now()` at the
+        two points where "waiting on Meta" first becomes real (children finish
+        create+upload; the CAROUSEL container is created) — see migration 0019's
+        docstring for the full rationale. `_over_ceiling` is DELIBERATELY untouched: it
+        still measures against `started_at` alone, so the worst-case (an attempt that
+        never resolves) fails at exactly the same absolute point it always has.
+
+        An attempt still within ~75 s of its (possibly reset) origin gets a faster
+        cadence (5 s → 10 s → 20 s → 40 s), then settles into the same steady 60 s
+        (`CONTAINER_POLL_INTERVAL_SECONDS`) every attempt already used before QUA-99.
+        Never faster than 5 s, never slower than 60 s.
         """
-        elapsed = (self._clock() - record.started_at).total_seconds()
+        origin = record.polling_baseline_at or record.started_at
+        elapsed = (self._clock() - origin).total_seconds()
         cursor = 0.0
         for step in _CAROUSEL_POLL_BACKOFF_SECONDS:
             cursor += step
@@ -768,6 +825,14 @@ class PublishService:
             caption=caption,
         )
         attempt = start.record
+        if start.created:
+            _log_stage(
+                "attempt_started",
+                tenant_id=tenant_id,
+                attempt_id=attempt.id,
+                media_product_type=MEDIA_TYPE_CAROUSEL,
+                item_count=len(items),
+            )
         if attempt.is_settled:
             # Same shape as start()'s own "not start.created -> return" — nothing more to
             # do with an attempt that already reached a terminal outcome.
@@ -872,6 +937,14 @@ class PublishService:
                 ),
                 return_exceptions=True,
             )
+            # QUA-102 (opción 1) — this batch of children just finished create+upload
+            # (success or failure per-child); this is the first honest moment "waiting on
+            # Meta" starts meaning anything for them, so the backoff's origin resets HERE,
+            # not back at `record.started_at` (which by now may already be 35-90s stale
+            # from staging + this very batch's own upload time — see migration 0019).
+            # Unconditional, once per batch — never inside `_create_and_upload_child`
+            # itself, which would reset it once per CHILD instead of once per tick.
+            self._repo.record_polling_baseline(tenant_id=tenant_id, attempt_id=record.id)
             self._settle_parent_if_a_child_failed(tenant_id=tenant_id, record=record)
             _reraise_first(results)
             return _state(self._require(tenant_id, record.id))
@@ -973,18 +1046,75 @@ class PublishService:
             child_id=child.id,
             position=child.position,
         )
+        # QUA-102 discovery follow-up — fine-grained sub-spans inside the SAME overall
+        # child_upload_start/end window above (unchanged): create/r2-read/upload-bytes
+        # are logged separately here so a real attempt's log can be decomposed into
+        # which of the three actually dominates, instead of only the bundled total.
+        create_start = time.monotonic()
+        _log_stage(
+            "child_create_start",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            child_id=child.id,
+            position=child.position,
+            media_type=child.media_product_type,
+        )
         container = await client.create_container(
             ig_user_id=target.ig_user_id, media_type=MEDIA_TYPE_VIDEO, is_carousel_item=True
+        )
+        _log_stage(
+            "child_create_end",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            child_id=child.id,
+            position=child.position,
+            duration_ms=round((time.monotonic() - create_start) * 1000),
         )
         self._repo.record_child_creation_id(
             tenant_id=tenant_id, child_id=child.id, creation_id=container.container_id
         )
         self._repo.advance_child_status(tenant_id=tenant_id, child_id=child.id, status="uploading")
 
+        r2_read_start = time.monotonic()
+        _log_stage(
+            "r2_read_start",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            child_id=child.id,
+            position=child.position,
+        )
         fileobj = self._gate.open_object(tenant_id, child.media_object_key)
         file_size = _length(fileobj)
+        _log_stage(
+            "r2_read_end",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            child_id=child.id,
+            position=child.position,
+            duration_ms=round((time.monotonic() - r2_read_start) * 1000),
+            file_size_bytes=file_size,
+        )
+
+        upload_start = time.monotonic()
+        _log_stage(
+            "child_upload_bytes_start",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            child_id=child.id,
+            position=child.position,
+            file_size_bytes=file_size,
+        )
         outcome = await client.upload_bytes(
             upload_uri=container.upload_uri, fileobj=fileobj, file_size=file_size
+        )
+        _log_stage(
+            "child_upload_bytes_end",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            child_id=child.id,
+            position=child.position,
+            outcome=("success" if outcome.success else "failed"),
+            duration_ms=round((time.monotonic() - upload_start) * 1000),
         )
         duration_ms = round((time.monotonic() - start_time) * 1000)
 
@@ -1012,6 +1142,15 @@ class PublishService:
                 child_id=child.id,
                 status="failed",
                 platform_error_code=error_code,
+            )
+            _log_stage(
+                "child_settled",
+                tenant_id=tenant_id,
+                attempt_id=record.id,
+                child_id=child.id,
+                position=child.position,
+                status="failed",
+                error_code=error_code,
             )
             _log_stage(
                 "child_upload_end",
@@ -1071,8 +1210,29 @@ class PublishService:
             object_key=child.media_object_key,
             content_type=child.media_content_type,
         )
+        # QUA-102 discovery follow-up — same child_create_start/end names the VIDEO
+        # branch uses (distinguished by the `media_type` field, not the event name):
+        # this is the IMAGE analogue of that branch's create_container call. Wraps ONLY
+        # create_image_container, not the media_linker.link() token mint above it.
+        create_start = time.monotonic()
+        _log_stage(
+            "child_create_start",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            child_id=child.id,
+            position=child.position,
+            media_type=child.media_product_type,
+        )
         container_id = await client.create_image_container(
             ig_user_id=target.ig_user_id, image_url=image_url, is_carousel_item=True
+        )
+        _log_stage(
+            "child_create_end",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            child_id=child.id,
+            position=child.position,
+            duration_ms=round((time.monotonic() - create_start) * 1000),
         )
         self._repo.record_child_creation_id(
             tenant_id=tenant_id, child_id=child.id, creation_id=container_id
@@ -1112,8 +1272,31 @@ class PublishService:
                 self._degrade(tenant_id=tenant_id, connection_id=record.connection_id)
             raise
 
+        # QUA-102 discovery follow-up — logged for EVERY observed status (not just
+        # terminal ones): this is honestly "the moment Qualify observed this status",
+        # never "the moment Meta actually reached it" — we have no push/webhook, so the
+        # true Meta-side finish time is NOT knowable. Bracketing consecutive
+        # child_poll_status_observed rows for one child (last non-FINISHED timestamp,
+        # first FINISHED timestamp) is the closest honest proxy for discovery lag.
+        _log_stage(
+            "child_poll_status_observed",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            child_id=child.id,
+            position=child.position,
+            status=container_status.value,
+        )
+
         if container_status is ContainerStatus.FINISHED:
             self._repo.settle_child(tenant_id=tenant_id, child_id=child.id, status="finished")
+            _log_stage(
+                "child_settled",
+                tenant_id=tenant_id,
+                attempt_id=record.id,
+                child_id=child.id,
+                position=child.position,
+                status="finished",
+            )
             _log_stage(
                 "child_processing_end",
                 tenant_id=tenant_id,
@@ -1134,6 +1317,15 @@ class PublishService:
                 child_id=child.id,
                 status="failed",
                 platform_error_code=error_code,
+            )
+            _log_stage(
+                "child_settled",
+                tenant_id=tenant_id,
+                attempt_id=record.id,
+                child_id=child.id,
+                position=child.position,
+                status="failed",
+                error_code=error_code,
             )
             _log_stage(
                 "child_processing_end",
@@ -1173,13 +1365,32 @@ class PublishService:
                 raise RuntimeError(f"child {c.id} is finished but has no creation_id")
             child_creation_ids.append(c.creation_id)
 
+        create_start = time.monotonic()
+        _log_stage(
+            "carousel_create_start",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            child_count=len(children),
+        )
         carousel_id = await client.create_carousel_container(
             ig_user_id=target.ig_user_id, children=child_creation_ids, caption=record.caption
+        )
+        _log_stage(
+            "carousel_create_end",
+            tenant_id=tenant_id,
+            attempt_id=record.id,
+            child_count=len(children),
+            duration_ms=round((time.monotonic() - create_start) * 1000),
         )
         self._repo.record_creation_id(
             tenant_id=tenant_id, attempt_id=record.id, creation_id=carousel_id
         )
         self._repo.advance_status(tenant_id=tenant_id, attempt_id=record.id, status="processing")
+        # QUA-102 (opción 1) — second reset. The CAROUSEL container is brand new; it
+        # deserves its own fast ramp, not whatever elapsed-since-started_at the children
+        # phase already burned through. Same unconditional-overwrite call as the children
+        # reset above.
+        self._repo.record_polling_baseline(tenant_id=tenant_id, attempt_id=record.id)
         _log_stage(
             "carousel_container_created",
             tenant_id=tenant_id,

@@ -9,6 +9,8 @@ factory — they inject fakes — which is exactly why the lazy import is safe.
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from dataclasses import dataclass
 from functools import cache
 from typing import IO
@@ -37,6 +39,18 @@ from qualify_api.publishing.service import (
     TooManyItems,
 )
 from qualify_api.publishing.staging import MediaStagingService
+
+# QUA-102 discovery follow-up — staging (the R2 upload phase) happens BEFORE any
+# `publish_attempts` row exists, so it cannot use `PublishService._log_stage` (private,
+# and keyed on `attempt_id`, which is not known yet here). Deliberately NOT imported
+# from `service.py` — this stays a pure, self-contained observability addition with no
+# new cross-module coupling. Same plain key=value style.
+logger = logging.getLogger(__name__)
+
+
+def _log_stage(event: str, *, tenant_id: UUID, attempt_id: UUID | None, **fields: object) -> None:
+    extra = " ".join(f"{key}={value}" for key, value in fields.items())
+    logger.info("publish.%s tenant_id=%s attempt_id=%s %s", event, tenant_id, attempt_id, extra)
 
 
 class TokenPublicMediaLinker:
@@ -296,6 +310,13 @@ async def stage_and_start_many_publish(
     if len(items) > MAX_CAROUSEL_ITEMS:
         raise TooManyItems(len(items))
 
+    # QUA-102 discovery follow-up — `attempt_id` does not exist yet at `staging_start`
+    # (write-ahead only happens in `start_many`, below); `staging_end` is logged AFTER
+    # `start_many` returns so it can carry the real `attempt_id`, letting it join the
+    # rest of that attempt's per-child/parent events even though the phase it measures
+    # happened entirely before the row did.
+    _log_stage("staging_start", tenant_id=tenant_id, attempt_id=None, item_count=len(items))
+    staging_start_time = time.monotonic()
     staged_items: list[MediaItem] = list(
         await asyncio.gather(
             *(
@@ -304,13 +325,22 @@ async def stage_and_start_many_publish(
             )
         )
     )
-    return await production_publish_service().start_many(
+    staging_duration_ms = round((time.monotonic() - staging_start_time) * 1000)
+    state = await production_publish_service().start_many(
         tenant_id=tenant_id,
         connection_id=connection_id,
         items=staged_items,
         idempotency_key=idempotency_key,
         caption=caption,
     )
+    _log_stage(
+        "staging_end",
+        tenant_id=tenant_id,
+        attempt_id=state.attempt_id,
+        item_count=len(items),
+        duration_ms=staging_duration_ms,
+    )
+    return state
 
 
 async def advance_publish(*, tenant_id: UUID, attempt_id: UUID) -> PublishState:
