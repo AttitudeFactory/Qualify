@@ -3022,7 +3022,19 @@ class BrandConnectState(rx.State):
                 await asyncio.to_thread(
                     scrapecreators_client.save_profile_snapshot, network, handle, profile
                 )
-                profile = await asyncio.to_thread(scrapecreators_client.load_profile_snapshot)
+                # Deliberately NOT re-read from the snapshot file after this save. The
+                # snapshot is one global, non-tenant-keyed JSON file (by design — see
+                # scrapecreators_client's module docstring); this is a multi-session
+                # async backend, so a concurrent session's own `save_profile_snapshot`
+                # can land in the window between this save and a re-read, handing this
+                # session someone else's real profile data (confirmed reproducible: two
+                # interleaved saves, then a blind re-read, return the SECOND tenant's
+                # profile to the FIRST). `profile` here is already the exact dict this
+                # call just fetched — using it directly costs nothing extra and has no
+                # race window, unlike reading it back from shared state. The save above
+                # stays: it is what makes `load_cached_profile` (which DOES validate
+                # network+handle before returning anything) a same-handle cache hit on
+                # a later analyze() call.
         except (scrapecreators_client.ScrapeCreatorsError, ValueError, OSError) as exc:
             # The vendor detail (HTTP status, "insufficient credits", etc. — see
             # scrapecreators_client._error_detail) is diagnostic, not for the operator:
@@ -3152,7 +3164,7 @@ class BrandConnectState(rx.State):
 
         runner: creator_discovery.PhasedDiscovery | None = None
         # (tenant, brand, user) when the session has them — then phases and the sort
-        # live in Postgres (`referentes_provider`, migration 0019). Without them (no
+        # live in Postgres (`referentes_provider`, migration 0020). Without them (no
         # login, e.g. the offline tests) the JSON cache is used as before.
         ids = await self._referentes_ids()
         try:
@@ -4250,7 +4262,7 @@ def _deck_zone(bucket: str, title: str, blurb: str, arrow: str, area: str) -> rx
             width="100%",
         ),
         # `sync_labels` right after the decision: it stores the sort (§ referentes
-        # persistence, migration 0019).
+        # persistence, migration 0020).
         on_click=[BrandConnectState.send_current(bucket), BrandConnectState.sync_labels],
         on_drop=[BrandConnectState.drop_into(bucket), BrandConnectState.sync_labels],
         type="button",

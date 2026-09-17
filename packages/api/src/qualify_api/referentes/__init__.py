@@ -1,4 +1,4 @@
-"""Persistence for the Brand Kit's referentes search (migration 0019).
+"""Persistence for the Brand Kit's referentes search (migration 0020).
 
 Stores what `Qualify/creator_discovery.py`'s phased search found for a brand (one row per
 phase, stamped with the algorithm version and the seed it ran on) and the operator's

@@ -1,5 +1,5 @@
 """The bridge between the referentes search (`creator_discovery`) and its Postgres store
-(`qualify_api.referentes`, migration 0019) — what `BrandConnectState` calls instead of the
+(`qualify_api.referentes`, migration 0020) — what `BrandConnectState` calls instead of the
 old `discovery_cache.json` for phases, and what persists the referente/competencia/
 detractor sort that used to live only in the session.
 

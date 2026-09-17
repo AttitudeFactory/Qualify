@@ -8,6 +8,10 @@ docstring for the general limitation)."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from . import creative_wizard_pages as wiz
 from .creative_wizard_pages import BrandConnectState
 
@@ -460,3 +464,79 @@ def test_a_decision_launches_a_ghost_of_the_card_the_way_it_went() -> None:
     assert state.fly_direction == "down" and state.fly_token == 3
     state._clear_discovery()
     assert state.fly_card == {} and state.fly_direction == ""
+
+
+async def test_analyze_never_seeds_from_a_concurrent_tenants_profile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The cross-tenant race this regression-guards: `analyze()` used to save its own
+    read to the one global, non-tenant-keyed snapshot file and then blindly re-read
+    THAT FILE (`scrapecreators_client.load_profile_snapshot`, no network/handle check)
+    instead of just using the profile it had already fetched. In a real multi-session
+    backend, another tenant's own `save_profile_snapshot` landing in that window handed
+    this session someone else's real business profile — reproduced directly against
+    `scrapecreators_client` before this fix (two interleaved saves, then a blind
+    re-read, returned the SECOND tenant's profile to the FIRST caller).
+
+    Simulates the worst case directly: `save_profile_snapshot` here does the real save
+    AND THEN a second tenant's save on top of it, in the same call — the exact
+    interleaving a concurrent session could produce. `analyze()` must still end up with
+    tenant A's own profile, because it no longer reads the shared file back at all."""
+    monkeypatch.setattr(wiz.scrapecreators_client, "load_cached_profile", lambda *a, **k: None)
+
+    tenant_a_profile = {
+        "username": "tenant_a_real_business",
+        "fullName": "Tenant A Real Business",
+        "bio": "",
+        "category": "",
+        "followers": 111,
+        "profilePicUrl": "",
+    }
+    snapshot_path = tmp_path / "shared_snapshot.json"
+    real_save = wiz.scrapecreators_client.save_profile_snapshot  # before it gets patched below
+
+    def _fetch(_network: str, _handle: str) -> dict[str, object]:
+        return tenant_a_profile
+
+    def _save_then_another_tenant_interleaves(
+        network: str, handle: str, profile: dict[str, object]
+    ) -> None:
+        real_save(network, handle, profile, path=snapshot_path)
+        # A DIFFERENT session's own save, landing in the same window a blind re-read
+        # (the code this test guards against reintroducing) would have been exposed to.
+        real_save(
+            "instagram",
+            "tenant_b_handle",
+            {"username": "tenant_b_real_business", "followers": 222},
+            path=snapshot_path,
+        )
+
+    monkeypatch.setattr(wiz.scrapecreators_client, "fetch_profile_and_posts", _fetch)
+    monkeypatch.setattr(
+        wiz.scrapecreators_client, "save_profile_snapshot", _save_then_another_tenant_interleaves
+    )
+    monkeypatch.setattr(
+        wiz.creator_discovery,
+        "seed_from_profile",
+        lambda _profile: wiz.creator_discovery.DiscoverySeed(
+            handle="tenant_a_real_business", niches=()
+        ),
+    )
+
+    state = BrandConnectState()
+    state.network = "instagram"
+    state.username = "tenant_a_handle"
+
+    async for _ in BrandConnectState.analyze.fn(state):
+        pass
+
+    # Sanity check the race actually happened on the shared file (proves this test
+    # exercises the real interleaving, not a no-op):
+    assert (
+        wiz.scrapecreators_client.load_profile_snapshot(path=snapshot_path)["username"]
+        == "tenant_b_real_business"
+    )
+    # ...yet tenant A's own session must never have picked that up.
+    assert state.profile_username == "tenant_a_real_business"
+    assert state.profile_fullname == "Tenant A Real Business"
+    assert state.error == ""

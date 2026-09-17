@@ -2,9 +2,15 @@
 Kit's referentes search (`Qualify/creator_discovery.py`, phases sector → national →
 local) and the operator's referente/competencia/detractor sort, persisted per tenant
 
-Revision ID: 0019
-Revises: 0018
+Revision ID: 0020
+Revises: 0019
 Create Date: 2026-09-16
+
+**Renumbered 2026-09-17** — this migration was originally authored as `0019` when
+`main`'s head was `0018`; in the meantime an unrelated PR (QUA-102,
+`publish_attempts.polling_baseline_at`) landed on `main` and took revision `0019`
+first. Renumbered to `0020`/`Revises: 0019` to resolve the resulting duplicate-revision
+collision — no DDL below changed, only these two identifiers and the filename.
 
 Until now the phases lived in `Qualify/fixtures/discovery_cache.json` and the sort lived
 only in the Reflex session — a reload lost it. What is persisted here is the RESULT of
@@ -49,8 +55,8 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0019"
-down_revision = "0018"
+revision = "0020"
+down_revision = "0019"
 branch_labels = None
 depends_on = None
 

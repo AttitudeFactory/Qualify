@@ -1,4 +1,4 @@
-"""ORM models for the referentes tables. DDL/RLS/grants are migration 0019's job; these
+"""ORM models for the referentes tables. DDL/RLS/grants are migration 0020's job; these
 mirror it for typed access through `tenant_session`. The partial unique index
 `uq_discovery_phase_current` (one current phase per brand + phase_key) is created in raw
 SQL by the migration, like every other partial/expression index in this chain."""
