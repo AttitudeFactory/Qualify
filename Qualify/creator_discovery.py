@@ -1180,9 +1180,12 @@ def save_result(result: DiscoveryResult, *, directory: Path = DISCOVERY_DIR) -> 
 # calls; the CLI below stays the lab bench for the filter-JSON experiment.
 # --------------------------------------------------------------------------------------
 
-#: Bumped when the phase plan changes (queries, ranking, filters) so a cached result
-#: computed under the old plan is a miss instead of a stale answer.
-PHASED_PLAN_VERSION = 4
+#: Bumped when the phase plan changes (queries, ranking, filters, the tables they read)
+#: so a cached or stored result computed under the old plan is a miss instead of a stale
+#: answer. Not left to memory: `test_creator_discovery_version.py` fingerprints the
+#: algorithm's code and fails when it changes without a bump (5 = the 2026-09-15
+#: country aliases / city lists, which shipped still stamped 4).
+PHASED_PLAN_VERSION = 5
 
 
 @dataclass(frozen=True)
