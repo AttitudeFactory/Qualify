@@ -139,3 +139,57 @@ def test_logos_are_not_placeholders() -> None:
     assert lp.is_placeholder_avatar(_bytes(black_on_white)) is False
     assert lp.is_placeholder_avatar(_bytes(Image.new("RGB", (80, 80), "#eeeeee"))) is False
     assert lp.is_placeholder_avatar(b"not an image") is False
+
+
+# --------------------------------------------------------------------------------------
+# TikTok's default avatar (2026-09-21)
+# --------------------------------------------------------------------------------------
+
+#: The real TikTok default avatar as its CDN serves it (100x100 JPEG, 1543 bytes): a grey
+#: disc with a lighter silhouette on white corners. Byte-identical for every account
+#: without a picture (three unrelated ones in the cached reads) — a fixed image, not one
+#: generated per account from its initial.
+DEFAULT_TIKTOK = Path(__file__).resolve().parent / "fixtures" / "tiktok_default_avatar.jpg"
+
+_TIKTOK_DEFAULT_URL = (
+    "https://p16-common-sign.tiktokcdn-us.com/musically-maliva-obj/1594805258216454"
+    "~tplv-tiktokx-cropcenter:100:100.jpeg?dr=9640&refresh_token=x&x-signature=y"
+)
+
+
+def test_the_real_tiktok_default_avatar_is_a_placeholder() -> None:
+    assert lp.is_placeholder_avatar(DEFAULT_TIKTOK.read_bytes()) is True
+
+
+def test_the_instagram_default_is_still_a_placeholder_after_the_tiktok_one_joined() -> None:
+    assert lp.is_placeholder_avatar(DEFAULT_INSTAGRAM.read_bytes()) is True
+
+
+def test_the_tiktok_default_url_is_recognised_without_any_download() -> None:
+    assert lp.is_default_avatar_url(_TIKTOK_DEFAULT_URL) is True
+    # the signature and the size suffix change on every request; the object does not
+    assert lp.is_default_avatar_url(_TIKTOK_DEFAULT_URL.replace("100:100", "720:720")) is True
+    other = "https://p16-common-sign.tiktokcdn-us.com/tos-useast5-avt-0068-tx/b18488a5449b8420"
+    assert lp.is_default_avatar_url(other) is False
+    assert lp.is_default_avatar_url("") is False
+
+
+def test_a_light_grey_disc_needs_a_real_gap_to_the_background_to_count() -> None:
+    """The ceiling on the second tone is a GAP to the background, not a fixed number: a
+    near-white picture with a barely darker shape is a photo or a logo, not the default."""
+    close = Image.new("RGB", (100, 100), "#f5f5f5")
+    ImageDraw.Draw(close).ellipse((10, 10, 90, 90), fill="#e6e6e6")  # gap ~15
+    assert lp.is_placeholder_avatar(_bytes(close)) is False
+
+    default_like = Image.new("RGB", (100, 100), "#ffffff")
+    ImageDraw.Draw(default_like).ellipse((0, 0, 99, 99), fill="#cccccc")  # gap ~51
+    assert lp.is_placeholder_avatar(_bytes(default_like)) is True
+
+
+def test_a_coloured_flat_avatar_is_never_taken_for_the_default() -> None:
+    """A letter on a coloured background looks like any flat coloured logo: nothing in
+    the pixels can tell them apart, so it must count as a real picture (the brand is
+    asked its logo question either way; the risk of guessing wrong is a wrong preselect)."""
+    letter = Image.new("RGB", (100, 100), "#7c3aed")
+    ImageDraw.Draw(letter).ellipse((30, 30, 70, 70), fill="#ffffff")
+    assert lp.is_placeholder_avatar(_bytes(letter)) is False
