@@ -260,24 +260,34 @@ def _trending_video_card(candidate: TrendingVideoVM) -> rx.Component:
             spacing="3",
             width="100%",
         ),
-        rx.cond(
-            candidate.has_music,
-            rx.vstack(
-                rx.button(
-                    "Ver detalle de la canción",
-                    variant="ghost",
-                    size="1",
-                    loading=is_expanded & StoriesState.is_loading_song_detail,
-                    on_click=StoriesState.expand_song(candidate.music_id, candidate.music_title),
+        rx.box(
+            # Reserves the same vertical space whether or not this candidate has
+            # music — Instagram Reels never do (`has_music` is always False there),
+            # and without this fixed slot their cards render visibly shorter than
+            # TikTok's, which was reported as an inconsistent grid.
+            rx.cond(
+                candidate.has_music,
+                rx.vstack(
+                    rx.button(
+                        "Ver detalle de la canción",
+                        variant="ghost",
+                        size="1",
+                        loading=is_expanded & StoriesState.is_loading_song_detail,
+                        on_click=StoriesState.expand_song(
+                            candidate.music_id, candidate.music_title
+                        ),
+                    ),
+                    rx.cond(
+                        is_expanded,
+                        rx.cond(StoriesState.song_detail, _song_detail_panel()),
+                    ),
+                    spacing="1",
+                    width="100%",
                 ),
-                rx.cond(
-                    is_expanded,
-                    rx.cond(StoriesState.song_detail, _song_detail_panel()),
-                ),
-                spacing="1",
-                width="100%",
-                margin_top="0.5rem",
             ),
+            min_height="2.25rem",
+            margin_top="0.5rem",
+            width="100%",
         ),
         padding="0.75rem",
         border=f"1px solid {rx.color('gray', 5)}",
