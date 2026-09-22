@@ -15,7 +15,9 @@ import inspect
 
 import pytest
 
+from . import scrapecreators_trending
 from . import stories_state as stories_state_module
+from .scrapecreators_client import ScrapeCreatorsError
 from .stories_state import StoriesState, _resolve_video
 
 # ----------------------------------------------------------------------------------
@@ -117,6 +119,34 @@ def test_selecting_a_new_connection_clears_the_previous_trend_suggestion() -> No
     assert state.selected_trend_audio_title == ""
 
 
+def test_selecting_a_new_connection_does_not_clear_scrapecreators_trending_lists() -> None:
+    """Unlike Meta's `trend_options` (tied to the connection's credentials),
+    ScrapeCreators trending discovery is connection-independent (QUA-107) —
+    switching connections must leave it untouched."""
+    state = StoriesState()
+    state.tiktok_trending = ["placeholder"]  # type: ignore[list-item]
+    state.instagram_trending = ["placeholder"]  # type: ignore[list-item]
+
+    state.select_connection("c-2")
+
+    assert state.tiktok_trending == ["placeholder"]
+    assert state.instagram_trending == ["placeholder"]
+
+
+def test_a_new_trend_selection_replaces_any_previous_one_regardless_of_source() -> None:
+    """One proposal carries exactly one audio reference — selecting a TikTok song
+    after a Meta `ig_audio` suggestion (or vice versa) replaces it outright. Intended
+    behavior (QUA-107 decision), not a bug: both sources write to the same
+    `selected_trend_audio_id`/`_title` pair."""
+    state = StoriesState()
+    state.select_trend_audio("meta-1", "Meta Song")
+    assert state.selected_trend_audio_id == "meta-1"
+
+    state.select_trend_audio("tiktok-1", "TikTok Song")
+    assert state.selected_trend_audio_id == "tiktok-1"
+    assert state.selected_trend_audio_title == "TikTok Song"
+
+
 def test_clear_file_resets_the_buffered_upload() -> None:
     state = StoriesState()
     state._pending_bytes = b"bytes"
@@ -186,6 +216,231 @@ def test_resolve_video_falls_back_to_extension() -> None:
 def test_resolve_video_rejects_images_and_unknown_types() -> None:
     assert _resolve_video("image/jpeg", "photo.jpg") is None
     assert _resolve_video(None, "clip.avi") is None
+
+
+# ----------------------------------------------------------------------------------
+# QUA-107: ScrapeCreators trending discovery — unlike suggest_audio/_decide_and_
+# maybe_publish, these handlers call neither get_state nor _session_tenant_id, so
+# they ARE reachable end-to-end on a bare instance (no live EventContext needed).
+# ----------------------------------------------------------------------------------
+
+
+def _video(**overrides: object) -> scrapecreators_trending.TrendingVideo:
+    defaults: dict[str, object] = {
+        "source": "tiktok",
+        "id": "1",
+        "caption": "a caption",
+        "author_handle": "someone",
+        "author_display_name": "Someone",
+        "likes": 10,
+        "comments": 2,
+        "plays": 100,
+        "created_at": None,
+        "permalink": "https://example.com/1",
+        "thumbnail_url": "",
+        "music_id": "m1",
+        "music_title": "a song",
+        "rank": 0,
+    }
+    defaults.update(overrides)
+    return scrapecreators_trending.TrendingVideo(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_discover_tiktok_trending_populates_state_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = StoriesState()
+    monkeypatch.setattr(
+        stories_state_module.scrapecreators_trending,
+        "fetch_tiktok_trending_feed",
+        lambda: (_video(),),
+    )
+
+    await StoriesState.discover_tiktok_trending.fn(state)
+
+    assert len(state.tiktok_trending) == 1
+    assert state.tiktok_trending[0].external_id == "1"
+    assert state.tiktok_trending[0].music_id == "m1"
+    assert state.is_loading_tiktok_trending is False
+    assert state.tiktok_trending_error == ""
+
+
+@pytest.mark.asyncio
+async def test_discover_tiktok_trending_degrades_to_empty_list_on_vendor_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale list from a previous successful call must not survive a failed
+    re-fetch — same "never blocking, degrade to empty" posture `suggest_trend_audio`
+    already has for Meta."""
+    state = StoriesState()
+    state.tiktok_trending = ["stale"]  # type: ignore[list-item]
+
+    def boom() -> tuple[scrapecreators_trending.TrendingVideo, ...]:
+        raise ScrapeCreatorsError("vendor down")
+
+    monkeypatch.setattr(
+        stories_state_module.scrapecreators_trending, "fetch_tiktok_trending_feed", boom
+    )
+
+    await StoriesState.discover_tiktok_trending.fn(state)
+
+    assert state.tiktok_trending == []
+    assert state.is_loading_tiktok_trending is False
+
+
+@pytest.mark.asyncio
+async def test_discover_instagram_trending_populates_state_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = StoriesState()
+    reel = _video(source="instagram", id="r1", music_id="", music_title="")
+    monkeypatch.setattr(
+        stories_state_module.scrapecreators_trending,
+        "fetch_instagram_trending_reels",
+        lambda: (reel,),
+    )
+
+    await StoriesState.discover_instagram_trending.fn(state)
+
+    assert len(state.instagram_trending) == 1
+    assert state.instagram_trending[0].external_id == "r1"
+    assert state.instagram_trending[0].has_music is False
+    assert state.is_loading_instagram_trending is False
+
+
+@pytest.mark.asyncio
+async def test_discover_instagram_trending_degrades_to_empty_list_on_vendor_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = StoriesState()
+    state.instagram_trending = ["stale"]  # type: ignore[list-item]
+
+    def boom() -> tuple[scrapecreators_trending.TrendingVideo, ...]:
+        raise ScrapeCreatorsError("vendor down")
+
+    monkeypatch.setattr(
+        stories_state_module.scrapecreators_trending, "fetch_instagram_trending_reels", boom
+    )
+
+    await StoriesState.discover_instagram_trending.fn(state)
+
+    assert state.instagram_trending == []
+    assert state.is_loading_instagram_trending is False
+
+
+@pytest.mark.asyncio
+async def test_expand_song_populates_song_detail_with_trending_signals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    detail = scrapecreators_trending.SongDetail(
+        id="s1", title="Cancion Viral", author="Artista", user_count=100, recommend_status=50
+    )
+    monkeypatch.setattr(
+        stories_state_module.scrapecreators_trending,
+        "fetch_tiktok_song",
+        lambda *, clip_id: detail,
+    )
+    state = StoriesState()
+
+    await StoriesState.expand_song.fn(state, "s1", "fallback title")
+
+    assert state.expanded_song_id == "s1"
+    assert state.song_detail is not None
+    assert state.song_detail.audio_id == "s1"
+    assert state.song_detail.title == "Cancion Viral"
+    assert state.song_detail.user_count == 100
+    assert state.song_detail.has_user_count is True
+    assert state.song_detail.recommend_status == 50
+    assert state.song_detail.has_recommend_status is True
+    assert state.is_loading_song_detail is False
+
+
+@pytest.mark.asyncio
+async def test_expand_song_without_trending_signals_leaves_them_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A song detail the vendor returned without `user_count`/`recommend_status`
+    must not fabricate either — `has_user_count`/`has_recommend_status` stay False."""
+    detail = scrapecreators_trending.SongDetail(
+        id="s1", title="t", author="a", user_count=None, recommend_status=None
+    )
+    monkeypatch.setattr(
+        stories_state_module.scrapecreators_trending,
+        "fetch_tiktok_song",
+        lambda *, clip_id: detail,
+    )
+    state = StoriesState()
+
+    await StoriesState.expand_song.fn(state, "s1", "fallback title")
+
+    assert state.song_detail.has_user_count is False
+    assert state.song_detail.has_recommend_status is False
+
+
+@pytest.mark.asyncio
+async def test_expand_song_degrades_without_blocking_on_vendor_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(*, clip_id: str) -> scrapecreators_trending.SongDetail:
+        raise ScrapeCreatorsError("vendor down")
+
+    monkeypatch.setattr(stories_state_module.scrapecreators_trending, "fetch_tiktok_song", boom)
+    state = StoriesState()
+
+    await StoriesState.expand_song.fn(state, "s1", "fallback title")
+
+    assert state.song_detail is None
+    assert state.is_loading_song_detail is False
+
+
+@pytest.mark.asyncio
+async def test_selecting_an_enriched_song_reuses_the_shared_selection_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The propagation path a chosen TikTok song takes into `create_proposal`: the
+    exact same `select_trend_audio` Meta's suggestion already uses — no new field."""
+    detail = scrapecreators_trending.SongDetail(
+        id="s1", title="Cancion Viral", author="Artista", user_count=10, recommend_status=90
+    )
+    monkeypatch.setattr(
+        stories_state_module.scrapecreators_trending,
+        "fetch_tiktok_song",
+        lambda *, clip_id: detail,
+    )
+    state = StoriesState()
+
+    await StoriesState.expand_song.fn(state, "s1", "fallback")
+    state.select_trend_audio(state.song_detail.audio_id, state.song_detail.title)
+
+    assert state.selected_trend_audio_id == "s1"
+    assert state.selected_trend_audio_title == "Cancion Viral"
+
+
+def test_trending_discovery_handlers_take_no_tenant_or_connection_params() -> None:
+    """QUA-107 architecture decision: ScrapeCreators trending discovery needs no
+    per-tenant credential, unlike `suggest_audio`'s Meta call — enforced by both
+    signature and by the absence of any tenant/session resolution in the source."""
+    for handler in (
+        StoriesState.discover_tiktok_trending.fn,
+        StoriesState.discover_instagram_trending.fn,
+        StoriesState.expand_song.fn,
+    ):
+        params = inspect.signature(handler).parameters
+        assert "tenant_id" not in params
+        assert "connection_id" not in params
+        source = inspect.getsource(handler)
+        assert "_session_tenant_id" not in source
+        assert "get_state" not in source
+
+
+def test_create_proposal_background_forwards_the_shared_trend_audio_fields() -> None:
+    """A TikTok song selection reuses the exact same `selected_trend_audio_id`/
+    `_title` fields Meta's suggestion already writes to — this structural pin proves
+    `create_proposal_background` needed no change for the new source."""
+    source = inspect.getsource(StoriesState.create_proposal_background.fn)
+    assert "trend_audio_id = self.selected_trend_audio_id" in source
+    assert "trend_audio_title = self.selected_trend_audio_title" in source
 
 
 # ----------------------------------------------------------------------------------
