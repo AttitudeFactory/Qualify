@@ -307,3 +307,24 @@ def test_clearing_the_discovery_forgets_what_was_persisted() -> None:
     state._persisted_buckets = {"TikTok:@a": "referente"}
     BrandConnectState._clear_discovery(state)
     assert state._persisted_buckets == {}
+
+
+def test_catalog_hashtags_survive_the_stored_seed_with_their_origin() -> None:
+    seed = cd.DiscoverySeed(
+        "brand",
+        ("food_drink",),
+        hashtags=("mine",),
+        country_code="CO",
+        terms=("smash burgers",),
+        catalog_hashtags=("burgers", "smash"),
+    )
+    payload = rp.seed_payload(seed)
+    assert payload["hashtags"] == [
+        {"tag": "mine", "origin": "profile"},
+        {"tag": "burgers", "origin": "catalog"},
+        {"tag": "smash", "origin": "catalog"},
+    ]
+    rebuilt = rp.rebuild_seed(payload)
+    assert rebuilt.hashtags == ("mine",)
+    assert rebuilt.catalog_hashtags == ("burgers", "smash")
+    assert rebuilt == seed

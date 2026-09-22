@@ -23,6 +23,7 @@ from typing import Any
 from uuid import UUID
 
 from qualify_api.referentes import (
+    ORIGIN_CATALOG,
     ORIGIN_PROFILE,
     NewDiscoveredAccount,
     NewDiscoveryPhase,
@@ -43,9 +44,9 @@ PHASE_TTL_SECONDS = 7 * 24 * 3600
 
 
 def seed_payload(seed: DiscoverySeed) -> dict[str, Any]:
-    """The seed as stored: everything the phase read, with each hashtag's origin. Every
-    hashtag comes from the brand's own profile today (`seed_from_profile`); a hashtag
-    discovery feeding the seed adds entries with its own origin."""
+    """The seed as stored: everything the phase read, with each hashtag's origin — the
+    brand's own (`profile`, `seed_from_profile`) or the shared catalog's (`catalog`,
+    `hashtag_catalog.catalog_hashtags_for`)."""
     return {
         "handle": seed.handle,
         "niches": list(seed.niches),
@@ -53,7 +54,10 @@ def seed_payload(seed: DiscoverySeed) -> dict[str, Any]:
         "related": list(seed.related),
         "country_code": seed.country_code,
         "city": seed.city,
-        "hashtags": [{"tag": tag, "origin": ORIGIN_PROFILE} for tag in seed.hashtags],
+        "hashtags": [
+            *({"tag": tag, "origin": ORIGIN_PROFILE} for tag in seed.hashtags),
+            *({"tag": tag, "origin": ORIGIN_CATALOG} for tag in seed.catalog_hashtags),
+        ],
     }
 
 
@@ -252,18 +256,19 @@ def rebuild_seed(payload: dict[str, Any]) -> DiscoverySeed:
     `phase_signature` matches what the wizard computes for the same answers and a
     recomputed phase is a hit the next time the operator walks the flow.
 
-    Every stored hashtag is used, whatever its origin. A future hashtag discovery that
-    re-derives its own hashtags replaces the entries of ITS origin before rebuilding —
-    the origin is stored exactly so that is possible."""
-    hashtags = tuple(
-        str(item["tag"])
-        for item in payload.get("hashtags") or []
-        if isinstance(item, dict) and item.get("tag")
-    )
+    Every stored hashtag is used, split back into its two seed fields by origin: `catalog`
+    ones into `catalog_hashtags`, the rest (the brand's own) into `hashtags`. The origin is
+    stored exactly so a recompute can re-derive one set without touching the other."""
+    items = [
+        item for item in payload.get("hashtags") or [] if isinstance(item, dict) and item.get("tag")
+    ]
+    hashtags = tuple(str(i["tag"]) for i in items if i.get("origin") != ORIGIN_CATALOG)
+    catalog = tuple(str(i["tag"]) for i in items if i.get("origin") == ORIGIN_CATALOG)
     return DiscoverySeed(
         handle=str(payload.get("handle") or ""),
         niches=tuple(str(n) for n in payload.get("niches") or ()),
         hashtags=hashtags,
+        catalog_hashtags=catalog,
         country_code=str(payload.get("country_code") or ""),
         city=str(payload.get("city") or ""),
         related=tuple(str(r) for r in payload.get("related") or ()),

@@ -86,6 +86,7 @@ _NOT_ALGORITHM = frozenset(
 #: version meant.
 FINGERPRINTS: dict[int, str] = {
     5: "1bf8506d5df38d5ed0c39769fa5c8b4acaac3735d7ce5c981750ec59eacfca4b",
+    6: "3f2cd2348040999347648ca37a942c2204566a4f0f5d04042642caf3cdf0b48a",
 }
 
 
