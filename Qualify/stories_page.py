@@ -95,13 +95,46 @@ def _upload_zone() -> rx.Component:
 
 
 def _trend_option(option: TrendAudioOptionVM) -> rx.Component:
+    """One row of the compact Meta audio list — title first (primary), artist and
+    duration secondary, the whole row clickable. Deliberately a plain list row, not
+    a card: no border box, no thumbnail (Meta's `ig_audio` never carries cover art —
+    nothing here is invented to fill that gap), so it reads as a distinct component
+    from the TikTok/Instagram trending cards next to it, not a restyled duplicate."""
     selected = StoriesState.selected_trend_audio_id == option.audio_id
     return rx.button(
-        rx.cond(selected, rx.icon("circle-check", size=14), rx.icon("music", size=14)),
-        option.display_label,
-        variant=rx.cond(selected, "solid", "soft"),
-        color_scheme="gray",
+        rx.hstack(
+            rx.cond(
+                selected,
+                rx.icon("circle-check", size=14, color=rx.color("iris", 9), flex_shrink="0"),
+                rx.icon("music", size=14, color=T.TEXT_FAINT, flex_shrink="0"),
+            ),
+            rx.vstack(
+                rx.text(option.title, size="2", weight="medium"),
+                rx.cond(
+                    option.artist_or_creator != "",
+                    rx.text(option.artist_or_creator, size="1", color=T.TEXT_MUTED),
+                ),
+                align_items="start",
+                spacing="0",
+            ),
+            rx.spacer(),
+            rx.cond(
+                option.duration_label != "",
+                rx.text(option.duration_label, size="1", color=T.TEXT_FAINT, flex_shrink="0"),
+            ),
+            align="center",
+            spacing="3",
+            width="100%",
+        ),
+        # `ghost` + a tinted background only when selected — a subtle state, never a
+        # solid button or a heavy badge (explicit product decision, QUA-107 follow-up).
+        variant="ghost",
+        color_scheme=rx.cond(selected, "iris", "gray"),
+        background=rx.cond(selected, rx.color("iris", 3), "transparent"),
+        border_radius="0",
+        border_bottom=f"1px solid {rx.color('gray', 4)}",
         size="2",
+        width="100%",
         on_click=StoriesState.select_trend_audio(option.audio_id, option.title),
     )
 
@@ -139,10 +172,10 @@ def _trend_audio_section() -> rx.Component:
         ),
         rx.cond(
             StoriesState.trend_options.length() > 0,
-            rx.flex(
+            rx.vstack(
                 rx.foreach(StoriesState.trend_options, _trend_option),
-                wrap="wrap",
-                gap="2",
+                spacing="0",
+                width="100%",
             ),
         ),
         width="100%",

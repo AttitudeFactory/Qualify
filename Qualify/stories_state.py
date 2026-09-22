@@ -85,6 +85,9 @@ _VIDEO_CONTENT_TYPES = {_MP4_CONTENT_TYPE, _MOV_CONTENT_TYPE}
 
 _UPLOAD_ID = "story_upload"
 
+# UI presentation cap for Meta's `ig_audio` suggestion list — see `suggest_audio`.
+_MAX_TREND_AUDIO_OPTIONS = 10
+
 
 def _resolve_video(content_type: str | None, filename: str) -> str | None:
     """`(canonical_content_type)` for one dropped/picked file, video-only — or `None`
@@ -318,7 +321,12 @@ class StoriesState(rx.State):
             self.trend_error = ""
         options = await _suggest_trend_audio(tenant_id=tenant_id, connection_id=UUID(connection_id))
         async with self:
-            self.trend_options = options
+            # UI-only presentation cap (QUA-107 follow-up) — Meta's own list is
+            # uncapped (~25 items measured), which read as a "wall of chips" once
+            # the trending-discovery cards landed next to it. The cap lives here,
+            # never in trend_audio_client.py: it is about how many we SHOW, not
+            # about what Meta returns.
+            self.trend_options = options[:_MAX_TREND_AUDIO_OPTIONS]
             self.is_loading_trend = False
 
     @rx.event

@@ -496,3 +496,17 @@ def test_no_handler_awaits_load_stories_screen_or_load_proposal_directly() -> No
     assert "await self.load_stories_screen()" not in source
     assert "await self.load_proposal()" not in source
     assert "yield StoriesState.load_stories_screen" in source
+
+
+def test_suggest_audio_caps_trend_options_at_the_ui_presentation_limit() -> None:
+    """Meta's `ig_audio` list is uncapped (~25 items measured live) — the cap is a
+    UI-only decision (QUA-107 follow-up), applied here and never inside
+    `trend_audio_client.py`. `suggest_audio` itself calls `_session_tenant_id`
+    (needs a live EventContext), so this is a structural pin, same technique the
+    rest of this file already uses for that class of handler."""
+    source = inspect.getsource(StoriesState.suggest_audio.fn)
+    assert "options[:_MAX_TREND_AUDIO_OPTIONS]" in source
+
+
+def test_max_trend_audio_options_is_ten() -> None:
+    assert stories_state_module._MAX_TREND_AUDIO_OPTIONS == 10
