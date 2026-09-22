@@ -99,43 +99,71 @@ def _trend_option(option: TrendAudioOptionVM) -> rx.Component:
     duration secondary, the whole row clickable. Deliberately a plain list row, not
     a card: no border box, no thumbnail (Meta's `ig_audio` never carries cover art —
     nothing here is invented to fill that gap), so it reads as a distinct component
-    from the TikTok/Instagram trending cards next to it, not a restyled duplicate."""
+    from the TikTok/Instagram trending cards next to it, not a restyled duplicate.
+
+    The play button (QUA-107 follow-up) is a SIBLING of the selection button, never
+    nested inside it — a `<button>` cannot contain another `<button>` per the HTML5
+    spec; browsers close the outer one early and the layout breaks. Two buttons
+    side by side in one row keeps "escuchar" and "seleccionar" independent, exactly
+    as decided, with no `stop_propagation` trick needed."""
     selected = StoriesState.selected_trend_audio_id == option.audio_id
-    return rx.button(
-        rx.hstack(
+    is_playing_this = (
+        StoriesState.playing_audio_id == option.audio_id
+    ) & StoriesState.is_audio_playing
+    return rx.hstack(
+        rx.box(
             rx.cond(
-                selected,
-                rx.icon("circle-check", size=14, color=rx.color("iris", 9), flex_shrink="0"),
-                rx.icon("music", size=14, color=T.TEXT_FAINT, flex_shrink="0"),
-            ),
-            rx.vstack(
-                rx.text(option.title, size="2", weight="medium"),
-                rx.cond(
-                    option.artist_or_creator != "",
-                    rx.text(option.artist_or_creator, size="1", color=T.TEXT_MUTED),
+                option.has_preview,
+                rx.button(
+                    rx.cond(is_playing_this, rx.icon("pause", size=12), rx.icon("play", size=12)),
+                    variant="ghost",
+                    color_scheme=rx.cond(is_playing_this, "iris", "gray"),
+                    size="1",
+                    on_click=StoriesState.toggle_audio_preview(option.audio_id, option.preview_url),
                 ),
-                align_items="start",
-                spacing="0",
             ),
-            rx.spacer(),
-            rx.cond(
-                option.duration_label != "",
-                rx.text(option.duration_label, size="1", color=T.TEXT_FAINT, flex_shrink="0"),
-            ),
-            align="center",
-            spacing="3",
-            width="100%",
+            width="1.75rem",
+            flex_shrink="0",
         ),
-        # `ghost` + a tinted background only when selected — a subtle state, never a
-        # solid button or a heavy badge (explicit product decision, QUA-107 follow-up).
-        variant="ghost",
-        color_scheme=rx.cond(selected, "iris", "gray"),
-        background=rx.cond(selected, rx.color("iris", 3), "transparent"),
-        border_radius="0",
-        border_bottom=f"1px solid {rx.color('gray', 4)}",
-        size="2",
+        rx.button(
+            rx.hstack(
+                rx.cond(
+                    selected,
+                    rx.icon("circle-check", size=14, color=rx.color("iris", 9), flex_shrink="0"),
+                    rx.icon("music", size=14, color=T.TEXT_FAINT, flex_shrink="0"),
+                ),
+                rx.vstack(
+                    rx.text(option.title, size="2", weight="medium"),
+                    rx.cond(
+                        option.artist_or_creator != "",
+                        rx.text(option.artist_or_creator, size="1", color=T.TEXT_MUTED),
+                    ),
+                    align_items="start",
+                    spacing="0",
+                ),
+                rx.spacer(),
+                rx.cond(
+                    option.duration_label != "",
+                    rx.text(option.duration_label, size="1", color=T.TEXT_FAINT, flex_shrink="0"),
+                ),
+                align="center",
+                spacing="3",
+                width="100%",
+            ),
+            # `ghost` + a tinted background only when selected — a subtle state,
+            # never a solid button or a heavy badge (explicit product decision).
+            variant="ghost",
+            color_scheme=rx.cond(selected, "iris", "gray"),
+            background=rx.cond(selected, rx.color("iris", 3), "transparent"),
+            border_radius="0",
+            size="2",
+            width="100%",
+            on_click=StoriesState.select_trend_audio(option.audio_id, option.title),
+        ),
+        align="center",
+        spacing="0",
         width="100%",
-        on_click=StoriesState.select_trend_audio(option.audio_id, option.title),
+        border_bottom=f"1px solid {rx.color('gray', 4)}",
     )
 
 
@@ -218,8 +246,26 @@ def _song_detail_panel() -> rx.Component:
     `_trending_video_card`'s guard), so no field here needs its own None-check
     besides `user_count`/`recommend_status`, which the vendor may omit."""
     detail = StoriesState.song_detail
+    is_playing_this = (
+        StoriesState.playing_audio_id == detail.audio_id
+    ) & StoriesState.is_audio_playing
     return rx.vstack(
         rx.text(detail.display_label, size="2", weight="medium"),
+        rx.cond(
+            detail.has_preview,
+            rx.hstack(
+                rx.button(
+                    rx.cond(is_playing_this, rx.icon("pause", size=12), rx.icon("play", size=12)),
+                    variant="soft",
+                    color_scheme=rx.cond(is_playing_this, "iris", "gray"),
+                    size="1",
+                    on_click=StoriesState.toggle_audio_preview(detail.audio_id, detail.preview_url),
+                ),
+                rx.text("Escuchar preview", size="1", color=T.TEXT_MUTED),
+                spacing="2",
+                align="center",
+            ),
+        ),
         rx.cond(
             detail.has_user_count,
             rx.hstack(
@@ -394,9 +440,29 @@ def _trending_discovery_section() -> rx.Component:
     )
 
 
+def _audio_preview_player() -> rx.Component:
+    """The ONE shared player behind every play/pause button on this screen (Meta's
+    audio list and the TikTok song-detail panel) — driven entirely by
+    `playing_audio_url`/`is_audio_playing`, so only one preview is ever sounding at
+    a time and no row mounts its own `<audio>` element. `on_error` degrades exactly
+    like `on_ended`: an expired/unavailable preview URL stops cleanly instead of
+    leaving a ⏸ icon showing sound that stopped playing on its own."""
+    return rx.box(
+        rx.audio(
+            src=StoriesState.playing_audio_url,
+            playing=StoriesState.is_audio_playing,
+            controls=False,
+            on_ended=StoriesState.audio_preview_stopped,
+            on_error=StoriesState.audio_preview_stopped,
+        ),
+        display="none",
+    )
+
+
 def _create_form() -> rx.Component:
     return card(
         rx.vstack(
+            _audio_preview_player(),
             section("Cuenta", _connection_selector()),
             rx.divider(),
             section("Video de la Story", _upload_zone()),

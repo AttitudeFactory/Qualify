@@ -133,6 +133,63 @@ def test_selecting_a_new_connection_does_not_clear_scrapecreators_trending_lists
     assert state.instagram_trending == ["placeholder"]
 
 
+def test_toggle_audio_preview_plays_a_new_track() -> None:
+    state = StoriesState()
+
+    state.toggle_audio_preview("a1", "https://example.test/a1.mp3")
+
+    assert state.playing_audio_id == "a1"
+    assert state.playing_audio_url == "https://example.test/a1.mp3"
+    assert state.is_audio_playing is True
+
+
+def test_toggle_audio_preview_pauses_the_currently_playing_track() -> None:
+    state = StoriesState()
+    state.toggle_audio_preview("a1", "https://example.test/a1.mp3")
+
+    state.toggle_audio_preview("a1", "https://example.test/a1.mp3")
+
+    assert state.is_audio_playing is False
+    # The url/id stay — a second click on the same (now-paused) row resumes it,
+    # rather than needing to re-supply the url from the caller.
+    assert state.playing_audio_id == "a1"
+
+
+def test_toggle_audio_preview_switches_track_without_needing_a_pause_first() -> None:
+    state = StoriesState()
+    state.toggle_audio_preview("a1", "https://example.test/a1.mp3")
+
+    state.toggle_audio_preview("a2", "https://example.test/a2.mp3")
+
+    assert state.playing_audio_id == "a2"
+    assert state.playing_audio_url == "https://example.test/a2.mp3"
+    assert state.is_audio_playing is True
+
+
+def test_audio_preview_stopped_resets_the_playing_flag_without_clearing_the_track() -> None:
+    """Fired by the player's own on_ended/on_error — degrades cleanly (an expired
+    preview URL, or a track finishing) without leaving a stale ⏸ icon."""
+    state = StoriesState()
+    state.toggle_audio_preview("a1", "https://example.test/a1.mp3")
+
+    state.audio_preview_stopped()
+
+    assert state.is_audio_playing is False
+    assert state.playing_audio_id == "a1"  # untouched — only the playing flag drops
+
+
+def test_selecting_trend_audio_never_touches_the_playing_audio_state() -> None:
+    """Listening and selecting are independent state (QUA-107 follow-up decision)."""
+    state = StoriesState()
+    state.toggle_audio_preview("a1", "https://example.test/a1.mp3")
+
+    state.select_trend_audio("a2", "Otra cancion")
+
+    assert state.playing_audio_id == "a1"
+    assert state.is_audio_playing is True
+    assert state.selected_trend_audio_id == "a2"
+
+
 def test_a_new_trend_selection_replaces_any_previous_one_regardless_of_source() -> None:
     """One proposal carries exactly one audio reference — selecting a TikTok song
     after a Meta `ig_audio` suggestion (or vice versa) replaces it outright. Intended
@@ -334,7 +391,12 @@ async def test_expand_song_populates_song_detail_with_trending_signals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     detail = scrapecreators_trending.SongDetail(
-        id="s1", title="Cancion Viral", author="Artista", user_count=100, recommend_status=50
+        id="s1",
+        title="Cancion Viral",
+        author="Artista",
+        user_count=100,
+        recommend_status=50,
+        preview_url="https://example.test/preview.mp3",
     )
     monkeypatch.setattr(
         stories_state_module.scrapecreators_trending,
@@ -353,6 +415,8 @@ async def test_expand_song_populates_song_detail_with_trending_signals(
     assert state.song_detail.has_user_count is True
     assert state.song_detail.recommend_status == 50
     assert state.song_detail.has_recommend_status is True
+    assert state.song_detail.preview_url == "https://example.test/preview.mp3"
+    assert state.song_detail.has_preview is True
     assert state.is_loading_song_detail is False
 
 

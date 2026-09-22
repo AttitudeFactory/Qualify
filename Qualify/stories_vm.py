@@ -66,7 +66,11 @@ class TrendAudioOptionVM:
     `user_count`/`recommend_status` (QUA-107) are populated only for a TikTok song
     enriched via `/v1/tiktok/song` — Meta's own `ig_audio` suggestion carries neither,
     so that call site simply leaves both `None`. Shared type rather than a third VM:
-    the shape (id/title/artist/duration/rank) already matched exactly."""
+    the shape (id/title/artist/duration/rank) already matched exactly.
+
+    `preview_url` (QUA-107 follow-up) is a temporary vendor/Meta URL for the human to
+    LISTEN to as reference — never downloaded, never persisted, never threaded into a
+    publish call. `has_preview` is precomputed so the page never string-compares it."""
 
     audio_id: str
     title: str
@@ -78,6 +82,8 @@ class TrendAudioOptionVM:
     recommend_status: int | None = None
     has_user_count: bool = False
     has_recommend_status: bool = False
+    preview_url: str = ""
+    has_preview: bool = False
 
 
 @dataclass(frozen=True)
@@ -140,6 +146,7 @@ def build_trend_audio_vm(
     rank: int,
     user_count: int | None = None,
     recommend_status: int | None = None,
+    preview_url: str = "",
 ) -> TrendAudioOptionVM:
     duration_label = _duration_label(duration_ms)
     parts = [title]
@@ -156,6 +163,8 @@ def build_trend_audio_vm(
         display_label=" ".join(parts),
         user_count=user_count,
         recommend_status=recommend_status,
+        preview_url=preview_url,
+        has_preview=bool(preview_url),
         has_user_count=user_count is not None,
         has_recommend_status=recommend_status is not None,
     )

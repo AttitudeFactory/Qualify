@@ -86,6 +86,12 @@ class SongDetail:
     author: str
     user_count: int | None
     recommend_status: int | None
+    # `play_url` (QUA-107 follow-up): a short preview clip, REFERENCE only — never
+    # downloaded/persisted here, never fed into a Meta publish call. Falls back to
+    # `full_song.full_song_play_url` only when the short preview is absent; both are
+    # TikTok's own common `{"url_list": [...]}` wrapper, same shape `_first_url`
+    # already handles for thumbnails.
+    preview_url: str = ""
 
 
 def _str_or_empty(value: object) -> str:
@@ -267,12 +273,18 @@ def fetch_tiktok_song(*, clip_id: str, client: httpx.Client | None = None) -> So
     if not isinstance(info, dict):
         raise ScrapeCreatorsError("tiktok song response carried no music_info object")
     song_id = info.get("id_str") or info.get("id")
+    preview_url = _first_url(info.get("play_url"))
+    if not preview_url:
+        full_song = info.get("full_song")
+        if isinstance(full_song, dict):
+            preview_url = _first_url(full_song.get("full_song_play_url"))
     return SongDetail(
         id=str(song_id) if isinstance(song_id, (str, int)) else clip_id,
         title=_str_or_empty(info.get("title")),
         author=_str_or_empty(info.get("author")),
         user_count=_int_or_none(info.get("user_count")),
         recommend_status=_int_or_none(info.get("recommend_status")),
+        preview_url=preview_url,
     )
 
 

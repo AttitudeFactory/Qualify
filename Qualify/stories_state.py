@@ -158,6 +158,13 @@ class StoriesState(rx.State):
     song_detail: TrendAudioOptionVM | None = None
     is_loading_song_detail: bool = False
 
+    # -- QUA-107 follow-up: audio preview player. Deliberately independent of
+    # `selected_trend_audio_id`/`_title` — listening to a track and choosing it as
+    # the proposal's reference are two separate actions, never coupled.
+    playing_audio_id: str = ""
+    playing_audio_url: str = ""
+    is_audio_playing: bool = False
+
     # idle | staging | failure (a success resets straight back to idle)
     create_phase: str = "idle"
     create_error: str = ""
@@ -339,6 +346,27 @@ class StoriesState(rx.State):
         self.selected_trend_audio_id = ""
         self.selected_trend_audio_title = ""
 
+    @rx.event
+    def toggle_audio_preview(self, audio_id: str, url: str) -> None:
+        """Play/pause the ONE shared preview player. Toggling the currently-playing
+        row pauses it; anything else (a different row, or a paused row) switches the
+        player's source and plays. Never touches `selected_trend_audio_id`/`_title`
+        — listening and selecting are independent (QUA-107 follow-up)."""
+        if self.playing_audio_id == audio_id and self.is_audio_playing:
+            self.is_audio_playing = False
+            return
+        self.playing_audio_id = audio_id
+        self.playing_audio_url = url
+        self.is_audio_playing = True
+
+    @rx.event
+    def audio_preview_stopped(self) -> None:
+        """Fired by the player's own `on_ended`/`on_error` — a track finishing, or a
+        preview URL that expired/failed mid-playback, both degrade to the same
+        clean stopped state rather than leaving the ⏸ icon stuck showing sound that
+        is not actually playing."""
+        self.is_audio_playing = False
+
     @rx.event(background=True)
     async def discover_tiktok_trending(self) -> None:
         """Explicit, operator-triggered — never runs on screen load. Needs no
@@ -407,6 +435,7 @@ class StoriesState(rx.State):
                 rank=0,
                 user_count=detail.user_count,
                 recommend_status=detail.recommend_status,
+                preview_url=detail.preview_url,
             )
             self.is_loading_song_detail = False
 
@@ -480,6 +509,9 @@ class StoriesState(rx.State):
             self.instagram_trending = []
             self.expanded_song_id = ""
             self.song_detail = None
+            self.playing_audio_id = ""
+            self.playing_audio_url = ""
+            self.is_audio_playing = False
         yield rx.toast.success("Propuesta creada — queda pendiente de revisión.")
         yield StoriesState.load_stories_screen
 

@@ -234,6 +234,7 @@ def test_fetch_tiktok_song_parses_the_real_shape_with_trending_signals() -> None
                     "user_count": 1305350,
                     "recommend_status": 100,
                     "commercial_right_type": 2,
+                    "play_url": {"url_list": ["https://example.test/song-preview.mp3"]},
                 },
             }
         )
@@ -247,6 +248,35 @@ def test_fetch_tiktok_song_parses_the_real_shape_with_trending_signals() -> None
     assert detail.author == "Healing song"
     assert detail.user_count == 1305350
     assert detail.recommend_status == 100
+    assert detail.preview_url == "https://example.test/song-preview.mp3"
+
+
+def test_fetch_tiktok_song_falls_back_to_full_song_play_url_when_short_preview_is_absent() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _json(
+            {
+                "success": True,
+                "music_info": {
+                    "id_str": "x",
+                    "title": "t",
+                    "author": "a",
+                    "full_song": {
+                        "full_song_play_url": {"url_list": ["https://example.test/full-song.mp3"]}
+                    },
+                },
+            }
+        )
+
+    detail = trending.fetch_tiktok_song(clip_id="x", client=_client(handler))
+    assert detail.preview_url == "https://example.test/full-song.mp3"
+
+
+def test_fetch_tiktok_song_preview_url_is_empty_when_neither_field_is_present() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _json({"success": True, "music_info": {"id_str": "x", "title": "t", "author": "a"}})
+
+    detail = trending.fetch_tiktok_song(clip_id="x", client=_client(handler))
+    assert detail.preview_url == ""
 
 
 def test_fetch_tiktok_song_without_trending_signals_leaves_them_none() -> None:
