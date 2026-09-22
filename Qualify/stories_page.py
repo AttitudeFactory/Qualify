@@ -15,7 +15,7 @@ from __future__ import annotations
 import reflex as rx
 
 from .stories_state import StoriesState
-from .stories_vm import StoryProposalVM, TrendAudioOptionVM
+from .stories_vm import StoryProposalVM, TrendAudioOptionVM, TrendingVideoVM
 from .ui import app_shell, callout, card, empty_state, page_body, page_header, section
 from .ui import tokens as T
 from .ui.primitives import skeleton_rows, tone_badge
@@ -95,14 +95,75 @@ def _upload_zone() -> rx.Component:
 
 
 def _trend_option(option: TrendAudioOptionVM) -> rx.Component:
+    """One row of the compact Meta audio list — title first (primary), artist and
+    duration secondary, the whole row clickable. Deliberately a plain list row, not
+    a card: no border box, no thumbnail (Meta's `ig_audio` never carries cover art —
+    nothing here is invented to fill that gap), so it reads as a distinct component
+    from the TikTok/Instagram trending cards next to it, not a restyled duplicate.
+
+    The play button (QUA-107 follow-up) is a SIBLING of the selection button, never
+    nested inside it — a `<button>` cannot contain another `<button>` per the HTML5
+    spec; browsers close the outer one early and the layout breaks. Two buttons
+    side by side in one row keeps "escuchar" and "seleccionar" independent, exactly
+    as decided, with no `stop_propagation` trick needed."""
     selected = StoriesState.selected_trend_audio_id == option.audio_id
-    return rx.button(
-        rx.cond(selected, rx.icon("circle-check", size=14), rx.icon("music", size=14)),
-        option.display_label,
-        variant=rx.cond(selected, "solid", "soft"),
-        color_scheme="gray",
-        size="2",
-        on_click=StoriesState.select_trend_audio(option.audio_id, option.title),
+    is_playing_this = (
+        StoriesState.playing_audio_id == option.audio_id
+    ) & StoriesState.is_audio_playing
+    return rx.hstack(
+        rx.box(
+            rx.cond(
+                option.has_preview,
+                rx.button(
+                    rx.cond(is_playing_this, rx.icon("pause", size=12), rx.icon("play", size=12)),
+                    variant="ghost",
+                    color_scheme=rx.cond(is_playing_this, "iris", "gray"),
+                    size="1",
+                    on_click=StoriesState.toggle_audio_preview(option.audio_id, option.preview_url),
+                ),
+            ),
+            width="1.75rem",
+            flex_shrink="0",
+        ),
+        rx.button(
+            rx.hstack(
+                rx.cond(
+                    selected,
+                    rx.icon("circle-check", size=14, color=rx.color("iris", 9), flex_shrink="0"),
+                    rx.icon("music", size=14, color=T.TEXT_FAINT, flex_shrink="0"),
+                ),
+                rx.vstack(
+                    rx.text(option.title, size="2", weight="medium"),
+                    rx.cond(
+                        option.artist_or_creator != "",
+                        rx.text(option.artist_or_creator, size="1", color=T.TEXT_MUTED),
+                    ),
+                    align_items="start",
+                    spacing="0",
+                ),
+                rx.spacer(),
+                rx.cond(
+                    option.duration_label != "",
+                    rx.text(option.duration_label, size="1", color=T.TEXT_FAINT, flex_shrink="0"),
+                ),
+                align="center",
+                spacing="3",
+                width="100%",
+            ),
+            # `ghost` + a tinted background only when selected — a subtle state,
+            # never a solid button or a heavy badge (explicit product decision).
+            variant="ghost",
+            color_scheme=rx.cond(selected, "iris", "gray"),
+            background=rx.cond(selected, rx.color("iris", 3), "transparent"),
+            border_radius="0",
+            size="2",
+            width="100%",
+            on_click=StoriesState.select_trend_audio(option.audio_id, option.title),
+        ),
+        align="center",
+        spacing="0",
+        width="100%",
+        border_bottom=f"1px solid {rx.color('gray', 4)}",
     )
 
 
@@ -139,10 +200,10 @@ def _trend_audio_section() -> rx.Component:
         ),
         rx.cond(
             StoriesState.trend_options.length() > 0,
-            rx.flex(
+            rx.vstack(
                 rx.foreach(StoriesState.trend_options, _trend_option),
-                wrap="wrap",
-                gap="2",
+                spacing="0",
+                width="100%",
             ),
         ),
         width="100%",
@@ -151,9 +212,257 @@ def _trend_audio_section() -> rx.Component:
     )
 
 
+# ---------------------------------------------------------------------------
+# QUA-107: ScrapeCreators trending discovery — TikTok + Instagram, reference only.
+# Independent of the connection selector above (see `stories_state.py`'s module
+# docstring): these buttons are never disabled by `selected_connection_id`, unlike
+# `_trend_audio_section`'s Meta-backed suggestion.
+
+
+def _trending_thumbnail(candidate: TrendingVideoVM) -> rx.Component:
+    return rx.cond(
+        candidate.has_thumbnail,
+        rx.image(
+            src=candidate.thumbnail_url,
+            width="56px",
+            height="56px",
+            object_fit="cover",
+            border_radius="0.5rem",
+            flex_shrink="0",
+        ),
+        rx.center(
+            rx.icon("film", size=20, color=T.TEXT_FAINT),
+            width="56px",
+            height="56px",
+            border_radius="0.5rem",
+            background=T.SURFACE_BG_RAISED,
+            flex_shrink="0",
+        ),
+    )
+
+
+def _song_detail_panel() -> rx.Component:
+    """Renders `StoriesState.song_detail` — only mounted once it is non-`None` (see
+    `_trending_video_card`'s guard), so no field here needs its own None-check
+    besides `user_count`/`recommend_status`, which the vendor may omit."""
+    detail = StoriesState.song_detail
+    is_playing_this = (
+        StoriesState.playing_audio_id == detail.audio_id
+    ) & StoriesState.is_audio_playing
+    return rx.vstack(
+        rx.text(detail.display_label, size="2", weight="medium"),
+        rx.cond(
+            detail.has_preview,
+            rx.hstack(
+                rx.button(
+                    rx.cond(is_playing_this, rx.icon("pause", size=12), rx.icon("play", size=12)),
+                    variant="soft",
+                    color_scheme=rx.cond(is_playing_this, "iris", "gray"),
+                    size="1",
+                    on_click=StoriesState.toggle_audio_preview(detail.audio_id, detail.preview_url),
+                ),
+                rx.text("Escuchar preview", size="1", color=T.TEXT_MUTED),
+                spacing="2",
+                align="center",
+            ),
+        ),
+        rx.cond(
+            detail.has_user_count,
+            rx.hstack(
+                rx.icon("users", size=12, color=T.TEXT_FAINT),
+                rx.text(detail.user_count, " videos la usan", size="1", color=T.TEXT_MUTED),
+                spacing="1",
+            ),
+        ),
+        rx.cond(
+            detail.has_recommend_status,
+            rx.hstack(
+                rx.icon("flame", size=12, color=T.TEXT_FAINT),
+                rx.text(
+                    "Puntaje de tendencia del vendor: ",
+                    detail.recommend_status,
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                spacing="1",
+            ),
+        ),
+        rx.button(
+            "Usar esta canción",
+            size="1",
+            variant="soft",
+            color_scheme="iris",
+            on_click=StoriesState.select_trend_audio(detail.audio_id, detail.title),
+        ),
+        spacing="2",
+        padding="0.5rem",
+        background=T.SURFACE_BG_RAISED,
+        border_radius="0.5rem",
+        align_items="start",
+        width="100%",
+    )
+
+
+def _trending_video_card(candidate: TrendingVideoVM) -> rx.Component:
+    is_expanded = StoriesState.expanded_song_id == candidate.music_id
+    return rx.box(
+        rx.hstack(
+            _trending_thumbnail(candidate),
+            rx.vstack(
+                rx.text(
+                    rx.cond(candidate.caption != "", candidate.caption, "(sin descripción)"),
+                    size="2",
+                    weight="medium",
+                    max_width="360px",
+                    overflow="hidden",
+                    text_overflow="ellipsis",
+                    white_space="nowrap",
+                ),
+                rx.text(candidate.author_label, size="1", color=T.TEXT_MUTED),
+                rx.hstack(
+                    rx.text("♥ ", candidate.likes_label, size="1", color=T.TEXT_FAINT),
+                    rx.text("💬 ", candidate.comments_label, size="1", color=T.TEXT_FAINT),
+                    rx.cond(
+                        candidate.plays_label != "",
+                        rx.text("▶ ", candidate.plays_label, size="1", color=T.TEXT_FAINT),
+                    ),
+                    spacing="3",
+                ),
+                rx.cond(
+                    candidate.permalink != "",
+                    rx.link("Ver original", href=candidate.permalink, target="_blank", size="1"),
+                ),
+                align_items="start",
+                spacing="1",
+            ),
+            align_items="start",
+            spacing="3",
+            width="100%",
+        ),
+        rx.box(
+            # Reserves the same vertical space whether or not this candidate has
+            # music — Instagram Reels never do (`has_music` is always False there),
+            # and without this fixed slot their cards render visibly shorter than
+            # TikTok's, which was reported as an inconsistent grid.
+            rx.cond(
+                candidate.has_music,
+                rx.vstack(
+                    rx.button(
+                        "Ver detalle de la canción",
+                        variant="ghost",
+                        size="1",
+                        loading=is_expanded & StoriesState.is_loading_song_detail,
+                        on_click=StoriesState.expand_song(
+                            candidate.music_id, candidate.music_title
+                        ),
+                    ),
+                    rx.cond(
+                        is_expanded,
+                        rx.cond(StoriesState.song_detail, _song_detail_panel()),
+                    ),
+                    spacing="1",
+                    width="100%",
+                ),
+            ),
+            min_height="2.25rem",
+            margin_top="0.5rem",
+            width="100%",
+        ),
+        padding="0.75rem",
+        border=f"1px solid {rx.color('gray', 5)}",
+        border_radius=T.RADIUS_CARD,
+        width="100%",
+    )
+
+
+def _trending_platform_column(
+    *,
+    label: str,
+    icon: str,
+    items: rx.Var[list[TrendingVideoVM]],
+    is_loading: rx.Var[bool],
+    on_discover: rx.event.EventHandler,
+) -> rx.Component:
+    return rx.vstack(
+        rx.button(
+            rx.icon(icon, size=14),
+            label,
+            variant="soft",
+            size="2",
+            loading=is_loading,
+            on_click=on_discover,
+        ),
+        rx.cond(
+            items.length() > 0,
+            rx.vstack(rx.foreach(items, _trending_video_card), spacing="2", width="100%"),
+        ),
+        width="100%",
+        spacing="2",
+        align_items="start",
+    )
+
+
+def _trending_discovery_section() -> rx.Component:
+    """QUA-107: TikTok + Instagram trending, shown for reference only. Explicit,
+    operator-triggered per platform — never fetched on screen load. `region=US` is a
+    fixed technical parameter for the TikTok call, never a claim about geography (see
+    `scrapecreators_trending.DEFAULT_TIKTOK_REGION` — measured live 2026-09-21 to not
+    reliably filter by country), hence the disclaimer below."""
+    return rx.vstack(
+        rx.text(
+            "Contenido y audios en tendencia, de forma general — no representa "
+            "exclusivamente una región ni tu país. Solo referencia visual: nada se "
+            "descarga ni se adjunta automáticamente a la Story.",
+            size="1",
+            color=T.TEXT_FAINT,
+        ),
+        rx.grid(
+            _trending_platform_column(
+                label="Descubrir tendencia en TikTok",
+                icon="music",
+                items=StoriesState.tiktok_trending,
+                is_loading=StoriesState.is_loading_tiktok_trending,
+                on_discover=StoriesState.discover_tiktok_trending,
+            ),
+            _trending_platform_column(
+                label="Descubrir tendencia en Instagram",
+                icon="film",
+                items=StoriesState.instagram_trending,
+                is_loading=StoriesState.is_loading_instagram_trending,
+                on_discover=StoriesState.discover_instagram_trending,
+            ),
+            columns=rx.breakpoints(initial="1", sm="2"),
+            spacing="4",
+            width="100%",
+        ),
+        width="100%",
+        spacing="3",
+    )
+
+
+def _audio_preview_player() -> rx.Component:
+    """The ONE shared player behind every play/pause button on this screen (Meta's
+    audio list and the TikTok song-detail panel) — driven entirely by
+    `playing_audio_url`/`is_audio_playing`, so only one preview is ever sounding at
+    a time and no row mounts its own `<audio>` element. `on_error` degrades exactly
+    like `on_ended`: an expired/unavailable preview URL stops cleanly instead of
+    leaving a ⏸ icon showing sound that stopped playing on its own."""
+    return rx.box(
+        rx.audio(
+            src=StoriesState.playing_audio_url,
+            playing=StoriesState.is_audio_playing,
+            controls=False,
+            on_ended=StoriesState.audio_preview_stopped,
+            on_error=StoriesState.audio_preview_stopped,
+        ),
+        display="none",
+    )
+
+
 def _create_form() -> rx.Component:
     return card(
         rx.vstack(
+            _audio_preview_player(),
             section("Cuenta", _connection_selector()),
             rx.divider(),
             section("Video de la Story", _upload_zone()),
@@ -176,6 +485,8 @@ def _create_form() -> rx.Component:
             ),
             rx.divider(),
             section("Audio en tendencia (opcional)", _trend_audio_section()),
+            rx.divider(),
+            section("Contenido en tendencia (opcional)", _trending_discovery_section()),
             rx.cond(
                 StoriesState.create_error != "",
                 callout(StoriesState.create_error, tone="error"),

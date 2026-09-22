@@ -26,7 +26,13 @@ from uuid import UUID
 from qualify_api.stories.repository import ProposalRecord, UnknownProposal
 
 from . import stories_provider
-from .stories_vm import STATUS_LABELS, StoryProposalVM, TrendAudioOptionVM, build_proposal_vm
+from .stories_vm import (
+    STATUS_LABELS,
+    StoryProposalVM,
+    TrendAudioOptionVM,
+    TrendingVideoVM,
+    build_proposal_vm,
+)
 
 _FORBIDDEN_FIELD_FRAGMENTS = (
     "token",
@@ -84,7 +90,7 @@ def _record(**overrides: object) -> ProposalRecord:
 
 
 def test_vms_have_no_credential_fields() -> None:
-    for vm_cls in (StoryProposalVM, TrendAudioOptionVM):
+    for vm_cls in (StoryProposalVM, TrendAudioOptionVM, TrendingVideoVM):
         for f in dataclasses.fields(vm_cls):
             lowered = f.name.lower()
             for fragment in _FORBIDDEN_FIELD_FRAGMENTS:

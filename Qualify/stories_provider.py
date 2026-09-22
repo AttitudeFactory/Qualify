@@ -56,6 +56,7 @@ def _trend_to_vm(option: TrendAudioOption) -> TrendAudioOptionVM:
         artist_or_creator=option.artist_or_creator,
         duration_ms=option.duration_ms,
         rank=option.rank,
+        preview_url=option.preview_url,
     )
 
 

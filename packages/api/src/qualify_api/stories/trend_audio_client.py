@@ -79,6 +79,12 @@ class TrendAudioOption:
     audio_type: str
     duration_ms: int | None
     rank: int
+    # `download_url` (QUA-107 follow-up): "A temporary URL to preview the audio
+    # file. This URL expires after approximately 1.5 days. May be null when no
+    # preview URL is available." (audio-api.md) — a REFERENCE preview for the
+    # human only, same posture as everything else on this dataclass. Never fed
+    # into a Meta publish call; never downloaded or persisted by this codebase.
+    preview_url: str = ""
 
 
 class TrendAudioClient(Protocol):
@@ -130,6 +136,7 @@ def _parse_audio_item(item: dict[str, Any], *, rank: int) -> TrendAudioOption | 
     else:
         artist_or_creator = ""
     duration = item.get("duration_in_ms")
+    preview_url = item.get("download_url")
     return TrendAudioOption(
         audio_id=audio_id,
         title=title or "Audio sin título",
@@ -137,6 +144,7 @@ def _parse_audio_item(item: dict[str, Any], *, rank: int) -> TrendAudioOption | 
         audio_type=audio_type,
         duration_ms=duration if isinstance(duration, int) else None,
         rank=rank,
+        preview_url=preview_url if isinstance(preview_url, str) else "",
     )
 
 
