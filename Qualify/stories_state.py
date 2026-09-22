@@ -15,6 +15,16 @@ list; `select_trend_audio` only remembers a display choice (`trend_audio_id`/`_t
 persisted on the proposal for the human's own context) — nothing here ever threads it
 into a Meta publish call (`audio_configuration` is out of this slice).
 
+**Trending TikTok/Instagram discovery (QUA-107) is a second, independent source of the
+same kind of reference.** `discover_tiktok_trending`/`discover_instagram_trending`
+read ScrapeCreators — a vendor with NO per-tenant credentials and NO relationship to
+`selected_connection_id`, unlike `suggest_audio`'s Meta call. Selecting a TikTok song
+(`expand_song` then `select_trend_audio`) reuses the EXACT SAME `selected_trend_audio_id`/
+`_title` fields Meta's suggestion already writes to — a proposal carries one audio
+reference, so a new choice from either source simply replaces the previous one. A
+Reel is shown for visual reference only; there is no selection action for it and
+nothing about it is ever persisted.
+
 **No path from a fresh proposal to a publish.** `approve_and_publish`/`save_and_
 publish` always call `decide_proposal` before `publish_proposal` — mirrors
 `replies_state.py`'s own "decide, then send" chaining, and the SERVICE layer refuses
@@ -30,10 +40,12 @@ from uuid import UUID
 
 import reflex as rx
 
+from . import scrapecreators_trending
 from .auth_state import AuthState
 from .connections_provider import acting_user_id
 from .publishing_provider import active_connections
 from .publishing_vm import ConnectionOptionVM
+from .scrapecreators_client import ScrapeCreatorsError
 from .stories_provider import (
     decide_proposal,
     list_proposals,
@@ -43,7 +55,13 @@ from .stories_provider import (
 )
 from .stories_provider import get_proposal as _get_proposal
 from .stories_provider import suggest_trend_audio as _suggest_trend_audio
-from .stories_vm import StoryProposalVM, TrendAudioOptionVM
+from .stories_vm import (
+    StoryProposalVM,
+    TrendAudioOptionVM,
+    TrendingVideoVM,
+    build_trend_audio_vm,
+    build_trending_video_vm,
+)
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -84,6 +102,25 @@ def _resolve_video(content_type: str | None, filename: str) -> str | None:
     return None
 
 
+def _trending_vm(video: scrapecreators_trending.TrendingVideo) -> TrendingVideoVM:
+    return build_trending_video_vm(
+        source=video.source,
+        external_id=video.id,
+        caption=video.caption,
+        author_handle=video.author_handle,
+        author_display_name=video.author_display_name,
+        likes=video.likes,
+        comments=video.comments,
+        plays=video.plays,
+        created_at=video.created_at,
+        permalink=video.permalink,
+        thumbnail_url=video.thumbnail_url,
+        music_id=video.music_id,
+        music_title=video.music_title,
+        rank=video.rank,
+    )
+
+
 class StoriesState(rx.State):
     """Backs both `/stories` (propose + queue) and `/stories/[proposal_id]`
     (the approval gate) — same one-state-two-routes pattern `CreativeState` already
@@ -103,6 +140,20 @@ class StoriesState(rx.State):
     trend_error: str = ""
     selected_trend_audio_id: str = ""
     selected_trend_audio_title: str = ""
+
+    # -- QUA-107: ScrapeCreators trending discovery — independent of connection_id,
+    # so switching connections (unlike `select_connection` above) never clears these.
+    tiktok_trending: list[TrendingVideoVM] = []
+    is_loading_tiktok_trending: bool = False
+    tiktok_trending_error: str = ""
+
+    instagram_trending: list[TrendingVideoVM] = []
+    is_loading_instagram_trending: bool = False
+    instagram_trending_error: str = ""
+
+    expanded_song_id: str = ""
+    song_detail: TrendAudioOptionVM | None = None
+    is_loading_song_detail: bool = False
 
     # idle | staging | failure (a success resets straight back to idle)
     create_phase: str = "idle"
@@ -280,6 +331,77 @@ class StoriesState(rx.State):
         self.selected_trend_audio_id = ""
         self.selected_trend_audio_title = ""
 
+    @rx.event(background=True)
+    async def discover_tiktok_trending(self) -> None:
+        """Explicit, operator-triggered — never runs on screen load. Needs no
+        tenant/connection: ScrapeCreators resolves against the one global
+        `SCRAPECREATORS_API_KEY`, not a per-tenant credential (QUA-107 architecture
+        decision). Any vendor failure degrades to an empty list, same "reference
+        only, never blocking" posture `suggest_audio` already has for Meta."""
+        async with self:
+            self.is_loading_tiktok_trending = True
+            self.tiktok_trending_error = ""
+        try:
+            videos = await asyncio.to_thread(scrapecreators_trending.fetch_tiktok_trending_feed)
+        except ScrapeCreatorsError as exc:
+            logger.warning("fetch_tiktok_trending_feed failed: %s", type(exc).__name__)
+            async with self:
+                self.tiktok_trending = []
+                self.is_loading_tiktok_trending = False
+            return
+        async with self:
+            self.tiktok_trending = [_trending_vm(v) for v in videos]
+            self.is_loading_tiktok_trending = False
+
+    @rx.event(background=True)
+    async def discover_instagram_trending(self) -> None:
+        """Same posture as `discover_tiktok_trending` — explicit trigger, no
+        tenant/connection, degrades to an empty list on any vendor failure."""
+        async with self:
+            self.is_loading_instagram_trending = True
+            self.instagram_trending_error = ""
+        try:
+            videos = await asyncio.to_thread(scrapecreators_trending.fetch_instagram_trending_reels)
+        except ScrapeCreatorsError as exc:
+            logger.warning("fetch_instagram_trending_reels failed: %s", type(exc).__name__)
+            async with self:
+                self.instagram_trending = []
+                self.is_loading_instagram_trending = False
+            return
+        async with self:
+            self.instagram_trending = [_trending_vm(v) for v in videos]
+            self.is_loading_instagram_trending = False
+
+    @rx.event(background=True)
+    async def expand_song(self, music_id: str, music_title: str) -> None:
+        """Enriches ONE TikTok candidate with `/song` — on demand, never batched
+        (QUA-107 decision). A failure here degrades to `song_detail` staying `None`;
+        it never blocks proposing or picking a different candidate."""
+        async with self:
+            self.expanded_song_id = music_id
+            self.is_loading_song_detail = True
+            self.song_detail = None
+        try:
+            detail = await asyncio.to_thread(
+                scrapecreators_trending.fetch_tiktok_song, clip_id=music_id
+            )
+        except ScrapeCreatorsError as exc:
+            logger.warning("fetch_tiktok_song failed: %s", type(exc).__name__)
+            async with self:
+                self.is_loading_song_detail = False
+            return
+        async with self:
+            self.song_detail = build_trend_audio_vm(
+                audio_id=detail.id or music_id,
+                title=detail.title or music_title,
+                artist_or_creator=detail.author,
+                duration_ms=None,
+                rank=0,
+                user_count=detail.user_count,
+                recommend_status=detail.recommend_status,
+            )
+            self.is_loading_song_detail = False
+
     @rx.event
     def create_proposal(self) -> rx.event.EventSpec | None:
         """Validates the buffered upload and hands off to the background handler —
@@ -346,6 +468,10 @@ class StoriesState(rx.State):
             self.trend_options = []
             self.selected_trend_audio_id = ""
             self.selected_trend_audio_title = ""
+            self.tiktok_trending = []
+            self.instagram_trending = []
+            self.expanded_song_id = ""
+            self.song_detail = None
         yield rx.toast.success("Propuesta creada — queda pendiente de revisión.")
         yield StoriesState.load_stories_screen
 

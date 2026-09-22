@@ -15,7 +15,7 @@ from __future__ import annotations
 import reflex as rx
 
 from .stories_state import StoriesState
-from .stories_vm import StoryProposalVM, TrendAudioOptionVM
+from .stories_vm import StoryProposalVM, TrendAudioOptionVM, TrendingVideoVM
 from .ui import app_shell, callout, card, empty_state, page_body, page_header, section
 from .ui import tokens as T
 from .ui.primitives import skeleton_rows, tone_badge
@@ -151,6 +151,206 @@ def _trend_audio_section() -> rx.Component:
     )
 
 
+# ---------------------------------------------------------------------------
+# QUA-107: ScrapeCreators trending discovery — TikTok + Instagram, reference only.
+# Independent of the connection selector above (see `stories_state.py`'s module
+# docstring): these buttons are never disabled by `selected_connection_id`, unlike
+# `_trend_audio_section`'s Meta-backed suggestion.
+
+
+def _trending_thumbnail(candidate: TrendingVideoVM) -> rx.Component:
+    return rx.cond(
+        candidate.has_thumbnail,
+        rx.image(
+            src=candidate.thumbnail_url,
+            width="56px",
+            height="56px",
+            object_fit="cover",
+            border_radius="0.5rem",
+            flex_shrink="0",
+        ),
+        rx.center(
+            rx.icon("film", size=20, color=T.TEXT_FAINT),
+            width="56px",
+            height="56px",
+            border_radius="0.5rem",
+            background=T.SURFACE_BG_RAISED,
+            flex_shrink="0",
+        ),
+    )
+
+
+def _song_detail_panel() -> rx.Component:
+    """Renders `StoriesState.song_detail` — only mounted once it is non-`None` (see
+    `_trending_video_card`'s guard), so no field here needs its own None-check
+    besides `user_count`/`recommend_status`, which the vendor may omit."""
+    detail = StoriesState.song_detail
+    return rx.vstack(
+        rx.text(detail.display_label, size="2", weight="medium"),
+        rx.cond(
+            detail.has_user_count,
+            rx.hstack(
+                rx.icon("users", size=12, color=T.TEXT_FAINT),
+                rx.text(detail.user_count, " videos la usan", size="1", color=T.TEXT_MUTED),
+                spacing="1",
+            ),
+        ),
+        rx.cond(
+            detail.has_recommend_status,
+            rx.hstack(
+                rx.icon("flame", size=12, color=T.TEXT_FAINT),
+                rx.text(
+                    "Puntaje de tendencia del vendor: ",
+                    detail.recommend_status,
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                spacing="1",
+            ),
+        ),
+        rx.button(
+            "Usar esta canción",
+            size="1",
+            variant="soft",
+            color_scheme="iris",
+            on_click=StoriesState.select_trend_audio(detail.audio_id, detail.title),
+        ),
+        spacing="2",
+        padding="0.5rem",
+        background=T.SURFACE_BG_RAISED,
+        border_radius="0.5rem",
+        align_items="start",
+        width="100%",
+    )
+
+
+def _trending_video_card(candidate: TrendingVideoVM) -> rx.Component:
+    is_expanded = StoriesState.expanded_song_id == candidate.music_id
+    return rx.box(
+        rx.hstack(
+            _trending_thumbnail(candidate),
+            rx.vstack(
+                rx.text(
+                    rx.cond(candidate.caption != "", candidate.caption, "(sin descripción)"),
+                    size="2",
+                    weight="medium",
+                    max_width="360px",
+                    overflow="hidden",
+                    text_overflow="ellipsis",
+                    white_space="nowrap",
+                ),
+                rx.text(candidate.author_label, size="1", color=T.TEXT_MUTED),
+                rx.hstack(
+                    rx.text("♥ ", candidate.likes_label, size="1", color=T.TEXT_FAINT),
+                    rx.text("💬 ", candidate.comments_label, size="1", color=T.TEXT_FAINT),
+                    rx.cond(
+                        candidate.plays_label != "",
+                        rx.text("▶ ", candidate.plays_label, size="1", color=T.TEXT_FAINT),
+                    ),
+                    spacing="3",
+                ),
+                rx.cond(
+                    candidate.permalink != "",
+                    rx.link("Ver original", href=candidate.permalink, target="_blank", size="1"),
+                ),
+                align_items="start",
+                spacing="1",
+            ),
+            align_items="start",
+            spacing="3",
+            width="100%",
+        ),
+        rx.cond(
+            candidate.has_music,
+            rx.vstack(
+                rx.button(
+                    "Ver detalle de la canción",
+                    variant="ghost",
+                    size="1",
+                    loading=is_expanded & StoriesState.is_loading_song_detail,
+                    on_click=StoriesState.expand_song(candidate.music_id, candidate.music_title),
+                ),
+                rx.cond(
+                    is_expanded,
+                    rx.cond(StoriesState.song_detail, _song_detail_panel()),
+                ),
+                spacing="1",
+                width="100%",
+                margin_top="0.5rem",
+            ),
+        ),
+        padding="0.75rem",
+        border=f"1px solid {rx.color('gray', 5)}",
+        border_radius=T.RADIUS_CARD,
+        width="100%",
+    )
+
+
+def _trending_platform_column(
+    *,
+    label: str,
+    icon: str,
+    items: rx.Var[list[TrendingVideoVM]],
+    is_loading: rx.Var[bool],
+    on_discover: rx.event.EventHandler,
+) -> rx.Component:
+    return rx.vstack(
+        rx.button(
+            rx.icon(icon, size=14),
+            label,
+            variant="soft",
+            size="2",
+            loading=is_loading,
+            on_click=on_discover,
+        ),
+        rx.cond(
+            items.length() > 0,
+            rx.vstack(rx.foreach(items, _trending_video_card), spacing="2", width="100%"),
+        ),
+        width="100%",
+        spacing="2",
+        align_items="start",
+    )
+
+
+def _trending_discovery_section() -> rx.Component:
+    """QUA-107: TikTok + Instagram trending, shown for reference only. Explicit,
+    operator-triggered per platform — never fetched on screen load. `region=US` is a
+    fixed technical parameter for the TikTok call, never a claim about geography (see
+    `scrapecreators_trending.DEFAULT_TIKTOK_REGION` — measured live 2026-09-21 to not
+    reliably filter by country), hence the disclaimer below."""
+    return rx.vstack(
+        rx.text(
+            "Contenido y audios en tendencia, de forma general — no representa "
+            "exclusivamente una región ni tu país. Solo referencia visual: nada se "
+            "descarga ni se adjunta automáticamente a la Story.",
+            size="1",
+            color=T.TEXT_FAINT,
+        ),
+        rx.grid(
+            _trending_platform_column(
+                label="Descubrir tendencia en TikTok",
+                icon="music",
+                items=StoriesState.tiktok_trending,
+                is_loading=StoriesState.is_loading_tiktok_trending,
+                on_discover=StoriesState.discover_tiktok_trending,
+            ),
+            _trending_platform_column(
+                label="Descubrir tendencia en Instagram",
+                icon="film",
+                items=StoriesState.instagram_trending,
+                is_loading=StoriesState.is_loading_instagram_trending,
+                on_discover=StoriesState.discover_instagram_trending,
+            ),
+            columns=rx.breakpoints(initial="1", sm="2"),
+            spacing="4",
+            width="100%",
+        ),
+        width="100%",
+        spacing="3",
+    )
+
+
 def _create_form() -> rx.Component:
     return card(
         rx.vstack(
@@ -176,6 +376,8 @@ def _create_form() -> rx.Component:
             ),
             rx.divider(),
             section("Audio en tendencia (opcional)", _trend_audio_section()),
+            rx.divider(),
+            section("Contenido en tendencia (opcional)", _trending_discovery_section()),
             rx.cond(
                 StoriesState.create_error != "",
                 callout(StoriesState.create_error, tone="error"),
