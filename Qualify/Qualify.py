@@ -32,7 +32,7 @@ from .publishing_page import publish_index
 from .publishing_state import PublishState
 from .signals_page import signals_index
 from .state import DashboardState
-from .stories_page import stories_index, story_detail_index
+from .stories_page import stories_index
 from .stories_state import StoriesState
 from .styleguide_page import styleguide_index
 from .ui import app_shell, page_body
@@ -226,21 +226,15 @@ app.add_page(
     on_load=[AuthState.require_login, CreativeState.load_draft],
     title="Qualify · Borrador",
 )
-# QUA-106 — Stories con contenido/trending + aprobación humana obligatoria. Misma
-# zona de navegación ("Publicas") y mismo patrón lista+detalle que /drafts +
-# /drafts/[draft_id], no una sección incrustada en /publish (esa pantalla es un
-# formulario de un solo intento, sin capacidad de lista) — ver el plan de QUA-106.
+# QUA-106 — Stories: un solo formulario de publicación (cuenta -> video -> preview
+# -> Publicar -> STORIES), mismo patrón que /publish, con un panel de tendencias
+# como referencia. No hay concepto de propuesta/aprobación/revisión ni pantalla de
+# detalle — ver el rediseño de QUA-106.
 app.add_page(
     stories_index,
     route="/stories",
     on_load=[AuthState.require_login, StoriesState.load_stories_screen],
     title="Qualify · Stories",
-)
-app.add_page(
-    story_detail_index,
-    route="/stories/[proposal_id]",
-    on_load=[AuthState.require_login, StoriesState.load_proposal],
-    title="Qualify · Story",
 )
 # UI demo, no backend: nothing to load, but the session gate still applies.
 app.add_page(

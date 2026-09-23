@@ -30,7 +30,6 @@ from qualify_api.http import (
     publishing_routes,
     replies_routes,
     sentiment_routes,
-    story_proposals_routes,
 )
 from qualify_api.http.inbox_routes import SyncComments
 from qualify_api.http.replies_routes import (
@@ -40,14 +39,6 @@ from qualify_api.http.replies_routes import (
     SendDraft,
 )
 from qualify_api.http.sentiment_routes import AnalyzePendingComments
-from qualify_api.http.story_proposals_routes import (
-    DecideProposal,
-    ListProposals,
-    ProposeStory,
-    PublishProposal,
-    RefreshProposal,
-    SuggestTrendAudio,
-)
 from qualify_api.leads.service import LeadIntakeService
 from qualify_api.publishing.media_token import MediaTokenStore
 from qualify_api.publishing.service import PublishService
@@ -208,46 +199,6 @@ def build_production_approved_creative_reader() -> creative_routes.ApprovedCreat
     return approved_creative
 
 
-def build_production_propose_story() -> ProposeStory:
-    """Lazy import like the publishing builders: composing the story service builds
-    the real Meta credential seam (via the underlying `PublishService`), and an app
-    booted without that env should fail the PROPOSE request loudly, not the whole
-    boot."""
-    from qualify_api.stories.composition import stage_and_propose_story  # noqa: PLC0415
-
-    return stage_and_propose_story
-
-
-def build_production_list_proposals() -> ListProposals:
-    from qualify_api.stories.composition import list_proposals  # noqa: PLC0415
-
-    return list_proposals
-
-
-def build_production_decide_proposal() -> DecideProposal:
-    from qualify_api.stories.composition import decide_proposal  # noqa: PLC0415
-
-    return decide_proposal
-
-
-def build_production_publish_proposal() -> PublishProposal:
-    from qualify_api.stories.composition import publish_proposal  # noqa: PLC0415
-
-    return publish_proposal
-
-
-def build_production_refresh_proposal() -> RefreshProposal:
-    from qualify_api.stories.composition import refresh_proposal  # noqa: PLC0415
-
-    return refresh_proposal
-
-
-def build_production_suggest_trend_audio() -> SuggestTrendAudio:
-    from qualify_api.stories.composition import suggest_trend_audio  # noqa: PLC0415
-
-    return suggest_trend_audio
-
-
 def create_app(*, configure_production: bool = True) -> FastAPI:
     # QUA-68: attached unconditionally (not gated on `configure_production`) — a token must
     # never reach an access log in ANY mode, tests included, and the filter is a no-op
@@ -264,7 +215,6 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
     app.include_router(sentiment_routes.router)
     app.include_router(mentions_routes.router)
     app.include_router(replies_routes.router)
-    app.include_router(story_proposals_routes.router)
     if configure_production:
         app.dependency_overrides[connections_routes.get_connect_service] = build_production_service
         app.dependency_overrides[publishing_routes.get_publish_service] = (
@@ -313,24 +263,6 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
         )
         app.dependency_overrides[creative_routes.get_approved_creative_reader] = (
             build_production_approved_creative_reader
-        )
-        app.dependency_overrides[story_proposals_routes.get_propose_story] = (
-            build_production_propose_story
-        )
-        app.dependency_overrides[story_proposals_routes.get_list_proposals] = (
-            build_production_list_proposals
-        )
-        app.dependency_overrides[story_proposals_routes.get_decide_proposal] = (
-            build_production_decide_proposal
-        )
-        app.dependency_overrides[story_proposals_routes.get_publish_proposal] = (
-            build_production_publish_proposal
-        )
-        app.dependency_overrides[story_proposals_routes.get_refresh_proposal] = (
-            build_production_refresh_proposal
-        )
-        app.dependency_overrides[story_proposals_routes.get_suggest_trend_audio] = (
-            build_production_suggest_trend_audio
         )
         # C1: parsed at assembly so a malformed QUALIFY_DEV_PRINCIPALS fails the boot,
         # not the first request.

@@ -95,6 +95,36 @@ async def test_trending_audio_sends_audio_type_and_user_id_with_no_search_query(
     assert "search_query" not in seen
 
 
+async def test_trending_audio_forwards_a_search_query_when_given() -> None:
+    """QUA-107 follow-up — Meta's own documented `search_query` param
+    (`content-publishing/audio-api.md`): "Optional. A search string to filter
+    results by keyword." An empty string behaves like omitting it (the trending
+    default), only a truthy query is ever sent."""
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        return _json(_MUSIC_PAYLOAD)
+
+    await _client(handler).trending_audio(
+        ig_user_id=IG_USER, audio_type="music", search_query="Oud Is Good"
+    )
+
+    assert seen == {"audio_type": "music", "user_id": IG_USER, "search_query": "Oud Is Good"}
+
+
+async def test_trending_audio_with_empty_search_query_omits_the_param() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        return _json(_MUSIC_PAYLOAD)
+
+    await _client(handler).trending_audio(ig_user_id=IG_USER, audio_type="music", search_query="")
+
+    assert "search_query" not in seen
+
+
 async def test_parses_music_items_including_ig_username_when_present() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return _json(_MUSIC_PAYLOAD)
