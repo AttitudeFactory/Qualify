@@ -29,13 +29,13 @@
     "universal-cookie": "7.2.2"
   },
   "devDependencies": {
-    "@emotion/react": "^11.14.0",
-    "@react-router/dev": "^7.15.0",
-    "@react-router/fs-routes": "^7.15.0",
-    "autoprefixer": "^10.5.0",
-    "postcss": "^8.5.14",
-    "postcss-import": "^16.1.1",
-    "vite": "^8.0.16"
+    "@emotion/react": "11.14.0",
+    "@react-router/dev": "7.15.0",
+    "@react-router/fs-routes": "7.15.0",
+    "autoprefixer": "10.5.0",
+    "postcss": "8.5.14",
+    "postcss-import": "16.1.1",
+    "vite": "8.0.16"
   },
   "overrides": {
     "cookie": "1.1.1"
