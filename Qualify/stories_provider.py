@@ -37,11 +37,16 @@ async def suggest_trend_audio(
     tenant_id: UUID,
     connection_id: UUID,
     audio_type: str = "music",
+    search_query: str = "",
 ) -> list[TrendAudioOptionVM]:
     """Never raises — a failed lookup is an empty list (see
     `qualify_api.stories.suggest_trend_audio_using`'s own degrade-don't-block
-    posture)."""
+    posture). `search_query` empty means Meta's own trending list; non-empty
+    searches Meta's catalog by keyword (`content-publishing/audio-api.md`)."""
     options = await _suggest_trend_audio(
-        tenant_id=tenant_id, connection_id=connection_id, audio_type=audio_type
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        audio_type=audio_type,
+        search_query=search_query or None,
     )
     return [_trend_to_vm(o) for o in options]

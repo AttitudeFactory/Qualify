@@ -22,14 +22,17 @@ API — confirmed during manual testing — so there is nothing to collect from 
 operator; `publish_background` always sends `caption=""`.
 
 **Trending audio/content is reference-only, informational, and never persisted.**
-`suggest_audio` shows Meta's own `GET /ig_audio` list (`qualify_api.stories`).
-`discover_tiktok_trending`/`discover_instagram_trending`/`expand_song` read
-ScrapeCreators (QUA-107, `scrapecreators_trending.py`) — a vendor with no per-tenant
-credential, independent of `selected_connection_id`. `select_trend_audio` only sets
-a display choice in THIS session's Reflex state (`selected_trend_audio_id`/`_title`)
-— nothing here is ever sent to Meta's publish call (`audio_configuration` stays out
-of scope — and per Meta's own docs is only ever defined for Reels, never Stories) or
-written to any database row: there is no row left to write it onto.
+`suggest_audio` shows Meta's own `GET /ig_audio` list (`qualify_api.stories`);
+`search_audio`/`search_song_on_meta` use that SAME call with Meta's documented
+`search_query` param (QUA-107 follow-up) instead of the default trending list —
+same client, same seam, no new integration. `discover_tiktok_trending`/
+`discover_instagram_trending`/`expand_song` read ScrapeCreators (QUA-107,
+`scrapecreators_trending.py`) — a vendor with no per-tenant credential, independent
+of `selected_connection_id`. `select_trend_audio` only sets a display choice in
+THIS session's Reflex state (`selected_trend_audio_id`/`_title`) — nothing here is
+ever sent to Meta's publish call (`audio_configuration` stays out of scope — and per
+Meta's own docs is only ever defined for Reels, never Stories) or written to any
+database row: there is no row left to write it onto.
 """
 
 from __future__ import annotations
@@ -156,6 +159,11 @@ class StoriesState(rx.State):
     trend_error: str = ""
     selected_trend_audio_id: str = ""
     selected_trend_audio_title: str = ""
+    # Meta's `GET /ig_audio` accepts an optional `search_query` (audio-api.md) — this
+    # box searches Meta's own catalog by keyword instead of only browsing whatever
+    # "Sugerir audio en tendencia" returns. Independent of `trend_options`: typing
+    # here does not filter the CURRENT list client-side, it drives the NEXT lookup.
+    audio_search_query: str = ""
 
     # QUA-107: ScrapeCreators trending discovery — independent of connection_id, so
     # switching connections (unlike `select_connection` below) never clears these.
@@ -262,6 +270,7 @@ class StoriesState(rx.State):
         # A new connection invalidates whatever trending audio was suggested for the
         # PREVIOUS one — never carried across silently.
         self.trend_options = []
+        self.audio_search_query = ""
         self.selected_trend_audio_id = ""
         self.selected_trend_audio_title = ""
 
@@ -297,12 +306,14 @@ class StoriesState(rx.State):
         self._pending_content_type = ""
         self.pending_filename = ""
 
-    @rx.event(background=True)
-    async def suggest_audio(self) -> None:
-        """Best-effort — an empty result is a normal outcome (see
-        `qualify_api.stories.suggest_trend_audio_using`'s own degrade-don't-block
-        posture), never shown as an error unless the call itself could not even be
-        attempted (no tenant/connection)."""
+    async def _run_audio_search(self, search_query: str) -> None:
+        """Shared body for `suggest_audio`/`search_audio`/`search_song_on_meta` —
+        best-effort, an empty result is a normal outcome, never shown as an error
+        unless the call itself could not even be attempted (no tenant/connection).
+        See `qualify_api.stories.suggest_trend_audio_using`'s own
+        degrade-don't-block posture. `search_query` empty means Meta's own trending
+        list (`suggest_audio`'s behavior, unchanged); non-empty searches Meta's
+        catalog by keyword instead."""
         async with self:
             connection_id = self.selected_connection_id
         if not connection_id:
@@ -313,7 +324,9 @@ class StoriesState(rx.State):
         async with self:
             self.is_loading_trend = True
             self.trend_error = ""
-        options = await _suggest_trend_audio(tenant_id=tenant_id, connection_id=UUID(connection_id))
+        options = await _suggest_trend_audio(
+            tenant_id=tenant_id, connection_id=UUID(connection_id), search_query=search_query
+        )
         async with self:
             # UI-only presentation cap (QUA-107 follow-up) — Meta's own list is
             # uncapped (~25 items measured), which read as a "wall of chips" once
@@ -322,6 +335,34 @@ class StoriesState(rx.State):
             # about what Meta returns.
             self.trend_options = options[:_MAX_TREND_AUDIO_OPTIONS]
             self.is_loading_trend = False
+
+    @rx.event(background=True)
+    async def suggest_audio(self) -> None:
+        """Browse Meta's own trending list — no search query, unchanged behavior."""
+        await self._run_audio_search("")
+
+    @rx.event(background=True)
+    async def search_audio(self) -> None:
+        """Search Meta's audio catalog using whatever is currently typed in
+        `audio_search_query`. An empty box behaves exactly like `suggest_audio`."""
+        async with self:
+            query = self.audio_search_query
+        await self._run_audio_search(query)
+
+    @rx.event(background=True)
+    async def search_song_on_meta(self, title: str) -> None:
+        """ "Buscar esta canción" from a TikTok/Instagram trending candidate's song
+        detail (QUA-107 follow-up) — fills the search box with that track's title
+        and searches Meta's OWN catalog for it. TikTok's and Meta's audio catalogs
+        are unrelated systems; this can only search by keyword, never guarantee a
+        match — same reference-only posture every trend-audio feature here has."""
+        async with self:
+            self.audio_search_query = title
+        await self._run_audio_search(title)
+
+    @rx.event
+    def set_audio_search_query(self, value: str) -> None:
+        self.audio_search_query = value
 
     @rx.event
     def select_trend_audio(self, audio_id: str, title: str) -> None:

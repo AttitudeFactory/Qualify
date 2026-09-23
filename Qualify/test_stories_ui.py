@@ -86,6 +86,30 @@ def test_suggest_trend_audio_never_raises_projects_empty_list() -> None:
     assert options == []
 
 
+def test_suggest_trend_audio_forwards_a_search_query() -> None:
+    """QUA-107 follow-up: an empty box means the trending default (`None`), a typed
+    query forwards verbatim — never an empty-string sentinel reaching the client."""
+    seen: dict[str, object] = {}
+
+    async def _fake(**kwargs: object) -> tuple:
+        seen.update(kwargs)
+        return ()
+
+    with _patched(_suggest_trend_audio=_fake):
+        _run_coro(
+            stories_provider.suggest_trend_audio(tenant_id=_TENANT, connection_id=_CONNECTION)
+        )
+    assert seen["search_query"] is None
+
+    with _patched(_suggest_trend_audio=_fake):
+        _run_coro(
+            stories_provider.suggest_trend_audio(
+                tenant_id=_TENANT, connection_id=_CONNECTION, search_query="Oud Is Good"
+            )
+        )
+    assert seen["search_query"] == "Oud Is Good"
+
+
 def test_suggest_trend_audio_projects_every_field() -> None:
     option = TrendAudioOption(
         audio_id="a1",

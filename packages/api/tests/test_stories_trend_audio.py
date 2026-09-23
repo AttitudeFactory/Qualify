@@ -25,10 +25,12 @@ class FakeConnections:
 class FakeTrendAudioClient:
     def __init__(self, options: tuple[TrendAudioOption, ...] | Exception) -> None:
         self._options = options
+        self.last_search_query: str | None = "unset"
 
     async def trending_audio(
-        self, *, ig_user_id: str, audio_type: str
+        self, *, ig_user_id: str, audio_type: str, search_query: str | None = None
     ) -> tuple[TrendAudioOption, ...]:
+        self.last_search_query = search_query
         if isinstance(self._options, Exception):
             raise self._options
         return self._options
@@ -116,3 +118,39 @@ def test_suggest_trend_audio_unknown_connection_returns_empty() -> None:
     )
 
     assert options == ()
+
+
+def test_suggest_trend_audio_defaults_to_no_search_query() -> None:
+    """The trending-list behavior, unchanged: omitting `search_query` forwards
+    `None`, never an empty string or a sentinel — Meta's own documented default
+    ("if no search query is provided, trending audio is returned")."""
+    import asyncio
+
+    client = FakeTrendAudioClient(())
+    asyncio.run(
+        suggest_trend_audio_using(
+            connections=_connections(),
+            trend_clients=FakeTrendAudioClientFactory(client),
+            tenant_id=TENANT,
+            connection_id=CONNECTION,
+        )
+    )
+
+    assert client.last_search_query is None
+
+
+def test_suggest_trend_audio_forwards_a_search_query_verbatim() -> None:
+    import asyncio
+
+    client = FakeTrendAudioClient(())
+    asyncio.run(
+        suggest_trend_audio_using(
+            connections=_connections(),
+            trend_clients=FakeTrendAudioClientFactory(client),
+            tenant_id=TENANT,
+            connection_id=CONNECTION,
+            search_query="Oud Is Good",
+        )
+    )
+
+    assert client.last_search_query == "Oud Is Good"

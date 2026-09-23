@@ -76,12 +76,15 @@ async def suggest_trend_audio_using(
     tenant_id: UUID,
     connection_id: UUID,
     audio_type: str = AUDIO_TYPE_MUSIC,
+    search_query: str | None = None,
 ) -> tuple[TrendAudioOption, ...]:
     """Best-effort reference list, degrade-don't-block: returns `()` rather than
     raising for every failure mode (no client factory configured, unknown connection,
     `TrendAudioError`) — a trending-audio lookup must never block the Stories screen.
-    Pure/injectable so it is unit-testable offline; `suggest_trend_audio` below is the
-    production-wired composition."""
+    `search_query` forwards verbatim to `TrendAudioClient.trending_audio` — `None`
+    (the default) keeps Meta's own trending list; a non-empty string searches Meta's
+    catalog by keyword instead. Pure/injectable so it is unit-testable offline;
+    `suggest_trend_audio` below is the production-wired composition."""
     if trend_clients is None:
         return ()
     target = connections.read(tenant_id=tenant_id, connection_id=connection_id)
@@ -89,7 +92,9 @@ async def suggest_trend_audio_using(
         return ()
     try:
         client = await trend_clients.client_for(tenant_id=tenant_id, connection_id=connection_id)
-        return await client.trending_audio(ig_user_id=target.ig_user_id, audio_type=audio_type)
+        return await client.trending_audio(
+            ig_user_id=target.ig_user_id, audio_type=audio_type, search_query=search_query
+        )
     except TrendAudioError:
         return ()
 
@@ -105,6 +110,7 @@ async def suggest_trend_audio(
     tenant_id: UUID,
     connection_id: UUID,
     audio_type: str = AUDIO_TYPE_MUSIC,
+    search_query: str | None = None,
 ) -> tuple[TrendAudioOption, ...]:
     return await suggest_trend_audio_using(
         connections=PostgresConnectionTargetReader(),
@@ -112,4 +118,5 @@ async def suggest_trend_audio(
         tenant_id=tenant_id,
         connection_id=connection_id,
         audio_type=audio_type,
+        search_query=search_query,
     )

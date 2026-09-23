@@ -353,15 +353,17 @@ def test_connection_and_form_setters_are_plain_synchronous() -> None:
 
 def test_selecting_a_new_connection_clears_the_previous_trend_suggestion() -> None:
     """A trending-audio list fetched for connection A must never silently survive a
-    switch to connection B."""
+    switch to connection B — including whatever search query was typed for it."""
     state = StoriesState()
     state.trend_options = ["placeholder"]  # type: ignore[list-item]
+    state.audio_search_query = "some query"
     state.selected_trend_audio_id = "a1"
     state.selected_trend_audio_title = "Cancion"
 
     state.select_connection("c-2")
 
     assert state.trend_options == []
+    assert state.audio_search_query == ""
     assert state.selected_trend_audio_id == ""
     assert state.selected_trend_audio_title == ""
 
@@ -726,9 +728,36 @@ def test_no_handler_awaits_load_stories_screen_or_publish_background_directly() 
 
 
 def test_suggest_audio_caps_trend_options_at_the_ui_presentation_limit() -> None:
-    source = inspect.getsource(StoriesState.suggest_audio.fn)
+    """The cap lives in the shared `_run_audio_search` helper (QUA-107 follow-up:
+    `suggest_audio`/`search_audio`/`search_song_on_meta` all delegate to it), so
+    every one of those three handlers inherits it — not just `suggest_audio`."""
+    source = inspect.getsource(StoriesState._run_audio_search)
     assert "options[:_MAX_TREND_AUDIO_OPTIONS]" in source
 
 
 def test_max_trend_audio_options_is_ten() -> None:
     assert stories_state_module._MAX_TREND_AUDIO_OPTIONS == 10
+
+
+def test_suggest_audio_search_audio_and_search_song_delegate_to_the_shared_helper() -> None:
+    """Structural pin: one search implementation, three entry points — `suggest_audio`
+    (no query), `search_audio` (whatever is typed), `search_song_on_meta` (a TikTok
+    candidate's title). None reimplements the tenant/connection resolution or the
+    presentation cap."""
+    suggest_source = inspect.getsource(StoriesState.suggest_audio.fn)
+    assert 'await self._run_audio_search("")' in suggest_source
+
+    search_source = inspect.getsource(StoriesState.search_audio.fn)
+    assert "await self._run_audio_search(query)" in search_source
+
+    search_song_source = inspect.getsource(StoriesState.search_song_on_meta.fn)
+    assert "await self._run_audio_search(title)" in search_song_source
+    assert "self.audio_search_query = title" in search_song_source
+
+
+def test_set_audio_search_query_is_plain_synchronous() -> None:
+    state = StoriesState()
+
+    state.set_audio_search_query("some song")
+
+    assert state.audio_search_query == "some song"
