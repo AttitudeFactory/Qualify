@@ -1,34 +1,25 @@
-"""The Stories screens (QUA-106): `/stories` (propose + review queue, list route,
-same nav zone/pattern as `/drafts`) and `/stories/[proposal_id]` (the mandatory
-approval gate, detail route — mirrors `/drafts/[draft_id]`'s list+detail split rather
-than bolting onto `/publish`, which has no queue/list capability to bolt onto — see
-the QUA-106 plan for why).
+"""The `/stories` screen (QUA-106 V1 redesign) — a single publish screen for
+Instagram Stories, structurally the same as `/publish`: pick a connected account,
+select one video (real thumbnail in the grid, reusing `ui/video_preview.py` exactly
+as `/publish` does), hit "Publicar", poll until Meta settles. A panel of trending
+content/audio (QUA-107 + Meta's `GET /ig_audio`) sits alongside the form, purely for
+reference — no field here ever reaches the publish call.
 
-Video only in this slice (`.mp4`/`.mov`) — no gallery, no carousel, one file per
-proposal. The caption is always typed/edited by the operator; the "sugerir audio"
-panel shows Meta's own trending list as a REFERENCE only, never attached to Meta's
-publish call (`audio_configuration` is out of scope).
+No propuesta, no aprobación, no revisión, no historial: there is no second screen —
+`/stories` is it, same as `/publish` is one screen for itself.
 """
 
 from __future__ import annotations
 
 import reflex as rx
 
-from .stories_state import StoriesState
-from .stories_vm import StoryProposalVM, TrendAudioOptionVM, TrendingVideoVM
-from .ui import app_shell, callout, card, empty_state, page_body, page_header, section
+from .stories_state import _UPLOAD_ID, StoriesState
+from .stories_vm import TrendAudioOptionVM, TrendingVideoVM
+from .ui import app_shell, callout, card, page_body, page_header, section
 from .ui import tokens as T
-from .ui.primitives import skeleton_rows, tone_badge
+from .ui.video_preview import gallery_preview_capture_anchor, video_frame_preview_src
 
-_UPLOAD_ID = "story_upload"
-
-
-def _screen(title: str, subtitle: str, *children: rx.Component) -> rx.Component:
-    return app_shell(page_header(title, subtitle), page_body(*children))
-
-
-# ---------------------------------------------------------------------------
-# /stories — propose + queue
+_GALLERY_ROOT_ID = "stories-gallery-root"
 
 
 def _connection_item(conn) -> rx.Component:
@@ -46,66 +37,167 @@ def _connection_selector() -> rx.Component:
     )
 
 
-def _upload_zone() -> rx.Component:
-    return rx.vstack(
-        rx.upload(
+def _connection_section() -> rx.Component:
+    return section(
+        "Cuenta",
+        _connection_selector(),
+        description="La cuenta de Instagram conectada donde se publicará la Story.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Content gallery — one tile, real video-frame thumbnail (reused from /publish's
+# `ui/video_preview.py`, unchanged), no "+" add tile since a Story is never a
+# carousel: a second drop simply REPLACES the first (`StoriesState.add_file`).
+
+
+def _pending_tile() -> rx.Component:
+    """The one selected video, shown with a REAL first-frame thumbnail — same
+    mechanism `publishing_page._pending_tile` uses (`video_frame_preview_src`,
+    client-side only, no backend change), falling back to a film icon + filename
+    while the frame has not been captured yet or never could be."""
+    preview_src = video_frame_preview_src(filename=StoriesState.pending_filename)
+    return rx.box(
+        rx.cond(
+            preview_src != "",
+            rx.el.img(
+                src=preview_src,
+                alt=StoriesState.pending_filename,
+                style={
+                    "width": "100%",
+                    "height": "100%",
+                    "object_fit": "cover",
+                    "display": "block",
+                },
+            ),
             rx.vstack(
-                rx.icon("film", size=T.ICON_LG, color=T.TEXT_FAINT),
+                rx.icon("film", size=24, color=T.tone_color("ok", 9)),
                 rx.text(
-                    rx.cond(
-                        StoriesState.pending_filename != "",
-                        StoriesState.pending_filename,
-                        "Arrastra un video (MP4/MOV) o haz clic para elegirlo",
-                    ),
-                    size="2",
+                    StoriesState.pending_filename,
+                    size="1",
                     color=T.TEXT_MUTED,
+                    width="100%",
+                    text_align="center",
+                    white_space="nowrap",
+                    overflow="hidden",
+                    text_overflow="ellipsis",
                 ),
-                spacing="2",
+                spacing="1",
                 align="center",
+                justify="center",
+                height="100%",
+                padding="0.4rem",
             ),
-            id=_UPLOAD_ID,
-            accept={"video/mp4": [".mp4"], "video/quicktime": [".mov"]},
-            multiple=False,
-            max_files=1,
-            disabled=StoriesState.create_phase == "staging",
-            on_drop=StoriesState.add_file,
-            on_drop_rejected=rx.toast.error(
-                "Formato no permitido", description="Solo se aceptan archivos MP4 o MOV."
-            ),
-            border=f"1.5px dashed {rx.color('gray', 7)}",
-            border_radius=T.RADIUS_CARD,
-            background=T.CARD_BG,
-            padding="2rem",
-            width="100%",
-            cursor="pointer",
         ),
+        rx.button(
+            rx.icon("x", size=14, color="white"),
+            on_click=StoriesState.clear_file,
+            disabled=~StoriesState.can_edit_gallery,
+            title="Quitar este archivo",
+            size="1",
+            variant="solid",
+            color_scheme="tomato",
+            radius="full",
+            position="absolute",
+            top="0.25rem",
+            right="0.25rem",
+            width="1.6rem",
+            height="1.6rem",
+            padding="0",
+            border=f"2px solid {T.CARD_BG}",
+            box_shadow="0 1px 3px rgba(0, 0, 0, 0.35)",
+            cursor="pointer",
+            _hover={"background": rx.color("tomato", 10)},
+        ),
+        position="relative",
+        width="8rem",
+        height="8rem",
+        overflow="hidden",
+        border=f"1.5px solid {rx.color('grass', 7)}",
+        border_radius=T.RADIUS_CARD,
+        background=T.tone_color("ok", 2),
+    )
+
+
+def _empty_state_content() -> rx.Component:
+    return rx.vstack(
+        rx.icon("film", size=32, color=T.TEXT_FAINT),
+        rx.text(
+            "Arrastra el video de la Story aquí o haz clic para elegirlo",
+            size="3",
+            weight="medium",
+        ),
+        rx.text("MP4 o MOV · hasta 300 MB", size="1", color=T.TEXT_MUTED),
+        spacing="2",
+        align="center",
+    )
+
+
+def _upload_widget(children: rx.Component, *, compact: bool) -> rx.Component:
+    return rx.upload(
+        children,
+        id=_UPLOAD_ID,
+        accept={"video/mp4": [".mp4"], "video/quicktime": [".mov"]},
+        multiple=False,
+        max_files=1,
+        disabled=~StoriesState.can_edit_gallery,
+        on_drop=StoriesState.add_file,
+        on_drop_rejected=rx.toast.error(
+            "Formato no permitido", description="Solo se aceptan archivos MP4 o MOV."
+        ),
+        border=f"1.5px dashed {rx.color('gray', 7)}",
+        border_radius=T.RADIUS_CARD,
+        background=T.CARD_BG,
+        width="8rem" if compact else "100%",
+        height="8rem" if compact else "auto",
+        padding="0" if compact else "2.5rem 1.5rem",
+        display="flex",
+        align_items="center",
+        justify_content="center",
+        transition=f"border-color {T.DUR_FAST} {T.EASE}, background {T.DUR_FAST} {T.EASE}",
+        _hover={"border_color": rx.color("accent", 8), "background": T.tone_color("accent", 2)},
+    )
+
+
+def _preview_capture_anchor() -> rx.Component:
+    """Mounted UNCONDITIONALLY — see `publishing_page._preview_capture_anchor`'s
+    docstring for why: without this, a video dropped while the empty-state prompt is
+    still showing (always true for the FIRST file) never gets a real thumbnail."""
+    return rx.box(gallery_preview_capture_anchor(root_id=_GALLERY_ROOT_ID), display="none")
+
+
+def _gallery_zone() -> rx.Component:
+    return rx.box(
+        _preview_capture_anchor(),
         rx.cond(
             StoriesState.pending_filename != "",
-            rx.button(
-                "Quitar archivo",
-                variant="soft",
-                color_scheme="gray",
-                size="1",
-                on_click=StoriesState.clear_file,
-            ),
+            rx.flex(_pending_tile(), wrap="wrap", gap="0.75rem", width="100%"),
+            _upload_widget(_empty_state_content(), compact=False),
         ),
+        id=_GALLERY_ROOT_ID,
         width="100%",
-        spacing="2",
     )
+
+
+def _content_section() -> rx.Component:
+    return section(
+        "Video de la Story",
+        _gallery_zone(),
+        description="Tu propio video — nunca se genera ni se reutiliza contenido de terceros.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Meta trending-audio reference (`GET /ig_audio`) — informational only.
 
 
 def _trend_option(option: TrendAudioOptionVM) -> rx.Component:
     """One row of the compact Meta audio list — title first (primary), artist and
     duration secondary, the whole row clickable. Deliberately a plain list row, not
-    a card: no border box, no thumbnail (Meta's `ig_audio` never carries cover art —
-    nothing here is invented to fill that gap), so it reads as a distinct component
-    from the TikTok/Instagram trending cards next to it, not a restyled duplicate.
+    a card: no border box, no thumbnail (Meta's `ig_audio` never carries cover art).
 
-    The play button (QUA-107 follow-up) is a SIBLING of the selection button, never
-    nested inside it — a `<button>` cannot contain another `<button>` per the HTML5
-    spec; browsers close the outer one early and the layout breaks. Two buttons
-    side by side in one row keeps "escuchar" and "seleccionar" independent, exactly
-    as decided, with no `stop_propagation` trick needed."""
+    The play button is a SIBLING of the selection button, never nested inside it —
+    a `<button>` cannot contain another `<button>` per the HTML5 spec."""
     selected = StoriesState.selected_trend_audio_id == option.audio_id
     is_playing_this = (
         StoriesState.playing_audio_id == option.audio_id
@@ -150,8 +242,6 @@ def _trend_option(option: TrendAudioOptionVM) -> rx.Component:
                 spacing="3",
                 width="100%",
             ),
-            # `ghost` + a tinted background only when selected — a subtle state,
-            # never a solid button or a heavy badge (explicit product decision).
             variant="ghost",
             color_scheme=rx.cond(selected, "iris", "gray"),
             background=rx.cond(selected, rx.color("iris", 3), "transparent"),
@@ -214,9 +304,8 @@ def _trend_audio_section() -> rx.Component:
 
 # ---------------------------------------------------------------------------
 # QUA-107: ScrapeCreators trending discovery — TikTok + Instagram, reference only.
-# Independent of the connection selector above (see `stories_state.py`'s module
-# docstring): these buttons are never disabled by `selected_connection_id`, unlike
-# `_trend_audio_section`'s Meta-backed suggestion.
+# Independent of the connection selector above: these buttons are never disabled by
+# `selected_connection_id`, unlike `_trend_audio_section`'s Meta-backed suggestion.
 
 
 def _trending_thumbnail(candidate: TrendingVideoVM) -> rx.Component:
@@ -340,10 +429,6 @@ def _trending_video_card(candidate: TrendingVideoVM) -> rx.Component:
             width="100%",
         ),
         rx.box(
-            # Reserves the same vertical space whether or not this candidate has
-            # music — Instagram Reels never do (`has_music` is always False there),
-            # and without this fixed slot their cards render visibly shorter than
-            # TikTok's, which was reported as an inconsistent grid.
             rx.cond(
                 candidate.has_music,
                 rx.vstack(
@@ -404,10 +489,7 @@ def _trending_platform_column(
 
 def _trending_discovery_section() -> rx.Component:
     """QUA-107: TikTok + Instagram trending, shown for reference only. Explicit,
-    operator-triggered per platform — never fetched on screen load. `region=US` is a
-    fixed technical parameter for the TikTok call, never a claim about geography (see
-    `scrapecreators_trending.DEFAULT_TIKTOK_REGION` — measured live 2026-09-21 to not
-    reliably filter by country), hence the disclaimer below."""
+    operator-triggered per platform — never fetched on screen load."""
     return rx.vstack(
         rx.text(
             "Contenido y audios en tendencia, de forma general — no representa "
@@ -444,9 +526,7 @@ def _audio_preview_player() -> rx.Component:
     """The ONE shared player behind every play/pause button on this screen (Meta's
     audio list and the TikTok song-detail panel) — driven entirely by
     `playing_audio_url`/`is_audio_playing`, so only one preview is ever sounding at
-    a time and no row mounts its own `<audio>` element. `on_error` degrades exactly
-    like `on_ended`: an expired/unavailable preview URL stops cleanly instead of
-    leaving a ⏸ icon showing sound that stopped playing on its own."""
+    a time."""
     return rx.box(
         rx.audio(
             src=StoriesState.playing_audio_url,
@@ -459,245 +539,121 @@ def _audio_preview_player() -> rx.Component:
     )
 
 
-def _create_form() -> rx.Component:
+def _trending_card() -> rx.Component:
     return card(
         rx.vstack(
             _audio_preview_player(),
-            section("Cuenta", _connection_selector()),
-            rx.divider(),
-            section("Video de la Story", _upload_zone()),
-            rx.divider(),
-            section(
-                "Caption",
-                rx.text_area(
-                    placeholder="Escribe el caption (editable en cualquier momento)…",
-                    value=StoriesState.caption,
-                    on_change=StoriesState.set_caption,
-                    width="100%",
-                    rows="3",
-                ),
-                rx.text(
-                    "Instagram no muestra texto en Stories publicadas mediante la API. "
-                    "Esta nota solo se guarda como referencia.",
-                    size="1",
-                    color=T.TEXT_FAINT,
-                ),
+            rx.hstack(
+                rx.icon("sparkles", size=T.ICON_MD, color=T.tone_color("info", 9)),
+                rx.heading("Tendencias e inspiración", size="3", as_="h2"),
+                spacing="2",
+                align="center",
             ),
             rx.divider(),
-            section("Audio en tendencia (opcional)", _trend_audio_section()),
+            section("Audio en tendencia (Meta)", _trend_audio_section()),
             rx.divider(),
-            section("Contenido en tendencia (opcional)", _trending_discovery_section()),
-            rx.cond(
-                StoriesState.create_error != "",
-                callout(StoriesState.create_error, tone="error"),
-            ),
-            rx.button(
-                "Crear propuesta",
-                size="3",
-                loading=StoriesState.create_phase == "staging",
-                disabled=~StoriesState.can_create,
-                on_click=StoriesState.create_proposal,
-            ),
+            section("Contenido en tendencia", _trending_discovery_section()),
             spacing="4",
             align_items="stretch",
             width="100%",
         ),
-        padding="2rem",
-    )
-
-
-def _proposal_row(proposal: StoryProposalVM) -> rx.Component:
-    return rx.table.row(
-        rx.table.cell(
-            rx.link(
-                rx.cond(proposal.caption != "", proposal.caption, "(sin caption)"),
-                href="/stories/" + proposal.id,
-            )
-        ),
-        rx.table.cell(tone_badge(proposal.status_label, proposal.status_tone)),
-        rx.table.cell(proposal.created_label, color=T.TEXT_MUTED),
-    )
-
-
-def _proposals_list() -> rx.Component:
-    return section(
-        "Propuestas",
-        "Cada Story propuesta espera tu revisión — nada se publica sin aprobación humana.",
-        rx.cond(
-            StoriesState.proposals_error != "",
-            callout(StoriesState.proposals_error, tone="error"),
-        ),
-        rx.cond(
-            StoriesState.is_loading_proposals,
-            skeleton_rows(3),
-            rx.cond(
-                StoriesState.proposals.length() > 0,
-                rx.box(
-                    rx.table.root(
-                        rx.table.header(
-                            rx.table.row(
-                                rx.table.column_header_cell("Caption"),
-                                rx.table.column_header_cell("Estado"),
-                                rx.table.column_header_cell("Creada"),
-                            )
-                        ),
-                        rx.table.body(rx.foreach(StoriesState.proposals, _proposal_row)),
-                        variant="surface",
-                        width="100%",
-                    ),
-                    overflow_x="auto",
-                    width="100%",
-                ),
-                empty_state(
-                    "film",
-                    "Todavía no hay propuestas",
-                    "Sube un video y crea la primera propuesta de Story arriba.",
-                ),
-            ),
-        ),
-    )
-
-
-def stories_index() -> rx.Component:
-    return _screen(
-        "Stories",
-        "Propone una Story con contenido/trending y apruébala antes de publicar",
-        rx.cond(
-            StoriesState.connections_error != "",
-            callout(StoriesState.connections_error, tone="error"),
-        ),
-        _create_form(),
-        _proposals_list(),
+        padding="1.5rem",
     )
 
 
 # ---------------------------------------------------------------------------
-# /stories/[proposal_id] — the mandatory approval gate
+# Publish form + status — same shape `publishing_page.py` uses for `/publish`.
 
 
-def _detail_actions(proposal: StoryProposalVM) -> rx.Component:
-    return rx.cond(
-        proposal.can_decide,
-        rx.cond(
-            StoriesState.is_editing,
-            rx.vstack(
-                rx.text_area(
-                    value=StoriesState.edit_caption,
-                    on_change=StoriesState.set_edit_caption,
-                    width="100%",
-                    rows="3",
-                ),
+def _status_block() -> rx.Component:
+    return rx.match(
+        StoriesState.phase,
+        (
+            "staging_and_starting",
+            rx.callout(
                 rx.hstack(
-                    rx.button(
-                        "Guardar y publicar",
-                        size="3",
-                        loading=StoriesState.is_deciding | StoriesState.is_publishing_action,
-                        on_click=StoriesState.save_and_publish,
-                    ),
-                    rx.button(
-                        "Cancelar",
-                        variant="soft",
-                        color_scheme="gray",
-                        size="3",
-                        on_click=StoriesState.cancel_edit,
-                    ),
-                    spacing="3",
+                    rx.spinner(size="2"),
+                    rx.text("Subiendo el video y arrancando la publicación...", size="2"),
+                    spacing="2",
+                    align="center",
                 ),
+                color_scheme="gray",
+                width="100%",
+            ),
+        ),
+        (
+            "polling",
+            rx.callout(
+                rx.vstack(
+                    rx.hstack(
+                        rx.spinner(size="2"),
+                        rx.text(
+                            "Publicando, esperando confirmación de Meta...",
+                            size="2",
+                            weight="medium",
+                        ),
+                        rx.cond(
+                            StoriesState.elapsed_label != "",
+                            rx.text(
+                                StoriesState.elapsed_label,
+                                size="1",
+                                color=T.TEXT_FAINT,
+                                font_family="monospace",
+                            ),
+                            rx.fragment(),
+                        ),
+                        spacing="2",
+                        align="center",
+                        width="100%",
+                    ),
+                    rx.text(
+                        "Meta está procesando la Story. Esto puede tardar varios minutos.",
+                        size="1",
+                        color=T.TEXT_MUTED,
+                    ),
+                    spacing="1",
+                    align_items="start",
+                    width="100%",
+                ),
+                icon="clock",
+                color_scheme="amber",
+                width="100%",
+            ),
+        ),
+        (
+            "failure",
+            rx.callout(
+                StoriesState.error, icon="triangle-alert", color_scheme="tomato", width="100%"
+            ),
+        ),
+        rx.fragment(),
+    )
+
+
+def _publish_button() -> rx.Component:
+    return rx.button(
+        rx.icon("send", size=16),
+        "Publicar",
+        on_click=StoriesState.publish(),
+        disabled=~StoriesState.can_publish,
+    )
+
+
+def _form_card() -> rx.Component:
+    return card(
+        rx.vstack(
+            _connection_section(),
+            rx.divider(),
+            _content_section(),
+            rx.divider(),
+            rx.vstack(
+                _publish_button(),
+                _status_block(),
                 spacing="3",
                 width="100%",
                 align_items="stretch",
             ),
-            rx.hstack(
-                rx.button(
-                    rx.icon("check", size=16),
-                    "Aprobar y publicar",
-                    size="3",
-                    loading=StoriesState.is_deciding | StoriesState.is_publishing_action,
-                    on_click=StoriesState.approve_and_publish,
-                ),
-                rx.button(
-                    rx.icon("pencil", size=16),
-                    "Editar caption",
-                    variant="soft",
-                    size="3",
-                    on_click=StoriesState.start_edit,
-                ),
-                rx.button(
-                    rx.icon("x", size=16),
-                    "Rechazar",
-                    variant="soft",
-                    color_scheme="tomato",
-                    size="3",
-                    loading=StoriesState.is_deciding,
-                    on_click=StoriesState.reject,
-                ),
-                spacing="3",
-                wrap="wrap",
-            ),
-        ),
-        rx.cond(
-            proposal.is_publishing,
-            rx.hstack(
-                rx.spinner(size="2"),
-                rx.text("Meta está procesando la publicación. Esto puede tardar varios minutos."),
-                rx.button(
-                    "Actualizar estado",
-                    variant="soft",
-                    size="2",
-                    on_click=StoriesState.refresh_status,
-                ),
-                align="center",
-                spacing="3",
-                wrap="wrap",
-            ),
-            rx.fragment(),
-        ),
-    )
-
-
-def _detail_card(proposal: StoryProposalVM) -> rx.Component:
-    return card(
-        rx.vstack(
-            rx.hstack(
-                rx.heading("Propuesta de Story", size="5", as_="h2"),
-                tone_badge(proposal.status_label, proposal.status_tone),
-                align="center",
-                spacing="3",
-            ),
-            rx.divider(),
-            section(
-                "Caption",
-                rx.text(rx.cond(proposal.caption != "", proposal.caption, "(sin caption)")),
-                rx.text(
-                    "Instagram no muestra texto en Stories publicadas mediante la API. "
-                    "Esta nota solo se guarda como referencia.",
-                    size="1",
-                    color=T.TEXT_FAINT,
-                ),
-            ),
-            rx.cond(
-                proposal.has_trend_audio,
-                section(
-                    "Audio de referencia",
-                    rx.hstack(
-                        rx.icon("music", size=14),
-                        rx.text(proposal.trend_audio_title),
-                        align="center",
-                        spacing="2",
-                    ),
-                ),
-            ),
-            rx.cond(
-                proposal.publish_error_code != "",
-                callout("La publicación falló: " + proposal.publish_error_code, tone="error"),
-            ),
-            rx.cond(
-                StoriesState.action_error != "",
-                callout(StoriesState.action_error, tone="error"),
-            ),
-            rx.divider(),
-            _detail_actions(proposal),
-            spacing="4",
+            spacing="5",
             align_items="stretch",
             width="100%",
         ),
@@ -705,21 +661,24 @@ def _detail_card(proposal: StoryProposalVM) -> rx.Component:
     )
 
 
-def story_detail_index() -> rx.Component:
-    return _screen(
-        "Propuesta de Story",
-        "Revisa el contenido antes de aprobar — nada se publica sin tu decisión",
-        rx.cond(
-            StoriesState.is_loading_proposal,
-            skeleton_rows(4),
-            rx.cond(
-                StoriesState.proposal_error != "",
-                callout(StoriesState.proposal_error, tone="error"),
-                rx.cond(
-                    StoriesState.proposal,
-                    _detail_card(StoriesState.proposal),
-                    rx.fragment(),
-                ),
+def _connections_error() -> rx.Component:
+    return callout(StoriesState.connections_error, tone="error")
+
+
+def stories_index() -> rx.Component:
+    return app_shell(
+        page_header(
+            "Stories",
+            "Sube tu video, mira tendencias como referencia, y publícalo directo en Instagram",
+        ),
+        page_body(
+            rx.cond(StoriesState.connections_error != "", _connections_error(), rx.fragment()),
+            rx.vstack(
+                _form_card(),
+                _trending_card(),
+                spacing="5",
+                width="100%",
+                align_items="stretch",
             ),
         ),
     )

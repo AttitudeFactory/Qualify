@@ -25,8 +25,9 @@ What this module deliberately does NOT do:
     EXACTLY the order the vendor sent them, capped at `MAX_CANDIDATES` — the cap is a
     presentation limit, not a re-sort.
   - **No persistence.** Nothing here writes to disk, R2, or Postgres. A caller that
-    wants to remember a choice does so through the existing `trend_audio_id`/
-    `trend_audio_title` fields on `story_proposals` (unchanged by this module).
+    wants to remember a choice keeps it in Reflex state only (`StoriesState.
+    selected_trend_audio_id`/`_title`) — informational for the current session,
+    never written anywhere and never forwarded to the actual Story publish call.
 """
 
 from __future__ import annotations

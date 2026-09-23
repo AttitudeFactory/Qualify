@@ -1,41 +1,39 @@
-"""Instagram Story proposals with mandatory human approval (QUA-106, first slice).
+"""Meta trending-audio reference for the Stories screen (QUA-106 V1 redesign).
 
-Pipeline: operator uploads media (`stage_and_propose_story`, the ONLY media source in
-this v1 — no AI generation, no third-party reuse) -> optional trending-audio reference
-(`suggest_trend_audio`, Meta's `GET /ig_audio`, informational only) -> human decision
-(`approved`/`edited`/`rejected`) -> `publish_proposal` (delegates to the EXISTING
-`qualify_api.publishing.PublishService`, `media_product_type=STORIES`) -> `refresh_
-proposal` mirrors that attempt's eventual `published`/`failed` verdict back onto the
-proposal.
+**QUA-106 no longer has a `story_proposals`/`StoryProposal` concept anywhere.**
+Publishing a Story is a plain `PublishService.start(media_product_type="STORIES")`
+call, made directly from the Reflex layer via `qualify_api.publishing` — same seam
+`/publish` already uses, just a different `media_product_type`. This package now
+holds ONLY the one thing that was ever genuinely Stories-specific: showing Meta's
+trending-audio suggestion (`GET /ig_audio`) as a reference panel. It is informational
+only — nothing here is ever attached to a real publish call (`audio_configuration` is
+explicitly out of scope), and a failed/empty lookup never blocks anything.
 
-Explicitly out of this module (QUA-106 decision, revisit only with a new ticket):
-autonomous publish, any scheduler/cron, `audio_configuration` (the suggested audio is
-shown, never attached to the real Meta call), Scrape Creators, AI-generated visual
-media.
+`suggest_trend_audio_using` is the pure, injectable logic (unit-tested directly,
+offline); `suggest_trend_audio` is the production-wired composition Reflex calls.
+Same split `qualify_api.publishing.composition`/`.service` already establish
+elsewhere in this codebase, just collapsed into one module since there is no longer
+enough Stories-specific surface to justify separate `service.py`/`composition.py`
+files.
 """
 
-from qualify_api.stories.composition import (
-    decide_proposal,
-    get_proposal,
-    list_proposals,
-    production_story_proposal_service,
-    publish_proposal,
-    refresh_proposal,
-    stage_and_propose_story,
-    suggest_trend_audio,
-)
-from qualify_api.stories.repository import (
-    DECISIONS,
-    MemoryStoryProposalRepository,
-    PostgresStoryProposalRepository,
-    ProposalRecord,
-    StoryProposalRepository,
-    UnknownProposal,
-)
-from qualify_api.stories.service import StoryProposalService
+from __future__ import annotations
+
+from functools import cache
+from typing import Protocol
+from uuid import UUID
+
+from qualify_api.config import MetaOAuthSettings
+from qualify_api.connections.credential_reader import DbCredentialReader
+from qualify_api.connections.crypto import DevEncryptor, Encryptor
+from qualify_api.connections.resolver import InjectingCredentialResolver
+from qualify_api.publishing.composition import PostgresConnectionTargetReader
+from qualify_api.publishing.service import ConnectionTargetReader
 from qualify_api.stories.trend_audio_client import (
     AUDIO_TYPE_MUSIC,
     AUDIO_TYPE_ORIGINAL_SOUND,
+    HttpTrendAudioClient,
+    TrendAudioClient,
     TrendAudioError,
     TrendAudioOption,
 )
@@ -43,21 +41,75 @@ from qualify_api.stories.trend_audio_client import (
 __all__ = [
     "AUDIO_TYPE_MUSIC",
     "AUDIO_TYPE_ORIGINAL_SOUND",
-    "DECISIONS",
-    "MemoryStoryProposalRepository",
-    "PostgresStoryProposalRepository",
-    "ProposalRecord",
-    "StoryProposalRepository",
-    "StoryProposalService",
+    "ResolverTrendAudioClientFactory",
+    "TrendAudioClientFactory",
     "TrendAudioError",
     "TrendAudioOption",
-    "UnknownProposal",
-    "decide_proposal",
-    "get_proposal",
-    "list_proposals",
-    "production_story_proposal_service",
-    "publish_proposal",
-    "refresh_proposal",
-    "stage_and_propose_story",
     "suggest_trend_audio",
+    "suggest_trend_audio_using",
 ]
+
+
+class TrendAudioClientFactory(Protocol):
+    async def client_for(self, *, tenant_id: UUID, connection_id: UUID) -> TrendAudioClient: ...
+
+
+class ResolverTrendAudioClientFactory:
+    """One authenticated client per lookup — resolved at call time, same seam
+    `ResolverPublishClientFactory`/`ResolverReplyClientFactory` already establish for
+    their own Meta calls. Nothing here ever holds a token."""
+
+    def __init__(self, settings: MetaOAuthSettings, encryptor: Encryptor) -> None:
+        self._settings = settings
+        self._encryptor = encryptor
+
+    async def client_for(self, *, tenant_id: UUID, connection_id: UUID) -> TrendAudioClient:
+        resolver = InjectingCredentialResolver(DbCredentialReader(tenant_id), self._encryptor)
+        graph = await resolver.client_for(connection_id, scheme=self._settings.graph_auth_scheme)
+        return HttpTrendAudioClient(graph_client=graph, graph_url=self._settings.graph_url)
+
+
+async def suggest_trend_audio_using(
+    *,
+    connections: ConnectionTargetReader,
+    trend_clients: TrendAudioClientFactory | None,
+    tenant_id: UUID,
+    connection_id: UUID,
+    audio_type: str = AUDIO_TYPE_MUSIC,
+) -> tuple[TrendAudioOption, ...]:
+    """Best-effort reference list, degrade-don't-block: returns `()` rather than
+    raising for every failure mode (no client factory configured, unknown connection,
+    `TrendAudioError`) — a trending-audio lookup must never block the Stories screen.
+    Pure/injectable so it is unit-testable offline; `suggest_trend_audio` below is the
+    production-wired composition."""
+    if trend_clients is None:
+        return ()
+    target = connections.read(tenant_id=tenant_id, connection_id=connection_id)
+    if target is None:
+        return ()
+    try:
+        client = await trend_clients.client_for(tenant_id=tenant_id, connection_id=connection_id)
+        return await client.trending_audio(ig_user_id=target.ig_user_id, audio_type=audio_type)
+    except TrendAudioError:
+        return ()
+
+
+@cache
+def _production_trend_audio_client_factory() -> ResolverTrendAudioClientFactory:
+    settings = MetaOAuthSettings.from_env()
+    return ResolverTrendAudioClientFactory(settings, DevEncryptor())
+
+
+async def suggest_trend_audio(
+    *,
+    tenant_id: UUID,
+    connection_id: UUID,
+    audio_type: str = AUDIO_TYPE_MUSIC,
+) -> tuple[TrendAudioOption, ...]:
+    return await suggest_trend_audio_using(
+        connections=PostgresConnectionTargetReader(),
+        trend_clients=_production_trend_audio_client_factory(),
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        audio_type=audio_type,
+    )
