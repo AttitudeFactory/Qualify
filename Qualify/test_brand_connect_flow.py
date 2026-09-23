@@ -84,14 +84,18 @@ def test_the_maps_pair_was_swapped_with_identity() -> None:
     ]
 
 
-def test_the_logo_pair_is_asked_even_when_the_profile_has_a_picture() -> None:
-    """§ request 2026-09-16: a profile picture is not a logo. Skipping the pair on one
-    made uploading a logo (or asking for one through the brief) unreachable."""
-    state = _existing_account(step=wiz._IDENTITY_STEP, account_kind="influencer")
-    assert state.profile_pic != ""
-    assert _next(state) == wiz._LOGO_QUESTION_STEP
-    assert _next(state) == wiz._LOGO_UPLOAD_STEP
-    assert _next(state) == wiz._PALETTE_STEP
+def test_the_logo_pair_is_asked_while_the_profile_picture_has_not_been_taken() -> None:
+    """§ request 2026-09-16: merely HAVING a profile picture is not a logo — skipping the
+    pair on that made uploading a logo (or asking for one through the brief)
+    unreachable. Since 2026-09-21 the pair is skipped only once `analyze` has taken a REAL
+    picture as the logo (`logo_from_profile`); until then, and for a default or missing
+    picture, it is asked."""
+    for kind in ("marca", "ambas"):
+        state = _existing_account(step=wiz._IDENTITY_STEP, account_kind=kind)
+        assert state.profile_pic != ""
+        assert _next(state) == wiz._LOGO_QUESTION_STEP
+        assert _next(state) == wiz._LOGO_UPLOAD_STEP
+        assert _next(state) == wiz._PALETTE_STEP
 
 
 def test_an_account_without_a_picture_is_asked_about_its_logo_too() -> None:
@@ -102,15 +106,41 @@ def test_an_account_without_a_picture_is_asked_about_its_logo_too() -> None:
     assert fresh.profile_pic == ""
     assert _next(fresh) == wiz._LOGO_QUESTION_STEP
 
-    no_picture = _existing_account(
-        step=wiz._IDENTITY_STEP, profile_pic="", account_kind="influencer"
+    for kind in ("ambas", "influencer"):
+        no_picture = _existing_account(step=wiz._IDENTITY_STEP, profile_pic="", account_kind=kind)
+        assert _next(no_picture) == wiz._LOGO_QUESTION_STEP
+        assert _next(no_picture) == wiz._LOGO_UPLOAD_STEP
+        # and back from the palette the walk passes through both logo screens again
+        no_picture.step = wiz._PALETTE_STEP
+        assert _prev(no_picture) == wiz._LOGO_UPLOAD_STEP
+        assert _prev(no_picture) == wiz._LOGO_QUESTION_STEP
+
+
+def test_an_influencer_with_a_real_picture_is_not_asked_about_a_logo() -> None:
+    """§ request 2026-09-21: a creator whose real profile picture was detected already has
+    their logo — neither ¿Tienes logo? nor Tu logo is walked, forwards or backwards."""
+    state = _existing_account(
+        step=wiz._IDENTITY_STEP, account_kind="influencer", logo_from_profile=True
     )
-    assert _next(no_picture) == wiz._LOGO_QUESTION_STEP
-    assert _next(no_picture) == wiz._LOGO_UPLOAD_STEP
-    # and back from the palette the walk passes through both logo screens again
-    no_picture.step = wiz._PALETTE_STEP
-    assert _prev(no_picture) == wiz._LOGO_UPLOAD_STEP
-    assert _prev(no_picture) == wiz._LOGO_QUESTION_STEP
+    assert _next(state) == wiz._PALETTE_STEP
+    assert _prev(state) == wiz._IDENTITY_STEP
+
+
+@pytest.mark.parametrize("profile_pic", ["https://example.com/default.jpg", ""])
+def test_an_influencer_without_a_real_picture_is_asked_about_a_logo(profile_pic: str) -> None:
+    """§ request 2026-09-21 ("solo la pregunta en influencer cuando detecte que no tiene
+    logo"): no picture at all, or the network's default silhouette — the detection then
+    takes nothing (`logo_from_profile` stays False) and the question is asked."""
+    state = _existing_account(
+        step=wiz._IDENTITY_STEP,
+        profile_pic=profile_pic,
+        account_kind="influencer",
+        profile_pic_is_real=False,
+        logo_from_profile=False,
+    )
+    assert _next(state) == wiz._LOGO_QUESTION_STEP
+    assert _next(state) == wiz._LOGO_UPLOAD_STEP
+    assert _next(state) == wiz._PALETTE_STEP
 
 
 def test_account_kind_offers_both_as_a_third_answer() -> None:
@@ -168,7 +198,8 @@ def test_existing_influencer_is_still_asked_the_rubro_then_walks_to_identity() -
     assert state.is_influencer is True and state.rubro_complete is True
     assert _next(state) == wiz._IDENTITY_STEP
 
-    # Maps pair skipped (influencer); the logo pair is asked even with a profile picture
+    # Maps pair skipped (influencer); the logo pair is asked while no real profile picture
+    # was taken as the logo (`test_an_influencer_with_a_real_picture_is_not_asked_...`)
     assert _next(state) == wiz._LOGO_QUESTION_STEP
     assert _next(state) == wiz._LOGO_UPLOAD_STEP
     assert _next(state) == wiz._PALETTE_STEP
@@ -540,3 +571,17 @@ async def test_analyze_never_seeds_from_a_concurrent_tenants_profile(
     assert state.profile_username == "tenant_a_real_business"
     assert state.profile_fullname == "Tenant A Real Business"
     assert state.error == ""
+
+
+def test_a_detected_profile_picture_preanswers_the_question_and_skips_only_tu_logo() -> None:
+    """§ request 2026-09-21: a brand or "ambas" is ALWAYS asked ¿Tienes logo? — a real
+    profile picture arrives as the selected answer ("Mi foto de perfil es mi logo"), and
+    only Tu logo, which has nothing left to ask, is skipped."""
+    for kind in ("marca", "ambas"):
+        state = _existing_account(
+            step=wiz._IDENTITY_STEP, account_kind=kind, logo_from_profile=True
+        )
+        assert _next(state) == wiz._LOGO_QUESTION_STEP
+        assert _next(state) == wiz._PALETTE_STEP
+        assert _prev(state) == wiz._LOGO_QUESTION_STEP
+        assert _prev(state) == wiz._IDENTITY_STEP

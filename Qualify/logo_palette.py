@@ -106,6 +106,30 @@ _PLACEHOLDER_MAX_DARK_SHARE = 0.02
 _PLACEHOLDER_DARK = 90
 _PLACEHOLDER_TWO_TONE_SHARE = 0.95
 _PLACEHOLDER_LIGHT = 200
+#: How much darker than the background the second tone must be. It replaced a fixed
+#: ceiling of 200 on that tone (2026-09-21): TikTok's default avatar is a #cccccc disc
+#: with a #f3f3f3 silhouette on white corners — the silhouette and the corners merge into
+#: one light tone, and the disc, at ~204, sat just above the old ceiling. A gap keeps the
+#: Instagram case (grey ~130 under a ~245 background) and admits that one.
+_PLACEHOLDER_MIN_GAP = 25
+
+
+#: Object ids of the platforms' own "no picture" images, as they appear in a CDN URL's
+#: path (the signature and size suffix after them change on every request, the object
+#: does not). Measured 2026-09-21 on 100 cached TikTok reads: four unrelated accounts
+#: (0-60 followers, one with an auto-generated `user60390607120` name) all carried
+#: `musically-maliva-obj/1594805258216454`, and the file behind it is byte-identical
+#: (a grey disc with a lighter silhouette). TikTok does NOT generate a letter-on-colour
+#: image server-side, at least in what the vendor returns: if it did, each account would
+#: have its own object. A match needs no download at all.
+_DEFAULT_AVATAR_OBJECTS = ("musically-maliva-obj/1594805258216454",)
+
+
+def is_default_avatar_url(url: str) -> bool:
+    """True when `url` points at a platform's shared "no picture" image (see
+    `_DEFAULT_AVATAR_OBJECTS`). Cheaper and more certain than looking at the pixels
+    (`is_placeholder_avatar`), but it only knows the images it has been shown."""
+    return any(marker in url for marker in _DEFAULT_AVATAR_OBJECTS)
 
 
 def is_placeholder_avatar(data: bytes) -> bool:
@@ -145,9 +169,10 @@ def is_placeholder_avatar(data: bytes) -> bool:
     if (first_count + second_count) / len(pixels) < _PLACEHOLDER_TWO_TONE_SHARE:
         return False
     light, other = sorted((first, second), key=lambda c: sum(c), reverse=True)
+    light_level, other_level = sum(light) / 3, sum(other) / 3
     return (
-        sum(light) / 3 >= _PLACEHOLDER_LIGHT
-        and _PLACEHOLDER_DARK <= sum(other) / 3 < _PLACEHOLDER_LIGHT
+        light_level >= _PLACEHOLDER_LIGHT
+        and _PLACEHOLDER_DARK <= other_level < light_level - _PLACEHOLDER_MIN_GAP
     )
 
 

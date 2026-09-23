@@ -44,9 +44,11 @@ from qualify_api.tenancy.models import Brand
 
 LABELS = ("referente", "competencia", "detractor")
 
-#: Where a seed hashtag came from. `profile` is the only origin today (the brand's own
-#: most-used hashtags); a hashtag discovery or a manual entry adds its own value.
+#: Where a seed hashtag came from: `profile` (the brand's own most-used hashtags) or
+#: `catalog` (the shared hashtag catalog resolved the operator's rubro to it, migration
+#: 0023). A manual entry would add its own value.
 ORIGIN_PROFILE = "profile"
+ORIGIN_CATALOG = "catalog"
 
 DEFAULT_SOURCE = "scrapecreators"
 

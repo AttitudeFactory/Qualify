@@ -885,3 +885,103 @@ def test_a_vendor_5xx_is_retried_once(monkeypatch: pytest.MonkeyPatch) -> None:
         with pytest.raises(cd.ScrapeCreatorsError):
             cd.run_query(client, cd.Query("tiktok", "keyword", "x", "food_drink"))
     assert attempts == ["bad"]
+
+
+# --------------------------------------------------------------------------------------
+# the shared hashtag catalog (v6): `DiscoverySeed.catalog_hashtags`
+# --------------------------------------------------------------------------------------
+
+
+def test_catalog_hashtags_join_the_sector_queries_and_extend_the_cap() -> None:
+    plain = cd.DiscoverySeed("x", (), (), "CO", "", terms=("smash burgers",))
+    with_catalog = cd.DiscoverySeed(
+        "x", (), (), "CO", "", terms=("smash burgers",), catalog_hashtags=("burgers", "hamburguesa")
+    )
+    assert cd.sector_terms(plain) == ["smash burgers"]
+    # after the operator's words, before any taxonomy phrasing; each one is one more query
+    assert cd.sector_terms(with_catalog) == ["smash burgers", "burgers", "hamburguesa"]
+
+
+def test_catalog_hashtags_never_displace_the_taxonomy_phrasings() -> None:
+    base = cd.DiscoverySeed("midu.dev", ("technology", "education"), ("programacion", "css"), "CO")
+    enriched = cd.DiscoverySeed(
+        "midu.dev",
+        ("technology", "education"),
+        ("programacion", "css"),
+        "CO",
+        catalog_hashtags=("devs", "coding"),
+    )
+    without = cd.sector_terms(base)
+    with_tags = cd.sector_terms(enriched)
+    assert len(with_tags) == len(without) + 2
+    assert [t for t in with_tags if t not in ("devs", "coding")] == without
+
+
+def test_catalog_hashtags_skip_place_tags_and_duplicates_in_the_sector() -> None:
+    seed = cd.DiscoverySeed(
+        "x",
+        (),
+        (),
+        "CO",
+        "Cúcuta",
+        terms=("burgers",),
+        catalog_hashtags=("cucutafood", "burgers", "smash"),
+    )
+    assert cd.sector_terms(seed) == ["burgers", "smash"]
+
+
+def test_a_rubro_outside_the_taxonomy_gets_a_composed_city_hashtag_from_the_catalog() -> None:
+    seed = cd.DiscoverySeed(
+        "x", (), (), "CO", "Cúcuta", terms=("smash burgers",), catalog_hashtags=("burgers",)
+    )
+    assert _labels("local", seed) == [
+        ("tiktok:keyword:smash burgers Cúcuta", "CO"),
+        ("tiktok:hashtag:#cucutaburgers", "CO"),
+    ]
+
+
+def test_the_taxonomy_and_the_accounts_own_city_tag_still_win_over_the_catalog() -> None:
+    niche = cd.DiscoverySeed(
+        "x", ("food_drink",), (), "CO", "Bogotá", catalog_hashtags=("burgers",)
+    )
+    assert _labels("local", niche)[1] == ("tiktok:hashtag:#bogotafood", "CO")
+    own = cd.DiscoverySeed(
+        "x", (), ("cucutafood",), "CO", "Cúcuta", terms=("burgers",), catalog_hashtags=("smash",)
+    )
+    assert _labels("local", own)[1] == ("tiktok:hashtag:#cucutafood", "CO")
+
+
+def test_no_catalog_means_no_extra_local_query() -> None:
+    seed = cd.DiscoverySeed("x", (), (), "CO", "Cúcuta", terms=("smash burgers",))
+    assert _labels("local", seed) == [("tiktok:keyword:smash burgers Cúcuta", "CO")]
+
+
+def test_catalog_hashtags_repair_a_misspelled_rubro_in_the_relevance_filter() -> None:
+    typo = cd.DiscoverySeed("x", (), (), "CO", "", terms=("ventas de hmaburguesas",))
+    fixed = cd.DiscoverySeed(
+        "x", (), (), "CO", "", terms=("ventas de hmaburguesas",), catalog_hashtags=("hamburguesas",)
+    )
+    burger = cd.Candidate("tiktok", "smashhouse", bio="Las mejores hamburguesas smash")
+    assert not cd._about_the_sector(burger, typo)  # "hmabu" is not "hambu"
+    assert cd._about_the_sector(burger, fixed)
+
+
+def test_catalog_hashtags_show_in_the_chips_without_repeating_own_tags() -> None:
+    seed = cd.DiscoverySeed(
+        "x", ("food_drink",), ("burgers",), "CO", "", catalog_hashtags=("burgers", "smash")
+    )
+    chips = seed.chips()
+    assert chips.count("#burgers") == 1
+    assert "#smash" in chips
+
+
+def test_the_catalog_never_changes_the_cache_key() -> None:
+    """The catalog grows with every search; a key that followed it would discard stored
+    phases (and their credits) each time it did."""
+    a = cd.DiscoverySeed("x", ("food_drink",), (), "CO", "Cúcuta", terms=("burgers",))
+    b = cd.DiscoverySeed(
+        "x", ("food_drink",), (), "CO", "Cúcuta", terms=("burgers",), catalog_hashtags=("smash",)
+    )
+    assert a.signature() == b.signature()
+    for key in cd.PHASES:
+        assert cd.phase_signature(key, a) == cd.phase_signature(key, b)

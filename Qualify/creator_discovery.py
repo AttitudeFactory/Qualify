@@ -1184,8 +1184,10 @@ def save_result(result: DiscoveryResult, *, directory: Path = DISCOVERY_DIR) -> 
 #: so a cached or stored result computed under the old plan is a miss instead of a stale
 #: answer. Not left to memory: `test_creator_discovery_version.py` fingerprints the
 #: algorithm's code and fails when it changes without a bump (5 = the 2026-09-15
-#: country aliases / city lists, which shipped still stamped 4).
-PHASED_PLAN_VERSION = 5
+#: country aliases / city lists, which shipped still stamped 4; 6 = the shared hashtag
+#: catalog: the rubro's catalog hashtags join the sector queries, the local hashtag
+#: query and the relevance stems — `hashtag_catalog.catalog_hashtags_for`).
+PHASED_PLAN_VERSION = 6
 
 
 @dataclass(frozen=True)
@@ -1661,6 +1663,15 @@ class DiscoverySeed:
     #: works for any rubro, not only the taxonomy's. Filled by the Brand Kit's rubro
     #: step (`rubro_text`); empty when only a taxonomy category was chosen.
     terms: tuple[str, ...] = ()
+    #: Hashtags the shared catalog (`hashtag_catalog.catalog_hashtags_for`, migration 0023)
+    #: knows for this rubro — what the operator's words resolve to even when they are
+    #: misspelled, plus the niche's most seen tags. Set by the wizard AFTER
+    #: `seed_from_profile`; deliberately NOT part of `signature` / `phase_signature`: the
+    #: catalog grows with every search, and a cache key that followed it would throw away
+    #: a stored phase (and spend its credits again) each time it did. A result is reused
+    #: for the answers that produced it; the catalog's improvements land on the next
+    #: search that is not a cache hit (a new city, the weekly TTL, a version bump).
+    catalog_hashtags: tuple[str, ...] = ()
 
     def signature(self) -> str:
         return "|".join(
@@ -1680,7 +1691,11 @@ class DiscoverySeed:
         """What the insights screen shows under "Buscamos con": the signals, readable."""
         out = list(self.terms)
         out.extend(NICHE_LABELS.get(n, n) for n in self.niches)
-        out.extend(f"#{tag}" for tag in self.hashtags[:3])
+        shown: list[str] = []
+        for tag in (*self.hashtags[:3], *self.catalog_hashtags[:3]):
+            if tag not in shown:
+                shown.append(tag)
+        out.extend(f"#{tag}" for tag in shown)
         place = ", ".join(p for p in (self.city, country_name(self.country_code)) if p)
         if place:
             out.append(place)
@@ -1803,6 +1818,11 @@ def _is_place_tag(tag: str, seed: DiscoverySeed) -> bool:
 #: taxonomy's sector terms, de-duplicated. Four TikTok queries at 2 pages and three
 #: Google pages is the widest net a run casts.
 SECTOR_OWN_TAGS = 2
+#: Catalog hashtags (`DiscoverySeed.catalog_hashtags`) the sector phase adds after the
+#: account's own. They EXTEND the `SECTOR_TERMS` cap instead of competing for it — each
+#: one found is one more query, none found is the same plan as before the catalog — so
+#: they never crowd out the taxonomy phrasings that surface a sector's biggest creators.
+SECTOR_CATALOG_TAGS = 2
 SECTOR_TERMS = 4
 
 
@@ -1816,12 +1836,19 @@ def sector_terms(seed: DiscoverySeed) -> list[str]:
     "aprende a programar")."""
     terms = list(seed.terms)
     terms.extend([tag for tag in seed.hashtags if not _is_place_tag(tag, seed)][:SECTOR_OWN_TAGS])
+    catalog_tags = [
+        tag
+        for tag in seed.catalog_hashtags
+        if not _is_place_tag(tag, seed) and _slug(tag) not in {_slug(t) for t in terms}
+    ]
+    from_catalog = catalog_tags[:SECTOR_CATALOG_TAGS]
+    terms.extend(from_catalog)
     for niche in seed.niches[:2]:
         queries = NICHE_TAXONOMY[niche]["queries"]
         for term in [queries[0], *queries[2:]]:
             if _slug(term) not in {_slug(t) for t in terms}:
                 terms.append(term)
-    return terms[:SECTOR_TERMS]
+    return terms[: SECTOR_TERMS + len(from_catalog)]
 
 
 def head_term(seed: DiscoverySeed) -> str:
@@ -1901,6 +1928,14 @@ def phase_queries(key: str, seed: DiscoverySeed) -> list[tuple[Query, str | None
     elif niches:
         composed = hashtags_for(niches[0], seed.city)[0]
         plan.append((Query("tiktok", "hashtag", composed, label), region))
+    else:
+        # A rubro outside the taxonomy has no niche to compose a city hashtag from: the
+        # catalog's best hashtag for it stands in (`cucutaburgers`).
+        catalog_tags = [t for t in seed.catalog_hashtags if not _is_place_tag(t, seed)]
+        if catalog_tags:
+            plan.append(
+                (Query("tiktok", "hashtag", f"{city_slug}{catalog_tags[0]}", label), region)
+            )
     return plan
 
 
@@ -1952,7 +1987,7 @@ def _stems(text: str) -> set[str]:
 
 def relevance_stems(seed: DiscoverySeed) -> set[str]:
     stems = _stems(" ".join(seed.terms))
-    for tag in seed.hashtags:
+    for tag in (*seed.hashtags, *seed.catalog_hashtags):
         if not _is_place_tag(tag, seed):
             stems |= _stems(tag)
     return stems

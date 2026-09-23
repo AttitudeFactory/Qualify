@@ -47,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from uuid import UUID, uuid4
 
 import reflex as rx
@@ -58,6 +59,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from . import (
     avatar_proxy,
     creator_discovery,
+    hashtag_catalog,
     logo_palette,
     referentes_provider,
     scrapecreators_client,
@@ -2347,14 +2349,23 @@ class BrandConnectState(rx.State):
           influencer también quiero que me deje escoger rubro y ubicación") — for an
           existing account it arrives prefilled from the profile read, which is the
           moment to correct it.
-        - ¿Tienes logo?: never skipped since 2026-09-16 (skipping it whenever the
-          profile had a picture hid the logo upload and brief for nearly every account).
-        - Tu logo: skipped only when the answer was "Usar mi foto de perfil" — nothing
-          left to upload or describe.
+        - ¿Tienes logo? (§ request 2026-09-21): a brand or "ambas" is ALWAYS asked — a
+          real profile picture does not skip it, it PRE-ANSWERS it: `analyze` detects the
+          picture (`_use_profile_picture_as_logo`) and leaves "Mi foto de perfil es mi
+          logo" selected, so Continuar accepts it and the operator can pick another
+          answer. An INFLUENCER is asked only when that detection found nothing to
+          take — no picture at all, the network's default silhouette, or one that cannot
+          be fetched: a creator with a real picture already has their logo, so
+          `logo_from_profile` skips the question for them.
+        - Tu logo: skipped only while "Mi foto de perfil es mi logo" stands
+          (`logo_from_profile`), for any kind of account — with the picture as the logo
+          there is nothing left to upload or describe.
         - ¿Tu negocio está en Google Maps?: skipped for "influencer".
         - Súmate a Google Maps: skipped for "influencer" and on a "sí"."""
         if index == _RECOMMENDATIONS_STEP:
             return self._is_fresh()
+        if index == _LOGO_QUESTION_STEP:
+            return self.account_kind == "influencer" and self.logo_from_profile
         if index == _LOGO_UPLOAD_STEP:
             return self.logo_from_profile
         if index == _MAPS_QUESTION_STEP:
@@ -2501,14 +2512,47 @@ class BrandConnectState(rx.State):
         wizard.has_logo = value
         self.logo_from_profile = value == HAS_LOGO_PROFILE
         if self.logo_from_profile:
-            found = await avatar_proxy.resolve_avatar(
-                self.network, self.profile_username, self.profile_pic
-            )
-            if found is not None:
-                await wizard.apply_logo_colours(found[0], LOGO_SOURCE_PROFILE)
+            await self._apply_profile_picture_colours(wizard)
         elif wizard.logo_source == LOGO_SOURCE_PROFILE:
             await wizard.retire_logo_colours()
         self.next_step()
+
+    async def _apply_profile_picture_colours(self, wizard: BrandWizardState) -> bool:
+        """Put the profile picture's colours in the palette. False when the picture cannot
+        be fetched (then the palette is left as it is). No Scrape Creators credit."""
+        found = await avatar_proxy.resolve_avatar(
+            self.network, self.profile_username, self.profile_pic
+        )
+        if found is None:
+            return False
+        await wizard.apply_logo_colours(found[0], LOGO_SOURCE_PROFILE)
+        return True
+
+    async def _use_profile_picture_as_logo(self) -> None:
+        """Detect that the profile picture is the logo and PRE-ANSWER ¿Tienes logo? with it
+        (§ request 2026-09-21: "que detecte 'mi foto de perfil es mi logo' cuando tenga
+        foto de perfil y no sea la predeterminada"). Only for a picture that passed
+        `_picture_is_real` and can be fetched now — otherwise nothing is set and the
+        question opens unanswered. A brand or "ambas" still sees the question with the
+        picture selected; an influencer, whose picture IS their logo, is not asked at all
+        (see `_is_skipped`). Setting `logo_from_profile` also skips Tu logo. Runs inside
+        the caller's `async with self`."""
+        wizard = await self.get_state(BrandWizardState)
+        if not await self._apply_profile_picture_colours(wizard):
+            return
+        wizard.has_logo = HAS_LOGO_PROFILE
+        self.logo_from_profile = True
+
+    async def _forget_profile_picture_logo(self) -> None:
+        """A NEW profile read: what the previous read's picture put in the palette goes
+        back out, so a brand with no real picture is not left with another account's
+        colours and a "yes, profile picture" answer it never gave. Runs inside the
+        caller's `async with self`."""
+        wizard = await self.get_state(BrandWizardState)
+        if wizard.has_logo == HAS_LOGO_PROFILE:
+            wizard.has_logo = ""
+        if wizard.logo_source == LOGO_SOURCE_PROFILE:
+            await wizard.retire_logo_colours()
 
     @rx.event
     def answer_account_kind(self, value: str) -> None:
@@ -3055,7 +3099,9 @@ class BrandConnectState(rx.State):
             self.profile_followers = f"{followers:,}".replace(",", ".") if followers else "—"
             self.profile_followers_count = int(followers) if followers else 0
             self.profile_pic = str(profile.get("profilePicUrl", ""))
-            self.logo_from_profile = False  # a new read: its picture was not chosen yet
+            if self.logo_from_profile:
+                await self._forget_profile_picture_logo()  # the previous read's picture
+            self.logo_from_profile = False  # a new read: its picture was not taken yet
             self.profile_pic_is_real = False  # checked below, once the read is on screen
             read_pic, read_handle = self.profile_pic, self.profile_username
             # Real figures over the window (`recentPosts` of this same read).
@@ -3079,19 +3125,27 @@ class BrandConnectState(rx.State):
         if start_now:
             yield BrandConnectState.run_discovery
         # After the read is on screen and the search has started: whether its picture
-        # can stand in for a logo. Also leaves the picture on disk, so choosing "Mi foto
-        # de perfil es mi logo" later reads it instantly.
+        # can stand in for a logo. Also leaves the picture on disk, so taking it below
+        # reads it instantly. A real picture PRE-ANSWERS ¿Tienes logo? (§ request
+        # 2026-09-21): "Mi foto de perfil es mi logo" arrives selected and its colours
+        # seed the palette; the question is still shown (to a brand or "ambas") and Tu
+        # logo is skipped while that answer stands. With no real picture it opens blank.
         is_real = await self._picture_is_real(network, read_handle, read_pic)
         async with self:
             if self.profile_pic == read_pic:
                 self.profile_pic_is_real = is_real
+                if is_real:
+                    await self._use_profile_picture_as_logo()
 
     async def _picture_is_real(self, network: str, handle: str, picture_url: str) -> bool:
         """True when the profile picture exists, can be fetched (`avatar_proxy.
         resolve_avatar`: disk, then the network's CDN — never a Scrape Creators credit)
-        and is not the default grey silhouette. Never raises: anything unknown is
-        "not real", which only hides an optional choice."""
-        if not picture_url:
+        and is not the network's default "no picture" image — recognised first by its
+        shared object in the URL (`logo_palette.is_default_avatar_url`, no download at
+        all: TikTok's), then by what it looks like (`is_placeholder_avatar`: the grey
+        silhouette of Instagram and TikTok). Never raises: anything unknown is "not
+        real", which only hides an optional choice."""
+        if not picture_url or logo_palette.is_default_avatar_url(picture_url):
             return False
         try:
             found = await avatar_proxy.resolve_avatar(network, handle, picture_url)
@@ -3172,6 +3226,7 @@ class BrandConnectState(rx.State):
                 scrapecreators_client.load_cached_profile, network, handle
             )
             seed = creator_discovery.seed_from_profile(profile or fallback, **answers)
+            seed = await self._with_catalog_hashtags(ids, seed)
             async with self:
                 if self.discovery_run_id != my_id:
                     return
@@ -3302,6 +3357,43 @@ class BrandConnectState(rx.State):
         except SQLAlchemyError as exc:
             # The operator still sees the result; only the reuse is lost.
             logger.warning("referentes: could not store the %s phase: %s", key, exc)
+        await self._capture_hashtags(ids[0], key, seed, result)
+
+    async def _with_catalog_hashtags(
+        self,
+        ids: tuple[UUID, UUID, UUID | None] | None,
+        seed: creator_discovery.DiscoverySeed,
+    ) -> creator_discovery.DiscoverySeed:
+        """The seed plus what the shared hashtag catalog knows for its rubro
+        (`hashtag_catalog.catalog_hashtags_for`). Without a session that has a tenant, or
+        when the catalog cannot be read, the seed comes back unchanged and the search
+        runs as it did before the catalog existed."""
+        if ids is None:
+            return seed
+        try:
+            tags = await asyncio.to_thread(hashtag_catalog.catalog_hashtags_for, ids[0], seed)
+        except SQLAlchemyError as exc:
+            logger.warning("hashtags: catalog unreadable, searching without it: %s", exc)
+            return seed
+        return replace(seed, catalog_hashtags=tags)
+
+    async def _capture_hashtags(
+        self,
+        tenant_id: UUID,
+        key: str,
+        seed: creator_discovery.DiscoverySeed,
+        result: creator_discovery.PhaseResult,
+    ) -> None:
+        """Feed the shared hashtag catalog with what this fresh run saw. Its own guard:
+        the catalog only ever ADDS knowledge, so a failure here must never touch the
+        result the operator is looking at (nor the phase that was just stored)."""
+        try:
+            await asyncio.to_thread(hashtag_catalog.ensure_seeded, tenant_id)
+            await asyncio.to_thread(
+                hashtag_catalog.capture, tenant_id, seed, key, list(result.accounts)
+            )
+        except SQLAlchemyError as exc:
+            logger.warning("hashtags: could not capture the %s phase: %s", key, exc)
 
     async def _stored_sort(
         self, ids: tuple[UUID, UUID, UUID | None] | None, run_id: int
