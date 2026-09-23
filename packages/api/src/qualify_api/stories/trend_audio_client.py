@@ -21,11 +21,20 @@ result. Measured findings this client's parsing accounts for:
 - `is_ads_eligible`/`on_platform_audio_preview_link` (documented by Meta) were absent
   from every one of the 50 real items observed — parsed as optional, never required.
 
+**`search_query` is doc-sourced, NOT yet verified live** (`content-publishing/
+audio-api.md`: "Optional. A search string to filter results by keyword") — added
+2026-09-22 to let the operator search Meta's catalog instead of only browsing the
+trending list; unlike the no-query call above, this exact parameter has not been
+exercised against the real endpoint yet.
+
 ## What this module deliberately does NOT do
 
 - **No `audio_configuration` attachment.** QUA-106 v1 shows this list for reference
   only; nothing here ever reaches `PublishClient.create_container`. Attaching a
-  suggested audio to a real Story is explicitly out of this first slice.
+  suggested audio to a real Story is explicitly out of this first slice — and per
+  Meta's own `audio-api.md`, `audio_configuration` is only ever documented for
+  `media_type=REELS`, never for Stories, so this may not be a phased limitation but
+  a hard one for this media type.
 - **No caching, no persistence, no ranking/scoring.** A plain read, called once per
   "sugerir audio" click — the same manual-trigger-only posture `replies.service.
   generate_drafts` documents for its own module.
@@ -51,8 +60,8 @@ AUDIO_TYPE_ORIGINAL_SOUND = "original_sound"
 class TrendAudioError(Exception):
     """A trend-audio lookup failed. Never carries the token or the response body —
     same discipline as every other Meta-facing exception in this codebase. Always
-    non-fatal to the caller: `StoryProposalService.suggest_trend_audio` catches this
-    and degrades to "no suggestion available", never blocking a proposal."""
+    non-fatal to the caller: `qualify_api.stories.suggest_trend_audio_using` catches
+    this and degrades to "no suggestion available", never blocking a Story publish."""
 
     def __init__(
         self,
@@ -79,15 +88,24 @@ class TrendAudioOption:
     audio_type: str
     duration_ms: int | None
     rank: int
+    # `download_url` (QUA-107 follow-up): "A temporary URL to preview the audio
+    # file. This URL expires after approximately 1.5 days. May be null when no
+    # preview URL is available." (audio-api.md) — a REFERENCE preview for the
+    # human only, same posture as everything else on this dataclass. Never fed
+    # into a Meta publish call; never downloaded or persisted by this codebase.
+    preview_url: str = ""
 
 
 class TrendAudioClient(Protocol):
     async def trending_audio(
-        self, *, ig_user_id: str, audio_type: str
+        self, *, ig_user_id: str, audio_type: str, search_query: str | None = None
     ) -> tuple[TrendAudioOption, ...]:
-        """`GET /ig_audio?audio_type=<audio_type>&user_id=<ig_user_id>` with no
-        `search_query` — Meta returns its own "trending" list. Raises
-        `TrendAudioError`."""
+        """`GET /ig_audio?audio_type=<audio_type>&user_id=<ig_user_id>`, plus
+        `search_query` when given — Meta's own documented parameter
+        (`content-publishing/audio-api.md`: "Optional. A search string to filter
+        results by keyword"; "If no search query is provided, trending audio is
+        returned"). `None`/omitted keeps the existing trending-list behavior exactly.
+        Raises `TrendAudioError`."""
         ...
 
 
@@ -130,6 +148,7 @@ def _parse_audio_item(item: dict[str, Any], *, rank: int) -> TrendAudioOption | 
     else:
         artist_or_creator = ""
     duration = item.get("duration_in_ms")
+    preview_url = item.get("download_url")
     return TrendAudioOption(
         audio_id=audio_id,
         title=title or "Audio sin título",
@@ -137,6 +156,7 @@ def _parse_audio_item(item: dict[str, Any], *, rank: int) -> TrendAudioOption | 
         audio_type=audio_type,
         duration_ms=duration if isinstance(duration, int) else None,
         rank=rank,
+        preview_url=preview_url if isinstance(preview_url, str) else "",
     )
 
 
@@ -164,13 +184,13 @@ class HttpTrendAudioClient:
         self._graph_url = graph_url.rstrip("/")
 
     async def trending_audio(
-        self, *, ig_user_id: str, audio_type: str
+        self, *, ig_user_id: str, audio_type: str, search_query: str | None = None
     ) -> tuple[TrendAudioOption, ...]:
+        params: dict[str, str] = {"audio_type": audio_type, "user_id": ig_user_id}
+        if search_query:
+            params["search_query"] = search_query
         try:
-            response = await self._graph.get(
-                f"{self._graph_url}/ig_audio",
-                params={"audio_type": audio_type, "user_id": ig_user_id},
-            )
+            response = await self._graph.get(f"{self._graph_url}/ig_audio", params=params)
         except httpx.TransportError as exc:
             raise TrendAudioError(f"transport failure calling ig_audio: {exc}") from exc
 

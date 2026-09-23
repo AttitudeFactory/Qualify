@@ -95,6 +95,36 @@ async def test_trending_audio_sends_audio_type_and_user_id_with_no_search_query(
     assert "search_query" not in seen
 
 
+async def test_trending_audio_forwards_a_search_query_when_given() -> None:
+    """QUA-107 follow-up — Meta's own documented `search_query` param
+    (`content-publishing/audio-api.md`): "Optional. A search string to filter
+    results by keyword." An empty string behaves like omitting it (the trending
+    default), only a truthy query is ever sent."""
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        return _json(_MUSIC_PAYLOAD)
+
+    await _client(handler).trending_audio(
+        ig_user_id=IG_USER, audio_type="music", search_query="Oud Is Good"
+    )
+
+    assert seen == {"audio_type": "music", "user_id": IG_USER, "search_query": "Oud Is Good"}
+
+
+async def test_trending_audio_with_empty_search_query_omits_the_param() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        return _json(_MUSIC_PAYLOAD)
+
+    await _client(handler).trending_audio(ig_user_id=IG_USER, audio_type="music", search_query="")
+
+    assert "search_query" not in seen
+
+
 async def test_parses_music_items_including_ig_username_when_present() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return _json(_MUSIC_PAYLOAD)
@@ -106,6 +136,7 @@ async def test_parses_music_items_including_ig_username_when_present() -> None:
     assert options[0].title == "Flourishing"
     assert options[0].artist_or_creator == "Electrum Electra"
     assert options[0].rank == 0
+    assert options[0].preview_url == "https://example.test/preview1.mp4"
     # This item has BOTH display_artist and ig_username — display_artist wins.
     assert options[1].artist_or_creator == "Giulio Cercato"
     assert options[1].rank == 1
@@ -121,6 +152,25 @@ async def test_parses_original_sound_items_using_ig_username_as_creator() -> Non
     assert options[0].title == "Audio original"
     assert options[0].artist_or_creator == "hana.effron"
     assert options[0].audio_type == "original_sound"
+    assert options[0].preview_url == "https://example.test/preview3.mp4"
+
+
+async def test_preview_url_is_empty_when_the_vendor_omits_download_url() -> None:
+    """ "May be null when no preview URL is available" (audio-api.md) — an absent
+    preview must never be fabricated, just an empty string, same posture every
+    other optional field on this dataclass already has."""
+    payload = {
+        "audio": [
+            {"audio_id": "1", "title": "No preview", "audio_type": "music"},
+        ]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _json(payload)
+
+    options = await _client(handler).trending_audio(ig_user_id=IG_USER, audio_type="music")
+
+    assert options[0].preview_url == ""
 
 
 async def test_missing_audio_list_raises_trend_audio_error() -> None:
