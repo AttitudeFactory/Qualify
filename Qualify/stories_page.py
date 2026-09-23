@@ -21,6 +21,52 @@ from .ui.video_preview import gallery_preview_capture_anchor, video_frame_previe
 
 _GALLERY_ROOT_ID = "stories-gallery-root"
 
+# ---------------------------------------------------------------------------
+# "Abrir en Instagram" -- Web Share API handoff (PoC validated on real
+# Android + iPhone devices: `navigator.share` with the video File opens
+# Instagram's own Story composer with the video pre-loaded and the Music
+# sticker fully available). An ALTERNATIVE to "Publicar", never a step of it:
+# Meta's Graph API cannot attach a native Music sticker to a Story
+# (`audio_configuration` only ever applies to Reels), so this hands the video
+# to the phone's OS share sheet instead, and the user finishes the post
+# themselves inside Instagram. No connected account is needed for this path
+# — it never touches Meta's Graph API.
+#
+# The video File itself never round-trips through Reflex state or the
+# server: `ui/video_preview.py`'s existing drop/change capture listener
+# (already mounted for the real-thumbnail feature) stashes the raw File at
+# `window.__qualifyPreviews.lastFile`, and this script reads it directly —
+# a Story is never a carousel, so "the last file dropped" is always exactly
+# the one file currently in the gallery.
+_SHARE_TO_INSTAGRAM_SCRIPT = """
+(function () {
+  try {
+    // Desktop OS share panels (Windows' "Compartir", macOS' share sheet) may list
+    // "Instagram" too, but Instagram there is web/desktop -- it never registers
+    // itself to actually RECEIVE the shared file into a Story composer the way the
+    // real Instagram mobile app does. Selecting it just drops the user on a plain
+    // "select a story" screen with nothing attached (reported 2026-09-23 testing
+    // from a Windows PC). Gating on the OS keeps that dead-end out of reach.
+    var isMobileOS = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
+    if (!isMobileOS) { return "desktop"; }
+    if (!window.isSecureContext) { return "insecure"; }
+    if (!navigator.share || !navigator.canShare) { return "unsupported"; }
+    var file = window.__qualifyPreviews && window.__qualifyPreviews.lastFile;
+    if (!file) { return "no_file"; }
+    if (!navigator.canShare({ files: [file] })) { return "cannot_share_file"; }
+    return navigator.share({ files: [file] }).then(
+      function () { return "shared"; },
+      function (err) {
+        if (err && err.name === "AbortError") { return "cancelled"; }
+        return "error:" + (err && err.message ? err.message : String(err));
+      }
+    );
+  } catch (e) {
+    return "error:" + (e && e.message ? e.message : String(e));
+  }
+})()
+"""
+
 
 def _connection_item(conn) -> rx.Component:
     return rx.select.item(conn.external_username + " · " + conn.platform, value=conn.id)
@@ -730,6 +776,23 @@ def _publish_button() -> rx.Component:
     )
 
 
+def _share_to_instagram_button() -> rx.Component:
+    """Alternative to `_publish_button` — see the module-level comment above
+    `_SHARE_TO_INSTAGRAM_SCRIPT` for why this exists and what it does. Gated only
+    on having a video selected: unlike "Publicar", it needs no connected account."""
+    return rx.button(
+        rx.icon("share-2", size=16),
+        "Abrir en Instagram",
+        on_click=rx.call_script(
+            _SHARE_TO_INSTAGRAM_SCRIPT, callback=StoriesState.handle_share_result
+        ),
+        disabled=StoriesState.pending_filename == "",
+        variant="soft",
+        size="3",
+        width="100%",
+    )
+
+
 def _form_card() -> rx.Component:
     return card(
         rx.vstack(
@@ -739,6 +802,21 @@ def _form_card() -> rx.Component:
             rx.divider(),
             rx.vstack(
                 _publish_button(),
+                rx.hstack(
+                    rx.divider(flex_grow="1"),
+                    rx.text("o", size="1", color=T.TEXT_FAINT),
+                    rx.divider(flex_grow="1"),
+                    align="center",
+                    width="100%",
+                    spacing="2",
+                ),
+                _share_to_instagram_button(),
+                rx.text(
+                    "Te permite seleccionar música oficial y personalizar tu historia "
+                    "desde la app.",
+                    size="1",
+                    color=T.TEXT_FAINT,
+                ),
                 _status_block(),
                 spacing="3",
                 width="100%",

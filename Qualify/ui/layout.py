@@ -175,6 +175,10 @@ def _nav_item(label: str, icon: str, route: str, enabled: bool) -> rx.Component:
         width="100%",
         underline="none",
         aria_current=rx.cond(active, "page", ""),
+        # No-op on desktop (the drawer is never open there); on a phone viewport
+        # this is what makes picking a page also close the overlay instead of
+        # leaving it covering the page that just loaded underneath it.
+        on_click=NavState.close_mobile_nav,
     )
 
 
@@ -302,7 +306,11 @@ def sidebar() -> rx.Component:
             logout_action(),
         ),
         aria_label="Secciones",
-        class_name=rx.cond(NavState.zen, "q-sidebar q-zen", "q-sidebar"),
+        class_name=rx.cond(
+            NavState.zen,
+            rx.cond(NavState.mobile_open, "q-sidebar q-zen q-mobile-open", "q-sidebar q-zen"),
+            rx.cond(NavState.mobile_open, "q-sidebar q-mobile-open", "q-sidebar"),
+        ),
         display="flex",
         flex_direction="column",
         gap=T.GAP,
@@ -402,6 +410,34 @@ def page_body(
     )
 
 
+def _mobile_nav_toggle() -> rx.Component:
+    """Hamburger button that opens the sidebar as an overlay drawer on a phone
+    viewport. Lives OUTSIDE the sidebar (unlike `_zen_toggle`) precisely because the
+    drawer is closed by default there — a control to open it can't live inside the
+    thing it opens. Hidden on wider viewports by `.q-mobile-nav-toggle` in
+    `assets/qualify.css`; nothing renders it there, `display: none` just keeps it
+    out of the layout and off the tab order isn't needed since it's unreachable
+    visually, but staying simple: the CSS rule is the only gate."""
+    return rx.el.button(
+        rx.icon("menu", size=T.ICON_MD),
+        id="q-mobile-nav-toggle",
+        on_click=NavState.toggle_mobile_nav,
+        class_name="q-mobile-nav-toggle",
+        aria_label="Abrir el menú",
+    )
+
+
+def _mobile_nav_backdrop() -> rx.Component:
+    """Dims the page behind the open drawer and closes it on tap-outside. Only
+    mounted while the drawer is open, so it can never intercept a click on desktop
+    or while the drawer is closed."""
+    return rx.box(
+        on_click=NavState.close_mobile_nav,
+        class_name="q-nav-backdrop",
+        aria_hidden="true",
+    )
+
+
 def app_shell(*children: rx.Component, spacing: str = "0") -> rx.Component:
     """Sidebar + page panel, floating on the app ground. Pass ``page_header`` first,
     then the body blocks.
@@ -427,6 +463,8 @@ def app_shell(*children: rx.Component, spacing: str = "0") -> rx.Component:
     the new model — if you are reverting one of the two, revert both.
     """
     return rx.hstack(
+        _mobile_nav_toggle(),
+        rx.cond(NavState.mobile_open, _mobile_nav_backdrop()),
         sidebar(),
         rx.el.main(
             rx.vstack(

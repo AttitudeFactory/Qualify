@@ -73,7 +73,7 @@ from reflex.vars.sequence import LiteralStringVar
 # and easy to reintroduce.
 _STORE_SETUP = """
     if (typeof window !== "undefined" && typeof window.__qualifyPreviews === "undefined") {
-      window.__qualifyPreviews = { data: {}, listeners: new Set() };
+      window.__qualifyPreviews = { data: {}, listeners: new Set(), lastFile: null };
       window.__qualifyPreviews.setPreview = function (filename, dataUri) {
         var next = Object.assign({}, window.__qualifyPreviews.data);
         next[filename] = dataUri;
@@ -99,6 +99,11 @@ def gallery_preview_capture_anchor(*, root_id: str) -> Var[str]:
       const root = document.getElementById({root_id_var!s});
       if (!root) {{ return undefined; }}
       const captureFile = (file) => {{
+        // Kept alongside the thumbnail capture below so the "Abrir en
+        // Instagram" button (`stories_page.py`) has a real File object to hand
+        // to `navigator.share()` -- Stories is single-file, so the LAST one
+        // dropped is always the one currently in the gallery.
+        window.__qualifyPreviews.lastFile = file;
         let blobUrl = null;
         const releaseBlob = () => {{
           if (blobUrl) {{ URL.revokeObjectURL(blobUrl); blobUrl = null; }}

@@ -515,6 +515,45 @@ class StoriesState(rx.State):
             )
             self.is_loading_song_detail = False
 
+    # -- share to Instagram (Web Share API handoff) -------------------------
+
+    @rx.event
+    def handle_share_result(self, result: str) -> rx.event.EventSpec | None:
+        """Receives the outcome of `_SHARE_TO_INSTAGRAM_SCRIPT` (`stories_page.py`).
+        This is a pure client-side OS handoff (`navigator.share`) — it never touches
+        Meta's Graph API and never changes `phase`/`attempt`: it is an ALTERNATIVE
+        to `publish()`, not a step of it, for the video the user wants to finish
+        inside Instagram itself with a native Music sticker — Meta's Graph API
+        `audio_configuration` only ever applies to Reels container creation; there is
+        no equivalent parameter for `media_type=STORIES`, confirmed against Meta's
+        current Instagram Platform docs (Content Publishing / Audio API references)."""
+        if result == "shared":
+            return rx.toast.success(
+                "Video compartido. Termina en Instagram: elige Historia, "
+                "agrega la música y publica ahí."
+            )
+        if result == "cancelled":
+            return None  # the user closed the OS share sheet — not an error
+        if result == "desktop":
+            return rx.toast.error(
+                "Esta opción es para el celular: abre Qualify desde tu teléfono "
+                "para que Instagram reciba el video directamente."
+            )
+        if result == "insecure":
+            return rx.toast.error("Esta página necesita HTTPS para poder compartir el video.")
+        if result == "unsupported":
+            return rx.toast.error(
+                "Este navegador no soporta compartir video directamente. "
+                "Prueba desde Chrome (Android) o Safari (iPhone)."
+            )
+        if result == "no_file":
+            return rx.toast.error("Sube el video de la Story antes de compartir.")
+        if result == "cannot_share_file":
+            return rx.toast.error(
+                "Este navegador no puede compartir este archivo (formato o tamaño no soportado)."
+            )
+        return rx.toast.error("No se pudo compartir el video.")
+
     # -- publish -----------------------------------------------------------
 
     @rx.event
