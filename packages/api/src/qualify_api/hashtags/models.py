@@ -1,7 +1,7 @@
 """ORM models for the shared hashtag catalog. DDL, grants and indexes (including the
-`pg_trgm` GIN ones, raw SQL) are migration 0022's job; these mirror it for typed access.
+`pg_trgm` GIN ones, raw SQL) are migration 0023's job; these mirror it for typed access.
 
-Neither table has a `tenant_id` or RLS — see 0022's docstring for why (public data,
+Neither table has a `tenant_id` or RLS — see 0023's docstring for why (public data,
 shared on purpose, like `platform_apps`)."""
 
 from __future__ import annotations

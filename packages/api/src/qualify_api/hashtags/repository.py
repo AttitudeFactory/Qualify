@@ -1,4 +1,4 @@
-"""Persistence for the shared hashtag catalog (migration 0022).
+"""Persistence for the shared hashtag catalog (migration 0023).
 
 Two questions the referentes search asks of it, and one thing it gives back:
 
@@ -17,7 +17,7 @@ mirrors the database's rules and one contract suite runs against both.
 
 Every method takes a `tenant_id` and it is used for one thing only: it is the key to the
 sanctioned DB door (`tenant_session`). The catalog itself is not tenant data and no row
-carries a tenant (see 0022's docstring).
+carries a tenant (see 0023's docstring).
 
 Two rules the callers can rely on:
 
@@ -72,7 +72,7 @@ _TAG_FORBIDDEN = re.compile(r"[#\s]")
 
 def normalize_tag(tag: str) -> str:
     """The one spelling a hashtag is stored under: trimmed, no leading `#`, lowercase.
-    Matches migration 0022's CHECK, so a value that passed here cannot be rejected there."""
+    Matches migration 0023's CHECK, so a value that passed here cannot be rejected there."""
     cleaned = tag.strip().lstrip("#").strip().lower()
     if not cleaned:
         raise ValueError("hashtag is empty")
@@ -240,7 +240,7 @@ class _Link:
 
 @dataclass
 class MemoryHashtagRepository:
-    """Mirrors migration 0022's rules without a database. Fuzzy matching uses `difflib`,
+    """Mirrors migration 0023's rules without a database. Fuzzy matching uses `difflib`,
     the database uses trigram similarity — both agree on clear typos and clear misses,
     which is all the contract suite asserts."""
 

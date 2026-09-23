@@ -1,4 +1,4 @@
-"""The hashtag catalog contract (migration 0022), run against BOTH implementations:
+"""The hashtag catalog contract (migration 0023), run against BOTH implementations:
 `MemoryHashtagRepository` offline, `PostgresHashtagRepository` against the compose
 Postgres (`db` marker) — so the database's own guarantees (the CHECKs, the trigram
 fuzzy match, the upsert's classification rule) are exercised, not just this module's belief
@@ -344,7 +344,7 @@ def test_the_database_rejects_a_tag_the_repository_would_never_write() -> None:
 @pytest.mark.db
 def test_the_catalog_is_shared_not_tenant_scoped() -> None:
     """One tenant's write is visible to another: the catalog is public data by design
-    (0022's docstring), and this pins that it stays that way."""
+    (0023's docstring), and this pins that it stays that way."""
     other = UUID("7a7a0000-0000-4000-8000-0000000000a2")
     repo = PostgresHashtagRepository()
     tag = f"{_word()}shared"

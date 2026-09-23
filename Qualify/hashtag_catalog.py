@@ -1,5 +1,5 @@
 """The bridge between the referentes search (`creator_discovery`) and the shared hashtag
-catalog (`qualify_api.hashtags`, migration 0022).
+catalog (`qualify_api.hashtags`, migration 0023).
 
 Three jobs:
 

@@ -1663,7 +1663,7 @@ class DiscoverySeed:
     #: works for any rubro, not only the taxonomy's. Filled by the Brand Kit's rubro
     #: step (`rubro_text`); empty when only a taxonomy category was chosen.
     terms: tuple[str, ...] = ()
-    #: Hashtags the shared catalog (`hashtag_catalog.catalog_hashtags_for`, migration 0022)
+    #: Hashtags the shared catalog (`hashtag_catalog.catalog_hashtags_for`, migration 0023)
     #: knows for this rubro — what the operator's words resolve to even when they are
     #: misspelled, plus the niche's most seen tags. Set by the wizard AFTER
     #: `seed_from_profile`; deliberately NOT part of `signature` / `phase_signature`: the

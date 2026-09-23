@@ -1,8 +1,8 @@
 """hashtags + hashtag_terms: the shared hashtag catalog the referentes search reads and
 feeds.
 
-Revision ID: 0022
-Revises: 0021
+Revision ID: 0023
+Revises: 0022
 Create Date: 2026-09-21
 
 ## Why this exists
@@ -58,8 +58,8 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0022"
-down_revision = "0021"
+revision = "0023"
+down_revision = "0022"
 branch_labels = None
 depends_on = None
 
