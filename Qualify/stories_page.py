@@ -241,6 +241,7 @@ def _trend_option(option: TrendAudioOptionVM) -> rx.Component:
                 align="center",
                 spacing="3",
                 width="100%",
+                padding_right="0.5rem",
             ),
             variant="ghost",
             color_scheme=rx.cond(selected, "iris", "gray"),
@@ -253,6 +254,7 @@ def _trend_option(option: TrendAudioOptionVM) -> rx.Component:
         align="center",
         spacing="0",
         width="100%",
+        padding_right="0.5rem",
         border_bottom=f"1px solid {rx.color('gray', 4)}",
     )
 
@@ -311,8 +313,23 @@ def _trend_audio_section() -> rx.Component:
             color=T.TEXT_FAINT,
         ),
         rx.cond(
-            StoriesState.trend_options.length() > 0,
+            StoriesState.trend_expanded & (StoriesState.trend_options.length() > 0),
             rx.vstack(
+                rx.hstack(
+                    rx.text("Resultados", size="1", weight="medium", color=T.TEXT_MUTED),
+                    rx.spacer(),
+                    rx.button(
+                        rx.icon("x", size=12),
+                        "Ocultar",
+                        variant="soft",
+                        color_scheme="gray",
+                        size="1",
+                        on_click=StoriesState.close_trend_audio,
+                    ),
+                    align="center",
+                    width="100%",
+                    padding_bottom="0.25rem",
+                ),
                 rx.foreach(StoriesState.trend_options, _trend_option),
                 spacing="0",
                 width="100%",
@@ -496,25 +513,61 @@ def _trending_video_card(candidate: TrendingVideoVM) -> rx.Component:
     )
 
 
-def _trending_platform_column(
+def _trending_platform_section(
     *,
     label: str,
     icon: str,
     items: rx.Var[list[TrendingVideoVM]],
+    expanded: rx.Var[bool],
     is_loading: rx.Var[bool],
-    on_discover: rx.event.EventHandler,
+    on_toggle: rx.event.EventHandler,
+    on_refresh: rx.event.EventHandler,
 ) -> rx.Component:
+    """One platform's trending block, full width — stacked with its sibling below
+    (never a side-by-side column) precisely because a TikTok card can expand a song
+    detail panel inline and an Instagram one never does (Reels carry no music), so
+    two columns of these next to each other drift out of alignment the moment one
+    expands. Stacking removes the "must match height" problem structurally instead
+    of bounding it with a fixed/scrollable height.
+
+    The main button drives fetch AND collapse/expand (follow-up: "cómo cierro
+    esto") — `on_toggle` never re-fetches once `items` is already cached, only the
+    very first click per platform does. The separate refresh icon (follow-up: "cómo
+    actualizo") ALWAYS re-fetches, bypassing that cache — it only appears once there
+    is something to refresh."""
     return rx.vstack(
-        rx.button(
-            rx.icon(icon, size=14),
-            label,
-            variant="soft",
-            size="2",
-            loading=is_loading,
-            on_click=on_discover,
+        rx.hstack(
+            rx.button(
+                rx.icon(icon, size=14),
+                label,
+                rx.cond(
+                    items.length() > 0,
+                    rx.icon(rx.cond(expanded, "chevron-up", "chevron-down"), size=14),
+                    rx.fragment(),
+                ),
+                variant="soft",
+                size="2",
+                loading=is_loading,
+                on_click=on_toggle,
+            ),
+            rx.cond(
+                items.length() > 0,
+                rx.icon_button(
+                    rx.icon("refresh-cw", size=14),
+                    variant="ghost",
+                    color_scheme="gray",
+                    size="2",
+                    loading=is_loading,
+                    title="Actualizar con contenido nuevo",
+                    on_click=on_refresh,
+                ),
+                rx.fragment(),
+            ),
+            align="center",
+            spacing="2",
         ),
         rx.cond(
-            items.length() > 0,
+            expanded & (items.length() > 0),
             rx.vstack(rx.foreach(items, _trending_video_card), spacing="2", width="100%"),
         ),
         width="100%",
@@ -534,24 +587,24 @@ def _trending_discovery_section() -> rx.Component:
             size="1",
             color=T.TEXT_FAINT,
         ),
-        rx.grid(
-            _trending_platform_column(
-                label="Descubrir tendencia en TikTok",
-                icon="music",
-                items=StoriesState.tiktok_trending,
-                is_loading=StoriesState.is_loading_tiktok_trending,
-                on_discover=StoriesState.discover_tiktok_trending,
-            ),
-            _trending_platform_column(
-                label="Descubrir tendencia en Instagram",
-                icon="film",
-                items=StoriesState.instagram_trending,
-                is_loading=StoriesState.is_loading_instagram_trending,
-                on_discover=StoriesState.discover_instagram_trending,
-            ),
-            columns=rx.breakpoints(initial="1", sm="2"),
-            spacing="4",
-            width="100%",
+        _trending_platform_section(
+            label="Tendencia en TikTok",
+            icon="music",
+            items=StoriesState.tiktok_trending,
+            expanded=StoriesState.tiktok_trending_expanded,
+            is_loading=StoriesState.is_loading_tiktok_trending,
+            on_toggle=StoriesState.toggle_tiktok_trending,
+            on_refresh=StoriesState.discover_tiktok_trending,
+        ),
+        rx.divider(),
+        _trending_platform_section(
+            label="Tendencia en Instagram",
+            icon="film",
+            items=StoriesState.instagram_trending,
+            expanded=StoriesState.instagram_trending_expanded,
+            is_loading=StoriesState.is_loading_instagram_trending,
+            on_toggle=StoriesState.toggle_instagram_trending,
+            on_refresh=StoriesState.discover_instagram_trending,
         ),
         width="100%",
         spacing="3",
@@ -672,6 +725,8 @@ def _publish_button() -> rx.Component:
         "Publicar",
         on_click=StoriesState.publish(),
         disabled=~StoriesState.can_publish,
+        size="3",
+        width="100%",
     )
 
 

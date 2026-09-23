@@ -356,6 +356,7 @@ def test_selecting_a_new_connection_clears_the_previous_trend_suggestion() -> No
     switch to connection B — including whatever search query was typed for it."""
     state = StoriesState()
     state.trend_options = ["placeholder"]  # type: ignore[list-item]
+    state.trend_expanded = True
     state.audio_search_query = "some query"
     state.selected_trend_audio_id = "a1"
     state.selected_trend_audio_title = "Cancion"
@@ -363,9 +364,21 @@ def test_selecting_a_new_connection_clears_the_previous_trend_suggestion() -> No
     state.select_connection("c-2")
 
     assert state.trend_options == []
+    assert state.trend_expanded is False
     assert state.audio_search_query == ""
     assert state.selected_trend_audio_id == ""
     assert state.selected_trend_audio_title == ""
+
+
+def test_close_trend_audio_collapses_without_clearing_the_cached_list() -> None:
+    state = StoriesState()
+    state.trend_options = ["cached"]  # type: ignore[list-item]
+    state.trend_expanded = True
+
+    state.close_trend_audio()
+
+    assert state.trend_expanded is False
+    assert state.trend_options == ["cached"]
 
 
 def test_selecting_a_new_connection_does_not_clear_scrapecreators_trending_lists() -> None:
@@ -514,6 +527,7 @@ async def test_discover_tiktok_trending_populates_state_on_success(
     assert state.tiktok_trending[0].music_id == "m1"
     assert state.is_loading_tiktok_trending is False
     assert state.tiktok_trending_error == ""
+    assert state.tiktok_trending_expanded is True
 
 
 @pytest.mark.asyncio
@@ -536,6 +550,34 @@ async def test_discover_tiktok_trending_degrades_to_empty_list_on_vendor_error(
     assert state.is_loading_tiktok_trending is False
 
 
+def test_toggle_tiktok_trending_fetches_on_the_first_click() -> None:
+    state = StoriesState()
+
+    result = state.toggle_tiktok_trending()
+
+    assert result is StoriesState.discover_tiktok_trending
+    assert state.tiktok_trending_expanded is False  # the fetch itself sets it, not this
+
+
+def test_toggle_tiktok_trending_collapses_and_re_expands_without_refetching() -> None:
+    """Follow-up ("cómo cierro esto"): once data is cached, the SAME button toggles
+    visibility instantly — never a second vendor call, never a `discover_*`
+    dispatch."""
+    state = StoriesState()
+    state.tiktok_trending = ["cached"]  # type: ignore[list-item]
+    state.tiktok_trending_expanded = True
+
+    collapse_result = state.toggle_tiktok_trending()
+    assert collapse_result is None
+    assert state.tiktok_trending_expanded is False
+    assert state.tiktok_trending == ["cached"]  # untouched, still cached
+
+    expand_result = state.toggle_tiktok_trending()
+    assert expand_result is None
+    assert state.tiktok_trending_expanded is True
+    assert state.tiktok_trending == ["cached"]
+
+
 @pytest.mark.asyncio
 async def test_discover_instagram_trending_populates_state_on_success(
     monkeypatch: pytest.MonkeyPatch,
@@ -554,6 +596,7 @@ async def test_discover_instagram_trending_populates_state_on_success(
     assert state.instagram_trending[0].external_id == "r1"
     assert state.instagram_trending[0].has_music is False
     assert state.is_loading_instagram_trending is False
+    assert state.instagram_trending_expanded is True
 
 
 @pytest.mark.asyncio
@@ -574,6 +617,25 @@ async def test_discover_instagram_trending_degrades_to_empty_list_on_vendor_erro
 
     assert state.instagram_trending == []
     assert state.is_loading_instagram_trending is False
+
+
+def test_toggle_instagram_trending_fetches_on_the_first_click() -> None:
+    state = StoriesState()
+
+    result = state.toggle_instagram_trending()
+
+    assert result is StoriesState.discover_instagram_trending
+
+
+def test_toggle_instagram_trending_collapses_and_re_expands_without_refetching() -> None:
+    state = StoriesState()
+    state.instagram_trending = ["cached"]  # type: ignore[list-item]
+    state.instagram_trending_expanded = True
+
+    collapse_result = state.toggle_instagram_trending()
+    assert collapse_result is None
+    assert state.instagram_trending_expanded is False
+    assert state.instagram_trending == ["cached"]
 
 
 @pytest.mark.asyncio
@@ -733,6 +795,14 @@ def test_suggest_audio_caps_trend_options_at_the_ui_presentation_limit() -> None
     every one of those three handlers inherits it — not just `suggest_audio`."""
     source = inspect.getsource(StoriesState._run_audio_search)
     assert "options[:_MAX_TREND_AUDIO_OPTIONS]" in source
+
+
+def test_run_audio_search_expands_the_list_on_a_successful_lookup() -> None:
+    """Follow-up ("que también se pueda cerrar"): a successful lookup re-opens the
+    list — same `_run_audio_search` helper every trend-audio entry point shares, so
+    `suggest_audio`/`search_audio`/`search_song_on_meta` all inherit it."""
+    source = inspect.getsource(StoriesState._run_audio_search)
+    assert "self.trend_expanded = True" in source
 
 
 def test_max_trend_audio_options_is_ten() -> None:

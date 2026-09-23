@@ -155,6 +155,10 @@ class StoriesState(rx.State):
     pending_filename: str = ""
 
     trend_options: list[TrendAudioOptionVM] = []
+    # Follow-up ("que también se pueda cerrar"): a successful lookup opens the list,
+    # a close never clears `trend_options` — same cache-but-collapse posture
+    # `tiktok_trending_expanded`/`instagram_trending_expanded` already have.
+    trend_expanded: bool = False
     is_loading_trend: bool = False
     trend_error: str = ""
     selected_trend_audio_id: str = ""
@@ -167,11 +171,16 @@ class StoriesState(rx.State):
 
     # QUA-107: ScrapeCreators trending discovery — independent of connection_id, so
     # switching connections (unlike `select_connection` below) never clears these.
+    # `_expanded` (follow-up) is separate from "has data": the fetched list stays
+    # cached once loaded, so collapsing/re-expanding is instant and never re-fetches
+    # the vendor — only an explicit re-click on an ALREADY-expanded button refetches.
     tiktok_trending: list[TrendingVideoVM] = []
+    tiktok_trending_expanded: bool = False
     is_loading_tiktok_trending: bool = False
     tiktok_trending_error: str = ""
 
     instagram_trending: list[TrendingVideoVM] = []
+    instagram_trending_expanded: bool = False
     is_loading_instagram_trending: bool = False
     instagram_trending_error: str = ""
 
@@ -270,6 +279,7 @@ class StoriesState(rx.State):
         # A new connection invalidates whatever trending audio was suggested for the
         # PREVIOUS one — never carried across silently.
         self.trend_options = []
+        self.trend_expanded = False
         self.audio_search_query = ""
         self.selected_trend_audio_id = ""
         self.selected_trend_audio_title = ""
@@ -334,7 +344,16 @@ class StoriesState(rx.State):
             # never in trend_audio_client.py: it is about how many we SHOW, not
             # about what Meta returns.
             self.trend_options = options[:_MAX_TREND_AUDIO_OPTIONS]
+            self.trend_expanded = True
             self.is_loading_trend = False
+
+    @rx.event
+    def close_trend_audio(self) -> None:
+        """Collapse the Meta audio list (follow-up: "que también se pueda
+        cerrar") — never clears `trend_options`, same cache-but-collapse posture
+        the TikTok/Instagram toggles already have. Clicking "Sugerir"/"Buscar"
+        again re-opens it (with fresh results, since those always re-fetch)."""
+        self.trend_expanded = False
 
     @rx.event(background=True)
     async def suggest_audio(self) -> None:
@@ -395,6 +414,20 @@ class StoriesState(rx.State):
         is not actually playing."""
         self.is_audio_playing = False
 
+    @rx.event
+    def toggle_tiktok_trending(self) -> rx.event.EventSpec | None:
+        """Collapse/expand — the same button drives both directions (follow-up).
+        Collapsing never clears `tiktok_trending`, so re-expanding right after is
+        instant and free; a fresh vendor call only happens the FIRST time (nothing
+        cached yet)."""
+        if self.tiktok_trending_expanded:
+            self.tiktok_trending_expanded = False
+            return None
+        if self.tiktok_trending:
+            self.tiktok_trending_expanded = True
+            return None
+        return StoriesState.discover_tiktok_trending
+
     @rx.event(background=True)
     async def discover_tiktok_trending(self) -> None:
         """Explicit, operator-triggered — never runs on screen load. Needs no
@@ -411,11 +444,24 @@ class StoriesState(rx.State):
             logger.warning("fetch_tiktok_trending_feed failed: %s", type(exc).__name__)
             async with self:
                 self.tiktok_trending = []
+                self.tiktok_trending_expanded = True
                 self.is_loading_tiktok_trending = False
             return
         async with self:
             self.tiktok_trending = [_trending_vm(v) for v in videos]
+            self.tiktok_trending_expanded = True
             self.is_loading_tiktok_trending = False
+
+    @rx.event
+    def toggle_instagram_trending(self) -> rx.event.EventSpec | None:
+        """Same collapse/expand toggle as `toggle_tiktok_trending`, for Instagram."""
+        if self.instagram_trending_expanded:
+            self.instagram_trending_expanded = False
+            return None
+        if self.instagram_trending:
+            self.instagram_trending_expanded = True
+            return None
+        return StoriesState.discover_instagram_trending
 
     @rx.event(background=True)
     async def discover_instagram_trending(self) -> None:
@@ -430,10 +476,12 @@ class StoriesState(rx.State):
             logger.warning("fetch_instagram_trending_reels failed: %s", type(exc).__name__)
             async with self:
                 self.instagram_trending = []
+                self.instagram_trending_expanded = True
                 self.is_loading_instagram_trending = False
             return
         async with self:
             self.instagram_trending = [_trending_vm(v) for v in videos]
+            self.instagram_trending_expanded = True
             self.is_loading_instagram_trending = False
 
     @rx.event(background=True)
