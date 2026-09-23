@@ -209,6 +209,68 @@ body {
 }
 .q-zen .q-nav-item:hover::after { opacity: 1; transform: translateY(-50%) translateX(0); }
 
+/* ── Mobile drawer ────────────────────────────────────────────────────────────
+   Below the breakpoint, the sidebar and the page panel no longer fit side by side
+   (reported 2026-09-23: both rendered squeezed into slivers on a phone). The
+   sidebar becomes a fixed overlay, closed by default and opened by the hamburger
+   button (`_mobile_nav_toggle`, outside the sidebar since the drawer starts
+   closed). `.q-panel` needs no override: once `.q-sidebar` leaves flex flow
+   (`position: fixed`), the panel — already `flex: 1` — fills the freed width on
+   its own. */
+.q-mobile-nav-toggle {
+  display: none;
+}
+.q-nav-backdrop {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .q-mobile-nav-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: 14px;
+    left: 14px;
+    width: 40px;
+    height: 40px;
+    border: none;
+    border-radius: var(--q-radius-control);
+    background: var(--color-panel-solid);
+    color: var(--gray-12);
+    box-shadow: var(--q-elev-lift);
+    z-index: 70;
+    cursor: pointer;
+  }
+
+  .q-nav-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: var(--black-a8);
+    z-index: 55;
+  }
+
+  .q-sidebar {
+    /* `!important`: `sidebar()` (layout.py) sets `position="sticky"`/`top="0"` as
+       direct component props for the desktop layout, which render with higher
+       priority than a plain class rule here — without `!important` the sidebar
+       stayed `sticky` (still reserving its layout width even while transformed
+       off-screen), which is why the panel never actually widened and the drawer
+       looked like it did nothing (confirmed on a real phone 2026-09-23). */
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    z-index: 60;
+    transform: translateX(-100%);
+    transition: transform var(--q-dur) var(--q-ease);
+    box-shadow: var(--q-elev-overlay);
+  }
+  .q-sidebar.q-mobile-open {
+    transform: translateX(0);
+  }
+}
+
 /* ── Entrance ─────────────────────────────────────────────────────────────────
    One orchestrated moment per screen: blocks settle in from below, staggered by
    depth. Applied by `page_body`, never by hand. */
