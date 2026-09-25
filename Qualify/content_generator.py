@@ -1,8 +1,16 @@
-"""The content generator (§ request 2026-09-25): the five content kinds and their inputs,
-shown on /signals — where the operator tests generation — while /create keeps its
-original form. Same `CreativeState` and the same service underneath: a submitted piece
-becomes a draft at /drafts/{id}, whose screen shows the video / the carousel and the
-script."""
+"""The content generator (§ request 2026-09-25), on /signals — where the operator tests
+generation — while /create keeps its original form. Two views:
+
+1. **Configura** — the form, interactive: the content kind picked decides which fields
+   appear (avatar and voice for the avatar kinds, images for the kinds that take them,
+   the carousel for a flyer in a feed format, the duration for scripts and videos) and
+   which formats can be chosen (`ContentKind.formats`).
+2. **Resultado** — one view per kind, filled in as the draft lands (`poll_generator`):
+   the script alone for a real creator; the HeyGen video for both avatar kinds; the
+   image or the carousel's slides for a flyer (composed locally).
+
+Same `CreativeState` and the same service underneath: every piece is also a draft at
+/drafts/{id}, where it is edited and approved."""
 
 from __future__ import annotations
 
@@ -174,7 +182,7 @@ def _images_section() -> rx.Component:
             multiple=True,
         ),
         rx.cond(
-            CreativeState.kind_is_flyer,
+            CreativeState.carousel_allowed,
             rx.hstack(
                 rx.switch(
                     checked=CreativeState.media_carousel,
@@ -435,10 +443,14 @@ def _brief_card() -> rx.Component:
             rows="2",
         ),
         rx.text("Formato", size="2", weight="medium"),
-        rx.cond(
-            CreativeState.kind_is_video,
-            rx.badge("Instagram · Reel vertical 9:16", color_scheme="grass", variant="soft"),
-            rx.badge("Instagram · Post de feed 4:5", color_scheme="grass", variant="soft"),
+        rx.segmented_control.root(
+            rx.foreach(
+                CreativeState.format_options,
+                lambda option: rx.segmented_control.item(option[1], value=option[0]),
+            ),
+            value=CreativeState.effective_format,
+            on_change=CreativeState.set_brief_format,
+            size="2",
         ),
         rx.text("Destino", size="2", weight="medium"),
         rx.hstack(
@@ -468,20 +480,36 @@ def _restrictions_card() -> rx.Component:
     )
 
 
-def generator_panel() -> rx.Component:
-    """The whole generator, as one block of the /signals page."""
+def _step(number: str, label: str, active: rx.Var[bool]) -> rx.Component:
+    return rx.hstack(
+        rx.center(
+            rx.text(number, size="1", weight="bold"),
+            width="1.5rem",
+            height="1.5rem",
+            border_radius="9999px",
+            background=rx.cond(active, rx.color("accent", 9), rx.color("gray", 4)),
+            color=rx.cond(active, "white", rx.color("gray", 11)),
+        ),
+        rx.text(label, size="2", weight=rx.cond(active, "bold", "regular")),
+        spacing="2",
+        align="center",
+    )
+
+
+def _stepper() -> rx.Component:
+    on_form = CreativeState.generator_view == "form"
+    return rx.hstack(
+        _step("1", "Configura", on_form),
+        rx.box(height="1px", width="2rem", background=rx.color("gray", 6)),
+        _step("2", "Resultado", ~on_form),
+        spacing="3",
+        align="center",
+    )
+
+
+def _form_view() -> rx.Component:
     readiness = CreativeState.readiness
     return rx.vstack(
-        rx.vstack(
-            rx.heading("Generador de contenido", size="4", as_="h2"),
-            rx.text(
-                "Elige qué quieres generar. El resultado queda como borrador para revisarlo.",
-                size="2",
-                color=T.TEXT_MUTED,
-            ),
-            spacing="1",
-            align_items="start",
-        ),
         rx.cond(
             readiness,
             rx.cond(
@@ -512,6 +540,274 @@ def generator_panel() -> rx.Component:
             ),
             width="100%",
         ),
+        spacing="4",
+        width="100%",
+        align_items="start",
+    )
+
+
+# -- the result view -------------------------------------------------------------------
+
+
+def _media_src(key: rx.Var[str]) -> rx.Var[str]:
+    return rx.get_upload_url(key)
+
+
+def _download(key: rx.Var[str], label: str = "Descargar") -> rx.Component:
+    return rx.link(
+        rx.hstack(rx.icon("download", size=14), rx.text(label, size="2"), spacing="1"),
+        href=_media_src(key),
+        is_external=True,
+        download=True,
+    )
+
+
+def _variant_switch() -> rx.Component:
+    return rx.cond(
+        CreativeState.gen_variant_labels.length() > 1,
+        rx.segmented_control.root(
+            rx.foreach(
+                CreativeState.gen_variant_labels,
+                lambda option: rx.segmented_control.item(option[1], value=option[0]),
+            ),
+            value=CreativeState.gen_variant.to_string(),
+            on_change=CreativeState.choose_gen_variant,
+            size="1",
+        ),
+    )
+
+
+def _shot_row(line: rx.Var[str]) -> rx.Component:
+    return rx.box(
+        rx.text(line, size="2"),
+        padding="0.6rem 0.8rem",
+        border_left=f"3px solid {rx.color('accent', 7)}",
+        background=rx.color("gray", 2),
+        border_radius="0.35rem",
+        width="100%",
+    )
+
+
+def _script_result() -> rx.Component:
+    """Creator's script: only the script — what is said, and the shots to record."""
+    variant = CreativeState.gen_variant_vm
+    return _card(
+        rx.hstack(
+            rx.text("Guion", size="3", weight="bold"),
+            rx.spacer(),
+            _variant_switch(),
+            width="100%",
+            align="center",
+        ),
+        rx.text(variant.script, size="3", white_space="pre-wrap", line_height="1.6"),
+        rx.button(
+            rx.icon("copy", size=14),
+            "Copiar guion",
+            variant="soft",
+            size="1",
+            on_click=rx.set_clipboard(variant.script),
+        ),
+        rx.cond(
+            variant.shots.length() > 0,
+            rx.vstack(
+                rx.text("Tomas", size="2", weight="medium", color=T.TEXT_MUTED),
+                rx.foreach(variant.shots, _shot_row),
+                spacing="2",
+                width="100%",
+            ),
+        ),
+    )
+
+
+def _post_text() -> rx.Component:
+    """The post's own copy under a video or an image: what goes in the caption."""
+    variant = CreativeState.gen_variant_vm
+    return rx.vstack(
+        rx.text("Texto del post", size="2", weight="medium", color=T.TEXT_MUTED),
+        rx.text(variant.rendered_caption, size="2", white_space="pre-wrap"),
+        rx.button(
+            rx.icon("copy", size=14),
+            "Copiar texto",
+            variant="soft",
+            size="1",
+            on_click=rx.set_clipboard(variant.rendered_caption),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _video_item(item: rx.Var) -> rx.Component:
+    return rx.vstack(
+        rx.video(src=_media_src(item.key), controls=True, width="100%", max_width="22rem"),
+        _download(item.key, "Descargar video"),
+        spacing="2",
+        align="center",
+    )
+
+
+def _video_result() -> rx.Component:
+    """Avatar video (human or animated): the HeyGen video, the script it read, the post."""
+    variant = CreativeState.gen_variant_vm
+    return _card(
+        rx.text("Video", size="3", weight="bold"),
+        rx.flex(
+            rx.box(
+                rx.foreach(CreativeState.gen_draft.media, _video_item),
+                flex_shrink="0",
+            ),
+            rx.vstack(
+                rx.text("Guion leído", size="2", weight="medium", color=T.TEXT_MUTED),
+                rx.text(variant.script, size="2", white_space="pre-wrap"),
+                rx.divider(),
+                _post_text(),
+                spacing="3",
+                width="100%",
+                align_items="start",
+            ),
+            direction=rx.breakpoints(initial="column", md="row"),
+            gap="5",
+            width="100%",
+        ),
+    )
+
+
+def _image_item(item: rx.Var) -> rx.Component:
+    return rx.vstack(
+        rx.image(src=_media_src(item.key), width="100%", border_radius="0.5rem"),
+        rx.hstack(
+            rx.text(item.label, size="1", color=T.TEXT_MUTED),
+            rx.spacer(),
+            _download(item.key),
+            width="100%",
+        ),
+        spacing="1",
+        width="100%",
+    )
+
+
+def _image_result() -> rx.Component:
+    """Flyer: the image, or the carousel's slides in order (composed locally)."""
+    return _card(
+        rx.hstack(
+            rx.text("Imagen", size="3", weight="bold"),
+            rx.spacer(),
+            _variant_switch(),
+            width="100%",
+            align="center",
+        ),
+        rx.grid(
+            rx.foreach(CreativeState.gen_draft.media, _image_item),
+            columns=rx.breakpoints(initial="1", sm="2", md="3"),
+            spacing="3",
+            width="100%",
+        ),
+        rx.divider(),
+        _post_text(),
+    )
+
+
+def _waiting() -> rx.Component:
+    return _card(
+        rx.hstack(
+            rx.spinner(size="3"),
+            rx.vstack(
+                rx.text(CreativeState.gen_waiting_label, size="3", weight="medium"),
+                rx.text(
+                    "Puedes quedarte aquí: el resultado aparece solo cuando esté listo.",
+                    size="2",
+                    color=T.TEXT_MUTED,
+                ),
+                spacing="1",
+                align_items="start",
+            ),
+            spacing="4",
+            align="center",
+        ),
+        rx.cond(
+            CreativeState.gen_timed_out,
+            callout(
+                "Está tardando más de lo normal. Revisa el borrador más tarde en Borradores.",
+                "warn",
+            ),
+        ),
+    )
+
+
+def _failed() -> rx.Component:
+    return callout(
+        rx.cond(
+            CreativeState.gen_failure_label != "",
+            CreativeState.gen_failure_label,
+            "No se pudo generar esta pieza.",
+        ),
+        "error",
+    )
+
+
+def _result_view() -> rx.Component:
+    return rx.vstack(
+        rx.hstack(
+            rx.cond(
+                CreativeState.gen_draft,
+                rx.badge(CreativeState.gen_draft.kind_label, color_scheme="gray", variant="soft"),
+            ),
+            rx.badge(CreativeState.effective_format_label, color_scheme="gray", variant="soft"),
+            spacing="2",
+        ),
+        rx.cond(
+            CreativeState.gen_is_ready,
+            rx.match(
+                CreativeState.gen_kind,
+                ("creator_script", _script_result()),
+                ("static_flyer", _image_result()),
+                _video_result(),
+            ),
+            rx.cond(CreativeState.gen_is_failed, _failed(), _waiting()),
+        ),
+        rx.hstack(
+            rx.button(
+                rx.icon("arrow-left", size=15),
+                "Crear otro",
+                variant="soft",
+                color_scheme="gray",
+                on_click=CreativeState.new_generation,
+                size="2",
+            ),
+            rx.spacer(),
+            rx.cond(
+                CreativeState.gen_draft_id != "",
+                rx.link(
+                    rx.button(
+                        "Revisar y aprobar en Borradores",
+                        rx.icon("arrow-right", size=15),
+                        variant="soft",
+                        size="2",
+                    ),
+                    href="/drafts/" + CreativeState.gen_draft_id,
+                ),
+            ),
+            width="100%",
+            align="center",
+        ),
+        spacing="4",
+        width="100%",
+        align_items="start",
+    )
+
+
+def generator_panel() -> rx.Component:
+    """The whole generator, as one block of the /signals page: step 1 configures, step
+    2 shows the piece."""
+    return rx.vstack(
+        rx.vstack(
+            rx.heading("Generador de contenido", size="4", as_="h2"),
+            _stepper(),
+            spacing="2",
+            align_items="start",
+        ),
+        rx.cond(CreativeState.generator_view == "result", _result_view(), _form_view()),
         spacing="4",
         width="100%",
         align_items="start",

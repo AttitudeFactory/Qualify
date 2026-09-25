@@ -253,3 +253,40 @@ def test_the_video_scene_is_vertical_and_only_made_when_there_is_something() -> 
     # the product sits in the upper band, clear of the presenter
     assert image.getpixel((REEL_SIZE[0] // 2, round(REEL_SIZE[1] * 0.18))) == (200, 40, 40)
     assert image.getpixel((REEL_SIZE[0] // 2, round(REEL_SIZE[1] * 0.7))) != (200, 40, 40)
+
+
+def test_each_kind_offers_its_own_formats() -> None:
+    assert ContentKind.STATIC_FLYER.formats[0] is ContentFormat.FEED_4_5
+    assert ContentFormat.STORY_9_16 in ContentKind.STATIC_FLYER.formats
+    assert ContentKind.AVATAR_VIDEO.formats[0] is ContentFormat.REELS_9_16
+    assert ContentFormat.FEED_1_1 in ContentKind.ANIMATED_AVATAR_VIDEO.formats
+    assert ContentFormat.FEED_1_1 not in ContentKind.CREATOR_SCRIPT.formats
+    for kind in ContentKind:
+        assert kind.default_format is kind.formats[0] or kind is ContentKind.TEMPLATE
+    assert ContentFormat.FEED_1_1.aspect_ratio == "1:1"
+    assert ContentFormat.STORY_9_16.dimensions == (1080, 1920)
+
+
+def test_a_format_the_kind_does_not_offer_is_refused() -> None:
+    with pytest.raises(ValidationError, match="not offered"):
+        ContentBrief(
+            brand_id=BRAND_ID,
+            objective=BriefObjective.SALE,
+            topic="x",
+            image_route=ImageRoute.TEMPLATE_ONLY,
+            kind=ContentKind.CREATOR_SCRIPT,
+            format=ContentFormat.FEED_1_1,
+        )
+
+
+def test_a_story_cannot_be_a_carousel() -> None:
+    with pytest.raises(ValidationError, match="feed post"):
+        ContentBrief(
+            brand_id=BRAND_ID,
+            objective=BriefObjective.SALE,
+            topic="x",
+            image_route=ImageRoute.TEMPLATE_ONLY,
+            kind=ContentKind.STATIC_FLYER,
+            format=ContentFormat.STORY_9_16,
+            media=MediaInputs(carousel=True),
+        )

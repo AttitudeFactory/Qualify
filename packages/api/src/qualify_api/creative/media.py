@@ -35,8 +35,6 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from qualify_creative.compose import (
-    FEED_SIZE,
-    REEL_SIZE,
     FlyerText,
     compose_scene,
     render_flyer,
@@ -62,7 +60,6 @@ HEYGEN = "heygen"
 COMPOSE_MODEL = "qualify-compose-v1"
 PROMPT_AVATAR_MODEL = "heygen_prompt_avatar"
 VIDEO_RESOLUTION = "1080p"
-VIDEO_ASPECT = "9:16"
 
 #: How an animated character is asked of HeyGen's prompt avatar: the operator describes
 #: WHO; the style is what makes it "animated" rather than a photoreal person.
@@ -280,8 +277,9 @@ class MediaProducer:
             palette=kit.palette_rgb,
             logo=self._logo(kit),
             carousel=brief.media.carousel,
-            size=FEED_SIZE,
+            size=brief.format.dimensions,
         )
+        width, height = brief.format.dimensions
         out: list[MediaWrite] = []
         for position, png in enumerate(slides):
             key = generated_key(tenant_id, draft_id, f"slide-{position + 1}.png")
@@ -292,9 +290,9 @@ class MediaProducer:
                     media_type="image",
                     media_url=key,
                     object_key=key,
-                    width=FEED_SIZE[0],
-                    height=FEED_SIZE[1],
-                    aspect_ratio="4:5",
+                    width=width,
+                    height=height,
+                    aspect_ratio=brief.format.aspect_ratio,
                     model_id=COMPOSE_MODEL,
                     provider="local",
                     params={
@@ -355,7 +353,7 @@ class MediaProducer:
             "script": script,
             "voice_id": media.voice_id,
             "resolution": VIDEO_RESOLUTION,
-            "aspect_ratio": VIDEO_ASPECT,
+            "aspect_ratio": brief.format.aspect_ratio,
             "idempotency_key": stamp,
             "title": f"qualify {draft_id}",
         }
@@ -366,7 +364,7 @@ class MediaProducer:
             products=self._products(brief),
             background=self._read(media.background_key),
             palette=kit.palette_rgb,
-            size=REEL_SIZE,
+            size=brief.format.dimensions,
         )
         if scene is not None:
             params["background_image_asset_id"] = self._upload(
@@ -443,9 +441,9 @@ class MediaProducer:
                 media_type="video",
                 media_url=video_key,
                 object_key=video_key,
-                width=REEL_SIZE[0],
-                height=REEL_SIZE[1],
-                aspect_ratio=VIDEO_ASPECT,
+                width=brief.format.dimensions[0],
+                height=brief.format.dimensions[1],
+                aspect_ratio=brief.format.aspect_ratio,
                 model_id=result.model_id,
                 provider=result.provider,
                 params={
@@ -480,7 +478,7 @@ class MediaProducer:
             api_key=key,
             name=f"qualify-{stamp[:8]}",
             prompt=(ANIMATED_STYLE + brief.media.avatar_prompt.strip())[:1000],
-            aspect_ratio=VIDEO_ASPECT,
+            aspect_ratio=brief.format.aspect_ratio,
             idempotency_key=f"{stamp}-look",
         )
         usage.append(

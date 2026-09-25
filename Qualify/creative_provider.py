@@ -38,6 +38,7 @@ from qualify_api.tenancy.models import Brand
 from qualify_creative.enums import (
     BriefIntent,
     BriefObjective,
+    ContentFormat,
     ContentKind,
     ContentType,
     ImageRoute,
@@ -303,6 +304,7 @@ def submit_brief(
     variants_requested: int = 3,
     kind: str = "static_flyer",
     media: Mapping[str, object] | None = None,
+    content_format: str = "",
 ) -> UUID:
     """Build the frozen `ContentBrief` and create the draft through the composed
     service. Returns the new draft id; generation runs out of band (§7.4).
@@ -338,7 +340,8 @@ def submit_brief(
         variants_requested=variants_requested,
         kind=content_kind,
         media=inputs,
-        format=content_kind.default_format,
+        # the format the operator picked, else the kind's default
+        format=ContentFormat(content_format) if content_format else content_kind.default_format,
     )
     return production_content_service().create_draft(
         tenant_id=tenant_id, brand_id=brand_id, brief=brief, user_id=user_id

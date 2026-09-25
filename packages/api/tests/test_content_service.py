@@ -20,6 +20,7 @@ import pytest
 from qualify_creative.adapters.anthropic_copy import CopyRefused
 from qualify_creative.enums import (
     BriefObjective,
+    ContentFormat,
     ContentKind,
     ContentType,
     GenerationTask,
@@ -221,7 +222,7 @@ class InMemoryRepository:
             approved_at=None,
             created_at=datetime.now(UTC),
             title=brief.topic[:120],
-            category=default_category(brief.kind).value,
+            category=default_category(brief.kind, brief.format).value,
         )
         return draft_id
 
@@ -1001,3 +1002,11 @@ def test_the_preview_is_the_video_thumbnail_or_the_first_image() -> None:
     )
     assert preview_of((video,)) == "g/thumbnail.jpg"
     assert preview_of(()) is None
+
+
+def test_a_story_format_makes_a_story_post() -> None:
+    service, repo, _ = make_service(kit=make_kit(), voice=make_voice())
+    story = repo.seed_draft(
+        make_brief(kind=ContentKind.STATIC_FLYER, format=ContentFormat.STORY_9_16)
+    )
+    assert repo.drafts[story].category == "story"
