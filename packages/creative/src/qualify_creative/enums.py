@@ -201,6 +201,9 @@ class GenerationTask(StrEnum):
     PRODUCT_IMAGE = "product_image"
     RESTYLE_ENHANCE = "restyle_enhance"
     RESTYLE_SCENE = "restyle_scene"
+    # A spokesperson video: an existing vendor avatar lip-syncing a script. It is always
+    # AI-generated footage, so it always carries Meta's disclosure label (F5-MA-10).
+    AVATAR_VIDEO = "avatar_video"
 
 
 class ContentType(StrEnum):

@@ -1,0 +1,34 @@
+{
+  "version": "v2",
+  "sources": {
+    "claude-opus-5": "skill claude-api 2026-08 (per-MTok list prices)",
+    "flux2_pro": "docs/comparativa-apis-creativo-motor-angulos.md §2.1",
+    "seedream_v4": "docs/comparativa-apis-creativo-motor-angulos.md §2.1",
+    "ideogram_v3_default": "docs/comparativa-apis-creativo-motor-angulos.md §2.1",
+    "heygen_avatar_iv": "HeyGen API pay-as-you-go 2026-09, third-party breakdowns (g2.com, anam.ai); official sheet is behind app.heygen.com/developers/api?modal=pricing. Priced at the HIGHEST avatar type for the engine (digital twin / studio $0.0667/s; photo avatar is $0.05/s) because the adapter does not know the avatar type at pre-flight. 4K deliberately unpriced.",
+    "heygen_avatar_iii": "Same sources. Priced at the photo-avatar rate ($0.0433/s; digital twin is $0.0167/s), again the conservative side. 4K deliberately unpriced."
+  },
+  "entries": {
+    "claude-opus-5": {
+      "per_mtok_in": "5.00",
+      "per_mtok_out": "25.00"
+    },
+    "flux2_pro": {
+      "per_piece": "0.03"
+    },
+    "seedream_v4": {
+      "per_piece": "0.03"
+    },
+    "ideogram_v3_default": {
+      "per_piece": "0.06"
+    },
+    "heygen_avatar_iv": {
+      "per_second_720p": "0.0667",
+      "per_second_1080p": "0.0667"
+    },
+    "heygen_avatar_iii": {
+      "per_second_720p": "0.0433",
+      "per_second_1080p": "0.0433"
+    }
+  }
+}

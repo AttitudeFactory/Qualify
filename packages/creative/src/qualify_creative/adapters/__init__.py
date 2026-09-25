@@ -6,5 +6,20 @@ lazily inside the method that needs it.
 """
 
 from qualify_creative.adapters.anthropic_copy import AnthropicCopyAdapter, CopyRefused
+from qualify_creative.adapters.heygen_video import (
+    HeyGenAPIError,
+    HeyGenAvatarVideoAdapter,
+    HeyGenError,
+    HeyGenRenderFailed,
+    HeyGenRenderTimeout,
+)
 
-__all__ = ["AnthropicCopyAdapter", "CopyRefused"]
+__all__ = [
+    "AnthropicCopyAdapter",
+    "CopyRefused",
+    "HeyGenAPIError",
+    "HeyGenAvatarVideoAdapter",
+    "HeyGenError",
+    "HeyGenRenderFailed",
+    "HeyGenRenderTimeout",
+]
