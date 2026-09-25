@@ -16,6 +16,7 @@ from .creative_vm import (
     CopyVariantVM,
     DraftSummaryVM,
     GapVM,
+    MediaVM,
     RouteOptionVM,
     SourceVM,
     ToneRowVM,
@@ -970,6 +971,10 @@ def _failed_panel() -> rx.Component:
             rx.vstack(
                 rx.text(failure.label, size="2"),
                 rx.cond(
+                    CreativeState.draft.failure_detail != "",
+                    rx.text(CreativeState.draft.failure_detail, size="2", color=T.TEXT_MUTED),
+                ),
+                rx.cond(
                     failure.action_route != "",
                     rx.link(
                         rx.button(failure.action_label, variant="soft", size="2"),
@@ -980,6 +985,70 @@ def _failed_panel() -> rx.Component:
                 spacing="3",
                 align_items="start",
             ),
+        ),
+    )
+
+
+def _media_item(item: rx.Var[MediaVM]) -> rx.Component:
+    src = rx.get_upload_url(item.key)
+    return rx.vstack(
+        rx.cond(
+            item.media_type == "video",
+            rx.video(src=src, controls=True, width="240px", height="427px"),
+            rx.image(src=src, width="240px", border_radius="0.5rem"),
+        ),
+        rx.hstack(
+            rx.text(item.label, size="1", color=T.TEXT_MUTED),
+            rx.link(
+                rx.icon("download", size=13),
+                href=src,
+                is_external=True,
+                download=True,
+            ),
+            spacing="2",
+            align="center",
+        ),
+        spacing="1",
+        align="center",
+    )
+
+
+def _media_column() -> rx.Component:
+    draft = CreativeState.draft
+    return rx.cond(
+        draft.media.length() > 0,
+        rx.vstack(
+            rx.foreach(draft.media, _media_item),
+            spacing="3",
+            max_height="40rem",
+            overflow_y="auto",
+            flex_shrink="0",
+        ),
+        rx.center(
+            rx.vstack(
+                rx.cond(
+                    draft.kind == "creator_script",
+                    rx.icon("clapperboard", size=26, color=T.TEXT_FAINT),
+                    rx.icon("image-off", size=26, color=T.TEXT_FAINT),
+                ),
+                rx.text(
+                    rx.cond(
+                        draft.kind == "creator_script",
+                        "Guion para grabar: el video lo hace tu creador.",
+                        "Pieza solo de copy: adjunta tu foto al publicar.",
+                    ),
+                    size="1",
+                    color=T.TEXT_MUTED,
+                    text_align="center",
+                ),
+                spacing="2",
+                align="center",
+            ),
+            width="220px",
+            height="275px",
+            border=f"1px dashed {rx.color('gray', 6)}",
+            border_radius="0.5rem",
+            flex_shrink="0",
         ),
     )
 
@@ -1026,6 +1095,31 @@ def _variant_editor() -> rx.Component:
                     width="100%",
                 ),
                 rx.cond(
+                    CreativeState.draft.has_script,
+                    rx.vstack(
+                        rx.text("Guion (lo que se dice)", size="1", color=T.TEXT_MUTED),
+                        rx.text_area(
+                            value=CreativeState.edit_script,
+                            on_change=CreativeState.set_edit_script,
+                            width="100%",
+                            rows="8",
+                        ),
+                        rx.cond(
+                            variant.shots.length() > 0,
+                            rx.vstack(
+                                rx.text("Tomas", size="1", color=T.TEXT_MUTED),
+                                rx.foreach(variant.shots, lambda line: rx.text(line, size="2")),
+                                spacing="1",
+                                align_items="start",
+                                width="100%",
+                            ),
+                        ),
+                        spacing="1",
+                        align_items="start",
+                        width="100%",
+                    ),
+                ),
+                rx.cond(
                     variant.has_ads,
                     rx.vstack(
                         rx.divider(),
@@ -1068,34 +1162,15 @@ def _variant_editor() -> rx.Component:
 def _review_panel() -> rx.Component:
     draft = CreativeState.draft
     return _card(
-        rx.hstack(
-            rx.cond(
-                draft.image_url,
-                rx.image(
-                    src=draft.image_url,
-                    width="220px",
-                    border_radius="0.5rem",
-                ),
-                rx.center(
-                    rx.vstack(
-                        rx.icon("image-off", size=26, color=T.TEXT_FAINT),
-                        rx.text(
-                            "Pieza solo de copy: adjunta tu foto al publicar.",
-                            size="1",
-                            color=T.TEXT_MUTED,
-                            text_align="center",
-                        ),
-                        spacing="2",
-                        align="center",
-                    ),
-                    width="220px",
-                    height="275px",
-                    border=f"1px dashed {rx.color('gray', 6)}",
-                    border_radius="0.5rem",
-                ),
-            ),
+        rx.cond(
+            draft.kind_label != "",
+            rx.badge(draft.kind_label, color_scheme="gray", variant="soft", size="1"),
+        ),
+        rx.flex(
+            _media_column(),
             _variant_editor(),
-            spacing="4",
+            direction=rx.breakpoints(initial="column", md="row"),
+            gap="4",
             align="start",
             width="100%",
         ),

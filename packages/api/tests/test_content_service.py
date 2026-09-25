@@ -20,11 +20,16 @@ import pytest
 from qualify_creative.adapters.anthropic_copy import CopyRefused
 from qualify_creative.enums import (
     BriefObjective,
+    ContentFormat,
+    ContentKind,
     ContentType,
     GenerationTask,
     ImageRoute,
     PaidBy,
+    PostCategory,
+    ReuseType,
     VoiceProfileStatus,
+    default_category,
 )
 from qualify_creative.providers import GenerationResult, ResolvedKey, Usage
 from qualify_creative.router import BudgetContext, Hop, HopAction, RouterOutcome
@@ -33,6 +38,7 @@ from qualify_creative.schemas import (
     BrandVoiceProfile,
     ContentBrief,
     CopyPayload,
+    MediaInputs,
     ToneAxes,
 )
 
@@ -42,16 +48,19 @@ from qualify_api.creative.fsm import (
     FAILED,
     GENERATED,
 )
+from qualify_api.creative.media import MediaOutcome, MediaUsage, MediaWrite
 from qualify_api.creative.service import (
     BrandNotReady,
     BudgetState,
     ContentService,
     DraftRecord,
+    ImageRecord,
     RouteBlockedByPolicy,
     UnknownVariant,
     UsageWrite,
     VariantRecord,
     VariantWrite,
+    preview_of,
 )
 
 TENANT_ID = uuid4()
@@ -192,6 +201,7 @@ class InMemoryRepository:
         self.usage: list[UsageWrite] = []
         self.budget: BudgetState | None = None
         self.spend_added = Decimal("0")
+        self.media: dict[UUID, list[ImageRecord]] = {}
 
     def insert_brief_and_draft(
         self, *, tenant_id, user_id, brief, voice_profile_version, pipeline_version
@@ -211,6 +221,8 @@ class InMemoryRepository:
             approved_by=None,
             approved_at=None,
             created_at=datetime.now(UTC),
+            title=brief.topic[:120],
+            category=default_category(brief.kind, brief.format).value,
         )
         return draft_id
 
@@ -246,7 +258,24 @@ class InMemoryRepository:
         variants,
         usage,
         spent_usd,
+        media=(),
+        failure_detail=None,
     ):  # noqa: ANN001, ANN201
+        if media:
+            self.drafts[draft_id] = replace(self.drafts[draft_id], preview_key=preview_of(media))
+            self.media[draft_id] = [
+                ImageRecord(
+                    id=uuid4(),
+                    media_url=item.media_url,
+                    width=item.width,
+                    height=item.height,
+                    aspect_ratio=item.aspect_ratio,
+                    media_type=item.media_type,
+                    position=item.position,
+                    params=item.params,
+                )
+                for item in media
+            ]
         for write in variants:
             assert isinstance(write, VariantWrite)
             variant_id = uuid4()
@@ -264,7 +293,12 @@ class InMemoryRepository:
         self.spend_added += spent_usd
         draft = self.drafts[draft_id]
         if draft.status == DRAFTING:
-            self.drafts[draft_id] = replace(draft, status=new_status, failure_reason=failure_reason)
+            self.drafts[draft_id] = replace(
+                draft,
+                status=new_status,
+                failure_reason=failure_reason,
+                failure_detail=failure_detail,
+            )
 
     def update_status(self, *, tenant_id, draft_id, new_status, failure_reason):  # noqa: ANN001, ANN201
         self.drafts[draft_id] = replace(
@@ -278,6 +312,21 @@ class InMemoryRepository:
             selected_variant_id=variant_id,
             approved_by=user_id,
             approved_at=approved_at,
+            approved_revision=self.drafts[draft_id].revision,
+        )
+
+    def bump_revision(self, *, tenant_id, draft_id):  # noqa: ANN001, ANN201
+        draft = self.drafts[draft_id]
+        self.drafts[draft_id] = replace(draft, revision=draft.revision + 1)
+        return draft.revision + 1
+
+    def update_post(self, *, tenant_id, draft_id, title, category, reuse_type):  # noqa: ANN001, ANN201
+        draft = self.drafts[draft_id]
+        self.drafts[draft_id] = replace(
+            draft,
+            title=draft.title if title is None else title,
+            category=draft.category if category is None else category,
+            reuse_type=draft.reuse_type if reuse_type is None else (reuse_type or None),
         )
 
     def list_drafts(self, *, tenant_id, brand_id, status, limit, offset):  # noqa: ANN001, ANN201
@@ -294,7 +343,15 @@ class InMemoryRepository:
         return tuple(sorted(rows, key=lambda v: v.ordinal))
 
     def image_for(self, *, tenant_id, draft_id):  # noqa: ANN001, ANN201
-        return None
+        items = self.media.get(draft_id) or []
+        return items[0] if items else None
+
+    def media_for(self, *, tenant_id, draft_id):  # noqa: ANN001, ANN201
+        return tuple(self.media.get(draft_id) or ())
+
+    def brief_kind(self, *, tenant_id, brief_id):  # noqa: ANN001, ANN201
+        brief = self.briefs.get(brief_id)
+        return None if brief is None else brief.kind.value
 
     def get_variant(self, *, tenant_id, variant_id):  # noqa: ANN001, ANN201
         return self.variants.get(variant_id)
@@ -310,6 +367,7 @@ def make_service(
     voice: BrandVoiceProfile | None = None,
     repo: InMemoryRepository | None = None,
     dispatcher: RecordingDispatcher | None = None,
+    media: object | None = None,
 ) -> tuple[ContentService, InMemoryRepository, RecordingDispatcher]:
     repo = repo or InMemoryRepository()
     dispatcher = dispatcher or RecordingDispatcher()
@@ -321,6 +379,7 @@ def make_service(
         brand_service=FakeBrand(kit),
         repository=repo,
         dispatcher=dispatcher,
+        media=media,  # type: ignore[arg-type]
     )
     return service, repo, dispatcher
 
@@ -752,3 +811,227 @@ def test_full_happy_path_create_run_approve_and_read_seam(
 
     listed = list_approved(tenant_id=tenant_id, brand_id=brand_id, since=None, intent=None)
     assert draft_id in {a.draft_id for a in listed}
+
+
+# ---------------------------------------------------------------------------
+# content kinds: the media half of a draft (§ request 2026-09-25)
+
+
+class FakeMedia:
+    """A `MediaProducer` stand-in: records what it was asked, answers a set outcome."""
+
+    def __init__(self, outcome: MediaOutcome) -> None:
+        self.outcome = outcome
+        self.calls: list[tuple[ContentBrief, CopyPayload]] = []
+
+    def produce(self, *, tenant_id, draft_id, brief, kit, copy, budget):  # noqa: ANN001, ANN201
+        self.calls.append((brief, copy))
+        return self.outcome
+
+
+FLYER_MEDIA = MediaWrite(
+    position=0,
+    media_type="image",
+    media_url="generated/t/d/slide-1.png",
+    object_key="generated/t/d/slide-1.png",
+    width=1080,
+    height=1350,
+    aspect_ratio="4:5",
+    model_id="qualify-compose-v1",
+    provider="local",
+)
+
+
+def test_a_flyer_draft_keeps_its_media_built_from_the_first_passing_variant() -> None:
+    bad = copy_dict("Hook malo", caption=GOOD_CAPTION + " Un toque gourmet inolvidable.")
+    router = FakeRouter([ok_outcome(bad), ok_outcome(copy_dict("Hook bueno"))])
+    media = FakeMedia(MediaOutcome(media=(FLYER_MEDIA,)))
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    draft_id = repo.seed_draft(make_brief(variants=2, kind=ContentKind.STATIC_FLYER))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    assert repo.drafts[draft_id].status == GENERATED
+    ((_, winner),) = media.calls
+    assert winner.hook == "Hook bueno"  # the variant that passed layer 1, not the first
+    detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert detail is not None and detail.kind == "static_flyer"
+    assert [m.media_url for m in detail.media] == ["generated/t/d/slide-1.png"]
+
+
+def test_a_failed_video_fails_the_draft_but_keeps_the_script_and_the_money_spent() -> None:
+    router = FakeRouter([ok_outcome(copy_dict())])
+    spent = MediaUsage(
+        provider="heygen",
+        model_id="heygen_prompt_avatar",
+        unit="piece",
+        quantity=1,
+        cost_usd=Decimal("0.50"),
+    )
+    media = FakeMedia(MediaOutcome(usage=(spent,), failure="provider_error", detail="boom"))
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    brief = make_brief(
+        variants=1,
+        kind=ContentKind.AVATAR_VIDEO,
+        media=MediaInputs(avatar_look_id="lk", voice_id="vo"),
+    )
+    draft_id = repo.seed_draft(brief)
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    draft = repo.drafts[draft_id]
+    assert draft.status == "failed" and draft.failure_reason == "provider_error"
+    assert len(repo.variants_for(tenant_id=TENANT_ID, draft_id=draft_id)) == 1
+    heygen = [u for u in repo.usage if u.provider == "heygen"]
+    assert [(u.unit, u.pieces, u.cost_usd) for u in heygen] == [("piece", 1, Decimal("0.50"))]
+    assert repo.spend_added == Decimal("0.0175") + Decimal("0.50")
+
+
+def test_a_creator_script_never_asks_for_media() -> None:
+    router = FakeRouter([ok_outcome(copy_dict())])
+    media = FakeMedia(MediaOutcome())
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    draft_id = repo.seed_draft(make_brief(variants=1, kind=ContentKind.CREATOR_SCRIPT))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert repo.drafts[draft_id].status == GENERATED and media.calls == []
+
+
+def test_an_edit_is_merged_over_the_stored_copy() -> None:
+    stored = {**copy_dict(), "script": "Hola, soy el guion.", "ads_headline": "Titular"}
+    router = FakeRouter([ok_outcome(stored)])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    draft_id = repo.seed_draft(make_brief(variants=1))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    (variant,) = repo.variants_for(tenant_id=TENANT_ID, draft_id=draft_id)
+    current = service.variant_copy(tenant_id=TENANT_ID, variant_id=variant.id)
+    assert current.script == "Hola, soy el guion." and current.ads_headline == "Titular"
+
+
+# ---------------------------------------------------------------------------
+# the POST fields (0025, QUA-109)
+
+
+def test_a_new_post_is_titled_by_its_topic_and_categorised_by_its_kind() -> None:
+    service, repo, _ = make_service(kit=make_kit(), voice=make_voice())
+    flyer = repo.seed_draft(make_brief(kind=ContentKind.STATIC_FLYER))
+    script = repo.seed_draft(make_brief(kind=ContentKind.CREATOR_SCRIPT))
+    detail = service.get_draft(tenant_id=TENANT_ID, draft_id=flyer)
+    assert detail is not None
+    assert (detail.title, detail.category, detail.revision) == (
+        "arepa de chócolo nueva",
+        "galeria",
+        1,
+    )
+    assert detail.reuse_type is None and detail.approved_revision is None
+    assert repo.drafts[script].category == "reel"
+
+
+def test_approval_pins_the_revision_and_an_edit_moves_past_it() -> None:
+    router = FakeRouter([ok_outcome(copy_dict())])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    draft_id = repo.seed_draft(make_brief(variants=1))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    (variant,) = repo.variants_for(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant.id, user_id=USER_ID)
+    assert (repo.drafts[draft_id].revision, repo.drafts[draft_id].approved_revision) == (1, 1)
+
+    edited = CopyPayload.model_validate({**copy_dict(), "hook": "Otra entrada"})
+    assert (
+        service.edit_variant(
+            tenant_id=TENANT_ID, variant_id=variant.id, copy=edited, user_id=USER_ID
+        )
+        == ()
+    )
+    draft = repo.drafts[draft_id]
+    # the edit is revision 2; what was approved is still revision 1
+    assert (draft.revision, draft.approved_revision) == (2, 1)
+
+
+def test_a_regeneration_is_a_new_revision() -> None:
+    router = FakeRouter([ok_outcome(copy_dict())])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    draft_id = repo.seed_draft(make_brief(variants=1), status=GENERATED)
+    service.reject(
+        tenant_id=TENANT_ID, draft_id=draft_id, reason="otra", user_id=USER_ID, regenerate=True
+    )
+    assert repo.drafts[draft_id].revision == 2
+
+
+def test_the_post_fields_are_set_and_validated() -> None:
+    service, repo, _ = make_service(kit=make_kit(), voice=make_voice())
+    draft_id = repo.seed_draft(make_brief())
+    detail = service.update_post(
+        tenant_id=TENANT_ID,
+        draft_id=draft_id,
+        title="  Arepa del viernes  ",
+        category=PostCategory.STORY.value,
+        reuse_type=ReuseType.RECURRENTE.value,
+    )
+    assert (detail.title, detail.category, detail.reuse_type) == (
+        "Arepa del viernes",
+        "story",
+        "recurrente",
+    )
+    cleared = service.update_post(tenant_id=TENANT_ID, draft_id=draft_id, reuse_type="")
+    assert cleared.reuse_type is None and cleared.category == "story"
+    for bad in ({"category": "carrusel"}, {"reuse_type": "evergreen"}, {"title": "   "}):
+        with pytest.raises(ValueError):
+            service.update_post(tenant_id=TENANT_ID, draft_id=draft_id, **bad)
+
+
+def test_the_preview_is_the_video_thumbnail_or_the_first_image() -> None:
+    slides = tuple(
+        MediaWrite(
+            position=n,
+            media_type="image",
+            media_url=f"g/slide-{n + 1}.png",
+            object_key=f"g/slide-{n + 1}.png",
+            width=1080,
+            height=1350,
+            aspect_ratio="4:5",
+            model_id="m",
+            provider="local",
+        )
+        for n in (1, 0)
+    )
+    assert preview_of(slides) == "g/slide-1.png"
+    video = MediaWrite(
+        position=0,
+        media_type="video",
+        media_url="g/video.mp4",
+        object_key="g/video.mp4",
+        width=1080,
+        height=1920,
+        aspect_ratio="9:16",
+        model_id="heygen_avatar_iv",
+        provider="heygen",
+        params={"thumbnail_key": "g/thumbnail.jpg"},
+    )
+    assert preview_of((video,)) == "g/thumbnail.jpg"
+    assert preview_of(()) is None
+
+
+def test_a_story_format_makes_a_story_post() -> None:
+    service, repo, _ = make_service(kit=make_kit(), voice=make_voice())
+    story = repo.seed_draft(
+        make_brief(kind=ContentKind.STATIC_FLYER, format=ContentFormat.STORY_9_16)
+    )
+    assert repo.drafts[story].category == "story"
+
+
+def test_a_media_failure_keeps_its_reason_in_words() -> None:
+    router = FakeRouter([ok_outcome(copy_dict())])
+    media = FakeMedia(
+        MediaOutcome(failure="provider_error", detail="HeyGen: la cuenta no tiene créditos de API.")
+    )
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    brief = make_brief(
+        variants=1,
+        kind=ContentKind.AVATAR_VIDEO,
+        format=ContentFormat.REELS_9_16,
+        media=MediaInputs(avatar_look_id="lk", voice_id="vo"),
+    )
+    draft_id = repo.seed_draft(brief)
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert detail is not None and detail.failure_reason == "provider_error"
+    assert detail.failure_detail == "HeyGen: la cuenta no tiene créditos de API."

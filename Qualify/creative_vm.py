@@ -491,6 +491,17 @@ class CopyVariantVM:
     failure_labels: tuple[str, ...]  # hard failures, "regla: detalle"
     was_edited: bool
     rendered_caption: str  # the paste-ready organic string
+    #: The libreto (video kinds): the spoken text, and a real creator's shot list as
+    #: display lines ("1 · 5 s — visual: line").
+    script: str = ""
+    shots: tuple[str, ...] = ()
+
+
+def _shot_lines(payload: CopyPayload) -> tuple[str, ...]:
+    return tuple(
+        f"{n} · {shot.seconds} s — {shot.visual}" + (f": «{shot.line}»" if shot.line else "")
+        for n, shot in enumerate(payload.shots, 1)
+    )
 
 
 def build_variant_vm(
@@ -533,6 +544,8 @@ def build_variant_vm(
         failure_labels=failures,
         was_edited=edited_copy is not None,
         rendered_caption=payload.rendered_caption(),
+        script=payload.script,
+        shots=_shot_lines(payload),
     )
 
 
@@ -568,6 +581,73 @@ def build_draft_summary_vm(
 
 
 @dataclass(frozen=True)
+class MediaVM:
+    """One generated media item: `key` is the upload-store key the page resolves with
+    `rx.get_upload_url`."""
+
+    key: str
+    media_type: str  # "image" | "video"
+    position: int
+    label: str  # "Imagen", "Slide 2 de 4", "Video"
+    poster_key: str = ""
+
+
+def build_media_vms(
+    items: Sequence[tuple[str, str, int, Mapping[str, object] | None]],
+) -> tuple[MediaVM, ...]:
+    """(key, media_type, position, params) rows → display items, in order."""
+    ordered = sorted(items, key=lambda item: item[2])
+    images = [item for item in ordered if item[1] == "image"]
+    out: list[MediaVM] = []
+    for key, media_type, position, params in ordered:
+        if media_type == "video":
+            poster = str((params or {}).get("thumbnail_key") or "")
+            out.append(MediaVM(key, media_type, position, "Video", poster))
+        elif len(images) > 1:
+            out.append(MediaVM(key, media_type, position, f"Slide {position + 1} de {len(images)}"))
+        else:
+            out.append(MediaVM(key, media_type, position, "Imagen"))
+    return tuple(out)
+
+
+#: The generator's content kinds as /create offers them (`ContentKind`), in order.
+#: (key, title, blurb, icon)
+KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "creator_script",
+        "Guion para creador real",
+        "Una persona de tu marca lo graba: generamos el guion y el texto del post.",
+        "clapperboard",
+    ),
+    (
+        "avatar_video",
+        "Video con avatar humano",
+        "Un presentador generado lee el guion. Fondo y producto opcionales.",
+        "user-round",
+    ),
+    (
+        "animated_avatar_video",
+        "Video con avatar animado",
+        "Un personaje animado, creado por IA o desde tu imagen. Fondo y producto opcionales.",
+        "smile",
+    ),
+    (
+        "static_flyer",
+        "Imagen tipo flyer",
+        "Una imagen o un carrusel con tu fondo y tus productos.",
+        "image",
+    ),
+    (
+        "template",
+        "Con plantilla",
+        "Tu plantilla de marca rellenada. Próximamente.",
+        "layout-template",
+    ),
+)
+KIND_LABELS: dict[str, str] = {key: title for key, title, _, _ in KIND_OPTIONS}
+
+
+@dataclass(frozen=True)
 class DraftVM:
     """The §6.6 contract, plus the display facts the detail screen renders."""
 
@@ -586,6 +666,13 @@ class DraftVM:
     created_label: str = ""
     is_drafting: bool = False
     is_failed: bool = False
+    kind: str = "static_flyer"
+    kind_label: str = ""
+    media: tuple[MediaVM, ...] = ()
+    has_video: bool = False
+    has_script: bool = False
+    #: Why it failed, in the operator's words (e.g. HeyGen has no API credit).
+    failure_detail: str = ""
 
 
 def build_draft_vm(
@@ -600,6 +687,9 @@ def build_draft_vm(
     model_ids: Sequence[str],
     requires_ai_disclosure: bool,
     created_label: str,
+    kind: str = "static_flyer",
+    media: Sequence[MediaVM] = (),
+    failure_detail: str | None = None,
 ) -> DraftVM:
     """Assemble the detail view-model. `can_approve` is the FSM fact (only a GENERATED
     draft has the approve edge); which VARIANT may be approved is per-variant `passed` —
@@ -632,6 +722,12 @@ def build_draft_vm(
         created_label=created_label,
         is_drafting=status == DraftStatus.DRAFTING.value,
         is_failed=status == DraftStatus.FAILED.value,
+        kind=kind,
+        kind_label=KIND_LABELS.get(kind, ""),
+        media=tuple(media),
+        has_video=any(item.media_type == "video" for item in media),
+        has_script=kind in ("creator_script", "avatar_video", "animated_avatar_video"),
+        failure_detail=failure_detail or "",
     )
 
 

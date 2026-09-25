@@ -151,6 +151,9 @@ class ContentBrief(Base):
     video_plan: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     variants_requested: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     constraints: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # ContentKind value and its MediaInputs (0024)
+    kind: Mapped[str] = mapped_column(Text, nullable=False, server_default="static_flyer")
+    media: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     created_by: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
@@ -186,6 +189,8 @@ class ContentDraft(Base):
     )
     status: Mapped[str] = mapped_column(Text, nullable=False)  # DraftStatus values (fsm.py)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)  # FailureReason
+    # why, in the operator's words (0026)
+    failure_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Points at copy_variants.id; not a declared FK (see module docstring).
     selected_variant_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     voice_profile_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -205,6 +210,13 @@ class ContentDraft(Base):
         DateTime(timezone=True), nullable=True
     )
     published_media_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The POST fields (0025, QUA-109): the draft IS the POST.
+    title: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    category: Mapped[str | None] = mapped_column(Text, nullable=True)  # PostCategory
+    reuse_type: Mapped[str | None] = mapped_column(Text, nullable=True)  # ReuseType
+    preview_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    approved_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
@@ -279,6 +291,9 @@ class ImageAsset(Base):
     provider: Mapped[str | None] = mapped_column(Text, nullable=True)
     params: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     fidelity: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # 'image' | 'video', and a carousel slide's order (0024)
+    media_type: Mapped[str] = mapped_column(Text, nullable=False, server_default="image")
+    position: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
