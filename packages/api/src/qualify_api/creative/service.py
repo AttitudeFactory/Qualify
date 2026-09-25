@@ -445,7 +445,7 @@ class PostgresContentRepository:
                 pipeline_version=pipeline_version,
                 requires_ai_disclosure=brief.requires_ai_disclosure,
                 title=brief.topic[:TITLE_MAX],
-                category=default_category(brief.kind).value,
+                category=default_category(brief.kind, brief.format).value,
                 revision=1,
             )
             session.add(draft_row)

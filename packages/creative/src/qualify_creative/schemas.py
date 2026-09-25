@@ -321,6 +321,10 @@ class ContentBrief(BaseModel):
                 raise ValueError("an animated avatar needs its source: ai or image")
         if media.carousel and self.kind is not ContentKind.STATIC_FLYER:
             raise ValueError("only a flyer can be a carousel")
+        if media.carousel and not self.format.is_feed:
+            raise ValueError("a carousel is a feed post (4:5 or 1:1)")
+        if self.format not in self.kind.formats:
+            raise ValueError(f"format {self.format} is not offered for {self.kind}")
         return self
 
     @property

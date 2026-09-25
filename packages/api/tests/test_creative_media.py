@@ -15,6 +15,7 @@ from PIL import Image
 from qualify_creative.enums import (
     AvatarSource,
     BriefObjective,
+    ContentFormat,
     ContentKind,
     GenerationTask,
     ImageRoute,
@@ -131,13 +132,14 @@ def _kit() -> BrandKit:
     )
 
 
-def _brief(kind: ContentKind, **media: object) -> ContentBrief:
+def _brief(kind: ContentKind, fmt: ContentFormat | None = None, **media: object) -> ContentBrief:
     return ContentBrief(
         brand_id=BRAND_ID,
         objective=BriefObjective.SALE,
         topic="Smash doble",
         image_route=ImageRoute.TEMPLATE_ONLY,
         kind=kind,
+        format=fmt or kind.default_format,
         media=MediaInputs(**media),  # type: ignore[arg-type]
     )
 
@@ -352,3 +354,27 @@ def test_the_local_store_refuses_keys_outside_its_root(tmp_path: Any) -> None:
     assert store.read("generated/t/d/slide-1.png") == b"x"
     with pytest.raises(ValueError):
         store.read("../../etc/passwd")
+
+
+def test_the_chosen_format_sizes_the_flyer_and_the_video() -> None:
+    store = MemoryStore({"uploads/t/p1.png": _png()})
+    square = _brief(
+        ContentKind.STATIC_FLYER, ContentFormat.FEED_1_1, product_keys=("uploads/t/p1.png",)
+    )
+    (image,) = _produce(_producer(store, None), square, uuid4()).media
+    assert (image.width, image.height, image.aspect_ratio) == (1080, 1080, "1:1")
+
+    heygen = FakeHeyGen()
+    story = _brief(
+        ContentKind.AVATAR_VIDEO, ContentFormat.STORY_9_16, avatar_look_id="lk", voice_id="vo"
+    )
+    (video,) = _produce(_producer(MemoryStore(), heygen), story, uuid4()).media
+    assert heygen.requests[0].params["aspect_ratio"] == "9:16"
+    assert video.aspect_ratio == "9:16"
+
+    feed = _brief(
+        ContentKind.AVATAR_VIDEO, ContentFormat.FEED_4_5, avatar_look_id="lk", voice_id="vo"
+    )
+    heygen = FakeHeyGen()
+    _produce(_producer(MemoryStore(), heygen), feed, uuid4())
+    assert heygen.requests[0].params["aspect_ratio"] == "4:5"
