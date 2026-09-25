@@ -18,9 +18,11 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from qualify_creative.enums import (
+    AvatarSource,
     BriefIntent,
     BriefObjective,
     ContentFormat,
+    ContentKind,
     ContentType,
     EmojiPolicy,
     ImageRoute,
@@ -35,6 +37,15 @@ from qualify_creative.enums import (
 ADS_HEADLINE_MAX = 40
 ADS_DESCRIPTION_MAX = 30
 HOOK_MAX = 60
+
+#: HeyGen reads at most 5,000 characters per video (`heygen_video.MAX_SCRIPT_CHARS`); a
+#: script is capped well below it so a 60-second piece never gets near the vendor limit.
+SCRIPT_MAX = 2000
+#: Target lengths a video / script can be asked for, in seconds.
+DURATIONS_SECONDS = (15, 30, 45, 60)
+#: Product images per brief — a carousel is at most 10 slides on Instagram.
+MAX_PRODUCT_IMAGES = 10
+AVATAR_PROMPT_MAX = 600
 
 
 class ToneAxes(BaseModel):
@@ -148,9 +159,24 @@ class BrandVoiceProfile(BaseModel):
     distilled_at: datetime | None = None
 
 
+class ScriptShot(BaseModel):
+    """One shot of a script for a real creator: what the camera shows and what is said
+    over it. The avatar kinds do not use shots — HeyGen reads `CopyPayload.script`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    visual: str
+    line: str = ""
+    seconds: int = Field(default=5, ge=1, le=60)
+
+
 class CopyPayload(BaseModel):
     """The artifact that leaves the module. Frozen on purpose: if a downstream consumer
-    could mutate it, the provenance recorded alongside would stop meaning anything."""
+    could mutate it, the provenance recorded alongside would stop meaning anything.
+
+    `script` / `shots` are the libreto of the video kinds (`ContentKind.has_script`):
+    the spoken text, whole, and — for a real creator — the shot list it is recorded
+    from. Empty for a flyer."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -158,6 +184,8 @@ class CopyPayload(BaseModel):
     caption: str
     hashtags: tuple[str, ...] = ()
     cta: str = ""
+    script: str = Field(default="", max_length=SCRIPT_MAX)
+    shots: tuple[ScriptShot, ...] = ()
 
     ads_primary_text: str | None = None
     ads_headline: str | None = Field(default=None, max_length=ADS_HEADLINE_MAX)
@@ -207,6 +235,38 @@ class VideoPlan(BaseModel):
     outro_card: bool = False
 
 
+class MediaInputs(BaseModel):
+    """What the operator hands the generator besides the words — per `ContentKind`,
+    every image optional unless the kind cannot work without it. Keys are the upload
+    store's keys (`uploads/<tenant>/…`), never vendor URLs."""
+
+    model_config = ConfigDict(frozen=True)
+
+    background_key: str | None = None
+    product_keys: tuple[str, ...] = Field(default=(), max_length=MAX_PRODUCT_IMAGES)
+    #: Flyer only: one slide per product instead of a single composed image.
+    carousel: bool = False
+    #: Target length of a script / video.
+    duration_seconds: int = 30
+    #: Avatar video: the HeyGen library look and the voice that reads the script.
+    avatar_look_id: str | None = None
+    voice_id: str | None = None
+    #: Animated avatar: generated from `avatar_prompt`, or animated from
+    #: `avatar_image_key`.
+    avatar_source: AvatarSource | None = None
+    avatar_prompt: str = Field(default="", max_length=AVATAR_PROMPT_MAX)
+    avatar_image_key: str | None = None
+    #: The operator confirmed they may animate the uploaded image (it is not a photo of
+    #: a real person used without consent — HeyGen's photo mode asks nobody).
+    avatar_rights_confirmed: bool = False
+
+    @model_validator(mode="after")
+    def _known_duration(self) -> MediaInputs:
+        if self.duration_seconds not in DURATIONS_SECONDS:
+            raise ValueError(f"duration_seconds must be one of {DURATIONS_SECONDS}")
+        return self
+
+
 class ContentBrief(BaseModel):
     """The operator's request. Short on purpose: the value sits in the brand substrate,
     not in making them fill twenty fields."""
@@ -226,6 +286,8 @@ class ContentBrief(BaseModel):
     video_plan: VideoPlan | None = None
     constraints: BriefConstraints = BriefConstraints()
     variants_requested: int = Field(default=3, ge=1, le=5)
+    kind: ContentKind = ContentKind.STATIC_FLYER
+    media: MediaInputs = MediaInputs()
 
     @model_validator(mode="after")
     def _upload_routes_need_media(self) -> ContentBrief:
@@ -236,11 +298,36 @@ class ContentBrief(BaseModel):
             raise ValueError(f"image_route {self.image_route} requires source_media_key")
         return self
 
+    @model_validator(mode="after")
+    def _kind_has_its_inputs(self) -> ContentBrief:
+        """Each kind's required inputs, checked before anything is stored or paid for."""
+        media = self.media
+        if not self.kind.enabled:
+            raise ValueError(f"content kind {self.kind} is not available yet")
+        if self.kind is ContentKind.AVATAR_VIDEO:
+            if not media.avatar_look_id or not media.voice_id:
+                raise ValueError("an avatar video needs an avatar look and a voice")
+        if self.kind is ContentKind.ANIMATED_AVATAR_VIDEO:
+            if not media.voice_id:
+                raise ValueError("an animated avatar video needs a voice")
+            if media.avatar_source is AvatarSource.AI and not media.avatar_prompt.strip():
+                raise ValueError("an AI-generated avatar needs a description")
+            if media.avatar_source is AvatarSource.IMAGE:
+                if not media.avatar_image_key:
+                    raise ValueError("an animated avatar from an image needs the image")
+                if not media.avatar_rights_confirmed:
+                    raise ValueError("animating an image needs the rights confirmation")
+            if media.avatar_source is None:
+                raise ValueError("an animated avatar needs its source: ai or image")
+        if media.carousel and self.kind is not ContentKind.STATIC_FLYER:
+            raise ValueError("only a flyer can be a carousel")
+        return self
+
     @property
     def requires_ai_disclosure(self) -> bool:
         """Travels with the artifact to the ads module: forgetting the label is the
         third-largest cause of Meta ad rejections."""
-        return self.image_route.requires_ai_disclosure
+        return self.image_route.requires_ai_disclosure or self.kind.requires_ai_disclosure
 
 
 class HardFailure(BaseModel):

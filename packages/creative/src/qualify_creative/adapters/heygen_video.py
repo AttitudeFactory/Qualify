@@ -47,6 +47,7 @@ from qualify_creative.providers import (
 
 BASE_URL = "https://api.heygen.com"
 MAX_SCRIPT_CHARS = 5000
+MAX_AVATAR_PROMPT_CHARS = 1000  # CreatePromptAvatarRequest.prompt maxLength
 MAX_ASSET_UPLOAD_BYTES = 32 * 1024 * 1024  # HeyGen's own cap on POST /v3/assets
 
 ENGINES = frozenset({"avatar_iii", "avatar_iv"})
@@ -354,6 +355,66 @@ class HeyGenAvatarVideoAdapter:
             )
             return _data_or_raise(response)
 
+    # -- prompt avatars ------------------------------------------------------------------
+    #
+    # An AI-generated character (`ContentKind.ANIMATED_AVATAR_VIDEO`, source "ai"):
+    # `POST /v3/avatars {type: "prompt"}` generates a SYNTHETIC avatar from a text
+    # description — nobody's likeness, so no consent question (HeyGen's own docs, and the
+    # scope guard above still holds: photo/footage cloning stays out). Asynchronous like a
+    # render: the response carries the new look (`avatar_item`) in `processing`, and
+    # `GET /v3/avatars/looks/{id}` is polled until `completed`; that look id is then the
+    # `avatar_id` of an ordinary avatar video. Shapes pinned from the v3 OpenAPI spec
+    # (`CreatePromptAvatarRequest`, `CreateAvatarResponse`, `AvatarLookItem`), 2026-09-25.
+
+    def create_prompt_avatar(
+        self,
+        *,
+        api_key: str,
+        name: str,
+        prompt: str,
+        aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        idempotency_key: str | None = None,
+    ) -> str:
+        """Start generating a synthetic avatar; returns the new look's id (not yet
+        usable — see `wait_for_look`)."""
+        prompt = prompt.strip()
+        if not prompt:
+            raise ValueError("a prompt avatar needs a description")
+        if len(prompt) > MAX_AVATAR_PROMPT_CHARS:
+            raise ValueError(
+                f"prompt is {len(prompt)} characters; HeyGen caps it at {MAX_AVATAR_PROMPT_CHARS}"
+            )
+        if aspect_ratio not in ASPECT_RATIOS:
+            raise ValueError(f"aspect_ratio must be one of {sorted(ASPECT_RATIOS)}")
+        headers = {"Idempotency-Key": idempotency_key} if idempotency_key else {}
+        body = {"type": "prompt", "name": name[:80] or "avatar", "prompt": prompt}
+        body["aspect_ratio"] = aspect_ratio
+        with self._client(api_key) as client:
+            data = _data_or_raise(client.post("/v3/avatars", json=body, headers=headers))
+        item = data.get("avatar_item")
+        look_id = item.get("id") if isinstance(item, dict) else None
+        if not look_id:
+            raise HeyGenError(f"prompt avatar response carried no look id: {data!r}")
+        return str(look_id)
+
+    def wait_for_look(self, look_id: str, *, api_key: str) -> Mapping[str, Any]:
+        """Poll a look until it is `completed` (returned) or `failed` (raises), within
+        the same timeout as a render."""
+        started = self._monotonic()
+        with self._client(api_key) as client:
+            while True:
+                data = _data_or_raise(client.get(f"/v3/avatars/looks/{look_id}"))
+                status = data.get("status")
+                if status == _TERMINAL_OK:
+                    return data
+                if status == _TERMINAL_FAILED:
+                    error = data.get("error") if isinstance(data.get("error"), dict) else {}
+                    raise HeyGenRenderFailed(look_id, error.get("code"), error.get("message"))
+                waited = self._monotonic() - started
+                if waited + self._poll_interval > self._poll_timeout:
+                    raise HeyGenRenderTimeout(look_id, waited)
+                self._sleep(self._poll_interval)
+
     # -- internals ----------------------------------------------------------------------
 
     def _create(self, client: Any, spec: _VideoSpec) -> str:
@@ -551,9 +612,8 @@ class _VideoSpec:
 
     @property
     def model_id(self) -> str:
-        # No published per-second rate for image mode exists yet (unlike the avatar
-        # engines' pinned rates in pricing_data) — deliberately left unpriced rather
-        # than guessed; estimate_cost_usd's KeyError is the correct, honest failure.
+        # Image mode runs on Avatar IV and is priced as its photo-avatar rate
+        # (pricing_data v2 `heygen_image`, read from HeyGen's pricing page 2026-09-25).
         return f"heygen_{self.engine}" if self.subject_kind == "avatar" else "heygen_image"
 
     def body(self) -> dict[str, object]:

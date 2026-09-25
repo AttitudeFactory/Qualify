@@ -31,7 +31,7 @@ from uuid import UUID
 
 from qualify_creative.adapters.anthropic_copy import CopyRefused
 from qualify_creative.brand import check_hard_rules, check_route_allowed, render_prompt
-from qualify_creative.enums import FailureReason, GenerationTask, PaidBy
+from qualify_creative.enums import ContentKind, FailureReason, GenerationTask, PaidBy
 from qualify_creative.providers import (
     CredentialResolver,
     GenerationRequest,
@@ -58,6 +58,7 @@ from qualify_api.creative.fsm import (
     DraftTrigger,
     apply_transition,
 )
+from qualify_api.creative.media import MediaProducer, MediaWrite
 
 logger = logging.getLogger(__name__)
 
@@ -139,11 +140,16 @@ class VariantRecord:
 
 @dataclass(frozen=True)
 class ImageRecord:
+    """One ``image_assets`` row: an image or (since 0024) a video, in carousel order."""
+
     id: UUID
     media_url: str
     width: int | None
     height: int | None
     aspect_ratio: str | None
+    media_type: str = "image"
+    position: int = 0
+    params: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -164,6 +170,10 @@ class DraftDetail:
     created_at: datetime
     variants: tuple[VariantRecord, ...]
     image: ImageRecord | None
+    #: Every media item in order — the flyer, the carousel's slides or the video (0024).
+    media: tuple[ImageRecord, ...] = ()
+    #: The brief's `ContentKind` value.
+    kind: str = "static_flyer"
 
 
 @dataclass(frozen=True)
@@ -189,6 +199,8 @@ class UsageWrite:
     cost_usd: Decimal
     paid_by: str
     pricing_table_version: str
+    #: Pieces or seconds for a per-piece / per-second vendor (0 for token-priced calls).
+    pieces: int = 0
 
 
 @dataclass(frozen=True)
@@ -254,6 +266,7 @@ class ContentRepository(Protocol):
         variants: tuple[VariantWrite, ...],
         usage: tuple[UsageWrite, ...],
         spent_usd: Decimal,
+        media: tuple[MediaWrite, ...] = (),
     ) -> None: ...
 
     def update_status(
@@ -289,6 +302,10 @@ class ContentRepository(Protocol):
     def variants_for(self, *, tenant_id: UUID, draft_id: UUID) -> tuple[VariantRecord, ...]: ...
 
     def image_for(self, *, tenant_id: UUID, draft_id: UUID) -> ImageRecord | None: ...
+
+    def media_for(self, *, tenant_id: UUID, draft_id: UUID) -> tuple[ImageRecord, ...]: ...
+
+    def brief_kind(self, *, tenant_id: UUID, brief_id: UUID) -> str | None: ...
 
     def get_variant(self, *, tenant_id: UUID, variant_id: UUID) -> VariantRecord | None: ...
 
@@ -331,6 +348,19 @@ def _variant_record(row: orm.CopyVariant) -> VariantRecord:
     )
 
 
+def _image_record(row: orm.ImageAsset) -> ImageRecord:
+    return ImageRecord(
+        id=row.id,
+        media_url=row.media_url,
+        width=row.width,
+        height=row.height,
+        aspect_ratio=row.aspect_ratio,
+        media_type=row.media_type,
+        position=row.position,
+        params=row.params,
+    )
+
+
 class PostgresContentRepository:
     """The real repository. Every method is one ``tenant_session`` transaction; RLS is
     the isolation, the explicit ``tenant_id`` argument is the identity discipline."""
@@ -360,6 +390,8 @@ class PostgresContentRepository:
                 video_plan=(brief.video_plan.model_dump(mode="json") if brief.video_plan else None),
                 variants_requested=brief.variants_requested,
                 constraints=brief.constraints.model_dump(mode="json"),
+                kind=brief.kind.value,
+                media=brief.media.model_dump(mode="json"),
                 created_by=user_id,
             )
             session.add(brief_row)
@@ -402,8 +434,15 @@ class PostgresContentRepository:
                     "video_plan": row.video_plan,
                     "constraints": row.constraints or {},
                     "variants_requested": row.variants_requested,
+                    "kind": row.kind,
+                    "media": row.media or {},
                 }
             )
+
+    def brief_kind(self, *, tenant_id: UUID, brief_id: UUID) -> str | None:
+        with tenant_session(tenant_id) as session:
+            row = session.get(orm.ContentBrief, brief_id)
+            return None if row is None else row.kind
 
     def budget_state(self, *, tenant_id: UUID, brand_id: UUID) -> BudgetState | None:
         with tenant_session(tenant_id) as session:
@@ -430,6 +469,7 @@ class PostgresContentRepository:
         variants: tuple[VariantWrite, ...],
         usage: tuple[UsageWrite, ...],
         spent_usd: Decimal,
+        media: tuple[MediaWrite, ...] = (),
     ) -> None:
         """One transaction for the whole outcome. Usage rows and spend are written even
         if the draft lost a race with the reaper — the money was spent either way, and
@@ -461,13 +501,38 @@ class PostgresContentRepository:
                         output_tokens=event.output_tokens,
                         cache_read_tokens=event.cache_read_tokens,
                         cache_creation_tokens=event.cache_creation_tokens,
-                        # Applied DDL (0005): `pieces` NOT NULL (0 for token-priced
+                        # Applied DDL (0009): `pieces` NOT NULL (0 for token-priced
                         # calls) and `occurred_at` NOT NULL with no server default.
-                        pieces=0,
+                        pieces=event.pieces,
                         cost_usd=event.cost_usd,
                         paid_by=event.paid_by,
                         pricing_table_version=event.pricing_table_version,
                         occurred_at=datetime.now(UTC),
+                    )
+                )
+            if media:
+                # A regeneration replaces the draft's media: the old files stay on disk
+                # (provenance), the rows describe what the draft shows now.
+                for old in session.scalars(
+                    select(orm.ImageAsset).where(orm.ImageAsset.draft_id == draft_id)
+                ):
+                    session.delete(old)
+                session.flush()
+            for item in media:
+                session.add(
+                    orm.ImageAsset(
+                        tenant_id=tenant_id,
+                        draft_id=draft_id,
+                        media_url=item.media_url,
+                        object_key=item.object_key,
+                        width=item.width,
+                        height=item.height,
+                        aspect_ratio=item.aspect_ratio,
+                        model_id=item.model_id,
+                        provider=item.provider,
+                        params=dict(item.params),
+                        media_type=item.media_type,
+                        position=item.position,
                     )
                 )
             if spent_usd:
@@ -555,13 +620,16 @@ class PostgresContentRepository:
             ).first()
             if row is None:
                 return None
-            return ImageRecord(
-                id=row.id,
-                media_url=row.media_url,
-                width=row.width,
-                height=row.height,
-                aspect_ratio=row.aspect_ratio,
+            return _image_record(row)
+
+    def media_for(self, *, tenant_id: UUID, draft_id: UUID) -> tuple[ImageRecord, ...]:
+        with tenant_session(tenant_id) as session:
+            rows = session.scalars(
+                select(orm.ImageAsset)
+                .where(orm.ImageAsset.draft_id == draft_id)
+                .order_by(orm.ImageAsset.position, orm.ImageAsset.created_at)
             )
+            return tuple(_image_record(row) for row in rows)
 
     def get_variant(self, *, tenant_id: UUID, variant_id: UUID) -> VariantRecord | None:
         with tenant_session(tenant_id) as session:
@@ -612,7 +680,9 @@ class ContentService:
         repository: ContentRepository | None = None,
         dispatcher: TaskDispatcher | None = None,
         copy_chain: tuple[str, ...] = COPY_CHAIN,
+        media: MediaProducer | None = None,
     ) -> None:
+        self._media = media
         self._router = router
         self._pricing = pricing
         self._credentials = credentials
@@ -800,9 +870,56 @@ class ContentService:
                 )
             )
 
-        if any_passed:
+        media_writes: tuple[MediaWrite, ...] = ()
+        media_failure: str | None = None
+        if any_passed and self._media is not None and brief.kind is not ContentKind.CREATOR_SCRIPT:
+            # The artifact is built from the FIRST variant that passed layer 1: the
+            # flyer prints its hook/CTA, the avatar reads its script.
+            winner = next(
+                CopyPayload.model_validate(write.copy)
+                for write in variant_writes
+                if write.fidelity.get("passed")
+            )
+            outcome = self._media.produce(
+                tenant_id=tenant_id,
+                draft_id=draft.id,
+                brief=brief,
+                kit=kit,
+                copy=winner,
+                budget=BudgetContext(
+                    remaining_usd=budget.remaining_usd - spent, hard_stop=budget.hard_stop
+                ),
+            )
+            spent += outcome.spent_usd
+            usage_writes.extend(
+                UsageWrite(
+                    provider=item.provider,
+                    model_id=item.model_id,
+                    unit=item.unit,
+                    input_tokens=0,
+                    output_tokens=0,
+                    cache_read_tokens=0,
+                    cache_creation_tokens=0,
+                    cost_usd=item.cost_usd,
+                    paid_by=PaidBy.PLATFORM.value,
+                    pricing_table_version=self._pricing.version,
+                    pieces=item.quantity,
+                )
+                for item in outcome.usage
+            )
+            media_writes = outcome.media
+            media_failure = outcome.failure
+
+        if any_passed and media_failure is None:
             new_status = apply_transition(DRAFTING, DraftTrigger.GENERATE_OK)
             failure_reason: str | None = None
+        elif media_failure is not None:
+            # The copy is fine but the video / image could not be made: the variants are
+            # kept (the script is worth reading), the draft says why it failed.
+            failure_reason = media_failure
+            new_status = apply_transition(
+                DRAFTING, DraftTrigger.GENERATE_FAIL, failure_reason=failure_reason
+            )
         else:
             # Every variant tripped a layer-1 hard rule: nothing showable came out of
             # the spend. Variants are persisted anyway — the failures are the evidence.
@@ -819,6 +936,7 @@ class ContentService:
             variants=tuple(variant_writes),
             usage=tuple(usage_writes),
             spent_usd=spent,
+            media=media_writes,
         )
 
     def _call_cost(self, usage: Usage, model_id: str) -> Decimal:
@@ -865,6 +983,9 @@ class ContentService:
             created_at=record.created_at,
             variants=self._repo.variants_for(tenant_id=tenant_id, draft_id=draft_id),
             image=self._repo.image_for(tenant_id=tenant_id, draft_id=draft_id),
+            media=self._repo.media_for(tenant_id=tenant_id, draft_id=draft_id),
+            kind=self._repo.brief_kind(tenant_id=tenant_id, brief_id=record.brief_id)
+            or ContentKind.STATIC_FLYER.value,
         )
 
     def list_drafts(
@@ -912,6 +1033,15 @@ class ContentService:
         )
         logger.info("variant %s edited by user %s", variant_id, user_id)
         return ()
+
+    def variant_copy(self, *, tenant_id: UUID, variant_id: UUID) -> CopyPayload:
+        """The copy a variant shows now (the edit when there is one) — what an edit is
+        merged over, so fields the editor does not show (the ads slots, the script's
+        shots) survive it."""
+        variant = self._repo.get_variant(tenant_id=tenant_id, variant_id=variant_id)
+        if variant is None:
+            raise UnknownVariant(str(variant_id))
+        return CopyPayload.model_validate(variant.edited_copy or variant.copy)
 
     def approve(
         self, *, tenant_id: UUID, draft_id: UUID, variant_id: UUID, user_id: UUID

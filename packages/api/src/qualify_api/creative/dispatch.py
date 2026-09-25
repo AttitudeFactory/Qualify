@@ -38,7 +38,7 @@ from qualify_api.creative.models import ContentDraft
 
 #: §7.4 minimal implementation: a generation round trip is 15-60s, so ten minutes in
 #: ``DRAFTING`` means the worker is dead, not slow.
-DEFAULT_REAP_AFTER_MINUTES = 10
+DEFAULT_REAP_AFTER_MINUTES = 20
 
 
 class GenerationRunner(Protocol):

@@ -167,3 +167,19 @@ def test_reaper_flips_stale_drafting_to_failed_timeout(
         fresh = session.get(orm.ContentDraft, fresh_id)
         assert stale is not None and stale.status == FAILED
         assert fresh is not None and fresh.status == DRAFTING
+
+
+def test_each_provider_resolves_its_own_platform_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Before the video lane every provider got the Anthropic key — HeyGen would have
+    been handed it. Each provider now reads its own variable; an unknown one has none."""
+    monkeypatch.setenv(PLATFORM_KEY_ENV, "sk-ant")
+    monkeypatch.setenv("QUALIFY_HEYGEN_API_KEY", "hg-key")
+    resolver = PlatformKeyResolver()
+    ids = {"tenant_id": uuid4(), "brand_id": uuid4()}
+    assert resolver.resolve(**ids, provider="anthropic").api_key == "sk-ant"
+    assert resolver.resolve(**ids, provider="heygen").api_key == "hg-key"
+    with pytest.raises(MissingPlatformKey):
+        resolver.resolve(**ids, provider="fal")
+    monkeypatch.delenv("QUALIFY_HEYGEN_API_KEY")
+    with pytest.raises(MissingPlatformKey, match="QUALIFY_HEYGEN_API_KEY"):
+        resolver.resolve(**ids, provider="heygen")

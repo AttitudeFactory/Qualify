@@ -115,7 +115,7 @@ class AnthropicCopyAdapter:
         }
         if request.output_schema is not None:
             kwargs["output_config"] = {
-                "format": {"type": "json_schema", "schema": dict(request.output_schema)}
+                "format": {"type": "json_schema", "schema": strict_schema(request.output_schema)}
             }
         # NEVER pass temperature/top_p/top_k: claude-opus-5 rejects them with a 400.
         response = client.messages.create(**kwargs)
@@ -192,3 +192,67 @@ class AnthropicCopyAdapter:
                     )
                 return parsed
         raise ValueError("response contains no text block to parse as the copy payload")
+
+
+#: Keywords structured outputs accepts as-is (everything else is folded into the
+#: description, where the model may still follow it).
+_STRING_FORMATS = frozenset(
+    {"date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid"}
+)
+
+
+def strict_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """A pydantic JSON schema in the shape structured outputs accepts — the same rules as
+    the SDK's own `anthropic.transform_schema`, kept here so this module needs no SDK at
+    import time: every object gets `additionalProperties: false`, and what the API does
+    not accept (`maxLength`, `default`, `maxItems`…) moves into the description.
+
+    Measured live 2026-09-25: the raw `CopyPayload.model_json_schema()` is rejected with
+    HTTP 400 ("For 'object' type, 'additionalProperties' must be explicitly set to
+    false"), so without this no copy could be generated at all."""
+    source = dict(schema)
+    out: dict[str, Any] = {}
+    defs = source.pop("$defs", None)
+    if defs is not None:
+        out["$defs"] = {name: strict_schema(item) for name, item in defs.items()}
+    ref = source.pop("$ref", None)
+    if ref is not None:
+        out["$ref"] = ref
+        return out
+    kind = source.pop("type", None)
+    for key in ("anyOf", "oneOf", "allOf"):
+        variants = source.pop(key, None)
+        if isinstance(variants, list):
+            out["allOf" if key == "allOf" else "anyOf"] = [strict_schema(v) for v in variants]
+            break
+    else:
+        if kind is None:
+            raise ValueError("schema has no type, anyOf, oneOf or allOf")
+        out["type"] = kind
+    for key in ("enum", "description", "title"):
+        if key in source:
+            out[key] = source.pop(key)
+    if kind == "object":
+        out["properties"] = {
+            name: strict_schema(item) for name, item in source.pop("properties", {}).items()
+        }
+        source.pop("additionalProperties", None)
+        out["additionalProperties"] = False
+        if "required" in source:
+            out["required"] = source.pop("required")
+    elif kind == "string":
+        fmt = source.pop("format", None)
+        if fmt in _STRING_FORMATS:
+            out["format"] = fmt
+        elif fmt:
+            source["format"] = fmt
+    elif kind == "array":
+        items = source.pop("items", None)
+        if items is not None:
+            out["items"] = strict_schema(items)
+        if source.get("minItems") in (0, 1):
+            out["minItems"] = source.pop("minItems")
+    if source:
+        extra = "{" + ", ".join(f"{key}: {value}" for key, value in source.items()) + "}"
+        out["description"] = f"{out['description']}\n\n{extra}" if "description" in out else extra
+    return out

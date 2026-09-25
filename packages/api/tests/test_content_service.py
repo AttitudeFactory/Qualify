@@ -20,6 +20,7 @@ import pytest
 from qualify_creative.adapters.anthropic_copy import CopyRefused
 from qualify_creative.enums import (
     BriefObjective,
+    ContentKind,
     ContentType,
     GenerationTask,
     ImageRoute,
@@ -33,6 +34,7 @@ from qualify_creative.schemas import (
     BrandVoiceProfile,
     ContentBrief,
     CopyPayload,
+    MediaInputs,
     ToneAxes,
 )
 
@@ -42,11 +44,13 @@ from qualify_api.creative.fsm import (
     FAILED,
     GENERATED,
 )
+from qualify_api.creative.media import MediaOutcome, MediaUsage, MediaWrite
 from qualify_api.creative.service import (
     BrandNotReady,
     BudgetState,
     ContentService,
     DraftRecord,
+    ImageRecord,
     RouteBlockedByPolicy,
     UnknownVariant,
     UsageWrite,
@@ -192,6 +196,7 @@ class InMemoryRepository:
         self.usage: list[UsageWrite] = []
         self.budget: BudgetState | None = None
         self.spend_added = Decimal("0")
+        self.media: dict[UUID, list[ImageRecord]] = {}
 
     def insert_brief_and_draft(
         self, *, tenant_id, user_id, brief, voice_profile_version, pipeline_version
@@ -246,7 +251,22 @@ class InMemoryRepository:
         variants,
         usage,
         spent_usd,
+        media=(),
     ):  # noqa: ANN001, ANN201
+        if media:
+            self.media[draft_id] = [
+                ImageRecord(
+                    id=uuid4(),
+                    media_url=item.media_url,
+                    width=item.width,
+                    height=item.height,
+                    aspect_ratio=item.aspect_ratio,
+                    media_type=item.media_type,
+                    position=item.position,
+                    params=item.params,
+                )
+                for item in media
+            ]
         for write in variants:
             assert isinstance(write, VariantWrite)
             variant_id = uuid4()
@@ -294,7 +314,15 @@ class InMemoryRepository:
         return tuple(sorted(rows, key=lambda v: v.ordinal))
 
     def image_for(self, *, tenant_id, draft_id):  # noqa: ANN001, ANN201
-        return None
+        items = self.media.get(draft_id) or []
+        return items[0] if items else None
+
+    def media_for(self, *, tenant_id, draft_id):  # noqa: ANN001, ANN201
+        return tuple(self.media.get(draft_id) or ())
+
+    def brief_kind(self, *, tenant_id, brief_id):  # noqa: ANN001, ANN201
+        brief = self.briefs.get(brief_id)
+        return None if brief is None else brief.kind.value
 
     def get_variant(self, *, tenant_id, variant_id):  # noqa: ANN001, ANN201
         return self.variants.get(variant_id)
@@ -310,6 +338,7 @@ def make_service(
     voice: BrandVoiceProfile | None = None,
     repo: InMemoryRepository | None = None,
     dispatcher: RecordingDispatcher | None = None,
+    media: object | None = None,
 ) -> tuple[ContentService, InMemoryRepository, RecordingDispatcher]:
     repo = repo or InMemoryRepository()
     dispatcher = dispatcher or RecordingDispatcher()
@@ -321,6 +350,7 @@ def make_service(
         brand_service=FakeBrand(kit),
         repository=repo,
         dispatcher=dispatcher,
+        media=media,  # type: ignore[arg-type]
     )
     return service, repo, dispatcher
 
@@ -752,3 +782,95 @@ def test_full_happy_path_create_run_approve_and_read_seam(
 
     listed = list_approved(tenant_id=tenant_id, brand_id=brand_id, since=None, intent=None)
     assert draft_id in {a.draft_id for a in listed}
+
+
+# ---------------------------------------------------------------------------
+# content kinds: the media half of a draft (§ request 2026-09-25)
+
+
+class FakeMedia:
+    """A `MediaProducer` stand-in: records what it was asked, answers a set outcome."""
+
+    def __init__(self, outcome: MediaOutcome) -> None:
+        self.outcome = outcome
+        self.calls: list[tuple[ContentBrief, CopyPayload]] = []
+
+    def produce(self, *, tenant_id, draft_id, brief, kit, copy, budget):  # noqa: ANN001, ANN201
+        self.calls.append((brief, copy))
+        return self.outcome
+
+
+FLYER_MEDIA = MediaWrite(
+    position=0,
+    media_type="image",
+    media_url="generated/t/d/slide-1.png",
+    object_key="generated/t/d/slide-1.png",
+    width=1080,
+    height=1350,
+    aspect_ratio="4:5",
+    model_id="qualify-compose-v1",
+    provider="local",
+)
+
+
+def test_a_flyer_draft_keeps_its_media_built_from_the_first_passing_variant() -> None:
+    bad = copy_dict("Hook malo", caption=GOOD_CAPTION + " Un toque gourmet inolvidable.")
+    router = FakeRouter([ok_outcome(bad), ok_outcome(copy_dict("Hook bueno"))])
+    media = FakeMedia(MediaOutcome(media=(FLYER_MEDIA,)))
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    draft_id = repo.seed_draft(make_brief(variants=2, kind=ContentKind.STATIC_FLYER))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    assert repo.drafts[draft_id].status == GENERATED
+    ((_, winner),) = media.calls
+    assert winner.hook == "Hook bueno"  # the variant that passed layer 1, not the first
+    detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert detail is not None and detail.kind == "static_flyer"
+    assert [m.media_url for m in detail.media] == ["generated/t/d/slide-1.png"]
+
+
+def test_a_failed_video_fails_the_draft_but_keeps_the_script_and_the_money_spent() -> None:
+    router = FakeRouter([ok_outcome(copy_dict())])
+    spent = MediaUsage(
+        provider="heygen",
+        model_id="heygen_prompt_avatar",
+        unit="piece",
+        quantity=1,
+        cost_usd=Decimal("0.50"),
+    )
+    media = FakeMedia(MediaOutcome(usage=(spent,), failure="provider_error", detail="boom"))
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    brief = make_brief(
+        variants=1,
+        kind=ContentKind.AVATAR_VIDEO,
+        media=MediaInputs(avatar_look_id="lk", voice_id="vo"),
+    )
+    draft_id = repo.seed_draft(brief)
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    draft = repo.drafts[draft_id]
+    assert draft.status == "failed" and draft.failure_reason == "provider_error"
+    assert len(repo.variants_for(tenant_id=TENANT_ID, draft_id=draft_id)) == 1
+    heygen = [u for u in repo.usage if u.provider == "heygen"]
+    assert [(u.unit, u.pieces, u.cost_usd) for u in heygen] == [("piece", 1, Decimal("0.50"))]
+    assert repo.spend_added == Decimal("0.0175") + Decimal("0.50")
+
+
+def test_a_creator_script_never_asks_for_media() -> None:
+    router = FakeRouter([ok_outcome(copy_dict())])
+    media = FakeMedia(MediaOutcome())
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    draft_id = repo.seed_draft(make_brief(variants=1, kind=ContentKind.CREATOR_SCRIPT))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert repo.drafts[draft_id].status == GENERATED and media.calls == []
+
+
+def test_an_edit_is_merged_over_the_stored_copy() -> None:
+    stored = {**copy_dict(), "script": "Hola, soy el guion.", "ads_headline": "Titular"}
+    router = FakeRouter([ok_outcome(stored)])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    draft_id = repo.seed_draft(make_brief(variants=1))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    (variant,) = repo.variants_for(tenant_id=TENANT_ID, draft_id=draft_id)
+    current = service.variant_copy(tenant_id=TENANT_ID, variant_id=variant.id)
+    assert current.script == "Hola, soy el guion." and current.ads_headline == "Titular"

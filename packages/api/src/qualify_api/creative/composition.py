@@ -3,7 +3,8 @@ as ``connections/composition.py``: one function to audit, cached because callers
 per request/event, and nothing here does network work at import or compose time.
 
 D4 (design §4.1): only the PLATFORM credential path exists in the MVP — Qualify pays,
-the key comes from the process environment (``QUALIFY_ANTHROPIC_API_KEY``). The resolver
+the key comes from the process environment: ``QUALIFY_ANTHROPIC_API_KEY`` for copy and
+``QUALIFY_HEYGEN_API_KEY`` for the avatar videos (one env var per provider). The resolver
 raises ``MissingPlatformKey`` at RESOLVE time, not at import or compose time, so a
 process without the key can still serve every read path and fails loudly exactly when a
 generation is attempted.
@@ -21,9 +22,11 @@ import hashlib
 import logging
 import os
 from functools import cache
+from pathlib import Path
 from uuid import UUID
 
 from qualify_creative.adapters.anthropic_copy import AnthropicCopyAdapter
+from qualify_creative.adapters.heygen_video import HeyGenAvatarVideoAdapter
 from qualify_creative.enums import PaidBy
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.providers import ResolvedKey
@@ -32,6 +35,7 @@ from qualify_creative.schemas import BrandKit, BrandVoiceProfile
 
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.dispatch import InlineDispatcher
+from qualify_api.creative.media import LocalMediaStore, MediaProducer
 from qualify_api.creative.service import ContentService
 from qualify_api.creative.voice_service import VoiceProfileService
 
@@ -39,8 +43,20 @@ logger = logging.getLogger(__name__)
 
 #: The environment variable carrying the platform's Anthropic key (D4: Qualify pays).
 PLATFORM_KEY_ENV = "QUALIFY_ANTHROPIC_API_KEY"
+#: One platform key per provider. Before the video lane every provider got the Anthropic
+#: key, which would have handed it to HeyGen.
+PROVIDER_KEY_ENVS = {"anthropic": PLATFORM_KEY_ENV, "heygen": "QUALIFY_HEYGEN_API_KEY"}
 
-PRICING_VERSION = "v1"
+#: v2 carries the HeyGen per-second rates (and everything v1 had).
+PRICING_VERSION = "v2"
+
+#: Where uploads and generated media live — the app's upload directory, the same one
+#: Reflex serves (`rx.get_upload_dir()`, overridable with `REFLEX_UPLOADED_FILES_DIR`).
+MEDIA_DIR_ENV = "REFLEX_UPLOADED_FILES_DIR"
+
+
+def media_root() -> Path:
+    return Path(os.environ.get(MEDIA_DIR_ENV) or "uploaded_files")
 
 
 class MissingPlatformKey(Exception):
@@ -54,12 +70,15 @@ class PlatformKeyResolver:
     construction — rotating the key is an env change plus nothing."""
 
     def resolve(self, *, tenant_id: UUID, brand_id: UUID, provider: str) -> ResolvedKey:
-        raw = os.environ.get(PLATFORM_KEY_ENV, "").strip()
+        env = PROVIDER_KEY_ENVS.get(provider)
+        if env is None:
+            raise MissingPlatformKey(f"no platform key is configured for provider {provider!r}")
+        raw = os.environ.get(env, "").strip()
         if not raw:
             raise MissingPlatformKey(
-                f"{PLATFORM_KEY_ENV} is not set. The MVP runs on the platform's Anthropic "
-                "key (D4 — Qualify pays for generation); export it in this process's "
-                "environment to enable creative generation. Read paths work without it."
+                f"{env} is not set. The MVP runs on the platform's {provider} key (D4 — "
+                "Qualify pays for generation); export it in this process's environment "
+                "to enable this kind of generation. Read paths work without it."
             )
         fingerprint = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
         return ResolvedKey(api_key=raw, paid_by=PaidBy.PLATFORM, fingerprint=fingerprint)
@@ -102,8 +121,9 @@ def production_content_service() -> ContentService:
     """
     pricing = JsonPricingTable(PRICING_VERSION)
     credentials = PlatformKeyResolver()
+    heygen = HeyGenAvatarVideoAdapter()
     router = CreativeRouter(
-        providers={"anthropic": AnthropicCopyAdapter()},
+        providers={"anthropic": AnthropicCopyAdapter(), "heygen": heygen},
         pricing=pricing,
         credentials=credentials,
     )
@@ -113,6 +133,13 @@ def production_content_service() -> ContentService:
         credentials=credentials,
         voice_service=DbVoiceProfileReader(),
         brand_service=DbBrandKitReader(),
+        media=MediaProducer(
+            store=LocalMediaStore(media_root()),
+            router=router,
+            credentials=credentials,
+            pricing=pricing,
+            heygen=heygen,
+        ),
     )
     service.dispatcher = InlineDispatcher(service.run_generation)
     return service

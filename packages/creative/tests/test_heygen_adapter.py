@@ -502,14 +502,15 @@ def test_bad_subject_or_audio_combinations_fail_before_any_request(
     assert rec.requests == []
 
 
-def test_estimate_cost_for_image_subject_is_unpriced_by_design() -> None:
-    """No published per-second rate for image-animation mode exists yet — model_id
-    resolves to "heygen_image" and the pricing table correctly has nothing for it
-    (KeyError, never a silently-wrong 0)."""
+def test_estimate_cost_for_image_subject_uses_the_photo_avatar_rate() -> None:
+    """Image mode runs on Avatar IV: priced at its photo-avatar rate ($0.05/s, v2),
+    and 4K stays unpriced (KeyError, never a silently-wrong 0)."""
     adapter = adapter_for(Recorder(CREATED, [ok(COMPLETED)]))
     req = make_raw_request(image_url="https://x/y.jpg", duration_seconds_hint=5)
+    assert adapter.estimate_cost_usd(req, JsonPricingTable("v2")) == Decimal("0.25")
+    four_k = make_raw_request(image_url="https://x/y.jpg", duration_seconds_hint=5, resolution="4k")
     with pytest.raises(KeyError, match="heygen_image"):
-        adapter.estimate_cost_usd(req, JsonPricingTable("v2"))
+        adapter.estimate_cost_usd(four_k, JsonPricingTable("v2"))
 
 
 def test_estimate_cost_without_a_script_requires_a_duration_hint() -> None:
@@ -716,4 +717,71 @@ def test_more_than_one_background_source_fails_before_any_request() -> None:
     )
     with pytest.raises(ValueError, match="one background source"):
         adapter_for(rec).generate(req, api_key=API_KEY)
+    assert rec.requests == []
+
+
+# ------------------------------------------------------------------------------------
+# prompt avatars (ContentKind.ANIMATED_AVATAR_VIDEO, source "ai")
+# ------------------------------------------------------------------------------------
+
+LOOK_CREATED = ok({"avatar_item": {"id": "lk_1", "status": "processing"}, "avatar_group": None})
+
+
+def test_a_prompt_avatar_is_created_then_polled_until_its_look_completes() -> None:
+    rec = Recorder(
+        LOOK_CREATED,
+        [ok({"id": "lk_1", "status": "processing"}), ok({"id": "lk_1", "status": "completed"})],
+    )
+    clock = FakeClock()
+    adapter = adapter_for(rec, clock)
+
+    look_id = adapter.create_prompt_avatar(
+        api_key=API_KEY,
+        name="Mascota",
+        prompt="Personaje animado 3D, una hamburguesa sonriente con gorra",
+        aspect_ratio="9:16",
+        idempotency_key="draft-7",
+    )
+    look = adapter.wait_for_look(look_id, api_key=API_KEY)
+
+    assert look_id == "lk_1" and look["status"] == "completed"
+    create = rec.requests[0]
+    assert create.url.path == "/v3/avatars"
+    assert create.headers["Idempotency-Key"] == "draft-7"
+    assert json.loads(create.content) == {
+        "type": "prompt",
+        "name": "Mascota",
+        "prompt": "Personaje animado 3D, una hamburguesa sonriente con gorra",
+        "aspect_ratio": "9:16",
+    }
+    assert [r.url.path for r in rec.requests[1:]] == ["/v3/avatars/looks/lk_1"] * 2
+    assert clock.sleeps == [10.0]
+
+
+def test_a_failed_look_raises_with_heygens_reason() -> None:
+    failed = ok(
+        {"id": "lk_1", "status": "failed", "error": {"code": "moderation_failed", "message": "no"}}
+    )
+    adapter = adapter_for(Recorder(LOOK_CREATED, [failed]))
+    with pytest.raises(HeyGenRenderFailed) as error:
+        adapter.wait_for_look("lk_1", api_key=API_KEY)
+    assert error.value.failure_code == "moderation_failed"
+
+
+def test_a_look_that_never_completes_times_out() -> None:
+    adapter = adapter_for(
+        Recorder(LOOK_CREATED, [ok({"id": "lk_1", "status": "processing"})]),
+        poll_timeout_seconds=30,
+    )
+    with pytest.raises(HeyGenRenderTimeout):
+        adapter.wait_for_look("lk_1", api_key=API_KEY)
+
+
+@pytest.mark.parametrize(("prompt", "ratio"), [("  ", "9:16"), ("x" * 1001, "9:16"), ("ok", "3:2")])
+def test_a_bad_prompt_avatar_request_never_reaches_heygen(prompt: str, ratio: str) -> None:
+    rec = Recorder(LOOK_CREATED, [ok({})])
+    with pytest.raises(ValueError):
+        adapter_for(rec).create_prompt_avatar(
+            api_key=API_KEY, name="x", prompt=prompt, aspect_ratio=ratio
+        )
     assert rec.requests == []

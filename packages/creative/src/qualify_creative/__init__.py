@@ -6,9 +6,11 @@ businesses: `docs/estrategia-contenido-bianki-polet.md`.
 
 from qualify_creative.brand import check_hard_rules, check_route_allowed, render_prompt
 from qualify_creative.enums import (
+    AvatarSource,
     BriefIntent,
     BriefObjective,
     ContentFormat,
+    ContentKind,
     ContentType,
     DraftStatus,
     FailureReason,
@@ -38,12 +40,16 @@ from qualify_creative.schemas import (
     CopyPayload,
     FidelityVerdict,
     ImagePolicy,
+    MediaInputs,
     ToneAxes,
     VideoPlan,
 )
 
 __all__ = [
+    "AvatarSource",
     "BrandKit",
+    "ContentKind",
+    "MediaInputs",
     "BudgetContext",
     "ContentType",
     "CreativeRouter",

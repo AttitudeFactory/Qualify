@@ -22,6 +22,7 @@ loop must run them off-thread.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
@@ -37,6 +38,7 @@ from qualify_api.tenancy.models import Brand
 from qualify_creative.enums import (
     BriefIntent,
     BriefObjective,
+    ContentKind,
     ContentType,
     ImageRoute,
     VoiceProfileStatus,
@@ -47,6 +49,7 @@ from qualify_creative.schemas import (
     ContentBrief,
     CopyPayload,
     ImagePolicy,
+    MediaInputs,
     ToneAxes,
 )
 from qualify_shared.db.session import tenant_session
@@ -63,6 +66,7 @@ from .creative_vm import (
     VoiceProposalVM,
     build_draft_summary_vm,
     build_draft_vm,
+    build_media_vms,
     build_readiness_vm,
     build_route_options,
     build_variant_vm,
@@ -297,13 +301,27 @@ def submit_brief(
     must_mention: str,
     must_avoid: str,
     variants_requested: int = 3,
+    kind: str = "static_flyer",
+    media: Mapping[str, object] | None = None,
 ) -> UUID:
     """Build the frozen `ContentBrief` and create the draft through the composed
     service. Returns the new draft id; generation runs out of band (§7.4).
 
     Raises `ValidationError` (an inexecutable brief, e.g. an upload route without a
-    photo), `BrandNotReady` and `RouteBlockedByPolicy` — the state translates each.
+    photo, or a kind missing its inputs), `BrandNotReady` and `RouteBlockedByPolicy` —
+    the state translates each.
+
+    `kind` / `media` are the generator's content kind and its inputs (`ContentKind`,
+    `MediaInputs`, § request 2026-09-25). The image route is derived from them rather
+    than asked: the operator's own images are placed untouched (`FROM_UPLOAD`, keyed on
+    the first of them) and a piece with none is `TEMPLATE_ONLY`.
     """
+    content_kind = ContentKind(kind)
+    inputs = MediaInputs.model_validate(dict(media or {}))
+    own_images = [*inputs.product_keys, *([inputs.background_key] if inputs.background_key else [])]
+    if content_kind is not ContentKind.STATIC_FLYER or image_route == "":
+        image_route = ImageRoute.FROM_UPLOAD.value if own_images else ImageRoute.TEMPLATE_ONLY.value
+        source_media_key = own_images[0] if own_images else ""
     brief = ContentBrief(
         brand_id=brand_id,
         objective=BriefObjective(objective),
@@ -318,6 +336,9 @@ def submit_brief(
             must_avoid=_split_commas(must_avoid),
         ),
         variants_requested=variants_requested,
+        kind=content_kind,
+        media=inputs,
+        format=content_kind.default_format,
     )
     return production_content_service().create_draft(
         tenant_id=tenant_id, brand_id=brand_id, brief=brief, user_id=user_id
@@ -385,6 +406,9 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         for v in detail.variants
     ]
     total, model_ids = _draft_costs(tenant_id, detail.id)
+    media = build_media_vms(
+        [(item.media_url, item.media_type, item.position, item.params) for item in detail.media]
+    )
     return build_draft_vm(
         draft_id=str(detail.id),
         status=detail.status,
@@ -396,6 +420,8 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         model_ids=model_ids,
         requires_ai_disclosure=detail.requires_ai_disclosure,
         created_label=_format_dt(detail.created_at),
+        kind=detail.kind,
+        media=media,
     )
 
 
@@ -421,6 +447,7 @@ def edit_variant(
     caption: str,
     hashtags: str,
     cta: str,
+    script: str | None = None,
 ) -> tuple[str, ...]:
     """Re-run layer 1 over the operator's edit through the service; returns the hard
     failures as display strings ("regla: detalle"), empty when the edit was stored.
@@ -429,18 +456,25 @@ def edit_variant(
     pydantic rejecting the payload and layer 1 rejecting a claim both mean "the approve
     button stays blocked WITH the reason", per §6.5.
     """
+    service = production_content_service()
+    # Merged over the stored copy: what the editor does not show (the ads slots, the
+    # script's shot list) survives the edit.
+    base = service.variant_copy(tenant_id=tenant_id, variant_id=variant_id)
+    changes: dict[str, object] = {
+        "hook": hook.strip(),
+        "caption": caption,
+        "hashtags": tuple(tag.lstrip("#") for tag in hashtags.split() if tag.strip("#")),
+        "cta": cta.strip(),
+    }
+    if script is not None:
+        changes["script"] = script.strip()
     try:
-        payload = CopyPayload(
-            hook=hook.strip(),
-            caption=caption,
-            hashtags=tuple(tag.lstrip("#") for tag in hashtags.split() if tag.strip("#")),
-            cta=cta.strip(),
-        )
+        payload = CopyPayload.model_validate({**base.model_dump(), **changes})
     except ValidationError as exc:
         return tuple(
             f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}" for err in exc.errors()
         )
-    failures = production_content_service().edit_variant(
+    failures = service.edit_variant(
         tenant_id=tenant_id, variant_id=variant_id, copy=payload, user_id=user_id
     )
     return tuple(f"{f.rule}: {f.detail}" for f in failures)
@@ -466,3 +500,60 @@ def reject_draft(
         regenerate=regenerate,
     )
     return _detail_to_vm(tenant_id, detail)
+
+
+# ---------------------------------------------------------------------------
+# HeyGen catalog for the avatar kinds (/create)
+
+#: The platform's HeyGen key (D4: Qualify pays) — same variable the composition's key
+#: resolver reads for the renders.
+HEYGEN_KEY_ENV = "QUALIFY_HEYGEN_API_KEY"
+#: Library looks and Spanish voices change rarely: one read per process-hour.
+_CATALOG_TTL_SECONDS = 3600
+_CATALOG_LIMIT = 50
+_catalog_cache: dict[str, tuple[float, list[dict[str, str]], list[dict[str, str]]]] = {}
+
+
+class HeyGenNotConfigured(RuntimeError):
+    """`QUALIFY_HEYGEN_API_KEY` is not set: the avatar kinds cannot be offered."""
+
+
+def heygen_catalog() -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """(looks, voices) for the avatar pickers: each look `{id, name, preview}` (its id
+    is a render's `avatar_id`), each voice `{id, name}` (Spanish only — the scripts are
+    written in the brand's Spanish variant)."""
+    import os
+    import time
+
+    from qualify_creative.adapters.heygen_video import HeyGenAvatarVideoAdapter
+
+    key = os.environ.get(HEYGEN_KEY_ENV, "").strip()
+    if not key:
+        raise HeyGenNotConfigured(f"{HEYGEN_KEY_ENV} is not set")
+    cached = _catalog_cache.get("public")
+    if cached is not None and time.time() - cached[0] < _CATALOG_TTL_SECONDS:
+        return cached[1], cached[2]
+    adapter = HeyGenAvatarVideoAdapter()
+    looks = [
+        {
+            "id": str(look["id"]),
+            "name": str(look.get("name") or look["id"]),
+            "preview": str(look.get("preview_image_url") or ""),
+        }
+        for look in adapter.list_avatar_looks(api_key=key, limit=_CATALOG_LIMIT)
+        if look.get("id")
+    ]
+    voices = [
+        {
+            "id": str(voice["voice_id"]),
+            "name": " · ".join(
+                part
+                for part in (str(voice.get("name") or ""), str(voice.get("gender") or ""))
+                if part
+            ),
+        }
+        for voice in adapter.list_voices(api_key=key, language="Spanish", limit=_CATALOG_LIMIT)
+        if voice.get("voice_id")
+    ]
+    _catalog_cache["public"] = (time.time(), looks, voices)
+    return looks, voices

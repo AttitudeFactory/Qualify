@@ -876,6 +876,55 @@ Formulario corto a propósito. El valor está en el sustrato, no en que el clien
 
 Al enviar: navega a `/drafts/{id}` con el estado en `DRAFTING` y un indicador de progreso real por etapa (copy → imagen → verificación), no un spinner ciego. Una espera de 40 segundos sin información se percibe como una caída.
 
+### 6.4b Tipos de contenido del generador (2026-09-25)
+
+> **Esto reemplaza al acordeón de imagen de §6.4.** Ahora lo primero que se elige en `/create` es **qué se genera**. La ruta de imagen se deriva de lo elegido (`creative_provider.submit_brief`): si el operador sube imágenes propias, se colocan sin tocar (`FROM_UPLOAD`); si no sube ninguna, es `TEMPLATE_ONLY`. El resto de §6.4 sigue igual: objetivo, tema, destino y restricciones.
+
+Hay cinco tipos (`qualify_creative.enums.ContentKind`). Cada uno tiene sus entradas (`schemas.MediaInputs`, guardadas en `content_briefs.media`, migración 0024) y su artefacto:
+
+| Tipo | Entradas | Qué genera | Proveedor | Costo |
+|---|---|---|---|---|
+| **Guion para creador real** (`creator_script`) | duración (15/30/45/60 s) | `script` (lo que dice) + `shots` (toma por toma: qué se ve, qué se dice, segundos) + el texto del post | Claude (el mismo adaptador de copy) | solo tokens |
+| **Video con avatar humano** (`avatar_video`) | avatar de la biblioteca de HeyGen, voz en español, duración; fondo y productos **opcionales** | video vertical 9:16 donde el avatar lee el `script` | HeyGen v3 (`type: avatar`, Avatar IV) | $0.0667/s |
+| **Video con avatar animado** (`animated_avatar_video`) | personaje **generado por IA** a partir de una descripción, o **desde una imagen** (mascota, ilustración; exige confirmar los derechos); voz, duración; fondo y productos opcionales | igual que el anterior | IA: `POST /v3/avatars {type: prompt}` y luego `type: avatar`. Imagen: `type: image` | IA: ~$0.50 por avatar + $0.0667/s. Imagen: $0.05/s |
+| **Imagen tipo flyer** (`static_flyer`) | fondo, uno o varios productos (hasta 10), carrusel sí/no; todo opcional | una imagen 4:5 o un **carrusel**: portada con el gancho y el primer producto, un slide por cada producto más y un slide de cierre con el CTA | local (PIL, `qualify_creative.compose`) | gratis |
+| **Con plantilla** (`template`) | — | **solo la opción** (badge "Próximamente"); el brief la rechaza | — | — |
+
+**Por qué el fondo y el producto se componen en una imagen.** HeyGen v3 acepta como fondo **una sola imagen** y no tiene forma nativa de meter un producto en el cuadro. Lo verificamos contra su OpenAPI el 2026-09-25: no hay campo de producto ni de overlay, la marca de agua es Enterprise y las plantillas se diseñan solo en su editor web. Por eso `compose.compose_scene` junta el fondo del operador (o un degradado con el primer color de la marca) y los productos en la franja de arriba, donde el presentador no los tapa, y esa imagen se sube como asset y se usa de fondo. El producto nunca se retoca: se escala y va sobre una tarjeta blanca con sombra, o directo si ya viene recortado con transparencia.
+
+**El guion.** `CopyPayload` ganó `script` y `shots`. El prompt (`brand/render.py`) le dice a cada tipo qué escribir:
+
+- **Creador real:** el guion completo más las tomas.
+- **Avatar:** texto para leer en voz alta, sin emojis ni hashtags, con los números escritos como se dicen.
+- **Flyer:** gancho y CTA cortos, porque van impresos en la imagen.
+
+El largo se pide en palabras según la duración (~2,3 palabras por segundo). Las reglas duras de la marca (palabras prohibidas, afirmaciones prohibidas) también revisan el guion y las tomas.
+
+Medido en vivo (2026-09-25, Opus): 30 s de creador dieron 71 palabras (se pidieron ~69) en 5 tomas que suman 30 s; 15 s de avatar dieron 34 palabras (se pidieron ~35).
+
+**Cómo corre** (`qualify_api.creative.media.MediaProducer`, lo llama `ContentService._generate`):
+
+1. Primero se generan las variantes de copy.
+2. Con la **primera variante que pasa las reglas duras** se arma el artefacto: el flyer imprime su gancho y su CTA, y el avatar lee su guion.
+3. El video se descarga a nuestro almacenamiento apenas termina. El `video_url` de HeyGen es un link firmado que vence y el borrador nunca depende de él.
+
+Qué queda guardado:
+
+- **Medios:** van en `image_assets` con `media_type` (`image` o `video`) y `position` (orden del carrusel).
+- **Costos:** cada llamada a HeyGen queda en `creative_usage_events`. El render se registra con `unit='second'` y el avatar IA con `unit='piece'`, con la tabla de precios v2.
+- **Presupuesto:** el pre-chequeo del router aplica igual que con la copy.
+- **Si el video falla:** el borrador queda `failed` con su motivo, pero **conserva las variantes**, porque el guion sirve igual, y el gasto que ya se hizo queda registrado.
+
+Otros detalles:
+
+- **Llaves:** cada proveedor usa la suya (`QUALIFY_ANTHROPIC_API_KEY`, `QUALIFY_HEYGEN_API_KEY`). Antes, el resolvedor le daba a cualquier proveedor la llave de Anthropic.
+- **Reaper:** subió de 10 a 20 minutos, porque un video con avatar IA (crear el avatar más el render) puede tardar varios.
+- **Revisión:** `/drafts/{id}` muestra el video con su reproductor o las imágenes del carrusel en orden, cada una con su descarga. El guion se puede editar y las tomas se leen debajo. La edición se fusiona sobre la copy guardada, así que ya no borra el guion, las tomas ni los campos de anuncio. Antes los perdía.
+
+**Arreglo que salió de la prueba en vivo.** Contra la API real, el adaptador de copy mandaba el schema de `CopyPayload` tal cual y la API lo rechazaba con HTTP 400: *"For 'object' type, 'additionalProperties' must be explicitly set to false"*. O sea, en producción no se podía generar ninguna copy. Ahora pasa por `anthropic_copy.strict_schema`, que hace la misma transformación que el `transform_schema` del SDK; hay un test que lo compara con el del SDK.
+
+**Estado de HeyGen (2026-09-25).** La cuenta responde **402 `insufficient_credit`**: *"This operation requires 'api' credits"*. El código de video está probado con fakes y el camino de fallo se probó en vivo (el borrador falla con `provider_error` y no se cobra nada), pero **para renderizar hay que cargar créditos de API en HeyGen**.
+
 ### 6.5 `/drafts/{id}` — HITL #2
 
 ```
