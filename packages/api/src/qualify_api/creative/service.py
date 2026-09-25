@@ -31,7 +31,15 @@ from uuid import UUID
 
 from qualify_creative.adapters.anthropic_copy import CopyRefused
 from qualify_creative.brand import check_hard_rules, check_route_allowed, render_prompt
-from qualify_creative.enums import ContentKind, FailureReason, GenerationTask, PaidBy
+from qualify_creative.enums import (
+    ContentKind,
+    FailureReason,
+    GenerationTask,
+    PaidBy,
+    PostCategory,
+    ReuseType,
+    default_category,
+)
 from qualify_creative.providers import (
     CredentialResolver,
     GenerationRequest,
@@ -124,6 +132,13 @@ class DraftRecord:
     approved_by: UUID | None
     approved_at: datetime | None
     created_at: datetime
+    # the POST fields (0025, QUA-109)
+    title: str = ""
+    category: str | None = None
+    reuse_type: str | None = None
+    preview_key: str | None = None
+    revision: int = 1
+    approved_revision: int | None = None
 
 
 @dataclass(frozen=True)
@@ -174,6 +189,13 @@ class DraftDetail:
     media: tuple[ImageRecord, ...] = ()
     #: The brief's `ContentKind` value.
     kind: str = "static_flyer"
+    # the POST fields (0025, QUA-109)
+    title: str = ""
+    category: str | None = None
+    reuse_type: str | None = None
+    preview_key: str | None = None
+    revision: int = 1
+    approved_revision: int | None = None
 
 
 @dataclass(frozen=True)
@@ -278,6 +300,18 @@ class ContentRepository(Protocol):
         failure_reason: str | None,
     ) -> None: ...
 
+    def bump_revision(self, *, tenant_id: UUID, draft_id: UUID) -> int: ...
+
+    def update_post(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        title: str | None,
+        category: str | None,
+        reuse_type: str | None,
+    ) -> None: ...
+
     def set_approved(
         self,
         *,
@@ -332,6 +366,12 @@ def _draft_record(row: orm.ContentDraft) -> DraftRecord:
         approved_by=row.approved_by,
         approved_at=row.approved_at,
         created_at=row.created_at,
+        title=row.title,
+        category=row.category,
+        reuse_type=row.reuse_type,
+        preview_key=row.preview_key,
+        revision=row.revision,
+        approved_revision=row.approved_revision,
     )
 
 
@@ -404,6 +444,9 @@ class PostgresContentRepository:
                 voice_profile_version=voice_profile_version,
                 pipeline_version=pipeline_version,
                 requires_ai_disclosure=brief.requires_ai_disclosure,
+                title=brief.topic[:TITLE_MAX],
+                category=default_category(brief.kind).value,
+                revision=1,
             )
             session.add(draft_row)
             session.flush()
@@ -543,6 +586,8 @@ class PostgresContentRepository:
                 )
                 if config is not None:
                     config.budget_spent_usd = Decimal(config.budget_spent_usd) + spent_usd
+            if draft is not None and media:
+                draft.preview_key = preview_of(media)
             if draft is not None and draft.status == DRAFTING:
                 draft.status = new_status
                 draft.failure_reason = failure_reason
@@ -580,6 +625,35 @@ class PostgresContentRepository:
             draft.selected_variant_id = variant_id
             draft.approved_by = user_id
             draft.approved_at = approved_at
+            draft.approved_revision = draft.revision
+
+    def bump_revision(self, *, tenant_id: UUID, draft_id: UUID) -> int:
+        with tenant_session(tenant_id) as session:
+            draft = session.get(orm.ContentDraft, draft_id)
+            if draft is None:
+                raise UnknownDraft(str(draft_id))
+            draft.revision += 1
+            return draft.revision
+
+    def update_post(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        title: str | None,
+        category: str | None,
+        reuse_type: str | None,
+    ) -> None:
+        with tenant_session(tenant_id) as session:
+            draft = session.get(orm.ContentDraft, draft_id)
+            if draft is None:
+                raise UnknownDraft(str(draft_id))
+            if title is not None:
+                draft.title = title
+            if category is not None:
+                draft.category = category
+            if reuse_type is not None:
+                draft.reuse_type = reuse_type or None
 
     def list_drafts(
         self,
@@ -648,6 +722,20 @@ class PostgresContentRepository:
 
 # ---------------------------------------------------------------------------
 # The service
+
+
+#: A POST title is a label, not a caption.
+TITLE_MAX = 120
+
+
+def preview_of(media: tuple[MediaWrite, ...]) -> str | None:
+    """What lists and Calendar show for a POST: a video's thumbnail, else the first
+    media item in order."""
+    if not media:
+        return None
+    first = min(media, key=lambda item: item.position)
+    thumbnail = first.params.get("thumbnail_key") if first.media_type == "video" else None
+    return str(thumbnail) if thumbnail else first.object_key or first.media_url
 
 
 def _failure_from_hops(hops: tuple[Hop, ...]) -> str:
@@ -986,6 +1074,12 @@ class ContentService:
             media=self._repo.media_for(tenant_id=tenant_id, draft_id=draft_id),
             kind=self._repo.brief_kind(tenant_id=tenant_id, brief_id=record.brief_id)
             or ContentKind.STATIC_FLYER.value,
+            title=record.title,
+            category=record.category,
+            reuse_type=record.reuse_type,
+            preview_key=record.preview_key,
+            revision=record.revision,
+            approved_revision=record.approved_revision,
         )
 
     def list_drafts(
@@ -1031,6 +1125,9 @@ class ContentService:
         self._repo.set_edited_copy(
             tenant_id=tenant_id, variant_id=variant_id, edited_copy=copy.model_dump(mode="json")
         )
+        # An edit is a new revision of the POST: an approved one keeps pointing at the
+        # revision that was approved (`approved_revision`).
+        self._repo.bump_revision(tenant_id=tenant_id, draft_id=draft.id)
         logger.info("variant %s edited by user %s", variant_id, user_id)
         return ()
 
@@ -1086,8 +1183,40 @@ class ContentService:
             tenant_id=tenant_id, draft_id=draft_id, new_status=new_status, failure_reason=None
         )
         logger.info("draft %s rejected by user %s: %s", draft_id, user_id, reason)
+        if regenerate:
+            self._repo.bump_revision(tenant_id=tenant_id, draft_id=draft_id)
         if regenerate and self.dispatcher is not None:
             self.dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)
+        return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
+
+    def update_post(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        title: str | None = None,
+        category: str | None = None,
+        reuse_type: str | None = None,
+    ) -> DraftDetail:
+        """Set the POST's own fields (QUA-109). `None` leaves a field as it is; an empty
+        `reuse_type` clears it. Values are validated against the vocabularies here, before
+        the database's CHECKs would reject them."""
+        self._require_draft(tenant_id=tenant_id, draft_id=draft_id)
+        if title is not None:
+            title = title.strip()[:TITLE_MAX]
+            if not title:
+                raise ValueError("a POST needs a title")
+        if category is not None:
+            category = PostCategory(category).value
+        if reuse_type:
+            reuse_type = ReuseType(reuse_type).value
+        self._repo.update_post(
+            tenant_id=tenant_id,
+            draft_id=draft_id,
+            title=title,
+            category=category,
+            reuse_type=reuse_type,
+        )
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
 
     # -- internals ----------------------------------------------------------

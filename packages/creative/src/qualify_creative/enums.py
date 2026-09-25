@@ -335,3 +335,33 @@ class AvatarSource(StrEnum):
     AI = "ai"
     #: Animated from an image the operator uploads (a mascot, an illustration).
     IMAGE = "image"
+
+
+class PostCategory(StrEnum):
+    """HOW a POST is published (QUA-109) — not what is generated (`ContentKind`) nor what
+    it is about (`ContentType`). Maps onto Meta's `media_product_type` at publish time:
+    `GALERIA` → IMAGE (one image) / CAROUSEL (several), `STORY` → STORIES, `REEL` →
+    REELS. `TIKTOK_VIDEO` is declared for the model; scheduled TikTok publishing stays
+    blocked by the platform (ADR 23c)."""
+
+    GALERIA = "galeria"
+    STORY = "story"
+    REEL = "reel"
+    TIKTOK_VIDEO = "tiktok_video"
+
+
+class ReuseType(StrEnum):
+    """HOW a POST is reused over time (QUA-109, Herwin's list — not closed yet).
+    Distinct from `ContentType.PROMOTION` / `SEASONAL`, which describe the TOPIC."""
+
+    #: Reused several times, the same day of the week.
+    RECURRENTE = "recurrente"
+    #: Used once, then retired.
+    PROMOCIONAL = "promocional"
+
+
+def default_category(kind: ContentKind) -> PostCategory:
+    """The category a new POST starts with: anything recorded or rendered as a video
+    (the avatar kinds, a real creator's script) is a reel; a flyer or carousel a galería.
+    The operator can change it."""
+    return PostCategory.GALERIA if kind is ContentKind.STATIC_FLYER else PostCategory.REEL
