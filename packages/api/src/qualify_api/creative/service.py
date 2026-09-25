@@ -139,6 +139,7 @@ class DraftRecord:
     preview_key: str | None = None
     revision: int = 1
     approved_revision: int | None = None
+    failure_detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,7 @@ class DraftDetail:
     preview_key: str | None = None
     revision: int = 1
     approved_revision: int | None = None
+    failure_detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -289,6 +291,7 @@ class ContentRepository(Protocol):
         usage: tuple[UsageWrite, ...],
         spent_usd: Decimal,
         media: tuple[MediaWrite, ...] = (),
+        failure_detail: str | None = None,
     ) -> None: ...
 
     def update_status(
@@ -372,6 +375,7 @@ def _draft_record(row: orm.ContentDraft) -> DraftRecord:
         preview_key=row.preview_key,
         revision=row.revision,
         approved_revision=row.approved_revision,
+        failure_detail=row.failure_detail,
     )
 
 
@@ -513,6 +517,7 @@ class PostgresContentRepository:
         usage: tuple[UsageWrite, ...],
         spent_usd: Decimal,
         media: tuple[MediaWrite, ...] = (),
+        failure_detail: str | None = None,
     ) -> None:
         """One transaction for the whole outcome. Usage rows and spend are written even
         if the draft lost a race with the reaper — the money was spent either way, and
@@ -591,6 +596,7 @@ class PostgresContentRepository:
             if draft is not None and draft.status == DRAFTING:
                 draft.status = new_status
                 draft.failure_reason = failure_reason
+                draft.failure_detail = failure_detail
 
     def update_status(
         self,
@@ -960,6 +966,7 @@ class ContentService:
 
         media_writes: tuple[MediaWrite, ...] = ()
         media_failure: str | None = None
+        media_detail = ""
         if any_passed and self._media is not None and brief.kind is not ContentKind.CREATOR_SCRIPT:
             # The artifact is built from the FIRST variant that passed layer 1: the
             # flyer prints its hook/CTA, the avatar reads its script.
@@ -997,6 +1004,7 @@ class ContentService:
             )
             media_writes = outcome.media
             media_failure = outcome.failure
+            media_detail = outcome.detail[:500] if outcome.failure else ""
 
         if any_passed and media_failure is None:
             new_status = apply_transition(DRAFTING, DraftTrigger.GENERATE_OK)
@@ -1025,6 +1033,7 @@ class ContentService:
             usage=tuple(usage_writes),
             spent_usd=spent,
             media=media_writes,
+            failure_detail=media_detail or None,
         )
 
     def _call_cost(self, usage: Usage, model_id: str) -> Decimal:
@@ -1080,6 +1089,7 @@ class ContentService:
             preview_key=record.preview_key,
             revision=record.revision,
             approved_revision=record.approved_revision,
+            failure_detail=record.failure_detail,
         )
 
     def list_drafts(

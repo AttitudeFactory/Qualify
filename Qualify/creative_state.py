@@ -356,9 +356,13 @@ class CreativeState(rx.State):
 
     @rx.var
     def gen_failure_label(self) -> str:
-        if self.gen_draft is None or self.gen_draft.failure is None:
+        """The precise reason when the media step gave one (HeyGen without credit…),
+        else the failure code's translation."""
+        if self.gen_draft is None:
             return ""
-        return self.gen_draft.failure.label
+        if self.gen_draft.failure_detail:
+            return self.gen_draft.failure_detail
+        return self.gen_draft.failure.label if self.gen_draft.failure is not None else ""
 
     @rx.var
     def product_items(self) -> list[dict[str, str]]:

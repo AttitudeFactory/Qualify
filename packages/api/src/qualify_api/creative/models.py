@@ -189,6 +189,8 @@ class ContentDraft(Base):
     )
     status: Mapped[str] = mapped_column(Text, nullable=False)  # DraftStatus values (fsm.py)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)  # FailureReason
+    # why, in the operator's words (0026)
+    failure_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Points at copy_variants.id; not a declared FK (see module docstring).
     selected_variant_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     voice_profile_version: Mapped[int | None] = mapped_column(Integer, nullable=True)

@@ -425,6 +425,7 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         created_label=_format_dt(detail.created_at),
         kind=detail.kind,
         media=media,
+        failure_detail=detail.failure_detail,
     )
 
 

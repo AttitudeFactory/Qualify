@@ -671,6 +671,8 @@ class DraftVM:
     media: tuple[MediaVM, ...] = ()
     has_video: bool = False
     has_script: bool = False
+    #: Why it failed, in the operator's words (e.g. HeyGen has no API credit).
+    failure_detail: str = ""
 
 
 def build_draft_vm(
@@ -687,6 +689,7 @@ def build_draft_vm(
     created_label: str,
     kind: str = "static_flyer",
     media: Sequence[MediaVM] = (),
+    failure_detail: str | None = None,
 ) -> DraftVM:
     """Assemble the detail view-model. `can_approve` is the FSM fact (only a GENERATED
     draft has the approve edge); which VARIANT may be approved is per-variant `passed` —
@@ -724,6 +727,7 @@ def build_draft_vm(
         media=tuple(media),
         has_video=any(item.media_type == "video" for item in media),
         has_script=kind in ("creator_script", "avatar_video", "animated_avatar_video"),
+        failure_detail=failure_detail or "",
     )
 
 
