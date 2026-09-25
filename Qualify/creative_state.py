@@ -37,6 +37,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
 from .creative_provider import (
+    HeyGenNotConfigured,
     acting_user_id,
     approve_draft,
     approve_voice,
@@ -44,6 +45,7 @@ from .creative_provider import (
     default_brand_id,
     draft_detail,
     edit_variant,
+    heygen_catalog,
     list_drafts,
     load_kit_form,
     load_voice_screen,
@@ -83,6 +85,13 @@ _BRIEF_INVALID = "El encargo no se puede ejecutar: "
 _UPLOAD_FAILED = "No se pudo leer la foto subida. Intenta con otro archivo."
 _UPLOAD_REQUIRED = "Esta ruta trabaja sobre tu foto: súbela antes de enviar el encargo."
 _TOPIC_REQUIRED = "Describe el tema o producto del encargo."
+_HEYGEN_OFF = "Los videos con avatar no están disponibles: falta configurar HeyGen."
+_HEYGEN_DOWN = "No pudimos cargar los avatares y voces de HeyGen. Inténtalo de nuevo."
+
+#: `ContentKind` values that can be chosen today (`template` is shown, not selectable).
+_ENABLED_KINDS = ("creator_script", "avatar_video", "animated_avatar_video", "static_flyer")
+_DURATIONS = ("15", "30", "45", "60")
+_MAX_PRODUCTS = 10
 _DRAFT_GONE = "Ese borrador no existe o ya no es visible para este negocio."
 _VARIANT_REQUIRED = "Elige una variante antes de aprobar."
 _POLL_TIMEOUT = (
@@ -164,6 +173,27 @@ class CreativeState(rx.State):
     staged_media_name: str = ""
     upload_error: str = ""
     is_submitting: bool = False
+    # The content kind and its inputs (§ request 2026-09-25, `ContentKind`/`MediaInputs`).
+    brief_kind: str = "static_flyer"
+    media_background_key: str = ""
+    media_background_name: str = ""
+    media_product_keys: list[str] = []
+    media_product_names: list[str] = []
+    media_carousel: bool = False
+    media_duration: str = "30"
+    avatar_look_id: str = ""
+    voice_id: str = ""
+    avatar_source: str = "ai"
+    avatar_prompt: str = ""
+    avatar_image_key: str = ""
+    avatar_image_name: str = ""
+    avatar_rights_confirmed: bool = False
+    #: HeyGen's library looks `{id, name, preview}` and Spanish voices `{id, name}`,
+    #: read once when an avatar kind is first chosen.
+    heygen_looks: list[dict[str, str]] = []
+    heygen_voices: list[dict[str, str]] = []
+    heygen_loading: bool = False
+    heygen_error: str = ""
 
     # -- /drafts ------------------------------------------------------------
     drafts: list[DraftSummaryVM] = []
@@ -179,6 +209,7 @@ class CreativeState(rx.State):
     edit_caption: str = ""
     edit_hashtags: str = ""
     edit_cta: str = ""
+    edit_script: str = ""
     edit_blocking: list[str] = []
     edit_saving: bool = False
     action_error: str = ""
@@ -213,6 +244,33 @@ class CreativeState(rx.State):
             and variant.passed
             and not self.edit_blocking
         )
+
+    @rx.var
+    def kind_is_video(self) -> bool:
+        return self.brief_kind in ("avatar_video", "animated_avatar_video")
+
+    @rx.var
+    def kind_is_flyer(self) -> bool:
+        return self.brief_kind == "static_flyer"
+
+    @rx.var
+    def kind_takes_images(self) -> bool:
+        """Background and product images: every kind but the creator's script."""
+        return self.brief_kind in ("avatar_video", "animated_avatar_video", "static_flyer")
+
+    @rx.var
+    def product_items(self) -> list[dict[str, str]]:
+        return [
+            {"key": key, "name": name}
+            for key, name in zip(self.media_product_keys, self.media_product_names, strict=False)
+        ]
+
+    @rx.var
+    def selected_look_name(self) -> str:
+        for look in self.heygen_looks:
+            if look.get("id") == self.avatar_look_id:
+                return look.get("name", "")
+        return ""
 
     @rx.var
     def selected_needs_upload(self) -> bool:
@@ -366,6 +424,10 @@ class CreativeState(rx.State):
     @rx.event
     def set_edit_cta(self, value: str) -> None:
         self.edit_cta = value
+
+    @rx.event
+    def set_edit_script(self, value: str) -> None:
+        self.edit_script = value
 
     # -- /brand -------------------------------------------------------------
 
@@ -611,6 +673,193 @@ class CreativeState(rx.State):
             self.route_options = list(options)
             self._select_default_route()
 
+    # -- the content kind and its inputs ------------------------------------------
+
+    @rx.event
+    def choose_kind(self, key: str) -> rx.event.EventSpec | None:
+        """One of the five kinds; `template` is shown but not selectable yet. An avatar
+        kind loads HeyGen's looks and voices the first time it is chosen."""
+        if key not in _ENABLED_KINDS:
+            return None
+        self.brief_kind = key
+        self.create_error = ""
+        if key != "static_flyer":
+            self.media_carousel = False
+        if key in ("avatar_video", "animated_avatar_video") and not self.heygen_voices:
+            return CreativeState.load_heygen_catalog
+        return None
+
+    @rx.event(background=True)
+    async def load_heygen_catalog(self) -> None:
+        async with self:
+            if self.heygen_loading:
+                return
+            self.heygen_loading = True
+            self.heygen_error = ""
+        try:
+            looks, voices = await asyncio.to_thread(heygen_catalog)
+        except HeyGenNotConfigured:
+            async with self:
+                self.heygen_loading = False
+                self.heygen_error = _HEYGEN_OFF
+            return
+        except Exception as exc:  # HeyGen's own errors, network
+            logger.warning("heygen catalog failed: %s", exc)
+            async with self:
+                self.heygen_loading = False
+                self.heygen_error = _HEYGEN_DOWN
+            return
+        async with self:
+            self.heygen_looks = looks
+            self.heygen_voices = voices
+            if voices and not self.voice_id:
+                self.voice_id = voices[0]["id"]
+            self.heygen_loading = False
+
+    @rx.event
+    def choose_look(self, look_id: str) -> None:
+        self.avatar_look_id = look_id
+
+    @rx.event
+    def set_voice_id(self, value: str) -> None:
+        self.voice_id = value
+
+    @rx.event
+    def set_avatar_source(self, value: str | list[str]) -> None:
+        value = value if isinstance(value, str) else (value[0] if value else "")
+        if value in ("ai", "image"):
+            self.avatar_source = value
+
+    @rx.event
+    def set_avatar_prompt(self, value: str) -> None:
+        self.avatar_prompt = value
+
+    @rx.event
+    def set_avatar_rights_confirmed(self, value: bool) -> None:
+        self.avatar_rights_confirmed = bool(value)
+
+    @rx.event
+    def set_media_carousel(self, value: bool) -> None:
+        self.media_carousel = bool(value)
+
+    @rx.event
+    def set_media_duration(self, value: str | list[str]) -> None:
+        value = value if isinstance(value, str) else (value[0] if value else "")
+        if value in _DURATIONS:
+            self.media_duration = value
+
+    async def _save_uploads(self, files: list[rx.UploadFile]) -> list[tuple[str, str]]:
+        """Store uploaded files under the tenant's namespace; `(key, name)` each. Sets
+        `upload_error` and returns nothing on a missing session or unreadable file."""
+        auth = await self.get_state(AuthState)
+        tenant_id = tenant_uuid(auth.session_tenant_id)
+        if tenant_id is None:
+            self.upload_error = _NO_SESSION
+            return []
+        saved: list[tuple[str, str]] = []
+        for upload in files:
+            try:
+                data = await upload.read()
+            except Exception:
+                self.upload_error = _UPLOAD_FAILED
+                return []
+            name = upload.name or "imagen"
+            key = f"uploads/{tenant_id}/{uuid4().hex}_{name}"
+            target = rx.get_upload_dir() / key
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            saved.append((key, name))
+        self.upload_error = ""
+        return saved
+
+    @rx.event
+    async def handle_background_upload(self, files: list[rx.UploadFile]) -> None:
+        saved = await self._save_uploads(files[:1])
+        if saved:
+            self.media_background_key, self.media_background_name = saved[0]
+
+    @rx.event
+    async def handle_product_uploads(self, files: list[rx.UploadFile]) -> None:
+        room = _MAX_PRODUCTS - len(self.media_product_keys)
+        saved = await self._save_uploads(files[: max(room, 0)])
+        self.media_product_keys = [*self.media_product_keys, *(k for k, _ in saved)]
+        self.media_product_names = [*self.media_product_names, *(n for _, n in saved)]
+
+    @rx.event
+    async def handle_avatar_upload(self, files: list[rx.UploadFile]) -> None:
+        saved = await self._save_uploads(files[:1])
+        if saved:
+            self.avatar_image_key, self.avatar_image_name = saved[0]
+
+    @rx.event
+    def remove_product(self, key: str) -> None:
+        pairs = [
+            (k, n)
+            for k, n in zip(self.media_product_keys, self.media_product_names, strict=False)
+            if k != key
+        ]
+        self.media_product_keys = [k for k, _ in pairs]
+        self.media_product_names = [n for _, n in pairs]
+
+    @rx.event
+    def clear_background(self) -> None:
+        self.media_background_key = ""
+        self.media_background_name = ""
+
+    @rx.event
+    def clear_avatar_image(self) -> None:
+        self.avatar_image_key = ""
+        self.avatar_image_name = ""
+
+    def _kind_problem(self) -> str:
+        """What the chosen kind still needs, in the operator's words ("" when ready)."""
+        if self.brief_kind == "avatar_video" and not self.avatar_look_id:
+            return "Elige el avatar que va a presentar el video."
+        if self.brief_kind in ("avatar_video", "animated_avatar_video") and not self.voice_id:
+            return "Elige la voz que va a leer el guion."
+        if self.brief_kind == "animated_avatar_video":
+            if self.avatar_source == "ai" and not self.avatar_prompt.strip():
+                return "Describe cómo es el personaje animado."
+            if self.avatar_source == "image":
+                if not self.avatar_image_key:
+                    return "Sube la imagen del personaje que quieres animar."
+                if not self.avatar_rights_confirmed:
+                    return "Confirma que tienes derecho a animar esa imagen."
+        return ""
+
+    def _media_inputs(self) -> dict[str, object]:
+        kind = self.brief_kind
+        takes_images = kind != "creator_script"
+        media: dict[str, object] = {
+            "duration_seconds": int(self.media_duration),
+            "background_key": self.media_background_key or None if takes_images else None,
+            "product_keys": list(self.media_product_keys) if takes_images else [],
+            "carousel": self.media_carousel and kind == "static_flyer",
+        }
+        if kind == "avatar_video":
+            media.update(avatar_look_id=self.avatar_look_id, voice_id=self.voice_id)
+        if kind == "animated_avatar_video":
+            media.update(voice_id=self.voice_id, avatar_source=self.avatar_source)
+            if self.avatar_source == "ai":
+                media["avatar_prompt"] = self.avatar_prompt.strip()
+            else:
+                media.update(
+                    avatar_image_key=self.avatar_image_key,
+                    avatar_rights_confirmed=self.avatar_rights_confirmed,
+                )
+        return media
+
+    def _reset_media_inputs(self) -> None:
+        self.media_background_key = ""
+        self.media_background_name = ""
+        self.media_product_keys = []
+        self.media_product_names = []
+        self.media_carousel = False
+        self.avatar_prompt = ""
+        self.avatar_image_key = ""
+        self.avatar_image_name = ""
+        self.avatar_rights_confirmed = False
+
     @rx.event
     def select_route(self, key: str) -> None:
         for option in self.route_options:
@@ -654,21 +903,26 @@ class CreativeState(rx.State):
             if not self.brief_topic.strip():
                 self.create_error = _TOPIC_REQUIRED
                 return
-            if self.selected_needs_upload and not self.staged_media_key:
-                self.create_error = _UPLOAD_REQUIRED
+            problem = self._kind_problem()
+            if problem:
+                self.create_error = problem
                 return
             self.is_submitting = True
             self.create_error = ""
+            # The image route is derived from the kind and its images
+            # (`creative_provider.submit_brief`), no longer picked on its own.
             form = {
                 "objective": self.brief_objective,
                 "content_type": self.brief_content_type,
                 "topic": self.brief_topic,
                 "product_ref": self.brief_product_ref,
                 "intent": self.brief_intent,
-                "image_route": self.selected_route,
-                "source_media_key": self.staged_media_key,
+                "image_route": "",
+                "source_media_key": "",
                 "must_mention": self.brief_must_mention,
                 "must_avoid": self.brief_must_avoid,
+                "kind": self.brief_kind,
+                "media": self._media_inputs(),
             }
         ids = await self._session_ids()
         if ids is None:
@@ -707,6 +961,7 @@ class CreativeState(rx.State):
             self.brief_topic = ""
             self.staged_media_key = ""
             self.staged_media_name = ""
+            self._reset_media_inputs()
         yield rx.redirect(f"/drafts/{draft_id}")
 
     # -- /drafts ------------------------------------------------------------
@@ -760,6 +1015,7 @@ class CreativeState(rx.State):
                 self.edit_caption = variant.caption
                 self.edit_hashtags = variant.hashtags_text
                 self.edit_cta = variant.cta
+                self.edit_script = variant.script
                 self.edit_blocking = list(variant.failure_labels)
                 return
 
@@ -871,6 +1127,7 @@ class CreativeState(rx.State):
             variant_id = self.selected_variant_id
             hook, caption = self.edit_hook, self.edit_caption
             hashtags, cta = self.edit_hashtags, self.edit_cta
+            script = self.edit_script if self.draft is not None and self.draft.has_script else None
         ids = await self._session_ids()
         if ids is None:
             async with self:
@@ -888,6 +1145,7 @@ class CreativeState(rx.State):
                     caption=caption,
                     hashtags=hashtags,
                     cta=cta,
+                    script=script,
                 )
             )
         except (UnknownVariant, UnknownDraft):

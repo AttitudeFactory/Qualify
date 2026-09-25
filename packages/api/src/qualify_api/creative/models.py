@@ -151,6 +151,9 @@ class ContentBrief(Base):
     video_plan: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     variants_requested: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     constraints: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # ContentKind value and its MediaInputs (0024)
+    kind: Mapped[str] = mapped_column(Text, nullable=False, server_default="static_flyer")
+    media: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     created_by: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
@@ -279,6 +282,9 @@ class ImageAsset(Base):
     provider: Mapped[str | None] = mapped_column(Text, nullable=True)
     params: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     fidelity: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # 'image' | 'video', and a carousel slide's order (0024)
+    media_type: Mapped[str] = mapped_column(Text, nullable=False, server_default="image")
+    position: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

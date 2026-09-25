@@ -24,12 +24,13 @@ from __future__ import annotations
 
 import hashlib
 
-from qualify_creative.enums import EmojiPolicy, GenerationTask
+from qualify_creative.enums import ContentKind, EmojiPolicy, GenerationTask
 from qualify_creative.providers import RenderedPrompt
 from qualify_creative.schemas import (
     ADS_DESCRIPTION_MAX,
     ADS_HEADLINE_MAX,
     HOOK_MAX,
+    SCRIPT_MAX,
     BrandKit,
     BrandVoiceProfile,
     ContentBrief,
@@ -37,6 +38,10 @@ from qualify_creative.schemas import (
 )
 
 _NONE = "(none)"
+
+#: Conversational Spanish is ~2.5 words per second; a script is sized to its target
+#: length at a slightly slower pace so a presenter never has to rush it.
+_SPOKEN_WORDS_PER_SECOND = 2.3
 
 _EMOJI_GUIDANCE: dict[EmojiPolicy, str] = {
     EmojiPolicy.NONE: "none — do not use any emoji",
@@ -145,6 +150,34 @@ _ADS_FIELD_LINES: tuple[str, ...] = (
 )
 
 
+#: What each kind asks of the copy beyond the post itself (`ContentKind`).
+_KIND_ASSIGNMENT: dict[ContentKind, str] = {
+    ContentKind.CREATOR_SCRIPT: (
+        "A real person from the brand will record this video. Write the script they"
+        " will follow: `script` is everything they say, start to finish, in their own"
+        " voice; `shots` breaks it into the shots to record — what the camera shows"
+        " (`visual`), the line said over it (`line`) and its length (`seconds`)."
+        " The hook is the first line said on camera."
+    ),
+    ContentKind.AVATAR_VIDEO: (
+        "A generated presenter will read `script` aloud, word for word, in a vertical"
+        " video. Write it to be spoken: short sentences, no emojis, no hashtags, no"
+        " stage directions, numbers written the way they are said. Leave `shots` empty."
+        " The hook is the first sentence of the script."
+    ),
+    ContentKind.ANIMATED_AVATAR_VIDEO: (
+        "An animated character will read `script` aloud, word for word, in a vertical"
+        " video. Write it to be spoken: short sentences, no emojis, no hashtags, no"
+        " stage directions, numbers written the way they are said. Leave `shots` empty."
+        " The hook is the first sentence of the script."
+    ),
+    ContentKind.STATIC_FLYER: (
+        "This is a still image. The hook and the CTA are printed on it, so keep them"
+        " short and punchy. Leave `script` empty and `shots` empty."
+    ),
+}
+
+
 def _volatile_suffix(brief: ContentBrief, task: GenerationTask) -> str:
     constraints = brief.constraints
     width, height = brief.format.dimensions
@@ -154,6 +187,21 @@ def _volatile_suffix(brief: ContentBrief, task: GenerationTask) -> str:
         else "(brand default)"
     )
     field_lines = list(_COPY_FIELD_LINES)
+    if brief.kind.has_script:
+        words = round(brief.media.duration_seconds * _SPOKEN_WORDS_PER_SECOND)
+        field_lines.append(
+            f"- script: string, the spoken text, about {words} words"
+            f" (~{brief.media.duration_seconds} seconds), at most {SCRIPT_MAX} characters"
+        )
+    else:
+        field_lines.append("- script: string, empty for this piece")
+    if brief.kind is ContentKind.CREATOR_SCRIPT:
+        field_lines.append(
+            "- shots: array of objects {visual: string, line: string, seconds: integer},"
+            f" their seconds adding up to about {brief.media.duration_seconds}"
+        )
+    else:
+        field_lines.append("- shots: array, empty for this piece")
     if brief.intent.includes_ads:
         field_lines.extend(_ADS_FIELD_LINES)
         ads_note = "This piece will run as an ad: fill every ads_* field."
@@ -170,17 +218,20 @@ def _volatile_suffix(brief: ContentBrief, task: GenerationTask) -> str:
         f"Format: {brief.format.value} ({width}x{height})",
         f"Intent: {brief.intent.value}",
         f"Image route: {brief.image_route.value}",
+        f"Piece kind: {brief.kind.value}. {_KIND_ASSIGNMENT[brief.kind]}",
         f"Must mention: {_listing(constraints.must_mention)}",
         f"Must avoid: {_listing(constraints.must_avoid)}",
         f"Maximum caption characters for this piece: {max_chars}",
         f"Variants requested: {brief.variants_requested}",
         "",
         "== Output ==",
-        f"Return only a JSON array of exactly {brief.variants_requested} variant objects,"
-        " with no prose before or after it. Each object has exactly these fields:",
+        # One call per variant (`ContentService._generate`): each answer is ONE object.
+        "Return only one JSON object, with no prose before or after it. It has exactly"
+        " these fields:",
         *field_lines,
         ads_note,
-        "Each variant takes a distinctly different angle on the same assignment.",
+        f"This is one of {brief.variants_requested} variants: take a distinct angle on"
+        " the assignment.",
     )
     return "\n".join(lines) + "\n"
 

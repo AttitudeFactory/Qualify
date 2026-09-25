@@ -80,6 +80,9 @@ def _full_text(copy: CopyPayload) -> str:
         copy.ads_primary_text or "",
         copy.ads_headline or "",
         copy.ads_description or "",
+        # the libreto is copy too: a banned word said on camera is still said
+        copy.script,
+        *(f"{shot.visual}\n{shot.line}" for shot in copy.shots),
     )
     return "\n".join(part for part in parts if part)
 
