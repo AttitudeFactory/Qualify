@@ -64,6 +64,7 @@ from . import (
     hashtag_catalog,
     logo_palette,
     referentes_provider,
+    referentes_review,
     scrapecreators_client,
 )
 from .auth_state import AuthState
@@ -2215,6 +2216,55 @@ def merge_suggestions(
     return out, note
 
 
+#: Every key a card may carry beyond `account_card`'s original ones, defaulted so a
+#: card stored before they existed (or a manual one) renders the same (`card_view`).
+_CARD_DEFAULTS: dict[str, str] = {
+    "kind": "",
+    "kind_label": "",
+    "review": "",
+    "reviewed_by": "",
+    "manual": "",
+    "fits": "",
+    "note": "",
+}
+
+
+def card_view(card: Mapping[str, object]) -> dict[str, str]:
+    """A stored or fresh card as the state keeps it: every optional key present (a Var
+    reading a missing key renders `undefined`), plus the picture's backend path."""
+    out = {**_CARD_DEFAULTS, **{str(k): str(v) for k, v in card.items()}}
+    out["avatar_src"] = creator_discovery.avatar_path(out)
+    return out
+
+
+def manual_outcome(
+    card: Mapping[str, str], bucket: str, result: referentes_review.ManualResult
+) -> tuple[str, str]:
+    """The callout after a manual add: what happened, in the operator's words, and its
+    tone — `warn` when the profile was not found or Claude thinks it does not fit."""
+    title = next((t for b, t, _, _ in BUCKETS if b == bucket), "Referentes")
+    who = card.get("handle") or "La cuenta"
+    parts = [f"Agregamos {who} a {title}."]
+    tone = "ok"
+    if result.missing:
+        network = card.get("network") or ""
+        parts.append(f"No encontramos ese perfil en {network}; la guardamos con lo que escribiste.")
+        tone = "warn"
+    if result.warning:
+        parts.append(f"Ojo, la IA cree que no encaja: {result.warning}")
+        tone = "warn"
+    elif card.get("review"):
+        kind = card.get("kind_label") or ""
+        parts.append(f"{kind}: {card['review']}" if kind else card["review"])
+    return " ".join(parts), tone
+
+
+#: Networks the manual form offers, in the select's order.
+MANUAL_NETWORK_OPTIONS: tuple[tuple[str, str], ...] = tuple(
+    referentes_review.MANUAL_NETWORKS.items()
+)
+
+
 def seed_with_pills(
     seed: creator_discovery.DiscoverySeed, pills: list[dict[str, str]]
 ) -> tuple[creator_discovery.DiscoverySeed, dict[str, dict[str, str]]]:
@@ -2340,6 +2390,22 @@ class BrandConnectState(rx.State):
     #: bucket, with the card of the newest stored phase that found them. Never dealt
     #: into the deck: they are sorted already.
     kept_accounts: list[dict[str, str]] = []
+    #: Accounts Claude's review dropped from this run's phases (`creator_discovery.
+    #: apply_review`), each with its phase key and the reason — listed under the deck
+    #: so a drop can be checked. Fresh runs only: a stored phase keeps what was shown.
+    discarded_accounts: list[dict[str, str]] = []
+    # -- A referente added by hand (`add_manual_account`): the search cannot find an
+    # account with little activity, few followers or no TikTok / Instagram at all.
+    manual_open: bool = False
+    manual_input: str = ""
+    manual_network: str = "instagram"
+    manual_bucket: str = "referente"
+    manual_note: str = ""
+    adding_manual: bool = False
+    manual_error: str = ""
+    #: The last manual add's outcome, and its tone (`ok` / `warn`) for the callout.
+    manual_message: str = ""
+    manual_tone: str = "ok"
     #: The card being dragged, same key.
     dragging: str = ""
     #: Which category the sort step is on (index into `creator_discovery.PHASES`):
@@ -2807,6 +2873,9 @@ class BrandConnectState(rx.State):
         self.account_buckets = {}
         self._persisted_buckets = {}
         self.kept_accounts = []
+        self.discarded_accounts = []
+        self.manual_message = ""
+        self.manual_error = ""
         self.dragging = ""
         self.sort_stage = 0
         self.stage_cursor = 0
@@ -2827,13 +2896,27 @@ class BrandConnectState(rx.State):
         if key not in creator_discovery.PHASES:
             return
         accounts = [
-            # `avatar_src`: the backend path the card's picture is served from
-            # (`creator_discovery.avatar_path` → `avatar_proxy.py`), resolved here so a
-            # cached result from before pictures existed gets one too.
-            {**a, "avatar_src": creator_discovery.avatar_path(a)}
+            # `card_view` resolves `avatar_src` — the backend path the card's picture is
+            # served from (`creator_discovery.avatar_path` → `avatar_proxy.py`) — so a
+            # cached result from before pictures existed gets one too, and defaults the
+            # keys cards stored before the AI review lack.
+            card_view(a)
             for a in phase.get("accounts") or []
             if isinstance(a, dict)
         ]
+        discarded = [
+            {
+                "phase": key,
+                "handle": str(d.get("handle") or ""),
+                "network": str(d.get("network") or ""),
+                "reason": str(d.get("reason") or ""),
+            }
+            for d in phase.get("discarded") or []
+            if isinstance(d, dict)
+        ]
+        self.discarded_accounts = [
+            d for d in self.discarded_accounts if d["phase"] != key
+        ] + discarded
         note = str(phase.get("note") or "")
         if phase.get("errors") and not accounts:
             note = "No pudimos completar esta búsqueda ahora. Inténtalo más tarde."
@@ -2997,6 +3080,29 @@ class BrandConnectState(rx.State):
         return rows
 
     @rx.var
+    def stage_discarded(self) -> list[dict[str, str]]:
+        """What the AI review dropped from the category on screen."""
+        key = self.stage_key
+        return [d for d in self.discarded_accounts if d["phase"] == key]
+
+    @rx.var
+    def stage_discarded_label(self) -> str:
+        count = len(self.stage_discarded)
+        noun = "cuenta que no encaja" if count == 1 else "cuentas que no encajan"
+        return f"La IA descartó {count} {noun} con tu marca"
+
+    @rx.var
+    def manual_accounts(self) -> list[dict[str, str]]:
+        """The referentes the operator added by hand, in whichever bucket."""
+        return [a for a in self.discovered_accounts if a.get("manual") == "1"]
+
+    @rx.var
+    def manual_placeholder(self) -> str:
+        if self.manual_network in ("web", "otro"):
+            return "Nombre del negocio o de la persona, o su página web"
+        return "Usuario (@cuenta) o enlace del perfil"
+
+    @rx.var
     def stage_pool(self) -> list[dict[str, str]]:
         return [a for a in self._phase_cards(self.stage_key) if a["bucket"] == ""]
 
@@ -3036,6 +3142,129 @@ class BrandConnectState(rx.State):
     @rx.var
     def can_undo(self) -> bool:
         return self.last_assigned != "" and self.last_assigned in self.account_buckets
+
+    @rx.event
+    def toggle_manual(self) -> None:
+        self.manual_open = not self.manual_open
+        self.manual_error = ""
+
+    @rx.event
+    def set_manual_input(self, value: str) -> None:
+        self.manual_input = value
+        self.manual_error = ""
+
+    @rx.event
+    def set_manual_network(self, value: str) -> None:
+        if value in referentes_review.MANUAL_NETWORKS:
+            self.manual_network = value
+
+    @rx.event
+    def set_manual_bucket(self, value: str) -> None:
+        if value in {b for b, _, _, _ in BUCKETS}:
+            self.manual_bucket = value
+
+    @rx.event
+    def set_manual_note(self, value: str) -> None:
+        self.manual_note = value
+
+    @rx.event
+    def remove_manual(self, key: str) -> rx.event.EventSpec:
+        """Take a manual referente out: its label is cleared (`sync_labels`), and a card
+        with no label is not shown — the stored card stays for provenance only."""
+        buckets = dict(self.account_buckets)
+        buckets.pop(key, None)
+        self.account_buckets = buckets
+        self.kept_accounts = [c for c in self.kept_accounts if _account_key(c) != key]
+        return BrandConnectState.sync_labels
+
+    @rx.event(background=True)
+    async def add_manual_account(self) -> AsyncIterator[None]:
+        """A referente the search could not find (§ request 2026-09-25): little activity,
+        few followers or no TikTok / Instagram at all. Read from the vendor when it is
+        on a network we read (1 credit, remembered), reviewed by Claude with the same
+        tool as the search (`referentes_review.add_manual_account`) — which never
+        refuses it: the operator decides, the review only warns — stored with the
+        brand's manual referentes and sorted into the chosen bucket."""
+        async with self:
+            if self.adding_manual:
+                return
+            try:
+                target = referentes_review.parse_manual(self.manual_input, self.manual_network)
+            except ValueError as exc:
+                self.manual_error = str(exc)
+                return
+            self.adding_manual = True
+            self.manual_error = ""
+            self.manual_message = ""
+            note = self.manual_note.strip()
+            bucket = self.manual_bucket
+            network = self.network
+            handle = self.profile_username or self.username.strip()
+            answers = {
+                "sector": self.sector,
+                "rubro_text": self.rubro_text.strip(),
+                "country_code": self.country_code,
+                "city": self.city.strip(),
+            }
+            fallback = {
+                "username": self.profile_username,
+                "bio": self.profile_bio,
+                "category": self.profile_category,
+            }
+            pills = [dict(item) for item in self.rubro_hashtags]
+            creative = await self.get_state(CreativeState)
+            positioning = creative.kit_positioning.strip()
+            audience = creative.kit_audience.strip()
+        yield
+
+        result: referentes_review.ManualResult | None = None
+        try:
+            profile = await asyncio.to_thread(
+                scrapecreators_client.load_cached_profile, network, handle
+            )
+            seed = creator_discovery.seed_from_profile(profile or fallback, **answers)
+            if pills:
+                seed, _ = seed_with_pills(seed, pills)
+            brief = referentes_review.brand_brief(
+                seed,
+                bio=str((profile or fallback).get("bio") or ""),
+                category=str((profile or fallback).get("category") or ""),
+                positioning=positioning,
+                audience=audience,
+            )
+            result = await asyncio.to_thread(
+                referentes_review.add_manual_account, target, brief, note=note
+            )
+            ids = await self._referentes_ids()
+            if ids is not None:
+                try:
+                    await asyncio.to_thread(
+                        referentes_provider.save_manual_account,
+                        ids[0],
+                        ids[1],
+                        result.candidate,
+                        result.card,
+                        brand_handle=handle,
+                    )
+                except (SQLAlchemyError, ValueError) as exc:
+                    # Still added for this session; only the reuse is lost.
+                    logger.warning("referentes: could not store a manual account: %s", exc)
+        except (ValueError, OSError) as exc:
+            logger.warning("manual referente failed: %s", exc)
+        async with self:
+            self.adding_manual = False
+            if result is None:
+                self.manual_error = "No pudimos agregar esa cuenta ahora. Inténtalo de nuevo."
+                return
+            card = card_view(result.card)
+            key = _account_key(card)
+            self.kept_accounts = [c for c in self.kept_accounts if _account_key(c) != key] + [card]
+            self.account_buckets = {**self.account_buckets, key: bucket}
+            self.manual_message, self.manual_tone = manual_outcome(card, bucket, result)
+            self.manual_input = ""
+            self.manual_note = ""
+            self.manual_open = False
+        yield BrandConnectState.sync_labels
 
     @rx.event
     def skip_card(self) -> None:
@@ -3463,8 +3692,18 @@ class BrandConnectState(rx.State):
             if not keys:
                 return
 
+            # Claude reviews each phase's shortlist (version 9): what is not a real peer
+            # of the brand is dropped, the rest carries marca / creador. No API key → no
+            # reviewer, and the search runs unreviewed.
+            reviewer = referentes_review.make_reviewer(
+                referentes_review.brand_brief(
+                    seed,
+                    bio=str((profile or fallback).get("bio") or ""),
+                    category=str((profile or fallback).get("category") or ""),
+                )
+            )
             runner = creator_discovery.PhasedDiscovery(
-                seed, profile_cache=creator_discovery.PROFILE_CACHE_PATH
+                seed, profile_cache=creator_discovery.PROFILE_CACHE_PATH, reviewer=reviewer
             )
             for key in keys:
                 async with self:
@@ -3501,10 +3740,7 @@ class BrandConnectState(rx.State):
                         self.account_buckets = {**restored, **self.account_buckets}
                         self._persisted_buckets = {**self._persisted_buckets, **restored}
                     if ids is not None:
-                        self.kept_accounts = [
-                            {**card, "avatar_src": creator_discovery.avatar_path(card)}
-                            for card in kept
-                        ]
+                        self.kept_accounts = [card_view(card) for card in kept]
                     self.discovering = False
                     self.discovery_running = ""
 
@@ -3556,7 +3792,8 @@ class BrandConnectState(rx.State):
         hashtag_picks: Mapping[str, Mapping[str, str]] | None = None,
     ) -> None:
         if ids is None:
-            await asyncio.to_thread(creator_discovery.save_cached_phase, key, seed, phase)
+            if not result.review_failed:
+                await asyncio.to_thread(creator_discovery.save_cached_phase, key, seed, phase)
             return
         try:
             await asyncio.to_thread(
@@ -4323,6 +4560,47 @@ def _connect_step_insights() -> rx.Component:
     )
 
 
+def _kind_flag(item: rx.Var[dict[str, str]]) -> rx.Component:
+    """Marca / Creador / Medio, as the AI review read the account (hover: its reason).
+    Nothing for an unreviewed card or an `otro`."""
+    return rx.cond(
+        item["kind_label"] != "",
+        rx.tooltip(
+            rx.badge(
+                rx.match(
+                    item["kind"],
+                    ("marca", rx.icon("store", size=12)),
+                    ("creador", rx.icon("user-round", size=12)),
+                    rx.icon("newspaper", size=12),
+                ),
+                item["kind_label"],
+                variant="soft",
+                size="1",
+                gap="1",
+            ),
+            content=rx.cond(item["review"] != "", item["review"], "Según la revisión de la IA"),
+        ),
+    )
+
+
+def _review_line(item: rx.Var[dict[str, str]], **props: object) -> rx.Component:
+    """Claude's one-line reason under a card — a warning tone when it thinks a manual
+    account does not fit."""
+    return rx.cond(
+        item["review"] != "",
+        rx.hstack(
+            rx.cond(
+                item["fits"] == "no",
+                rx.icon("triangle-alert", size=12, color=T.tone_color("warn", 11), flex_shrink="0"),
+                rx.icon("sparkles", size=12, color=T.TEXT_FAINT, flex_shrink="0"),
+            ),
+            rx.text(item["review"], size="1", color=T.TEXT_FAINT, **props),
+            spacing="1",
+            align="start",
+        ),
+    )
+
+
 def _discovery_account(item: rx.Var[dict[str, str]]) -> rx.Component:
     """One referente: the whole card links to the public profile (new tab). The
     picture comes through `_avatar` — the backend proxy, never the vendor's signed
@@ -4336,6 +4614,7 @@ def _discovery_account(item: rx.Var[dict[str, str]]) -> rx.Component:
                     rx.hstack(
                         mono(item["handle"], size="2"),
                         tag(item["network"]),
+                        _kind_flag(item),
                         rx.text(item["followers"], " seguidores", size="1", color=T.TEXT_MUTED),
                         rx.cond(
                             item["likes"] != "",
@@ -4349,6 +4628,7 @@ def _discovery_account(item: rx.Var[dict[str, str]]) -> rx.Component:
                         item["blurb"] != "",
                         rx.text(item["blurb"], size="2", color=T.TEXT_MUTED),
                     ),
+                    _review_line(item),
                     spacing="1",
                     align_items="start",
                     min_width="0",
@@ -4571,6 +4851,7 @@ def _deck_face(item: rx.Var[dict[str, str]]) -> rx.Component:
             mono(item["handle"], size="3"),
             rx.hstack(
                 tag(item["network"]),
+                _kind_flag(item),
                 rx.text(item["followers"], " seguidores", size="1", color=T.TEXT_MUTED),
                 rx.cond(
                     item["likes"] != "",
@@ -4581,6 +4862,7 @@ def _deck_face(item: rx.Var[dict[str, str]]) -> rx.Component:
                 wrap="wrap",
                 justify="center",
             ),
+            _review_line(item, text_align="center"),
             rx.cond(
                 item["blurb"] != "",
                 rx.text(
@@ -4931,8 +5213,201 @@ def _connect_step_sort() -> rx.Component:
             justify="center",
             width="100%",
         ),
+        _stage_discarded(),
+        _manual_section(),
         icon="layout-grid",
         grow=True,
+    )
+
+
+def _discarded_row(item: rx.Var[dict[str, str]]) -> rx.Component:
+    return rx.hstack(
+        mono(item["handle"], size="1"),
+        tag(item["network"]),
+        rx.text(item["reason"], size="1", color=T.TEXT_MUTED),
+        spacing="2",
+        align="center",
+        wrap="wrap",
+    )
+
+
+def _stage_discarded() -> rx.Component:
+    """What the AI review dropped from this category, folded: the operator can check
+    a drop, and add the account by hand if the review was wrong."""
+    return rx.cond(
+        BrandConnectState.stage_discarded.length() > 0,
+        rx.el.details(
+            rx.el.summary(
+                rx.hstack(
+                    rx.icon("sparkles", size=14, color=T.TEXT_FAINT),
+                    rx.text(BrandConnectState.stage_discarded_label, size="1", color=T.TEXT_MUTED),
+                    spacing="1",
+                    align="center",
+                    display="inline-flex",
+                ),
+                cursor="pointer",
+            ),
+            rx.vstack(
+                rx.foreach(BrandConnectState.stage_discarded, _discarded_row),
+                spacing="1",
+                padding_top="0.5rem",
+                width="100%",
+            ),
+            width="100%",
+        ),
+    )
+
+
+def _manual_chip(item: rx.Var[dict[str, str]]) -> rx.Component:
+    bucket_title = rx.match(
+        item["bucket"],
+        *((key, title) for key, title, _, _ in BUCKETS),
+        "",
+    )
+    return rx.badge(
+        rx.cond(item["fits"] == "no", rx.icon("triangle-alert", size=12)),
+        rx.text(item["handle"], " · ", bucket_title),
+        rx.el.button(
+            rx.icon("x", size=12),
+            on_click=BrandConnectState.remove_manual(item["key"]),
+            type="button",
+            aria_label="Quitar esta cuenta",
+            display="flex",
+            align_items="center",
+            background="transparent",
+            border="none",
+            padding="0",
+            color="inherit",
+            cursor="pointer",
+        ),
+        variant="surface",
+        color_scheme="gray",
+        size="2",
+        radius="full",
+        gap="1",
+        align_items="center",
+    )
+
+
+def _manual_form() -> rx.Component:
+    return rx.form(
+        rx.vstack(
+            rx.hstack(
+                rx.box(
+                    _select_field(
+                        "Red",
+                        BrandConnectState.manual_network,
+                        BrandConnectState.set_manual_network,
+                        MANUAL_NETWORK_OPTIONS,
+                        "Red",
+                    ),
+                    flex="1 1 8rem",
+                ),
+                rx.box(
+                    _select_field(
+                        "Lo agregas como",
+                        BrandConnectState.manual_bucket,
+                        BrandConnectState.set_manual_bucket,
+                        tuple((key, title) for key, title, _, _ in BUCKETS),
+                        "Referente",
+                    ),
+                    flex="1 1 8rem",
+                ),
+                spacing="2",
+                width="100%",
+                wrap="wrap",
+            ),
+            rx.input(
+                value=BrandConnectState.manual_input,
+                on_change=BrandConnectState.set_manual_input,
+                placeholder=BrandConnectState.manual_placeholder,
+                width="100%",
+                size="2",
+                radius=_CONTROL_RADIUS,
+            ),
+            rx.text_area(
+                value=BrandConnectState.manual_note,
+                on_change=BrandConnectState.set_manual_note,
+                placeholder="¿Qué hace y por qué la agregas? (opcional, ayuda a la IA)",
+                width="100%",
+                rows="2",
+                radius=_CONTROL_RADIUS,
+            ),
+            rx.cond(
+                BrandConnectState.manual_error != "",
+                rx.text(BrandConnectState.manual_error, size="1", color=T.tone_color("error", 11)),
+            ),
+            rx.hstack(
+                rx.button(
+                    "Cancelar",
+                    type="button",
+                    variant="ghost",
+                    size="2",
+                    radius=_CONTROL_RADIUS,
+                    on_click=BrandConnectState.toggle_manual,
+                ),
+                rx.button(
+                    rx.cond(
+                        BrandConnectState.adding_manual,
+                        loading_spinner("sm"),
+                        rx.icon("user-plus", size=T.ICON_SM),
+                    ),
+                    rx.cond(BrandConnectState.adding_manual, "Revisando…", "Agregar"),
+                    type="submit",
+                    size="2",
+                    radius=_CONTROL_RADIUS,
+                    disabled=BrandConnectState.adding_manual,
+                ),
+                spacing="2",
+                justify="end",
+                width="100%",
+            ),
+            spacing="2",
+            width="100%",
+        ),
+        on_submit=BrandConnectState.add_manual_account,
+        width="100%",
+    )
+
+
+def _manual_section() -> rx.Component:
+    """Agregar a mano (§ request 2026-09-25): an account the search cannot find —
+    little activity, few followers, or not on TikTok / Instagram at all — added by
+    handle, link or plain name, then reviewed by Claude like the search's."""
+    return rx.vstack(
+        rx.cond(
+            BrandConnectState.manual_message != "",
+            rx.cond(
+                BrandConnectState.manual_tone == "warn",
+                callout(BrandConnectState.manual_message, "warn"),
+                callout(BrandConnectState.manual_message, "ok"),
+            ),
+        ),
+        rx.cond(
+            BrandConnectState.manual_accounts.length() > 0,
+            rx.flex(
+                rx.foreach(BrandConnectState.manual_accounts, _manual_chip),
+                wrap="wrap",
+                gap="2",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            BrandConnectState.manual_open,
+            card(_manual_form(), padding="1rem", width="100%"),
+            rx.button(
+                rx.icon("user-plus", size=T.ICON_SM),
+                "¿Falta alguien? Agrégalo a mano",
+                variant="soft",
+                color_scheme="gray",
+                size="2",
+                radius=_CONTROL_RADIUS,
+                on_click=BrandConnectState.toggle_manual,
+            ),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="center",
     )
 
 

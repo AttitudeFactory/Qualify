@@ -60,6 +60,7 @@ import re
 import sys
 import time
 import unicodedata
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -503,6 +504,13 @@ class Candidate:
     engagement_rate: float | None = None
     follower_band: str | None = None
     exclusion_reasons: list[str] = field(default_factory=list)
+    # filled by the AI review (`run_phase`, `AccountReviewer`) — empty when unreviewed
+    #: What the account IS: marca / creador / medio / otro.
+    account_kind: str = ""
+    #: The reviewer's one-line reason, shown to the operator.
+    review_reason: str = ""
+    #: Who reviewed it (model id) — provenance of `account_kind` and of the drop.
+    reviewed_by: str = ""
 
     @property
     def key(self) -> tuple[str, str]:
@@ -1226,7 +1234,7 @@ def save_result(result: DiscoveryResult, *, directory: Path = DISCOVERY_DIR) -> 
 #: Claude — `hashtag_catalog.ai_hashtags_for`; 8 = the operator's own hashtag pills
 #: on Tu rubro y ubicación, `DiscoverySeed.chosen_hashtags`: they replace the catalog's
 #: choice, join the sector/local keys and run as up to `CHOSEN_HASHTAGS` sector queries).
-PHASED_PLAN_VERSION = 8
+PHASED_PLAN_VERSION = 9
 
 
 @dataclass(frozen=True)
@@ -1842,6 +1850,11 @@ class PhaseResult:
     queries: list[str] = field(default_factory=list)
     credits: int = 0
     errors: list[str] = field(default_factory=list)
+    #: Accounts the AI review said do not fit the brand — dropped, kept for the report.
+    discarded: list[Candidate] = field(default_factory=list)
+    #: The review ran and failed: the phase fell back to the unreviewed pick, and a
+    #: caller that stores phases must not keep it (the next run should review it).
+    review_failed: bool = False
 
 
 def _is_place_tag_anywhere(tag: str) -> bool:
@@ -2215,6 +2228,22 @@ def _read_profile(
     return (charged if isinstance(charged, int) else 1), facts, None
 
 
+def lookup_account(
+    network: str, handle: str, *, store_path: Path | None = None
+) -> tuple[Candidate, bool, str | None]:
+    """One account read outside a search — the referente the operator adds by hand.
+    Returns `(candidate, found, error)`: the candidate always comes back (a stub with
+    its profile URL when the read missed), `found` says whether the profile exists, and
+    a vendor failure is an error string, never an exception. Remembered in the same
+    on-disk store the search uses, so a handle already read costs nothing."""
+    candidate = _account_stub(network, handle, f"{network}:manual")
+    store = ProfileStore(store_path)
+    with httpx.Client(timeout=_DISCOVERY_TIMEOUT_SECONDS) as client:
+        _charged, facts, error = _read_profile(client, candidate, None, store)
+    store.save()
+    return candidate, facts is not None, error
+
+
 def _run_parallel(executor: ThreadPoolExecutor | None, fn: Any, items: list[Any]) -> list[Any]:
     """`[fn(item) for item in items]`, on the executor when there is one — results in
     the items' order, so credits, queries and errors stay deterministic."""
@@ -2459,6 +2488,74 @@ def mirror_accounts(
             mirrored.country_code = mirrored.country_code or twin.country_code
 
 
+@dataclass(frozen=True)
+class AccountVerdict:
+    """What the AI review says about one account (`AccountReviewer`)."""
+
+    kind: str
+    fits: bool
+    reason: str
+    reviewed_by: str
+
+
+#: `(phase key, accounts) -> verdict per account key`. Injected by the caller (the wizard
+#: builds it over `qualify_api.referentes.ai.review_accounts`), so this module never
+#: talks to a model itself; an account missing from the answer counts as unreviewed. It
+#: may raise: the phase then falls back to the unreviewed pick (`review_failed`).
+AccountReviewer = Callable[[str, list[Candidate]], Mapping[tuple[str, str], AccountVerdict]]
+
+#: Accounts per network sent to the review: the best-ranked ones, enough that the
+#: `MAX_PER_PHASE` pick (`PER_NETWORK_FLOOR` per network) still fills after the drops.
+REVIEW_PER_NETWORK = 10
+
+
+def _rank(candidate: Candidate) -> tuple[int, float]:
+    return (candidate.followers or 0, _interactions_per_post(candidate))
+
+
+def review_shortlist(eligible: list[Candidate]) -> list[Candidate]:
+    """What the review reads: per network, the `REVIEW_PER_NETWORK` accounts the pick
+    would reach first (followers known, best ranked) — the only ones that can end up on
+    screen, so nothing is paid for an account that could never be shown."""
+    by_network: dict[str, list[Candidate]] = {}
+    for candidate in sorted((c for c in eligible if c.followers), key=_rank, reverse=True):
+        by_network.setdefault(candidate.network, []).append(candidate)
+    return [c for accounts in by_network.values() for c in accounts[:REVIEW_PER_NETWORK]]
+
+
+def apply_review(
+    key: str,
+    eligible: list[Candidate],
+    reviewer: AccountReviewer,
+    result: PhaseResult,
+) -> list[Candidate]:
+    """The shortlist the review kept, each with its verdict on it; the ones it said do
+    not fit go to `result.discarded`. On a review failure the eligible list comes back
+    untouched and `result.review_failed` says so — a failed review never empties a
+    phase."""
+    shortlist = review_shortlist(eligible)
+    if not shortlist:
+        return eligible
+    try:
+        verdicts = reviewer(key, shortlist)
+    except Exception as exc:  # the reviewer is a network call to a model
+        logger.warning("referentes review failed for the %s phase: %s", key, exc)
+        result.review_failed = True
+        return eligible
+    kept: list[Candidate] = []
+    for candidate in shortlist:
+        verdict = verdicts.get(candidate.key)
+        if verdict is not None:
+            candidate.account_kind = verdict.kind
+            candidate.review_reason = verdict.reason
+            candidate.reviewed_by = verdict.reviewed_by
+            if not verdict.fits:
+                result.discarded.append(candidate)
+                continue
+        kept.append(candidate)
+    return kept
+
+
 def _pick_accounts(eligible: list[Candidate]) -> list[Candidate]:
     """Top `MAX_PER_PHASE` by followers, each network guaranteed `PER_NETWORK_FLOOR`
     slots when it has that many accounts; ties broken by interactions per post."""
@@ -2489,13 +2586,18 @@ def run_phase(
     enrich_budget: int = LOCAL_ENRICH_BUDGET,
     store: ProfileStore | None = None,
     executor: ThreadPoolExecutor | None = None,
+    reviewer: AccountReviewer | None = None,
 ) -> PhaseResult:
     """Run one phase's TikTok searches and Instagram walk into the shared `pool`, then
     pick its most influential accounts from EVERYTHING seen so far (a national account
     surfaced by the sector search still counts) that no earlier phase already picked.
     Influence = followers, then interactions per post seen; `_pick_accounts` keeps
     both networks represented. A search the vendor answers with 404 is an empty
-    result, not an error (the Instagram reels 404s of the first run)."""
+    result, not an error (the Instagram reels 404s of the first run).
+
+    With a `reviewer` (version 9), the accounts the pick could reach are first reviewed
+    by Claude (`apply_review`): the ones that are not real peers of the brand are
+    dropped, the rest carry what they are (marca / creador / medio)."""
     result = PhaseResult(key=key, title=phase_title(key, seed))
     if key == "national" and not seed.country_code:
         result.note = "Indica tu país para ver referentes nacionales."
@@ -2584,8 +2686,13 @@ def run_phase(
             if error:
                 result.errors.append(error)
 
+    if reviewer is not None:
+        eligible = apply_review(key, eligible, reviewer, result)
     result.accounts = _pick_accounts(eligible)
     picked.update(c.key for c in result.accounts)
+    # A discarded account is not offered by a later phase either: it does not fit the
+    # brand, whichever category would have shown it.
+    picked.update(c.key for c in result.discarded)
     if not result.accounts:
         result.note = "Todavía no encontramos cuentas para esta fase."
     return result
@@ -2605,8 +2712,10 @@ class PhasedDiscovery:
         raw_dir: Path | None = None,
         profile_cache: Path | None = None,
         parallel: int = PARALLEL_CALLS,
+        reviewer: AccountReviewer | None = None,
     ) -> None:
         self.seed = seed
+        self.reviewer = reviewer
         self._owns_client = client is None
         self.client = client or httpx.Client(timeout=_DISCOVERY_TIMEOUT_SECONDS)
         self.raw_dir = raw_dir
@@ -2625,6 +2734,7 @@ class PhasedDiscovery:
             raw_dir=self.raw_dir,
             store=self.store,
             executor=self.executor,
+            reviewer=self.reviewer,
         )
 
     def run_all(self) -> list[PhaseResult]:
@@ -2694,7 +2804,15 @@ def account_card(candidate: Candidate) -> dict[str, str]:
         "blurb": blurb[:110] + ("…" if len(blurb) > 110 else ""),
         "reason": _reason(candidate),
         "avatar": candidate.avatar,
+        "kind": candidate.account_kind,
+        "kind_label": KIND_LABELS.get(candidate.account_kind, ""),
+        "review": candidate.review_reason,
+        "reviewed_by": candidate.reviewed_by,
     }
+
+
+#: The card's flag for `Candidate.account_kind` (`otro` shows none).
+KIND_LABELS = {"marca": "Marca", "creador": "Creador", "medio": "Medio"}
 
 
 #: Where the backend serves the cards' pictures from (`avatar_proxy.py`) and where it
@@ -2738,6 +2856,14 @@ def phase_to_dict(result: PhaseResult) -> dict[str, Any]:
         "accounts": [account_card(c) for c in result.accounts],
         "credits": result.credits,
         "errors": result.errors,
+        "discarded": [
+            {
+                "handle": f"@{c.username}",
+                "network": "TikTok" if c.network == "tiktok" else "Instagram",
+                "reason": c.review_reason,
+            }
+            for c in result.discarded
+        ],
     }
 
 

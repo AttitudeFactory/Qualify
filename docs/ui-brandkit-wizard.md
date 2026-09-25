@@ -254,6 +254,50 @@ Ambos pasan por la misma **tool `proponer_brand_kit`** (`packages/api/src/qualif
 
 Medido en vivo (2026-09-25) con un brief DOCX de prueba: **10 propuestas, las 10 con la cita verificada**, 14 s, $0.012; con un brandboard PNG: la paleta exacta (4 colores con su HEX), 7 s, $0.009. Estado propio `BrandDocumentState` en `Qualify/brand_documents.py` (reseteado en `logout` y al finalizar el flujo); los archivos quedan en disco igual que el logo (§7).
 
+### 4.8 Referentes revisados por Claude, marca o creador, y agregados a mano (2026-09-25)
+
+Tres cambios sobre la búsqueda de §4.3/§4.4, pedidos juntos: descartar los referentes que no tienen que ver con la marca, distinguir marcas de creadores y poder agregar a mano uno que el scrape no encuentra.
+
+**1. Revisión por IA en la búsqueda (`PHASED_PLAN_VERSION` 8→9).** Antes de elegir las cuentas de una fase, la **lista corta** pasa por la tool **`revisar_cuentas`** (`packages/api/src/qualify_api/referentes/ai.py`). La lista corta son las 10 mejor rankeadas por red, las únicas que pueden llegar a pantalla (`creator_discovery.review_shortlist`). Claude lee lo que cada cuenta dice de sí misma (nombre, bio, categoría, hasta 3 publicaciones, hashtags) y responde, por cuenta:
+
+- `encaja`: si es un par real de la marca. Aplica los mismos principios que la selección de hashtags: mismo producto o servicio, mismo formato de negocio, mismo público. Si no encaja, **se descarta** (`creator_discovery.apply_review`) y tampoco la ofrece una fase posterior.
+- `tipo`: `marca` / `creador` / `medio` / `otro`.
+- `razon`: una frase para el operador.
+
+El algoritmo no llama al modelo: recibe un `AccountReviewer` inyectado, que construye `Qualify/referentes_review.make_reviewer`. Sin API key no hay revisor y la búsqueda corre como antes. Si la revisión falla, la fase usa la elección sin revisar y **no se guarda** (`PhaseResult.review_failed`), para que la próxima visita la revise.
+
+**Modelo: Sonnet 5, effort `low`**, elegido con el eval `packages/api/evals/referentes_ai` (164 cuentas reales etiquetadas a mano, 4 marcas):
+
+| | Haiku 4.5 | Sonnet 5 low | Sonnet 5 medium |
+|---|---|---|---|
+| Trampas | 5/212 | **0/212** | 0/212 |
+| Precision | 0.95 | **1.00** | 1.00 |
+| Recall | 0.92 | **0.93** | 0.91 |
+
+Medido en vivo: **9 s y ~$0.02 por fase**, porque la lista corta va en dos llamadas de 10 en paralelo. Las trampas que evita son reales: la "programación" de TV, automotriz o del combustible para un creador de programación; cuentas de turismo y noticieros que colaban en la fase local; hamburgueserías para un restaurante de autor.
+
+**2. Marca / Creador en las tarjetas.** Cada tarjeta (deck y lista) muestra un badge **Marca**, **Creador** o **Medio**, y al pasar el ratón muestra la razón. Debajo del texto aparece la razón de Claude con ✦. Bajo el deck, **"La IA descartó N cuentas que no encajan"** se despliega con cada cuenta y su razón, para poder revisar un descarte y, si fue un error, agregarla a mano. Las claves nuevas de la tarjeta son `kind`, `kind_label`, `review`, `reviewed_by`, `manual`, `fits` y `note`. Las tarjetas guardadas antes de este cambio las reciben vacías (`card_view`).
+
+**3. Agregar un referente a mano.** Bajo el deck está **"¿Falta alguien? Agrégalo a mano"**. Sirve para una cuenta que el scrape no encuentra: poca actividad, pocos seguidores o **sin cuenta en TikTok/Instagram**. El formulario pide:
+
+- la red: Instagram, TikTok, YouTube, Facebook, X, LinkedIn, Web o Sin redes;
+- cómo se agrega: referente, competencia o detractor;
+- el usuario, el enlace o el nombre (un enlace decide su propia red: `referentes_review.parse_manual`);
+- una nota opcional ("qué hace y por qué la agregas"), que es la única evidencia cuando no hay perfil que leer.
+
+`referentes_review.add_manual_account` lee el perfil si está en una red que leemos (1 crédito, recordado en `discovery_profiles.json`) y lo revisa con **la misma tool** marcado como "agregada a mano". **La IA nunca lo rechaza**: si cree que no encaja, se agrega igual con un aviso ⚠ y su razón, porque decide el operador. Si el perfil no existe, también se agrega, con lo que se escribió.
+
+- **Dónde se guarda:** como la pseudo-fase **`manual`** de la marca en `brand_discovery_phases` (`referentes_provider.save_manual_account`), con `source='operator'`, **sin migración** (las claves de fase son abiertas).
+- **Cómo vuelve:** por el mismo camino que una cuenta que un algoritmo nuevo dejó de encontrar (`load_sort` → `kept`), en su bucket y con "agregado a mano" como razón.
+- **Refresh:** `plan_refresh` nunca la recalcula.
+- **Quitar:** la ✕ del chip borra su etiqueta; la tarjeta queda guardada solo como procedencia.
+
+Medido en vivo (hamburguesería del Táchira):
+
+- `@tequesburger2023` quedó como Marca: "hamburguesería de delivery en la misma ciudad".
+- "Pastelería Doña Rosa", sin redes, se agregó con aviso: "rubro distinto a smash burgers".
+- Un enlace a `@npr` quedó como Medio, con aviso.
+
 ### 4.5 Colores del logo → paleta (2026-09-16)
 
 Los colores de un logo **se añaden a la paleta** del paso siguiente, con la nota "Tomamos estos colores de tu logo" (o "…de tu foto de perfil"). Nunca había existido antes (verificado en todo el historial de git). **Un solo camino para todas las fuentes**, `BrandWizardState.apply_logo_colours(bytes, fuente)`:
@@ -362,6 +406,7 @@ Verificado con `reflex compile --dry` (`Success: App compiled successfully`) —
 Documentado también en el docstring del módulo. Campos que **sobreviven navegar entre pasos pero no un reload**, porque `save_kit_form` (en `creative_state.py`, sin tocar) no los conoce:
 
 - `BrandWizardState.subscription` y el brief de creación de logo (`logo_brief_1/2/3`) — copy placeholder, **no existe columna** para ninguno de los dos en `brand_kits`.
+- Las cuentas que la IA descartó (§4.8) — se muestran en la búsqueda que las descartó; una fase guardada guarda lo que se mostró, no lo que no.
 - El brief y el brandboard subidos (§4.7) — igual que el logo: en disco, en sesión. Lo que **sí** queda es lo que se aplicó desde ellos, porque va a los campos del Brand Kit que `save_kit_form` ya guarda.
 - Las pills de hashtags del rubro (§4.6) — en sesión mientras se recorre el flujo; quedan guardadas con cada fase de la búsqueda (`"origin": "operator"`), no como preferencia de la marca.
 - El logo subido (`logo_key`) — aquí la columna **sí existe** (`brand_kits.logo_asset_key`) y `creative_provider.save_kit` preserva a propósito lo que ya hubiera guardado (nada se pierde al guardar), pero ningún camino escribe todavía una clave nueva.

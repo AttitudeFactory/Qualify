@@ -35,7 +35,7 @@ from qualify_api.referentes import (
     normalize_handle,
 )
 
-from . import creator_discovery
+from . import creator_discovery, referentes_review
 from .creator_discovery import Candidate, DiscoverySeed, PhaseResult
 
 REPOSITORY: ReferentesRepository = PostgresReferentesRepository()
@@ -84,8 +84,11 @@ def seed_payload(
 
 def card_identity(card: dict[str, str]) -> tuple[str, str] | None:
     """`(network, handle)` as stored, from a card (`creator_discovery.account_card`:
-    network "TikTok"/"Instagram", handle "@user"). None for a card with no handle."""
-    network = str(card.get("network") or "").strip().lower()
+    network "TikTok"/"Instagram", handle "@user"; a manual referente's network label is
+    mapped back to its id, `referentes_review.MANUAL_NETWORKS`). None for a card with
+    no handle."""
+    label = str(card.get("network") or "").strip().lower()
+    network = referentes_review.NETWORK_BY_LABEL.get(label, label)
     try:
         handle = normalize_handle(str(card.get("handle") or ""))
     except ValueError:
@@ -122,6 +125,8 @@ def to_phase_dict(stored: StoredDiscoveryPhase) -> dict[str, Any]:
         "accounts": [dict(account.card) for account in stored.accounts],
         "credits": stored.credits,
         "errors": list(stored.errors),
+        # what the AI review dropped is shown for a fresh run only; not stored
+        "discarded": [],
     }
 
 
@@ -159,9 +164,13 @@ def save_phase(
     """Store a finished phase as the brand's current one. `phase` is the dict the wizard
     rendered (`phase_to_dict(result)`), so the stored cards are the ones shown. Same rule
     the JSON cache had: a phase with errors AND nothing found is not stored, so the next
-    walk retries it. `hashtag_picks` is the provenance of the seed's AI-chosen hashtags
-    (`seed_payload`). Returns whether it was stored."""
+    walk retries it. Nor is a phase whose AI review failed (`PhaseResult.review_failed`):
+    it fell back to the unreviewed pick, and keeping it would serve that for a week.
+    `hashtag_picks` is the provenance of the seed's AI-chosen hashtags (`seed_payload`).
+    Returns whether it was stored."""
     if result.errors and not result.accounts:
+        return False
+    if result.review_failed:
         return False
     cards = [c for c in phase.get("accounts") or [] if isinstance(c, dict)]
     accounts: list[NewDiscoveredAccount] = []
@@ -232,7 +241,8 @@ def load_sort(
             if account is None:
                 continue
             card = {str(k): str(v) for k, v in account.card.items()}
-            card["reason"] = KEPT_REASON
+            if card.get("manual") != "1":
+                card["reason"] = KEPT_REASON
             kept.append(card)
             buckets[_bucket_key(card)] = labels[identity]
     return buckets, kept
@@ -267,6 +277,82 @@ def write_labels(
             REPOSITORY.clear_label(
                 tenant_id=tenant_id, brand_id=brand_id, network=network, handle=handle
             )
+
+
+# --------------------------------------------------------------------------------------
+# Referentes added by hand (`referentes_review.add_manual_account`)
+# --------------------------------------------------------------------------------------
+
+#: The phase key the manual referentes of a brand are stored under — a pseudo-phase
+#: next to the search's (`creator_discovery.PHASES`), so a manual account is restored by
+#: the same path as one a newer algorithm stopped finding (`load_sort`'s `kept`), with
+#: no table of its own. Never recomputed (`plan_refresh` only reads `PHASES`).
+MANUAL_PHASE = "manual"
+MANUAL_TITLE = "Agregados a mano"
+
+
+def save_manual_account(
+    tenant_id: UUID,
+    brand_id: UUID,
+    candidate: Candidate,
+    card: dict[str, str],
+    *,
+    brand_handle: str = "",
+) -> None:
+    """Add (or replace) one manual referente: the brand's manual pseudo-phase is stored
+    again with every manual account it had plus this one. The label (referente /
+    competencia / detractor) is written apart, by the wizard's `sync_labels`."""
+    identity = card_identity(card)
+    if identity is None:
+        raise ValueError("the manual card has no handle")
+    previous = next(
+        (
+            p
+            for p in REPOSITORY.current_phases(tenant_id=tenant_id, brand_id=brand_id)
+            if p.phase_key == MANUAL_PHASE
+        ),
+        None,
+    )
+    accounts = [
+        NewDiscoveredAccount(
+            network=identity[0],
+            handle=identity[1],
+            card=card,
+            full_name=candidate.full_name,
+            followers=candidate.followers,
+            profile_url=card.get("url", ""),
+            avatar_url=candidate.avatar,
+            found_by=tuple(candidate.sources),
+        )
+    ]
+    for stored in previous.accounts if previous else ():
+        if (stored.network, stored.handle) == identity:
+            continue
+        accounts.append(
+            NewDiscoveredAccount(
+                network=stored.network,
+                handle=stored.handle,
+                card=stored.card,
+                full_name=stored.full_name,
+                followers=stored.followers,
+                profile_url=stored.profile_url,
+                avatar_url=stored.avatar_url,
+                found_by=stored.found_by,
+            )
+        )
+    REPOSITORY.save_phase(
+        NewDiscoveryPhase(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            phase_key=MANUAL_PHASE,
+            algorithm_version=creator_discovery.PHASED_PLAN_VERSION,
+            seed_signature=MANUAL_PHASE,
+            seed={"handle": brand_handle, "hashtags": []},
+            title=MANUAL_TITLE,
+            accounts=tuple(accounts),
+            source="operator",
+        )
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -328,9 +414,14 @@ def plan_refresh(tenant_id: UUID, *, brand_id: UUID | None = None) -> list[Brand
     repeated by the local one), so recomputing one alone could repeat accounts across
     categories. The seed is the one of the brand's newest phase — the latest answers
     the operator gave."""
-    stale = REPOSITORY.stale_phases(
-        tenant_id=tenant_id, algorithm_version=creator_discovery.PHASED_PLAN_VERSION
-    )
+    stale = [
+        # the manual pseudo-phase is the operator's, not the algorithm's: never stale
+        p
+        for p in REPOSITORY.stale_phases(
+            tenant_id=tenant_id, algorithm_version=creator_discovery.PHASED_PLAN_VERSION
+        )
+        if p.phase_key in creator_discovery.PHASES
+    ]
     brands = list(dict.fromkeys(p.brand_id for p in stale))
     if brand_id is not None:
         brands = [b for b in brands if b == brand_id]
@@ -362,9 +453,13 @@ PhaseRunner = Callable[[DiscoverySeed, list[str]], list[PhaseResult]]
 
 
 def run_phases(seed: DiscoverySeed, keys: list[str]) -> list[PhaseResult]:
-    """The real vendor run — one `PhasedDiscovery`, so the phases share their pool."""
+    """The real vendor run — one `PhasedDiscovery`, so the phases share their pool —
+    reviewed by Claude like the wizard's run (`referentes_review.make_reviewer`) when an
+    API key is set."""
     runner = creator_discovery.PhasedDiscovery(
-        seed, profile_cache=creator_discovery.PROFILE_CACHE_PATH
+        seed,
+        profile_cache=creator_discovery.PROFILE_CACHE_PATH,
+        reviewer=referentes_review.make_reviewer(referentes_review.brand_brief(seed)),
     )
     try:
         return [runner.run(key) for key in keys]

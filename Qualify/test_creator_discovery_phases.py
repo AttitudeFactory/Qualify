@@ -554,6 +554,11 @@ def test_phased_run_ranks_by_influence_and_never_repeats_an_account(tmp_path: Pa
         "blurb": "Foodie de Cúcuta",
         "reason": "«comida Colombia»",
         "avatar": "",
+        # no reviewer in this run: the AI review's keys are empty
+        "kind": "",
+        "kind_label": "",
+        "review": "",
+        "reviewed_by": "",
     }
     assert cd.account_card(local.accounts[2])["reason"] == "#cucutafood"
     assert cd.account_card(local.accounts[2])["likes"] == "200K"  # heartCount from the read

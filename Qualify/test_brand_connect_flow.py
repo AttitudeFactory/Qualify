@@ -355,8 +355,11 @@ def test_apply_phase_fills_the_phase_and_explains_a_failed_empty_one() -> None:
     card = {"handle": "@x", "network": "TikTok", "followers": "12K", "likes": "", "url": "u"}
     state._apply_phase({"key": "local", "title": "Referentes en Cúcuta", "accounts": [card]})
     assert state.local_title == "Referentes en Cúcuta"
-    # `_apply_phase` adds the backend path of the card's picture (2026-09-14)
-    assert state.local_accounts == [{**card, "avatar_src": "/avatar/tiktok/x"}]
+    # `_apply_phase` adds the backend path of the card's picture (2026-09-14) and the
+    # keys the AI review writes, empty for a card stored before it (2026-09-25)
+    assert state.local_accounts == [
+        {**wiz._CARD_DEFAULTS, **card, "avatar_src": "/avatar/tiktok/x"}
+    ]
 
     state._apply_phase({"key": "sector", "title": "t", "accounts": [], "errors": ["402"]})
     assert state.sector_accounts == []
