@@ -51,6 +51,7 @@ from dataclasses import replace
 from uuid import UUID, uuid4
 
 import reflex as rx
+from qualify_api.hashtags import fold, normalize_tag
 from reflex.constants import Dirs
 from reflex.utils.imports import ImportVar
 from reflex.vars import VarData
@@ -58,6 +59,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from . import (
     avatar_proxy,
+    brand_documents,
     creator_discovery,
     hashtag_catalog,
     logo_palette,
@@ -783,7 +785,12 @@ def _finish_button(on_click: rx.event.EventType[()]) -> rx.Component:
 
 
 def _step_identity() -> rx.Component:
+    """¿Quién es la marca?, in both flows. Opens with the brief upload (§ request
+    2026-09-25, `brand_documents.brief_upload_card`): a brief read by Claude proposes
+    values for this step AND the later ones (tone, examples, restrictions, palette), and
+    whatever the operator applies is already in place when they get there."""
     return _step_body(
+        brand_documents.brief_upload_card(),
         _labeled_area(
             "Posicionamiento",
             CreativeState.kit_positioning,
@@ -958,7 +965,12 @@ def _step_logo(next_handler: rx.event.EventHandler) -> rx.Component:
     brief form's Enter-to-submit should advance — see `_logo_brief_form`."""
     return rx.cond(
         BrandWizardState.has_logo == "si",
-        _logo_upload_field(),
+        rx.vstack(
+            _logo_upload_field(),
+            brand_documents.brandboard_upload_field(),
+            spacing="4",
+            width="100%",
+        ),
         _logo_brief_form(next_handler),
     )
 
@@ -1585,7 +1597,13 @@ def _controls() -> rx.Component:
         rx.spacer(),
         rx.cond(
             BrandWizardState.step == LAST_STEP,
-            _finish_button([CreativeState.save_kit_form, BrandWizardState.finish_to_signals]),
+            _finish_button(
+                [
+                    CreativeState.save_kit_form,
+                    brand_documents.BrandDocumentState.reset_documents,
+                    BrandWizardState.finish_to_signals,
+                ]
+            ),
             rx.button(
                 "Continuar",
                 rx.icon("chevron-right", size=T.ICON_SM),
@@ -2148,6 +2166,72 @@ COUNTRY_OPTIONS: tuple[tuple[str, str], ...] = tuple(
 )
 
 
+def add_pills(
+    pills: list[dict[str, str]], items: list[dict[str, str]]
+) -> tuple[list[dict[str, str]], str]:
+    """`pills` plus `items`, skipping ones already there (accents/case folded) and
+    stopping at `CHOSEN_HASHTAGS`. Returns the new pills and the note to show ("" when
+    everything fitted)."""
+    out = [dict(p) for p in pills]
+    present = {fold(p["tag"]) for p in out}
+    dropped = 0
+    for item in items:
+        slug = fold(item["tag"])
+        if slug in present:
+            continue
+        if len(out) >= creator_discovery.CHOSEN_HASHTAGS:
+            dropped += 1
+            continue
+        out.append({"tag": item["tag"], "origin": "manual", "reason": "", "model": "", **item})
+        present.add(slug)
+    if dropped:
+        cap = creator_discovery.CHOSEN_HASHTAGS
+        return out, f"Caben {cap} hashtags: quita alguno para agregar otro."
+    return out, ""
+
+
+def merge_suggestions(
+    pills: list[dict[str, str]], choice: hashtag_catalog.HashtagChoice
+) -> tuple[list[dict[str, str]], str]:
+    """A "Sugerir" answer into the pills: the operator's hand-typed pills stay, the
+    previous suggestions are replaced by the new ones."""
+    kept = [p for p in pills if p["origin"] == "manual"]
+    origin = "ai" if choice.by == "ai" else "catalog"
+    suggested = [
+        {
+            "tag": tag,
+            "origin": origin,
+            "reason": str(choice.picks.get(tag, {}).get("reason", "")),
+            "model": str(choice.picks.get(tag, {}).get("model", "")),
+        }
+        for tag in choice.tags
+    ]
+    out, note = add_pills(kept, suggested)
+    if not choice.tags:
+        note = (
+            "No encontramos hashtags de tu rubro en nuestra base todavía. Agrega los tuyos: "
+            "con ellos buscamos."
+        )
+    return out, note
+
+
+def seed_with_pills(
+    seed: creator_discovery.DiscoverySeed, pills: list[dict[str, str]]
+) -> tuple[creator_discovery.DiscoverySeed, dict[str, dict[str, str]]]:
+    """The seed with the operator's pills as its hashtags (`chosen_hashtags`), and each
+    one's provenance for the stored phase (`referentes_provider.seed_payload`)."""
+    picks: dict[str, dict[str, str]] = {}
+    for item in pills:
+        if item["origin"] == "ai":
+            picks[item["tag"]] = {"suggested_by": item["model"], "reason": item["reason"]}
+        elif item["origin"] == "catalog":
+            picks[item["tag"]] = {"suggested_by": "catalogo"}
+        else:
+            picks[item["tag"]] = {}
+    tags = tuple(item["tag"] for item in pills)
+    return replace(seed, chosen_hashtags=tags), picks
+
+
 class BrandConnectState(rx.State):
     """Cursor and profile read for the connect flow. Kept apart from `BrandWizardState`
     so the two entry paths cannot fight over one cursor — the kit fields they share
@@ -2206,6 +2290,16 @@ class BrandConnectState(rx.State):
     rubro_text: str = ""
     country_code: str = ""
     city: str = ""
+    #: The hashtags the search will use, as pills under the rubro (§ request
+    #: 2026-09-25): suggested by Claude with its catalog tools (`suggest_hashtags`) and/or
+    #: typed by hand, each removable. `{"tag", "origin", "reason", "model"}` — origin is
+    #: `ai` (Claude suggested it), `catalog` (the rule path suggested it, no key) or
+    #: `manual`. When there are any they BECOME the search's hashtags
+    #: (`DiscoverySeed.chosen_hashtags`) and the search makes no AI call of its own.
+    rubro_hashtags: list[dict[str, str]] = []
+    new_hashtag: str = ""
+    suggesting_hashtags: bool = False
+    hashtag_note: str = ""
 
     #: The phased creator discovery on Resultados e insights (`run_discovery`). One
     #: list of account cards per phase (`creator_discovery.account_card` shape), plus
@@ -2351,7 +2445,13 @@ class BrandConnectState(rx.State):
 
     def _answers(self) -> list[str]:
         """What the discovery is seeded with from this state, in one comparable shape."""
-        return [self.sector, self.rubro_text.strip(), self.country_code, self.city.strip()]
+        return [
+            self.sector,
+            self.rubro_text.strip(),
+            self.country_code,
+            self.city.strip(),
+            ",".join(item["tag"] for item in self.rubro_hashtags),
+        ]
 
     def _is_skipped(self, index: int) -> bool:
         """THE one place deciding which steps a session sees (2026-09-11):
@@ -2489,6 +2589,90 @@ class BrandConnectState(rx.State):
         self.city = value
 
     @rx.event
+    def set_new_hashtag(self, value: str) -> None:
+        self.new_hashtag = value
+
+    @rx.event
+    def add_hashtag(self) -> None:
+        """The pills' "+" (and Enter in its input): one hand-typed hashtag, normalised
+        the way the catalog stores them (no `#`, lowercase, one token)."""
+        raw = self.new_hashtag.strip()
+        if not raw:
+            return
+        try:
+            tag = normalize_tag(raw)
+        except ValueError:
+            self.hashtag_note = "Un hashtag es una sola palabra, sin espacios."
+            return
+        self.new_hashtag = ""
+        self.rubro_hashtags, self.hashtag_note = add_pills(
+            self.rubro_hashtags, [{"tag": tag, "origin": "manual"}]
+        )
+
+    @rx.event
+    def remove_hashtag(self, tag: str) -> None:
+        self.rubro_hashtags = [item for item in self.rubro_hashtags if item["tag"] != tag]
+        self.hashtag_note = ""
+
+    @rx.event(background=True)
+    async def suggest_hashtags(self) -> None:
+        """The button next to Tu rubro: Claude explores the hashtag catalog with its
+        tools (`hashtag_catalog.suggest_hashtags`) for this rubro, this brand's profile
+        and place, and the answer lands as pills the operator can curate. Background:
+        a tool run takes several seconds and the step stays usable meanwhile."""
+        async with self:
+            if self.suggesting_hashtags:
+                return
+            if not self.sector and not self.rubro_text.strip():
+                self.hashtag_note = "Escribe tu rubro (o elige una categoría) y te sugerimos."
+                return
+            self.suggesting_hashtags = True
+            self.hashtag_note = ""
+            network = self.network
+            handle = self.profile_username or self.username.strip()
+            answers = {
+                "sector": self.sector,
+                "rubro_text": self.rubro_text.strip(),
+                "country_code": self.country_code,
+                "city": self.city.strip(),
+            }
+            fallback = {
+                "username": self.profile_username,
+                "bio": self.profile_bio,
+                "category": self.profile_category,
+            }
+        ids = await self._referentes_ids()
+        choice: hashtag_catalog.HashtagChoice | None = None
+        note = ""
+        if ids is None:
+            note = "Inicia sesión con tu negocio para que te sugiramos hashtags."
+        else:
+            try:
+                profile = await asyncio.to_thread(
+                    scrapecreators_client.load_cached_profile, network, handle
+                )
+                source = profile or fallback
+                seed = creator_discovery.seed_from_profile(source, **answers)
+                choice = await asyncio.to_thread(
+                    hashtag_catalog.suggest_hashtags,
+                    ids[0],
+                    seed,
+                    bio=str(source.get("bio") or ""),
+                    category=str(source.get("category") or ""),
+                )
+            except (SQLAlchemyError, OSError, ValueError) as exc:
+                logger.warning("hashtags: suggestion failed: %s", exc)
+                note = "No pudimos sugerir hashtags ahora. Agrega los tuyos o inténtalo luego."
+        async with self:
+            self.suggesting_hashtags = False
+            if choice is not None:
+                self.rubro_hashtags, self.hashtag_note = merge_suggestions(
+                    self.rubro_hashtags, choice
+                )
+            else:
+                self.hashtag_note = note
+
+    @rx.event
     def choose_network(self, key: str) -> None:
         """Choosing advances — the screen holds nothing else, so a second click on
         Continue would be a dead one."""
@@ -2605,6 +2789,10 @@ class BrandConnectState(rx.State):
         self.rubro_text = ""
         self.country_code = ""
         self.city = ""
+        self.rubro_hashtags = []
+        self.new_hashtag = ""
+        self.suggesting_hashtags = False
+        self.hashtag_note = ""
         self.rubro_asked = False
         self._clear_discovery()
         self._set_metrics([])
@@ -3225,6 +3413,8 @@ class BrandConnectState(rx.State):
                 "bio": self.profile_bio,
                 "category": self.profile_category,
             }
+            # Bound under the lock: the pills as they were when the search started.
+            pills = [dict(item) for item in self.rubro_hashtags]
         yield
 
         runner: creator_discovery.PhasedDiscovery | None = None
@@ -3237,7 +3427,13 @@ class BrandConnectState(rx.State):
                 scrapecreators_client.load_cached_profile, network, handle
             )
             seed = creator_discovery.seed_from_profile(profile or fallback, **answers)
-            seed, hashtag_picks = await self._with_catalog_hashtags(ids, seed, profile or fallback)
+            if pills:
+                # The operator's pills ARE the hashtags: no AI call of the search's own.
+                seed, hashtag_picks = seed_with_pills(seed, pills)
+            else:
+                seed, hashtag_picks = await self._with_catalog_hashtags(
+                    ids, seed, profile or fallback
+                )
             async with self:
                 if self.discovery_run_id != my_id:
                     return
@@ -3720,11 +3916,26 @@ def _connect_step_rubro() -> rx.Component:
     return _step_body(
         rx.cond(
             ~BrandConnectState.is_influencer,
-            _labeled_input(
-                "Tu rubro, con tus palabras",
-                BrandConnectState.rubro_text,
-                BrandConnectState.set_rubro_text,
-                "Ej. peluquería canina, fisioterapia deportiva",
+            rx.vstack(
+                rx.text("Tu rubro, con tus palabras", size="2", weight="medium"),
+                rx.hstack(
+                    rx.input(
+                        value=BrandConnectState.rubro_text,
+                        on_change=BrandConnectState.set_rubro_text,
+                        placeholder="Ej. peluquería canina, fisioterapia deportiva",
+                        width="100%",
+                        size="3",
+                        height="2.75rem",
+                        radius=_CONTROL_RADIUS,
+                    ),
+                    _suggest_hashtags_button(),
+                    spacing="2",
+                    width="100%",
+                    align="center",
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
             ),
         ),
         _select_field(
@@ -3734,6 +3945,7 @@ def _connect_step_rubro() -> rx.Component:
             tuple(creator_discovery.NICHE_LABELS.items()),
             "Elige una categoría",
         ),
+        _rubro_hashtags_block(),
         _select_field(
             rx.cond(BrandConnectState.needs_location, "País", "País (opcional)"),
             BrandConnectState.country_code,
@@ -3771,6 +3983,129 @@ def _connect_step_rubro() -> rx.Component:
             text_align="center",
         ),
         icon="map-pin",
+    )
+
+
+def _suggest_hashtags_button() -> rx.Component:
+    """The small button next to Tu rubro (§ request 2026-09-25): asks Claude, with its
+    catalog tools, for the hashtags to search with (`BrandConnectState.
+    suggest_hashtags`). Spins while the run lasts — a tool run takes a few seconds."""
+    return rx.tooltip(
+        rx.button(
+            rx.cond(
+                BrandConnectState.suggesting_hashtags,
+                rx.spinner(size="2"),
+                rx.icon("sparkles", size=T.ICON_SM),
+            ),
+            "Sugerir",
+            on_click=BrandConnectState.suggest_hashtags,
+            disabled=BrandConnectState.suggesting_hashtags,
+            variant="soft",
+            size="3",
+            height="2.75rem",
+            radius=_CONTROL_RADIUS,
+            flex_shrink="0",
+        ),
+        content="Sugerir hashtags de tu rubro para buscar referentes",
+    )
+
+
+def _hashtag_pill_body(item: rx.Var[dict[str, str]], **badge: object) -> rx.Component:
+    return rx.badge(
+        rx.text("#", item["tag"]),
+        rx.el.button(
+            rx.icon("x", size=12),
+            on_click=BrandConnectState.remove_hashtag(item["tag"]),
+            type="button",
+            aria_label="Quitar este hashtag",
+            display="flex",
+            align_items="center",
+            background="transparent",
+            border="none",
+            padding="0",
+            color="inherit",
+            cursor="pointer",
+        ),
+        size="2",
+        radius="full",
+        gap="1",
+        align_items="center",
+        **badge,
+    )
+
+
+def _hashtag_pill(item: rx.Var[dict[str, str]]) -> rx.Component:
+    """One pill: accent for a suggestion (hover shows Claude's reason), neutral for
+    one the operator typed; the ✕ removes it either way."""
+    suggested = rx.tooltip(
+        _hashtag_pill_body(item, variant="soft"),
+        content=rx.cond(item["reason"] != "", item["reason"], "Sugerido para tu rubro"),
+    )
+    typed = _hashtag_pill_body(item, variant="surface", color_scheme="gray")
+    return rx.cond(item["origin"] == "manual", typed, suggested)
+
+
+def _rubro_hashtags_block() -> rx.Component:
+    """The hashtags the search will use, as pills (§ request 2026-09-25): filled by
+    "Sugerir" and/or typed here, each removable. An influencer has no rubro input, so
+    the suggest button sits in this block's header for them."""
+    return rx.vstack(
+        rx.hstack(
+            rx.text("Hashtags para buscar referentes", size="2", weight="medium"),
+            rx.spacer(),
+            rx.cond(BrandConnectState.is_influencer, _suggest_hashtags_button()),
+            width="100%",
+            align="center",
+        ),
+        rx.cond(
+            BrandConnectState.rubro_hashtags.length() > 0,
+            rx.flex(
+                rx.foreach(BrandConnectState.rubro_hashtags, _hashtag_pill),
+                wrap="wrap",
+                gap="2",
+                width="100%",
+            ),
+        ),
+        rx.form(
+            rx.hstack(
+                rx.input(
+                    value=BrandConnectState.new_hashtag,
+                    on_change=BrandConnectState.set_new_hashtag,
+                    placeholder="Agrega un hashtag, ej. #streetfood",
+                    width="100%",
+                    size="2",
+                    radius=_CONTROL_RADIUS,
+                ),
+                rx.icon_button(
+                    rx.icon("plus", size=T.ICON_SM),
+                    type="submit",
+                    variant="soft",
+                    color_scheme="gray",
+                    size="2",
+                    radius=_CONTROL_RADIUS,
+                    aria_label="Agregar hashtag",
+                ),
+                spacing="2",
+                width="100%",
+            ),
+            on_submit=BrandConnectState.add_hashtag,
+            width="100%",
+        ),
+        rx.cond(
+            BrandConnectState.hashtag_note != "",
+            rx.text(BrandConnectState.hashtag_note, size="1", color=T.TEXT_MUTED),
+            rx.cond(
+                BrandConnectState.rubro_hashtags.length() > 0,
+                rx.text(
+                    "Buscaremos referentes con estos hashtags. Quita los que no encajen.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+            ),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
     )
 
 
@@ -4711,7 +5046,9 @@ def _logo_step_complete() -> rx.Var[bool]:
     flows' gate for the same reason `_identity_complete` is."""
     return rx.cond(
         BrandWizardState.has_logo == "si",
-        BrandWizardState.logo_key != "",
+        # A brandboard carries the logo too (§ request 2026-09-25): either file will do.
+        (BrandWizardState.logo_key != "")
+        | (brand_documents.BrandDocumentState.brandboard_key != ""),
         BrandWizardState.logo_brief_1 != "",
     )
 
@@ -4788,7 +5125,13 @@ def _connect_controls() -> rx.Component:
     )
     right = rx.cond(
         BrandConnectState.step == CONNECT_LAST,
-        _finish_button([CreativeState.save_kit_form, BrandConnectState.finish_to_signals]),
+        _finish_button(
+            [
+                CreativeState.save_kit_form,
+                brand_documents.BrandDocumentState.reset_documents,
+                BrandConnectState.finish_to_signals,
+            ]
+        ),
         rx.cond(
             BrandConnectState.step == 1,
             rx.button(

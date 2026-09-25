@@ -1,0 +1,107 @@
+"""The brief / brandboard review (§ request 2026-09-25): verified proposals become rows,
+an unverified one starts unticked, and only what the operator ticks reaches the Brand
+Kit fields in `CreativeState`. Offline — the Claude call itself is covered in
+`packages/api/tests/test_brief_ai.py`."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+from qualify_api.creative.brief_ai import FieldProposal
+
+from .brand_documents import BrandDocumentState, assign, kit_snapshot, proposal_rows
+from .creative_state import CreativeState
+
+
+def _proposals() -> list[FieldProposal]:
+    return [
+        FieldProposal("positioning", "Posicionamiento", "", "Cocina de autor", "cita", True),
+        FieldProposal("audience", "Audiencia", "", "Familias", "otra cita", False),
+        FieldProposal("tone_formal_casual", "Tono", "50", "70", "", None),
+        FieldProposal("banned_words", "Palabras prohibidas", "", "barato\ngratis", "", True),
+        FieldProposal("palette", "Paleta", "", "#556B2F,#F5F0E1", "", None),
+    ]
+
+
+def test_rows_carry_the_verification_and_an_unverified_quote_starts_unticked() -> None:
+    rows = proposal_rows("brief", _proposals())
+    assert [(r["field"], r["verified"], r["accepted"]) for r in rows] == [
+        ("positioning", "si", "1"),
+        ("audience", "no", "0"),
+        ("tone_formal_casual", "na", "1"),
+        ("banned_words", "si", "1"),
+        ("palette", "na", "1"),
+    ]
+    assert all(r["source"] == "brief" for r in rows)
+
+
+def test_assign_writes_each_field_in_the_wizards_own_format() -> None:
+    creative = CreativeState()
+    assign(creative, "positioning", "Cocina de autor")
+    assign(creative, "tone_formal_casual", "140")
+    assign(creative, "banned_words", "barato\ngratis")
+    assign(creative, "palette", "#556B2F,#F5F0E1")
+    assert creative.kit_positioning == "Cocina de autor"
+    assert creative.tone_formal_casual == 100  # clamped to the slider's range
+    assert creative.kit_banned_words == "barato\ngratis"
+    assert creative.kit_palette == "#556B2F,#F5F0E1"
+
+
+def test_the_snapshot_reads_the_kit_as_the_wizard_holds_it() -> None:
+    creative = CreativeState()
+    creative.kit_do_examples = "Te esperamos\n\n¡Ven hoy!"
+    creative.kit_palette = "#111111, #222222"
+    snap = kit_snapshot(creative)
+    assert snap.do_examples == ("Te esperamos", "¡Ven hoy!")
+    assert snap.palette == ("#111111", "#222222")
+
+
+@pytest.fixture
+def session(monkeypatch: pytest.MonkeyPatch) -> tuple[BrandDocumentState, CreativeState]:
+    docs = BrandDocumentState()
+    creative = CreativeState()
+
+    async def get_state(_self: Any, state_cls: type) -> Any:
+        assert state_cls is CreativeState
+        return creative
+
+    monkeypatch.setattr(BrandDocumentState, "get_state", get_state)
+    docs.proposals = proposal_rows("brief", _proposals()) + proposal_rows(
+        "brandboard", [FieldProposal("palette", "Paleta", "", "#000000", "", None)]
+    )
+    return docs, creative
+
+
+async def test_only_ticked_proposals_of_that_document_are_applied(session) -> None:
+    docs, creative = session
+    BrandDocumentState.toggle_proposal.fn(docs, "brief", "banned_words")  # untick
+    await BrandDocumentState.apply_proposals.fn(docs, "brief")
+    assert creative.kit_positioning == "Cocina de autor"
+    assert creative.kit_audience == ""  # unverified, left unticked
+    assert creative.tone_formal_casual == 70
+    assert creative.kit_banned_words == ""  # unticked by the operator
+    assert creative.kit_palette == "#556B2F,#F5F0E1"
+    assert [r["source"] for r in docs.proposals] == ["brandboard"]  # the other doc waits
+    assert docs.brief_message.startswith("Aplicamos 3 cambios")
+    assert docs.brief_tone == "ok"
+
+
+async def test_applying_nothing_says_so(session) -> None:
+    docs, creative = session
+    for row in list(docs.proposals):
+        if row["source"] == "brief" and row["accepted"] == "1":
+            BrandDocumentState.toggle_proposal.fn(docs, "brief", row["field"])
+    await BrandDocumentState.apply_proposals.fn(docs, "brief")
+    assert creative.kit_positioning == ""
+    assert "No aplicamos nada" in docs.brief_message
+
+
+def test_discarding_and_removing_the_brandboard(session) -> None:
+    docs, _ = session
+    BrandDocumentState.discard_proposals.fn(docs, "brief")
+    assert [r["source"] for r in docs.proposals] == ["brandboard"]
+    docs.brandboard_key = "uploads/t/brandboard/x_board.png"
+    docs.brandboard_name = "board.png"
+    BrandDocumentState.clear_brandboard.fn(docs)
+    assert (docs.brandboard_key, docs.brandboard_name, docs.proposals) == ("", "", [])

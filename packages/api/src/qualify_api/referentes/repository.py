@@ -47,11 +47,13 @@ LABELS = ("referente", "competencia", "detractor")
 #: Where a seed hashtag came from: `profile` (the brand's own most-used hashtags),
 #: `catalog` (the shared hashtag catalog resolved the operator's rubro to it, migration
 #: 0023) or `ai` (a catalog hashtag Claude chose for this brand — stored with the
-#: `model`, `fit` and `reason` it gave, the provenance a model decision must carry). A
-#: manual entry would add its own value.
+#: `model`, `fit` and `reason` it gave, the provenance a model decision must carry) or
+#: `operator` (a pill the operator kept or typed on Tu rubro y ubicación — with
+#: `suggested_by`/`reason` when Claude suggested it).
 ORIGIN_PROFILE = "profile"
 ORIGIN_CATALOG = "catalog"
 ORIGIN_AI = "ai"
+ORIGIN_OPERATOR = "operator"
 
 DEFAULT_SOURCE = "scrapecreators"
 

@@ -413,3 +413,13 @@ def test_classify_pending_never_raises(repo, fresh_choices) -> None:
 
     summary = hashtag_catalog.classify_pending(TENANT, repository=repo, classifier=boom)
     assert (summary.asked, summary.changed) == (1, 0)
+
+
+def test_the_suggest_button_asks_for_room_to_curate(repo, fresh_choices) -> None:
+    calls: list = []
+    seed = _seed(niches=("food_drink",), terms=("smash burgers",))
+    choice = hashtag_catalog.suggest_hashtags(
+        TENANT, seed, repository=repo, selector=_selector(["foodie"], calls)
+    )
+    assert calls[0][-1] == creator_discovery.CHOSEN_HASHTAGS
+    assert choice.tags == ("foodie",)

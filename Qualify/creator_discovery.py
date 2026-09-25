@@ -1223,8 +1223,10 @@ def save_result(result: DiscoveryResult, *, directory: Path = DISCOVERY_DIR) -> 
 #: query and the relevance stems — `hashtag_catalog.catalog_hashtags_for`; 7 = an
 #: Instagram profile read contributes its last posts' captions and hashtags as evidence,
 #: and the sector phase searches up to three catalog hashtags, now chosen per brand by
-#: Claude — `hashtag_catalog.ai_hashtags_for`).
-PHASED_PLAN_VERSION = 7
+#: Claude — `hashtag_catalog.ai_hashtags_for`; 8 = the operator's own hashtag pills
+#: on Tu rubro y ubicación, `DiscoverySeed.chosen_hashtags`: they replace the catalog's
+#: choice, join the sector/local keys and run as up to `CHOSEN_HASHTAGS` sector queries).
+PHASED_PLAN_VERSION = 8
 
 
 @dataclass(frozen=True)
@@ -1709,6 +1711,17 @@ class DiscoverySeed:
     #: for the answers that produced it; the catalog's improvements land on the next
     #: search that is not a cache hit (a new city, the weekly TTL, a version bump).
     catalog_hashtags: tuple[str, ...] = ()
+    #: Hashtags the operator curated on Tu rubro y ubicación (the pills — suggested by
+    #: Claude with its catalog tools and/or typed by hand). When present they REPLACE
+    #: `catalog_hashtags` as the tags the search uses (`steering_hashtags`), and unlike
+    #: those they ARE part of the signature: they only change when a person changes
+    #: them, and a person who changed them expects a new search, not the stored one.
+    chosen_hashtags: tuple[str, ...] = ()
+
+    def steering_hashtags(self) -> tuple[str, ...]:
+        """The catalog-side hashtags this search runs with: the operator's pills when
+        there are any, otherwise what the catalog / Claude chose."""
+        return self.chosen_hashtags or self.catalog_hashtags
 
     def signature(self) -> str:
         return "|".join(
@@ -1721,6 +1734,7 @@ class DiscoverySeed:
                 _slug(self.city),
                 ",".join(_slug(r) for r in self.related[:3]),
                 ",".join(_slug(t) for t in self.terms),
+                ",".join(sorted(_slug(t) for t in self.chosen_hashtags)),
             ]
         )
 
@@ -1729,7 +1743,8 @@ class DiscoverySeed:
         out = list(self.terms)
         out.extend(NICHE_LABELS.get(n, n) for n in self.niches)
         shown: list[str] = []
-        for tag in (*self.hashtags[:3], *self.catalog_hashtags[:3]):
+        extra = self.chosen_hashtags or self.catalog_hashtags[:3]
+        for tag in (*self.hashtags[:3], *extra):
             if tag not in shown:
                 shown.append(tag)
         out.extend(f"#{tag}" for tag in shown)
@@ -1863,6 +1878,9 @@ SECTOR_OWN_TAGS = 2
 #: not get `#streetfood`), so a third one widens the net without the drift two fuzzy
 #: matches risked. Each is one more keyword query (at most two pages of credits).
 SECTOR_CATALOG_TAGS = 3
+#: The most pills the operator can keep on Tu rubro y ubicación — each one is a sector
+#: query, so the cap is what bounds the credits a curated search spends.
+CHOSEN_HASHTAGS = 5
 SECTOR_TERMS = 4
 
 
@@ -1878,10 +1896,11 @@ def sector_terms(seed: DiscoverySeed) -> list[str]:
     terms.extend([tag for tag in seed.hashtags if not _is_place_tag(tag, seed)][:SECTOR_OWN_TAGS])
     catalog_tags = [
         tag
-        for tag in seed.catalog_hashtags
+        for tag in seed.steering_hashtags()
         if not _is_place_tag(tag, seed) and _slug(tag) not in {_slug(t) for t in terms}
     ]
-    from_catalog = catalog_tags[:SECTOR_CATALOG_TAGS]
+    cap = CHOSEN_HASHTAGS if seed.chosen_hashtags else SECTOR_CATALOG_TAGS
+    from_catalog = catalog_tags[:cap]
     terms.extend(from_catalog)
     for niche in seed.niches[:2]:
         queries = NICHE_TAXONOMY[niche]["queries"]
@@ -1971,7 +1990,7 @@ def phase_queries(key: str, seed: DiscoverySeed) -> list[tuple[Query, str | None
     else:
         # A rubro outside the taxonomy has no niche to compose a city hashtag from: the
         # catalog's best hashtag for it stands in (`cucutaburgers`).
-        catalog_tags = [t for t in seed.catalog_hashtags if not _is_place_tag(t, seed)]
+        catalog_tags = [t for t in seed.steering_hashtags() if not _is_place_tag(t, seed)]
         if catalog_tags:
             plan.append(
                 (Query("tiktok", "hashtag", f"{city_slug}{catalog_tags[0]}", label), region)
@@ -2027,7 +2046,7 @@ def _stems(text: str) -> set[str]:
 
 def relevance_stems(seed: DiscoverySeed) -> set[str]:
     stems = _stems(" ".join(seed.terms))
-    for tag in (*seed.hashtags, *seed.catalog_hashtags):
+    for tag in (*seed.hashtags, *seed.steering_hashtags()):
         if not _is_place_tag(tag, seed):
             stems |= _stems(tag)
     return stems
@@ -2736,6 +2755,10 @@ def phase_signature(key: str, seed: DiscoverySeed) -> str:
         ",".join(_slug(r) for r in seed.related[:3]),
         ",".join(_slug(t) for t in seed.terms),
     ]
+    if key in ("sector", "local") and seed.chosen_hashtags:
+        # Only the phases that search with them: changing the pills re-runs the
+        # sector and the local phase, never the national one.
+        parts.append(",".join(sorted(_slug(t) for t in seed.chosen_hashtags)))
     if key in ("national", "local"):
         parts.append(seed.country_code.upper())
     if key == "local":

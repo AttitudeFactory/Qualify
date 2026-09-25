@@ -25,6 +25,7 @@ from uuid import UUID
 from qualify_api.referentes import (
     ORIGIN_AI,
     ORIGIN_CATALOG,
+    ORIGIN_OPERATOR,
     ORIGIN_PROFILE,
     NewDiscoveredAccount,
     NewDiscoveryPhase,
@@ -50,9 +51,15 @@ def seed_payload(
     """The seed as stored: everything the phase read, with each hashtag's origin — the
     brand's own (`profile`, `seed_from_profile`), the shared catalog's (`catalog`,
     `hashtag_catalog.catalog_hashtags_for`) or a catalog tag Claude chose (`ai`,
-    `hashtag_catalog.ai_hashtags_for`). An `ai` entry carries what `picks` says about it
-    (`model`, `fit`, `reason`): a model's decision is stored with its provenance."""
+    `hashtag_catalog.ai_hashtags_for`) or one the operator curated as a pill (`operator`,
+    `DiscoverySeed.chosen_hashtags`). An `ai` or `operator` entry carries what `picks`
+    says about it (`model`/`fit`/`reason`, or `suggested_by`/`reason` for a pill Claude
+    suggested): a model's decision is stored with its provenance."""
     picks = picks or {}
+
+    def chosen_item(tag: str) -> dict[str, str]:
+        extra = {k: str(v) for k, v in (picks.get(tag) or {}).items() if k != "origin"}
+        return {"tag": tag, "origin": ORIGIN_OPERATOR, **extra}
 
     def catalog_item(tag: str) -> dict[str, str]:
         pick = picks.get(tag)
@@ -70,6 +77,7 @@ def seed_payload(
         "hashtags": [
             *({"tag": tag, "origin": ORIGIN_PROFILE} for tag in seed.hashtags),
             *(catalog_item(tag) for tag in seed.catalog_hashtags),
+            *(chosen_item(tag) for tag in seed.chosen_hashtags),
         ],
     }
 
@@ -271,22 +279,26 @@ def rebuild_seed(payload: dict[str, Any]) -> DiscoverySeed:
     `phase_signature` matches what the wizard computes for the same answers and a
     recomputed phase is a hit the next time the operator walks the flow.
 
-    Every stored hashtag is used, split back into its two seed fields by origin: `catalog`
-    and `ai` ones (both came from the shared catalog) into `catalog_hashtags`, the rest
-    (the brand's own) into `hashtags`. The origin is stored exactly so a recompute can
+    Every stored hashtag is used, split back into its seed fields by origin: `catalog`
+    and `ai` ones (both came from the shared catalog) into `catalog_hashtags`, the
+    operator's pills (`operator`) into `chosen_hashtags` — so the signature matches — and
+    the rest (the brand's own) into `hashtags`. The origin is stored exactly so a recompute can
     re-derive one set without touching the other — and a recompute reuses the stored AI
     choice rather than asking again."""
     items = [
         item for item in payload.get("hashtags") or [] if isinstance(item, dict) and item.get("tag")
     ]
     from_catalog = (ORIGIN_CATALOG, ORIGIN_AI)
-    hashtags = tuple(str(i["tag"]) for i in items if i.get("origin") not in from_catalog)
+    not_own = (*from_catalog, ORIGIN_OPERATOR)
+    hashtags = tuple(str(i["tag"]) for i in items if i.get("origin") not in not_own)
     catalog = tuple(str(i["tag"]) for i in items if i.get("origin") in from_catalog)
+    chosen = tuple(str(i["tag"]) for i in items if i.get("origin") == ORIGIN_OPERATOR)
     return DiscoverySeed(
         handle=str(payload.get("handle") or ""),
         niches=tuple(str(n) for n in payload.get("niches") or ()),
         hashtags=hashtags,
         catalog_hashtags=catalog,
+        chosen_hashtags=chosen,
         country_code=str(payload.get("country_code") or ""),
         city=str(payload.get("city") or ""),
         related=tuple(str(r) for r in payload.get("related") or ()),

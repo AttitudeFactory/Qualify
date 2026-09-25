@@ -231,6 +231,29 @@ La pantalla previa a Resultados e insights (`_connect_step_sort`, `_SORT_STEP`),
 
 Por qué esos dos modelos: `packages/api/evals/hashtag_ai/README.md` (15 marcas de rubros distintos con trampas etiquetadas + 95 tags reales). Primera medición (llamada única): Haiku cayó en la trampa central (`#comidacallejera` para una hamburguesería smash, 2 de 2 veces); Sonnet medium, 0 trampas. Con herramientas: Sonnet precisión 0.92 / recall 0.88 frente a Haiku 0.89 / 0.69, y Sonnet además más rápido y no más caro. Para clasificar, Haiku 96.8% frente a 92.6% de Sonnet a un tercio del costo. API key: `QUALIFY_ANTHROPIC_API_KEY` en `.env` (la misma del módulo creativo).
 
+### 4.6 Hashtags del rubro como pills (2026-09-25)
+
+En **Tu rubro y ubicación**, al lado de "Tu rubro, con tus palabras", hay un botón **Sugerir** (en un influencer, que no tiene ese campo, el botón va en la cabecera del bloque de hashtags). Claude —el mismo agente con herramientas de §4.4b (`hashtag_catalog.suggest_hashtags` → `select_hashtags` sobre `CatalogTools`)— explora el catálogo con sinónimos y variantes de lo que escribió el operador y devuelve hasta **5** hashtags (`creator_discovery.CHOSEN_HASHTAGS`) como **pills**: acento las sugeridas (al pasar el ratón muestran la razón), gris las escritas a mano. Cada pill se quita con ✕; debajo hay un campo para agregar las propias (se normalizan: sin `#`, minúsculas, una sola palabra; no se repiten; máximo 5).
+
+**Por qué sí con la tool aquí:** el operador escribe su rubro con sus palabras, y lo que falla con una lista fija es justamente encontrar las variantes que el catálogo sí tiene (medido: #iphone/#smartphone para una tienda de celulares, que la lista fija nunca ofrecía). Y **no cuesta más**: cuando hay pills, *esas* son los hashtags de la búsqueda (`DiscoverySeed.chosen_hashtags`) y la búsqueda ya no hace su propia llamada a la IA — una sola corrida de Claude en cualquier caso. Medido en vivo: ~14–16 s y ~$0.01–0.02 por clic.
+
+**Cómo entran a la búsqueda (`PHASED_PLAN_VERSION` 7→8):** `chosen_hashtags` reemplaza a `catalog_hashtags` (`steering_hashtags()`), corre como hasta 5 consultas del sector y alimenta el hashtag local y los stems de relevancia. A diferencia de lo que elige el catálogo, **sí forma parte de la firma** (de `signature()` y de la de las fases *sector* y *local*, no de la *nacional*): cambiar las pills y salir del paso vuelve a buscar, porque eso es lo que espera quien las cambió. Se guardan con la fase como `"origin": "operator"`, con `suggested_by`/`reason` cuando las sugirió Claude (procedencia), y `rebuild_seed` las restaura para que `just refresh-referentes` calcule la misma firma. Sin pills, todo sigue como en §4.4b.
+
+### 4.7 Brief y brandboard leídos por Claude (2026-09-25)
+
+**Brief.** "¿Quién es la marca?" (en ambos flujos) abre con **¿Tienes un brief de marca?** → Subir brief (PDF, DOCX, TXT, MD o imagen, hasta 15 MB). **Brandboard.** En **Tu logo**, debajo del logo, **¿Tienes un brandboard? (opcional)** (imagen o PDF) — y un brandboard basta para continuar aunque no se suba el logo suelto (lo lleva dentro).
+
+Ambos pasan por la misma **tool `proponer_brand_kit`** (`packages/api/src/qualify_api/creative/brief_ai.py`, Claude Sonnet 5 effort medium): Claude lee el documento **nativamente** (el PDF o la imagen van como bloque de documento/imagen, así ve muestras de color y estilo, no solo el texto; el DOCX se lee sin dependencias nuevas) y responde con una llamada estricta: por campo del Brand Kit, el valor que el documento respalda y la **cita literal** de dónde sale. Campos: posicionamiento, audiencia, los 4 ejes de tono, así sí / así no habla, llamados a la acción, palabras y afirmaciones prohibidas y paleta.
+
+**Lo que se verifica antes de mostrarte nada** (`verify_proposal`):
+1. **Forma** — HEX normalizados (#RGB → #RRGGBB, los inválidos fuera), tono dentro de 0–100 (fuera de rango = "no lo dice"), listas limpias sin duplicados y con tope.
+2. **Cambio real** — lo que ya coincide con tu Brand Kit no se propone.
+3. **Cita** — si el documento tiene texto (DOCX/TXT/MD), la cita tiene que estar de verdad en él (sin importar tildes/mayúsculas); si no está, la propuesta aparece **desmarcada** con la marca "No hallamos la cita". En PDF o imagen no hay texto contra el cual comprobar: se muestra sin marca.
+
+**Tú decides:** el panel muestra por campo *Ahora* / *Propuesta* (la paleta como muestras de color) / la cita, con casillas; **Aplicar seleccionados** escribe solo lo marcado en los mismos campos que editan los pasos siguientes (`CreativeState.kit_*`), así que al llegar a Paleta o Tono ya está puesto. **Descartar** lo tira.
+
+Medido en vivo (2026-09-25) con un brief DOCX de prueba: **10 propuestas, las 10 con la cita verificada**, 14 s, $0.012; con un brandboard PNG: la paleta exacta (4 colores con su HEX), 7 s, $0.009. Estado propio `BrandDocumentState` en `Qualify/brand_documents.py` (reseteado en `logout` y al finalizar el flujo); los archivos quedan en disco igual que el logo (§7).
+
 ### 4.5 Colores del logo → paleta (2026-09-16)
 
 Los colores de un logo **se añaden a la paleta** del paso siguiente, con la nota "Tomamos estos colores de tu logo" (o "…de tu foto de perfil"). Nunca había existido antes (verificado en todo el historial de git). **Un solo camino para todas las fuentes**, `BrandWizardState.apply_logo_colours(bytes, fuente)`:
@@ -339,6 +362,8 @@ Verificado con `reflex compile --dry` (`Success: App compiled successfully`) —
 Documentado también en el docstring del módulo. Campos que **sobreviven navegar entre pasos pero no un reload**, porque `save_kit_form` (en `creative_state.py`, sin tocar) no los conoce:
 
 - `BrandWizardState.subscription` y el brief de creación de logo (`logo_brief_1/2/3`) — copy placeholder, **no existe columna** para ninguno de los dos en `brand_kits`.
+- El brief y el brandboard subidos (§4.7) — igual que el logo: en disco, en sesión. Lo que **sí** queda es lo que se aplicó desde ellos, porque va a los campos del Brand Kit que `save_kit_form` ya guarda.
+- Las pills de hashtags del rubro (§4.6) — en sesión mientras se recorre el flujo; quedan guardadas con cada fase de la búsqueda (`"origin": "operator"`), no como preferencia de la marca.
 - El logo subido (`logo_key`) — aquí la columna **sí existe** (`brand_kits.logo_asset_key`) y `creative_provider.save_kit` preserva a propósito lo que ya hubiera guardado (nada se pierde al guardar), pero ningún camino escribe todavía una clave nueva.
 
 Cerrar esto significa: una migración Alembic para `subscription`/brief (si se decide persistirlos), + subida a R2 del logo + un campo `logo_asset_key` en `KitFormVM` — trabajo de backend, fuera del alcance de esta sesión (solo UI).

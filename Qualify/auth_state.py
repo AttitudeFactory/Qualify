@@ -187,6 +187,7 @@ class AuthState(rx.State):
             # Destroy every business substate so no stale tenant data survives into
             # the next login on this browser. Imported here, not at module top: these
             # modules read AuthState, and a top-level import would be circular.
+            from .brand_documents import BrandDocumentState
             from .clarity_state import ClarityState
             from .connections_state import ConnectionsState
             from .creative_state import CreativeState
@@ -214,6 +215,9 @@ class AuthState(rx.State):
                 # logs in next on this browser.
                 BrandWizardState,
                 BrandConnectState,
+                # The wizard's staged brief / brandboard and their pending proposals
+                # (request 2026-09-25) — tenant files and tenant kit values.
+                BrandDocumentState,
                 RepliesState,
                 StoriesState,
             ):

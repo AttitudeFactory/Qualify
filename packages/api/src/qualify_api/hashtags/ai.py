@@ -30,14 +30,29 @@ API facts pinned from the `claude-api` skill (2026-09), not from memory:
 
 from __future__ import annotations
 
-import os
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from ..claude_tools import (
+    API_KEY_ENV,
+    PRICES,
+    CallStats,
+    ClaudeToolError,
+    ClientFactory,
+    Meter,
+    MissingAPIKey,
+    ModelConfig,
+    api_key_from_env,
+    create_turn,
+    default_client,
+    forced_or_auto,
+    strict_tool,
+    tool_uses,
+)
 from .repository import fold, normalize_tag
 
-API_KEY_ENV = "QUALIFY_ANTHROPIC_API_KEY"
+__all__ = ["API_KEY_ENV", "PRICES", "MissingAPIKey", "api_key_from_env"]
 
 #: Defaults chosen by `packages/api/evals/hashtag_ai` (Haiku 4.5 vs Sonnet 5) — see that
 #: directory's README for the numbers behind each one. Classifying a tag is easy and
@@ -57,14 +72,6 @@ MAX_TURNS = 8
 #: Rows a catalog tool returns per call — enough to see the variants of a word.
 TOOL_RESULTS = 25
 
-#: $ per million tokens (input, output), from the `claude-api` skill's model table
-#: (cached 2026-06-24). Used for reporting only — nothing is budgeted from it.
-PRICES: dict[str, tuple[float, float]] = {
-    "claude-haiku-4-5": (1.0, 5.0),
-    "claude-sonnet-5": (2.0, 10.0),
-    "claude-opus-5": (5.0, 25.0),
-}
-
 CLASSIFIABLE_KINDS = ("topic", "place", "generic", "noise")
 NO_NICHE = "none"
 FIT_LEVELS = ("alta", "media")
@@ -75,46 +82,8 @@ CHOOSE_TOOL = "elegir_hashtags"
 CLASSIFY_TOOL = "clasificar_hashtags"
 
 
-class HashtagAIError(RuntimeError):
-    """The run could not produce a usable answer (refusal, truncation, no final tool)."""
-
-
-class MissingAPIKey(HashtagAIError):
-    """`QUALIFY_ANTHROPIC_API_KEY` is not set — callers fall back to the rule path."""
-
-
-@dataclass(frozen=True)
-class ModelConfig:
-    model_id: str
-    #: `output_config.effort` — None for models that reject it (Haiku 4.5), which are
-    #: also the ones that run without thinking and so accept a forced tool choice.
-    effort: str | None = None
-
-    @property
-    def label(self) -> str:
-        return f"{self.model_id}@{self.effort}" if self.effort else self.model_id
-
-    @property
-    def thinks(self) -> bool:
-        return self.effort is not None
-
-
-@dataclass(frozen=True)
-class CallStats:
-    """Provenance and cost of one run (every turn summed) — recorded with the answer."""
-
-    model_id: str
-    model_revision: str | None
-    input_tokens: int
-    output_tokens: int
-    cache_read_tokens: int = 0
-    turns: int = 0
-    tool_calls: int = 0
-
-    @property
-    def cost_usd(self) -> float:
-        price_in, price_out = PRICES.get(self.model_id, (0.0, 0.0))
-        return (self.input_tokens * price_in + self.output_tokens * price_out) / 1_000_000
+#: The error every hashtag run raises — the shared one, under the name callers know.
+HashtagAIError = ClaudeToolError
 
 
 @dataclass(frozen=True)
@@ -245,35 +214,21 @@ mismo rubro pero más amplio. reason: una frase corta en español que explique p
 encaja con esta marca en concreto. Ordena de mejor a peor."""
 
 
-def _strict_tool(name: str, description: str, properties: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "name": name,
-        "description": description,
-        "strict": True,
-        "input_schema": {
-            "type": "object",
-            "properties": properties,
-            "required": list(properties),
-            "additionalProperties": False,
-        },
-    }
-
-
 def _select_tools(niches: Sequence[str]) -> list[dict[str, Any]]:
     return [
-        _strict_tool(
+        strict_tool(
             SEARCH_TOOL,
             "Busca en el catálogo hashtags parecidos a una palabra o frase (tolera errores "
             "de tipeo y tildes). Devuelve hasta 25, con cuántas cuentas los usan y su nicho. "
             "Los lugares, los genéricos y los que la marca ya usa nunca aparecen.",
             {"consulta": {"type": "string", "description": "Una palabra o frase corta."}},
         ),
-        _strict_tool(
+        strict_tool(
             NICHE_TOOL,
             "Los hashtags más usados de un nicho de la taxonomía.",
             {"nicho": {"type": "string", "enum": list(niches)}},
         ),
-        _strict_tool(
+        strict_tool(
             CHOOSE_TOOL,
             "Entrega la selección final para esta marca. Llámala una sola vez, al terminar; "
             "una lista vacía es una respuesta válida.",
@@ -297,7 +252,7 @@ def _select_tools(niches: Sequence[str]) -> list[dict[str, Any]]:
 
 
 def _classify_tool(niches: Sequence[str]) -> dict[str, Any]:
-    return _strict_tool(
+    return strict_tool(
         CLASSIFY_TOOL,
         "Registra la clasificación de cada hashtag recibido.",
         {
@@ -363,87 +318,6 @@ def _brand_message(
 # the runs
 # --------------------------------------------------------------------------------------
 
-ClientFactory = Callable[[str], Any]
-
-
-def api_key_from_env() -> str:
-    key = os.environ.get(API_KEY_ENV, "").strip()
-    if not key:
-        raise MissingAPIKey(f"{API_KEY_ENV} is not set")
-    return key
-
-
-def _default_client(api_key: str) -> Any:
-    import anthropic  # lazy: optional dependency (`qualify-creative[llm]`)
-
-    return anthropic.Anthropic(api_key=api_key)
-
-
-@dataclass
-class _Meter:
-    """Usage summed over every turn of one run."""
-
-    config: ModelConfig
-    revision: str | None = None
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read: int = 0
-    turns: int = 0
-    tool_calls: int = 0
-
-    def add(self, response: Any) -> None:
-        self.turns += 1
-        self.revision = getattr(response, "model", None) or self.revision
-        usage = response.usage
-        self.input_tokens += usage.input_tokens
-        self.output_tokens += usage.output_tokens
-        self.cache_read += getattr(usage, "cache_read_input_tokens", 0) or 0
-
-    def stats(self) -> CallStats:
-        return CallStats(
-            self.config.model_id,
-            self.revision,
-            self.input_tokens,
-            self.output_tokens,
-            self.cache_read,
-            self.turns,
-            self.tool_calls,
-        )
-
-
-def _create(
-    client: Any,
-    config: ModelConfig,
-    meter: _Meter,
-    *,
-    system: str,
-    messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]],
-    tool_choice: dict[str, Any],
-    max_tokens: int,
-) -> Any:
-    kwargs: dict[str, Any] = {
-        "model": config.model_id,
-        "max_tokens": max_tokens,
-        "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        "messages": messages,
-        "tools": tools,
-        "tool_choice": tool_choice,
-    }
-    if config.effort:
-        kwargs["output_config"] = {"effort": config.effort}
-    response = client.messages.create(**kwargs)
-    meter.add(response)
-    if response.stop_reason == "refusal":
-        raise HashtagAIError(f"{config.model_id} refused the request")
-    if response.stop_reason == "max_tokens":
-        raise HashtagAIError(f"{config.model_id} hit max_tokens={max_tokens}")
-    return response
-
-
-def _tool_uses(response: Any) -> list[Any]:
-    return [b for b in response.content if getattr(b, "type", None) == "tool_use"]
-
 
 def classify_hashtags(
     tags: Sequence[str],
@@ -459,24 +333,22 @@ def classify_hashtags(
     if len(tags) > CLASSIFY_BATCH:
         raise ValueError(f"at most {CLASSIFY_BATCH} tags per call, got {len(tags)}")
     asked = list(dict.fromkeys(normalize_tag(t) for t in tags))
-    client = (client_factory or _default_client)(api_key)
-    meter = _Meter(config)
+    client = (client_factory or default_client)(api_key)
+    meter = Meter(config)
     tool = _classify_tool(list(niches))
-    response = _create(
+    response = create_turn(
         client,
         config,
         meter,
         system=CLASSIFY_SYSTEM,
         messages=[{"role": "user", "content": _classify_message(asked, niches)}],
         tools=[tool],
-        tool_choice=(
-            {"type": "auto"} if config.thinks else {"type": "tool", "name": CLASSIFY_TOOL}
-        ),
+        tool_choice=forced_or_auto(config, CLASSIFY_TOOL),
         # 16000 is the ceiling the SDK allows without streaming; with thinking on, it
         # covers the reasoning plus ~80 output tokens per tag at `CLASSIFY_BATCH`.
         max_tokens=16000 if config.thinks else max(4096, 80 * len(asked)),
     )
-    calls = [b for b in _tool_uses(response) if b.name == CLASSIFY_TOOL]
+    calls = [b for b in tool_uses(response) if b.name == CLASSIFY_TOOL]
     if not calls:
         raise HashtagAIError(f"{config.model_id} did not call {CLASSIFY_TOOL}")
     meter.tool_calls = 1
@@ -542,8 +414,8 @@ def select_hashtags(
     `max_picks` hashtags, best first. Only tags a tool (or `starting`) showed it can come
     back — never one the brand already uses, never two spellings of one word. Raises
     `HashtagAIError` when the run ends without `elegir_hashtags`."""
-    client = (client_factory or _default_client)(api_key)
-    meter = _Meter(config)
+    client = (client_factory or default_client)(api_key)
+    meter = Meter(config)
     tools = _select_tools(list(niches))
     shown: dict[str, str] = {fold(c.tag): c.tag for c in starting}
     own = {fold(t) for t in brand.own_hashtags}
@@ -570,7 +442,7 @@ def select_hashtags(
         return (_candidate_lines(found) if found else empty), False
 
     for _ in range(max_turns):
-        response = _create(
+        response = create_turn(
             client,
             config,
             meter,
@@ -580,7 +452,7 @@ def select_hashtags(
             tool_choice={"type": "auto"},
             max_tokens=16000 if config.thinks else 4096,
         )
-        uses = _tool_uses(response)
+        uses = tool_uses(response)
         meter.tool_calls += len(uses)
         final = next((u for u in uses if u.name == CHOOSE_TOOL), None)
         if final is not None:

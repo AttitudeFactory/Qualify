@@ -1033,3 +1033,45 @@ def test_the_catalog_never_changes_the_cache_key() -> None:
     assert a.signature() == b.signature()
     for key in cd.PHASES:
         assert cd.phase_signature(key, a) == cd.phase_signature(key, b)
+
+
+# -- the operator's pills (`chosen_hashtags`, § request 2026-09-25) -------------------
+
+
+def test_chosen_hashtags_replace_the_catalogs_and_widen_the_sector_queries() -> None:
+    seed = cd.DiscoverySeed(
+        "smash",
+        (),
+        terms=("hamburgueseria",),
+        catalog_hashtags=("foodie",),
+        chosen_hashtags=("hamburguesas", "burger", "smashburger", "burgerlovers", "cheeseburger"),
+    )
+    terms = cd.sector_terms(seed)
+    assert terms[0] == "hamburgueseria"
+    assert terms[1:] == ["hamburguesas", "burger", "smashburger", "burgerlovers", "cheeseburger"]
+    assert "foodie" not in terms  # the catalog's pick yields to the operator's
+    assert seed.steering_hashtags() == seed.chosen_hashtags
+    assert "#cheeseburger" in seed.chips() and "#foodie" not in seed.chips()
+
+
+def test_changing_the_pills_is_a_new_sector_and_local_search_but_not_a_national_one() -> None:
+    base = cd.DiscoverySeed(
+        "smash", (), terms=("hamburgueseria",), country_code="VE", city="Caracas"
+    )
+    picked = cd.DiscoverySeed(
+        "smash",
+        (),
+        terms=("hamburgueseria",),
+        country_code="VE",
+        city="Caracas",
+        chosen_hashtags=("hamburguesas",),
+    )
+    assert base.signature() != picked.signature()
+    assert cd.phase_signature("sector", base) != cd.phase_signature("sector", picked)
+    assert cd.phase_signature("local", base) != cd.phase_signature("local", picked)
+    assert cd.phase_signature("national", base) == cd.phase_signature("national", picked)
+    # the catalog's own choice still never is part of any key
+    catalog = cd.DiscoverySeed("smash", (), terms=("hamburgueseria",), catalog_hashtags=("x",))
+    assert (
+        catalog.signature() == cd.DiscoverySeed("smash", (), terms=("hamburgueseria",)).signature()
+    )

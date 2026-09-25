@@ -328,3 +328,37 @@ def test_catalog_hashtags_survive_the_stored_seed_with_their_origin() -> None:
     assert rebuilt.hashtags == ("mine",)
     assert rebuilt.catalog_hashtags == ("burgers", "smash")
     assert rebuilt == seed
+
+
+def test_the_operators_pills_round_trip_with_their_provenance() -> None:
+    """A pill is stored as `operator` (with who suggested it) and comes back as a
+    chosen hashtag — so a recompute's signature matches the wizard's."""
+    seed = cd.DiscoverySeed(
+        "smash",
+        ("food_drink",),
+        hashtags=("smashburger",),
+        catalog_hashtags=("foodie",),
+        chosen_hashtags=("hamburguesas", "burgerlovers"),
+    )
+    payload = rp.seed_payload(
+        seed,
+        {
+            "foodie": {"model": "m", "fit": "alta", "reason": "r"},
+            "hamburguesas": {"suggested_by": "claude-sonnet-5", "reason": "producto"},
+        },
+    )
+    validate_seed(payload)
+    by_tag = {item["tag"]: item for item in payload["hashtags"]}
+    assert by_tag["foodie"]["origin"] == "ai"
+    assert by_tag["hamburguesas"] == {
+        "tag": "hamburguesas",
+        "origin": "operator",
+        "suggested_by": "claude-sonnet-5",
+        "reason": "producto",
+    }
+    assert by_tag["burgerlovers"] == {"tag": "burgerlovers", "origin": "operator"}
+    rebuilt = rp.rebuild_seed(payload)
+    assert rebuilt.chosen_hashtags == ("hamburguesas", "burgerlovers")
+    assert rebuilt.catalog_hashtags == ("foodie",)
+    assert rebuilt.hashtags == ("smashburger",)
+    assert rebuilt.signature() == seed.signature()

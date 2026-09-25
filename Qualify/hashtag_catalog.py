@@ -336,9 +336,12 @@ def ai_hashtags_for(
     selector: Callable[..., tuple[list[hashtag_ai.HashtagPick], hashtag_ai.CallStats]]
     | None = None,
     now: float | None = None,
+    max_picks: int = creator_discovery.SECTOR_CATALOG_TAGS,
 ) -> HashtagChoice:
     """The catalog hashtags that fit this brand, chosen by Claude with its catalog tools
-    (`hashtag_ai.select_hashtags` over `CatalogTools`, at most `SECTOR_CATALOG_TAGS`). An
+    (`hashtag_ai.select_hashtags` over `CatalogTools`, at most `max_picks`: the search's
+    own `SECTOR_CATALOG_TAGS`, or `CHOSEN_HASHTAGS` when the rubro step's "Sugerir"
+    button asks for pills the operator will curate — `suggest_hashtags`). An
     empty choice is a valid answer — nothing in the catalog fits — and is respected, not
     papered over.
 
@@ -347,7 +350,7 @@ def ai_hashtags_for(
     never allowed to stop it. Database errors are NOT swallowed here — the caller already
     treats an unreadable catalog as "search without it"."""
     repo = repository or REPOSITORY
-    cache_key = (str(tenant_id), seed.signature(), bio, category)
+    cache_key = (str(tenant_id), seed.signature(), bio, category, str(max_picks))
     moment = now if now is not None else time.time()
     with _choices_lock:
         hit = _choices.get(cache_key)
@@ -370,7 +373,7 @@ def ai_hashtags_for(
             creator_discovery.NICHE_LABELS,
             api_key=key,
             starting=starting,
-            max_picks=creator_discovery.SECTOR_CATALOG_TAGS,
+            max_picks=max_picks,
         )
     except Exception as exc:  # noqa: BLE001 — SDK/transport/model errors all fall back
         logger.warning("hashtags: AI selection failed, using the rule path: %s", exc)
@@ -393,6 +396,34 @@ def ai_hashtags_for(
     with _choices_lock:
         _choices[cache_key] = (moment, choice)
     return choice
+
+
+def suggest_hashtags(
+    tenant_id: UUID,
+    seed: DiscoverySeed,
+    *,
+    bio: str = "",
+    category: str = "",
+    repository: HashtagRepository | None = None,
+    api_key: str | None = None,
+    selector: Callable[..., tuple[list[hashtag_ai.HashtagPick], hashtag_ai.CallStats]]
+    | None = None,
+) -> HashtagChoice:
+    """The rubro step's "Sugerir hashtags" button: the same tool run as the search's own
+    choice, asking for up to `CHOSEN_HASHTAGS` so the operator has room to curate. The
+    operator's pills then BECOME the search's hashtags (`DiscoverySeed.chosen_hashtags`)
+    and the search makes no second call — one Claude run either way. Falls back to the
+    rule path, like `ai_hashtags_for`, when there is no key or the run fails."""
+    return ai_hashtags_for(
+        tenant_id,
+        seed,
+        bio=bio,
+        category=category,
+        repository=repository,
+        api_key=api_key,
+        selector=selector,
+        max_picks=creator_discovery.CHOSEN_HASHTAGS,
+    )
 
 
 # --------------------------------------------------------------------------------------
