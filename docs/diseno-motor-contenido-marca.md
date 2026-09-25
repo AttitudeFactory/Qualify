@@ -878,7 +878,7 @@ Al enviar: navega a `/drafts/{id}` con el estado en `DRAFTING` y un indicador de
 
 ### 6.4b Tipos de contenido del generador (2026-09-25)
 
-> **Esto reemplaza al acordeón de imagen de §6.4.** Ahora lo primero que se elige en `/create` es **qué se genera**. La ruta de imagen se deriva de lo elegido (`creative_provider.submit_brief`): si el operador sube imágenes propias, se colocan sin tocar (`FROM_UPLOAD`); si no sube ninguna, es `TEMPLATE_ONLY`. El resto de §6.4 sigue igual: objetivo, tema, destino y restricciones.
+> **Dónde vive:** el generador está en **`/signals`** (`Qualify/content_generator.py`), que es donde se prueba; **`/create` sigue con su formulario original** (el acordeón de imagen de §6.4). Los dos usan el mismo servicio y el resultado es un borrador en `/drafts/{id}`, que muestra el video o el carrusel y el guion. En el generador, lo primero que se elige es **qué se genera**; la ruta de imagen se deriva de ahí (`creative_provider.submit_brief`): con imágenes propias es `FROM_UPLOAD` (se colocan sin retocar) y sin imágenes es `TEMPLATE_ONLY`.
 
 Hay cinco tipos (`qualify_creative.enums.ContentKind`). Cada uno tiene sus entradas (`schemas.MediaInputs`, guardadas en `content_briefs.media`, migración 0024) y su artefacto:
 
