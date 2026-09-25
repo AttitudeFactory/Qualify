@@ -1,0 +1,154 @@
+{
+  "_doc": "Gold set for select_hashtags. Candidate = [tag, seen_count, label, niche?]. Labels: y = should be picked (same product AND same business format), m = acceptable (same rubro, broader, or a near-duplicate), n = must not be picked (place, generic, noise, other rubro, the brand's own tag or a spelling of it), t = TRAP: same general topic but a different business model/format — the error this feature exists to prevent. Hand-labelled 2026-09-25; the operator should review and correct labels, they are the spec.",
+  "max_picks": 3,
+  "cases": [
+    {
+      "id": "restaurante_autor_bogota",
+      "brand": {"handle": "casaolivo.bog", "bio": "Cocina de autor colombiana · Menú degustación y maridaje · Reservas por DM · Zona G, Bogotá", "category": "Restaurant", "rubro": ["restaurante de autor"], "niches": ["Comida y bebida"], "city": "Bogotá", "country": "Colombia", "own_hashtags": ["cocinadeautor"]},
+      "candidates": [
+        ["restaurantes", 40, "y", "food_drink"], ["finedining", 12, "y"], ["menudegustacion", 5, "y"], ["gastronomia", 30, "y"], ["maridaje", 6, "y"],
+        ["chef", 25, "m"], ["foodie", 60, "m", "food_drink"], ["comida", 80, "m", "food_drink"], ["restaurante", 14, "m"], ["vinos", 8, "m"],
+        ["streetfood", 45, "t"], ["comidacallejera", 22, "t"], ["foodtruck", 9, "t"], ["perroscalientes", 7, "t"], ["comidarapida", 18, "t"], ["hamburguesas", 21, "t", "food_drink"], ["recetasfaciles", 15, "t"],
+        ["bogotafood", 10, "n"], ["zonag", 3, "n"], ["fyp", 200, "n"], ["viral", 150, "n"], ["inppimhlcbfood", 5, "n"], ["cocinadeautor", 4, "n"], ["cafedeespecialidad", 10, "n"]
+      ]
+    },
+    {
+      "id": "food_truck_perros_cucuta",
+      "brand": {"handle": "perrosdonpacho", "bio": "🌭 Perros calientes y salchipapas al carbón · Food truck en el Malecón · Abierto 6pm–1am · Domicilios Cúcuta", "category": "Fast Food Restaurant", "rubro": ["comida rápida", "food truck"], "niches": ["Comida y bebida"], "city": "Cúcuta", "country": "Colombia", "own_hashtags": ["perroscalientes"]},
+      "candidates": [
+        ["streetfood", 45, "y"], ["comidacallejera", 22, "y"], ["foodtruck", 9, "y"], ["comidarapida", 18, "y"], ["salchipapas", 6, "y"], ["fastfood", 20, "y"],
+        ["hamburguesas", 21, "m", "food_drink"], ["foodie", 60, "m", "food_drink"], ["comida", 80, "m", "food_drink"], ["hotdog", 14, "m"],
+        ["finedining", 12, "t"], ["menudegustacion", 5, "t"], ["maridaje", 6, "t"], ["altacocina", 7, "t"], ["cafedeespecialidad", 10, "t"], ["recetasfaciles", 15, "t"],
+        ["cucutafood", 11, "n"], ["colombia", 30, "n"], ["parati", 120, "n"], ["tendencia", 40, "n"], ["perrocaliente", 5, "n"], ["chef", 25, "n"], ["bpjmilogancomidarapida", 3, "n"]
+      ]
+    },
+    {
+      "id": "hamburgueseria_smash_caracas",
+      "brand": {"handle": "smashclub.ccs", "bio": "Smash burgers 🍔 carne 100% res, pan brioche · Las Mercedes, Caracas · Delivery", "category": "Burger Restaurant", "rubro": ["hamburguesería"], "niches": ["Comida y bebida"], "city": "Caracas", "country": "Venezuela", "own_hashtags": ["smashburger"]},
+      "candidates": [
+        ["hamburguesas", 21, "y", "food_drink"], ["burger", 6, "y"],
+        ["hamburguesa", 15, "m"], ["burgers", 4, "m"], ["comidarapida", 18, "m"], ["fastfood", 20, "m"], ["foodie", 60, "m", "food_drink"], ["hamburguesatriple", 3, "m"],
+        ["streetfood", 45, "t"], ["comidacallejera", 22, "t"], ["finedining", 12, "t"], ["recetas", 25, "t", "food_drink"],
+        ["pizza", 17, "n"], ["sushi", 9, "n"], ["steak", 4, "n"], ["parrilla", 8, "n"], ["caracasfood", 6, "n"], ["chacao", 3, "n"], ["gochos", 7, "n"], ["viral", 150, "n"], ["carterpcs", 16, "n"]
+      ]
+    },
+    {
+      "id": "pasteleria_vegana_medellin",
+      "brand": {"handle": "dulceverde.med", "bio": "Repostería 100% vegana 🌱 sin lácteos ni huevo · Tortas por encargo y postres · Envíos en Medellín", "category": "Bakery", "rubro": ["repostería vegana"], "niches": ["Comida y bebida"], "city": "Medellín", "country": "Colombia", "own_hashtags": ["vegano"]},
+      "candidates": [
+        ["reposteria", 12, "y"], ["postresveganos", 4, "y"], ["tortas", 10, "y"], ["veganfood", 7, "y"], ["postres", 14, "y"], ["pasteleria", 9, "y"],
+        ["plantbased", 5, "m"], ["sinlactosa", 3, "m"], ["panaderia", 8, "m"], ["foodie", 60, "m", "food_drink"], ["recetasveganas", 4, "m"],
+        ["parrilla", 8, "t"], ["carne", 11, "t"], ["asado", 6, "t"],
+        ["hamburguesas", 21, "n", "food_drink"], ["fitness", 70, "n", "fitness_health"], ["vegana", 5, "n"], ["medellinfood", 6, "n"], ["fyp", 200, "n"], ["happy", 4, "n"]
+      ]
+    },
+    {
+      "id": "cafeteria_especialidad_caracas",
+      "brand": {"handle": "tostado.cafe", "bio": "Café de especialidad venezolano ☕ métodos filtrados, espresso y latte art · Tostamos nuestro café · Altamira, Caracas", "category": "Coffee Shop", "rubro": ["cafetería de especialidad"], "niches": ["Comida y bebida"], "city": "Caracas", "country": "Venezuela", "own_hashtags": ["cafe"]},
+      "candidates": [
+        ["cafedeespecialidad", 10, "y"], ["specialtycoffee", 6, "y"], ["barista", 9, "y"], ["latteart", 7, "y"], ["cafeteria", 8, "y"], ["espresso", 5, "y"],
+        ["coffeelover", 12, "m"], ["tostadodecafe", 3, "m"], ["brunch", 9, "m"], ["desayunos", 11, "m"], ["coffee", 15, "m"],
+        ["cocteles", 7, "n"], ["cerveza", 6, "n"], ["bar", 8, "n"], ["comidarapida", 18, "n"], ["streetfood", 45, "n"], ["starbucks", 5, "n"], ["altamira", 3, "n"], ["caracas", 25, "n"], ["trending", 60, "n"]
+      ]
+    },
+    {
+      "id": "crossfit_box_bogota",
+      "brand": {"handle": "boxhierro.co", "bio": "CrossFit Box 🏋️ clases de WOD, halterofilia y gimnasia · Coaches certificados L2 · Chapinero, Bogotá", "category": "Gym/Physical Fitness Center", "rubro": ["crossfit"], "niches": ["Fitness y salud"], "city": "Bogotá", "country": "Colombia", "own_hashtags": ["crossfit"]},
+      "candidates": [
+        ["wod", 8, "y"], ["entrenamientofuncional", 6, "y"], ["halterofilia", 4, "y"],
+        ["crossfitgames", 3, "m"], ["gym", 50, "m", "fitness_health"], ["fitness", 70, "m", "fitness_health"], ["entrenamiento", 20, "m"], ["gymrat", 15, "m"], ["fit", 40, "m", "fitness_health"], ["rutinadeejercicio", 9, "m"], ["culturismo", 7, "m"],
+        ["yoga", 18, "t"], ["pilates", 12, "t"], ["meditacion", 9, "t"], ["zumba", 6, "t"],
+        ["nutricion", 10, "n"], ["runners", 8, "n"], ["bogota", 25, "n"], ["chapinero", 3, "n"], ["fyp", 200, "n"], ["ffffemabpogym", 2, "n"]
+      ]
+    },
+    {
+      "id": "estudio_yoga_medellin",
+      "brand": {"handle": "shanti.yoga.med", "bio": "Estudio de yoga y meditación 🧘‍♀️ Hatha, Vinyasa y Yin · Clases presenciales y online · Laureles, Medellín", "category": "Yoga Studio", "rubro": ["estudio de yoga"], "niches": ["Fitness y salud"], "city": "Medellín", "country": "Colombia", "own_hashtags": ["yoga"]},
+      "candidates": [
+        ["meditacion", 9, "y"], ["mindfulness", 7, "y"], ["vinyasa", 4, "y"], ["yogaonline", 3, "y"], ["yogalife", 5, "y"],
+        ["pilates", 12, "m"], ["bienestar", 10, "m"], ["respiracion", 3, "m"], ["fitness", 70, "m", "fitness_health"], ["espiritualidad", 6, "m"], ["yogui", 4, "m"],
+        ["crossfit", 25, "t"], ["wod", 8, "t"], ["gymrat", 15, "t"], ["powerlifting", 5, "t"], ["culturismo", 7, "t"],
+        ["zumba", 6, "n"], ["tarot", 5, "n"], ["medellin", 20, "n"], ["laureles", 3, "n"], ["parati", 120, "n"]
+      ]
+    },
+    {
+      "id": "peluqueria_canina_barranquilla",
+      "brand": {"handle": "patitas.spa", "bio": "Peluquería y spa canino 🐶✂️ baño, corte por raza y deslanado · Recogemos a tu perrito · Barranquilla", "category": "Pet Groomer", "rubro": ["peluquería canina"], "niches": [], "city": "Barranquilla", "country": "Colombia", "own_hashtags": ["peluqueriacanina"]},
+      "candidates": [
+        ["groomer", 6, "y"], ["doggrooming", 5, "y"], ["grooming", 7, "y"], ["spacanino", 3, "y"],
+        ["perros", 30, "m"], ["mascotas", 25, "m"], ["perritos", 20, "m"], ["doglovers", 12, "m"], ["gatos", 10, "m"], ["caninos", 6, "m"],
+        ["peluqueria", 18, "t"], ["barberia", 22, "t"], ["cortedecabello", 12, "t"], ["salondebelleza", 10, "t"], ["veterinaria", 9, "t"], ["adiestramientocanino", 4, "t"], ["accesoriosparamascotas", 3, "t"],
+        ["barranquilla", 15, "n"], ["fyp", 200, "n"], ["afoplnjnoccaninos", 2, "n"]
+      ]
+    },
+    {
+      "id": "barberia_valencia",
+      "brand": {"handle": "elcorte.barbershop", "bio": "Barbería clásica 💈 cortes, fade y arreglo de barba · Walk-ins y citas por WhatsApp · Valencia, Carabobo", "category": "Barber Shop", "rubro": ["barbería"], "niches": ["Moda y belleza"], "city": "Valencia", "country": "Venezuela", "own_hashtags": ["barberia"]},
+      "candidates": [
+        ["barber", 14, "y"], ["barbershop", 11, "y"], ["fade", 8, "y"], ["barba", 9, "y"], ["cortedecabello", 12, "y"], ["barberos", 6, "y"],
+        ["estilomasculino", 5, "m"], ["peluqueria", 18, "m"],
+        ["peluqueriacanina", 8, "t"], ["groomer", 6, "t"], ["unas", 14, "t"], ["nailart", 10, "t"], ["maquillaje", 20, "t"], ["salondebelleza", 10, "t"],
+        ["tatuajes", 9, "n"], ["valencia", 12, "n"], ["carabobo", 4, "n"], ["viral", 150, "n"], ["skincare", 12, "n"]
+      ]
+    },
+    {
+      "id": "inmobiliaria_venta_bogota",
+      "brand": {"handle": "habitat.inmuebles", "bio": "Inmobiliaria 🏡 venta de apartamentos y casas nuevas y usadas · Asesoría de crédito hipotecario · Bogotá", "category": "Real Estate Agent", "rubro": ["inmobiliaria"], "niches": ["Inmobiliaria"], "city": "Bogotá", "country": "Colombia", "own_hashtags": ["inmobiliaria"]},
+      "candidates": [
+        ["bienesraices", 15, "y", "real_estate"], ["apartamentosenventa", 6, "y"], ["realestate", 12, "y"], ["casasenventa", 5, "y"], ["agenteinmobiliario", 4, "y"],
+        ["inversioninmobiliaria", 5, "m"], ["creditohipotecario", 3, "m"], ["apartamentos", 9, "m", "real_estate"],
+        ["arriendo", 8, "t"], ["airbnb", 7, "t"], ["apartamentosenarriendo", 4, "t"],
+        ["arquitectura", 6, "n"], ["decoracion", 10, "n"], ["interiorismo", 5, "n"], ["construccion", 7, "n"], ["inversiones", 9, "n"], ["bogota", 25, "n"], ["fyp", 200, "n"], ["dinero", 7, "n"], ["remax", 4, "n"]
+      ]
+    },
+    {
+      "id": "academia_programacion_online",
+      "brand": {"handle": "codigo.academy", "bio": "Aprende a programar desde cero 👩‍💻 cursos online de Python, JavaScript y desarrollo web · +20.000 estudiantes en LATAM", "category": "Education Website", "rubro": ["cursos de programación"], "niches": ["Educación", "Tecnología"], "city": "", "country": "", "own_hashtags": ["programacion", "python"]},
+      "candidates": [
+        ["aprendeaprogramar", 5, "y"], ["desarrolloweb", 8, "y"], ["javascript", 9, "y"], ["programador", 12, "y"], ["cursosonline", 6, "y"],
+        ["programadores", 10, "m"], ["techtok", 25, "m"], ["tecnologia", 30, "m", "technology"], ["learnontiktok", 3, "m"], ["ia", 14, "m"], ["diplomados", 4, "m"], ["software", 10, "m"],
+        ["gamingpc", 9, "t"], ["gamingsetup", 5, "t"], ["android", 4, "t"], ["apple", 12, "t"],
+        ["impresorashp", 3, "n"], ["hacks", 7, "n"], ["carterpcs", 16, "n"], ["programacao", 7, "n"], ["fyp", 200, "n"]
+      ]
+    },
+    {
+      "id": "boutique_ropa_mujer_maracaibo",
+      "brand": {"handle": "lunaboutique.mcbo", "bio": "Moda femenina 👗 vestidos, blusas y jeans · Nuevas colecciones cada semana · Envíos a toda Venezuela · Maracaibo", "category": "Clothing (Brand)", "rubro": ["tienda de ropa para mujer"], "niches": ["Moda y belleza"], "city": "Maracaibo", "country": "Venezuela", "own_hashtags": ["moda"]},
+      "candidates": [
+        ["modafemenina", 8, "y"], ["outfit", 20, "y"], ["ootd", 9, "y"], ["boutique", 7, "y"], ["vestidos", 6, "y"], ["ropademujer", 5, "y"],
+        ["fashion", 25, "m", "fashion_beauty"], ["tendenciasdemoda", 4, "m"], ["zapatos", 6, "m"],
+        ["makeup", 22, "t", "fashion_beauty"], ["maquillaje", 20, "t"], ["unas", 14, "t"], ["modamasculina", 6, "t"], ["streetwear", 8, "t"],
+        ["barberia", 22, "n"], ["zulia", 5, "n"], ["maracaibo", 9, "n"], ["viral", 150, "n"], ["agijjoafnomoda", 2, "n"], ["emprendimiento", 3, "n"]
+      ]
+    },
+    {
+      "id": "tienda_celulares_cucuta",
+      "brand": {"handle": "celulares.frontera", "bio": "📱 Venta de celulares nuevos y accesorios · Xiaomi, Samsung, Infinix y iPhone · Garantía y envíos · Cúcuta", "category": "Mobile Phone Shop", "rubro": ["tienda de celulares"], "niches": ["Tecnología"], "city": "Cúcuta", "country": "Colombia", "own_hashtags": ["celulares"]},
+      "candidates": [
+        ["android", 4, "y"], ["infinix", 4, "y"], ["iphone", 10, "y"], ["smartphone", 6, "y"], ["xiaomi", 5, "y"],
+        ["techtok", 25, "m"], ["tecnologia", 30, "m", "technology"], ["apple", 12, "m"], ["accesorios", 6, "m"], ["unboxing", 7, "m"], ["infinixhot70pro", 3, "m"],
+        ["programacion", 30, "t", "technology"], ["aprendeaprogramar", 5, "t"], ["desarrolloweb", 8, "t"], ["gamingpc", 9, "t"], ["reparaciondecelulares", 4, "t"],
+        ["cucuta", 20, "n"], ["fyp", 200, "n"], ["noticia", 6, "n"], ["ia", 14, "n"]
+      ]
+    },
+    {
+      "id": "pizzeria_lena_bucaramanga",
+      "brand": {"handle": "lenaypizza", "bio": "Pizza napolitana en horno de leña 🍕 masa madre de 48h · Bucaramanga", "category": "Pizza Place", "rubro": ["pizzería"], "niches": ["Comida y bebida"], "city": "Bucaramanga", "country": "Colombia", "own_hashtags": ["pizza"]},
+      "candidates": [
+        ["pizzanapolitana", 4, "y"], ["pizzeria", 7, "y"], ["hornodeleña", 3, "y"], ["masamadre", 5, "y"], ["comidaitaliana", 6, "y"],
+        ["pizzalover", 5, "m"], ["foodie", 60, "m", "food_drink"], ["restaurantes", 40, "m", "food_drink"],
+        ["streetfood", 45, "t"], ["comidarapida", 18, "t"], ["recetas", 25, "t", "food_drink"],
+        ["hamburguesas", 21, "n", "food_drink"], ["sushi", 9, "n"], ["arepas", 8, "n"], ["pizzas", 6, "n"], ["bucaramanga", 12, "n"], ["santander", 5, "n"], ["parati", 120, "n"], ["gknfcjgioefood", 5, "n"], ["panaderia", 8, "n"]
+      ]
+    },
+    {
+      "id": "taller_motos_sin_candidatos",
+      "brand": {"handle": "motorepuestos.eljefe", "bio": "Taller de motos 🏍️ mantenimiento, repuestos y pintura · San Cristóbal, Táchira", "category": "Motorcycle Repair Shop", "rubro": ["taller de motos"], "niches": [], "city": "San Cristóbal", "country": "Venezuela", "own_hashtags": []},
+      "candidates": [
+        ["hamburguesas", 21, "n", "food_drink"], ["moda", 30, "n", "fashion_beauty"], ["gym", 50, "n", "fitness_health"], ["programacion", 30, "n", "technology"], ["techtok", 25, "n"],
+        ["foodie", 60, "n", "food_drink"], ["viajes", 20, "n", "travel_lifestyle"], ["inmobiliaria", 15, "n", "real_estate"], ["humor", 18, "n", "entertainment"], ["fyp", 200, "n"],
+        ["tachira", 9, "n"], ["comida", 80, "n", "food_drink"], ["fitness", 70, "n", "fitness_health"], ["android", 4, "n"], ["carro", 2, "n"]
+      ]
+    }
+  ]
+}

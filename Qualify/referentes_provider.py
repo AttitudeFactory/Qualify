@@ -16,13 +16,14 @@ Every function here is a blocking DB call: callers on the event loop run them th
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 from qualify_api.referentes import (
+    ORIGIN_AI,
     ORIGIN_CATALOG,
     ORIGIN_PROFILE,
     NewDiscoveredAccount,
@@ -43,10 +44,22 @@ REPOSITORY: ReferentesRepository = PostgresReferentesRepository()
 PHASE_TTL_SECONDS = 7 * 24 * 3600
 
 
-def seed_payload(seed: DiscoverySeed) -> dict[str, Any]:
+def seed_payload(
+    seed: DiscoverySeed, picks: Mapping[str, Mapping[str, str]] | None = None
+) -> dict[str, Any]:
     """The seed as stored: everything the phase read, with each hashtag's origin — the
-    brand's own (`profile`, `seed_from_profile`) or the shared catalog's (`catalog`,
-    `hashtag_catalog.catalog_hashtags_for`)."""
+    brand's own (`profile`, `seed_from_profile`), the shared catalog's (`catalog`,
+    `hashtag_catalog.catalog_hashtags_for`) or a catalog tag Claude chose (`ai`,
+    `hashtag_catalog.ai_hashtags_for`). An `ai` entry carries what `picks` says about it
+    (`model`, `fit`, `reason`): a model's decision is stored with its provenance."""
+    picks = picks or {}
+
+    def catalog_item(tag: str) -> dict[str, str]:
+        pick = picks.get(tag)
+        if pick is None:
+            return {"tag": tag, "origin": ORIGIN_CATALOG}
+        return {"tag": tag, "origin": ORIGIN_AI, **{k: str(v) for k, v in pick.items()}}
+
     return {
         "handle": seed.handle,
         "niches": list(seed.niches),
@@ -56,7 +69,7 @@ def seed_payload(seed: DiscoverySeed) -> dict[str, Any]:
         "city": seed.city,
         "hashtags": [
             *({"tag": tag, "origin": ORIGIN_PROFILE} for tag in seed.hashtags),
-            *({"tag": tag, "origin": ORIGIN_CATALOG} for tag in seed.catalog_hashtags),
+            *(catalog_item(tag) for tag in seed.catalog_hashtags),
         ],
     }
 
@@ -133,11 +146,13 @@ def save_phase(
     seed: DiscoverySeed,
     result: PhaseResult,
     phase: dict[str, Any],
+    hashtag_picks: Mapping[str, Mapping[str, str]] | None = None,
 ) -> bool:
     """Store a finished phase as the brand's current one. `phase` is the dict the wizard
     rendered (`phase_to_dict(result)`), so the stored cards are the ones shown. Same rule
     the JSON cache had: a phase with errors AND nothing found is not stored, so the next
-    walk retries it. Returns whether it was stored."""
+    walk retries it. `hashtag_picks` is the provenance of the seed's AI-chosen hashtags
+    (`seed_payload`). Returns whether it was stored."""
     if result.errors and not result.accounts:
         return False
     cards = [c for c in phase.get("accounts") or [] if isinstance(c, dict)]
@@ -156,7 +171,7 @@ def save_phase(
             phase_key=key,
             algorithm_version=creator_discovery.PHASED_PLAN_VERSION,
             seed_signature=creator_discovery.phase_signature(key, seed),
-            seed=seed_payload(seed),
+            seed=seed_payload(seed, hashtag_picks),
             title=result.title,
             note=result.note,
             queries=tuple(result.queries),
@@ -257,13 +272,16 @@ def rebuild_seed(payload: dict[str, Any]) -> DiscoverySeed:
     recomputed phase is a hit the next time the operator walks the flow.
 
     Every stored hashtag is used, split back into its two seed fields by origin: `catalog`
-    ones into `catalog_hashtags`, the rest (the brand's own) into `hashtags`. The origin is
-    stored exactly so a recompute can re-derive one set without touching the other."""
+    and `ai` ones (both came from the shared catalog) into `catalog_hashtags`, the rest
+    (the brand's own) into `hashtags`. The origin is stored exactly so a recompute can
+    re-derive one set without touching the other — and a recompute reuses the stored AI
+    choice rather than asking again."""
     items = [
         item for item in payload.get("hashtags") or [] if isinstance(item, dict) and item.get("tag")
     ]
-    hashtags = tuple(str(i["tag"]) for i in items if i.get("origin") != ORIGIN_CATALOG)
-    catalog = tuple(str(i["tag"]) for i in items if i.get("origin") == ORIGIN_CATALOG)
+    from_catalog = (ORIGIN_CATALOG, ORIGIN_AI)
+    hashtags = tuple(str(i["tag"]) for i in items if i.get("origin") not in from_catalog)
+    catalog = tuple(str(i["tag"]) for i in items if i.get("origin") in from_catalog)
     return DiscoverySeed(
         handle=str(payload.get("handle") or ""),
         niches=tuple(str(n) for n in payload.get("niches") or ()),

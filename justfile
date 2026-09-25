@@ -49,6 +49,13 @@ link-login tenant email:
 refresh-referentes *args:
     uv run --no-sync python -m Qualify.refresh_referentes {{args}}
 
+# Classify, with Claude (Haiku 4.5), the catalog hashtags the rules left open.
+# SPENDS Anthropic credits (~$0.005 per batch of 80) — look first:
+#   just classify-hashtags --dry-run
+#   just classify-hashtags --max-batches 10
+classify-hashtags *args:
+    uv run --no-sync python -m Qualify.classify_hashtags {{args}}
+
 # Default test pass: unit + db, never external network. Mirrors CI.
 test:
     uv run pytest -m "not integration"

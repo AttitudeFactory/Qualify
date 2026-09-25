@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import replace
 from uuid import UUID, uuid4
 
@@ -83,6 +83,17 @@ from .ui import (
 from .ui import tokens as T
 
 logger = logging.getLogger(__name__)
+
+#: Fire-and-forget work started by a state handler (the AI classification of the hashtag
+#: catalog). Held here so the event loop keeps a strong reference until it finishes.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def _finish_background_task(task: asyncio.Task) -> None:
+    _BACKGROUND_TASKS.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning("background task failed: %s", task.exception())
+
 
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _UPLOAD_FAILED = "No se pudo leer el archivo. Inténtalo de nuevo."
@@ -3226,7 +3237,7 @@ class BrandConnectState(rx.State):
                 scrapecreators_client.load_cached_profile, network, handle
             )
             seed = creator_discovery.seed_from_profile(profile or fallback, **answers)
-            seed = await self._with_catalog_hashtags(ids, seed)
+            seed, hashtag_picks = await self._with_catalog_hashtags(ids, seed, profile or fallback)
             async with self:
                 if self.discovery_run_id != my_id:
                     return
@@ -3269,7 +3280,7 @@ class BrandConnectState(rx.State):
                 phase = creator_discovery.phase_to_dict(result)
                 if result.errors:
                     logger.warning("brand discovery %s phase errors: %s", key, result.errors)
-                await self._store_phase(ids, key, seed, result, phase)
+                await self._store_phase(ids, key, seed, result, phase, hashtag_picks)
                 async with self:
                     if self.discovery_run_id != my_id:
                         return
@@ -3346,13 +3357,21 @@ class BrandConnectState(rx.State):
         seed: creator_discovery.DiscoverySeed,
         result: creator_discovery.PhaseResult,
         phase: dict,
+        hashtag_picks: Mapping[str, Mapping[str, str]] | None = None,
     ) -> None:
         if ids is None:
             await asyncio.to_thread(creator_discovery.save_cached_phase, key, seed, phase)
             return
         try:
             await asyncio.to_thread(
-                referentes_provider.save_phase, ids[0], ids[1], key, seed, result, phase
+                referentes_provider.save_phase,
+                ids[0],
+                ids[1],
+                key,
+                seed,
+                result,
+                phase,
+                hashtag_picks,
             )
         except SQLAlchemyError as exc:
             # The operator still sees the result; only the reuse is lost.
@@ -3363,19 +3382,29 @@ class BrandConnectState(rx.State):
         self,
         ids: tuple[UUID, UUID, UUID | None] | None,
         seed: creator_discovery.DiscoverySeed,
-    ) -> creator_discovery.DiscoverySeed:
-        """The seed plus what the shared hashtag catalog knows for its rubro
-        (`hashtag_catalog.catalog_hashtags_for`). Without a session that has a tenant, or
-        when the catalog cannot be read, the seed comes back unchanged and the search
-        runs as it did before the catalog existed."""
+        profile: dict,
+    ) -> tuple[creator_discovery.DiscoverySeed, dict[str, dict[str, str]]]:
+        """The seed plus the catalog hashtags that fit this brand — chosen by Claude from
+        a wide catalog pool (`hashtag_catalog.ai_hashtags_for`), or by the rule path when
+        there is no key or the call fails — and the provenance of an AI choice, which is
+        stored with each phase. Without a session that has a tenant, or when the catalog
+        cannot be read, the seed comes back unchanged and the search runs as it did
+        before the catalog existed."""
         if ids is None:
-            return seed
+            return seed, {}
         try:
-            tags = await asyncio.to_thread(hashtag_catalog.catalog_hashtags_for, ids[0], seed)
+            choice = await asyncio.to_thread(
+                hashtag_catalog.ai_hashtags_for,
+                ids[0],
+                seed,
+                bio=str(profile.get("bio") or ""),
+                category=str(profile.get("category") or ""),
+            )
         except SQLAlchemyError as exc:
             logger.warning("hashtags: catalog unreadable, searching without it: %s", exc)
-            return seed
-        return replace(seed, catalog_hashtags=tags)
+            return seed, {}
+        picks = {tag: dict(info) for tag, info in choice.picks.items()}
+        return replace(seed, catalog_hashtags=choice.tags), picks
 
     async def _capture_hashtags(
         self,
@@ -3384,9 +3413,11 @@ class BrandConnectState(rx.State):
         seed: creator_discovery.DiscoverySeed,
         result: creator_discovery.PhaseResult,
     ) -> None:
-        """Feed the shared hashtag catalog with what this fresh run saw. Its own guard:
-        the catalog only ever ADDS knowledge, so a failure here must never touch the
-        result the operator is looking at (nor the phase that was just stored)."""
+        """Feed the shared hashtag catalog with what this fresh run saw, then let Claude
+        classify a batch of what the rules left open — in the background: the operator
+        is waiting for the next phase, not for the catalog. Its own guard: the catalog
+        only ever ADDS knowledge, so a failure here must never touch the result the
+        operator is looking at (nor the phase that was just stored)."""
         try:
             await asyncio.to_thread(hashtag_catalog.ensure_seeded, tenant_id)
             await asyncio.to_thread(
@@ -3394,6 +3425,10 @@ class BrandConnectState(rx.State):
             )
         except SQLAlchemyError as exc:
             logger.warning("hashtags: could not capture the %s phase: %s", key, exc)
+            return
+        task = asyncio.create_task(asyncio.to_thread(hashtag_catalog.classify_pending, tenant_id))
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_finish_background_task)
 
     async def _stored_sort(
         self, ids: tuple[UUID, UUID, UUID | None] | None, run_id: int

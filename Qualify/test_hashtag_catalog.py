@@ -251,3 +251,152 @@ def test_a_seed_carries_at_most_a_handful(repo, monkeypatch) -> None:
     seed = _seed(terms=("smash burgers",))
     found = hashtag_catalog.catalog_hashtags_for(TENANT, seed, repository=repo)
     assert len(found) == hashtag_catalog.CATALOG_HASHTAGS
+
+
+# -- ai_hashtags_for (Claude chooses; fakes stand in for the API) --------------------------
+
+from qualify_api.hashtags import ai as hashtag_ai  # noqa: E402
+
+
+@pytest.fixture
+def fresh_choices(monkeypatch):
+    monkeypatch.setattr(hashtag_catalog, "_seeded", False)
+    monkeypatch.setattr(hashtag_catalog, "_choices", {})
+    monkeypatch.setenv("QUALIFY_ANTHROPIC_API_KEY", "sk-test")
+
+
+def _selector(picks: list[str], calls: list | None = None):
+    def select(brand, candidates, *, api_key, max_picks):
+        if calls is not None:
+            calls.append((brand, [c.tag for c in candidates], api_key, max_picks))
+        chosen = [hashtag_ai.HashtagPick(t, "alta", f"encaja: {t}") for t in picks]
+        return chosen, hashtag_ai.CallStats("claude-sonnet-5", "claude-sonnet-5", 900, 150)
+
+    return select
+
+
+def test_ai_choice_reads_a_wide_pool_and_keeps_its_provenance(repo, fresh_choices) -> None:
+    _taught(repo, "smash burgers", ["smashburger", "burgerlovers", "cucutafood", "fyp"])
+    calls: list = []
+    seed = _seed(niches=("food_drink",), terms=("smash burgers",), hashtags=("burgerlovers",))
+    choice = hashtag_catalog.ai_hashtags_for(
+        TENANT, seed, bio="Smash 🍔", repository=repo, selector=_selector(["smashburger"], calls)
+    )
+    brand, offered, key, max_picks = calls[0]
+    assert (brand.bio, brand.own_hashtags, key) == ("Smash 🍔", ("burgerlovers",), "sk-test")
+    assert max_picks == creator_discovery.SECTOR_CATALOG_TAGS
+    # the lexical hit, the niche's tags — never places, generic tags or the brand's own
+    assert {"smashburger", "foodie", "comida"} <= set(offered)
+    assert not {"cucutafood", "fyp", "burgerlovers"} & set(offered)
+    assert choice.by == "ai" and choice.tags == ("smashburger",)
+    assert choice.picks["smashburger"] == {
+        "model": "claude-sonnet-5",
+        "fit": "alta",
+        "reason": "encaja: smashburger",
+    }
+
+
+def test_an_empty_ai_choice_is_respected_not_replaced(repo, fresh_choices) -> None:
+    seed = _seed(niches=("food_drink",), terms=("taller de motos",))
+    choice = hashtag_catalog.ai_hashtags_for(TENANT, seed, repository=repo, selector=_selector([]))
+    assert (choice.by, choice.tags) == ("ai", ())
+
+
+def test_without_a_key_the_rule_path_answers(repo, fresh_choices, monkeypatch) -> None:
+    monkeypatch.delenv("QUALIFY_ANTHROPIC_API_KEY")
+    seed = _seed(niches=("food_drink",), terms=())
+
+    def never(*_a, **_k):
+        raise AssertionError("no AI call without a key")
+
+    choice = hashtag_catalog.ai_hashtags_for(TENANT, seed, repository=repo, selector=never)
+    assert choice.by == "rule"
+    assert set(choice.tags) == {"food", "foodie", "comida"}
+
+
+def test_a_failed_ai_call_falls_back_to_the_rule_path(repo, fresh_choices) -> None:
+    def boom(*_a, **_k):
+        raise hashtag_ai.HashtagAIError("refused")
+
+    seed = _seed(niches=("food_drink",), terms=())
+    choice = hashtag_catalog.ai_hashtags_for(TENANT, seed, repository=repo, selector=boom)
+    assert choice.by == "rule" and choice.picks == {}
+
+
+def test_the_same_brand_is_not_asked_twice_within_the_ttl(repo, fresh_choices) -> None:
+    calls: list = []
+    seed = _seed(niches=("food_drink",), terms=())
+    for moment in (1_000.0, 1_000.0 + 3600):
+        hashtag_catalog.ai_hashtags_for(
+            TENANT, seed, repository=repo, selector=_selector(["foodie"], calls), now=moment
+        )
+    assert len(calls) == 1
+    hashtag_catalog.ai_hashtags_for(
+        TENANT, seed, repository=repo, selector=_selector(["foodie"], calls), now=1_000.0 + 86_400
+    )
+    assert len(calls) == 2
+
+
+# -- classify_pending ----------------------------------------------------------------------
+
+
+def _classifier(answers: dict[str, tuple[str, str | None]], calls: list | None = None):
+    def classify(tags, niches, *, api_key):
+        if calls is not None:
+            calls.append(list(tags))
+        results = [hashtag_ai.TagClassification(t, *answers[t], None) for t in tags if t in answers]
+        return results, hashtag_ai.CallStats("claude-haiku-4-5", "claude-haiku-4-5", 500, 300)
+
+    return classify
+
+
+def test_classify_pending_settles_what_the_rule_left_open(repo, fresh_choices) -> None:
+    hashtag_catalog.capture(
+        TENANT,
+        _seed(),
+        "national",
+        [_cand("a", ["techtok", "xqzvbnm", "cucutafood"])],
+        repository=repo,
+    )
+    calls: list = []
+    summary = hashtag_catalog.classify_pending(
+        TENANT,
+        repository=repo,
+        classifier=_classifier(
+            {"techtok": ("topic", "technology"), "xqzvbnm": ("noise", None)}, calls
+        ),
+    )
+    assert calls == [["techtok", "xqzvbnm"]]  # the rule already knew cucutafood is a place
+    assert (summary.asked, summary.changed) == (2, 2)
+    stored = repo.get(TENANT, "techtok")
+    assert (stored.kind, stored.niche, stored.classified_by) == ("topic", "technology", "ai")
+    assert repo.needs_classification(TENANT) == ()
+    # nothing left: the next pass makes no call at all
+    assert (
+        hashtag_catalog.classify_pending(
+            TENANT, repository=repo, classifier=_classifier({}, calls)
+        ).asked
+        == 0
+    )
+    assert len(calls) == 1
+
+
+def test_classify_pending_without_a_key_changes_nothing(repo, fresh_choices, monkeypatch) -> None:
+    monkeypatch.delenv("QUALIFY_ANTHROPIC_API_KEY")
+    hashtag_catalog.capture(TENANT, _seed(), "national", [_cand("a", ["techtok"])], repository=repo)
+
+    def never(*_a, **_k):
+        raise AssertionError("no AI call without a key")
+
+    assert hashtag_catalog.classify_pending(TENANT, repository=repo, classifier=never).changed == 0
+    assert repo.get(TENANT, "techtok").kind == "unknown"
+
+
+def test_classify_pending_never_raises(repo, fresh_choices) -> None:
+    hashtag_catalog.capture(TENANT, _seed(), "national", [_cand("a", ["techtok"])], repository=repo)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("network down")
+
+    summary = hashtag_catalog.classify_pending(TENANT, repository=repo, classifier=boom)
+    assert (summary.asked, summary.changed) == (1, 0)

@@ -10,6 +10,7 @@ algorithm recompute stored results (`stale_phases`).
 
 from qualify_api.referentes.repository import (
     LABELS,
+    ORIGIN_AI,
     ORIGIN_CATALOG,
     ORIGIN_PROFILE,
     AccountLabel,
@@ -26,6 +27,7 @@ from qualify_api.referentes.repository import (
 
 __all__ = [
     "LABELS",
+    "ORIGIN_AI",
     "ORIGIN_CATALOG",
     "ORIGIN_PROFILE",
     "AccountLabel",

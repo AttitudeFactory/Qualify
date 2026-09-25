@@ -156,6 +156,31 @@ class NewTermLink:
 
 
 @dataclass(frozen=True)
+class Classification:
+    """A decision about what an already-stored tag is — written by
+    `apply_classifications`, which (unlike `upsert_hashtags`) is not a sighting: it never
+    touches `seen_count`, `networks` or `last_seen_at`."""
+
+    tag: str
+    kind: str
+    niche: str | None = None
+    country_code: str | None = None
+    classified_by: str = "ai"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "tag", normalize_tag(self.tag))
+        _check(self.kind, KINDS, "kind")
+        if self.kind == "unknown":
+            raise ValueError("a classification must decide something, got kind='unknown'")
+        _check(self.classified_by, CLASSIFIERS, "classified_by")
+        if self.country_code is not None:
+            code = self.country_code.strip().upper()
+            if not re.fullmatch(r"[A-Z]{2}", code):
+                raise ValueError(f"country_code must be ISO alpha-2, got {self.country_code!r}")
+            object.__setattr__(self, "country_code", code)
+
+
+@dataclass(frozen=True)
 class StoredHashtag:
     tag: str
     slug: str
@@ -211,6 +236,27 @@ class HashtagRepository(Protocol):
         self, tenant_id: UUID, niche: str, *, limit: int = 20
     ) -> tuple[StoredHashtag, ...]:
         """Tags classified under `niche` (a taxonomy key), most seen first."""
+        ...
+
+    def top_tags(
+        self, tenant_id: UUID, *, kinds: Sequence[str] = DEFAULT_KINDS, limit: int = 100
+    ) -> tuple[StoredHashtag, ...]:
+        """The most seen tags of `kinds`, whatever their niche — the wide net a
+        rubro outside the taxonomy is matched against."""
+        ...
+
+    def needs_classification(
+        self, tenant_id: UUID, *, limit: int = 200
+    ) -> tuple[StoredHashtag, ...]:
+        """Tags only a rule has looked at and the rule could not settle: `unknown`, or a
+        `topic` without a niche. Taxonomy tags are excluded (a person wrote them), and so
+        is anything an AI or a person already decided — a pass never repeats itself.
+        Most seen first."""
+        ...
+
+    def apply_classifications(self, tenant_id: UUID, items: Iterable[Classification]) -> int:
+        """Store decisions about existing tags under the never-downgrade rule (module
+        docstring). Unknown tags are ignored. Returns how many rows changed."""
         ...
 
 
@@ -364,6 +410,44 @@ class MemoryHashtagRepository:
         rows.sort(key=lambda t: (-t.seen_count, t.tag))
         return tuple(rows[:limit])
 
+    def top_tags(
+        self, tenant_id: UUID, *, kinds: Sequence[str] = DEFAULT_KINDS, limit: int = 100
+    ) -> tuple[StoredHashtag, ...]:
+        rows = [t for t in self._tags.values() if t.kind in kinds]
+        rows.sort(key=lambda t: (-t.seen_count, t.tag))
+        return tuple(rows[:limit])
+
+    def needs_classification(
+        self, tenant_id: UUID, *, limit: int = 200
+    ) -> tuple[StoredHashtag, ...]:
+        rows = [
+            t
+            for t in self._tags.values()
+            if t.classified_by == "rule"
+            and t.source != "taxonomy"
+            and (t.kind == "unknown" or (t.kind == "topic" and t.niche is None))
+        ]
+        rows.sort(key=lambda t: (-t.seen_count, t.tag))
+        return tuple(rows[:limit])
+
+    def apply_classifications(self, tenant_id: UUID, items: Iterable[Classification]) -> int:
+        changed = 0
+        for item in items:
+            current = self._tags.get(item.tag)
+            if current is None or not _takes_classification(
+                current.kind, current.classified_by, item.kind, item.classified_by
+            ):
+                continue
+            self._tags[item.tag] = replace(
+                current,
+                kind=item.kind,
+                niche=item.niche,
+                country_code=item.country_code,
+                classified_by=item.classified_by,
+            )
+            changed += 1
+        return changed
+
 
 # --------------------------------------------------------------------------------------
 # Postgres
@@ -452,6 +536,27 @@ _RESOLVE_FUZZY_TAG = text(
     FROM hashtags
     WHERE slug % :slug AND similarity(slug, :slug) >= :min AND kind = ANY(:kinds)
     ORDER BY score DESC, seen_count DESC, tag
+    LIMIT :limit
+    """
+)
+
+
+_APPLY_CLASSIFICATION = text(
+    f"""
+    UPDATE hashtags SET
+        kind = :kind, niche = :niche, country_code = :country_code, classified_by = :by
+    WHERE tag = :tag
+      AND (kind = 'unknown'
+           OR {_RANK.format(col="CAST(:by AS text)")} > {_RANK.format(col="classified_by")})
+    """
+)
+
+_NEEDS_CLASSIFICATION = text(
+    f"""
+    SELECT {_COLUMNS} FROM hashtags
+    WHERE classified_by = 'rule' AND source <> 'taxonomy'
+      AND (kind = 'unknown' OR (kind = 'topic' AND niche IS NULL))
+    ORDER BY seen_count DESC, tag
     LIMIT :limit
     """
 )
@@ -573,3 +678,40 @@ class PostgresHashtagRepository:
                 {"niche": niche, "limit": limit},
             ).all()
         return tuple(_stored(r) for r in rows)
+
+    def top_tags(
+        self, tenant_id: UUID, *, kinds: Sequence[str] = DEFAULT_KINDS, limit: int = 100
+    ) -> tuple[StoredHashtag, ...]:
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(
+                text(
+                    f"SELECT {_COLUMNS} FROM hashtags WHERE kind = ANY(:kinds) "
+                    "ORDER BY seen_count DESC, tag LIMIT :limit"
+                ),
+                {"kinds": list(kinds), "limit": limit},
+            ).all()
+        return tuple(_stored(r) for r in rows)
+
+    def needs_classification(
+        self, tenant_id: UUID, *, limit: int = 200
+    ) -> tuple[StoredHashtag, ...]:
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(_NEEDS_CLASSIFICATION, {"limit": limit}).all()
+        return tuple(_stored(r) for r in rows)
+
+    def apply_classifications(self, tenant_id: UUID, items: Iterable[Classification]) -> int:
+        changed = 0
+        with tenant_session(tenant_id) as session:
+            for item in items:
+                result = session.execute(
+                    _APPLY_CLASSIFICATION,
+                    {
+                        "tag": item.tag,
+                        "kind": item.kind,
+                        "niche": item.niche,
+                        "country_code": item.country_code,
+                        "by": item.classified_by,
+                    },
+                )
+                changed += result.rowcount or 0
+        return changed

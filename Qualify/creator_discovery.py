@@ -910,6 +910,29 @@ class ProfileFacts:
     related: tuple[str, ...] = ()
     full_name: str = ""
     avatar: str = ""
+    #: The captions of the account's most recent posts, when the read carried them
+    #: (Instagram: `edge_owner_to_timeline_media`, the last 12 — measured live
+    #: 2026-09-25 on `mouredev`: 12 posts, 58 hashtags). The only place an Instagram
+    #: account found by Google, by related-profile walk or by mirroring shows the
+    #: hashtags it uses; before, those reads kept the count and dropped the posts.
+    captions: tuple[str, ...] = ()
+
+
+#: Recent captions kept per profile read — Instagram serves 12, the cap is a ceiling.
+PROFILE_CAPTIONS = 12
+
+
+def _instagram_captions(user: dict[str, Any]) -> tuple[str, ...]:
+    edges = (user.get("edge_owner_to_timeline_media") or {}).get("edges") or []
+    out: list[str] = []
+    for edge in edges[:PROFILE_CAPTIONS]:
+        node = edge.get("node") if isinstance(edge, dict) else None
+        captions = ((node or {}).get("edge_media_to_caption") or {}).get("edges") or []
+        first = captions[0] if captions and isinstance(captions[0], dict) else {}
+        text = str((first.get("node") or {}).get("text") or "").strip()
+        if text:
+            out.append(text)
+    return tuple(out)
 
 
 def _int(value: object) -> int | None:
@@ -965,6 +988,7 @@ def profile_facts(network: str, payload: dict[str, Any]) -> ProfileFacts:
         related=related,
         full_name=str(user.get("full_name") or ""),
         avatar=str(user.get("profile_pic_url_hd") or user.get("profile_pic_url") or ""),
+        captions=_instagram_captions(user),
     )
 
 
@@ -981,6 +1005,16 @@ def _apply_facts(candidate: Candidate, facts: ProfileFacts, source: str) -> None
     candidate.is_verified = candidate.is_verified or facts.is_verified
     if facts.category and facts.category not in candidate.texts:
         candidate.texts.append(facts.category)
+    # The posts' words are evidence (niche, place, relevance) and their hashtags are what
+    # the catalog learns from. Not `absorb_post`: a profile read is not a feed sighting,
+    # and its posts must not move the engagement numbers the ranking reads.
+    for caption in facts.captions:
+        if caption in candidate.texts:
+            continue
+        candidate.texts.append(caption)
+        for tag in _hashtags_in(caption):
+            if tag not in candidate.hashtags_seen:
+                candidate.hashtags_seen.append(tag)
     if source not in candidate.sources:
         candidate.sources.append(source)
 
@@ -1186,8 +1220,11 @@ def save_result(result: DiscoveryResult, *, directory: Path = DISCOVERY_DIR) -> 
 #: algorithm's code and fails when it changes without a bump (5 = the 2026-09-15
 #: country aliases / city lists, which shipped still stamped 4; 6 = the shared hashtag
 #: catalog: the rubro's catalog hashtags join the sector queries, the local hashtag
-#: query and the relevance stems — `hashtag_catalog.catalog_hashtags_for`).
-PHASED_PLAN_VERSION = 6
+#: query and the relevance stems — `hashtag_catalog.catalog_hashtags_for`; 7 = an
+#: Instagram profile read contributes its last posts' captions and hashtags as evidence,
+#: and the sector phase searches up to three catalog hashtags, now chosen per brand by
+#: Claude — `hashtag_catalog.ai_hashtags_for`).
+PHASED_PLAN_VERSION = 7
 
 
 @dataclass(frozen=True)
@@ -1822,7 +1859,10 @@ SECTOR_OWN_TAGS = 2
 #: account's own. They EXTEND the `SECTOR_TERMS` cap instead of competing for it — each
 #: one found is one more query, none found is the same plan as before the catalog — so
 #: they never crowd out the taxonomy phrasings that surface a sector's biggest creators.
-SECTOR_CATALOG_TAGS = 2
+#: Three since plan 7: the tags are now vetted per brand by Claude (a restaurant does
+#: not get `#streetfood`), so a third one widens the net without the drift two fuzzy
+#: matches risked. Each is one more keyword query (at most two pages of credits).
+SECTOR_CATALOG_TAGS = 3
 SECTOR_TERMS = 4
 
 
@@ -2092,6 +2132,9 @@ class ProfileStore:
             related=tuple(str(r) for r in facts.get("related") or []),
             full_name=str(facts.get("full_name") or ""),
             avatar=str(facts.get("avatar") or ""),
+            # Entries written before captions were kept have none: they fill in when the
+            # 30-day entry expires, rather than spending a credit per account now.
+            captions=tuple(str(c) for c in facts.get("captions") or []),
         )
 
     def put(

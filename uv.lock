@@ -1810,7 +1810,7 @@ source = { virtual = "." }
 [package.dev-dependencies]
 backend = [
     { name = "qualify-api" },
-    { name = "qualify-creative" },
+    { name = "qualify-creative", extra = ["llm"] },
     { name = "qualify-scraper" },
     { name = "qualify-shared" },
 ]
@@ -1834,7 +1834,7 @@ ml = [
 [package.metadata.requires-dev]
 backend = [
     { name = "qualify-api", editable = "packages/api" },
-    { name = "qualify-creative", editable = "packages/creative" },
+    { name = "qualify-creative", extras = ["llm"], editable = "packages/creative" },
     { name = "qualify-scraper", editable = "packages/scraper" },
     { name = "qualify-shared", editable = "packages/shared" },
 ]
