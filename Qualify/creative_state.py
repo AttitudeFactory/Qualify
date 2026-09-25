@@ -32,7 +32,7 @@ from qualify_api.creative.service import (
     UnknownVariant,
 )
 from qualify_api.creative.voice_service import NotProposed, UnknownBrandKit, UnknownVersion
-from qualify_creative.enums import ContentType
+from qualify_creative.enums import ContentKind, ContentType
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
@@ -91,6 +91,26 @@ _HEYGEN_DOWN = "No pudimos cargar los avatares y voces de HeyGen. Inténtalo de 
 #: `ContentKind` values that can be chosen today (`template` is shown, not selectable).
 _ENABLED_KINDS = ("creator_script", "avatar_video", "animated_avatar_video", "static_flyer")
 _DURATIONS = ("15", "30", "45", "60")
+_FORMAT_LABELS = {
+    "feed_4_5": "Post 4:5",
+    "feed_1_1": "Post cuadrado 1:1",
+    "reels_9_16": "Reel 9:16",
+    "story_9_16": "Story 9:16",
+}
+#: What the result view says while the piece is being made, per kind.
+_GEN_WAITING = {
+    "creator_script": "Escribiendo el guion…",
+    "avatar_video": (
+        "Escribiendo el guion y generando el video en HeyGen. Puede tardar unos minutos."
+    ),
+    "animated_avatar_video": (
+        "Creando el personaje y generando el video en HeyGen. Puede tardar varios minutos."
+    ),
+    "static_flyer": "Escribiendo el texto y componiendo la imagen…",
+}
+_GEN_POLL_SECONDS = 3.0
+#: An AI avatar plus its render can take many minutes; the draft's reaper is 20.
+_GEN_POLL_BUDGET_SECONDS = 20 * 60
 _MAX_PRODUCTS = 10
 _DRAFT_GONE = "Ese borrador no existe o ya no es visible para este negocio."
 _VARIANT_REQUIRED = "Elige una variante antes de aprobar."
@@ -194,6 +214,15 @@ class CreativeState(rx.State):
     heygen_voices: list[dict[str, str]] = []
     heygen_loading: bool = False
     heygen_error: str = ""
+    #: The format picked for the kind ("" = the kind's default, `ContentKind.formats`).
+    brief_format: str = ""
+    # The generator's two views (/signals): "form" (configure) → "result" (the piece).
+    generator_view: str = "form"
+    gen_draft_id: str = ""
+    gen_draft: DraftVM | None = None
+    #: Which variant the result view shows (index into `gen_draft.variants`).
+    gen_variant: int = 0
+    gen_timed_out: bool = False
 
     # -- /drafts ------------------------------------------------------------
     drafts: list[DraftSummaryVM] = []
@@ -257,6 +286,75 @@ class CreativeState(rx.State):
     def kind_takes_images(self) -> bool:
         """Background and product images: every kind but the creator's script."""
         return self.brief_kind in ("avatar_video", "animated_avatar_video", "static_flyer")
+
+    @rx.var
+    def format_options(self) -> list[list[str]]:
+        """[value, label] of the formats the chosen kind offers, its default first."""
+        try:
+            kind = ContentKind(self.brief_kind)
+        except ValueError:
+            return []
+        return [[fmt.value, _FORMAT_LABELS[fmt.value]] for fmt in kind.formats]
+
+    @rx.var
+    def effective_format(self) -> str:
+        options = [value for value, _ in self.format_options]
+        if self.brief_format in options:
+            return self.brief_format
+        return options[0] if options else "feed_4_5"
+
+    @rx.var
+    def effective_format_label(self) -> str:
+        return _FORMAT_LABELS.get(self.effective_format, "")
+
+    @rx.var
+    def carousel_allowed(self) -> bool:
+        """A carousel is a flyer in a feed format (Instagram takes none in a story)."""
+        return self.brief_kind == "static_flyer" and self.effective_format.startswith("feed_")
+
+    @rx.var
+    def gen_is_drafting(self) -> bool:
+        return self.gen_draft is None or self.gen_draft.is_drafting
+
+    @rx.var
+    def gen_is_failed(self) -> bool:
+        return self.gen_draft is not None and self.gen_draft.is_failed
+
+    @rx.var
+    def gen_is_ready(self) -> bool:
+        return (
+            self.gen_draft is not None
+            and not self.gen_draft.is_drafting
+            and not self.gen_draft.is_failed
+        )
+
+    @rx.var
+    def gen_kind(self) -> str:
+        return self.gen_draft.kind if self.gen_draft is not None else self.brief_kind
+
+    @rx.var
+    def gen_variant_vm(self) -> CopyVariantVM | None:
+        if self.gen_draft is None or not self.gen_draft.variants:
+            return None
+        variants = self.gen_draft.variants
+        return variants[min(self.gen_variant, len(variants) - 1)]
+
+    @rx.var
+    def gen_variant_labels(self) -> list[list[str]]:
+        """[index, label] per variant, for the result view's switch."""
+        if self.gen_draft is None:
+            return []
+        return [[str(i), f"Opción {i + 1}"] for i in range(len(self.gen_draft.variants))]
+
+    @rx.var
+    def gen_waiting_label(self) -> str:
+        return _GEN_WAITING.get(self.gen_kind, "Generando…")
+
+    @rx.var
+    def gen_failure_label(self) -> str:
+        if self.gen_draft is None or self.gen_draft.failure is None:
+            return ""
+        return self.gen_draft.failure.label
 
     @rx.var
     def product_items(self) -> list[dict[str, str]]:
@@ -682,6 +780,7 @@ class CreativeState(rx.State):
         if key not in _ENABLED_KINDS:
             return None
         self.brief_kind = key
+        self.brief_format = ""  # each kind starts on its own default format
         self.create_error = ""
         if key != "static_flyer":
             self.media_carousel = False
@@ -740,7 +839,63 @@ class CreativeState(rx.State):
 
     @rx.event
     def set_media_carousel(self, value: bool) -> None:
-        self.media_carousel = bool(value)
+        self.media_carousel = bool(value) and self.carousel_allowed
+
+    @rx.event
+    def set_brief_format(self, value: str | list[str]) -> None:
+        value = value if isinstance(value, str) else (value[0] if value else "")
+        if value in {v for v, _ in self.format_options}:
+            self.brief_format = value
+            if not value.startswith("feed_"):
+                self.media_carousel = False
+
+    @rx.event
+    def choose_gen_variant(self, value: str | list[str]) -> None:
+        value = value if isinstance(value, str) else (value[0] if value else "0")
+        try:
+            self.gen_variant = max(int(value), 0)
+        except ValueError:
+            self.gen_variant = 0
+
+    @rx.event
+    def new_generation(self) -> None:
+        """Back to the form, the inputs kept — to try a variation."""
+        self.generator_view = "form"
+        self.gen_draft = None
+        self.gen_draft_id = ""
+        self.gen_variant = 0
+        self.gen_timed_out = False
+        self.create_error = ""
+
+    @rx.event(background=True)
+    async def poll_generator(self) -> None:
+        """The result view waits here: the draft is read until it leaves `drafting`
+        (an avatar video can take several minutes). Stops on its own when the operator
+        goes back to the form or starts another piece."""
+        async with self:
+            draft_id = self.gen_draft_id
+        ids = await self._session_ids()
+        if ids is None or not draft_id:
+            return
+        tenant_id = ids[0]
+        started = time.monotonic()
+        while True:
+            try:
+                vm = await asyncio.to_thread(draft_detail, tenant_id, UUID(draft_id))
+            except SQLAlchemyError as exc:
+                logger.warning("generator poll failed: %s", type(exc).__name__)
+                vm = None
+            async with self:
+                if self.gen_draft_id != draft_id or self.generator_view != "result":
+                    return
+                if vm is not None:
+                    self.gen_draft = vm
+                    if not vm.is_drafting:
+                        return
+                if time.monotonic() - started > _GEN_POLL_BUDGET_SECONDS:
+                    self.gen_timed_out = True
+                    return
+            await asyncio.sleep(_GEN_POLL_SECONDS)
 
     @rx.event
     def set_media_duration(self, value: str | list[str]) -> None:
@@ -834,7 +989,7 @@ class CreativeState(rx.State):
             "duration_seconds": int(self.media_duration),
             "background_key": self.media_background_key or None if takes_images else None,
             "product_keys": list(self.media_product_keys) if takes_images else [],
-            "carousel": self.media_carousel and kind == "static_flyer",
+            "carousel": self.media_carousel and self.carousel_allowed,
         }
         if kind == "avatar_video":
             media.update(avatar_look_id=self.avatar_look_id, voice_id=self.voice_id)
@@ -920,8 +1075,13 @@ class CreativeState(rx.State):
                 "must_mention": self.brief_must_mention,
                 "must_avoid": self.brief_must_avoid,
             }
-        async for event in self._send_brief(form):
-            yield event
+        draft_id = await self._create_draft(form)
+        if draft_id is not None:
+            async with self:
+                self.brief_topic = ""
+                self.staged_media_key = ""
+                self.staged_media_name = ""
+            yield rx.redirect(f"/drafts/{draft_id}")
 
     @rx.event(background=True)
     async def submit_generator_form(self) -> AsyncIterator[rx.event.EventSpec]:
@@ -952,19 +1112,30 @@ class CreativeState(rx.State):
                 "must_avoid": self.brief_must_avoid,
                 "kind": self.brief_kind,
                 "media": self._media_inputs(),
+                "content_format": self.effective_format,
             }
-        async for event in self._send_brief(form):
-            yield event
+        draft_id = await self._create_draft(form)
+        if draft_id is None:
+            return
+        # The generator's second view: the piece, as it lands (§ request 2026-09-25).
+        async with self:
+            self.generator_view = "result"
+            self.gen_draft_id = str(draft_id)
+            self.gen_draft = None
+            self.gen_variant = 0
+            self.gen_timed_out = False
+        yield CreativeState.poll_generator
 
-    async def _send_brief(self, form: dict[str, object]) -> AsyncIterator[rx.event.EventSpec]:
-        """Create the draft from a form and go to it — shared by both forms. Must be
-        called outside the state lock, with `is_submitting` already set."""
+    async def _create_draft(self, form: dict[str, object]) -> UUID | None:
+        """Create the draft from a form — shared by both forms. Must be called outside
+        the state lock, with `is_submitting` already set; clears it either way and
+        leaves the reason in `create_error` when nothing was created."""
         ids = await self._session_ids()
         if ids is None:
             async with self:
                 self.is_submitting = False
                 self.create_error = _NO_SESSION
-            return
+            return None
         tenant_id, brand_id, user_id = ids
         try:
             draft_id = await asyncio.to_thread(
@@ -974,30 +1145,26 @@ class CreativeState(rx.State):
             async with self:
                 self.is_submitting = False
                 self.create_error = _BRIEF_NOT_READY
-            return
+            return None
         except RouteBlockedByPolicy as exc:
             async with self:
                 self.is_submitting = False
                 self.create_error = _ROUTE_BLOCKED + exc.detail
-            return
+            return None
         except (ValidationError, ValueError) as exc:
             async with self:
                 self.is_submitting = False
                 self.create_error = _BRIEF_INVALID + str(exc).splitlines()[0]
-            return
+            return None
         except SQLAlchemyError as exc:
             logger.error("submit brief failed: %s", type(exc).__name__)
             async with self:
                 self.is_submitting = False
                 self.create_error = _DB_ERROR
-            return
+            return None
         async with self:
             self.is_submitting = False
-            self.brief_topic = ""
-            self.staged_media_key = ""
-            self.staged_media_name = ""
-            self._reset_media_inputs()
-        yield rx.redirect(f"/drafts/{draft_id}")
+        return draft_id
 
     # -- /drafts ------------------------------------------------------------
 

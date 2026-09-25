@@ -98,16 +98,29 @@ class Platform(StrEnum):
 
 
 class ContentFormat(StrEnum):
-    """Aspect ratio and placement. `REELS_9_16` is declared but disabled in the MVP: it
-    is a separate render with Meta's safe zones applied (top 14% and bottom 35% are
-    reserved by the interface), never a crop of the 4:5."""
+    """Aspect ratio and placement. `REELS_9_16` / `STORY_9_16` are separate renders at
+    full vertical size, never a crop of the 4:5. `enabled` is /create's original form
+    (feed 4:5 only); the generator on /signals offers each kind its own formats
+    (`ContentKind.formats`)."""
 
     FEED_4_5 = "feed_4_5"
+    FEED_1_1 = "feed_1_1"
     REELS_9_16 = "reels_9_16"
+    STORY_9_16 = "story_9_16"
 
     @property
     def dimensions(self) -> tuple[int, int]:
         return _FORMAT_DIMENSIONS[self]
+
+    @property
+    def aspect_ratio(self) -> str:
+        """The ratio as the vendors name it (HeyGen's `aspect_ratio`)."""
+        return _FORMAT_ASPECT[self]
+
+    @property
+    def is_feed(self) -> bool:
+        """A feed post — the only placement Instagram takes a carousel in."""
+        return self in (ContentFormat.FEED_4_5, ContentFormat.FEED_1_1)
 
     @property
     def enabled(self) -> bool:
@@ -116,7 +129,15 @@ class ContentFormat(StrEnum):
 
 _FORMAT_DIMENSIONS: dict[ContentFormat, tuple[int, int]] = {
     ContentFormat.FEED_4_5: (1080, 1350),
+    ContentFormat.FEED_1_1: (1080, 1080),
     ContentFormat.REELS_9_16: (1080, 1920),
+    ContentFormat.STORY_9_16: (1080, 1920),
+}
+_FORMAT_ASPECT: dict[ContentFormat, str] = {
+    ContentFormat.FEED_4_5: "4:5",
+    ContentFormat.FEED_1_1: "1:1",
+    ContentFormat.REELS_9_16: "9:16",
+    ContentFormat.STORY_9_16: "9:16",
 }
 
 
@@ -324,8 +345,15 @@ class ContentKind(StrEnum):
 
     @property
     def default_format(self) -> ContentFormat:
-        """Videos are vertical (Reels); the flyer and the script's post are feed 4:5."""
-        return ContentFormat.REELS_9_16 if self.is_video else ContentFormat.FEED_4_5
+        """Videos and a creator's script are vertical (Reels); the flyer is feed 4:5."""
+        return (
+            ContentFormat.FEED_4_5 if self is ContentKind.STATIC_FLYER else ContentFormat.REELS_9_16
+        )
+
+    @property
+    def formats(self) -> tuple[ContentFormat, ...]:
+        """The formats the generator offers this kind, the default first."""
+        return _KIND_FORMATS[self]
 
 
 class AvatarSource(StrEnum):
@@ -335,3 +363,30 @@ class AvatarSource(StrEnum):
     AI = "ai"
     #: Animated from an image the operator uploads (a mascot, an illustration).
     IMAGE = "image"
+
+
+_KIND_FORMATS: dict[ContentKind, tuple[ContentFormat, ...]] = {
+    ContentKind.CREATOR_SCRIPT: (
+        ContentFormat.REELS_9_16,
+        ContentFormat.STORY_9_16,
+        ContentFormat.FEED_4_5,
+    ),
+    ContentKind.AVATAR_VIDEO: (
+        ContentFormat.REELS_9_16,
+        ContentFormat.STORY_9_16,
+        ContentFormat.FEED_4_5,
+        ContentFormat.FEED_1_1,
+    ),
+    ContentKind.ANIMATED_AVATAR_VIDEO: (
+        ContentFormat.REELS_9_16,
+        ContentFormat.STORY_9_16,
+        ContentFormat.FEED_4_5,
+        ContentFormat.FEED_1_1,
+    ),
+    ContentKind.STATIC_FLYER: (
+        ContentFormat.FEED_4_5,
+        ContentFormat.FEED_1_1,
+        ContentFormat.STORY_9_16,
+    ),
+    ContentKind.TEMPLATE: (ContentFormat.FEED_4_5,),
+}

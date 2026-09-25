@@ -219,3 +219,110 @@ def test_a_variant_shows_its_script_and_shot_list() -> None:
         "1 · 4 s — Plano de la plancha: «Así se aplasta»",
         "2 · 3 s — Primer plano del queso",
     )
+
+
+# --------------------------------------------------------------------------------------
+# the generator's views: the format, and the result view's state
+# --------------------------------------------------------------------------------------
+
+
+def test_each_kind_offers_its_formats_and_starts_on_its_default() -> None:
+    state = CreativeState()
+    state.choose_kind("static_flyer")
+    assert [value for value, _ in state.format_options] == ["feed_4_5", "feed_1_1", "story_9_16"]
+    assert state.effective_format == "feed_4_5"
+    state.choose_kind("avatar_video")
+    assert state.effective_format == "reels_9_16"
+    assert ["feed_1_1", "Post cuadrado 1:1"] in state.format_options
+
+
+def test_a_format_the_kind_does_not_offer_is_ignored_and_a_new_kind_resets_it() -> None:
+    state = CreativeState()
+    state.choose_kind("creator_script")
+    state.set_brief_format("feed_1_1")  # not offered for a creator's script
+    assert state.effective_format == "reels_9_16"
+    state.set_brief_format("story_9_16")
+    assert state.effective_format == "story_9_16"
+    state.choose_kind("static_flyer")
+    assert state.brief_format == "" and state.effective_format == "feed_4_5"
+
+
+def test_the_carousel_is_only_offered_for_a_flyer_in_a_feed_format() -> None:
+    state = CreativeState()
+    state.choose_kind("static_flyer")
+    state.set_media_carousel(True)
+    assert state.carousel_allowed and state.media_carousel
+    state.set_brief_format("story_9_16")
+    assert not state.carousel_allowed and state.media_carousel is False
+    state.set_media_carousel(True)
+    assert state.media_carousel is False
+    assert state._media_inputs()["carousel"] is False
+
+
+def test_back_to_the_form_keeps_the_inputs() -> None:
+    state = CreativeState()
+    state.brief_topic = "Smash doble"
+    state.generator_view = "result"
+    state.gen_draft_id = "d1"
+    state.new_generation()
+    assert state.generator_view == "form" and state.gen_draft_id == ""
+    assert state.brief_topic == "Smash doble"
+
+
+def test_the_result_view_follows_the_draft() -> None:
+    from .creative_vm import build_draft_vm
+
+    state = CreativeState()
+    assert state.gen_is_drafting and not state.gen_is_ready  # nothing landed yet
+    variants = [
+        build_variant_vm(
+            variant_id=f"v{i}",
+            ordinal=i,
+            copy={"hook": "h", "caption": "c", "script": f"guion {i}"},
+            edited_copy=None,
+            fidelity={"passed": True},
+        )
+        for i in range(2)
+    ]
+    state.gen_draft = build_draft_vm(
+        draft_id="d1",
+        status="generated",
+        failure_reason=None,
+        variants=variants,
+        image_url=None,
+        total_cost_usd=None,
+        voice_profile_version=1,
+        model_ids=(),
+        requires_ai_disclosure=False,
+        created_label="",
+        kind="creator_script",
+    )
+    assert state.gen_is_ready and state.gen_kind == "creator_script"
+    assert state.gen_variant_labels == [["0", "Opción 1"], ["1", "Opción 2"]]
+    state.choose_gen_variant("1")
+    assert state.gen_variant_vm is not None and state.gen_variant_vm.script == "guion 1"
+    state.choose_gen_variant("9")  # out of range → the last one
+    assert state.gen_variant_vm.script == "guion 1"
+
+
+def test_the_chosen_format_reaches_the_brief(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _RecordingService()
+    monkeypatch.setattr(creative_provider, "production_content_service", lambda: service)
+    creative_provider.submit_brief(
+        _TENANT_ID,
+        _BRAND_ID,
+        _USER_ID,
+        objective="sale",
+        content_type="product",
+        topic="Smash doble",
+        product_ref="",
+        intent="organic",
+        image_route="",
+        source_media_key="",
+        must_mention="",
+        must_avoid="",
+        kind="static_flyer",
+        media={},
+        content_format="story_9_16",
+    )
+    assert service.briefs[0].format.value == "story_9_16"
