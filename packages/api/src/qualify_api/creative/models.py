@@ -208,6 +208,13 @@ class ContentDraft(Base):
         DateTime(timezone=True), nullable=True
     )
     published_media_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The POST fields (0025, QUA-109): the draft IS the POST.
+    title: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    category: Mapped[str | None] = mapped_column(Text, nullable=True)  # PostCategory
+    reuse_type: Mapped[str | None] = mapped_column(Text, nullable=True)  # ReuseType
+    preview_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    approved_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

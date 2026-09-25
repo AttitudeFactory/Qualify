@@ -25,7 +25,10 @@ from qualify_creative.enums import (
     GenerationTask,
     ImageRoute,
     PaidBy,
+    PostCategory,
+    ReuseType,
     VoiceProfileStatus,
+    default_category,
 )
 from qualify_creative.providers import GenerationResult, ResolvedKey, Usage
 from qualify_creative.router import BudgetContext, Hop, HopAction, RouterOutcome
@@ -56,6 +59,7 @@ from qualify_api.creative.service import (
     UsageWrite,
     VariantRecord,
     VariantWrite,
+    preview_of,
 )
 
 TENANT_ID = uuid4()
@@ -216,6 +220,8 @@ class InMemoryRepository:
             approved_by=None,
             approved_at=None,
             created_at=datetime.now(UTC),
+            title=brief.topic[:120],
+            category=default_category(brief.kind).value,
         )
         return draft_id
 
@@ -254,6 +260,7 @@ class InMemoryRepository:
         media=(),
     ):  # noqa: ANN001, ANN201
         if media:
+            self.drafts[draft_id] = replace(self.drafts[draft_id], preview_key=preview_of(media))
             self.media[draft_id] = [
                 ImageRecord(
                     id=uuid4(),
@@ -298,6 +305,21 @@ class InMemoryRepository:
             selected_variant_id=variant_id,
             approved_by=user_id,
             approved_at=approved_at,
+            approved_revision=self.drafts[draft_id].revision,
+        )
+
+    def bump_revision(self, *, tenant_id, draft_id):  # noqa: ANN001, ANN201
+        draft = self.drafts[draft_id]
+        self.drafts[draft_id] = replace(draft, revision=draft.revision + 1)
+        return draft.revision + 1
+
+    def update_post(self, *, tenant_id, draft_id, title, category, reuse_type):  # noqa: ANN001, ANN201
+        draft = self.drafts[draft_id]
+        self.drafts[draft_id] = replace(
+            draft,
+            title=draft.title if title is None else title,
+            category=draft.category if category is None else category,
+            reuse_type=draft.reuse_type if reuse_type is None else (reuse_type or None),
         )
 
     def list_drafts(self, *, tenant_id, brand_id, status, limit, offset):  # noqa: ANN001, ANN201
@@ -874,3 +896,108 @@ def test_an_edit_is_merged_over_the_stored_copy() -> None:
     (variant,) = repo.variants_for(tenant_id=TENANT_ID, draft_id=draft_id)
     current = service.variant_copy(tenant_id=TENANT_ID, variant_id=variant.id)
     assert current.script == "Hola, soy el guion." and current.ads_headline == "Titular"
+
+
+# ---------------------------------------------------------------------------
+# the POST fields (0025, QUA-109)
+
+
+def test_a_new_post_is_titled_by_its_topic_and_categorised_by_its_kind() -> None:
+    service, repo, _ = make_service(kit=make_kit(), voice=make_voice())
+    flyer = repo.seed_draft(make_brief(kind=ContentKind.STATIC_FLYER))
+    script = repo.seed_draft(make_brief(kind=ContentKind.CREATOR_SCRIPT))
+    detail = service.get_draft(tenant_id=TENANT_ID, draft_id=flyer)
+    assert detail is not None
+    assert (detail.title, detail.category, detail.revision) == (
+        "arepa de chócolo nueva",
+        "galeria",
+        1,
+    )
+    assert detail.reuse_type is None and detail.approved_revision is None
+    assert repo.drafts[script].category == "reel"
+
+
+def test_approval_pins_the_revision_and_an_edit_moves_past_it() -> None:
+    router = FakeRouter([ok_outcome(copy_dict())])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    draft_id = repo.seed_draft(make_brief(variants=1))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    (variant,) = repo.variants_for(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant.id, user_id=USER_ID)
+    assert (repo.drafts[draft_id].revision, repo.drafts[draft_id].approved_revision) == (1, 1)
+
+    edited = CopyPayload.model_validate({**copy_dict(), "hook": "Otra entrada"})
+    assert (
+        service.edit_variant(
+            tenant_id=TENANT_ID, variant_id=variant.id, copy=edited, user_id=USER_ID
+        )
+        == ()
+    )
+    draft = repo.drafts[draft_id]
+    # the edit is revision 2; what was approved is still revision 1
+    assert (draft.revision, draft.approved_revision) == (2, 1)
+
+
+def test_a_regeneration_is_a_new_revision() -> None:
+    router = FakeRouter([ok_outcome(copy_dict())])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    draft_id = repo.seed_draft(make_brief(variants=1), status=GENERATED)
+    service.reject(
+        tenant_id=TENANT_ID, draft_id=draft_id, reason="otra", user_id=USER_ID, regenerate=True
+    )
+    assert repo.drafts[draft_id].revision == 2
+
+
+def test_the_post_fields_are_set_and_validated() -> None:
+    service, repo, _ = make_service(kit=make_kit(), voice=make_voice())
+    draft_id = repo.seed_draft(make_brief())
+    detail = service.update_post(
+        tenant_id=TENANT_ID,
+        draft_id=draft_id,
+        title="  Arepa del viernes  ",
+        category=PostCategory.STORY.value,
+        reuse_type=ReuseType.RECURRENTE.value,
+    )
+    assert (detail.title, detail.category, detail.reuse_type) == (
+        "Arepa del viernes",
+        "story",
+        "recurrente",
+    )
+    cleared = service.update_post(tenant_id=TENANT_ID, draft_id=draft_id, reuse_type="")
+    assert cleared.reuse_type is None and cleared.category == "story"
+    for bad in ({"category": "carrusel"}, {"reuse_type": "evergreen"}, {"title": "   "}):
+        with pytest.raises(ValueError):
+            service.update_post(tenant_id=TENANT_ID, draft_id=draft_id, **bad)
+
+
+def test_the_preview_is_the_video_thumbnail_or_the_first_image() -> None:
+    slides = tuple(
+        MediaWrite(
+            position=n,
+            media_type="image",
+            media_url=f"g/slide-{n + 1}.png",
+            object_key=f"g/slide-{n + 1}.png",
+            width=1080,
+            height=1350,
+            aspect_ratio="4:5",
+            model_id="m",
+            provider="local",
+        )
+        for n in (1, 0)
+    )
+    assert preview_of(slides) == "g/slide-1.png"
+    video = MediaWrite(
+        position=0,
+        media_type="video",
+        media_url="g/video.mp4",
+        object_key="g/video.mp4",
+        width=1080,
+        height=1920,
+        aspect_ratio="9:16",
+        model_id="heygen_avatar_iv",
+        provider="heygen",
+        params={"thumbnail_key": "g/thumbnail.jpg"},
+    )
+    assert preview_of((video,)) == "g/thumbnail.jpg"
+    assert preview_of(()) is None
