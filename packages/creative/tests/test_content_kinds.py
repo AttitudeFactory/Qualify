@@ -290,3 +290,21 @@ def test_a_story_cannot_be_a_carousel() -> None:
             format=ContentFormat.STORY_9_16,
             media=MediaInputs(carousel=True),
         )
+
+
+def test_an_own_script_is_for_videos_and_is_copied_verbatim_by_the_prompt() -> None:
+    with pytest.raises(ValidationError, match="own script"):
+        _brief(ContentKind.CREATOR_SCRIPT, own_script="Hola")
+    with pytest.raises(ValidationError, match="engine"):
+        MediaInputs(engine="avatar_v")
+    brief = _brief(
+        ContentKind.AVATAR_VIDEO,
+        avatar_look_id="l",
+        voice_id="v",
+        own_script="Hola, soy Doña Rosa.",
+    )
+    suffix = render_prompt(
+        kit=make_kit(), voice=make_voice(), brief=brief, task=GenerationTask.COPY
+    ).volatile_suffix
+    assert "EXACTLY the operator's script below, word for word" in suffix
+    assert "Operator's script: «Hola, soy Doña Rosa.»" in suffix

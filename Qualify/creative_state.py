@@ -214,6 +214,10 @@ class CreativeState(rx.State):
     heygen_voices: list[dict[str, str]] = []
     heygen_loading: bool = False
     heygen_error: str = ""
+    #: The operator's own script for a video (instead of Claude's), and the engine.
+    own_script_on: bool = False
+    own_script: str = ""
+    avatar_engine: str = "avatar_iv"
     #: The format picked for the kind ("" = the kind's default, `ContentKind.formats`).
     brief_format: str = ""
     # The generator's two views (/signals): "form" (configure) → "result" (the piece).
@@ -838,6 +842,20 @@ class CreativeState(rx.State):
         self.avatar_rights_confirmed = bool(value)
 
     @rx.event
+    def set_own_script_on(self, value: bool) -> None:
+        self.own_script_on = bool(value)
+
+    @rx.event
+    def set_own_script(self, value: str) -> None:
+        self.own_script = value
+
+    @rx.event
+    def set_avatar_engine(self, value: str | list[str]) -> None:
+        value = value if isinstance(value, str) else (value[0] if value else "")
+        if value in ("avatar_iv", "avatar_iii"):
+            self.avatar_engine = value
+
+    @rx.event
     def set_media_carousel(self, value: bool) -> None:
         self.media_carousel = bool(value) and self.carousel_allowed
 
@@ -972,6 +990,8 @@ class CreativeState(rx.State):
             return "Elige el avatar que va a presentar el video."
         if self.brief_kind in ("avatar_video", "animated_avatar_video") and not self.voice_id:
             return "Elige la voz que va a leer el guion."
+        if self.kind_is_video and self.own_script_on and not self.own_script.strip():
+            return "Escribe tu guion o apaga «Escribir mi propio guion»."
         if self.brief_kind == "animated_avatar_video":
             if self.avatar_source == "ai" and not self.avatar_prompt.strip():
                 return "Describe cómo es el personaje animado."
@@ -991,6 +1011,10 @@ class CreativeState(rx.State):
             "product_keys": list(self.media_product_keys) if takes_images else [],
             "carousel": self.media_carousel and self.carousel_allowed,
         }
+        if kind in ("avatar_video", "animated_avatar_video"):
+            media["engine"] = self.avatar_engine
+            if self.own_script_on:
+                media["own_script"] = self.own_script.strip()
         if kind == "avatar_video":
             media.update(avatar_look_id=self.avatar_look_id, voice_id=self.voice_id)
         if kind == "animated_avatar_video":

@@ -326,3 +326,19 @@ def test_the_chosen_format_reaches_the_brief(monkeypatch: pytest.MonkeyPatch) ->
         content_format="story_9_16",
     )
     assert service.briefs[0].format.value == "story_9_16"
+
+
+def test_an_own_script_and_the_engine_reach_the_inputs() -> None:
+    state = CreativeState()
+    state.choose_kind("avatar_video")
+    state.avatar_look_id, state.voice_id = "lk", "vo"
+    state.set_own_script_on(True)
+    assert "Escribe tu guion" in state._kind_problem()
+    state.set_own_script("  Hola, soy Doña Rosa.  ")
+    state.set_avatar_engine("avatar_iii")
+    state.set_avatar_engine("avatar_v")  # not an engine: ignored
+    assert state._kind_problem() == ""
+    media = state._media_inputs()
+    assert media["own_script"] == "Hola, soy Doña Rosa." and media["engine"] == "avatar_iii"
+    state.set_own_script_on(False)
+    assert "own_script" not in state._media_inputs()
