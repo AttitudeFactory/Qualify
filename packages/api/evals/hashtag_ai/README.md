@@ -1,5 +1,11 @@
 # Hashtag AI eval — Haiku 4.5 vs Sonnet 5
 
+Both calls are TOOL runs since 2026-09-25: the selection is an agent loop over two
+catalog tools (`buscar_hashtags`, `hashtags_del_nicho`) that ends with `elegir_hashtags`;
+the classification answers through the `clasificar_hashtags` tool. The eval gives the
+model only each case's 8 most used candidates to start with and serves the rest
+through the tools (`CaseCatalog`), so finding the specific tags is part of the test.
+
 Measures the two Claude calls in `qualify_api.hashtags.ai` against hand-labelled gold
 sets, and is what the model defaults in that module are chosen from. It spends real
 money (cents per run), so it is run by hand, never in CI:
@@ -21,7 +27,31 @@ uv run --no-sync --with anthropic python packages/api/evals/hashtag_ai/run_eval.
 
 The labels are the spec. Review them; a wrong label is a wrong measurement.
 
-## Result — 2026-09-25 (`results/20260925-113341.json`)
+## Result — tools, 2026-09-25 (`results/20260925-120905.json`) — CURRENT
+
+Selection: 15 cases × 2 repeats, at most 3 picks, 8 starting candidates, the rest via
+tools.
+
+| config | precision | recall@3 | traps taken | bad picks | abstains (motos) | stability | $/run | p50 s |
+|---|---|---|---|---|---|---|---|---|
+| `claude-haiku-4-5` | 0.885 | 0.690 | 0 | 0 | 2/2 | 0.407 | 0.0100 | 13.6 |
+| `claude-sonnet-5` @ medium | **0.923** | **0.881** | 1 | 1 | 2/2 | **0.700** | **0.0094** | **9.4** |
+
+With tools the gap widens: Haiku searched less well (recall 0.69, unstable) and, taking
+more turns, cost as much as Sonnet. Sonnet searched like an analyst (for the fine-dining
+case: "menu degustacion", "fine dining", "alta cocina", "maridaje", "gourmet"). Its
+misses: `#peluqueria` for the dog groomer once in two runs, and `#perrocaliente` for a
+brand that uses `#perroscalientes` — the second is now dropped in code (`_same_word` is
+plural-blind mid-tag). **Default stays Sonnet 5 at medium effort.**
+
+Classification (through the tool): Haiku 0.968 kind+niche vs Sonnet medium 0.926, at a
+third of the cost ($0.019 vs $0.064 for 95 tags). **Default stays Haiku 4.5.**
+
+Live on the real local catalog (read-only), the tool run found `#iphone` and
+`#smartphone` for a phone shop — tags the fixed-list version never saw — at 2–4 turns,
+8–14 s and $0.010–0.024 per brand.
+
+## Earlier result — single call over a fixed list (`results/20260925-113341.json`)
 
 Selection: 15 cases × 2 repeats, at most 3 picks each.
 

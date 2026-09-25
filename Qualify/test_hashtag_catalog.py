@@ -266,34 +266,47 @@ def fresh_choices(monkeypatch):
 
 
 def _selector(picks: list[str], calls: list | None = None):
-    def select(brand, candidates, *, api_key, max_picks):
+    def select(brand, catalog, niches, *, api_key, starting, max_picks):
         if calls is not None:
-            calls.append((brand, [c.tag for c in candidates], api_key, max_picks))
+            calls.append((brand, catalog, niches, [c.tag for c in starting], api_key, max_picks))
         chosen = [hashtag_ai.HashtagPick(t, "alta", f"encaja: {t}") for t in picks]
         return chosen, hashtag_ai.CallStats("claude-sonnet-5", "claude-sonnet-5", 900, 150)
 
     return select
 
 
-def test_ai_choice_reads_a_wide_pool_and_keeps_its_provenance(repo, fresh_choices) -> None:
+def test_ai_choice_gets_a_starting_list_tools_and_keeps_provenance(repo, fresh_choices) -> None:
     _taught(repo, "smash burgers", ["smashburger", "burgerlovers", "cucutafood", "fyp"])
     calls: list = []
     seed = _seed(niches=("food_drink",), terms=("smash burgers",), hashtags=("burgerlovers",))
     choice = hashtag_catalog.ai_hashtags_for(
         TENANT, seed, bio="Smash 🍔", repository=repo, selector=_selector(["smashburger"], calls)
     )
-    brand, offered, key, max_picks = calls[0]
+    brand, catalog, niches, starting, key, max_picks = calls[0]
     assert (brand.bio, brand.own_hashtags, key) == ("Smash 🍔", ("burgerlovers",), "sk-test")
     assert max_picks == creator_discovery.SECTOR_CATALOG_TAGS
+    assert niches == creator_discovery.NICHE_LABELS
     # the lexical hit, the niche's tags — never places, generic tags or the brand's own
-    assert {"smashburger", "foodie", "comida"} <= set(offered)
-    assert not {"cucutafood", "fyp", "burgerlovers"} & set(offered)
+    assert {"smashburger", "foodie", "comida"} <= set(starting)
+    assert not {"cucutafood", "fyp", "burgerlovers"} & set(starting)
     assert choice.by == "ai" and choice.tags == ("smashburger",)
     assert choice.picks["smashburger"] == {
         "model": "claude-sonnet-5",
         "fit": "alta",
         "reason": "encaja: smashburger",
     }
+
+
+def test_the_catalog_tools_apply_the_same_filter(repo, fresh_choices) -> None:
+    """Whatever Claude searches for, a place, a generic tag or the brand's own tag is
+    never shown to it — the filter lives on the catalog side of the tools."""
+    _taught(repo, "smash burgers", ["smashburger", "burgerlovers", "cucutaburger", "fyp"])
+    seed = _seed(terms=("smash burgers",), hashtags=("burgerlovers",))
+    tools = hashtag_catalog.CatalogTools(TENANT, seed, repo)
+    assert [c.tag for c in tools.search("smash burgers")] == ["smashburger"]
+    hashtag_catalog.ensure_seeded(TENANT, repository=repo)
+    assert {c.tag for c in tools.niche("food_drink")} == {"food", "foodie", "comida"}
+    assert tools.search("zzqqxxww") == []
 
 
 def test_an_empty_ai_choice_is_respected_not_replaced(repo, fresh_choices) -> None:

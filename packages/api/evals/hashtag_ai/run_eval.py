@@ -33,6 +33,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime
+from difflib import SequenceMatcher
 from itertools import combinations
 from pathlib import Path
 from typing import Any
@@ -79,22 +80,64 @@ def _load_env(path: str | None) -> None:
             os.environ.setdefault(name.strip(), value.strip().strip('"').strip("'"))
 
 
+#: What the model is shown before searching: the case's most used candidates (mostly
+#: broad or off-topic ones), so finding the specific tags takes the tools.
+STARTING = 8
+
+
+class CaseCatalog:
+    """The case's candidates behind the two catalog tools: fuzzy search (accents and
+    case folded, substring or difflib >= 0.4) and niche listing. Unlike production
+    (`hashtag_catalog.CatalogTools`) nothing is pre-filtered, so the model's own
+    judgement about places, generic tags and the brand's own tags is measured too."""
+
+    def __init__(self, candidates: list[Candidate]) -> None:
+        self.candidates = candidates
+        self.calls: list[str] = []
+
+    def search(self, query: str) -> list[Candidate]:
+        self.calls.append(f"buscar:{query}")
+        q = fold(query)
+        scored = []
+        for c in self.candidates:
+            slug = fold(c.tag)
+            ratio = SequenceMatcher(None, q, slug).ratio()
+            if q and (q in slug or slug in q or ratio >= 0.4):
+                scored.append((max(ratio, 0.9 if q in slug or slug in q else 0.0), c))
+        scored.sort(key=lambda pair: -pair[0])
+        return [c for _, c in scored]
+
+    def niche(self, key: str) -> list[Candidate]:
+        self.calls.append(f"nicho:{key}")
+        return sorted((c for c in self.candidates if c.niche == key), key=lambda c: -c.seen_count)
+
+
 def run_select(config: ModelConfig, case: dict[str, Any], max_picks: int, key: str) -> dict:
     brand = BrandProfile(**case["brand"])
     candidates = [
         Candidate(tag=c[0], seen_count=c[1], niche=c[3] if len(c) > 3 else None)
         for c in case["candidates"]
     ]
+    catalog = CaseCatalog(candidates)
+    starting = sorted(candidates, key=lambda c: -c.seen_count)[:STARTING]
     started = time.perf_counter()
     try:
         picks, stats = select_hashtags(
-            brand, candidates, api_key=key, max_picks=max_picks, config=config
+            brand,
+            catalog,
+            NICHES,
+            api_key=key,
+            starting=starting,
+            max_picks=max_picks,
+            config=config,
         )
     except HashtagAIError as exc:
-        return {"case": case["id"], "error": str(exc)}
+        return {"case": case["id"], "error": str(exc), "tools": catalog.calls}
     return {
         "case": case["id"],
         "picks": [asdict(p) for p in picks],
+        "tools": catalog.calls,
+        "turns": stats.turns,
         "seconds": round(time.perf_counter() - started, 2),
         "cost_usd": stats.cost_usd,
         "input_tokens": stats.input_tokens,
@@ -148,6 +191,7 @@ def score_select(runs: list[dict], cases: list[dict], max_picks: int) -> dict[st
         "errors": errors,
         "cost_per_call_usd": round(statistics.mean(r["cost_usd"] for r in ok), 5) if ok else None,
         "p50_seconds": round(statistics.median(r["seconds"] for r in ok), 2) if ok else None,
+        "mean_turns": round(statistics.mean(r["turns"] for r in ok), 1) if ok else None,
         "per_case": per_case,
     }
 
@@ -260,6 +304,7 @@ def main(argv: list[str] | None = None) -> int:
             "errors",
             "cost_per_call_usd",
             "p50_seconds",
+            "mean_turns",
         ]
         print("\nSELECT  " + "  ".join(cols))
         for name, entry in report["runs"].items():

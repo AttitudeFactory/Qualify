@@ -3,10 +3,11 @@ catalog (`qualify_api.hashtags`, migration 0023).
 
 Two Claude-backed jobs sit on top of the three below (`qualify_api.hashtags.ai`):
 
-- `ai_hashtags_for` — the READ side used by the wizard since plan 7: a wide pool of
-  catalog hashtags (the rubro's words, its niches, the most used tags) goes to Claude with
-  the brand's profile, and only the ones that fit THIS brand's business come back (a
-  restaurant does not get `#streetfood`). Stateless: the choice is stored with the phase
+- `ai_hashtags_for` — the READ side used by the wizard since plan 7: Claude gets the
+  brand's profile, a starting list of catalog tags and two catalog TOOLS (`CatalogTools`:
+  search by word, list a niche), explores the catalog itself, and returns through a
+  third tool only the tags that fit THIS brand's business (a restaurant does not get
+  `#streetfood`). Stateless: the choice is stored with the phase
   that used it (provenance), never written back into the catalog, so nothing is learned
   per rubro. Without a key, or on any failure, it falls back to `catalog_hashtags_for`.
 - `classify_pending` — what the rule in `classify_tag` left `unknown` (or a topic with no
@@ -196,14 +197,14 @@ def catalog_hashtags_for(
 # Claude: which catalog hashtags fit THIS brand
 # --------------------------------------------------------------------------------------
 
-#: Candidates Claude reads per brand. ~6 tokens each: 150 is ~1K input tokens, and wide
-#: enough that a rubro the lexical match misses (a restaurant never types "foodie") is
-#: still offered what the catalog knows.
-POOL_SIZE = 150
+#: How many catalog tags Claude is shown before it starts searching on its own: the
+#: operator's words, the seed's niches and the most used tags, so a run that needs no
+#: search is one turn. Everything else it finds with the tools (`CatalogTools`).
+STARTING_POOL = 40
 
-#: Loose on purpose (the rule path uses 0.55): Claude filters, so the pool may include
-#: near misses — it must not MISS what the operator's words point at.
-_POOL_MIN_SIMILARITY = 0.35
+#: Loose on purpose (the rule path uses 0.55): Claude judges the fit, so a search may
+#: return near misses — it must not MISS the variant the model is looking for.
+_SEARCH_MIN_SIMILARITY = 0.35
 
 #: One selection per seed and profile is reused this long in the process: the wizard
 #: runs discovery on every visit, and the answer for the same brand does not change
@@ -228,11 +229,13 @@ _choices_lock = threading.Lock()
 
 def _steers(stored: StoredHashtag, seed: DiscoverySeed) -> bool:
     """A catalog tag worth offering: topic-like, not a place (the national / local phases
-    compose places themselves), not generic, not the brand's own name."""
+    compose places themselves), not generic, not the brand's own name or tags."""
     if stored.kind not in _STEERING_KINDS:
         return False
     slug = creator_discovery._slug(stored.tag)
     if slug in creator_discovery._GENERIC_HASHTAGS:
+        return False
+    if slug in {creator_discovery._slug(t) for t in seed.hashtags}:
         return False
     handle = creator_discovery._slug(seed.handle)
     if handle and handle in slug:
@@ -243,36 +246,66 @@ def _steers(stored: StoredHashtag, seed: DiscoverySeed) -> bool:
     )
 
 
+def _as_candidate(stored: StoredHashtag) -> hashtag_ai.Candidate:
+    return hashtag_ai.Candidate(stored.tag, stored.seen_count, stored.niche)
+
+
+@dataclass
+class CatalogTools:
+    """The catalog side of Claude's tools (`hashtag_ai.CatalogSearch`) for one brand:
+    what `buscar_hashtags` and `hashtags_del_nicho` return, with the same filter as the
+    starting pool — so the model can never be shown a place, a generic tag or the
+    brand's own tag, whatever it searches for."""
+
+    tenant_id: UUID
+    seed: DiscoverySeed
+    repository: HashtagRepository
+
+    def search(self, query: str) -> list[hashtag_ai.Candidate]:
+        hits = self.repository.resolve(
+            self.tenant_id,
+            query,
+            limit=hashtag_ai.TOOL_RESULTS * 2,
+            min_similarity=_SEARCH_MIN_SIMILARITY,
+            kinds=_STEERING_KINDS,
+        )
+        # Best match first (the repository's order), not most used: a popular near miss
+        # must not bury the variant the model searched for.
+        return [_as_candidate(h.hashtag) for h in hits if _steers(h.hashtag, self.seed)]
+
+    def niche(self, key: str) -> list[hashtag_ai.Candidate]:
+        rows = self.repository.for_niche(self.tenant_id, key, limit=hashtag_ai.TOOL_RESULTS * 2)
+        return [_as_candidate(s) for s in rows if _steers(s, self.seed)]
+
+
 def candidate_pool(
     tenant_id: UUID,
     seed: DiscoverySeed,
     *,
     repository: HashtagRepository | None = None,
-    limit: int = POOL_SIZE,
+    limit: int = STARTING_POOL,
 ) -> list[StoredHashtag]:
-    """The catalog hashtags Claude chooses from: what the operator's words resolve to,
-    then the seed's niches, then the most seen topic tags of the whole catalog — minus
-    places, generic tags and what the brand already uses. Deliberately wide; the fit is
-    Claude's call, not this function's."""
+    """The catalog hashtags Claude is shown to start with: what the operator's words
+    resolve to, then the seed's niches, then the most seen topic tags of the whole
+    catalog — minus places, generic tags and what the brand already uses. A starting
+    point, not the limit of what it can choose: the tools reach the rest."""
     repo = repository or REPOSITORY
     ensure_seeded(tenant_id, repository=repo)
-    own = {creator_discovery._slug(t) for t in seed.hashtags}
     pool: dict[str, StoredHashtag] = {}
 
     def add(stored: StoredHashtag) -> None:
         if stored.tag not in pool and _steers(stored, seed):
-            if creator_discovery._slug(stored.tag) not in own:
-                pool[stored.tag] = stored
+            pool[stored.tag] = stored
 
     for term in seed.terms:
         for hit in repo.resolve(
-            tenant_id, term, limit=20, min_similarity=_POOL_MIN_SIMILARITY, kinds=_STEERING_KINDS
+            tenant_id, term, limit=20, min_similarity=_SEARCH_MIN_SIMILARITY, kinds=_STEERING_KINDS
         ):
             add(hit.hashtag)
     for niche in seed.niches[:2]:
-        for stored in repo.for_niche(tenant_id, niche, limit=40):
+        for stored in repo.for_niche(tenant_id, niche, limit=20):
             add(stored)
-    for stored in repo.top_tags(tenant_id, kinds=_STEERING_KINDS, limit=limit * 2):
+    for stored in repo.top_tags(tenant_id, kinds=_STEERING_KINDS, limit=limit * 3):
         if len(pool) >= limit:
             break
         add(stored)
@@ -304,12 +337,13 @@ def ai_hashtags_for(
     | None = None,
     now: float | None = None,
 ) -> HashtagChoice:
-    """The catalog hashtags that fit this brand, chosen by Claude
-    (`hashtag_ai.select_hashtags`, at most `SECTOR_CATALOG_TAGS`). An empty choice is a
-    valid answer — nothing in the catalog fits — and is respected, not papered over.
+    """The catalog hashtags that fit this brand, chosen by Claude with its catalog tools
+    (`hashtag_ai.select_hashtags` over `CatalogTools`, at most `SECTOR_CATALOG_TAGS`). An
+    empty choice is a valid answer — nothing in the catalog fits — and is respected, not
+    papered over.
 
     Falls back to the rule path (`catalog_hashtags_for`) when there is no key, the SDK
-    is not installed, or the call fails for any reason: the AI improves the search, it is
+    is not installed, or the run fails for any reason: the AI improves the search, it is
     never allowed to stop it. Database errors are NOT swallowed here — the caller already
     treats an unreadable catalog as "search without it"."""
     repo = repository or REPOSITORY
@@ -327,26 +361,27 @@ def ai_hashtags_for(
         key = api_key or hashtag_ai.api_key_from_env()
     except hashtag_ai.MissingAPIKey:
         return fallback()
-    pool = candidate_pool(tenant_id, seed, repository=repo)
-    if not pool:
-        return fallback()
+    starting = [_as_candidate(s) for s in candidate_pool(tenant_id, seed, repository=repo)]
     select = selector or hashtag_ai.select_hashtags
     try:
         picks, stats = select(
             _brand_profile(seed, bio, category),
-            [hashtag_ai.Candidate(s.tag, s.seen_count, s.niche) for s in pool],
+            CatalogTools(tenant_id, seed, repo),
+            creator_discovery.NICHE_LABELS,
             api_key=key,
+            starting=starting,
             max_picks=creator_discovery.SECTOR_CATALOG_TAGS,
         )
     except Exception as exc:  # noqa: BLE001 — SDK/transport/model errors all fall back
         logger.warning("hashtags: AI selection failed, using the rule path: %s", exc)
         return fallback()
     logger.info(
-        "hashtags: %s chose %s from %d candidates for @%s ($%.4f)",
+        "hashtags: %s chose %s for @%s in %d turns / %d tool calls ($%.4f)",
         stats.model_revision or stats.model_id,
         [p.tag for p in picks],
-        len(pool),
         seed.handle,
+        stats.turns,
+        stats.tool_calls,
         stats.cost_usd,
     )
     model = stats.model_revision or stats.model_id
