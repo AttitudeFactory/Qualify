@@ -259,6 +259,7 @@ class InMemoryRepository:
         usage,
         spent_usd,
         media=(),
+        failure_detail=None,
     ):  # noqa: ANN001, ANN201
         if media:
             self.drafts[draft_id] = replace(self.drafts[draft_id], preview_key=preview_of(media))
@@ -292,7 +293,12 @@ class InMemoryRepository:
         self.spend_added += spent_usd
         draft = self.drafts[draft_id]
         if draft.status == DRAFTING:
-            self.drafts[draft_id] = replace(draft, status=new_status, failure_reason=failure_reason)
+            self.drafts[draft_id] = replace(
+                draft,
+                status=new_status,
+                failure_reason=failure_reason,
+                failure_detail=failure_detail,
+            )
 
     def update_status(self, *, tenant_id, draft_id, new_status, failure_reason):  # noqa: ANN001, ANN201
         self.drafts[draft_id] = replace(
@@ -1010,3 +1016,22 @@ def test_a_story_format_makes_a_story_post() -> None:
         make_brief(kind=ContentKind.STATIC_FLYER, format=ContentFormat.STORY_9_16)
     )
     assert repo.drafts[story].category == "story"
+
+
+def test_a_media_failure_keeps_its_reason_in_words() -> None:
+    router = FakeRouter([ok_outcome(copy_dict())])
+    media = FakeMedia(
+        MediaOutcome(failure="provider_error", detail="HeyGen: la cuenta no tiene créditos de API.")
+    )
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    brief = make_brief(
+        variants=1,
+        kind=ContentKind.AVATAR_VIDEO,
+        format=ContentFormat.REELS_9_16,
+        media=MediaInputs(avatar_look_id="lk", voice_id="vo"),
+    )
+    draft_id = repo.seed_draft(brief)
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert detail is not None and detail.failure_reason == "provider_error"
+    assert detail.failure_detail == "HeyGen: la cuenta no tiene créditos de API."

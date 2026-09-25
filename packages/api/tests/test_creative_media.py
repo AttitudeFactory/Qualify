@@ -31,6 +31,7 @@ from qualify_api.creative.media import (
     LocalMediaStore,
     MediaProducer,
     generated_key,
+    heygen_failure_text,
 )
 
 TENANT_ID = UUID("7e7e0000-0000-4000-8000-000000000001")
@@ -378,3 +379,62 @@ def test_the_chosen_format_sizes_the_flyer_and_the_video() -> None:
     heygen = FakeHeyGen()
     _produce(_producer(MemoryStore(), heygen), feed, uuid4())
     assert heygen.requests[0].params["aspect_ratio"] == "4:5"
+
+
+# --------------------------------------------------------------------------------------
+# ported from the HeyGen smoke-test panel (2026-09-25)
+# --------------------------------------------------------------------------------------
+
+
+def test_the_operators_own_script_is_read_word_for_word_on_the_chosen_engine() -> None:
+    heygen = FakeHeyGen()
+    brief = _brief(
+        ContentKind.AVATAR_VIDEO,
+        avatar_look_id="lk",
+        voice_id="vo",
+        own_script="Hola, soy Doña Rosa y hoy hay torta de tres leches.",
+        engine="avatar_iii",
+    )
+    _produce(_producer(MemoryStore(), heygen), brief, uuid4())
+    params = heygen.requests[0].params
+    assert params["script"] == "Hola, soy Doña Rosa y hoy hay torta de tres leches."
+    assert params["engine"] == "avatar_iii"
+
+
+def test_an_image_subject_carries_no_engine() -> None:
+    store = MemoryStore({"uploads/t/m.png": _png()})
+    heygen = FakeHeyGen()
+    brief = _brief(
+        ContentKind.ANIMATED_AVATAR_VIDEO,
+        voice_id="vo",
+        avatar_source=AvatarSource.IMAGE,
+        avatar_image_key="uploads/t/m.png",
+        avatar_rights_confirmed=True,
+        engine="avatar_iii",
+    )
+    _produce(_producer(store, heygen), brief, uuid4())
+    assert "engine" not in heygen.requests[0].params  # HeyGen's image mode is Avatar IV
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("HeyGenAPIError: HTTP 402 insufficient_credit: Insufficient credit", "no tiene créditos"),
+        ("HeyGenRenderTimeout: render v_1 still running after 480s", "se va a"),
+        ("HeyGenRenderFailed: HeyGen render v_1 failed: moderation_failed", "no pudo generar"),
+        ("HeyGenAPIError: HTTP 401 unauthorized", "rechazó la llave"),
+        ("something else entirely", "No se pudo generar el video"),
+    ],
+)
+def test_heygen_failures_are_explained_in_spanish(raw: str, expected: str) -> None:
+    text = heygen_failure_text(raw)
+    assert expected in text and raw[:40] in text  # the vendor's text stays, for support
+
+
+def test_a_failed_render_says_why_in_the_outcome() -> None:
+    heygen = FakeHeyGen(fail_render=True)
+    brief = _brief(ContentKind.AVATAR_VIDEO, avatar_look_id="lk", voice_id="vo")
+    outcome = _produce(_producer(MemoryStore(), heygen), brief, uuid4())
+    assert outcome.failure == "provider_error"
+    assert outcome.detail.startswith("No se pudo generar el video:")
+    assert "render failed" in outcome.detail

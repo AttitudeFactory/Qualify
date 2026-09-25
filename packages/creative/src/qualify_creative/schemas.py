@@ -46,6 +46,9 @@ DURATIONS_SECONDS = (15, 30, 45, 60)
 #: Product images per brief — a carousel is at most 10 slides on Instagram.
 MAX_PRODUCT_IMAGES = 10
 AVATAR_PROMPT_MAX = 600
+#: HeyGen's avatar engines: IV is the more natural, III costs about a third for stock
+#: avatars (pricing_data v2) — the operator picks per piece.
+AVATAR_ENGINES = ("avatar_iv", "avatar_iii")
 
 
 class ToneAxes(BaseModel):
@@ -259,11 +262,17 @@ class MediaInputs(BaseModel):
     #: The operator confirmed they may animate the uploaded image (it is not a photo of
     #: a real person used without consent — HeyGen's photo mode asks nobody).
     avatar_rights_confirmed: bool = False
+    #: The operator's own script for a video — read word for word instead of Claude's.
+    own_script: str = Field(default="", max_length=SCRIPT_MAX)
+    #: HeyGen engine for an avatar subject (an image subject always runs Avatar IV).
+    engine: str = "avatar_iv"
 
     @model_validator(mode="after")
     def _known_duration(self) -> MediaInputs:
         if self.duration_seconds not in DURATIONS_SECONDS:
             raise ValueError(f"duration_seconds must be one of {DURATIONS_SECONDS}")
+        if self.engine not in AVATAR_ENGINES:
+            raise ValueError(f"engine must be one of {AVATAR_ENGINES}")
         return self
 
 
@@ -321,6 +330,8 @@ class ContentBrief(BaseModel):
                 raise ValueError("an animated avatar needs its source: ai or image")
         if media.carousel and self.kind is not ContentKind.STATIC_FLYER:
             raise ValueError("only a flyer can be a carousel")
+        if media.own_script.strip() and not self.kind.is_video:
+            raise ValueError("an own script is for the avatar videos")
         if media.carousel and not self.format.is_feed:
             raise ValueError("a carousel is a feed post (4:5 or 1:1)")
         if self.format not in self.kind.formats:

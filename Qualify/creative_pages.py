@@ -971,6 +971,10 @@ def _failed_panel() -> rx.Component:
             rx.vstack(
                 rx.text(failure.label, size="2"),
                 rx.cond(
+                    CreativeState.draft.failure_detail != "",
+                    rx.text(CreativeState.draft.failure_detail, size="2", color=T.TEXT_MUTED),
+                ),
+                rx.cond(
                     failure.action_route != "",
                     rx.link(
                         rx.button(failure.action_label, variant="soft", size="2"),

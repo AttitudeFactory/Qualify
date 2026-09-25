@@ -425,6 +425,7 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         created_label=_format_dt(detail.created_at),
         kind=detail.kind,
         media=media,
+        failure_detail=detail.failure_detail,
     )
 
 
@@ -544,7 +545,8 @@ def heygen_catalog() -> tuple[list[dict[str, str]], list[dict[str, str]]]:
             "preview": str(look.get("preview_image_url") or ""),
         }
         for look in adapter.list_avatar_looks(api_key=key, limit=_CATALOG_LIMIT)
-        if look.get("id")
+        # a look still processing (or failed) cannot render yet
+        if look.get("id") and look.get("status", "completed") == "completed"
     ]
     voices = [
         {
