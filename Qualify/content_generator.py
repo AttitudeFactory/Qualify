@@ -335,11 +335,62 @@ def _avatar_section() -> rx.Component:
             rx.vstack(
                 rx.cond(CreativeState.brief_kind == "avatar_video", human, animated),
                 _voice_select(),
+                # an image subject always renders on Avatar IV: no choice to make there
+                rx.cond(
+                    (CreativeState.brief_kind == "avatar_video")
+                    | (CreativeState.avatar_source == "ai"),
+                    _engine_select(),
+                ),
                 spacing="4",
                 width="100%",
                 align_items="start",
             ),
         ),
+    )
+
+
+def _engine_select() -> rx.Component:
+    return rx.vstack(
+        rx.text("Motor de HeyGen", size="2", weight="medium"),
+        rx.segmented_control.root(
+            rx.segmented_control.item("Avatar IV · más natural", value="avatar_iv"),
+            rx.segmented_control.item("Avatar III · más barato", value="avatar_iii"),
+            value=CreativeState.avatar_engine,
+            on_change=CreativeState.set_avatar_engine,
+            size="2",
+        ),
+        spacing="2",
+        align_items="start",
+    )
+
+
+def _script_source() -> rx.Component:
+    """Claude writes the script to the chosen length, or the operator writes it and the
+    avatar reads it word for word."""
+    return rx.vstack(
+        rx.hstack(
+            rx.switch(
+                checked=CreativeState.own_script_on, on_change=CreativeState.set_own_script_on
+            ),
+            rx.text("Escribir mi propio guion", size="2"),
+            spacing="2",
+            align="center",
+        ),
+        rx.cond(
+            CreativeState.own_script_on,
+            rx.text_area(
+                value=CreativeState.own_script,
+                on_change=CreativeState.set_own_script,
+                placeholder="Lo que va a decir el avatar, palabra por palabra.",
+                width="100%",
+                rows="5",
+                max_length=2000,
+            ),
+            _duration_select(),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
     )
 
 
@@ -395,7 +446,7 @@ def _kind_inputs() -> rx.Component:
             rx.vstack(
                 _avatar_section(),
                 rx.divider(),
-                _duration_select(),
+                _script_source(),
                 rx.divider(),
                 rx.text(
                     "El fondo y los productos se componen en una sola imagen detrás del avatar.",

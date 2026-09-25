@@ -146,6 +146,35 @@ class LocalMediaStore:
         path.write_bytes(data)
 
 
+#: HeyGen's failures, in the operator's words (from the smoke-test panel it replaces).
+#: Matched on the error text the adapter / router carry; the raw text follows.
+_HEYGEN_FAILURES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        ("insufficient_credit", "HTTP 402"),
+        "HeyGen: la cuenta no tiene créditos de API. Recárgalos en HeyGen y vuelve a generar.",
+    ),
+    (
+        ("HeyGenRenderTimeout",),
+        "HeyGen sigue renderizando el video y tardó más de lo esperado. No se canceló: se va a"
+        " terminar y cobrar — búscalo en tu cuenta de HeyGen.",
+    ),
+    (("HeyGenRenderFailed", "moderation_failed"), "HeyGen no pudo generar el video."),
+    (("HTTP 401", "HTTP 403"), "HeyGen rechazó la llave de API (QUALIFY_HEYGEN_API_KEY)."),
+    (("HTTP 429",), "HeyGen está limitando las solicitudes. Espera un momento y reintenta."),
+    (("QUALIFY_HEYGEN_API_KEY", "no HeyGen key"), "Falta configurar QUALIFY_HEYGEN_API_KEY."),
+    (("HeyGen is not configured",), "Los videos con avatar no están configurados (HeyGen)."),
+)
+
+
+def heygen_failure_text(raw: str) -> str:
+    """What the operator reads when a video fails: the known cases in plain Spanish,
+    followed by the vendor's own text for the support ticket."""
+    for needles, text in _HEYGEN_FAILURES:
+        if any(needle in raw for needle in needles):
+            return f"{text} ({raw[:300]})"
+    return f"No se pudo generar el video: {raw[:300]}"
+
+
 def generated_key(tenant_id: UUID, draft_id: UUID, name: str) -> str:
     return f"generated/{tenant_id}/{draft_id}/{name}"
 
@@ -245,7 +274,7 @@ class MediaProducer:
             return MediaOutcome(
                 usage=tuple(usage),
                 failure=FailureReason.PROVIDER_ERROR.value,
-                detail=str(exc),
+                detail=heygen_failure_text(f"{type(exc).__name__}: {exc}"),
             )
         return MediaOutcome(media=tuple(media), usage=tuple(usage))
 
@@ -342,7 +371,12 @@ class MediaProducer:
     ) -> list[MediaWrite]:
         if self._heygen is None:
             raise _MediaFailed(FailureReason.PROVIDER_ERROR.value, "HeyGen is not configured")
-        script = (copy.script or f"{copy.hook} {copy.caption} {copy.cta}").strip()
+        # The operator's own script wins: it is read word for word.
+        script = (
+            brief.media.own_script.strip()
+            or copy.script
+            or f"{copy.hook} {copy.caption} {copy.cta}"
+        ).strip()
         # A retry of the same script re-uses HeyGen's render (24 h idempotency window);
         # a regenerated script is a new render.
         stamp = hashlib.sha256(f"{draft_id}:{script}".encode()).hexdigest()[:24]
@@ -373,13 +407,16 @@ class MediaProducer:
 
         subject: dict[str, object]
         if brief.kind is ContentKind.AVATAR_VIDEO:
-            subject = {"avatar_id": media.avatar_look_id}
+            subject = {"avatar_id": media.avatar_look_id, "engine": media.engine}
         elif media.avatar_source is AvatarSource.IMAGE:
             image = self._store.read(media.avatar_image_key or "")
             name = "avatar.png" if (media.avatar_image_key or "").endswith(".png") else "avatar.jpg"
             subject = {"image_asset_id": self._upload(key, image, name, f"{stamp}-avatar")}
         else:
-            subject = {"avatar_id": self._prompt_avatar(key, brief, stamp, budget, usage)}
+            subject = {
+                "avatar_id": self._prompt_avatar(key, brief, stamp, budget, usage),
+                "engine": media.engine,
+            }
         params.update(subject)
 
         request = GenerationRequest(
@@ -406,7 +443,7 @@ class MediaProducer:
                 FailureReason.BUDGET_EXCEEDED.value
                 if blocked
                 else FailureReason.PROVIDER_ERROR.value,
-                f"HeyGen render: {detail}",
+                heygen_failure_text(detail),
             )
         result = outcome.result
         payload = dict(result.payload) if isinstance(result.payload, dict) else {}

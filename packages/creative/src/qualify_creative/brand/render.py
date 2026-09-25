@@ -187,7 +187,10 @@ def _volatile_suffix(brief: ContentBrief, task: GenerationTask) -> str:
         else "(brand default)"
     )
     field_lines = list(_COPY_FIELD_LINES)
-    if brief.kind.has_script:
+    own_script = brief.media.own_script.strip()
+    if own_script:
+        field_lines.append("- script: string, EXACTLY the operator's script below, word for word")
+    elif brief.kind.has_script:
         words = round(brief.media.duration_seconds * _SPOKEN_WORDS_PER_SECOND)
         field_lines.append(
             f"- script: string, the spoken text, about {words} words"
@@ -219,6 +222,15 @@ def _volatile_suffix(brief: ContentBrief, task: GenerationTask) -> str:
         f"Intent: {brief.intent.value}",
         f"Image route: {brief.image_route.value}",
         f"Piece kind: {brief.kind.value}. {_KIND_ASSIGNMENT[brief.kind]}",
+        *(
+            (
+                "The operator wrote the script themselves. Do not rewrite it: copy it"
+                " into `script` word for word, and write the hook, caption and CTA of"
+                f" the post to match it. Operator's script: «{own_script}»",
+            )
+            if own_script
+            else ()
+        ),
         f"Must mention: {_listing(constraints.must_mention)}",
         f"Must avoid: {_listing(constraints.must_avoid)}",
         f"Maximum caption characters for this piece: {max_chars}",
