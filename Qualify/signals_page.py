@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .content_generator import generator_panel
 from .ui import app_shell, empty_state, page_body, page_header
 
 
@@ -23,6 +24,9 @@ def signals_index() -> rx.Component:
             "Detectores de oportunidad sobre lo que se dice de tu marca",
         ),
         page_body(
+            # The content generator lives here while it is being tested (§ request
+            # 2026-09-25); /create keeps its original form.
+            generator_panel(),
             empty_state(
                 "radar",
                 "Todavía no hay señales que mostrar",

@@ -897,6 +897,37 @@ class CreativeState(rx.State):
 
     @rx.event(background=True)
     async def submit_brief_form(self) -> AsyncIterator[rx.event.EventSpec]:
+        """/create's form: the image route picked in the accordion."""
+        async with self:
+            if self.is_submitting:
+                return
+            if not self.brief_topic.strip():
+                self.create_error = _TOPIC_REQUIRED
+                return
+            if self.selected_needs_upload and not self.staged_media_key:
+                self.create_error = _UPLOAD_REQUIRED
+                return
+            self.is_submitting = True
+            self.create_error = ""
+            form = {
+                "objective": self.brief_objective,
+                "content_type": self.brief_content_type,
+                "topic": self.brief_topic,
+                "product_ref": self.brief_product_ref,
+                "intent": self.brief_intent,
+                "image_route": self.selected_route,
+                "source_media_key": self.staged_media_key,
+                "must_mention": self.brief_must_mention,
+                "must_avoid": self.brief_must_avoid,
+            }
+        async for event in self._send_brief(form):
+            yield event
+
+    @rx.event(background=True)
+    async def submit_generator_form(self) -> AsyncIterator[rx.event.EventSpec]:
+        """The content generator on /signals (`content_generator.py`): the content kind
+        and its inputs; the image route is derived from them
+        (`creative_provider.submit_brief`)."""
         async with self:
             if self.is_submitting:
                 return
@@ -909,8 +940,6 @@ class CreativeState(rx.State):
                 return
             self.is_submitting = True
             self.create_error = ""
-            # The image route is derived from the kind and its images
-            # (`creative_provider.submit_brief`), no longer picked on its own.
             form = {
                 "objective": self.brief_objective,
                 "content_type": self.brief_content_type,
@@ -924,6 +953,12 @@ class CreativeState(rx.State):
                 "kind": self.brief_kind,
                 "media": self._media_inputs(),
             }
+        async for event in self._send_brief(form):
+            yield event
+
+    async def _send_brief(self, form: dict[str, object]) -> AsyncIterator[rx.event.EventSpec]:
+        """Create the draft from a form and go to it — shared by both forms. Must be
+        called outside the state lock, with `is_submitting` already set."""
         ids = await self._session_ids()
         if ids is None:
             async with self:
