@@ -1199,6 +1199,7 @@ def _review_panel() -> rx.Component:
                 variant="soft",
                 color_scheme="gray",
                 on_click=CreativeState.reject_current(False),
+                disabled=~draft.can_reject,
                 size="2",
             ),
             rx.button(
@@ -1207,6 +1208,7 @@ def _review_panel() -> rx.Component:
                 variant="soft",
                 color_scheme="amber",
                 on_click=CreativeState.reject_current(True),
+                disabled=~draft.can_regenerate,
                 size="2",
             ),
             rx.button(

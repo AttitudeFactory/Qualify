@@ -25,6 +25,7 @@ from uuid import UUID, uuid4
 
 import reflex as rx
 from pydantic import ValidationError
+from qualify_api.creative.fsm import InvalidTransition
 from qualify_api.creative.service import (
     BrandNotReady,
     RouteBlockedByPolicy,
@@ -112,6 +113,10 @@ _GEN_POLL_SECONDS = 3.0
 #: An AI avatar plus its render can take many minutes; the draft's reaper is 20.
 _GEN_POLL_BUDGET_SECONDS = 20 * 60
 _MAX_PRODUCTS = 10
+_NOT_REJECTABLE = (
+    "Este borrador ya no se puede rechazar: ya fue rechazado o aprobado. "
+    "Actualiza la página para ver su estado."
+)
 _DRAFT_GONE = "Ese borrador no existe o ya no es visible para este negocio."
 _VARIANT_REQUIRED = "Elige una variante antes de aprobar."
 _POLL_TIMEOUT = (
@@ -1479,6 +1484,12 @@ class CreativeState(rx.State):
         except UnknownDraft:
             async with self:
                 self.action_error = _DRAFT_GONE
+            return
+        except InvalidTransition:
+            # The draft moved on (another tab, or an already-rejected/approved draft):
+            # say so instead of letting the FSM error reach the generic Reflex toast.
+            async with self:
+                self.action_error = _NOT_REJECTABLE
             return
         except SQLAlchemyError as exc:
             logger.error("reject failed: %s", type(exc).__name__)

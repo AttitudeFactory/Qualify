@@ -28,6 +28,8 @@ from .inbox_page import inbox_index
 from .inbox_state import InboxState
 from .leads_page import leads_index
 from .leads_state import LeadsState
+from .planner_page import planner_index
+from .planner_state import PlannerState
 from .publishing_page import publish_index
 from .publishing_state import PublishState
 from .signals_page import signals_index
@@ -226,6 +228,15 @@ app.add_page(
     route="/drafts/[draft_id]",
     on_load=[AuthState.require_login, CreativeState.load_draft],
     title="Qualify · Borrador",
+)
+# QUA-108 — Planificador: calendario editorial (vista semanal por horas + lista).
+# Planifica qué POST sale, cuándo y en qué cuenta; no publica (eso es /publish ahora,
+# o QUA-111 después).
+app.add_page(
+    planner_index,
+    route="/planner",
+    on_load=[AuthState.require_login, PlannerState.load_current_week],
+    title="Qualify · Planificador",
 )
 # QUA-106 — Stories: un solo formulario de publicación (cuenta -> video -> preview
 # -> Publicar -> STORIES), mismo patrón que /publish, con un panel de tendencias

@@ -660,6 +660,10 @@ class DraftVM:
     fidelity_summary: str = ""
     cost_label: str = ""
     can_approve: bool = False
+    # FSM facts for the review buttons: only a GENERATED draft can be rejected; a
+    # GENERATED or already-REJECTED one can go back to generation.
+    can_reject: bool = False
+    can_regenerate: bool = False
     blocking_reason: str | None = None
     failure: FailureVM | None = None
     requires_ai_disclosure: bool = False
@@ -716,6 +720,8 @@ def build_draft_vm(
         fidelity_summary=fidelity_summary,
         cost_label=format_cost_label(total_cost_usd, voice_profile_version, model_ids),
         can_approve=can_approve,
+        can_reject=status == DraftStatus.GENERATED.value,
+        can_regenerate=status in (DraftStatus.GENERATED.value, DraftStatus.REJECTED.value),
         blocking_reason=blocking_reason,
         failure=failure_vm(failure_reason),
         requires_ai_disclosure=requires_ai_disclosure,

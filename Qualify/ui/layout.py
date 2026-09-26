@@ -61,6 +61,7 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
             ("Marca", "palette", "/brand", True),
             ("Crear pieza", "wand-sparkles", "/create", True),
             ("Borradores", "layout-list", "/drafts", True),
+            ("Planificador", "calendar-days", "/planner", True),
             ("Publicar", "upload", "/publish", True),
             ("Stories", "clapperboard", "/stories", True),
         ],

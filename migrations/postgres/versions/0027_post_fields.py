@@ -1,8 +1,8 @@
 """content_drafts as the POST: title, category, reuse_type, preview_key, revision,
 approved_revision (QUA-109).
 
-Revision ID: 0025
-Revises: 0024
+Revision ID: 0027
+Revises: 0026
 Create Date: 2026-09-25
 
 ## Why this exists
@@ -35,8 +35,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0025"
-down_revision = "0024"
+revision = "0027"
+down_revision = "0026"
 branch_labels = None
 depends_on = None
 

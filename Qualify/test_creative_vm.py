@@ -394,3 +394,25 @@ def test_voice_proposal_marks_differing_axes_and_labels_sources() -> None:
         sources=[],
     )
     assert not active.can_approve
+
+
+def _vm_for(status: str):
+    return build_draft_vm(
+        draft_id="d1",
+        status=status,
+        failure_reason=None,
+        variants=(),
+        image_url=None,
+        total_cost_usd=None,
+        voice_profile_version=None,
+        model_ids=(),
+        requires_ai_disclosure=False,
+        created_label="",
+    )
+
+
+def test_review_buttons_follow_the_fsm() -> None:
+    generated, rejected, approved = _vm_for("generated"), _vm_for("rejected"), _vm_for("approved")
+    assert generated.can_reject and generated.can_regenerate
+    assert not rejected.can_reject and rejected.can_regenerate  # regenerate is still legal
+    assert not approved.can_reject and not approved.can_regenerate

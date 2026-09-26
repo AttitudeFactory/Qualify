@@ -63,6 +63,7 @@ from qualify_api.creative.dispatch import TaskDispatcher, reap_stale_drafts
 from qualify_api.creative.fsm import (
     DRAFT_STATUSES,
     DRAFTING,
+    REJECTED,
     DraftTrigger,
     apply_transition,
 )
@@ -132,7 +133,7 @@ class DraftRecord:
     approved_by: UUID | None
     approved_at: datetime | None
     created_at: datetime
-    # the POST fields (0025, QUA-109)
+    # the POST fields (0027, QUA-109)
     title: str = ""
     category: str | None = None
     reuse_type: str | None = None
@@ -156,7 +157,7 @@ class VariantRecord:
 
 @dataclass(frozen=True)
 class ImageRecord:
-    """One ``image_assets`` row: an image or (since 0024) a video, in carousel order."""
+    """One ``image_assets`` row: an image or (since 0026) a video, in carousel order."""
 
     id: UUID
     media_url: str
@@ -186,11 +187,11 @@ class DraftDetail:
     created_at: datetime
     variants: tuple[VariantRecord, ...]
     image: ImageRecord | None
-    #: Every media item in order — the flyer, the carousel's slides or the video (0024).
+    #: Every media item in order — the flyer, the carousel's slides or the video (0026).
     media: tuple[ImageRecord, ...] = ()
     #: The brief's `ContentKind` value.
     kind: str = "static_flyer"
-    # the POST fields (0025, QUA-109)
+    # the POST fields (0027, QUA-109)
     title: str = ""
     category: str | None = None
     reuse_type: str | None = None
@@ -1186,9 +1187,15 @@ class ContentService:
         ``user_id`` are logged — the schema carries no rejection-audit columns yet, and
         stuffing them into ``failure_reason`` (which belongs to ``FAILED``) would lie."""
         record = self._require_draft(tenant_id=tenant_id, draft_id=draft_id)
-        new_status = apply_transition(record.status, DraftTrigger.REJECT)
-        if regenerate:
-            new_status = apply_transition(new_status, DraftTrigger.REGENERATE)
+        if regenerate and record.status == REJECTED:
+            # Already rejected: "Rechazar y regenerar" only needs the regenerate edge.
+            # Applying REJECT again is not a legal edge (rejected → rejected) and used to
+            # surface as an unhandled InvalidTransition in the review screen.
+            new_status = apply_transition(record.status, DraftTrigger.REGENERATE)
+        else:
+            new_status = apply_transition(record.status, DraftTrigger.REJECT)
+            if regenerate:
+                new_status = apply_transition(new_status, DraftTrigger.REGENERATE)
         self._repo.update_status(
             tenant_id=tenant_id, draft_id=draft_id, new_status=new_status, failure_reason=None
         )
