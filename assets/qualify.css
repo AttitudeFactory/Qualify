@@ -553,3 +553,54 @@ body[data-deck-dragging] .q-deck-zone {
   }
   .q-lift:hover { transform: none; }
 }
+
+/* Planificador (QUA-108): desktop calendar vs phone list. On plain divs, because
+   Radix's own base `display` on its components can outrank an emotion `display`. */
+.q-planner-desktop { display: block; }
+.q-planner-mobile { display: none; }
+@media (max-width: 47.99em) {
+  .q-planner-desktop { display: none; }
+  .q-planner-mobile { display: block; }
+  /* List item on a phone: the time goes above the card and the approval/status pills
+     wrap under the text, or the title column is squeezed to zero width. Doubled
+     classes so they outrank Radix's single-class flex utilities. */
+  .q-plist-item.q-plist-item { flex-direction: column; gap: 0.35rem; }
+  .q-plist-time.q-plist-time { padding-top: 0; min-width: 0; }
+  .q-plist-item > .q-lift { width: 100%; }
+  .q-plist-body.q-plist-body { flex-wrap: wrap; }
+  .q-plist-pills.q-plist-pills { flex-direction: row; flex-basis: 100%; align-items: center; }
+}
+
+/* Planificador: the "+" an empty calendar slot shows on hover. Plain classes (no Radix
+   component) so nothing in the Radix base layer can outrank them. */
+.q-planner-slot-plus {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--gray-6);
+  border-radius: var(--q-radius-control);
+  background: var(--color-panel-solid);
+  color: var(--gray-11);
+  box-shadow: var(--q-elev-island);
+  opacity: 0;
+  transform: scale(0.9);
+  transition: opacity var(--q-dur-fast) var(--q-ease), transform var(--q-dur-fast) var(--q-ease);
+  pointer-events: none;
+}
+.q-planner-slot:hover .q-planner-slot-plus {
+  opacity: 1;
+  transform: scale(1);
+}
+/* …and in a slot that already has posts: in the flow, under the last chip. */
+.q-planner-slot-plus--below {
+  position: static;
+  align-self: flex-end;
+  width: 22px;
+  height: 22px;
+  box-shadow: none;
+}
