@@ -193,6 +193,7 @@ class AuthState(rx.State):
             from .creative_wizard_pages import BrandConnectState, BrandWizardState
             from .inbox_state import InboxState
             from .leads_state import LeadsState
+            from .planner_state import PlannerState
             from .publishing_state import PublishState
             from .replies_state import RepliesState
             from .state import DashboardState
@@ -216,6 +217,7 @@ class AuthState(rx.State):
                 BrandConnectState,
                 RepliesState,
                 StoriesState,
+                PlannerState,
             ):
                 substate = await self.get_state(state_cls)
                 substate.reset()
