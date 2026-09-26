@@ -55,6 +55,7 @@ from qualify_api.creative.dispatch import TaskDispatcher, reap_stale_drafts
 from qualify_api.creative.fsm import (
     DRAFT_STATUSES,
     DRAFTING,
+    REJECTED,
     DraftTrigger,
     apply_transition,
 )
@@ -949,9 +950,15 @@ class ContentService:
         ``user_id`` are logged — the schema carries no rejection-audit columns yet, and
         stuffing them into ``failure_reason`` (which belongs to ``FAILED``) would lie."""
         record = self._require_draft(tenant_id=tenant_id, draft_id=draft_id)
-        new_status = apply_transition(record.status, DraftTrigger.REJECT)
-        if regenerate:
-            new_status = apply_transition(new_status, DraftTrigger.REGENERATE)
+        if regenerate and record.status == REJECTED:
+            # Already rejected: "Rechazar y regenerar" only needs the regenerate edge.
+            # Applying REJECT again is not a legal edge (rejected → rejected) and used to
+            # surface as an unhandled InvalidTransition in the review screen.
+            new_status = apply_transition(record.status, DraftTrigger.REGENERATE)
+        else:
+            new_status = apply_transition(record.status, DraftTrigger.REJECT)
+            if regenerate:
+                new_status = apply_transition(new_status, DraftTrigger.REGENERATE)
         self._repo.update_status(
             tenant_id=tenant_id, draft_id=draft_id, new_status=new_status, failure_reason=None
         )
