@@ -19,6 +19,7 @@ from qualify_api.hashtags import (
     MATCH_FUZZY_TAG,
     MATCH_FUZZY_TERM,
     MATCH_TERM,
+    Classification,
     HashtagRepository,
     MemoryHashtagRepository,
     NewHashtag,
@@ -322,6 +323,90 @@ def test_for_niche_orders_by_sightings(repo: HashtagRepository) -> None:
     assert [t.seen_count for t in tags] == [9, 1]
     assert repo.for_niche(TENANT, niche, limit=1)[0].seen_count == 9
     assert repo.for_niche(TENANT, f"niche_{_word()}") == ()
+
+
+def test_top_tags_filters_kinds_and_orders_by_sightings(repo: HashtagRepository) -> None:
+    word = _word()
+    repo.upsert_hashtags(
+        TENANT,
+        [
+            NewHashtag(tag=f"{word}a", source="observed", kind="topic", seen=10**8),
+            NewHashtag(tag=f"{word}b", source="observed", kind="unknown", seen=10**8 + 1),
+            NewHashtag(tag=f"{word}c", source="observed", kind="generic", seen=10**8 + 2),
+        ],
+    )
+    mine = [t.tag for t in repo.top_tags(TENANT, limit=10_000) if t.tag.startswith(word)]
+    assert mine == [f"{word}b", f"{word}a"]
+    only_topics = repo.top_tags(TENANT, kinds=("topic",), limit=10_000)
+    assert [t.tag for t in only_topics if t.tag.startswith(word)] == [f"{word}a"]
+
+
+# -- AI classification -------------------------------------------------------------------
+
+
+def test_classification_validates_its_vocabulary() -> None:
+    with pytest.raises(ValueError):
+        Classification(tag="ok", kind="unknown")
+    with pytest.raises(ValueError):
+        Classification(tag="ok", kind="weird")
+    with pytest.raises(ValueError):
+        Classification(tag="ok", kind="place", country_code="COL")
+    assert Classification(tag="#OK", kind="place", country_code="ve").country_code == "VE"
+
+
+def test_needs_classification_lists_only_what_a_rule_left_open(repo: HashtagRepository) -> None:
+    word = _word()
+    repo.upsert_hashtags(
+        TENANT,
+        [
+            NewHashtag(tag=f"{word}unknown", source="observed", seen=5),
+            NewHashtag(tag=f"{word}noniche", source="observed", kind="topic", seen=4),
+            NewHashtag(tag=f"{word}niche", source="observed", kind="topic", niche="food_drink"),
+            NewHashtag(tag=f"{word}generic", source="observed", kind="generic"),
+            NewHashtag(tag=f"{word}taxonomy", source="taxonomy", kind="topic"),
+            NewHashtag(tag=f"{word}byai", source="observed", kind="noise", classified_by="ai"),
+        ],
+    )
+    pending = [
+        t.tag for t in repo.needs_classification(TENANT, limit=100_000) if t.tag.startswith(word)
+    ]
+    assert pending == [f"{word}unknown", f"{word}noniche"]
+
+
+def test_apply_classification_is_a_decision_not_a_sighting(repo: HashtagRepository) -> None:
+    tag = f"{_word()}burger"
+    repo.upsert_hashtags(TENANT, [NewHashtag(tag=tag, source="observed", network="tiktok", seen=3)])
+    before = repo.get(TENANT, tag)
+    assert before is not None
+
+    changed = repo.apply_classifications(
+        TENANT, [Classification(tag=tag, kind="topic", niche="food_drink")]
+    )
+
+    after = repo.get(TENANT, tag)
+    assert changed == 1 and after is not None
+    assert (after.kind, after.niche, after.classified_by) == ("topic", "food_drink", "ai")
+    assert (after.seen_count, after.networks) == (3, ("tiktok",))
+    assert after.last_seen_at == before.last_seen_at
+    assert tag not in {t.tag for t in repo.needs_classification(TENANT, limit=100_000)}
+
+
+def test_apply_classification_never_overrides_a_person(repo: HashtagRepository) -> None:
+    tag = f"{_word()}moda"
+    repo.upsert_hashtags(
+        TENANT, [NewHashtag(tag=tag, source="manual", kind="topic", classified_by="manual")]
+    )
+    assert repo.apply_classifications(TENANT, [Classification(tag=tag, kind="noise")]) == 0
+    stored = repo.get(TENANT, tag)
+    assert stored is not None and (stored.kind, stored.classified_by) == ("topic", "manual")
+
+
+def test_apply_classification_ignores_a_tag_the_catalog_never_saw(
+    repo: HashtagRepository,
+) -> None:
+    tag = _word()
+    assert repo.apply_classifications(TENANT, [Classification(tag=tag, kind="generic")]) == 0
+    assert repo.get(TENANT, tag) is None
 
 
 # -- the database's own floor (Postgres only) ---------------------------------------------

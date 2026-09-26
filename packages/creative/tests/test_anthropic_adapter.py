@@ -179,3 +179,37 @@ def test_supports_copy_only() -> None:
     adapter, _ = make_adapter(FakeMessages())
     assert adapter.name == "anthropic"
     assert adapter.supports == frozenset({GenerationTask.COPY})
+
+
+def test_the_output_schema_is_strict_for_structured_outputs() -> None:
+    """The API rejects an object schema without `additionalProperties: false` (HTTP 400,
+    measured 2026-09-25) — every object in the copy schema, nested ones included."""
+    from qualify_creative.adapters.anthropic_copy import strict_schema
+    from qualify_creative.schemas import CopyPayload
+
+    schema = strict_schema(CopyPayload.model_json_schema())
+
+    def objects(node: object) -> list[dict]:
+        found: list[dict] = []
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                found.append(node)
+            for value in node.values():
+                found.extend(objects(value))
+        elif isinstance(node, list):
+            for value in node:
+                found.extend(objects(value))
+        return found
+
+    assert objects(schema) and all(o["additionalProperties"] is False for o in objects(schema))
+    hook = schema["properties"]["hook"]
+    assert "maxLength" not in hook and "maxLength: 60" in hook["description"]
+
+
+def test_the_strict_schema_matches_the_sdks_own_transform() -> None:
+    anthropic = pytest.importorskip("anthropic")
+    from qualify_creative.adapters.anthropic_copy import strict_schema
+    from qualify_creative.schemas import CopyPayload
+
+    raw = CopyPayload.model_json_schema()
+    assert strict_schema(raw) == anthropic.transform_schema(raw)

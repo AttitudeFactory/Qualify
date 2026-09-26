@@ -222,6 +222,82 @@ La pantalla previa a Resultados e insights (`_connect_step_sort`, `_SORT_STEP`),
 
 **Limitación real, no un bug: Instagram casi no aporta hashtags propios.** Medido contra el catálogo real tras el primer día de uso: de 314 hashtags guardados, **295 llevan `networks = {tiktok}` y ninguno lleva `instagram`** — pese a que Instagram sí aportó cuentas reales (186 descubiertas, 117 de búsqueda directa por keyword). La causa está en el vendor, no en el código: TikTok expone los hashtags de un video en un campo estructurado (`text_extra[].hashtag_name`) que `candidates_from_tiktok_videos` añade al texto aunque no aparezcan escritos; Instagram (Scrape Creators) solo los trae si están escritos literalmente en el caption (`reel["caption"]`, leído con un regex `#(\w+)` en `candidates_from_instagram_reels`) — no existe un campo equivalente a `text_extra` para Instagram en ningún endpoint de este vendor (confirmado también en `scrapecreators_client.py`, función `_page_hashtags`, sobre el endpoint hermano `/v2/instagram/user/posts`). Cuando una cuenta de Instagram sí escribe "#algo" en el caption, se captura igual — el mecanismo de unión de `networks` de arriba ya está listo para ese caso, simplemente hoy tiene poco con qué alimentarse desde Instagram.
 
+**Corrección 2026-09-25: la causa principal SÍ estaba en el código (`PHASED_PLAN_VERSION` 6→7).** El diagnóstico de arriba era incompleto. En el flujo real las cuentas de Instagram casi nunca pasan por `candidates_from_instagram_reels`: llegan por Google `site:instagram.com`, por `edge_related_profiles` y por el espejo de handles, y en los tres casos lo único que se lee es el perfil (`/v1/instagram/profile`). Medido en vivo sobre `mouredev`: **esa lectura ya trae los últimos 12 posts con su caption** (`edge_owner_to_timeline_media.edges`, 58 hashtags en ese perfil), y `profile_facts` se quedaba solo con el `count` y descartaba los posts. Ahora `ProfileFacts.captions` los conserva y `_apply_facts` los suma como evidencia (nicho, lugar, relevancia) y como `hashtags_seen`, sin tocar el engagement (una lectura de perfil no es un avistamiento del feed). Costo extra: cero créditos, es la misma lectura. Las entradas de `discovery_profiles.json` anteriores no traen captions y se completan cuando vencen (30 días), para no gastar un crédito por cuenta de golpe. Lo que sigue sin leerse: hashtags puestos en el primer comentario.
+
+**IA sobre el catálogo (2026-09-25) — dos llamadas a Claude, ninguna aprende por rubro** (`packages/api/src/qualify_api/hashtags/ai.py`, puente en `Qualify/hashtag_catalog.py`):
+
+- **Qué hashtags buscar para ESTA marca — Claude Sonnet 5 (effort medium), como agente con herramientas (tools).** `ai_hashtags_for` le da una lista inicial de 40 tags del catálogo y tres herramientas: `buscar_hashtags(consulta)` y `hashtags_del_nicho(nicho)` para explorar el catálogo por su cuenta (prueba sinónimos, singular/plural, la forma en inglés — para una tienda de celulares buscó "celulares", "smartphone", "iphone", "xiaomi"), y `elegir_hashtags` para entregar la selección. Los lugares, genéricos y tags propios de la marca nunca le llegan (filtro del lado del catálogo, `CatalogTools`). Elige como máximo 3 que encajen con el producto **y el formato de negocio** de la marca: a un restaurante de autor no le da `#streetfood`, a una peluquería canina no le da `#peluqueria`. Solo puede elegir tags del pool (lo que invente se descarta en código), y devolver cero es una respuesta válida que se respeta. La elección va a `catalog_hashtags` → consultas del sector (`SECTOR_CATALOG_TAGS` sube de 2 a 3), hashtag local y stems de relevancia. Se guarda con la fase como `"origin": "ai"` con `model`, `fit` y `reason` (procedencia), y **nunca se escribe de vuelta como vínculo término → hashtag**: no se acumula nada por rubro, un rubro nuevo recibe el mismo juicio que uno buscado cien veces. Sin API key, sin el SDK, o si la llamada falla, cae al camino de reglas (`catalog_hashtags_for`) — la IA mejora la búsqueda, nunca la frena. Se reutiliza 12 h en memoria por marca. Costo medido: $0.01–0.024 por marca, 8–14 s (2–4 turnos).
+- **Qué ES cada hashtag — Claude Haiku 4.5.** `classify_pending` toma lo que la regla dejó `unknown` (o `topic` sin nicho) y lo clasifica en `topic`/`place`/`generic`/`noise` + nicho, por lotes de 80, en segundo plano tras cada captura; se guarda en el catálogo compartido con `classified_by='ai'` (la respuesta llega por la herramienta `clasificar_hashtags`) (nunca pisa una decisión manual; `apply_classifications` no cuenta como avistamiento). Esto sí se guarda porque es propiedad del tag, igual para cualquier marca. Backlog: `just classify-hashtags --dry-run` y luego `just classify-hashtags` (~$0.005 por lote).
+
+Por qué esos dos modelos: `packages/api/evals/hashtag_ai/README.md` (15 marcas de rubros distintos con trampas etiquetadas + 95 tags reales). Primera medición (llamada única): Haiku cayó en la trampa central (`#comidacallejera` para una hamburguesería smash, 2 de 2 veces); Sonnet medium, 0 trampas. Con herramientas: Sonnet precisión 0.92 / recall 0.88 frente a Haiku 0.89 / 0.69, y Sonnet además más rápido y no más caro. Para clasificar, Haiku 96.8% frente a 92.6% de Sonnet a un tercio del costo. API key: `QUALIFY_ANTHROPIC_API_KEY` en `.env` (la misma del módulo creativo).
+
+### 4.6 Hashtags del rubro como pills (2026-09-25)
+
+En **Tu rubro y ubicación**, al lado de "Tu rubro, con tus palabras", hay un botón **Sugerir** (en un influencer, que no tiene ese campo, el botón va en la cabecera del bloque de hashtags). Claude —el mismo agente con herramientas de §4.4b (`hashtag_catalog.suggest_hashtags` → `select_hashtags` sobre `CatalogTools`)— explora el catálogo con sinónimos y variantes de lo que escribió el operador y devuelve hasta **5** hashtags (`creator_discovery.CHOSEN_HASHTAGS`) como **pills**: acento las sugeridas (al pasar el ratón muestran la razón), gris las escritas a mano. Cada pill se quita con ✕; debajo hay un campo para agregar las propias (se normalizan: sin `#`, minúsculas, una sola palabra; no se repiten; máximo 5).
+
+**Por qué sí con la tool aquí:** el operador escribe su rubro con sus palabras, y lo que falla con una lista fija es justamente encontrar las variantes que el catálogo sí tiene (medido: #iphone/#smartphone para una tienda de celulares, que la lista fija nunca ofrecía). Y **no cuesta más**: cuando hay pills, *esas* son los hashtags de la búsqueda (`DiscoverySeed.chosen_hashtags`) y la búsqueda ya no hace su propia llamada a la IA — una sola corrida de Claude en cualquier caso. Medido en vivo: ~14–16 s y ~$0.01–0.02 por clic.
+
+**Cómo entran a la búsqueda (`PHASED_PLAN_VERSION` 7→8):** `chosen_hashtags` reemplaza a `catalog_hashtags` (`steering_hashtags()`), corre como hasta 5 consultas del sector y alimenta el hashtag local y los stems de relevancia. A diferencia de lo que elige el catálogo, **sí forma parte de la firma** (de `signature()` y de la de las fases *sector* y *local*, no de la *nacional*): cambiar las pills y salir del paso vuelve a buscar, porque eso es lo que espera quien las cambió. Se guardan con la fase como `"origin": "operator"`, con `suggested_by`/`reason` cuando las sugirió Claude (procedencia), y `rebuild_seed` las restaura para que `just refresh-referentes` calcule la misma firma. Sin pills, todo sigue como en §4.4b.
+
+### 4.7 Brief y brandboard leídos por Claude (2026-09-25)
+
+**Brief.** "¿Quién es la marca?" (en ambos flujos) abre con **¿Tienes un brief de marca?** → Subir brief (PDF, DOCX, TXT, MD o imagen, hasta 15 MB). **Brandboard.** En **Tu logo**, debajo del logo, **¿Tienes un brandboard? (opcional)** (imagen o PDF) — y un brandboard basta para continuar aunque no se suba el logo suelto (lo lleva dentro).
+
+Ambos pasan por la misma **tool `proponer_brand_kit`** (`packages/api/src/qualify_api/creative/brief_ai.py`, Claude Sonnet 5 effort medium): Claude lee el documento **nativamente** (el PDF o la imagen van como bloque de documento/imagen, así ve muestras de color y estilo, no solo el texto; el DOCX se lee sin dependencias nuevas) y responde con una llamada estricta: por campo del Brand Kit, el valor que el documento respalda y la **cita literal** de dónde sale. Campos: posicionamiento, audiencia, los 4 ejes de tono, así sí / así no habla, llamados a la acción, palabras y afirmaciones prohibidas y paleta.
+
+**Lo que se verifica antes de mostrarte nada** (`verify_proposal`):
+1. **Forma** — HEX normalizados (#RGB → #RRGGBB, los inválidos fuera), tono dentro de 0–100 (fuera de rango = "no lo dice"), listas limpias sin duplicados y con tope.
+2. **Cambio real** — lo que ya coincide con tu Brand Kit no se propone.
+3. **Cita** — si el documento tiene texto (DOCX/TXT/MD), la cita tiene que estar de verdad en él (sin importar tildes/mayúsculas); si no está, la propuesta aparece **desmarcada** con la marca "No hallamos la cita". En PDF o imagen no hay texto contra el cual comprobar: se muestra sin marca.
+
+**Tú decides:** el panel muestra por campo *Ahora* / *Propuesta* (la paleta como muestras de color) / la cita, con casillas; **Aplicar seleccionados** escribe solo lo marcado en los mismos campos que editan los pasos siguientes (`CreativeState.kit_*`), así que al llegar a Paleta o Tono ya está puesto. **Descartar** lo tira.
+
+Medido en vivo (2026-09-25) con un brief DOCX de prueba: **10 propuestas, las 10 con la cita verificada**, 14 s, $0.012; con un brandboard PNG: la paleta exacta (4 colores con su HEX), 7 s, $0.009. Estado propio `BrandDocumentState` en `Qualify/brand_documents.py` (reseteado en `logout` y al finalizar el flujo); los archivos quedan en disco igual que el logo (§7).
+
+### 4.8 Referentes revisados por Claude, marca o creador, y agregados a mano (2026-09-25)
+
+Tres cambios sobre la búsqueda de §4.3/§4.4, pedidos juntos: descartar los referentes que no tienen que ver con la marca, distinguir marcas de creadores y poder agregar a mano uno que el scrape no encuentra.
+
+**1. Revisión por IA en la búsqueda (`PHASED_PLAN_VERSION` 8→9).** Antes de elegir las cuentas de una fase, la **lista corta** pasa por la tool **`revisar_cuentas`** (`packages/api/src/qualify_api/referentes/ai.py`). La lista corta son las 10 mejor rankeadas por red, las únicas que pueden llegar a pantalla (`creator_discovery.review_shortlist`). Claude lee lo que cada cuenta dice de sí misma (nombre, bio, categoría, hasta 3 publicaciones, hashtags) y responde, por cuenta:
+
+- `encaja`: si es un par real de la marca. Aplica los mismos principios que la selección de hashtags: mismo producto o servicio, mismo formato de negocio, mismo público. Si no encaja, **se descarta** (`creator_discovery.apply_review`) y tampoco la ofrece una fase posterior.
+- `tipo`: `marca` / `creador` / `medio` / `otro`.
+- `razon`: una frase para el operador.
+
+El algoritmo no llama al modelo: recibe un `AccountReviewer` inyectado, que construye `Qualify/referentes_review.make_reviewer`. Sin API key no hay revisor y la búsqueda corre como antes. Si la revisión falla, la fase usa la elección sin revisar y **no se guarda** (`PhaseResult.review_failed`), para que la próxima visita la revise.
+
+**Modelo: Sonnet 5, effort `low`**, elegido con el eval `packages/api/evals/referentes_ai` (164 cuentas reales etiquetadas a mano, 4 marcas):
+
+| | Haiku 4.5 | Sonnet 5 low | Sonnet 5 medium |
+|---|---|---|---|
+| Trampas | 5/212 | **0/212** | 0/212 |
+| Precision | 0.95 | **1.00** | 1.00 |
+| Recall | 0.92 | **0.93** | 0.91 |
+
+Medido en vivo: **9 s y ~$0.02 por fase**, porque la lista corta va en dos llamadas de 10 en paralelo. Las trampas que evita son reales: la "programación" de TV, automotriz o del combustible para un creador de programación; cuentas de turismo y noticieros que colaban en la fase local; hamburgueserías para un restaurante de autor.
+
+**2. Marca / Creador en las tarjetas.** Cada tarjeta (deck y lista) muestra un badge **Marca**, **Creador** o **Medio**, y al pasar el ratón muestra la razón. Debajo del texto aparece la razón de Claude con ✦. Bajo el deck, **"La IA descartó N cuentas que no encajan"** se despliega con cada cuenta y su razón, para poder revisar un descarte y, si fue un error, agregarla a mano. Las claves nuevas de la tarjeta son `kind`, `kind_label`, `review`, `reviewed_by`, `manual`, `fits` y `note`. Las tarjetas guardadas antes de este cambio las reciben vacías (`card_view`).
+
+**3. Agregar un referente a mano.** Bajo el deck está **"¿Falta alguien? Agrégalo a mano"**. Sirve para una cuenta que el scrape no encuentra: poca actividad, pocos seguidores o **sin cuenta en TikTok/Instagram**. El formulario pide:
+
+- la red: Instagram, TikTok, YouTube, Facebook, X, LinkedIn, Web o Sin redes;
+- cómo se agrega: referente, competencia o detractor;
+- el usuario, el enlace o el nombre (un enlace decide su propia red: `referentes_review.parse_manual`);
+- una nota opcional ("qué hace y por qué la agregas"), que es la única evidencia cuando no hay perfil que leer.
+
+`referentes_review.add_manual_account` lee el perfil si está en una red que leemos (1 crédito, recordado en `discovery_profiles.json`) y lo revisa con **la misma tool** marcado como "agregada a mano". **La IA nunca lo rechaza**: si cree que no encaja, se agrega igual con un aviso ⚠ y su razón, porque decide el operador. Si el perfil no existe, también se agrega, con lo que se escribió.
+
+- **Dónde se guarda:** como la pseudo-fase **`manual`** de la marca en `brand_discovery_phases` (`referentes_provider.save_manual_account`), con `source='operator'`, **sin migración** (las claves de fase son abiertas).
+- **Cómo vuelve:** por el mismo camino que una cuenta que un algoritmo nuevo dejó de encontrar (`load_sort` → `kept`), en su bucket y con "agregado a mano" como razón.
+- **Refresh:** `plan_refresh` nunca la recalcula.
+- **Quitar:** la ✕ del chip borra su etiqueta; la tarjeta queda guardada solo como procedencia.
+
+Medido en vivo (hamburguesería del Táchira):
+
+- `@tequesburger2023` quedó como Marca: "hamburguesería de delivery en la misma ciudad".
+- "Pastelería Doña Rosa", sin redes, se agregó con aviso: "rubro distinto a smash burgers".
+- Un enlace a `@npr` quedó como Medio, con aviso.
+
 ### 4.5 Colores del logo → paleta (2026-09-16)
 
 Los colores de un logo **se añaden a la paleta** del paso siguiente, con la nota "Tomamos estos colores de tu logo" (o "…de tu foto de perfil"). Nunca había existido antes (verificado en todo el historial de git). **Un solo camino para todas las fuentes**, `BrandWizardState.apply_logo_colours(bytes, fuente)`:
@@ -330,6 +406,9 @@ Verificado con `reflex compile --dry` (`Success: App compiled successfully`) —
 Documentado también en el docstring del módulo. Campos que **sobreviven navegar entre pasos pero no un reload**, porque `save_kit_form` (en `creative_state.py`, sin tocar) no los conoce:
 
 - `BrandWizardState.subscription` y el brief de creación de logo (`logo_brief_1/2/3`) — copy placeholder, **no existe columna** para ninguno de los dos en `brand_kits`.
+- Las cuentas que la IA descartó (§4.8) — se muestran en la búsqueda que las descartó; una fase guardada guarda lo que se mostró, no lo que no.
+- El brief y el brandboard subidos (§4.7) — igual que el logo: en disco, en sesión. Lo que **sí** queda es lo que se aplicó desde ellos, porque va a los campos del Brand Kit que `save_kit_form` ya guarda.
+- Las pills de hashtags del rubro (§4.6) — en sesión mientras se recorre el flujo; quedan guardadas con cada fase de la búsqueda (`"origin": "operator"`), no como preferencia de la marca.
 - El logo subido (`logo_key`) — aquí la columna **sí existe** (`brand_kits.logo_asset_key`) y `creative_provider.save_kit` preserva a propósito lo que ya hubiera guardado (nada se pierde al guardar), pero ningún camino escribe todavía una clave nueva.
 
 Cerrar esto significa: una migración Alembic para `subscription`/brief (si se decide persistirlos), + subida a R2 del logo + un campo `logo_asset_key` en `KitFormVM` — trabajo de backend, fuera del alcance de esta sesión (solo UI).

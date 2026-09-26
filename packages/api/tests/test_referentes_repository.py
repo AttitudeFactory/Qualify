@@ -232,6 +232,43 @@ def test_phase_keys_are_open_so_a_new_phase_needs_no_migration(env: Env) -> None
     assert keys == {"sector", "hashtags"}
 
 
+def test_the_operators_manual_referentes_fit_the_same_tables(env: Env) -> None:
+    """`Qualify/referentes_provider.save_manual_account` (2026-09-25): referentes added
+    by hand are a `manual` phase, on networks the search never reads, sourced from the
+    operator — and `latest_accounts` restores them like any other card."""
+    env.repo.save_phase(
+        NewDiscoveryPhase(
+            tenant_id=env.tenant_a,
+            brand_id=env.brand_a,
+            phase_key="manual",
+            algorithm_version=9,
+            seed_signature="manual",
+            seed={"handle": "casaolivo", "hashtags": []},
+            title="Agregados a mano",
+            source="operator",
+            accounts=(
+                NewDiscoveredAccount(
+                    network="otro",
+                    handle="pasteleria-dona-rosa",
+                    card={"handle": "pasteleria-dona-rosa", "manual": "1"},
+                ),
+                NewDiscoveredAccount(
+                    network="youtube", handle="@CocinaConMaria", card={"manual": "1"}
+                ),
+            ),
+        )
+    )
+    stored = env.repo.latest_accounts(
+        tenant_id=env.tenant_a,
+        brand_id=env.brand_a,
+        identities=[("otro", "pasteleria-dona-rosa"), ("youtube", "cocinaconmaria")],
+    )
+    assert set(stored) == {("otro", "pasteleria-dona-rosa"), ("youtube", "cocinaconmaria")}
+    assert stored[("otro", "pasteleria-dona-rosa")].card["manual"] == "1"
+    (phase,) = env.repo.current_phases(tenant_id=env.tenant_a, brand_id=env.brand_a)
+    assert phase.source == "operator"
+
+
 def test_stale_phases_lists_only_current_phases_from_older_versions(env: Env) -> None:
     env.repo.save_phase(_phase(env, key="sector", version=4))
     env.repo.save_phase(_phase(env, key="sector", version=5))  # supersedes the v4 sector

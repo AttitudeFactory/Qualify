@@ -43,13 +43,18 @@ class RenderedPrompt:
 class Usage:
     """What a call consumed. Token fields stay zero for per-piece vendors and `pieces`
     stays zero for token-priced ones; both shapes coexist because the pricing table
-    carries two units and the budget check has to compare like with like."""
+    carries two units and the budget check has to compare like with like.
+
+    `media_seconds` is the third shape: video vendors bill by rendered second, and the
+    duration is only known once the render finishes — it is the vendor-reported length,
+    never the pre-flight estimate."""
 
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
     pieces: int = 0
+    media_seconds: Decimal = Decimal(0)
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,2372 @@
+{
+ "_doc": "Gold labels for `qualify_api.referentes.ai.review_accounts`. Accounts are REAL: the ones the stored referentes searches found (brand_discovered_accounts, 2026-09-25), with the caption the search surfaced; except the four marked `synthetic` in the fine-dining case. fit: y = a real peer of the brand, n = not (a trap when it shares a word or topic), m = ambiguous, not scored. kinds: the accepted `tipo` answers ([] = kind not scored).",
+ "cases": [
+  {
+   "id": "smash-burger-tachira",
+   "brand": {
+    "handle": "djvp.30",
+    "bio": "Smash burgers 🍔 San Cristóbal, Táchira",
+    "category": "Burger Restaurant",
+    "rubro": [
+     "hamburguesería",
+     "smash burgers"
+    ],
+    "niches": [
+     "Comida y bebida"
+    ],
+    "hashtags": [
+     "smashburger",
+     "hamburguesas"
+    ],
+    "city": "San Cristóbal",
+    "country": "Venezuela"
+   },
+   "accounts": [
+    {
+     "network": "tiktok",
+     "handle": "overtime",
+     "followers": 35295247,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "So cooked bro 😭 #robot #kungfu #ai #technology #bruh"
+     ],
+     "fit": "n",
+     "kinds": [
+      "medio",
+      "otro"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "overtime",
+     "followers": 10604962,
+     "bio": "Love ya’ll 🤞\n🍿 I CREATED @ote @ot7 & @overtimeselect\nHARDEST NBA WORKOUT 🚨⬇️",
+     "category": "",
+     "captions": [
+      "Love ya’ll 🤞 🍿 I CREATED @ote @ot7 & @overtimeselect HARDEST NBA WORKOUT 🚨⬇️"
+     ],
+     "fit": "n",
+     "kinds": [
+      "medio",
+      "otro",
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "technology",
+     "followers": 9181737,
+     "bio": "The go to source for everything tech and business. Unveiling the future of tomorrow, today! 🤖\nGet Featured: 📩 Partnerships@Technology.io",
+     "category": "",
+     "captions": [
+      "The go to source for everything tech and business. Unveiling the future of tomorrow, today! 🤖 Get Featured: 📩 …"
+     ],
+     "fit": "n",
+     "kinds": [
+      "medio"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "imparkerburton",
+     "followers": 3605478,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Thank you sooo much @Samsung US, @Microsoft, @Google, and @SonyElectronics !! #Tech #android #imparkerburton #…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "tatechtips",
+     "followers": 3567318,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Android Phones are about to get some serious POWER 💪🏼 Meet the new Snapdragon Elite Gen 6 & Elite Extreme Gen …"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "lauratuttman",
+     "followers": 3414299,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "e bora aprender a programar e dessa vez sem desculpas!! 😍💻 #programacao #app #dicas #hacks"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "imparkerburton",
+     "followers": 470203,
+     "bio": "That Android Guy\nBusiness: parker@imparkerburton.com",
+     "category": "",
+     "captions": [
+      "That Android Guy Business: parker@imparkerburton.com"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "lauratuttman",
+     "followers": 410449,
+     "bio": "✨ Muitas dicas e hacks para facilitar sua vida ✨\n↠ tiktok: lauratuttman(+3.5M) \n📬contato: lauratuttman@grupofarol.com",
+     "category": "Digital creator",
+     "captions": [
+      "✨ Muitas dicas e hacks para facilitar sua vida ✨ ↠ tiktok: lauratuttman(+3.5M) 📬contato: lauratuttman@grupofar…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "carterpcs",
+     "followers": 7180231,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "I owe him a new thinkpad.. help me get in contact with him @BinaryDec #carterpcs #Tech #pc #gamingpc #tech"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "brujeriatech",
+     "followers": 1830374,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Guía para Aprender a Programar Desde Cero: para Programadores Principiantes #developer #programador #programmi…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "brujeriatech",
+     "followers": 365178,
+     "bio": "No es brujería, es tecnología ⬅️\nAprende la magia detrás de tu pantalla \nIng. de software certificado\nContacto: brujeriatechoficial@gmail.com",
+     "category": "Science, Technology & Engineering",
+     "captions": [
+      "No es brujería, es tecnología ⬅️ Aprende la magia detrás de tu pantalla Ing. de software certificado Contacto:…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "leomarisreyes.dev",
+     "followers": 5070,
+     "bio": "👩‍💻 Te guío en el mundo tech\n🏆 Microsoft MVP (8x) | Software Engineer\n💡 Recursos y herramientas para avanzar en tech y AI\n💌 hola@leomarisreyes.dev",
+     "category": "Digital creator",
+     "captions": [
+      "👩‍💻 Te guío en el mundo tech 🏆 Microsoft MVP (8x) | Software Engineer 💡 Recursos y herramientas para avanzar e…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "thejesusp",
+     "followers": 2162246,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "El nuevo Infinix Hot 70 Pro 5G ¿Vale la pena? Probamos de parte de @Infinix Venezuela el nuevo Hot 70 Pro 5G q…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "phonecellven",
+     "followers": 358709,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "¡La combinación perfecta de tablet y teléfono en un solo equipo! 📱💥 ​Descubre la Redmi Pad 2 (11\" 4G) de 8 GB …"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "vip_phonecity",
+     "followers": 352150,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Todo mal 😩 ¿Y ahora? #comedia #tiendas #tecnologia #venezuela"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "quitalelabolsavnzla",
+     "followers": 302821,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "‼️QUÉDATE VIENDO EL VIDEO HASTA EL FINAL‼️ LLEGANDO ESTACIONES DE ENERGÍA⚡️ PORTATIL🔋 MARSRIVA ✅300W/153.6WH M…"
+     ],
+     "fit": "n",
+     "kinds": []
+    },
+    {
+     "network": "tiktok",
+     "handle": "diegolesrecomienda",
+     "followers": 256010,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "CPU DESDE $50🤩 ⭐️Nombre: MIMUTEC @MiMuTec 📍Dirección: Urb. La Coromoto C.C La Redoma, detrás de la antigua red…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "iutecp",
+     "followers": 41059,
+     "bio": "Instituto Universitario de Tecnología Elías Calixto Pompa\n🇻🇪5 sedes: @iutecp\n@iutecpcaracas @iutecpplc\n@iutecpeltigre @iutecpbarcelona\nRif: J304631774",
+     "category": "",
+     "captions": [
+      "Instituto Universitario de Tecnología Elías Calixto Pompa 🇻🇪5 sedes: @iutecp @iutecpcaracas @iutecpplc @iutecp…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca",
+      "otro"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "gabyelectronica",
+     "followers": 15362,
+     "bio": "Somos Mayoristas🇨🇳🇻🇪\nEspecialista en Tecnología \nCaracas-Guarenas\nContacto; 📲0414-413-01-15/\n📲0412-991-53-49\nJ-50364335-8",
+     "category": "Product/service",
+     "captions": [
+      "Somos Mayoristas🇨🇳🇻🇪 Especialista en Tecnología Caracas-Guarenas Contacto; 📲0414-413-01-15/ 📲0412-991-53-49 J-…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "thejesusp",
+     "followers": 2,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "El nuevo Infinix Hot 70 Pro 5G ¿Vale la pena? Probamos de parte de @Infinix Venezuela el nuevo Hot 70 Pro 5G q…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "carlosdelgadosc",
+     "followers": 189128,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "I SE ACABA LO DE LAS REDES … QUE HARÍA? @ingenieriadigitalsc . @cafz23 ❤️‍🩹 . 🤓 Cursos y Diplomados en Ingenie…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "_christianmarquez",
+     "followers": 140858,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "5 Lugares para visitar en Tachira 🇻🇪📍 . #tachira #planesentachira #lobatera #sancristobal #estadotachira"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "trt_contigo",
+     "followers": 49239,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Muy pronto disfrutarás de \"La Feria\" en nuestra programación TRT Gigante como la Feria TRT Siempre contigo #fi…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "medio"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "cotaturve",
+     "followers": 29513,
+     "bio": "Ente rector del turismo regional a través de la  @gobernaciondeltachira\n#TáchiraTuDestinoTuristico",
+     "category": "",
+     "captions": [
+      "Ente rector del turismo regional a través de la @gobernaciondeltachira #TáchiraTuDestinoTuristico"
+     ],
+     "fit": "n",
+     "kinds": [
+      "otro",
+      "medio"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "jesusdaviduseche87",
+     "followers": 25920,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Buenos días mi gente del estado táchira San Cristóbal y los municipios por acá les dejo el reporte de la gasol…"
+     ],
+     "fit": "n",
+     "kinds": []
+    },
+    {
+     "network": "tiktok",
+     "handle": "imaginacion96.1",
+     "followers": 16592,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "así Despedimos el 2024 y le damos la bienvenida al 2025 en La Radio Vida del Táchira!!!! desde las 7pm hasta l…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "medio"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "osmel_cuberos",
+     "followers": 14894,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "#greenscreen Estamos a 7 dias de que arranque la #ligafutve para nuestro #deportivotachira se enfrentará a anz…"
+     ],
+     "fit": "n",
+     "kinds": []
+    },
+    {
+     "network": "tiktok",
+     "handle": "zoditachira21",
+     "followers": 12399,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "La ZODI Nº 21 TÁCHIRA realizó despliegue operacional en el marco de la Operación Cacique Murachi 2025, en los …"
+     ],
+     "fit": "n",
+     "kinds": [
+      "otro",
+      "medio"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "kaelimaee",
+     "followers": 13592338,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "LET’S MEAL PREP 👏🏼👩🏻‍🍳✨ please try this!!! #mealprep #cooking #healthymealideas #Vlog #FoodTok #vlog #foodtok"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "gabrielafloresv_",
+     "followers": 8665208,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Yo cuando pruebo la comida de mamá ❤️‍🩹 #fyp #paratiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii #humor #lachicadelkennedy #…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "thegoldenbalance",
+     "followers": 8542916,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Onion Smash Burger For Weight Loss 😛 Recipe for 4 burgers - 4 buns of choice 24 oz beef (93/7) 8 slices fat fr…"
+     ],
+     "fit": "m",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "iambiggroove",
+     "followers": 8053320,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "When you have a flaming steak in the DR 🥩🔥 @pantera.101.restaurant @Pantera 101 📍Pantera 101 F4RR+8R6, C. Pedr…"
+     ],
+     "fit": "m",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "thegoldenbalance",
+     "followers": 4767435,
+     "bio": "Now Bismillah \nRestaurant @eatgoldenboys \nAll Recipes on Thegoldenbalance.com 🙌🏽\n29\nFlint, MI",
+     "category": "Kitchen/cooking",
+     "captions": [
+      "Now Bismillah Restaurant @eatgoldenboys All Recipes on Thegoldenbalance.com 🙌🏽 29 Flint, MI"
+     ],
+     "fit": "m",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "gabrielafloresv_",
+     "followers": 1564248,
+     "bio": "💃🏻Bailarina 🎤Cantante 🎨Animadora\n💡 @_chris.ting\n📩 pe.gabrielaflores@gmail.com\n🏃‍♀️ Instructora en @dancefit.virtual \n🦷 Est. Prótesis dental",
+     "category": "Artist",
+     "captions": [
+      "💃🏻Bailarina 🎤Cantante 🎨Animadora 💡 @_chris.ting 📩 pe.gabrielaflores@gmail.com 🏃‍♀️ Instructora en @dancefit.vi…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "chubbies_burger",
+     "followers": 139255,
+     "bio": "Smash Burger 100% res | By @amg.hg y @chubbies_team \n📍CDMX - EDOMEX \n👉🏽DARK KITCHEN: DELIVERY Y PICKUP \nPEDIDOS ⬇️",
+     "category": "Burger Restaurant",
+     "captions": [
+      "Smash Burger 100% res | By @amg.hg y @chubbies_team 📍CDMX - EDOMEX 👉🏽DARK KITCHEN: DELIVERY Y PICKUP PEDIDOS ⬇…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "lahamburguesaaz",
+     "followers": 34585,
+     "bio": "WEDNESDAY-SUNDAY \n4PM-9PM 🍔\n2333 N 7TH ST 85006",
+     "category": "",
+     "captions": [
+      "WEDNESDAY-SUNDAY 4PM-9PM 🍔 2333 N 7TH ST 85006"
+     ],
+     "fit": "y",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "doumatpedro",
+     "followers": 3697423,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Bajo de Precio La Triple en @thebestofthebest022 Solo Por El Mes de Julio Podrás Disfrutar de La Hamburguesa T…"
+     ],
+     "fit": "m",
+     "kinds": []
+    },
+    {
+     "network": "tiktok",
+     "handle": "kelvynpadillaa",
+     "followers": 2253260,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "¡¡ HAMBURGUESAS TIPO SMASH EN MARACAY 🍔🤤!! Este lugar @WAO WAO cuenta con hamburguesas y perro calientes, deli…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "samuelgarciasoy",
+     "followers": 488087,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "La hamburguesa más grande de todo el mundo ya la puedes conseguir en Venezuela🇻🇪 @Shaddai burger By la turka #…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "probaderaa",
+     "followers": 414287,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Probando las mejores hamburguesas y gigantes de Venezuela 🍔🇻🇪 Comiendo en el carro porque en la casa estamos a…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "smashack.ve",
+     "followers": 142215,
+     "bio": "🍔 Smashed Burgers\n📍Bella Vista - Maracaibo\n📍Sambil - Maracaibo \n📍El Viñedo - Valencia\n🧡 #FirstSmashedBurgersInTown\n⬇️ HAZ TU PEDIDO",
+     "category": "",
+     "captions": [
+      "🍔 Smashed Burgers 📍Bella Vista - Maracaibo 📍Sambil - Maracaibo 📍El Viñedo - Valencia 🧡 #FirstSmashedBurgersInT…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "niggasburger",
+     "followers": 65761,
+     "bio": "🍔¡Sabor inolvidable para Compartir!🍔\n📍Caricuao - Caracas Venezuela 🇻🇪\n⏰ 1pm a 12am (Martes a Domingo)\n¡Haz tu pedido aqui! 👇🏻",
+     "category": "Fast food restaurant",
+     "captions": [
+      "🍔¡Sabor inolvidable para Compartir!🍔 📍Caricuao - Caracas Venezuela 🇻🇪 ⏰ 1pm a 12am (Martes a Domingo) ¡Haz tu …"
+     ],
+     "fit": "y",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "burgerbunch.ve",
+     "followers": 26266,
+     "bio": "🍔 Authentic American Burgers\n✨ #SmashingItSince2020\n📍 Caracas\n⏰ Lunes - Domingo 12:00m-9:00pm\n⬇️  Pide en nuestra Plataforma y Pedidos Ya",
+     "category": "Restaurant",
+     "captions": [
+      "🍔 Authentic American Burgers ✨ #SmashingItSince2020 📍 Caracas ⏰ Lunes - Domingo 12:00m-9:00pm ⬇️ Pide en nuest…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "taguara_58",
+     "followers": 8838,
+     "bio": "Food truck de comida venezolana en Denver\nAquí encontrarás ese sabor que tanto añoras 🇻🇪\nPepitos\nBurgers\nTequeños\nEmpanadas y más.\ncontacto 7206490342",
+     "category": "Entrepreneur",
+     "captions": [
+      "Food truck de comida venezolana en Denver Aquí encontrarás ese sabor que tanto añoras 🇻🇪 Pepitos Burgers Teque…"
+     ],
+     "fit": "m",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "alejolocuras",
+     "followers": 543606,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "MAMARRA DE HAMBURGUESA ¿MALO? NO CREOOOO 🍔 #tachira #comida #Viral #gochos #unidadvecinal @Yayo’sburguer_sc #v…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "theavengersburger",
+     "followers": 110517,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "4 HAMBURGUESAS POR 25.000 COP 🔥🍔 Te ofrecemos: 2 hamburguesas de Carne con queso Mozzarella, Jamón, Huevo, Lec…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "conamor.valen",
+     "followers": 34787,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "de las hamburguesas más ricas que he comido, y la atención es súper topp🍔❤️ #recomendacionesdecomida #creators…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "georchauuu",
+     "followers": 29076,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Combo de hamgurguesas, barquillas y refresco por 30Mil pesos. #hamburguesas #comidarapida #capacho #tachira @Y…"
+     ],
+     "fit": "y",
+     "kinds": []
+    },
+    {
+     "network": "tiktok",
+     "handle": "delosandes_soy",
+     "followers": 28458,
+     "bio": "Soy andino hasta el tuétano, también soy foodie, amo la 🍕 pero me gusta toda la comida además de conocer lugares ✔️",
+     "category": "",
+     "captions": [
+      "#lagrita #tachira #Venezuela #hamburguesa #burguer #venezuela"
+     ],
+     "fit": "m",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "jeancarlosjcvape1",
+     "followers": 26168,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Vine a probar las mejores hamburguesas de San Cristóbal 🍔🍟 y sin duda las preparan en @@World_burger_sc . . . …"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "adriancho_oficial",
+     "followers": 20031,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Las mejores hamburguesas al grill #Viral #comida #creatorsearchinsights #rubio #tachira #viral"
+     ],
+     "fit": "y",
+     "kinds": []
+    },
+    {
+     "network": "instagram",
+     "handle": "tequesburger2023",
+     "followers": 2295,
+     "bio": "Solo Delivery  🏍️\n📍Urb.Los Teques. I Etapa\n📱 +58 412-4765440\n📌San Cristóbal - Táchira\nMiércoles a Domingo de 6 pm a 11 pm",
+     "category": "",
+     "captions": [
+      "Solo Delivery 🏍️ 📍Urb.Los Teques. I Etapa 📱 +58 412-4765440 📌San Cristóbal - Táchira Miércoles a Domingo de 6 …"
+     ],
+     "fit": "y",
+     "kinds": [
+      "marca"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "programming-creator",
+   "brand": {
+    "handle": "deividvarg",
+    "bio": "Enseño programación desde cero 💻 JavaScript y Python",
+    "category": "Digital creator",
+    "rubro": [
+     "programación"
+    ],
+    "niches": [
+     "Tecnología"
+    ],
+    "hashtags": [
+     "programacion",
+     "javascript"
+    ],
+    "city": "San Cristóbal",
+    "country": "Venezuela"
+   },
+   "accounts": [
+    {
+     "network": "instagram",
+     "handle": "technology",
+     "followers": 9181737,
+     "bio": "The go to source for everything tech and business. Unveiling the future of tomorrow, today! 🤖\nGet Featured: 📩 Partnerships@Technology.io",
+     "category": "",
+     "captions": [
+      "The go to source for everything tech and business. Unveiling the future of tomorrow, today! 🤖 Get Featured: 📩 …"
+     ],
+     "fit": "n",
+     "kinds": [
+      "medio"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "carterpcs",
+     "followers": 7180231,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "I owe him a new thinkpad.. help me get in contact with him @BinaryDec #carterpcs #Tech #pc #gamingpc #tech"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "setupspawn",
+     "followers": 5210210,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Google secrets they don’t tell you #google #techtok #technology"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "setupspawn",
+     "followers": 3589465,
+     "bio": "🔹| PC Tech Enthusiast and Creator\n🗓 | Daily #tech and #pc tips\n📩 | DM for Business or Promotions\n👨‍💻 | Get All The Websites 👇",
+     "category": "Reel creator",
+     "captions": [
+      "🔹| PC Tech Enthusiast and Creator 🗓 | Daily #tech and #pc tips 📩 | DM for Business or Promotions 👨‍💻 | Get All…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "christian.grossi",
+     "followers": 2430872,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "It’s unbelievable how advanced simple technologies are in China This may not seem like something groundbreakin…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "trumpbyryan",
+     "followers": 2087350,
+     "bio": "The Chinese Trump 🇨🇳🇺🇸\nComedy • Culture\n📧 team.ryanchen@outlook.com\n🌍 Building a Global Creator Network",
+     "category": "Artist",
+     "captions": [
+      "The Chinese Trump 🇨🇳🇺🇸 Comedy • Culture 📧 team.ryanchen@outlook.com 🌍 Building a Global Creator Network"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "trumpbyryan",
+     "followers": 1999181,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Chinese tech in CES#trump #china #Tech #ces #chinese #tech"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "illinoistech",
+     "followers": 18783,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "The official account of @illinoistech - Chicago’s only tech-focused university. Join our community of people w…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca",
+      "otro"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "reddnea",
+     "followers": 1925895,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "maybe i get an S25 ultra hehe #apple #Tech #techtour #electronics #technology #ipad #iphone #macbook #meta #to…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "npr",
+     "followers": 1843171,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "As artificial intelligence tools begin to handle more junior programming tasks — with routine tasks like writi…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "medio"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "bloombergbusiness",
+     "followers": 1108232,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Nvidia's Jensen Huang calls concerns of AI reducing jobs “complete nonsense,\" saying instead that companies ar…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "medio"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "magicjohn.official",
+     "followers": 1080399,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Carterpcs…. The most unhinged Tech content creator oat @Not Magic John #magicjohn #Tech #carterpcs #screenprot…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "reddnea",
+     "followers": 587746,
+     "bio": "ex apple employee 🍎 (not affiliated)\njust doing things 😸\nblame the adhd 🧠 \n📧: hello@reddnea.com",
+     "category": "Digital creator",
+     "captions": [
+      "ex apple employee 🍎 (not affiliated) just doing things 😸 blame the adhd 🧠 📧: hello@reddnea.com"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "thecodingspacerd",
+     "followers": 8264,
+     "bio": "🚀 Utiliza la tecnología para crear, no solo consumir\n🤖 Clases de programación y STEAM para 3-18 años\n📍 DR location of @thecodingspace",
+     "category": "Education",
+     "captions": [
+      "🚀 Utiliza la tecnología para crear, no solo consumir 🤖 Clases de programación y STEAM para 3-18 años 📍 DR loca…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "leomarisreyes.dev",
+     "followers": 5070,
+     "bio": "👩‍💻 Te guío en el mundo tech\n🏆 Microsoft MVP (8x) | Software Engineer\n💡 Recursos y herramientas para avanzar en tech y AI\n💌 hola@leomarisreyes.dev",
+     "category": "Digital creator",
+     "captions": [
+      "👩‍💻 Te guío en el mundo tech 🏆 Microsoft MVP (8x) | Software Engineer 💡 Recursos y herramientas para avanzar e…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "marjorihaddad",
+     "followers": 722762,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "[LINK EN LA BIO] IA que sí funciona en en el país. Sin VPN, sin excusas, sin teoría. VENEZUELA NEXT es una mas…"
+     ],
+     "fit": "m",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "bcodevenezuelaoficial",
+     "followers": 680463,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Los sueños se construyen de la mano con el Banco #1 🤝 Comprometidos con el desarrollo tecnológico de nuestra n…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "josegabrielarape",
+     "followers": 594452,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "💻💰 ¡Descifrando la Brecha Salarial de los Programadores en Venezuela! 📊👩‍💻 🚀 ¡Excelente elección querer adentr…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "jacksonmartinez010",
+     "followers": 79265,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "#CapCut @Sistemas Financieros se encuentran en busquedad de personal tienes vacante de Programador Junior. Env…"
+     ],
+     "fit": "n",
+     "kinds": []
+    },
+    {
+     "network": "tiktok",
+     "handle": "somosisum",
+     "followers": 50553,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "¿Te gustaría estudiar Informática? 🧑‍💻 Esto es todo lo que aprenderás con nosotros: ✅Fundamentos de la Informá…"
+     ],
+     "fit": "m",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "jean.iovino",
+     "followers": 49367,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Si buscas trabajo en Venezuela 🇻🇪 y sabes de tecnología, programación, IA, es tu momento!! #thorplay #intezia"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "edtecnica",
+     "followers": 48295,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Programar hoy ya no es como hace unos años: ahora la IA es tu mejor aliada para escribir código más rápido y r…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador",
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "uneweb",
+     "followers": 40615,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Venezolanos el país se construye con educación y tecnología en #uneweb puedes ampliar tu #currículo en nuestro…"
+     ],
+     "fit": "m",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "carlosdelgadosc",
+     "followers": 189128,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "I SE ACABA LO DE LAS REDES … QUE HARÍA? @ingenieriadigitalsc . @cafz23 ❤️‍🩹 . 🤓 Cursos y Diplomados en Ingenie…"
+     ],
+     "fit": "m",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "venezuelahablacantando.9",
+     "followers": 167110,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Información: Fútbol @318performance 04125567770 Llega a Táchira una experiencia única para el futuro del fútbo…"
+     ],
+     "fit": "n",
+     "kinds": []
+    },
+    {
+     "network": "tiktok",
+     "handle": "trt_contigo",
+     "followers": 49239,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Muy pronto disfrutarás de \"La Feria\" en nuestra programación TRT Gigante como la Feria TRT Siempre contigo #fi…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "medio"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "adrianroa15",
+     "followers": 46288,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "¿Quieres conocer el destino turístico más atractivo del estado Táchira? 🛣️⛰️ Ahora desde Rubio o San Cristóbal…"
+     ],
+     "fit": "n",
+     "kinds": []
+    },
+    {
+     "network": "instagram",
+     "handle": "cotaturve",
+     "followers": 29513,
+     "bio": "Ente rector del turismo regional a través de la  @gobernaciondeltachira\n#TáchiraTuDestinoTuristico",
+     "category": "",
+     "captions": [
+      "Ente rector del turismo regional a través de la @gobernaciondeltachira #TáchiraTuDestinoTuristico"
+     ],
+     "fit": "n",
+     "kinds": [
+      "otro",
+      "medio"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "julianacontrerash",
+     "followers": 26424,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "¿Cansado de los lunes aburridos? Te tenemos un plan para transformar el día más pesado en el mejor día de la s…"
+     ],
+     "fit": "n",
+     "kinds": []
+    },
+    {
+     "network": "tiktok",
+     "handle": "jesusdaviduseche87",
+     "followers": 25920,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Buenos días mi gente del estado táchira San Cristóbal y los municipios por acá les dejo el reporte de la gasol…"
+     ],
+     "fit": "n",
+     "kinds": []
+    },
+    {
+     "network": "instagram",
+     "handle": "cicpclagrita",
+     "followers": 7314,
+     "bio": "La Grita, municipio Jáuregui,  Táchira.  a mando de la  @Com.liliananunez",
+     "category": "",
+     "captions": [
+      "La Grita, municipio Jáuregui, Táchira. a mando de la @Com.liliananunez"
+     ],
+     "fit": "n",
+     "kinds": [
+      "otro",
+      "medio"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "602kyle",
+     "followers": 4447277,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "GROSSS laptop quit working!! Let’s see what’s going on! SHOULD WE CLEAN IT?? #Tech #gross #CleanTok #laptop #l…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "lauratuttman",
+     "followers": 3414299,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "e bora aprender a programar e dessa vez sem desculpas!! 😍💻 #programacao #app #dicas #hacks"
+     ],
+     "fit": "m",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "lauratuttman",
+     "followers": 410449,
+     "bio": "✨ Muitas dicas e hacks para facilitar sua vida ✨\n↠ tiktok: lauratuttman(+3.5M) \n📬contato: lauratuttman@grupofarol.com",
+     "category": "Digital creator",
+     "captions": [
+      "✨ Muitas dicas e hacks para facilitar sua vida ✨ ↠ tiktok: lauratuttman(+3.5M) 📬contato: lauratuttman@grupofar…"
+     ],
+     "fit": "m",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "cornell_tech",
+     "followers": 11103,
+     "bio": "Developing leaders, building ventures, and creating technologies for the Al era in New York City. @cornelluniversity\nAll at #CornellTech",
+     "category": "College & university",
+     "captions": [
+      "Developing leaders, building ventures, and creating technologies for the Al era in New York City. @cornelluniv…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca",
+      "otro"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "cerrajeria_caracas24h",
+     "followers": 410935,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Curso básico de programación automotriz!!! Comenta para pasarte toda la información @Jon Cerrajero @locksmith …"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "un24tvoficial",
+     "followers": 314180,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "¡Llega el Semillero Científico de Videojuegos! La historia, la ciencia y la tecnología se unen en una sola pan…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "medio"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "luisgabrielmkt",
+     "followers": 213766,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Respuesta a @Nicolás Vallejo TRABAJANDO REMOTO COMO PROGRAMADOR EN VENEZUELA ES LO MEJOR Y SE PUEDE HACER DINE…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "matsimultiservicios",
+     "followers": 119021,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "🔥 ¡ATENCIÓN CIUDAD GUAYANA! Nivel experto en programación. 🚗💻 Llegan los mejores instructores de Venezuela: @t…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "csc_ve",
+     "followers": 82171,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "¿Deseas aprender a ingresar al sistema de atención al cliente y programación de producción (SACPPRO)? No te pi…"
+     ],
+     "fit": "n",
+     "kinds": []
+    },
+    {
+     "network": "instagram",
+     "handle": "caracasretumba",
+     "followers": 36958,
+     "bio": "☝🏽GRANDES CONCIERTOS EN CARACAS🔥",
+     "category": "Community",
+     "captions": [
+      "☝🏽GRANDES CONCIERTOS EN CARACAS🔥"
+     ],
+     "fit": "n",
+     "kinds": [
+      "medio",
+      "otro"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "stellar_908",
+     "followers": 151296,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "táchira Venezuela 🇻🇪🗻🔥❤️ #táchira #venezuela #fyp #🔥🔥🔥 #parati #⚠️⚠️⚠️"
+     ],
+     "fit": "n",
+     "kinds": []
+    },
+    {
+     "network": "tiktok",
+     "handle": "anthonysherylanth",
+     "followers": 43880,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "𝐄𝐬𝐭𝐚𝐝𝐨 𝐓á𝐜𝐡𝐢𝐫𝐚 ‎𝐄𝐧 𝐞𝐬𝐭𝐞 𝐞𝐬𝐭𝐚𝐝𝐨 𝐧𝐨 𝐬𝐨𝐥𝐨 𝐬𝐞 𝐫𝐞𝐜𝐨𝐫𝐫𝐞, 𝐬𝐞 𝐬𝐢𝐞𝐧𝐭𝐞 𝐞𝐧 𝐞𝐥 𝐜𝐚𝐥𝐨𝐫 𝐝𝐞 𝐬𝐮 𝐠𝐞𝐧𝐭𝐞; 𝐚𝐪𝐮í 𝐜𝐚𝐝𝐚 𝐩𝐮𝐞𝐫𝐭𝐚 𝐚𝐛𝐢𝐞𝐫𝐭𝐚…"
+     ],
+     "fit": "n",
+     "kinds": []
+    },
+    {
+     "network": "tiktok",
+     "handle": "cfdcursos",
+     "followers": 32409,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "AHORRA HASTA UN 48% EN EL PAGO DE TU CURSO EN ESTAS VACACIONES 🔥🔥🔥 San Cristóbal táchira Venezuela, Centro Cív…"
+     ],
+     "fit": "m",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "ventetachira1",
+     "followers": 23357,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "📍 Táchira recibe a la Organización Nacional de Vente Venezuela La visita de nuestro coordinador nacional de or…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "otro",
+      "medio"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "imaginacion96.1",
+     "followers": 16592,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "así Despedimos el 2024 y le damos la bienvenida al 2025 en La Radio Vida del Táchira!!!! desde las 7pm hasta l…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "medio"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "imparkerburton",
+     "followers": 3605478,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Thank you sooo much @Samsung US, @Microsoft, @Google, and @SonyElectronics !! #Tech #android #imparkerburton #…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "one.more.official",
+     "followers": 2516092,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Become a tech expert with these awesome hack for your phone 😉📲 #techtok #howtotiktok #hack #gadget #funnytikto…"
+     ],
+     "fit": "n",
+     "kinds": []
+    },
+    {
+     "network": "instagram",
+     "handle": "imparkerburton",
+     "followers": 470203,
+     "bio": "That Android Guy\nBusiness: parker@imparkerburton.com",
+     "category": "",
+     "captions": [
+      "That Android Guy Business: parker@imparkerburton.com"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "citytechcuny",
+     "followers": 10534,
+     "bio": "58 unique associate and baccalaureate degree programs, at the foot of the Brooklyn Bridge. See where Tech can take you.",
+     "category": "College & university",
+     "captions": [
+      "58 unique associate and baccalaureate degree programs, at the foot of the Brooklyn Bridge. See where Tech can …"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca",
+      "otro"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "overtime",
+     "followers": 35295247,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "So cooked bro 😭 #robot #kungfu #ai #technology #bruh"
+     ],
+     "fit": "n",
+     "kinds": [
+      "medio",
+      "otro"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "overtime",
+     "followers": 10604962,
+     "bio": "Love ya’ll 🤞\n🍿 I CREATED @ote @ot7 & @overtimeselect\nHARDEST NBA WORKOUT 🚨⬇️",
+     "category": "",
+     "captions": [
+      "Love ya’ll 🤞 🍿 I CREATED @ote @ot7 & @overtimeselect HARDEST NBA WORKOUT 🚨⬇️"
+     ],
+     "fit": "n",
+     "kinds": [
+      "medio",
+      "otro",
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "cursoslogros",
+     "followers": 63550,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "No esperes más, el momento es ahora✨🔥 #maracaibo #curso #logros #computacion"
+     ],
+     "fit": "m",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "ipuvorg",
+     "followers": 25009,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "DECOM NACIONAL CONVENCIÓN REGIÓN TÁCHIRA"
+     ],
+     "fit": "n",
+     "kinds": []
+    },
+    {
+     "network": "tiktok",
+     "handle": "jesuscfg1",
+     "followers": 17837,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Conocías este lugar en el estado Táchira Venezuela? Te presento Pozo azul, una maravilla natural en la poblaci…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "fine-dining-bogota",
+   "brand": {
+    "handle": "casaolivo",
+    "bio": "Cocina de autor colombiana · Menú de temporada · Zona G, Bogotá",
+    "category": "Restaurant",
+    "rubro": [
+     "restaurante de autor"
+    ],
+    "niches": [
+     "Comida y bebida"
+    ],
+    "hashtags": [
+     "cocinadeautor",
+     "restaurantesbogota"
+    ],
+    "city": "Bogotá",
+    "country": "Colombia",
+    "positioning": "Experiencia gastronómica premium para celebrar",
+    "audience": "Parejas y grupos de 28 a 50 años"
+   },
+   "accounts": [
+    {
+     "network": "tiktok",
+     "handle": "kaelimaee",
+     "followers": 13592338,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "LET’S MEAL PREP 👏🏼👩🏻‍🍳✨ please try this!!! #mealprep #cooking #healthymealideas #Vlog #FoodTok #vlog #foodtok"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "gabrielafloresv_",
+     "followers": 8665208,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Yo cuando pruebo la comida de mamá ❤️‍🩹 #fyp #paratiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii #humor #lachicadelkennedy #…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "thegoldenbalance",
+     "followers": 8542916,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Onion Smash Burger For Weight Loss 😛 Recipe for 4 burgers - 4 buns of choice 24 oz beef (93/7) 8 slices fat fr…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "thegoldenbalance",
+     "followers": 4767435,
+     "bio": "Now Bismillah \nRestaurant @eatgoldenboys \nAll Recipes on Thegoldenbalance.com 🙌🏽\n29\nFlint, MI",
+     "category": "Kitchen/cooking",
+     "captions": [
+      "Now Bismillah Restaurant @eatgoldenboys All Recipes on Thegoldenbalance.com 🙌🏽 29 Flint, MI"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "chubbies_burger",
+     "followers": 139255,
+     "bio": "Smash Burger 100% res | By @amg.hg y @chubbies_team \n📍CDMX - EDOMEX \n👉🏽DARK KITCHEN: DELIVERY Y PICKUP \nPEDIDOS ⬇️",
+     "category": "Burger Restaurant",
+     "captions": [
+      "Smash Burger 100% res | By @amg.hg y @chubbies_team 📍CDMX - EDOMEX 👉🏽DARK KITCHEN: DELIVERY Y PICKUP PEDIDOS ⬇…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "lahamburguesaaz",
+     "followers": 34585,
+     "bio": "WEDNESDAY-SUNDAY \n4PM-9PM 🍔\n2333 N 7TH ST 85006",
+     "category": "",
+     "captions": [
+      "WEDNESDAY-SUNDAY 4PM-9PM 🍔 2333 N 7TH ST 85006"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "doumatpedro",
+     "followers": 3697423,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Bajo de Precio La Triple en @thebestofthebest022 Solo Por El Mes de Julio Podrás Disfrutar de La Hamburguesa T…"
+     ],
+     "fit": "n",
+     "kinds": []
+    },
+    {
+     "network": "tiktok",
+     "handle": "kelvynpadillaa",
+     "followers": 2253260,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "¡¡ HAMBURGUESAS TIPO SMASH EN MARACAY 🍔🤤!! Este lugar @WAO WAO cuenta con hamburguesas y perro calientes, deli…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "samuelgarciasoy",
+     "followers": 488087,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "La hamburguesa más grande de todo el mundo ya la puedes conseguir en Venezuela🇻🇪 @Shaddai burger By la turka #…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "probaderaa",
+     "followers": 414287,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Probando las mejores hamburguesas y gigantes de Venezuela 🍔🇻🇪 Comiendo en el carro porque en la casa estamos a…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "smashack.ve",
+     "followers": 142215,
+     "bio": "🍔 Smashed Burgers\n📍Bella Vista - Maracaibo\n📍Sambil - Maracaibo \n📍El Viñedo - Valencia\n🧡 #FirstSmashedBurgersInTown\n⬇️ HAZ TU PEDIDO",
+     "category": "",
+     "captions": [
+      "🍔 Smashed Burgers 📍Bella Vista - Maracaibo 📍Sambil - Maracaibo 📍El Viñedo - Valencia 🧡 #FirstSmashedBurgersInT…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "niggasburger",
+     "followers": 65761,
+     "bio": "🍔¡Sabor inolvidable para Compartir!🍔\n📍Caricuao - Caracas Venezuela 🇻🇪\n⏰ 1pm a 12am (Martes a Domingo)\n¡Haz tu pedido aqui! 👇🏻",
+     "category": "Fast food restaurant",
+     "captions": [
+      "🍔¡Sabor inolvidable para Compartir!🍔 📍Caricuao - Caracas Venezuela 🇻🇪 ⏰ 1pm a 12am (Martes a Domingo) ¡Haz tu …"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "burgerbunch.ve",
+     "followers": 26266,
+     "bio": "🍔 Authentic American Burgers\n✨ #SmashingItSince2020\n📍 Caracas\n⏰ Lunes - Domingo 12:00m-9:00pm\n⬇️  Pide en nuestra Plataforma y Pedidos Ya",
+     "category": "Restaurant",
+     "captions": [
+      "🍔 Authentic American Burgers ✨ #SmashingItSince2020 📍 Caracas ⏰ Lunes - Domingo 12:00m-9:00pm ⬇️ Pide en nuest…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "taguara_58",
+     "followers": 8838,
+     "bio": "Food truck de comida venezolana en Denver\nAquí encontrarás ese sabor que tanto añoras 🇻🇪\nPepitos\nBurgers\nTequeños\nEmpanadas y más.\ncontacto 7206490342",
+     "category": "Entrepreneur",
+     "captions": [
+      "Food truck de comida venezolana en Denver Aquí encontrarás ese sabor que tanto añoras 🇻🇪 Pepitos Burgers Teque…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "alejolocuras",
+     "followers": 543606,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "MAMARRA DE HAMBURGUESA ¿MALO? NO CREOOOO 🍔 #tachira #comida #Viral #gochos #unidadvecinal @Yayo’sburguer_sc #v…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "theavengersburger",
+     "followers": 110517,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "4 HAMBURGUESAS POR 25.000 COP 🔥🍔 Te ofrecemos: 2 hamburguesas de Carne con queso Mozzarella, Jamón, Huevo, Lec…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "conamor.valen",
+     "followers": 34787,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "de las hamburguesas más ricas que he comido, y la atención es súper topp🍔❤️ #recomendacionesdecomida #creators…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "georchauuu",
+     "followers": 29076,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Combo de hamgurguesas, barquillas y refresco por 30Mil pesos. #hamburguesas #comidarapida #capacho #tachira @Y…"
+     ],
+     "fit": "n",
+     "kinds": []
+    },
+    {
+     "network": "tiktok",
+     "handle": "jeancarlosjcvape1",
+     "followers": 26168,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Vine a probar las mejores hamburguesas de San Cristóbal 🍔🍟 y sin duda las preparan en @@World_burger_sc . . . …"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "adriancho_oficial",
+     "followers": 20031,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Las mejores hamburguesas al grill #Viral #comida #creatorsearchinsights #rubio #tachira #viral"
+     ],
+     "fit": "n",
+     "kinds": []
+    },
+    {
+     "network": "instagram",
+     "handle": "tequesburger2023",
+     "followers": 2295,
+     "bio": "Solo Delivery  🏍️\n📍Urb.Los Teques. I Etapa\n📱 +58 412-4765440\n📌San Cristóbal - Táchira\nMiércoles a Domingo de 6 pm a 11 pm",
+     "category": "",
+     "captions": [
+      "Solo Delivery 🏍️ 📍Urb.Los Teques. I Etapa 📱 +58 412-4765440 📌San Cristóbal - Táchira Miércoles a Domingo de 6 …"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "iambiggroove",
+     "followers": 8053320,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "When you have a flaming steak in the DR 🥩🔥 @pantera.101.restaurant @Pantera 101 📍Pantera 101 F4RR+8R6, C. Pedr…"
+     ],
+     "fit": "m",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "delosandes_soy",
+     "followers": 28458,
+     "bio": "Soy andino hasta el tuétano, también soy foodie, amo la 🍕 pero me gusta toda la comida además de conocer lugares ✔️",
+     "category": "",
+     "captions": [
+      "#lagrita #tachira #Venezuela #hamburguesa #burguer #venezuela"
+     ],
+     "fit": "m",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "criollo.autor",
+     "followers": 48000,
+     "bio": "Cocina de autor colombiana · Menú degustación de 9 tiempos · Reservas por DM · Bogotá",
+     "category": "Restaurant",
+     "captions": [
+      "Nuevo menú de temporada: el Pacífico en 9 tiempos, maridaje con vinos naturales."
+     ],
+     "fit": "y",
+     "kinds": [
+      "marca"
+     ],
+     "synthetic": true
+    },
+    {
+     "network": "instagram",
+     "handle": "lamesadelchef.co",
+     "followers": 91000,
+     "bio": "Chef. Cocina colombiana contemporánea con productores locales. Bogotá",
+     "category": "Chef",
+     "captions": [
+      "Así preparamos el tartar de pesca del día para el menú de esta semana."
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ],
+     "synthetic": true
+    },
+    {
+     "network": "tiktok",
+     "handle": "bogotaamanteles",
+     "followers": 210000,
+     "bio": "Reseñas de restaurantes de alta cocina en Bogotá 🍷",
+     "captions": [
+      "Probé el menú degustación más comentado de la Zona G: ¿vale lo que cuesta?"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ],
+     "synthetic": true
+    },
+    {
+     "network": "instagram",
+     "handle": "vinoymantel",
+     "followers": 23000,
+     "bio": "Restaurante & cava · Cocina de mercado · Usaquén",
+     "category": "Restaurant",
+     "captions": [
+      "Cena de maridaje este jueves: 5 tiempos con vinos de Mendoza."
+     ],
+     "fit": "y",
+     "kinds": [
+      "marca"
+     ],
+     "synthetic": true
+    }
+   ]
+  },
+  {
+   "id": "phone-store-caracas",
+   "brand": {
+    "handle": "celularesya.ve",
+    "bio": "Tienda de celulares y accesorios 📱 Envíos a toda Venezuela",
+    "category": "Mobile phone shop",
+    "rubro": [
+     "tienda de celulares"
+    ],
+    "niches": [
+     "Tecnología"
+    ],
+    "hashtags": [
+     "celulares",
+     "smartphone"
+    ],
+    "city": "Caracas",
+    "country": "Venezuela"
+   },
+   "accounts": [
+    {
+     "network": "tiktok",
+     "handle": "phonecellven",
+     "followers": 358709,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "¡La combinación perfecta de tablet y teléfono en un solo equipo! 📱💥 ​Descubre la Redmi Pad 2 (11\" 4G) de 8 GB …"
+     ],
+     "fit": "y",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "vip_phonecity",
+     "followers": 352150,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Todo mal 😩 ¿Y ahora? #comedia #tiendas #tecnologia #venezuela"
+     ],
+     "fit": "y",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "gabyelectronica",
+     "followers": 15362,
+     "bio": "Somos Mayoristas🇨🇳🇻🇪\nEspecialista en Tecnología \nCaracas-Guarenas\nContacto; 📲0414-413-01-15/\n📲0412-991-53-49\nJ-50364335-8",
+     "category": "Product/service",
+     "captions": [
+      "Somos Mayoristas🇨🇳🇻🇪 Especialista en Tecnología Caracas-Guarenas Contacto; 📲0414-413-01-15/ 📲0412-991-53-49 J-…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "thejesusp",
+     "followers": 2162246,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "El nuevo Infinix Hot 70 Pro 5G ¿Vale la pena? Probamos de parte de @Infinix Venezuela el nuevo Hot 70 Pro 5G q…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "thejesusp",
+     "followers": 2,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "El nuevo Infinix Hot 70 Pro 5G ¿Vale la pena? Probamos de parte de @Infinix Venezuela el nuevo Hot 70 Pro 5G q…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "tatechtips",
+     "followers": 3567318,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Android Phones are about to get some serious POWER 💪🏼 Meet the new Snapdragon Elite Gen 6 & Elite Extreme Gen …"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "imparkerburton",
+     "followers": 3605478,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Thank you sooo much @Samsung US, @Microsoft, @Google, and @SonyElectronics !! #Tech #android #imparkerburton #…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "imparkerburton",
+     "followers": 470203,
+     "bio": "That Android Guy\nBusiness: parker@imparkerburton.com",
+     "category": "",
+     "captions": [
+      "That Android Guy Business: parker@imparkerburton.com"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "reddnea",
+     "followers": 1925895,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "maybe i get an S25 ultra hehe #apple #Tech #techtour #electronics #technology #ipad #iphone #macbook #meta #to…"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "reddnea",
+     "followers": 587746,
+     "bio": "ex apple employee 🍎 (not affiliated)\njust doing things 😸\nblame the adhd 🧠 \n📧: hello@reddnea.com",
+     "category": "Digital creator",
+     "captions": [
+      "ex apple employee 🍎 (not affiliated) just doing things 😸 blame the adhd 🧠 📧: hello@reddnea.com"
+     ],
+     "fit": "y",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "carterpcs",
+     "followers": 7180231,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "I owe him a new thinkpad.. help me get in contact with him @BinaryDec #carterpcs #Tech #pc #gamingpc #tech"
+     ],
+     "fit": "m",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "setupspawn",
+     "followers": 5210210,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Google secrets they don’t tell you #google #techtok #technology"
+     ],
+     "fit": "m",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "one.more.official",
+     "followers": 2516092,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Become a tech expert with these awesome hack for your phone 😉📲 #techtok #howtotiktok #hack #gadget #funnytikto…"
+     ],
+     "fit": "y",
+     "kinds": []
+    },
+    {
+     "network": "tiktok",
+     "handle": "602kyle",
+     "followers": 4447277,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "GROSSS laptop quit working!! Let’s see what’s going on! SHOULD WE CLEAN IT?? #Tech #gross #CleanTok #laptop #l…"
+     ],
+     "fit": "m",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "quitalelabolsavnzla",
+     "followers": 302821,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "‼️QUÉDATE VIENDO EL VIDEO HASTA EL FINAL‼️ LLEGANDO ESTACIONES DE ENERGÍA⚡️ PORTATIL🔋 MARSRIVA ✅300W/153.6WH M…"
+     ],
+     "fit": "m",
+     "kinds": []
+    },
+    {
+     "network": "tiktok",
+     "handle": "diegolesrecomienda",
+     "followers": 256010,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "CPU DESDE $50🤩 ⭐️Nombre: MIMUTEC @MiMuTec 📍Dirección: Urb. La Coromoto C.C La Redoma, detrás de la antigua red…"
+     ],
+     "fit": "m",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "brujeriatech",
+     "followers": 1830374,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Guía para Aprender a Programar Desde Cero: para Programadores Principiantes #developer #programador #programmi…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "leomarisreyes.dev",
+     "followers": 5070,
+     "bio": "👩‍💻 Te guío en el mundo tech\n🏆 Microsoft MVP (8x) | Software Engineer\n💡 Recursos y herramientas para avanzar en tech y AI\n💌 hola@leomarisreyes.dev",
+     "category": "Digital creator",
+     "captions": [
+      "👩‍💻 Te guío en el mundo tech 🏆 Microsoft MVP (8x) | Software Engineer 💡 Recursos y herramientas para avanzar e…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "lauratuttman",
+     "followers": 3414299,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "e bora aprender a programar e dessa vez sem desculpas!! 😍💻 #programacao #app #dicas #hacks"
+     ],
+     "fit": "m",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "thecodingspacerd",
+     "followers": 8264,
+     "bio": "🚀 Utiliza la tecnología para crear, no solo consumir\n🤖 Clases de programación y STEAM para 3-18 años\n📍 DR location of @thecodingspace",
+     "category": "Education",
+     "captions": [
+      "🚀 Utiliza la tecnología para crear, no solo consumir 🤖 Clases de programación y STEAM para 3-18 años 📍 DR loca…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "josegabrielarape",
+     "followers": 594452,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "💻💰 ¡Descifrando la Brecha Salarial de los Programadores en Venezuela! 📊👩‍💻 🚀 ¡Excelente elección querer adentr…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "edtecnica",
+     "followers": 48295,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Programar hoy ya no es como hace unos años: ahora la IA es tu mejor aliada para escribir código más rápido y r…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador",
+      "marca"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "iutecp",
+     "followers": 41059,
+     "bio": "Instituto Universitario de Tecnología Elías Calixto Pompa\n🇻🇪5 sedes: @iutecp\n@iutecpcaracas @iutecpplc\n@iutecpeltigre @iutecpbarcelona\nRif: J304631774",
+     "category": "",
+     "captions": [
+      "Instituto Universitario de Tecnología Elías Calixto Pompa 🇻🇪5 sedes: @iutecp @iutecpcaracas @iutecpplc @iutecp…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca",
+      "otro"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "bcodevenezuelaoficial",
+     "followers": 680463,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Los sueños se construyen de la mano con el Banco #1 🤝 Comprometidos con el desarrollo tecnológico de nuestra n…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "instagram",
+     "handle": "technology",
+     "followers": 9181737,
+     "bio": "The go to source for everything tech and business. Unveiling the future of tomorrow, today! 🤖\nGet Featured: 📩 Partnerships@Technology.io",
+     "category": "",
+     "captions": [
+      "The go to source for everything tech and business. Unveiling the future of tomorrow, today! 🤖 Get Featured: 📩 …"
+     ],
+     "fit": "n",
+     "kinds": [
+      "medio"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "npr",
+     "followers": 1843171,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "As artificial intelligence tools begin to handle more junior programming tasks — with routine tasks like writi…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "medio"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "bloombergbusiness",
+     "followers": 1108232,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Nvidia's Jensen Huang calls concerns of AI reducing jobs “complete nonsense,\" saying instead that companies ar…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "medio"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "christian.grossi",
+     "followers": 2430872,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "It’s unbelievable how advanced simple technologies are in China This may not seem like something groundbreakin…"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "cerrajeria_caracas24h",
+     "followers": 410935,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Curso básico de programación automotriz!!! Comenta para pasarte toda la información @Jon Cerrajero @locksmith …"
+     ],
+     "fit": "n",
+     "kinds": [
+      "marca"
+     ]
+    },
+    {
+     "network": "tiktok",
+     "handle": "trumpbyryan",
+     "followers": 1999181,
+     "bio": "",
+     "category": "",
+     "captions": [
+      "Chinese tech in CES#trump #china #Tech #ces #chinese #tech"
+     ],
+     "fit": "n",
+     "kinds": [
+      "creador"
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -46,11 +46,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import replace
 from uuid import UUID, uuid4
 
 import reflex as rx
+from qualify_api.hashtags import fold, normalize_tag
 from reflex.constants import Dirs
 from reflex.utils.imports import ImportVar
 from reflex.vars import VarData
@@ -58,10 +59,12 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from . import (
     avatar_proxy,
+    brand_documents,
     creator_discovery,
     hashtag_catalog,
     logo_palette,
     referentes_provider,
+    referentes_review,
     scrapecreators_client,
 )
 from .auth_state import AuthState
@@ -83,6 +86,17 @@ from .ui import (
 from .ui import tokens as T
 
 logger = logging.getLogger(__name__)
+
+#: Fire-and-forget work started by a state handler (the AI classification of the hashtag
+#: catalog). Held here so the event loop keeps a strong reference until it finishes.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def _finish_background_task(task: asyncio.Task) -> None:
+    _BACKGROUND_TASKS.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning("background task failed: %s", task.exception())
+
 
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _UPLOAD_FAILED = "No se pudo leer el archivo. Inténtalo de nuevo."
@@ -772,7 +786,12 @@ def _finish_button(on_click: rx.event.EventType[()]) -> rx.Component:
 
 
 def _step_identity() -> rx.Component:
+    """¿Quién es la marca?, in both flows. Opens with the brief upload (§ request
+    2026-09-25, `brand_documents.brief_upload_card`): a brief read by Claude proposes
+    values for this step AND the later ones (tone, examples, restrictions, palette), and
+    whatever the operator applies is already in place when they get there."""
     return _step_body(
+        brand_documents.brief_upload_card(),
         _labeled_area(
             "Posicionamiento",
             CreativeState.kit_positioning,
@@ -947,7 +966,12 @@ def _step_logo(next_handler: rx.event.EventHandler) -> rx.Component:
     brief form's Enter-to-submit should advance — see `_logo_brief_form`."""
     return rx.cond(
         BrandWizardState.has_logo == "si",
-        _logo_upload_field(),
+        rx.vstack(
+            _logo_upload_field(),
+            brand_documents.brandboard_upload_field(),
+            spacing="4",
+            width="100%",
+        ),
         _logo_brief_form(next_handler),
     )
 
@@ -1574,7 +1598,13 @@ def _controls() -> rx.Component:
         rx.spacer(),
         rx.cond(
             BrandWizardState.step == LAST_STEP,
-            _finish_button([CreativeState.save_kit_form, BrandWizardState.finish_to_signals]),
+            _finish_button(
+                [
+                    CreativeState.save_kit_form,
+                    brand_documents.BrandDocumentState.reset_documents,
+                    BrandWizardState.finish_to_signals,
+                ]
+            ),
             rx.button(
                 "Continuar",
                 rx.icon("chevron-right", size=T.ICON_SM),
@@ -2137,6 +2167,121 @@ COUNTRY_OPTIONS: tuple[tuple[str, str], ...] = tuple(
 )
 
 
+def add_pills(
+    pills: list[dict[str, str]], items: list[dict[str, str]]
+) -> tuple[list[dict[str, str]], str]:
+    """`pills` plus `items`, skipping ones already there (accents/case folded) and
+    stopping at `CHOSEN_HASHTAGS`. Returns the new pills and the note to show ("" when
+    everything fitted)."""
+    out = [dict(p) for p in pills]
+    present = {fold(p["tag"]) for p in out}
+    dropped = 0
+    for item in items:
+        slug = fold(item["tag"])
+        if slug in present:
+            continue
+        if len(out) >= creator_discovery.CHOSEN_HASHTAGS:
+            dropped += 1
+            continue
+        out.append({"tag": item["tag"], "origin": "manual", "reason": "", "model": "", **item})
+        present.add(slug)
+    if dropped:
+        cap = creator_discovery.CHOSEN_HASHTAGS
+        return out, f"Caben {cap} hashtags: quita alguno para agregar otro."
+    return out, ""
+
+
+def merge_suggestions(
+    pills: list[dict[str, str]], choice: hashtag_catalog.HashtagChoice
+) -> tuple[list[dict[str, str]], str]:
+    """A "Sugerir" answer into the pills: the operator's hand-typed pills stay, the
+    previous suggestions are replaced by the new ones."""
+    kept = [p for p in pills if p["origin"] == "manual"]
+    origin = "ai" if choice.by == "ai" else "catalog"
+    suggested = [
+        {
+            "tag": tag,
+            "origin": origin,
+            "reason": str(choice.picks.get(tag, {}).get("reason", "")),
+            "model": str(choice.picks.get(tag, {}).get("model", "")),
+        }
+        for tag in choice.tags
+    ]
+    out, note = add_pills(kept, suggested)
+    if not choice.tags:
+        note = (
+            "No encontramos hashtags de tu rubro en nuestra base todavía. Agrega los tuyos: "
+            "con ellos buscamos."
+        )
+    return out, note
+
+
+#: Every key a card may carry beyond `account_card`'s original ones, defaulted so a
+#: card stored before they existed (or a manual one) renders the same (`card_view`).
+_CARD_DEFAULTS: dict[str, str] = {
+    "kind": "",
+    "kind_label": "",
+    "review": "",
+    "reviewed_by": "",
+    "manual": "",
+    "fits": "",
+    "note": "",
+}
+
+
+def card_view(card: Mapping[str, object]) -> dict[str, str]:
+    """A stored or fresh card as the state keeps it: every optional key present (a Var
+    reading a missing key renders `undefined`), plus the picture's backend path."""
+    out = {**_CARD_DEFAULTS, **{str(k): str(v) for k, v in card.items()}}
+    out["avatar_src"] = creator_discovery.avatar_path(out)
+    return out
+
+
+def manual_outcome(
+    card: Mapping[str, str], bucket: str, result: referentes_review.ManualResult
+) -> tuple[str, str]:
+    """The callout after a manual add: what happened, in the operator's words, and its
+    tone — `warn` when the profile was not found or Claude thinks it does not fit."""
+    title = next((t for b, t, _, _ in BUCKETS if b == bucket), "Referentes")
+    who = card.get("handle") or "La cuenta"
+    parts = [f"Agregamos {who} a {title}."]
+    tone = "ok"
+    if result.missing:
+        network = card.get("network") or ""
+        parts.append(f"No encontramos ese perfil en {network}; la guardamos con lo que escribiste.")
+        tone = "warn"
+    if result.warning:
+        parts.append(f"Ojo, la IA cree que no encaja: {result.warning}")
+        tone = "warn"
+    elif card.get("review"):
+        kind = card.get("kind_label") or ""
+        parts.append(f"{kind}: {card['review']}" if kind else card["review"])
+    return " ".join(parts), tone
+
+
+#: Networks the manual form offers, in the select's order.
+MANUAL_NETWORK_OPTIONS: tuple[tuple[str, str], ...] = tuple(
+    referentes_review.MANUAL_NETWORKS.items()
+)
+
+
+def seed_with_pills(
+    seed: creator_discovery.DiscoverySeed, pills: list[dict[str, str]]
+) -> tuple[creator_discovery.DiscoverySeed, dict[str, dict[str, str]]]:
+    """The seed with the operator's pills as its hashtags (`chosen_hashtags`), and each
+    one's provenance for the stored phase (`referentes_provider.seed_payload`)."""
+    picks: dict[str, dict[str, str]] = {}
+    for item in pills:
+        if item["origin"] == "ai":
+            picks[item["tag"]] = {"suggested_by": item["model"], "reason": item["reason"]}
+        elif item["origin"] == "catalog":
+            picks[item["tag"]] = {"suggested_by": "catalogo"}
+        else:
+            picks[item["tag"]] = {}
+    tags = tuple(item["tag"] for item in pills)
+    return replace(seed, chosen_hashtags=tags), picks
+
+
 class BrandConnectState(rx.State):
     """Cursor and profile read for the connect flow. Kept apart from `BrandWizardState`
     so the two entry paths cannot fight over one cursor — the kit fields they share
@@ -2195,6 +2340,16 @@ class BrandConnectState(rx.State):
     rubro_text: str = ""
     country_code: str = ""
     city: str = ""
+    #: The hashtags the search will use, as pills under the rubro (§ request
+    #: 2026-09-25): suggested by Claude with its catalog tools (`suggest_hashtags`) and/or
+    #: typed by hand, each removable. `{"tag", "origin", "reason", "model"}` — origin is
+    #: `ai` (Claude suggested it), `catalog` (the rule path suggested it, no key) or
+    #: `manual`. When there are any they BECOME the search's hashtags
+    #: (`DiscoverySeed.chosen_hashtags`) and the search makes no AI call of its own.
+    rubro_hashtags: list[dict[str, str]] = []
+    new_hashtag: str = ""
+    suggesting_hashtags: bool = False
+    hashtag_note: str = ""
 
     #: The phased creator discovery on Resultados e insights (`run_discovery`). One
     #: list of account cards per phase (`creator_discovery.account_card` shape), plus
@@ -2235,6 +2390,22 @@ class BrandConnectState(rx.State):
     #: bucket, with the card of the newest stored phase that found them. Never dealt
     #: into the deck: they are sorted already.
     kept_accounts: list[dict[str, str]] = []
+    #: Accounts Claude's review dropped from this run's phases (`creator_discovery.
+    #: apply_review`), each with its phase key and the reason — listed under the deck
+    #: so a drop can be checked. Fresh runs only: a stored phase keeps what was shown.
+    discarded_accounts: list[dict[str, str]] = []
+    # -- A referente added by hand (`add_manual_account`): the search cannot find an
+    # account with little activity, few followers or no TikTok / Instagram at all.
+    manual_open: bool = False
+    manual_input: str = ""
+    manual_network: str = "instagram"
+    manual_bucket: str = "referente"
+    manual_note: str = ""
+    adding_manual: bool = False
+    manual_error: str = ""
+    #: The last manual add's outcome, and its tone (`ok` / `warn`) for the callout.
+    manual_message: str = ""
+    manual_tone: str = "ok"
     #: The card being dragged, same key.
     dragging: str = ""
     #: Which category the sort step is on (index into `creator_discovery.PHASES`):
@@ -2340,7 +2511,13 @@ class BrandConnectState(rx.State):
 
     def _answers(self) -> list[str]:
         """What the discovery is seeded with from this state, in one comparable shape."""
-        return [self.sector, self.rubro_text.strip(), self.country_code, self.city.strip()]
+        return [
+            self.sector,
+            self.rubro_text.strip(),
+            self.country_code,
+            self.city.strip(),
+            ",".join(item["tag"] for item in self.rubro_hashtags),
+        ]
 
     def _is_skipped(self, index: int) -> bool:
         """THE one place deciding which steps a session sees (2026-09-11):
@@ -2478,6 +2655,90 @@ class BrandConnectState(rx.State):
         self.city = value
 
     @rx.event
+    def set_new_hashtag(self, value: str) -> None:
+        self.new_hashtag = value
+
+    @rx.event
+    def add_hashtag(self) -> None:
+        """The pills' "+" (and Enter in its input): one hand-typed hashtag, normalised
+        the way the catalog stores them (no `#`, lowercase, one token)."""
+        raw = self.new_hashtag.strip()
+        if not raw:
+            return
+        try:
+            tag = normalize_tag(raw)
+        except ValueError:
+            self.hashtag_note = "Un hashtag es una sola palabra, sin espacios."
+            return
+        self.new_hashtag = ""
+        self.rubro_hashtags, self.hashtag_note = add_pills(
+            self.rubro_hashtags, [{"tag": tag, "origin": "manual"}]
+        )
+
+    @rx.event
+    def remove_hashtag(self, tag: str) -> None:
+        self.rubro_hashtags = [item for item in self.rubro_hashtags if item["tag"] != tag]
+        self.hashtag_note = ""
+
+    @rx.event(background=True)
+    async def suggest_hashtags(self) -> None:
+        """The button next to Tu rubro: Claude explores the hashtag catalog with its
+        tools (`hashtag_catalog.suggest_hashtags`) for this rubro, this brand's profile
+        and place, and the answer lands as pills the operator can curate. Background:
+        a tool run takes several seconds and the step stays usable meanwhile."""
+        async with self:
+            if self.suggesting_hashtags:
+                return
+            if not self.sector and not self.rubro_text.strip():
+                self.hashtag_note = "Escribe tu rubro (o elige una categoría) y te sugerimos."
+                return
+            self.suggesting_hashtags = True
+            self.hashtag_note = ""
+            network = self.network
+            handle = self.profile_username or self.username.strip()
+            answers = {
+                "sector": self.sector,
+                "rubro_text": self.rubro_text.strip(),
+                "country_code": self.country_code,
+                "city": self.city.strip(),
+            }
+            fallback = {
+                "username": self.profile_username,
+                "bio": self.profile_bio,
+                "category": self.profile_category,
+            }
+        ids = await self._referentes_ids()
+        choice: hashtag_catalog.HashtagChoice | None = None
+        note = ""
+        if ids is None:
+            note = "Inicia sesión con tu negocio para que te sugiramos hashtags."
+        else:
+            try:
+                profile = await asyncio.to_thread(
+                    scrapecreators_client.load_cached_profile, network, handle
+                )
+                source = profile or fallback
+                seed = creator_discovery.seed_from_profile(source, **answers)
+                choice = await asyncio.to_thread(
+                    hashtag_catalog.suggest_hashtags,
+                    ids[0],
+                    seed,
+                    bio=str(source.get("bio") or ""),
+                    category=str(source.get("category") or ""),
+                )
+            except (SQLAlchemyError, OSError, ValueError) as exc:
+                logger.warning("hashtags: suggestion failed: %s", exc)
+                note = "No pudimos sugerir hashtags ahora. Agrega los tuyos o inténtalo luego."
+        async with self:
+            self.suggesting_hashtags = False
+            if choice is not None:
+                self.rubro_hashtags, self.hashtag_note = merge_suggestions(
+                    self.rubro_hashtags, choice
+                )
+            else:
+                self.hashtag_note = note
+
+    @rx.event
     def choose_network(self, key: str) -> None:
         """Choosing advances — the screen holds nothing else, so a second click on
         Continue would be a dead one."""
@@ -2594,6 +2855,10 @@ class BrandConnectState(rx.State):
         self.rubro_text = ""
         self.country_code = ""
         self.city = ""
+        self.rubro_hashtags = []
+        self.new_hashtag = ""
+        self.suggesting_hashtags = False
+        self.hashtag_note = ""
         self.rubro_asked = False
         self._clear_discovery()
         self._set_metrics([])
@@ -2608,6 +2873,9 @@ class BrandConnectState(rx.State):
         self.account_buckets = {}
         self._persisted_buckets = {}
         self.kept_accounts = []
+        self.discarded_accounts = []
+        self.manual_message = ""
+        self.manual_error = ""
         self.dragging = ""
         self.sort_stage = 0
         self.stage_cursor = 0
@@ -2628,13 +2896,27 @@ class BrandConnectState(rx.State):
         if key not in creator_discovery.PHASES:
             return
         accounts = [
-            # `avatar_src`: the backend path the card's picture is served from
-            # (`creator_discovery.avatar_path` → `avatar_proxy.py`), resolved here so a
-            # cached result from before pictures existed gets one too.
-            {**a, "avatar_src": creator_discovery.avatar_path(a)}
+            # `card_view` resolves `avatar_src` — the backend path the card's picture is
+            # served from (`creator_discovery.avatar_path` → `avatar_proxy.py`) — so a
+            # cached result from before pictures existed gets one too, and defaults the
+            # keys cards stored before the AI review lack.
+            card_view(a)
             for a in phase.get("accounts") or []
             if isinstance(a, dict)
         ]
+        discarded = [
+            {
+                "phase": key,
+                "handle": str(d.get("handle") or ""),
+                "network": str(d.get("network") or ""),
+                "reason": str(d.get("reason") or ""),
+            }
+            for d in phase.get("discarded") or []
+            if isinstance(d, dict)
+        ]
+        self.discarded_accounts = [
+            d for d in self.discarded_accounts if d["phase"] != key
+        ] + discarded
         note = str(phase.get("note") or "")
         if phase.get("errors") and not accounts:
             note = "No pudimos completar esta búsqueda ahora. Inténtalo más tarde."
@@ -2798,6 +3080,29 @@ class BrandConnectState(rx.State):
         return rows
 
     @rx.var
+    def stage_discarded(self) -> list[dict[str, str]]:
+        """What the AI review dropped from the category on screen."""
+        key = self.stage_key
+        return [d for d in self.discarded_accounts if d["phase"] == key]
+
+    @rx.var
+    def stage_discarded_label(self) -> str:
+        count = len(self.stage_discarded)
+        noun = "cuenta que no encaja" if count == 1 else "cuentas que no encajan"
+        return f"La IA descartó {count} {noun} con tu marca"
+
+    @rx.var
+    def manual_accounts(self) -> list[dict[str, str]]:
+        """The referentes the operator added by hand, in whichever bucket."""
+        return [a for a in self.discovered_accounts if a.get("manual") == "1"]
+
+    @rx.var
+    def manual_placeholder(self) -> str:
+        if self.manual_network in ("web", "otro"):
+            return "Nombre del negocio o de la persona, o su página web"
+        return "Usuario (@cuenta) o enlace del perfil"
+
+    @rx.var
     def stage_pool(self) -> list[dict[str, str]]:
         return [a for a in self._phase_cards(self.stage_key) if a["bucket"] == ""]
 
@@ -2837,6 +3142,129 @@ class BrandConnectState(rx.State):
     @rx.var
     def can_undo(self) -> bool:
         return self.last_assigned != "" and self.last_assigned in self.account_buckets
+
+    @rx.event
+    def toggle_manual(self) -> None:
+        self.manual_open = not self.manual_open
+        self.manual_error = ""
+
+    @rx.event
+    def set_manual_input(self, value: str) -> None:
+        self.manual_input = value
+        self.manual_error = ""
+
+    @rx.event
+    def set_manual_network(self, value: str) -> None:
+        if value in referentes_review.MANUAL_NETWORKS:
+            self.manual_network = value
+
+    @rx.event
+    def set_manual_bucket(self, value: str) -> None:
+        if value in {b for b, _, _, _ in BUCKETS}:
+            self.manual_bucket = value
+
+    @rx.event
+    def set_manual_note(self, value: str) -> None:
+        self.manual_note = value
+
+    @rx.event
+    def remove_manual(self, key: str) -> rx.event.EventSpec:
+        """Take a manual referente out: its label is cleared (`sync_labels`), and a card
+        with no label is not shown — the stored card stays for provenance only."""
+        buckets = dict(self.account_buckets)
+        buckets.pop(key, None)
+        self.account_buckets = buckets
+        self.kept_accounts = [c for c in self.kept_accounts if _account_key(c) != key]
+        return BrandConnectState.sync_labels
+
+    @rx.event(background=True)
+    async def add_manual_account(self) -> AsyncIterator[None]:
+        """A referente the search could not find (§ request 2026-09-25): little activity,
+        few followers or no TikTok / Instagram at all. Read from the vendor when it is
+        on a network we read (1 credit, remembered), reviewed by Claude with the same
+        tool as the search (`referentes_review.add_manual_account`) — which never
+        refuses it: the operator decides, the review only warns — stored with the
+        brand's manual referentes and sorted into the chosen bucket."""
+        async with self:
+            if self.adding_manual:
+                return
+            try:
+                target = referentes_review.parse_manual(self.manual_input, self.manual_network)
+            except ValueError as exc:
+                self.manual_error = str(exc)
+                return
+            self.adding_manual = True
+            self.manual_error = ""
+            self.manual_message = ""
+            note = self.manual_note.strip()
+            bucket = self.manual_bucket
+            network = self.network
+            handle = self.profile_username or self.username.strip()
+            answers = {
+                "sector": self.sector,
+                "rubro_text": self.rubro_text.strip(),
+                "country_code": self.country_code,
+                "city": self.city.strip(),
+            }
+            fallback = {
+                "username": self.profile_username,
+                "bio": self.profile_bio,
+                "category": self.profile_category,
+            }
+            pills = [dict(item) for item in self.rubro_hashtags]
+            creative = await self.get_state(CreativeState)
+            positioning = creative.kit_positioning.strip()
+            audience = creative.kit_audience.strip()
+        yield
+
+        result: referentes_review.ManualResult | None = None
+        try:
+            profile = await asyncio.to_thread(
+                scrapecreators_client.load_cached_profile, network, handle
+            )
+            seed = creator_discovery.seed_from_profile(profile or fallback, **answers)
+            if pills:
+                seed, _ = seed_with_pills(seed, pills)
+            brief = referentes_review.brand_brief(
+                seed,
+                bio=str((profile or fallback).get("bio") or ""),
+                category=str((profile or fallback).get("category") or ""),
+                positioning=positioning,
+                audience=audience,
+            )
+            result = await asyncio.to_thread(
+                referentes_review.add_manual_account, target, brief, note=note
+            )
+            ids = await self._referentes_ids()
+            if ids is not None:
+                try:
+                    await asyncio.to_thread(
+                        referentes_provider.save_manual_account,
+                        ids[0],
+                        ids[1],
+                        result.candidate,
+                        result.card,
+                        brand_handle=handle,
+                    )
+                except (SQLAlchemyError, ValueError) as exc:
+                    # Still added for this session; only the reuse is lost.
+                    logger.warning("referentes: could not store a manual account: %s", exc)
+        except (ValueError, OSError) as exc:
+            logger.warning("manual referente failed: %s", exc)
+        async with self:
+            self.adding_manual = False
+            if result is None:
+                self.manual_error = "No pudimos agregar esa cuenta ahora. Inténtalo de nuevo."
+                return
+            card = card_view(result.card)
+            key = _account_key(card)
+            self.kept_accounts = [c for c in self.kept_accounts if _account_key(c) != key] + [card]
+            self.account_buckets = {**self.account_buckets, key: bucket}
+            self.manual_message, self.manual_tone = manual_outcome(card, bucket, result)
+            self.manual_input = ""
+            self.manual_note = ""
+            self.manual_open = False
+        yield BrandConnectState.sync_labels
 
     @rx.event
     def skip_card(self) -> None:
@@ -3214,6 +3642,8 @@ class BrandConnectState(rx.State):
                 "bio": self.profile_bio,
                 "category": self.profile_category,
             }
+            # Bound under the lock: the pills as they were when the search started.
+            pills = [dict(item) for item in self.rubro_hashtags]
         yield
 
         runner: creator_discovery.PhasedDiscovery | None = None
@@ -3226,7 +3656,13 @@ class BrandConnectState(rx.State):
                 scrapecreators_client.load_cached_profile, network, handle
             )
             seed = creator_discovery.seed_from_profile(profile or fallback, **answers)
-            seed = await self._with_catalog_hashtags(ids, seed)
+            if pills:
+                # The operator's pills ARE the hashtags: no AI call of the search's own.
+                seed, hashtag_picks = seed_with_pills(seed, pills)
+            else:
+                seed, hashtag_picks = await self._with_catalog_hashtags(
+                    ids, seed, profile or fallback
+                )
             async with self:
                 if self.discovery_run_id != my_id:
                     return
@@ -3256,8 +3692,18 @@ class BrandConnectState(rx.State):
             if not keys:
                 return
 
+            # Claude reviews each phase's shortlist (version 9): what is not a real peer
+            # of the brand is dropped, the rest carries marca / creador. No API key → no
+            # reviewer, and the search runs unreviewed.
+            reviewer = referentes_review.make_reviewer(
+                referentes_review.brand_brief(
+                    seed,
+                    bio=str((profile or fallback).get("bio") or ""),
+                    category=str((profile or fallback).get("category") or ""),
+                )
+            )
             runner = creator_discovery.PhasedDiscovery(
-                seed, profile_cache=creator_discovery.PROFILE_CACHE_PATH
+                seed, profile_cache=creator_discovery.PROFILE_CACHE_PATH, reviewer=reviewer
             )
             for key in keys:
                 async with self:
@@ -3269,7 +3715,7 @@ class BrandConnectState(rx.State):
                 phase = creator_discovery.phase_to_dict(result)
                 if result.errors:
                     logger.warning("brand discovery %s phase errors: %s", key, result.errors)
-                await self._store_phase(ids, key, seed, result, phase)
+                await self._store_phase(ids, key, seed, result, phase, hashtag_picks)
                 async with self:
                     if self.discovery_run_id != my_id:
                         return
@@ -3294,10 +3740,7 @@ class BrandConnectState(rx.State):
                         self.account_buckets = {**restored, **self.account_buckets}
                         self._persisted_buckets = {**self._persisted_buckets, **restored}
                     if ids is not None:
-                        self.kept_accounts = [
-                            {**card, "avatar_src": creator_discovery.avatar_path(card)}
-                            for card in kept
-                        ]
+                        self.kept_accounts = [card_view(card) for card in kept]
                     self.discovering = False
                     self.discovery_running = ""
 
@@ -3346,13 +3789,22 @@ class BrandConnectState(rx.State):
         seed: creator_discovery.DiscoverySeed,
         result: creator_discovery.PhaseResult,
         phase: dict,
+        hashtag_picks: Mapping[str, Mapping[str, str]] | None = None,
     ) -> None:
         if ids is None:
-            await asyncio.to_thread(creator_discovery.save_cached_phase, key, seed, phase)
+            if not result.review_failed:
+                await asyncio.to_thread(creator_discovery.save_cached_phase, key, seed, phase)
             return
         try:
             await asyncio.to_thread(
-                referentes_provider.save_phase, ids[0], ids[1], key, seed, result, phase
+                referentes_provider.save_phase,
+                ids[0],
+                ids[1],
+                key,
+                seed,
+                result,
+                phase,
+                hashtag_picks,
             )
         except SQLAlchemyError as exc:
             # The operator still sees the result; only the reuse is lost.
@@ -3363,19 +3815,29 @@ class BrandConnectState(rx.State):
         self,
         ids: tuple[UUID, UUID, UUID | None] | None,
         seed: creator_discovery.DiscoverySeed,
-    ) -> creator_discovery.DiscoverySeed:
-        """The seed plus what the shared hashtag catalog knows for its rubro
-        (`hashtag_catalog.catalog_hashtags_for`). Without a session that has a tenant, or
-        when the catalog cannot be read, the seed comes back unchanged and the search
-        runs as it did before the catalog existed."""
+        profile: dict,
+    ) -> tuple[creator_discovery.DiscoverySeed, dict[str, dict[str, str]]]:
+        """The seed plus the catalog hashtags that fit this brand — chosen by Claude from
+        a wide catalog pool (`hashtag_catalog.ai_hashtags_for`), or by the rule path when
+        there is no key or the call fails — and the provenance of an AI choice, which is
+        stored with each phase. Without a session that has a tenant, or when the catalog
+        cannot be read, the seed comes back unchanged and the search runs as it did
+        before the catalog existed."""
         if ids is None:
-            return seed
+            return seed, {}
         try:
-            tags = await asyncio.to_thread(hashtag_catalog.catalog_hashtags_for, ids[0], seed)
+            choice = await asyncio.to_thread(
+                hashtag_catalog.ai_hashtags_for,
+                ids[0],
+                seed,
+                bio=str(profile.get("bio") or ""),
+                category=str(profile.get("category") or ""),
+            )
         except SQLAlchemyError as exc:
             logger.warning("hashtags: catalog unreadable, searching without it: %s", exc)
-            return seed
-        return replace(seed, catalog_hashtags=tags)
+            return seed, {}
+        picks = {tag: dict(info) for tag, info in choice.picks.items()}
+        return replace(seed, catalog_hashtags=choice.tags), picks
 
     async def _capture_hashtags(
         self,
@@ -3384,9 +3846,11 @@ class BrandConnectState(rx.State):
         seed: creator_discovery.DiscoverySeed,
         result: creator_discovery.PhaseResult,
     ) -> None:
-        """Feed the shared hashtag catalog with what this fresh run saw. Its own guard:
-        the catalog only ever ADDS knowledge, so a failure here must never touch the
-        result the operator is looking at (nor the phase that was just stored)."""
+        """Feed the shared hashtag catalog with what this fresh run saw, then let Claude
+        classify a batch of what the rules left open — in the background: the operator
+        is waiting for the next phase, not for the catalog. Its own guard: the catalog
+        only ever ADDS knowledge, so a failure here must never touch the result the
+        operator is looking at (nor the phase that was just stored)."""
         try:
             await asyncio.to_thread(hashtag_catalog.ensure_seeded, tenant_id)
             await asyncio.to_thread(
@@ -3394,6 +3858,10 @@ class BrandConnectState(rx.State):
             )
         except SQLAlchemyError as exc:
             logger.warning("hashtags: could not capture the %s phase: %s", key, exc)
+            return
+        task = asyncio.create_task(asyncio.to_thread(hashtag_catalog.classify_pending, tenant_id))
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_finish_background_task)
 
     async def _stored_sort(
         self, ids: tuple[UUID, UUID, UUID | None] | None, run_id: int
@@ -3685,11 +4153,26 @@ def _connect_step_rubro() -> rx.Component:
     return _step_body(
         rx.cond(
             ~BrandConnectState.is_influencer,
-            _labeled_input(
-                "Tu rubro, con tus palabras",
-                BrandConnectState.rubro_text,
-                BrandConnectState.set_rubro_text,
-                "Ej. peluquería canina, fisioterapia deportiva",
+            rx.vstack(
+                rx.text("Tu rubro, con tus palabras", size="2", weight="medium"),
+                rx.hstack(
+                    rx.input(
+                        value=BrandConnectState.rubro_text,
+                        on_change=BrandConnectState.set_rubro_text,
+                        placeholder="Ej. peluquería canina, fisioterapia deportiva",
+                        width="100%",
+                        size="3",
+                        height="2.75rem",
+                        radius=_CONTROL_RADIUS,
+                    ),
+                    _suggest_hashtags_button(),
+                    spacing="2",
+                    width="100%",
+                    align="center",
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
             ),
         ),
         _select_field(
@@ -3699,6 +4182,7 @@ def _connect_step_rubro() -> rx.Component:
             tuple(creator_discovery.NICHE_LABELS.items()),
             "Elige una categoría",
         ),
+        _rubro_hashtags_block(),
         _select_field(
             rx.cond(BrandConnectState.needs_location, "País", "País (opcional)"),
             BrandConnectState.country_code,
@@ -3736,6 +4220,129 @@ def _connect_step_rubro() -> rx.Component:
             text_align="center",
         ),
         icon="map-pin",
+    )
+
+
+def _suggest_hashtags_button() -> rx.Component:
+    """The small button next to Tu rubro (§ request 2026-09-25): asks Claude, with its
+    catalog tools, for the hashtags to search with (`BrandConnectState.
+    suggest_hashtags`). Spins while the run lasts — a tool run takes a few seconds."""
+    return rx.tooltip(
+        rx.button(
+            rx.cond(
+                BrandConnectState.suggesting_hashtags,
+                rx.spinner(size="2"),
+                rx.icon("sparkles", size=T.ICON_SM),
+            ),
+            "Sugerir",
+            on_click=BrandConnectState.suggest_hashtags,
+            disabled=BrandConnectState.suggesting_hashtags,
+            variant="soft",
+            size="3",
+            height="2.75rem",
+            radius=_CONTROL_RADIUS,
+            flex_shrink="0",
+        ),
+        content="Sugerir hashtags de tu rubro para buscar referentes",
+    )
+
+
+def _hashtag_pill_body(item: rx.Var[dict[str, str]], **badge: object) -> rx.Component:
+    return rx.badge(
+        rx.text("#", item["tag"]),
+        rx.el.button(
+            rx.icon("x", size=12),
+            on_click=BrandConnectState.remove_hashtag(item["tag"]),
+            type="button",
+            aria_label="Quitar este hashtag",
+            display="flex",
+            align_items="center",
+            background="transparent",
+            border="none",
+            padding="0",
+            color="inherit",
+            cursor="pointer",
+        ),
+        size="2",
+        radius="full",
+        gap="1",
+        align_items="center",
+        **badge,
+    )
+
+
+def _hashtag_pill(item: rx.Var[dict[str, str]]) -> rx.Component:
+    """One pill: accent for a suggestion (hover shows Claude's reason), neutral for
+    one the operator typed; the ✕ removes it either way."""
+    suggested = rx.tooltip(
+        _hashtag_pill_body(item, variant="soft"),
+        content=rx.cond(item["reason"] != "", item["reason"], "Sugerido para tu rubro"),
+    )
+    typed = _hashtag_pill_body(item, variant="surface", color_scheme="gray")
+    return rx.cond(item["origin"] == "manual", typed, suggested)
+
+
+def _rubro_hashtags_block() -> rx.Component:
+    """The hashtags the search will use, as pills (§ request 2026-09-25): filled by
+    "Sugerir" and/or typed here, each removable. An influencer has no rubro input, so
+    the suggest button sits in this block's header for them."""
+    return rx.vstack(
+        rx.hstack(
+            rx.text("Hashtags para buscar referentes", size="2", weight="medium"),
+            rx.spacer(),
+            rx.cond(BrandConnectState.is_influencer, _suggest_hashtags_button()),
+            width="100%",
+            align="center",
+        ),
+        rx.cond(
+            BrandConnectState.rubro_hashtags.length() > 0,
+            rx.flex(
+                rx.foreach(BrandConnectState.rubro_hashtags, _hashtag_pill),
+                wrap="wrap",
+                gap="2",
+                width="100%",
+            ),
+        ),
+        rx.form(
+            rx.hstack(
+                rx.input(
+                    value=BrandConnectState.new_hashtag,
+                    on_change=BrandConnectState.set_new_hashtag,
+                    placeholder="Agrega un hashtag, ej. #streetfood",
+                    width="100%",
+                    size="2",
+                    radius=_CONTROL_RADIUS,
+                ),
+                rx.icon_button(
+                    rx.icon("plus", size=T.ICON_SM),
+                    type="submit",
+                    variant="soft",
+                    color_scheme="gray",
+                    size="2",
+                    radius=_CONTROL_RADIUS,
+                    aria_label="Agregar hashtag",
+                ),
+                spacing="2",
+                width="100%",
+            ),
+            on_submit=BrandConnectState.add_hashtag,
+            width="100%",
+        ),
+        rx.cond(
+            BrandConnectState.hashtag_note != "",
+            rx.text(BrandConnectState.hashtag_note, size="1", color=T.TEXT_MUTED),
+            rx.cond(
+                BrandConnectState.rubro_hashtags.length() > 0,
+                rx.text(
+                    "Buscaremos referentes con estos hashtags. Quita los que no encajen.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+            ),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
     )
 
 
@@ -3953,6 +4560,47 @@ def _connect_step_insights() -> rx.Component:
     )
 
 
+def _kind_flag(item: rx.Var[dict[str, str]]) -> rx.Component:
+    """Marca / Creador / Medio, as the AI review read the account (hover: its reason).
+    Nothing for an unreviewed card or an `otro`."""
+    return rx.cond(
+        item["kind_label"] != "",
+        rx.tooltip(
+            rx.badge(
+                rx.match(
+                    item["kind"],
+                    ("marca", rx.icon("store", size=12)),
+                    ("creador", rx.icon("user-round", size=12)),
+                    rx.icon("newspaper", size=12),
+                ),
+                item["kind_label"],
+                variant="soft",
+                size="1",
+                gap="1",
+            ),
+            content=rx.cond(item["review"] != "", item["review"], "Según la revisión de la IA"),
+        ),
+    )
+
+
+def _review_line(item: rx.Var[dict[str, str]], **props: object) -> rx.Component:
+    """Claude's one-line reason under a card — a warning tone when it thinks a manual
+    account does not fit."""
+    return rx.cond(
+        item["review"] != "",
+        rx.hstack(
+            rx.cond(
+                item["fits"] == "no",
+                rx.icon("triangle-alert", size=12, color=T.tone_color("warn", 11), flex_shrink="0"),
+                rx.icon("sparkles", size=12, color=T.TEXT_FAINT, flex_shrink="0"),
+            ),
+            rx.text(item["review"], size="1", color=T.TEXT_FAINT, **props),
+            spacing="1",
+            align="start",
+        ),
+    )
+
+
 def _discovery_account(item: rx.Var[dict[str, str]]) -> rx.Component:
     """One referente: the whole card links to the public profile (new tab). The
     picture comes through `_avatar` — the backend proxy, never the vendor's signed
@@ -3966,6 +4614,7 @@ def _discovery_account(item: rx.Var[dict[str, str]]) -> rx.Component:
                     rx.hstack(
                         mono(item["handle"], size="2"),
                         tag(item["network"]),
+                        _kind_flag(item),
                         rx.text(item["followers"], " seguidores", size="1", color=T.TEXT_MUTED),
                         rx.cond(
                             item["likes"] != "",
@@ -3979,6 +4628,7 @@ def _discovery_account(item: rx.Var[dict[str, str]]) -> rx.Component:
                         item["blurb"] != "",
                         rx.text(item["blurb"], size="2", color=T.TEXT_MUTED),
                     ),
+                    _review_line(item),
                     spacing="1",
                     align_items="start",
                     min_width="0",
@@ -4201,6 +4851,7 @@ def _deck_face(item: rx.Var[dict[str, str]]) -> rx.Component:
             mono(item["handle"], size="3"),
             rx.hstack(
                 tag(item["network"]),
+                _kind_flag(item),
                 rx.text(item["followers"], " seguidores", size="1", color=T.TEXT_MUTED),
                 rx.cond(
                     item["likes"] != "",
@@ -4211,6 +4862,7 @@ def _deck_face(item: rx.Var[dict[str, str]]) -> rx.Component:
                 wrap="wrap",
                 justify="center",
             ),
+            _review_line(item, text_align="center"),
             rx.cond(
                 item["blurb"] != "",
                 rx.text(
@@ -4561,8 +5213,201 @@ def _connect_step_sort() -> rx.Component:
             justify="center",
             width="100%",
         ),
+        _stage_discarded(),
+        _manual_section(),
         icon="layout-grid",
         grow=True,
+    )
+
+
+def _discarded_row(item: rx.Var[dict[str, str]]) -> rx.Component:
+    return rx.hstack(
+        mono(item["handle"], size="1"),
+        tag(item["network"]),
+        rx.text(item["reason"], size="1", color=T.TEXT_MUTED),
+        spacing="2",
+        align="center",
+        wrap="wrap",
+    )
+
+
+def _stage_discarded() -> rx.Component:
+    """What the AI review dropped from this category, folded: the operator can check
+    a drop, and add the account by hand if the review was wrong."""
+    return rx.cond(
+        BrandConnectState.stage_discarded.length() > 0,
+        rx.el.details(
+            rx.el.summary(
+                rx.hstack(
+                    rx.icon("sparkles", size=14, color=T.TEXT_FAINT),
+                    rx.text(BrandConnectState.stage_discarded_label, size="1", color=T.TEXT_MUTED),
+                    spacing="1",
+                    align="center",
+                    display="inline-flex",
+                ),
+                cursor="pointer",
+            ),
+            rx.vstack(
+                rx.foreach(BrandConnectState.stage_discarded, _discarded_row),
+                spacing="1",
+                padding_top="0.5rem",
+                width="100%",
+            ),
+            width="100%",
+        ),
+    )
+
+
+def _manual_chip(item: rx.Var[dict[str, str]]) -> rx.Component:
+    bucket_title = rx.match(
+        item["bucket"],
+        *((key, title) for key, title, _, _ in BUCKETS),
+        "",
+    )
+    return rx.badge(
+        rx.cond(item["fits"] == "no", rx.icon("triangle-alert", size=12)),
+        rx.text(item["handle"], " · ", bucket_title),
+        rx.el.button(
+            rx.icon("x", size=12),
+            on_click=BrandConnectState.remove_manual(item["key"]),
+            type="button",
+            aria_label="Quitar esta cuenta",
+            display="flex",
+            align_items="center",
+            background="transparent",
+            border="none",
+            padding="0",
+            color="inherit",
+            cursor="pointer",
+        ),
+        variant="surface",
+        color_scheme="gray",
+        size="2",
+        radius="full",
+        gap="1",
+        align_items="center",
+    )
+
+
+def _manual_form() -> rx.Component:
+    return rx.form(
+        rx.vstack(
+            rx.hstack(
+                rx.box(
+                    _select_field(
+                        "Red",
+                        BrandConnectState.manual_network,
+                        BrandConnectState.set_manual_network,
+                        MANUAL_NETWORK_OPTIONS,
+                        "Red",
+                    ),
+                    flex="1 1 8rem",
+                ),
+                rx.box(
+                    _select_field(
+                        "Lo agregas como",
+                        BrandConnectState.manual_bucket,
+                        BrandConnectState.set_manual_bucket,
+                        tuple((key, title) for key, title, _, _ in BUCKETS),
+                        "Referente",
+                    ),
+                    flex="1 1 8rem",
+                ),
+                spacing="2",
+                width="100%",
+                wrap="wrap",
+            ),
+            rx.input(
+                value=BrandConnectState.manual_input,
+                on_change=BrandConnectState.set_manual_input,
+                placeholder=BrandConnectState.manual_placeholder,
+                width="100%",
+                size="2",
+                radius=_CONTROL_RADIUS,
+            ),
+            rx.text_area(
+                value=BrandConnectState.manual_note,
+                on_change=BrandConnectState.set_manual_note,
+                placeholder="¿Qué hace y por qué la agregas? (opcional, ayuda a la IA)",
+                width="100%",
+                rows="2",
+                radius=_CONTROL_RADIUS,
+            ),
+            rx.cond(
+                BrandConnectState.manual_error != "",
+                rx.text(BrandConnectState.manual_error, size="1", color=T.tone_color("error", 11)),
+            ),
+            rx.hstack(
+                rx.button(
+                    "Cancelar",
+                    type="button",
+                    variant="ghost",
+                    size="2",
+                    radius=_CONTROL_RADIUS,
+                    on_click=BrandConnectState.toggle_manual,
+                ),
+                rx.button(
+                    rx.cond(
+                        BrandConnectState.adding_manual,
+                        loading_spinner("sm"),
+                        rx.icon("user-plus", size=T.ICON_SM),
+                    ),
+                    rx.cond(BrandConnectState.adding_manual, "Revisando…", "Agregar"),
+                    type="submit",
+                    size="2",
+                    radius=_CONTROL_RADIUS,
+                    disabled=BrandConnectState.adding_manual,
+                ),
+                spacing="2",
+                justify="end",
+                width="100%",
+            ),
+            spacing="2",
+            width="100%",
+        ),
+        on_submit=BrandConnectState.add_manual_account,
+        width="100%",
+    )
+
+
+def _manual_section() -> rx.Component:
+    """Agregar a mano (§ request 2026-09-25): an account the search cannot find —
+    little activity, few followers, or not on TikTok / Instagram at all — added by
+    handle, link or plain name, then reviewed by Claude like the search's."""
+    return rx.vstack(
+        rx.cond(
+            BrandConnectState.manual_message != "",
+            rx.cond(
+                BrandConnectState.manual_tone == "warn",
+                callout(BrandConnectState.manual_message, "warn"),
+                callout(BrandConnectState.manual_message, "ok"),
+            ),
+        ),
+        rx.cond(
+            BrandConnectState.manual_accounts.length() > 0,
+            rx.flex(
+                rx.foreach(BrandConnectState.manual_accounts, _manual_chip),
+                wrap="wrap",
+                gap="2",
+                width="100%",
+            ),
+        ),
+        rx.cond(
+            BrandConnectState.manual_open,
+            card(_manual_form(), padding="1rem", width="100%"),
+            rx.button(
+                rx.icon("user-plus", size=T.ICON_SM),
+                "¿Falta alguien? Agrégalo a mano",
+                variant="soft",
+                color_scheme="gray",
+                size="2",
+                radius=_CONTROL_RADIUS,
+                on_click=BrandConnectState.toggle_manual,
+            ),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="center",
     )
 
 
@@ -4676,7 +5521,9 @@ def _logo_step_complete() -> rx.Var[bool]:
     flows' gate for the same reason `_identity_complete` is."""
     return rx.cond(
         BrandWizardState.has_logo == "si",
-        BrandWizardState.logo_key != "",
+        # A brandboard carries the logo too (§ request 2026-09-25): either file will do.
+        (BrandWizardState.logo_key != "")
+        | (brand_documents.BrandDocumentState.brandboard_key != ""),
         BrandWizardState.logo_brief_1 != "",
     )
 
@@ -4753,7 +5600,13 @@ def _connect_controls() -> rx.Component:
     )
     right = rx.cond(
         BrandConnectState.step == CONNECT_LAST,
-        _finish_button([CreativeState.save_kit_form, BrandConnectState.finish_to_signals]),
+        _finish_button(
+            [
+                CreativeState.save_kit_form,
+                brand_documents.BrandDocumentState.reset_documents,
+                BrandConnectState.finish_to_signals,
+            ]
+        ),
         rx.cond(
             BrandConnectState.step == 1,
             rx.button(

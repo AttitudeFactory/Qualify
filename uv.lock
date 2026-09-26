@@ -1666,15 +1666,19 @@ dependencies = [
 llm = [
     { name = "anthropic" },
 ]
+video = [
+    { name = "httpx" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "anthropic", marker = "extra == 'llm'", specifier = ">=0.40" },
+    { name = "httpx", marker = "extra == 'video'", specifier = ">=0.28.1" },
     { name = "pillow", specifier = ">=11.0" },
     { name = "pillow-heif", specifier = ">=0.18" },
     { name = "pydantic", specifier = ">=2.13.4" },
 ]
-provides-extras = ["llm"]
+provides-extras = ["llm", "video"]
 
 [[package]]
 name = "qualify-docs-harvester"
@@ -1810,7 +1814,7 @@ source = { virtual = "." }
 [package.dev-dependencies]
 backend = [
     { name = "qualify-api" },
-    { name = "qualify-creative" },
+    { name = "qualify-creative", extra = ["llm"] },
     { name = "qualify-scraper" },
     { name = "qualify-shared" },
 ]
@@ -1834,7 +1838,7 @@ ml = [
 [package.metadata.requires-dev]
 backend = [
     { name = "qualify-api", editable = "packages/api" },
-    { name = "qualify-creative", editable = "packages/creative" },
+    { name = "qualify-creative", extras = ["llm"], editable = "packages/creative" },
     { name = "qualify-scraper", editable = "packages/scraper" },
     { name = "qualify-shared", editable = "packages/shared" },
 ]

@@ -554,6 +554,11 @@ def test_phased_run_ranks_by_influence_and_never_repeats_an_account(tmp_path: Pa
         "blurb": "Foodie de Cúcuta",
         "reason": "«comida Colombia»",
         "avatar": "",
+        # no reviewer in this run: the AI review's keys are empty
+        "kind": "",
+        "kind_label": "",
+        "review": "",
+        "reviewed_by": "",
     }
     assert cd.account_card(local.accounts[2])["reason"] == "#cucutafood"
     assert cd.account_card(local.accounts[2])["likes"] == "200K"  # heartCount from the read
@@ -654,6 +659,47 @@ def test_profile_facts_reads_both_shapes() -> None:
     assert (instagram.followers, instagram.category, instagram.related) == (7, "Restaurant", ("a",))
 
 
+def _ig_post(caption: str | None) -> dict:
+    edges = [] if caption is None else [{"node": {"text": caption}}]
+    return {"node": {"edge_media_to_caption": {"edges": edges}}}
+
+
+def test_an_instagram_read_keeps_its_posts_captions_and_hashtags() -> None:
+    """The shape measured live 2026-09-25 (`/v1/instagram/profile`, `mouredev`): the read
+    carries the last 12 posts. Their hashtags reach `hashtags_seen` — the only way an
+    Instagram account found through Google, related profiles or a mirror feeds the
+    catalog — without counting as feed sightings (engagement stays untouched)."""
+    posts = [
+        _ig_post("Aprende #Python gratis 💬 #programacion #IA"),
+        _ig_post(None),  # a post without caption
+        _ig_post("Otro curso #programacion #javascript"),
+        "not a dict",
+    ]
+    facts = cd.profile_facts(
+        "instagram",
+        {"data": {"user": {"edge_owner_to_timeline_media": {"count": 99, "edges": posts}}}},
+    )
+    assert facts.captions == (
+        "Aprende #Python gratis 💬 #programacion #IA",
+        "Otro curso #programacion #javascript",
+    )
+
+    candidate = cd.Candidate("instagram", "dev")
+    cd._apply_facts(candidate, facts, "instagram:profile")
+    cd._apply_facts(candidate, facts, "instagram:profile")  # a second read adds nothing
+    assert candidate.hashtags_seen == ["python", "programacion", "ia", "javascript"]
+    assert candidate.texts.count("Otro curso #programacion #javascript") == 1
+    assert (candidate.posts_seen, candidate.likes_seen) == (0, 0)
+
+
+def test_profile_facts_caps_the_captions_it_keeps() -> None:
+    posts = [_ig_post(f"post {i} #tag{i}") for i in range(cd.PROFILE_CAPTIONS + 5)]
+    facts = cd.profile_facts(
+        "instagram", {"data": {"user": {"edge_owner_to_timeline_media": {"edges": posts}}}}
+    )
+    assert len(facts.captions) == cd.PROFILE_CAPTIONS
+
+
 def test_vendor_errors_are_recorded_and_the_run_is_not_cached(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(402, json={"success": False, "error": "insufficient credits"})
@@ -726,7 +772,13 @@ def test_profile_store_remembers_reads_and_misses(tmp_path: Path) -> None:
     now = time.time()
     path = tmp_path / "profiles.json"
     store = cd.ProfileStore(path)
-    facts = cd.ProfileFacts(followers=5, bio="b", related=("a", "c"), category="Restaurant")
+    facts = cd.ProfileFacts(
+        followers=5,
+        bio="b",
+        related=("a", "c"),
+        category="Restaurant",
+        captions=("menú del día #almuerzo",),
+    )
     store.put("instagram", "Some.One", facts, now=now)
     store.put("tiktok", "ghost", None, now=now)
     store.save()
@@ -746,6 +798,7 @@ def test_profile_store_remembers_reads_and_misses(tmp_path: Path) -> None:
         charged, got, error = cd._read_profile(client, candidate, None, again)
     assert (charged, got, error) == (0, facts, None)
     assert candidate.followers == 5 and "Restaurant" in candidate.texts
+    assert candidate.hashtags_seen == ["almuerzo"]
 
     # an in-memory store (path=None) never writes
     cd.ProfileStore(None).save()
@@ -985,3 +1038,45 @@ def test_the_catalog_never_changes_the_cache_key() -> None:
     assert a.signature() == b.signature()
     for key in cd.PHASES:
         assert cd.phase_signature(key, a) == cd.phase_signature(key, b)
+
+
+# -- the operator's pills (`chosen_hashtags`, § request 2026-09-25) -------------------
+
+
+def test_chosen_hashtags_replace_the_catalogs_and_widen_the_sector_queries() -> None:
+    seed = cd.DiscoverySeed(
+        "smash",
+        (),
+        terms=("hamburgueseria",),
+        catalog_hashtags=("foodie",),
+        chosen_hashtags=("hamburguesas", "burger", "smashburger", "burgerlovers", "cheeseburger"),
+    )
+    terms = cd.sector_terms(seed)
+    assert terms[0] == "hamburgueseria"
+    assert terms[1:] == ["hamburguesas", "burger", "smashburger", "burgerlovers", "cheeseburger"]
+    assert "foodie" not in terms  # the catalog's pick yields to the operator's
+    assert seed.steering_hashtags() == seed.chosen_hashtags
+    assert "#cheeseburger" in seed.chips() and "#foodie" not in seed.chips()
+
+
+def test_changing_the_pills_is_a_new_sector_and_local_search_but_not_a_national_one() -> None:
+    base = cd.DiscoverySeed(
+        "smash", (), terms=("hamburgueseria",), country_code="VE", city="Caracas"
+    )
+    picked = cd.DiscoverySeed(
+        "smash",
+        (),
+        terms=("hamburgueseria",),
+        country_code="VE",
+        city="Caracas",
+        chosen_hashtags=("hamburguesas",),
+    )
+    assert base.signature() != picked.signature()
+    assert cd.phase_signature("sector", base) != cd.phase_signature("sector", picked)
+    assert cd.phase_signature("local", base) != cd.phase_signature("local", picked)
+    assert cd.phase_signature("national", base) == cd.phase_signature("national", picked)
+    # the catalog's own choice still never is part of any key
+    catalog = cd.DiscoverySeed("smash", (), terms=("hamburgueseria",), catalog_hashtags=("x",))
+    assert (
+        catalog.signature() == cd.DiscoverySeed("smash", (), terms=("hamburgueseria",)).signature()
+    )

@@ -16,14 +16,16 @@ Every function here is a blocking DB call: callers on the event loop run them th
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 from qualify_api.referentes import (
+    ORIGIN_AI,
     ORIGIN_CATALOG,
+    ORIGIN_OPERATOR,
     ORIGIN_PROFILE,
     NewDiscoveredAccount,
     NewDiscoveryPhase,
@@ -33,7 +35,7 @@ from qualify_api.referentes import (
     normalize_handle,
 )
 
-from . import creator_discovery
+from . import creator_discovery, referentes_review
 from .creator_discovery import Candidate, DiscoverySeed, PhaseResult
 
 REPOSITORY: ReferentesRepository = PostgresReferentesRepository()
@@ -43,10 +45,28 @@ REPOSITORY: ReferentesRepository = PostgresReferentesRepository()
 PHASE_TTL_SECONDS = 7 * 24 * 3600
 
 
-def seed_payload(seed: DiscoverySeed) -> dict[str, Any]:
+def seed_payload(
+    seed: DiscoverySeed, picks: Mapping[str, Mapping[str, str]] | None = None
+) -> dict[str, Any]:
     """The seed as stored: everything the phase read, with each hashtag's origin — the
-    brand's own (`profile`, `seed_from_profile`) or the shared catalog's (`catalog`,
-    `hashtag_catalog.catalog_hashtags_for`)."""
+    brand's own (`profile`, `seed_from_profile`), the shared catalog's (`catalog`,
+    `hashtag_catalog.catalog_hashtags_for`) or a catalog tag Claude chose (`ai`,
+    `hashtag_catalog.ai_hashtags_for`) or one the operator curated as a pill (`operator`,
+    `DiscoverySeed.chosen_hashtags`). An `ai` or `operator` entry carries what `picks`
+    says about it (`model`/`fit`/`reason`, or `suggested_by`/`reason` for a pill Claude
+    suggested): a model's decision is stored with its provenance."""
+    picks = picks or {}
+
+    def chosen_item(tag: str) -> dict[str, str]:
+        extra = {k: str(v) for k, v in (picks.get(tag) or {}).items() if k != "origin"}
+        return {"tag": tag, "origin": ORIGIN_OPERATOR, **extra}
+
+    def catalog_item(tag: str) -> dict[str, str]:
+        pick = picks.get(tag)
+        if pick is None:
+            return {"tag": tag, "origin": ORIGIN_CATALOG}
+        return {"tag": tag, "origin": ORIGIN_AI, **{k: str(v) for k, v in pick.items()}}
+
     return {
         "handle": seed.handle,
         "niches": list(seed.niches),
@@ -56,15 +76,19 @@ def seed_payload(seed: DiscoverySeed) -> dict[str, Any]:
         "city": seed.city,
         "hashtags": [
             *({"tag": tag, "origin": ORIGIN_PROFILE} for tag in seed.hashtags),
-            *({"tag": tag, "origin": ORIGIN_CATALOG} for tag in seed.catalog_hashtags),
+            *(catalog_item(tag) for tag in seed.catalog_hashtags),
+            *(chosen_item(tag) for tag in seed.chosen_hashtags),
         ],
     }
 
 
 def card_identity(card: dict[str, str]) -> tuple[str, str] | None:
     """`(network, handle)` as stored, from a card (`creator_discovery.account_card`:
-    network "TikTok"/"Instagram", handle "@user"). None for a card with no handle."""
-    network = str(card.get("network") or "").strip().lower()
+    network "TikTok"/"Instagram", handle "@user"; a manual referente's network label is
+    mapped back to its id, `referentes_review.MANUAL_NETWORKS`). None for a card with
+    no handle."""
+    label = str(card.get("network") or "").strip().lower()
+    network = referentes_review.NETWORK_BY_LABEL.get(label, label)
     try:
         handle = normalize_handle(str(card.get("handle") or ""))
     except ValueError:
@@ -101,6 +125,8 @@ def to_phase_dict(stored: StoredDiscoveryPhase) -> dict[str, Any]:
         "accounts": [dict(account.card) for account in stored.accounts],
         "credits": stored.credits,
         "errors": list(stored.errors),
+        # what the AI review dropped is shown for a fresh run only; not stored
+        "discarded": [],
     }
 
 
@@ -133,12 +159,18 @@ def save_phase(
     seed: DiscoverySeed,
     result: PhaseResult,
     phase: dict[str, Any],
+    hashtag_picks: Mapping[str, Mapping[str, str]] | None = None,
 ) -> bool:
     """Store a finished phase as the brand's current one. `phase` is the dict the wizard
     rendered (`phase_to_dict(result)`), so the stored cards are the ones shown. Same rule
     the JSON cache had: a phase with errors AND nothing found is not stored, so the next
-    walk retries it. Returns whether it was stored."""
+    walk retries it. Nor is a phase whose AI review failed (`PhaseResult.review_failed`):
+    it fell back to the unreviewed pick, and keeping it would serve that for a week.
+    `hashtag_picks` is the provenance of the seed's AI-chosen hashtags (`seed_payload`).
+    Returns whether it was stored."""
     if result.errors and not result.accounts:
+        return False
+    if result.review_failed:
         return False
     cards = [c for c in phase.get("accounts") or [] if isinstance(c, dict)]
     accounts: list[NewDiscoveredAccount] = []
@@ -156,7 +188,7 @@ def save_phase(
             phase_key=key,
             algorithm_version=creator_discovery.PHASED_PLAN_VERSION,
             seed_signature=creator_discovery.phase_signature(key, seed),
-            seed=seed_payload(seed),
+            seed=seed_payload(seed, hashtag_picks),
             title=result.title,
             note=result.note,
             queries=tuple(result.queries),
@@ -209,7 +241,8 @@ def load_sort(
             if account is None:
                 continue
             card = {str(k): str(v) for k, v in account.card.items()}
-            card["reason"] = KEPT_REASON
+            if card.get("manual") != "1":
+                card["reason"] = KEPT_REASON
             kept.append(card)
             buckets[_bucket_key(card)] = labels[identity]
     return buckets, kept
@@ -247,6 +280,82 @@ def write_labels(
 
 
 # --------------------------------------------------------------------------------------
+# Referentes added by hand (`referentes_review.add_manual_account`)
+# --------------------------------------------------------------------------------------
+
+#: The phase key the manual referentes of a brand are stored under — a pseudo-phase
+#: next to the search's (`creator_discovery.PHASES`), so a manual account is restored by
+#: the same path as one a newer algorithm stopped finding (`load_sort`'s `kept`), with
+#: no table of its own. Never recomputed (`plan_refresh` only reads `PHASES`).
+MANUAL_PHASE = "manual"
+MANUAL_TITLE = "Agregados a mano"
+
+
+def save_manual_account(
+    tenant_id: UUID,
+    brand_id: UUID,
+    candidate: Candidate,
+    card: dict[str, str],
+    *,
+    brand_handle: str = "",
+) -> None:
+    """Add (or replace) one manual referente: the brand's manual pseudo-phase is stored
+    again with every manual account it had plus this one. The label (referente /
+    competencia / detractor) is written apart, by the wizard's `sync_labels`."""
+    identity = card_identity(card)
+    if identity is None:
+        raise ValueError("the manual card has no handle")
+    previous = next(
+        (
+            p
+            for p in REPOSITORY.current_phases(tenant_id=tenant_id, brand_id=brand_id)
+            if p.phase_key == MANUAL_PHASE
+        ),
+        None,
+    )
+    accounts = [
+        NewDiscoveredAccount(
+            network=identity[0],
+            handle=identity[1],
+            card=card,
+            full_name=candidate.full_name,
+            followers=candidate.followers,
+            profile_url=card.get("url", ""),
+            avatar_url=candidate.avatar,
+            found_by=tuple(candidate.sources),
+        )
+    ]
+    for stored in previous.accounts if previous else ():
+        if (stored.network, stored.handle) == identity:
+            continue
+        accounts.append(
+            NewDiscoveredAccount(
+                network=stored.network,
+                handle=stored.handle,
+                card=stored.card,
+                full_name=stored.full_name,
+                followers=stored.followers,
+                profile_url=stored.profile_url,
+                avatar_url=stored.avatar_url,
+                found_by=stored.found_by,
+            )
+        )
+    REPOSITORY.save_phase(
+        NewDiscoveryPhase(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            phase_key=MANUAL_PHASE,
+            algorithm_version=creator_discovery.PHASED_PLAN_VERSION,
+            seed_signature=MANUAL_PHASE,
+            seed={"handle": brand_handle, "hashtags": []},
+            title=MANUAL_TITLE,
+            accounts=tuple(accounts),
+            source="operator",
+        )
+    )
+
+
+# --------------------------------------------------------------------------------------
 # Recompute with a newer algorithm (`just refresh-referentes` → `refresh_referentes.py`)
 # --------------------------------------------------------------------------------------
 
@@ -256,19 +365,26 @@ def rebuild_seed(payload: dict[str, Any]) -> DiscoverySeed:
     `phase_signature` matches what the wizard computes for the same answers and a
     recomputed phase is a hit the next time the operator walks the flow.
 
-    Every stored hashtag is used, split back into its two seed fields by origin: `catalog`
-    ones into `catalog_hashtags`, the rest (the brand's own) into `hashtags`. The origin is
-    stored exactly so a recompute can re-derive one set without touching the other."""
+    Every stored hashtag is used, split back into its seed fields by origin: `catalog`
+    and `ai` ones (both came from the shared catalog) into `catalog_hashtags`, the
+    operator's pills (`operator`) into `chosen_hashtags` — so the signature matches — and
+    the rest (the brand's own) into `hashtags`. The origin is stored exactly so a recompute can
+    re-derive one set without touching the other — and a recompute reuses the stored AI
+    choice rather than asking again."""
     items = [
         item for item in payload.get("hashtags") or [] if isinstance(item, dict) and item.get("tag")
     ]
-    hashtags = tuple(str(i["tag"]) for i in items if i.get("origin") != ORIGIN_CATALOG)
-    catalog = tuple(str(i["tag"]) for i in items if i.get("origin") == ORIGIN_CATALOG)
+    from_catalog = (ORIGIN_CATALOG, ORIGIN_AI)
+    not_own = (*from_catalog, ORIGIN_OPERATOR)
+    hashtags = tuple(str(i["tag"]) for i in items if i.get("origin") not in not_own)
+    catalog = tuple(str(i["tag"]) for i in items if i.get("origin") in from_catalog)
+    chosen = tuple(str(i["tag"]) for i in items if i.get("origin") == ORIGIN_OPERATOR)
     return DiscoverySeed(
         handle=str(payload.get("handle") or ""),
         niches=tuple(str(n) for n in payload.get("niches") or ()),
         hashtags=hashtags,
         catalog_hashtags=catalog,
+        chosen_hashtags=chosen,
         country_code=str(payload.get("country_code") or ""),
         city=str(payload.get("city") or ""),
         related=tuple(str(r) for r in payload.get("related") or ()),
@@ -298,9 +414,14 @@ def plan_refresh(tenant_id: UUID, *, brand_id: UUID | None = None) -> list[Brand
     repeated by the local one), so recomputing one alone could repeat accounts across
     categories. The seed is the one of the brand's newest phase — the latest answers
     the operator gave."""
-    stale = REPOSITORY.stale_phases(
-        tenant_id=tenant_id, algorithm_version=creator_discovery.PHASED_PLAN_VERSION
-    )
+    stale = [
+        # the manual pseudo-phase is the operator's, not the algorithm's: never stale
+        p
+        for p in REPOSITORY.stale_phases(
+            tenant_id=tenant_id, algorithm_version=creator_discovery.PHASED_PLAN_VERSION
+        )
+        if p.phase_key in creator_discovery.PHASES
+    ]
     brands = list(dict.fromkeys(p.brand_id for p in stale))
     if brand_id is not None:
         brands = [b for b in brands if b == brand_id]
@@ -332,9 +453,13 @@ PhaseRunner = Callable[[DiscoverySeed, list[str]], list[PhaseResult]]
 
 
 def run_phases(seed: DiscoverySeed, keys: list[str]) -> list[PhaseResult]:
-    """The real vendor run — one `PhasedDiscovery`, so the phases share their pool."""
+    """The real vendor run — one `PhasedDiscovery`, so the phases share their pool —
+    reviewed by Claude like the wizard's run (`referentes_review.make_reviewer`) when an
+    API key is set."""
     runner = creator_discovery.PhasedDiscovery(
-        seed, profile_cache=creator_discovery.PROFILE_CACHE_PATH
+        seed,
+        profile_cache=creator_discovery.PROFILE_CACHE_PATH,
+        reviewer=referentes_review.make_reviewer(referentes_review.brand_brief(seed)),
     )
     try:
         return [runner.run(key) for key in keys]

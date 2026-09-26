@@ -42,6 +42,7 @@ _NOT_ALGORITHM = frozenset(
         "_RETRY_DELAY_SECONDS",
         "_get_retry",
         "_run_parallel",
+        "lookup_account",
         "PARALLEL_CALLS",
         "_PROFILE_CACHE_MAX_AGE",
         "_dump_raw",
@@ -70,6 +71,7 @@ _NOT_ALGORITHM = frozenset(
         "_reason",
         "_likes_label",
         "account_card",
+        "KIND_LABELS",
         "phase_to_dict",
         # the filter-JSON CLI bench
         "result_path",
@@ -87,6 +89,9 @@ _NOT_ALGORITHM = frozenset(
 FINGERPRINTS: dict[int, str] = {
     5: "1bf8506d5df38d5ed0c39769fa5c8b4acaac3735d7ce5c981750ec59eacfca4b",
     6: "3f2cd2348040999347648ca37a942c2204566a4f0f5d04042642caf3cdf0b48a",
+    7: "940189c1e6f88972ea55fd3cc8624719a9138ffd05f2f21771df392f65ecd6f8",
+    8: "029d966521ac0bad41ad0523c75a129d7871ebbbaa2d35561c92c4a29abb2ab0",
+    9: "7fad47a4258303b5324b3d1cfb53d5495d05b32cae01d0c07edcf7e747ee7317",
 }
 
 

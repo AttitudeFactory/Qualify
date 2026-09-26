@@ -155,7 +155,8 @@ app.add_page(
 app.add_page(
     signals_index,
     route="/signals",
-    on_load=AuthState.require_login,
+    # the content generator on this page needs the brand's readiness
+    on_load=[AuthState.require_login, CreativeState.load_create],
     title="Qualify · Señales",
 )
 # Brand Content Engine (design §6): /brand is the default entry when the brand is not

@@ -1,0 +1,3161 @@
+{
+ "when": "2026-09-25T12:05:25",
+ "runs": {
+  "haiku-4.5": {
+   "select_runs": [
+    {
+     "case": "restaurante_autor_bogota",
+     "picks": [
+      {
+       "tag": "restaurantes",
+       "fit": "alta",
+       "reason": "Identifica cuentas de restaurantes como pares directos en modelo de negocio y formato."
+      },
+      {
+       "tag": "gastronomia",
+       "fit": "alta",
+       "reason": "Conecta con cuentas de cocina especializada y de autor, el posicionamiento premium de la marca."
+      },
+      {
+       "tag": "chef",
+       "fit": "alta",
+       "reason": "Atrae perfiles de profesionales gastronómicos y espacios con propuesta culinaria sofisticada."
+      }
+     ],
+     "tools": [
+      "buscar:degustación",
+      "buscar:maridaje",
+      "buscar:menú",
+      "buscar:chef",
+      "buscar:cocina"
+     ],
+     "turns": 3,
+     "seconds": 34.46,
+     "cost_usd": 0.011924,
+     "input_tokens": 7289,
+     "output_tokens": 927,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "restaurante_autor_bogota",
+     "picks": [
+      {
+       "tag": "menudegustacion",
+       "fit": "alta",
+       "reason": "Restaurantes que ofrecen menú degustación, formato exacto de Casa Olivo"
+      },
+      {
+       "tag": "maridaje",
+       "fit": "alta",
+       "reason": "Cuentas con servicio de maridaje como ofrece Casa Olivo"
+      },
+      {
+       "tag": "restaurantes",
+       "fit": "media",
+       "reason": "Restaurantes del nicho food_drink, formato compatible aunque más amplio"
+      }
+     ],
+     "tools": [
+      "buscar:menú degustación",
+      "buscar:cocina gourmet",
+      "buscar:experiencia culinaria",
+      "buscar:maridaje",
+      "buscar:alta cocina",
+      "buscar:restaurant gourmet"
+     ],
+     "turns": 3,
+     "seconds": 37.95,
+     "cost_usd": 0.012625,
+     "input_tokens": 7565,
+     "output_tokens": 1012,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "food_truck_perros_cucuta",
+     "picks": [
+      {
+       "tag": "comidacallejera",
+       "fit": "alta",
+       "reason": "Comunidad específica de comida callejera y food trucks, mismo formato y modelo de negocio"
+      },
+      {
+       "tag": "fastfood",
+       "fit": "alta",
+       "reason": "Enfocado en comida rápida, público que busca servicio ágil como perros calientes y salchipapas"
+      },
+      {
+       "tag": "foodtruck",
+       "fit": "media",
+       "reason": "Identifica específicamente el formato de food truck, aunque con menor volumen de cuentas"
+      }
+     ],
+     "tools": [
+      "buscar:food truck",
+      "buscar:perros calientes",
+      "buscar:salchipapas"
+     ],
+     "turns": 2,
+     "seconds": 30.17,
+     "cost_usd": 0.009069,
+     "input_tokens": 4424,
+     "output_tokens": 929,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "food_truck_perros_cucuta",
+     "picks": [
+      {
+       "tag": "streetfood",
+       "fit": "alta",
+       "reason": "Comida callejera en food truck, formato idéntico al de la marca"
+      },
+      {
+       "tag": "fastfood",
+       "fit": "alta",
+       "reason": "Comida rápida, alinea con su categoría oficial de Instagram"
+      },
+      {
+       "tag": "comidacallejera",
+       "fit": "alta",
+       "reason": "Comunidad específica de negocios de comida callejera, búsqueda directa de pares"
+      }
+     ],
+     "tools": [
+      "buscar:food truck",
+      "buscar:perros calientes",
+      "buscar:salchipapas",
+      "buscar:carbón grill"
+     ],
+     "turns": 2,
+     "seconds": 30.13,
+     "cost_usd": 0.008957,
+     "input_tokens": 4537,
+     "output_tokens": 884,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "hamburgueseria_smash_caracas",
+     "picks": [
+      {
+       "tag": "hamburguesas",
+       "fit": "alta",
+       "reason": "Restaurantes que venden burgers y hamburguesas, mismo formato y modelo de negocio"
+      },
+      {
+       "tag": "comidarapida",
+       "fit": "media",
+       "reason": "Comida rápida con servicio de delivery, público similar aunque más amplio"
+      }
+     ],
+     "tools": [
+      "buscar:burger",
+      "buscar:smash burger",
+      "buscar:comida rápida"
+     ],
+     "turns": 2,
+     "seconds": 31.96,
+     "cost_usd": 0.008569,
+     "input_tokens": 4469,
+     "output_tokens": 820,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "hamburgueseria_smash_caracas",
+     "picks": [
+      {
+       "tag": "hamburguesas",
+       "fit": "alta",
+       "reason": "Producto central de la marca, agrupa cuentas de hamburgueserías del mismo nicho"
+      }
+     ],
+     "tools": [
+      "buscar:burger",
+      "buscar:smash burger",
+      "buscar:delivery comida"
+     ],
+     "turns": 2,
+     "seconds": 33.34,
+     "cost_usd": 0.008356,
+     "input_tokens": 4596,
+     "output_tokens": 752,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "pasteleria_vegana_medellin",
+     "picks": [
+      {
+       "tag": "reposteria",
+       "fit": "alta",
+       "reason": "Su rubro exacto: repostería artesanal, el negocio principal"
+      },
+      {
+       "tag": "tortas",
+       "fit": "alta",
+       "reason": "Producto específico que ofrecen por encargo, fuerte diferenciador"
+      },
+      {
+       "tag": "veganfood",
+       "fit": "media",
+       "reason": "Segmento vegano de comida, complementa su posicionamiento sin lácteos ni huevo"
+      }
+     ],
+     "tools": [
+      "buscar:repostería vegana",
+      "buscar:postres veganos",
+      "buscar:tortas veganas",
+      "buscar:pastelería vegana"
+     ],
+     "turns": 2,
+     "seconds": 11.08,
+     "cost_usd": 0.008908,
+     "input_tokens": 4638,
+     "output_tokens": 854,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "pasteleria_vegana_medellin",
+     "picks": [
+      {
+       "tag": "pasteleria",
+       "fit": "alta",
+       "reason": "Sinónimo directo de repostería, mismo público especializado"
+      },
+      {
+       "tag": "veganfood",
+       "fit": "alta",
+       "reason": "Conecta con público vegano que busca opciones de comida y postres"
+      },
+      {
+       "tag": "postresveganos",
+       "fit": "alta",
+       "reason": "Audiencia altamente específica de postres veganos, su target exacto"
+      }
+     ],
+     "tools": [
+      "buscar:repostero vegano",
+      "buscar:pasteleria vegana",
+      "buscar:postres sin lácteos"
+     ],
+     "turns": 2,
+     "seconds": 10.11,
+     "cost_usd": 0.008201,
+     "input_tokens": 4491,
+     "output_tokens": 742,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "cafeteria_especialidad_caracas",
+     "picks": [
+      {
+       "tag": "cafedeespecialidad",
+       "fit": "alta",
+       "reason": "Identifica exactamente su rubro y formato: cafetería de especialidad con métodos filtrados"
+      },
+      {
+       "tag": "coffee",
+       "fit": "alta",
+       "reason": "Pares que sirven café de calidad en establecimiento, mismo público y modelo de negocio"
+      },
+      {
+       "tag": "coffeelover",
+       "fit": "media",
+       "reason": "Comunidad de enthusiastas del café que valoran especialidad y calidad, público objetivo"
+      }
+     ],
+     "tools": [],
+     "turns": 1,
+     "seconds": 7.91,
+     "cost_usd": 0.004293,
+     "input_tokens": 1903,
+     "output_tokens": 478,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "cafeteria_especialidad_caracas",
+     "picks": [
+      {
+       "tag": "cafedeespecialidad",
+       "fit": "alta",
+       "reason": "Define exactamente el segmento y tipo de café que Tostado posiciona"
+      },
+      {
+       "tag": "coffee",
+       "fit": "alta",
+       "reason": "Core del negocio; alcanza a cafés especializados con métodos similares"
+      },
+      {
+       "tag": "barista",
+       "fit": "media",
+       "reason": "Conecta con cuentas que destacan técnica y arte en preparación de café"
+      }
+     ],
+     "tools": [
+      "buscar:espresso",
+      "buscar:latte art",
+      "buscar:tostado café",
+      "buscar:barista",
+      "buscar:café filtrado"
+     ],
+     "turns": 3,
+     "seconds": 17.11,
+     "cost_usd": 0.01273,
+     "input_tokens": 7595,
+     "output_tokens": 1027,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "crossfit_box_bogota",
+     "picks": [
+      {
+       "tag": "wod",
+       "fit": "alta",
+       "reason": "Término exclusivo de crossfit que agrupa cuentas directas de boxes y atletas"
+      },
+      {
+       "tag": "entrenamientofuncional",
+       "fit": "alta",
+       "reason": "Define exactamente el formato de entrenamiento que ofrece el box (WOD, halterofilia, gimnasia)"
+      }
+     ],
+     "tools": [
+      "buscar:WOD",
+      "buscar:halterofilia",
+      "buscar:box crossfit",
+      "buscar:entrenamiento funcional",
+      "buscar:crossfitbogota",
+      "buscar:gimnasia"
+     ],
+     "turns": 3,
+     "seconds": 13.89,
+     "cost_usd": 0.012814,
+     "input_tokens": 7394,
+     "output_tokens": 1084,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "crossfit_box_bogota",
+     "picks": [
+      {
+       "tag": "gym",
+       "fit": "alta",
+       "reason": "Gimnasios y boxes de entrenamiento funcional; audiencia que busca espacios de fitness estructurado"
+      },
+      {
+       "tag": "wod",
+       "fit": "alta",
+       "reason": "Específico de CrossFit (Workout of the Day); referentes directos de boxes que comparten mismo formato y público"
+      }
+     ],
+     "tools": [
+      "buscar:wod",
+      "buscar:halterofilia",
+      "buscar:box crossfit",
+      "buscar:crossfitter"
+     ],
+     "turns": 2,
+     "seconds": 7.21,
+     "cost_usd": 0.007168,
+     "input_tokens": 4438,
+     "output_tokens": 546,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "estudio_yoga_medellin",
+     "picks": [
+      {
+       "tag": "meditacion",
+       "fit": "alta",
+       "reason": "Servicio central del estudio, atrae a audiencia interesada en clases de meditación"
+      },
+      {
+       "tag": "yogalife",
+       "fit": "alta",
+       "reason": "Comunidad específica de practicantes y estudios de yoga, perfecto para encontrar referentes del mismo rubro"
+      }
+     ],
+     "tools": [
+      "buscar:yoga clases",
+      "buscar:hatha vinyasa yin",
+      "buscar:estudio yoga",
+      "buscar:yoga online presencial",
+      "nicho:fitness_health"
+     ],
+     "turns": 2,
+     "seconds": 14.31,
+     "cost_usd": 0.009509,
+     "input_tokens": 4659,
+     "output_tokens": 970,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "estudio_yoga_medellin",
+     "picks": [
+      {
+       "tag": "meditacion",
+       "fit": "alta",
+       "reason": "Uno de sus servicios principales, público exacto de bienestar y mindfulness"
+      },
+      {
+       "tag": "yogalife",
+       "fit": "alta",
+       "reason": "Comunidad de practicantes de yoga, mismo público y formato educativo"
+      },
+      {
+       "tag": "vinyasa",
+       "fit": "alta",
+       "reason": "Estilo que ofrecen, cuentas de instructores y estudios de yoga especializados"
+      }
+     ],
+     "tools": [
+      "buscar:yoga",
+      "buscar:vinyasa",
+      "buscar:hatha",
+      "buscar:yin yoga",
+      "nicho:fitness_health"
+     ],
+     "turns": 2,
+     "seconds": 13.37,
+     "cost_usd": 0.00938,
+     "input_tokens": 4710,
+     "output_tokens": 934,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "peluqueria_canina_barranquilla",
+     "picks": [
+      {
+       "tag": "grooming",
+       "fit": "alta",
+       "reason": "Término profesional para peluquería y spa canino, atrae groomers especializados"
+      },
+      {
+       "tag": "mascotas",
+       "fit": "media",
+       "reason": "Incluye servicios de cuidado profesional canino, audiencia más amplia de mascotistas"
+      }
+     ],
+     "tools": [
+      "buscar:grooming perros",
+      "buscar:spa canino",
+      "buscar:baño y corte perros",
+      "buscar:estética canina",
+      "nicho:fashion_beauty"
+     ],
+     "turns": 3,
+     "seconds": 17.0,
+     "cost_usd": 0.011378,
+     "input_tokens": 7188,
+     "output_tokens": 838,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "peluqueria_canina_barranquilla",
+     "picks": [
+      {
+       "tag": "perros",
+       "fit": "alta",
+       "reason": "Audiencia directa de dueños de perros que buscan servicios de grooming y cuidados caninos."
+      },
+      {
+       "tag": "mascotas",
+       "fit": "media",
+       "reason": "Amplía el alcance a comunidad de dueños de mascotas, aunque incluye otras especies."
+      },
+      {
+       "tag": "doglovers",
+       "fit": "media",
+       "reason": "Conecta con apasionados por perros que valoran el cuidado y bienestar canino."
+      }
+     ],
+     "tools": [],
+     "turns": 1,
+     "seconds": 7.71,
+     "cost_usd": 0.00471,
+     "input_tokens": 1900,
+     "output_tokens": 562,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "barberia_valencia",
+     "picks": [
+      {
+       "tag": "barber",
+       "fit": "alta",
+       "reason": "Hashtag directo para barberías clásicas, máxima especificidad del rubro y formato"
+      },
+      {
+       "tag": "cortedecabello",
+       "fit": "alta",
+       "reason": "Describe el servicio principal, atrae a público buscando cortes profesionales"
+      },
+      {
+       "tag": "barbershop",
+       "fit": "media",
+       "reason": "Término en inglés para barbería clásica, complementa búsqueda de referentes del mismo formato"
+      }
+     ],
+     "tools": [
+      "buscar:barber shop",
+      "buscar:fade corte",
+      "buscar:barbershop"
+     ],
+     "turns": 2,
+     "seconds": 11.88,
+     "cost_usd": 0.00815,
+     "input_tokens": 4385,
+     "output_tokens": 753,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "barberia_valencia",
+     "picks": [
+      {
+       "tag": "barber",
+       "fit": "alta",
+       "reason": "Hashtag principal para barberías clásicas, audiencia exacta de pares en el rubro"
+      },
+      {
+       "tag": "barbershop",
+       "fit": "alta",
+       "reason": "Identifica específicamente barbershops, mismo formato y modelo de negocio"
+      },
+      {
+       "tag": "barba",
+       "fit": "media",
+       "reason": "Relevante para el servicio de arreglo de barba, aunque nicho más amplio"
+      }
+     ],
+     "tools": [
+      "buscar:fade",
+      "buscar:barbershop",
+      "buscar:arreglo de barba"
+     ],
+     "turns": 2,
+     "seconds": 13.16,
+     "cost_usd": 0.008046,
+     "input_tokens": 4381,
+     "output_tokens": 733,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "inmobiliaria_venta_bogota",
+     "picks": [
+      {
+       "tag": "bienesraices",
+       "fit": "alta",
+       "reason": "Inmobiliarias de venta de propiedades, mismo rubro y público en Colombia"
+      },
+      {
+       "tag": "apartamentos",
+       "fit": "alta",
+       "reason": "Producto específico que vende la marca, mismo modelo de negocio"
+      },
+      {
+       "tag": "apartamentosenventa",
+       "fit": "alta",
+       "reason": "Diferencia venta de alquiler, audiencia buscando comprar propiedades"
+      }
+     ],
+     "tools": [
+      "buscar:casas venta",
+      "buscar:propiedades",
+      "buscar:crédito hipotecario"
+     ],
+     "turns": 2,
+     "seconds": 8.31,
+     "cost_usd": 0.007874,
+     "input_tokens": 4424,
+     "output_tokens": 690,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "inmobiliaria_venta_bogota",
+     "picks": [
+      {
+       "tag": "bienesraices",
+       "fit": "alta",
+       "reason": "Inmobiliarias de venta de propiedades, mismo modelo y audiencia que la marca"
+      },
+      {
+       "tag": "apartamentosenventa",
+       "fit": "alta",
+       "reason": "Específico de venta de apartamentos, uno de los productos principales de la marca"
+      },
+      {
+       "tag": "casasenventa",
+       "fit": "alta",
+       "reason": "Específico de venta de casas, el otro producto principal que ofrece la marca"
+      }
+     ],
+     "tools": [
+      "buscar:casa venta",
+      "buscar:comprar casa",
+      "buscar:propiedad"
+     ],
+     "turns": 2,
+     "seconds": 9.03,
+     "cost_usd": 0.008361,
+     "input_tokens": 4486,
+     "output_tokens": 775,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "academia_programacion_online",
+     "picks": [
+      {
+       "tag": "aprendeaprogramar",
+       "fit": "alta",
+       "reason": "Agrupa cuentas educativas que enseñan programación a principiantes, su público exacto"
+      },
+      {
+       "tag": "cursosonline",
+       "fit": "alta",
+       "reason": "Coincide con su modelo de negocio: educación online en programación"
+      },
+      {
+       "tag": "desarrolloweb",
+       "fit": "media",
+       "reason": "Relevante para su línea de desarrollo web, aunque puede incluir también profesionales freelance"
+      }
+     ],
+     "tools": [
+      "buscar:cursos programacion",
+      "buscar:aprender programar",
+      "buscar:coding",
+      "buscar:developer",
+      "buscar:javascript",
+      "buscar:webdeveloper"
+     ],
+     "turns": 3,
+     "seconds": 15.87,
+     "cost_usd": 0.012535,
+     "input_tokens": 7380,
+     "output_tokens": 1031,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "academia_programacion_online",
+     "picks": [
+      {
+       "tag": "tecnologia",
+       "fit": "media",
+       "reason": "Comunidad tech amplia donde buscar cuentas de programación como referentes"
+      },
+      {
+       "tag": "desarrolloweb",
+       "fit": "alta",
+       "reason": "Exactamente uno de sus cursos principales, audiencia altamente alineada"
+      },
+      {
+       "tag": "programador",
+       "fit": "alta",
+       "reason": "Audiencia de desarrolladores interesados en aprender, mismo público objetivo"
+      }
+     ],
+     "tools": [
+      "buscar:programación online",
+      "buscar:desarrollo web",
+      "buscar:aprender a programar",
+      "buscar:coding",
+      "nicho:education",
+      "nicho:technology"
+     ],
+     "turns": 3,
+     "seconds": 15.78,
+     "cost_usd": 0.011688,
+     "input_tokens": 7063,
+     "output_tokens": 925,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "boutique_ropa_mujer_maracaibo",
+     "picks": [
+      {
+       "tag": "fashion",
+       "fit": "alta",
+       "reason": "Del nicho fashion_beauty con amplio alcance, describe perfectamente el rubro de moda"
+      },
+      {
+       "tag": "outfit",
+       "fit": "alta",
+       "reason": "Atuendos y looks, ideal para una tienda de ropa que vende vestidos, blusas y jeans"
+      },
+      {
+       "tag": "modafemenina",
+       "fit": "alta",
+       "reason": "Específico para ropa femenina, muy alineado con el posicionamiento de la marca"
+      }
+     ],
+     "tools": [
+      "buscar:tienda ropa mujer",
+      "buscar:ropa femenina",
+      "buscar:boutique mujer",
+      "buscar:vestidos"
+     ],
+     "turns": 2,
+     "seconds": 8.46,
+     "cost_usd": 0.008378,
+     "input_tokens": 4443,
+     "output_tokens": 787,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "boutique_ropa_mujer_maracaibo",
+     "picks": [
+      {
+       "tag": "outfit",
+       "fit": "alta",
+       "reason": "Directamente sobre combinaciones de prendas; audiencia de moda femenina que busca inspiración de looks"
+      },
+      {
+       "tag": "ootd",
+       "fit": "alta",
+       "reason": "Outfit of the day es clave en tiendas de ropa; muestra productos en contexto de outfits completos"
+      },
+      {
+       "tag": "fashion",
+       "fit": "media",
+       "reason": "Amplía alcance dentro del nicho de moda con mayor volumen de cuentas relevantes"
+      }
+     ],
+     "tools": [
+      "buscar:vestidos",
+      "buscar:ropa mujer",
+      "buscar:tienda ropa",
+      "buscar:blusas",
+      "buscar:jeans mujer",
+      "buscar:outfits casuales"
+     ],
+     "turns": 3,
+     "seconds": 13.02,
+     "cost_usd": 0.013295,
+     "input_tokens": 7560,
+     "output_tokens": 1147,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "tienda_celulares_cucuta",
+     "picks": [
+      {
+       "tag": "smartphone",
+       "fit": "alta",
+       "reason": "Venta directa de teléfonos inteligentes, atrae compradores del mismo rubro"
+      },
+      {
+       "tag": "xiaomi",
+       "fit": "alta",
+       "reason": "Una de las marcas principales que vende, alcanza vendedores y clientes de esa línea"
+      },
+      {
+       "tag": "accesorios",
+       "fit": "media",
+       "reason": "Complementa su línea de accesorios, aunque es más amplio puede incluir otros tipos de accesorios"
+      }
+     ],
+     "tools": [
+      "buscar:venta celulares",
+      "buscar:tienda móviles",
+      "buscar:smartphones",
+      "buscar:samsung",
+      "buscar:accesorios celular",
+      "buscar:infinix"
+     ],
+     "turns": 3,
+     "seconds": 17.14,
+     "cost_usd": 0.013306,
+     "input_tokens": 7491,
+     "output_tokens": 1163,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "tienda_celulares_cucuta",
+     "picks": [
+      {
+       "tag": "accesorios",
+       "fit": "alta",
+       "reason": "Venden accesorios de celulares junto con los dispositivos"
+      },
+      {
+       "tag": "iphone",
+       "fit": "media",
+       "reason": "Una de las marcas principales que comercializa"
+      }
+     ],
+     "tools": [
+      "buscar:tienda celulares",
+      "buscar:venta móviles",
+      "buscar:accesorios celular",
+      "buscar:smartphone",
+      "buscar:celular nuevo",
+      "buscar:samsung xiaomi",
+      "buscar:tienda online",
+      "buscar:ofertas celular",
+      "buscar:electrodomésticos",
+      "buscar:gadgets"
+     ],
+     "turns": 4,
+     "seconds": 20.72,
+     "cost_usd": 0.016914,
+     "input_tokens": 10844,
+     "output_tokens": 1214,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "pizzeria_lena_bucaramanga",
+     "picks": [
+      {
+       "tag": "pizzeria",
+       "fit": "alta",
+       "reason": "Mismo rubro y formato: cuentas de pizzerías especializadas"
+      },
+      {
+       "tag": "comidaitaliana",
+       "fit": "media",
+       "reason": "Conecta con pizzerías y restaurantes italianos artesanales del mismo nivel"
+      }
+     ],
+     "tools": [
+      "buscar:pizzería",
+      "buscar:horno de leña",
+      "buscar:napolitana",
+      "nicho:food_drink"
+     ],
+     "turns": 2,
+     "seconds": 14.23,
+     "cost_usd": 0.009379,
+     "input_tokens": 4634,
+     "output_tokens": 949,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "pizzeria_lena_bucaramanga",
+     "picks": [
+      {
+       "tag": "pizzanapolitana",
+       "fit": "alta",
+       "reason": "Exactamente el posicionamiento de la marca: pizza napolitana con horno de leña"
+      },
+      {
+       "tag": "foodie",
+       "fit": "media",
+       "reason": "Audiencia premium interesada en gastronomía y experiencias culinarias"
+      }
+     ],
+     "tools": [
+      "buscar:pizzería",
+      "buscar:pizza napolitana",
+      "buscar:horno de leña"
+     ],
+     "turns": 2,
+     "seconds": 13.21,
+     "cost_usd": 0.009202,
+     "input_tokens": 4587,
+     "output_tokens": 923,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "taller_motos_sin_candidatos",
+     "picks": [],
+     "tools": [
+      "buscar:motos",
+      "buscar:taller motos",
+      "buscar:repuestos motos",
+      "buscar:mecanica motos",
+      "buscar:motorcycle",
+      "buscar:moto",
+      "buscar:reparacion motos",
+      "buscar:mantenimiento motos"
+     ],
+     "turns": 3,
+     "seconds": 9.2,
+     "cost_usd": 0.010723,
+     "input_tokens": 7073,
+     "output_tokens": 730,
+     "model_revision": "claude-haiku-4-5-20251001"
+    },
+    {
+     "case": "taller_motos_sin_candidatos",
+     "picks": [],
+     "tools": [
+      "buscar:motos",
+      "buscar:taller moto",
+      "buscar:mantenimiento motos",
+      "buscar:repuestos motos",
+      "buscar:mecánica motos",
+      "buscar:motorcycle",
+      "buscar:bike repair",
+      "buscar:pintura motos"
+     ],
+     "turns": 3,
+     "seconds": 12.45,
+     "cost_usd": 0.01223,
+     "input_tokens": 7450,
+     "output_tokens": 956,
+     "model_revision": "claude-haiku-4-5-20251001"
+    }
+   ],
+   "select": {
+    "precision": 0.885,
+    "recall@k": 0.69,
+    "picks": 74,
+    "traps": 0,
+    "bad": 0,
+    "abstain": "2/2",
+    "stability": 0.407,
+    "errors": 0,
+    "cost_per_call_usd": 0.00996,
+    "p50_seconds": 13.63,
+    "mean_turns": 2.4,
+    "per_case": {
+     "restaurante_autor_bogota": [
+      "restaurantes[y] gastronomia[y] chef[m]",
+      "menudegustacion[y] maridaje[y] restaurantes[y]"
+     ],
+     "food_truck_perros_cucuta": [
+      "comidacallejera[y] fastfood[y] foodtruck[y]",
+      "streetfood[y] fastfood[y] comidacallejera[y]"
+     ],
+     "hamburgueseria_smash_caracas": [
+      "hamburguesas[y] comidarapida[m]",
+      "hamburguesas[y]"
+     ],
+     "pasteleria_vegana_medellin": [
+      "reposteria[y] tortas[y] veganfood[y]",
+      "pasteleria[y] veganfood[y] postresveganos[y]"
+     ],
+     "cafeteria_especialidad_caracas": [
+      "cafedeespecialidad[y] coffee[m] coffeelover[m]",
+      "cafedeespecialidad[y] coffee[m] barista[y]"
+     ],
+     "crossfit_box_bogota": [
+      "wod[y] entrenamientofuncional[y]",
+      "gym[m] wod[y]"
+     ],
+     "estudio_yoga_medellin": [
+      "meditacion[y] yogalife[y]",
+      "meditacion[y] yogalife[y] vinyasa[y]"
+     ],
+     "peluqueria_canina_barranquilla": [
+      "grooming[y] mascotas[m]",
+      "perros[m] mascotas[m] doglovers[m]"
+     ],
+     "barberia_valencia": [
+      "barber[y] cortedecabello[y] barbershop[y]",
+      "barber[y] barbershop[y] barba[y]"
+     ],
+     "inmobiliaria_venta_bogota": [
+      "bienesraices[y] apartamentos[m] apartamentosenventa[y]",
+      "bienesraices[y] apartamentosenventa[y] casasenventa[y]"
+     ],
+     "academia_programacion_online": [
+      "aprendeaprogramar[y] cursosonline[y] desarrolloweb[y]",
+      "tecnologia[m] desarrolloweb[y] programador[y]"
+     ],
+     "boutique_ropa_mujer_maracaibo": [
+      "fashion[m] outfit[y] modafemenina[y]",
+      "outfit[y] ootd[y] fashion[m]"
+     ],
+     "tienda_celulares_cucuta": [
+      "smartphone[y] xiaomi[y] accesorios[m]",
+      "accesorios[m] iphone[y]"
+     ],
+     "pizzeria_lena_bucaramanga": [
+      "pizzeria[y] comidaitaliana[y]",
+      "pizzanapolitana[y] foodie[m]"
+     ],
+     "taller_motos_sin_candidatos": [
+      "—",
+      "—"
+     ]
+    }
+   },
+   "classify_raw": {
+    "predictions": {
+     "techtok": {
+      "tag": "techtok",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "hamburguesas": {
+      "tag": "hamburguesas",
+      "kind": "topic",
+      "niche": "food_drink",
+      "country_code": null
+     },
+     "hamburguesa": {
+      "tag": "hamburguesa",
+      "kind": "topic",
+      "niche": "food_drink",
+      "country_code": null
+     },
+     "burger": {
+      "tag": "burger",
+      "kind": "topic",
+      "niche": "food_drink",
+      "country_code": null
+     },
+     "smashburger": {
+      "tag": "smashburger",
+      "kind": "topic",
+      "niche": "food_drink",
+      "country_code": null
+     },
+     "hamburguesatriple": {
+      "tag": "hamburguesatriple",
+      "kind": "topic",
+      "niche": "food_drink",
+      "country_code": null
+     },
+     "steak": {
+      "tag": "steak",
+      "kind": "topic",
+      "niche": "food_drink",
+      "country_code": null
+     },
+     "carterpcs": {
+      "tag": "carterpcs",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "paratiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii": {
+      "tag": "paratiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "paratiiiiiiii": {
+      "tag": "paratiiiiiiii",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "apple": {
+      "tag": "apple",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "google": {
+      "tag": "google",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "android": {
+      "tag": "android",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "infinix": {
+      "tag": "infinix",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "laptop": {
+      "tag": "laptop",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "pcs": {
+      "tag": "pcs",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "custompc": {
+      "tag": "custompc",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "gamingpc": {
+      "tag": "gamingpc",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "gamingsetup": {
+      "tag": "gamingsetup",
+      "kind": "topic",
+      "niche": "entertainment",
+      "country_code": null
+     },
+     "gaming": {
+      "tag": "gaming",
+      "kind": "topic",
+      "niche": "entertainment",
+      "country_code": null
+     },
+     "minecraft": {
+      "tag": "minecraft",
+      "kind": "topic",
+      "niche": "entertainment",
+      "country_code": null
+     },
+     "robot": {
+      "tag": "robot",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "techvideos": {
+      "tag": "techvideos",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "ai": {
+      "tag": "ai",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "inteligenciartificial": {
+      "tag": "inteligenciartificial",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "programacao": {
+      "tag": "programacao",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "informatica": {
+      "tag": "informatica",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "impresorashp": {
+      "tag": "impresorashp",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "salariosti": {
+      "tag": "salariosti",
+      "kind": "topic",
+      "niche": "education",
+      "country_code": null
+     },
+     "diplomados": {
+      "tag": "diplomados",
+      "kind": "topic",
+      "niche": "education",
+      "country_code": null
+     },
+     "learnontiktok": {
+      "tag": "learnontiktok",
+      "kind": "topic",
+      "niche": "education",
+      "country_code": null
+     },
+     "dicas": {
+      "tag": "dicas",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "hacks": {
+      "tag": "hacks",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "freelance": {
+      "tag": "freelance",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "emprendimiento": {
+      "tag": "emprendimiento",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "marketingdigital": {
+      "tag": "marketingdigital",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "inversiones": {
+      "tag": "inversiones",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "cerrajero": {
+      "tag": "cerrajero",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "cleantok": {
+      "tag": "cleantok",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "arquitectura": {
+      "tag": "arquitectura",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "kungfu": {
+      "tag": "kungfu",
+      "kind": "topic",
+      "niche": "fitness_health",
+      "country_code": null
+     },
+     "dance": {
+      "tag": "dance",
+      "kind": "topic",
+      "niche": "entertainment",
+      "country_code": null
+     },
+     "documental": {
+      "tag": "documental",
+      "kind": "topic",
+      "niche": "entertainment",
+      "country_code": null
+     },
+     "90s": {
+      "tag": "90s",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "noticia": {
+      "tag": "noticia",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "contentcreator": {
+      "tag": "contentcreator",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "greenscreen": {
+      "tag": "greenscreen",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "qanda": {
+      "tag": "qanda",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "preguntaseria": {
+      "tag": "preguntaseria",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "enero": {
+      "tag": "enero",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "comparte": {
+      "tag": "comparte",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "happy": {
+      "tag": "happy",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "bruh": {
+      "tag": "bruh",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "viraltiktok": {
+      "tag": "viraltiktok",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "fyp": {
+      "tag": "fyp",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "parati": {
+      "tag": "parati",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "capcut": {
+      "tag": "capcut",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "jesusdaviduseche87": {
+      "tag": "jesusdaviduseche87",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "kelvynpadilla": {
+      "tag": "kelvynpadilla",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "fiss": {
+      "tag": "fiss",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "sc": {
+      "tag": "sc",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "noticiastrt": {
+      "tag": "noticiastrt",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "venevision": {
+      "tag": "venevision",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "ucab": {
+      "tag": "ucab",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "gochos": {
+      "tag": "gochos",
+      "kind": "place",
+      "niche": null,
+      "country_code": "VE"
+     },
+     "zulia": {
+      "tag": "zulia",
+      "kind": "place",
+      "niche": null,
+      "country_code": "VE"
+     },
+     "capacho": {
+      "tag": "capacho",
+      "kind": "place",
+      "niche": null,
+      "country_code": "VE"
+     },
+     "chacao": {
+      "tag": "chacao",
+      "kind": "place",
+      "niche": null,
+      "country_code": "VE"
+     },
+     "lobatera": {
+      "tag": "lobatera",
+      "kind": "place",
+      "niche": null,
+      "country_code": "VE"
+     },
+     "lecheria": {
+      "tag": "lecheria",
+      "kind": "place",
+      "niche": null,
+      "country_code": "VE"
+     },
+     "cucutafood": {
+      "tag": "cucutafood",
+      "kind": "place",
+      "niche": null,
+      "country_code": "CO"
+     },
+     "comidacolombia": {
+      "tag": "comidacolombia",
+      "kind": "place",
+      "niche": null,
+      "country_code": "CO"
+     },
+     "caracas": {
+      "tag": "caracas",
+      "kind": "place",
+      "niche": null,
+      "country_code": "VE"
+     },
+     "medellin": {
+      "tag": "medellin",
+      "kind": "place",
+      "niche": null,
+      "country_code": "CO"
+     },
+     "peluqueriacanina": {
+      "tag": "peluqueriacanina",
+      "kind": "topic",
+      "niche": "fashion_beauty",
+      "country_code": null
+     },
+     "perritos": {
+      "tag": "perritos",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "crossfit": {
+      "tag": "crossfit",
+      "kind": "topic",
+      "niche": "fitness_health",
+      "country_code": null
+     },
+     "yoga": {
+      "tag": "yoga",
+      "kind": "topic",
+      "niche": "fitness_health",
+      "country_code": null
+     },
+     "maquillaje": {
+      "tag": "maquillaje",
+      "kind": "topic",
+      "niche": "fashion_beauty",
+      "country_code": null
+     },
+     "outfit": {
+      "tag": "outfit",
+      "kind": "topic",
+      "niche": "fashion_beauty",
+      "country_code": null
+     },
+     "barberia": {
+      "tag": "barberia",
+      "kind": "topic",
+      "niche": "fashion_beauty",
+      "country_code": null
+     },
+     "bienesraices": {
+      "tag": "bienesraices",
+      "kind": "place",
+      "niche": null,
+      "country_code": "CO"
+     },
+     "apartamentosenventa": {
+      "tag": "apartamentosenventa",
+      "kind": "topic",
+      "niche": "real_estate",
+      "country_code": null
+     },
+     "viajero": {
+      "tag": "viajero",
+      "kind": "topic",
+      "niche": "travel_lifestyle",
+      "country_code": null
+     },
+     "turismo": {
+      "tag": "turismo",
+      "kind": "topic",
+      "niche": "travel_lifestyle",
+      "country_code": null
+     },
+     "comedia": {
+      "tag": "comedia",
+      "kind": "topic",
+      "niche": "entertainment",
+      "country_code": null
+     },
+     "musica": {
+      "tag": "musica",
+      "kind": "topic",
+      "niche": "entertainment",
+      "country_code": null
+     },
+     "cursos": {
+      "tag": "cursos",
+      "kind": "topic",
+      "niche": "education",
+      "country_code": null
+     },
+     "inppimhlcbfood": {
+      "tag": "inppimhlcbfood",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "afoplnjnoccaninos": {
+      "tag": "afoplnjnoccaninos",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "bdjnjjbcmnspam": {
+      "tag": "bdjnjjbcmnspam",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "agijjoafnomoda": {
+      "tag": "agijjoafnomoda",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "bobhchhnfdgym": {
+      "tag": "bobhchhnfdgym",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "bpjmilogancomidarapida": {
+      "tag": "bpjmilogancomidarapida",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     }
+    },
+    "cost_usd": 0.018711,
+    "seconds": 25.247118800180033,
+    "errors": []
+   },
+   "classify": {
+    "kind_acc": 0.979,
+    "niche_acc": 0.981,
+    "full_acc": 0.968,
+    "country_acc": "10/10",
+    "missing": 0,
+    "errors": 0,
+    "cost_usd": 0.0187,
+    "seconds": 25.2,
+    "wrong": [
+     "noticiastrt: topic/None/None",
+     "peluqueriacanina: topic/fashion_beauty/None",
+     "bienesraices: place/None/CO"
+    ]
+   }
+  },
+  "sonnet-5@medium": {
+   "select_runs": [
+    {
+     "case": "restaurante_autor_bogota",
+     "picks": [
+      {
+       "tag": "finedining",
+       "fit": "alta",
+       "reason": "Restaurantes de alta cocina y menú degustación, mismo formato premium que Casa Olivo."
+      },
+      {
+       "tag": "menudegustacion",
+       "fit": "alta",
+       "reason": "Formato específico de menú degustación que ofrece la marca."
+      },
+      {
+       "tag": "maridaje",
+       "fit": "alta",
+       "reason": "El maridaje es parte central de la propuesta de Casa Olivo."
+      }
+     ],
+     "tools": [
+      "buscar:menu degustacion",
+      "buscar:fine dining",
+      "buscar:alta cocina",
+      "buscar:maridaje",
+      "buscar:gourmet"
+     ],
+     "turns": 3,
+     "seconds": 11.11,
+     "cost_usd": 0.010934,
+     "input_tokens": 2732,
+     "output_tokens": 547,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "restaurante_autor_bogota",
+     "picks": [
+      {
+       "tag": "finedining",
+       "fit": "alta",
+       "reason": "Cocina de autor con menú degustación encaja directamente con la comunidad de alta gastronomía."
+      },
+      {
+       "tag": "menudegustacion",
+       "fit": "alta",
+       "reason": "La marca ofrece explícitamente menú degustación y maridaje, coincide en formato exacto."
+      },
+      {
+       "tag": "gastronomia",
+       "fit": "media",
+       "reason": "Tema amplio de gastronomía que puede atraer audiencia interesada en cocina de autor, aunque no es exclusivo de fine dining."
+      }
+     ],
+     "tools": [
+      "buscar:menu degustacion",
+      "buscar:alta cocina",
+      "buscar:fine dining",
+      "buscar:gastronomia colombiana"
+     ],
+     "turns": 2,
+     "seconds": 11.67,
+     "cost_usd": 0.00967,
+     "input_tokens": 1565,
+     "output_tokens": 654,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "food_truck_perros_cucuta",
+     "picks": [
+      {
+       "tag": "salchipapas",
+       "fit": "alta",
+       "reason": "Producto principal exacto que vende la marca."
+      },
+      {
+       "tag": "hotdog",
+       "fit": "alta",
+       "reason": "Los perros calientes son hot dogs, mismo producto."
+      },
+      {
+       "tag": "foodtruck",
+       "fit": "alta",
+       "reason": "Mismo formato de negocio: food truck de comida rápida."
+      }
+     ],
+     "tools": [
+      "buscar:salchipapa",
+      "buscar:food truck",
+      "buscar:hot dog"
+     ],
+     "turns": 2,
+     "seconds": 10.68,
+     "cost_usd": 0.008398,
+     "input_tokens": 1459,
+     "output_tokens": 548,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "food_truck_perros_cucuta",
+     "picks": [
+      {
+       "tag": "salchipapas",
+       "fit": "alta",
+       "reason": "Producto exacto que vende la marca"
+      },
+      {
+       "tag": "perrocaliente",
+       "fit": "alta",
+       "reason": "Producto principal del food truck"
+      },
+      {
+       "tag": "foodtruck",
+       "fit": "alta",
+       "reason": "Mismo formato de negocio: food truck"
+      }
+     ],
+     "tools": [
+      "buscar:salchipapa",
+      "buscar:food truck",
+      "buscar:perro caliente"
+     ],
+     "turns": 2,
+     "seconds": 10.02,
+     "cost_usd": 0.007938,
+     "input_tokens": 1519,
+     "output_tokens": 490,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "hamburgueseria_smash_caracas",
+     "picks": [
+      {
+       "tag": "hamburguesas",
+       "fit": "alta",
+       "reason": "Hashtag específico del producto principal de la marca, mismo formato de hamburguesería."
+      },
+      {
+       "tag": "foodie",
+       "fit": "media",
+       "reason": "Comunidad amplia de amantes de la comida que puede incluir referentes gastronómicos similares."
+      },
+      {
+       "tag": "fastfood",
+       "fit": "media",
+       "reason": "Categoría general de comida rápida que engloba hamburgueserías como esta."
+      }
+     ],
+     "tools": [
+      "buscar:burger",
+      "buscar:hamburgueseria"
+     ],
+     "turns": 2,
+     "seconds": 13.01,
+     "cost_usd": 0.008924,
+     "input_tokens": 1427,
+     "output_tokens": 607,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "hamburgueseria_smash_caracas",
+     "picks": [
+      {
+       "tag": "hamburguesas",
+       "fit": "alta",
+       "reason": "Hashtag específico de hamburguesas, mismo producto y formato que la marca."
+      },
+      {
+       "tag": "foodie",
+       "fit": "media",
+       "reason": "Comunidad amplia de comida que puede incluir referentes de hamburguesería."
+      },
+      {
+       "tag": "fastfood",
+       "fit": "media",
+       "reason": "Categoría relacionada con el formato rápido y delivery de smash burgers."
+      }
+     ],
+     "tools": [
+      "buscar:burger",
+      "buscar:hamburguesa"
+     ],
+     "turns": 2,
+     "seconds": 12.1,
+     "cost_usd": 0.008186,
+     "input_tokens": 1438,
+     "output_tokens": 531,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "pasteleria_vegana_medellin",
+     "picks": [
+      {
+       "tag": "postresveganos",
+       "fit": "alta",
+       "reason": "Postres veganos específicos, mismo producto y posicionamiento que la marca"
+      },
+      {
+       "tag": "recetasveganas",
+       "fit": "media",
+       "reason": "Comunidad vegana afín, aunque más amplia que solo repostería"
+      },
+      {
+       "tag": "reposteria",
+       "fit": "media",
+       "reason": "Mismo oficio de repostería, aunque no exclusivamente vegano"
+      }
+     ],
+     "tools": [
+      "buscar:reposteria vegana",
+      "buscar:tortas veganas",
+      "buscar:postres veganos",
+      "buscar:vegan bakery"
+     ],
+     "turns": 2,
+     "seconds": 7.59,
+     "cost_usd": 0.008156,
+     "input_tokens": 1743,
+     "output_tokens": 467,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "pasteleria_vegana_medellin",
+     "picks": [
+      {
+       "tag": "postresveganos",
+       "fit": "alta",
+       "reason": "Postres veganos es exactamente el producto y formato de la marca."
+      },
+      {
+       "tag": "reposteria",
+       "fit": "media",
+       "reason": "Categoría general de repostería que incluye negocios de tortas y postres por encargo."
+      },
+      {
+       "tag": "veganfood",
+       "fit": "media",
+       "reason": "Público vegano amplio, afín al posicionamiento sin lácteos ni huevo de la marca."
+      }
+     ],
+     "tools": [
+      "buscar:reposteria vegana",
+      "buscar:postres veganos",
+      "buscar:tortas veganas",
+      "buscar:vegan bakery"
+     ],
+     "turns": 2,
+     "seconds": 10.5,
+     "cost_usd": 0.009952,
+     "input_tokens": 1736,
+     "output_tokens": 648,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "cafeteria_especialidad_caracas",
+     "picks": [
+      {
+       "tag": "cafedeespecialidad",
+       "fit": "alta",
+       "reason": "Coincide exactamente con el posicionamiento de café de especialidad de la marca"
+      },
+      {
+       "tag": "latteart",
+       "fit": "alta",
+       "reason": "La marca destaca su latte art como parte de su oferta"
+      },
+      {
+       "tag": "barista",
+       "fit": "media",
+       "reason": "Público afín a la cultura del café de especialidad y métodos de preparación"
+      }
+     ],
+     "tools": [
+      "buscar:cafeteria de especialidad",
+      "buscar:latte art",
+      "buscar:espresso",
+      "buscar:coffee shop"
+     ],
+     "turns": 2,
+     "seconds": 9.18,
+     "cost_usd": 0.009958,
+     "input_tokens": 1609,
+     "output_tokens": 674,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "cafeteria_especialidad_caracas",
+     "picks": [
+      {
+       "tag": "cafedeespecialidad",
+       "fit": "alta",
+       "reason": "Café de especialidad venezolano, mismo posicionamiento premium y formato"
+      },
+      {
+       "tag": "latteart",
+       "fit": "alta",
+       "reason": "La marca destaca su latte art como parte de su oferta"
+      },
+      {
+       "tag": "specialtycoffee",
+       "fit": "alta",
+       "reason": "Equivalente en inglés al café de especialidad, mismo segmento premium"
+      }
+     ],
+     "tools": [
+      "buscar:cafeteria",
+      "buscar:barista",
+      "buscar:especialidad",
+      "buscar:latte art"
+     ],
+     "turns": 2,
+     "seconds": 6.98,
+     "cost_usd": 0.008192,
+     "input_tokens": 1736,
+     "output_tokens": 472,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "crossfit_box_bogota",
+     "picks": [
+      {
+       "tag": "wod",
+       "fit": "alta",
+       "reason": "WOD es el formato de entrenamiento diario propio de CrossFit, mismo público y modelo de negocio."
+      },
+      {
+       "tag": "crossfitgames",
+       "fit": "alta",
+       "reason": "Referencia directa a la competencia oficial de CrossFit, atrae a boxes y atletas del mismo rubro."
+      },
+      {
+       "tag": "halterofilia",
+       "fit": "media",
+       "reason": "La halterofilia es parte central de las clases del box, aunque también la practican gimnasios especializados fuera del formato CrossFit."
+      }
+     ],
+     "tools": [
+      "buscar:wod",
+      "buscar:halterofilia",
+      "buscar:box crossfit",
+      "buscar:crossfitter"
+     ],
+     "turns": 2,
+     "seconds": 8.89,
+     "cost_usd": 0.008436,
+     "input_tokens": 1603,
+     "output_tokens": 523,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "crossfit_box_bogota",
+     "picks": [
+      {
+       "tag": "wod",
+       "fit": "alta",
+       "reason": "Término específico de CrossFit para el entrenamiento del día, mismo formato exacto de la marca."
+      },
+      {
+       "tag": "halterofilia",
+       "fit": "alta",
+       "reason": "La bio menciona halterofilia como parte de las clases del box."
+      },
+      {
+       "tag": "entrenamientofuncional",
+       "fit": "media",
+       "reason": "CrossFit es una modalidad de entrenamiento funcional, atrae público afín aunque más amplio."
+      }
+     ],
+     "tools": [
+      "buscar:crossfit",
+      "buscar:wod",
+      "buscar:halterofilia",
+      "buscar:box",
+      "buscar:gimnasia",
+      "buscar:functional training"
+     ],
+     "turns": 3,
+     "seconds": 11.1,
+     "cost_usd": 0.011738,
+     "input_tokens": 2839,
+     "output_tokens": 606,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "estudio_yoga_medellin",
+     "picks": [
+      {
+       "tag": "vinyasa",
+       "fit": "alta",
+       "reason": "La marca ofrece clases de Vinyasa específicamente, mismo estilo y público."
+      },
+      {
+       "tag": "meditacion",
+       "fit": "alta",
+       "reason": "El estudio ofrece meditación como parte central de su oferta."
+      },
+      {
+       "tag": "yogalife",
+       "fit": "alta",
+       "reason": "Comunidad de practicantes y estudios de yoga, mismo público y formato."
+      }
+     ],
+     "tools": [
+      "buscar:yoga",
+      "buscar:meditación",
+      "buscar:vinyasa",
+      "buscar:mindfulness"
+     ],
+     "turns": 2,
+     "seconds": 9.03,
+     "cost_usd": 0.009632,
+     "input_tokens": 1661,
+     "output_tokens": 631,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "estudio_yoga_medellin",
+     "picks": [
+      {
+       "tag": "vinyasa",
+       "fit": "alta",
+       "reason": "Estilo específico de yoga que practica y enseña la marca"
+      },
+      {
+       "tag": "meditacion",
+       "fit": "alta",
+       "reason": "La marca es estudio de yoga y meditación, mismo servicio"
+      },
+      {
+       "tag": "mindfulness",
+       "fit": "media",
+       "reason": "Público afín a bienestar y meditación, tema relacionado al estudio"
+      }
+     ],
+     "tools": [
+      "buscar:yoga",
+      "buscar:meditación",
+      "buscar:vinyasa",
+      "buscar:mindfulness"
+     ],
+     "turns": 2,
+     "seconds": 6.78,
+     "cost_usd": 0.008026,
+     "input_tokens": 1663,
+     "output_tokens": 470,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "peluqueria_canina_barranquilla",
+     "picks": [
+      {
+       "tag": "spacanino",
+       "fit": "alta",
+       "reason": "Mismo servicio exacto de spa canino que ofrece la marca"
+      },
+      {
+       "tag": "doggrooming",
+       "fit": "alta",
+       "reason": "Término en inglés para peluquería canina, mismo rubro y formato"
+      },
+      {
+       "tag": "groomer",
+       "fit": "alta",
+       "reason": "Oficio de peluquero canino, conecta con cuentas pares del mismo servicio"
+      }
+     ],
+     "tools": [
+      "buscar:spa canino",
+      "buscar:grooming",
+      "buscar:baño y corte perros"
+     ],
+     "turns": 2,
+     "seconds": 9.23,
+     "cost_usd": 0.008812,
+     "input_tokens": 1436,
+     "output_tokens": 594,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "peluqueria_canina_barranquilla",
+     "picks": [
+      {
+       "tag": "peluqueria",
+       "fit": "alta",
+       "reason": "Directamente relacionado con el servicio de peluquería que ofrece la marca."
+      },
+      {
+       "tag": "spacanino",
+       "fit": "alta",
+       "reason": "Coincide con el spa canino mencionado en la bio de la marca."
+      },
+      {
+       "tag": "doggrooming",
+       "fit": "media",
+       "reason": "Término en inglés usado por cuentas de grooming canino, mismo rubro."
+      }
+     ],
+     "tools": [
+      "buscar:spa canino",
+      "buscar:grooming",
+      "buscar:deslanado",
+      "buscar:petgroomer"
+     ],
+     "turns": 2,
+     "seconds": 10.11,
+     "cost_usd": 0.009914,
+     "input_tokens": 1587,
+     "output_tokens": 674,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "barberia_valencia",
+     "picks": [
+      {
+       "tag": "barbershop",
+       "fit": "alta",
+       "reason": "Coincide exactamente con el tipo de negocio: barbería clásica de cortes y fade."
+      },
+      {
+       "tag": "barber",
+       "fit": "alta",
+       "reason": "Término en inglés muy usado por barberías similares, mismo formato y público."
+      },
+      {
+       "tag": "barba",
+       "fit": "alta",
+       "reason": "Servicio de arreglo de barba que ofrece la marca, mismo público objetivo."
+      }
+     ],
+     "tools": [
+      "buscar:fade",
+      "buscar:barberia",
+      "buscar:barba"
+     ],
+     "turns": 2,
+     "seconds": 9.4,
+     "cost_usd": 0.00956,
+     "input_tokens": 1410,
+     "output_tokens": 674,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "barberia_valencia",
+     "picks": [
+      {
+       "tag": "barber",
+       "fit": "alta",
+       "reason": "Hashtag específico de barbería, mismo formato y público que la marca."
+      },
+      {
+       "tag": "barbershop",
+       "fit": "alta",
+       "reason": "Término directo del negocio de barbería clásica, igual que la cuenta."
+      },
+      {
+       "tag": "barba",
+       "fit": "alta",
+       "reason": "Servicio de arreglo de barba que ofrece la marca, atrae cuentas del mismo rubro."
+      }
+     ],
+     "tools": [
+      "buscar:fade",
+      "buscar:barberia",
+      "buscar:barba"
+     ],
+     "turns": 2,
+     "seconds": 8.68,
+     "cost_usd": 0.00757,
+     "input_tokens": 1410,
+     "output_tokens": 475,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "inmobiliaria_venta_bogota",
+     "picks": [
+      {
+       "tag": "bienesraices",
+       "fit": "alta",
+       "reason": "Hashtag central del rubro inmobiliario para venta de propiedades"
+      },
+      {
+       "tag": "apartamentos",
+       "fit": "alta",
+       "reason": "Coincide con el producto principal: venta de apartamentos"
+      },
+      {
+       "tag": "casasenventa",
+       "fit": "alta",
+       "reason": "Coincide exactamente con la venta de casas que ofrece la marca"
+      }
+     ],
+     "tools": [
+      "buscar:apartamentos venta",
+      "buscar:credito hipotecario",
+      "buscar:casas",
+      "nicho:real_estate"
+     ],
+     "turns": 2,
+     "seconds": 11.6,
+     "cost_usd": 0.011178,
+     "input_tokens": 1649,
+     "output_tokens": 788,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "inmobiliaria_venta_bogota",
+     "picks": [
+      {
+       "tag": "bienesraices",
+       "fit": "alta",
+       "reason": "Hashtag central del rubro inmobiliario, mismo formato de venta de inmuebles."
+      },
+      {
+       "tag": "apartamentos",
+       "fit": "alta",
+       "reason": "Coincide exactamente con el producto principal que vende la marca."
+      },
+      {
+       "tag": "apartamentosenventa",
+       "fit": "alta",
+       "reason": "Especifica el modelo de negocio de venta, igual al de la marca."
+      }
+     ],
+     "tools": [
+      "buscar:venta de apartamentos",
+      "buscar:crédito hipotecario",
+      "nicho:real_estate"
+     ],
+     "turns": 2,
+     "seconds": 6.9,
+     "cost_usd": 0.006924,
+     "input_tokens": 1517,
+     "output_tokens": 389,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "academia_programacion_online",
+     "picks": [
+      {
+       "tag": "javascript",
+       "fit": "alta",
+       "reason": "La marca enseña JavaScript, coincide directamente con el contenido de sus cursos."
+      },
+      {
+       "tag": "desarrolloweb",
+       "fit": "alta",
+       "reason": "Los cursos de desarrollo web son parte central de la oferta de la academia."
+      },
+      {
+       "tag": "programador",
+       "fit": "alta",
+       "reason": "Público objetivo de la academia: personas que aprenden a programar o se forman como programadores."
+      }
+     ],
+     "tools": [
+      "buscar:programación",
+      "buscar:javascript",
+      "buscar:desarrollo web",
+      "buscar:coding",
+      "buscar:cursos online"
+     ],
+     "turns": 2,
+     "seconds": 9.72,
+     "cost_usd": 0.010972,
+     "input_tokens": 1626,
+     "output_tokens": 772,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "academia_programacion_online",
+     "picks": [
+      {
+       "tag": "desarrolloweb",
+       "fit": "alta",
+       "reason": "La academia enseña desarrollo web, tema central de sus cursos."
+      },
+      {
+       "tag": "javascript",
+       "fit": "alta",
+       "reason": "JavaScript es uno de los lenguajes que enseña la academia."
+      },
+      {
+       "tag": "aprendeaprogramar",
+       "fit": "alta",
+       "reason": "Coincide directamente con la propuesta de enseñar a programar desde cero."
+      }
+     ],
+     "tools": [
+      "buscar:programacion",
+      "buscar:cursos online",
+      "buscar:desarrollo web",
+      "buscar:javascript",
+      "nicho:education"
+     ],
+     "turns": 2,
+     "seconds": 9.31,
+     "cost_usd": 0.010344,
+     "input_tokens": 1567,
+     "output_tokens": 721,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "boutique_ropa_mujer_maracaibo",
+     "picks": [
+      {
+       "tag": "modafemenina",
+       "fit": "alta",
+       "reason": "Describe exactamente el rubro de moda para mujer que vende la marca"
+      },
+      {
+       "tag": "vestidos",
+       "fit": "alta",
+       "reason": "Producto principal que ofrece la boutique"
+      },
+      {
+       "tag": "boutique",
+       "fit": "alta",
+       "reason": "Mismo formato de negocio: tienda boutique de ropa femenina"
+      }
+     ],
+     "tools": [
+      "buscar:ropa de mujer",
+      "buscar:vestidos",
+      "buscar:boutique",
+      "buscar:tienda de ropa"
+     ],
+     "turns": 2,
+     "seconds": 7.92,
+     "cost_usd": 0.007874,
+     "input_tokens": 1597,
+     "output_tokens": 468,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "boutique_ropa_mujer_maracaibo",
+     "picks": [
+      {
+       "tag": "modafemenina",
+       "fit": "alta",
+       "reason": "Coincide exactamente con el público y producto de la tienda: moda femenina."
+      },
+      {
+       "tag": "boutique",
+       "fit": "alta",
+       "reason": "Refleja el formato de negocio: boutique de ropa para mujer."
+      },
+      {
+       "tag": "vestidos",
+       "fit": "media",
+       "reason": "Uno de los productos principales que vende la marca."
+      }
+     ],
+     "tools": [
+      "buscar:vestidos",
+      "buscar:ropa de mujer",
+      "buscar:boutique"
+     ],
+     "turns": 2,
+     "seconds": 6.78,
+     "cost_usd": 0.007936,
+     "input_tokens": 1483,
+     "output_tokens": 497,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "tienda_celulares_cucuta",
+     "picks": [
+      {
+       "tag": "smartphone",
+       "fit": "alta",
+       "reason": "Es el término genérico para celulares, coincide con el producto principal de la marca."
+      },
+      {
+       "tag": "iphone",
+       "fit": "alta",
+       "reason": "La marca vende iPhone como una de sus líneas principales."
+      },
+      {
+       "tag": "xiaomi",
+       "fit": "alta",
+       "reason": "Xiaomi es una de las marcas que vende la tienda."
+      }
+     ],
+     "tools": [
+      "buscar:celular",
+      "buscar:smartphone",
+      "buscar:xiaomi",
+      "buscar:accesorios celular"
+     ],
+     "turns": 2,
+     "seconds": 8.32,
+     "cost_usd": 0.008956,
+     "input_tokens": 1523,
+     "output_tokens": 591,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "tienda_celulares_cucuta",
+     "picks": [
+      {
+       "tag": "smartphone",
+       "fit": "alta",
+       "reason": "La marca vende celulares nuevos de varias marcas, coincide con el producto central."
+      },
+      {
+       "tag": "iphone",
+       "fit": "alta",
+       "reason": "Vende iPhone, marca específica que ofrece la tienda."
+      },
+      {
+       "tag": "xiaomi",
+       "fit": "alta",
+       "reason": "Vende Xiaomi, una de las marcas que comercializa la tienda."
+      }
+     ],
+     "tools": [
+      "buscar:celular",
+      "buscar:smartphone",
+      "buscar:xiaomi",
+      "buscar:accesorios celular",
+      "buscar:samsung",
+      "buscar:infinix",
+      "buscar:venta de celulares",
+      "buscar:tienda de celulares"
+     ],
+     "turns": 3,
+     "seconds": 12.44,
+     "cost_usd": 0.015624,
+     "input_tokens": 3092,
+     "output_tokens": 944,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "pizzeria_lena_bucaramanga",
+     "picks": [
+      {
+       "tag": "pizzanapolitana",
+       "fit": "alta",
+       "reason": "Es exactamente el estilo de pizza que ofrece la marca"
+      },
+      {
+       "tag": "pizzeria",
+       "fit": "alta",
+       "reason": "Mismo tipo de negocio: pizzería"
+      },
+      {
+       "tag": "masamadre",
+       "fit": "media",
+       "reason": "Comparte la técnica de masa madre destacada en la bio"
+      }
+     ],
+     "tools": [
+      "buscar:pizza napolitana",
+      "buscar:horno de leña",
+      "buscar:masa madre",
+      "buscar:pizzeria"
+     ],
+     "turns": 2,
+     "seconds": 8.31,
+     "cost_usd": 0.00854,
+     "input_tokens": 1665,
+     "output_tokens": 521,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "pizzeria_lena_bucaramanga",
+     "picks": [
+      {
+       "tag": "pizzanapolitana",
+       "fit": "alta",
+       "reason": "Es exactamente el estilo de pizza que ofrece la marca"
+      },
+      {
+       "tag": "pizzeria",
+       "fit": "alta",
+       "reason": "Mismo formato de negocio: pizzería"
+      },
+      {
+       "tag": "masamadre",
+       "fit": "alta",
+       "reason": "Coincide con la característica distintiva de su masa de 48h"
+      }
+     ],
+     "tools": [
+      "buscar:pizza napolitana",
+      "buscar:horno de leña",
+      "buscar:masa madre"
+     ],
+     "turns": 2,
+     "seconds": 5.6,
+     "cost_usd": 0.00667,
+     "input_tokens": 1510,
+     "output_tokens": 365,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "taller_motos_sin_candidatos",
+     "picks": [],
+     "tools": [
+      "buscar:motos",
+      "buscar:taller mecanico",
+      "buscar:repuestos moto",
+      "buscar:motocicleta",
+      "buscar:mecanico",
+      "buscar:pintura automotriz",
+      "buscar:motorcycle"
+     ],
+     "turns": 3,
+     "seconds": 10.79,
+     "cost_usd": 0.011616,
+     "input_tokens": 2753,
+     "output_tokens": 611,
+     "model_revision": "claude-sonnet-5"
+    },
+    {
+     "case": "taller_motos_sin_candidatos",
+     "picks": [],
+     "tools": [
+      "buscar:motos",
+      "buscar:taller mecanico",
+      "buscar:repuestos moto",
+      "buscar:motorcycle",
+      "buscar:motociclismo",
+      "buscar:mecanico",
+      "buscar:pintura automotriz",
+      "buscar:moto"
+     ],
+     "turns": 3,
+     "seconds": 14.0,
+     "cost_usd": 0.01255,
+     "input_tokens": 2970,
+     "output_tokens": 661,
+     "model_revision": "claude-sonnet-5"
+    }
+   ],
+   "select": {
+    "precision": 0.923,
+    "recall@k": 0.881,
+    "picks": 84,
+    "traps": 1,
+    "bad": 1,
+    "abstain": "2/2",
+    "stability": 0.7,
+    "errors": 0,
+    "cost_per_call_usd": 0.00944,
+    "p50_seconds": 9.36,
+    "mean_turns": 2.2,
+    "per_case": {
+     "restaurante_autor_bogota": [
+      "finedining[y] menudegustacion[y] maridaje[y]",
+      "finedining[y] menudegustacion[y] gastronomia[y]"
+     ],
+     "food_truck_perros_cucuta": [
+      "salchipapas[y] hotdog[m] foodtruck[y]",
+      "salchipapas[y] perrocaliente[n] foodtruck[y]"
+     ],
+     "hamburgueseria_smash_caracas": [
+      "hamburguesas[y] foodie[m] fastfood[m]",
+      "hamburguesas[y] foodie[m] fastfood[m]"
+     ],
+     "pasteleria_vegana_medellin": [
+      "postresveganos[y] recetasveganas[m] reposteria[y]",
+      "postresveganos[y] reposteria[y] veganfood[y]"
+     ],
+     "cafeteria_especialidad_caracas": [
+      "cafedeespecialidad[y] latteart[y] barista[y]",
+      "cafedeespecialidad[y] latteart[y] specialtycoffee[y]"
+     ],
+     "crossfit_box_bogota": [
+      "wod[y] crossfitgames[m] halterofilia[y]",
+      "wod[y] halterofilia[y] entrenamientofuncional[y]"
+     ],
+     "estudio_yoga_medellin": [
+      "vinyasa[y] meditacion[y] yogalife[y]",
+      "vinyasa[y] meditacion[y] mindfulness[y]"
+     ],
+     "peluqueria_canina_barranquilla": [
+      "spacanino[y] doggrooming[y] groomer[y]",
+      "peluqueria[t] spacanino[y] doggrooming[y]"
+     ],
+     "barberia_valencia": [
+      "barbershop[y] barber[y] barba[y]",
+      "barber[y] barbershop[y] barba[y]"
+     ],
+     "inmobiliaria_venta_bogota": [
+      "bienesraices[y] apartamentos[m] casasenventa[y]",
+      "bienesraices[y] apartamentos[m] apartamentosenventa[y]"
+     ],
+     "academia_programacion_online": [
+      "javascript[y] desarrolloweb[y] programador[y]",
+      "desarrolloweb[y] javascript[y] aprendeaprogramar[y]"
+     ],
+     "boutique_ropa_mujer_maracaibo": [
+      "modafemenina[y] vestidos[y] boutique[y]",
+      "modafemenina[y] boutique[y] vestidos[y]"
+     ],
+     "tienda_celulares_cucuta": [
+      "smartphone[y] iphone[y] xiaomi[y]",
+      "smartphone[y] iphone[y] xiaomi[y]"
+     ],
+     "pizzeria_lena_bucaramanga": [
+      "pizzanapolitana[y] pizzeria[y] masamadre[y]",
+      "pizzanapolitana[y] pizzeria[y] masamadre[y]"
+     ],
+     "taller_motos_sin_candidatos": [
+      "—",
+      "—"
+     ]
+    }
+   },
+   "classify_raw": {
+    "predictions": {
+     "techtok": {
+      "tag": "techtok",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "hamburguesas": {
+      "tag": "hamburguesas",
+      "kind": "topic",
+      "niche": "food_drink",
+      "country_code": null
+     },
+     "hamburguesa": {
+      "tag": "hamburguesa",
+      "kind": "topic",
+      "niche": "food_drink",
+      "country_code": null
+     },
+     "burger": {
+      "tag": "burger",
+      "kind": "topic",
+      "niche": "food_drink",
+      "country_code": null
+     },
+     "smashburger": {
+      "tag": "smashburger",
+      "kind": "topic",
+      "niche": "food_drink",
+      "country_code": null
+     },
+     "hamburguesatriple": {
+      "tag": "hamburguesatriple",
+      "kind": "topic",
+      "niche": "food_drink",
+      "country_code": null
+     },
+     "steak": {
+      "tag": "steak",
+      "kind": "topic",
+      "niche": "food_drink",
+      "country_code": null
+     },
+     "carterpcs": {
+      "tag": "carterpcs",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "paratiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii": {
+      "tag": "paratiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "paratiiiiiiii": {
+      "tag": "paratiiiiiiii",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "apple": {
+      "tag": "apple",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "google": {
+      "tag": "google",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "android": {
+      "tag": "android",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "infinix": {
+      "tag": "infinix",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "laptop": {
+      "tag": "laptop",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "pcs": {
+      "tag": "pcs",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "custompc": {
+      "tag": "custompc",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "gamingpc": {
+      "tag": "gamingpc",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "gamingsetup": {
+      "tag": "gamingsetup",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "gaming": {
+      "tag": "gaming",
+      "kind": "topic",
+      "niche": "entertainment",
+      "country_code": null
+     },
+     "minecraft": {
+      "tag": "minecraft",
+      "kind": "topic",
+      "niche": "entertainment",
+      "country_code": null
+     },
+     "robot": {
+      "tag": "robot",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "techvideos": {
+      "tag": "techvideos",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "ai": {
+      "tag": "ai",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "inteligenciartificial": {
+      "tag": "inteligenciartificial",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "programacao": {
+      "tag": "programacao",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "informatica": {
+      "tag": "informatica",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "impresorashp": {
+      "tag": "impresorashp",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "salariosti": {
+      "tag": "salariosti",
+      "kind": "topic",
+      "niche": "technology",
+      "country_code": null
+     },
+     "diplomados": {
+      "tag": "diplomados",
+      "kind": "topic",
+      "niche": "education",
+      "country_code": null
+     },
+     "learnontiktok": {
+      "tag": "learnontiktok",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "dicas": {
+      "tag": "dicas",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "hacks": {
+      "tag": "hacks",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "freelance": {
+      "tag": "freelance",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "emprendimiento": {
+      "tag": "emprendimiento",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "marketingdigital": {
+      "tag": "marketingdigital",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "inversiones": {
+      "tag": "inversiones",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "cerrajero": {
+      "tag": "cerrajero",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "cleantok": {
+      "tag": "cleantok",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "arquitectura": {
+      "tag": "arquitectura",
+      "kind": "topic",
+      "niche": "real_estate",
+      "country_code": null
+     },
+     "kungfu": {
+      "tag": "kungfu",
+      "kind": "topic",
+      "niche": "fitness_health",
+      "country_code": null
+     },
+     "dance": {
+      "tag": "dance",
+      "kind": "topic",
+      "niche": "entertainment",
+      "country_code": null
+     },
+     "documental": {
+      "tag": "documental",
+      "kind": "topic",
+      "niche": "education",
+      "country_code": null
+     },
+     "90s": {
+      "tag": "90s",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "noticia": {
+      "tag": "noticia",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "contentcreator": {
+      "tag": "contentcreator",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "greenscreen": {
+      "tag": "greenscreen",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "qanda": {
+      "tag": "qanda",
+      "kind": "topic",
+      "niche": "education",
+      "country_code": null
+     },
+     "preguntaseria": {
+      "tag": "preguntaseria",
+      "kind": "topic",
+      "niche": "education",
+      "country_code": null
+     },
+     "enero": {
+      "tag": "enero",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "comparte": {
+      "tag": "comparte",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "happy": {
+      "tag": "happy",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "bruh": {
+      "tag": "bruh",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "viraltiktok": {
+      "tag": "viraltiktok",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "fyp": {
+      "tag": "fyp",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "parati": {
+      "tag": "parati",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "capcut": {
+      "tag": "capcut",
+      "kind": "generic",
+      "niche": null,
+      "country_code": null
+     },
+     "jesusdaviduseche87": {
+      "tag": "jesusdaviduseche87",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "kelvynpadilla": {
+      "tag": "kelvynpadilla",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "fiss": {
+      "tag": "fiss",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "sc": {
+      "tag": "sc",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "noticiastrt": {
+      "tag": "noticiastrt",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "venevision": {
+      "tag": "venevision",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "ucab": {
+      "tag": "ucab",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "gochos": {
+      "tag": "gochos",
+      "kind": "place",
+      "niche": null,
+      "country_code": "VE"
+     },
+     "zulia": {
+      "tag": "zulia",
+      "kind": "place",
+      "niche": null,
+      "country_code": "VE"
+     },
+     "capacho": {
+      "tag": "capacho",
+      "kind": "place",
+      "niche": null,
+      "country_code": "VE"
+     },
+     "chacao": {
+      "tag": "chacao",
+      "kind": "place",
+      "niche": null,
+      "country_code": "VE"
+     },
+     "lobatera": {
+      "tag": "lobatera",
+      "kind": "place",
+      "niche": null,
+      "country_code": "VE"
+     },
+     "lecheria": {
+      "tag": "lecheria",
+      "kind": "place",
+      "niche": null,
+      "country_code": "VE"
+     },
+     "cucutafood": {
+      "tag": "cucutafood",
+      "kind": "place",
+      "niche": null,
+      "country_code": "CO"
+     },
+     "comidacolombia": {
+      "tag": "comidacolombia",
+      "kind": "place",
+      "niche": null,
+      "country_code": "CO"
+     },
+     "caracas": {
+      "tag": "caracas",
+      "kind": "place",
+      "niche": null,
+      "country_code": "VE"
+     },
+     "medellin": {
+      "tag": "medellin",
+      "kind": "place",
+      "niche": null,
+      "country_code": "CO"
+     },
+     "peluqueriacanina": {
+      "tag": "peluqueriacanina",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "perritos": {
+      "tag": "perritos",
+      "kind": "topic",
+      "niche": null,
+      "country_code": null
+     },
+     "crossfit": {
+      "tag": "crossfit",
+      "kind": "topic",
+      "niche": "fitness_health",
+      "country_code": null
+     },
+     "yoga": {
+      "tag": "yoga",
+      "kind": "topic",
+      "niche": "fitness_health",
+      "country_code": null
+     },
+     "maquillaje": {
+      "tag": "maquillaje",
+      "kind": "topic",
+      "niche": "fashion_beauty",
+      "country_code": null
+     },
+     "outfit": {
+      "tag": "outfit",
+      "kind": "topic",
+      "niche": "fashion_beauty",
+      "country_code": null
+     },
+     "barberia": {
+      "tag": "barberia",
+      "kind": "topic",
+      "niche": "fashion_beauty",
+      "country_code": null
+     },
+     "bienesraices": {
+      "tag": "bienesraices",
+      "kind": "topic",
+      "niche": "real_estate",
+      "country_code": null
+     },
+     "apartamentosenventa": {
+      "tag": "apartamentosenventa",
+      "kind": "topic",
+      "niche": "real_estate",
+      "country_code": null
+     },
+     "viajero": {
+      "tag": "viajero",
+      "kind": "topic",
+      "niche": "travel_lifestyle",
+      "country_code": null
+     },
+     "turismo": {
+      "tag": "turismo",
+      "kind": "topic",
+      "niche": "travel_lifestyle",
+      "country_code": null
+     },
+     "comedia": {
+      "tag": "comedia",
+      "kind": "topic",
+      "niche": "entertainment",
+      "country_code": null
+     },
+     "musica": {
+      "tag": "musica",
+      "kind": "topic",
+      "niche": "entertainment",
+      "country_code": null
+     },
+     "cursos": {
+      "tag": "cursos",
+      "kind": "topic",
+      "niche": "education",
+      "country_code": null
+     },
+     "inppimhlcbfood": {
+      "tag": "inppimhlcbfood",
+      "kind": "topic",
+      "niche": "food_drink",
+      "country_code": null
+     },
+     "afoplnjnoccaninos": {
+      "tag": "afoplnjnoccaninos",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "bdjnjjbcmnspam": {
+      "tag": "bdjnjjbcmnspam",
+      "kind": "noise",
+      "niche": null,
+      "country_code": null
+     },
+     "agijjoafnomoda": {
+      "tag": "agijjoafnomoda",
+      "kind": "topic",
+      "niche": "fashion_beauty",
+      "country_code": null
+     },
+     "bobhchhnfdgym": {
+      "tag": "bobhchhnfdgym",
+      "kind": "topic",
+      "niche": "fitness_health",
+      "country_code": null
+     },
+     "bpjmilogancomidarapida": {
+      "tag": "bpjmilogancomidarapida",
+      "kind": "topic",
+      "niche": "food_drink",
+      "country_code": null
+     }
+    },
+    "cost_usd": 0.063598,
+    "seconds": 54.733907100278884,
+    "errors": []
+   },
+   "classify": {
+    "kind_acc": 0.936,
+    "niche_acc": 0.981,
+    "full_acc": 0.926,
+    "country_acc": "10/10",
+    "missing": 0,
+    "errors": 0,
+    "cost_usd": 0.0636,
+    "seconds": 54.7,
+    "wrong": [
+     "documental: topic/education/None",
+     "qanda: topic/education/None",
+     "preguntaseria: topic/education/None",
+     "inppimhlcbfood: topic/food_drink/None",
+     "agijjoafnomoda: topic/fashion_beauty/None",
+     "bobhchhnfdgym: topic/fitness_health/None",
+     "bpjmilogancomidarapida: topic/food_drink/None"
+    ]
+   }
+  }
+ }
+}

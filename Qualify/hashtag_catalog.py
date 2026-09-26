@@ -1,6 +1,20 @@
 """The bridge between the referentes search (`creator_discovery`) and the shared hashtag
 catalog (`qualify_api.hashtags`, migration 0023).
 
+Two Claude-backed jobs sit on top of the three below (`qualify_api.hashtags.ai`):
+
+- `ai_hashtags_for` — the READ side used by the wizard since plan 7: Claude gets the
+  brand's profile, a starting list of catalog tags and two catalog TOOLS (`CatalogTools`:
+  search by word, list a niche), explores the catalog itself, and returns through a
+  third tool only the tags that fit THIS brand's business (a restaurant does not get
+  `#streetfood`). Stateless: the choice is stored with the phase
+  that used it (provenance), never written back into the catalog, so nothing is learned
+  per rubro. Without a key, or on any failure, it falls back to `catalog_hashtags_for`.
+- `classify_pending` — what the rule in `classify_tag` left `unknown` (or a topic with no
+  niche) is classified by Claude, a batch at a time, after each capture and by
+  `just classify-hashtags`. What a tag is does not depend on who searches, so this one IS
+  stored on the shared catalog (`classified_by='ai'`, never over a person's decision).
+
 Three jobs:
 
 - `seed_taxonomy` — the hand-written `NICHE_TAXONOMY` (3 hashtags per niche) becomes data:
@@ -28,16 +42,22 @@ is skipped and counted, never allowed to fail a search that already succeeded.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from collections import defaultdict
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from uuid import UUID
 
 from qualify_api.hashtags import (
+    Classification,
     HashtagRepository,
     NewHashtag,
     NewTermLink,
     PostgresHashtagRepository,
+    StoredHashtag,
 )
+from qualify_api.hashtags import ai as hashtag_ai
 
 from . import creator_discovery
 from .creator_discovery import Candidate, DiscoverySeed
@@ -171,6 +191,311 @@ def catalog_hashtags_for(
             if stored.kind in _STEERING_KINDS:
                 take(stored.tag)
     return tuple(found[:CATALOG_HASHTAGS])
+
+
+# --------------------------------------------------------------------------------------
+# Claude: which catalog hashtags fit THIS brand
+# --------------------------------------------------------------------------------------
+
+#: How many catalog tags Claude is shown before it starts searching on its own: the
+#: operator's words, the seed's niches and the most used tags, so a run that needs no
+#: search is one turn. Everything else it finds with the tools (`CatalogTools`).
+STARTING_POOL = 40
+
+#: Loose on purpose (the rule path uses 0.55): Claude judges the fit, so a search may
+#: return near misses — it must not MISS the variant the model is looking for.
+_SEARCH_MIN_SIMILARITY = 0.35
+
+#: One selection per seed and profile is reused this long in the process: the wizard
+#: runs discovery on every visit, and the answer for the same brand does not change
+#: within a day (stored phases keep theirs for a week anyway).
+_CHOICE_TTL_SECONDS = 12 * 3600
+
+
+@dataclass(frozen=True)
+class HashtagChoice:
+    """What the seed's `catalog_hashtags` become, and why."""
+
+    tags: tuple[str, ...]
+    #: `ai` (Claude chose), `rule` (the fallback: `catalog_hashtags_for`).
+    by: str
+    #: For AI-chosen tags: tag → `{"model", "fit", "reason"}` — stored with the phase.
+    picks: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+
+
+_choices: dict[tuple[str, ...], tuple[float, HashtagChoice]] = {}
+_choices_lock = threading.Lock()
+
+
+def _steers(stored: StoredHashtag, seed: DiscoverySeed) -> bool:
+    """A catalog tag worth offering: topic-like, not a place (the national / local phases
+    compose places themselves), not generic, not the brand's own name or tags."""
+    if stored.kind not in _STEERING_KINDS:
+        return False
+    slug = creator_discovery._slug(stored.tag)
+    if slug in creator_discovery._GENERIC_HASHTAGS:
+        return False
+    if slug in {creator_discovery._slug(t) for t in seed.hashtags}:
+        return False
+    handle = creator_discovery._slug(seed.handle)
+    if handle and handle in slug:
+        return False
+    return not (
+        creator_discovery._is_place_tag(stored.tag, seed)
+        or creator_discovery._is_place_tag_anywhere(stored.tag)
+    )
+
+
+def _as_candidate(stored: StoredHashtag) -> hashtag_ai.Candidate:
+    return hashtag_ai.Candidate(stored.tag, stored.seen_count, stored.niche)
+
+
+@dataclass
+class CatalogTools:
+    """The catalog side of Claude's tools (`hashtag_ai.CatalogSearch`) for one brand:
+    what `buscar_hashtags` and `hashtags_del_nicho` return, with the same filter as the
+    starting pool — so the model can never be shown a place, a generic tag or the
+    brand's own tag, whatever it searches for."""
+
+    tenant_id: UUID
+    seed: DiscoverySeed
+    repository: HashtagRepository
+
+    def search(self, query: str) -> list[hashtag_ai.Candidate]:
+        hits = self.repository.resolve(
+            self.tenant_id,
+            query,
+            limit=hashtag_ai.TOOL_RESULTS * 2,
+            min_similarity=_SEARCH_MIN_SIMILARITY,
+            kinds=_STEERING_KINDS,
+        )
+        # Best match first (the repository's order), not most used: a popular near miss
+        # must not bury the variant the model searched for.
+        return [_as_candidate(h.hashtag) for h in hits if _steers(h.hashtag, self.seed)]
+
+    def niche(self, key: str) -> list[hashtag_ai.Candidate]:
+        rows = self.repository.for_niche(self.tenant_id, key, limit=hashtag_ai.TOOL_RESULTS * 2)
+        return [_as_candidate(s) for s in rows if _steers(s, self.seed)]
+
+
+def candidate_pool(
+    tenant_id: UUID,
+    seed: DiscoverySeed,
+    *,
+    repository: HashtagRepository | None = None,
+    limit: int = STARTING_POOL,
+) -> list[StoredHashtag]:
+    """The catalog hashtags Claude is shown to start with: what the operator's words
+    resolve to, then the seed's niches, then the most seen topic tags of the whole
+    catalog — minus places, generic tags and what the brand already uses. A starting
+    point, not the limit of what it can choose: the tools reach the rest."""
+    repo = repository or REPOSITORY
+    ensure_seeded(tenant_id, repository=repo)
+    pool: dict[str, StoredHashtag] = {}
+
+    def add(stored: StoredHashtag) -> None:
+        if stored.tag not in pool and _steers(stored, seed):
+            pool[stored.tag] = stored
+
+    for term in seed.terms:
+        for hit in repo.resolve(
+            tenant_id, term, limit=20, min_similarity=_SEARCH_MIN_SIMILARITY, kinds=_STEERING_KINDS
+        ):
+            add(hit.hashtag)
+    for niche in seed.niches[:2]:
+        for stored in repo.for_niche(tenant_id, niche, limit=20):
+            add(stored)
+    for stored in repo.top_tags(tenant_id, kinds=_STEERING_KINDS, limit=limit * 3):
+        if len(pool) >= limit:
+            break
+        add(stored)
+    return list(pool.values())[:limit]
+
+
+def _brand_profile(seed: DiscoverySeed, bio: str, category: str) -> hashtag_ai.BrandProfile:
+    return hashtag_ai.BrandProfile(
+        handle=seed.handle,
+        bio=bio,
+        category=category,
+        rubro=seed.terms,
+        niches=tuple(creator_discovery.NICHE_LABELS.get(n, n) for n in seed.niches),
+        city=seed.city,
+        country=creator_discovery.country_name(seed.country_code),
+        own_hashtags=seed.hashtags,
+    )
+
+
+def ai_hashtags_for(
+    tenant_id: UUID,
+    seed: DiscoverySeed,
+    *,
+    bio: str = "",
+    category: str = "",
+    repository: HashtagRepository | None = None,
+    api_key: str | None = None,
+    selector: Callable[..., tuple[list[hashtag_ai.HashtagPick], hashtag_ai.CallStats]]
+    | None = None,
+    now: float | None = None,
+    max_picks: int = creator_discovery.SECTOR_CATALOG_TAGS,
+) -> HashtagChoice:
+    """The catalog hashtags that fit this brand, chosen by Claude with its catalog tools
+    (`hashtag_ai.select_hashtags` over `CatalogTools`, at most `max_picks`: the search's
+    own `SECTOR_CATALOG_TAGS`, or `CHOSEN_HASHTAGS` when the rubro step's "Sugerir"
+    button asks for pills the operator will curate — `suggest_hashtags`). An
+    empty choice is a valid answer — nothing in the catalog fits — and is respected, not
+    papered over.
+
+    Falls back to the rule path (`catalog_hashtags_for`) when there is no key, the SDK
+    is not installed, or the run fails for any reason: the AI improves the search, it is
+    never allowed to stop it. Database errors are NOT swallowed here — the caller already
+    treats an unreadable catalog as "search without it"."""
+    repo = repository or REPOSITORY
+    cache_key = (str(tenant_id), seed.signature(), bio, category, str(max_picks))
+    moment = now if now is not None else time.time()
+    with _choices_lock:
+        hit = _choices.get(cache_key)
+        if hit is not None and moment - hit[0] < _CHOICE_TTL_SECONDS:
+            return hit[1]
+
+    def fallback() -> HashtagChoice:
+        return HashtagChoice(catalog_hashtags_for(tenant_id, seed, repository=repo), "rule")
+
+    try:
+        key = api_key or hashtag_ai.api_key_from_env()
+    except hashtag_ai.MissingAPIKey:
+        return fallback()
+    starting = [_as_candidate(s) for s in candidate_pool(tenant_id, seed, repository=repo)]
+    select = selector or hashtag_ai.select_hashtags
+    try:
+        picks, stats = select(
+            _brand_profile(seed, bio, category),
+            CatalogTools(tenant_id, seed, repo),
+            creator_discovery.NICHE_LABELS,
+            api_key=key,
+            starting=starting,
+            max_picks=max_picks,
+        )
+    except Exception as exc:  # noqa: BLE001 — SDK/transport/model errors all fall back
+        logger.warning("hashtags: AI selection failed, using the rule path: %s", exc)
+        return fallback()
+    logger.info(
+        "hashtags: %s chose %s for @%s in %d turns / %d tool calls ($%.4f)",
+        stats.model_revision or stats.model_id,
+        [p.tag for p in picks],
+        seed.handle,
+        stats.turns,
+        stats.tool_calls,
+        stats.cost_usd,
+    )
+    model = stats.model_revision or stats.model_id
+    choice = HashtagChoice(
+        tags=tuple(p.tag for p in picks),
+        by="ai",
+        picks={p.tag: {"model": model, "fit": p.fit, "reason": p.reason} for p in picks},
+    )
+    with _choices_lock:
+        _choices[cache_key] = (moment, choice)
+    return choice
+
+
+def suggest_hashtags(
+    tenant_id: UUID,
+    seed: DiscoverySeed,
+    *,
+    bio: str = "",
+    category: str = "",
+    repository: HashtagRepository | None = None,
+    api_key: str | None = None,
+    selector: Callable[..., tuple[list[hashtag_ai.HashtagPick], hashtag_ai.CallStats]]
+    | None = None,
+) -> HashtagChoice:
+    """The rubro step's "Sugerir hashtags" button: the same tool run as the search's own
+    choice, asking for up to `CHOSEN_HASHTAGS` so the operator has room to curate. The
+    operator's pills then BECOME the search's hashtags (`DiscoverySeed.chosen_hashtags`)
+    and the search makes no second call — one Claude run either way. Falls back to the
+    rule path, like `ai_hashtags_for`, when there is no key or the run fails."""
+    return ai_hashtags_for(
+        tenant_id,
+        seed,
+        bio=bio,
+        category=category,
+        repository=repository,
+        api_key=api_key,
+        selector=selector,
+        max_picks=creator_discovery.CHOSEN_HASHTAGS,
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Claude: what a tag IS (stored on the shared catalog)
+# --------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ClassifySummary:
+    asked: int = 0
+    changed: int = 0
+    cost_usd: float = 0.0
+
+
+def classify_pending(
+    tenant_id: UUID,
+    *,
+    limit: int = hashtag_ai.CLASSIFY_BATCH,
+    repository: HashtagRepository | None = None,
+    api_key: str | None = None,
+    classifier: Callable[..., tuple[list[hashtag_ai.TagClassification], hashtag_ai.CallStats]]
+    | None = None,
+) -> ClassifySummary:
+    """One batch of what the rule could not settle (`needs_classification`), classified
+    by Claude and stored under the never-downgrade rule. A no-op without a key, and while
+    another pass is running in this process (the three phases of one search each trigger
+    one — they would pay to classify the same batch); a failed call is logged and changes
+    nothing (the tags stay pending for the next pass)."""
+    if not _classify_lock.acquire(blocking=False):
+        return ClassifySummary()
+    try:
+        return _classify_batch(tenant_id, limit, repository or REPOSITORY, api_key, classifier)
+    finally:
+        _classify_lock.release()
+
+
+_classify_lock = threading.Lock()
+
+
+def _classify_batch(
+    tenant_id: UUID,
+    limit: int,
+    repo: HashtagRepository,
+    api_key: str | None,
+    classifier: Callable[..., tuple[list[hashtag_ai.TagClassification], hashtag_ai.CallStats]]
+    | None,
+) -> ClassifySummary:
+    pending = repo.needs_classification(tenant_id, limit=min(limit, hashtag_ai.CLASSIFY_BATCH))
+    if not pending:
+        return ClassifySummary()
+    try:
+        key = api_key or hashtag_ai.api_key_from_env()
+    except hashtag_ai.MissingAPIKey:
+        return ClassifySummary()
+    classify = classifier or hashtag_ai.classify_hashtags
+    try:
+        results, stats = classify(
+            [p.tag for p in pending], creator_discovery.NICHE_LABELS, api_key=key
+        )
+    except Exception as exc:  # noqa: BLE001 — the catalog only ever gains; never raise
+        logger.warning("hashtags: AI classification failed: %s", exc)
+        return ClassifySummary(asked=len(pending))
+    decisions = [Classification(r.tag, r.kind, r.niche, r.country_code) for r in results]
+    changed = repo.apply_classifications(tenant_id, decisions)
+    logger.info(
+        "hashtags: classified %d/%d pending tags with %s ($%.4f)",
+        changed,
+        len(pending),
+        stats.model_revision or stats.model_id,
+        stats.cost_usd,
+    )
+    return ClassifySummary(asked=len(pending), changed=changed, cost_usd=stats.cost_usd)
 
 
 def _rubro_terms(seed: DiscoverySeed) -> list[str]:

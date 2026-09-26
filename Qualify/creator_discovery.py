@@ -60,6 +60,7 @@ import re
 import sys
 import time
 import unicodedata
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -503,6 +504,13 @@ class Candidate:
     engagement_rate: float | None = None
     follower_band: str | None = None
     exclusion_reasons: list[str] = field(default_factory=list)
+    # filled by the AI review (`run_phase`, `AccountReviewer`) — empty when unreviewed
+    #: What the account IS: marca / creador / medio / otro.
+    account_kind: str = ""
+    #: The reviewer's one-line reason, shown to the operator.
+    review_reason: str = ""
+    #: Who reviewed it (model id) — provenance of `account_kind` and of the drop.
+    reviewed_by: str = ""
 
     @property
     def key(self) -> tuple[str, str]:
@@ -910,6 +918,29 @@ class ProfileFacts:
     related: tuple[str, ...] = ()
     full_name: str = ""
     avatar: str = ""
+    #: The captions of the account's most recent posts, when the read carried them
+    #: (Instagram: `edge_owner_to_timeline_media`, the last 12 — measured live
+    #: 2026-09-25 on `mouredev`: 12 posts, 58 hashtags). The only place an Instagram
+    #: account found by Google, by related-profile walk or by mirroring shows the
+    #: hashtags it uses; before, those reads kept the count and dropped the posts.
+    captions: tuple[str, ...] = ()
+
+
+#: Recent captions kept per profile read — Instagram serves 12, the cap is a ceiling.
+PROFILE_CAPTIONS = 12
+
+
+def _instagram_captions(user: dict[str, Any]) -> tuple[str, ...]:
+    edges = (user.get("edge_owner_to_timeline_media") or {}).get("edges") or []
+    out: list[str] = []
+    for edge in edges[:PROFILE_CAPTIONS]:
+        node = edge.get("node") if isinstance(edge, dict) else None
+        captions = ((node or {}).get("edge_media_to_caption") or {}).get("edges") or []
+        first = captions[0] if captions and isinstance(captions[0], dict) else {}
+        text = str((first.get("node") or {}).get("text") or "").strip()
+        if text:
+            out.append(text)
+    return tuple(out)
 
 
 def _int(value: object) -> int | None:
@@ -965,6 +996,7 @@ def profile_facts(network: str, payload: dict[str, Any]) -> ProfileFacts:
         related=related,
         full_name=str(user.get("full_name") or ""),
         avatar=str(user.get("profile_pic_url_hd") or user.get("profile_pic_url") or ""),
+        captions=_instagram_captions(user),
     )
 
 
@@ -981,6 +1013,16 @@ def _apply_facts(candidate: Candidate, facts: ProfileFacts, source: str) -> None
     candidate.is_verified = candidate.is_verified or facts.is_verified
     if facts.category and facts.category not in candidate.texts:
         candidate.texts.append(facts.category)
+    # The posts' words are evidence (niche, place, relevance) and their hashtags are what
+    # the catalog learns from. Not `absorb_post`: a profile read is not a feed sighting,
+    # and its posts must not move the engagement numbers the ranking reads.
+    for caption in facts.captions:
+        if caption in candidate.texts:
+            continue
+        candidate.texts.append(caption)
+        for tag in _hashtags_in(caption):
+            if tag not in candidate.hashtags_seen:
+                candidate.hashtags_seen.append(tag)
     if source not in candidate.sources:
         candidate.sources.append(source)
 
@@ -1186,8 +1228,13 @@ def save_result(result: DiscoveryResult, *, directory: Path = DISCOVERY_DIR) -> 
 #: algorithm's code and fails when it changes without a bump (5 = the 2026-09-15
 #: country aliases / city lists, which shipped still stamped 4; 6 = the shared hashtag
 #: catalog: the rubro's catalog hashtags join the sector queries, the local hashtag
-#: query and the relevance stems — `hashtag_catalog.catalog_hashtags_for`).
-PHASED_PLAN_VERSION = 6
+#: query and the relevance stems — `hashtag_catalog.catalog_hashtags_for`; 7 = an
+#: Instagram profile read contributes its last posts' captions and hashtags as evidence,
+#: and the sector phase searches up to three catalog hashtags, now chosen per brand by
+#: Claude — `hashtag_catalog.ai_hashtags_for`; 8 = the operator's own hashtag pills
+#: on Tu rubro y ubicación, `DiscoverySeed.chosen_hashtags`: they replace the catalog's
+#: choice, join the sector/local keys and run as up to `CHOSEN_HASHTAGS` sector queries).
+PHASED_PLAN_VERSION = 9
 
 
 @dataclass(frozen=True)
@@ -1672,6 +1719,17 @@ class DiscoverySeed:
     #: for the answers that produced it; the catalog's improvements land on the next
     #: search that is not a cache hit (a new city, the weekly TTL, a version bump).
     catalog_hashtags: tuple[str, ...] = ()
+    #: Hashtags the operator curated on Tu rubro y ubicación (the pills — suggested by
+    #: Claude with its catalog tools and/or typed by hand). When present they REPLACE
+    #: `catalog_hashtags` as the tags the search uses (`steering_hashtags`), and unlike
+    #: those they ARE part of the signature: they only change when a person changes
+    #: them, and a person who changed them expects a new search, not the stored one.
+    chosen_hashtags: tuple[str, ...] = ()
+
+    def steering_hashtags(self) -> tuple[str, ...]:
+        """The catalog-side hashtags this search runs with: the operator's pills when
+        there are any, otherwise what the catalog / Claude chose."""
+        return self.chosen_hashtags or self.catalog_hashtags
 
     def signature(self) -> str:
         return "|".join(
@@ -1684,6 +1742,7 @@ class DiscoverySeed:
                 _slug(self.city),
                 ",".join(_slug(r) for r in self.related[:3]),
                 ",".join(_slug(t) for t in self.terms),
+                ",".join(sorted(_slug(t) for t in self.chosen_hashtags)),
             ]
         )
 
@@ -1692,7 +1751,8 @@ class DiscoverySeed:
         out = list(self.terms)
         out.extend(NICHE_LABELS.get(n, n) for n in self.niches)
         shown: list[str] = []
-        for tag in (*self.hashtags[:3], *self.catalog_hashtags[:3]):
+        extra = self.chosen_hashtags or self.catalog_hashtags[:3]
+        for tag in (*self.hashtags[:3], *extra):
             if tag not in shown:
                 shown.append(tag)
         out.extend(f"#{tag}" for tag in shown)
@@ -1790,6 +1850,11 @@ class PhaseResult:
     queries: list[str] = field(default_factory=list)
     credits: int = 0
     errors: list[str] = field(default_factory=list)
+    #: Accounts the AI review said do not fit the brand — dropped, kept for the report.
+    discarded: list[Candidate] = field(default_factory=list)
+    #: The review ran and failed: the phase fell back to the unreviewed pick, and a
+    #: caller that stores phases must not keep it (the next run should review it).
+    review_failed: bool = False
 
 
 def _is_place_tag_anywhere(tag: str) -> bool:
@@ -1822,7 +1887,13 @@ SECTOR_OWN_TAGS = 2
 #: account's own. They EXTEND the `SECTOR_TERMS` cap instead of competing for it — each
 #: one found is one more query, none found is the same plan as before the catalog — so
 #: they never crowd out the taxonomy phrasings that surface a sector's biggest creators.
-SECTOR_CATALOG_TAGS = 2
+#: Three since plan 7: the tags are now vetted per brand by Claude (a restaurant does
+#: not get `#streetfood`), so a third one widens the net without the drift two fuzzy
+#: matches risked. Each is one more keyword query (at most two pages of credits).
+SECTOR_CATALOG_TAGS = 3
+#: The most pills the operator can keep on Tu rubro y ubicación — each one is a sector
+#: query, so the cap is what bounds the credits a curated search spends.
+CHOSEN_HASHTAGS = 5
 SECTOR_TERMS = 4
 
 
@@ -1838,10 +1909,11 @@ def sector_terms(seed: DiscoverySeed) -> list[str]:
     terms.extend([tag for tag in seed.hashtags if not _is_place_tag(tag, seed)][:SECTOR_OWN_TAGS])
     catalog_tags = [
         tag
-        for tag in seed.catalog_hashtags
+        for tag in seed.steering_hashtags()
         if not _is_place_tag(tag, seed) and _slug(tag) not in {_slug(t) for t in terms}
     ]
-    from_catalog = catalog_tags[:SECTOR_CATALOG_TAGS]
+    cap = CHOSEN_HASHTAGS if seed.chosen_hashtags else SECTOR_CATALOG_TAGS
+    from_catalog = catalog_tags[:cap]
     terms.extend(from_catalog)
     for niche in seed.niches[:2]:
         queries = NICHE_TAXONOMY[niche]["queries"]
@@ -1931,7 +2003,7 @@ def phase_queries(key: str, seed: DiscoverySeed) -> list[tuple[Query, str | None
     else:
         # A rubro outside the taxonomy has no niche to compose a city hashtag from: the
         # catalog's best hashtag for it stands in (`cucutaburgers`).
-        catalog_tags = [t for t in seed.catalog_hashtags if not _is_place_tag(t, seed)]
+        catalog_tags = [t for t in seed.steering_hashtags() if not _is_place_tag(t, seed)]
         if catalog_tags:
             plan.append(
                 (Query("tiktok", "hashtag", f"{city_slug}{catalog_tags[0]}", label), region)
@@ -1987,7 +2059,7 @@ def _stems(text: str) -> set[str]:
 
 def relevance_stems(seed: DiscoverySeed) -> set[str]:
     stems = _stems(" ".join(seed.terms))
-    for tag in (*seed.hashtags, *seed.catalog_hashtags):
+    for tag in (*seed.hashtags, *seed.steering_hashtags()):
         if not _is_place_tag(tag, seed):
             stems |= _stems(tag)
     return stems
@@ -2092,6 +2164,9 @@ class ProfileStore:
             related=tuple(str(r) for r in facts.get("related") or []),
             full_name=str(facts.get("full_name") or ""),
             avatar=str(facts.get("avatar") or ""),
+            # Entries written before captions were kept have none: they fill in when the
+            # 30-day entry expires, rather than spending a credit per account now.
+            captions=tuple(str(c) for c in facts.get("captions") or []),
         )
 
     def put(
@@ -2151,6 +2226,22 @@ def _read_profile(
         store.put(candidate.network, candidate.username, facts)
     charged = payload.get("credits_charged")
     return (charged if isinstance(charged, int) else 1), facts, None
+
+
+def lookup_account(
+    network: str, handle: str, *, store_path: Path | None = None
+) -> tuple[Candidate, bool, str | None]:
+    """One account read outside a search — the referente the operator adds by hand.
+    Returns `(candidate, found, error)`: the candidate always comes back (a stub with
+    its profile URL when the read missed), `found` says whether the profile exists, and
+    a vendor failure is an error string, never an exception. Remembered in the same
+    on-disk store the search uses, so a handle already read costs nothing."""
+    candidate = _account_stub(network, handle, f"{network}:manual")
+    store = ProfileStore(store_path)
+    with httpx.Client(timeout=_DISCOVERY_TIMEOUT_SECONDS) as client:
+        _charged, facts, error = _read_profile(client, candidate, None, store)
+    store.save()
+    return candidate, facts is not None, error
 
 
 def _run_parallel(executor: ThreadPoolExecutor | None, fn: Any, items: list[Any]) -> list[Any]:
@@ -2397,6 +2488,74 @@ def mirror_accounts(
             mirrored.country_code = mirrored.country_code or twin.country_code
 
 
+@dataclass(frozen=True)
+class AccountVerdict:
+    """What the AI review says about one account (`AccountReviewer`)."""
+
+    kind: str
+    fits: bool
+    reason: str
+    reviewed_by: str
+
+
+#: `(phase key, accounts) -> verdict per account key`. Injected by the caller (the wizard
+#: builds it over `qualify_api.referentes.ai.review_accounts`), so this module never
+#: talks to a model itself; an account missing from the answer counts as unreviewed. It
+#: may raise: the phase then falls back to the unreviewed pick (`review_failed`).
+AccountReviewer = Callable[[str, list[Candidate]], Mapping[tuple[str, str], AccountVerdict]]
+
+#: Accounts per network sent to the review: the best-ranked ones, enough that the
+#: `MAX_PER_PHASE` pick (`PER_NETWORK_FLOOR` per network) still fills after the drops.
+REVIEW_PER_NETWORK = 10
+
+
+def _rank(candidate: Candidate) -> tuple[int, float]:
+    return (candidate.followers or 0, _interactions_per_post(candidate))
+
+
+def review_shortlist(eligible: list[Candidate]) -> list[Candidate]:
+    """What the review reads: per network, the `REVIEW_PER_NETWORK` accounts the pick
+    would reach first (followers known, best ranked) — the only ones that can end up on
+    screen, so nothing is paid for an account that could never be shown."""
+    by_network: dict[str, list[Candidate]] = {}
+    for candidate in sorted((c for c in eligible if c.followers), key=_rank, reverse=True):
+        by_network.setdefault(candidate.network, []).append(candidate)
+    return [c for accounts in by_network.values() for c in accounts[:REVIEW_PER_NETWORK]]
+
+
+def apply_review(
+    key: str,
+    eligible: list[Candidate],
+    reviewer: AccountReviewer,
+    result: PhaseResult,
+) -> list[Candidate]:
+    """The shortlist the review kept, each with its verdict on it; the ones it said do
+    not fit go to `result.discarded`. On a review failure the eligible list comes back
+    untouched and `result.review_failed` says so — a failed review never empties a
+    phase."""
+    shortlist = review_shortlist(eligible)
+    if not shortlist:
+        return eligible
+    try:
+        verdicts = reviewer(key, shortlist)
+    except Exception as exc:  # the reviewer is a network call to a model
+        logger.warning("referentes review failed for the %s phase: %s", key, exc)
+        result.review_failed = True
+        return eligible
+    kept: list[Candidate] = []
+    for candidate in shortlist:
+        verdict = verdicts.get(candidate.key)
+        if verdict is not None:
+            candidate.account_kind = verdict.kind
+            candidate.review_reason = verdict.reason
+            candidate.reviewed_by = verdict.reviewed_by
+            if not verdict.fits:
+                result.discarded.append(candidate)
+                continue
+        kept.append(candidate)
+    return kept
+
+
 def _pick_accounts(eligible: list[Candidate]) -> list[Candidate]:
     """Top `MAX_PER_PHASE` by followers, each network guaranteed `PER_NETWORK_FLOOR`
     slots when it has that many accounts; ties broken by interactions per post."""
@@ -2427,13 +2586,18 @@ def run_phase(
     enrich_budget: int = LOCAL_ENRICH_BUDGET,
     store: ProfileStore | None = None,
     executor: ThreadPoolExecutor | None = None,
+    reviewer: AccountReviewer | None = None,
 ) -> PhaseResult:
     """Run one phase's TikTok searches and Instagram walk into the shared `pool`, then
     pick its most influential accounts from EVERYTHING seen so far (a national account
     surfaced by the sector search still counts) that no earlier phase already picked.
     Influence = followers, then interactions per post seen; `_pick_accounts` keeps
     both networks represented. A search the vendor answers with 404 is an empty
-    result, not an error (the Instagram reels 404s of the first run)."""
+    result, not an error (the Instagram reels 404s of the first run).
+
+    With a `reviewer` (version 9), the accounts the pick could reach are first reviewed
+    by Claude (`apply_review`): the ones that are not real peers of the brand are
+    dropped, the rest carry what they are (marca / creador / medio)."""
     result = PhaseResult(key=key, title=phase_title(key, seed))
     if key == "national" and not seed.country_code:
         result.note = "Indica tu país para ver referentes nacionales."
@@ -2522,8 +2686,13 @@ def run_phase(
             if error:
                 result.errors.append(error)
 
+    if reviewer is not None:
+        eligible = apply_review(key, eligible, reviewer, result)
     result.accounts = _pick_accounts(eligible)
     picked.update(c.key for c in result.accounts)
+    # A discarded account is not offered by a later phase either: it does not fit the
+    # brand, whichever category would have shown it.
+    picked.update(c.key for c in result.discarded)
     if not result.accounts:
         result.note = "Todavía no encontramos cuentas para esta fase."
     return result
@@ -2543,8 +2712,10 @@ class PhasedDiscovery:
         raw_dir: Path | None = None,
         profile_cache: Path | None = None,
         parallel: int = PARALLEL_CALLS,
+        reviewer: AccountReviewer | None = None,
     ) -> None:
         self.seed = seed
+        self.reviewer = reviewer
         self._owns_client = client is None
         self.client = client or httpx.Client(timeout=_DISCOVERY_TIMEOUT_SECONDS)
         self.raw_dir = raw_dir
@@ -2563,6 +2734,7 @@ class PhasedDiscovery:
             raw_dir=self.raw_dir,
             store=self.store,
             executor=self.executor,
+            reviewer=self.reviewer,
         )
 
     def run_all(self) -> list[PhaseResult]:
@@ -2632,7 +2804,15 @@ def account_card(candidate: Candidate) -> dict[str, str]:
         "blurb": blurb[:110] + ("…" if len(blurb) > 110 else ""),
         "reason": _reason(candidate),
         "avatar": candidate.avatar,
+        "kind": candidate.account_kind,
+        "kind_label": KIND_LABELS.get(candidate.account_kind, ""),
+        "review": candidate.review_reason,
+        "reviewed_by": candidate.reviewed_by,
     }
+
+
+#: The card's flag for `Candidate.account_kind` (`otro` shows none).
+KIND_LABELS = {"marca": "Marca", "creador": "Creador", "medio": "Medio"}
 
 
 #: Where the backend serves the cards' pictures from (`avatar_proxy.py`) and where it
@@ -2676,6 +2856,14 @@ def phase_to_dict(result: PhaseResult) -> dict[str, Any]:
         "accounts": [account_card(c) for c in result.accounts],
         "credits": result.credits,
         "errors": result.errors,
+        "discarded": [
+            {
+                "handle": f"@{c.username}",
+                "network": "TikTok" if c.network == "tiktok" else "Instagram",
+                "reason": c.review_reason,
+            }
+            for c in result.discarded
+        ],
     }
 
 
@@ -2693,6 +2881,10 @@ def phase_signature(key: str, seed: DiscoverySeed) -> str:
         ",".join(_slug(r) for r in seed.related[:3]),
         ",".join(_slug(t) for t in seed.terms),
     ]
+    if key in ("sector", "local") and seed.chosen_hashtags:
+        # Only the phases that search with them: changing the pills re-runs the
+        # sector and the local phase, never the national one.
+        parts.append(",".join(sorted(_slug(t) for t in seed.chosen_hashtags)))
     if key in ("national", "local"):
         parts.append(seed.country_code.upper())
     if key == "local":

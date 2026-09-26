@@ -46,6 +46,15 @@ def test_unknown_unit_raises_keyerror_naming_version() -> None:
     assert "per_piece" in message
 
 
+def test_v2_keeps_v1_prices_and_adds_per_second_video() -> None:
+    v1, v2 = JsonPricingTable("v1"), JsonPricingTable("v2")
+    for model_id, unit in (("claude-opus-5", "per_mtok_in"), ("flux2_pro", "per_piece")):
+        assert v2.unit_price(model_id=model_id, unit=unit) == v1.unit_price(
+            model_id=model_id, unit=unit
+        )
+    assert v2.unit_price(model_id="heygen_avatar_iv", unit="per_second_1080p") == Decimal("0.0667")
+
+
 def test_unknown_version_raises_keyerror_naming_version() -> None:
     with pytest.raises(KeyError) as excinfo:
         JsonPricingTable(version="v999")
