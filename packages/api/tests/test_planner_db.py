@@ -28,6 +28,7 @@ from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.creative import models as creative
 from qualify_api.planner import draft_post_reader
 from qualify_api.planner.composition import PostgresConnectionGate, tenant_timezone
+from qualify_api.planner.discovery import DiscoveredTenants, ScopedTenants
 from qualify_api.planner.draft_post_reader import DraftPostReader
 from qualify_api.planner.executor import (
     AdvanceOutcome,
@@ -52,6 +53,7 @@ from qualify_api.planner.repository import (
 )
 from qualify_api.planner.rules import idempotency_key
 from qualify_api.planner.service import PlannerService
+from qualify_api.planner.tick import TickRunner
 from qualify_api.publishing.client import ContainerStatus, ResumableContainer, UploadOutcome
 from qualify_api.publishing.composition import PostgresConnectionTargetReader
 from qualify_api.publishing.repository import PostgresPublishAttemptRepository
@@ -956,10 +958,10 @@ class _NoLock:
         yield True
 
 
-def _executor(counter: list[str], lock=None, factory=None) -> EventExecutor:
+def _executor(counter: list[str], lock=None, factory=None, posts=None) -> EventExecutor:
     return EventExecutor(
         repository=PostgresPlannerRepository(),
-        posts=DraftPostReader(),
+        posts=posts or DraftPostReader(),
         publisher=PublishService(
             repository=PostgresPublishAttemptRepository(),
             gate=ObjectGate(_BytesStore()),
@@ -1478,3 +1480,177 @@ def test_an_attempt_settled_by_another_caller_is_reflected(world_f5) -> None:
     assert result.outcome is SettleOutcome.SETTLED_PUBLISHED
     assert result.published_media_id == "ext-1789"
     assert _stored(tenant_id, event.id).status == "published"
+
+
+# --- the multi-tenant tick (QUA-111 F6) ---------------------------------------------
+#
+# Fresh tenants per test. No test here runs the production discovery unrestricted: the
+# shared dev database holds earlier test tenants that a real tick would act on.
+
+
+def _fresh_world(label: str) -> tuple[UUID, UUID, UUID]:
+    tenant_id = uuid4()
+    brand_id, _, connection_id = _provision(tenant_id, f"t-qua111-f6-{label}-{tenant_id.hex[:6]}")
+    return tenant_id, brand_id, connection_id
+
+
+@pytest.fixture
+def worlds_ab() -> tuple[tuple[UUID, UUID, UUID], tuple[UUID, UUID, UUID]]:
+    return _fresh_world("a"), _fresh_world("b")
+
+
+class _DiscoveredOnly:
+    """The REAL production discovery, narrowed to the tenants a test created — so the
+    test proves discovery finds them without acting on anyone else's data."""
+
+    def __init__(self, *allowed: UUID) -> None:
+        self.allowed, self.found = set(allowed), []
+
+    def tenants(self, *, now):
+        self.found = DiscoveredTenants().tenants(now=now)
+        return [t for t in self.found if t in self.allowed]
+
+
+def _tick(source, meta: _MetaCalls, *, posts=None, repository=None, status=None) -> TickRunner:
+    executor = _executor([], factory=_AdvanceFactory(meta, status=status), posts=posts)
+    return TickRunner(
+        tenants=source, repository=repository or PostgresPlannerRepository(), executor=executor
+    )
+
+
+def _updated_at(tenant_id: UUID, event_id: UUID) -> datetime:
+    return _stored(tenant_id, event_id).updated_at
+
+
+def test_discovery_returns_only_the_ids_of_tenants_with_work_and_writes_nothing(
+    worlds_ab,
+) -> None:
+    (a, b), idle = worlds_ab, _fresh_world("idle")
+    event_a, event_b = _due_reel_event(a), _due_reel_event(b)
+    before = (_updated_at(a[0], event_a.id), _updated_at(b[0], event_b.id))
+    found = DiscoveredTenants().tenants(now=datetime.now(UTC))
+    assert all(isinstance(t, UUID) for t in found)  # tenant ids, nothing else
+    assert a[0] in found and b[0] in found and idle[0] not in found
+    assert (_updated_at(a[0], event_a.id), _updated_at(b[0], event_b.id)) == before
+
+
+def test_a_tick_scoped_to_a_never_touches_b(worlds_ab) -> None:
+    a, b = worlds_ab
+    event_a, event_b = _due_reel_event(a), _due_reel_event(b)
+    b_before = _stored(b[0], event_b.id)
+    report = asyncio.run(_tick(ScopedTenants([a[0]]), _MetaCalls()).run_once())
+    assert [t.tenant_id for t in report.tenants] == [a[0]]
+    assert [r.event_id for r in report.tenants[0].executed] == [event_a.id]  # RLS: A's only
+    assert _stored(a[0], event_a.id).status == "publishing"
+    assert _stored(b[0], event_b.id) == b_before
+
+
+def test_the_multi_tenant_tick_discovers_and_processes_both(worlds_ab) -> None:
+    a, b = worlds_ab
+    event_a, event_b = _due_reel_event(a), _due_reel_event(b)
+    source = _DiscoveredOnly(a[0], b[0])
+    first = asyncio.run(_tick(source, _MetaCalls()).run_once())
+    assert a[0] in source.found and b[0] in source.found
+    assert {t.tenant_id for t in first.tenants} == {a[0], b[0]}
+    assert _stored(a[0], event_a.id).status == _stored(b[0], event_b.id).status == "publishing"
+    # Next tick: Meta reports FINISHED → both publish and settle.
+    second = asyncio.run(_tick(source, _MetaCalls(), status=ContainerStatus.FINISHED).run_once())
+    assert all(len(t.advanced) == 1 for t in second.tenants)
+    assert _stored(a[0], event_a.id).status == _stored(b[0], event_b.id).status == "published"
+
+
+def test_a_failing_tenant_does_not_stop_another(worlds_ab) -> None:
+    a, b = worlds_ab
+    event_a, event_b = _due_reel_event(a), _due_reel_event(b)
+
+    class _ReaderDownForA(DraftPostReader):
+        def get_publishable(self, *, tenant_id, post_id):
+            if tenant_id == a[0]:
+                raise ConnectionError("reader down for A")
+            return super().get_publishable(tenant_id=tenant_id, post_id=post_id)
+
+    report = asyncio.run(
+        _tick(ScopedTenants([a[0], b[0]]), _MetaCalls(), posts=_ReaderDownForA()).run_once()
+    )
+    a_report, b_report = report.tenants
+    assert a_report.errors == [f"{event_a.id}:ConnectionError"]
+    assert _stored(a[0], event_a.id).status == "scheduled"
+    assert b_report.errors == [] and _stored(b[0], event_b.id).status == "publishing"
+
+
+def test_two_concurrent_ticks_do_not_duplicate_a_publication(worlds_ab) -> None:
+    a, b = worlds_ab
+    event_a, event_b = _due_reel_event(a), _due_reel_event(b)
+    meta = _MetaCalls()
+    _race(lambda: _tick(ScopedTenants([a[0], b[0]]), meta).run_once())
+    for world, event in ((a, event_a), (b, event_b)):
+        rows = _attempt_rows(world[0], f"cal:{event.id}:1")
+        assert len(rows) == 1
+        assert _stored(world[0], event.id).publish_attempt_id == rows[0]
+    assert meta.count("create_container") == 2  # one per event, never two
+
+
+class _AppendHook(list):
+    """A list whose `append` also calls a hook — lets a fake Meta call act mid-tick."""
+
+    def __init__(self, hook) -> None:
+        super().__init__()
+        self._hook = hook
+
+    def append(self, item) -> None:
+        super().append(item)
+        self._hook(item)
+
+
+def test_an_event_created_after_the_snapshot_waits_for_the_next_tick(worlds_ab) -> None:
+    a, _ = worlds_ab
+    _due_reel_event(a)
+    created: list[EventRecord] = []
+
+    class _PlanAnotherMidTick(_MetaCalls):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = _AppendHook(self._plan)
+
+        def _plan(self, name: str) -> None:
+            if name == "create_container" and not created:
+                created.append(_due_reel_event(a))
+
+    meta = _PlanAnotherMidTick()
+    asyncio.run(_tick(ScopedTenants([a[0]]), meta).run_once())
+    assert created and _stored(a[0], created[0].id).status == "scheduled"
+    second = asyncio.run(_tick(ScopedTenants([a[0]]), _MetaCalls()).run_once())
+    assert created[0].id in {r.event_id for r in second.tenants[0].executed}
+    assert _stored(a[0], created[0].id).status == "publishing"
+
+
+def test_a_change_between_snapshot_and_execution_is_caught_by_the_claim(worlds_ab) -> None:
+    a, _ = worlds_ab
+    event = _due_reel_event(a)
+
+    class _CancelAfterSnapshot(PostgresPlannerRepository):
+        def list_due(self, *, tenant_id, now, limit=100):
+            rows = super().list_due(tenant_id=tenant_id, now=now, limit=limit)
+            self.set_status(
+                tenant_id=tenant_id,
+                event_id=event.id,
+                expected_status="scheduled",
+                new_status="cancelled",
+            )
+            return rows
+
+    meta = _MetaCalls()
+    report = asyncio.run(
+        _tick(ScopedTenants([a[0]]), meta, repository=_CancelAfterSnapshot()).run_once()
+    )
+    assert [r.outcome for r in report.tenants[0].executed] == [ExecutionOutcome.CLAIM_LOST]
+    assert _stored(a[0], event.id).status == "cancelled"
+    assert meta.calls == []
+
+
+def test_a_tenant_without_work_generates_no_operations(worlds_ab) -> None:
+    idle = _fresh_world("idle")
+    meta = _MetaCalls()
+    report = asyncio.run(_tick(ScopedTenants([idle[0]]), meta).run_once())
+    assert report.tenants[0].operations == 0 and report.tenants[0].errors == []
+    assert meta.calls == []

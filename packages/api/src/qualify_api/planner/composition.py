@@ -7,17 +7,20 @@ else in the planner (service, repository, UI) knows which reader it is talking t
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
 
 from qualify_api.connections.models import SocialConnection
+from qualify_api.planner.discovery import ScopedTenants
 from qualify_api.planner.draft_post_reader import DraftPostReader
 from qualify_api.planner.executor import EventExecutor
 from qualify_api.planner.locks import PostgresAdvisoryLock
 from qualify_api.planner.post_reader import PostReader
 from qualify_api.planner.repository import PostgresPlannerRepository
 from qualify_api.planner.service import PlannerService
+from qualify_api.planner.tick import TickRunner
 from qualify_api.tenancy.models import Tenant
 
 DEFAULT_TIMEZONE = "UTC"
@@ -53,6 +56,32 @@ def production_event_executor() -> EventExecutor:
         publisher=production_publish_service(),
         attempts=PostgresPublishAttemptRepository(),
         lock=PostgresAdvisoryLock(),
+    )
+
+
+def scoped_tick_runner(tenant_ids: Iterable[UUID]) -> TickRunner:
+    """A tick over EXACTLY these tenants, on the real executor — for tests and localhost
+    validation. It never reads across tenants, so it cannot touch anyone else's events."""
+    return TickRunner(
+        tenants=ScopedTenants(tenant_ids),
+        repository=PostgresPlannerRepository(),
+        executor=production_event_executor(),
+    )
+
+
+def production_tick_runner() -> TickRunner:
+    """The PRODUCTION tick: discovers every tenant with calendar work (`admin_session`,
+    tenant ids only). This is the one place multi-tenant discovery is switched on; do not
+    run it against a database that holds test tenants.
+
+    Imported here, not at module level: the Planificador's screens import this module,
+    and only the production tick may reference the BYPASSRLS door."""
+    from qualify_api.planner.discovery import DiscoveredTenants  # noqa: PLC0415
+
+    return TickRunner(
+        tenants=DiscoveredTenants(),
+        repository=PostgresPlannerRepository(),
+        executor=production_event_executor(),
     )
 
 

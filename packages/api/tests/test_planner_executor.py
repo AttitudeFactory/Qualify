@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from qualify_api.planner.discovery import ScopedTenants
 from qualify_api.planner.executor import (
     AdvanceOutcome,
     EventExecutor,
@@ -28,6 +29,7 @@ from qualify_api.planner.post_reader import (
     UnpublishableReason,
 )
 from qualify_api.planner.repository import MemoryPlannerRepository, NewEvent
+from qualify_api.planner.tick import TickRunner
 from qualify_api.publishing.service import PublishState, UnknownConnection
 
 Outcome = ExecutionOutcome
@@ -73,7 +75,10 @@ class FakePosts:
 
     def get_publishable(self, *, tenant_id: UUID, post_id: UUID):
         queue = self.answers[post_id]
-        return queue.pop(0) if len(queue) > 1 else queue[0]
+        answer = queue.pop(0) if len(queue) > 1 else queue[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
 
 @dataclass
@@ -192,11 +197,11 @@ def world() -> World:
     return World(repo, posts, publisher, lock, executor)
 
 
-def _due(world: World, *answers: PublishablePost | NotPublishable, connection=CONN):
+def _due(world: World, *answers: PublishablePost | NotPublishable, connection=CONN, tenant=TENANT):
     post_id = uuid4()
     event = world.repo.add(
         NewEvent(
-            tenant_id=TENANT,
+            tenant_id=tenant,
             brand_id=BRAND,
             post_id=post_id,
             connection_id=connection,
@@ -210,7 +215,7 @@ def _due(world: World, *answers: PublishablePost | NotPublishable, connection=CO
 
 
 def _status(world: World, event) -> tuple[str, UUID | None]:
-    row = world.repo.get(tenant_id=TENANT, event_id=event.id)
+    row = world.repo.get(tenant_id=event.tenant_id, event_id=event.id)
     return row.status, row.publish_attempt_id
 
 
@@ -681,3 +686,159 @@ def test_settle_from_attempt_compares_status_revision_and_attempt(world: World) 
     done = repo.settle_from_attempt(expected_revision=1, published=True, **kw)
     assert done is not None and done.status == "published"
     assert repo.settle_from_attempt(expected_revision=1, published=False, **kw) is None
+
+
+# --- the tick (F6) -----------------------------------------------------------------
+
+TENANT_B = UUID("f3000000-0000-4000-8000-000000000002")
+
+
+class _Source:
+    """A TenantSource stand-in: a fixed answer, or an exception."""
+
+    def __init__(self, *tenant_ids: UUID, fails: Exception | None = None) -> None:
+        self.tenant_ids, self.fails = list(tenant_ids), fails
+
+    def tenants(self, *, now):
+        if self.fails is not None:
+            raise self.fails
+        return list(self.tenant_ids)
+
+
+def _runner(world: World, source) -> TickRunner:
+    return TickRunner(
+        tenants=source, repository=world.repo, executor=world.executor, clock=lambda: NOW
+    )
+
+
+async def test_the_tick_processes_its_snapshot_in_order(world: World) -> None:
+    linked = await _linked(world)  # (a) pre-existing linked
+    unlinked = _due(world)
+    world.repo.claim(tenant_id=TENANT, event_id=unlinked.id, expected_revision=1, now=NOW)
+    due = _due(world)  # (c)
+    world.publisher.advance_calls.clear()
+
+    report = await _runner(world, _Source(TENANT)).run_once()
+    (tenant,) = report.tenants
+    assert [a.event_id for a, _ in tenant.advanced] == [linked.id]
+    assert [r.event_id for r in tenant.resumed] == [unlinked.id]
+    assert [r.event_id for r in tenant.executed] == [due.id]
+    assert tenant.resumed[0].outcome is Outcome.STARTED
+    assert tenant.executed[0].outcome is Outcome.STARTED
+    # Only the pre-existing attempt was polled: the two started this tick wait.
+    assert [c["attempt_id"] for c in world.publisher.advance_calls] == [linked.publish_attempt_id]
+    assert tenant.errors == [] and report.error == "" and report.finished_at is not None
+
+
+async def test_an_event_created_during_the_tick_waits_for_the_next(world: World) -> None:
+    _due(world)
+    created: list = []
+    original = world.publisher.start
+
+    async def start_and_plan_another(**kw):
+        if not created:
+            created.append(_due(world))  # appears mid-tick, after the snapshot
+        return await original(**kw)
+
+    world.publisher.start = start_and_plan_another
+    first = await _runner(world, _Source(TENANT)).run_once()
+    assert len(first.tenants[0].executed) == 1
+    assert _status(world, created[0]) == ("scheduled", None)
+    second = await _runner(world, _Source(TENANT)).run_once()
+    assert [r.event_id for r in second.tenants[0].executed] == [created[0].id]
+
+
+async def test_a_scoped_tick_never_touches_another_tenant(world: World) -> None:
+    mine = _due(world)
+    theirs = _due(world, tenant=TENANT_B)
+    report = await _runner(world, ScopedTenants([TENANT])).run_once()
+    assert [t.tenant_id for t in report.tenants] == [TENANT]
+    assert _status(world, mine)[0] == "publishing"
+    assert _status(world, theirs) == ("scheduled", None)
+    assert all(c["tenant_id"] == TENANT for c in world.publisher.start_calls)
+
+
+async def test_a_multi_tenant_source_processes_every_tenant(world: World) -> None:
+    a, b = _due(world), _due(world, tenant=TENANT_B)
+    report = await _runner(world, _Source(TENANT, TENANT_B)).run_once()
+    assert [t.tenant_id for t in report.tenants] == [TENANT, TENANT_B]
+    assert _status(world, a)[0] == _status(world, b)[0] == "publishing"
+
+
+async def test_a_failing_tenant_does_not_stop_the_others(world: World, monkeypatch) -> None:
+    b = _due(world, tenant=TENANT_B)
+    real = world.repo.list_in_flight
+
+    def broken(*, tenant_id, limit=100):
+        if tenant_id == TENANT:
+            raise ConnectionError("tenant A unreachable")
+        return real(tenant_id=tenant_id, limit=limit)
+
+    monkeypatch.setattr(world.repo, "list_in_flight", broken)
+    report = await _runner(world, _Source(TENANT, TENANT_B)).run_once()
+    a_report, b_report = report.tenants
+    assert a_report.errors == ["snapshot:ConnectionError"] and a_report.operations == 0
+    assert b_report.errors == [] and _status(world, b)[0] == "publishing"
+
+
+async def test_a_failing_event_does_not_stop_the_others(world: World) -> None:
+    bad, good = _due(world), _due(world)
+    world.posts.set(bad.post_id, RuntimeError("reader down"))
+    report = await _runner(world, _Source(TENANT)).run_once()
+    (tenant,) = report.tenants
+    assert tenant.errors == [f"{bad.id}:RuntimeError"]
+    assert [r.event_id for r in tenant.executed] == [good.id]
+    assert _status(world, bad) == ("scheduled", None)
+
+
+async def test_a_tenant_without_work_does_nothing(world: World) -> None:
+    report = await _runner(world, ScopedTenants([uuid4()])).run_once()
+    assert report.tenants[0].operations == 0
+    assert not world.publisher.start_calls and not world.publisher.advance_calls
+
+
+async def test_a_change_after_the_snapshot_is_caught_by_the_claim(
+    world: World, monkeypatch
+) -> None:
+    event = _due(world)
+    real = world.repo.list_due
+
+    def snapshot_then_cancel(*, tenant_id, now, limit=100):
+        rows = real(tenant_id=tenant_id, now=now, limit=limit)
+        world.repo.set_status(  # the operator cancels right after the snapshot
+            tenant_id=tenant_id,
+            event_id=event.id,
+            expected_status="scheduled",
+            new_status="cancelled",
+        )
+        return rows
+
+    monkeypatch.setattr(world.repo, "list_due", snapshot_then_cancel)
+    report = await _runner(world, _Source(TENANT)).run_once()
+    assert [r.outcome for r in report.tenants[0].executed] == [Outcome.CLAIM_LOST]
+    assert _status(world, event)[0] == "cancelled"
+    assert not world.publisher.start_calls
+
+
+async def test_a_failing_tenant_source_runs_nothing(world: World) -> None:
+    _due(world)
+    report = await _runner(world, _Source(fails=RuntimeError("admin down"))).run_once()
+    assert report.error == "RuntimeError" and report.tenants == []
+    assert not world.publisher.start_calls
+
+
+async def test_a_second_tick_starts_nothing_new_and_polls_once(world: World) -> None:
+    _due(world)
+    await _runner(world, _Source(TENANT)).run_once()
+    second = await _runner(world, _Source(TENANT)).run_once()
+    (tenant,) = second.tenants
+    assert not tenant.executed and not tenant.resumed and len(tenant.advanced) == 1
+    assert len(world.publisher.start_calls) == 1
+    advanced, _ = tenant.advanced[0]
+    assert advanced.state.poll_interval_seconds > 0  # reported, never slept on
+
+
+def test_a_scoped_source_needs_at_least_one_tenant() -> None:
+    with pytest.raises(ValueError):
+        ScopedTenants([])
+    assert ScopedTenants([TENANT, TENANT]).tenants(now=NOW) == [TENANT]

@@ -355,10 +355,15 @@ class EventExecutor:
         for event in self._repo.list_in_flight(tenant_id=tenant_id, limit=limit):
             if event.publish_attempt_id is None:
                 continue
-            advanced = await self.advance_event(event)
-            settled = self.settle_event(event) if advanced.outcome in _SETTLE_AFTER else None
-            results.append((advanced, settled))
+            results.append(await self.progress_event(event))
         return results
+
+    async def progress_event(self, event: EventRecord) -> tuple[AdvanceResult, SettleResult | None]:
+        """One advance step (F4), then — when that step may have ended the attempt — the
+        event's settlement (F5)."""
+        advanced = await self.advance_event(event)
+        settled = self.settle_event(event) if advanced.outcome in _SETTLE_AFTER else None
+        return advanced, settled
 
     # -- settlement (F5) ----------------------------------------------------------------
 
