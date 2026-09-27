@@ -3,8 +3,11 @@
 `start_claimed` holds the lock of its EVENT for its whole critical section, so two
 executors can never both decide what happens to the same claimed event — the one race
 the publisher's own idempotency cannot close (one process failing an event it read as
-unpublishable while another is already sending it to Meta). F4 reuses the same lock,
-keyed by publish attempt, around `advance()`.
+unpublishable while another is already sending it to Meta). `advance_event` holds the
+lock of its PUBLISH ATTEMPT around `PublishService.advance()`: two concurrent advances of
+one attempt could otherwise both read "not sent yet" and both call `media_publish`, or
+create a carousel's child containers twice — the send marker is written without a
+compare-and-set, so it is not a barrier between processes.
 
 The Postgres implementation is a transaction-scoped advisory lock
 (`pg_try_advisory_xact_lock`): non-blocking (a busy key is skipped, not waited on), and
@@ -28,6 +31,10 @@ from sqlalchemy import text
 
 def event_lock_key(event_id: UUID) -> str:
     return f"qua111:calendar-event:{event_id}"
+
+
+def attempt_lock_key(attempt_id: UUID) -> str:
+    return f"qua111:publish-attempt:{attempt_id}"
 
 
 class ExecutionLock(Protocol):

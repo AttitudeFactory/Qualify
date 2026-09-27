@@ -1,10 +1,13 @@
-"""The calendar-event executor (QUA-111): claim a due event and START its publication.
+"""The calendar-event executor (QUA-111): claim a due event, START its publication, and
+ADVANCE the publish attempt linked to it.
 
 POST (QUA-109) → CalendarEvent (QUA-108) → **this** → PublishService (publishing).
 
-This module takes one event from `scheduled` to `publishing` + a linked publish attempt.
-It never publishes by itself — `PublishService.start()` / `start_many()` do, unchanged —
-and it never advances an attempt (F4) nor decides when to run (the runtime, F6).
+This module takes one event from `scheduled` to `publishing` + a linked publish attempt,
+then drives that attempt one `PublishService.advance()` step at a time. It never
+publishes by itself — `start()` / `start_many()` / `advance()` do, unchanged — it never
+moves an event to its final status (F5 translates the attempt's outcome), and it never
+decides when to run (the runtime, F6).
 
 ## The flow, per event
 
@@ -31,6 +34,22 @@ C. **`start_claimed`**, under the event's advisory lock (`locks.py`) for the who
   an error that left no row, safe.
 - The event lock serialises every decision about one event, so an executor can never fail
   an event (reading the POST as unpublishable) while another is starting it.
+
+## Advancing (`advance_event`)
+
+One `advance()` per call, under the ATTEMPT's advisory lock, after re-reading the event
+under that lock. The publisher already makes a settled attempt answer from its row (no
+Meta call) and never resends once the send marker exists (A6-min) — but that marker is
+not a compare-and-set, so two concurrent advances could both send; the attempt lock is
+what rules that out for every executor. The result is returned, not applied: the event
+stays `publishing` until F5 maps a settled attempt to `PUBLISH_OK` / `PUBLISH_FAIL`.
+
+Known limits, recorded rather than patched (they are the publisher's):
+- the lock covers executor callers only — `GET /api/publishing/attempts/{id}` and the
+  Publicar screen's `advance_publish` call `advance()` without it (neither knows a
+  calendar attempt's id today);
+- an attempt whose `client_for` / `container_status` raises on every step never reaches
+  the poll ceiling check, so it is never settled; each step reports ADVANCE_ERROR.
 """
 
 from __future__ import annotations
@@ -44,7 +63,7 @@ from typing import Protocol
 from uuid import UUID
 
 from qualify_api.planner.fsm import EventStatus
-from qualify_api.planner.locks import ExecutionLock, event_lock_key
+from qualify_api.planner.locks import ExecutionLock, attempt_lock_key, event_lock_key
 from qualify_api.planner.post_reader import (
     NotPublishable,
     PostReader,
@@ -86,8 +105,28 @@ class ExecutionResult:
     reason: str = ""
 
 
+class AdvanceOutcome(StrEnum):
+    NOT_LINKED = "not_linked"  # no attempt yet — `start_claimed`'s job, not advance's
+    BUSY = "busy"  # another executor is advancing this attempt right now
+    NOT_IN_FLIGHT = "not_in_flight"  # under the lock: not `publishing`, or another attempt
+    SETTLED = "settled"  # the attempt is published/failed — F5 applies it to the event
+    AWAITING_CONFIRMATION = "awaiting_confirmation"  # sent, unconfirmed: never resent
+    ADVANCED = "advanced"  # still in progress; call again after `poll_interval_seconds`
+    ADVANCE_ERROR = "advance_error"  # advance() raised; the event is untouched
+
+
+@dataclass(frozen=True)
+class AdvanceResult:
+    event_id: UUID
+    outcome: AdvanceOutcome
+    attempt_id: UUID | None = None
+    state: PublishState | None = None
+    error: str = ""
+
+
 class PublishStarter(Protocol):
-    """The two `PublishService` operations the executor starts a publication with."""
+    """The `PublishService` operations the executor uses: start a publication, then
+    advance its attempt one step at a time."""
 
     async def start(
         self,
@@ -111,6 +150,8 @@ class PublishStarter(Protocol):
         idempotency_key: str,
         caption: str | None = None,
     ) -> PublishState: ...
+
+    async def advance(self, *, tenant_id: UUID, attempt_id: UUID) -> PublishState: ...
 
 
 class AttemptLocator(Protocol):
@@ -223,6 +264,55 @@ class EventExecutor:
 
         _log("started", current, attempt_id=state.attempt_id, status=state.status)
         return self._link(current, state.attempt_id, ExecutionOutcome.STARTED)
+
+    # -- advancing (F4) -----------------------------------------------------------------
+
+    async def advance_event(self, event: EventRecord) -> AdvanceResult:
+        """ONE `PublishService.advance()` step for the attempt linked to `event`, under
+        that attempt's lock. Never loops, never waits, never changes the event."""
+        attempt_id = event.publish_attempt_id
+        if attempt_id is None:
+            return AdvanceResult(event.id, AdvanceOutcome.NOT_LINKED)
+        with self._lock.hold(tenant_id=event.tenant_id, key=attempt_lock_key(attempt_id)) as held:
+            if not held:
+                return AdvanceResult(event.id, AdvanceOutcome.BUSY, attempt_id)
+            current = self._repo.get(tenant_id=event.tenant_id, event_id=event.id)
+            if (
+                current is None
+                or current.status != EventStatus.PUBLISHING.value
+                or current.publish_attempt_id != attempt_id
+            ):
+                return AdvanceResult(event.id, AdvanceOutcome.NOT_IN_FLIGHT, attempt_id)
+            try:
+                state = await self._publisher.advance(
+                    tenant_id=current.tenant_id, attempt_id=attempt_id
+                )
+            except Exception as exc:
+                _log("advance_error", current, attempt_id=attempt_id, error=type(exc).__name__)
+                return AdvanceResult(
+                    current.id,
+                    AdvanceOutcome.ADVANCE_ERROR,
+                    attempt_id,
+                    error=type(exc).__name__,
+                )
+        if state.settled:
+            outcome = AdvanceOutcome.SETTLED
+        elif state.awaiting_confirmation:
+            outcome = AdvanceOutcome.AWAITING_CONFIRMATION
+        else:
+            outcome = AdvanceOutcome.ADVANCED
+        _log("advanced", current, attempt_id=attempt_id, outcome=outcome.value, status=state.status)
+        return AdvanceResult(current.id, outcome, attempt_id, state=state)
+
+    async def advance_in_flight(self, *, tenant_id: UUID, limit: int = 100) -> list[AdvanceResult]:
+        """One step for each of the tenant's `publishing` events that HAS an attempt, oldest
+        claim first. Unlinked ones are left to `start_claimed`; cross-tenant discovery,
+        cadence and looping belong to the runtime (F6)."""
+        results: list[AdvanceResult] = []
+        for event in self._repo.list_in_flight(tenant_id=tenant_id, limit=limit):
+            if event.publish_attempt_id is not None:
+                results.append(await self.advance_event(event))
+        return results
 
     # -- helpers ----------------------------------------------------------------------
 

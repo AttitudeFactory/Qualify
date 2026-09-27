@@ -1,4 +1,5 @@
-"""QUA-111 F3: the executor's claim + start — unit tests, no DB.
+"""QUA-111 F3 + F4: the executor's claim + start, and its one-step advance — unit tests,
+no DB.
 
 The fake publisher reproduces the one property the executor relies on: an attempt row is
 INSERTed per `(connection_id, idempotency_key)`, a repeated key returns the existing
@@ -7,14 +8,14 @@ attempt without "calling Meta", and Meta is only reached after a won INSERT.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
 
-from qualify_api.planner.executor import EventExecutor, ExecutionOutcome
-from qualify_api.planner.locks import MemoryExecutionLock, event_lock_key
+from qualify_api.planner.executor import AdvanceOutcome, EventExecutor, ExecutionOutcome
+from qualify_api.planner.locks import MemoryExecutionLock, attempt_lock_key, event_lock_key
 from qualify_api.planner.post_reader import (
     NotPublishable,
     PublishableMedia,
@@ -118,6 +119,20 @@ class FakePublisher:
         self.start_many_calls.append(kw)
         attempt, _ = self._insert(kw["connection_id"], kw["idempotency_key"])
         return self._state(attempt)  # start_many never calls Meta itself
+
+    # advance (F4): answers with `next_advance`, or raises `raise_on_advance`.
+    advance_calls: list[dict] = field(default_factory=list)
+    next_advance: dict = field(default_factory=dict)
+    raise_on_advance: Exception | None = None
+
+    async def advance(self, **kw) -> PublishState:
+        self.advance_calls.append(kw)
+        if self.raise_on_advance is not None:
+            raise self.raise_on_advance
+        fields = {"status": "processing", "settled": False, **self.next_advance}
+        return PublishState(
+            attempt_id=kw["attempt_id"], published_media_id=None, reason=None, **fields
+        )
 
     # AttemptLocator
     def find_by_idempotency_key(self, *, tenant_id, connection_id, idempotency_key):
@@ -398,3 +413,103 @@ def test_fail_unstarted_only_matches_an_unlinked_publishing_event(world: World) 
     repo.link_attempt(tenant_id=TENANT, event_id=event.id, expected_revision=1, attempt_id=uuid4())
     assert repo.fail_unstarted(tenant_id=TENANT, event_id=event.id, expected_revision=1) is None
     assert _status(world, event)[0] == "publishing"
+
+
+# --- advance (F4) ------------------------------------------------------------------
+
+A = AdvanceOutcome
+
+
+async def _linked(world: World):
+    """A due event taken through claim + start: `publishing` with an attempt."""
+    event = _due(world)
+    started = await world.executor.try_execute(event)
+    assert started.outcome is Outcome.STARTED
+    return world.repo.get(tenant_id=TENANT, event_id=event.id)
+
+
+async def test_advance_calls_the_publisher_once_and_leaves_the_event_alone(world: World) -> None:
+    event = await _linked(world)
+    result = await world.executor.advance_event(event)
+    assert result.outcome is A.ADVANCED and result.attempt_id == event.publish_attempt_id
+    assert world.publisher.advance_calls == [
+        {"tenant_id": TENANT, "attempt_id": event.publish_attempt_id}
+    ]
+    assert result.state is not None and result.state.poll_interval_seconds > 0
+    assert _status(world, event) == ("publishing", event.publish_attempt_id)
+    assert not world.lock.is_held(attempt_lock_key(event.publish_attempt_id))
+
+
+@pytest.mark.parametrize("status", ["published", "failed"])
+async def test_a_settled_attempt_is_reported_and_the_event_is_not_changed(
+    world: World, status: str
+) -> None:
+    event = await _linked(world)
+    world.publisher.next_advance = {"status": status, "settled": True}
+    result = await world.executor.advance_event(event)
+    assert result.outcome is A.SETTLED and result.state.status == status
+    assert _status(world, event) == ("publishing", event.publish_attempt_id)  # F5's job
+
+
+async def test_awaiting_confirmation_keeps_the_event_publishing(world: World) -> None:
+    event = await _linked(world)
+    world.publisher.next_advance = {"awaiting_confirmation": True}
+    result = await world.executor.advance_event(event)
+    assert result.outcome is A.AWAITING_CONFIRMATION
+    assert _status(world, event)[0] == "publishing"
+
+
+async def test_a_busy_attempt_lock_advances_nothing(world: World) -> None:
+    event = await _linked(world)
+    key = attempt_lock_key(event.publish_attempt_id)
+    with world.lock.hold(tenant_id=TENANT, key=key) as held:
+        assert held
+        result = await world.executor.advance_event(event)
+    assert result.outcome is A.BUSY
+    assert not world.publisher.advance_calls
+
+
+async def test_an_advance_error_leaves_the_event_intact_and_releases_the_lock(
+    world: World,
+) -> None:
+    event = await _linked(world)
+    world.publisher.raise_on_advance = RuntimeError("graph 500")
+    result = await world.executor.advance_event(event)
+    assert result.outcome is A.ADVANCE_ERROR and result.error == "RuntimeError"
+    assert _status(world, event) == ("publishing", event.publish_attempt_id)
+    assert not world.lock.is_held(attempt_lock_key(event.publish_attempt_id))
+    world.publisher.raise_on_advance = None
+    assert (await world.executor.advance_event(event)).outcome is A.ADVANCED
+
+
+async def test_an_unlinked_event_is_not_advanced(world: World) -> None:
+    event = _due(world)
+    claimed = world.repo.claim(tenant_id=TENANT, event_id=event.id, expected_revision=1, now=NOW)
+    result = await world.executor.advance_event(claimed)
+    assert result.outcome is A.NOT_LINKED
+    assert not world.publisher.advance_calls
+
+
+async def test_an_event_no_longer_publishing_or_relinked_is_not_advanced(world: World) -> None:
+    event = await _linked(world)
+    stale = replace(event, publish_attempt_id=uuid4())  # a snapshot pointing elsewhere
+    assert (await world.executor.advance_event(stale)).outcome is A.NOT_IN_FLIGHT
+    world.repo._rows[event.id] = replace(event, status="published")
+    assert (await world.executor.advance_event(event)).outcome is A.NOT_IN_FLIGHT
+    assert not world.publisher.advance_calls
+
+
+async def test_advance_in_flight_steps_only_the_tenants_linked_events(world: World) -> None:
+    linked = await _linked(world)
+    unlinked = _due(world)
+    world.repo.claim(tenant_id=TENANT, event_id=unlinked.id, expected_revision=1, now=NOW)
+    _due(world)  # still scheduled
+    results = await world.executor.advance_in_flight(tenant_id=TENANT)
+    assert [r.event_id for r in results] == [linked.id]
+    assert await world.executor.advance_in_flight(tenant_id=uuid4()) == []
+
+
+def test_the_attempt_lock_and_the_event_lock_are_different_keys() -> None:
+    same = uuid4()
+    assert attempt_lock_key(same) != event_lock_key(same)
+    assert attempt_lock_key(same) == f"qua111:publish-attempt:{same}"

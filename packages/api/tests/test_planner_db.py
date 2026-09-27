@@ -28,9 +28,9 @@ from qualify_api.creative import models as creative
 from qualify_api.planner import draft_post_reader
 from qualify_api.planner.composition import PostgresConnectionGate, tenant_timezone
 from qualify_api.planner.draft_post_reader import DraftPostReader
-from qualify_api.planner.executor import EventExecutor, ExecutionOutcome
+from qualify_api.planner.executor import AdvanceOutcome, EventExecutor, ExecutionOutcome
 from qualify_api.planner.fsm import EventTrigger, apply_transition
-from qualify_api.planner.locks import PostgresAdvisoryLock
+from qualify_api.planner.locks import PostgresAdvisoryLock, attempt_lock_key
 from qualify_api.planner.post_reader import (
     ApprovalStatus,
     NotPublishable,
@@ -46,7 +46,7 @@ from qualify_api.planner.repository import (
 )
 from qualify_api.planner.rules import idempotency_key
 from qualify_api.planner.service import PlannerService
-from qualify_api.publishing.client import ResumableContainer, UploadOutcome
+from qualify_api.publishing.client import ContainerStatus, ResumableContainer, UploadOutcome
 from qualify_api.publishing.composition import PostgresConnectionTargetReader
 from qualify_api.publishing.repository import PostgresPublishAttemptRepository
 from qualify_api.publishing.service import PublishService
@@ -950,7 +950,7 @@ class _NoLock:
         yield True
 
 
-def _executor(counter: list[str], lock=None) -> EventExecutor:
+def _executor(counter: list[str], lock=None, factory=None) -> EventExecutor:
     return EventExecutor(
         repository=PostgresPlannerRepository(),
         posts=DraftPostReader(),
@@ -958,20 +958,22 @@ def _executor(counter: list[str], lock=None) -> EventExecutor:
             repository=PostgresPublishAttemptRepository(),
             gate=ObjectGate(_BytesStore()),
             connections=PostgresConnectionTargetReader(),
-            client_factory=_ClientFactory(counter),
+            client_factory=factory or _ClientFactory(counter),
         ),
         attempts=PostgresPublishAttemptRepository(),
         lock=lock or PostgresAdvisoryLock(),
     )
 
 
-def _due_reel_event(world) -> EventRecord:
+def _due_reel_event(world, post_id: UUID | None = None) -> EventRecord:
+    """A due event for `post_id` — by default a fresh single-MP4 reel POST."""
     tenant_id, brand_id, conn_id = world
-    post_id = _post_row(
-        world,
-        category="reel",
-        items=[(media_key(tenant_id, conn_id, uuid4().hex), "video/mp4", "video", 0)],
-    )
+    if post_id is None:
+        post_id = _post_row(
+            world,
+            category="reel",
+            items=[(media_key(tenant_id, conn_id, uuid4().hex), "video/mp4", "video", 0)],
+        )
     with admin_session() as session:
         user_id = session.scalar(select(User.id).where(User.tenant_id == tenant_id))
     return PostgresPlannerRepository().add(
@@ -1122,3 +1124,208 @@ def test_fail_unstarted_never_touches_a_linked_event(world_f2) -> None:
     assert repo.fail_unstarted(tenant_id=tenant_id, event_id=event.id, expected_revision=1) is None
     stored = repo.get(tenant_id=tenant_id, event_id=event.id)
     assert (stored.status, stored.publish_attempt_id) == ("publishing", result.attempt_id)
+
+
+# --- advance under the attempt lock (QUA-111 F4) -----------------------------------
+#
+# Real PublishService.advance() over the real publish_attempts / children rows; Meta is a
+# fake that counts every platform call. Same isolated tenant (`world_f2`).
+
+
+class _MetaCalls:
+    """Every platform call any fake client made, across threads (list.append is atomic)."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def count(self, name: str) -> int:
+        return self.calls.count(name)
+
+
+class _AdvanceClient:
+    """Meta for the advance path. `container_status` answers `status`; `media_publish`
+    returns a media id. Optional barriers make two advances meet at a given call — used
+    ONLY by the diagnostic no-lock test, never by the positive ones."""
+
+    def __init__(self, meta: _MetaCalls, *, status=None, raises=None, barriers=None) -> None:
+        self._meta = meta
+        self._status = status
+        self._raises = raises
+        self._barriers = barriers or {}
+
+    def _meet(self, name: str) -> None:
+        barrier = self._barriers.get(name)
+        if barrier is not None:
+            barrier.wait(timeout=10)  # a broken barrier fails the test loudly, never flakes
+
+    async def create_container(self, *, ig_user_id, media_type, caption=None, **_):
+        self._meta.calls.append("create_container")
+        return ResumableContainer(container_id=f"c-{uuid4().hex}", upload_uri="https://u/x")
+
+    async def upload_bytes(self, *, upload_uri, fileobj, file_size):
+        self._meta.calls.append("upload_bytes")
+        return UploadOutcome(success=True)
+
+    async def container_status(self, *, container_id):
+        self._meta.calls.append("container_status")
+        if self._raises is not None:
+            raise self._raises
+        self._meet("container_status")
+        return self._status
+
+    async def publish_container(self, *, ig_user_id, creation_id):
+        self._meta.calls.append("media_publish")
+        self._meet("media_publish")
+        return f"media-{uuid4().hex[:8]}"
+
+
+class _AdvanceFactory:
+    def __init__(self, meta: _MetaCalls, **kw) -> None:
+        self._meta, self._kw = meta, kw
+
+    async def client_for(self, *, tenant_id, connection_id):
+        return _AdvanceClient(self._meta, **self._kw)
+
+
+def _linked_event(world, *, carousel: bool = False) -> EventRecord:
+    """A due event taken through F3 (claim + start) with the fake Meta: `publishing` with
+    its attempt linked. REELS: container created + uploaded (`processing`). CAROUSEL: the
+    parent + children written ahead, no platform call yet."""
+    tenant_id, _, conn_id = world
+    post_id = None
+    if carousel:
+        keys = [media_key(tenant_id, conn_id, uuid4().hex) for _ in range(2)]
+        post_id = _post_row(
+            world,
+            category="galeria",
+            items=[(keys[0], "video/mp4", "video", 0), (keys[1], "video/mp4", "video", 1)],
+        )
+    event = _due_reel_event(world, post_id)
+    started = asyncio.run(_executor([]).try_execute(event))
+    assert started.outcome is ExecutionOutcome.STARTED
+    return PostgresPlannerRepository().get(tenant_id=tenant_id, event_id=event.id)
+
+
+def _attempt(tenant_id: UUID, attempt_id: UUID):
+    return PostgresPublishAttemptRepository().get_attempt(
+        tenant_id=tenant_id, attempt_id=attempt_id
+    )
+
+
+def test_two_concurrent_advances_of_a_finished_container_publish_once(world_f2) -> None:
+    tenant_id = world_f2[0]
+    event = _linked_event(world_f2)
+    meta = _MetaCalls()
+    factory = _AdvanceFactory(meta, status=ContainerStatus.FINISHED)
+    results = _race(lambda: _executor([], factory=factory).advance_event(event))
+    assert meta.count("media_publish") == 1
+    outcomes = sorted(r.outcome.value for r in results)
+    # The loser is BUSY, or — had it reached the lock after the winner — reads a settled
+    # attempt from the row. Either way it never reaches Meta.
+    assert outcomes in (["busy", "settled"], ["settled", "settled"])
+    attempt = _attempt(tenant_id, event.publish_attempt_id)
+    assert attempt.status == "published" and attempt.published_media_id
+    stored = PostgresPlannerRepository().get(tenant_id=tenant_id, event_id=event.id)
+    assert stored.status == "publishing"  # F4 never changes the event (F5 does)
+
+
+def test_two_concurrent_advances_of_an_assembling_carousel_create_children_once(
+    world_f2,
+) -> None:
+    tenant_id = world_f2[0]
+    event = _linked_event(world_f2, carousel=True)
+    attempt = _attempt(tenant_id, event.publish_attempt_id)
+    assert attempt.media_product_type == "CAROUSEL" and attempt.creation_id is None
+    meta = _MetaCalls()
+    factory = _AdvanceFactory(meta, status=ContainerStatus.IN_PROGRESS)
+    _race(lambda: _executor([], factory=factory).advance_event(event))
+    children = PostgresPublishAttemptRepository().list_children(
+        tenant_id=tenant_id, attempt_id=event.publish_attempt_id
+    )
+    assert len(children) == 2
+    assert meta.count("create_container") == 2  # one per child, never duplicated
+    assert len({c.creation_id for c in children}) == 2 and None not in {
+        c.creation_id for c in children
+    }
+    # The carousel's own container is not created while children are still in flight.
+    assert _attempt(tenant_id, event.publish_attempt_id).creation_id is None
+
+
+def test_advancing_a_settled_attempt_calls_meta_zero_times(world_f2) -> None:
+    tenant_id = world_f2[0]
+    event = _linked_event(world_f2)
+    first = _MetaCalls()
+    finished = _AdvanceFactory(first, status=ContainerStatus.FINISHED)
+    asyncio.run(_executor([], factory=finished).advance_event(event))
+    assert _attempt(tenant_id, event.publish_attempt_id).status == "published"
+    again = _MetaCalls()
+    result = asyncio.run(
+        _executor(
+            [], factory=_AdvanceFactory(again, status=ContainerStatus.FINISHED)
+        ).advance_event(event)
+    )
+    assert result.outcome is AdvanceOutcome.SETTLED
+    assert again.calls == []
+
+
+def test_the_attempt_lock_is_released_after_advance_raises(world_f2) -> None:
+    tenant_id = world_f2[0]
+    event = _linked_event(world_f2)
+    meta = _MetaCalls()
+    failing = _AdvanceFactory(meta, raises=RuntimeError("graph 500"))
+    result = asyncio.run(_executor([], factory=failing).advance_event(event))
+    assert result.outcome is AdvanceOutcome.ADVANCE_ERROR and result.error == "RuntimeError"
+    with PostgresAdvisoryLock().hold(
+        tenant_id=tenant_id, key=attempt_lock_key(event.publish_attempt_id)
+    ) as held:
+        assert held is True  # the rollback released it
+    retry = asyncio.run(_executor([], factory=failing).advance_event(event))
+    assert retry.outcome is AdvanceOutcome.ADVANCE_ERROR  # ran again, not BUSY
+    assert meta.count("container_status") == 2
+    stored = PostgresPlannerRepository().get(tenant_id=tenant_id, event_id=event.id)
+    assert (stored.status, stored.publish_attempt_id) == ("publishing", event.publish_attempt_id)
+
+
+def test_a_held_attempt_lock_makes_advance_busy(world_f2) -> None:
+    tenant_id = world_f2[0]
+    event = _linked_event(world_f2)
+    key = attempt_lock_key(event.publish_attempt_id)
+    holding, release = threading.Event(), threading.Event()
+
+    def holder() -> None:
+        with PostgresAdvisoryLock().hold(tenant_id=tenant_id, key=key) as held:
+            assert held
+            holding.set()
+            release.wait(timeout=10)
+
+    meta = _MetaCalls()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        running = pool.submit(holder)
+        assert holding.wait(timeout=10)
+        factory = _AdvanceFactory(meta, status=ContainerStatus.FINISHED)
+        result = asyncio.run(_executor([], factory=factory).advance_event(event))
+        release.set()
+        running.result(timeout=10)
+    assert result.outcome is AdvanceOutcome.BUSY
+    assert meta.calls == []
+
+
+def test_diagnostic_without_the_attempt_lock_two_advances_publish_twice(world_f2) -> None:
+    """DIAGNOSTIC — documents WHY `advance_event` takes the attempt lock; it does not
+    validate any production path (production always passes the lock).
+
+    With the lock removed, two advances of the same FINISHED attempt both read "not sent"
+    from their own snapshot, both write the send marker (a plain UPDATE, not a
+    compare-and-set) and both call `media_publish`. Two barriers make that interleaving
+    deterministic — both advances must reach `container_status`, then both must reach
+    `media_publish`, before either continues — so this needs no sleep and cannot pass or
+    fail by timing: a broken barrier raises instead."""
+    event = _linked_event(world_f2)
+    meta = _MetaCalls()
+    barriers = {
+        "container_status": threading.Barrier(2),
+        "media_publish": threading.Barrier(2),
+    }
+    factory = _AdvanceFactory(meta, status=ContainerStatus.FINISHED, barriers=barriers)
+    _race(lambda: _executor([], lock=_NoLock(), factory=factory).advance_event(event))
+    assert meta.count("media_publish") == 2  # the double publish the attempt lock prevents
