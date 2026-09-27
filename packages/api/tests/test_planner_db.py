@@ -15,15 +15,23 @@ from uuid import UUID, uuid4
 import pytest
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
+from qualify_shared.objects.keys import media_key
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.creative import models as creative
+from qualify_api.planner import draft_post_reader
 from qualify_api.planner.composition import PostgresConnectionGate, tenant_timezone
 from qualify_api.planner.draft_post_reader import DraftPostReader
 from qualify_api.planner.fsm import EventTrigger, apply_transition
-from qualify_api.planner.post_reader import ApprovalStatus
+from qualify_api.planner.post_reader import (
+    ApprovalStatus,
+    NotPublishable,
+    PublishablePost,
+    UnpublishableReason,
+)
+from qualify_api.planner.publishable import REASON_TEXT
 from qualify_api.planner.repository import (
     MemoryPlannerRepository,
     NewEvent,
@@ -282,13 +290,16 @@ def test_draft_reader_maps_status_to_approval_and_reads_the_card_fields(world_p)
     assert card.title == "Promo de octubre"
     assert card.caption_excerpt == "Dos por uno todo octubre"  # whitespace collapsed
     assert card.thumbnail_url == "https://cdn.example/img.jpg"
-    assert card.category == "feed" and card.media_product_type == "IMAGE"
+    # The POST's own category (0027), never the brief's render format; this row has none.
+    assert card.category is None and card.media_product_type is None
     assert card.content_type == "promotion"
     assert card.reuse_type is None  # the draft model has no such concept
     assert card.asset_count == 1 and card.asset_types == ("IMAGE",)
     assert card.detail_href == f"/drafts/{pending}"
     assert not card.is_publishable and card.unpublishable_reason
-    assert got[approved].is_publishable  # its image has an R2 key
+    # QUA-111 F2: "has an object_key" is no longer "publishable" — this row has no
+    # approved_revision, no category, and a key outside its tenant's prefix.
+    assert not got[approved].is_publishable and got[approved].unpublishable_reason
 
 
 def test_draft_reader_hides_an_expired_thumbnail(world_p) -> None:
@@ -652,3 +663,229 @@ def test_two_concurrent_claims_exactly_one_wins(world_p) -> None:
             results = list(pool.map(contend, range(contenders)))
         assert sum(r is not None for r in results) == 1
         assert repo.get(tenant_id=TENANT_P, event_id=event.id).status == "publishing"
+
+
+# --- the publishable POST (QUA-111 F2) --------------------------------------------
+#
+# A FRESH tenant per test run: these rows must never mix with what earlier runs left in
+# the shared dev database (TENANT_P/TENANT_Q accumulate), nor be mistaken for real data.
+
+
+@pytest.fixture(scope="module")
+def world_f2() -> tuple[UUID, UUID, UUID]:
+    tenant_id = uuid4()
+    brand_id, _, connection_id = _provision(tenant_id, f"t-qua111-f2-{tenant_id.hex[:8]}")
+    return tenant_id, brand_id, connection_id
+
+
+_APPROVED_COPY = {
+    "hook": "¡Oferta!",
+    "caption": "Dos por uno todo octubre",
+    "hashtags": ["promo", "#octubre"],
+    "cta": "Pide ya",
+}
+
+
+def _post_row(
+    world: tuple[UUID, UUID, UUID],
+    *,
+    status: str = "approved",
+    revision: int = 1,
+    approved_revision: int | None = 1,
+    category: str | None = "galeria",
+    edited: dict | None = None,
+    items: list[tuple[str | None, str | None, str, int]] | None = None,
+) -> UUID:
+    """A draft shaped as a POST: two variants (the SECOND is the selected one), and
+    `items` as (object_key, content_type, media_type, position). Default: one JPEG in
+    the tenant's R2 prefix."""
+    tenant_id, brand_id, conn_id = world
+    if items is None:
+        items = [(media_key(tenant_id, conn_id, uuid4().hex), "image/jpeg", "image", 0)]
+    with tenant_session(tenant_id) as session:
+        brief = creative.ContentBrief(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            objective="sale",
+            topic="Promo",
+            platform="instagram",
+            format="feed_4_5",
+            intent="organic",
+            content_type="promotion",
+            image_route="template_only",
+        )
+        session.add(brief)
+        session.flush()
+        draft = creative.ContentDraft(
+            tenant_id=tenant_id,
+            brief_id=brief.id,
+            brand_id=brand_id,
+            status=status,
+            pipeline_version="test",
+            category=category,
+            revision=revision,
+            approved_revision=approved_revision,
+        )
+        session.add(draft)
+        session.flush()
+        other = creative.CopyVariant(
+            tenant_id=tenant_id,
+            draft_id=draft.id,
+            ordinal=0,
+            copy={"hook": "Otra", "caption": "No elegida", "cta": ""},
+            model_id="test",
+        )
+        chosen = creative.CopyVariant(
+            tenant_id=tenant_id,
+            draft_id=draft.id,
+            ordinal=1,
+            copy=_APPROVED_COPY,
+            edited_copy=edited,
+            model_id="test",
+        )
+        session.add_all([other, chosen])
+        session.flush()
+        if status in ("approved", "staged", "published"):
+            draft.selected_variant_id = chosen.id
+        for object_key, content_type, media_type, position in items:
+            session.add(
+                creative.ImageAsset(
+                    tenant_id=tenant_id,
+                    draft_id=draft.id,
+                    media_url=object_key or "https://cdn.example/x",
+                    object_key=object_key,
+                    content_type=content_type,
+                    media_type=media_type,
+                    position=position,
+                )
+            )
+        session.flush()
+        return draft.id
+
+
+def _publishable(world, post_id: UUID) -> PublishablePost | NotPublishable:
+    return DraftPostReader().get_publishable(tenant_id=world[0], post_id=post_id)
+
+
+def test_an_approved_post_at_its_approved_revision_is_publishable(world_f2) -> None:
+    tenant_id, _, conn_id = world_f2
+    keys = [media_key(tenant_id, conn_id, uuid4().hex) for _ in range(3)]
+    post_id = _post_row(
+        world_f2,
+        items=[
+            (keys[2], "image/jpeg", "image", 2),
+            (keys[0], "video/mp4", "video", 0),
+            (keys[1], "image/jpeg", "image", 1),
+        ],
+    )
+    verdict = _publishable(world_f2, post_id)
+    assert isinstance(verdict, PublishablePost)
+    assert verdict.tenant_id == tenant_id and verdict.post_id == post_id
+    assert verdict.approved_revision == 1
+    assert verdict.media_product_type == "CAROUSEL"
+    assert [m.object_key for m in verdict.media] == keys  # by position, not creation
+    assert [m.media_type for m in verdict.media] == ["VIDEO", "IMAGE", "IMAGE"]
+    # The SELECTED variant, rendered the one way the creative module defines.
+    assert verdict.caption == "¡Oferta!\n\nDos por uno todo octubre\n\nPide ya\n\n#promo #octubre"
+
+
+def test_the_caption_is_the_selected_variants_edited_copy(world_f2) -> None:
+    edited = {**_APPROVED_COPY, "hook": "", "caption": "Editado antes de aprobar", "hashtags": []}
+    verdict = _publishable(world_f2, _post_row(world_f2, edited=edited))
+    assert isinstance(verdict, PublishablePost)
+    assert verdict.caption == "Editado antes de aprobar\n\nPide ya"
+
+
+def test_an_edit_after_approval_is_blocked(world_f2) -> None:
+    verdict = _publishable(world_f2, _post_row(world_f2, revision=2, approved_revision=1))
+    assert isinstance(verdict, NotPublishable)
+    assert verdict.reason is UnpublishableReason.REVISION_NOT_APPROVED
+
+
+def test_an_unapproved_post_is_blocked(world_f2) -> None:
+    post_id = _post_row(world_f2, status="generated", approved_revision=None)
+    verdict = _publishable(world_f2, post_id)
+    assert isinstance(verdict, NotPublishable)
+    assert verdict.reason is UnpublishableReason.NOT_APPROVED
+
+
+def test_local_generated_media_is_blocked(world_f2) -> None:
+    tenant_id = world_f2[0]
+    local = f"generated/{tenant_id}/{uuid4()}/slide-1.png"
+    verdict = _publishable(world_f2, _post_row(world_f2, items=[(local, None, "image", 0)]))
+    assert isinstance(verdict, NotPublishable)
+    assert verdict.reason is UnpublishableReason.MEDIA_NOT_IN_R2
+
+
+def test_a_null_content_type_from_the_column_is_blocked(world_f2) -> None:
+    tenant_id, _, conn_id = world_f2
+    key = media_key(tenant_id, conn_id, uuid4().hex)
+    verdict = _publishable(world_f2, _post_row(world_f2, items=[(key, None, "image", 0)]))
+    assert isinstance(verdict, NotPublishable)
+    assert verdict.reason is UnpublishableReason.CONTENT_TYPE_MISSING
+
+
+def test_a_png_from_the_column_is_blocked_and_an_mp4_reel_passes(world_f2) -> None:
+    tenant_id, _, conn_id = world_f2
+    png = _post_row(
+        world_f2, items=[(media_key(tenant_id, conn_id, uuid4().hex), "image/png", "image", 0)]
+    )
+    reel = _post_row(
+        world_f2,
+        category="reel",
+        items=[(media_key(tenant_id, conn_id, uuid4().hex), "video/mp4", "video", 0)],
+    )
+    assert _publishable(world_f2, png).reason is UnpublishableReason.UNSUPPORTED_CONTENT_TYPE
+    verdict = _publishable(world_f2, reel)
+    assert isinstance(verdict, PublishablePost) and verdict.media_product_type == "REELS"
+
+
+def test_another_tenant_reads_the_post_as_not_found(world_f2, world_q) -> None:
+    post_id = _post_row(world_f2)
+    verdict = DraftPostReader().get_publishable(tenant_id=TENANT_Q, post_id=post_id)
+    assert isinstance(verdict, NotPublishable)
+    assert verdict.reason is UnpublishableReason.POST_NOT_FOUND
+
+
+def test_the_card_and_the_executor_use_the_same_evaluation(world_f2, monkeypatch) -> None:
+    """Same verdict for every shape, and literally the same function: `_summarize` and
+    `get_publishable` both go through `publishable.evaluate` (spied, not assumed)."""
+    tenant_id, _, conn_id = world_f2
+    posts = [
+        _post_row(world_f2),
+        _post_row(world_f2, revision=2, approved_revision=1),
+        _post_row(world_f2, status="generated", approved_revision=None),
+        _post_row(world_f2, category="story"),
+        _post_row(world_f2, category=None),
+        _post_row(world_f2, items=[(media_key(tenant_id, conn_id, uuid4().hex), None, "image", 0)]),
+    ]
+    calls: list[UUID] = []
+    real_evaluate = draft_post_reader.evaluate
+
+    def spy(candidate):
+        calls.append(candidate.post_id)
+        return real_evaluate(candidate)
+
+    monkeypatch.setattr(draft_post_reader, "evaluate", spy)
+    reader = DraftPostReader()
+    cards = reader.get_many(tenant_id=tenant_id, post_ids=posts)
+    for post_id in posts:
+        verdict = reader.get_publishable(tenant_id=tenant_id, post_id=post_id)
+        card = cards[post_id]
+        assert card.is_publishable is isinstance(verdict, PublishablePost)
+        if isinstance(verdict, NotPublishable):
+            assert card.unpublishable_reason == REASON_TEXT[verdict.reason]
+        else:
+            assert card.media_product_type == verdict.media_product_type
+    assert sorted(calls) == sorted(posts * 2)  # once per card, once per executor read
+
+
+def test_get_publishable_never_writes(world_f2) -> None:
+    tenant_id = world_f2[0]
+    post_id = _post_row(world_f2)
+    with tenant_session(tenant_id) as session:
+        before = session.get(creative.ContentDraft, post_id).updated_at
+    DraftPostReader().get_publishable(tenant_id=tenant_id, post_id=post_id)
+    with tenant_session(tenant_id) as session:
+        row = session.get(creative.ContentDraft, post_id)
+        assert row.status == "approved" and row.updated_at == before
