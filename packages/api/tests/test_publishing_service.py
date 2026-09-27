@@ -24,6 +24,7 @@ from qualify_api.publishing.client import (
     MEDIA_TYPE_IMAGE,
     ContainerStatus,
     PublishError,
+    RecentMedia,
     ResumableContainer,
     UploadOutcome,
 )
@@ -110,6 +111,12 @@ class FakePublishClient:
         self.image_container_calls: list[dict[str, object]] = []
         self.calls = {"create": 0, "upload": 0, "status": 0, "publish": 0, "create_carousel": 0}
         self.upload_sizes: list[int] = []
+        # QUA-111 — the read-only media listing reconciliation uses to recover a PUBLISHED
+        # container's media id. Tracked OUTSIDE `self.calls` for the same exact-dict reason
+        # as `image_container_calls`. Default: an empty account listing.
+        self.recent: list[RecentMedia] = []
+        self.recent_error: Exception | None = None
+        self.recent_calls: list[dict[str, object]] = []
 
     async def create_container(self, **kwargs: object) -> ResumableContainer:
         self.calls["create"] += 1
@@ -175,6 +182,14 @@ class FakePublishClient:
         if self.publish_error is not None:
             raise self.publish_error
         return self.publish_media_id
+
+    async def recent_media(
+        self, *, ig_user_id: str, since: datetime, stories: bool = False
+    ) -> list[RecentMedia]:
+        self.recent_calls.append({"ig_user_id": ig_user_id, "since": since, "stories": stories})
+        if self.recent_error is not None:
+            raise self.recent_error
+        return list(self.recent)
 
 
 class FakeMediaLinker:
@@ -569,6 +584,145 @@ async def test_published_after_a_sent_publish_confirms_and_settles() -> None:
 
     assert state.settled and state.status == "published"
     assert h.client.calls["publish"] == 1
+
+
+# --- QUA-111: the media id of a PUBLISHED confirmation ------------------------------
+#
+# When `media_publish` never returned an id (timeout) and a later poll sees PUBLISHED, the
+# id is recovered read-only from the account's recent media — never by publishing again.
+
+
+async def _sent_then_published(h: Harness, *, caption: str | None = "reel caption", kind="REELS"):
+    """An attempt whose media_publish timed out (sent, no id), then Meta says PUBLISHED."""
+    state = await h.service.start(
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        media_object_key=h.media_key,
+        media_product_type=kind,
+        idempotency_key=f"op-rec-{uuid4().hex[:6]}",
+        caption=caption,
+    )
+    h.client.status_script = [ContainerStatus.FINISHED, ContainerStatus.PUBLISHED]
+    h.client.publish_error = TimeoutError("media_publish timed out")
+    awaiting = await h.advance(state.attempt_id)
+    assert awaiting.awaiting_confirmation and not awaiting.settled
+    return state.attempt_id
+
+
+def _media(media_id: str, surface: str = "REELS", *, caption="reel caption", minutes=0):
+    return RecentMedia(
+        media_id=media_id,
+        media_product_type=surface,
+        caption=caption,
+        timestamp=datetime.now(UTC) + timedelta(minutes=minutes),
+    )
+
+
+@pytest.mark.asyncio
+async def test_published_without_an_id_recovers_it_from_recent_media() -> None:
+    h = Harness()
+    attempt_id = await _sent_then_published(h)
+    h.client.recent = [_media("17900000000000001")]
+    state = await h.advance(attempt_id)
+    assert state.settled and state.status == "published"
+    assert state.published_media_id == "17900000000000001"
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=attempt_id)
+    assert record is not None and record.published_media_id == "17900000000000001"
+    assert h.client.calls["publish"] == 1  # only the original (timed-out) send
+    (call,) = h.client.recent_calls
+    assert call["stories"] is False and call["ig_user_id"]
+
+
+@pytest.mark.asyncio
+async def test_recovery_filters_surface_time_caption_and_media_owned_by_another_attempt() -> None:
+    h = Harness()
+    # Another attempt on the same connection already owns "owned".
+    other = await h.start("op-owner")
+    h.client.status_script = [ContainerStatus.FINISHED]
+    h.client.publish_media_id = "owned"
+    await h.advance(other.attempt_id)
+    h.client.publish_media_id = "media-1"
+
+    attempt_id = await _sent_then_published(h)
+    h.client.recent = [
+        _media("story", surface="STORY"),  # wrong surface
+        _media("old", minutes=-60),  # before the attempt started
+        _media("other-caption", caption="something else"),  # not our caption
+        _media("owned"),  # another attempt's media
+        _media("ours"),
+    ]
+    state = await h.advance(attempt_id)
+    assert state.published_media_id == "ours"
+
+
+@pytest.mark.asyncio
+async def test_an_ambiguous_listing_settles_published_without_guessing_an_id() -> None:
+    h = Harness()
+    attempt_id = await _sent_then_published(h)
+    h.client.recent = [_media("a"), _media("b")]  # two identical-looking candidates
+    state = await h.advance(attempt_id)
+    assert state.settled and state.status == "published"
+    assert state.published_media_id is None
+    assert h.client.calls["publish"] == 1
+
+
+@pytest.mark.asyncio
+async def test_no_candidate_settles_published_with_a_null_id() -> None:
+    h = Harness()
+    attempt_id = await _sent_then_published(h)
+    state = await h.advance(attempt_id)
+    assert state.settled and state.status == "published" and state.published_media_id is None
+
+
+@pytest.mark.asyncio
+async def test_a_story_is_looked_up_in_stories_and_ignores_captions() -> None:
+    h = Harness()
+    attempt_id = await _sent_then_published(h, kind="STORIES", caption="story caption")
+    h.client.recent = [_media("story-1", surface="STORY", caption=None)]
+    state = await h.advance(attempt_id)
+    assert state.published_media_id == "story-1"
+    assert h.client.recent_calls[-1]["stories"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_listing_error_does_not_settle_and_the_next_step_recovers() -> None:
+    h = Harness()
+    attempt_id = await _sent_then_published(h)
+    h.client.recent_error = PublishError("media listing failed with HTTP 500", http_status=500)
+    with pytest.raises(PublishError):
+        await h.advance(attempt_id)
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=attempt_id)
+    assert record is not None and not record.is_settled  # not settled with a missing id
+
+    h.client.recent_error = None
+    h.client.status_script = [ContainerStatus.PUBLISHED]
+    h.client.recent = [_media("17900000000000002")]
+    state = await h.advance(attempt_id)
+    assert state.settled and state.published_media_id == "17900000000000002"
+    assert h.client.calls["publish"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_401_during_the_lookup_degrades_the_connection_and_does_not_settle() -> None:
+    h = Harness()
+    attempt_id = await _sent_then_published(h)
+    h.client.recent_error = PublishError("unauthorized", platform_code=190, http_status=401)
+    with pytest.raises(PublishError):
+        await h.advance(attempt_id)
+    assert h.degrade_calls == [(TENANT, CONNECTION)]
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=attempt_id)
+    assert record is not None and not record.is_settled
+
+
+@pytest.mark.asyncio
+async def test_a_normal_publish_never_lists_media() -> None:
+    """The id comes back from media_publish: no lookup, no extra Graph call."""
+    h = Harness()
+    attempt_id = await _started(h)
+    h.client.status_script = [ContainerStatus.FINISHED]
+    state = await h.advance(attempt_id)
+    assert state.published_media_id == "media-1"
+    assert h.client.recent_calls == []
 
 
 @pytest.mark.asyncio

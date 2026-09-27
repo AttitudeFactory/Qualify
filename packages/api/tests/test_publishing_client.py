@@ -9,6 +9,7 @@ host) unexercised.
 from __future__ import annotations
 
 import io
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -614,6 +615,61 @@ def test_terminal_statuses_are_exactly_the_three_that_end_the_poll() -> None:
     # FINISHED is deliberately NOT terminal: it means "ready to publish", so the work
     # continues rather than stopping.
     assert not ContainerStatus.FINISHED.is_terminal
+
+
+# --------------------------------------------------------------------------------------
+# recent_media (QUA-111): the read-only listing that recovers a PUBLISHED container's id
+# --------------------------------------------------------------------------------------
+
+
+async def test_recent_media_lists_the_media_edge_since_a_unix_timestamp() -> None:
+    since = datetime(2026, 9, 27, 21, 10, tzinfo=UTC)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == f"/v21.0/{IG_USER}/media"
+        assert request.url.params["fields"] == "id,caption,media_product_type,timestamp"
+        assert request.url.params["since"] == str(int(since.timestamp()))
+        assert request.headers["Authorization"] == f"{GRAPH_AUTH_SCHEME} {TOKEN}"
+        return _json(
+            {
+                "data": [
+                    {
+                        "id": "17903090199355402",
+                        "caption": "hola",
+                        "media_product_type": "REELS",
+                        "timestamp": "2026-09-27T21:11:48+0000",
+                    },
+                    {"caption": "no id: dropped"},
+                ]
+            }
+        )
+
+    (media,) = await _client(handler).recent_media(ig_user_id=IG_USER, since=since)
+    assert media.media_id == "17903090199355402"
+    assert media.media_product_type == "REELS" and media.caption == "hola"
+    assert media.timestamp == datetime(2026, 9, 27, 21, 11, 48, tzinfo=UTC)
+
+
+async def test_recent_media_reads_stories_from_the_stories_edge() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == f"/v21.0/{IG_USER}/stories"
+        return _json({"data": [{"id": "s1", "media_product_type": "STORY"}]})
+
+    (story,) = await _client(handler).recent_media(
+        ig_user_id=IG_USER, since=datetime.now(UTC), stories=True
+    )
+    assert story.media_id == "s1" and story.caption is None and story.timestamp is None
+
+
+async def test_recent_media_raises_with_codes_on_an_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _json({"error": {"code": 190, "error_subcode": 463}}, status=401)
+
+    with pytest.raises(PublishError) as raised:
+        await _client(handler).recent_media(ig_user_id=IG_USER, since=datetime.now(UTC))
+    assert raised.value.http_status == 401 and raised.value.platform_code == 190
+    assert TOKEN not in str(raised.value)
 
 
 # --------------------------------------------------------------------------------------

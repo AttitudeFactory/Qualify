@@ -32,7 +32,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
@@ -43,6 +43,7 @@ from qualify_api.publishing.client import (
     CONTAINER_POLL_INTERVAL_SECONDS,
     MEDIA_TYPE_IMAGE,
     MEDIA_TYPE_REELS,
+    MEDIA_TYPE_STORIES,
     MEDIA_TYPE_VIDEO,
     ContainerStatus,
     PublishClient,
@@ -101,6 +102,19 @@ CHILD_ERROR_PREFIX = "carousel_child_failed"
 # of magnitude under the 200 calls/hour development budget even in the worst case
 # (11 containers x ~7 polls each at the fast end ~= 77 calls for one attempt).
 _CAROUSEL_POLL_BACKOFF_SECONDS: tuple[int, ...] = (5, 10, 20, 40)
+
+# QUA-111 — media-id recovery for a PUBLISHED confirmation (`_recover_media_id`). The IG
+# Media `media_product_type` a publish of each kind lands as (`FEED` / `REELS` / `STORY`);
+# a candidate on any other surface can never be this attempt's media.
+_MEDIA_SURFACES: dict[str, frozenset[str]] = {
+    MEDIA_TYPE_REELS: frozenset({"REELS"}),
+    MEDIA_TYPE_STORIES: frozenset({"STORY"}),
+    MEDIA_TYPE_IMAGE: frozenset({"FEED"}),
+    MEDIA_TYPE_VIDEO: frozenset({"FEED"}),
+    MEDIA_TYPE_CAROUSEL: frozenset({"FEED"}),
+}
+# Tolerance between our clock (the attempt's started_at) and Meta's media timestamp.
+_MEDIA_LOOKUP_SKEW = timedelta(minutes=2)
 
 
 class UnknownConnection(Exception):
@@ -543,12 +557,17 @@ class PublishService:
 
         if container_status is ContainerStatus.PUBLISHED:
             # Reconciliation's happy ending — success WITHOUT calling publish_container
-            # again. The media id is not in this response; recovering it is full A6.
+            # again. The container does not carry the media id, so it is looked up
+            # read-only in the account's recent media before the one-time settle
+            # (QUA-111): once settled, the row can never be completed.
+            media_id = record.published_media_id or await self._recover_media_id(
+                record=record, client=client
+            )
             self._repo.settle(
                 tenant_id=tenant_id,
                 attempt_id=attempt_id,
                 status="published",
-                published_media_id=record.published_media_id,
+                published_media_id=media_id,
             )
             return _state(self._require(tenant_id, attempt_id), container_status="PUBLISHED")
 
@@ -674,6 +693,63 @@ class PublishService:
             total_duration_ms=total_duration_ms,
         )
         return _state(self._require(tenant_id, record.id), container_status="FINISHED")
+
+    async def _recover_media_id(
+        self, *, record: AttemptRecord, client: PublishClient
+    ) -> str | None:
+        """The id of the media a PUBLISHED container became, when `media_publish` never
+        returned it (the send timed out, or its response was lost).
+
+        An IG Container exposes no media id, and Meta documents no link from container to
+        media. So this reads `GET /{ig-user}/media` (or `/stories`) since the attempt
+        started and accepts a candidate ONLY when exactly one matches every check:
+        the attempt's surface (`media_product_type`), a timestamp at or after the
+        attempt started, the caption the attempt recorded and sent (stories carry none),
+        and not already the media of another attempt on this connection. Zero or several
+        candidates → None, logged: a wrong id is worse than a missing one.
+
+        Read-only — never a second `media_publish`. A 401/190 degrades the connection and
+        raises, like the status poll does; any other listing error raises, so the attempt
+        is NOT settled this step and the next `advance()` tries again.
+        """
+        target = self._connections.read(
+            tenant_id=record.tenant_id, connection_id=record.connection_id
+        )
+        if target is None:
+            raise UnknownConnection(str(record.connection_id))
+        stories = record.media_product_type == MEDIA_TYPE_STORIES
+        since = record.started_at - _MEDIA_LOOKUP_SKEW
+        try:
+            candidates = await client.recent_media(
+                ig_user_id=target.ig_user_id, since=since, stories=stories
+            )
+        except PublishError as exc:
+            if exc.http_status == 401 or exc.platform_code == 190:
+                self._degrade(tenant_id=record.tenant_id, connection_id=record.connection_id)
+            raise
+        surfaces = _MEDIA_SURFACES.get(record.media_product_type, frozenset())
+        taken = self._repo.published_media_ids(
+            tenant_id=record.tenant_id, connection_id=record.connection_id
+        )
+        matches = [
+            media
+            for media in candidates
+            if media.media_product_type in surfaces
+            and media.timestamp is not None
+            and media.timestamp >= since
+            and media.media_id not in taken
+            and (stories or record.caption is None or media.caption == record.caption)
+        ]
+        if len(matches) == 1:
+            _log_stage("media_id_recovered", tenant_id=record.tenant_id, attempt_id=record.id)
+            return matches[0].media_id
+        _log_stage(
+            "media_id_unresolved",
+            tenant_id=record.tenant_id,
+            attempt_id=record.id,
+            candidates=len(matches),
+        )
+        return None
 
     def list_children_status(self, *, tenant_id: UUID, attempt_id: UUID) -> list[ChildStatus]:
         """Read-only projection of a carousel attempt's children, position-ordered (QUA-99

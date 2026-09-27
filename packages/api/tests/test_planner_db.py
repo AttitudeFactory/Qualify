@@ -54,7 +54,12 @@ from qualify_api.planner.repository import (
 from qualify_api.planner.rules import idempotency_key
 from qualify_api.planner.service import PlannerService
 from qualify_api.planner.tick import TickRunner
-from qualify_api.publishing.client import ContainerStatus, ResumableContainer, UploadOutcome
+from qualify_api.publishing.client import (
+    ContainerStatus,
+    RecentMedia,
+    ResumableContainer,
+    UploadOutcome,
+)
 from qualify_api.publishing.composition import PostgresConnectionTargetReader
 from qualify_api.publishing.repository import PostgresPublishAttemptRepository
 from qualify_api.publishing.service import PublishService
@@ -1155,11 +1160,18 @@ class _AdvanceClient:
     returns a media id. Optional barriers make two advances meet at a given call — used
     ONLY by the diagnostic no-lock test, never by the positive ones."""
 
-    def __init__(self, meta: _MetaCalls, *, status=None, raises=None, barriers=None) -> None:
+    def __init__(
+        self, meta: _MetaCalls, *, status=None, raises=None, barriers=None, recent=()
+    ) -> None:
         self._meta = meta
         self._status = status
         self._raises = raises
         self._barriers = barriers or {}
+        self._recent = list(recent)
+
+    async def recent_media(self, *, ig_user_id, since, stories=False):
+        self._meta.calls.append("recent_media")
+        return list(self._recent)
 
     def _meet(self, name: str) -> None:
         barrier = self._barriers.get(name)
@@ -1380,9 +1392,33 @@ def test_end_to_end_execute_advance_settle_publishes_with_the_media_id(world_f5)
     assert attempt.caption == "¡Oferta!\n\nDos por uno todo octubre\n\nPide ya\n\n#promo #octubre"
 
 
-def test_a_published_confirmation_without_media_id_keeps_it_null(world_f5) -> None:
-    """Meta reports the container PUBLISHED without `media_publish` having returned an
-    id (the reconciliation path): the event is published, the id stays NULL."""
+def test_a_published_confirmation_recovers_the_media_id_from_recent_media(world_f5) -> None:
+    """QUA-111 criterion 7 — Meta reports the container PUBLISHED and `media_publish`
+    never returned an id (reconciliation path): the id is recovered read-only from the
+    account's media (surface + time + the caption recorded on the attempt), with zero
+    `media_publish` calls, and the event is settled with it."""
+    tenant_id = world_f5[0]
+    event = _due_reel_event(world_f5)
+    asyncio.run(_executor([]).try_execute(event))
+    event = _stored(tenant_id, event.id)
+    caption = _attempt(tenant_id, event.publish_attempt_id).caption
+    listing = [
+        RecentMedia("17900000000000009", "REELS", caption, datetime.now(UTC)),
+        RecentMedia("17900000000000008", "REELS", "otro texto", datetime.now(UTC)),
+    ]
+    meta = _MetaCalls()
+    factory = _AdvanceFactory(meta, status=ContainerStatus.PUBLISHED, recent=listing)
+    ((_, settled),) = asyncio.run(
+        _executor([], factory=factory).advance_in_flight(tenant_id=tenant_id)
+    )
+    assert settled.outcome is SettleOutcome.SETTLED_PUBLISHED
+    assert settled.published_media_id == "17900000000000009"
+    assert _attempt(tenant_id, event.publish_attempt_id).published_media_id == "17900000000000009"
+    assert meta.count("media_publish") == 0 and meta.count("recent_media") == 1
+
+
+def test_an_unresolvable_published_confirmation_keeps_the_id_null(world_f5) -> None:
+    """No candidate in the listing: published (Meta said so), id NULL — never guessed."""
     tenant_id = world_f5[0]
     event, steps = _advance_and_settle(world_f5, ContainerStatus.PUBLISHED)
     ((_, settled),) = steps
@@ -1390,6 +1426,17 @@ def test_a_published_confirmation_without_media_id_keeps_it_null(world_f5) -> No
     assert settled.published_media_id is None
     assert event.status == "published"
     assert _attempt(tenant_id, event.publish_attempt_id).published_media_id is None
+
+
+def test_published_media_ids_lists_only_this_connections_recorded_ids(world_f5, world_q) -> None:
+    tenant_id = world_f5[0]
+    event, _ = _advance_and_settle(world_f5, ContainerStatus.FINISHED)
+    media_id = _attempt(tenant_id, event.publish_attempt_id).published_media_id
+    repo = PostgresPublishAttemptRepository()
+    assert media_id in repo.published_media_ids(
+        tenant_id=tenant_id, connection_id=event.connection_id
+    )
+    assert repo.published_media_ids(tenant_id=TENANT_Q, connection_id=event.connection_id) == set()
 
 
 def test_a_failed_attempt_fails_the_event_and_keeps_its_platform_reason(world_f5) -> None:
