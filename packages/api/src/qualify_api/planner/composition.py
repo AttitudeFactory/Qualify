@@ -13,6 +13,8 @@ from qualify_shared.db.session import tenant_session
 
 from qualify_api.connections.models import SocialConnection
 from qualify_api.planner.draft_post_reader import DraftPostReader
+from qualify_api.planner.executor import EventExecutor
+from qualify_api.planner.locks import PostgresAdvisoryLock
 from qualify_api.planner.post_reader import PostReader
 from qualify_api.planner.repository import PostgresPlannerRepository
 from qualify_api.planner.service import PlannerService
@@ -34,6 +36,24 @@ class PostgresConnectionGate:
 def production_post_reader() -> PostReader:
     # TEMPORARY (QUA-108): swap for QUA-109's POST reader when it exists.
     return DraftPostReader()
+
+
+def production_event_executor() -> EventExecutor:
+    """QUA-111's executor over the real publisher. The publishing composition is imported
+    here, not at module level: building it resolves Meta/R2 settings, which the
+    Planificador's own screens never need."""
+    from qualify_api.publishing.composition import production_publish_service  # noqa: PLC0415
+    from qualify_api.publishing.repository import (  # noqa: PLC0415
+        PostgresPublishAttemptRepository,
+    )
+
+    return EventExecutor(
+        repository=PostgresPlannerRepository(),
+        posts=production_post_reader(),
+        publisher=production_publish_service(),
+        attempts=PostgresPublishAttemptRepository(),
+        lock=PostgresAdvisoryLock(),
+    )
 
 
 def production_planner_service() -> PlannerService:

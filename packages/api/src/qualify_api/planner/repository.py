@@ -20,9 +20,10 @@ from sqlalchemy import delete, func, or_, select, update
 from qualify_api.planner.fsm import EventStatus, EventTrigger, apply_transition
 from qualify_api.planner.models import CalendarEvent, CalendarEventTag, PlannerTag
 
-# QUA-111's claim edge, read from the FSM once so the repository never spells a status
-# the transition table does not produce.
+# QUA-111's execution edges, read from the FSM once so the repository never spells a
+# status the transition table does not produce.
 _CLAIMED: EventStatus = apply_transition(EventStatus.SCHEDULED.value, EventTrigger.CLAIM)
+_FAILED: EventStatus = apply_transition(EventStatus.PUBLISHING.value, EventTrigger.PUBLISH_FAIL)
 
 
 @dataclass(frozen=True)
@@ -127,6 +128,15 @@ class PlannerRepository(Protocol):
     def list_in_flight(self, *, tenant_id: UUID, limit: int = 100) -> list[EventRecord]:
         """`publishing` events, oldest claim first — what an executor resumes after a
         restart."""
+        ...
+
+    def fail_unstarted(
+        self, *, tenant_id: UUID, event_id: UUID, expected_revision: int
+    ) -> EventRecord | None:
+        """`publishing` → `failed` ONLY while no publish attempt is linked: an event whose
+        publication never started (nothing was sent) may be failed; one with an attempt
+        belongs to that attempt's outcome. `None` if the event is not `publishing` at
+        `expected_revision` with `publish_attempt_id IS NULL`."""
         ...
 
     # -- planning tags (0025) ------------------------------------------------
@@ -385,6 +395,21 @@ class MemoryPlannerRepository:
         )
         return in_flight[:limit]
 
+    def fail_unstarted(
+        self, *, tenant_id: UUID, event_id: UUID, expected_revision: int
+    ) -> EventRecord | None:
+        current = self.get(tenant_id=tenant_id, event_id=event_id)
+        if (
+            current is None
+            or current.status != EventStatus.PUBLISHING.value
+            or current.revision != expected_revision
+            or current.publish_attempt_id is not None
+        ):
+            return None
+        updated = replace(current, status=_FAILED.value, updated_at=datetime.now(UTC))
+        self._rows[event_id] = updated
+        return updated
+
 
 class PostgresPlannerRepository:
     """Every call opens its own `tenant_session` — RLS decides visibility."""
@@ -553,6 +578,23 @@ class PostgresPlannerRepository:
                 .limit(limit)
             )
             return [_snapshot(row) for row in rows]
+
+    def fail_unstarted(
+        self, *, tenant_id: UUID, event_id: UUID, expected_revision: int
+    ) -> EventRecord | None:
+        with tenant_session(tenant_id) as session:
+            row = session.scalars(
+                update(CalendarEvent)
+                .where(
+                    CalendarEvent.id == event_id,
+                    CalendarEvent.status == EventStatus.PUBLISHING.value,
+                    CalendarEvent.revision == expected_revision,
+                    CalendarEvent.publish_attempt_id.is_(None),
+                )
+                .values(status=_FAILED.value, updated_at=datetime.now(UTC))
+                .returning(CalendarEvent)
+            ).one_or_none()
+            return _snapshot(row) if row is not None else None
 
     # -- planning tags (0025) ------------------------------------------------
 

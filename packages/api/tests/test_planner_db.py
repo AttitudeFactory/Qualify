@@ -7,14 +7,18 @@ Same two-door fixture split the publishing schema tests use: provisioning throug
 
 from __future__ import annotations
 
+import asyncio
+import io
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
+from qualify_shared.objects.gate import ObjectGate
 from qualify_shared.objects.keys import media_key
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -24,7 +28,9 @@ from qualify_api.creative import models as creative
 from qualify_api.planner import draft_post_reader
 from qualify_api.planner.composition import PostgresConnectionGate, tenant_timezone
 from qualify_api.planner.draft_post_reader import DraftPostReader
+from qualify_api.planner.executor import EventExecutor, ExecutionOutcome
 from qualify_api.planner.fsm import EventTrigger, apply_transition
+from qualify_api.planner.locks import PostgresAdvisoryLock
 from qualify_api.planner.post_reader import (
     ApprovalStatus,
     NotPublishable,
@@ -33,13 +39,17 @@ from qualify_api.planner.post_reader import (
 )
 from qualify_api.planner.publishable import REASON_TEXT
 from qualify_api.planner.repository import (
+    EventRecord,
     MemoryPlannerRepository,
     NewEvent,
     PostgresPlannerRepository,
 )
 from qualify_api.planner.rules import idempotency_key
 from qualify_api.planner.service import PlannerService
+from qualify_api.publishing.client import ResumableContainer, UploadOutcome
+from qualify_api.publishing.composition import PostgresConnectionTargetReader
 from qualify_api.publishing.repository import PostgresPublishAttemptRepository
+from qualify_api.publishing.service import PublishService
 from qualify_api.tenancy.models import Brand, Tenant, User
 
 pytestmark = pytest.mark.db
@@ -889,3 +899,226 @@ def test_get_publishable_never_writes(world_f2) -> None:
     with tenant_session(tenant_id) as session:
         row = session.get(creative.ContentDraft, post_id)
         assert row.status == "approved" and row.updated_at == before
+
+
+# --- the executor's start over real Postgres (QUA-111 F3) ---------------------------
+#
+# Real planner repository, real DraftPostReader, real PublishService over the real
+# publish_attempts table; only Meta (the client) and R2 (the store) are fakes. Same
+# isolated tenant as F2 (`world_f2`).
+
+
+class _CountingClient:
+    """Meta stand-in for the REELS path. `create_container` is the first platform call
+    `start()` makes — counting it counts "publications that reached Meta". The sleep
+    widens the window in which a competing execution could slip in."""
+
+    def __init__(self, counter: list[str]) -> None:
+        self._counter = counter
+
+    async def create_container(self, *, ig_user_id, media_type, caption=None, **_):
+        self._counter.append(media_type)
+        await asyncio.sleep(0.3)
+        return ResumableContainer(container_id=f"c-{uuid4().hex}", upload_uri="https://u/x")
+
+    async def upload_bytes(self, *, upload_uri, fileobj, file_size):
+        return UploadOutcome(success=True)
+
+
+class _ClientFactory:
+    def __init__(self, counter: list[str]) -> None:
+        self._counter = counter
+
+    async def client_for(self, *, tenant_id, connection_id):
+        return _CountingClient(self._counter)
+
+
+class _BytesStore:
+    def put(self, key, fileobj, content_type) -> None:  # pragma: no cover - unused
+        raise AssertionError("the executor never stages media")
+
+    def open(self, key):
+        return io.BytesIO(b"\x00" * 64)
+
+
+class _NoLock:
+    """Lets two executions into the critical section at once, to prove the publisher's
+    own idempotency is the second barrier behind the event lock."""
+
+    @contextmanager
+    def hold(self, *, tenant_id, key):
+        yield True
+
+
+def _executor(counter: list[str], lock=None) -> EventExecutor:
+    return EventExecutor(
+        repository=PostgresPlannerRepository(),
+        posts=DraftPostReader(),
+        publisher=PublishService(
+            repository=PostgresPublishAttemptRepository(),
+            gate=ObjectGate(_BytesStore()),
+            connections=PostgresConnectionTargetReader(),
+            client_factory=_ClientFactory(counter),
+        ),
+        attempts=PostgresPublishAttemptRepository(),
+        lock=lock or PostgresAdvisoryLock(),
+    )
+
+
+def _due_reel_event(world) -> EventRecord:
+    tenant_id, brand_id, conn_id = world
+    post_id = _post_row(
+        world,
+        category="reel",
+        items=[(media_key(tenant_id, conn_id, uuid4().hex), "video/mp4", "video", 0)],
+    )
+    with admin_session() as session:
+        user_id = session.scalar(select(User.id).where(User.tenant_id == tenant_id))
+    return PostgresPlannerRepository().add(
+        NewEvent(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            post_id=post_id,
+            connection_id=conn_id,
+            scheduled_at=datetime.now(UTC) - timedelta(minutes=1),
+            scheduled_tz="America/Caracas",
+            created_by_user_id=user_id,
+        )
+    )
+
+
+def _attempt_rows(tenant_id: UUID, key: str) -> list[UUID]:
+    with tenant_session(tenant_id) as session:
+        return list(
+            session.scalars(
+                text("SELECT id FROM publish_attempts WHERE idempotency_key = :k"), {"k": key}
+            )
+        )
+
+
+def _race(fn, contenders: int = 2) -> list:
+    """Run `fn()` (a coroutine factory) in `contenders` threads, each with its own event
+    loop and its own pooled connections, released together by a barrier."""
+    barrier = threading.Barrier(contenders)
+
+    def run(_: int):
+        barrier.wait()
+        return asyncio.run(fn())
+
+    with ThreadPoolExecutor(max_workers=contenders) as pool:
+        return list(pool.map(run, range(contenders)))
+
+
+def test_executor_starts_a_ready_event_once_and_links_it(world_f2) -> None:
+    tenant_id = world_f2[0]
+    event = _due_reel_event(world_f2)
+    calls: list[str] = []
+    result = asyncio.run(_executor(calls).try_execute(event))
+    assert result.outcome is ExecutionOutcome.STARTED
+    key = f"cal:{event.id}:1"
+    assert _attempt_rows(tenant_id, key) == [result.attempt_id]
+    assert calls == ["REELS"]
+    stored = PostgresPlannerRepository().get(tenant_id=tenant_id, event_id=event.id)
+    assert (stored.status, stored.publish_attempt_id) == ("publishing", result.attempt_id)
+
+
+def test_two_concurrent_executions_of_one_event_publish_once(world_f2) -> None:
+    """Two executors on the same due event: the claim lets one through; one attempt row,
+    one call to Meta, the event linked to it."""
+    tenant_id = world_f2[0]
+    event = _due_reel_event(world_f2)
+    calls: list[str] = []
+    results = _race(lambda: _executor(calls).try_execute(event))
+    outcomes = sorted(r.outcome for r in results)
+    assert outcomes == sorted([ExecutionOutcome.STARTED, ExecutionOutcome.CLAIM_LOST])
+    rows = _attempt_rows(tenant_id, f"cal:{event.id}:1")
+    assert len(rows) == 1 and calls == ["REELS"]
+    stored = PostgresPlannerRepository().get(tenant_id=tenant_id, event_id=event.id)
+    assert stored.publish_attempt_id == rows[0]
+
+
+def test_two_concurrent_starts_of_one_claimed_event_are_serialised_by_the_lock(
+    world_f2,
+) -> None:
+    """Both past the claim (a resume racing the claimer): the advisory lock lets one in;
+    the other is BUSY, or — if it got the lock after the first finished — only re-links."""
+    tenant_id = world_f2[0]
+    event = _due_reel_event(world_f2)
+    claimed = PostgresPlannerRepository().claim(
+        tenant_id=tenant_id, event_id=event.id, expected_revision=1, now=datetime.now(UTC)
+    )
+    calls: list[str] = []
+    results = _race(lambda: _executor(calls).start_claimed(claimed))
+    started = [r for r in results if r.outcome is ExecutionOutcome.STARTED]
+    others = {r.outcome for r in results if r.outcome is not ExecutionOutcome.STARTED}
+    assert len(started) == 1
+    assert others <= {ExecutionOutcome.BUSY, ExecutionOutcome.LINKED_EXISTING}
+    assert _attempt_rows(tenant_id, f"cal:{event.id}:1") == [started[0].attempt_id]
+    assert calls == ["REELS"]
+
+
+def test_without_the_lock_the_publisher_idempotency_still_yields_one_attempt(world_f2) -> None:
+    """The second barrier: with the event lock taken away, both executions reach
+    `start()`; `uq_attempt_idempotency` gives both the SAME attempt, Meta is called once,
+    and both end linked to it."""
+    tenant_id = world_f2[0]
+    event = _due_reel_event(world_f2)
+    claimed = PostgresPlannerRepository().claim(
+        tenant_id=tenant_id, event_id=event.id, expected_revision=1, now=datetime.now(UTC)
+    )
+    calls: list[str] = []
+    results = _race(lambda: _executor(calls, lock=_NoLock()).start_claimed(claimed))
+    attempt_ids = {r.attempt_id for r in results}
+    assert len(attempt_ids) == 1 and None not in attempt_ids
+    assert {r.outcome for r in results} <= {
+        ExecutionOutcome.STARTED,
+        ExecutionOutcome.LINKED_EXISTING,
+    }
+    assert _attempt_rows(tenant_id, f"cal:{event.id}:1") == list(attempt_ids)
+    assert calls == ["REELS"]
+    stored = PostgresPlannerRepository().get(tenant_id=tenant_id, event_id=event.id)
+    assert stored.publish_attempt_id in attempt_ids
+
+
+def test_the_advisory_lock_excludes_across_connections_and_releases_at_commit(world_f2) -> None:
+    tenant_id = world_f2[0]
+    key = f"qua111-test:{uuid4()}"
+    lock = PostgresAdvisoryLock()
+    holding, release = threading.Event(), threading.Event()
+
+    def holder() -> bool:
+        with lock.hold(tenant_id=tenant_id, key=key) as held:
+            holding.set()
+            release.wait(timeout=10)
+            return held
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(holder)
+        assert holding.wait(timeout=10)
+        with lock.hold(tenant_id=tenant_id, key=key) as second:
+            assert second is False  # another connection holds it
+        release.set()
+        assert first.result(timeout=10) is True
+    with lock.hold(tenant_id=tenant_id, key=key) as again:
+        assert again is True  # released when the holder's transaction ended
+
+
+def test_the_advisory_lock_is_released_when_the_transaction_fails(world_f2) -> None:
+    tenant_id = world_f2[0]
+    key = f"qua111-test:{uuid4()}"
+    lock = PostgresAdvisoryLock()
+    with pytest.raises(RuntimeError), lock.hold(tenant_id=tenant_id, key=key) as held:
+        assert held
+        raise RuntimeError("crash inside the critical section")
+    with lock.hold(tenant_id=tenant_id, key=key) as again:
+        assert again is True
+
+
+def test_fail_unstarted_never_touches_a_linked_event(world_f2) -> None:
+    tenant_id = world_f2[0]
+    event = _due_reel_event(world_f2)
+    result = asyncio.run(_executor([]).try_execute(event))
+    repo = PostgresPlannerRepository()
+    assert repo.fail_unstarted(tenant_id=tenant_id, event_id=event.id, expected_revision=1) is None
+    stored = repo.get(tenant_id=tenant_id, event_id=event.id)
+    assert (stored.status, stored.publish_attempt_id) == ("publishing", result.attempt_id)
