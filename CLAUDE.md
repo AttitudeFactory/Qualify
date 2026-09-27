@@ -114,7 +114,11 @@ just test         # uv run pytest -m "not integration"  — mirrors CI
 just test-db      # only the tests needing the compose Postgres/Redis
 just lint / fmt   # ruff check . / ruff format .
 just down         # docker compose down -v — DROPS the pgdata volume
+just calendar-tick --tenant <uuid>     # QUA-111: one Planificador tick — PUBLISHES FOR REAL
+just calendar-worker --tenant <uuid>   # QUA-111: a tick every 60 s until Ctrl+C
 ```
+
+The calendar executor (QUA-111, `packages/api/src/qualify_api/planner/worker.py`) publishes due, approved `calendar_events` through `PublishService`. **Locally always pass `--tenant`:** `--all-tenants` is the production discovery, and this dev database holds dozens of test tenants it would act on. Decision, guarantees and UML: `docs/automatizacion-calendario-qua111.md`.
 
 Four operational traps worth knowing before you touch this stack:
 
