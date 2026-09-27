@@ -59,10 +59,12 @@ def _platform_icon(platform: rx.Var[str]) -> rx.Component:
 
 
 def _thumbnail(url: rx.Var[str], size: str) -> rx.Component:
+    """`url` is an http(s) URL or a local upload-store key (`PostSummary.thumbnail_url`);
+    a key is resolved the way the creative screens do, with `rx.get_upload_url`."""
     return rx.cond(
         url != "",
         rx.image(
-            src=url,
+            src=rx.cond(url.startswith("http"), url, rx.get_upload_url(url)),
             alt="",
             width=size,
             height=size,

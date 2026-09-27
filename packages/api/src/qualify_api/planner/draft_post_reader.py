@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
+from typing import Protocol
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -64,6 +65,10 @@ _SCHEDULABLE_DRAFT_STATUSES: tuple[str, ...] = tuple(
 
 _EXCERPT_CHARS = 140
 _SCHEDULABLE_LIMIT = 100
+
+# Every object-store key starts with the tenant prefix (`qualify_shared.objects.keys`):
+# `t/{tenant_id}/…`. Local upload-store keys (`generated/…`, `uploads/…`) never do.
+_OBJECT_STORE_PREFIX = "t/"
 
 
 def _excerpt(text: str) -> str:
@@ -124,6 +129,59 @@ def _candidate(
             ("selected_variant_id", str(draft.selected_variant_id)),
         ),
     )
+
+
+class _AssetView(Protocol):
+    media_type: str
+    media_url: str
+    object_key: str | None
+    media_expires_at: datetime | None
+    params: dict | None
+    position: int
+
+
+def thumbnail_source(
+    *, preview_key: str | None, assets: Sequence[_AssetView], now: datetime
+) -> str | None:
+    """What the calendar card can show in an `<img>`: an `http(s)` URL, or a key of the
+    local upload store (the UI turns it into a URL with `rx.get_upload_url`, as the
+    creative screens do). The POST's own `preview_key` (0027) comes first — a video's
+    poster or the first image — then the first asset.
+
+    Never a video file (an `<img>` cannot show one; a video without a poster gets the
+    placeholder), never an R2 key (`t/{tenant}/…`: nothing serves the object store to a
+    browser), never a provider URL that already expired. `None` → the card's placeholder.
+    """
+    ordered = sorted(assets, key=lambda asset: asset.position)
+    video_files = {
+        key
+        for asset in ordered
+        if asset.media_type == "video"
+        for key in (asset.object_key, asset.media_url)
+        if key
+    }
+    expired = {
+        asset.media_url
+        for asset in ordered
+        if asset.media_expires_at is not None and asset.media_expires_at < now
+    }
+    candidates: list[str | None] = [preview_key]
+    if ordered:
+        first = ordered[0]
+        if first.media_type == "video":
+            poster = (first.params or {}).get("thumbnail_key")
+            candidates.append(str(poster) if poster else None)
+        else:
+            candidates.append(first.media_url)
+    for candidate in candidates:
+        if (
+            candidate
+            and candidate not in video_files
+            and candidate not in expired
+            and not candidate.startswith(_OBJECT_STORE_PREFIX)
+        ):
+            return candidate
+    return None
 
 
 def _images(session: Session, draft_id: UUID) -> list[creative.ImageAsset]:
@@ -195,14 +253,9 @@ class DraftPostReader:
                 .order_by(creative.CopyVariant.ordinal)
             ).first()
         images = _images(session, draft.id)
-
-        now = self._clock()
-        thumbnail = None
-        if images:
-            first = images[0]
-            expired = first.media_expires_at is not None and first.media_expires_at < now
-            if first.media_url and not expired:
-                thumbnail = first.media_url
+        thumbnail = thumbnail_source(
+            preview_key=draft.preview_key, assets=images, now=self._clock()
+        )
 
         verdict = evaluate(_candidate(session, tenant_id, draft, images))
         publishable = isinstance(verdict, PublishablePost)

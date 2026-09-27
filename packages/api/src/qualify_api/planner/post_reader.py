@@ -59,6 +59,8 @@ class PostSummary:
     # How the POST is reused over time (RECURRENTE/PROMOCIONAL…) — QUA-109.
     reuse_type: str | None = None
     lifecycle_status: str = ""
+    # An http(s) URL, or a local upload-store key the UI resolves with
+    # `rx.get_upload_url`. Never a video file nor an object-store (R2) key.
     thumbnail_url: str | None = None
     caption_excerpt: str = ""
     asset_count: int = 0
