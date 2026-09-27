@@ -1376,6 +1376,8 @@ def test_end_to_end_execute_advance_settle_publishes_with_the_media_id(world_f5)
     attempt = _attempt(tenant_id, event.publish_attempt_id)
     assert attempt.status == "published" and attempt.published_media_id
     assert settled.published_media_id == attempt.published_media_id
+    # QUA-111 criterion 8: the approved caption, as sent to Meta, is on the attempt.
+    assert attempt.caption == "¡Oferta!\n\nDos por uno todo octubre\n\nPide ya\n\n#promo #octubre"
 
 
 def test_a_published_confirmation_without_media_id_keeps_it_null(world_f5) -> None:

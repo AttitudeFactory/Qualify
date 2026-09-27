@@ -60,8 +60,7 @@ class AttemptRecord:
     tenant_id: UUID
     connection_id: UUID
     idempotency_key: str
-    # QUA-99 (4.5/6) — CAROUSEL-only in practice, NULL for every single-video attempt.
-    # See `PublishAttemptChild`'s sibling comment in models.py for why this bridge exists.
+    # The caption sent to Meta, for every media type since QUA-111 (see models.py).
     caption: str | None
     media_product_type: str
     adapter_version: str

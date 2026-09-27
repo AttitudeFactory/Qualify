@@ -146,6 +146,7 @@ class FakePublishClient:
             {
                 "ig_user_id": ig_user_id,
                 "image_url": image_url,
+                "caption": caption,
                 "is_carousel_item": is_carousel_item,
             }
         )
@@ -1562,10 +1563,9 @@ async def test_start_many_retry_same_key_no_second_parent_no_corrupted_caption()
 
 
 @pytest.mark.asyncio
-async def test_single_video_caption_still_flows_directly_through_start_unchanged() -> None:
-    """start() is UNCHANGED by QUA-99 (4.5/6) — caption still travels ONLY as a
-    parameter straight into create_container(), and the new column stays NULL for this
-    path: single-video does not depend on it in any way."""
+async def test_single_video_caption_is_sent_and_recorded_as_the_same_value() -> None:
+    """QUA-111 (criterion 8): the caption start() sends to create_container() is the one
+    recorded with the attempt — one value, no second source of truth."""
     h = Harness()
     state = await h.service.start(
         tenant_id=TENANT,
@@ -1577,7 +1577,55 @@ async def test_single_video_caption_still_flows_directly_through_start_unchanged
     )
     assert h.client.create_container_calls[-1]["caption"] == "video caption"
     record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=state.attempt_id)
+    assert record is not None and record.caption == "video caption"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_product_type", ["REELS", "STORIES"])
+async def test_every_single_video_type_records_its_caption(media_product_type: str) -> None:
+    h = Harness()
+    state = await h.service.start(
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        media_object_key=h.media_key,
+        media_product_type=media_product_type,
+        idempotency_key=f"op-cap-{media_product_type}",
+        caption=f"{media_product_type} caption",
+    )
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=state.attempt_id)
+    assert record is not None and record.caption == f"{media_product_type} caption"
+
+
+@pytest.mark.asyncio
+async def test_a_single_video_without_caption_records_null() -> None:
+    h = Harness()
+    state = await h.start("op-cap-none")
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=state.attempt_id)
     assert record is not None and record.caption is None
+
+
+@pytest.mark.asyncio
+async def test_a_retry_with_the_same_key_never_rewrites_the_recorded_caption() -> None:
+    h = Harness()
+    first = await h.service.start(
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        media_object_key=h.media_key,
+        media_product_type="REELS",
+        idempotency_key="op-cap-retry",
+        caption="original",
+    )
+    await h.service.start(
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        media_object_key=h.media_key,
+        media_product_type="REELS",
+        idempotency_key="op-cap-retry",
+        caption="changed",
+    )
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=first.attempt_id)
+    assert record is not None and record.caption == "original"
+    assert len(h.client.create_container_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -1762,6 +1810,24 @@ async def test_start_image_mints_the_public_link_with_the_staged_content_type() 
     assert call["tenant_id"] == TENANT
     assert call["object_key"] == h.image_key
     assert call["content_type"] == "image/jpeg"
+
+
+async def test_start_image_records_the_caption_it_sends_to_meta() -> None:
+    """QUA-111 (criterion 8): IMAGE too — the caption handed to create_image_container is
+    the one recorded with the attempt."""
+    h = Harness()
+    state = await h.service.start(
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        media_object_key=h.image_key,
+        media_product_type=MEDIA_TYPE_IMAGE,
+        idempotency_key="op-img-cap",
+        content_type="image/jpeg",
+        caption="image caption",
+    )
+    assert h.client.image_container_calls[-1]["caption"] == "image caption"
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=state.attempt_id)
+    assert record is not None and record.caption == "image caption"
 
 
 async def test_start_image_sends_the_minted_url_to_meta() -> None:

@@ -321,12 +321,16 @@ class PublishService:
         if target is None:
             raise UnknownConnection(str(connection_id))
 
+        # The caption is recorded with the attempt (column 0017) — the SAME value this
+        # call hands to create_container / create_image_container below, so the audit
+        # trail says exactly what Meta was asked to publish, for every media type.
         start = self._repo.start_attempt(
             tenant_id=tenant_id,
             connection_id=connection_id,
             idempotency_key=idempotency_key,
             media_product_type=media_product_type,
             adapter_version=self._adapter_version,
+            caption=caption,
         )
         if not start.created:
             # The idempotent path: same key → the existing outcome, never a second publish.
@@ -782,8 +786,8 @@ class PublishService:
         if not items:
             raise ValueError("start_many requires at least one item")
         if len(items) == 1:
-            # Delegates to start() UNCHANGED (QUA-99 4.5/6: it still never persists
-            # caption anywhere) — the only decision THIS call makes is which
+            # Delegates to start() UNCHANGED (which records the caption with the attempt,
+            # QUA-111) — the only decision THIS call makes is which
             # media_product_type to hand it, from the one item's own `media_type`
             # (QUA-103). Hardcoding MEDIA_TYPE_REELS here regardless of type would mean
             # a caller reaching this method with a single IMAGE (not exercised by the
