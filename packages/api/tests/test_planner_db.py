@@ -7,6 +7,8 @@ Same two-door fixture split the publishing schema tests use: provisioning throug
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -20,9 +22,16 @@ from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.creative import models as creative
 from qualify_api.planner.composition import PostgresConnectionGate, tenant_timezone
 from qualify_api.planner.draft_post_reader import DraftPostReader
+from qualify_api.planner.fsm import EventTrigger, apply_transition
 from qualify_api.planner.post_reader import ApprovalStatus
-from qualify_api.planner.repository import NewEvent, PostgresPlannerRepository
+from qualify_api.planner.repository import (
+    MemoryPlannerRepository,
+    NewEvent,
+    PostgresPlannerRepository,
+)
+from qualify_api.planner.rules import idempotency_key
 from qualify_api.planner.service import PlannerService
+from qualify_api.publishing.repository import PostgresPublishAttemptRepository
 from qualify_api.tenancy.models import Brand, Tenant, User
 
 pytestmark = pytest.mark.db
@@ -415,3 +424,231 @@ def test_delete_cancelled_only_deletes_cancelled_events(world_p) -> None:
     assert repo.delete_cancelled(tenant_id=TENANT_P, event_id=event.id) is True
     assert repo.get(tenant_id=TENANT_P, event_id=event.id) is None
     assert repo.find_tag(tenant_id=TENANT_P, name=tag.name) is not None  # the tag stays
+
+
+# --- execution: claim / link / in-flight (QUA-111 F1) ---------------------------
+#
+# The contract tests run against BOTH repositories, so the in-memory stand-in the unit
+# tests use cannot drift from the Postgres semantics. The race test is Postgres-only: it
+# is the database's row lock that makes the claim atomic, not the Python code.
+
+
+@pytest.fixture(params=["memory", "postgres"])
+def repo(request: pytest.FixtureRequest) -> MemoryPlannerRepository | PostgresPlannerRepository:
+    return MemoryPlannerRepository() if request.param == "memory" else PostgresPlannerRepository()
+
+
+def _attempt_id(repo: object, tenant_id: UUID, connection_id: UUID) -> UUID:
+    """A publish attempt the event may link to: a real row for Postgres (the composite FK
+    demands it), any id for the in-memory repository."""
+    if isinstance(repo, MemoryPlannerRepository):
+        return uuid4()
+    return (
+        PostgresPublishAttemptRepository()
+        .start_attempt(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            idempotency_key=f"test-{uuid4()}",
+            media_product_type="REELS",
+            adapter_version="test",
+        )
+        .record.id
+    )
+
+
+def _due_event(repo, world, *, hours: int = -1):
+    brand_id, user_id, conn_id = world
+    return repo.add(_new_event(TENANT_P, brand_id, user_id, conn_id, hours=hours))
+
+
+def _retire(repo, *events) -> None:
+    """Cancel what a test left `scheduled`. These tests run against the shared dev
+    database with no teardown (nothing is deleted), and a past-due `scheduled` row that
+    outlives its test is exactly what crowds `list_due`'s default limit for everyone
+    else."""
+    for event in events:
+        repo.set_status(
+            tenant_id=TENANT_P,
+            event_id=event.id,
+            expected_status="scheduled",
+            new_status="cancelled",
+        )
+
+
+def test_claim_moves_a_due_scheduled_event_to_publishing_once(repo, world_p) -> None:
+    event = _due_event(repo, world_p)
+    now = datetime.now(UTC)
+    claimed = repo.claim(tenant_id=TENANT_P, event_id=event.id, expected_revision=1, now=now)
+    assert claimed is not None
+    assert claimed.status == apply_transition("scheduled", EventTrigger.CLAIM) == "publishing"
+    assert claimed.revision == 1 and claimed.publish_attempt_id is None
+    assert idempotency_key(claimed.id, claimed.revision) == f"cal:{event.id}:1"
+    # A second claim of the same event (a second executor, or a replay) wins nothing.
+    assert repo.claim(tenant_id=TENANT_P, event_id=event.id, expected_revision=1, now=now) is None
+
+
+def test_claim_with_a_stale_revision_fails(repo, world_p) -> None:
+    _, _, conn_id = world_p
+    event = _due_event(repo, world_p)
+    moved = repo.reschedule(
+        tenant_id=TENANT_P,
+        event_id=event.id,
+        expected_revision=1,
+        scheduled_at=event.scheduled_at,
+        scheduled_tz=event.scheduled_tz,
+        connection_id=conn_id,
+    )
+    assert moved is not None and moved.revision == 2
+    now = datetime.now(UTC)
+    assert repo.claim(tenant_id=TENANT_P, event_id=event.id, expected_revision=1, now=now) is None
+    assert repo.get(tenant_id=TENANT_P, event_id=event.id).status == "scheduled"
+    _retire(repo, event)
+
+
+def test_claim_before_scheduled_at_fails(repo, world_p) -> None:
+    event = _due_event(repo, world_p, hours=2)
+    claimed = repo.claim(
+        tenant_id=TENANT_P, event_id=event.id, expected_revision=1, now=datetime.now(UTC)
+    )
+    assert claimed is None
+    assert repo.get(tenant_id=TENANT_P, event_id=event.id).status == "scheduled"
+    _retire(repo, event)
+
+
+def test_claim_of_a_cancelled_event_fails(repo, world_p) -> None:
+    event = _due_event(repo, world_p)
+    repo.set_status(
+        tenant_id=TENANT_P, event_id=event.id, expected_status="scheduled", new_status="cancelled"
+    )
+    claimed = repo.claim(
+        tenant_id=TENANT_P, event_id=event.id, expected_revision=1, now=datetime.now(UTC)
+    )
+    assert claimed is None
+    assert repo.get(tenant_id=TENANT_P, event_id=event.id).status == "cancelled"
+
+
+def test_another_tenant_cannot_claim_the_event(repo, world_p, world_q) -> None:
+    event = _due_event(repo, world_p)
+    now = datetime.now(UTC)
+    assert repo.claim(tenant_id=TENANT_Q, event_id=event.id, expected_revision=1, now=now) is None
+    assert repo.get(tenant_id=TENANT_P, event_id=event.id).status == "scheduled"
+    _retire(repo, event)
+
+
+def test_once_claimed_the_event_can_no_longer_be_moved_or_cancelled(repo, world_p) -> None:
+    """QUA-108's existing compare-and-set on `status='scheduled'` is what locks the
+    operator out after a claim — F1 relies on it and does not change it."""
+    _, _, conn_id = world_p
+    event = _due_event(repo, world_p)
+    repo.claim(tenant_id=TENANT_P, event_id=event.id, expected_revision=1, now=datetime.now(UTC))
+    assert (
+        repo.reschedule(
+            tenant_id=TENANT_P,
+            event_id=event.id,
+            expected_revision=1,
+            scheduled_at=datetime.now(UTC) + timedelta(days=1),
+            scheduled_tz=event.scheduled_tz,
+            connection_id=conn_id,
+        )
+        is None
+    )
+    assert (
+        repo.set_status(
+            tenant_id=TENANT_P,
+            event_id=event.id,
+            expected_status="scheduled",
+            new_status="cancelled",
+        )
+        is None
+    )
+
+
+def test_link_attempt_is_idempotent_for_the_same_attempt(repo, world_p) -> None:
+    _, _, conn_id = world_p
+    event = _due_event(repo, world_p)
+    repo.claim(tenant_id=TENANT_P, event_id=event.id, expected_revision=1, now=datetime.now(UTC))
+    attempt = _attempt_id(repo, TENANT_P, conn_id)
+    first = repo.link_attempt(
+        tenant_id=TENANT_P, event_id=event.id, expected_revision=1, attempt_id=attempt
+    )
+    again = repo.link_attempt(
+        tenant_id=TENANT_P, event_id=event.id, expected_revision=1, attempt_id=attempt
+    )
+    assert first is not None and first.publish_attempt_id == attempt
+    assert again is not None and again.publish_attempt_id == attempt
+    assert again.status == "publishing"
+
+
+def test_link_attempt_never_replaces_a_different_attempt(repo, world_p) -> None:
+    _, _, conn_id = world_p
+    event = _due_event(repo, world_p)
+    repo.claim(tenant_id=TENANT_P, event_id=event.id, expected_revision=1, now=datetime.now(UTC))
+    attempt = _attempt_id(repo, TENANT_P, conn_id)
+    other = _attempt_id(repo, TENANT_P, conn_id)
+    repo.link_attempt(
+        tenant_id=TENANT_P, event_id=event.id, expected_revision=1, attempt_id=attempt
+    )
+    refused = repo.link_attempt(
+        tenant_id=TENANT_P, event_id=event.id, expected_revision=1, attempt_id=other
+    )
+    assert refused is None
+    assert repo.get(tenant_id=TENANT_P, event_id=event.id).publish_attempt_id == attempt
+
+
+def test_link_attempt_outside_publishing_or_at_another_revision_is_refused(repo, world_p) -> None:
+    _, _, conn_id = world_p
+    attempt = _attempt_id(repo, TENANT_P, conn_id)
+    scheduled = _due_event(repo, world_p)
+    assert (
+        repo.link_attempt(
+            tenant_id=TENANT_P, event_id=scheduled.id, expected_revision=1, attempt_id=attempt
+        )
+        is None
+    )
+    assert repo.get(tenant_id=TENANT_P, event_id=scheduled.id).publish_attempt_id is None
+    _retire(repo, scheduled)
+
+    claimed = _due_event(repo, world_p)
+    repo.claim(tenant_id=TENANT_P, event_id=claimed.id, expected_revision=1, now=datetime.now(UTC))
+    assert (
+        repo.link_attempt(
+            tenant_id=TENANT_P, event_id=claimed.id, expected_revision=2, attempt_id=attempt
+        )
+        is None
+    )
+
+
+def test_list_in_flight_returns_only_the_tenants_publishing_events(repo, world_p, world_q) -> None:
+    claimed = _due_event(repo, world_p)
+    waiting = _due_event(repo, world_p)
+    repo.claim(tenant_id=TENANT_P, event_id=claimed.id, expected_revision=1, now=datetime.now(UTC))
+    in_flight = repo.list_in_flight(tenant_id=TENANT_P, limit=10_000)
+    assert claimed.id in {e.id for e in in_flight}
+    assert waiting.id not in {e.id for e in in_flight}
+    assert all(e.status == "publishing" for e in in_flight)
+    assert claimed.id not in {e.id for e in repo.list_in_flight(tenant_id=TENANT_Q)}
+    _retire(repo, waiting)
+
+
+def test_two_concurrent_claims_exactly_one_wins(world_p) -> None:
+    """The real race: N threads, each on its own pooled connection, released together by
+    a barrier against the same due event. Repeated so a lucky interleaving cannot pass."""
+    repo = PostgresPlannerRepository()
+    contenders = 4
+    for _ in range(5):
+        event = _due_event(repo, world_p)
+        barrier = threading.Barrier(contenders)
+
+        def contend(_: int, event_id: UUID = event.id, gate: threading.Barrier = barrier):
+            gate.wait()
+            return repo.claim(
+                tenant_id=TENANT_P,
+                event_id=event_id,
+                expected_revision=1,
+                now=datetime.now(UTC),
+            )
+
+        with ThreadPoolExecutor(max_workers=contenders) as pool:
+            results = list(pool.map(contend, range(contenders)))
+        assert sum(r is not None for r in results) == 1
+        assert repo.get(tenant_id=TENANT_P, event_id=event.id).status == "publishing"
