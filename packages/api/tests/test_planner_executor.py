@@ -14,7 +14,12 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from qualify_api.planner.executor import AdvanceOutcome, EventExecutor, ExecutionOutcome
+from qualify_api.planner.executor import (
+    AdvanceOutcome,
+    EventExecutor,
+    ExecutionOutcome,
+    SettleOutcome,
+)
 from qualify_api.planner.locks import MemoryExecutionLock, attempt_lock_key, event_lock_key
 from qualify_api.planner.post_reader import (
     NotPublishable,
@@ -73,7 +78,24 @@ class FakePosts:
 
 @dataclass
 class _Attempt:
+    """The slice of `AttemptRecord` the executor reads."""
+
     id: UUID
+    connection_id: UUID | None = None
+    idempotency_key: str = ""
+    status: str = "processing"
+    settled_at: datetime | None = None
+    published_media_id: str | None = None
+    platform_error_code: str | None = None
+
+    @property
+    def is_settled(self) -> bool:
+        return self.settled_at is not None
+
+    def settle(self, status: str, **kw: object) -> None:
+        self.status, self.settled_at = status, NOW
+        for name, value in kw.items():
+            setattr(self, name, value)
 
 
 @dataclass
@@ -93,7 +115,7 @@ class FakePublisher:
         existing = self.attempts.get((connection_id, key))
         if existing is not None:
             return existing, False
-        attempt = _Attempt(uuid4())
+        attempt = _Attempt(uuid4(), connection_id=connection_id, idempotency_key=key)
         self.attempts[(connection_id, key)] = attempt
         return attempt, True
 
@@ -137,6 +159,9 @@ class FakePublisher:
     # AttemptLocator
     def find_by_idempotency_key(self, *, tenant_id, connection_id, idempotency_key):
         return self.attempts.get((connection_id, idempotency_key))
+
+    def get_attempt(self, *, tenant_id, attempt_id):
+        return next((a for a in self.attempts.values() if a.id == attempt_id), None)
 
 
 @dataclass
@@ -505,7 +530,7 @@ async def test_advance_in_flight_steps_only_the_tenants_linked_events(world: Wor
     world.repo.claim(tenant_id=TENANT, event_id=unlinked.id, expected_revision=1, now=NOW)
     _due(world)  # still scheduled
     results = await world.executor.advance_in_flight(tenant_id=TENANT)
-    assert [r.event_id for r in results] == [linked.id]
+    assert [advanced.event_id for advanced, _ in results] == [linked.id]
     assert await world.executor.advance_in_flight(tenant_id=uuid4()) == []
 
 
@@ -513,3 +538,146 @@ def test_the_attempt_lock_and_the_event_lock_are_different_keys() -> None:
     same = uuid4()
     assert attempt_lock_key(same) != event_lock_key(same)
     assert attempt_lock_key(same) == f"qua111:publish-attempt:{same}"
+
+
+# --- settle (F5) -------------------------------------------------------------------
+
+S = SettleOutcome
+
+
+def _attempt_of(world: World, event) -> _Attempt:
+    attempt = world.publisher.get_attempt(tenant_id=TENANT, attempt_id=event.publish_attempt_id)
+    assert attempt is not None
+    return attempt
+
+
+async def test_a_published_attempt_publishes_the_event_with_its_media_id(world: World) -> None:
+    event = await _linked(world)
+    _attempt_of(world, event).settle("published", published_media_id="1789")
+    result = world.executor.settle_event(event)
+    assert result.outcome is S.SETTLED_PUBLISHED and result.published_media_id == "1789"
+    assert _status(world, event) == ("published", event.publish_attempt_id)
+
+
+async def test_a_published_attempt_without_a_media_id_stays_without_one(world: World) -> None:
+    """Confirmed through the container's PUBLISHED status: no id was ever returned."""
+    event = await _linked(world)
+    _attempt_of(world, event).settle("published", published_media_id=None)
+    result = world.executor.settle_event(event)
+    assert result.outcome is S.SETTLED_PUBLISHED and result.published_media_id is None
+    assert _status(world, event)[0] == "published"
+
+
+async def test_a_failed_attempt_fails_the_event_with_the_platform_reason(world: World) -> None:
+    event = await _linked(world)
+    _attempt_of(world, event).settle("failed", platform_error_code="container_error")
+    result = world.executor.settle_event(event)
+    assert result.outcome is S.SETTLED_FAILED and result.reason == "container_error"
+    assert _status(world, event) == ("failed", event.publish_attempt_id)
+    assert event.post_id not in world.repo.occupied_post_ids(tenant_id=TENANT, brand_id=BRAND)
+
+
+async def test_an_unsettled_attempt_changes_nothing(world: World) -> None:
+    event = await _linked(world)
+    result = world.executor.settle_event(event)
+    assert result.outcome is S.NOT_SETTLED
+    assert _status(world, event) == ("publishing", event.publish_attempt_id)
+
+
+async def test_settling_twice_is_already_settled(world: World) -> None:
+    event = await _linked(world)
+    _attempt_of(world, event).settle("published", published_media_id="1789")
+    assert world.executor.settle_event(event).outcome is S.SETTLED_PUBLISHED
+    again = world.executor.settle_event(event)  # the same (stale) snapshot, same outcome
+    assert again.outcome is S.ALREADY_SETTLED
+    assert _status(world, event)[0] == "published"
+
+
+async def test_an_event_in_another_terminal_status_is_a_mismatch(world: World) -> None:
+    event = await _linked(world)
+    _attempt_of(world, event).settle("failed", platform_error_code="x")
+    world.repo._rows[event.id] = replace(event, status="published")  # a hand-edited row
+    result = world.executor.settle_event(event)
+    assert result.outcome is S.MISMATCH
+    assert _status(world, event)[0] == "published"  # never "repaired"
+
+
+async def test_an_attempt_of_another_key_or_connection_is_a_mismatch(world: World) -> None:
+    event = await _linked(world)
+    attempt = _attempt_of(world, event)
+    attempt.settle("published")
+    attempt.idempotency_key = f"cal:{event.id}:99"
+    assert world.executor.settle_event(event).outcome is S.MISMATCH
+    attempt.idempotency_key, attempt.connection_id = f"cal:{event.id}:1", uuid4()
+    assert world.executor.settle_event(event).outcome is S.MISMATCH
+    assert _status(world, event)[0] == "publishing"
+
+
+async def test_a_stale_revision_or_link_is_a_mismatch(world: World) -> None:
+    event = await _linked(world)
+    _attempt_of(world, event).settle("published")
+    other = replace(event, publish_attempt_id=uuid4())
+    assert world.executor.settle_event(other).outcome is S.MISMATCH
+    assert world.executor.settle_event(replace(event, revision=2)).outcome is S.MISMATCH
+    assert _status(world, event)[0] == "publishing"
+
+
+def test_an_unlinked_event_is_not_settled(world: World) -> None:
+    event = _due(world)
+    assert world.executor.settle_event(event).outcome is S.NOT_LINKED
+
+
+async def test_advance_in_flight_settles_only_after_settled_or_advance_error(
+    world: World,
+) -> None:
+    event = await _linked(world)
+    attempt = _attempt_of(world, event)
+
+    # Still in progress: advanced, not settled.
+    ((advanced, settled),) = await world.executor.advance_in_flight(tenant_id=TENANT)
+    assert advanced.outcome is A.ADVANCED and settled is None
+
+    # Awaiting confirmation: not settled either.
+    world.publisher.next_advance = {"awaiting_confirmation": True}
+    ((advanced, settled),) = await world.executor.advance_in_flight(tenant_id=TENANT)
+    assert advanced.outcome is A.AWAITING_CONFIRMATION and settled is None
+
+    # A transient error with the attempt NOT settled: the event stays publishing.
+    world.publisher.next_advance = {}
+    world.publisher.raise_on_advance = RuntimeError("graph 500")
+    ((advanced, settled),) = await world.executor.advance_in_flight(tenant_id=TENANT)
+    assert advanced.outcome is A.ADVANCE_ERROR and settled.outcome is S.NOT_SETTLED
+    assert _status(world, event)[0] == "publishing"
+
+    # An error after someone else settled the attempt: the row decides.
+    attempt.settle("published", published_media_id="42")
+    ((advanced, settled),) = await world.executor.advance_in_flight(tenant_id=TENANT)
+    assert advanced.outcome is A.ADVANCE_ERROR and settled.outcome is S.SETTLED_PUBLISHED
+    assert _status(world, event)[0] == "published"
+    assert await world.executor.advance_in_flight(tenant_id=TENANT) == []  # nothing in flight
+
+
+async def test_advance_in_flight_settles_a_settled_step(world: World) -> None:
+    event = await _linked(world)
+    _attempt_of(world, event).settle("failed", platform_error_code="container_poll_ceiling")
+    world.publisher.next_advance = {"status": "failed", "settled": True}
+    ((advanced, settled),) = await world.executor.advance_in_flight(tenant_id=TENANT)
+    assert advanced.outcome is A.SETTLED and settled.outcome is S.SETTLED_FAILED
+    assert _status(world, event)[0] == "failed"
+
+
+def test_settle_from_attempt_compares_status_revision_and_attempt(world: World) -> None:
+    repo, event = world.repo, _due(world)
+    attempt_id = uuid4()
+    kw = {"tenant_id": TENANT, "event_id": event.id, "attempt_id": attempt_id}
+    assert repo.settle_from_attempt(expected_revision=1, published=True, **kw) is None  # scheduled
+    repo.claim(tenant_id=TENANT, event_id=event.id, expected_revision=1, now=NOW)
+    repo.link_attempt(
+        tenant_id=TENANT, event_id=event.id, expected_revision=1, attempt_id=attempt_id
+    )
+    assert repo.settle_from_attempt(expected_revision=2, published=True, **kw) is None
+    wrong = {**kw, "attempt_id": uuid4()}
+    assert repo.settle_from_attempt(expected_revision=1, published=True, **wrong) is None
+    done = repo.settle_from_attempt(expected_revision=1, published=True, **kw)
+    assert done is not None and done.status == "published"
+    assert repo.settle_from_attempt(expected_revision=1, published=False, **kw) is None

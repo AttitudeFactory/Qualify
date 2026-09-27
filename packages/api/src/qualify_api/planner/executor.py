@@ -1,13 +1,13 @@
-"""The calendar-event executor (QUA-111): claim a due event, START its publication, and
-ADVANCE the publish attempt linked to it.
+"""The calendar-event executor (QUA-111): claim a due event, START its publication,
+ADVANCE the publish attempt linked to it, and SETTLE the event with that attempt's outcome.
 
 POST (QUA-109) → CalendarEvent (QUA-108) → **this** → PublishService (publishing).
 
 This module takes one event from `scheduled` to `publishing` + a linked publish attempt,
-then drives that attempt one `PublishService.advance()` step at a time. It never
-publishes by itself — `start()` / `start_many()` / `advance()` do, unchanged — it never
-moves an event to its final status (F5 translates the attempt's outcome), and it never
-decides when to run (the runtime, F6).
+drives that attempt one `PublishService.advance()` step at a time, and closes the event as
+`published` / `failed` once the attempt is settled. It never publishes by itself —
+`start()` / `start_many()` / `advance()` do, unchanged — and it never decides when to run
+(the runtime, F6).
 
 ## The flow, per event
 
@@ -41,8 +41,17 @@ One `advance()` per call, under the ATTEMPT's advisory lock, after re-reading th
 under that lock. The publisher already makes a settled attempt answer from its row (no
 Meta call) and never resends once the send marker exists (A6-min) — but that marker is
 not a compare-and-set, so two concurrent advances could both send; the attempt lock is
-what rules that out for every executor. The result is returned, not applied: the event
-stays `publishing` until F5 maps a settled attempt to `PUBLISH_OK` / `PUBLISH_FAIL`.
+what rules that out for every executor. `advance_event` only reports; the event stays
+`publishing` until `settle_event` applies a settled attempt's outcome.
+
+## Settling (`settle_event`)
+
+The attempt's outcome, read from its `publish_attempts` row by the id the event links to,
+closes the event through the FSM's PUBLISH_OK / PUBLISH_FAIL edges with one conditional
+write (`publishing`, same revision, same attempt). A second settle of the same outcome is
+ALREADY_SETTLED; any disagreement is MISMATCH and nothing is written. The media id and
+the failure reason stay on the attempt (the event has no columns for them); a PUBLISHED
+confirmation that never went through `media_publish` has no media id, and none is made up.
 
 Known limits, recorded rather than patched (they are the publisher's):
 - the lock covers executor callers only — `GET /api/publishing/attempts/{id}` and the
@@ -124,6 +133,33 @@ class AdvanceResult:
     error: str = ""
 
 
+class SettleOutcome(StrEnum):
+    NOT_LINKED = "not_linked"  # no attempt to take an outcome from
+    NOT_SETTLED = "not_settled"  # the attempt is still in progress / awaiting confirmation
+    SETTLED_PUBLISHED = "settled_published"  # this call moved the event to `published`
+    SETTLED_FAILED = "settled_failed"  # this call moved the event to `failed`
+    ALREADY_SETTLED = "already_settled"  # the event already carries this attempt's outcome
+    MISMATCH = "mismatch"  # event and attempt disagree — nothing written, logged as error
+
+
+@dataclass(frozen=True)
+class SettleResult:
+    event_id: UUID
+    outcome: SettleOutcome
+    attempt_id: UUID | None = None
+    published_media_id: str | None = None  # the attempt's, as Meta returned it — or None
+    reason: str = ""
+
+
+# F4 results after which the attempt row may be terminal and is worth reading (F5).
+# ADVANCE_ERROR included: the attempt may have been settled by another caller, or by this
+# very step before the error — the row, not the error, says which.
+_SETTLE_AFTER: frozenset[AdvanceOutcome] = frozenset(
+    {AdvanceOutcome.SETTLED, AdvanceOutcome.ADVANCE_ERROR}
+)
+_ATTEMPT_PUBLISHED = "published"
+
+
 class PublishStarter(Protocol):
     """The `PublishService` operations the executor uses: start a publication, then
     advance its attempt one step at a time."""
@@ -155,11 +191,15 @@ class PublishStarter(Protocol):
 
 
 class AttemptLocator(Protocol):
-    """The publisher repository's own lookup by its unique idempotency key."""
+    """Read access to `publish_attempts` through the publisher's own repository: by its
+    unique idempotency key (to find what `start()` wrote) and by id (to read the outcome
+    of the attempt an event links to)."""
 
     def find_by_idempotency_key(
         self, *, tenant_id: UUID, connection_id: UUID, idempotency_key: str
     ) -> AttemptRecord | None: ...
+
+    def get_attempt(self, *, tenant_id: UUID, attempt_id: UUID) -> AttemptRecord | None: ...
 
 
 def _log(event: str, record: EventRecord, **fields: object) -> None:
@@ -304,15 +344,104 @@ class EventExecutor:
         _log("advanced", current, attempt_id=attempt_id, outcome=outcome.value, status=state.status)
         return AdvanceResult(current.id, outcome, attempt_id, state=state)
 
-    async def advance_in_flight(self, *, tenant_id: UUID, limit: int = 100) -> list[AdvanceResult]:
+    async def advance_in_flight(
+        self, *, tenant_id: UUID, limit: int = 100
+    ) -> list[tuple[AdvanceResult, SettleResult | None]]:
         """One step for each of the tenant's `publishing` events that HAS an attempt, oldest
-        claim first. Unlinked ones are left to `start_claimed`; cross-tenant discovery,
+        claim first, then — when that step may have ended the attempt — the event's
+        settlement (F5). Unlinked ones are left to `start_claimed`; cross-tenant discovery,
         cadence and looping belong to the runtime (F6)."""
-        results: list[AdvanceResult] = []
+        results: list[tuple[AdvanceResult, SettleResult | None]] = []
         for event in self._repo.list_in_flight(tenant_id=tenant_id, limit=limit):
-            if event.publish_attempt_id is not None:
-                results.append(await self.advance_event(event))
+            if event.publish_attempt_id is None:
+                continue
+            advanced = await self.advance_event(event)
+            settled = self.settle_event(event) if advanced.outcome in _SETTLE_AFTER else None
+            results.append((advanced, settled))
         return results
+
+    # -- settlement (F5) ----------------------------------------------------------------
+
+    def settle_event(self, event: EventRecord) -> SettleResult:
+        """Close the event with the outcome of the attempt it links to — read from the
+        `publish_attempts` row (settle-once, the source of truth), never from a transient
+        `PublishState`. A no-op while the attempt is not settled. Idempotent. Never
+        repairs a disagreement between event and attempt: it reports MISMATCH.
+
+        `published_media_id` is whatever the attempt holds. When Meta confirmed through
+        the container's PUBLISHED status (reconciliation) rather than `media_publish`, the
+        publisher never received an id and the attempt's is NULL; it stays NULL here — the
+        event has no media-id column, and recovering it is full A6 reconciliation."""
+        attempt_id = event.publish_attempt_id
+        if attempt_id is None:
+            return SettleResult(event.id, SettleOutcome.NOT_LINKED)
+        attempt = self._attempts.get_attempt(tenant_id=event.tenant_id, attempt_id=attempt_id)
+        expected_key = idempotency_key(event.id, event.revision)
+        if (
+            attempt is None
+            or attempt.connection_id != event.connection_id
+            or attempt.idempotency_key != expected_key
+        ):
+            # Defensive: the FK says this is the event's attempt; key and connection must
+            # agree with it. If they do not, nothing is written.
+            return self._mismatch(event, attempt_id, "attempt does not match the event")
+        if not attempt.is_settled:
+            return SettleResult(event.id, SettleOutcome.NOT_SETTLED, attempt_id)
+
+        published = attempt.status == _ATTEMPT_PUBLISHED
+        reason = "" if published else (attempt.platform_error_code or "")
+        settled = self._repo.settle_from_attempt(
+            tenant_id=event.tenant_id,
+            event_id=event.id,
+            expected_revision=event.revision,
+            attempt_id=attempt_id,
+            published=published,
+        )
+        outcome = SettleOutcome.SETTLED_PUBLISHED if published else SettleOutcome.SETTLED_FAILED
+        if settled is None:
+            current = self._repo.get(tenant_id=event.tenant_id, event_id=event.id)
+            target = EventStatus.PUBLISHED if published else EventStatus.FAILED
+            if (
+                current is not None
+                and current.status == target.value
+                and current.publish_attempt_id == attempt_id
+                and current.revision == event.revision
+            ):
+                outcome = SettleOutcome.ALREADY_SETTLED
+            else:
+                return self._mismatch(
+                    event,
+                    attempt_id,
+                    f"event is {current.status if current else 'missing'}, "
+                    f"attempt is {attempt.status}",
+                )
+        else:
+            _log(
+                "settled",
+                event,
+                attempt_id=attempt_id,
+                status=attempt.status,
+                published_media_id=attempt.published_media_id or "none",
+                reason=reason or "none",
+            )
+        return SettleResult(
+            event.id,
+            outcome,
+            attempt_id,
+            published_media_id=attempt.published_media_id,
+            reason=reason,
+        )
+
+    def _mismatch(self, event: EventRecord, attempt_id: UUID, detail: str) -> SettleResult:
+        logger.error(
+            "calendar.settle_mismatch tenant_id=%s event_id=%s revision=%s attempt_id=%s %s",
+            event.tenant_id,
+            event.id,
+            event.revision,
+            attempt_id,
+            detail,
+        )
+        return SettleResult(event.id, SettleOutcome.MISMATCH, attempt_id, reason=detail)
 
     # -- helpers ----------------------------------------------------------------------
 

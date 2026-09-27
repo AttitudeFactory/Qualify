@@ -24,6 +24,7 @@ from qualify_api.planner.models import CalendarEvent, CalendarEventTag, PlannerT
 # status the transition table does not produce.
 _CLAIMED: EventStatus = apply_transition(EventStatus.SCHEDULED.value, EventTrigger.CLAIM)
 _FAILED: EventStatus = apply_transition(EventStatus.PUBLISHING.value, EventTrigger.PUBLISH_FAIL)
+_PUBLISHED: EventStatus = apply_transition(EventStatus.PUBLISHING.value, EventTrigger.PUBLISH_OK)
 
 
 @dataclass(frozen=True)
@@ -137,6 +138,21 @@ class PlannerRepository(Protocol):
         publication never started (nothing was sent) may be failed; one with an attempt
         belongs to that attempt's outcome. `None` if the event is not `publishing` at
         `expected_revision` with `publish_attempt_id IS NULL`."""
+        ...
+
+    def settle_from_attempt(
+        self,
+        *,
+        tenant_id: UUID,
+        event_id: UUID,
+        expected_revision: int,
+        attempt_id: UUID,
+        published: bool,
+    ) -> EventRecord | None:
+        """Close a `publishing` event with its settled attempt's outcome: `published`
+        (PUBLISH_OK) or `failed` (PUBLISH_FAIL), in ONE conditional write — only if the
+        event is still `publishing`, at `expected_revision`, linked to `attempt_id`.
+        `None` when it no longer matches (already settled, or a different state)."""
         ...
 
     # -- planning tags (0025) ------------------------------------------------
@@ -410,6 +426,28 @@ class MemoryPlannerRepository:
         self._rows[event_id] = updated
         return updated
 
+    def settle_from_attempt(
+        self,
+        *,
+        tenant_id: UUID,
+        event_id: UUID,
+        expected_revision: int,
+        attempt_id: UUID,
+        published: bool,
+    ) -> EventRecord | None:
+        current = self.get(tenant_id=tenant_id, event_id=event_id)
+        if (
+            current is None
+            or current.status != EventStatus.PUBLISHING.value
+            or current.revision != expected_revision
+            or current.publish_attempt_id != attempt_id
+        ):
+            return None
+        new_status = _PUBLISHED if published else _FAILED
+        updated = replace(current, status=new_status.value, updated_at=datetime.now(UTC))
+        self._rows[event_id] = updated
+        return updated
+
 
 class PostgresPlannerRepository:
     """Every call opens its own `tenant_session` — RLS decides visibility."""
@@ -592,6 +630,30 @@ class PostgresPlannerRepository:
                     CalendarEvent.publish_attempt_id.is_(None),
                 )
                 .values(status=_FAILED.value, updated_at=datetime.now(UTC))
+                .returning(CalendarEvent)
+            ).one_or_none()
+            return _snapshot(row) if row is not None else None
+
+    def settle_from_attempt(
+        self,
+        *,
+        tenant_id: UUID,
+        event_id: UUID,
+        expected_revision: int,
+        attempt_id: UUID,
+        published: bool,
+    ) -> EventRecord | None:
+        new_status = _PUBLISHED if published else _FAILED
+        with tenant_session(tenant_id) as session:
+            row = session.scalars(
+                update(CalendarEvent)
+                .where(
+                    CalendarEvent.id == event_id,
+                    CalendarEvent.status == EventStatus.PUBLISHING.value,
+                    CalendarEvent.revision == expected_revision,
+                    CalendarEvent.publish_attempt_id == attempt_id,
+                )
+                .values(status=new_status.value, updated_at=datetime.now(UTC))
                 .returning(CalendarEvent)
             ).one_or_none()
             return _snapshot(row) if row is not None else None

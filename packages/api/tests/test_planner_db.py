@@ -12,6 +12,7 @@ import io
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -28,7 +29,12 @@ from qualify_api.creative import models as creative
 from qualify_api.planner import draft_post_reader
 from qualify_api.planner.composition import PostgresConnectionGate, tenant_timezone
 from qualify_api.planner.draft_post_reader import DraftPostReader
-from qualify_api.planner.executor import AdvanceOutcome, EventExecutor, ExecutionOutcome
+from qualify_api.planner.executor import (
+    AdvanceOutcome,
+    EventExecutor,
+    ExecutionOutcome,
+    SettleOutcome,
+)
 from qualify_api.planner.fsm import EventTrigger, apply_transition
 from qualify_api.planner.locks import PostgresAdvisoryLock, attempt_lock_key
 from qualify_api.planner.post_reader import (
@@ -1329,3 +1335,146 @@ def test_diagnostic_without_the_attempt_lock_two_advances_publish_twice(world_f2
     factory = _AdvanceFactory(meta, status=ContainerStatus.FINISHED, barriers=barriers)
     _race(lambda: _executor([], lock=_NoLock(), factory=factory).advance_event(event))
     assert meta.count("media_publish") == 2  # the double publish the attempt lock prevents
+
+
+# --- settling the event from its attempt (QUA-111 F5) -------------------------------
+#
+# A FRESH tenant per test here: `advance_in_flight` steps every linked `publishing` event
+# of the tenant, and the module-wide `world_f2` tenant holds F3/F4 leftovers.
+
+
+@pytest.fixture
+def world_f5() -> tuple[UUID, UUID, UUID]:
+    tenant_id = uuid4()
+    brand_id, _, connection_id = _provision(tenant_id, f"t-qua111-f5-{tenant_id.hex[:8]}")
+    return tenant_id, brand_id, connection_id
+
+
+def _stored(tenant_id: UUID, event_id: UUID) -> EventRecord:
+    return PostgresPlannerRepository().get(tenant_id=tenant_id, event_id=event_id)
+
+
+def _advance_and_settle(world, status: ContainerStatus) -> tuple[EventRecord, list]:
+    """try_execute → advance_in_flight (advance + settle) with Meta answering `status`."""
+    tenant_id = world[0]
+    event = _due_reel_event(world)
+    executor = _executor([], factory=_AdvanceFactory(_MetaCalls(), status=status))
+    assert asyncio.run(executor.try_execute(event)).outcome is ExecutionOutcome.STARTED
+    steps = asyncio.run(executor.advance_in_flight(tenant_id=tenant_id))
+    return _stored(tenant_id, event.id), steps
+
+
+def test_end_to_end_execute_advance_settle_publishes_with_the_media_id(world_f5) -> None:
+    tenant_id = world_f5[0]
+    event, steps = _advance_and_settle(world_f5, ContainerStatus.FINISHED)
+    ((advanced, settled),) = steps
+    assert advanced.outcome is AdvanceOutcome.SETTLED
+    assert settled.outcome is SettleOutcome.SETTLED_PUBLISHED
+    assert event.status == "published"
+    attempt = _attempt(tenant_id, event.publish_attempt_id)
+    assert attempt.status == "published" and attempt.published_media_id
+    assert settled.published_media_id == attempt.published_media_id
+
+
+def test_a_published_confirmation_without_media_id_keeps_it_null(world_f5) -> None:
+    """Meta reports the container PUBLISHED without `media_publish` having returned an
+    id (the reconciliation path): the event is published, the id stays NULL."""
+    tenant_id = world_f5[0]
+    event, steps = _advance_and_settle(world_f5, ContainerStatus.PUBLISHED)
+    ((_, settled),) = steps
+    assert settled.outcome is SettleOutcome.SETTLED_PUBLISHED
+    assert settled.published_media_id is None
+    assert event.status == "published"
+    assert _attempt(tenant_id, event.publish_attempt_id).published_media_id is None
+
+
+def test_a_failed_attempt_fails_the_event_and_keeps_its_platform_reason(world_f5) -> None:
+    tenant_id = world_f5[0]
+    event, steps = _advance_and_settle(world_f5, ContainerStatus.ERROR)
+    ((_, settled),) = steps
+    assert settled.outcome is SettleOutcome.SETTLED_FAILED
+    assert settled.reason == "container_error"
+    assert event.status == "failed"
+    assert _attempt(tenant_id, event.publish_attempt_id).platform_error_code == "container_error"
+
+
+def test_a_non_terminal_attempt_leaves_the_event_publishing(world_f5) -> None:
+    tenant_id = world_f5[0]
+    event, steps = _advance_and_settle(world_f5, ContainerStatus.IN_PROGRESS)
+    ((advanced, settled),) = steps
+    assert advanced.outcome is AdvanceOutcome.ADVANCED and settled is None
+    assert _executor([]).settle_event(event).outcome is SettleOutcome.NOT_SETTLED
+    assert _stored(tenant_id, event.id).status == "publishing"
+
+
+def test_a_repeated_settlement_is_already_settled(world_f5) -> None:
+    tenant_id = world_f5[0]
+    event, _ = _advance_and_settle(world_f5, ContainerStatus.FINISHED)
+    again = _executor([]).settle_event(event)
+    assert again.outcome is SettleOutcome.ALREADY_SETTLED
+    assert _stored(tenant_id, event.id).status == "published"
+
+
+def test_a_mismatched_attempt_revision_or_state_writes_nothing(world_f5) -> None:
+    tenant_id = world_f5[0]
+    executor = _executor([], factory=_AdvanceFactory(_MetaCalls(), status=ContainerStatus.ERROR))
+    mine = _due_reel_event(world_f5)
+    other = _due_reel_event(world_f5)
+    for event in (mine, other):
+        asyncio.run(executor.try_execute(event))
+    mine, other = _stored(tenant_id, mine.id), _stored(tenant_id, other.id)
+    asyncio.run(executor.advance_event(other))  # settles OTHER's attempt as failed
+    # Another event's attempt: key does not match this event.
+    stolen = replace(mine, publish_attempt_id=other.publish_attempt_id)
+    assert _executor([]).settle_event(stolen).outcome is SettleOutcome.MISMATCH
+    # A stale revision: key does not match either.
+    assert _executor([]).settle_event(replace(other, revision=2)).outcome is SettleOutcome.MISMATCH
+    # The repository CAS itself refuses a wrong attempt or revision.
+    repo = PostgresPlannerRepository()
+    kw = {"tenant_id": tenant_id, "event_id": mine.id, "published": False}
+    assert repo.settle_from_attempt(expected_revision=1, attempt_id=uuid4(), **kw) is None
+    assert (
+        repo.settle_from_attempt(expected_revision=2, attempt_id=mine.publish_attempt_id, **kw)
+        is None
+    )
+    assert _stored(tenant_id, mine.id).status == "publishing"
+    assert _stored(tenant_id, other.id).status == "publishing"
+
+
+def test_two_concurrent_settlements_make_exactly_one_transition(world_f5) -> None:
+    tenant_id = world_f5[0]
+    event = _due_reel_event(world_f5)
+    finished = _AdvanceFactory(_MetaCalls(), status=ContainerStatus.FINISHED)
+    executor = _executor([], factory=finished)
+    asyncio.run(executor.try_execute(event))
+    event = _stored(tenant_id, event.id)
+    asyncio.run(executor.advance_event(event))  # the attempt is now settled `published`
+    barrier = threading.Barrier(2)
+
+    def settle(_: int):
+        barrier.wait(timeout=10)
+        return _executor([]).settle_event(event)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(settle, range(2)))
+    assert sorted(r.outcome.value for r in results) == ["already_settled", "settled_published"]
+    stored = _stored(tenant_id, event.id)
+    assert (stored.status, stored.publish_attempt_id) == ("published", event.publish_attempt_id)
+
+
+def test_an_attempt_settled_by_another_caller_is_reflected(world_f5) -> None:
+    """E.g. the HTTP GET route advanced it: the executor only reads the row."""
+    tenant_id = world_f5[0]
+    event = _due_reel_event(world_f5)
+    asyncio.run(_executor([]).try_execute(event))
+    event = _stored(tenant_id, event.id)
+    PostgresPublishAttemptRepository().settle(
+        tenant_id=tenant_id,
+        attempt_id=event.publish_attempt_id,
+        status="published",
+        published_media_id="ext-1789",
+    )
+    result = _executor([]).settle_event(event)
+    assert result.outcome is SettleOutcome.SETTLED_PUBLISHED
+    assert result.published_media_id == "ext-1789"
+    assert _stored(tenant_id, event.id).status == "published"
