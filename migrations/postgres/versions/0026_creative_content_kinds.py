@@ -1,8 +1,8 @@
 """content_briefs.kind/media + image_assets.media_type/position: the generator's content
 kinds.
 
-Revision ID: 0024
-Revises: 0023
+Revision ID: 0026
+Revises: 0025
 Create Date: 2026-09-25
 
 ## Why this exists
@@ -32,8 +32,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision = "0024"
-down_revision = "0023"
+revision = "0026"
+down_revision = "0025"
 branch_labels = None
 depends_on = None
 

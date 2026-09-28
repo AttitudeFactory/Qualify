@@ -813,6 +813,29 @@ def test_full_happy_path_create_run_approve_and_read_seam(
     assert draft_id in {a.draft_id for a in listed}
 
 
+def test_regenerating_an_already_rejected_draft_skips_the_second_reject() -> None:
+    router = FakeRouter([ok_outcome(copy_dict()), ok_outcome(copy_dict())])
+    service, repo, dispatcher = make_service(router=router, kit=make_kit(), voice=make_voice())
+    draft_id, _ = _generated_draft_with_variant(service, repo)
+    service.reject(tenant_id=TENANT_ID, draft_id=draft_id, reason="no", user_id=USER_ID)
+    detail = service.reject(
+        tenant_id=TENANT_ID, draft_id=draft_id, reason="again", user_id=USER_ID, regenerate=True
+    )
+    assert detail.status == DRAFTING
+    assert dispatcher.calls == [(TENANT_ID, draft_id)]
+
+
+def test_rejecting_an_already_rejected_draft_is_an_invalid_transition() -> None:
+    from qualify_api.creative.fsm import InvalidTransition
+
+    router = FakeRouter([ok_outcome(copy_dict())])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    draft_id, _ = _generated_draft_with_variant(service, repo)
+    service.reject(tenant_id=TENANT_ID, draft_id=draft_id, reason="no", user_id=USER_ID)
+    with pytest.raises(InvalidTransition):
+        service.reject(tenant_id=TENANT_ID, draft_id=draft_id, reason="no", user_id=USER_ID)
+
+
 # ---------------------------------------------------------------------------
 # content kinds: the media half of a draft (§ request 2026-09-25)
 
@@ -906,7 +929,7 @@ def test_an_edit_is_merged_over_the_stored_copy() -> None:
 
 
 # ---------------------------------------------------------------------------
-# the POST fields (0025, QUA-109)
+# the POST fields (0027, QUA-109)
 
 
 def test_a_new_post_is_titled_by_its_topic_and_categorised_by_its_kind() -> None:
