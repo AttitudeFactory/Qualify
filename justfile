@@ -56,6 +56,19 @@ refresh-referentes *args:
 classify-hashtags *args:
     uv run --no-sync python -m Qualify.classify_hashtags {{args}}
 
+# QUA-111: the calendar executor (claim → publish → advance → settle). PUBLISHES FOR REAL
+# to the connected accounts of the tenants in scope. Scope is mandatory:
+#   just calendar-tick --tenant <uuid>     # one tick, that tenant only (use this locally)
+#   just calendar-tick --all-tenants       # one tick, every tenant (production; e.g. cron)
+calendar-tick *args:
+    uv run --no-sync python -m qualify_api.planner.worker --once {{args}}
+
+# QUA-111: the calendar worker — a tick every --interval seconds (default 60) until Ctrl+C.
+#   just calendar-worker --tenant <uuid>
+#   just calendar-worker --all-tenants [--interval 60]
+calendar-worker *args:
+    uv run --no-sync python -m qualify_api.planner.worker {{args}}
+
 # Default test pass: unit + db, never external network. Mirrors CI.
 test:
     uv run pytest -m "not integration"

@@ -15,10 +15,16 @@ from typing import Protocol
 from uuid import UUID, uuid4
 
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 
-from qualify_api.planner.fsm import EventStatus
+from qualify_api.planner.fsm import EventStatus, EventTrigger, apply_transition
 from qualify_api.planner.models import CalendarEvent, CalendarEventTag, PlannerTag
+
+# QUA-111's execution edges, read from the FSM once so the repository never spells a
+# status the transition table does not produce.
+_CLAIMED: EventStatus = apply_transition(EventStatus.SCHEDULED.value, EventTrigger.CLAIM)
+_FAILED: EventStatus = apply_transition(EventStatus.PUBLISHING.value, EventTrigger.PUBLISH_FAIL)
+_PUBLISHED: EventStatus = apply_transition(EventStatus.PUBLISHING.value, EventTrigger.PUBLISH_OK)
 
 
 @dataclass(frozen=True)
@@ -100,6 +106,53 @@ class PlannerRepository(Protocol):
 
     def list_due(self, *, tenant_id: UUID, now: datetime, limit: int = 100) -> list[EventRecord]:
         """`scheduled` events with `scheduled_at <= now`, oldest first — QUA-111's query."""
+        ...
+
+    # -- execution (QUA-111) ---------------------------------------------------
+
+    def claim(
+        self, *, tenant_id: UUID, event_id: UUID, expected_revision: int, now: datetime
+    ) -> EventRecord | None:
+        """`scheduled` → `publishing` in ONE conditional write: only if the event is still
+        `scheduled`, at `expected_revision`, and due at `now`. `None` means another
+        executor claimed it first, or the operator moved/cancelled it — never both."""
+        ...
+
+    def link_attempt(
+        self, *, tenant_id: UUID, event_id: UUID, expected_revision: int, attempt_id: UUID
+    ) -> EventRecord | None:
+        """Point a `publishing` event at its publish attempt. Idempotent for the same
+        attempt; `None` if the event is not `publishing` at `expected_revision` or is
+        already linked to a DIFFERENT attempt (the link is never overwritten)."""
+        ...
+
+    def list_in_flight(self, *, tenant_id: UUID, limit: int = 100) -> list[EventRecord]:
+        """`publishing` events, oldest claim first — what an executor resumes after a
+        restart."""
+        ...
+
+    def fail_unstarted(
+        self, *, tenant_id: UUID, event_id: UUID, expected_revision: int
+    ) -> EventRecord | None:
+        """`publishing` → `failed` ONLY while no publish attempt is linked: an event whose
+        publication never started (nothing was sent) may be failed; one with an attempt
+        belongs to that attempt's outcome. `None` if the event is not `publishing` at
+        `expected_revision` with `publish_attempt_id IS NULL`."""
+        ...
+
+    def settle_from_attempt(
+        self,
+        *,
+        tenant_id: UUID,
+        event_id: UUID,
+        expected_revision: int,
+        attempt_id: UUID,
+        published: bool,
+    ) -> EventRecord | None:
+        """Close a `publishing` event with its settled attempt's outcome: `published`
+        (PUBLISH_OK) or `failed` (PUBLISH_FAIL), in ONE conditional write — only if the
+        event is still `publishing`, at `expected_revision`, linked to `attempt_id`.
+        `None` when it no longer matches (already settled, or a different state)."""
         ...
 
     # -- planning tags (0025) ------------------------------------------------
@@ -317,6 +370,84 @@ class MemoryPlannerRepository:
         )
         return due[:limit]
 
+    def claim(
+        self, *, tenant_id: UUID, event_id: UUID, expected_revision: int, now: datetime
+    ) -> EventRecord | None:
+        current = self.get(tenant_id=tenant_id, event_id=event_id)
+        if (
+            current is None
+            or current.status != EventStatus.SCHEDULED.value
+            or current.revision != expected_revision
+            or current.scheduled_at > now
+        ):
+            return None
+        updated = replace(current, status=_CLAIMED.value, updated_at=datetime.now(UTC))
+        self._rows[event_id] = updated
+        return updated
+
+    def link_attempt(
+        self, *, tenant_id: UUID, event_id: UUID, expected_revision: int, attempt_id: UUID
+    ) -> EventRecord | None:
+        current = self.get(tenant_id=tenant_id, event_id=event_id)
+        if (
+            current is None
+            or current.status != EventStatus.PUBLISHING.value
+            or current.revision != expected_revision
+            or current.publish_attempt_id not in (None, attempt_id)
+        ):
+            return None
+        updated = replace(current, publish_attempt_id=attempt_id, updated_at=datetime.now(UTC))
+        self._rows[event_id] = updated
+        return updated
+
+    def list_in_flight(self, *, tenant_id: UUID, limit: int = 100) -> list[EventRecord]:
+        in_flight = sorted(
+            (
+                r
+                for r in self._rows.values()
+                if r.tenant_id == tenant_id and r.status == EventStatus.PUBLISHING.value
+            ),
+            key=lambda r: r.updated_at,
+        )
+        return in_flight[:limit]
+
+    def fail_unstarted(
+        self, *, tenant_id: UUID, event_id: UUID, expected_revision: int
+    ) -> EventRecord | None:
+        current = self.get(tenant_id=tenant_id, event_id=event_id)
+        if (
+            current is None
+            or current.status != EventStatus.PUBLISHING.value
+            or current.revision != expected_revision
+            or current.publish_attempt_id is not None
+        ):
+            return None
+        updated = replace(current, status=_FAILED.value, updated_at=datetime.now(UTC))
+        self._rows[event_id] = updated
+        return updated
+
+    def settle_from_attempt(
+        self,
+        *,
+        tenant_id: UUID,
+        event_id: UUID,
+        expected_revision: int,
+        attempt_id: UUID,
+        published: bool,
+    ) -> EventRecord | None:
+        current = self.get(tenant_id=tenant_id, event_id=event_id)
+        if (
+            current is None
+            or current.status != EventStatus.PUBLISHING.value
+            or current.revision != expected_revision
+            or current.publish_attempt_id != attempt_id
+        ):
+            return None
+        new_status = _PUBLISHED if published else _FAILED
+        updated = replace(current, status=new_status.value, updated_at=datetime.now(UTC))
+        self._rows[event_id] = updated
+        return updated
+
 
 class PostgresPlannerRepository:
     """Every call opens its own `tenant_session` — RLS decides visibility."""
@@ -433,6 +564,99 @@ class PostgresPlannerRepository:
                 .limit(limit)
             )
             return [_snapshot(row) for row in rows]
+
+    # -- execution (QUA-111) ---------------------------------------------------
+
+    def claim(
+        self, *, tenant_id: UUID, event_id: UUID, expected_revision: int, now: datetime
+    ) -> EventRecord | None:
+        # One UPDATE, not read-then-write: a concurrent claim blocks on the row lock and,
+        # once the winner commits, re-evaluates this WHERE against the new row — so it
+        # matches nothing and gets `None`.
+        with tenant_session(tenant_id) as session:
+            row = session.scalars(
+                update(CalendarEvent)
+                .where(
+                    CalendarEvent.id == event_id,
+                    CalendarEvent.status == EventStatus.SCHEDULED.value,
+                    CalendarEvent.revision == expected_revision,
+                    CalendarEvent.scheduled_at <= now,
+                )
+                .values(status=_CLAIMED.value, updated_at=datetime.now(UTC))
+                .returning(CalendarEvent)
+            ).one_or_none()
+            return _snapshot(row) if row is not None else None
+
+    def link_attempt(
+        self, *, tenant_id: UUID, event_id: UUID, expected_revision: int, attempt_id: UUID
+    ) -> EventRecord | None:
+        with tenant_session(tenant_id) as session:
+            row = session.scalars(
+                update(CalendarEvent)
+                .where(
+                    CalendarEvent.id == event_id,
+                    CalendarEvent.status == EventStatus.PUBLISHING.value,
+                    CalendarEvent.revision == expected_revision,
+                    or_(
+                        CalendarEvent.publish_attempt_id.is_(None),
+                        CalendarEvent.publish_attempt_id == attempt_id,
+                    ),
+                )
+                .values(publish_attempt_id=attempt_id, updated_at=datetime.now(UTC))
+                .returning(CalendarEvent)
+            ).one_or_none()
+            return _snapshot(row) if row is not None else None
+
+    def list_in_flight(self, *, tenant_id: UUID, limit: int = 100) -> list[EventRecord]:
+        with tenant_session(tenant_id) as session:
+            rows = session.scalars(
+                select(CalendarEvent)
+                .where(CalendarEvent.status == EventStatus.PUBLISHING.value)
+                .order_by(CalendarEvent.updated_at)
+                .limit(limit)
+            )
+            return [_snapshot(row) for row in rows]
+
+    def fail_unstarted(
+        self, *, tenant_id: UUID, event_id: UUID, expected_revision: int
+    ) -> EventRecord | None:
+        with tenant_session(tenant_id) as session:
+            row = session.scalars(
+                update(CalendarEvent)
+                .where(
+                    CalendarEvent.id == event_id,
+                    CalendarEvent.status == EventStatus.PUBLISHING.value,
+                    CalendarEvent.revision == expected_revision,
+                    CalendarEvent.publish_attempt_id.is_(None),
+                )
+                .values(status=_FAILED.value, updated_at=datetime.now(UTC))
+                .returning(CalendarEvent)
+            ).one_or_none()
+            return _snapshot(row) if row is not None else None
+
+    def settle_from_attempt(
+        self,
+        *,
+        tenant_id: UUID,
+        event_id: UUID,
+        expected_revision: int,
+        attempt_id: UUID,
+        published: bool,
+    ) -> EventRecord | None:
+        new_status = _PUBLISHED if published else _FAILED
+        with tenant_session(tenant_id) as session:
+            row = session.scalars(
+                update(CalendarEvent)
+                .where(
+                    CalendarEvent.id == event_id,
+                    CalendarEvent.status == EventStatus.PUBLISHING.value,
+                    CalendarEvent.revision == expected_revision,
+                    CalendarEvent.publish_attempt_id == attempt_id,
+                )
+                .values(status=new_status.value, updated_at=datetime.now(UTC))
+                .returning(CalendarEvent)
+            ).one_or_none()
+            return _snapshot(row) if row is not None else None
 
     # -- planning tags (0025) ------------------------------------------------
 
