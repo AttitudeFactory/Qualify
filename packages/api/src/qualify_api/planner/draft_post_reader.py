@@ -8,26 +8,44 @@ delete this file and swap the one line in `composition.py` that constructs it.
 Rules this adapter keeps so it can never become a second POST definition:
 - **Read-only.** It never writes to `content_drafts` (or any creative table), never runs
   the creative FSM, and adds no columns anywhere.
-- **No invented fields.** What the draft model does not have (category, reuse type,
-  multi-asset, R2 assets) is returned as unknown, not guessed. `category` is the brief's
-  render format, the closest thing the draft has; QUA-109 replaces it.
+- **No invented fields.** What the draft model does not have (reuse type, R2 existence)
+  is returned as unknown, not guessed. `category` is the POST's own (0027, QUA-109) —
+  never the brief's render format, and never a default.
+- **One publishability rule.** Whether a POST can be published — for the calendar card
+  and for QUA-111's executor alike — is `publishable.evaluate` over one candidate built
+  by `_candidate`; nothing here decides it on its own.
 - **Drafts are read directly, not through `ContentService.list_drafts`**, because that
   call runs the draft reaper (a write) as a side effect.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
+from typing import Protocol
 from uuid import UUID
 
+from pydantic import ValidationError
+from qualify_creative.schemas import CopyPayload
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from qualify_api.creative import fsm as draft_fsm
 from qualify_api.creative import models as creative
-from qualify_api.planner.post_reader import ApprovalStatus, PostSummary
+from qualify_api.planner.post_reader import (
+    ApprovalStatus,
+    NotPublishable,
+    PostSummary,
+    PublishablePost,
+    UnpublishableReason,
+)
+from qualify_api.planner.publishable import (
+    REASON_TEXT,
+    MediaCandidate,
+    PostCandidate,
+    evaluate,
+)
 
 # Draft status → approval as the calendar sees it. STAGED/PUBLISHED drafts were approved
 # first (creative FSM), so they read as approved.
@@ -45,15 +63,12 @@ _SCHEDULABLE_DRAFT_STATUSES: tuple[str, ...] = tuple(
     status for status, approval in _APPROVAL_BY_DRAFT_STATUS.items() if approval.is_schedulable
 )
 
-# The brief's render format is the only "category" a draft has. Labels only; QUA-109
-# decides the real category vocabulary.
-_CATEGORY_BY_FORMAT: dict[str, tuple[str, str]] = {
-    "feed_4_5": ("feed", "IMAGE"),
-    "reels_9_16": ("reel", "REELS"),
-}
-
 _EXCERPT_CHARS = 140
 _SCHEDULABLE_LIMIT = 100
+
+# Every object-store key starts with the tenant prefix (`qualify_shared.objects.keys`):
+# `t/{tenant_id}/…`. Local upload-store keys (`generated/…`, `uploads/…`) never do.
+_OBJECT_STORE_PREFIX = "t/"
 
 
 def _excerpt(text: str) -> str:
@@ -67,6 +82,118 @@ def _caption(variant: creative.CopyVariant | None) -> str:
     payload = variant.edited_copy or variant.copy or {}
     caption = payload.get("caption") if isinstance(payload, dict) else None
     return caption if isinstance(caption, str) else ""
+
+
+def _approved_caption(session: Session, draft: creative.ContentDraft) -> str | None:
+    """The organic caption of the variant the human approved (`selected_variant_id`),
+    through `CopyPayload.rendered_caption` — the one concatenation the creative module
+    defines for the publisher. None when there is no readable selected variant."""
+    if draft.selected_variant_id is None:
+        return None
+    variant = session.get(creative.CopyVariant, draft.selected_variant_id)
+    if variant is None or variant.draft_id != draft.id:
+        return None
+    try:
+        return CopyPayload.model_validate(variant.edited_copy or variant.copy).rendered_caption()
+    except ValidationError:
+        return None
+
+
+def _candidate(
+    session: Session,
+    tenant_id: UUID,
+    draft: creative.ContentDraft,
+    images: Sequence[creative.ImageAsset],
+) -> PostCandidate:
+    return PostCandidate(
+        tenant_id=tenant_id,
+        post_id=draft.id,
+        brand_id=draft.brand_id,
+        approval=_APPROVAL_BY_DRAFT_STATUS.get(draft.status, ApprovalStatus.NOT_READY),
+        revision=draft.revision,
+        approved_revision=draft.approved_revision,
+        category=draft.category,
+        caption=_approved_caption(session, draft),
+        media=tuple(
+            MediaCandidate(
+                object_key=image.object_key,
+                content_type=image.content_type,
+                media_type=image.media_type,
+                position=image.position,
+            )
+            for image in images
+        ),
+        requires_ai_disclosure=draft.requires_ai_disclosure,
+        provenance=(
+            ("pipeline_version", draft.pipeline_version),
+            ("selected_variant_id", str(draft.selected_variant_id)),
+        ),
+    )
+
+
+class _AssetView(Protocol):
+    media_type: str
+    media_url: str
+    object_key: str | None
+    media_expires_at: datetime | None
+    params: dict | None
+    position: int
+
+
+def thumbnail_source(
+    *, preview_key: str | None, assets: Sequence[_AssetView], now: datetime
+) -> str | None:
+    """What the calendar card can show in an `<img>`: an `http(s)` URL, or a key of the
+    local upload store (the UI turns it into a URL with `rx.get_upload_url`, as the
+    creative screens do). The POST's own `preview_key` (0027) comes first — a video's
+    poster or the first image — then the first asset.
+
+    Never a video file (an `<img>` cannot show one; a video without a poster gets the
+    placeholder), never an R2 key (`t/{tenant}/…`: nothing serves the object store to a
+    browser), never a provider URL that already expired. `None` → the card's placeholder.
+    """
+    ordered = sorted(assets, key=lambda asset: asset.position)
+    video_files = {
+        key
+        for asset in ordered
+        if asset.media_type == "video"
+        for key in (asset.object_key, asset.media_url)
+        if key
+    }
+    expired = {
+        asset.media_url
+        for asset in ordered
+        if asset.media_expires_at is not None and asset.media_expires_at < now
+    }
+    candidates: list[str | None] = [preview_key]
+    if ordered:
+        first = ordered[0]
+        if first.media_type == "video":
+            poster = (first.params or {}).get("thumbnail_key")
+            candidates.append(str(poster) if poster else None)
+        else:
+            candidates.append(first.media_url)
+    for candidate in candidates:
+        if (
+            candidate
+            and candidate not in video_files
+            and candidate not in expired
+            and not candidate.startswith(_OBJECT_STORE_PREFIX)
+        ):
+            return candidate
+    return None
+
+
+def _images(session: Session, draft_id: UUID) -> list[creative.ImageAsset]:
+    """In creation order (the card's thumbnail is the first); `evaluate` orders the
+    publishable media by `position` itself."""
+    return list(
+        session.scalars(
+            select(creative.ImageAsset)
+            .where(creative.ImageAsset.draft_id == draft_id)
+            .order_by(creative.ImageAsset.created_at)
+        ).all()
+    )
 
 
 class DraftPostReader:
@@ -87,7 +214,7 @@ class DraftPostReader:
             drafts = session.scalars(
                 select(creative.ContentDraft).where(creative.ContentDraft.id.in_(ids))
             ).all()
-            return {draft.id: self._summarize(session, draft) for draft in drafts}
+            return {draft.id: self._summarize(session, tenant_id, draft) for draft in drafts}
 
     def list_schedulable(self, *, tenant_id: UUID, brand_id: UUID) -> list[PostSummary]:
         with tenant_session(tenant_id) as session:
@@ -100,9 +227,20 @@ class DraftPostReader:
                 .order_by(creative.ContentDraft.created_at.desc())
                 .limit(_SCHEDULABLE_LIMIT)
             ).all()
-            return [self._summarize(session, draft) for draft in drafts]
+            return [self._summarize(session, tenant_id, draft) for draft in drafts]
 
-    def _summarize(self, session: Session, draft: creative.ContentDraft) -> PostSummary:
+    def get_publishable(
+        self, *, tenant_id: UUID, post_id: UUID
+    ) -> PublishablePost | NotPublishable:
+        with tenant_session(tenant_id) as session:
+            draft = session.get(creative.ContentDraft, post_id)
+            if draft is None:
+                return NotPublishable(post_id=post_id, reason=UnpublishableReason.POST_NOT_FOUND)
+            return evaluate(_candidate(session, tenant_id, draft, _images(session, draft.id)))
+
+    def _summarize(
+        self, session: Session, tenant_id: UUID, draft: creative.ContentDraft
+    ) -> PostSummary:
         brief = session.get(creative.ContentBrief, draft.brief_id)
         variant = None
         if draft.selected_variant_id is not None:
@@ -114,24 +252,13 @@ class DraftPostReader:
                 .where(creative.CopyVariant.draft_id == draft.id)
                 .order_by(creative.CopyVariant.ordinal)
             ).first()
-        images = session.scalars(
-            select(creative.ImageAsset)
-            .where(creative.ImageAsset.draft_id == draft.id)
-            .order_by(creative.ImageAsset.created_at)
-        ).all()
-
-        now = self._clock()
-        thumbnail = None
-        if images:
-            first = images[0]
-            expired = first.media_expires_at is not None and first.media_expires_at < now
-            if first.media_url and not expired:
-                thumbnail = first.media_url
-        in_r2 = bool(images) and all(image.object_key for image in images)
-
-        category, media_product_type = _CATEGORY_BY_FORMAT.get(
-            brief.format if brief is not None else "", (None, None)
+        images = _images(session, draft.id)
+        thumbnail = thumbnail_source(
+            preview_key=draft.preview_key, assets=images, now=self._clock()
         )
+
+        verdict = evaluate(_candidate(session, tenant_id, draft, images))
+        publishable = isinstance(verdict, PublishablePost)
         title = (brief.topic if brief is not None else "") or _excerpt(_caption(variant))[:60]
         return PostSummary(
             post_id=draft.id,
@@ -139,8 +266,8 @@ class DraftPostReader:
             title=title or "(sin tema)",
             approval=_APPROVAL_BY_DRAFT_STATUS.get(draft.status, ApprovalStatus.NOT_READY),
             approved_at=draft.approved_at.isoformat() if draft.approved_at else None,
-            category=category,
-            media_product_type=media_product_type,
+            category=draft.category,
+            media_product_type=verdict.media_product_type if publishable else None,
             content_type=brief.content_type if brief is not None else None,
             reuse_type=None,  # the draft model has no such concept — QUA-109
             lifecycle_status=draft.status,
@@ -148,9 +275,7 @@ class DraftPostReader:
             caption_excerpt=_excerpt(_caption(variant)),
             asset_count=len(images),
             asset_types=tuple("IMAGE" for _ in images),
-            is_publishable=in_r2,
-            unpublishable_reason=(
-                "" if in_r2 else "Los assets todavía no están en R2 (pendiente de QUA-109/QUA-110)"
-            ),
+            is_publishable=publishable,
+            unpublishable_reason="" if publishable else REASON_TEXT[verdict.reason],
             detail_href=f"/drafts/{draft.id}",
         )

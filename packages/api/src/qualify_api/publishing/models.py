@@ -55,11 +55,11 @@ class PublishAttempt(Base):
     scheduled_post_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     # Caller-chosen operation identity — what makes "no blind retry" (ADR 22e) implementable.
     idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
-    # QUA-99 (4.5/6) — CAROUSEL-only in practice. A single video never reads this back:
-    # start() consumes its caption synchronously within one create_container() call and
-    # never persists it. A carousel's caption is needed later, inside a LATER advance()
-    # call (_create_carousel, service.py) that has no other way to receive one — this
-    # column is that bridge. NULL for every single-video attempt.
+    # The caption this attempt asked Meta to publish. QUA-99 (4.5/6) added it as the bridge
+    # a carousel needs (its container is created in a LATER advance(), _create_carousel);
+    # QUA-111 records it for every media type (start() writes the same value it sends to
+    # create_container / create_image_container). NULL on rows written before that, and
+    # when no caption was given.
     caption: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Null until Meta returns the container; reconciliation enters by this value.
     creation_id: Mapped[str | None] = mapped_column(Text, nullable=True)

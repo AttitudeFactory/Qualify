@@ -59,6 +59,7 @@ publish response routinely echoes request parameters.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import IO, Any, Protocol
 
@@ -197,6 +198,19 @@ class UploadOutcome:
     error_type: str | None = None
 
 
+@dataclass(frozen=True)
+class RecentMedia:
+    """One published IG Media as `GET /{ig-user-id}/media` (or `/stories`) lists it — what
+    reconciliation needs to recognise the media a confirmed container became. An IG
+    Container exposes no media id (`ig-container.md`: id, status, status_code,
+    copyright_check_status), so this listing is Meta's only read-side route to it."""
+
+    media_id: str
+    media_product_type: str | None  # FEED / REELS / STORY / AD
+    caption: str | None
+    timestamp: datetime | None
+
+
 class PublishClient(Protocol):
     async def create_container(
         self,
@@ -232,6 +246,12 @@ class PublishClient(Protocol):
     async def container_status(self, *, container_id: str) -> ContainerStatus: ...
 
     async def publish_container(self, *, ig_user_id: str, creation_id: str) -> str: ...
+
+    async def recent_media(
+        self, *, ig_user_id: str, since: datetime, stories: bool = False
+    ) -> list[RecentMedia]:
+        """READ-ONLY: the account's media (or stories) published since `since`."""
+        ...
 
 
 # --- [V] response parsing. One function per endpoint; the only place reality lands. ---
@@ -350,6 +370,40 @@ def _parse_publish_response(payload: dict[str, Any]) -> str:
     if not isinstance(media_id, str) or not media_id:
         raise PublishError("publish response carried no media id")
     return media_id
+
+
+def _parse_timestamp(value: object) -> datetime | None:
+    """IG Media `timestamp` is ISO-8601 with a `+0000` offset (e.g.
+    `2026-09-27T21:11:48+0000`). Anything else reads as unknown, never as a guess."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S%z")
+    except ValueError:
+        return None
+
+
+def _parse_recent_media(payload: dict[str, Any]) -> list[RecentMedia]:
+    """[V] `GET /{ig-user-id}/media|stories`: {"data": [{"id", "caption",
+    "media_product_type", "timestamp"}, ...]}. Items without an id are dropped."""
+    items = payload.get("data")
+    if not isinstance(items, list):
+        return []
+    out: list[RecentMedia] = []
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            continue
+        caption = item.get("caption")
+        product = item.get("media_product_type")
+        out.append(
+            RecentMedia(
+                media_id=item["id"],
+                media_product_type=product if isinstance(product, str) else None,
+                caption=caption if isinstance(caption, str) else None,
+                timestamp=_parse_timestamp(item.get("timestamp")),
+            )
+        )
+    return out
 
 
 # Timeouts, measured rather than defaulted (live smoke, 2026-08-07): httpx's 5 s defaults
@@ -532,3 +586,28 @@ class HttpPublishClient:
         return _parse_publish_response(
             await self._post_graph(f"/{ig_user_id}/media_publish", {"creation_id": creation_id})
         )
+
+    async def recent_media(
+        self, *, ig_user_id: str, since: datetime, stories: bool = False
+    ) -> list[RecentMedia]:
+        """READ-ONLY listing used by reconciliation to learn a confirmed container's media
+        id without publishing anything. `/stories` for stories (the `/media` edge does not
+        return them); time-based pagination via `since` (`ig-user/media.md`)."""
+        edge = "stories" if stories else "media"
+        response = await self._graph.get(
+            f"{self._graph_url}/{ig_user_id}/{edge}",
+            params={
+                "fields": "id,caption,media_product_type,timestamp",
+                "since": str(int(since.timestamp())),
+                "limit": "50",
+            },
+        )
+        if response.status_code != 200:
+            code, subcode = _error_codes(response)
+            raise PublishError(
+                f"media listing failed with HTTP {response.status_code}",
+                platform_code=code,
+                platform_subcode=subcode,
+                http_status=response.status_code,
+            )
+        return _parse_recent_media(dict(response.json()))

@@ -282,6 +282,9 @@ class ImageAsset(Base):
         DateTime(timezone=True), nullable=True
     )
     object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The MIME type the object was stored with (0029). Written by whoever persists the
+    # asset in R2 (QUA-109/110); NULL means "not publishable" to QUA-111.
+    content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     mask_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)

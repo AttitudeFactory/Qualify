@@ -7,22 +7,62 @@ Same two-door fixture split the publishing schema tests use: provisioning throug
 
 from __future__ import annotations
 
+import asyncio
+import io
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
+from qualify_shared.objects.gate import ObjectGate
+from qualify_shared.objects.keys import media_key
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.creative import models as creative
+from qualify_api.planner import draft_post_reader
 from qualify_api.planner.composition import PostgresConnectionGate, tenant_timezone
+from qualify_api.planner.discovery import DiscoveredTenants, ScopedTenants
 from qualify_api.planner.draft_post_reader import DraftPostReader
-from qualify_api.planner.post_reader import ApprovalStatus
-from qualify_api.planner.repository import NewEvent, PostgresPlannerRepository
+from qualify_api.planner.executor import (
+    AdvanceOutcome,
+    EventExecutor,
+    ExecutionOutcome,
+    SettleOutcome,
+)
+from qualify_api.planner.fsm import EventTrigger, apply_transition
+from qualify_api.planner.locks import PostgresAdvisoryLock, attempt_lock_key
+from qualify_api.planner.post_reader import (
+    ApprovalStatus,
+    NotPublishable,
+    PublishablePost,
+    UnpublishableReason,
+)
+from qualify_api.planner.publishable import REASON_TEXT
+from qualify_api.planner.repository import (
+    EventRecord,
+    MemoryPlannerRepository,
+    NewEvent,
+    PostgresPlannerRepository,
+)
+from qualify_api.planner.rules import idempotency_key
 from qualify_api.planner.service import PlannerService
+from qualify_api.planner.tick import TickRunner
+from qualify_api.publishing.client import (
+    ContainerStatus,
+    RecentMedia,
+    ResumableContainer,
+    UploadOutcome,
+)
+from qualify_api.publishing.composition import PostgresConnectionTargetReader
+from qualify_api.publishing.repository import PostgresPublishAttemptRepository
+from qualify_api.publishing.service import PublishService
 from qualify_api.tenancy.models import Brand, Tenant, User
 
 pytestmark = pytest.mark.db
@@ -273,13 +313,16 @@ def test_draft_reader_maps_status_to_approval_and_reads_the_card_fields(world_p)
     assert card.title == "Promo de octubre"
     assert card.caption_excerpt == "Dos por uno todo octubre"  # whitespace collapsed
     assert card.thumbnail_url == "https://cdn.example/img.jpg"
-    assert card.category == "feed" and card.media_product_type == "IMAGE"
+    # The POST's own category (0027), never the brief's render format; this row has none.
+    assert card.category is None and card.media_product_type is None
     assert card.content_type == "promotion"
     assert card.reuse_type is None  # the draft model has no such concept
     assert card.asset_count == 1 and card.asset_types == ("IMAGE",)
     assert card.detail_href == f"/drafts/{pending}"
     assert not card.is_publishable and card.unpublishable_reason
-    assert got[approved].is_publishable  # its image has an R2 key
+    # QUA-111 F2: "has an object_key" is no longer "publishable" — this row has no
+    # approved_revision, no category, and a key outside its tenant's prefix.
+    assert not got[approved].is_publishable and got[approved].unpublishable_reason
 
 
 def test_draft_reader_hides_an_expired_thumbnail(world_p) -> None:
@@ -415,3 +458,1248 @@ def test_delete_cancelled_only_deletes_cancelled_events(world_p) -> None:
     assert repo.delete_cancelled(tenant_id=TENANT_P, event_id=event.id) is True
     assert repo.get(tenant_id=TENANT_P, event_id=event.id) is None
     assert repo.find_tag(tenant_id=TENANT_P, name=tag.name) is not None  # the tag stays
+
+
+# --- execution: claim / link / in-flight (QUA-111 F1) ---------------------------
+#
+# The contract tests run against BOTH repositories, so the in-memory stand-in the unit
+# tests use cannot drift from the Postgres semantics. The race test is Postgres-only: it
+# is the database's row lock that makes the claim atomic, not the Python code.
+
+
+@pytest.fixture(params=["memory", "postgres"])
+def repo(request: pytest.FixtureRequest) -> MemoryPlannerRepository | PostgresPlannerRepository:
+    return MemoryPlannerRepository() if request.param == "memory" else PostgresPlannerRepository()
+
+
+def _attempt_id(repo: object, tenant_id: UUID, connection_id: UUID) -> UUID:
+    """A publish attempt the event may link to: a real row for Postgres (the composite FK
+    demands it), any id for the in-memory repository."""
+    if isinstance(repo, MemoryPlannerRepository):
+        return uuid4()
+    return (
+        PostgresPublishAttemptRepository()
+        .start_attempt(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            idempotency_key=f"test-{uuid4()}",
+            media_product_type="REELS",
+            adapter_version="test",
+        )
+        .record.id
+    )
+
+
+def _due_event(repo, world, *, hours: int = -1):
+    brand_id, user_id, conn_id = world
+    return repo.add(_new_event(TENANT_P, brand_id, user_id, conn_id, hours=hours))
+
+
+def _retire(repo, *events) -> None:
+    """Cancel what a test left `scheduled`. These tests run against the shared dev
+    database with no teardown (nothing is deleted), and a past-due `scheduled` row that
+    outlives its test is exactly what crowds `list_due`'s default limit for everyone
+    else."""
+    for event in events:
+        repo.set_status(
+            tenant_id=TENANT_P,
+            event_id=event.id,
+            expected_status="scheduled",
+            new_status="cancelled",
+        )
+
+
+def test_claim_moves_a_due_scheduled_event_to_publishing_once(repo, world_p) -> None:
+    event = _due_event(repo, world_p)
+    now = datetime.now(UTC)
+    claimed = repo.claim(tenant_id=TENANT_P, event_id=event.id, expected_revision=1, now=now)
+    assert claimed is not None
+    assert claimed.status == apply_transition("scheduled", EventTrigger.CLAIM) == "publishing"
+    assert claimed.revision == 1 and claimed.publish_attempt_id is None
+    assert idempotency_key(claimed.id, claimed.revision) == f"cal:{event.id}:1"
+    # A second claim of the same event (a second executor, or a replay) wins nothing.
+    assert repo.claim(tenant_id=TENANT_P, event_id=event.id, expected_revision=1, now=now) is None
+
+
+def test_claim_with_a_stale_revision_fails(repo, world_p) -> None:
+    _, _, conn_id = world_p
+    event = _due_event(repo, world_p)
+    moved = repo.reschedule(
+        tenant_id=TENANT_P,
+        event_id=event.id,
+        expected_revision=1,
+        scheduled_at=event.scheduled_at,
+        scheduled_tz=event.scheduled_tz,
+        connection_id=conn_id,
+    )
+    assert moved is not None and moved.revision == 2
+    now = datetime.now(UTC)
+    assert repo.claim(tenant_id=TENANT_P, event_id=event.id, expected_revision=1, now=now) is None
+    assert repo.get(tenant_id=TENANT_P, event_id=event.id).status == "scheduled"
+    _retire(repo, event)
+
+
+def test_claim_before_scheduled_at_fails(repo, world_p) -> None:
+    event = _due_event(repo, world_p, hours=2)
+    claimed = repo.claim(
+        tenant_id=TENANT_P, event_id=event.id, expected_revision=1, now=datetime.now(UTC)
+    )
+    assert claimed is None
+    assert repo.get(tenant_id=TENANT_P, event_id=event.id).status == "scheduled"
+    _retire(repo, event)
+
+
+def test_claim_of_a_cancelled_event_fails(repo, world_p) -> None:
+    event = _due_event(repo, world_p)
+    repo.set_status(
+        tenant_id=TENANT_P, event_id=event.id, expected_status="scheduled", new_status="cancelled"
+    )
+    claimed = repo.claim(
+        tenant_id=TENANT_P, event_id=event.id, expected_revision=1, now=datetime.now(UTC)
+    )
+    assert claimed is None
+    assert repo.get(tenant_id=TENANT_P, event_id=event.id).status == "cancelled"
+
+
+def test_another_tenant_cannot_claim_the_event(repo, world_p, world_q) -> None:
+    event = _due_event(repo, world_p)
+    now = datetime.now(UTC)
+    assert repo.claim(tenant_id=TENANT_Q, event_id=event.id, expected_revision=1, now=now) is None
+    assert repo.get(tenant_id=TENANT_P, event_id=event.id).status == "scheduled"
+    _retire(repo, event)
+
+
+def test_once_claimed_the_event_can_no_longer_be_moved_or_cancelled(repo, world_p) -> None:
+    """QUA-108's existing compare-and-set on `status='scheduled'` is what locks the
+    operator out after a claim — F1 relies on it and does not change it."""
+    _, _, conn_id = world_p
+    event = _due_event(repo, world_p)
+    repo.claim(tenant_id=TENANT_P, event_id=event.id, expected_revision=1, now=datetime.now(UTC))
+    assert (
+        repo.reschedule(
+            tenant_id=TENANT_P,
+            event_id=event.id,
+            expected_revision=1,
+            scheduled_at=datetime.now(UTC) + timedelta(days=1),
+            scheduled_tz=event.scheduled_tz,
+            connection_id=conn_id,
+        )
+        is None
+    )
+    assert (
+        repo.set_status(
+            tenant_id=TENANT_P,
+            event_id=event.id,
+            expected_status="scheduled",
+            new_status="cancelled",
+        )
+        is None
+    )
+
+
+def test_link_attempt_is_idempotent_for_the_same_attempt(repo, world_p) -> None:
+    _, _, conn_id = world_p
+    event = _due_event(repo, world_p)
+    repo.claim(tenant_id=TENANT_P, event_id=event.id, expected_revision=1, now=datetime.now(UTC))
+    attempt = _attempt_id(repo, TENANT_P, conn_id)
+    first = repo.link_attempt(
+        tenant_id=TENANT_P, event_id=event.id, expected_revision=1, attempt_id=attempt
+    )
+    again = repo.link_attempt(
+        tenant_id=TENANT_P, event_id=event.id, expected_revision=1, attempt_id=attempt
+    )
+    assert first is not None and first.publish_attempt_id == attempt
+    assert again is not None and again.publish_attempt_id == attempt
+    assert again.status == "publishing"
+
+
+def test_link_attempt_never_replaces_a_different_attempt(repo, world_p) -> None:
+    _, _, conn_id = world_p
+    event = _due_event(repo, world_p)
+    repo.claim(tenant_id=TENANT_P, event_id=event.id, expected_revision=1, now=datetime.now(UTC))
+    attempt = _attempt_id(repo, TENANT_P, conn_id)
+    other = _attempt_id(repo, TENANT_P, conn_id)
+    repo.link_attempt(
+        tenant_id=TENANT_P, event_id=event.id, expected_revision=1, attempt_id=attempt
+    )
+    refused = repo.link_attempt(
+        tenant_id=TENANT_P, event_id=event.id, expected_revision=1, attempt_id=other
+    )
+    assert refused is None
+    assert repo.get(tenant_id=TENANT_P, event_id=event.id).publish_attempt_id == attempt
+
+
+def test_link_attempt_outside_publishing_or_at_another_revision_is_refused(repo, world_p) -> None:
+    _, _, conn_id = world_p
+    attempt = _attempt_id(repo, TENANT_P, conn_id)
+    scheduled = _due_event(repo, world_p)
+    assert (
+        repo.link_attempt(
+            tenant_id=TENANT_P, event_id=scheduled.id, expected_revision=1, attempt_id=attempt
+        )
+        is None
+    )
+    assert repo.get(tenant_id=TENANT_P, event_id=scheduled.id).publish_attempt_id is None
+    _retire(repo, scheduled)
+
+    claimed = _due_event(repo, world_p)
+    repo.claim(tenant_id=TENANT_P, event_id=claimed.id, expected_revision=1, now=datetime.now(UTC))
+    assert (
+        repo.link_attempt(
+            tenant_id=TENANT_P, event_id=claimed.id, expected_revision=2, attempt_id=attempt
+        )
+        is None
+    )
+
+
+def test_list_in_flight_returns_only_the_tenants_publishing_events(repo, world_p, world_q) -> None:
+    claimed = _due_event(repo, world_p)
+    waiting = _due_event(repo, world_p)
+    repo.claim(tenant_id=TENANT_P, event_id=claimed.id, expected_revision=1, now=datetime.now(UTC))
+    in_flight = repo.list_in_flight(tenant_id=TENANT_P, limit=10_000)
+    assert claimed.id in {e.id for e in in_flight}
+    assert waiting.id not in {e.id for e in in_flight}
+    assert all(e.status == "publishing" for e in in_flight)
+    assert claimed.id not in {e.id for e in repo.list_in_flight(tenant_id=TENANT_Q)}
+    _retire(repo, waiting)
+
+
+def test_two_concurrent_claims_exactly_one_wins(world_p) -> None:
+    """The real race: N threads, each on its own pooled connection, released together by
+    a barrier against the same due event. Repeated so a lucky interleaving cannot pass."""
+    repo = PostgresPlannerRepository()
+    contenders = 4
+    for _ in range(5):
+        event = _due_event(repo, world_p)
+        barrier = threading.Barrier(contenders)
+
+        def contend(_: int, event_id: UUID = event.id, gate: threading.Barrier = barrier):
+            gate.wait()
+            return repo.claim(
+                tenant_id=TENANT_P,
+                event_id=event_id,
+                expected_revision=1,
+                now=datetime.now(UTC),
+            )
+
+        with ThreadPoolExecutor(max_workers=contenders) as pool:
+            results = list(pool.map(contend, range(contenders)))
+        assert sum(r is not None for r in results) == 1
+        assert repo.get(tenant_id=TENANT_P, event_id=event.id).status == "publishing"
+
+
+# --- the publishable POST (QUA-111 F2) --------------------------------------------
+#
+# A FRESH tenant per test run: these rows must never mix with what earlier runs left in
+# the shared dev database (TENANT_P/TENANT_Q accumulate), nor be mistaken for real data.
+
+
+@pytest.fixture(scope="module")
+def world_f2() -> tuple[UUID, UUID, UUID]:
+    tenant_id = uuid4()
+    brand_id, _, connection_id = _provision(tenant_id, f"t-qua111-f2-{tenant_id.hex[:8]}")
+    return tenant_id, brand_id, connection_id
+
+
+_APPROVED_COPY = {
+    "hook": "¡Oferta!",
+    "caption": "Dos por uno todo octubre",
+    "hashtags": ["promo", "#octubre"],
+    "cta": "Pide ya",
+}
+
+
+def _post_row(
+    world: tuple[UUID, UUID, UUID],
+    *,
+    status: str = "approved",
+    revision: int = 1,
+    approved_revision: int | None = 1,
+    category: str | None = "galeria",
+    edited: dict | None = None,
+    items: list[tuple[str | None, str | None, str, int]] | None = None,
+) -> UUID:
+    """A draft shaped as a POST: two variants (the SECOND is the selected one), and
+    `items` as (object_key, content_type, media_type, position). Default: one JPEG in
+    the tenant's R2 prefix."""
+    tenant_id, brand_id, conn_id = world
+    if items is None:
+        items = [(media_key(tenant_id, conn_id, uuid4().hex), "image/jpeg", "image", 0)]
+    with tenant_session(tenant_id) as session:
+        brief = creative.ContentBrief(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            objective="sale",
+            topic="Promo",
+            platform="instagram",
+            format="feed_4_5",
+            intent="organic",
+            content_type="promotion",
+            image_route="template_only",
+        )
+        session.add(brief)
+        session.flush()
+        draft = creative.ContentDraft(
+            tenant_id=tenant_id,
+            brief_id=brief.id,
+            brand_id=brand_id,
+            status=status,
+            pipeline_version="test",
+            category=category,
+            revision=revision,
+            approved_revision=approved_revision,
+        )
+        session.add(draft)
+        session.flush()
+        other = creative.CopyVariant(
+            tenant_id=tenant_id,
+            draft_id=draft.id,
+            ordinal=0,
+            copy={"hook": "Otra", "caption": "No elegida", "cta": ""},
+            model_id="test",
+        )
+        chosen = creative.CopyVariant(
+            tenant_id=tenant_id,
+            draft_id=draft.id,
+            ordinal=1,
+            copy=_APPROVED_COPY,
+            edited_copy=edited,
+            model_id="test",
+        )
+        session.add_all([other, chosen])
+        session.flush()
+        if status in ("approved", "staged", "published"):
+            draft.selected_variant_id = chosen.id
+        for object_key, content_type, media_type, position in items:
+            session.add(
+                creative.ImageAsset(
+                    tenant_id=tenant_id,
+                    draft_id=draft.id,
+                    media_url=object_key or "https://cdn.example/x",
+                    object_key=object_key,
+                    content_type=content_type,
+                    media_type=media_type,
+                    position=position,
+                )
+            )
+        session.flush()
+        return draft.id
+
+
+def _publishable(world, post_id: UUID) -> PublishablePost | NotPublishable:
+    return DraftPostReader().get_publishable(tenant_id=world[0], post_id=post_id)
+
+
+def test_an_approved_post_at_its_approved_revision_is_publishable(world_f2) -> None:
+    tenant_id, _, conn_id = world_f2
+    keys = [media_key(tenant_id, conn_id, uuid4().hex) for _ in range(3)]
+    post_id = _post_row(
+        world_f2,
+        items=[
+            (keys[2], "image/jpeg", "image", 2),
+            (keys[0], "video/mp4", "video", 0),
+            (keys[1], "image/jpeg", "image", 1),
+        ],
+    )
+    verdict = _publishable(world_f2, post_id)
+    assert isinstance(verdict, PublishablePost)
+    assert verdict.tenant_id == tenant_id and verdict.post_id == post_id
+    assert verdict.approved_revision == 1
+    assert verdict.media_product_type == "CAROUSEL"
+    assert [m.object_key for m in verdict.media] == keys  # by position, not creation
+    assert [m.media_type for m in verdict.media] == ["VIDEO", "IMAGE", "IMAGE"]
+    # The SELECTED variant, rendered the one way the creative module defines.
+    assert verdict.caption == "¡Oferta!\n\nDos por uno todo octubre\n\nPide ya\n\n#promo #octubre"
+
+
+def test_the_caption_is_the_selected_variants_edited_copy(world_f2) -> None:
+    edited = {**_APPROVED_COPY, "hook": "", "caption": "Editado antes de aprobar", "hashtags": []}
+    verdict = _publishable(world_f2, _post_row(world_f2, edited=edited))
+    assert isinstance(verdict, PublishablePost)
+    assert verdict.caption == "Editado antes de aprobar\n\nPide ya"
+
+
+def test_an_edit_after_approval_is_blocked(world_f2) -> None:
+    verdict = _publishable(world_f2, _post_row(world_f2, revision=2, approved_revision=1))
+    assert isinstance(verdict, NotPublishable)
+    assert verdict.reason is UnpublishableReason.REVISION_NOT_APPROVED
+
+
+def test_an_unapproved_post_is_blocked(world_f2) -> None:
+    post_id = _post_row(world_f2, status="generated", approved_revision=None)
+    verdict = _publishable(world_f2, post_id)
+    assert isinstance(verdict, NotPublishable)
+    assert verdict.reason is UnpublishableReason.NOT_APPROVED
+
+
+def test_local_generated_media_is_blocked(world_f2) -> None:
+    tenant_id = world_f2[0]
+    local = f"generated/{tenant_id}/{uuid4()}/slide-1.png"
+    verdict = _publishable(world_f2, _post_row(world_f2, items=[(local, None, "image", 0)]))
+    assert isinstance(verdict, NotPublishable)
+    assert verdict.reason is UnpublishableReason.MEDIA_NOT_IN_R2
+
+
+def test_a_null_content_type_from_the_column_is_blocked(world_f2) -> None:
+    tenant_id, _, conn_id = world_f2
+    key = media_key(tenant_id, conn_id, uuid4().hex)
+    verdict = _publishable(world_f2, _post_row(world_f2, items=[(key, None, "image", 0)]))
+    assert isinstance(verdict, NotPublishable)
+    assert verdict.reason is UnpublishableReason.CONTENT_TYPE_MISSING
+
+
+def test_a_png_from_the_column_is_blocked_and_an_mp4_reel_passes(world_f2) -> None:
+    tenant_id, _, conn_id = world_f2
+    png = _post_row(
+        world_f2, items=[(media_key(tenant_id, conn_id, uuid4().hex), "image/png", "image", 0)]
+    )
+    reel = _post_row(
+        world_f2,
+        category="reel",
+        items=[(media_key(tenant_id, conn_id, uuid4().hex), "video/mp4", "video", 0)],
+    )
+    assert _publishable(world_f2, png).reason is UnpublishableReason.UNSUPPORTED_CONTENT_TYPE
+    verdict = _publishable(world_f2, reel)
+    assert isinstance(verdict, PublishablePost) and verdict.media_product_type == "REELS"
+
+
+def test_another_tenant_reads_the_post_as_not_found(world_f2, world_q) -> None:
+    post_id = _post_row(world_f2)
+    verdict = DraftPostReader().get_publishable(tenant_id=TENANT_Q, post_id=post_id)
+    assert isinstance(verdict, NotPublishable)
+    assert verdict.reason is UnpublishableReason.POST_NOT_FOUND
+
+
+def test_the_card_and_the_executor_use_the_same_evaluation(world_f2, monkeypatch) -> None:
+    """Same verdict for every shape, and literally the same function: `_summarize` and
+    `get_publishable` both go through `publishable.evaluate` (spied, not assumed)."""
+    tenant_id, _, conn_id = world_f2
+    posts = [
+        _post_row(world_f2),
+        _post_row(world_f2, revision=2, approved_revision=1),
+        _post_row(world_f2, status="generated", approved_revision=None),
+        _post_row(world_f2, category="story"),
+        _post_row(world_f2, category=None),
+        _post_row(world_f2, items=[(media_key(tenant_id, conn_id, uuid4().hex), None, "image", 0)]),
+    ]
+    calls: list[UUID] = []
+    real_evaluate = draft_post_reader.evaluate
+
+    def spy(candidate):
+        calls.append(candidate.post_id)
+        return real_evaluate(candidate)
+
+    monkeypatch.setattr(draft_post_reader, "evaluate", spy)
+    reader = DraftPostReader()
+    cards = reader.get_many(tenant_id=tenant_id, post_ids=posts)
+    for post_id in posts:
+        verdict = reader.get_publishable(tenant_id=tenant_id, post_id=post_id)
+        card = cards[post_id]
+        assert card.is_publishable is isinstance(verdict, PublishablePost)
+        if isinstance(verdict, NotPublishable):
+            assert card.unpublishable_reason == REASON_TEXT[verdict.reason]
+        else:
+            assert card.media_product_type == verdict.media_product_type
+    assert sorted(calls) == sorted(posts * 2)  # once per card, once per executor read
+
+
+def test_get_publishable_never_writes(world_f2) -> None:
+    tenant_id = world_f2[0]
+    post_id = _post_row(world_f2)
+    with tenant_session(tenant_id) as session:
+        before = session.get(creative.ContentDraft, post_id).updated_at
+    DraftPostReader().get_publishable(tenant_id=tenant_id, post_id=post_id)
+    with tenant_session(tenant_id) as session:
+        row = session.get(creative.ContentDraft, post_id)
+        assert row.status == "approved" and row.updated_at == before
+
+
+# --- the executor's start over real Postgres (QUA-111 F3) ---------------------------
+#
+# Real planner repository, real DraftPostReader, real PublishService over the real
+# publish_attempts table; only Meta (the client) and R2 (the store) are fakes. Same
+# isolated tenant as F2 (`world_f2`).
+
+
+class _CountingClient:
+    """Meta stand-in for the REELS path. `create_container` is the first platform call
+    `start()` makes — counting it counts "publications that reached Meta". The sleep
+    widens the window in which a competing execution could slip in."""
+
+    def __init__(self, counter: list[str]) -> None:
+        self._counter = counter
+
+    async def create_container(self, *, ig_user_id, media_type, caption=None, **_):
+        self._counter.append(media_type)
+        await asyncio.sleep(0.3)
+        return ResumableContainer(container_id=f"c-{uuid4().hex}", upload_uri="https://u/x")
+
+    async def upload_bytes(self, *, upload_uri, fileobj, file_size):
+        return UploadOutcome(success=True)
+
+
+class _ClientFactory:
+    def __init__(self, counter: list[str]) -> None:
+        self._counter = counter
+
+    async def client_for(self, *, tenant_id, connection_id):
+        return _CountingClient(self._counter)
+
+
+class _BytesStore:
+    def put(self, key, fileobj, content_type) -> None:  # pragma: no cover - unused
+        raise AssertionError("the executor never stages media")
+
+    def open(self, key):
+        return io.BytesIO(b"\x00" * 64)
+
+
+class _NoLock:
+    """Lets two executions into the critical section at once, to prove the publisher's
+    own idempotency is the second barrier behind the event lock."""
+
+    @contextmanager
+    def hold(self, *, tenant_id, key):
+        yield True
+
+
+def _executor(counter: list[str], lock=None, factory=None, posts=None) -> EventExecutor:
+    return EventExecutor(
+        repository=PostgresPlannerRepository(),
+        posts=posts or DraftPostReader(),
+        publisher=PublishService(
+            repository=PostgresPublishAttemptRepository(),
+            gate=ObjectGate(_BytesStore()),
+            connections=PostgresConnectionTargetReader(),
+            client_factory=factory or _ClientFactory(counter),
+        ),
+        attempts=PostgresPublishAttemptRepository(),
+        lock=lock or PostgresAdvisoryLock(),
+    )
+
+
+def _due_reel_event(world, post_id: UUID | None = None) -> EventRecord:
+    """A due event for `post_id` — by default a fresh single-MP4 reel POST."""
+    tenant_id, brand_id, conn_id = world
+    if post_id is None:
+        post_id = _post_row(
+            world,
+            category="reel",
+            items=[(media_key(tenant_id, conn_id, uuid4().hex), "video/mp4", "video", 0)],
+        )
+    with admin_session() as session:
+        user_id = session.scalar(select(User.id).where(User.tenant_id == tenant_id))
+    return PostgresPlannerRepository().add(
+        NewEvent(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            post_id=post_id,
+            connection_id=conn_id,
+            scheduled_at=datetime.now(UTC) - timedelta(minutes=1),
+            scheduled_tz="America/Caracas",
+            created_by_user_id=user_id,
+        )
+    )
+
+
+def _attempt_rows(tenant_id: UUID, key: str) -> list[UUID]:
+    with tenant_session(tenant_id) as session:
+        return list(
+            session.scalars(
+                text("SELECT id FROM publish_attempts WHERE idempotency_key = :k"), {"k": key}
+            )
+        )
+
+
+def _race(fn, contenders: int = 2) -> list:
+    """Run `fn()` (a coroutine factory) in `contenders` threads, each with its own event
+    loop and its own pooled connections, released together by a barrier."""
+    barrier = threading.Barrier(contenders)
+
+    def run(_: int):
+        barrier.wait()
+        return asyncio.run(fn())
+
+    with ThreadPoolExecutor(max_workers=contenders) as pool:
+        return list(pool.map(run, range(contenders)))
+
+
+def test_executor_starts_a_ready_event_once_and_links_it(world_f2) -> None:
+    tenant_id = world_f2[0]
+    event = _due_reel_event(world_f2)
+    calls: list[str] = []
+    result = asyncio.run(_executor(calls).try_execute(event))
+    assert result.outcome is ExecutionOutcome.STARTED
+    key = f"cal:{event.id}:1"
+    assert _attempt_rows(tenant_id, key) == [result.attempt_id]
+    assert calls == ["REELS"]
+    stored = PostgresPlannerRepository().get(tenant_id=tenant_id, event_id=event.id)
+    assert (stored.status, stored.publish_attempt_id) == ("publishing", result.attempt_id)
+
+
+def test_two_concurrent_executions_of_one_event_publish_once(world_f2) -> None:
+    """Two executors on the same due event: the claim lets one through; one attempt row,
+    one call to Meta, the event linked to it."""
+    tenant_id = world_f2[0]
+    event = _due_reel_event(world_f2)
+    calls: list[str] = []
+    results = _race(lambda: _executor(calls).try_execute(event))
+    outcomes = sorted(r.outcome for r in results)
+    assert outcomes == sorted([ExecutionOutcome.STARTED, ExecutionOutcome.CLAIM_LOST])
+    rows = _attempt_rows(tenant_id, f"cal:{event.id}:1")
+    assert len(rows) == 1 and calls == ["REELS"]
+    stored = PostgresPlannerRepository().get(tenant_id=tenant_id, event_id=event.id)
+    assert stored.publish_attempt_id == rows[0]
+
+
+def test_two_concurrent_starts_of_one_claimed_event_are_serialised_by_the_lock(
+    world_f2,
+) -> None:
+    """Both past the claim (a resume racing the claimer): the advisory lock lets one in;
+    the other is BUSY, or — if it got the lock after the first finished — only re-links."""
+    tenant_id = world_f2[0]
+    event = _due_reel_event(world_f2)
+    claimed = PostgresPlannerRepository().claim(
+        tenant_id=tenant_id, event_id=event.id, expected_revision=1, now=datetime.now(UTC)
+    )
+    calls: list[str] = []
+    results = _race(lambda: _executor(calls).start_claimed(claimed))
+    started = [r for r in results if r.outcome is ExecutionOutcome.STARTED]
+    others = {r.outcome for r in results if r.outcome is not ExecutionOutcome.STARTED}
+    assert len(started) == 1
+    assert others <= {ExecutionOutcome.BUSY, ExecutionOutcome.LINKED_EXISTING}
+    assert _attempt_rows(tenant_id, f"cal:{event.id}:1") == [started[0].attempt_id]
+    assert calls == ["REELS"]
+
+
+def test_without_the_lock_the_publisher_idempotency_still_yields_one_attempt(world_f2) -> None:
+    """The second barrier: with the event lock taken away, both executions reach
+    `start()`; `uq_attempt_idempotency` gives both the SAME attempt, Meta is called once,
+    and both end linked to it."""
+    tenant_id = world_f2[0]
+    event = _due_reel_event(world_f2)
+    claimed = PostgresPlannerRepository().claim(
+        tenant_id=tenant_id, event_id=event.id, expected_revision=1, now=datetime.now(UTC)
+    )
+    calls: list[str] = []
+    results = _race(lambda: _executor(calls, lock=_NoLock()).start_claimed(claimed))
+    attempt_ids = {r.attempt_id for r in results}
+    assert len(attempt_ids) == 1 and None not in attempt_ids
+    assert {r.outcome for r in results} <= {
+        ExecutionOutcome.STARTED,
+        ExecutionOutcome.LINKED_EXISTING,
+    }
+    assert _attempt_rows(tenant_id, f"cal:{event.id}:1") == list(attempt_ids)
+    assert calls == ["REELS"]
+    stored = PostgresPlannerRepository().get(tenant_id=tenant_id, event_id=event.id)
+    assert stored.publish_attempt_id in attempt_ids
+
+
+def test_the_advisory_lock_excludes_across_connections_and_releases_at_commit(world_f2) -> None:
+    tenant_id = world_f2[0]
+    key = f"qua111-test:{uuid4()}"
+    lock = PostgresAdvisoryLock()
+    holding, release = threading.Event(), threading.Event()
+
+    def holder() -> bool:
+        with lock.hold(tenant_id=tenant_id, key=key) as held:
+            holding.set()
+            release.wait(timeout=10)
+            return held
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(holder)
+        assert holding.wait(timeout=10)
+        with lock.hold(tenant_id=tenant_id, key=key) as second:
+            assert second is False  # another connection holds it
+        release.set()
+        assert first.result(timeout=10) is True
+    with lock.hold(tenant_id=tenant_id, key=key) as again:
+        assert again is True  # released when the holder's transaction ended
+
+
+def test_the_advisory_lock_is_released_when_the_transaction_fails(world_f2) -> None:
+    tenant_id = world_f2[0]
+    key = f"qua111-test:{uuid4()}"
+    lock = PostgresAdvisoryLock()
+    with pytest.raises(RuntimeError), lock.hold(tenant_id=tenant_id, key=key) as held:
+        assert held
+        raise RuntimeError("crash inside the critical section")
+    with lock.hold(tenant_id=tenant_id, key=key) as again:
+        assert again is True
+
+
+def test_fail_unstarted_never_touches_a_linked_event(world_f2) -> None:
+    tenant_id = world_f2[0]
+    event = _due_reel_event(world_f2)
+    result = asyncio.run(_executor([]).try_execute(event))
+    repo = PostgresPlannerRepository()
+    assert repo.fail_unstarted(tenant_id=tenant_id, event_id=event.id, expected_revision=1) is None
+    stored = repo.get(tenant_id=tenant_id, event_id=event.id)
+    assert (stored.status, stored.publish_attempt_id) == ("publishing", result.attempt_id)
+
+
+# --- advance under the attempt lock (QUA-111 F4) -----------------------------------
+#
+# Real PublishService.advance() over the real publish_attempts / children rows; Meta is a
+# fake that counts every platform call. Same isolated tenant (`world_f2`).
+
+
+class _MetaCalls:
+    """Every platform call any fake client made, across threads (list.append is atomic)."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def count(self, name: str) -> int:
+        return self.calls.count(name)
+
+
+class _AdvanceClient:
+    """Meta for the advance path. `container_status` answers `status`; `media_publish`
+    returns a media id. Optional barriers make two advances meet at a given call — used
+    ONLY by the diagnostic no-lock test, never by the positive ones."""
+
+    def __init__(
+        self, meta: _MetaCalls, *, status=None, raises=None, barriers=None, recent=()
+    ) -> None:
+        self._meta = meta
+        self._status = status
+        self._raises = raises
+        self._barriers = barriers or {}
+        self._recent = list(recent)
+
+    async def recent_media(self, *, ig_user_id, since, stories=False):
+        self._meta.calls.append("recent_media")
+        return list(self._recent)
+
+    def _meet(self, name: str) -> None:
+        barrier = self._barriers.get(name)
+        if barrier is not None:
+            barrier.wait(timeout=10)  # a broken barrier fails the test loudly, never flakes
+
+    async def create_container(self, *, ig_user_id, media_type, caption=None, **_):
+        self._meta.calls.append("create_container")
+        return ResumableContainer(container_id=f"c-{uuid4().hex}", upload_uri="https://u/x")
+
+    async def upload_bytes(self, *, upload_uri, fileobj, file_size):
+        self._meta.calls.append("upload_bytes")
+        return UploadOutcome(success=True)
+
+    async def container_status(self, *, container_id):
+        self._meta.calls.append("container_status")
+        if self._raises is not None:
+            raise self._raises
+        self._meet("container_status")
+        return self._status
+
+    async def publish_container(self, *, ig_user_id, creation_id):
+        self._meta.calls.append("media_publish")
+        self._meet("media_publish")
+        return f"media-{uuid4().hex[:8]}"
+
+
+class _AdvanceFactory:
+    def __init__(self, meta: _MetaCalls, **kw) -> None:
+        self._meta, self._kw = meta, kw
+
+    async def client_for(self, *, tenant_id, connection_id):
+        return _AdvanceClient(self._meta, **self._kw)
+
+
+def _linked_event(world, *, carousel: bool = False) -> EventRecord:
+    """A due event taken through F3 (claim + start) with the fake Meta: `publishing` with
+    its attempt linked. REELS: container created + uploaded (`processing`). CAROUSEL: the
+    parent + children written ahead, no platform call yet."""
+    tenant_id, _, conn_id = world
+    post_id = None
+    if carousel:
+        keys = [media_key(tenant_id, conn_id, uuid4().hex) for _ in range(2)]
+        post_id = _post_row(
+            world,
+            category="galeria",
+            items=[(keys[0], "video/mp4", "video", 0), (keys[1], "video/mp4", "video", 1)],
+        )
+    event = _due_reel_event(world, post_id)
+    started = asyncio.run(_executor([]).try_execute(event))
+    assert started.outcome is ExecutionOutcome.STARTED
+    return PostgresPlannerRepository().get(tenant_id=tenant_id, event_id=event.id)
+
+
+def _attempt(tenant_id: UUID, attempt_id: UUID):
+    return PostgresPublishAttemptRepository().get_attempt(
+        tenant_id=tenant_id, attempt_id=attempt_id
+    )
+
+
+def test_two_concurrent_advances_of_a_finished_container_publish_once(world_f2) -> None:
+    tenant_id = world_f2[0]
+    event = _linked_event(world_f2)
+    meta = _MetaCalls()
+    factory = _AdvanceFactory(meta, status=ContainerStatus.FINISHED)
+    results = _race(lambda: _executor([], factory=factory).advance_event(event))
+    assert meta.count("media_publish") == 1
+    outcomes = sorted(r.outcome.value for r in results)
+    # The loser is BUSY, or — had it reached the lock after the winner — reads a settled
+    # attempt from the row. Either way it never reaches Meta.
+    assert outcomes in (["busy", "settled"], ["settled", "settled"])
+    attempt = _attempt(tenant_id, event.publish_attempt_id)
+    assert attempt.status == "published" and attempt.published_media_id
+    stored = PostgresPlannerRepository().get(tenant_id=tenant_id, event_id=event.id)
+    assert stored.status == "publishing"  # F4 never changes the event (F5 does)
+
+
+def test_two_concurrent_advances_of_an_assembling_carousel_create_children_once(
+    world_f2,
+) -> None:
+    tenant_id = world_f2[0]
+    event = _linked_event(world_f2, carousel=True)
+    attempt = _attempt(tenant_id, event.publish_attempt_id)
+    assert attempt.media_product_type == "CAROUSEL" and attempt.creation_id is None
+    meta = _MetaCalls()
+    factory = _AdvanceFactory(meta, status=ContainerStatus.IN_PROGRESS)
+    _race(lambda: _executor([], factory=factory).advance_event(event))
+    children = PostgresPublishAttemptRepository().list_children(
+        tenant_id=tenant_id, attempt_id=event.publish_attempt_id
+    )
+    assert len(children) == 2
+    assert meta.count("create_container") == 2  # one per child, never duplicated
+    assert len({c.creation_id for c in children}) == 2 and None not in {
+        c.creation_id for c in children
+    }
+    # The carousel's own container is not created while children are still in flight.
+    assert _attempt(tenant_id, event.publish_attempt_id).creation_id is None
+
+
+def test_advancing_a_settled_attempt_calls_meta_zero_times(world_f2) -> None:
+    tenant_id = world_f2[0]
+    event = _linked_event(world_f2)
+    first = _MetaCalls()
+    finished = _AdvanceFactory(first, status=ContainerStatus.FINISHED)
+    asyncio.run(_executor([], factory=finished).advance_event(event))
+    assert _attempt(tenant_id, event.publish_attempt_id).status == "published"
+    again = _MetaCalls()
+    result = asyncio.run(
+        _executor(
+            [], factory=_AdvanceFactory(again, status=ContainerStatus.FINISHED)
+        ).advance_event(event)
+    )
+    assert result.outcome is AdvanceOutcome.SETTLED
+    assert again.calls == []
+
+
+def test_the_attempt_lock_is_released_after_advance_raises(world_f2) -> None:
+    tenant_id = world_f2[0]
+    event = _linked_event(world_f2)
+    meta = _MetaCalls()
+    failing = _AdvanceFactory(meta, raises=RuntimeError("graph 500"))
+    result = asyncio.run(_executor([], factory=failing).advance_event(event))
+    assert result.outcome is AdvanceOutcome.ADVANCE_ERROR and result.error == "RuntimeError"
+    with PostgresAdvisoryLock().hold(
+        tenant_id=tenant_id, key=attempt_lock_key(event.publish_attempt_id)
+    ) as held:
+        assert held is True  # the rollback released it
+    retry = asyncio.run(_executor([], factory=failing).advance_event(event))
+    assert retry.outcome is AdvanceOutcome.ADVANCE_ERROR  # ran again, not BUSY
+    assert meta.count("container_status") == 2
+    stored = PostgresPlannerRepository().get(tenant_id=tenant_id, event_id=event.id)
+    assert (stored.status, stored.publish_attempt_id) == ("publishing", event.publish_attempt_id)
+
+
+def test_a_held_attempt_lock_makes_advance_busy(world_f2) -> None:
+    tenant_id = world_f2[0]
+    event = _linked_event(world_f2)
+    key = attempt_lock_key(event.publish_attempt_id)
+    holding, release = threading.Event(), threading.Event()
+
+    def holder() -> None:
+        with PostgresAdvisoryLock().hold(tenant_id=tenant_id, key=key) as held:
+            assert held
+            holding.set()
+            release.wait(timeout=10)
+
+    meta = _MetaCalls()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        running = pool.submit(holder)
+        assert holding.wait(timeout=10)
+        factory = _AdvanceFactory(meta, status=ContainerStatus.FINISHED)
+        result = asyncio.run(_executor([], factory=factory).advance_event(event))
+        release.set()
+        running.result(timeout=10)
+    assert result.outcome is AdvanceOutcome.BUSY
+    assert meta.calls == []
+
+
+def test_diagnostic_without_the_attempt_lock_two_advances_publish_twice(world_f2) -> None:
+    """DIAGNOSTIC — documents WHY `advance_event` takes the attempt lock; it does not
+    validate any production path (production always passes the lock).
+
+    With the lock removed, two advances of the same FINISHED attempt both read "not sent"
+    from their own snapshot, both write the send marker (a plain UPDATE, not a
+    compare-and-set) and both call `media_publish`. Two barriers make that interleaving
+    deterministic — both advances must reach `container_status`, then both must reach
+    `media_publish`, before either continues — so this needs no sleep and cannot pass or
+    fail by timing: a broken barrier raises instead."""
+    event = _linked_event(world_f2)
+    meta = _MetaCalls()
+    barriers = {
+        "container_status": threading.Barrier(2),
+        "media_publish": threading.Barrier(2),
+    }
+    factory = _AdvanceFactory(meta, status=ContainerStatus.FINISHED, barriers=barriers)
+    _race(lambda: _executor([], lock=_NoLock(), factory=factory).advance_event(event))
+    assert meta.count("media_publish") == 2  # the double publish the attempt lock prevents
+
+
+# --- settling the event from its attempt (QUA-111 F5) -------------------------------
+#
+# A FRESH tenant per test here: `advance_in_flight` steps every linked `publishing` event
+# of the tenant, and the module-wide `world_f2` tenant holds F3/F4 leftovers.
+
+
+@pytest.fixture
+def world_f5() -> tuple[UUID, UUID, UUID]:
+    tenant_id = uuid4()
+    brand_id, _, connection_id = _provision(tenant_id, f"t-qua111-f5-{tenant_id.hex[:8]}")
+    return tenant_id, brand_id, connection_id
+
+
+def _stored(tenant_id: UUID, event_id: UUID) -> EventRecord:
+    return PostgresPlannerRepository().get(tenant_id=tenant_id, event_id=event_id)
+
+
+def _advance_and_settle(world, status: ContainerStatus) -> tuple[EventRecord, list]:
+    """try_execute → advance_in_flight (advance + settle) with Meta answering `status`."""
+    tenant_id = world[0]
+    event = _due_reel_event(world)
+    executor = _executor([], factory=_AdvanceFactory(_MetaCalls(), status=status))
+    assert asyncio.run(executor.try_execute(event)).outcome is ExecutionOutcome.STARTED
+    steps = asyncio.run(executor.advance_in_flight(tenant_id=tenant_id))
+    return _stored(tenant_id, event.id), steps
+
+
+def test_end_to_end_execute_advance_settle_publishes_with_the_media_id(world_f5) -> None:
+    tenant_id = world_f5[0]
+    event, steps = _advance_and_settle(world_f5, ContainerStatus.FINISHED)
+    ((advanced, settled),) = steps
+    assert advanced.outcome is AdvanceOutcome.SETTLED
+    assert settled.outcome is SettleOutcome.SETTLED_PUBLISHED
+    assert event.status == "published"
+    attempt = _attempt(tenant_id, event.publish_attempt_id)
+    assert attempt.status == "published" and attempt.published_media_id
+    assert settled.published_media_id == attempt.published_media_id
+    # QUA-111 criterion 8: the approved caption, as sent to Meta, is on the attempt.
+    assert attempt.caption == "¡Oferta!\n\nDos por uno todo octubre\n\nPide ya\n\n#promo #octubre"
+
+
+def test_a_published_confirmation_recovers_the_media_id_from_recent_media(world_f5) -> None:
+    """QUA-111 criterion 7 — Meta reports the container PUBLISHED and `media_publish`
+    never returned an id (reconciliation path): the id is recovered read-only from the
+    account's media (surface + time + the caption recorded on the attempt), with zero
+    `media_publish` calls, and the event is settled with it."""
+    tenant_id = world_f5[0]
+    event = _due_reel_event(world_f5)
+    asyncio.run(_executor([]).try_execute(event))
+    event = _stored(tenant_id, event.id)
+    caption = _attempt(tenant_id, event.publish_attempt_id).caption
+    listing = [
+        RecentMedia("17900000000000009", "REELS", caption, datetime.now(UTC)),
+        RecentMedia("17900000000000008", "REELS", "otro texto", datetime.now(UTC)),
+    ]
+    meta = _MetaCalls()
+    factory = _AdvanceFactory(meta, status=ContainerStatus.PUBLISHED, recent=listing)
+    ((_, settled),) = asyncio.run(
+        _executor([], factory=factory).advance_in_flight(tenant_id=tenant_id)
+    )
+    assert settled.outcome is SettleOutcome.SETTLED_PUBLISHED
+    assert settled.published_media_id == "17900000000000009"
+    assert _attempt(tenant_id, event.publish_attempt_id).published_media_id == "17900000000000009"
+    assert meta.count("media_publish") == 0 and meta.count("recent_media") == 1
+
+
+def test_an_unresolvable_published_confirmation_keeps_the_id_null(world_f5) -> None:
+    """No candidate in the listing: published (Meta said so), id NULL — never guessed."""
+    tenant_id = world_f5[0]
+    event, steps = _advance_and_settle(world_f5, ContainerStatus.PUBLISHED)
+    ((_, settled),) = steps
+    assert settled.outcome is SettleOutcome.SETTLED_PUBLISHED
+    assert settled.published_media_id is None
+    assert event.status == "published"
+    assert _attempt(tenant_id, event.publish_attempt_id).published_media_id is None
+
+
+def test_published_media_ids_lists_only_this_connections_recorded_ids(world_f5, world_q) -> None:
+    tenant_id = world_f5[0]
+    event, _ = _advance_and_settle(world_f5, ContainerStatus.FINISHED)
+    media_id = _attempt(tenant_id, event.publish_attempt_id).published_media_id
+    repo = PostgresPublishAttemptRepository()
+    assert media_id in repo.published_media_ids(
+        tenant_id=tenant_id, connection_id=event.connection_id
+    )
+    assert repo.published_media_ids(tenant_id=TENANT_Q, connection_id=event.connection_id) == set()
+
+
+def test_a_failed_attempt_fails_the_event_and_keeps_its_platform_reason(world_f5) -> None:
+    tenant_id = world_f5[0]
+    event, steps = _advance_and_settle(world_f5, ContainerStatus.ERROR)
+    ((_, settled),) = steps
+    assert settled.outcome is SettleOutcome.SETTLED_FAILED
+    assert settled.reason == "container_error"
+    assert event.status == "failed"
+    assert _attempt(tenant_id, event.publish_attempt_id).platform_error_code == "container_error"
+
+
+def test_a_non_terminal_attempt_leaves_the_event_publishing(world_f5) -> None:
+    tenant_id = world_f5[0]
+    event, steps = _advance_and_settle(world_f5, ContainerStatus.IN_PROGRESS)
+    ((advanced, settled),) = steps
+    assert advanced.outcome is AdvanceOutcome.ADVANCED and settled is None
+    assert _executor([]).settle_event(event).outcome is SettleOutcome.NOT_SETTLED
+    assert _stored(tenant_id, event.id).status == "publishing"
+
+
+def test_a_repeated_settlement_is_already_settled(world_f5) -> None:
+    tenant_id = world_f5[0]
+    event, _ = _advance_and_settle(world_f5, ContainerStatus.FINISHED)
+    again = _executor([]).settle_event(event)
+    assert again.outcome is SettleOutcome.ALREADY_SETTLED
+    assert _stored(tenant_id, event.id).status == "published"
+
+
+def test_a_mismatched_attempt_revision_or_state_writes_nothing(world_f5) -> None:
+    tenant_id = world_f5[0]
+    executor = _executor([], factory=_AdvanceFactory(_MetaCalls(), status=ContainerStatus.ERROR))
+    mine = _due_reel_event(world_f5)
+    other = _due_reel_event(world_f5)
+    for event in (mine, other):
+        asyncio.run(executor.try_execute(event))
+    mine, other = _stored(tenant_id, mine.id), _stored(tenant_id, other.id)
+    asyncio.run(executor.advance_event(other))  # settles OTHER's attempt as failed
+    # Another event's attempt: key does not match this event.
+    stolen = replace(mine, publish_attempt_id=other.publish_attempt_id)
+    assert _executor([]).settle_event(stolen).outcome is SettleOutcome.MISMATCH
+    # A stale revision: key does not match either.
+    assert _executor([]).settle_event(replace(other, revision=2)).outcome is SettleOutcome.MISMATCH
+    # The repository CAS itself refuses a wrong attempt or revision.
+    repo = PostgresPlannerRepository()
+    kw = {"tenant_id": tenant_id, "event_id": mine.id, "published": False}
+    assert repo.settle_from_attempt(expected_revision=1, attempt_id=uuid4(), **kw) is None
+    assert (
+        repo.settle_from_attempt(expected_revision=2, attempt_id=mine.publish_attempt_id, **kw)
+        is None
+    )
+    assert _stored(tenant_id, mine.id).status == "publishing"
+    assert _stored(tenant_id, other.id).status == "publishing"
+
+
+def test_two_concurrent_settlements_make_exactly_one_transition(world_f5) -> None:
+    tenant_id = world_f5[0]
+    event = _due_reel_event(world_f5)
+    finished = _AdvanceFactory(_MetaCalls(), status=ContainerStatus.FINISHED)
+    executor = _executor([], factory=finished)
+    asyncio.run(executor.try_execute(event))
+    event = _stored(tenant_id, event.id)
+    asyncio.run(executor.advance_event(event))  # the attempt is now settled `published`
+    barrier = threading.Barrier(2)
+
+    def settle(_: int):
+        barrier.wait(timeout=10)
+        return _executor([]).settle_event(event)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(settle, range(2)))
+    assert sorted(r.outcome.value for r in results) == ["already_settled", "settled_published"]
+    stored = _stored(tenant_id, event.id)
+    assert (stored.status, stored.publish_attempt_id) == ("published", event.publish_attempt_id)
+
+
+def test_an_attempt_settled_by_another_caller_is_reflected(world_f5) -> None:
+    """E.g. the HTTP GET route advanced it: the executor only reads the row."""
+    tenant_id = world_f5[0]
+    event = _due_reel_event(world_f5)
+    asyncio.run(_executor([]).try_execute(event))
+    event = _stored(tenant_id, event.id)
+    PostgresPublishAttemptRepository().settle(
+        tenant_id=tenant_id,
+        attempt_id=event.publish_attempt_id,
+        status="published",
+        published_media_id="ext-1789",
+    )
+    result = _executor([]).settle_event(event)
+    assert result.outcome is SettleOutcome.SETTLED_PUBLISHED
+    assert result.published_media_id == "ext-1789"
+    assert _stored(tenant_id, event.id).status == "published"
+
+
+# --- the multi-tenant tick (QUA-111 F6) ---------------------------------------------
+#
+# Fresh tenants per test. No test here runs the production discovery unrestricted: the
+# shared dev database holds earlier test tenants that a real tick would act on.
+
+
+def _fresh_world(label: str) -> tuple[UUID, UUID, UUID]:
+    tenant_id = uuid4()
+    brand_id, _, connection_id = _provision(tenant_id, f"t-qua111-f6-{label}-{tenant_id.hex[:6]}")
+    return tenant_id, brand_id, connection_id
+
+
+@pytest.fixture
+def worlds_ab() -> tuple[tuple[UUID, UUID, UUID], tuple[UUID, UUID, UUID]]:
+    return _fresh_world("a"), _fresh_world("b")
+
+
+class _DiscoveredOnly:
+    """The REAL production discovery, narrowed to the tenants a test created — so the
+    test proves discovery finds them without acting on anyone else's data."""
+
+    def __init__(self, *allowed: UUID) -> None:
+        self.allowed, self.found = set(allowed), []
+
+    def tenants(self, *, now):
+        self.found = DiscoveredTenants().tenants(now=now)
+        return [t for t in self.found if t in self.allowed]
+
+
+def _tick(source, meta: _MetaCalls, *, posts=None, repository=None, status=None) -> TickRunner:
+    executor = _executor([], factory=_AdvanceFactory(meta, status=status), posts=posts)
+    return TickRunner(
+        tenants=source, repository=repository or PostgresPlannerRepository(), executor=executor
+    )
+
+
+def _updated_at(tenant_id: UUID, event_id: UUID) -> datetime:
+    return _stored(tenant_id, event_id).updated_at
+
+
+def test_discovery_returns_only_the_ids_of_tenants_with_work_and_writes_nothing(
+    worlds_ab,
+) -> None:
+    (a, b), idle = worlds_ab, _fresh_world("idle")
+    event_a, event_b = _due_reel_event(a), _due_reel_event(b)
+    before = (_updated_at(a[0], event_a.id), _updated_at(b[0], event_b.id))
+    found = DiscoveredTenants().tenants(now=datetime.now(UTC))
+    assert all(isinstance(t, UUID) for t in found)  # tenant ids, nothing else
+    assert a[0] in found and b[0] in found and idle[0] not in found
+    assert (_updated_at(a[0], event_a.id), _updated_at(b[0], event_b.id)) == before
+
+
+def test_a_tick_scoped_to_a_never_touches_b(worlds_ab) -> None:
+    a, b = worlds_ab
+    event_a, event_b = _due_reel_event(a), _due_reel_event(b)
+    b_before = _stored(b[0], event_b.id)
+    report = asyncio.run(_tick(ScopedTenants([a[0]]), _MetaCalls()).run_once())
+    assert [t.tenant_id for t in report.tenants] == [a[0]]
+    assert [r.event_id for r in report.tenants[0].executed] == [event_a.id]  # RLS: A's only
+    assert _stored(a[0], event_a.id).status == "publishing"
+    assert _stored(b[0], event_b.id) == b_before
+
+
+def test_the_multi_tenant_tick_discovers_and_processes_both(worlds_ab) -> None:
+    a, b = worlds_ab
+    event_a, event_b = _due_reel_event(a), _due_reel_event(b)
+    source = _DiscoveredOnly(a[0], b[0])
+    first = asyncio.run(_tick(source, _MetaCalls()).run_once())
+    assert a[0] in source.found and b[0] in source.found
+    assert {t.tenant_id for t in first.tenants} == {a[0], b[0]}
+    assert _stored(a[0], event_a.id).status == _stored(b[0], event_b.id).status == "publishing"
+    # Next tick: Meta reports FINISHED → both publish and settle.
+    second = asyncio.run(_tick(source, _MetaCalls(), status=ContainerStatus.FINISHED).run_once())
+    assert all(len(t.advanced) == 1 for t in second.tenants)
+    assert _stored(a[0], event_a.id).status == _stored(b[0], event_b.id).status == "published"
+
+
+def test_a_failing_tenant_does_not_stop_another(worlds_ab) -> None:
+    a, b = worlds_ab
+    event_a, event_b = _due_reel_event(a), _due_reel_event(b)
+
+    class _ReaderDownForA(DraftPostReader):
+        def get_publishable(self, *, tenant_id, post_id):
+            if tenant_id == a[0]:
+                raise ConnectionError("reader down for A")
+            return super().get_publishable(tenant_id=tenant_id, post_id=post_id)
+
+    report = asyncio.run(
+        _tick(ScopedTenants([a[0], b[0]]), _MetaCalls(), posts=_ReaderDownForA()).run_once()
+    )
+    a_report, b_report = report.tenants
+    assert a_report.errors == [f"{event_a.id}:ConnectionError"]
+    assert _stored(a[0], event_a.id).status == "scheduled"
+    assert b_report.errors == [] and _stored(b[0], event_b.id).status == "publishing"
+
+
+def test_two_concurrent_ticks_do_not_duplicate_a_publication(worlds_ab) -> None:
+    a, b = worlds_ab
+    event_a, event_b = _due_reel_event(a), _due_reel_event(b)
+    meta = _MetaCalls()
+    _race(lambda: _tick(ScopedTenants([a[0], b[0]]), meta).run_once())
+    for world, event in ((a, event_a), (b, event_b)):
+        rows = _attempt_rows(world[0], f"cal:{event.id}:1")
+        assert len(rows) == 1
+        assert _stored(world[0], event.id).publish_attempt_id == rows[0]
+    assert meta.count("create_container") == 2  # one per event, never two
+
+
+class _AppendHook(list):
+    """A list whose `append` also calls a hook — lets a fake Meta call act mid-tick."""
+
+    def __init__(self, hook) -> None:
+        super().__init__()
+        self._hook = hook
+
+    def append(self, item) -> None:
+        super().append(item)
+        self._hook(item)
+
+
+def test_an_event_created_after_the_snapshot_waits_for_the_next_tick(worlds_ab) -> None:
+    a, _ = worlds_ab
+    _due_reel_event(a)
+    created: list[EventRecord] = []
+
+    class _PlanAnotherMidTick(_MetaCalls):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = _AppendHook(self._plan)
+
+        def _plan(self, name: str) -> None:
+            if name == "create_container" and not created:
+                created.append(_due_reel_event(a))
+
+    meta = _PlanAnotherMidTick()
+    asyncio.run(_tick(ScopedTenants([a[0]]), meta).run_once())
+    assert created and _stored(a[0], created[0].id).status == "scheduled"
+    second = asyncio.run(_tick(ScopedTenants([a[0]]), _MetaCalls()).run_once())
+    assert created[0].id in {r.event_id for r in second.tenants[0].executed}
+    assert _stored(a[0], created[0].id).status == "publishing"
+
+
+def test_a_change_between_snapshot_and_execution_is_caught_by_the_claim(worlds_ab) -> None:
+    a, _ = worlds_ab
+    event = _due_reel_event(a)
+
+    class _CancelAfterSnapshot(PostgresPlannerRepository):
+        def list_due(self, *, tenant_id, now, limit=100):
+            rows = super().list_due(tenant_id=tenant_id, now=now, limit=limit)
+            self.set_status(
+                tenant_id=tenant_id,
+                event_id=event.id,
+                expected_status="scheduled",
+                new_status="cancelled",
+            )
+            return rows
+
+    meta = _MetaCalls()
+    report = asyncio.run(
+        _tick(ScopedTenants([a[0]]), meta, repository=_CancelAfterSnapshot()).run_once()
+    )
+    assert [r.outcome for r in report.tenants[0].executed] == [ExecutionOutcome.CLAIM_LOST]
+    assert _stored(a[0], event.id).status == "cancelled"
+    assert meta.calls == []
+
+
+def test_a_tenant_without_work_generates_no_operations(worlds_ab) -> None:
+    idle = _fresh_world("idle")
+    meta = _MetaCalls()
+    report = asyncio.run(_tick(ScopedTenants([idle[0]]), meta).run_once())
+    assert report.tenants[0].operations == 0 and report.tenants[0].errors == []
+    assert meta.calls == []

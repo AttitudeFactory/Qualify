@@ -60,8 +60,7 @@ class AttemptRecord:
     tenant_id: UUID
     connection_id: UUID
     idempotency_key: str
-    # QUA-99 (4.5/6) — CAROUSEL-only in practice, NULL for every single-video attempt.
-    # See `PublishAttemptChild`'s sibling comment in models.py for why this bridge exists.
+    # The caption sent to Meta, for every media type since QUA-111 (see models.py).
     caption: str | None
     media_product_type: str
     adapter_version: str
@@ -174,6 +173,11 @@ class PublishAttemptRepository(Protocol):
     def find_by_idempotency_key(
         self, *, tenant_id: UUID, connection_id: UUID, idempotency_key: str
     ) -> AttemptRecord | None: ...
+
+    def published_media_ids(self, *, tenant_id: UUID, connection_id: UUID) -> set[str]:
+        """Media ids already recorded on this connection's attempts — so reconciliation can
+        never hand one attempt a media another attempt already owns."""
+        ...
 
     # --- carousel children (QUA-99, 3/6) — schema-only until commit 4/6 wires a caller ---
 
@@ -340,6 +344,15 @@ class MemoryPublishAttemptRepository:
             if record.connection_id == connection_id and record.idempotency_key == idempotency_key:
                 return record
         return None
+
+    def published_media_ids(self, *, tenant_id: UUID, connection_id: UUID) -> set[str]:
+        return {
+            record.published_media_id
+            for record in self.rows.values()
+            if record.tenant_id == tenant_id
+            and record.connection_id == connection_id
+            and record.published_media_id
+        }
 
     def _mutate(self, attempt_id: UUID, **changes: object) -> None:
         record = self.rows[attempt_id]
@@ -535,6 +548,17 @@ class PostgresPublishAttemptRepository:
                 )
             )
             return _snapshot(row) if row is not None else None
+
+    def published_media_ids(self, *, tenant_id: UUID, connection_id: UUID) -> set[str]:
+        with tenant_session(tenant_id) as session:
+            return set(
+                session.scalars(
+                    select(PublishAttempt.published_media_id).where(
+                        PublishAttempt.connection_id == connection_id,
+                        PublishAttempt.published_media_id.is_not(None),
+                    )
+                )
+            )
 
     def _update(self, tenant_id: UUID, attempt_id: UUID, values: dict[str, object]) -> None:
         """One UPDATE, no `WHERE settled_at IS NULL` — the trigger is the arbiter of
