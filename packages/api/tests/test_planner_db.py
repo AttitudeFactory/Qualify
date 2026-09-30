@@ -2132,6 +2132,21 @@ def test_editing_an_approved_scheduled_post_waits_for_reapproval_then_publishes(
     assert _attempt(tenant_id, attempt_id).caption == publishable.caption  # the edit went out
 
 
+def test_the_summary_names_an_r2_video_so_the_ui_can_show_it(worlds_ab) -> None:
+    a, _ = worlds_ab
+    tenant_id = a[0]
+    video_key = media_key(tenant_id, a[2], uuid4().hex)
+    reel = _post_row(a, category="reel", items=[(video_key, "video/mp4", "video", 0)])
+    image = _post_row(a)  # default: one JPEG
+    local = _post_row(
+        a, category="reel", items=[("generated/x/video.mp4", "video/mp4", "video", 0)]
+    )
+    reader = DraftPostReader()
+    assert reader.get(tenant_id=tenant_id, post_id=reel).video_object_key == video_key
+    assert reader.get(tenant_id=tenant_id, post_id=image).video_object_key is None
+    assert reader.get(tenant_id=tenant_id, post_id=local).video_object_key is None
+
+
 # --- reject from the Planificador, then take the rejected POST off the calendar -------------
 
 

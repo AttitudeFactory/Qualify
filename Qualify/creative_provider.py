@@ -22,6 +22,8 @@ loop must run them off-thread.
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
@@ -62,6 +64,7 @@ from .creative_vm import (
     DraftSummaryVM,
     DraftVM,
     KitFormVM,
+    MediaVM,
     ReadinessVM,
     RouteOptionVM,
     VoiceProposalVM,
@@ -73,6 +76,9 @@ from .creative_vm import (
     build_variant_vm,
     build_voice_proposal_vm,
 )
+from .r2_media import is_r2_key, issue_view_path
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "acting_user_id",
@@ -409,8 +415,11 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         for v in detail.variants
     ]
     total, model_ids = _draft_costs(tenant_id, detail.id)
-    media = build_media_vms(
-        [(item.media_url, item.media_type, item.position, item.params) for item in detail.media]
+    media = _with_r2_urls(
+        tenant_id,
+        build_media_vms(
+            [(item.media_url, item.media_type, item.position, item.params) for item in detail.media]
+        ),
     )
     return build_draft_vm(
         draft_id=str(detail.id),
@@ -427,6 +436,22 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         media=media,
         failure_detail=detail.failure_detail,
     )
+
+
+def _with_r2_urls(tenant_id: UUID, media: tuple[MediaVM, ...]) -> tuple[MediaVM, ...]:
+    """Media that lives only in R2 gets a short-lived backend URL (`r2_media`); the rest
+    keeps resolving through the local upload store. A token that cannot be minted (e.g.
+    Redis down) only costs the preview — the draft itself still loads."""
+    out: list[MediaVM] = []
+    for item in media:
+        url = ""
+        if is_r2_key(item.key):
+            try:
+                url = issue_view_path(tenant_id, item.key, item.media_type)
+            except Exception as exc:  # noqa: BLE001 — a preview is not worth failing the page
+                logger.warning("r2 media token not issued: %s", type(exc).__name__)
+        out.append(dataclasses.replace(item, url=url) if url else item)
+    return tuple(out)
 
 
 def draft_detail(tenant_id: UUID, draft_id: UUID) -> DraftVM | None:

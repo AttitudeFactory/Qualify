@@ -11,6 +11,7 @@ It never publishes: the planner service it calls has no publish path.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time
 from uuid import UUID
@@ -63,6 +64,9 @@ from .planner_vm import (
     time_label_12h,
     week_label,
 )
+from .r2_media import issue_view_path
+
+logger = logging.getLogger(__name__)
 
 ALL_CONNECTIONS = "all"
 
@@ -182,7 +186,7 @@ def view_zone(tenant_id: UUID, tz_override: str) -> str:
     return CALENDAR_DEFAULT_TZ
 
 
-def _card_input(planned: PlannedEvent) -> CardInput:
+def _card_input(planned: PlannedEvent, video_urls: dict[str, str] | None = None) -> CardInput:
     event, post = planned.event, planned.post
     return CardInput(
         event_id=str(event.id),
@@ -201,7 +205,19 @@ def _card_input(planned: PlannedEvent) -> CardInput:
         tags=tuple(_tag_vm(t) for t in planned.tags),
         is_publishable=post.is_publishable if post is not None else False,
         unpublishable_reason=post.unpublishable_reason if post is not None else "",
+        video_url=(video_urls or {}).get(str(event.post_id), ""),
     )
+
+
+def _week_video_urls(tenant_id: UUID, planned: list[PlannedEvent]) -> dict[str, str]:
+    """One short-lived URL per POST with an R2-only video (not one per event): the cards
+    show its first frame, fetched with HTTP Range (`r2_media`), never the whole reel."""
+    keys = {
+        str(p.post.post_id): p.post.video_object_key
+        for p in planned
+        if p.post is not None and p.post.video_object_key
+    }
+    return {post_id: url for post_id, key in keys.items() if (url := _video_url(tenant_id, key))}
 
 
 def load_week(
@@ -239,11 +255,12 @@ def load_week(
     )
     schedulable = service.list_schedulable(tenant_id=tenant_id, brand_id=brand_id)
     unscheduled = service.list_unscheduled(tenant_id=tenant_id, brand_id=brand_id)
+    video_urls = _week_video_urls(tenant_id, planned)
     grid = build_week(
         monday=monday,
         today=today,
         zone=zone,
-        items=[_card_input(p) for p in planned],
+        items=[_card_input(p, video_urls) for p in planned],
         connections=index,
     )
     return WeekData(
@@ -404,6 +421,19 @@ def cancel_event(tenant_id: UUID, event_id: str) -> None:
     production_planner_service().cancel(tenant_id=tenant_id, event_id=_uuid(event_id, UnknownEvent))
 
 
+def _video_url(tenant_id: UUID, key: str | None) -> str:
+    """The dialog's video preview: a short-lived `/r2media/<token>` for the tenant's own
+    R2 video (`r2_media.issue_view_path` re-checks the prefix). A token that cannot be
+    minted only costs the preview, never the dialog."""
+    if not key:
+        return ""
+    try:
+        return issue_view_path(tenant_id, key, "video")
+    except Exception as exc:  # noqa: BLE001 — a preview is not worth failing the dialog
+        logger.warning("planner video token not issued: %s", type(exc).__name__)
+        return ""
+
+
 def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> EventDetailVM:
     planned = production_planner_service().get(
         tenant_id=tenant_id, event_id=_uuid(event_id, UnknownEvent)
@@ -449,6 +479,7 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
         can_remove_rejected=actions.can_remove_rejected,
         detail_href=post.detail_href if post is not None else "",
         publish_note=ready.note,
+        video_url=_video_url(tenant_id, post.video_object_key if post is not None else None),
         local_date=local.date().isoformat(),
         local_time=local.strftime("%H:%M"),
         connection_id=str(event.connection_id),

@@ -21,6 +21,7 @@ from .creative_vm import (
     SourceVM,
     ToneRowVM,
 )
+from .r2_media import BACKEND_BASE
 from .ui import app_shell, callout, card, empty_state, page_body, page_header
 from .ui import tokens as T
 
@@ -990,7 +991,11 @@ def _failed_panel() -> rx.Component:
 
 
 def _media_item(item: rx.Var[MediaVM]) -> rx.Component:
-    src = rx.get_upload_url(item.key)
+    # R2-only media comes through the backend's `/r2media/<token>` (`r2_media.py`);
+    # everything else from the local upload store, as before.
+    local = rx.get_upload_url(item.key)
+    src = rx.cond(item.url != "", BACKEND_BASE + item.url, local)
+    download_href = rx.cond(item.url != "", BACKEND_BASE + item.url + "?download=1", local)
     return rx.vstack(
         rx.cond(
             item.media_type == "video",
@@ -1001,9 +1006,10 @@ def _media_item(item: rx.Var[MediaVM]) -> rx.Component:
             rx.text(item.label, size="1", color=T.TEXT_MUTED),
             rx.link(
                 rx.icon("download", size=13),
-                href=src,
+                href=download_href,
                 is_external=True,
                 download=True,
+                title="Descargar",
             ),
             spacing="2",
             align="center",

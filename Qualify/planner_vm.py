@@ -468,6 +468,8 @@ class EventCardVM:
     date_label: str
     tags: list[TagVM] = field(default_factory=list)
     readiness_note: str = ""  # why the POST cannot be published yet ("" when it can)
+    # The POST's R2-only video: the card shows its first frame instead of a placeholder.
+    video_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -547,6 +549,8 @@ class EventDetailVM:
     can_remove_rejected: bool = False  # the POST is rejected → "Quitar del calendario"
     detail_href: str = ""
     publish_note: str = ""  # why this POST cannot be published yet, if so
+    # Backend path (`r2_media`) of the POST's R2-only video, "" when there is none.
+    video_url: str = ""
     # Pre-filled values for the reschedule form.
     local_date: str = ""
     local_time: str = ""
@@ -581,6 +585,7 @@ class CardInput:
     tags: tuple[TagVM, ...] = ()
     is_publishable: bool = False  # `PostSummary.is_publishable`
     unpublishable_reason: str = ""  # `PostSummary.unpublishable_reason`
+    video_url: str = ""  # backend path of the POST's R2-only video (`r2_media`), or ""
 
 
 def event_readiness(
@@ -630,6 +635,7 @@ def build_card(
         date_label=date_label(local.date()),
         tags=list(item.tags),
         readiness_note=ready.note,
+        video_url=item.video_url,
     )
 
 

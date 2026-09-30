@@ -590,6 +590,9 @@ class MediaVM:
     position: int
     label: str  # "Imagen", "Slide 2 de 4", "Video"
     poster_key: str = ""
+    #: Backend path for media that lives only in R2 (`r2_media.issue_view_path`); "" →
+    #: the page resolves `key` in the local upload store as before.
+    url: str = ""
 
 
 def build_media_vms(

@@ -35,6 +35,7 @@ from .planner_page import planner_index
 from .planner_state import PlannerState
 from .publishing_page import publish_index
 from .publishing_state import PublishState
+from .r2_media import router as r2_media_router
 from .signals_page import signals_index
 from .state import DashboardState
 from .stories_page import stories_index
@@ -62,6 +63,11 @@ for _noisy_logger in ("httpx", "httpcore", "botocore", "boto3", "urllib3", "sqla
 # (`db.py`/`models.py`/`seed_data.py`) — its data comes from the real `mentions` backend
 # via `state.py`/`mentions_provider.py`. Those files stay on disk (still useful for a
 # quick manual demo or a future fixture), just no longer wired into the app's boot path.
+
+
+# R2-only media for the draft screen (`r2_media.py`), on the same backend FastAPI app the
+# avatar proxy already mounts through `api_transformer`.
+avatar_api.include_router(r2_media_router)
 
 
 def index() -> rx.Component:

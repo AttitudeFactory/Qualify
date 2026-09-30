@@ -187,8 +187,21 @@ def test_gate_exposes_no_presign_method() -> None:
     the guarantee that this sprint opens no public HTTP surface, so it is asserted rather
     than left to review."""
     surface = {name for name in dir(ObjectGate) if not name.startswith("_")}
-    assert surface == {"put_media", "open_object"}
+    # 2026-09-30: `object_size` + `open_range` added for the browser's video preview
+    # (`Qualify/r2_media.py`, HTTP Range). Both are READS behind the same tenant-prefix
+    # check as `open_object`; the bytes still leave only through a backend route that
+    # resolves an opaque token. Still no signed/public URL of any kind.
+    assert surface == {"put_media", "open_object", "object_size", "open_range"}
     assert not any("presign" in name or "sign" in name for name in surface)
+
+
+def test_ranged_reads_keep_the_tenant_prefix_check() -> None:
+    gate = ObjectGate(_NullStore())
+    other = media_key(uuid4(), uuid4(), "x")
+    with pytest.raises(TenantPrefixViolation):
+        gate.object_size(_TENANT, other)
+    with pytest.raises(TenantPrefixViolation):
+        gate.open_range(_TENANT, other, 0, 1)
 
 
 class _NullStore:

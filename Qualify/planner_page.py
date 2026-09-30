@@ -27,6 +27,7 @@ from .planner_vm import (
     VIEW_CALENDAR,
     VIEW_LIST,
 )
+from .r2_media import BACKEND_BASE
 from .ui import app_shell, callout, card, page_body, page_header, platform_badge, signal_pill, tag
 from .ui import tokens as T
 
@@ -61,6 +62,33 @@ def _platform_icon(platform: rx.Var[str]) -> rx.Component:
             for key, icon in _PLATFORM_ICON.items()
         ],
         rx.icon("globe", size=T.ICON_SM, color=T.TEXT_MUTED),
+    )
+
+
+def _card_media(thumbnail_url: rx.Var[str], video_url: rx.Var[str], size: str) -> rx.Component:
+    """A card's picture: the first frame of the POST's R2-only video when it has one (a
+    muted, controls-less `<video>` that only loads metadata — served with HTTP Range, so
+    a card reads a few MB, not the reel), otherwise the image thumbnail / placeholder."""
+    return rx.cond(
+        video_url != "",
+        rx.el.video(
+            src=BACKEND_BASE + video_url + "#t=0.1",
+            muted=True,
+            preload="metadata",
+            plays_inline=True,
+            aria_hidden="true",
+            width=size,
+            height=size,
+            style={
+                "min_width": size,
+                "object_fit": "cover",
+                "border_radius": T.RADIUS_CONTROL,
+                "border": T.BORDER,
+                "background": "black",
+                "pointer_events": "none",
+            },
+        ),
+        _thumbnail(thumbnail_url, size),
     )
 
 
@@ -231,7 +259,7 @@ def _calendar_chip(event) -> rx.Component:
     (approval wording, caption, actions) lives in the detail dialog, one click away."""
     return rx.box(
         rx.hstack(
-            _thumbnail(event.thumbnail_url, "1.6rem"),
+            _card_media(event.thumbnail_url, event.video_url, "1.6rem"),
             rx.vstack(
                 rx.hstack(
                     _platform_icon(event.platform),
@@ -431,7 +459,7 @@ def _list_item(event) -> rx.Component:
         ),
         rx.hstack(
             rx.hstack(
-                _thumbnail(event.thumbnail_url, "3.5rem"),
+                _card_media(event.thumbnail_url, event.video_url, "3.5rem"),
                 rx.vstack(
                     rx.text(event.title, size="3", weight="bold", style=_ONE_LINE, width="100%"),
                     rx.cond(
@@ -1296,7 +1324,27 @@ def _detail_dialog() -> rx.Component:
     d = PlannerState.detail
     body = rx.vstack(
         rx.hstack(
-            _thumbnail(d.thumbnail_url, "4.5rem"),
+            # A POST whose video lives only in R2 shows the video itself (its first frame,
+            # playable) through the backend's short-lived `/r2media/<token>`; anything
+            # else keeps the image thumbnail / placeholder.
+            rx.cond(
+                d.video_url != "",
+                rx.video(
+                    src=BACKEND_BASE + d.video_url,
+                    controls=True,
+                    muted=True,
+                    preload="metadata",
+                    width="6rem",
+                    min_width="6rem",
+                    height="auto",
+                    style={
+                        "aspect_ratio": "9 / 16",
+                        "background": "black",
+                        "border_radius": "0.375rem",
+                    },
+                ),
+                _thumbnail(d.thumbnail_url, "4.5rem"),
+            ),
             rx.vstack(
                 rx.text(d.title, size="3", weight="bold"),
                 rx.flex(
