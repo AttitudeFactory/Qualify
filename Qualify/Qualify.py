@@ -1,6 +1,9 @@
+import asyncio
+import contextlib
 import logging
 
 import reflex as rx
+from qualify_api.planner.embedded import calendar_worker
 
 from .auth_pages import login_index, signup_index
 from .auth_state import AuthState
@@ -93,6 +96,24 @@ app = rx.App(
     # at the document, so it is loaded once here rather than per page.
     head_components=[rx.script(src="/deck-drag.js")],
 )
+
+
+# QUA-111: the calendar worker runs INSIDE the backend process, so a running app means
+# scheduled posts get published — nobody has to remember a separate command. By default
+# it serves every tenant with a connected account, discovered on each tick (no per-tenant
+# config); `qualify_api.planner.embedded` documents the optional overrides. Several
+# backend processes, or the app plus a CLI worker, are safe together (claim + locks +
+# idempotency).
+@app.register_lifespan_task
+@contextlib.asynccontextmanager
+async def calendar_worker_lifespan():
+    worker = calendar_worker()
+    worker.start()
+    try:
+        yield
+    finally:
+        await asyncio.to_thread(worker.stop)
+
 
 # Living style guide: static, no tenant data, so it needs no session. Not linked from
 # the sidebar on purpose — it is for whoever builds screens, not for the business.

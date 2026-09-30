@@ -280,6 +280,20 @@ def zone_countries() -> dict[str, str]:
     return zones
 
 
+# What the Planificador tells the operator about automatic publication (QUA-111).
+AUTO_PUBLISH_ACTIVE = "active"  # the worker runs for this tenant and it has an account
+AUTO_PUBLISH_NO_CONNECTION = "no_connection"  # worker fine; the tenant has no active account
+AUTO_PUBLISH_UNAVAILABLE = "unavailable"  # the worker is not running (or excludes the tenant)
+
+
+def auto_publish_state(*, worker_covers_tenant: bool, has_active_connection: bool) -> str:
+    """The service's availability comes first: with no worker, connecting an account
+    would not help, so that is not what the operator is told to do."""
+    if not worker_covers_tenant:
+        return AUTO_PUBLISH_UNAVAILABLE
+    return AUTO_PUBLISH_ACTIVE if has_active_connection else AUTO_PUBLISH_NO_CONNECTION
+
+
 # The zone every calendar opens in, whatever the tenant's own zone is: the operators
 # plan from Caracas. The picker still overrides it per session.
 CALENDAR_DEFAULT_TZ = "America/Caracas"

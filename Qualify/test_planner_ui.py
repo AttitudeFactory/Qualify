@@ -35,6 +35,9 @@ from .planner_state import (
     to_24h,
 )
 from .planner_vm import (
+    AUTO_PUBLISH_ACTIVE,
+    AUTO_PUBLISH_NO_CONNECTION,
+    AUTO_PUBLISH_UNAVAILABLE,
     HOUR_ROW_KEYS,
     OPENING_HOUR,
     TAG_SUGGESTIONS,
@@ -51,6 +54,7 @@ from .planner_vm import (
     TagVM,
     approval_label,
     approval_short,
+    auto_publish_state,
     build_week,
     category_label,
     day_title,
@@ -447,6 +451,22 @@ def test_calendar_defaults_to_caracas_whatever_the_tenant_zone() -> None:
     assert view_zone(uuid4(), "") == "America/Caracas"
     assert view_zone(uuid4(), "not/a-zone") == "America/Caracas"
     assert view_zone(uuid4(), "America/Bogota") == "America/Bogota"
+
+
+def test_auto_publish_state_reflects_worker_and_connection() -> None:
+    def state(covers: bool, connected: bool) -> str:
+        return auto_publish_state(worker_covers_tenant=covers, has_active_connection=connected)
+
+    assert state(True, True) == AUTO_PUBLISH_ACTIVE
+    assert state(True, False) == AUTO_PUBLISH_NO_CONNECTION
+    assert state(False, True) == AUTO_PUBLISH_UNAVAILABLE
+    assert state(False, False) == AUTO_PUBLISH_UNAVAILABLE  # service first
+
+
+def test_the_calendar_worker_starts_with_the_app() -> None:
+    from .Qualify import app, calendar_worker_lifespan
+
+    assert calendar_worker_lifespan in app.get_lifespan_tasks()
 
 
 def test_a_time_planned_in_the_default_zone_is_that_caracas_instant() -> None:

@@ -20,7 +20,13 @@ from __future__ import annotations
 import reflex as rx
 
 from .planner_state import SCROLL_ID, PlannerState
-from .planner_vm import TAG_COLORS, VIEW_CALENDAR, VIEW_LIST
+from .planner_vm import (
+    AUTO_PUBLISH_ACTIVE,
+    AUTO_PUBLISH_NO_CONNECTION,
+    TAG_COLORS,
+    VIEW_CALENDAR,
+    VIEW_LIST,
+)
 from .ui import app_shell, callout, card, page_body, page_header, platform_badge, signal_pill, tag
 from .ui import tokens as T
 
@@ -1303,11 +1309,30 @@ def _detail_dialog() -> rx.Component:
             d.publish_note != "",
             callout("Aún no publicable: " + d.publish_note, "warn"),
         ),
-        rx.text(
-            "El Planificador no publica. La ejecución automática de los eventos aprobados "
-            "llega con la automatización (QUA-111).",
-            size="1",
-            color=T.TEXT_MUTED,
+        rx.match(
+            PlannerState.auto_publish,
+            (
+                AUTO_PUBLISH_ACTIVE,
+                rx.text(
+                    "Publicación automática activa: un evento aprobado se publica a su "
+                    "hora (se revisa cada minuto).",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+            ),
+            (
+                AUTO_PUBLISH_NO_CONNECTION,
+                callout(
+                    "No hay una cuenta conectada y activa para publicar. Conéctala en "
+                    "Conexiones: los eventos se publicarán en cuanto lo esté.",
+                    "warn",
+                ),
+            ),
+            callout(
+                "El servicio de publicación automática no está disponible en este "
+                "momento: los eventos no se publicarán a su hora.",
+                "warn",
+            ),
         ),
         rx.hstack(
             rx.cond(

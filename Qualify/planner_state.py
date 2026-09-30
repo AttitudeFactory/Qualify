@@ -33,6 +33,7 @@ from .planner_provider import (
     set_event_tags,
 )
 from .planner_vm import (
+    AUTO_PUBLISH_UNAVAILABLE,
     CALENDAR_DEFAULT_TZ,
     OPENING_HOUR,
     TAG_SUGGESTIONS,
@@ -139,6 +140,7 @@ class PlannerState(rx.State):
     # is a per-session view choice and is never written back to the tenant.
     view_tz: str = ""
     tenant_tz: str = ""
+    auto_publish: str = AUTO_PUBLISH_UNAVAILABLE
     tz_query: str = ""
     # Planning tags (0025): the tenant's labels and the calendar's tag filter.
     tags: list[TagVM] = []
@@ -347,6 +349,7 @@ class PlannerState(rx.State):
             self.schedulable = data.schedulable
             self.connections = data.connections
             self.tenant_tz = data.tenant_tz
+            self.auto_publish = data.auto_publish
             self.tags = data.tags
             known = {t.id for t in data.tags}
             self.tag_filter = [t for t in self.tag_filter if t in known]

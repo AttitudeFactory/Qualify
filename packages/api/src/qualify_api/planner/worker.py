@@ -120,12 +120,14 @@ async def run_worker(
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     clock: Callable[[], float] = time.monotonic,
     max_ticks: int | None = None,
+    should_stop: Callable[[], bool] = lambda: False,
 ) -> int:
     """Tick, then wait until `interval` seconds after that tick STARTED, then tick again.
-    The runner is built once, after `.env` is loaded. `max_ticks` exists for tests."""
+    The runner is built once, after `.env` is loaded. `max_ticks` exists for tests;
+    `should_stop` lets an embedding host (`planner.embedded`) end the loop between ticks."""
     runner = make_runner()
     ticks = 0
-    while True:
+    while not should_stop():
         started = clock()
         report: TickReport | None = None
         try:
@@ -139,6 +141,7 @@ async def run_worker(
         if max_ticks is not None and ticks >= max_ticks:
             return 0
         await sleep(max(0.0, interval - (clock() - started)))
+    return 0
 
 
 def main(

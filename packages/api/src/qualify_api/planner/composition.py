@@ -56,6 +56,7 @@ def production_event_executor() -> EventExecutor:
         publisher=production_publish_service(),
         attempts=PostgresPublishAttemptRepository(),
         lock=PostgresAdvisoryLock(),
+        connections=PostgresConnectionGate(),
     )
 
 

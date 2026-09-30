@@ -35,6 +35,40 @@
 
 Se descartan la tarea dentro de la app web (acopla la publicación al servidor HTTP y se multiplica con las réplicas) y Celery + Beat (infraestructura nueva para un solo job; es la decisión F6 del fundador y adelanta la Parte 3). **La corrección no depende de cuál se elija**: la exclusión y la idempotencia viven en la base de datos (§4), así que un cron y un worker a la vez, o dos workers, son seguros.
 
+### Enmienda 2026-09-29 — el worker corre dentro de la app (rama `feat/planner-default-timezone-caracas`)
+
+**Problema observado:** un evento aprobado programado a las 4:35 p. m. Caracas venció y quedó en `scheduled`. El evento y la lógica estaban bien; **ningún proceso ejecutaba el tick**. La decisión anterior dejaba el worker como un proceso aparte que nadie arrancaba: ni `reflex run`, ni `.claude/launch.json`, ni `just dev` lo inician, y el hosting de producción sigue sin decidir, así que ningún supervisor lo lanzaba. El diseño era correcto en sí, pero nada lo conectaba al funcionamiento de la app.
+
+**Cambio:** el backend de Reflex arranca el mismo bucle (`run_worker` → `TickRunner`) en **un hilo propio con su propio event loop** al iniciar la app (lifespan task en `Qualify/Qualify.py`, módulo `planner/embedded.py`). Si la app está levantada, las publicaciones programadas se procesan; nadie tiene que acordarse de un comando.
+
+Por qué esto no reabre las objeciones de la tabla:
+- **"Se multiplica con las réplicas":** es seguro por diseño (§4). N procesos, o la app más un CLI/cron, publican cada evento una sola vez; lo cubren los tests `test_two_embedded_workers_publish_an_event_once` y `test_two_concurrent_ticks_do_not_duplicate_a_publication`.
+- **"Acopla la publicación al servidor HTTP":** el tick corre en su propio hilo, así que las llamadas síncronas a Postgres, R2 y Meta no bloquean los websockets. Quien quiera separarlo pone `QUALIFY_CALENDAR_WORKER=off` y corre el CLI de §2, que sigue igual.
+
+Configuración (variables de entorno, leídas al arrancar; `.env` sirve):
+
+| Variable | Valores | Por defecto |
+|---|---|---|
+| `QUALIFY_CALENDAR_WORKER` | `embedded` \| `off` | `embedded` |
+| `QUALIFY_CALENDAR_WORKER_TENANTS` | vacío o `all` \| UUIDs separados por coma | **vacío = todas las cuentas conectadas** (comportamiento normal del producto). Una lista de UUIDs es una **restricción explícita** para desarrollo o pruebas, nunca el mecanismo para habilitar una cuenta |
+| `QUALIFY_CALENDAR_WORKER_INTERVAL` | segundos, mínimo 30 | 60 |
+
+**Descubrimiento automático (por defecto).** En cada tick, `DiscoveredTenants` lee con `admin_session` solo los ids de los tenants que tienen un evento vencido cuya **propia conexión está `active`**, o un evento en `publishing`. Una cuenta que se conecta después del arranque entra en el siguiente tick: no hay que tocar `.env`, código ni reiniciar. Todo lo que sigue va por `tenant_session(tenant_id)` con RLS. Un evento no puede apuntar a la conexión de otro tenant, porque la FK de `calendar_events` es compuesta `(connection_id, tenant_id)`.
+
+**Cuenta sin conexión activa.** El tenant no se descubre. Si igualmente llega a un tick (por un worker restringido), el ejecutor comprueba la conexión antes del claim y devuelve `NOT_READY` con `reason=connection_not_active`: el evento sigue `scheduled`, sin error, sin intento y sin fallo, igual que un POST sin aprobar. Se publica en el primer tick después de reconectar la cuenta.
+
+**Aviso del Planificador** (modal del evento):
+
+| Estado | Mensaje |
+|---|---|
+| Worker activo y la cuenta tiene una conexión activa | "Publicación automática activa…" |
+| Worker activo y sin conexión activa | Aviso: conectar una cuenta en Conexiones |
+| Worker no activo (apagado, mal configurado o restringido a otros tenants) | Aviso: el servicio de publicación automática no está disponible |
+
+**Base de desarrollo compartida con los tests.** Con el valor por defecto, el worker local también procesa los tenants que dejan los tests `db` (hoy unos 200, con cientos de eventos en `publishing` sobre conexiones sin credenciales). No pueden llegar a Meta sin credenciales, pero cada tick tarda unos 50 s en recorrerlos. Mientras corren los tests `db`, conviene levantar la app con `QUALIFY_CALENDAR_WORKER=off` para que el worker no compita con ellos.
+
+**Caída y reinicio:** el primer tick corre al arrancar. Un evento vencido sigue vencido (`scheduled_at <= now`) y se ejecuta en ese tick. Un evento en `publishing` se reanuda o se avanza. Si el intento ya existía, se vuelve a enlazar por su clave de idempotencia y nunca se envía dos veces. Lo cubre el test `test_a_worker_restart_mid_publication_resumes_without_publishing_twice`.
+
 ---
 
 ## 2. Cómo se ejecuta

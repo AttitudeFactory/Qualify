@@ -17,6 +17,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from qualify_api.planner.composition import production_planner_service, tenant_timezone
+from qualify_api.planner.embedded import calendar_worker
 from qualify_api.planner.post_reader import PostSummary
 from qualify_api.planner.service import (
     EventConflict,
@@ -38,6 +39,7 @@ from qualify_api.planner.service import (
 from .connections_provider import acting_user_id, connections_for
 from .creative_provider import default_brand_id
 from .planner_vm import (
+    AUTO_PUBLISH_UNAVAILABLE,
     CALENDAR_DEFAULT_TZ,
     CardInput,
     ConnectionChoiceVM,
@@ -47,6 +49,7 @@ from .planner_vm import (
     PostOptionVM,
     TagVM,
     approval_label,
+    auto_publish_state,
     build_post_option,
     build_week,
     category_label,
@@ -80,6 +83,8 @@ class WeekData:
     total_events: int = 0
     tenant_tz: str = ""  # the business's own zone — the picker's suggestion
     tags: list[TagVM] = field(default_factory=list)
+    # One of planner_vm.AUTO_PUBLISH_* — worker running here + an active account (QUA-111).
+    auto_publish: str = AUTO_PUBLISH_UNAVAILABLE
 
 
 def planner_error_message(exc: Exception) -> str:
@@ -240,6 +245,10 @@ def load_week(
         total_events=len(planned),
         tenant_tz=tenant_tz,
         tags=[_tag_vm(t) for t in service.list_tags(tenant_id=tenant_id)],
+        auto_publish=auto_publish_state(
+            worker_covers_tenant=calendar_worker().status().covers(tenant_id),
+            has_active_connection=bool(active),
+        ),
     )
 
 
