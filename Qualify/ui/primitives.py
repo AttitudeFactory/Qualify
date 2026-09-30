@@ -14,6 +14,9 @@ it. The rules, in short (full text in docs/design-system.md §5):
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import reflex as rx
 
 from . import tokens as T
@@ -163,6 +166,112 @@ def tag(label: str | rx.Var, size: str = "1") -> rx.Component:
     """A category / free label (interest, source, topic). ``surface`` gray, so it reads
     as metadata rather than as a state or an identity."""
     return rx.badge(label, variant="surface", color_scheme="gray", size=size)
+
+
+def removable_pill(
+    label: str | rx.Var | rx.Component,
+    on_remove: Any,
+    *,
+    icon: str | None = None,
+    leading: rx.Component | None = None,
+    suggested: bool = False,
+    remove_label: str = "Quitar",
+    size: str = "2",
+) -> rx.Component:
+    """A value the operator curates — a hashtag, a banned word, an uploaded file — with
+    its ✕. ``surface`` gray like a `tag` (it is a value, not a state); ``suggested=True``
+    turns it ``soft`` accent for a value the product proposed and the operator has not
+    typed. Never a tone: a pill that could be removed is not a verdict. ``icon`` is a
+    fixed lucide icon; ``leading`` is any component (e.g. a conditional warning)."""
+    children: list = []
+    if icon:
+        children.append(rx.icon(icon, size=12))
+    if leading is not None:
+        children.append(leading)
+    children.append(
+        rx.text(label, overflow="hidden", text_overflow="ellipsis", white_space="nowrap")
+    )
+    children.append(
+        rx.el.button(
+            rx.icon("x", size=12),
+            on_click=on_remove,
+            type="button",
+            aria_label=remove_label,
+            display="flex",
+            align_items="center",
+            background="transparent",
+            border="none",
+            padding="0",
+            color="inherit",
+            cursor="pointer",
+            flex_shrink="0",
+        )
+    )
+    look = {"variant": "soft"} if suggested else {"variant": "surface", "color_scheme": "gray"}
+    return rx.badge(
+        *children,
+        size=size,
+        radius="full",
+        gap="1",
+        align_items="center",
+        max_width="100%",
+        **look,
+    )
+
+
+def pill_editor(
+    items: rx.Var[list[str]],
+    *,
+    draft: rx.Var[str],
+    on_draft_change: Any,
+    on_add: Any,
+    on_remove: Callable[[rx.Var[int]], Any],
+    placeholder: str,
+    add_label: str = "Agregar",
+    empty_hint: str = "",
+) -> rx.Component:
+    """A list the operator builds one value at a time: the values as `removable_pill`s,
+    and an input that adds one on Enter or "+". ``on_remove`` gets the pill's index."""
+    pills = rx.flex(
+        rx.foreach(items, lambda item, index: removable_pill(item, on_remove(index))),
+        wrap="wrap",
+        gap="2",
+        width="100%",
+    )
+    return rx.vstack(
+        rx.cond(
+            items.length() > 0,
+            pills,
+            rx.text(empty_hint, size="1", color=T.TEXT_FAINT) if empty_hint else rx.fragment(),
+        ),
+        rx.form(
+            rx.hstack(
+                rx.input(
+                    value=draft,
+                    on_change=on_draft_change,
+                    placeholder=placeholder,
+                    width="100%",
+                    size="2",
+                ),
+                rx.icon_button(
+                    rx.icon("plus", size=T.ICON_SM),
+                    type="submit",
+                    variant="soft",
+                    color_scheme="gray",
+                    size="2",
+                    aria_label=add_label,
+                ),
+                spacing="2",
+                width="100%",
+            ),
+            on_submit=on_add,
+            reset_on_submit=False,
+            width="100%",
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
 
 
 def sentiment_badge(sentiment: rx.Var[str]) -> rx.Component:

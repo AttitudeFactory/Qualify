@@ -18,9 +18,9 @@ def _proposals() -> list[FieldProposal]:
     return [
         FieldProposal("positioning", "Posicionamiento", "", "Cocina de autor", "cita", True),
         FieldProposal("audience", "Audiencia", "", "Familias", "otra cita", False),
-        FieldProposal("tone_formal_casual", "Tono", "50", "70", "", None),
+        FieldProposal("dont_examples", "Así no habla la marca", "", "¡Oferta!", "", None),
         FieldProposal("banned_words", "Palabras prohibidas", "", "barato\ngratis", "", True),
-        FieldProposal("palette", "Paleta", "", "#556B2F,#F5F0E1", "", None),
+        FieldProposal("cta_patterns", "Llamados a la acción", "", "Reserva hoy", "", None),
     ]
 
 
@@ -29,9 +29,9 @@ def test_rows_carry_the_verification_and_an_unverified_quote_starts_unticked() -
     assert [(r["field"], r["verified"], r["accepted"]) for r in rows] == [
         ("positioning", "si", "1"),
         ("audience", "no", "0"),
-        ("tone_formal_casual", "na", "1"),
+        ("dont_examples", "na", "1"),
         ("banned_words", "si", "1"),
-        ("palette", "na", "1"),
+        ("cta_patterns", "na", "1"),
     ]
     assert all(r["source"] == "brief" for r in rows)
 
@@ -39,22 +39,18 @@ def test_rows_carry_the_verification_and_an_unverified_quote_starts_unticked() -
 def test_assign_writes_each_field_in_the_wizards_own_format() -> None:
     creative = CreativeState()
     assign(creative, "positioning", "Cocina de autor")
-    assign(creative, "tone_formal_casual", "140")
     assign(creative, "banned_words", "barato\ngratis")
-    assign(creative, "palette", "#556B2F,#F5F0E1")
+    assign(creative, "cta_patterns", "Reserva hoy")
     assert creative.kit_positioning == "Cocina de autor"
-    assert creative.tone_formal_casual == 100  # clamped to the slider's range
     assert creative.kit_banned_words == "barato\ngratis"
-    assert creative.kit_palette == "#556B2F,#F5F0E1"
+    assert creative.kit_cta_patterns == "Reserva hoy"
 
 
 def test_the_snapshot_reads_the_kit_as_the_wizard_holds_it() -> None:
     creative = CreativeState()
     creative.kit_do_examples = "Te esperamos\n\n¡Ven hoy!"
-    creative.kit_palette = "#111111, #222222"
     snap = kit_snapshot(creative)
     assert snap.do_examples == ("Te esperamos", "¡Ven hoy!")
-    assert snap.palette == ("#111111", "#222222")
 
 
 @pytest.fixture
@@ -68,7 +64,7 @@ def session(monkeypatch: pytest.MonkeyPatch) -> tuple[BrandDocumentState, Creati
 
     monkeypatch.setattr(BrandDocumentState, "get_state", get_state)
     docs.proposals = proposal_rows("brief", _proposals()) + proposal_rows(
-        "brandboard", [FieldProposal("palette", "Paleta", "", "#000000", "", None)]
+        "brandboard", [FieldProposal("audience", "Audiencia", "", "Parejas", "", None)]
     )
     return docs, creative
 
@@ -79,9 +75,10 @@ async def test_only_ticked_proposals_of_that_document_are_applied(session) -> No
     await BrandDocumentState.apply_proposals.fn(docs, "brief")
     assert creative.kit_positioning == "Cocina de autor"
     assert creative.kit_audience == ""  # unverified, left unticked
-    assert creative.tone_formal_casual == 70
+    assert creative.kit_dont_examples == "¡Oferta!"
+    assert creative.tone_formal_casual == 50  # a brief never moves the tone sliders
     assert creative.kit_banned_words == ""  # unticked by the operator
-    assert creative.kit_palette == "#556B2F,#F5F0E1"
+    assert creative.kit_cta_patterns == "Reserva hoy"
     assert [r["source"] for r in docs.proposals] == ["brandboard"]  # the other doc waits
     assert docs.brief_message.startswith("Aplicamos 3 cambios")
     assert docs.brief_tone == "ok"

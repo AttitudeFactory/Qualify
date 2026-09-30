@@ -22,7 +22,9 @@ from .ui import (
     mono,
     page_body,
     page_header,
+    pill_editor,
     platform_badge,
+    removable_pill,
     section,
     sentiment_badge,
     signal_pill,
@@ -675,12 +677,54 @@ def _sentiment_badges() -> rx.Component:
     )
 
 
+def _pills() -> rx.Component:
+    """`removable_pill` / `pill_editor`: values the operator curates (a Brand Kit list, the
+    hashtags, an uploaded file). Static here — the ✕ and the input do nothing."""
+    return card(
+        rx.vstack(
+            rx.hstack(
+                removable_pill("barato", rx.noop()),
+                removable_pill("#streetfood", rx.noop(), suggested=True),
+                removable_pill("fondo-local.jpg", rx.noop(), icon="image"),
+                spacing="2",
+                wrap="wrap",
+            ),
+            rx.text(
+                "surface gris = valor escrito por el operador · soft acento = sugerido por el "
+                "producto (aún no confirmado). Nunca un tono: una pill no es un estado.",
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            rx.divider(),
+            rx.text("Palabras vetadas (pill_editor)", size="2", weight="medium"),
+            pill_editor(
+                rx.Var.create(["barato", "el mejor de la ciudad"]),
+                draft=rx.Var.create(""),
+                on_draft_change=lambda _value: rx.noop(),
+                on_add=rx.noop(),
+                on_remove=lambda _index: rx.noop(),
+                placeholder="Escribe una palabra y pulsa Enter",
+                add_label="Agregar palabra vetada",
+            ),
+            spacing="3",
+            width="100%",
+            align_items="start",
+        )
+    )
+
+
 def _components_section() -> rx.Component:
     return section(
         "Componentes",
         _buttons(),
         _forms(),
         card(_feedback()),
+        rx.text(
+            "Pills (removable_pill / pill_editor — listas que el operador arma)",
+            size="2",
+            weight="medium",
+        ),
+        _pills(),
         rx.text("Cifras", size="2", weight="medium"),
         _stats(),
         rx.text(

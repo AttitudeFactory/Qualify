@@ -279,6 +279,36 @@ def write_labels(
             )
 
 
+def load_order(tenant_id: UUID, brand_id: UUID, cards: list[dict[str, str]]) -> list[str]:
+    """The stored influence order (§ request 2026-09-29) of these cards, as the wizard's
+    bucket keys, most influential first. Only accounts the operator ordered are listed;
+    the wizard ranks the rest after them, in the order the search found them."""
+    positions = {
+        (label.network, label.handle): label.position
+        for label in REPOSITORY.labels(tenant_id=tenant_id, brand_id=brand_id)
+        if label.position is not None
+    }
+    ranked: dict[str, int] = {}
+    for card in cards:
+        identity = card_identity(card)
+        if identity is not None and identity in positions:
+            ranked.setdefault(_bucket_key(card), positions[identity])
+    return sorted(ranked, key=lambda key: ranked[key])
+
+
+def write_order(tenant_id: UUID, brand_id: UUID, order: list[str]) -> None:
+    """Store the influence order: each key's index in `order` is its position. `order`
+    is one list per label concatenated — a position is only ever compared inside a
+    label, so one running index serves them all."""
+    positions: dict[tuple[str, str], int] = {}
+    for index, account_key in enumerate(order):
+        identity = key_identity(account_key)
+        if identity is not None:
+            positions.setdefault(identity, index)
+    if positions:
+        REPOSITORY.set_positions(tenant_id=tenant_id, brand_id=brand_id, positions=positions)
+
+
 # --------------------------------------------------------------------------------------
 # Referentes added by hand (`referentes_review.add_manual_account`)
 # --------------------------------------------------------------------------------------

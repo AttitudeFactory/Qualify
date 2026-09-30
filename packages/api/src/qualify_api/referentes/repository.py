@@ -204,6 +204,8 @@ class AccountLabel:
     label: str
     labeled_by: UUID | None
     labeled_at: datetime
+    #: Influence order inside the label, 0 = most influential; None until ordered.
+    position: int | None = None
 
 
 class ReferentesRepository(Protocol):
@@ -270,6 +272,23 @@ class ReferentesRepository(Protocol):
         ...
 
     def labels(self, *, tenant_id: UUID, brand_id: UUID) -> tuple[AccountLabel, ...]: ...
+
+    def set_positions(
+        self, *, tenant_id: UUID, brand_id: UUID, positions: Mapping[tuple[str, str], int]
+    ) -> None:
+        """Store each labeled `(network, handle)`'s influence position. An account with no
+        label is skipped — a position only means something inside a label. Raises
+        `ValueError` for a negative position."""
+        ...
+
+
+def _validate_positions(positions: Mapping[tuple[str, str], int]) -> dict[tuple[str, str], int]:
+    out: dict[tuple[str, str], int] = {}
+    for (network, handle), position in positions.items():
+        if position < 0:
+            raise ValueError("position must be >= 0")
+        out[(_normalize_network(network), normalize_handle(handle))] = position
+    return out
 
 
 # --------------------------------------------------------------------------------------
@@ -425,14 +444,18 @@ class MemoryReferentesRepository:
         labeled_by: UUID | None = None,
     ) -> AccountLabel:
         self._check_brand(tenant_id, brand_id)
+        key = (brand_id, _normalize_network(network), normalize_handle(handle))
+        previous = self._labels.get(key)
         stored = AccountLabel(
-            network=_normalize_network(network),
-            handle=normalize_handle(handle),
+            network=key[1],
+            handle=key[2],
             label=_validate_label(label),
             labeled_by=labeled_by,
             labeled_at=datetime.now(UTC),
+            # Re-labeling keeps the position, as Postgres' upsert does.
+            position=previous[1].position if previous is not None else None,
         )
-        self._labels[(brand_id, stored.network, stored.handle)] = (tenant_id, stored)
+        self._labels[key] = (tenant_id, stored)
         return stored
 
     def clear_label(self, *, tenant_id: UUID, brand_id: UUID, network: str, handle: str) -> bool:
@@ -449,6 +472,19 @@ class MemoryReferentesRepository:
             for (b, _n, _h), (t, label) in self._labels.items()
             if b == brand_id and t == tenant_id
         )
+
+    def set_positions(
+        self, *, tenant_id: UUID, brand_id: UUID, positions: Mapping[tuple[str, str], int]
+    ) -> None:
+        self._check_brand(tenant_id, brand_id)
+        for (network, handle), position in _validate_positions(positions).items():
+            entry = self._labels.get((brand_id, network, handle))
+            if entry is None or entry[0] != tenant_id:
+                continue
+            self._labels[(brand_id, network, handle)] = (
+                tenant_id,
+                replace(entry[1], position=position),
+            )
 
 
 # --------------------------------------------------------------------------------------
@@ -766,6 +802,26 @@ class PostgresReferentesRepository:
                     label=row.label,
                     labeled_by=row.labeled_by,
                     labeled_at=row.labeled_at,
+                    position=row.position,
                 )
                 for row in rows
             )
+
+    def set_positions(
+        self, *, tenant_id: UUID, brand_id: UUID, positions: Mapping[tuple[str, str], int]
+    ) -> None:
+        wanted = _validate_positions(positions)
+        with tenant_session(tenant_id) as session:
+            if not _brand_visible(session, tenant_id, brand_id):
+                raise ValueError("brand not found for this tenant")
+            for (network, handle), position in wanted.items():
+                session.execute(
+                    update(BrandAccountLabel)
+                    .where(
+                        BrandAccountLabel.tenant_id == tenant_id,
+                        BrandAccountLabel.brand_id == brand_id,
+                        BrandAccountLabel.network == network,
+                        BrandAccountLabel.handle == handle,
+                    )
+                    .values(position=position)
+                )

@@ -365,6 +365,59 @@ def test_list_voices_omits_language_param_when_not_given() -> None:
 
     adapter_for(handler).list_voices(api_key=API_KEY)
     assert "language" not in dict(seen[0].url.params)
+    assert "gender" not in dict(seen[0].url.params)
+
+
+def test_list_voices_filters_by_gender_when_given() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return list_response([])
+
+    adapter_for(handler).list_voices(api_key=API_KEY, language="Spanish", gender="female")
+    assert dict(seen[0].url.params)["gender"] == "female"
+
+
+# The flat looks page is all men for its first 150 looks (measured live 2026-09-28) and
+# rejects a gender filter; the groups carry the gender, and looks can be asked per group.
+REAL_GROUP = {
+    "created_at": 1788525265,
+    "default_voice_id": "6c5a16cb1ce6469a85b80798be89d95c",
+    "gender": "female",
+    "id": "grp_saoirse",
+    "looks_count": 12,
+    "name": "Saoirse",
+    "preview_image_url": "https://resource2.heygen.ai/public-avatars/Saoirse/p.jpg",
+}
+
+
+def test_list_avatar_groups_reads_the_groups_endpoint() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return list_response([REAL_GROUP])
+
+    groups = adapter_for(handler).list_avatar_groups(api_key=API_KEY)
+    assert groups == [REAL_GROUP]
+    assert seen[0].url.path == "/v3/avatars"
+    assert dict(seen[0].url.params) == {"ownership": "public", "limit": "50"}
+
+
+def test_list_avatar_looks_narrows_to_one_group_when_given() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return list_response([])
+
+    adapter_for(handler).list_avatar_looks(api_key=API_KEY, limit=2, group_id="grp_saoirse")
+    assert dict(seen[0].url.params) == {
+        "ownership": "public",
+        "limit": "2",
+        "group_id": "grp_saoirse",
+    }
 
 
 def test_list_endpoints_surface_api_errors_like_create_does() -> None:

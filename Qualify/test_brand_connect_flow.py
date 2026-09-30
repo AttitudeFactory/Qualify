@@ -77,9 +77,10 @@ def test_the_maps_pair_was_swapped_with_identity() -> None:
     assert titles[wiz._MAPS_QUESTION_STEP : wiz._PALETTE_STEP + 1] == [
         "¿Tu negocio está en Google Maps?",
         "Súmate a Google Maps",
+        "Tu brief de marca",
         "¿Quién es la marca?",
-        "¿Tienes logo?",
-        "Tu logo",
+        "¿Tienes brandboard?",
+        "Tu brandboard",
         "Paleta de colores",
     ]
 
@@ -101,46 +102,39 @@ def test_the_logo_pair_is_asked_while_the_profile_picture_has_not_been_taken() -
 def test_an_account_without_a_picture_is_asked_about_its_logo_too() -> None:
     """§ request 2026-09-16: "si la cuenta llega sin logo se muestre la pregunta de
     tengo logo" — with no profile picture at all (a fresh start, and an existing
-    account whose read carried none), both as a brand and as a creator."""
+    account whose read carried none), for a brand."""
     fresh = _state(step=wiz._IDENTITY_STEP, started_without_socials=True, account_kind="marca")
     assert fresh.profile_pic == ""
     assert _next(fresh) == wiz._LOGO_QUESTION_STEP
 
-    for kind in ("ambas", "influencer"):
-        no_picture = _existing_account(step=wiz._IDENTITY_STEP, profile_pic="", account_kind=kind)
-        assert _next(no_picture) == wiz._LOGO_QUESTION_STEP
-        assert _next(no_picture) == wiz._LOGO_UPLOAD_STEP
-        # and back from the palette the walk passes through both logo screens again
-        no_picture.step = wiz._PALETTE_STEP
-        assert _prev(no_picture) == wiz._LOGO_UPLOAD_STEP
-        assert _prev(no_picture) == wiz._LOGO_QUESTION_STEP
+    no_picture = _existing_account(step=wiz._IDENTITY_STEP, profile_pic="", account_kind="ambas")
+    assert _next(no_picture) == wiz._LOGO_QUESTION_STEP
+    assert _next(no_picture) == wiz._LOGO_UPLOAD_STEP
+    # and back from the palette the walk passes through both logo screens again
+    no_picture.step = wiz._PALETTE_STEP
+    assert _prev(no_picture) == wiz._LOGO_UPLOAD_STEP
+    assert _prev(no_picture) == wiz._LOGO_QUESTION_STEP
 
 
-def test_an_influencer_with_a_real_picture_is_not_asked_about_a_logo() -> None:
-    """§ request 2026-09-21: a creator whose real profile picture was detected already has
-    their logo — neither ¿Tienes logo? nor Tu logo is walked, forwards or backwards."""
-    state = _existing_account(
-        step=wiz._IDENTITY_STEP, account_kind="influencer", logo_from_profile=True
-    )
-    assert _next(state) == wiz._PALETTE_STEP
-    assert _prev(state) == wiz._IDENTITY_STEP
-
-
-@pytest.mark.parametrize("profile_pic", ["https://example.com/default.jpg", ""])
-def test_an_influencer_without_a_real_picture_is_asked_about_a_logo(profile_pic: str) -> None:
-    """§ request 2026-09-21 ("solo la pregunta en influencer cuando detecte que no tiene
-    logo"): no picture at all, or the network's default silhouette — the detection then
-    takes nothing (`logo_from_profile` stays False) and the question is asked."""
+@pytest.mark.parametrize(
+    ("profile_pic", "is_real"),
+    [("https://example.com/me.jpg", True), ("https://example.com/default.jpg", False), ("", False)],
+)
+def test_an_influencer_goes_straight_from_identity_to_the_voice(
+    profile_pic: str, is_real: bool
+) -> None:
+    """§ request 2026-09-29 ("se salte directo al apartado de voz"): whatever the profile
+    picture, a creator walks neither ¿Tienes logo?, Tu logo nor Paleta de colores —
+    forwards or backwards."""
     state = _existing_account(
         step=wiz._IDENTITY_STEP,
         profile_pic=profile_pic,
         account_kind="influencer",
-        profile_pic_is_real=False,
-        logo_from_profile=False,
+        profile_pic_is_real=is_real,
+        logo_from_profile=is_real,
     )
-    assert _next(state) == wiz._LOGO_QUESTION_STEP
-    assert _next(state) == wiz._LOGO_UPLOAD_STEP
-    assert _next(state) == wiz._PALETTE_STEP
+    assert _next(state) == wiz._VOICE_TONE_STEP
+    assert _prev(state) == wiz._IDENTITY_STEP
 
 
 def test_account_kind_offers_both_as_a_third_answer() -> None:
@@ -196,16 +190,14 @@ def test_existing_influencer_is_still_asked_the_rubro_then_walks_to_identity() -
     # the rubro step is always shown now (§ request 2026-09-11), prefilled
     assert state.step == wiz._RUBRO_STEP
     assert state.is_influencer is True and state.rubro_complete is True
+    # Maps pair skipped (influencer); the brief has its own screen before the identity
+    assert _next(state) == wiz._BRIEF_STEP
     assert _next(state) == wiz._IDENTITY_STEP
 
-    # Maps pair skipped (influencer); the logo pair is asked while no real profile picture
-    # was taken as the logo (`test_an_influencer_with_a_real_picture_is_not_asked_...`)
-    assert _next(state) == wiz._LOGO_QUESTION_STEP
-    assert _next(state) == wiz._LOGO_UPLOAD_STEP
-    assert _next(state) == wiz._PALETTE_STEP
-    assert _prev(state) == wiz._LOGO_UPLOAD_STEP
-    assert _prev(state) == wiz._LOGO_QUESTION_STEP
+    # logo + palette skipped too (influencer): straight to the voice
+    assert _next(state) == wiz._VOICE_TONE_STEP
     assert _prev(state) == wiz._IDENTITY_STEP
+    assert _prev(state) == wiz._BRIEF_STEP
     assert _prev(state) == wiz._RUBRO_STEP
     assert _prev(state) == wiz._ACCOUNT_KIND_STEP
 
@@ -228,7 +220,7 @@ def test_leaving_the_rubro_step_restarts_the_search_only_when_the_seed_changed()
     # the search that started at the profile read was seeded with these answers
     state.discovery_answers = state._answers()
     assert BrandConnectState.next_step.fn(state) is None  # nothing changed → no restart
-    assert state.step == wiz._IDENTITY_STEP
+    assert state.step == wiz._BRIEF_STEP
 
     state = _existing_account(step=wiz._RUBRO_STEP, account_kind="influencer")
     state.discovery_answers = state._answers()
@@ -247,9 +239,9 @@ def test_both_behaves_as_a_brand_for_location_and_maps() -> None:
     assert state.needs_location is True
     assert _next(state) == wiz._MAPS_QUESTION_STEP
 
-    # "sí" skips Súmate a Google Maps, so the walk lands on ¿Quién es la marca?
+    # "sí" skips Súmate a Google Maps, so the walk lands on Tu brief de marca
     BrandConnectState.answer_has_maps.fn(state, "si")
-    assert state.step == wiz._IDENTITY_STEP
+    assert state.step == wiz._BRIEF_STEP
     assert _prev(state) == wiz._MAPS_QUESTION_STEP
 
 

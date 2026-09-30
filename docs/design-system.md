@@ -253,6 +253,8 @@ Todo en `Qualify/ui/primitives.py` salvo lo indicado. Radix (`rx.button`, `rx.in
 |---|---|---|
 | `platform_badge(platform)` | `outline` + color de plataforma | plataforma de una cuenta/mención. Acepta `str` o `Var` |
 | `tag(label)` | `surface` gris | interés, fuente, scope, tema — metadata, no estado |
+| `removable_pill(label, on_remove, icon=None, leading=None, suggested=False)` | `surface` gris con ✕; `suggested=True` → `soft` acento | un valor que el operador cura y puede quitar: un hashtag, una palabra vetada, un archivo subido. `suggested` marca lo que propuso el producto y el operador aún no escribió. Nunca un tono: una pill quitable no es un veredicto |
+| `pill_editor(items, draft=, on_draft_change=, on_add=, on_remove=, placeholder=)` | pills + input con Enter / "+" | una lista que se arma de a un valor (listas del Brand Kit: ejemplos, CTAs, palabras vetadas, claims). `on_remove` recibe el índice. Sustituye a los textarea "uno por línea" |
 | badge de conteo (`rx.badge(..., variant="soft", color_scheme="gray")`) | `soft` gris | "12 leads" junto a un título |
 
 **Tabla de decisión — ¿qué badge?**

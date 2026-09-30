@@ -18,6 +18,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from qualify_creative.enums import (
+    AdImageMode,
     AvatarSource,
     BriefIntent,
     BriefObjective,
@@ -46,6 +47,9 @@ DURATIONS_SECONDS = (15, 30, 45, 60)
 #: Product images per brief — a carousel is at most 10 slides on Instagram.
 MAX_PRODUCT_IMAGES = 10
 AVATAR_PROMPT_MAX = 600
+#: The scene an advertising image asks the image model for ("a hand holding the glass,
+#: the bar blurred behind").
+SCENE_PROMPT_MAX = 600
 #: HeyGen's avatar engines: IV is the more natural, III costs about a third for stock
 #: avatars (pricing_data v2) — the operator picks per piece.
 AVATAR_ENGINES = ("avatar_iv", "avatar_iii")
@@ -266,6 +270,10 @@ class MediaInputs(BaseModel):
     own_script: str = Field(default="", max_length=SCRIPT_MAX)
     #: HeyGen engine for an avatar subject (an image subject always runs Avatar IV).
     engine: str = "avatar_iv"
+    #: Advertising image only: what it is built from, and the scene the image model is
+    #: asked for. Stored with the brief today; rendered once the model is wired.
+    ad_mode: AdImageMode | None = None
+    scene_prompt: str = Field(default="", max_length=SCENE_PROMPT_MAX)
 
     @model_validator(mode="after")
     def _known_duration(self) -> MediaInputs:
@@ -314,7 +322,17 @@ class ContentBrief(BaseModel):
         if not self.kind.enabled:
             raise ValueError(f"content kind {self.kind} is not available yet")
         if self.kind is ContentKind.AVATAR_VIDEO:
-            if not media.avatar_look_id or not media.voice_id:
+            if not media.voice_id:
+                raise ValueError("an avatar video needs a voice")
+            # A library look, or a custom synthetic person described by the operator. An
+            # uploaded photo is not offered for a human presenter: that is a real person's
+            # likeness, and HeyGen's photo mode asks nobody for consent.
+            if media.avatar_source is AvatarSource.IMAGE:
+                raise ValueError("a human avatar video cannot animate an uploaded photo")
+            if media.avatar_source is AvatarSource.AI:
+                if not media.avatar_prompt.strip():
+                    raise ValueError("a custom human avatar needs a description")
+            elif not media.avatar_look_id:
                 raise ValueError("an avatar video needs an avatar look and a voice")
         if self.kind is ContentKind.ANIMATED_AVATAR_VIDEO:
             if not media.voice_id:
@@ -330,6 +348,14 @@ class ContentBrief(BaseModel):
                 raise ValueError("an animated avatar needs its source: ai or image")
         if media.carousel and self.kind is not ContentKind.STATIC_FLYER:
             raise ValueError("only a flyer can be a carousel")
+        if self.kind is not ContentKind.STATIC_FLYER:
+            if media.ad_mode is not None or media.scene_prompt.strip():
+                raise ValueError("an ad mode and a scene are for the advertising image")
+        elif media.ad_mode is not None:
+            if media.ad_mode.needs_product and not media.product_keys:
+                raise ValueError(f"an ad image built from {media.ad_mode} needs a product photo")
+            if media.ad_mode.needs_background and not media.background_key:
+                raise ValueError(f"an ad image built from {media.ad_mode} needs a background")
         if media.own_script.strip() and not self.kind.is_video:
             raise ValueError("an own script is for the avatar videos")
         if media.carousel and not self.format.is_feed:

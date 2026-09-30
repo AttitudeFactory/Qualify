@@ -347,6 +347,33 @@ def test_labels_survive_a_recompute_that_drops_the_account(env: Env) -> None:
     assert _label_map(env) == {("tiktok", "midudev"): "detractor"}
 
 
+def test_positions_are_stored_on_labeled_accounts_only_and_survive_a_relabel(
+    env: Env,
+) -> None:
+    """The influence order (§ request 2026-09-29, migration 0031)."""
+    ids = dict(tenant_id=env.tenant_a, brand_id=env.brand_a)
+    env.repo.set_label(**ids, network="TikTok", handle="@MiduDev", label="referente")
+    env.repo.set_label(**ids, network="tiktok", handle="otra", label="referente")
+    env.repo.set_positions(
+        **ids,
+        positions={("TikTok", "@MiduDev"): 1, ("tiktok", "otra"): 0, ("tiktok", "nadie"): 2},
+    )
+
+    def positions() -> dict[tuple[str, str], int | None]:
+        return {(lb.network, lb.handle): lb.position for lb in env.repo.labels(**ids)}
+
+    assert positions() == {("tiktok", "midudev"): 1, ("tiktok", "otra"): 0}
+    env.repo.set_label(**ids, network="tiktok", handle="midudev", label="competencia")
+    assert positions()[("tiktok", "midudev")] == 1
+    # another tenant cannot position this brand's accounts
+    with pytest.raises(ValueError):
+        env.repo.set_positions(
+            tenant_id=env.tenant_b, brand_id=env.brand_a, positions={("tiktok", "otra"): 5}
+        )
+    with pytest.raises(ValueError):
+        env.repo.set_positions(**ids, positions={("tiktok", "otra"): -1})
+
+
 def test_an_unknown_label_is_rejected(env: Env) -> None:
     with pytest.raises(ValueError):
         env.repo.set_label(

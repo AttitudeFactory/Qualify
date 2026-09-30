@@ -8,6 +8,8 @@ from qualify_api.planner.embedded import calendar_worker
 from .auth_pages import login_index, signup_index
 from .auth_state import AuthState
 from .avatar_proxy import avatar_api
+from .canva_pages import canva_callback_index, canva_return_index
+from .canva_state import CanvaState
 from .clarity_page import clarity_index
 from .clarity_state import ClarityState
 from .components import filter_bar, mentions_body, stats_row, topbar
@@ -98,9 +100,10 @@ app = rx.App(
     # The creator-discovery cards' pictures (`avatar_proxy.py`): a FastAPI app mounted
     # on the same backend, so the browser never touches a vendor's signed URL.
     api_transformer=avatar_api,
-    # The Brand Kit deck's pointer drag (`assets/deck-drag.js`): plain DOM, delegated
-    # at the document, so it is loaded once here rather than per page.
-    head_components=[rx.script(src="/deck-drag.js")],
+    # The Brand Kit deck's pointer drag (`assets/deck-drag.js`) and the influence
+    # ranking's (`assets/rank-drag.js`): plain DOM, delegated at the document, so they
+    # are loaded once here rather than per page.
+    head_components=[rx.script(src="/deck-drag.js"), rx.script(src="/rank-drag.js")],
 )
 
 
@@ -186,6 +189,22 @@ app.add_page(
     on_load=[AuthState.require_login, CreativeState.load_create],
     title="Qualify · Señales",
 )
+# Canva round trip (§ request 2026-09-28): where Canva sends the user back after the
+# OAuth consent and after "Return" in its editor. Both work in on_load and redirect to
+# /signals; both URLs must be registered in Canva's developer portal.
+app.add_page(
+    canva_callback_index,
+    route="/canva/callback",
+    on_load=[AuthState.require_login, CanvaState.finish_connect],
+    title="Qualify · Conectando Canva",
+)
+app.add_page(
+    canva_return_index,
+    route="/canva/return",
+    on_load=[AuthState.require_login, CanvaState.finish_return],
+    title="Qualify · Volviendo de Canva",
+)
+
 # Brand Content Engine (design §6): /brand is the default entry when the brand is not
 # ready; /create is gated server-side by BrandReadiness (the load stores the verdict).
 # The entry is now a yes/no question (¿tienes redes?, § request 2026-09-09) rather

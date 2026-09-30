@@ -36,7 +36,6 @@ from .ui import tokens as T
 logger = logging.getLogger(__name__)
 
 BRIEF_UPLOAD_ID = "brand_brief"
-BRANDBOARD_UPLOAD_ID = "brand_brandboard"
 
 #: What the brief's dropzone takes — every type `brief_ai.read_document` can read.
 BRIEF_ACCEPT = {
@@ -46,11 +45,6 @@ BRIEF_ACCEPT = {
     "text/markdown": [".md"],
     "image/*": [".png", ".jpg", ".jpeg", ".webp"],
 }
-#: A brandboard is a visual sheet: an image or a PDF.
-BRANDBOARD_ACCEPT = {
-    "application/pdf": [".pdf"],
-    "image/*": [".png", ".jpg", ".jpeg", ".webp"],
-}
 
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 
@@ -58,16 +52,11 @@ _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 _TARGETS: dict[str, str] = {
     "positioning": "kit_positioning",
     "audience": "kit_audience",
-    "tone_formal_casual": "tone_formal_casual",
-    "tone_sober_enthusiastic": "tone_sober_enthusiastic",
-    "tone_technical_plain": "tone_technical_plain",
-    "tone_brief_elaborate": "tone_brief_elaborate",
     "do_examples": "kit_do_examples",
     "dont_examples": "kit_dont_examples",
     "cta_patterns": "kit_cta_patterns",
     "banned_words": "kit_banned_words",
     "forbidden_claims": "kit_forbidden_claims",
-    "palette": "kit_palette",
 }
 
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
@@ -81,16 +70,11 @@ def kit_snapshot(creative: CreativeState) -> brief_ai.KitSnapshot:
     return brief_ai.KitSnapshot(
         positioning=creative.kit_positioning,
         audience=creative.kit_audience,
-        tone_formal_casual=creative.tone_formal_casual,
-        tone_sober_enthusiastic=creative.tone_sober_enthusiastic,
-        tone_technical_plain=creative.tone_technical_plain,
-        tone_brief_elaborate=creative.tone_brief_elaborate,
         do_examples=brief_ai.snapshot_lists(creative.kit_do_examples),
         dont_examples=brief_ai.snapshot_lists(creative.kit_dont_examples),
         cta_patterns=brief_ai.snapshot_lists(creative.kit_cta_patterns),
         banned_words=brief_ai.snapshot_lists(creative.kit_banned_words),
         forbidden_claims=brief_ai.snapshot_lists(creative.kit_forbidden_claims),
-        palette=brief_ai.snapshot_palette(creative.kit_palette),
     )
 
 
@@ -116,12 +100,9 @@ def proposal_rows(source: str, proposals: list[brief_ai.FieldProposal]) -> list[
 
 
 def assign(creative: CreativeState, field: str, value: str) -> None:
-    """Write one accepted proposal into the kit field it belongs to."""
-    target = _TARGETS[field]
-    if target.startswith("tone_"):
-        setattr(creative, target, max(0, min(100, int(value))))
-    else:
-        setattr(creative, target, value)
+    """Write one accepted proposal into the kit field it belongs to. The tone axes are
+    not among them (§ request 2026-09-29): a brief never moves the tone sliders."""
+    setattr(creative, _TARGETS[field], value)
 
 
 class BrandDocumentState(rx.State):
@@ -228,8 +209,7 @@ class BrandDocumentState(rx.State):
             creative = await self.get_state(CreativeState)
             current = kit_snapshot(creative)
             self._set_busy(source, True)
-            what = "tu brief" if source == "brief" else "tu brandboard"
-            self._say(source, f"Leyendo {what}…")
+            self._say(source, "Leyendo tu brief…")
         rows: list[dict[str, str]] = []
         message, tone = "", "neutral"
         try:
@@ -338,33 +318,11 @@ def _status(busy: rx.Var[bool], message: rx.Var[str], tone: rx.Var[str]) -> rx.C
     )
 
 
-def _swatches(value: rx.Var[str]) -> rx.Component:
-    return rx.flex(
-        rx.foreach(
-            value.to(str).split(","),
-            lambda colour: rx.box(
-                width="1.25rem",
-                height="1.25rem",
-                border_radius="4px",
-                background=colour,
-                border=f"1px solid {rx.color('gray', 6)}",
-                title=colour,
-            ),
-        ),
-        gap="1",
-        wrap="wrap",
-    )
-
-
-def _value(field: rx.Var[str], value: rx.Var[str]) -> rx.Component:
+def _value(value: rx.Var[str]) -> rx.Component:
     return rx.cond(
         value == "",
         rx.text("(vacío)", size="1", color=T.TEXT_FAINT),
-        rx.cond(
-            field == "palette",
-            _swatches(value),
-            rx.text(value, size="1", white_space="pre-line"),
-        ),
+        rx.text(value, size="1", white_space="pre-line"),
     )
 
 
@@ -393,9 +351,9 @@ def _proposal_row(row: rx.Var[dict[str, str]]) -> rx.Component:
             ),
             rx.grid(
                 rx.text("Ahora", size="1", color=T.TEXT_MUTED),
-                _value(row["field"], row["current"]),
+                _value(row["current"]),
                 rx.text("Propuesta", size="1", color=T.TEXT_MUTED),
-                _value(row["field"], row["proposed"]),
+                _value(row["proposed"]),
                 columns="5.5rem 1fr",
                 gap_x="2",
                 gap_y="1",
@@ -431,7 +389,7 @@ def proposals_panel(source: str) -> rx.Component:
         card(
             rx.vstack(
                 rx.text(
-                    "Cambios que propone tu " + ("brief" if source == "brief" else "brandboard"),
+                    "Cambios que propone tu brief",
                     size="2",
                     weight="bold",
                 ),
@@ -525,73 +483,6 @@ def brief_upload_card() -> rx.Component:
     )
 
 
-def brandboard_upload_field() -> rx.Component:
-    """Next to the logo (§ request 2026-09-25): an optional brandboard, read for its
-    colours and style and reviewed like the brief."""
-    return rx.vstack(
-        rx.text("¿Tienes un brandboard? (opcional)", size="2", weight="medium"),
-        rx.cond(
-            BrandDocumentState.brandboard_key == "",
-            rx.upload(
-                rx.hstack(
-                    rx.icon("layout-template", size=18, color=T.TEXT_FAINT),
-                    rx.text("Súbelo y leemos sus colores y su estilo", size="2"),
-                    rx.text("PNG, JPG, WEBP o PDF", size="1", color=T.TEXT_FAINT),
-                    align="center",
-                    spacing="2",
-                    wrap="wrap",
-                ),
-                id=BRANDBOARD_UPLOAD_ID,
-                accept=BRANDBOARD_ACCEPT,
-                max_files=1,
-                max_size=brief_ai.MAX_DOCUMENT_BYTES,
-                on_drop=BrandDocumentState.handle_brandboard_upload(
-                    rx.upload_files(upload_id=BRANDBOARD_UPLOAD_ID)
-                ),
-                border=f"1px dashed {rx.color('gray', 7)}",
-                border_radius=T.RADIUS_CARD,
-                padding="1rem",
-                width="100%",
-            ),
-            card(
-                rx.hstack(
-                    rx.cond(
-                        BrandDocumentState.brandboard_is_image,
-                        rx.image(
-                            src=rx.get_upload_url(BrandDocumentState.brandboard_key),
-                            alt="Vista previa del brandboard",
-                            height="3rem",
-                            width="4.5rem",
-                            object_fit="cover",
-                            border_radius=T.RADIUS_CONTROL,
-                        ),
-                        rx.icon("file-text", size=28, color=T.TEXT_MUTED),
-                    ),
-                    rx.text(BrandDocumentState.brandboard_name, size="2", weight="medium"),
-                    rx.spacer(),
-                    rx.button(
-                        rx.icon("trash-2", size=T.ICON_SM),
-                        "Quitar",
-                        variant="soft",
-                        color_scheme=T.tone_scale("error"),
-                        size="2",
-                        on_click=BrandDocumentState.clear_brandboard,
-                    ),
-                    align="center",
-                    spacing="3",
-                    width="100%",
-                ),
-                padding="0.75rem 1rem",
-                width="100%",
-            ),
-        ),
-        _status(
-            BrandDocumentState.brandboard_busy,
-            BrandDocumentState.brandboard_message,
-            BrandDocumentState.brandboard_tone,
-        ),
-        proposals_panel("brandboard"),
-        spacing="2",
-        width="100%",
-        align_items="start",
-    )
+# The brandboard document field that sat next to the logo (`brandboard_upload_field`) was
+# removed on 2026-09-29 ("quita el tienes brief"): Tu brandboard's own dropzone takes the
+# file now. The "brandboard" source in `BrandDocumentState` stays for its state/tests.

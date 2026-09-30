@@ -14,7 +14,7 @@ from . import avatar_proxy as ap
 from . import creator_discovery as cd
 
 _JPEG = b"\xff\xd8\xff\xe0fake-jpeg-bytes"
-_VENDOR = "https://p16-common-sign.tiktokcdn-us.com/tos/abc~c5_100x100.jpeg?x-expires=1"
+_VENDOR = "https://p16-common-sign.tiktokcdn-us.com/tos/abc~c5_100x100.jpeg?x-expires=9999999999"
 
 
 def _transport(routes: dict[str, tuple[int, bytes, str]]) -> httpx.MockTransport:
@@ -33,6 +33,9 @@ def _transport(routes: dict[str, tuple[int, bytes, str]]) -> httpx.MockTransport
 def _reset_module_state() -> None:
     ap._misses.clear()
     ap._background_tasks.clear()
+    ap._account_locks.clear()
+    ap._refreshed.clear()
+    ap._refresh_log.clear()
 
 
 def test_only_vendor_cdns_and_unavatar_are_fetchable() -> None:
@@ -83,19 +86,17 @@ async def test_unavatar_is_the_fallback_when_the_vendor_url_is_dead_or_absent(
     transport = _transport(
         {
             _VENDOR: (403, b"expired", "text/plain"),
-            "https://unavatar.io/instagram/midu.dev": (200, _JPEG, "image/png"),
+            "https://unavatar.io/tiktok/sof_lol": (200, _JPEG, "image/png"),
         }
     )
     async with httpx.AsyncClient(transport=transport) as client:
         found = await ap.resolve_avatar(
-            "instagram", "midu.dev", _VENDOR, client=client, directory=tmp_path
+            "tiktok", "sof_lol", _VENDOR, client=client, directory=tmp_path
         )
         assert found == (_JPEG, "image/png")
-        assert (tmp_path / "instagram_midu.dev.png").exists()
+        assert (tmp_path / "tiktok_sof_lol.png").exists()
         # a card from a cache written before pictures existed: no vendor URL at all
-        found = await ap.resolve_avatar(
-            "instagram", "midu.dev", "", client=client, directory=tmp_path
-        )
+        found = await ap.resolve_avatar("tiktok", "sof_lol", "", client=client, directory=tmp_path)
         assert found == (_JPEG, "image/png")
 
 
@@ -151,8 +152,10 @@ def test_the_route_serves_the_picture_or_a_404(monkeypatch: pytest.MonkeyPatch) 
     asked: list[tuple[str, str, str]] = []
 
     async def fake_resolve(
-        network: str, handle: str, vendor_url: str = ""
+        network: str, handle: str, vendor_url: str = "", *, refresh: object = None
     ) -> tuple[bytes, str] | None:
+        # the browser's request is the one allowed the paid last resort
+        assert refresh is ap.fresh_vendor_url
         asked.append((network, handle, vendor_url))
         return (_JPEG, "image/webp") if handle == "sof_lol" else None
 
@@ -180,7 +183,9 @@ def test_the_card_path_the_frontend_asks_for_matches_the_route(
     decoded, query string and all."""
     asked: list[tuple[str, str, str]] = []
 
-    async def fake_resolve(network: str, handle: str, vendor_url: str = "") -> None:
+    async def fake_resolve(
+        network: str, handle: str, vendor_url: str = "", *, refresh: object = None
+    ) -> None:
         asked.append((network, handle, vendor_url))
         return None
 
@@ -304,3 +309,157 @@ async def test_an_unavatar_429_pauses_it_for_everyone(
             is None
         )
         assert len(calls) == 2  # the pause is over
+
+
+# -- the paid last resort (§ request 2026-09-29) -----------------------------------------
+
+_EXPIRED_IG = "https://scontent-mia5-2.cdninstagram.com/v/t51/old.jpg?oe=68D2B9A5"
+_FRESH_IG = "https://scontent-mia5-2.cdninstagram.com/v/t51/new.jpg?oe=7FFFFFFF"
+
+
+async def test_an_expired_url_is_replaced_by_a_fresh_one_when_allowed(tmp_path: Path) -> None:
+    """The vendor URL answers 403 (its signature expired) and unavatar has nothing: the
+    refresh hands a fresh URL, whose picture is served and kept on disk."""
+    transport = _transport(
+        {_EXPIRED_IG: (403, b"", "text/plain"), _FRESH_IG: (200, _JPEG, "image/jpeg")}
+    )
+    asked: list[tuple[str, str]] = []
+
+    def refresh(network: str, handle: str) -> str:
+        asked.append((network, handle))
+        return _FRESH_IG
+
+    async with httpx.AsyncClient(transport=transport) as client:
+        found = await ap.resolve_avatar(
+            "instagram",
+            "mouredev",
+            _EXPIRED_IG,
+            client=client,
+            directory=tmp_path,
+            refresh=refresh,
+        )
+    assert found == (_JPEG, "image/jpeg")
+    assert asked == [("instagram", "mouredev")]
+    assert (tmp_path / "instagram_mouredev.jpg").read_bytes() == _JPEG
+
+
+async def test_without_refresh_a_dead_url_stays_a_miss(tmp_path: Path) -> None:
+    """The prefetch and every other caller pass no `refresh`: nothing is ever spent."""
+    transport = _transport({_EXPIRED_IG: (403, b"", "text/plain")})
+    async with httpx.AsyncClient(transport=transport) as client:
+        found = await ap.resolve_avatar(
+            "instagram", "mouredev", _EXPIRED_IG, client=client, directory=tmp_path
+        )
+    assert found is None
+
+
+def test_the_profile_read_runs_once_per_account_and_within_the_hourly_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from . import scrapecreators_client as sc
+
+    reads: list[tuple[str, str]] = []
+
+    def fetch_profile(network: str, handle: str) -> dict[str, str]:
+        reads.append((network, handle))
+        return {"profilePicUrl": _FRESH_IG}
+
+    monkeypatch.setattr(sc, "fetch_profile", fetch_profile)
+    monkeypatch.setattr(ap, "_REFRESH_PER_HOUR", 2)
+    t0 = 1_000_000.0
+
+    assert ap.fresh_vendor_url("instagram", "MoureDev", now=t0) == _FRESH_IG
+    assert ap.fresh_vendor_url("instagram", "mouredev", now=t0 + 1) == ""  # same account
+    assert ap.fresh_vendor_url("instagram", "otra", now=t0 + 2) == _FRESH_IG
+    assert ap.fresh_vendor_url("instagram", "tercera", now=t0 + 3) == ""  # hour spent
+    # an hour later the budget is back; the same account waits its day
+    assert ap.fresh_vendor_url("instagram", "tercera", now=t0 + 3601) == _FRESH_IG
+    assert ap.fresh_vendor_url("instagram", "mouredev", now=t0 + 3602) == ""
+    assert ap.fresh_vendor_url("instagram", "mouredev", now=t0 + 24 * 3600 + 5) == _FRESH_IG
+    assert reads == [
+        ("instagram", "MoureDev"),
+        ("instagram", "otra"),
+        ("instagram", "tercera"),
+        ("instagram", "mouredev"),
+    ]
+
+
+def test_a_zero_budget_turns_the_refresh_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    from . import scrapecreators_client as sc
+
+    monkeypatch.setattr(sc, "fetch_profile", lambda *_a: pytest.fail("must not spend"))
+    monkeypatch.setattr(ap, "_REFRESH_PER_HOUR", 0)
+    assert ap.fresh_vendor_url("instagram", "mouredev") == ""
+
+
+def test_a_signature_says_when_a_url_is_dead() -> None:
+    now = 1_790_000_000.0
+    assert ap.signature_expired(f"https://x.cdninstagram.com/p.jpg?oe={int(now) - 1:X}", now=now)
+    assert not ap.signature_expired(
+        f"https://x.cdninstagram.com/p.jpg?oe={int(now) + 3600:X}", now=now
+    )
+    assert ap.signature_expired(f"https://t.tiktokcdn.com/p.jpeg?x-expires={int(now)}", now=now)
+    assert not ap.signature_expired("https://t.tiktokcdn.com/p.jpeg?x-expires=9999999999", now=now)
+    assert not ap.signature_expired("https://t.tiktokcdn.com/p.jpeg", now=now)  # unknown: alive
+    assert not ap.signature_expired("https://x.cdninstagram.com/p.jpg?oe=zz", now=now)
+
+
+async def test_a_dead_url_and_instagram_unavatar_are_never_asked(tmp_path: Path) -> None:
+    """Both are known failures (measured 2026-09-29): no request goes out for them."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        found = await ap.resolve_avatar(
+            "instagram", "mouredev", _EXPIRED_IG, client=client, directory=tmp_path
+        )
+    assert found is None
+    assert calls == []
+
+
+async def test_the_prefetch_uses_the_paid_refresh_and_pays_once_per_account(
+    tmp_path: Path,
+) -> None:
+    """The prefetch is where a dead picture is replaced (§ 2026-09-29); two cards of the
+    same account — or the prefetch and the browser at once — cost one read."""
+    transport = _transport({_FRESH_IG: (200, _JPEG, "image/jpeg")})
+    asked: list[tuple[str, str]] = []
+
+    def refresh(network: str, handle: str) -> str:
+        asked.append((network, handle))
+        return _FRESH_IG
+
+    card = {"network": "Instagram", "handle": "@mouredev", "avatar": _EXPIRED_IG}
+    async with httpx.AsyncClient(transport=transport) as client:
+        await ap.warm_avatars(
+            [card, dict(card)], client=client, directory=tmp_path, refresh=refresh
+        )
+    assert asked == [("instagram", "mouredev")]
+    assert (tmp_path / "instagram_mouredev.jpg").read_bytes() == _JPEG
+
+
+async def test_a_miss_left_by_the_prefetch_does_not_block_the_paid_refresh(
+    tmp_path: Path,
+) -> None:
+    """The prefetch (no `refresh`) records the miss first; the browser's request right
+    after must still get the refreshed picture instead of the remembered 404."""
+    transport = _transport(
+        {_EXPIRED_IG: (403, b"", "text/plain"), _FRESH_IG: (200, _JPEG, "image/jpeg")}
+    )
+    async with httpx.AsyncClient(transport=transport) as client:
+        warm = await ap.resolve_avatar(
+            "instagram", "leomarisreyes.dev", _EXPIRED_IG, client=client, directory=tmp_path
+        )
+        assert warm is None  # the miss is now remembered
+        found = await ap.resolve_avatar(
+            "instagram",
+            "leomarisreyes.dev",
+            _EXPIRED_IG,
+            client=client,
+            directory=tmp_path,
+            refresh=lambda _n, _h: _FRESH_IG,
+        )
+    assert found == (_JPEG, "image/jpeg")

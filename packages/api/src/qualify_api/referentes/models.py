@@ -105,6 +105,7 @@ class BrandAccountLabel(Base):
         ),
         CheckConstraint("network <> ''", name="ck_account_label_network"),
         CheckConstraint(_HANDLE_CHECK, name="ck_account_label_handle_normalized"),
+        CheckConstraint("position IS NULL OR position >= 0", name="ck_account_label_position"),
         UniqueConstraint("brand_id", "network", "handle", name="uq_account_label"),
         Index("ix_account_label_tenant", "tenant_id"),
     )
@@ -125,3 +126,6 @@ class BrandAccountLabel(Base):
     labeled_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
+    #: The operator's influence order inside its label, 0 = most influential; NULL until
+    #: ordered (migration 0031).
+    position: Mapped[int | None] = mapped_column(Integer, nullable=True)
