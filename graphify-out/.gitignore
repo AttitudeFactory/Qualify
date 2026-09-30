@@ -6,3 +6,5 @@ manifest.json
 cache/ast/
 cache/last_query_stamp
 20*/
+graph.html
+.graphify_labels.json.sig
