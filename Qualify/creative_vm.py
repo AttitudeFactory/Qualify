@@ -633,8 +633,8 @@ KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     ),
     (
         "static_flyer",
-        "Imagen tipo flyer",
-        "Una imagen o un carrusel con tu fondo y tus productos.",
+        "Imagen publicitaria",
+        "Un anuncio con tu producto, tu local o ambos. Una imagen o un carrusel.",
         "image",
     ),
     (

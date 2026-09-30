@@ -287,20 +287,43 @@ class HeyGenAvatarVideoAdapter:
     # "Dante") whose ``id`` is NOT usable as ``avatar_id`` in ``generate`` — you need one
     # of the group's *looks*. ``GET /v3/avatars/looks`` turned out to need no ``group_id``
     # at all: called bare, it returns a flat page of looks spanning every public group,
-    # and each look's ``id`` IS directly usable as ``avatar_id``. That is the only call
-    # ``list_avatar_looks`` makes — the group-listing/group-detail endpoints are
-    # deliberately unused, since they would only add a step for no benefit here.
+    # and each look's ``id`` IS directly usable as ``avatar_id``.
+    #
+    # Re-measured live 2026-09-28: the bare flat page is NOT a usable sample of the
+    # library — its first 150 looks were all ``gender: "male"`` (a few men with dozens of
+    # looks each lead the ordering), and ``GET /v3/avatars/looks`` rejects a ``gender``
+    # filter ("Extra inputs are not permitted"). The groups DO carry ``gender`` (first
+    # page: 31 female, 19 male) and ``/v3/avatars/looks`` accepts ``group_id``, so a
+    # gender-balanced picker is: list the groups, then a few looks per group.
+    # ``/v3/voices`` does accept ``gender`` directly.
+
+    def list_avatar_groups(
+        self, *, api_key: str, ownership: str = "public", limit: int = 50
+    ) -> list[Mapping[str, Any]]:
+        """Avatar groups (one character each, with ``"gender"``); a group's ``"id"`` is
+        NOT an ``avatar_id`` — pass it to ``list_avatar_looks(group_id=…)``."""
+        with self._client(api_key) as client:
+            return _list_or_raise(
+                client.get("/v3/avatars", params={"ownership": ownership, "limit": limit})
+            )
 
     def list_avatar_looks(
-        self, *, api_key: str, ownership: str = "public", limit: int = 20
+        self,
+        *,
+        api_key: str,
+        ownership: str = "public",
+        limit: int = 20,
+        group_id: str | None = None,
     ) -> list[Mapping[str, Any]]:
         """Ready-to-use avatar looks; each item's ``"id"`` is what ``generate``'s
         ``params["avatar_id"]`` wants. ``ownership="private"`` lists the account's own
-        (consented) avatars instead of HeyGen's public library."""
+        (consented) avatars instead of HeyGen's public library; ``group_id`` narrows the
+        page to one character's looks."""
+        params: dict[str, Any] = {"ownership": ownership, "limit": limit}
+        if group_id:
+            params["group_id"] = group_id
         with self._client(api_key) as client:
-            return _list_or_raise(
-                client.get("/v3/avatars/looks", params={"ownership": ownership, "limit": limit})
-            )
+            return _list_or_raise(client.get("/v3/avatars/looks", params=params))
 
     def list_voices(
         self,
@@ -308,14 +331,17 @@ class HeyGenAvatarVideoAdapter:
         api_key: str,
         voice_type: str = "public",
         language: str | None = None,
+        gender: str | None = None,
         limit: int = 20,
     ) -> list[Mapping[str, Any]]:
         """Voices; each item's ``"voice_id"`` is what ``generate``'s
         ``params["voice_id"]`` wants. ``language`` filters by HeyGen's language name
-        (e.g. ``"Spanish"``) when given."""
+        (e.g. ``"Spanish"``) and ``gender`` by ``"female"``/``"male"``, when given."""
         params: dict[str, Any] = {"type": voice_type, "limit": limit}
         if language:
             params["language"] = language
+        if gender:
+            params["gender"] = gender
         with self._client(api_key) as client:
             return _list_or_raise(client.get("/v3/voices", params=params))
 

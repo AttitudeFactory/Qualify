@@ -20,6 +20,7 @@ from qualify_creative.compose import (
     render_flyer,
 )
 from qualify_creative.enums import (
+    AdImageMode,
     AvatarSource,
     BriefObjective,
     ContentFormat,
@@ -77,7 +78,17 @@ def test_videos_are_vertical_scripted_and_always_disclosed() -> None:
     ("kind", "media", "message"),
     [
         (ContentKind.AVATAR_VIDEO, {"voice_id": "vo"}, "avatar look and a voice"),
-        (ContentKind.AVATAR_VIDEO, {"avatar_look_id": "lk"}, "avatar look and a voice"),
+        (ContentKind.AVATAR_VIDEO, {"avatar_look_id": "lk"}, "needs a voice"),
+        (
+            ContentKind.AVATAR_VIDEO,
+            {"voice_id": "vo", "avatar_source": "ai", "avatar_prompt": "  "},
+            "custom human avatar needs a description",
+        ),
+        (
+            ContentKind.AVATAR_VIDEO,
+            {"voice_id": "vo", "avatar_source": "image", "avatar_image_key": "uploads/t/a.png"},
+            "cannot animate an uploaded photo",
+        ),
         (ContentKind.ANIMATED_AVATAR_VIDEO, {"avatar_source": "ai"}, "needs a voice"),
         (
             ContentKind.ANIMATED_AVATAR_VIDEO,
@@ -109,6 +120,12 @@ def test_a_kind_with_its_inputs_is_a_valid_brief() -> None:
     _brief(ContentKind.CREATOR_SCRIPT, duration_seconds=45)
     _brief(ContentKind.STATIC_FLYER, product_keys=("uploads/t/a.png",) * 3, carousel=True)
     _brief(
+        ContentKind.AVATAR_VIDEO,
+        voice_id="vo",
+        avatar_source=AvatarSource.AI,
+        avatar_prompt="Mujer de unos 30 años, pelo rizado, blusa verde",
+    )
+    _brief(
         ContentKind.ANIMATED_AVATAR_VIDEO,
         voice_id="vo",
         avatar_source=AvatarSource.AI,
@@ -121,6 +138,40 @@ def test_a_kind_with_its_inputs_is_a_valid_brief() -> None:
         avatar_image_key="uploads/t/mascota.png",
         avatar_rights_confirmed=True,
     )
+
+
+@pytest.mark.parametrize(
+    ("mode", "media", "message"),
+    [
+        (AdImageMode.PRODUCT, {}, "needs a product photo"),
+        (AdImageMode.BACKGROUND, {"product_keys": ("uploads/t/p.png",)}, "needs a background"),
+        (AdImageMode.BOTH, {"background_key": "uploads/t/bar.jpg"}, "needs a product photo"),
+    ],
+)
+def test_an_ad_image_needs_the_photos_its_mode_names(
+    mode: AdImageMode, media: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        _brief(ContentKind.STATIC_FLYER, ad_mode=mode, **media)
+
+
+def test_an_ad_image_keeps_its_mode_and_scene() -> None:
+    brief = _brief(
+        ContentKind.STATIC_FLYER,
+        ad_mode=AdImageMode.BOTH,
+        product_keys=("uploads/t/vaso.png",),
+        background_key="uploads/t/bar.jpg",
+        scene_prompt="Una mano sostiene el vaso, el bar desenfocado detrás",
+    )
+    assert brief.media.ad_mode is AdImageMode.BOTH
+    assert brief.media.scene_prompt.startswith("Una mano")
+    assert AdImageMode.PRODUCT.needs_product and not AdImageMode.PRODUCT.needs_background
+    assert AdImageMode.BACKGROUND.needs_background and not AdImageMode.BACKGROUND.needs_product
+
+
+def test_only_the_ad_image_takes_a_mode_or_a_scene() -> None:
+    with pytest.raises(ValidationError, match="advertising image"):
+        _brief(ContentKind.CREATOR_SCRIPT, scene_prompt="una mano")
 
 
 def test_inputs_are_bounded() -> None:

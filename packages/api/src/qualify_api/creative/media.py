@@ -11,8 +11,9 @@ brief's `ContentKind` asks for (§ request 2026-09-25).
      HeyGen asset;
   2. the subject: the library look the operator picked (`AVATAR_VIDEO`), a synthetic
      avatar generated from their description (`AvatarSource.AI`, a prompt avatar —
-     created, then polled until ready) or their uploaded image animated as-is
-     (`AvatarSource.IMAGE`, HeyGen's image mode);
+     created, then polled until ready; photoreal for `AVATAR_VIDEO`, animated for
+     `ANIMATED_AVATAR_VIDEO`) or their uploaded image animated as-is
+     (`AvatarSource.IMAGE`, HeyGen's image mode, animated kind only);
   3. the render, reading the copy's `script` with the chosen voice;
   4. the video DOWNLOADED into our store at once: HeyGen's `video_url` is a pre-signed
      link with an undocumented expiry, and a draft must never depend on it.
@@ -66,6 +67,12 @@ VIDEO_RESOLUTION = "1080p"
 ANIMATED_STYLE = (
     "Personaje animado estilo 3D tipo película de animación, colores vivos, expresivo, "
     "de frente a cámara, plano medio, fondo liso. "
+)
+#: The same prompt avatar for a custom HUMAN presenter (`AVATAR_VIDEO`, source AI): a
+#: synthetic photoreal person — nobody's likeness, so no consent question applies.
+HUMAN_STYLE = (
+    "Persona real fotorrealista, presentadora de video para redes sociales, expresión "
+    "natural y cercana, de frente a cámara, plano medio, iluminación suave, fondo liso. "
 )
 
 
@@ -406,7 +413,8 @@ class MediaProducer:
             )
 
         subject: dict[str, object]
-        if brief.kind is ContentKind.AVATAR_VIDEO:
+        library_look = media.avatar_source is not AvatarSource.AI
+        if brief.kind is ContentKind.AVATAR_VIDEO and library_look:
             subject = {"avatar_id": media.avatar_look_id, "engine": media.engine}
         elif media.avatar_source is AvatarSource.IMAGE:
             image = self._store.read(media.avatar_image_key or "")
@@ -505,16 +513,18 @@ class MediaProducer:
         budget: BudgetContext,
         usage: list[MediaUsage],
     ) -> str:
-        """A synthetic animated character from the operator's description: created,
-        then waited for — its look id is the video's avatar."""
+        """A synthetic avatar from the operator's description — a photoreal person for
+        `AVATAR_VIDEO`, an animated character otherwise: created, then waited for — its
+        look id is the video's avatar."""
         assert self._heygen is not None
         price = self._pricing.unit_price(model_id=PROMPT_AVATAR_MODEL, unit="per_piece")
         if budget.hard_stop and price > budget.remaining_usd:
             raise _MediaFailed(FailureReason.BUDGET_EXCEEDED.value, "prompt avatar over budget")
+        style = HUMAN_STYLE if brief.kind is ContentKind.AVATAR_VIDEO else ANIMATED_STYLE
         look_id = self._heygen.create_prompt_avatar(
             api_key=key,
             name=f"qualify-{stamp[:8]}",
-            prompt=(ANIMATED_STYLE + brief.media.avatar_prompt.strip())[:1000],
+            prompt=(style + brief.media.avatar_prompt.strip())[:1000],
             aspect_ratio=brief.format.aspect_ratio,
             idempotency_key=f"{stamp}-look",
         )

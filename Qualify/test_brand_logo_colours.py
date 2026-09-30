@@ -90,7 +90,7 @@ async def test_the_profile_picture_as_logo_seeds_the_palette_and_skips_tu_logo(
     assert session.creative.kit_palette == "#be123c"
     assert session.wizard.logo_source == wiz.LOGO_SOURCE_PROFILE
     assert session.wizard.has_logo == wiz.HAS_LOGO_PROFILE
-    # nothing to upload or describe: straight to the palette, and back again
+    # nothing to upload or describe: straight to the palette, and back to the question
     assert session.connect.step == wiz._PALETTE_STEP
     BrandConnectState.prev_step.fn(session.connect)
     assert session.connect.step == wiz._LOGO_QUESTION_STEP
@@ -146,11 +146,9 @@ async def test_removing_an_upload_does_not_touch_profile_colours(session: _Sessi
     assert session.creative.kit_palette == "#be123c"
 
 
-def test_the_logo_question_offers_the_profile_picture_only_when_it_is_real() -> None:
+def test_the_brandboard_question_no_longer_offers_the_profile_picture() -> None:
     rendered = str(wiz._connect_step_has_logo())
-    assert "Mi foto de perfil es mi logo" in rendered
-    # the third card sits behind the real-picture check, not just "has a URL"
-    assert "profile_pic_is_real" in rendered
+    assert "Mi foto de perfil es mi logo" not in rendered  # removed 2026-09-29
 
 
 async def test_the_profile_answer_is_ignored_for_a_default_or_missing_picture(
@@ -192,3 +190,269 @@ def test_a_new_profile_read_forgets_the_previous_choice() -> None:
     BrandConnectState._reset_fields(state)
     assert state.logo_from_profile is False
     assert state.profile_pic_is_real is False
+
+
+# --------------------------------------------------------------------------------------
+# § request 2026-09-21: a REAL profile picture is taken as the logo without asking
+# --------------------------------------------------------------------------------------
+
+
+async def test_a_real_picture_preanswers_the_question_and_skips_only_tu_logo(
+    session: _Session,
+) -> None:
+    session.creative.kit_palette = "#000000"
+    await session.connect._use_profile_picture_as_logo()
+
+    assert session.connect.logo_from_profile is True
+    assert session.wizard.has_logo == wiz.HAS_LOGO_PROFILE  # "Mi foto de perfil es mi logo"
+    assert session.wizard.logo_source == wiz.LOGO_SOURCE_PROFILE
+    assert session.creative.kit_palette == "#000000,#be123c"  # its colours joined the palette
+    # the question is STILL asked (a brand answers it, or just presses Continuar), and
+    # only Tu logo — nothing left to upload or describe — is skipped
+    session.connect.step = wiz._IDENTITY_STEP
+    BrandConnectState.next_step.fn(session.connect)
+    assert session.connect.step == wiz._LOGO_QUESTION_STEP
+    BrandConnectState.next_step.fn(session.connect)
+    assert session.connect.step == wiz._PALETTE_STEP
+    BrandConnectState.prev_step.fn(session.connect)
+    assert session.connect.step == wiz._LOGO_QUESTION_STEP
+    BrandConnectState.prev_step.fn(session.connect)
+    assert session.connect.step == wiz._IDENTITY_STEP
+
+
+async def test_the_preanswer_can_be_changed_and_tu_logo_comes_back(session: _Session) -> None:
+    await session.connect._use_profile_picture_as_logo()
+    assert session.wizard.has_logo == wiz.HAS_LOGO_PROFILE
+
+    await session.answer("si")  # "Sí, ya tengo uno" instead of the picture
+    assert session.connect.logo_from_profile is False
+    assert session.connect.step == wiz._LOGO_UPLOAD_STEP
+
+
+async def test_an_influencer_gets_the_picture_colours_but_no_logo_screens(
+    session: _Session,
+) -> None:
+    session.connect.account_kind = "influencer"
+    await session.connect._use_profile_picture_as_logo()
+    session.connect.step = wiz._IDENTITY_STEP
+    BrandConnectState.next_step.fn(session.connect)
+    assert session.connect.step == wiz._VOICE_TONE_STEP  # 2026-09-29: logo + palette skipped
+
+
+async def test_a_picture_that_cannot_be_fetched_is_not_taken_and_the_question_stays(
+    session: _Session,
+) -> None:
+    session.picture = None
+    await session.connect._use_profile_picture_as_logo()
+
+    assert session.connect.logo_from_profile is False
+    assert session.wizard.has_logo == ""
+    session.connect.step = wiz._IDENTITY_STEP
+    BrandConnectState.next_step.fn(session.connect)
+    assert session.connect.step == wiz._LOGO_QUESTION_STEP  # asked, as before
+
+
+async def test_a_new_read_takes_back_what_the_previous_picture_put_in(
+    session: _Session,
+) -> None:
+    session.creative.kit_palette = "#000000"
+    await session.connect._use_profile_picture_as_logo()
+    assert session.creative.kit_palette == "#000000,#be123c"
+
+    await session.connect._forget_profile_picture_logo()
+    assert session.creative.kit_palette == "#000000"  # the hand-picked colour stays
+    assert session.wizard.has_logo == ""
+    assert session.wizard.logo_source == ""
+
+
+async def test_forgetting_leaves_an_uploaded_logo_alone(session: _Session) -> None:
+    await session.wizard.apply_logo_colours(_png("#1e3a8a"), wiz.LOGO_SOURCE_UPLOAD)
+    session.wizard.has_logo = "si"
+    await session.connect._forget_profile_picture_logo()
+    assert session.wizard.has_logo == "si"
+    assert session.wizard.logo_source == wiz.LOGO_SOURCE_UPLOAD
+    assert session.creative.kit_palette == "#1e3a8a"
+
+
+async def test_analyze_detects_a_real_picture_but_no_longer_preanswers_the_question(
+    session: _Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = {
+        "username": "marca.demo",
+        "fullName": "Marca Demo",
+        "bio": "",
+        "category": "",
+        "followers": 12_000,
+        "profilePicUrl": "https://scontent.cdninstagram.com/pic.jpg",
+    }
+    monkeypatch.setattr(wiz.scrapecreators_client, "load_cached_profile", lambda *_a, **_k: profile)
+    monkeypatch.setattr(
+        wiz.creator_discovery,
+        "seed_from_profile",
+        lambda _profile: wiz.creator_discovery.DiscoverySeed(handle="marca.demo", niches=()),
+    )
+    state = session.connect
+    state.profile_pic_is_real = False
+    state.username = "marca.demo"
+
+    async for _ in BrandConnectState.analyze.fn(state):
+        pass
+
+    assert state.profile_pic_is_real is True
+    assert state.logo_from_profile is False  # no pre-answer since 2026-09-29
+    assert session.wizard.has_logo == ""
+    assert session.creative.kit_palette == ""  # the picture seeds no colours
+    # a brand meets the question unanswered
+    state.account_kind = "marca"
+    state.step = wiz._IDENTITY_STEP
+    BrandConnectState.next_step.fn(state)
+    assert state.step == wiz._LOGO_QUESTION_STEP
+
+
+async def test_analyze_asks_the_question_when_the_picture_is_only_the_default_one(
+    session: _Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session.picture = DEFAULT_INSTAGRAM.read_bytes()
+    profile = {
+        "username": "marca.demo",
+        "followers": 12_000,
+        "profilePicUrl": "https://scontent.cdninstagram.com/default.jpg",
+    }
+    monkeypatch.setattr(wiz.scrapecreators_client, "load_cached_profile", lambda *_a, **_k: profile)
+    monkeypatch.setattr(
+        wiz.creator_discovery,
+        "seed_from_profile",
+        lambda _profile: wiz.creator_discovery.DiscoverySeed(handle="marca.demo", niches=()),
+    )
+    state = session.connect
+    state.username = "marca.demo"
+
+    async for _ in BrandConnectState.analyze.fn(state):
+        pass
+
+    assert state.profile_pic_is_real is False
+    assert state.logo_from_profile is False
+    assert session.wizard.has_logo == ""
+    state.step = wiz._IDENTITY_STEP
+    BrandConnectState.next_step.fn(state)
+    assert state.step == wiz._LOGO_QUESTION_STEP
+
+
+async def test_analyze_asks_the_question_when_the_profile_has_no_picture(
+    session: _Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = {"username": "marca.demo", "followers": 12_000, "profilePicUrl": ""}
+    monkeypatch.setattr(wiz.scrapecreators_client, "load_cached_profile", lambda *_a, **_k: profile)
+    monkeypatch.setattr(
+        wiz.creator_discovery,
+        "seed_from_profile",
+        lambda _profile: wiz.creator_discovery.DiscoverySeed(handle="marca.demo", niches=()),
+    )
+    state = session.connect
+    state.username = "marca.demo"
+
+    async for _ in BrandConnectState.analyze.fn(state):
+        pass
+
+    assert state.logo_from_profile is False
+    assert session.fetches == []  # nothing to fetch for a profile without a picture
+    state.step = wiz._IDENTITY_STEP
+    BrandConnectState.next_step.fn(state)
+    assert state.step == wiz._LOGO_QUESTION_STEP
+
+
+async def test_an_influencer_whose_picture_cannot_be_taken_skips_to_the_voice(
+    session: _Session,
+) -> None:
+    session.picture = None
+    session.connect.account_kind = "influencer"
+    await session.connect._use_profile_picture_as_logo()
+    assert session.connect.logo_from_profile is False
+    session.connect.step = wiz._IDENTITY_STEP
+    BrandConnectState.next_step.fn(session.connect)
+    assert session.connect.step == wiz._VOICE_TONE_STEP
+
+
+async def _analyze_as(
+    session: _Session, monkeypatch: pytest.MonkeyPatch, *, kind: str, picture_url: str
+) -> BrandConnectState:
+    profile = {"username": "creador.demo", "followers": 12_000, "profilePicUrl": picture_url}
+    monkeypatch.setattr(wiz.scrapecreators_client, "load_cached_profile", lambda *_a, **_k: profile)
+    monkeypatch.setattr(
+        wiz.creator_discovery,
+        "seed_from_profile",
+        lambda _profile: wiz.creator_discovery.DiscoverySeed(handle="creador.demo", niches=()),
+    )
+    state = session.connect
+    state.account_kind = kind
+    state.username = "creador.demo"
+    async for _ in BrandConnectState.analyze.fn(state):
+        pass
+    state.step = wiz._IDENTITY_STEP
+    BrandConnectState.next_step.fn(state)
+    return state
+
+
+async def test_analyze_does_not_ask_an_influencer_with_a_real_picture(
+    session: _Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = await _analyze_as(
+        session, monkeypatch, kind="influencer", picture_url="https://cdn.example/real.jpg"
+    )
+    assert state.logo_from_profile is False
+    assert state.step == wiz._VOICE_TONE_STEP
+
+
+async def test_analyze_skips_an_influencer_whose_picture_is_the_default_one(
+    session: _Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session.picture = DEFAULT_INSTAGRAM.read_bytes()
+    state = await _analyze_as(
+        session, monkeypatch, kind="influencer", picture_url="https://cdn.example/default.jpg"
+    )
+    assert state.logo_from_profile is False
+    assert state.step == wiz._VOICE_TONE_STEP
+
+
+async def test_analyze_skips_an_influencer_with_no_picture_at_all(
+    session: _Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = await _analyze_as(session, monkeypatch, kind="influencer", picture_url="")
+    assert state.logo_from_profile is False
+    assert state.step == wiz._VOICE_TONE_STEP
+
+
+DEFAULT_TIKTOK = Path(__file__).resolve().parent / "fixtures" / "tiktok_default_avatar.jpg"
+
+
+async def test_the_picture_check_knows_tiktoks_default_by_its_url_without_downloading(
+    session: _Session,
+) -> None:
+    url = (
+        "https://p16-common-sign.tiktokcdn-us.com/musically-maliva-obj/1594805258216454"
+        "~tplv-tiktokx-cropcenter:100:100.jpeg?x-signature=y"
+    )
+    calls = len(session.fetches)
+    assert await session.connect._picture_is_real("tiktok", "nuevo.usuario", url) is False
+    assert len(session.fetches) == calls  # decided from the URL alone
+
+
+async def test_the_picture_check_knows_tiktoks_default_by_its_pixels_too(
+    session: _Session,
+) -> None:
+    """A default image served from an object the URL list does not know yet (TikTok
+    rotates its CDN objects) is still caught by what it looks like."""
+    session.picture = DEFAULT_TIKTOK.read_bytes()
+    url = "https://p16-common-sign.tiktokcdn-us.com/some-new-default-object/abc~x.jpeg"
+    assert await session.connect._picture_is_real("tiktok", "otro.usuario", url) is False
+
+
+async def test_analyze_skips_an_influencer_whose_tiktok_picture_is_the_default_one(
+    session: _Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session.connect.network = "tiktok"
+    url = "https://p16-common-sign.tiktokcdn-us.com/musically-maliva-obj/1594805258216454~x.jpeg"
+    state = await _analyze_as(session, monkeypatch, kind="influencer", picture_url=url)
+    assert state.profile_pic_is_real is False
+    assert state.logo_from_profile is False
+    assert state.step == wiz._VOICE_TONE_STEP

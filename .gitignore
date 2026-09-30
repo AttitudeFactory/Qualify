@@ -2,6 +2,9 @@
 __pycache__/
 .web
 .states
+# FakeAuthProvider's persisted dev-mode identity map (QUALIFY_AUTH_FAKE=1) — plaintext
+# passwords, never real credentials, never committed. See auth/fake.py.
+.states/fake_auth_users.json
 *.db
 assets/external/
 *.py[cod]

@@ -28,6 +28,7 @@ from qualify_creative.schemas import BrandKit, ContentBrief, CopyPayload, MediaI
 
 from qualify_api.creative.media import (
     ANIMATED_STYLE,
+    HUMAN_STYLE,
     LocalMediaStore,
     MediaProducer,
     generated_key,
@@ -276,6 +277,24 @@ def test_an_ai_animated_avatar_is_generated_waited_for_and_paid_for() -> None:
     assert models[0] == ("heygen_prompt_avatar", "piece", Decimal("0.50"))
     assert models[1][0] == "heygen_avatar_iv"
     assert outcome.spent_usd == Decimal("0.50") + Decimal("0.833750")
+
+
+def test_a_custom_human_avatar_is_a_photoreal_prompt_avatar() -> None:
+    heygen = FakeHeyGen()
+    brief = _brief(
+        ContentKind.AVATAR_VIDEO,
+        voice_id="vo",
+        avatar_source=AvatarSource.AI,
+        avatar_prompt="Mujer de unos 30 años, pelo rizado, blusa verde",
+    )
+    outcome = _produce(_producer(MemoryStore(), heygen), brief, uuid4())
+
+    assert outcome.failure is None
+    # the human style, not the animated one
+    assert heygen.prompts == [HUMAN_STYLE + "Mujer de unos 30 años, pelo rizado, blusa verde"]
+    assert heygen.waited == ["lk_generated"]
+    assert heygen.requests[0].params["avatar_id"] == "lk_generated"
+    assert outcome.usage[0].model_id == "heygen_prompt_avatar"
 
 
 def test_an_animated_avatar_from_an_image_animates_the_upload() -> None:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 
 class AuthNotConfigured(RuntimeError):
@@ -68,3 +69,19 @@ def fake_auth_enabled() -> bool:
     the fake — it fails with `AuthNotConfigured` at the first login attempt.
     """
     return os.environ.get("QUALIFY_AUTH_FAKE", "") == "1"
+
+
+#: Default location for `FakeAuthProvider`'s persisted identity map — next to Reflex's
+#: own `.states/` pickles (already gitignored), relative to wherever `just dev` /
+#: `reflex run` is invoked (repo root, by convention). Overridable for a worktree or a
+#: test that wants an isolated file.
+_DEFAULT_FAKE_AUTH_STATE_PATH = Path(".states/fake_auth_users.json")
+
+
+def fake_auth_state_path() -> Path:
+    """Where the fake provider's identity map persists across dev-server restarts —
+    the fix for the bug where a hot-reload forgets every signed-up email and forces a
+    brand-new tenant/brand/kit on the next login. `QUALIFY_AUTH_FAKE_STATE_PATH`
+    overrides it; unset falls back to the default above."""
+    override = os.environ.get("QUALIFY_AUTH_FAKE_STATE_PATH", "").strip()
+    return Path(override) if override else _DEFAULT_FAKE_AUTH_STATE_PATH

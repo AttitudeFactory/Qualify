@@ -19,16 +19,41 @@ Guard rails: `u` is only ever fetched from the vendors' own CDNs (and unavatar) 
 proxy is not an open fetcher — pictures above `_MAX_BYTES` are refused, and a miss is
 remembered in memory for `_MISS_TTL_SECONDS` so a deck of dead links does not hammer
 anyone on every re-render.
+
+Why some pictures never showed (root cause, measured 2026-09-29 over every stored
+referente, § "quiero que veas cual es el problema"): the vendor URLs very often arrive
+ALREADY DEAD. Discovery reads profiles through Scrape Creators' cache of up to 30 days
+(`creator_discovery._PROFILE_CACHE_MAX_AGE`, which is what makes most reads free) and its
+own 30-day profile cache, while a signed picture URL lives ~3-4 days on Instagram (`oe`)
+and ~1 day on TikTok (`x-expires`): 14 of 18 Instagram cards had expired before their
+phase was even computed. TikTok's usually still work at compute time, so the prefetch
+keeps them; Instagram's had no second source left — unavatar answers 403 for Instagram,
+and Instagram's own public profile endpoint rate-limits (429) at once.
+
+The fix, for every account and not just the ones seen that day:
+- a URL whose own signature says it expired (`signature_expired`) is not even fetched;
+- the paid last resort (`fresh_vendor_url`): ONE Scrape Creators profile read for a
+  fresh URL, used by the prefetch as soon as a phase lands (so the picture is on disk
+  before anyone opens the card) and by the browser's own request if that failed; at
+  most one read per account per `_REFRESH_RETRY_SECONDS`, never more than
+  `QUALIFY_AVATAR_REFRESH_PER_HOUR` per rolling hour (default 60; 0 turns it off), and
+  the picture is then kept on disk like any other, so an account is paid for once;
+- a miss remembered by the prefetch never blocks that last resort, and one lock per
+  account keeps the prefetch and the browser from doing — and paying — it twice.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import threading
 import time
+from collections import deque
+from collections.abc import Callable
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 from fastapi import FastAPI, Response
@@ -130,6 +155,27 @@ def unavatar_url(network: str, handle: str) -> str:
     return f"https://unavatar.io/{network}/{handle}?fallback=false"
 
 
+#: Networks unavatar no longer serves: every Instagram lookup answered 403 (measured
+#: 2026-09-29), so asking only adds a round trip before the next source.
+_NO_UNAVATAR = {"instagram"}
+
+
+def signature_expired(url: str, *, now: float | None = None) -> bool:
+    """Whether a vendor URL's own signature says it is dead already — Instagram's `oe`
+    (hex epoch seconds) or TikTok's `x-expires` (epoch seconds). Unknown shapes count as
+    alive: the fetch itself decides."""
+    query = parse_qs(urlsplit(url).query)
+    moment = now if now is not None else time.time()
+    try:
+        if "oe" in query:
+            return int(query["oe"][0], 16) <= moment
+        if "x-expires" in query:
+            return int(query["x-expires"][0]) <= moment
+    except ValueError:
+        return False
+    return False
+
+
 #: HEIC/HEIF is what TikTok's CDN serves for the first entries of an avatar `url_list`
 #: (measured 2026-09-14) and it renders nowhere but Safari. A URL already saved in a
 #: discovery cache cannot be switched to its JPEG sibling — the signature covers the
@@ -196,6 +242,56 @@ async def _fetch(
     return response.content, media_type
 
 
+# -- The paid last resort (`fresh_vendor_url`) -------------------------------------------
+
+#: Profile reads (1 credit each) the last resort may spend in any rolling hour;
+#: `QUALIFY_AVATAR_REFRESH_PER_HOUR=0` turns it off.
+_REFRESH_PER_HOUR = int(os.environ.get("QUALIFY_AVATAR_REFRESH_PER_HOUR", "60") or 0)
+#: An account whose read found no usable picture is not read again for this long.
+_REFRESH_RETRY_SECONDS = 24 * 3600
+_refresh_log: deque[float] = deque()
+_refreshed: dict[tuple[str, str], float] = {}
+_refresh_guard = threading.Lock()
+
+
+def _take_refresh_slot(key: tuple[str, str], moment: float) -> bool:
+    """Book one paid read for `key` now, or say no: tried within `_REFRESH_RETRY_SECONDS`,
+    or the hour's budget is spent. Thread-safe — reads run in worker threads."""
+    with _refresh_guard:
+        if moment - _refreshed.get(key, float("-inf")) < _REFRESH_RETRY_SECONDS:
+            return False
+        while _refresh_log and moment - _refresh_log[0] >= 3600:
+            _refresh_log.popleft()
+        if len(_refresh_log) >= _REFRESH_PER_HOUR:
+            return False
+        _refreshed[key] = moment
+        _refresh_log.append(moment)
+        return True
+
+
+def fresh_vendor_url(network: str, handle: str, *, now: float | None = None) -> str:
+    """A fresh picture URL from a Scrape Creators profile read — ONE credit — or "".
+    Blocking: `resolve_avatar` runs it in a thread. See the module docstring for why
+    this exists and what bounds it."""
+    moment = now if now is not None else time.time()
+    if not _take_refresh_slot((network, handle.lower()), moment):
+        return ""
+    try:
+        from . import scrapecreators_client
+
+        profile = scrapecreators_client.fetch_profile(network, handle)
+    except Exception as exc:  # noqa: BLE001 - a picture must never break the page
+        logger.info("avatar refresh failed for %s/%s: %s", network, handle, type(exc).__name__)
+        return ""
+    logger.info("avatar refreshed through a profile read (1 credit): %s/%s", network, handle)
+    return str(profile.get("profilePicUrl") or "")
+
+
+#: One lock per account, so the prefetch and the browser asking for the same picture at
+#: the same moment do the work — and pay for it — once.
+_account_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+
 async def resolve_avatar(
     network: str,
     handle: str,
@@ -204,36 +300,64 @@ async def resolve_avatar(
     client: httpx.AsyncClient | None = None,
     directory: Path = AVATAR_DIR,
     now: float | None = None,
+    refresh: Callable[[str, str], str] | None = None,
 ) -> tuple[bytes, str] | None:
-    """The picture for one account: disk first, then the vendor's URL (fetched and
-    kept), then unavatar (fetched and kept), then None. A miss is remembered for
-    `_MISS_TTL_SECONDS`."""
+    """The picture for one account: disk first, then the vendor's URL unless its own
+    signature says it expired, then unavatar (not for Instagram), then — only when
+    `refresh` is given — a fresh vendor URL from it (the paid last resort,
+    `fresh_vendor_url`), then None. Whatever is found is kept on disk; a miss is
+    remembered for `_MISS_TTL_SECONDS`."""
     if not valid_target(network, handle):
         return None
     cached = cache_file(network, handle, directory=directory)
     if cached is not None:
         return cached.read_bytes(), _media_type(cached)
 
-    key = (network, handle.lower(), vendor_url)
-    moment = now if now is not None else time.time()
-    if _misses.get(key, 0.0) > moment:
+    lock = _account_locks.setdefault((network, handle.lower()), asyncio.Lock())
+    async with lock:
+        # Whoever held the lock may have just kept it.
+        cached = cache_file(network, handle, directory=directory)
+        if cached is not None:
+            return cached.read_bytes(), _media_type(cached)
+
+        key = (network, handle.lower(), vendor_url)
+        moment = now if now is not None else time.time()
+        # A remembered miss skips the free sources — they just failed — but not the
+        # paid last resort, when this caller may use it.
+        missed = _misses.get(key, 0.0) > moment
+        if missed and refresh is None:
+            return None
+
+        sources = []
+        if vendor_url and not signature_expired(vendor_url, now=moment):
+            sources.append(vendor_url)
+        if network not in _NO_UNAVATAR:
+            sources.append(unavatar_url(network, handle))
+        http = client or _shared()
+        for url in [] if missed else sources:
+            found = await _fetch(http, url, now=moment)
+            if found is not None:
+                return _keep(network, handle, found, directory)
+        if refresh is not None:
+            fresh = await asyncio.to_thread(refresh, network, handle)
+            if fresh and fresh != vendor_url:
+                found = await _fetch(http, fresh, now=moment)
+                if found is not None:
+                    return _keep(network, handle, found, directory)
+        _misses[key] = moment + _MISS_TTL_SECONDS
         return None
 
-    sources = [u for u in (vendor_url, unavatar_url(network, handle)) if u]
-    http = client or _shared()
-    for url in sources:
-        found = await _fetch(http, url, now=moment)
-        if found is None:
-            continue
-        content, media_type = found
-        try:
-            directory.mkdir(parents=True, exist_ok=True)
-            (directory / f"{network}_{handle.lower()}{_TYPES[media_type]}").write_bytes(content)
-        except OSError as exc:
-            logger.warning("avatar cache write failed: %s", type(exc).__name__)
-        return content, media_type
-    _misses[key] = moment + _MISS_TTL_SECONDS
-    return None
+
+def _keep(
+    network: str, handle: str, found: tuple[bytes, str], directory: Path
+) -> tuple[bytes, str]:
+    content, media_type = found
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{network}_{handle.lower()}{_TYPES[media_type]}").write_bytes(content)
+    except OSError as exc:
+        logger.warning("avatar cache write failed: %s", type(exc).__name__)
+    return content, media_type
 
 
 async def warm_avatars(
@@ -242,16 +366,18 @@ async def warm_avatars(
     concurrency: int = 8,
     client: httpx.AsyncClient | None = None,
     directory: Path = AVATAR_DIR,
+    refresh: Callable[[str, str], str] | None = None,
 ) -> None:
     """Best-effort prefetch: download every card's picture into the cache before the
     browser ever asks for it (§ request 2026-09-14, "más rápido cargar las imágenes
     en la card"). Called fire-and-forget (`warm_avatars_in_background`) from
     `creative_wizard_pages._apply_phase` the instant a phase lands, so by the time
     the deck renders its first card the picture is very likely already on disk — a
-    `resolve_avatar` cache hit instead of a network round trip. Bounded by
-    `concurrency` (a semaphore, not one request at a time) and never raises: a slow
-    or failing prefetch just means the browser's own request does the work instead,
-    exactly as it did before this existed."""
+    `resolve_avatar` cache hit instead of a network round trip. With `refresh` (what
+    `_apply_phase` passes since 2026-09-29) a picture whose URL arrived dead is replaced
+    by a fresh one right here, instead of when someone is already staring at an empty
+    card. Bounded by `concurrency` and never raises: a slow or failing prefetch just
+    means the browser's own request does the work instead."""
     semaphore = asyncio.Semaphore(concurrency)
 
     async def one(card: dict[str, str]) -> None:
@@ -267,6 +393,7 @@ async def warm_avatars(
                     str(card.get("avatar") or ""),
                     client=client,
                     directory=directory,
+                    refresh=refresh,
                 )
             except Exception:  # noqa: BLE001 - a prefetch must never surface an error
                 logger.debug("avatar warm failed for %s/%s", network, handle, exc_info=True)
@@ -280,6 +407,7 @@ def warm_avatars_in_background(
     concurrency: int = 8,
     client: httpx.AsyncClient | None = None,
     directory: Path = AVATAR_DIR,
+    refresh: Callable[[str, str], str] | None = None,
 ) -> None:
     """Fire-and-forget `warm_avatars` for a fresh batch of cards. A no-op outside a
     running event loop — `_apply_phase` is also called directly and synchronously by
@@ -293,7 +421,9 @@ def warm_avatars_in_background(
     except RuntimeError:
         return
     task = loop.create_task(
-        warm_avatars(cards, concurrency=concurrency, client=client, directory=directory)
+        warm_avatars(
+            cards, concurrency=concurrency, client=client, directory=directory, refresh=refresh
+        )
     )
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
@@ -305,7 +435,7 @@ avatar_api = FastAPI()
 @avatar_api.get(AVATAR_ROUTE + "/{network}/{handle}")
 async def avatar(network: str, handle: str, u: str = "") -> Response:
     """`GET /avatar/<network>/<handle>?u=<vendor url>` → the picture, or 404."""
-    found = await resolve_avatar(network.lower(), handle, u)
+    found = await resolve_avatar(network.lower(), handle, u, refresh=fresh_vendor_url)
     if found is None:
         return Response(status_code=404, headers={"Cache-Control": "no-store"})
     content, media_type = found

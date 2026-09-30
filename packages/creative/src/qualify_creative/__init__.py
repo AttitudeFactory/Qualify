@@ -6,6 +6,7 @@ businesses: `docs/estrategia-contenido-bianki-polet.md`.
 
 from qualify_creative.brand import check_hard_rules, check_route_allowed, render_prompt
 from qualify_creative.enums import (
+    AdImageMode,
     AvatarSource,
     BriefIntent,
     BriefObjective,
@@ -46,6 +47,7 @@ from qualify_creative.schemas import (
 )
 
 __all__ = [
+    "AdImageMode",
     "AvatarSource",
     "BrandKit",
     "ContentKind",

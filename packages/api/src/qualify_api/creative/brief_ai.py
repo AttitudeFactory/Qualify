@@ -6,15 +6,19 @@ block (so a brandboard's swatches and typography are seen, not just its text lay
 DOCX/TXT/MD as text — and answers with one strict tool call: per Brand Kit field, the
 value the document supports and the literal quote (`evidence`) it comes from.
 
+Neither the palette nor the tone axes are among those fields (§ requests 2026-09-29,
+"descartar la paleta de colores en las sugerencias" and "no quiero los tonos en el
+brief"): colours reach the kit from the logo and the palette step, and the tone from its
+own sliders on ¿Cómo suena?, never from a document.
+
 Nothing is applied here. `propose_kit_changes` returns `FieldProposal`s that already
 passed four checks, and the wizard shows them as a reviewable diff:
 
-1. Shape — hex colours normalised (#RGB → #RRGGBB, invalid dropped), tone axes within
-   0–100 (anything else means "not stated"), lists stripped, de-duplicated and capped,
-   free text capped.
+1. Shape — lists stripped, de-duplicated and capped, free text capped.
 2. Change — a proposal equal to what the kit already holds is dropped: only real
    changes are offered.
-3. Evidence — when the document's text is available (DOCX/TXT/MD), the quote must
+3. Evidence — a proposal with NO quote is dropped (§ request 2026-09-29, "solo quiero
+   los citados"). When the document's text is available (DOCX/TXT/MD), the quote must
    actually be in it (accents/case/punctuation folded); a proposal whose quote is not
    found is kept but flagged `verified=False`, so the UI offers it unticked. For a PDF or
    an image there is no text to check against: `verified=None`.
@@ -29,6 +33,7 @@ from __future__ import annotations
 import base64
 import html
 import io
+import logging
 import re
 import unicodedata
 import zipfile
@@ -51,12 +56,19 @@ from ..claude_tools import (
     tool_uses,
 )
 
+logger = logging.getLogger(__name__)
+
 BRIEF_MODEL = "claude-sonnet-5"
 BRIEF_EFFORT = "medium"
 PROPOSE_TOOL = "proponer_brand_kit"
 
-#: Upload ceiling. A PDF travels base64 (×4/3) and the request limit is 32 MB.
-MAX_DOCUMENT_BYTES = 15 * 1024 * 1024
+#: Upload ceiling. Brandboards are image-heavy PDFs; the Files API takes up to 500 MB per
+#: file, and what really bounds a PDF for the model is its page count (600 per request on
+#: the 1M-context models), not its bytes.
+MAX_DOCUMENT_BYTES = 100 * 1024 * 1024
+#: Up to here a PDF travels inline, base64 (×4/3) — the request limit is 32 MB. Above it
+#: the PDF is uploaded to the Files API and referenced by `file_id` (`propose_kit_changes`).
+INLINE_PDF_MAX_BYTES = 15 * 1024 * 1024
 #: The API's per-image limit is 5 MB; larger images are re-encoded below it.
 MAX_IMAGE_BYTES = 4_500_000
 #: The longest side an oversized image is scaled to.
@@ -65,7 +77,6 @@ IMAGE_MAX_SIDE = 2000
 MAX_TEXT_CHARS = 800
 MAX_LIST_ITEMS = 10
 MAX_ITEM_CHARS = 300
-MAX_COLOURS = 8
 
 SOURCES = ("brief", "brandboard")
 
@@ -93,6 +104,10 @@ class DocumentInput:
     blocks: tuple[dict[str, Any], ...]
     text: str | None
     kind: str  # "pdf" | "image" | "text"
+    #: A PDF too heavy to travel inline: (filename, bytes). `propose_kit_changes`
+    #: uploads it to the Files API, puts a `file_id` document block in place of
+    #: `blocks`, and deletes the file once the call is done.
+    upload: tuple[str, bytes] | None = None
 
 
 @dataclass(frozen=True)
@@ -101,23 +116,17 @@ class KitSnapshot:
 
     positioning: str = ""
     audience: str = ""
-    tone_formal_casual: int = 50
-    tone_sober_enthusiastic: int = 50
-    tone_technical_plain: int = 50
-    tone_brief_elaborate: int = 50
     do_examples: tuple[str, ...] = ()
     dont_examples: tuple[str, ...] = ()
     cta_patterns: tuple[str, ...] = ()
     banned_words: tuple[str, ...] = ()
     forbidden_claims: tuple[str, ...] = ()
-    palette: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class FieldProposal:
     """One verified change. `proposed`/`current` are in the wizard state's own string
-    format (lists one per line, palette comma-separated, tone as a number) so applying
-    is an assignment."""
+    format (lists one per line) so applying is an assignment."""
 
     field: str
     label: str
@@ -177,9 +186,13 @@ def read_document(filename: str, data: bytes) -> DocumentInput:
     if not data:
         raise UnsupportedDocument("el archivo está vacío")
     if len(data) > MAX_DOCUMENT_BYTES:
-        raise UnsupportedDocument("el archivo pesa más de 15 MB")
+        raise UnsupportedDocument(
+            f"el archivo pesa más de {MAX_DOCUMENT_BYTES // (1024 * 1024)} MB"
+        )
     suffix = PurePath(filename.lower()).suffix
     if suffix == ".pdf":
+        if len(data) > INLINE_PDF_MAX_BYTES:
+            return DocumentInput((), None, "pdf", upload=(PurePath(filename).name, data))
         block = {
             "type": "document",
             "source": {
@@ -212,18 +225,12 @@ def read_document(filename: str, data: bytes) -> DocumentInput:
 FIELDS: tuple[tuple[str, str, str], ...] = (
     ("positioning", "Posicionamiento", "text"),
     ("audience", "Audiencia", "text"),
-    ("tone_formal_casual", "Tono: formal ↔ coloquial", "tone"),
-    ("tone_sober_enthusiastic", "Tono: sobrio ↔ entusiasta", "tone"),
-    ("tone_technical_plain", "Tono: técnico ↔ llano", "tone"),
-    ("tone_brief_elaborate", "Tono: breve ↔ elaborado", "tone"),
     ("do_examples", "Así sí habla la marca", "list"),
     ("dont_examples", "Así no habla la marca", "list"),
     ("cta_patterns", "Llamados a la acción", "list"),
     ("banned_words", "Palabras prohibidas", "list"),
     ("forbidden_claims", "Afirmaciones prohibidas", "list"),
-    ("palette", "Paleta de colores", "palette"),
 )
-_TONE_AXES = ("formal_casual", "sober_enthusiastic", "technical_plain", "brief_elaborate")
 
 SYSTEM = """\
 Lees documentos de marca (briefs, manuales de marca, brandboards) y propones cómo \
@@ -232,25 +239,20 @@ contenido en la voz de la marca. Entregas la propuesta con la herramienta \
 proponer_brand_kit, una sola vez.
 
 Reglas:
-- Solo lo que el documento dice o muestra. Si un campo no aparece, déjalo vacío ("", [] \
-o -1). Un campo vacío es mejor que uno inventado o "razonable".
+- Solo lo que el documento dice o muestra. Si un campo no aparece, déjalo vacío ("" o \
+[]). Un campo vacío es mejor que uno inventado o "razonable".
 - evidence: copia LITERAL, de 5 a 30 palabras, del fragmento del documento que respalda \
 el campo, sin comillas añadidas. Si el dato es visual (una muestra de color, el estilo de \
 una imagen), describe en pocas palabras dónde está ("muestras de color de la página 2").
 - Escribe en español; los ejemplos de frases van tal como aparecen en el documento.
 - positioning: qué es la marca y por qué importa, de 1 a 3 frases. audience: a quién le \
 habla, 1 o 2 frases.
-- tone: cada eje de 0 a 100, solo si el documento describe el tono; -1 si no. \
-formal_casual: 0 formal, 100 coloquial. sober_enthusiastic: 0 sobrio, 100 entusiasta. \
-technical_plain: 0 técnico, 100 llano. brief_elaborate: 0 breve, 100 elaborado. Una sola \
-evidence para los cuatro.
+- Todo campo necesita su evidence: un valor sin cita se descarta, así que si no puedes \
+citarlo, déjalo vacío.
 - do_examples: frases de ejemplo de cómo sí escribe la marca. dont_examples: cómo NO debe \
 escribir. cta_patterns: llamados a la acción que usa. banned_words: palabras que no debe \
 usar. forbidden_claims: afirmaciones que no puede hacer (promesas, comparaciones, temas \
 legales o de salud). Máximo 10 por lista.
-- palette: colores de la marca en hexadecimal #RRGGBB, del más importante al menos, \
-máximo 8. Si el documento da códigos (HEX, RGB, CMYK, Pantone), conviértelos a HEX; si \
-solo hay muestras, estima el HEX de la muestra.
 - Si un valor coincide con lo que la marca ya tiene (te lo damos), déjalo vacío: solo \
 propones cambios."""
 
@@ -277,22 +279,12 @@ def _list_prop() -> dict[str, Any]:
 
 
 def _tool() -> dict[str, Any]:
-    tone = {
-        "type": "object",
-        "properties": {
-            **{axis: {"type": "integer"} for axis in _TONE_AXES},
-            "evidence": {"type": "string"},
-        },
-        "required": [*_TONE_AXES, "evidence"],
-        "additionalProperties": False,
-    }
     properties: dict[str, Any] = {
         "positioning": _text_prop(),
         "audience": _text_prop(),
-        "tone": tone,
     }
     for field, _label, kind in FIELDS:
-        if kind in ("list", "palette"):
+        if kind == "list":
             properties[field] = _list_prop()
     return strict_tool(
         PROPOSE_TOOL,
@@ -306,24 +298,11 @@ def _current_lines(current: KitSnapshot) -> str:
     rows = [
         ("Posicionamiento", current.positioning),
         ("Audiencia", current.audience),
-        (
-            "Tono (formal_casual, sober_enthusiastic, technical_plain, brief_elaborate)",
-            ", ".join(
-                str(v)
-                for v in (
-                    current.tone_formal_casual,
-                    current.tone_sober_enthusiastic,
-                    current.tone_technical_plain,
-                    current.tone_brief_elaborate,
-                )
-            ),
-        ),
         ("Así sí habla", " | ".join(current.do_examples)),
         ("Así no habla", " | ".join(current.dont_examples)),
         ("Llamados a la acción", " | ".join(current.cta_patterns)),
         ("Palabras prohibidas", ", ".join(current.banned_words)),
         ("Afirmaciones prohibidas", " | ".join(current.forbidden_claims)),
-        ("Paleta", ", ".join(current.palette)),
     ]
     return "\n".join(f"- {name}: {value or '(vacío)'}" for name, value in rows)
 
@@ -382,30 +361,6 @@ def _clean_list(values: object) -> list[str]:
     return out
 
 
-_HEX = re.compile(r"^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
-
-
-def normalize_hex(value: str) -> str | None:
-    match = _HEX.match(value.strip())
-    if match is None:
-        return None
-    digits = match.group(1)
-    if len(digits) == 3:
-        digits = "".join(ch * 2 for ch in digits)
-    return f"#{digits.upper()}"
-
-
-def _clean_palette(values: object) -> list[str]:
-    out: list[str] = []
-    for raw in values if isinstance(values, list) else []:
-        colour = normalize_hex(str(raw or ""))
-        if colour and colour not in out:
-            out.append(colour)
-        if len(out) >= MAX_COLOURS:
-            break
-    return out
-
-
 def _verify(evidence: str, document: DocumentInput) -> bool | None:
     if document.text is None:
         return None
@@ -417,25 +372,11 @@ def verify_proposal(
 ) -> list[FieldProposal]:
     """The tool's raw arguments → the changes worth showing, in `FIELDS` order."""
     out: list[FieldProposal] = []
-    tone = payload.get("tone") if isinstance(payload.get("tone"), dict) else {}
     for field, label, kind in FIELDS:
-        if kind == "tone":
-            axis = field.removeprefix("tone_")
-            value = tone.get(axis)
-            if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 100:
-                continue
-            now = getattr(current, field)
-            if value == now:
-                continue
-            evidence = _clean_text(tone.get("evidence"))
-            out.append(
-                FieldProposal(
-                    field, label, str(now), str(value), evidence, _verify(evidence, document)
-                )
-            )
-            continue
         entry = payload.get(field) if isinstance(payload.get(field), dict) else {}
         evidence = _clean_text(entry.get("evidence"))
+        if not evidence:
+            continue
         if kind == "text":
             value_text = _clean_text(entry.get("value"))
             now_text = getattr(current, field)
@@ -446,7 +387,7 @@ def verify_proposal(
                     field, label, now_text, value_text, evidence, _verify(evidence, document)
                 )
             )
-        elif kind == "list":
+        else:  # list
             values = _clean_list(entry.get("values"))
             now_list = getattr(current, field)
             if not values or {_fold(v) for v in values} == {_fold(v) for v in now_list}:
@@ -459,22 +400,6 @@ def verify_proposal(
                     "\n".join(values),
                     evidence,
                     _verify(evidence, document),
-                )
-            )
-        else:  # palette
-            colours = _clean_palette(entry.get("values"))
-            if not colours or set(colours) == {c.upper() for c in current.palette}:
-                continue
-            # A palette is seen, not quoted: its evidence is only checkable when the
-            # document spelled the codes out in text.
-            verified = (
-                None
-                if document.text is None
-                else all(c.lower() in document.text.lower() for c in colours)
-            )
-            out.append(
-                FieldProposal(
-                    field, label, ",".join(current.palette), ",".join(colours), evidence, verified
                 )
             )
     return out
@@ -495,12 +420,47 @@ def propose_kit_changes(
     if source not in SOURCES:
         raise ValueError(f"source must be one of {SOURCES}, got {source!r}")
     client = (client_factory or default_client)(api_key)
+    file_id = _upload_pdf(client, *document.upload) if document.upload else None
+    try:
+        return _propose(client, document, current, source, config, file_id)
+    finally:
+        if file_id:
+            _delete_file(client, file_id)
+
+
+def _upload_pdf(client: Any, filename: str, data: bytes) -> str:
+    """A heavy PDF to the Files API; the returned `file_id` stands in for its bytes."""
+    uploaded = client.beta.files.upload(file=(filename or "documento.pdf", data, "application/pdf"))
+    return str(uploaded.id)
+
+
+def _delete_file(client: Any, file_id: str) -> None:
+    """Uploaded files persist until deleted; a brand document is read once."""
+    try:
+        client.beta.files.delete(file_id)
+    except Exception as exc:  # never let cleanup mask the call's own outcome
+        logger.warning("brand document file %s not deleted: %s", file_id, exc)
+
+
+def _propose(
+    client: Any,
+    document: DocumentInput,
+    current: KitSnapshot,
+    source: str,
+    config: ModelConfig,
+    file_id: str | None,
+) -> tuple[list[FieldProposal], CallStats]:
     meter = Meter(config)
     tool = _tool()
+    blocks = (
+        [{"type": "document", "source": {"type": "file", "file_id": file_id}}]
+        if file_id
+        else list(document.blocks)
+    )
     messages: list[dict[str, Any]] = [
         {
             "role": "user",
-            "content": [*document.blocks, {"type": "text", "text": _instructions(source, current)}],
+            "content": [*blocks, {"type": "text", "text": _instructions(source, current)}],
         }
     ]
     for attempt in range(2):
@@ -531,10 +491,6 @@ def snapshot_lists(text: str) -> tuple[str, ...]:
     return tuple(line.strip() for line in text.splitlines() if line.strip())
 
 
-def snapshot_palette(text: str) -> tuple[str, ...]:
-    return tuple(c.strip() for c in text.split(",") if c.strip())
-
-
 __all__: Sequence[str] = (
     "ACCEPTED_EXTENSIONS",
     "BRIEF_EFFORT",
@@ -545,11 +501,9 @@ __all__: Sequence[str] = (
     "FieldProposal",
     "KitSnapshot",
     "UnsupportedDocument",
-    "normalize_hex",
     "propose_kit_changes",
     "quote_in_text",
     "read_document",
     "snapshot_lists",
-    "snapshot_palette",
     "verify_proposal",
 )

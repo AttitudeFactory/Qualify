@@ -33,7 +33,7 @@ from qualify_api.creative.service import (
     UnknownVariant,
 )
 from qualify_api.creative.voice_service import NotProposed, UnknownBrandKit, UnknownVersion
-from qualify_creative.enums import ContentKind, ContentType
+from qualify_creative.enums import BriefIntent, BriefObjective, ContentKind, ContentType
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
@@ -91,6 +91,29 @@ _HEYGEN_DOWN = "No pudimos cargar los avatares y voces de HeyGen. Inténtalo de 
 
 #: `ContentKind` values that can be chosen today (`template` is shown, not selectable).
 _ENABLED_KINDS = ("creator_script", "avatar_video", "animated_avatar_video", "static_flyer")
+#: HeyGen's own gender values, as the catalog carries them on looks and voices.
+_GENDERS = ("female", "male")
+#: `AdImageMode` values, in the picker's order.
+_AD_MODES = ("product", "background", "both")
+_OBJECTIVES = frozenset(o.value for o in BriefObjective)
+_INTENTS = frozenset(i.value for i in BriefIntent)
+#: The Brand Kit's list fields edited as pills: pill-input key → the `kit_*` attr that
+#: stores the list (one value per line, the format the kit form and the brief/brandboard
+#: proposals already use).
+_KIT_PILL_FIELDS = {
+    "do": "kit_do_examples",
+    "dont": "kit_dont_examples",
+    "cta": "kit_cta_patterns",
+    "banned": "kit_banned_words",
+    "claims": "kit_forbidden_claims",
+}
+
+
+def _pill_items(text: str) -> list[str]:
+    """A newline-joined kit list as its non-empty, trimmed values."""
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
 _DURATIONS = ("15", "30", "45", "60")
 _FORMAT_LABELS = {
     "feed_4_5": "Post 4:5",
@@ -175,6 +198,9 @@ class CreativeState(rx.State):
     kit_forbidden_claims: str = ""
     kit_cta_patterns: str = ""
     kit_palette: str = ""
+    #: What each list's pill input holds before Enter (`_KIT_PILL_FIELDS` keys). The
+    #: lists themselves stay the newline-joined `kit_*` strings above.
+    kit_pill_drafts: dict[str, str] = {key: "" for key in ("do", "dont", "cta", "banned", "claims")}
 
     # -- /brand/voice -------------------------------------------------------
     voice_loading: bool = False
@@ -206,6 +232,10 @@ class CreativeState(rx.State):
     media_product_names: list[str] = []
     media_carousel: bool = False
     media_duration: str = "30"
+    #: The advertising image: built from the product, the background or both
+    #: (`AdImageMode`), and the scene the image model will be asked for.
+    ad_mode: str = "both"
+    ad_scene_prompt: str = ""
     avatar_look_id: str = ""
     voice_id: str = ""
     avatar_source: str = "ai"
@@ -213,8 +243,15 @@ class CreativeState(rx.State):
     avatar_image_key: str = ""
     avatar_image_name: str = ""
     avatar_rights_confirmed: bool = False
-    #: HeyGen's library looks `{id, name, preview}` and Spanish voices `{id, name}`,
-    #: read once when an avatar kind is first chosen.
+    #: The human presenter: a woman or a man from HeyGen's library, or "custom" — a
+    #: synthetic photoreal person generated from `human_avatar_prompt`.
+    human_avatar_mode: str = "female"
+    human_avatar_prompt: str = ""
+    #: Which voices the voice picker lists. Follows the library gender on its own; for a
+    #: custom or animated presenter the operator picks it.
+    voice_gender: str = "female"
+    #: HeyGen's library looks `{id, name, preview, gender}` and Spanish voices
+    #: `{id, name, gender}`, read once when an avatar kind is first chosen.
     heygen_looks: list[dict[str, str]] = []
     heygen_voices: list[dict[str, str]] = []
     heygen_loading: bool = False
@@ -377,6 +414,27 @@ class CreativeState(rx.State):
         ]
 
     @rx.var
+    def visible_looks(self) -> list[dict[str, str]]:
+        """The library looks of the chosen gender (none for a custom presenter)."""
+        return [look for look in self.heygen_looks if look.get("gender") == self.human_avatar_mode]
+
+    # One fixed list per gender, each rendered by its own always-mounted grid: switching
+    # Mujer/Hombre then only shows/hides a grid. A single grid over `visible_looks` made
+    # React recycle the `<img>` nodes by position, so the old gender's photos lingered
+    # (mixed with the new ones) until each new `src` loaded.
+    @rx.var
+    def female_looks(self) -> list[dict[str, str]]:
+        return [look for look in self.heygen_looks if look.get("gender") == "female"]
+
+    @rx.var
+    def male_looks(self) -> list[dict[str, str]]:
+        return [look for look in self.heygen_looks if look.get("gender") == "male"]
+
+    @rx.var
+    def visible_voices(self) -> list[dict[str, str]]:
+        return [voice for voice in self.heygen_voices if voice.get("gender") == self.voice_gender]
+
+    @rx.var
     def selected_look_name(self) -> str:
         for look in self.heygen_looks:
             if look.get("id") == self.avatar_look_id:
@@ -503,6 +561,59 @@ class CreativeState(rx.State):
     @rx.event
     def set_kit_palette(self, value: str) -> None:
         self.kit_palette = value
+
+    # -- the Brand Kit's list fields, as pills ----------------------------------
+    # One computed var per list, each naming its own `kit_*` attr: a `getattr` with a
+    # dynamic name inside an `@rx.var` registers no dependency and never recomputes.
+
+    @rx.var
+    def kit_do_items(self) -> list[str]:
+        return _pill_items(self.kit_do_examples)
+
+    @rx.var
+    def kit_dont_items(self) -> list[str]:
+        return _pill_items(self.kit_dont_examples)
+
+    @rx.var
+    def kit_cta_items(self) -> list[str]:
+        return _pill_items(self.kit_cta_patterns)
+
+    @rx.var
+    def kit_banned_items(self) -> list[str]:
+        return _pill_items(self.kit_banned_words)
+
+    @rx.var
+    def kit_claims_items(self) -> list[str]:
+        return _pill_items(self.kit_forbidden_claims)
+
+    @rx.event
+    def set_kit_pill_draft(self, field: str, value: str) -> None:
+        if field in _KIT_PILL_FIELDS:
+            self.kit_pill_drafts = {**self.kit_pill_drafts, field: value}
+
+    @rx.event
+    def add_kit_pill(self, field: str) -> None:
+        """Enter / "+" in a list's pill input: the typed value joins the list (a value
+        already there, ignoring case, is not added twice)."""
+        attr = _KIT_PILL_FIELDS.get(field)
+        if attr is None:
+            return
+        value = " ".join(self.kit_pill_drafts.get(field, "").split())
+        if value:
+            items = _pill_items(getattr(self, attr))
+            if value.casefold() not in {item.casefold() for item in items}:
+                setattr(self, attr, "\n".join([*items, value]))
+        self.kit_pill_drafts = {**self.kit_pill_drafts, field: ""}
+
+    @rx.event
+    def remove_kit_pill(self, field: str, index: int) -> None:
+        attr = _KIT_PILL_FIELDS.get(field)
+        if attr is None:
+            return
+        items = _pill_items(getattr(self, attr))
+        if 0 <= index < len(items):
+            del items[index]
+            setattr(self, attr, "\n".join(items))
 
     @rx.event
     def set_brief_topic(self, value: str) -> None:
@@ -758,12 +869,16 @@ class CreativeState(rx.State):
             self.selected_route = next(opt.key for opt in self.route_options if opt.enabled)
 
     @rx.event
-    def set_objective(self, value: str) -> None:
-        self.brief_objective = value
+    def set_objective(self, value: str | list[str]) -> None:
+        value = value if isinstance(value, str) else (value[0] if value else "")
+        if value in _OBJECTIVES:
+            self.brief_objective = value
 
     @rx.event
-    def set_intent(self, value: str) -> None:
-        self.brief_intent = value
+    def set_intent(self, value: str | list[str]) -> None:
+        value = value if isinstance(value, str) else (value[0] if value else "")
+        if value in _INTENTS:
+            self.brief_intent = value
 
     @rx.event(background=True)
     async def set_content_type(self, value: str) -> None:
@@ -824,8 +939,7 @@ class CreativeState(rx.State):
         async with self:
             self.heygen_looks = looks
             self.heygen_voices = voices
-            if voices and not self.voice_id:
-                self.voice_id = voices[0]["id"]
+            self._sync_voice()
             self.heygen_loading = False
 
     @rx.event
@@ -835,6 +949,49 @@ class CreativeState(rx.State):
     @rx.event
     def set_voice_id(self, value: str) -> None:
         self.voice_id = value
+
+    @rx.event
+    def set_human_avatar_mode(self, value: str | list[str]) -> None:
+        """Mujer / Hombre / Personalizado. A library gender also switches the voices to
+        that gender, and drops a look picked under the other one."""
+        value = value if isinstance(value, str) else (value[0] if value else "")
+        if value not in (*_GENDERS, "custom"):
+            return
+        self.human_avatar_mode = value
+        if value in _GENDERS:
+            self.voice_gender = value
+            genders = {look.get("id"): look.get("gender") for look in self.heygen_looks}
+            if genders.get(self.avatar_look_id) != value:
+                self.avatar_look_id = ""
+        self._sync_voice()
+
+    @rx.event
+    def set_ad_mode(self, value: str | list[str]) -> None:
+        value = value if isinstance(value, str) else (value[0] if value else "")
+        if value in _AD_MODES:
+            self.ad_mode = value
+
+    @rx.event
+    def set_ad_scene_prompt(self, value: str) -> None:
+        self.ad_scene_prompt = value
+
+    @rx.event
+    def set_human_avatar_prompt(self, value: str) -> None:
+        self.human_avatar_prompt = value
+
+    @rx.event
+    def set_voice_gender(self, value: str | list[str]) -> None:
+        value = value if isinstance(value, str) else (value[0] if value else "")
+        if value in _GENDERS:
+            self.voice_gender = value
+            self._sync_voice()
+
+    def _sync_voice(self) -> None:
+        """Keep the chosen voice inside the listed gender: the first one of that gender
+        when the current one is not (or none is chosen yet)."""
+        voices = [v for v in self.heygen_voices if v.get("gender") == self.voice_gender]
+        if not any(v.get("id") == self.voice_id for v in voices):
+            self.voice_id = voices[0]["id"] if voices else ""
 
     @rx.event
     def set_avatar_source(self, value: str | list[str]) -> None:
@@ -995,8 +1152,17 @@ class CreativeState(rx.State):
 
     def _kind_problem(self) -> str:
         """What the chosen kind still needs, in the operator's words ("" when ready)."""
-        if self.brief_kind == "avatar_video" and not self.avatar_look_id:
-            return "Elige el avatar que va a presentar el video."
+        if self.brief_kind == "avatar_video":
+            if self.human_avatar_mode == "custom":
+                if not self.human_avatar_prompt.strip():
+                    return "Describe cómo es la persona que va a presentar el video."
+            elif not self.avatar_look_id:
+                return "Elige el avatar que va a presentar el video."
+        if self.brief_kind == "static_flyer":
+            if self.ad_mode != "background" and not self.media_product_keys:
+                return "Sube la foto de tu producto."
+            if self.ad_mode != "product" and not self.media_background_key:
+                return "Sube la foto del fondo (por ejemplo, tu local)."
         if self.brief_kind in ("avatar_video", "animated_avatar_video") and not self.voice_id:
             return "Elige la voz que va a leer el guion."
         if self.kind_is_video and self.own_script_on and not self.own_script.strip():
@@ -1014,18 +1180,29 @@ class CreativeState(rx.State):
     def _media_inputs(self) -> dict[str, object]:
         kind = self.brief_kind
         takes_images = kind != "creator_script"
+        # the ad image sends only the photos its mode is built from
+        is_ad = kind == "static_flyer"
+        takes_background = takes_images and not (is_ad and self.ad_mode == "product")
+        takes_products = takes_images and not (is_ad and self.ad_mode == "background")
         media: dict[str, object] = {
             "duration_seconds": int(self.media_duration),
-            "background_key": self.media_background_key or None if takes_images else None,
-            "product_keys": list(self.media_product_keys) if takes_images else [],
-            "carousel": self.media_carousel and self.carousel_allowed,
+            "background_key": self.media_background_key or None if takes_background else None,
+            "product_keys": list(self.media_product_keys) if takes_products else [],
+            "carousel": self.media_carousel and self.carousel_allowed and takes_products,
         }
+        if is_ad:
+            media["ad_mode"] = self.ad_mode
+            media["scene_prompt"] = self.ad_scene_prompt.strip()
         if kind in ("avatar_video", "animated_avatar_video"):
             media["engine"] = self.avatar_engine
             if self.own_script_on:
                 media["own_script"] = self.own_script.strip()
         if kind == "avatar_video":
-            media.update(avatar_look_id=self.avatar_look_id, voice_id=self.voice_id)
+            media["voice_id"] = self.voice_id
+            if self.human_avatar_mode == "custom":
+                media.update(avatar_source="ai", avatar_prompt=self.human_avatar_prompt.strip())
+            else:
+                media["avatar_look_id"] = self.avatar_look_id
         if kind == "animated_avatar_video":
             media.update(voice_id=self.voice_id, avatar_source=self.avatar_source)
             if self.avatar_source == "ai":
@@ -1044,6 +1221,8 @@ class CreativeState(rx.State):
         self.media_product_names = []
         self.media_carousel = False
         self.avatar_prompt = ""
+        self.human_avatar_prompt = ""
+        self.ad_scene_prompt = ""
         self.avatar_image_key = ""
         self.avatar_image_name = ""
         self.avatar_rights_confirmed = False

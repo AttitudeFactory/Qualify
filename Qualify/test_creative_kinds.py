@@ -48,6 +48,133 @@ def test_an_avatar_kind_loads_heygens_catalog_once() -> None:
     assert state.choose_kind("animated_avatar_video") is None
 
 
+_LOOKS = [
+    {"id": "lk_ana", "name": "Ana", "preview": "", "gender": "female"},
+    {"id": "lk_leo", "name": "Leo", "preview": "", "gender": "male"},
+]
+_VOICES = [
+    {"id": "vo_elena", "name": "Elena", "gender": "female"},
+    {"id": "vo_jorge", "name": "Jorge", "gender": "male"},
+]
+
+
+def _catalog_state() -> CreativeState:
+    state = CreativeState()
+    state.brief_kind = "avatar_video"
+    state.heygen_looks = list(_LOOKS)
+    state.heygen_voices = list(_VOICES)
+    state._sync_voice()
+    return state
+
+
+def test_the_library_is_split_by_gender_and_the_voice_follows_it() -> None:
+    state = _catalog_state()
+    assert [look["id"] for look in state.visible_looks] == ["lk_ana"]
+    assert state.voice_id == "vo_elena"
+
+    state.choose_look("lk_ana")
+    state.set_human_avatar_mode("male")
+    assert [look["id"] for look in state.visible_looks] == ["lk_leo"]
+    assert state.avatar_look_id == ""  # a woman's look does not survive picking "Hombre"
+    assert [voice["id"] for voice in state.visible_voices] == ["vo_jorge"]
+    assert state.voice_id == "vo_jorge"
+
+
+def test_a_custom_or_animated_presenter_picks_the_voice_gender_itself() -> None:
+    state = _catalog_state()
+    state.set_human_avatar_mode("custom")
+    assert state.visible_looks == []
+    state.set_voice_gender("male")
+    assert state.voice_id == "vo_jorge"
+    state.set_voice_gender("robot")  # not a HeyGen gender: ignored
+    assert state.voice_gender == "male"
+
+
+def test_a_custom_human_avatar_is_sent_as_a_described_person() -> None:
+    state = _catalog_state()
+    state.set_human_avatar_mode("custom")
+    assert "Describe cómo es la persona" in state._kind_problem()
+    state.set_human_avatar_prompt("  Mujer de 30 años, pelo rizado  ")
+    assert state._kind_problem() == ""
+    media = state._media_inputs()
+    assert media["avatar_source"] == "ai"
+    assert media["avatar_prompt"] == "Mujer de 30 años, pelo rizado"
+    assert media["voice_id"] == "vo_elena" and "avatar_look_id" not in media
+
+
+def test_the_catalog_samples_both_genders_per_character() -> None:
+    class _Adapter:
+        def __init__(self) -> None:
+            self.voice_genders: list[str | None] = []
+
+        def list_avatar_groups(self, *, api_key: str, limit: int) -> list[dict[str, Any]]:
+            return [
+                {"id": "g_dante", "gender": "male"},
+                {"id": "g_liza", "gender": "female"},
+                {"id": "g_x", "gender": None},  # no gender: not offered
+            ]
+
+        def list_avatar_looks(
+            self, *, api_key: str, limit: int, group_id: str
+        ) -> list[dict[str, Any]]:
+            if group_id == "g_dante":
+                raise RuntimeError("boom")  # one character failing does not empty the picker
+            return [
+                {"id": f"{group_id}_1", "name": "Liza Office", "status": "completed"},
+                {"id": f"{group_id}_2", "name": "Liza Kitchen", "status": "processing"},
+            ]
+
+        def list_voices(
+            self, *, api_key: str, language: str, gender: str | None, limit: int
+        ) -> list[dict[str, Any]]:
+            self.voice_genders.append(gender)
+            return [{"voice_id": f"v_{gender}", "name": f"Voz {gender}"}]
+
+    adapter = _Adapter()
+    looks, voices = creative_provider.build_heygen_catalog(adapter, "key")
+    assert looks == [{"id": "g_liza_1", "name": "Liza Office", "preview": "", "gender": "female"}]
+    assert adapter.voice_genders == ["female", "male"]
+    assert [(v["id"], v["gender"]) for v in voices] == [
+        ("v_female", "female"),
+        ("v_male", "male"),
+    ]
+
+
+def test_an_ad_image_asks_for_the_photos_its_mode_names() -> None:
+    state = CreativeState()
+    state.brief_kind = "static_flyer"
+    assert "producto" in state._kind_problem()  # default mode: product + background
+    state.media_product_keys = ["uploads/t/vaso.png"]
+    assert "fondo" in state._kind_problem()
+    state.set_ad_mode("product")
+    assert state._kind_problem() == ""
+    state.set_ad_mode("background")
+    assert "fondo" in state._kind_problem()
+    state.set_ad_mode("anything")  # not an AdImageMode: ignored
+    assert state.ad_mode == "background"
+
+
+def test_an_ad_image_sends_only_its_modes_photos_and_the_scene() -> None:
+    state = CreativeState()
+    state.brief_kind = "static_flyer"
+    state.media_background_key = "uploads/t/bar.jpg"
+    state.media_product_keys = ["uploads/t/vaso.png"]
+    state.media_carousel = True
+    state.set_ad_scene_prompt("  una mano con el vaso  ")
+
+    both = state._media_inputs()
+    assert both["ad_mode"] == "both" and both["scene_prompt"] == "una mano con el vaso"
+    assert both["background_key"] == "uploads/t/bar.jpg"
+    assert both["product_keys"] == ["uploads/t/vaso.png"]
+
+    state.set_ad_mode("background")
+    background = state._media_inputs()
+    assert background["product_keys"] == [] and background["carousel"] is False
+
+    state.set_ad_mode("product")
+    assert state._media_inputs()["background_key"] is None
+
+
 def test_leaving_the_flyer_drops_the_carousel() -> None:
     state = CreativeState()
     state.media_carousel = True
@@ -59,6 +186,7 @@ def test_leaving_the_flyer_drops_the_carousel() -> None:
     ("kind", "fields", "problem"),
     [
         ("avatar_video", {"voice_id": "vo"}, "Elige el avatar"),
+        ("avatar_video", {"voice_id": "vo", "human_avatar_mode": "custom"}, "Describe"),
         ("avatar_video", {"avatar_look_id": "lk"}, "Elige la voz"),
         ("animated_avatar_video", {"voice_id": "vo", "avatar_source": "ai"}, "Describe"),
         ("animated_avatar_video", {"voice_id": "vo", "avatar_source": "image"}, "Sube la imagen"),
@@ -67,7 +195,8 @@ def test_leaving_the_flyer_drops_the_carousel() -> None:
             {"voice_id": "vo", "avatar_source": "image", "avatar_image_key": "uploads/t/a.png"},
             "Confirma",
         ),
-        ("static_flyer", {}, ""),
+        ("static_flyer", {"ad_mode": "product", "media_product_keys": ["uploads/t/p.png"]}, ""),
+        ("static_flyer", {}, "Sube la foto de tu producto"),
         ("creator_script", {}, ""),
     ],
 )

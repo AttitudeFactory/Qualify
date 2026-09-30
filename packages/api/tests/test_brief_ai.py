@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import zipfile
 from types import SimpleNamespace
 from typing import Any
@@ -17,17 +18,18 @@ from qualify_api.claude_tools import ClaudeToolError, ModelConfig
 from qualify_api.creative.brief_ai import (
     BRIEF_EFFORT,
     BRIEF_MODEL,
+    FIELDS,
+    INLINE_PDF_MAX_BYTES,
+    MAX_DOCUMENT_BYTES,
     MAX_IMAGE_BYTES,
     PROPOSE_TOOL,
     DocumentInput,
     KitSnapshot,
     UnsupportedDocument,
-    normalize_hex,
     propose_kit_changes,
     quote_in_text,
     read_document,
     snapshot_lists,
-    snapshot_palette,
     verify_proposal,
 )
 
@@ -104,7 +106,6 @@ PDF_DOC = DocumentInput(({"type": "document"},), None, "pdf")
 CURRENT = KitSnapshot(
     positioning="Restaurante en Bogotá",
     do_examples=("Te esperamos",),
-    palette=("#556B2F",),
 )
 
 
@@ -113,19 +114,11 @@ def _payload(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "positioning": {"value": "", "evidence": ""},
         "audience": {"value": "", "evidence": ""},
-        "tone": {
-            "formal_casual": -1,
-            "sober_enthusiastic": -1,
-            "technical_plain": -1,
-            "brief_elaborate": -1,
-            "evidence": "",
-        },
         "do_examples": empty_list,
         "dont_examples": empty_list,
         "cta_patterns": empty_list,
         "banned_words": empty_list,
         "forbidden_claims": empty_list,
-        "palette": empty_list,
     }
     base.update(overrides)
     return base
@@ -138,10 +131,25 @@ def test_quote_in_text_folds_accents_case_and_elisions() -> None:
     assert not quote_in_text("Somos", BRIEF)  # too short to prove anything
 
 
-def test_normalize_hex() -> None:
-    assert normalize_hex("#abc") == "#AABBCC"
-    assert normalize_hex("556b2f") == "#556B2F"
-    assert normalize_hex("verde") is None and normalize_hex("#12345") is None
+def test_the_palette_is_not_proposed() -> None:
+    """§ request 2026-09-29: colours never come from a document — not asked of the model,
+    and a palette it sends anyway is ignored."""
+    assert "palette" not in {field for field, _label, _kind in FIELDS}
+    stray = _payload(palette={"values": ["#556B2F"], "evidence": "Colores: verde oliva"})
+    assert verify_proposal(stray, CURRENT, TEXT_DOC) == []
+
+
+def test_the_tone_is_not_proposed() -> None:
+    """§ request 2026-09-29, "no quiero los tonos en el brief": the tone axes are neither
+    asked of the model nor accepted from it — the sliders on ¿Cómo suena? own them."""
+    from qualify_api.creative import brief_ai
+
+    assert not any(field.startswith("tone") for field, _label, _kind in FIELDS)
+    assert "tone" not in json.dumps(brief_ai._tool()["input_schema"])
+    stray = _payload(
+        tone={"formal_casual": 80, "evidence": "Hablamos con cercanía pero sin perder la elegancia"}
+    )
+    assert verify_proposal(stray, CURRENT, TEXT_DOC) == []
 
 
 def test_only_real_changes_survive_and_quotes_are_checked() -> None:
@@ -155,22 +163,11 @@ def test_only_real_changes_survive_and_quotes_are_checked() -> None:
                 "value": "Gente que celebra",
                 "evidence": "una frase que no está en el brief",
             },
-            tone={
-                "formal_casual": 60,
-                "sober_enthusiastic": 50,  # equal to the current 50 → dropped
-                "technical_plain": 140,  # out of range → dropped
-                "brief_elaborate": -1,  # not stated
-                "evidence": "Hablamos con cercanía pero sin perder la elegancia",
-            },
             banned_words={
                 "values": ["barato", " Barato ", ""],
                 "evidence": "Nunca decimos 'barato'",
             },
             do_examples={"values": ["Te esperamos"], "evidence": "x"},  # same as current
-            palette={
-                "values": ["#556b2f", "F5F0E1", "no-es-color"],
-                "evidence": "Colores: verde oliva",
-            },
         ),
         CURRENT,
         TEXT_DOC,
@@ -179,21 +176,13 @@ def test_only_real_changes_survive_and_quotes_are_checked() -> None:
     assert list(by_field) == [
         "positioning",
         "audience",
-        "tone_formal_casual",
         "banned_words",
-        "palette",
     ]
     assert by_field["positioning"].proposed == "Cocina de autor colombiana en la Zona G"
     assert by_field["positioning"].current == "Restaurante en Bogotá"
     assert by_field["positioning"].verified is True
     assert by_field["audience"].verified is False  # the quote is not in the brief
-    assert (by_field["tone_formal_casual"].current, by_field["tone_formal_casual"].proposed) == (
-        "50",
-        "60",
-    )
     assert by_field["banned_words"].proposed == "barato"
-    assert by_field["palette"].proposed == "#556B2F,#F5F0E1"
-    assert by_field["palette"].verified is True  # both codes are spelled out in the text
 
 
 def test_a_document_without_text_cannot_be_verified() -> None:
@@ -203,6 +192,19 @@ def test_a_document_without_text_cannot_be_verified() -> None:
     assert [(p.field, p.verified) for p in proposals] == [("audience", None)]
 
 
+def test_a_proposal_without_a_quote_is_dropped() -> None:
+    """§ request 2026-09-29, "solo quiero los citados": no evidence, no proposal."""
+    proposals = verify_proposal(
+        _payload(
+            audience={"value": "Familias", "evidence": "  "},
+            banned_words={"values": ["barato"], "evidence": ""},
+        ),
+        CURRENT,
+        TEXT_DOC,
+    )
+    assert proposals == []
+
+
 def test_an_empty_answer_proposes_nothing() -> None:
     assert verify_proposal(_payload(), CURRENT, TEXT_DOC) == []
     assert verify_proposal({}, CURRENT, TEXT_DOC) == []
@@ -210,7 +212,6 @@ def test_an_empty_answer_proposes_nothing() -> None:
 
 def test_snapshot_helpers() -> None:
     assert snapshot_lists("a\n\n b \n") == ("a", "b")
-    assert snapshot_palette("#111111, #222222,") == ("#111111", "#222222")
 
 
 # -- the call ------------------------------------------------------------------------------
@@ -238,7 +239,9 @@ def _tool_call(payload: dict[str, Any]) -> list[Any]:
 
 
 def test_the_call_sends_the_document_the_current_kit_and_one_strict_tool() -> None:
-    client = ScriptedClient(_tool_call(_payload(audience={"value": "Familias", "evidence": ""})))
+    client = ScriptedClient(
+        _tool_call(_payload(audience={"value": "Familias", "evidence": "Zona G de Bogotá"}))
+    )
     proposals, stats = propose_kit_changes(
         TEXT_DOC, CURRENT, source="brandboard", api_key="k", client_factory=lambda _k: client
     )
@@ -281,6 +284,56 @@ def test_haiku_would_be_forced_to_call_the_tool() -> None:
         client_factory=lambda _k: client,
     )
     assert client.calls[0]["tool_choice"] == {"type": "tool", "name": PROPOSE_TOOL}
+
+
+class _Files:
+    def __init__(self) -> None:
+        self.uploaded: list[tuple[str, int, str]] = []
+        self.deleted: list[str] = []
+
+    def upload(self, *, file: tuple[str, bytes, str]) -> SimpleNamespace:
+        name, data, mime = file
+        self.uploaded.append((name, len(data), mime))
+        return SimpleNamespace(id="file_brandboard")
+
+    def delete(self, file_id: str) -> None:
+        self.deleted.append(file_id)
+
+
+def _with_files(client: ScriptedClient) -> tuple[ScriptedClient, _Files]:
+    files = _Files()
+    client.beta = SimpleNamespace(files=files)  # type: ignore[attr-defined]
+    return client, files
+
+
+def test_a_heavy_pdf_is_not_inlined_but_marked_for_upload() -> None:
+    heavy = b"%PDF-1.7 " + b"x" * INLINE_PDF_MAX_BYTES
+    doc = read_document("Brandboard.pdf", heavy)
+    assert doc.kind == "pdf" and doc.blocks == ()
+    assert doc.upload == ("Brandboard.pdf", heavy)
+    # up to the inline ceiling the PDF still travels base64, as before
+    assert read_document("b.pdf", b"%PDF-1.7 small").upload is None
+    with pytest.raises(UnsupportedDocument, match="100 MB"):
+        read_document("b.pdf", b"x" * (MAX_DOCUMENT_BYTES + 1))
+
+
+def test_a_heavy_pdf_goes_through_the_files_api_and_is_deleted_after() -> None:
+    client, files = _with_files(ScriptedClient(_tool_call(_payload())))
+    heavy = DocumentInput((), None, "pdf", upload=("board.pdf", b"%PDF big"))
+    propose_kit_changes(heavy, CURRENT, api_key="k", client_factory=lambda _k: client)
+    assert files.uploaded == [("board.pdf", 8, "application/pdf")]
+    first = client.calls[0]["messages"][0]["content"][0]
+    assert first == {"type": "document", "source": {"type": "file", "file_id": "file_brandboard"}}
+    assert files.deleted == ["file_brandboard"]
+
+
+def test_the_uploaded_pdf_is_deleted_even_when_the_model_fails() -> None:
+    prose = [SimpleNamespace(type="text", text="no")]
+    client, files = _with_files(ScriptedClient(prose, prose))
+    heavy = DocumentInput((), None, "pdf", upload=("board.pdf", b"%PDF big"))
+    with pytest.raises(ClaudeToolError):
+        propose_kit_changes(heavy, CURRENT, api_key="k", client_factory=lambda _k: client)
+    assert files.deleted == ["file_brandboard"]
 
 
 def test_an_unknown_source_is_refused() -> None:

@@ -263,3 +263,68 @@ Coste **de proveedor** (lo que Qualify paga; el precio al cliente lleva markup e
 ---
 
 **Fuentes:** [fal.ai video model pricing (invideo, ago 2026)](https://invideo.io/blog/ai-video-model-pricing/) · [Google Veo pricing guide (costgoat, ago 2026)](https://costgoat.com/pricing/google-veo) · [Nano Banana Pro API pricing (pricepertoken)](https://pricepertoken.com/pricing-page/model/google-gemini-3-pro-image-preview) · [Nano Banana Pro pricing (glbgpt)](https://www.glbgpt.com/hub/how-much-is-nano-banana-pro/) · [Kling 3.0 Turbo pricing (ImagineArt)](https://www.imagine.art/blogs/kling-3-0-turbo-pricing) · datos de proveedor aportados por los cuatro investigadores (verificación cruzada agosto 2026).
+
+---
+
+## 7. Actualización 28-sep-2026 — imagen publicitaria multi-referencia (producto real + local real)
+
+*Añadido tras redefinir el tipo `static_flyer`: ya no es un "flyer" sino una **imagen publicitaria** construida con la foto del producto, la del fondo (el local) o ambas (`AdImageMode`: `product` / `background` / `both`), más una descripción de la escena (`MediaInputs.scene_prompt`). Caso canónico: **una mano sosteniendo el vaso de la marca, con el local real desenfocado detrás**. Estado en código: la UI, el brief y la validación ya lo soportan; **ningún modelo está conectado** — la pieza se sigue componiendo en local con Pillow hasta que se decida el adaptador. Las §2.1, §3 y §5 de arriba quedan como registro de agosto; para este caso manda esta sección.*
+
+### 7.1 Ranking para este caso (precios por imagen en fal salvo nota)
+
+| # | Modelo (id) | Refs | Precio | Latencia | Fidelidad de producto | Debilidades |
+|---|---|---|---|---|---|---|
+| 1 | **Nano Banana 2** (Gemini 3.1 Flash Image) `fal-ai/nano-banana-2/edit` | 14 (10 objetos en alta fidelidad) | $0.08 (1K) / $0.12 (2K); Google directo $0.067 / $0.101, Batch −50% (DATO) | 4–12 s (DATO) | Mejor "credibilidad de producto" en test de packaging para ads (Soku, jul-2026); arena multi-imagen 1369 (DATO) | Añade lo no pedido; texto pequeño se "sangra"; marca de agua SynthID (DATO) |
+| 2 | **GPT Image 2.5 Sunburst/Flare** `openai/gpt-image-2.5/sunburst/edit` | 16 | 1024×1536: $0.041 `high` / $0.165 `max`; refs cobradas como tokens de entrada (DATO) | Lento: 105–150 s medido en GPT Image 2 `high`; Flare promete −50% (DATO) | **Nº1** en arena de edición multi-imagen (1527) y en Artificial Analysis (DATO) | Lento y caro en `max`; en Replicate solo GPT Image 2, con 3 proporciones (DATO) |
+| 3 | **Seedream 5.0 Pro** `bytedance/seedream/v5/pro/edit` | 10 | $0.0675 + $0.0045/ref extra; Replicate $0.056 (DATO) | 38–48 s (DATO) | Arena 1414; edición por región, deja intacto el resto (DATO) | **Inventa copy y precios no pedidos** (DATO); proveedor chino (ver §6.4) |
+| 4 | **Meta Muse Image** `meta/muse-image/edit` (en fal desde 1-sep-2026) | 1–10 | **$0.01** (DATO) | p50 17.8 s (DATO) | Arena 1403 (DATO) | Color 3.4/5, flojo para colores de marca; 4:5 solo recortando 3:4; no está en Replicate (DATO) |
+| 5 | **Nano Banana Pro** `fal-ai/nano-banana-pro/edit` | 6 objetos | $0.15; Google directo $0.134 (DATO) | 10–20 s | No inventa; buena tipografía de envase | Superado por Nano Banana 2 en arena y precio (DATO) |
+| 6 | **FLUX.2 [pro]/[max] edit** `fal-ai/flux-2-pro/edit` | 9 | Pro ≈ **$0.06 con 2 refs** (cobra MP de entrada); Max ≈ $0.13 (DATO) | — | **Fuera de los tops de edición** (DATO) | Útil solo como opción EU (BFL) para `data_residency_restricted` |
+| 7 | **Bria Product Shot** `fal-ai/bria/product-shot` | producto + 1 escena | $0.04 (DATO) | — | Conserva los píxeles del producto (`placement_type=original`); datos licenciados (DATO) | No integra manos ni el producto dentro de la escena |
+
+**Licencias:** Qwen-Image-2.1 (20-sep) lidera los modelos abiertos pero es **solo investigación, no comercial** → descartado. Qwen-Image-Edit-2511 sí es Apache-2.0 (vía self-host, por debajo de los líderes). FLUX.2 [dev] sigue exigiendo licencia comercial de BFL.
+
+### 7.2 Cadenas recomendadas
+
+Sustituyen, para este caso, a la cadena "FLUX.2 [pro] → Seedream 4.0" de §2.1/§3 y de ADR 32 D9.
+
+- **Estándar (por defecto):** Nano Banana 2 (1K borrador / 2K final) → GPT Image 2.5 Sunburst `high` → Seedream 5.0 Pro.
+- **Económico:** Muse Image → Seedream 5.0 Lite (`fal-ai/bytedance/seedream/v5/lite/edit`, $0.035) → Nano Banana 2 1K.
+- **Premium:** GPT Image 2.5 Sunburst `max` → Nano Banana Pro 2K → Nano Banana 2 2K.
+- **`data_residency_restricted`:** sin Seedream; FLUX.2 [max] como último eslabón.
+
+Por modo: **`product`** → Nano Banana 2 (Bria Product Shot si es un envase posado y la etiqueta debe quedar exacta al píxel) · **`background`** → Nano Banana 2 o Seedream 5.0 Pro · **`both`** → Nano Banana 2 → GPT Image 2.5 (sube al primer puesto si la etiqueta tiene texto fino).
+
+### 7.3 Forma del pipeline
+
+**Una sola llamada multi-referencia**, no recorte + pegado: con los dedos envolviendo el vaso, el modelo tiene que redibujarlo dentro de la mano. Pasos:
+
+1. Recorte del producto (Bria RMBG 2.0, $0.018), enviado en alta resolución.
+2. 3 borradores en paralelo.
+3. Control de calidad con lo que ya existe en `packages/models`: similitud SigLIP2 del recorte generado frente a la referencia + lectura de la etiqueta con Qwen3-VL. Si falla, siguiente eslabón.
+4. Final en 2K con el borrador aprobado como referencia extra.
+5. 1:1 y 9:16 regenerando con la pieza aprobada como referencia.
+6. Opcional, "candado de etiqueta": pegar el recorte original (el compositor Pillow actual) y armonizar la luz con `fal-ai/iclight-v2`, solo cuando el producto no está tapado.
+
+**Coste por pieza, un formato (inferencia):** económico ≈ $0.14 · estándar ≈ $0.38 (≈ $0.32 con Google directo) · premium ≈ $0.43. **El coste de "una imagen de ad" de §5 ($0.03) se queda corto para multi-referencia.**
+
+### 7.4 Guía de prompt (mano + vaso + local)
+
+- Orden fijo de referencias y su rol dicho en el prompt: "Image 1 = PRODUCT, image 2 = LOCATION" (Seedream: "Figure 1"; FLUX: `@image1`).
+- Bloqueo del producto: "Reproduce the glass from image 1 exactly: same shape, logo, label text «NOMBRE», colours and liquid colour. Do not redesign, restyle or add any text, logo or watermark." El texto de la etiqueta, literal y entre comillas.
+- Escena: "Use image 2 as the real location; keep its decor and layout, shallow depth of field (f/1.8), background bokeh."
+- Mano: "A natural adult hand holding the glass by the stem at chest height, label facing camera, 3/4 view, product sharp and dominant."
+- Luz: "Warm ambient light matching image 2, coherent reflections and condensation."
+- La proporción va en el parámetro, no en el prompt. El copy en español lo pone nuestro renderer después.
+
+### 7.5 Qué quedó obsoleto arriba
+
+- §2.1: FLUX.2 [pro] ya no es el *anchor* para edición multi-referencia, y su $0.03 no incluye los MP de entrada.
+- Seedream 4.0 → 5.0 Pro / Lite.
+- Nano Banana Pro ya no es el líder: lo supera Nano Banana 2 (feb-2026).
+- GPT-Image-2 sí está en fal y Replicate, llega a 3840 px, y ya existe la 2.5.
+- Ideogram 3.0 → 4.0 (Apache-2.0); Recraft V3 → V4.1 (también en Replicate); FLUX.1 Kontext superado.
+- §6.3: Nano Banana Pro ya está en Replicate.
+- Faltaban Muse Image, MAI-Image (solo Azure Foundry) y Seedream 5.
+
+**Fuentes (28-sep-2026):** [arena multi-image edit](https://arena.ai/leaderboard/image-edit/multi-image-edit) · [Artificial Analysis editing](https://artificialanalysis.ai/image/leaderboard/editing) · [fal Nano Banana 2 edit](https://fal.ai/models/fal-ai/nano-banana-2/edit) · [fal Nano Banana Pro edit](https://fal.ai/models/fal-ai/nano-banana-pro/edit) · [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing) · [fal GPT Image 2.5 Flare](https://fal.ai/models/openai/gpt-image-2.5/flare/edit) · [fal Seedream 5 Pro edit](https://fal.ai/models/bytedance/seedream/v5/pro/edit) · [fal Muse Image edit](https://fal.ai/models/meta/muse-image/edit) · [IMG.LY Muse benchmark](https://img.ly/ai-benchmarks/models/meta-muse-image/) · [fal FLUX.2 pro edit](https://fal.ai/models/fal-ai/flux-2-pro/edit) · [fal Bria product shot](https://fal.ai/models/fal-ai/bria/product-shot/api) · [fal IC-Light v2](https://fal.ai/models/fal-ai/iclight-v2) · [Segmind: precios y latencias medidos](https://blog.segmind.com/ai-image-gen-pricing-compared-nano-banana-2-vs-seedream-5-0-vs-gpt-image-2-2026/) · [Soku: test de creativos de ads](https://soku.ai/blog/gpt-image-2-vs-nano-banana-2-vs-seedream-5-pro-ad-creative) · [Qwen-Image-2.1, licencia](https://mixed-news.com/en/qwen-image-2-1-transparent-rgba-7b-open-weights-research-licence/).

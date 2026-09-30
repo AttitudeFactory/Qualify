@@ -188,6 +188,7 @@ class AuthState(rx.State):
             # the next login on this browser. Imported here, not at module top: these
             # modules read AuthState, and a top-level import would be circular.
             from .brand_documents import BrandDocumentState
+            from .canva_state import CanvaState
             from .clarity_state import ClarityState
             from .connections_state import ConnectionsState
             from .creative_state import CreativeState
@@ -222,6 +223,8 @@ class AuthState(rx.State):
                 RepliesState,
                 StoriesState,
                 PlannerState,
+                # the Canva card: links of a draft and the pending OAuth verifier
+                CanvaState,
             ):
                 substate = await self.get_state(state_cls)
                 substate.reset()

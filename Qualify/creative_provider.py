@@ -22,9 +22,11 @@ loop must run them off-thread.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -73,6 +75,8 @@ from .creative_vm import (
     build_variant_vm,
     build_voice_proposal_vm,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "acting_user_id",
@@ -515,6 +519,12 @@ HEYGEN_KEY_ENV = "QUALIFY_HEYGEN_API_KEY"
 #: Library looks and Spanish voices change rarely: one read per process-hour.
 _CATALOG_TTL_SECONDS = 3600
 _CATALOG_LIMIT = 50
+#: The picker samples the library per character, not HeyGen's flat looks page — that
+#: page's first 150 looks were all men (measured 2026-09-28, see the adapter). A few
+#: characters per gender, a couple of looks each, fetched in parallel.
+_GROUPS_PER_GENDER = 10
+_LOOKS_PER_GROUP = 2
+GENDERS = ("female", "male")
 _catalog_cache: dict[str, tuple[float, list[dict[str, str]], list[dict[str, str]]]] = {}
 
 
@@ -523,9 +533,8 @@ class HeyGenNotConfigured(RuntimeError):
 
 
 def heygen_catalog() -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    """(looks, voices) for the avatar pickers: each look `{id, name, preview}` (its id
-    is a render's `avatar_id`), each voice `{id, name}` (Spanish only — the scripts are
-    written in the brand's Spanish variant)."""
+    """(looks, voices) for the avatar pickers — see `build_heygen_catalog` — cached per
+    process-hour."""
     import os
     import time
 
@@ -537,28 +546,64 @@ def heygen_catalog() -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     cached = _catalog_cache.get("public")
     if cached is not None and time.time() - cached[0] < _CATALOG_TTL_SECONDS:
         return cached[1], cached[2]
-    adapter = HeyGenAvatarVideoAdapter()
-    looks = [
-        {
-            "id": str(look["id"]),
-            "name": str(look.get("name") or look["id"]),
-            "preview": str(look.get("preview_image_url") or ""),
-        }
-        for look in adapter.list_avatar_looks(api_key=key, limit=_CATALOG_LIMIT)
-        # a look still processing (or failed) cannot render yet
-        if look.get("id") and look.get("status", "completed") == "completed"
+    looks, voices = build_heygen_catalog(HeyGenAvatarVideoAdapter(), key)
+    _catalog_cache["public"] = (time.time(), looks, voices)
+    return looks, voices
+
+
+def build_heygen_catalog(
+    adapter: Any, key: str
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """Each look `{id, name, preview, gender}` (its id is a render's `avatar_id`), each
+    voice `{id, name, gender}` (Spanish only — the scripts are written in the brand's
+    Spanish variant). `gender` is HeyGen's own `"female"`/`"male"`, so the pickers can
+    offer women and men side by side."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    groups = [
+        group
+        for group in adapter.list_avatar_groups(api_key=key, limit=_CATALOG_LIMIT)
+        if group.get("id") and group.get("gender") in GENDERS
     ]
+    picked = [
+        group
+        for gender in GENDERS
+        for group in [g for g in groups if g.get("gender") == gender][:_GROUPS_PER_GENDER]
+    ]
+
+    def group_looks(group: Mapping[str, Any]) -> list[dict[str, str]]:
+        try:
+            page = adapter.list_avatar_looks(
+                api_key=key, limit=_LOOKS_PER_GROUP, group_id=str(group["id"])
+            )
+        except Exception as exc:  # one character failing must not empty the picker
+            logger.info("heygen looks for group %s not read: %s", group.get("id"), exc)
+            return []
+        return [
+            {
+                "id": str(look["id"]),
+                "name": str(look.get("name") or look["id"]),
+                "preview": str(look.get("preview_image_url") or ""),
+                "gender": str(group["gender"]),
+            }
+            for look in page
+            # a look still processing (or failed) cannot render yet
+            if look.get("id") and look.get("status", "completed") == "completed"
+        ]
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        looks = [look for batch in pool.map(group_looks, picked) for look in batch]
+
     voices = [
         {
             "id": str(voice["voice_id"]),
-            "name": " · ".join(
-                part
-                for part in (str(voice.get("name") or ""), str(voice.get("gender") or ""))
-                if part
-            ),
+            "name": str(voice.get("name") or voice["voice_id"]),
+            "gender": gender,
         }
-        for voice in adapter.list_voices(api_key=key, language="Spanish", limit=_CATALOG_LIMIT)
+        for gender in GENDERS
+        for voice in adapter.list_voices(
+            api_key=key, language="Spanish", gender=gender, limit=_CATALOG_LIMIT
+        )
         if voice.get("voice_id")
     ]
-    _catalog_cache["public"] = (time.time(), looks, voices)
     return looks, voices
