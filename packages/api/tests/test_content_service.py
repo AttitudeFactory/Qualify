@@ -47,6 +47,7 @@ from qualify_api.creative.fsm import (
     DRAFTING,
     FAILED,
     GENERATED,
+    InvalidTransition,
 )
 from qualify_api.creative.media import MediaOutcome, MediaUsage, MediaWrite
 from qualify_api.creative.service import (
@@ -965,8 +966,45 @@ def test_approval_pins_the_revision_and_an_edit_moves_past_it() -> None:
         == ()
     )
     draft = repo.drafts[draft_id]
-    # the edit is revision 2; what was approved is still revision 1
+    # the edit is revision 2; what was approved is still revision 1 — and the draft is
+    # back in review (the FSM's `edit` edge), not "approved" with an unapproved revision
     assert (draft.revision, draft.approved_revision) == (2, 1)
+    assert draft.status == "generated"
+
+    # Approving again pins the edited revision: the POST is approvable, not a dead end.
+    service.approve(tenant_id=TENANT_ID, draft_id=draft_id, variant_id=variant.id, user_id=USER_ID)
+    draft = repo.drafts[draft_id]
+    assert (draft.status, draft.revision, draft.approved_revision) == ("approved", 2, 2)
+
+
+def test_an_edit_in_review_keeps_the_draft_in_review() -> None:
+    router = FakeRouter([ok_outcome(copy_dict())])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    draft_id, variant_id = _generated_draft_with_variant(service, repo)
+    edited = CopyPayload.model_validate({**copy_dict(), "hook": "Otra entrada"})
+    assert (
+        service.edit_variant(
+            tenant_id=TENANT_ID, variant_id=variant_id, copy=edited, user_id=USER_ID
+        )
+        == ()
+    )
+    assert repo.drafts[draft_id].status == "generated"
+
+
+@pytest.mark.parametrize("status", ["published", "staged", "failed", "drafting"])
+def test_a_draft_that_is_not_editable_refuses_the_edit_and_stores_nothing(status: str) -> None:
+    router = FakeRouter([ok_outcome(copy_dict())])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    draft_id, variant_id = _generated_draft_with_variant(service, repo)
+    repo.drafts[draft_id] = replace(repo.drafts[draft_id], status=status)
+    revision = repo.drafts[draft_id].revision
+    edited = CopyPayload.model_validate({**copy_dict(), "hook": "Otra entrada"})
+    with pytest.raises(InvalidTransition):
+        service.edit_variant(
+            tenant_id=TENANT_ID, variant_id=variant_id, copy=edited, user_id=USER_ID
+        )
+    assert repo.variants[variant_id].edited_copy is None
+    assert repo.drafts[draft_id].revision == revision
 
 
 def test_a_regeneration_is_a_new_revision() -> None:

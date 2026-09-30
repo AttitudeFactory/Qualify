@@ -2028,6 +2028,9 @@ def test_an_approved_post_missing_its_copy_waits_scheduled_and_publishes_once_co
     assert len(_attempt_rows(a[0], f"cal:{event.id}:1")) == 1
 
 
+# --- editing an approved POST sends it back to review (2026-09-30) ---------------------
+
+
 class _Kit:
     """`BrandService` stand-in: a permissive kit for the tenant's own brand."""
 
@@ -2060,6 +2063,73 @@ def _content_service(brand_id: UUID):
         voice_service=unused,  # type: ignore[arg-type]
         brand_service=_Kit(brand_id),
     )
+
+
+def test_editing_an_approved_scheduled_post_waits_for_reapproval_then_publishes(
+    worlds_ab,
+) -> None:
+    from qualify_creative.schemas import CopyPayload
+
+    a, _ = worlds_ab
+    tenant_id, brand_id, _conn = a
+    post_id = _post_row(
+        a,
+        category="reel",
+        items=[(media_key(tenant_id, a[2], uuid4().hex), "video/mp4", "video", 0)],
+    )
+    event = _due_reel_event(a, post_id)
+    service = _content_service(brand_id)
+    with tenant_session(tenant_id) as session:
+        variant_id = session.scalar(
+            select(creative.ContentDraft.selected_variant_id).where(
+                creative.ContentDraft.id == post_id
+            )
+        )
+        user_id = session.scalar(select(User.id).where(User.tenant_id == tenant_id))
+
+    # The operator edits the approved copy (real service, real Postgres repository).
+    edited = CopyPayload.model_validate(
+        {
+            "hook": "Nueva promo",
+            "caption": "Dos por uno todo octubre en todas las arepas del local, solo en "
+            "tienda y hasta agotar existencias.",
+            "hashtags": ["promo", "octubre"],
+            "cta": "Pide ya",
+        }
+    )
+    assert (
+        service.edit_variant(
+            tenant_id=tenant_id, variant_id=variant_id, copy=edited, user_id=user_id
+        )
+        == ()
+    )
+    summary = DraftPostReader().get(tenant_id=tenant_id, post_id=post_id)
+    assert summary.lifecycle_status == "generated"  # back in review, not a dead "approved"
+    assert summary.approval is ApprovalStatus.PENDING and not summary.is_publishable
+
+    # The worker waits: not approved → the event stays scheduled, nothing is sent.
+    meta = _MetaCalls()
+    runner = _tick(
+        ScopedTenants([tenant_id]),
+        meta,
+        status=ContainerStatus.FINISHED,
+        connections=PostgresConnectionGate(),
+    )
+    (executed,) = asyncio.run(runner.run_once()).tenants[0].executed
+    assert executed.outcome is ExecutionOutcome.NOT_READY
+    assert _stored(tenant_id, event.id).status == "scheduled" and meta.calls == []
+
+    # Approved again: the edited revision is what gets published.
+    service.approve(tenant_id=tenant_id, draft_id=post_id, variant_id=variant_id, user_id=user_id)
+    publishable = DraftPostReader().get_publishable(tenant_id=tenant_id, post_id=post_id)
+    assert isinstance(publishable, PublishablePost)
+    assert publishable.approved_revision == 2
+    assert "Dos por uno todo octubre en todas las arepas" in publishable.caption  # the edit
+    asyncio.run(runner.run_once())
+    asyncio.run(runner.run_once())
+    assert _stored(tenant_id, event.id).status == "published"
+    (attempt_id,) = _attempt_rows(tenant_id, f"cal:{event.id}:1")
+    assert _attempt(tenant_id, attempt_id).caption == publishable.caption  # the edit went out
 
 
 # --- reject from the Planificador, then take the rejected POST off the calendar -------------
