@@ -119,6 +119,59 @@ def _approval(approval: str | None) -> tuple[str, str, str]:
     return _APPROVAL_LABEL.get(approval, ("Aprobación desconocida", "Desconocida", "neutral"))
 
 
+# "Approved" is a human decision; "ready" is `publishable.evaluate` (via
+# `PostSummary.is_publishable`) — the same verdict QUA-111's executor applies. An approved
+# POST shows which of the two it is, so "Aprobado + Programado" never promises a publish
+# the worker will refuse.
+READY_TO_PUBLISH = ("Listo para publicar", "Listo", "ok")
+APPROVED_NOT_READY = ("Aprobado, pero no listo para publicar", "No listo", "warn")
+
+
+@dataclass(frozen=True)
+class Readiness:
+    label: str
+    short: str
+    tone: str
+    note: str  # the evaluator's reason when the POST cannot be published; "" otherwise
+
+
+def readiness(approval: str | None, *, is_publishable: bool, reason: str) -> Readiness:
+    """What the calendar says about a POST's approval AND publishability. Only reads the
+    verdict the reader already computed — it decides nothing itself."""
+    if approval == "approved":
+        label, short, tone = READY_TO_PUBLISH if is_publishable else APPROVED_NOT_READY
+    else:
+        label, short, tone = _approval(approval)
+    note = "" if is_publishable or approval is None else reason
+    return Readiness(label, short, tone, note)
+
+
+@dataclass(frozen=True)
+class EventActions:
+    """What the event dialog (and the card menu) may offer — one rule for both.
+
+    The POST's own state decides with the event's: rejecting is the creative FSM's
+    `generated → rejected` edge, so it is offered only for a POST in review; a REJECTED
+    POST has nothing to move or cancel, only "Quitar del calendario" (its unpublished
+    events are removed; the service re-checks the rejection). Every action is enforced
+    again server-side — this only decides what is shown."""
+
+    can_modify: bool  # Reprogramar / Cancelar publicación
+    can_delete: bool  # the trash of a cancelled event ("Eliminar del calendario")
+    can_reject_post: bool  # "Rechazar POST"
+    can_remove_rejected: bool  # "Quitar del calendario" for a rejected POST
+
+
+def event_actions(*, status: str, approval: str | None, lifecycle: str | None) -> EventActions:
+    rejected = approval == "rejected"
+    return EventActions(
+        can_modify=status == "scheduled" and not rejected,
+        can_delete=status == "cancelled" and not rejected,
+        can_reject_post=status == "scheduled" and lifecycle == "generated",
+        can_remove_rejected=rejected and status in ("scheduled", "cancelled"),
+    )
+
+
 def status_label(status: str, *, overdue: bool) -> tuple[str, str]:
     if overdue:
         return OVERDUE_LABEL
@@ -414,6 +467,7 @@ class EventCardVM:
     detail_href: str
     date_label: str
     tags: list[TagVM] = field(default_factory=list)
+    readiness_note: str = ""  # why the POST cannot be published yet ("" when it can)
 
 
 @dataclass(frozen=True)
@@ -466,6 +520,8 @@ class PostOptionVM:
     approval_label: str
     approval_tone: str
     detail_href: str
+    approval_short: str = ""
+    readiness_note: str = ""  # why the POST cannot be published yet ("" when it can)
 
 
 @dataclass(frozen=True)
@@ -487,6 +543,8 @@ class EventDetailVM:
     revision: int = 0
     can_modify: bool = False
     can_delete: bool = False  # cancelled → removable from the calendar
+    can_reject_post: bool = False  # the POST is in review → "Rechazar POST"
+    can_remove_rejected: bool = False  # the POST is rejected → "Quitar del calendario"
     detail_href: str = ""
     publish_note: str = ""  # why this POST cannot be published yet, if so
     # Pre-filled values for the reschedule form.
@@ -521,6 +579,19 @@ class CardInput:
     approval: str | None = None
     detail_href: str = ""
     tags: tuple[TagVM, ...] = ()
+    is_publishable: bool = False  # `PostSummary.is_publishable`
+    unpublishable_reason: str = ""  # `PostSummary.unpublishable_reason`
+
+
+def event_readiness(
+    *, status: str, approval: str | None, is_publishable: bool, reason: str
+) -> Readiness:
+    """A scheduled event shows readiness (it is what decides whether it will publish);
+    one that already ran, or was cancelled, keeps the plain approval wording."""
+    if status == "scheduled":
+        return readiness(approval, is_publishable=is_publishable, reason=reason)
+    long_label, short, tone = _approval(approval)
+    return Readiness(long_label, short, tone, "")
 
 
 def build_card(
@@ -529,7 +600,12 @@ def build_card(
     local = item.scheduled_at.astimezone(zone)
     platform, account = connections.get(item.connection_id, ("", "Cuenta desconocida"))
     approval = item.approval if item.post_title is not None else None
-    a_label, a_tone = approval_label(approval)
+    ready = event_readiness(
+        status=item.status,
+        approval=approval,
+        is_publishable=item.is_publishable,
+        reason=item.unpublishable_reason,
+    )
     s_label, s_tone = status_label(item.status, overdue=item.overdue)
     return EventCardVM(
         event_id=item.event_id,
@@ -542,17 +618,18 @@ def build_card(
         account_label=account,
         category_label=category_label(item.category),
         content_type_label=content_type_label(item.content_type),
-        approval_label=a_label,
-        approval_short=approval_short(approval),
-        approval_tone=a_tone,
+        approval_label=ready.label,
+        approval_short=ready.short,
+        approval_tone=ready.tone,
         status_label=s_label,
         status_tone=s_tone,
         overdue=item.overdue,
-        can_modify=item.status == "scheduled",
+        can_modify=event_actions(status=item.status, approval=approval, lifecycle=None).can_modify,
         muted=item.status == "cancelled",
         detail_href=item.detail_href,
         date_label=date_label(local.date()),
         tags=list(item.tags),
+        readiness_note=ready.note,
     )
 
 
@@ -625,15 +702,19 @@ def build_post_option(
     category: str | None,
     approval: str,
     detail_href: str,
+    is_publishable: bool,
+    unpublishable_reason: str,
 ) -> PostOptionVM:
-    a_label, a_tone = approval_label(approval)
+    ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
     return PostOptionVM(
         post_id=post_id,
         title=title,
         caption_excerpt=caption_excerpt,
         thumbnail_url=thumbnail_url or "",
         category_label=category_label(category),
-        approval_label=a_label,
-        approval_tone=a_tone,
+        approval_label=ready.label,
+        approval_tone=ready.tone,
         detail_href=detail_href,
+        approval_short=ready.short,
+        readiness_note=ready.note,
     )

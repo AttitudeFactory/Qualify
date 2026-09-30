@@ -237,7 +237,7 @@ def _calendar_chip(event) -> rx.Component:
                     _platform_icon(event.platform),
                     rx.text(event.time_label, size="1", weight="bold", class_name="q-nums"),
                     rx.cond(
-                        event.overdue,
+                        event.overdue | (event.readiness_note != ""),
                         rx.icon("triangle-alert", size=12, color=rx.color("amber", 10)),
                     ),
                     rx.spacer(),
@@ -264,7 +264,12 @@ def _calendar_chip(event) -> rx.Component:
         cursor="pointer",
         role="button",
         aria_label=event.time_label + " · " + event.title + " · " + event.approval_label,
-        title=event.title + " — " + event.approval_label + " · " + event.status_label,
+        title=event.title
+        + " — "
+        + event.approval_label
+        + " · "
+        + event.status_label
+        + rx.cond(event.readiness_note != "", " · " + event.readiness_note, ""),
         padding="0.3rem 0.4rem",
         border=T.BORDER,
         border_left="3px solid",
@@ -401,6 +406,19 @@ def _calendar() -> rx.Component:
 # Lista — grouped by day
 
 
+def _readiness_note(note) -> rx.Component:
+    """The evaluator's reason, under an approved-but-not-ready POST (card, list, panel)."""
+    return rx.cond(
+        note != "",
+        rx.hstack(
+            rx.icon("triangle-alert", size=12, color=rx.color("amber", 10), flex_shrink="0"),
+            rx.text(note, size="1", color=rx.color("amber", 11)),
+            spacing="1",
+            align="center",
+        ),
+    )
+
+
 def _list_item(event) -> rx.Component:
     return rx.hstack(
         rx.text(
@@ -435,6 +453,7 @@ def _list_item(event) -> rx.Component:
                         spacing="2",
                         wrap="wrap",
                     ),
+                    _readiness_note(event.readiness_note),
                     spacing="1",
                     min_width="0",
                     flex="1",
@@ -554,6 +573,7 @@ def _post_option(post) -> rx.Component:
                     wrap="wrap",
                     gap="0.25rem",
                 ),
+                _readiness_note(post.readiness_note),
                 spacing="1",
                 min_width="0",
                 flex="1",
@@ -1142,7 +1162,9 @@ def _assign_dialog() -> rx.Component:
                             rx.select.content(
                                 rx.foreach(
                                     PlannerState.schedulable,
-                                    lambda p: rx.select.item(p.title, value=p.post_id),
+                                    lambda p: rx.select.item(
+                                        p.title + " · " + p.approval_short, value=p.post_id
+                                    ),
                                 )
                             ),
                             value=PlannerState.form_post_id,
@@ -1180,9 +1202,19 @@ def _assign_dialog() -> rx.Component:
                     ),
                 ),
                 _field("Etiquetas (opcional)", _form_tags()),
+                rx.cond(
+                    PlannerState.form_post_note != "",
+                    callout(
+                        "Quedará programado, pero no se publicará hasta que esté listo: "
+                        + PlannerState.form_post_note
+                        + " Si lo completas, se publica en el siguiente minuto, aunque ya "
+                        "haya pasado la hora.",
+                        "warn",
+                    ),
+                ),
                 rx.text(
-                    "Un POST pendiente de aprobación se puede planificar, pero solo se "
-                    "publicará si está aprobado cuando llegue la hora.",
+                    "Solo se publica un POST listo para publicar: aprobado, con su texto "
+                    "aprobado y su media disponible.",
                     size="1",
                     color=T.TEXT_MUTED,
                 ),
@@ -1292,7 +1324,16 @@ def _detail_dialog() -> rx.Component:
             width="100%",
         ),
         rx.cond(d.content_type_label != "", _detail_row("Contenido", d.content_type_label)),
-        _detail_row("Revisión", d.revision.to_string()),
+        # `revision` is the event's reschedule counter (it keys the publish attempt, so a
+        # moved event can never collide with the old one) — internal. Shown to people only
+        # once it means something: how many times the publication was moved.
+        rx.cond(
+            d.revision > 1,
+            _detail_row(
+                "Reprogramado",
+                rx.cond(d.revision == 2, "1 vez", (d.revision - 1).to_string() + " veces"),
+            ),
+        ),
         rx.hstack(
             rx.text("Etiquetas", size="2", color=T.TEXT_MUTED, min_width="6.5rem"),
             rx.flex(
@@ -1307,7 +1348,13 @@ def _detail_dialog() -> rx.Component:
         ),
         rx.cond(
             d.publish_note != "",
-            callout("Aún no publicable: " + d.publish_note, "warn"),
+            callout(
+                "No se publicará hasta completarlo: "
+                + d.publish_note
+                + " El evento sigue programado y se publica en el siguiente minuto en que "
+                "esté listo.",
+                "warn",
+            ),
         ),
         rx.match(
             PlannerState.auto_publish,
@@ -1353,6 +1400,28 @@ def _detail_dialog() -> rx.Component:
                     on_click=PlannerState.ask_delete_event_from_detail,
                 ),
             ),
+            # A REJECTED POST: nothing to move or cancel — only take it off the calendar.
+            rx.cond(
+                d.can_remove_rejected,
+                rx.button(
+                    rx.icon("trash-2", size=T.ICON_SM),
+                    "Quitar del calendario",
+                    variant="soft",
+                    color_scheme="red",
+                    on_click=PlannerState.ask_remove_rejected,
+                ),
+            ),
+            # A POST still in review can be rejected from here (the creative FSM decides).
+            rx.cond(
+                d.can_reject_post,
+                rx.button(
+                    rx.icon("thumbs-down", size=T.ICON_SM),
+                    "Rechazar POST",
+                    variant="soft",
+                    color_scheme="red",
+                    on_click=PlannerState.reject_post_from_detail,
+                ),
+            ),
             rx.cond(
                 d.can_modify,
                 rx.hstack(
@@ -1369,6 +1438,7 @@ def _detail_dialog() -> rx.Component:
             width="100%",
             align="center",
             wrap="wrap",
+            gap="2",
         ),
         spacing="3",
         width="100%",
@@ -1419,6 +1489,37 @@ def _delete_event_dialog() -> rx.Component:
         ),
         open=PlannerState.delete_event_open,
         on_open_change=PlannerState.set_delete_event_open,
+    )
+
+
+def _remove_rejected_dialog() -> rx.Component:
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title("Quitar POST rechazado del calendario"),
+            rx.alert_dialog.description(
+                "Se cancelan y se quitan del calendario las publicaciones de este POST que "
+                "todavía no salieron. Lo ya publicado se conserva. El POST rechazado no se "
+                "borra: puedes regenerarlo y volver a programarlo.",
+                size="2",
+            ),
+            rx.hstack(
+                rx.alert_dialog.cancel(
+                    rx.button("Volver", variant="soft", color_scheme="gray"),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        "Quitar del calendario",
+                        color_scheme="red",
+                        on_click=PlannerState.confirm_remove_rejected,
+                    ),
+                ),
+                justify="end",
+                spacing="2",
+                margin_top="1rem",
+            ),
+        ),
+        open=PlannerState.remove_rejected_open,
+        on_open_change=PlannerState.set_remove_rejected_open,
     )
 
 
@@ -1552,4 +1653,5 @@ def planner_index() -> rx.Component:
         _cancel_dialog(),
         _delete_tag_dialog(),
         _delete_event_dialog(),
+        _remove_rejected_dialog(),
     )

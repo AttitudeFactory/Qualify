@@ -16,6 +16,7 @@ from datetime import UTC, date, datetime, time
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransition
 from qualify_api.planner.composition import production_planner_service, tenant_timezone
 from qualify_api.planner.embedded import calendar_worker
 from qualify_api.planner.post_reader import PostSummary
@@ -27,6 +28,7 @@ from qualify_api.planner.service import (
     InvalidTag,
     PlannedEvent,
     PlannerError,
+    PostNotRejected,
     PostNotSchedulable,
     UnknownEvent,
     UnknownPost,
@@ -48,13 +50,14 @@ from .planner_vm import (
     HourRowVM,
     PostOptionVM,
     TagVM,
-    approval_label,
     auto_publish_state,
     build_post_option,
     build_week,
     category_label,
     content_type_label,
     date_label,
+    event_actions,
+    event_readiness,
     month_label,
     status_label,
     time_label_12h,
@@ -106,6 +109,14 @@ def planner_error_message(exc: Exception) -> str:
         (UnknownTag, "Esa etiqueta ya no existe. Actualiza la página."),
         (EventNotModifiable, "Ese evento ya no se puede modificar (no está programado)."),
         (
+            PostNotRejected,
+            "Ese POST ya no está rechazado (quizá se aprobó de nuevo): no se quitó nada.",
+        ),
+        (
+            CreativeInvalidTransition,
+            "Ese POST ya no está en revisión, así que no se puede rechazar. Actualiza la página.",
+        ),
+        (
             EventConflict,
             "Alguien más modificó este evento al mismo tiempo. Actualiza y vuelve a intentarlo.",
         ),
@@ -149,6 +160,8 @@ def _post_option(post: PostSummary) -> PostOptionVM:
         category=post.category,
         approval=post.approval.value,
         detail_href=post.detail_href,
+        is_publishable=post.is_publishable,
+        unpublishable_reason=post.unpublishable_reason,
     )
 
 
@@ -186,6 +199,8 @@ def _card_input(planned: PlannedEvent) -> CardInput:
         approval=post.approval.value if post is not None else None,
         detail_href=post.detail_href if post is not None else "",
         tags=tuple(_tag_vm(t) for t in planned.tags),
+        is_publishable=post.is_publishable if post is not None else False,
+        unpublishable_reason=post.unpublishable_reason if post is not None else "",
     )
 
 
@@ -353,6 +368,34 @@ def set_event_tags(tenant_id: UUID, event_id: str, tag_ids: tuple[str, ...]) -> 
     )
 
 
+def reject_post(tenant_id: UUID, event_id: str) -> None:
+    """Reject the event's POST from the Planificador — the creative FSM's `reject` edge
+    (legal only for a POST in review; anything else raises `InvalidTransition`). The event
+    stays scheduled and the worker will not publish it (the POST is not approved)."""
+    from .creative_provider import reject_draft  # noqa: PLC0415 — avoids an import cycle
+
+    planned = production_planner_service().get(
+        tenant_id=tenant_id, event_id=_uuid(event_id, UnknownEvent)
+    )
+    user_id = acting_user_id(tenant_id)
+    if user_id is None:
+        raise NoBrand(str(tenant_id))
+    reject_draft(
+        tenant_id,
+        planned.event.post_id,
+        user_id,
+        reason="Rechazado desde el Planificador",
+        regenerate=False,
+    )
+
+
+def remove_rejected_post(tenant_id: UUID, event_id: str) -> int:
+    """ "Quitar del calendario" for a rejected POST (`PlannerService.remove_rejected_post`)."""
+    return production_planner_service().remove_rejected_post(
+        tenant_id=tenant_id, event_id=_uuid(event_id, UnknownEvent)
+    )
+
+
 def delete_event(tenant_id: UUID, event_id: str) -> None:
     production_planner_service().delete(tenant_id=tenant_id, event_id=_uuid(event_id, UnknownEvent))
 
@@ -370,8 +413,20 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
     local = event.scheduled_at.astimezone(ZoneInfo(tz_name))
     index, _ = _connection_index(tenant_id)
     platform, account = index.get(str(event.connection_id), ("", "Cuenta desconocida"))
-    a_label, a_tone = approval_label(post.approval.value if post is not None else None)
+    # Same function the calendar card uses (`planner_vm.event_readiness`), over the same
+    # `PostSummary` verdict — card and dialog cannot disagree.
+    ready = event_readiness(
+        status=event.status,
+        approval=post.approval.value if post is not None else None,
+        is_publishable=post.is_publishable if post is not None else False,
+        reason=post.unpublishable_reason if post is not None else "",
+    )
     s_label, s_tone = status_label(event.status, overdue=planned.overdue_unapproved)
+    actions = event_actions(
+        status=event.status,
+        approval=post.approval.value if post is not None else None,
+        lifecycle=post.lifecycle_status if post is not None else None,
+    )
     return EventDetailVM(
         event_id=str(event.id),
         post_id=str(event.post_id),
@@ -380,20 +435,20 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
         thumbnail_url=(post.thumbnail_url or "") if post is not None else "",
         category_label=category_label(post.category if post is not None else None),
         content_type_label=content_type_label(post.content_type if post is not None else None),
-        approval_label=a_label,
-        approval_tone=a_tone,
+        approval_label=ready.label,
+        approval_tone=ready.tone,
         status_label=s_label,
         status_tone=s_tone,
         when_label=f"{date_label(local.date())} · {time_label_12h(local)} ({tz_name})",
         platform=platform,
         account_label=account,
         revision=event.revision,
-        can_modify=event.status == "scheduled",
-        can_delete=event.status == "cancelled",
+        can_modify=actions.can_modify,
+        can_delete=actions.can_delete,
+        can_reject_post=actions.can_reject_post,
+        can_remove_rejected=actions.can_remove_rejected,
         detail_href=post.detail_href if post is not None else "",
-        publish_note=(
-            post.unpublishable_reason if post is not None and not post.is_publishable else ""
-        ),
+        publish_note=ready.note,
         local_date=local.date().isoformat(),
         local_time=local.strftime("%H:%M"),
         connection_id=str(event.connection_id),

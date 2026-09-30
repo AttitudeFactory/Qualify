@@ -1967,3 +1967,152 @@ def test_an_account_connected_after_startup_is_covered_with_no_configuration() -
     finally:
         worker.stop(timeout=10)
     assert worker.config.all_tenants  # no tenant list, no restart
+
+
+# --- approved but not ready: the UI reads the verdict, the worker waits ----------------
+
+
+def _set_selected_variant(world, post_id: UUID, *, clear: bool) -> None:
+    tenant_id = world[0]
+    with tenant_session(tenant_id) as session:
+        draft = session.get(creative.ContentDraft, post_id)
+        if clear:
+            draft.selected_variant_id = None
+        else:
+            draft.selected_variant_id = session.scalar(
+                select(creative.CopyVariant.id).where(
+                    creative.CopyVariant.draft_id == post_id, creative.CopyVariant.ordinal == 1
+                )
+            )
+
+
+def test_an_approved_post_missing_its_copy_waits_scheduled_and_publishes_once_completed(
+    worlds_ab,
+) -> None:
+    a, _ = worlds_ab
+    post_id = _post_row(
+        a,
+        category="reel",
+        items=[(media_key(a[0], a[2], uuid4().hex), "video/mp4", "video", 0)],
+    )
+    _set_selected_variant(a, post_id, clear=True)  # "approved" with no approved copy
+    event = _due_reel_event(a, post_id)
+
+    # The Planificador shows it: approved, not publishable, with the evaluator's reason.
+    summary = DraftPostReader().get(tenant_id=a[0], post_id=post_id)
+    assert summary.approval is ApprovalStatus.APPROVED and not summary.is_publishable
+    assert summary.unpublishable_reason == REASON_TEXT[UnpublishableReason.APPROVED_COPY_MISSING]
+
+    meta = _MetaCalls()
+    runner = _tick(
+        ScopedTenants([a[0]]),
+        meta,
+        status=ContainerStatus.FINISHED,
+        connections=PostgresConnectionGate(),
+    )
+    report = asyncio.run(runner.run_once())
+    (executed,) = report.tenants[0].executed
+    assert (executed.outcome, executed.reason) == (
+        ExecutionOutcome.NOT_READY,
+        UnpublishableReason.APPROVED_COPY_MISSING,
+    )
+    assert _stored(a[0], event.id).status == "scheduled"  # neither failed nor published
+    assert _attempt_rows(a[0], f"cal:{event.id}:1") == [] and meta.calls == []
+
+    # The operator completes it after the hour: the next ticks publish it, once.
+    _set_selected_variant(a, post_id, clear=False)
+    assert DraftPostReader().get(tenant_id=a[0], post_id=post_id).is_publishable
+    asyncio.run(runner.run_once())
+    asyncio.run(runner.run_once())
+    assert _stored(a[0], event.id).status == "published"
+    assert len(_attempt_rows(a[0], f"cal:{event.id}:1")) == 1
+
+
+class _Kit:
+    """`BrandService` stand-in: a permissive kit for the tenant's own brand."""
+
+    def __init__(self, brand_id: UUID) -> None:
+        from qualify_creative.schemas import BrandKit, ToneAxes
+
+        self._kit = BrandKit.model_validate(
+            {
+                "brand_id": brand_id,
+                "positioning": "promos de barrio",
+                "audience": "clientes del local",
+                "tone_axes": ToneAxes(
+                    formal_casual=70, sober_enthusiastic=60, technical_plain=80, brief_elaborate=40
+                ),
+            }
+        )
+
+    def kit(self, *, tenant_id: UUID, brand_id: UUID):
+        return self._kit
+
+
+def _content_service(brand_id: UUID):
+    from qualify_api.creative.service import ContentService
+
+    unused = object()  # generation collaborators: edit/approve never touch them
+    return ContentService(
+        router=unused,  # type: ignore[arg-type]
+        pricing=unused,  # type: ignore[arg-type]
+        credentials=unused,  # type: ignore[arg-type]
+        voice_service=unused,  # type: ignore[arg-type]
+        brand_service=_Kit(brand_id),
+    )
+
+
+# --- reject from the Planificador, then take the rejected POST off the calendar -------------
+
+
+def test_a_post_rejected_from_the_planner_is_never_published_and_can_be_removed(
+    worlds_ab,
+) -> None:
+    from qualify_api.creative.fsm import InvalidTransition
+    from qualify_api.planner.service import PostNotRejected
+
+    a, _ = worlds_ab
+    tenant_id, brand_id, _conn = a
+    post_id = _post_row(
+        a,
+        status="generated",
+        approved_revision=None,
+        category="reel",
+        items=[(media_key(tenant_id, a[2], uuid4().hex), "video/mp4", "video", 0)],
+    )
+    event = _due_reel_event(a, post_id)
+    planner = PlannerService(
+        repository=PostgresPlannerRepository(),
+        posts=DraftPostReader(),
+        connections=PostgresConnectionGate(),
+    )
+    # Still in review: "Quitar del calendario" is refused, nothing is touched.
+    with pytest.raises(PostNotRejected):
+        planner.remove_rejected_post(tenant_id=tenant_id, event_id=event.id)
+
+    with tenant_session(tenant_id) as session:
+        user_id = session.scalar(select(User.id).where(User.tenant_id == tenant_id))
+    content = _content_service(brand_id)
+    content.reject(tenant_id=tenant_id, draft_id=post_id, reason="planner", user_id=user_id)
+    assert DraftPostReader().get(tenant_id=tenant_id, post_id=post_id).approval is (
+        ApprovalStatus.REJECTED
+    )
+    # A rejected POST cannot be rejected again (the FSM, not the button, decides).
+    with pytest.raises(InvalidTransition):
+        content.reject(tenant_id=tenant_id, draft_id=post_id, reason="again", user_id=user_id)
+
+    # The worker leaves it alone: due, but not approved.
+    meta = _MetaCalls()
+    runner = _tick(
+        ScopedTenants([tenant_id]),
+        meta,
+        status=ContainerStatus.FINISHED,
+        connections=PostgresConnectionGate(),
+    )
+    (executed,) = asyncio.run(runner.run_once()).tenants[0].executed
+    assert executed.outcome is ExecutionOutcome.NOT_READY and meta.calls == []
+    assert _stored(tenant_id, event.id).status == "scheduled"
+
+    assert planner.remove_rejected_post(tenant_id=tenant_id, event_id=event.id) == 1
+    assert _stored(tenant_id, event.id) is None
+    assert DraftPostReader().get(tenant_id=tenant_id, post_id=post_id) is not None  # POST kept
