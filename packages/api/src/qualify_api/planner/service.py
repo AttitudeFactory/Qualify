@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from qualify_api.planner.fsm import EventStatus, EventTrigger, InvalidTransition, apply_transition
 from qualify_api.planner.models import TAG_COLORS
-from qualify_api.planner.post_reader import PostReader, PostSummary
+from qualify_api.planner.post_reader import ApprovalStatus, PostReader, PostSummary
 from qualify_api.planner.repository import EventRecord, NewEvent, PlannerRepository, TagRecord
 from qualify_api.planner.rules import is_overdue_unapproved
 
@@ -75,6 +75,17 @@ TAG_NAME_MAX = 40
 
 class EventNotModifiable(PlannerError):
     """Only a `scheduled` event can be moved or cancelled; this one is past that."""
+
+
+class PostNotRejected(PlannerError):
+    """ "Quitar del calendario" is only for a POST the human rejected."""
+
+
+# The event statuses "Quitar del calendario" may remove: a plan that never reached Meta.
+# `publishing` / `published` / `failed` are history and are never deleted here.
+_REMOVABLE_WHEN_REJECTED: frozenset[str] = frozenset(
+    {EventStatus.SCHEDULED.value, EventStatus.CANCELLED.value}
+)
 
 
 def _transition(current: str, trigger: EventTrigger) -> EventStatus:
@@ -273,6 +284,28 @@ class PlannerService:
             raise EventNotModifiable(f"only a cancelled event can be deleted ({current.status})")
         if not self._repo.delete_cancelled(tenant_id=tenant_id, event_id=event_id):
             raise EventConflict(str(event_id))
+
+    def remove_rejected_post(self, *, tenant_id: UUID, event_id: UUID) -> int:
+        """ "Quitar del calendario" for a REJECTED POST: every event of that POST that never
+        reached Meta (scheduled or cancelled) is cancelled — through the FSM — and deleted.
+        Publishing/published/failed events stay as history. The POST itself is untouched
+        (it can still be regenerated). Returns how many events were removed.
+
+        The rejection is re-read here, not trusted from the screen: a POST approved again
+        since the dialog opened is refused."""
+        current = self._require_event(tenant_id=tenant_id, event_id=event_id)
+        post = self._posts.get(tenant_id=tenant_id, post_id=current.post_id)
+        if post is None or post.approval is not ApprovalStatus.REJECTED:
+            raise PostNotRejected(str(current.post_id))
+        removed = 0
+        for event in self._repo.list_for_post(tenant_id=tenant_id, post_id=current.post_id):
+            if event.status not in _REMOVABLE_WHEN_REJECTED:
+                continue
+            if event.status == EventStatus.SCHEDULED.value:
+                self.cancel(tenant_id=tenant_id, event_id=event.id)
+            self.delete(tenant_id=tenant_id, event_id=event.id)
+            removed += 1
+        return removed
 
     # -- queries ------------------------------------------------------------
 

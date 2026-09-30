@@ -28,7 +28,7 @@ from uuid import UUID
 
 from . import creative_state as creative_state_module
 from .creative_state import CreativeState
-from .creative_vm import GapVM, KitFormVM, ReadinessVM
+from .creative_vm import CopyVariantVM, DraftVM, GapVM, KitFormVM, ReadinessVM
 
 _TENANT_ID = UUID("a0000000-0000-4000-8000-000000000001")
 _BRAND_ID = UUID("b0000000-0000-4000-8000-000000000001")
@@ -176,3 +176,64 @@ async def test_load_brand_with_no_saved_kit_still_marks_the_session_loaded(monke
 
     assert state._kit_draft_loaded is True
     assert state.kit_positioning == ""
+
+
+# --- draft review: the copy is read-only until "Editar" (request 2026-09-30) ----------
+
+
+def _review_state(monkeypatch) -> CreativeState:
+    variant = CopyVariantVM(
+        variant_id="v1",
+        ordinal=0,
+        label="Variante 1",
+        hook="Gancho guardado",
+        caption="Caption guardado",
+        hashtags_text="#a",
+        cta="Pide ya",
+        ads_primary_text="",
+        ads_headline="",
+        ads_description="",
+        has_ads=False,
+        passed=True,
+        failure_labels=(),
+        was_edited=False,
+        rendered_caption="Caption guardado",
+    )
+    state = _state(monkeypatch)
+    state.draft = DraftVM(
+        draft_id="d1",
+        status="generated",
+        status_label="Por revisar",
+        status_tone="warn",
+        variants=(variant,),
+        can_approve=True,
+        can_reject=True,
+        can_regenerate=True,
+    )
+    state.select_variant("v1")
+    return state
+
+
+def test_the_copy_starts_read_only_and_editar_unlocks_it(monkeypatch) -> None:
+    state = _review_state(monkeypatch)
+    assert state.edit_mode is False
+    assert state.can_approve_now  # nothing unsaved
+    state.start_edit()
+    assert state.edit_mode is True
+    assert not state.can_approve_now  # never approve over unsaved edits
+
+
+def test_cancelar_restores_the_saved_copy_and_locks_the_fields(monkeypatch) -> None:
+    state = _review_state(monkeypatch)
+    state.start_edit()
+    state.set_edit_caption("Algo que no quiero guardar")
+    state.cancel_edit()
+    assert state.edit_mode is False
+    assert state.edit_caption == "Caption guardado"
+
+
+def test_switching_variant_leaves_edit_mode(monkeypatch) -> None:
+    state = _review_state(monkeypatch)
+    state.start_edit()
+    state.select_variant("v1")
+    assert state.edit_mode is False

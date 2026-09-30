@@ -22,6 +22,8 @@ loop must run them off-thread.
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
@@ -62,6 +64,7 @@ from .creative_vm import (
     DraftSummaryVM,
     DraftVM,
     KitFormVM,
+    MediaVM,
     ReadinessVM,
     RouteOptionVM,
     VoiceProposalVM,
@@ -72,7 +75,11 @@ from .creative_vm import (
     build_route_options,
     build_variant_vm,
     build_voice_proposal_vm,
+    failure_label,
 )
+from .r2_media import is_r2_key, issue_view_path
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "acting_user_id",
@@ -409,8 +416,11 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         for v in detail.variants
     ]
     total, model_ids = _draft_costs(tenant_id, detail.id)
-    media = build_media_vms(
-        [(item.media_url, item.media_type, item.position, item.params) for item in detail.media]
+    media = _with_r2_urls(
+        tenant_id,
+        build_media_vms(
+            [(item.media_url, item.media_type, item.position, item.params) for item in detail.media]
+        ),
     )
     return build_draft_vm(
         draft_id=str(detail.id),
@@ -427,6 +437,22 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
         media=media,
         failure_detail=detail.failure_detail,
     )
+
+
+def _with_r2_urls(tenant_id: UUID, media: tuple[MediaVM, ...]) -> tuple[MediaVM, ...]:
+    """Media that lives only in R2 gets a short-lived backend URL (`r2_media`); the rest
+    keeps resolving through the local upload store. A token that cannot be minted (e.g.
+    Redis down) only costs the preview — the draft itself still loads."""
+    out: list[MediaVM] = []
+    for item in media:
+        url = ""
+        if is_r2_key(item.key):
+            try:
+                url = issue_view_path(tenant_id, item.key, item.media_type)
+            except Exception as exc:  # noqa: BLE001 — a preview is not worth failing the page
+                logger.warning("r2 media token not issued: %s", type(exc).__name__)
+        out.append(dataclasses.replace(item, url=url) if url else item)
+    return tuple(out)
 
 
 def draft_detail(tenant_id: UUID, draft_id: UUID) -> DraftVM | None:
@@ -475,13 +501,34 @@ def edit_variant(
     try:
         payload = CopyPayload.model_validate({**base.model_dump(), **changes})
     except ValidationError as exc:
-        return tuple(
-            f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}" for err in exc.errors()
-        )
+        return tuple(_field_error(err) for err in exc.errors())
     failures = service.edit_variant(
         tenant_id=tenant_id, variant_id=variant_id, copy=payload, user_id=user_id
     )
-    return tuple(f"{f.rule}: {f.detail}" for f in failures)
+    return tuple(failure_label(f.rule, f.detail) for f in failures)
+
+
+_FIELD_LABELS = {
+    "hook": "El gancho",
+    "caption": "El caption",
+    "cta": "El CTA",
+    "script": "El guion",
+}
+
+
+def _field_error(err: Mapping[str, object]) -> str:
+    """A malformed edit in the operator's words: "El gancho admite como máximo 60
+    caracteres." rather than pydantic's "hook: String should have at most 60 characters"."""
+    loc = err.get("loc") or ()
+    field = str(loc[0]) if loc else ""
+    label = _FIELD_LABELS.get(field, f"El campo «{field}»")
+    ctx = err.get("ctx") or {}
+    kind = str(err.get("type", ""))
+    if kind == "string_too_long" and isinstance(ctx, Mapping):
+        return f"{label} admite como máximo {ctx.get('max_length')} caracteres."
+    if kind == "string_too_short" and isinstance(ctx, Mapping):
+        return f"{label} necesita al menos {ctx.get('min_length')} caracteres."
+    return f"{label} no es válido: {err.get('msg', '')}"
 
 
 def approve_draft(tenant_id: UUID, draft_id: UUID, variant_id: UUID, user_id: UUID) -> DraftVM:

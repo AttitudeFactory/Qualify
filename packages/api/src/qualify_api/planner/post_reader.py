@@ -62,6 +62,10 @@ class PostSummary:
     # An http(s) URL, or a local upload-store key the UI resolves with
     # `rx.get_upload_url`. Never a video file nor an object-store (R2) key.
     thumbnail_url: str | None = None
+    # The POST's first media when it is a video stored ONLY in R2 (`t/{tenant}/…`): the
+    # object key, which the UI turns into a short-lived, tenant-checked URL (never a URL
+    # itself — the reader does not mint access). None for anything else.
+    video_object_key: str | None = None
     caption_excerpt: str = ""
     asset_count: int = 0
     asset_types: tuple[str, ...] = ()

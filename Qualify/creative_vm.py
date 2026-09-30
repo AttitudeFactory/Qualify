@@ -16,7 +16,8 @@ User-facing strings are Spanish (the operator is Spanish-speaking); code stays E
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import re
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -504,6 +505,82 @@ def _shot_lines(payload: CopyPayload) -> tuple[str, ...]:
     )
 
 
+# The brand rules (layer 1, `qualify_creative.brand.fidelity`) report in English with the
+# rule id first — right for logs, unreadable for the operator ("caption_length: caption is
+# 19 characters, below the brand minimum of 80"). Each known shape is said in Spanish,
+# with what to do; an unknown one still shows, prefixed, rather than disappearing.
+_FAILURE_PATTERNS: tuple[tuple[str, re.Pattern[str], Callable[[re.Match[str]], str]], ...] = (
+    (
+        "caption_length",
+        re.compile(r"caption is (\d+) characters, below the brand minimum of (\d+)"),
+        lambda m: (
+            f"El caption tiene {m[1]} caracteres y tu marca pide al menos {m[2]}: "
+            f"agrega {int(m[2]) - int(m[1])} más."
+        ),
+    ),
+    (
+        "caption_length",
+        re.compile(r"caption is (\d+) characters, above the brand maximum of (\d+)"),
+        lambda m: (
+            f"El caption tiene {m[1]} caracteres y tu marca permite como máximo {m[2]}: "
+            f"quita {int(m[1]) - int(m[2])}."
+        ),
+    ),
+    (
+        "banned_word",
+        re.compile(r"banned word '(.+)' appears in the copy"),
+        lambda m: f"El texto usa «{m[1]}», una palabra que tu marca tiene prohibida.",
+    ),
+    (
+        "forbidden_claim",
+        re.compile(r"forbidden claim '(.+)' appears in the copy"),
+        lambda m: f"El texto dice «{m[1]}», una afirmación que tu marca no permite.",
+    ),
+    (
+        "emoji_policy",
+        re.compile(r"emoji policy is 'none' but the copy contains (\d+) emoji"),
+        lambda m: f"Tu marca no usa emojis y el texto tiene {m[1]}.",
+    ),
+    (
+        "emoji_policy",
+        re.compile(r"at most (\d+)\) but the copy contains (\d+) emoji"),
+        lambda m: f"Tu marca usa como máximo {m[1]} emojis y el texto tiene {m[2]}.",
+    ),
+    (
+        "hashtag_policy",
+        re.compile(r"(\d+) hashtags, below the brand minimum of (\d+)"),
+        lambda m: f"Hay {m[1]} hashtags y tu marca pide al menos {m[2]}.",
+    ),
+    (
+        "hashtag_policy",
+        re.compile(r"(\d+) hashtags, above the brand maximum of (\d+)"),
+        lambda m: f"Hay {m[1]} hashtags y tu marca permite como máximo {m[2]}.",
+    ),
+    (
+        "hashtag_policy",
+        re.compile(r"hashtag '#(.+)' is on the brand's never list"),
+        lambda m: f"El hashtag #{m[1]} está entre los que tu marca nunca usa.",
+    ),
+    (
+        "hashtag_policy",
+        re.compile(r"required hashtag '#(.+)' is missing from the copy"),
+        lambda m: f"Falta el hashtag #{m[1]}, que tu marca usa siempre.",
+    ),
+)
+
+
+def failure_label(rule: str, detail: str) -> str:
+    """One brand-rule failure in the operator's words (Spanish, with what to do)."""
+    for known_rule, pattern, render in _FAILURE_PATTERNS:
+        if rule == known_rule:
+            match = pattern.search(detail)
+            if match:
+                return render(match)
+    if rule == "route_blocked":
+        return detail  # the brand's own policy reason, already written for people
+    return f"Regla de marca ({rule}): {detail}"
+
+
 def build_variant_vm(
     *,
     variant_id: str,
@@ -524,7 +601,7 @@ def build_variant_vm(
         verdict = fidelity or {}
         passed = bool(verdict.get("passed", True))
         failures = tuple(
-            f"{f.get('rule', '')}: {f.get('detail', '')}"
+            failure_label(str(f.get("rule", "")), str(f.get("detail", "")))
             for f in verdict.get("hard_failures", ())
             if isinstance(f, Mapping)
         )
@@ -590,6 +667,9 @@ class MediaVM:
     position: int
     label: str  # "Imagen", "Slide 2 de 4", "Video"
     poster_key: str = ""
+    #: Backend path for media that lives only in R2 (`r2_media.issue_view_path`); "" →
+    #: the page resolves `key` in the local upload store as before.
+    url: str = ""
 
 
 def build_media_vms(
@@ -677,6 +757,15 @@ class DraftVM:
     has_script: bool = False
     #: Why it failed, in the operator's words (e.g. HeyGen has no API credit).
     failure_detail: str = ""
+    #: The copy may be edited (the FSM's `edit` edge exists from this status).
+    can_edit: bool = False
+
+
+# Mirrors `qualify_api.creative.fsm.EDITABLE_STATUSES` (pinned equal by a test): editing is
+# legal in review, after approval (it sends the draft back to review) and after a rejection.
+EDITABLE_DRAFT_STATUSES: frozenset[str] = frozenset(
+    {DraftStatus.GENERATED.value, DraftStatus.APPROVED.value, DraftStatus.REJECTED.value}
+)
 
 
 def build_draft_vm(
@@ -734,6 +823,7 @@ def build_draft_vm(
         has_video=any(item.media_type == "video" for item in media),
         has_script=kind in ("creator_script", "avatar_video", "animated_avatar_video"),
         failure_detail=failure_detail or "",
+        can_edit=status in EDITABLE_DRAFT_STATUSES,
     )
 
 

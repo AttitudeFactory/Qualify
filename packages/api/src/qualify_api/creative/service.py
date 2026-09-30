@@ -1127,6 +1127,9 @@ class ContentService:
         draft = self._repo.get_draft(tenant_id=tenant_id, draft_id=variant.draft_id)
         if draft is None:
             raise UnknownDraft(str(variant.draft_id))
+        # The FSM decides whether this draft may be edited at all, and what an edit does
+        # to it — before the rules run, so a published draft is refused, not "validated".
+        new_status = apply_transition(draft.status, DraftTrigger.EDIT)
         kit = self._brand.kit(tenant_id=tenant_id, brand_id=draft.brand_id)
         if kit is None:
             raise BrandNotReady(missing=("brand_kit",))
@@ -1136,10 +1139,22 @@ class ContentService:
         self._repo.set_edited_copy(
             tenant_id=tenant_id, variant_id=variant_id, edited_copy=copy.model_dump(mode="json")
         )
-        # An edit is a new revision of the POST: an approved one keeps pointing at the
-        # revision that was approved (`approved_revision`).
+        # An edit is a new revision of the POST: `approved_revision` keeps pointing at the
+        # revision that was approved, and an approved draft goes back to review (the
+        # `edit` edge), where approving it again pins the new revision.
         self._repo.bump_revision(tenant_id=tenant_id, draft_id=draft.id)
-        logger.info("variant %s edited by user %s", variant_id, user_id)
+        if new_status != draft.status:
+            self._repo.update_status(
+                tenant_id=tenant_id, draft_id=draft.id, new_status=new_status, failure_reason=None
+            )
+        logger.info(
+            "variant %s edited by user %s (draft %s: %s -> %s)",
+            variant_id,
+            user_id,
+            draft.id,
+            draft.status,
+            new_status,
+        )
         return ()
 
     def variant_copy(self, *, tenant_id: UUID, variant_id: UUID) -> CopyPayload:

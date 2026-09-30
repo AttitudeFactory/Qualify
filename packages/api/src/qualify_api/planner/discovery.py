@@ -18,7 +18,9 @@ like `mentions/resolve.py`'s lookup, and follows the same narrow terms:
 - READ-ONLY: one `SELECT DISTINCT tenant_id`, nothing written. `qualify_admin` already
   holds `SELECT` on `calendar_events` (0024); no grant, role or SECURITY DEFINER is added.
 - IDS ONLY: no event row, POST, attempt or connection data leaves the admin session —
-  just the ids of tenants with due `scheduled` or `publishing` events.
+  just the ids of tenants with due `scheduled` events on an active connection or with
+  `publishing` events. `qualify_admin` already holds `SELECT` on `social_connections`
+  (0002); the join reads its `status` only.
 - Everything after it — listing that tenant's events, claiming, starting, advancing,
   settling — goes through `tenant_session(tenant_id)` inside the executor. Nothing
   downstream inherits the admin session.
@@ -35,6 +37,9 @@ from sqlalchemy import or_, select
 
 from qualify_api.planner.fsm import EventStatus
 from qualify_api.planner.models import CalendarEvent
+
+# `publishing.service` refuses to send on anything but this status.
+ACTIVE_CONNECTION = "active"
 
 
 class TenantSource(Protocol):
@@ -56,21 +61,36 @@ class ScopedTenants:
 
 
 class DiscoveredTenants:
-    """Every tenant with a due `scheduled` event or a `publishing` one — ids only."""
+    """Every tenant with work — ids only: a due `scheduled` event whose OWN connection is
+    `active` (the only status the publisher sends on), or a `publishing` event (already
+    started; it must be driven to its outcome whatever the connection does next).
+
+    A tenant with no active connection is simply not listed: no tick work, no error. A
+    newly connected account is picked up on the next tick — nothing to configure. The
+    event → connection join cannot cross tenants: `calendar_events` has a composite FK
+    `(connection_id, tenant_id)` onto `social_connections`."""
 
     def tenants(self, *, now: datetime) -> list[UUID]:
         # Referenced only here, on use: `ScopedTenants` lives in this module too, and a
         # scoped tick must never have the BYPASSRLS door within reach.
         from qualify_shared.db.admin import admin_session  # noqa: PLC0415
 
+        from qualify_api.connections.models import SocialConnection  # noqa: PLC0415
+
         with admin_session() as session:
             return list(
                 session.scalars(
                     select(CalendarEvent.tenant_id)
+                    .outerjoin(
+                        SocialConnection,
+                        (SocialConnection.id == CalendarEvent.connection_id)
+                        & (SocialConnection.tenant_id == CalendarEvent.tenant_id),
+                    )
                     .where(
                         or_(
                             (CalendarEvent.status == EventStatus.SCHEDULED.value)
-                            & (CalendarEvent.scheduled_at <= now),
+                            & (CalendarEvent.scheduled_at <= now)
+                            & (SocialConnection.status == ACTIVE_CONNECTION),
                             CalendarEvent.status == EventStatus.PUBLISHING.value,
                         )
                     )

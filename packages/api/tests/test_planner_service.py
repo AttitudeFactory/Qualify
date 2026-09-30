@@ -21,6 +21,7 @@ from qualify_api.planner.service import (
     InvalidSchedule,
     InvalidTag,
     PlannerService,
+    PostNotRejected,
     PostNotSchedulable,
     UnknownEvent,
     UnknownPost,
@@ -515,3 +516,58 @@ def test_another_tenant_cannot_delete_the_event() -> None:
     svc.cancel(tenant_id=TENANT, event_id=event.id)
     with pytest.raises(UnknownEvent):
         svc.delete(tenant_id=OTHER_TENANT, event_id=event.id)
+
+
+# --- "Quitar del calendario" for a rejected POST (2026-09-30) -----------------------------
+
+
+def _rejectable_world():
+    repo = MemoryPlannerRepository()
+    post = _post(ApprovalStatus.PENDING)
+    posts = FakePosts(post)
+    svc = PlannerService(
+        repository=repo, posts=posts, connections=FakeConnections(), clock=lambda: NOW
+    )
+    return repo, posts, post, svc
+
+
+def test_a_rejected_posts_unpublished_events_are_removed_and_history_is_kept() -> None:
+    repo, posts, post, svc = _rejectable_world()
+    scheduled = _schedule(svc, post, hours=24)
+    cancelled = _schedule(svc, post, hours=48)
+    svc.cancel(tenant_id=TENANT, event_id=cancelled.id)
+    published = _schedule(svc, post, hours=72)
+    repo._rows[published.id] = replace(repo._rows[published.id], status="published")
+    other_post = _post(ApprovalStatus.PENDING)
+    posts.by_id[other_post.post_id] = other_post
+    unrelated = _schedule(svc, other_post, hours=24)
+
+    posts.by_id[post.post_id] = replace(post, approval=ApprovalStatus.REJECTED)
+    removed = svc.remove_rejected_post(tenant_id=TENANT, event_id=scheduled.id)
+
+    assert removed == 2
+    assert repo.get(tenant_id=TENANT, event_id=scheduled.id) is None
+    assert repo.get(tenant_id=TENANT, event_id=cancelled.id) is None
+    assert repo.get(tenant_id=TENANT, event_id=published.id).status == "published"  # history
+    assert repo.get(tenant_id=TENANT, event_id=unrelated.id).status == "scheduled"  # other POST
+
+
+@pytest.mark.parametrize(
+    "approval", [ApprovalStatus.PENDING, ApprovalStatus.APPROVED, ApprovalStatus.NOT_READY]
+)
+def test_only_a_rejected_post_can_be_taken_off_the_calendar(approval: ApprovalStatus) -> None:
+    repo, posts, post, svc = _rejectable_world()
+    event = _schedule(svc, post)
+    posts.by_id[post.post_id] = replace(post, approval=approval)
+    with pytest.raises(PostNotRejected):
+        svc.remove_rejected_post(tenant_id=TENANT, event_id=event.id)
+    assert repo.get(tenant_id=TENANT, event_id=event.id).status == "scheduled"
+
+
+def test_another_tenant_cannot_remove_the_events() -> None:
+    repo, posts, post, svc = _rejectable_world()
+    event = _schedule(svc, post)
+    posts.by_id[post.post_id] = replace(post, approval=ApprovalStatus.REJECTED)
+    with pytest.raises(UnknownEvent):
+        svc.remove_rejected_post(tenant_id=OTHER_TENANT, event_id=event.id)
+    assert repo.get(tenant_id=TENANT, event_id=event.id).status == "scheduled"

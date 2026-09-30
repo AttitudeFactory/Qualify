@@ -84,6 +84,10 @@ class PlannerRepository(Protocol):
         """POSTs with at least one event whose status `occupies_post`."""
         ...
 
+    def list_for_post(self, *, tenant_id: UUID, post_id: UUID) -> list[EventRecord]:
+        """Every event of one POST, any status, ordered by instant."""
+        ...
+
     def reschedule(
         self,
         *,
@@ -319,6 +323,12 @@ class MemoryPlannerRepository:
             if r.tenant_id == tenant_id and r.brand_id == brand_id and r.status in _OCCUPYING
         }
 
+    def list_for_post(self, *, tenant_id: UUID, post_id: UUID) -> list[EventRecord]:
+        return sorted(
+            (r for r in self._rows.values() if r.tenant_id == tenant_id and r.post_id == post_id),
+            key=lambda r: (r.scheduled_at, r.created_at),
+        )
+
     def reschedule(
         self,
         *,
@@ -510,6 +520,17 @@ class PostgresPlannerRepository:
                     .distinct()
                 )
             )
+
+    def list_for_post(self, *, tenant_id: UUID, post_id: UUID) -> list[EventRecord]:
+        with tenant_session(tenant_id) as session:
+            return [
+                _snapshot(row)
+                for row in session.scalars(
+                    select(CalendarEvent)
+                    .where(CalendarEvent.post_id == post_id)
+                    .order_by(CalendarEvent.scheduled_at, CalendarEvent.created_at)
+                )
+            ]
 
     def reschedule(
         self,

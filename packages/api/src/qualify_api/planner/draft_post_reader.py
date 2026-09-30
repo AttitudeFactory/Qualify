@@ -259,6 +259,15 @@ class DraftPostReader:
 
         verdict = evaluate(_candidate(session, tenant_id, draft, images))
         publishable = isinstance(verdict, PublishablePost)
+        first = min(images, key=lambda image: image.position) if images else None
+        video_object_key = (
+            first.object_key
+            if first is not None
+            and first.media_type == "video"
+            and first.object_key
+            and first.object_key.startswith(_OBJECT_STORE_PREFIX + f"{tenant_id}/")
+            else None
+        )
         title = (brief.topic if brief is not None else "") or _excerpt(_caption(variant))[:60]
         return PostSummary(
             post_id=draft.id,
@@ -272,6 +281,7 @@ class DraftPostReader:
             reuse_type=None,  # the draft model has no such concept — QUA-109
             lifecycle_status=draft.status,
             thumbnail_url=thumbnail,
+            video_object_key=video_object_key,
             caption_excerpt=_excerpt(_caption(variant)),
             asset_count=len(images),
             asset_types=tuple("IMAGE" for _ in images),
