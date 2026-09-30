@@ -38,6 +38,7 @@ from qualify_api.planner.service import (
 from .connections_provider import acting_user_id, connections_for
 from .creative_provider import default_brand_id
 from .planner_vm import (
+    CALENDAR_DEFAULT_TZ,
     CardInput,
     ConnectionChoiceVM,
     DayColumnVM,
@@ -152,14 +153,15 @@ def _tag_vm(tag) -> TagVM:
 
 def view_zone(tenant_id: UUID, tz_override: str) -> str:
     """The zone the calendar shows and plans in: the operator's pick for this session if
-    valid, else the business's own zone. Never written back to the tenant."""
+    valid, else `CALENDAR_DEFAULT_TZ` — not the tenant's zone. Never written back to the
+    tenant."""
     if tz_override:
         try:
             resolve_zone(tz_override)
             return tz_override
         except InvalidSchedule:
             pass
-    return tenant_timezone(tenant_id)
+    return CALENDAR_DEFAULT_TZ
 
 
 def _card_input(planned: PlannedEvent) -> CardInput:

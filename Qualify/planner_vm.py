@@ -280,6 +280,11 @@ def zone_countries() -> dict[str, str]:
     return zones
 
 
+# The zone every calendar opens in, whatever the tenant's own zone is: the operators
+# plan from Caracas. The picker still overrides it per session.
+CALENDAR_DEFAULT_TZ = "America/Caracas"
+
+
 def tz_city(name: str) -> str:
     return _TZ_CITY_ES.get(name, name.rsplit("/", 1)[-1].replace("_", " "))
 

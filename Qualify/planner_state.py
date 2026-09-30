@@ -33,6 +33,7 @@ from .planner_provider import (
     set_event_tags,
 )
 from .planner_vm import (
+    CALENDAR_DEFAULT_TZ,
     OPENING_HOUR,
     TAG_SUGGESTIONS,
     VIEW_CALENDAR,
@@ -134,7 +135,7 @@ class PlannerState(rx.State):
     # Per-session view preferences (not tenant data; reset on logout like the rest).
     view_mode: str = VIEW_CALENDAR
     show_unscheduled: bool = False
-    # The zone the calendar shows and plans in. "" = the business's own zone; a pick here
+    # The zone the calendar shows and plans in. "" = CALENDAR_DEFAULT_TZ; a pick here
     # is a per-session view choice and is never written back to the tenant.
     view_tz: str = ""
     tenant_tz: str = ""
@@ -204,8 +205,9 @@ class PlannerState(rx.State):
 
     @rx.var
     def tz_suggestions(self) -> list[TzOptionVM]:
-        """The business's own zone, the one suggestion worth pinning."""
-        return [tz_option(self.tenant_tz, datetime.now(UTC))] if self.tenant_tz else []
+        """The calendar's default zone plus the business's own zone, if it differs."""
+        names = dict.fromkeys(z for z in (CALENDAR_DEFAULT_TZ, self.tenant_tz) if z)
+        return [tz_option(name, datetime.now(UTC)) for name in names]
 
     # -- tags -----------------------------------------------------------------
 
@@ -399,7 +401,7 @@ class PlannerState(rx.State):
 
     @rx.event
     def choose_tz(self, value: str):
-        self.view_tz = "" if value == self.tenant_tz else value
+        self.view_tz = "" if value == CALENDAR_DEFAULT_TZ else value
         self.tz_query = ""
         return PlannerState.load
 

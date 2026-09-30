@@ -11,7 +11,8 @@ documents.
 from __future__ import annotations
 
 import dataclasses
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from qualify_api.planner.service import (
@@ -20,9 +21,10 @@ from qualify_api.planner.service import (
     InactiveConnection,
     InvalidSchedule,
     PostNotSchedulable,
+    compose_instant,
 )
 
-from .planner_provider import planner_error_message
+from .planner_provider import planner_error_message, view_zone
 from .planner_state import (
     MODE_ASSIGN,
     MODE_RESCHEDULE,
@@ -430,13 +432,37 @@ def test_timezone_search_matches_city_iana_or_offset() -> None:
     assert len(search_timezones("", day)) == 60  # capped
 
 
-def test_choosing_the_business_zone_clears_the_override() -> None:
+def test_choosing_the_default_zone_clears_the_override() -> None:
     state = _state()
     state.tenant_tz = "America/Bogota"
     state.choose_tz("Europe/Madrid")
     assert state.view_tz == "Europe/Madrid"
-    state.choose_tz("America/Bogota")
+    state.choose_tz("America/Bogota")  # the business's zone is an override now
+    assert state.view_tz == "America/Bogota"
+    state.choose_tz("America/Caracas")
     assert state.view_tz == ""
+
+
+def test_calendar_defaults_to_caracas_whatever_the_tenant_zone() -> None:
+    assert view_zone(uuid4(), "") == "America/Caracas"
+    assert view_zone(uuid4(), "not/a-zone") == "America/Caracas"
+    assert view_zone(uuid4(), "America/Bogota") == "America/Bogota"
+
+
+def test_a_time_planned_in_the_default_zone_is_that_caracas_instant() -> None:
+    # 4:35 p. m. in the calendar = 20:35 UTC (Caracas is UTC-4 all year), never Bogotá's.
+    tz_name = view_zone(uuid4(), "")
+    instant = compose_instant(date(2026, 9, 29), time(16, 35), tz_name)
+    assert instant == datetime(2026, 9, 29, 20, 35, tzinfo=UTC)
+    assert instant.astimezone(ZoneInfo(tz_name)).strftime("%H:%M") == "16:35"
+
+
+def test_tz_suggestions_pin_the_default_then_the_business_zone() -> None:
+    state = _state()
+    state.tenant_tz = "America/Bogota"
+    assert [o.value for o in state.tz_suggestions] == ["America/Caracas", "America/Bogota"]
+    state.tenant_tz = "America/Caracas"
+    assert [o.value for o in state.tz_suggestions] == ["America/Caracas"]
 
 
 # --- tags ----------------------------------------------------------------------------
