@@ -1,6 +1,9 @@
+import asyncio
+import contextlib
 import logging
 
 import reflex as rx
+from qualify_api.planner.embedded import calendar_worker
 
 from .auth_pages import login_index, signup_index
 from .auth_state import AuthState
@@ -34,6 +37,7 @@ from .planner_page import planner_index
 from .planner_state import PlannerState
 from .publishing_page import publish_index
 from .publishing_state import PublishState
+from .r2_media import router as r2_media_router
 from .signals_page import signals_index
 from .state import DashboardState
 from .stories_page import stories_index
@@ -61,6 +65,11 @@ for _noisy_logger in ("httpx", "httpcore", "botocore", "boto3", "urllib3", "sqla
 # (`db.py`/`models.py`/`seed_data.py`) — its data comes from the real `mentions` backend
 # via `state.py`/`mentions_provider.py`. Those files stay on disk (still useful for a
 # quick manual demo or a future fixture), just no longer wired into the app's boot path.
+
+
+# R2-only media for the draft screen (`r2_media.py`), on the same backend FastAPI app the
+# avatar proxy already mounts through `api_transformer`.
+avatar_api.include_router(r2_media_router)
 
 
 def index() -> rx.Component:
@@ -96,6 +105,24 @@ app = rx.App(
     # are loaded once here rather than per page.
     head_components=[rx.script(src="/deck-drag.js"), rx.script(src="/rank-drag.js")],
 )
+
+
+# QUA-111: the calendar worker runs INSIDE the backend process, so a running app means
+# scheduled posts get published — nobody has to remember a separate command. By default
+# it serves every tenant with a connected account, discovered on each tick (no per-tenant
+# config); `qualify_api.planner.embedded` documents the optional overrides. Several
+# backend processes, or the app plus a CLI worker, are safe together (claim + locks +
+# idempotency).
+@app.register_lifespan_task
+@contextlib.asynccontextmanager
+async def calendar_worker_lifespan():
+    worker = calendar_worker()
+    worker.start()
+    try:
+        yield
+    finally:
+        await asyncio.to_thread(worker.stop)
+
 
 # Living style guide: static, no tenant data, so it needs no session. Not linked from
 # the sidebar on purpose — it is for whoever builds screens, not for the business.

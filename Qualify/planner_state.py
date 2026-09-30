@@ -16,6 +16,7 @@ from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 
 import reflex as rx
+from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransition
 from qualify_api.planner.service import PlannerError
 
 from .auth_state import AuthState
@@ -28,11 +29,15 @@ from .planner_provider import (
     event_detail,
     load_week,
     planner_error_message,
+    reject_post,
+    remove_rejected_post,
     reschedule_event,
     schedule_post,
     set_event_tags,
 )
 from .planner_vm import (
+    AUTO_PUBLISH_UNAVAILABLE,
+    CALENDAR_DEFAULT_TZ,
     OPENING_HOUR,
     TAG_SUGGESTIONS,
     VIEW_CALENDAR,
@@ -134,10 +139,11 @@ class PlannerState(rx.State):
     # Per-session view preferences (not tenant data; reset on logout like the rest).
     view_mode: str = VIEW_CALENDAR
     show_unscheduled: bool = False
-    # The zone the calendar shows and plans in. "" = the business's own zone; a pick here
+    # The zone the calendar shows and plans in. "" = CALENDAR_DEFAULT_TZ; a pick here
     # is a per-session view choice and is never written back to the tenant.
     view_tz: str = ""
     tenant_tz: str = ""
+    auto_publish: str = AUTO_PUBLISH_UNAVAILABLE
     tz_query: str = ""
     # Planning tags (0025): the tenant's labels and the calendar's tag filter.
     tags: list[TagVM] = []
@@ -167,6 +173,7 @@ class PlannerState(rx.State):
     cancel_event_id: str = ""
     # -- delete a tag (confirmation) ------------------------------------------
     delete_event_open: bool = False
+    remove_rejected_open: bool = False  # confirm "Quitar del calendario" (rejected POST)
     delete_event_id: str = ""
     delete_tag_open: bool = False
     delete_tag_id: str = ""
@@ -204,8 +211,9 @@ class PlannerState(rx.State):
 
     @rx.var
     def tz_suggestions(self) -> list[TzOptionVM]:
-        """The business's own zone, the one suggestion worth pinning."""
-        return [tz_option(self.tenant_tz, datetime.now(UTC))] if self.tenant_tz else []
+        """The calendar's default zone plus the business's own zone, if it differs."""
+        names = dict.fromkeys(z for z in (CALENDAR_DEFAULT_TZ, self.tenant_tz) if z)
+        return [tz_option(name, datetime.now(UTC)) for name in names]
 
     # -- tags -----------------------------------------------------------------
 
@@ -296,6 +304,17 @@ class PlannerState(rx.State):
     def form_is_reschedule(self) -> bool:
         return self.form_mode == MODE_RESCHEDULE
 
+    @rx.var
+    def form_post_note(self) -> str:
+        """Why the POST being scheduled will not publish yet — the same `readiness_note` the
+        card and the detail dialog show (`planner_vm.readiness`), "" when it is ready."""
+        if self.form_mode == MODE_RESCHEDULE:
+            return self.detail.publish_note
+        for post in self.schedulable:
+            if post.post_id == self.form_post_id:
+                return post.readiness_note
+        return ""
+
     # -- loading --------------------------------------------------------------
 
     async def _tenant(self):
@@ -345,6 +364,7 @@ class PlannerState(rx.State):
             self.schedulable = data.schedulable
             self.connections = data.connections
             self.tenant_tz = data.tenant_tz
+            self.auto_publish = data.auto_publish
             self.tags = data.tags
             known = {t.id for t in data.tags}
             self.tag_filter = [t for t in self.tag_filter if t in known]
@@ -399,7 +419,7 @@ class PlannerState(rx.State):
 
     @rx.event
     def choose_tz(self, value: str):
-        self.view_tz = "" if value == self.tenant_tz else value
+        self.view_tz = "" if value == CALENDAR_DEFAULT_TZ else value
         self.tz_query = ""
         return PlannerState.load
 
@@ -499,6 +519,58 @@ class PlannerState(rx.State):
             self.detail_open = False
             self.delete_event_id = ""
         yield rx.toast.success("Publicación eliminada del calendario")
+        yield PlannerState.load
+
+    # -- the POST's own review from the dialog ------------------------------------
+
+    @rx.event(background=True)
+    async def reject_post_from_detail(self):
+        """Reject the event's POST (creative FSM `generated → rejected`). The event stays
+        scheduled; the worker will not publish a rejected POST."""
+        async with self:
+            event_id = self.detail.event_id
+        tenant_id = await self._tenant()
+        if tenant_id is None or not event_id:
+            return
+        try:
+            await asyncio.to_thread(reject_post, tenant_id, event_id)
+        except Exception as exc:
+            if not isinstance(exc, (PlannerError, CreativeInvalidTransition)):
+                logger.error("planner reject_post failed: %s", type(exc).__name__)
+            yield rx.toast.error(planner_error_message(exc))
+            return
+        yield rx.toast.success("POST rechazado: no se publicará")
+        yield PlannerState.load
+        yield PlannerState.open_detail(event_id)
+
+    @rx.event
+    def ask_remove_rejected(self) -> None:
+        self.remove_rejected_open = True
+
+    @rx.event
+    def set_remove_rejected_open(self, value: bool) -> None:
+        self.remove_rejected_open = value
+
+    @rx.event(background=True)
+    async def confirm_remove_rejected(self):
+        async with self:
+            event_id = self.detail.event_id
+            self.remove_rejected_open = False
+        tenant_id = await self._tenant()
+        if tenant_id is None or not event_id:
+            return
+        try:
+            removed = await asyncio.to_thread(remove_rejected_post, tenant_id, event_id)
+        except Exception as exc:
+            if not isinstance(exc, PlannerError):
+                logger.error("planner remove_rejected failed: %s", type(exc).__name__)
+            yield rx.toast.error(planner_error_message(exc))
+            return
+        async with self:
+            self.detail_open = False
+        yield rx.toast.success(
+            "POST quitado del calendario" + (f" ({removed} publicaciones)" if removed > 1 else "")
+        )
         yield PlannerState.load
 
     # -- delete a tag ------------------------------------------------------------

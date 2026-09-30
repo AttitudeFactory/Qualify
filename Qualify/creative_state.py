@@ -141,6 +141,10 @@ _NOT_REJECTABLE = (
     "Actualiza la página para ver su estado."
 )
 _DRAFT_GONE = "Ese borrador no existe o ya no es visible para este negocio."
+_NOT_EDITABLE = (
+    "Este borrador ya no se puede editar: está en preparación, publicado o falló. "
+    "No se guardó ningún cambio."
+)
 _VARIANT_REQUIRED = "Elige una variante antes de aprobar."
 _POLL_TIMEOUT = (
     "La generación lleva más de 5 minutos sin terminar. La bandeja mostrará el "
@@ -287,6 +291,9 @@ class CreativeState(rx.State):
     edit_script: str = ""
     edit_blocking: list[str] = []
     edit_saving: bool = False
+    # The copy fields are read-only until the operator presses "Editar"; "Cancelar" puts
+    # the saved copy back. Approving is not offered over unsaved edits.
+    edit_mode: bool = False
     action_error: str = ""
     poll_timed_out: bool = False
     poll_elapsed_label: str = ""
@@ -318,6 +325,7 @@ class CreativeState(rx.State):
             and variant is not None
             and variant.passed
             and not self.edit_blocking
+            and not self.edit_mode
         )
 
     @rx.var
@@ -1440,6 +1448,7 @@ class CreativeState(rx.State):
             self.detail_error = ""
             self.action_error = ""
             self.poll_timed_out = False
+            self.edit_mode = False
             draft_id = self._route_draft_id()
         if draft_id is None:
             async with self:
@@ -1527,6 +1536,17 @@ class CreativeState(rx.State):
     @rx.event
     def select_variant(self, variant_id: str) -> None:
         self.selected_variant_id = variant_id
+        self.edit_mode = False
+        self._fill_edit_fields()
+
+    @rx.event
+    def start_edit(self) -> None:
+        self.edit_mode = True
+
+    @rx.event
+    def cancel_edit(self) -> None:
+        """Discard unsaved changes: the fields show the saved copy again."""
+        self.edit_mode = False
         self._fill_edit_fields()
 
     @rx.event(background=True)
@@ -1567,6 +1587,15 @@ class CreativeState(rx.State):
                 self.edit_saving = False
                 self.action_error = _DRAFT_GONE
             return
+        except InvalidTransition:
+            # The FSM refuses edits once the draft is staged, published or failed — e.g.
+            # it was published while this screen was open. Reload to show where it is.
+            async with self:
+                self.edit_saving = False
+                self.edit_mode = False
+                self.action_error = _NOT_EDITABLE
+            await self._reload_detail()
+            return
         except SQLAlchemyError as exc:
             logger.error("edit failed: %s", type(exc).__name__)
             async with self:
@@ -1576,6 +1605,8 @@ class CreativeState(rx.State):
         async with self:
             self.edit_saving = False
             self.edit_blocking = list(failures)
+            if not failures:
+                self.edit_mode = False  # saved: back to read-only
         if not failures:
             await self._reload_detail()
 

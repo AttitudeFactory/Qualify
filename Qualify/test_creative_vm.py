@@ -262,7 +262,8 @@ def test_variant_vm_shows_model_copy_with_fidelity_failures() -> None:
     )
     assert vm.label == "Variante 1"
     assert not vm.passed
-    assert vm.failure_labels == ("forbidden_claim: «el mejor precio»",)
+    # A detail that is not in the engine's own shape still shows, labelled — never lost.
+    assert vm.failure_labels == ("Regla de marca (forbidden_claim): «el mejor precio»",)
     assert vm.hashtags_text == "#LaRiviera #vivienda"
     assert not vm.was_edited
     assert "Agenda tu visita" in vm.rendered_caption
@@ -416,3 +417,61 @@ def test_review_buttons_follow_the_fsm() -> None:
     assert generated.can_reject and generated.can_regenerate
     assert not rejected.can_reject and rejected.can_regenerate  # regenerate is still legal
     assert not approved.can_reject and not approved.can_regenerate
+
+
+# --- brand-rule failures in the operator's words (request 2026-09-30) -------------------
+
+
+def test_brand_rule_failures_read_in_spanish_with_what_to_do() -> None:
+    from qualify_creative.brand import fidelity
+    from qualify_creative.enums import EmojiPolicy
+    from qualify_creative.schemas import BrandKit, CopyPayload, ToneAxes
+
+    from .creative_vm import failure_label
+
+    kit = BrandKit.model_validate(
+        {
+            "brand_id": "b0000000-0000-4000-8000-000000000001",
+            "positioning": "x",
+            "audience": "y",
+            "tone_axes": ToneAxes(
+                formal_casual=50, sober_enthusiastic=50, technical_plain=50, brief_elaborate=50
+            ),
+            "banned_words": ("gratis",),
+            "emoji_policy": EmojiPolicy.NONE,
+        }
+    )
+    copy = CopyPayload.model_validate(
+        {"hook": "Hola", "caption": "es gratis 🎉", "hashtags": [], "cta": ""}
+    )
+    labels = [failure_label(f.rule, f.detail) for f in fidelity.check_hard_rules(copy, kit)]
+    assert "El texto usa «gratis», una palabra que tu marca tiene prohibida." in labels
+    assert any(
+        label.startswith("El caption tiene 11 caracteres y tu marca pide al menos")
+        for label in labels
+    )
+    assert "Tu marca no usa emojis y el texto tiene 1." in labels
+    assert not any("caption_length" in label or "below the brand" in label for label in labels)
+
+
+def test_the_reported_message_is_translated() -> None:
+    from .creative_vm import failure_label
+
+    assert (
+        failure_label("caption_length", "caption is 19 characters, below the brand minimum of 80")
+        == "El caption tiene 19 caracteres y tu marca pide al menos 80: agrega 61 más."
+    )
+
+
+def test_an_unknown_failure_still_shows() -> None:
+    from .creative_vm import failure_label
+
+    assert failure_label("new_rule", "something") == "Regla de marca (new_rule): something"
+
+
+def test_editable_statuses_mirror_the_fsm() -> None:
+    from qualify_api.creative.fsm import EDITABLE_STATUSES
+
+    from .creative_vm import EDITABLE_DRAFT_STATUSES
+
+    assert EDITABLE_DRAFT_STATUSES == EDITABLE_STATUSES

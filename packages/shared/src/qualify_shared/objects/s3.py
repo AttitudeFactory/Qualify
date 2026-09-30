@@ -19,7 +19,14 @@ from qualify_shared.objects.gate import ObjectNotFound
 # S3/R2 error codes that mean "no object at this key" — as opposed to any other ClientError
 # (bad credentials, wrong bucket, throttling), which must keep propagating as-is rather than
 # being silently reinterpreted as a missing object.
-_NOT_FOUND_CODES = frozenset({"NoSuchKey", "404"})
+_NOT_FOUND_CODES = frozenset({"NoSuchKey", "404", "NotFound"})
+
+
+def _raise_not_found_or_reraise(exc: ClientError, key: str) -> None:
+    code = exc.response.get("Error", {}).get("Code")
+    if code in _NOT_FOUND_CODES:
+        raise ObjectNotFound(key) from None
+    raise exc
 
 
 def _build_client(settings: R2Settings) -> Any:
@@ -79,3 +86,29 @@ class R2ObjectStore:
             raise
         body: IO[bytes] = response["Body"]
         return io.BytesIO(body.read())
+
+    # -- ranged reads (2026-09-30): the browser previewing a video --------------------------
+    #
+    # A `<video>` asks for bytes, not files: `Range: bytes=0-` first, then whatever it
+    # needs to seek. Serving that through `open()` read the WHOLE object from R2 on every
+    # request (a 52 MB reel per card, per seek). R2 answers ranged GETs natively, so these
+    # two calls read only what was asked. `open()` — the publisher's whole-object read —
+    # is untouched.
+
+    def size(self, key: str) -> int:
+        """The object's length in bytes (HEAD, no body read)."""
+        try:
+            response = self._client.head_object(Bucket=self._settings.bucket, Key=key)
+        except ClientError as exc:
+            _raise_not_found_or_reraise(exc, key)
+        return int(response["ContentLength"])
+
+    def open_range(self, key: str, start: int, end: int) -> IO[bytes]:
+        """Bytes `start..end` inclusive (HTTP semantics), buffered like `open()`."""
+        try:
+            response = self._client.get_object(
+                Bucket=self._settings.bucket, Key=key, Range=f"bytes={start}-{end}"
+            )
+        except ClientError as exc:
+            _raise_not_found_or_reraise(exc, key)
+        return io.BytesIO(response["Body"].read())

@@ -51,6 +51,7 @@ class DraftTrigger(StrEnum):
     PUBLISH_OK = "publish_ok"  # platform confirmed the publish
     STAGE_EXPIRED = "stage_expired"  # container expired; service must clear container cols
     REAP = "reap"  # stuck in drafting past deadline; reason forced to TIMEOUT
+    EDIT = "edit"  # the human saved an edit of the copy (a new revision)
 
 
 class InvalidTransition(Exception):
@@ -81,7 +82,21 @@ _TRANSITIONS: dict[tuple[str, str], str] = {
     # this edge must also clear `staged_container_id`/`staged_expires_at` — a status of
     # `approved` with a container id would be a row lying about its own state.
     (STAGED, DraftTrigger.STAGE_EXPIRED): APPROVED,
+    # Editing the copy (2026-09-30). An edit is a new revision, and what was approved was
+    # the previous one — so an APPROVED draft goes back to the human gate instead of
+    # staying "approved" with an unapproved revision, which `approve` (legal only from
+    # GENERATED) could never fix: an editable-but-never-publishable dead end. During
+    # review, or after a rejection, an edit changes nothing about the state. A draft
+    # still generating, staged on the platform, published or failed is not editable.
+    (GENERATED, DraftTrigger.EDIT): GENERATED,
+    (APPROVED, DraftTrigger.EDIT): GENERATED,
+    (REJECTED, DraftTrigger.EDIT): REJECTED,
 }
+
+#: The statuses in which the copy may be edited — derived from the table, not restated.
+EDITABLE_STATUSES: frozenset[str] = frozenset(
+    current for current, trigger in _TRANSITIONS if trigger == DraftTrigger.EDIT
+)
 
 
 def apply_transition(

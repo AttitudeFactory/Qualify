@@ -124,3 +124,15 @@ class ObjectGate:
         re-checking is a string comparison.
         """
         return self._store.open(require_tenant_prefix(tenant_id, object_key))
+
+    # Ranged reads for the browser's video preview (`Qualify/r2_media.py`). Same prefix
+    # check as `open_object`. Not part of the `ObjectStore` protocol: only a store that
+    # can read ranges (`R2ObjectStore`) offers them, and nothing else needs to.
+
+    def object_size(self, tenant_id: UUID, object_key: str) -> int:
+        key = require_tenant_prefix(tenant_id, object_key)  # checked before any store call
+        return self._store.size(key)  # type: ignore[attr-defined]
+
+    def open_range(self, tenant_id: UUID, object_key: str, start: int, end: int) -> IO[bytes]:
+        key = require_tenant_prefix(tenant_id, object_key)
+        return self._store.open_range(key, start, end)  # type: ignore[attr-defined]

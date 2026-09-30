@@ -30,6 +30,11 @@ from qualify_api.planner import draft_post_reader
 from qualify_api.planner.composition import PostgresConnectionGate, tenant_timezone
 from qualify_api.planner.discovery import DiscoveredTenants, ScopedTenants
 from qualify_api.planner.draft_post_reader import DraftPostReader
+from qualify_api.planner.embedded import (
+    EmbeddedCalendarWorker,
+    EmbeddedWorkerConfig,
+    WorkerMode,
+)
 from qualify_api.planner.executor import (
     AdvanceOutcome,
     EventExecutor,
@@ -963,7 +968,9 @@ class _NoLock:
         yield True
 
 
-def _executor(counter: list[str], lock=None, factory=None, posts=None) -> EventExecutor:
+def _executor(
+    counter: list[str], lock=None, factory=None, posts=None, connections=None
+) -> EventExecutor:
     return EventExecutor(
         repository=PostgresPlannerRepository(),
         posts=posts or DraftPostReader(),
@@ -975,6 +982,7 @@ def _executor(counter: list[str], lock=None, factory=None, posts=None) -> EventE
         ),
         attempts=PostgresPublishAttemptRepository(),
         lock=lock or PostgresAdvisoryLock(),
+        connections=connections,
     )
 
 
@@ -1560,8 +1568,12 @@ class _DiscoveredOnly:
         return [t for t in self.found if t in self.allowed]
 
 
-def _tick(source, meta: _MetaCalls, *, posts=None, repository=None, status=None) -> TickRunner:
-    executor = _executor([], factory=_AdvanceFactory(meta, status=status), posts=posts)
+def _tick(
+    source, meta: _MetaCalls, *, posts=None, repository=None, status=None, connections=None
+) -> TickRunner:
+    executor = _executor(
+        [], factory=_AdvanceFactory(meta, status=status), posts=posts, connections=connections
+    )
     return TickRunner(
         tenants=source, repository=repository or PostgresPlannerRepository(), executor=executor
     )
@@ -1703,3 +1715,489 @@ def test_a_tenant_without_work_generates_no_operations(worlds_ab) -> None:
     report = asyncio.run(_tick(ScopedTenants([idle[0]]), meta).run_once())
     assert report.tenants[0].operations == 0 and report.tenants[0].errors == []
     assert meta.calls == []
+
+
+# --- the worker embedded in the app process (QUA-111 follow-up) ----------------------
+#
+# The real thread, loop, tick, executor, publisher and Postgres; only Meta and R2 are
+# fakes. Scoped to fresh tenants, like every tick test above.
+
+
+def _embedded(runner_factory, *, all_tenants: bool = False) -> EmbeddedCalendarWorker:
+    scope = {"all_tenants": True} if all_tenants else {"tenant_ids": (uuid4(),)}
+    return EmbeddedCalendarWorker(
+        EmbeddedWorkerConfig(WorkerMode.EMBEDDED, interval=0, **scope),
+        make_runner=runner_factory,
+    )
+
+
+def _wait_for(predicate, timeout: float = 20.0) -> bool:
+    deadline = datetime.now(UTC) + timedelta(seconds=timeout)
+    while datetime.now(UTC) < deadline:
+        if predicate():
+            return True
+        threading.Event().wait(0.05)
+    return predicate()
+
+
+def test_the_embedded_worker_publishes_a_due_event_by_itself(worlds_ab) -> None:
+    a, _ = worlds_ab
+    event = _due_reel_event(a)
+    meta = _MetaCalls()
+    worker = _embedded(lambda: _tick(ScopedTenants([a[0]]), meta, status=ContainerStatus.FINISHED))
+    worker.start()
+    try:
+        assert _wait_for(lambda: _stored(a[0], event.id).status == "published")
+    finally:
+        worker.stop(timeout=10)
+    assert len(_attempt_rows(a[0], f"cal:{event.id}:1")) == 1
+    assert meta.count("create_container") == 1
+
+
+def test_a_rescheduled_event_publishes_at_its_new_time_under_its_new_revision(worlds_ab) -> None:
+    a, _ = worlds_ab
+    event = _due_reel_event(a)
+    repo = PostgresPlannerRepository()
+    later = repo.reschedule(
+        tenant_id=a[0],
+        event_id=event.id,
+        expected_revision=1,
+        scheduled_at=datetime.now(UTC) + timedelta(hours=1),
+        scheduled_tz="America/Caracas",
+        connection_id=a[2],
+    )
+    assert later is not None and later.revision == 2
+    meta = _MetaCalls()
+    runner = _tick(ScopedTenants([a[0]]), meta, status=ContainerStatus.FINISHED)
+    asyncio.run(runner.run_once())
+    assert _stored(a[0], event.id).status == "scheduled"  # not due at its NEW time
+    assert meta.calls == []
+    # Time passes: the new instant is reached (simulated by moving it into the past).
+    due = repo.reschedule(
+        tenant_id=a[0],
+        event_id=event.id,
+        expected_revision=2,
+        scheduled_at=datetime.now(UTC) - timedelta(seconds=1),
+        scheduled_tz="America/Caracas",
+        connection_id=a[2],
+    )
+    asyncio.run(runner.run_once())  # claim + start
+    asyncio.run(runner.run_once())  # advance → FINISHED → settle
+    assert _stored(a[0], event.id).status == "published"
+    assert _attempt_rows(a[0], f"cal:{event.id}:1") == []
+    assert len(_attempt_rows(a[0], f"cal:{event.id}:{due.revision}")) == 1
+
+
+def test_a_worker_restart_mid_publication_resumes_without_publishing_twice(worlds_ab) -> None:
+    a, _ = worlds_ab
+    event = _due_reel_event(a)
+    meta = _MetaCalls()
+    # First process: claims and starts, then "dies" before Meta finishes processing.
+    first = _tick(ScopedTenants([a[0]]), meta, status=ContainerStatus.IN_PROGRESS)
+    asyncio.run(first.run_once())
+    assert _stored(a[0], event.id).status == "publishing"
+    # Second process (app restarted): resumes the in-flight attempt, never restarts it.
+    worker = _embedded(lambda: _tick(ScopedTenants([a[0]]), meta, status=ContainerStatus.FINISHED))
+    worker.start()
+    try:
+        assert _wait_for(lambda: _stored(a[0], event.id).status == "published")
+    finally:
+        worker.stop(timeout=10)
+    assert len(_attempt_rows(a[0], f"cal:{event.id}:1")) == 1
+    assert meta.count("create_container") == 1
+
+
+def test_two_embedded_workers_publish_an_event_once(worlds_ab) -> None:
+    """Two app processes (or app + CLI worker) at the same time."""
+    a, _ = worlds_ab
+    events = [_due_reel_event(a) for _ in range(3)]
+    meta = _MetaCalls()
+    workers = [
+        _embedded(lambda: _tick(ScopedTenants([a[0]]), meta, status=ContainerStatus.FINISHED))
+        for _ in range(2)
+    ]
+    for w in workers:
+        w.start()
+    try:
+        assert _wait_for(lambda: all(_stored(a[0], e.id).status == "published" for e in events))
+    finally:
+        for w in workers:
+            w.stop(timeout=10)
+    for e in events:
+        assert len(_attempt_rows(a[0], f"cal:{e.id}:1")) == 1
+    assert meta.count("create_container") == 3
+
+
+# --- the default: every tenant with a connected account (all-tenants discovery) -------
+#
+# The production discovery runs for real (`DiscoveredTenants`), narrowed by
+# `_DiscoveredOnly` to the tenants each test creates: the shared dev database holds
+# earlier test tenants a real all-tenants tick would act on. The narrowing is a test
+# safety net only — what is asserted is that the REAL discovery found the tenant.
+
+
+def _set_connection_status(world, status: str) -> None:
+    tenant_id, _, conn_id = world
+    with tenant_session(tenant_id) as session:
+        session.get(SocialConnection, conn_id).status = status
+
+
+def _discovery_worker(source, meta: _MetaCalls) -> EmbeddedCalendarWorker:
+    return _embedded(
+        lambda: _tick(
+            source, meta, status=ContainerStatus.FINISHED, connections=PostgresConnectionGate()
+        ),
+        all_tenants=True,
+    )
+
+
+def test_the_default_worker_publishes_for_every_connected_tenant(worlds_ab) -> None:
+    a, b = worlds_ab
+    event_a, event_b = _due_reel_event(a), _due_reel_event(b)
+    meta, source = _MetaCalls(), _DiscoveredOnly(a[0], b[0])
+    worker = _discovery_worker(source, meta)
+    worker.start()
+    try:
+        assert _wait_for(
+            lambda: (
+                _stored(a[0], event_a.id).status == "published"
+                and _stored(b[0], event_b.id).status == "published"
+            )
+        )
+    finally:
+        worker.stop(timeout=10)
+    # `_DiscoveredOnly` hands the tick only tenants the REAL discovery returned, so both
+    # publishing proves both were discovered (`found` itself is the LAST tick's answer,
+    # taken after they were published and therefore had no work left).
+    assert a[0] not in source.found and b[0] not in source.found
+    for world, event in ((a, event_a), (b, event_b)):
+        (attempt_id,) = _attempt_rows(world[0], f"cal:{event.id}:1")
+        assert _attempt(world[0], attempt_id).connection_id == world[2]  # its OWN account
+
+
+def test_a_tenant_without_an_active_connection_is_skipped_and_blocks_no_one(worlds_ab) -> None:
+    a, b = worlds_ab
+    event_a, event_b = _due_reel_event(a), _due_reel_event(b)
+    _set_connection_status(b, "revoked")
+    found = DiscoveredTenants().tenants(now=datetime.now(UTC))
+    assert a[0] in found and b[0] not in found  # not even discovered
+
+    # Forced into a tick anyway (a restricted worker): B is "not ready", never an error,
+    # never a failed event, never a publish attempt — and A publishes regardless.
+    runner = _tick(
+        ScopedTenants([b[0], a[0]]),
+        _MetaCalls(),
+        status=ContainerStatus.FINISHED,
+        connections=PostgresConnectionGate(),
+    )
+    report = asyncio.run(runner.run_once())
+    b_report = next(t for t in report.tenants if t.tenant_id == b[0])
+    assert [(r.outcome, r.reason) for r in b_report.executed] == [
+        (ExecutionOutcome.NOT_READY, "connection_not_active")
+    ]
+    assert b_report.errors == []
+    assert _stored(b[0], event_b.id).status == "scheduled"
+    assert _attempt_rows(b[0], f"cal:{event_b.id}:1") == []
+    asyncio.run(runner.run_once())
+    assert _stored(a[0], event_a.id).status == "published"
+
+    # The account is reconnected: the waiting event publishes, nothing to configure.
+    _set_connection_status(b, "active")
+    assert b[0] in DiscoveredTenants().tenants(now=datetime.now(UTC))
+    asyncio.run(runner.run_once())
+    asyncio.run(runner.run_once())
+    assert _stored(b[0], event_b.id).status == "published"
+
+
+def test_an_event_can_never_use_another_tenants_connection(worlds_ab) -> None:
+    a, b = worlds_ab
+    post_id = _post_row(
+        a,
+        category="reel",
+        items=[(media_key(a[0], a[2], uuid4().hex), "video/mp4", "video", 0)],
+    )
+    with admin_session() as session:
+        user_id = session.scalar(select(User.id).where(User.tenant_id == a[0]))
+    with pytest.raises(DBAPIError):  # composite FK (connection_id, tenant_id)
+        PostgresPlannerRepository().add(
+            NewEvent(
+                tenant_id=a[0],
+                brand_id=a[1],
+                post_id=post_id,
+                connection_id=b[2],
+                scheduled_at=datetime.now(UTC) - timedelta(minutes=1),
+                scheduled_tz="America/Caracas",
+                created_by_user_id=user_id,
+            )
+        )
+    # And under A's RLS, B's connection does not exist at all.
+    assert PostgresConnectionGate().status(tenant_id=a[0], connection_id=b[2]) is None
+    assert PostgresConnectionGate().status(tenant_id=a[0], connection_id=a[2]) == "active"
+
+
+def test_two_default_workers_publish_each_event_once(worlds_ab) -> None:
+    a, b = worlds_ab
+    events = [(a, _due_reel_event(a)), (b, _due_reel_event(b)), (a, _due_reel_event(a))]
+    meta = _MetaCalls()
+    workers = [_discovery_worker(_DiscoveredOnly(a[0], b[0]), meta) for _ in range(2)]
+    for w in workers:
+        w.start()
+    try:
+        assert _wait_for(lambda: all(_stored(w[0], e.id).status == "published" for w, e in events))
+    finally:
+        for w in workers:
+            w.stop(timeout=10)
+    for world, event in events:
+        assert len(_attempt_rows(world[0], f"cal:{event.id}:1")) == 1
+    assert meta.count("create_container") == 3
+
+
+def test_an_account_connected_after_startup_is_covered_with_no_configuration() -> None:
+    early = _fresh_world("early")
+    late_id = uuid4()  # does not exist yet when the worker starts
+    meta = _MetaCalls()
+    worker = _discovery_worker(_DiscoveredOnly(early[0], late_id), meta)
+    worker.start()
+    try:
+        assert _wait_for(lambda: worker.status().last_tick_at is not None)
+        # A new business signs up and connects its account while the worker runs.
+        brand_id, _, conn_id = _provision(late_id, f"t-qua111-late-{late_id.hex[:6]}")
+        event = _due_reel_event((late_id, brand_id, conn_id))
+        assert _wait_for(lambda: _stored(late_id, event.id).status == "published")
+    finally:
+        worker.stop(timeout=10)
+    assert worker.config.all_tenants  # no tenant list, no restart
+
+
+# --- approved but not ready: the UI reads the verdict, the worker waits ----------------
+
+
+def _set_selected_variant(world, post_id: UUID, *, clear: bool) -> None:
+    tenant_id = world[0]
+    with tenant_session(tenant_id) as session:
+        draft = session.get(creative.ContentDraft, post_id)
+        if clear:
+            draft.selected_variant_id = None
+        else:
+            draft.selected_variant_id = session.scalar(
+                select(creative.CopyVariant.id).where(
+                    creative.CopyVariant.draft_id == post_id, creative.CopyVariant.ordinal == 1
+                )
+            )
+
+
+def test_an_approved_post_missing_its_copy_waits_scheduled_and_publishes_once_completed(
+    worlds_ab,
+) -> None:
+    a, _ = worlds_ab
+    post_id = _post_row(
+        a,
+        category="reel",
+        items=[(media_key(a[0], a[2], uuid4().hex), "video/mp4", "video", 0)],
+    )
+    _set_selected_variant(a, post_id, clear=True)  # "approved" with no approved copy
+    event = _due_reel_event(a, post_id)
+
+    # The Planificador shows it: approved, not publishable, with the evaluator's reason.
+    summary = DraftPostReader().get(tenant_id=a[0], post_id=post_id)
+    assert summary.approval is ApprovalStatus.APPROVED and not summary.is_publishable
+    assert summary.unpublishable_reason == REASON_TEXT[UnpublishableReason.APPROVED_COPY_MISSING]
+
+    meta = _MetaCalls()
+    runner = _tick(
+        ScopedTenants([a[0]]),
+        meta,
+        status=ContainerStatus.FINISHED,
+        connections=PostgresConnectionGate(),
+    )
+    report = asyncio.run(runner.run_once())
+    (executed,) = report.tenants[0].executed
+    assert (executed.outcome, executed.reason) == (
+        ExecutionOutcome.NOT_READY,
+        UnpublishableReason.APPROVED_COPY_MISSING,
+    )
+    assert _stored(a[0], event.id).status == "scheduled"  # neither failed nor published
+    assert _attempt_rows(a[0], f"cal:{event.id}:1") == [] and meta.calls == []
+
+    # The operator completes it after the hour: the next ticks publish it, once.
+    _set_selected_variant(a, post_id, clear=False)
+    assert DraftPostReader().get(tenant_id=a[0], post_id=post_id).is_publishable
+    asyncio.run(runner.run_once())
+    asyncio.run(runner.run_once())
+    assert _stored(a[0], event.id).status == "published"
+    assert len(_attempt_rows(a[0], f"cal:{event.id}:1")) == 1
+
+
+# --- editing an approved POST sends it back to review (2026-09-30) ---------------------
+
+
+class _Kit:
+    """`BrandService` stand-in: a permissive kit for the tenant's own brand."""
+
+    def __init__(self, brand_id: UUID) -> None:
+        from qualify_creative.schemas import BrandKit, ToneAxes
+
+        self._kit = BrandKit.model_validate(
+            {
+                "brand_id": brand_id,
+                "positioning": "promos de barrio",
+                "audience": "clientes del local",
+                "tone_axes": ToneAxes(
+                    formal_casual=70, sober_enthusiastic=60, technical_plain=80, brief_elaborate=40
+                ),
+            }
+        )
+
+    def kit(self, *, tenant_id: UUID, brand_id: UUID):
+        return self._kit
+
+
+def _content_service(brand_id: UUID):
+    from qualify_api.creative.service import ContentService
+
+    unused = object()  # generation collaborators: edit/approve never touch them
+    return ContentService(
+        router=unused,  # type: ignore[arg-type]
+        pricing=unused,  # type: ignore[arg-type]
+        credentials=unused,  # type: ignore[arg-type]
+        voice_service=unused,  # type: ignore[arg-type]
+        brand_service=_Kit(brand_id),
+    )
+
+
+def test_editing_an_approved_scheduled_post_waits_for_reapproval_then_publishes(
+    worlds_ab,
+) -> None:
+    from qualify_creative.schemas import CopyPayload
+
+    a, _ = worlds_ab
+    tenant_id, brand_id, _conn = a
+    post_id = _post_row(
+        a,
+        category="reel",
+        items=[(media_key(tenant_id, a[2], uuid4().hex), "video/mp4", "video", 0)],
+    )
+    event = _due_reel_event(a, post_id)
+    service = _content_service(brand_id)
+    with tenant_session(tenant_id) as session:
+        variant_id = session.scalar(
+            select(creative.ContentDraft.selected_variant_id).where(
+                creative.ContentDraft.id == post_id
+            )
+        )
+        user_id = session.scalar(select(User.id).where(User.tenant_id == tenant_id))
+
+    # The operator edits the approved copy (real service, real Postgres repository).
+    edited = CopyPayload.model_validate(
+        {
+            "hook": "Nueva promo",
+            "caption": "Dos por uno todo octubre en todas las arepas del local, solo en "
+            "tienda y hasta agotar existencias.",
+            "hashtags": ["promo", "octubre"],
+            "cta": "Pide ya",
+        }
+    )
+    assert (
+        service.edit_variant(
+            tenant_id=tenant_id, variant_id=variant_id, copy=edited, user_id=user_id
+        )
+        == ()
+    )
+    summary = DraftPostReader().get(tenant_id=tenant_id, post_id=post_id)
+    assert summary.lifecycle_status == "generated"  # back in review, not a dead "approved"
+    assert summary.approval is ApprovalStatus.PENDING and not summary.is_publishable
+
+    # The worker waits: not approved → the event stays scheduled, nothing is sent.
+    meta = _MetaCalls()
+    runner = _tick(
+        ScopedTenants([tenant_id]),
+        meta,
+        status=ContainerStatus.FINISHED,
+        connections=PostgresConnectionGate(),
+    )
+    (executed,) = asyncio.run(runner.run_once()).tenants[0].executed
+    assert executed.outcome is ExecutionOutcome.NOT_READY
+    assert _stored(tenant_id, event.id).status == "scheduled" and meta.calls == []
+
+    # Approved again: the edited revision is what gets published.
+    service.approve(tenant_id=tenant_id, draft_id=post_id, variant_id=variant_id, user_id=user_id)
+    publishable = DraftPostReader().get_publishable(tenant_id=tenant_id, post_id=post_id)
+    assert isinstance(publishable, PublishablePost)
+    assert publishable.approved_revision == 2
+    assert "Dos por uno todo octubre en todas las arepas" in publishable.caption  # the edit
+    asyncio.run(runner.run_once())
+    asyncio.run(runner.run_once())
+    assert _stored(tenant_id, event.id).status == "published"
+    (attempt_id,) = _attempt_rows(tenant_id, f"cal:{event.id}:1")
+    assert _attempt(tenant_id, attempt_id).caption == publishable.caption  # the edit went out
+
+
+def test_the_summary_names_an_r2_video_so_the_ui_can_show_it(worlds_ab) -> None:
+    a, _ = worlds_ab
+    tenant_id = a[0]
+    video_key = media_key(tenant_id, a[2], uuid4().hex)
+    reel = _post_row(a, category="reel", items=[(video_key, "video/mp4", "video", 0)])
+    image = _post_row(a)  # default: one JPEG
+    local = _post_row(
+        a, category="reel", items=[("generated/x/video.mp4", "video/mp4", "video", 0)]
+    )
+    reader = DraftPostReader()
+    assert reader.get(tenant_id=tenant_id, post_id=reel).video_object_key == video_key
+    assert reader.get(tenant_id=tenant_id, post_id=image).video_object_key is None
+    assert reader.get(tenant_id=tenant_id, post_id=local).video_object_key is None
+
+
+# --- reject from the Planificador, then take the rejected POST off the calendar -------------
+
+
+def test_a_post_rejected_from_the_planner_is_never_published_and_can_be_removed(
+    worlds_ab,
+) -> None:
+    from qualify_api.creative.fsm import InvalidTransition
+    from qualify_api.planner.service import PostNotRejected
+
+    a, _ = worlds_ab
+    tenant_id, brand_id, _conn = a
+    post_id = _post_row(
+        a,
+        status="generated",
+        approved_revision=None,
+        category="reel",
+        items=[(media_key(tenant_id, a[2], uuid4().hex), "video/mp4", "video", 0)],
+    )
+    event = _due_reel_event(a, post_id)
+    planner = PlannerService(
+        repository=PostgresPlannerRepository(),
+        posts=DraftPostReader(),
+        connections=PostgresConnectionGate(),
+    )
+    # Still in review: "Quitar del calendario" is refused, nothing is touched.
+    with pytest.raises(PostNotRejected):
+        planner.remove_rejected_post(tenant_id=tenant_id, event_id=event.id)
+
+    with tenant_session(tenant_id) as session:
+        user_id = session.scalar(select(User.id).where(User.tenant_id == tenant_id))
+    content = _content_service(brand_id)
+    content.reject(tenant_id=tenant_id, draft_id=post_id, reason="planner", user_id=user_id)
+    assert DraftPostReader().get(tenant_id=tenant_id, post_id=post_id).approval is (
+        ApprovalStatus.REJECTED
+    )
+    # A rejected POST cannot be rejected again (the FSM, not the button, decides).
+    with pytest.raises(InvalidTransition):
+        content.reject(tenant_id=tenant_id, draft_id=post_id, reason="again", user_id=user_id)
+
+    # The worker leaves it alone: due, but not approved.
+    meta = _MetaCalls()
+    runner = _tick(
+        ScopedTenants([tenant_id]),
+        meta,
+        status=ContainerStatus.FINISHED,
+        connections=PostgresConnectionGate(),
+    )
+    (executed,) = asyncio.run(runner.run_once()).tenants[0].executed
+    assert executed.outcome is ExecutionOutcome.NOT_READY and meta.calls == []
+    assert _stored(tenant_id, event.id).status == "scheduled"
+
+    assert planner.remove_rejected_post(tenant_id=tenant_id, event_id=event.id) == 1
+    assert _stored(tenant_id, event.id) is None
+    assert DraftPostReader().get(tenant_id=tenant_id, post_id=post_id) is not None  # POST kept

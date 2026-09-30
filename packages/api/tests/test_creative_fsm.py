@@ -39,6 +39,10 @@ DECLARED_EDGES: list[tuple[str, DraftTrigger, str, dict]] = [
     (APPROVED, DraftTrigger.PUBLISH_OK, PUBLISHED, {}),
     (STAGED, DraftTrigger.PUBLISH_OK, PUBLISHED, {}),
     (STAGED, DraftTrigger.STAGE_EXPIRED, APPROVED, {}),
+    # Editing the copy: approved goes back to review; review/rejected stay where they are.
+    (GENERATED, DraftTrigger.EDIT, GENERATED, {}),
+    (APPROVED, DraftTrigger.EDIT, GENERATED, {}),
+    (REJECTED, DraftTrigger.EDIT, REJECTED, {}),
 ]
 
 
@@ -79,7 +83,26 @@ UNDECLARED_EDGES: list[tuple[str, DraftTrigger]] = [
     (PUBLISHED, DraftTrigger.REJECT),  # published is terminal
     (FAILED, DraftTrigger.GENERATE_OK),  # failed is terminal
     (FAILED, DraftTrigger.REGENERATE),  # failed is terminal (regenerate ≠ retry)
+    (DRAFTING, DraftTrigger.EDIT),  # nothing generated to edit yet
+    (STAGED, DraftTrigger.EDIT),  # the platform container already holds the old copy
+    (PUBLISHED, DraftTrigger.EDIT),  # it is live; editing would lie about what went out
+    (FAILED, DraftTrigger.EDIT),  # terminal
 ]
+
+
+def test_an_approved_draft_that_is_edited_can_be_approved_again() -> None:
+    """The dead end this edge removes: approved → edit → (approve again) → approved."""
+    back_in_review = apply_transition(APPROVED, DraftTrigger.EDIT)
+    assert back_in_review == GENERATED
+    assert apply_transition(back_in_review, DraftTrigger.APPROVE, selected_variant_id=VARIANT) == (
+        APPROVED
+    )
+
+
+def test_editable_statuses_come_from_the_table() -> None:
+    from qualify_api.creative.fsm import EDITABLE_STATUSES
+
+    assert EDITABLE_STATUSES == {GENERATED, APPROVED, REJECTED}
 
 
 @pytest.mark.parametrize(

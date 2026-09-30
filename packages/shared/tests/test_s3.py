@@ -59,19 +59,31 @@ class _FakeS3Client:
     def __init__(self, stored: dict[str, bytes] | None = None) -> None:
         self.stored: dict[str, bytes] = stored or {}
         self.put_calls: list[tuple[str, bytes, str]] = []
+        self.ranges: list[str] = []
 
     def put_object(self, *, Bucket: str, Key: str, Body: Any, ContentType: str) -> None:
         data = Body.read()
         self.put_calls.append((Key, data, ContentType))
         self.stored[Key] = data
 
-    def get_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
+    def get_object(self, *, Bucket: str, Key: str, Range: str | None = None) -> dict[str, Any]:
         if Key not in self.stored:
             # The real shape botocore raises for a missing S3/R2 key — reproduced so
             # `R2ObjectStore.open()`'s translation to `ObjectNotFound` (QUA-68) is
             # exercised against the actual exception type, not a stand-in.
             raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "not found"}}, "GetObject")
-        return {"Body": _UnseekableStreamingBody(self.stored[Key])}
+        data = self.stored[Key]
+        if Range is not None:
+            self.ranges.append(Range)
+            start, end = (int(part) for part in Range.removeprefix("bytes=").split("-"))
+            data = data[start : end + 1]
+        return {"Body": _UnseekableStreamingBody(data)}
+
+    def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:
+        if Key not in self.stored:
+            # HEAD has no body, so S3/R2 report a missing key as a bare "404".
+            raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
+        return {"ContentLength": len(self.stored[Key])}
 
 
 def test_open_returns_a_seekable_stream_even_though_get_object_is_not() -> None:
@@ -137,3 +149,22 @@ def test_open_reraises_a_client_error_that_is_not_a_missing_key() -> None:
 
     with pytest.raises(ClientError):
         store.open("t/tenant/media/conn/m-1")
+
+
+# --- ranged reads (browser video preview) ----------------------------------------------------
+
+
+def test_size_is_a_head_request_and_open_range_asks_r2_for_just_those_bytes() -> None:
+    client = _FakeS3Client({"t/tenant/media/conn/v": b"0123456789"})
+    store = R2ObjectStore(_SETTINGS, client=client)
+    assert store.size("t/tenant/media/conn/v") == 10
+    assert store.open_range("t/tenant/media/conn/v", 2, 5).read() == b"2345"
+    assert client.ranges == ["bytes=2-5"]
+
+
+def test_ranged_reads_of_a_missing_key_raise_object_not_found() -> None:
+    store = R2ObjectStore(_SETTINGS, client=_FakeS3Client())
+    with pytest.raises(ObjectNotFound):
+        store.size("t/tenant/media/conn/gone")
+    with pytest.raises(ObjectNotFound):
+        store.open_range("t/tenant/media/conn/gone", 0, 1)

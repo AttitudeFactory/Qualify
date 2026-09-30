@@ -11,7 +11,8 @@ drives that attempt one `PublishService.advance()` step at a time, and closes th
 
 ## The flow, per event
 
-A. **Before the claim**, the POST must be publishable *now* (`PostReader.get_publishable`,
+A. **Before the claim**, the event's connection must be `active` and the POST
+   publishable *now* (`PostReader.get_publishable`,
    the F2 contract). If not, nothing is claimed: the event stays `scheduled` and is looked
    at again on the next tick — "due but not approved" never publishes and never fails.
 B. **Claim**: one conditional UPDATE (F1). Losing it means another executor won, or the
@@ -202,6 +203,18 @@ class AttemptLocator(Protocol):
     def get_attempt(self, *, tenant_id: UUID, attempt_id: UUID) -> AttemptRecord | None: ...
 
 
+class ConnectionStatusReader(Protocol):
+    """The event's connection status through RLS (`composition.PostgresConnectionGate`);
+    `None` when it is not visible to the event's tenant."""
+
+    def status(self, *, tenant_id: UUID, connection_id: UUID) -> str | None: ...
+
+
+# The only connection status `PublishService` sends on.
+_ACTIVE_CONNECTION = "active"
+CONNECTION_NOT_ACTIVE = "connection_not_active"
+
+
 def _log(event: str, record: EventRecord, **fields: object) -> None:
     """Same plain key=value style as `publishing.service._log_stage`: ids, statuses and
     reasons only — never a caption, a key's bytes or a token."""
@@ -226,6 +239,7 @@ class EventExecutor:
         attempts: AttemptLocator,
         lock: ExecutionLock,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        connections: ConnectionStatusReader | None = None,
     ) -> None:
         self._repo = repository
         self._posts = posts
@@ -233,11 +247,27 @@ class EventExecutor:
         self._attempts = attempts
         self._lock = lock
         self._clock = clock
+        self._connections = connections
 
     # -- A + B + C ------------------------------------------------------------------
 
     async def try_execute(self, event: EventRecord) -> ExecutionResult:
-        """One due `scheduled` event: check, claim, start."""
+        """One due `scheduled` event: check, claim, start.
+
+        A connection that is not `active` (revoked, degraded, pending, or not the
+        tenant's) is treated like an unapproved POST: nothing is claimed, the event stays
+        `scheduled`, and it publishes on the first tick after the account is reconnected.
+        Without this, the publisher would settle the attempt as failed and the event with
+        it — an error for what is only "this account cannot publish right now"."""
+        if self._connections is not None:
+            status = self._connections.status(
+                tenant_id=event.tenant_id, connection_id=event.connection_id
+            )
+            if status != _ACTIVE_CONNECTION:
+                _log("not_ready", event, reason=CONNECTION_NOT_ACTIVE, status=status or "none")
+                return ExecutionResult(
+                    event.id, ExecutionOutcome.NOT_READY, reason=CONNECTION_NOT_ACTIVE
+                )
         verdict = self._publishable(event)
         if isinstance(verdict, NotPublishable):
             _log("not_ready", event, reason=verdict.reason.value)

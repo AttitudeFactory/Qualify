@@ -184,3 +184,17 @@ def test_ctrl_c_exits_cleanly(monkeypatch) -> None:
         ["--tenant", str(TENANT)], scoped=lambda _: FakeRunner(), production=FakeRunner
     )
     assert code == 0
+
+
+async def test_should_stop_ends_the_loop_between_ticks() -> None:
+    runner = FakeRunner()
+    clock = FakeClock()
+    code = await worker.run_worker(
+        lambda: runner,
+        once=False,
+        interval=60,
+        sleep=clock.sleep,
+        clock=clock,
+        should_stop=lambda: runner.ticks >= 2,
+    )
+    assert code == 0 and runner.ticks == 2

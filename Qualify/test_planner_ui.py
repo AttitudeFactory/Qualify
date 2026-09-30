@@ -11,18 +11,27 @@ documents.
 from __future__ import annotations
 
 import dataclasses
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
+import pytest
+from qualify_api.planner.post_reader import (
+    ApprovalStatus,
+    PublishablePost,
+    UnpublishableReason,
+)
+from qualify_api.planner.publishable import REASON_TEXT, MediaCandidate, PostCandidate, evaluate
 from qualify_api.planner.service import (
     EventConflict,
     EventNotModifiable,
     InactiveConnection,
     InvalidSchedule,
     PostNotSchedulable,
+    compose_instant,
 )
 
-from .planner_provider import planner_error_message
+from .planner_provider import planner_error_message, view_zone
 from .planner_state import (
     MODE_ASSIGN,
     MODE_RESCHEDULE,
@@ -33,6 +42,9 @@ from .planner_state import (
     to_24h,
 )
 from .planner_vm import (
+    AUTO_PUBLISH_ACTIVE,
+    AUTO_PUBLISH_NO_CONNECTION,
+    AUTO_PUBLISH_UNAVAILABLE,
     HOUR_ROW_KEYS,
     OPENING_HOUR,
     TAG_SUGGESTIONS,
@@ -49,12 +61,18 @@ from .planner_vm import (
     TagVM,
     approval_label,
     approval_short,
+    auto_publish_state,
+    build_card,
+    build_post_option,
     build_week,
     category_label,
     day_title,
+    event_actions,
+    event_readiness,
     hour_row_for,
     hour_row_label,
     month_label,
+    readiness,
     status_label,
     time_label_12h,
     timezone_options,
@@ -430,13 +448,53 @@ def test_timezone_search_matches_city_iana_or_offset() -> None:
     assert len(search_timezones("", day)) == 60  # capped
 
 
-def test_choosing_the_business_zone_clears_the_override() -> None:
+def test_choosing_the_default_zone_clears_the_override() -> None:
     state = _state()
     state.tenant_tz = "America/Bogota"
     state.choose_tz("Europe/Madrid")
     assert state.view_tz == "Europe/Madrid"
-    state.choose_tz("America/Bogota")
+    state.choose_tz("America/Bogota")  # the business's zone is an override now
+    assert state.view_tz == "America/Bogota"
+    state.choose_tz("America/Caracas")
     assert state.view_tz == ""
+
+
+def test_calendar_defaults_to_caracas_whatever_the_tenant_zone() -> None:
+    assert view_zone(uuid4(), "") == "America/Caracas"
+    assert view_zone(uuid4(), "not/a-zone") == "America/Caracas"
+    assert view_zone(uuid4(), "America/Bogota") == "America/Bogota"
+
+
+def test_auto_publish_state_reflects_worker_and_connection() -> None:
+    def state(covers: bool, connected: bool) -> str:
+        return auto_publish_state(worker_covers_tenant=covers, has_active_connection=connected)
+
+    assert state(True, True) == AUTO_PUBLISH_ACTIVE
+    assert state(True, False) == AUTO_PUBLISH_NO_CONNECTION
+    assert state(False, True) == AUTO_PUBLISH_UNAVAILABLE
+    assert state(False, False) == AUTO_PUBLISH_UNAVAILABLE  # service first
+
+
+def test_the_calendar_worker_starts_with_the_app() -> None:
+    from .Qualify import app, calendar_worker_lifespan
+
+    assert calendar_worker_lifespan in app.get_lifespan_tasks()
+
+
+def test_a_time_planned_in_the_default_zone_is_that_caracas_instant() -> None:
+    # 4:35 p. m. in the calendar = 20:35 UTC (Caracas is UTC-4 all year), never Bogotá's.
+    tz_name = view_zone(uuid4(), "")
+    instant = compose_instant(date(2026, 9, 29), time(16, 35), tz_name)
+    assert instant == datetime(2026, 9, 29, 20, 35, tzinfo=UTC)
+    assert instant.astimezone(ZoneInfo(tz_name)).strftime("%H:%M") == "16:35"
+
+
+def test_tz_suggestions_pin_the_default_then_the_business_zone() -> None:
+    state = _state()
+    state.tenant_tz = "America/Bogota"
+    assert [o.value for o in state.tz_suggestions] == ["America/Caracas", "America/Bogota"]
+    state.tenant_tz = "America/Caracas"
+    assert [o.value for o in state.tz_suggestions] == ["America/Caracas"]
 
 
 # --- tags ----------------------------------------------------------------------------
@@ -543,3 +601,191 @@ def test_entering_the_page_closes_any_dialog_left_open() -> None:
         or state.delete_tag_open
     )
     assert state.monday_iso == ""
+
+
+# --- publishability: "Aprobado" vs "Listo para publicar" -------------------------------
+#
+# The UI shows the verdict of `publishable.evaluate` (the executor's own rule) and never
+# computes one of its own: every case below feeds the REAL evaluator's result through.
+
+
+def _verdict(**overrides: object) -> tuple[bool, str]:
+    """(is_publishable, unpublishable_reason) exactly as `DraftPostReader` derives them."""
+    tenant = UUID("a0000000-0000-4000-8000-000000000001")
+    base: dict[str, object] = {
+        "tenant_id": tenant,
+        "post_id": uuid4(),
+        "brand_id": uuid4(),
+        "approval": ApprovalStatus.APPROVED,
+        "revision": 1,
+        "approved_revision": 1,
+        "category": "reel",
+        "caption": "Nuevo sabor: taro.",
+        "media": (
+            MediaCandidate(
+                object_key=f"t/{tenant}/media/x.mp4",
+                content_type="video/mp4",
+                media_type="video",
+                position=0,
+            ),
+        ),
+    }
+    base.update(overrides)
+    verdict = evaluate(PostCandidate(**base))  # type: ignore[arg-type]
+    if isinstance(verdict, PublishablePost):
+        return True, ""
+    return False, REASON_TEXT[verdict.reason]
+
+
+def test_a_complete_approved_post_reads_ready_to_publish() -> None:
+    ok, reason = _verdict()
+    ready = readiness("approved", is_publishable=ok, reason=reason)
+    assert (ready.label, ready.tone, ready.note) == ("Listo para publicar", "ok", "")
+
+
+def test_an_approved_post_without_approved_copy_is_not_ready_and_says_why() -> None:
+    ok, reason = _verdict(caption=None)
+    ready = readiness("approved", is_publishable=ok, reason=reason)
+    assert ready.label == "Aprobado, pero no listo para publicar"
+    assert ready.tone == "warn"
+    assert ready.note == "No se encuentra el texto aprobado del POST."
+
+
+def test_an_approved_post_without_media_is_not_ready_and_says_why() -> None:
+    ok, reason = _verdict(media=())
+    ready = readiness("approved", is_publishable=ok, reason=reason)
+    assert ready.label == "Aprobado, pero no listo para publicar"
+    assert ready.note == "El POST no tiene imágenes ni video."
+
+
+def test_media_outside_r2_or_with_a_bad_format_is_not_ready() -> None:
+    no_r2 = MediaCandidate(object_key=None, content_type=None, media_type="image", position=0)
+    ok, reason = _verdict(category="galeria", media=(no_r2,))
+    assert (
+        readiness("approved", is_publishable=ok, reason=reason).note
+        == REASON_TEXT[UnpublishableReason.MEDIA_NOT_IN_R2]
+    )
+    png = MediaCandidate(
+        object_key="t/a0000000-0000-4000-8000-000000000001/media/x.png",
+        content_type="image/png",
+        media_type="image",
+        position=0,
+    )
+    ok, reason = _verdict(category="galeria", media=(png,))
+    assert (
+        readiness("approved", is_publishable=ok, reason=reason).note
+        == REASON_TEXT[UnpublishableReason.UNSUPPORTED_CONTENT_TYPE]
+    )
+
+
+def test_a_post_that_is_not_approved_keeps_its_approval_wording() -> None:
+    ok, reason = _verdict(approval=ApprovalStatus.PENDING)
+    ready = readiness("pending", is_publishable=ok, reason=reason)
+    assert (ready.label, ready.tone) == ("Pendiente de aprobación", "warn")
+    assert ready.note == "El POST no está aprobado."
+
+
+def test_card_and_detail_share_one_function() -> None:
+    ok, reason = _verdict(caption=None)
+    card = build_card(
+        _item(
+            "e1",
+            datetime(2026, 9, 23, 23, 25, tzinfo=CARACAS),
+            is_publishable=ok,
+            unpublishable_reason=reason,
+        ),
+        zone=CARACAS,
+        connections=CONNS,
+    )
+    detail = event_readiness(
+        status="scheduled", approval="approved", is_publishable=ok, reason=reason
+    )
+    assert (card.approval_label, card.approval_tone, card.readiness_note) == (
+        detail.label,
+        detail.tone,
+        detail.note,
+    )
+    assert card.approval_short == "No listo"
+
+
+def test_an_event_that_already_ran_keeps_the_plain_approval_wording() -> None:
+    card = build_card(
+        _item(
+            "e2",
+            datetime(2026, 9, 23, 17, 20, tzinfo=CARACAS),
+            status="published",
+            is_publishable=True,
+        ),
+        zone=CARACAS,
+        connections=CONNS,
+    )
+    assert (card.approval_label, card.readiness_note) == ("Aprobado", "")
+
+
+def test_the_schedule_form_warns_before_confirming_an_incomplete_post() -> None:
+    ok, reason = _verdict(caption=None)
+    option = build_post_option(
+        post_id="p1",
+        title="Nuevo sabor: taro",
+        caption_excerpt="",
+        thumbnail_url=None,
+        category="galeria",
+        approval="approved",
+        detail_href="/drafts/p1",
+        is_publishable=ok,
+        unpublishable_reason=reason,
+    )
+    assert (option.approval_short, option.readiness_note) == ("No listo", reason)
+    state = _state()
+    state.schedulable = [option]
+    state.form_post_id = "p1"
+    assert state.form_post_note == "No se encuentra el texto aprobado del POST."
+    ready_ok, _ = _verdict()
+    state.schedulable = [dataclasses.replace(option, readiness_note="", approval_short="Listo")]
+    assert state.form_post_note == ""  # ready → no warning
+    # Rescheduling reads the event's own detail, same note as the dialog.
+    state.form_mode = MODE_RESCHEDULE
+    state.detail = EventDetailVM(publish_note=REASON_TEXT[UnpublishableReason.NO_MEDIA])
+    assert state.form_post_note == "El POST no tiene imágenes ni video."
+    assert ready_ok
+
+
+# --- event dialog actions: review, rejection and the event's own state (2026-09-30) ------
+
+
+@pytest.mark.parametrize(
+    ("status", "approval", "lifecycle", "expected"),
+    [
+        # POST in review, event scheduled: reject it, or move/cancel the event.
+        ("scheduled", "pending", "generated", (True, False, True, False)),
+        # Approved POST: the plan can move/cancel; nothing to reject or remove.
+        ("scheduled", "approved", "approved", (True, False, False, False)),
+        # Rejected POST: only "Quitar del calendario" — no reschedule, no cancel.
+        ("scheduled", "rejected", "rejected", (False, False, False, True)),
+        ("cancelled", "rejected", "rejected", (False, False, False, True)),
+        # A cancelled event of a live POST keeps its own trash.
+        ("cancelled", "approved", "approved", (False, True, False, False)),
+        # What already ran is history: no action at all.
+        ("published", "approved", "published", (False, False, False, False)),
+        ("published", "rejected", "rejected", (False, False, False, False)),
+        ("failed", "approved", "approved", (False, False, False, False)),
+        ("publishing", "approved", "approved", (False, False, False, False)),
+    ],
+)
+def test_event_actions_follow_the_post_and_the_event(status, approval, lifecycle, expected) -> None:
+    actions = event_actions(status=status, approval=approval, lifecycle=lifecycle)
+    assert (
+        actions.can_modify,
+        actions.can_delete,
+        actions.can_reject_post,
+        actions.can_remove_rejected,
+    ) == expected
+
+
+def test_a_rejected_posts_card_offers_no_reschedule() -> None:
+    card = build_card(
+        _item("e9", datetime(2026, 9, 23, 10, 0, tzinfo=CARACAS), approval="rejected"),
+        zone=CARACAS,
+        connections=CONNS,
+    )
+    assert card.can_modify is False
