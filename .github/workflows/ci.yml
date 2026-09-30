@@ -15,13 +15,15 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_DB: qualify
+          # The test database name: the root conftest.py refuses any DSN whose database
+          # does not end in `_test`, in CI as locally.
+          POSTGRES_DB: qualify_test
           POSTGRES_USER: qualify_owner
           POSTGRES_PASSWORD: ci
         ports:
           - "5432:5432"
         options: >-
-          --health-cmd "pg_isready -U qualify_owner -d qualify"
+          --health-cmd "pg_isready -U qualify_owner -d qualify_test"
           --health-interval 2s
           --health-timeout 3s
           --health-retries 20
@@ -39,11 +41,11 @@ jobs:
       # Owner DSN for Alembic (migrations run as qualify_owner). App/admin roles are
       # created by migration 0001 with dev passwords, so those DSNs are identical in
       # CI and local compose.
-      QUALIFY_MIGRATION_DSN: postgresql+psycopg://qualify_owner:ci@localhost:5432/qualify
-      QUALIFY_APP_DSN: postgresql+psycopg://qualify_app:app_dev@localhost:5432/qualify
-      QUALIFY_ADMIN_DSN: postgresql+psycopg://qualify_admin:admin_dev@localhost:5432/qualify
-      QUALIFY_CREDENTIAL_DSN: postgresql+psycopg://qualify_credential:credential_dev@localhost:5432/qualify
-      QUALIFY_REDIS_URL: redis://localhost:6379/0
+      QUALIFY_MIGRATION_DSN: postgresql+psycopg://qualify_owner:ci@localhost:5432/qualify_test
+      QUALIFY_APP_DSN: postgresql+psycopg://qualify_app:app_dev@localhost:5432/qualify_test
+      QUALIFY_ADMIN_DSN: postgresql+psycopg://qualify_admin:admin_dev@localhost:5432/qualify_test
+      QUALIFY_CREDENTIAL_DSN: postgresql+psycopg://qualify_credential:credential_dev@localhost:5432/qualify_test
+      QUALIFY_REDIS_URL: redis://localhost:6379/15
 
     steps:
       - uses: actions/checkout@v4

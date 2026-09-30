@@ -70,12 +70,23 @@ calendar-worker *args:
     uv run --no-sync python -m qualify_api.planner.worker {{args}}
 
 # Default test pass: unit + db, never external network. Mirrors CI.
+# Tests use `qualify_test` + Redis db 15, NEVER the dev `qualify` (root conftest.py aborts
+# otherwise). Data a run leaves in `qualify_test` is kept for inspection — no auto reset.
 test:
     uv run pytest -m "not integration"
 
 # Only the tests that need the local Postgres/Redis from docker-compose.
 test-db:
     uv run pytest -m "db"
+
+# DROP + CREATE + migrate `qualify_test` and flush Redis db 15. Explicit and destructive
+# ONLY for the test database — refuses to run against `qualify`.
+test-db-reset:
+    uv run python testing/testdb.py reset
+
+# A clean `qualify_test`, then the default test pass.
+test-fresh:
+    uv run pytest --reset-test-db -m "not integration"
 
 lint:
     uv run ruff check .
