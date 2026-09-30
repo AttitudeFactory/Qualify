@@ -996,11 +996,19 @@ def _media_item(item: rx.Var[MediaVM]) -> rx.Component:
     local = rx.get_upload_url(item.key)
     src = rx.cond(item.url != "", BACKEND_BASE + item.url, local)
     download_href = rx.cond(item.url != "", BACKEND_BASE + item.url + "?download=1", local)
+    # Fluid up to 16rem: a fixed 240×427 box overflowed narrow screens and left a black
+    # letterbox; the 9:16 ratio keeps a vertical video's shape at any width.
     return rx.vstack(
         rx.cond(
             item.media_type == "video",
-            rx.video(src=src, controls=True, width="240px", height="427px"),
-            rx.image(src=src, width="240px", border_radius="0.5rem"),
+            rx.video(
+                src=src,
+                controls=True,
+                width="100%",
+                height="auto",
+                style={"aspect_ratio": "9 / 16", "background": "black", "border_radius": "0.5rem"},
+            ),
+            rx.image(src=src, width="100%", border_radius="0.5rem"),
         ),
         rx.hstack(
             rx.text(item.label, size="1", color=T.TEXT_MUTED),
@@ -1016,7 +1024,13 @@ def _media_item(item: rx.Var[MediaVM]) -> rx.Component:
         ),
         spacing="1",
         align="center",
+        width="100%",
     )
+
+
+# The media column fills its grid track (see `_review_panel`); on phones the track is the
+# full width, so it is capped and centred there.
+_MEDIA_COLUMN_WIDTH = "100%"
 
 
 def _media_column() -> rx.Component:
@@ -1026,9 +1040,11 @@ def _media_column() -> rx.Component:
         rx.vstack(
             rx.foreach(draft.media, _media_item),
             spacing="3",
-            max_height="40rem",
+            width=_MEDIA_COLUMN_WIDTH,
+            max_width=rx.breakpoints(initial="16rem", md="none"),
+            margin_x=rx.breakpoints(initial="auto", md="0"),
+            max_height=rx.breakpoints(initial="none", md="40rem"),
             overflow_y="auto",
-            flex_shrink="0",
         ),
         rx.center(
             rx.vstack(
@@ -1050,11 +1066,66 @@ def _media_column() -> rx.Component:
                 spacing="2",
                 align="center",
             ),
-            width="220px",
+            width=_MEDIA_COLUMN_WIDTH,
+            max_width=rx.breakpoints(initial="16rem", md="none"),
+            margin_x=rx.breakpoints(initial="auto", md="0"),
             height="275px",
             border=f"1px dashed {rx.color('gray', 6)}",
             border_radius="0.5rem",
             flex_shrink="0",
+        ),
+    )
+
+
+def _edit_actions() -> rx.Component:
+    """Read-only by default: "Editar" unlocks the fields; "Guardar" re-runs the brand
+    rules and locks them again; "Cancelar" restores the saved copy."""
+    draft = CreativeState.draft
+    return rx.cond(
+        CreativeState.edit_mode,
+        rx.vstack(
+            rx.flex(
+                rx.button(
+                    rx.icon("shield-check", size=15),
+                    "Guardar edición (revalida las reglas)",
+                    on_click=CreativeState.save_edit,
+                    loading=CreativeState.edit_saving,
+                    size="2",
+                ),
+                rx.button(
+                    "Cancelar",
+                    variant="soft",
+                    color_scheme="gray",
+                    on_click=CreativeState.cancel_edit,
+                    disabled=CreativeState.edit_saving,
+                    size="2",
+                ),
+                gap="2",
+                wrap="wrap",
+            ),
+            # Only while editing something already approved: saving sends it back to
+            # review (the FSM's `edit` edge) — said before the click, not after.
+            rx.cond(
+                draft.status == "approved",
+                rx.text(
+                    "Al guardar, el POST vuelve a revisión: apruébalo de nuevo para que se "
+                    "pueda publicar.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+            ),
+            spacing="1",
+            align_items="start",
+        ),
+        rx.cond(
+            draft.can_edit,
+            rx.button(
+                rx.icon("pencil", size=15),
+                "Editar",
+                variant="soft",
+                on_click=CreativeState.start_edit,
+                size="2",
+            ),
         ),
     )
 
@@ -1078,6 +1149,7 @@ def _variant_editor() -> rx.Component:
                 rx.input(
                     value=CreativeState.edit_hook,
                     on_change=CreativeState.set_edit_hook,
+                    disabled=~CreativeState.edit_mode,
                     max_length=60,
                     width="100%",
                 ),
@@ -1085,6 +1157,7 @@ def _variant_editor() -> rx.Component:
                 rx.text_area(
                     value=CreativeState.edit_caption,
                     on_change=CreativeState.set_edit_caption,
+                    disabled=~CreativeState.edit_mode,
                     width="100%",
                     rows="6",
                 ),
@@ -1092,12 +1165,14 @@ def _variant_editor() -> rx.Component:
                 rx.input(
                     value=CreativeState.edit_hashtags,
                     on_change=CreativeState.set_edit_hashtags,
+                    disabled=~CreativeState.edit_mode,
                     width="100%",
                 ),
                 rx.text("CTA", size="1", color=T.TEXT_MUTED),
                 rx.input(
                     value=CreativeState.edit_cta,
                     on_change=CreativeState.set_edit_cta,
+                    disabled=~CreativeState.edit_mode,
                     width="100%",
                 ),
                 rx.cond(
@@ -1107,6 +1182,7 @@ def _variant_editor() -> rx.Component:
                         rx.text_area(
                             value=CreativeState.edit_script,
                             on_change=CreativeState.set_edit_script,
+                            disabled=~CreativeState.edit_mode,
                             width="100%",
                             rows="8",
                         ),
@@ -1137,14 +1213,7 @@ def _variant_editor() -> rx.Component:
                         width="100%",
                     ),
                 ),
-                rx.button(
-                    rx.icon("shield-check", size=15),
-                    "Guardar edición (revalida las reglas)",
-                    on_click=CreativeState.save_edit,
-                    loading=CreativeState.edit_saving,
-                    variant="soft",
-                    size="2",
-                ),
+                _edit_actions(),
                 rx.cond(
                     CreativeState.edit_blocking.length() > 0,
                     rx.vstack(
@@ -1172,12 +1241,20 @@ def _review_panel() -> rx.Component:
             draft.kind_label != "",
             rx.badge(draft.kind_label, color_scheme="gray", variant="soft", size="1"),
         ),
-        rx.flex(
+        # A grid, not a flex row: from `md` up the media gets its own track and a real
+        # gutter, so the video never touches the form; on phones it stacks, media first.
+        rx.box(
             _media_column(),
-            _variant_editor(),
-            direction=rx.breakpoints(initial="column", md="row"),
-            gap="4",
-            align="start",
+            rx.box(_variant_editor(), min_width="0", width="100%"),
+            display="grid",
+            grid_template_columns=rx.breakpoints(
+                initial="minmax(0, 1fr)",
+                md="15rem minmax(0, 1fr)",
+                xl="17rem minmax(0, 1fr)",
+            ),
+            column_gap=rx.breakpoints(initial="0", md="2.5rem", xl="3rem"),
+            row_gap="1.5rem",
+            align_items="start",
             width="100%",
         ),
         rx.divider(),
@@ -1198,35 +1275,68 @@ def _review_panel() -> rx.Component:
             draft.blocking_reason,
             _error_callout(draft.blocking_reason),
         ),
-        rx.hstack(
-            rx.spacer(),
-            rx.button(
-                "Rechazar",
-                variant="soft",
-                color_scheme="gray",
-                on_click=CreativeState.reject_current(False),
-                disabled=~draft.can_reject,
-                size="2",
+        _decision_bar(),
+    )
+
+
+def _decision_bar() -> rx.Component:
+    """The review decision (HITL #2). It only exists while the draft waits for one
+    (`generated`, or `rejected` for a regeneration): once approved, the buttons are gone
+    and the operator is told why, instead of three disabled buttons with no reason."""
+    draft = CreativeState.draft
+    return rx.cond(
+        draft.can_reject | draft.can_regenerate | draft.can_approve,
+        rx.vstack(
+            rx.flex(
+                rx.button(
+                    "Rechazar",
+                    variant="soft",
+                    color_scheme="gray",
+                    on_click=CreativeState.reject_current(False),
+                    disabled=~draft.can_reject,
+                    size="2",
+                    title="Descarta este borrador. No genera nada nuevo.",
+                ),
+                rx.button(
+                    rx.icon("refresh-cw", size=15),
+                    "Rechazar y regenerar",
+                    variant="soft",
+                    color_scheme="amber",
+                    on_click=CreativeState.reject_current(True),
+                    disabled=~draft.can_regenerate,
+                    size="2",
+                    title="Descarta este borrador y genera variantes nuevas del mismo encargo "
+                    "(consume créditos).",
+                ),
+                rx.button(
+                    rx.icon("circle-check", size=15),
+                    "Aprobar y descargar",
+                    on_click=CreativeState.approve_selected,
+                    disabled=~CreativeState.can_approve_now,
+                    size="2",
+                ),
+                gap="3",
+                wrap="wrap",
+                justify="end",
+                align=rx.breakpoints(initial="stretch", sm="center"),
+                direction=rx.breakpoints(initial="column", sm="row"),
+                width="100%",
             ),
-            rx.button(
-                rx.icon("refresh-cw", size=15),
-                "Rechazar y regenerar",
-                variant="soft",
-                color_scheme="amber",
-                on_click=CreativeState.reject_current(True),
-                disabled=~draft.can_regenerate,
-                size="2",
+            rx.text(
+                "Rechazar descarta el borrador. Rechazar y regenerar lo descarta y genera "
+                "variantes nuevas del mismo encargo (consume créditos). Aprobar fija la "
+                "variante elegida como el texto aprobado del POST.",
+                size="1",
+                color=T.TEXT_MUTED,
+                text_align=rx.breakpoints(initial="left", sm="right"),
+                width="100%",
             ),
-            rx.button(
-                rx.icon("circle-check", size=15),
-                "Aprobar y descargar",
-                on_click=CreativeState.approve_selected,
-                disabled=~CreativeState.can_approve_now,
-                size="2",
-            ),
+            spacing="2",
             width="100%",
-            spacing="3",
         ),
+        # Nothing to decide (already approved/staged/published): no bar at all — the
+        # status badge at the top already says where the draft stands.
+        rx.fragment(),
     )
 
 

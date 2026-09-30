@@ -75,6 +75,7 @@ from .creative_vm import (
     build_route_options,
     build_variant_vm,
     build_voice_proposal_vm,
+    failure_label,
 )
 from .r2_media import is_r2_key, issue_view_path
 
@@ -500,13 +501,34 @@ def edit_variant(
     try:
         payload = CopyPayload.model_validate({**base.model_dump(), **changes})
     except ValidationError as exc:
-        return tuple(
-            f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}" for err in exc.errors()
-        )
+        return tuple(_field_error(err) for err in exc.errors())
     failures = service.edit_variant(
         tenant_id=tenant_id, variant_id=variant_id, copy=payload, user_id=user_id
     )
-    return tuple(f"{f.rule}: {f.detail}" for f in failures)
+    return tuple(failure_label(f.rule, f.detail) for f in failures)
+
+
+_FIELD_LABELS = {
+    "hook": "El gancho",
+    "caption": "El caption",
+    "cta": "El CTA",
+    "script": "El guion",
+}
+
+
+def _field_error(err: Mapping[str, object]) -> str:
+    """A malformed edit in the operator's words: "El gancho admite como máximo 60
+    caracteres." rather than pydantic's "hook: String should have at most 60 characters"."""
+    loc = err.get("loc") or ()
+    field = str(loc[0]) if loc else ""
+    label = _FIELD_LABELS.get(field, f"El campo «{field}»")
+    ctx = err.get("ctx") or {}
+    kind = str(err.get("type", ""))
+    if kind == "string_too_long" and isinstance(ctx, Mapping):
+        return f"{label} admite como máximo {ctx.get('max_length')} caracteres."
+    if kind == "string_too_short" and isinstance(ctx, Mapping):
+        return f"{label} necesita al menos {ctx.get('min_length')} caracteres."
+    return f"{label} no es válido: {err.get('msg', '')}"
 
 
 def approve_draft(tenant_id: UUID, draft_id: UUID, variant_id: UUID, user_id: UUID) -> DraftVM:
