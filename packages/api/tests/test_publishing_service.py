@@ -22,6 +22,7 @@ from qualify_shared.objects.gate import ObjectGate
 from qualify_api.publishing.client import (
     CONTAINER_POLL_INTERVAL_SECONDS,
     MEDIA_TYPE_IMAGE,
+    MEDIA_TYPE_STORIES,
     ContainerStatus,
     PublishError,
     RecentMedia,
@@ -148,6 +149,7 @@ class FakePublishClient:
         image_url: str,
         caption: str | None = None,
         is_carousel_item: bool = False,
+        media_type: str | None = None,
     ) -> str:
         self.image_container_calls.append(
             {
@@ -155,6 +157,7 @@ class FakePublishClient:
                 "image_url": image_url,
                 "caption": caption,
                 "is_carousel_item": is_carousel_item,
+                "media_type": media_type,
             }
         )
         if self.create_image_error is not None:
@@ -2265,3 +2268,80 @@ def test_nothing_in_publishing_builds_its_own_http_client() -> None:
     construction would be a second door past the credential gate."""
     for source_file in PUBLISHING_SRC.glob("*.py"):
         assert "AsyncClient(" not in source_file.read_text(), source_file.name
+
+
+# --------------------------------------------------------------------------------------
+# Image Story (QUA-113) — STORIES + an image content type takes the image branch
+# --------------------------------------------------------------------------------------
+
+
+async def _start_story(h: Harness, *, key: str, object_key: str, content_type: str):
+    return await h.service.start(
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        media_object_key=object_key,
+        media_product_type=MEDIA_TYPE_STORIES,
+        idempotency_key=key,
+        content_type=content_type,
+    )
+
+
+async def test_image_story_creates_an_image_container_with_media_type_stories() -> None:
+    h = Harness()
+
+    state = await _start_story(
+        h, key="op-story-img", object_key=h.image_key, content_type="image/jpeg"
+    )
+
+    assert state.status == "processing"
+    assert len(h.client.image_container_calls) == 1
+    call = h.client.image_container_calls[0]
+    assert call["media_type"] == MEDIA_TYPE_STORIES
+    assert call["is_carousel_item"] is False
+    assert h.client.calls["create"] == 0  # never the resumable video container
+    assert h.client.calls["upload"] == 0  # Meta fetches the image itself
+
+
+async def test_image_story_is_recorded_as_a_stories_attempt() -> None:
+    """The attempt stays `STORIES` — reconciliation looks for it among the account's
+    stories (`media_product_type` STORY), exactly like a video Story."""
+    h = Harness()
+
+    state = await _start_story(
+        h, key="op-story-img-2", object_key=h.image_key, content_type="image/jpeg"
+    )
+
+    record = h.repo.get_attempt(tenant_id=TENANT, attempt_id=state.attempt_id)
+    assert record is not None
+    assert record.media_product_type == MEDIA_TYPE_STORIES
+
+
+async def test_image_story_settles_through_the_unmodified_advance_machinery() -> None:
+    h = Harness()
+    start_state = await _start_story(
+        h, key="op-story-img-3", object_key=h.image_key, content_type="image/jpeg"
+    )
+    h.client.status_script = [ContainerStatus.FINISHED]
+
+    final = await h.drive_to_settled(start_state.attempt_id)
+
+    assert final.status == "published"
+    assert h.client.calls["publish"] == 1
+
+
+async def test_video_story_still_takes_the_resumable_video_path() -> None:
+    h = Harness()
+
+    await _start_story(h, key="op-story-vid", object_key=h.media_key, content_type="video/mp4")
+
+    assert h.client.calls["create"] == 1
+    assert h.client.calls["upload"] == 1
+    assert h.client.image_container_calls == []
+
+
+async def test_a_feed_image_still_sends_no_container_media_type() -> None:
+    h = Harness()
+
+    await h.start_image()
+
+    assert h.client.image_container_calls[0]["media_type"] is None

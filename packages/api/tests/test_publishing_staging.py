@@ -376,3 +376,72 @@ def test_the_size_ceiling_is_checked_before_the_magic_bytes_read() -> None:
             media_product_type="IMAGE",
         )
     assert store.objects == {}
+
+
+# --------------------------------------------------------------------------------------
+# Image Story (QUA-113) — an image Story is an image: JPEG-only, 8 MB
+# --------------------------------------------------------------------------------------
+
+
+def test_an_image_story_is_staged_like_an_image() -> None:
+    service, store = build()
+
+    staged = service.stage_media(
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        media_id="m-story-img",
+        fileobj=io.BytesIO(b"\xff\xd8\xff\xe0jpeg-bytes"),
+        content_type="image/jpeg",
+        media_product_type="STORIES",
+    )
+
+    assert staged.media_product_type == "STORIES"
+    assert staged.content_type == "image/jpeg"
+    assert store.objects[staged.media_object_key][1] == "image/jpeg"
+
+
+def test_an_image_story_over_8mb_is_rejected_without_reading_it() -> None:
+    service, store = build()
+
+    with pytest.raises(ObjectSizeExceeded):
+        service.stage_media(
+            tenant_id=TENANT,
+            connection_id=CONNECTION,
+            media_id="m-story-big",
+            fileobj=HugeStream(IMAGE_MAX_BYTES + 1),  # type: ignore[arg-type]
+            content_type="image/jpeg",
+            media_product_type="STORIES",
+        )
+    assert store.objects == {}
+
+
+@pytest.mark.parametrize("content_type", ["image/png", "image/webp"])
+def test_an_image_story_must_be_jpeg(content_type: str) -> None:
+    service, store = build()
+
+    with pytest.raises(UnsupportedImageFormat):
+        service.stage_media(
+            tenant_id=TENANT,
+            connection_id=CONNECTION,
+            media_id="m-story-png",
+            fileobj=io.BytesIO(b"\x89PNG...."),
+            content_type=content_type,
+            media_product_type="STORIES",
+        )
+    assert store.objects == {}
+
+
+def test_a_video_story_is_never_subjected_to_the_image_rules() -> None:
+    service, store = build()
+    size = IMAGE_MAX_BYTES + 1
+
+    service.stage_media(
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        media_id="m-story-vid",
+        fileobj=io.BytesIO(b"x" * size),
+        content_type="video/mp4",
+        media_product_type="STORIES",
+    )
+
+    assert len(store.objects[f"t/{TENANT}/media/{CONNECTION}/m-story-vid"][0]) == size
