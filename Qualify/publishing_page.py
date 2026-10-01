@@ -47,14 +47,27 @@ after it are cropped to that image's ratio, not their own. Neither this screen n
 `PublishService` does anything about it (no reordering, no warning) — the operator's own
 selection order is respected exactly as given. Any UX mitigation (a warning, a suggested
 reorder) is a follow-up decision, not part of this ticket's scope.
+
+**QUA-113 (Fase 2): `/publish` is the one module for immediate publishing.** The page
+now hosts two INDEPENDENT flows behind a `Publicaciones | Stories` selector in the form
+card's header (`_flow_selector`, state: `PublishHubState`): the Publicaciones flow is
+everything above, untouched; the Stories flow is `stories_page.stories_flow`, bound to
+its own `StoriesState`. Only the active flow's form (and so its gallery) is mounted.
+Below both sits the shared "Tendencias e inspiración" panel
+(`trending_panel.trending_card`, `TrendingState`), fed with the active flow's account.
 """
 
 from __future__ import annotations
 
 import reflex as rx
 
+from .publish_hub_state import FLOW_POSTS, FLOW_STORIES, PublishHubState
+from .publish_tips import main_with_tips, tip_row, tips_card
 from .publishing_state import _MAX_ITEMS, _UPLOAD_ID, _WAIT_EXPLANATION, PublishState
 from .publishing_vm import ConnectionOptionVM, PendingItemVM
+from .stories_page import stories_flow, stories_tips_card
+from .stories_state import StoriesState
+from .trending_panel import trending_card
 from .ui import app_shell, callout, card, page_body, page_header, section
 from .ui import tokens as T
 from .ui.image_preview import gallery_image_preview_capture_anchor
@@ -113,7 +126,7 @@ def _pending_tile(item: PendingItemVM, index: rx.Var[int]) -> rx.Component:
     that is what makes clicking a tile or its `X` never reopen the file picker; only the
     `+` tile (the actual `rx.upload` widget) is wired to do that.
     """
-    preview_src = video_frame_preview_src(filename=item.filename)
+    preview_src = video_frame_preview_src(root_id=_GALLERY_ROOT_ID, filename=item.filename)
     return rx.box(
         rx.cond(
             preview_src != "",
@@ -485,9 +498,11 @@ def _publish_button() -> rx.Component:
     )
 
 
-def _form_card() -> rx.Component:
+def _form_card(header: rx.Component) -> rx.Component:
     return card(
         rx.vstack(
+            header,
+            rx.divider(),
             _connection_section(),
             rx.divider(),
             _content_section(),
@@ -509,57 +524,21 @@ def _form_card() -> rx.Component:
     )
 
 
-def _tip_row(icon: str, text: str) -> rx.Component:
-    return rx.hstack(
-        rx.icon(icon, size=T.ICON_SM, color=T.TEXT_FAINT),
-        rx.text(text, size="2", color=T.TEXT_MUTED),
-        spacing="2",
-        align="start",
-    )
-
-
 def _tips_card() -> rx.Component:
     """Static, informational only — every fact here mirrors an existing constraint
     already enforced by `PublishState`/`_gallery_zone` (accepted formats, size limit,
-    polling behavior), not a new claim about functionality."""
-    return card(
-        rx.vstack(
-            rx.hstack(
-                rx.icon("info", size=T.ICON_MD, color=T.tone_color("info", 9)),
-                rx.heading("Antes de publicar", size="3", as_="h2"),
-                spacing="2",
-                align="center",
-            ),
-            rx.vstack(
-                _tip_row("film", "Formatos aceptados: MP4, MOV (video) y JPEG (imagen)."),
-                _tip_row("scale", "Tamaño máximo: 300 MB por video, 8 MB por imagen."),
-                _tip_row(
-                    "layers",
-                    f"Hasta {_MAX_ITEMS} archivos, imágenes y/o videos — 2 o más se "
-                    "publican juntos, como un carrusel.",
-                ),
-                _tip_row("at-sign", "Se publica en la cuenta que elijas arriba."),
-                _tip_row("clock", "La confirmación de Meta puede tardar unos minutos."),
-                spacing="3",
-                align_items="start",
-                width="100%",
-            ),
-            spacing="4",
-            align_items="start",
-            width="100%",
+    polling behavior), not a new claim about functionality. Same shell as the Stories
+    flow's block (`publish_tips.tips_card`, QUA-113)."""
+    return tips_card(
+        tip_row("film", "Formatos aceptados: MP4, MOV (video) y JPEG (imagen)."),
+        tip_row("scale", "Tamaño máximo: 300 MB por video, 8 MB por imagen."),
+        tip_row(
+            "layers",
+            f"Hasta {_MAX_ITEMS} archivos, imágenes y/o videos — 2 o más se "
+            "publican juntos, como un carrusel.",
         ),
-        padding="1.5rem",
-    )
-
-
-def _form() -> rx.Component:
-    return rx.flex(
-        rx.box(_form_card(), flex="2 1 480px", min_width="0", width="100%"),
-        rx.box(_tips_card(), flex="1 1 280px", min_width="0", width="100%"),
-        spacing="5",
-        width="100%",
-        wrap="wrap",
-        align_items="start",
+        tip_row("at-sign", "Se publica en la cuenta que elijas arriba."),
+        tip_row("clock", "La confirmación de Meta puede tardar unos minutos."),
     )
 
 
@@ -567,16 +546,85 @@ def _load_error() -> rx.Component:
     return callout(PublishState.load_error, "error")
 
 
+# ---------------------------------------------------------------------------
+# QUA-113: the flow selector and the page that hosts both flows.
+
+
+def _flow_selector() -> rx.Component:
+    """`Publicaciones | Stories`, both always visible, the active one highlighted by
+    the segmented control itself. Disabled while EITHER flow has a publish in flight
+    (staging or waiting for Meta) — `can_edit_gallery` is exactly "phase is resting"
+    in both states. The segmented control has no `disabled` prop, so the lock is
+    visual + pointer here and enforced server-side by `PublishHubState.select_flow`.
+
+    `q-flow-switch` (assets/qualify.css) makes the active flow unmistakable — accent
+    fill, contrast text — and gives the inactive one a hover tint; colour only, so
+    nothing moves or resizes."""
+    busy = ~PublishState.can_edit_gallery | ~StoriesState.can_edit_gallery
+    return rx.hstack(
+        rx.box(
+            rx.segmented_control.root(
+                rx.segmented_control.item("Publicaciones", value=FLOW_POSTS),
+                rx.segmented_control.item("Stories", value=FLOW_STORIES),
+                value=PublishHubState.active_flow,
+                on_change=PublishHubState.select_flow,
+                size="2",
+                class_name="q-flow-switch",
+            ),
+            opacity=rx.cond(busy, "0.5", "1"),
+            pointer_events=rx.cond(busy, "none", "auto"),
+            aria_disabled=busy,
+            title=rx.cond(busy, "Espera a que termine la publicación en curso", ""),
+        ),
+        rx.cond(
+            busy,
+            rx.text(
+                "Espera a que termine la publicación en curso para cambiar de flujo.",
+                size="1",
+                color=T.TEXT_FAINT,
+            ),
+            rx.fragment(),
+        ),
+        align="center",
+        spacing="3",
+        wrap="wrap",
+        width="100%",
+    )
+
+
+def _posts_flow() -> rx.Component:
+    # A failed accounts load replaces the form, as before — but the selector stays,
+    # so the operator can still reach the Stories flow.
+    return rx.cond(
+        PublishState.load_error != "",
+        rx.vstack(_flow_selector(), _load_error(), spacing="4", width="100%"),
+        _form_card(_flow_selector()),
+    )
+
+
 def publish_topbar() -> rx.Component:
     return page_header(
         "Publicar",
-        "Sube una imagen o uno o varios reels y publícalos en una de tus cuentas de "
-        "Instagram conectadas — 2 o más videos se publican juntos, como un carrusel",
+        "Publica de inmediato en una de tus cuentas de Instagram conectadas: una "
+        "publicación (imagen, reel o carrusel) o una Story",
     )
 
 
 def publish_index() -> rx.Component:
-    return app_shell(
-        publish_topbar(),
-        page_body(rx.cond(PublishState.load_error != "", _load_error(), _form())),
+    is_stories = PublishHubState.active_flow == FLOW_STORIES
+    # The form and the trending panel share the main column — one width, one right
+    # edge, in both flows. The active flow's "Antes de publicar" sits beside them
+    # (hidden, as before, when the Publicaciones accounts failed to load).
+    main = rx.vstack(
+        rx.cond(is_stories, stories_flow(_flow_selector()), _posts_flow()),
+        trending_card(),
+        spacing="5",
+        width="100%",
+        align_items="stretch",
     )
+    tips = rx.cond(
+        is_stories,
+        stories_tips_card(),
+        rx.cond(PublishState.load_error != "", rx.fragment(), _tips_card()),
+    )
+    return app_shell(publish_topbar(), page_body(main_with_tips(main, tips)))

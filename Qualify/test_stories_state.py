@@ -1,9 +1,10 @@
 """Tests for `StoriesState` (QUA-106 V1 redesign) — `/stories` as a single publish
 screen, structurally the single-item path of `PublishState` (`publishing_state.py`)
-with `media_product_type` fixed to `"STORIES"`, plus the QUA-107 trending/reference
-panel untouched in behavior. No `StoryProposal`, no decide/approve/reject, no list,
-no detail screen — see `test_publishing_state.py` for the pattern these publish-flow
-tests mirror.
+with `media_product_type` fixed to `"STORIES"`. The QUA-107 trending/reference panel
+is its own state since QUA-113 — its tests live in `test_trending_state.py`; this file
+only pins the two links Stories keeps with it (the account, the post-publish release).
+No `StoryProposal`, no decide/approve/reject, no list, no detail screen — see
+`test_publishing_state.py` for the pattern these publish-flow tests mirror.
 
 **Why this file does not exercise `publish_background`/`poll_attempt` end to end:**
 both call `self.get_state(AuthState)`, which needs a live `EventContext` — the same
@@ -21,10 +22,10 @@ import time
 
 import pytest
 
-from . import scrapecreators_trending
+from . import stories_page
 from . import stories_state as stories_state_module
-from .scrapecreators_client import ScrapeCreatorsError
-from .stories_state import StoriesState, _resolve_video
+from .stories_state import StoriesState, _resolve_story_media
+from .trending_state import TrendingState
 
 # ----------------------------------------------------------------------------------
 # publish() — server-side double-submit guard (same shape PublishState.publish has)
@@ -166,7 +167,8 @@ async def test_add_file_replaces_a_previous_selection() -> None:
 async def test_add_file_rejects_an_unsupported_format() -> None:
     state = StoriesState()
 
-    result = await state.add_file([_FakeUpload(content_type="image/jpeg", filename="photo.jpg")])
+    # A JPEG is valid since QUA-113 (image Story); PNG is still not a format Meta takes.
+    result = await state.add_file([_FakeUpload(content_type="image/png", filename="photo.png")])
 
     assert result is not None  # a toast event
     assert state._pending_bytes == b""
@@ -337,410 +339,76 @@ async def test_poll_attempt_returns_immediately_when_there_is_no_attempt_to_poll
 # ----------------------------------------------------------------------------------
 
 
-def test_connection_and_form_setters_are_plain_synchronous() -> None:
-    state = StoriesState()
-    state.select_connection("c-1")
-    assert state.selected_connection_id == "c-1"
-
-    state.select_trend_audio("a1", "Cancion")
-    assert state.selected_trend_audio_id == "a1"
-    assert state.selected_trend_audio_title == "Cancion"
-
-    state.clear_trend_audio()
-    assert state.selected_trend_audio_id == ""
-    assert state.selected_trend_audio_title == ""
-
-
-def test_selecting_a_new_connection_clears_the_previous_trend_suggestion() -> None:
-    """A trending-audio list fetched for connection A must never silently survive a
-    switch to connection B — including whatever search query was typed for it."""
-    state = StoriesState()
-    state.trend_options = ["placeholder"]  # type: ignore[list-item]
-    state.trend_expanded = True
-    state.audio_search_query = "some query"
-    state.selected_trend_audio_id = "a1"
-    state.selected_trend_audio_title = "Cancion"
-
-    state.select_connection("c-2")
-
-    assert state.trend_options == []
-    assert state.trend_expanded is False
-    assert state.audio_search_query == ""
-    assert state.selected_trend_audio_id == ""
-    assert state.selected_trend_audio_title == ""
-
-
-def test_close_trend_audio_collapses_without_clearing_the_cached_list() -> None:
-    state = StoriesState()
-    state.trend_options = ["cached"]  # type: ignore[list-item]
-    state.trend_expanded = True
-
-    state.close_trend_audio()
-
-    assert state.trend_expanded is False
-    assert state.trend_options == ["cached"]
-
-
-def test_selecting_a_new_connection_does_not_clear_scrapecreators_trending_lists() -> None:
-    """Unlike Meta's `trend_options` (tied to the connection's credentials),
-    ScrapeCreators trending discovery is connection-independent (QUA-107) —
-    switching connections must leave it untouched."""
-    state = StoriesState()
-    state.tiktok_trending = ["placeholder"]  # type: ignore[list-item]
-    state.instagram_trending = ["placeholder"]  # type: ignore[list-item]
-
-    state.select_connection("c-2")
-
-    assert state.tiktok_trending == ["placeholder"]
-    assert state.instagram_trending == ["placeholder"]
-
-
-def test_toggle_audio_preview_plays_a_new_track() -> None:
-    state = StoriesState()
-
-    state.toggle_audio_preview("a1", "https://example.test/a1.mp3")
-
-    assert state.playing_audio_id == "a1"
-    assert state.playing_audio_url == "https://example.test/a1.mp3"
-    assert state.is_audio_playing is True
-
-
-def test_toggle_audio_preview_pauses_the_currently_playing_track() -> None:
-    state = StoriesState()
-    state.toggle_audio_preview("a1", "https://example.test/a1.mp3")
-
-    state.toggle_audio_preview("a1", "https://example.test/a1.mp3")
-
-    assert state.is_audio_playing is False
-    assert state.playing_audio_id == "a1"
-
-
-def test_toggle_audio_preview_switches_track_without_needing_a_pause_first() -> None:
-    state = StoriesState()
-    state.toggle_audio_preview("a1", "https://example.test/a1.mp3")
-
-    state.toggle_audio_preview("a2", "https://example.test/a2.mp3")
-
-    assert state.playing_audio_id == "a2"
-    assert state.playing_audio_url == "https://example.test/a2.mp3"
-    assert state.is_audio_playing is True
-
-
-def test_audio_preview_stopped_resets_the_playing_flag_without_clearing_the_track() -> None:
-    state = StoriesState()
-    state.toggle_audio_preview("a1", "https://example.test/a1.mp3")
-
-    state.audio_preview_stopped()
-
-    assert state.is_audio_playing is False
-    assert state.playing_audio_id == "a1"
-
-
-def test_selecting_trend_audio_never_touches_the_playing_audio_state() -> None:
-    state = StoriesState()
-    state.toggle_audio_preview("a1", "https://example.test/a1.mp3")
-
-    state.select_trend_audio("a2", "Otra cancion")
-
-    assert state.playing_audio_id == "a1"
-    assert state.is_audio_playing is True
-    assert state.selected_trend_audio_id == "a2"
-
-
-def test_a_new_trend_selection_replaces_any_previous_one_regardless_of_source() -> None:
-    """`selected_trend_audio_id`/`_title` are purely a display choice in this
-    session's Reflex state (QUA-106 V1 redesign — there is no row left to persist it
-    on) — selecting a TikTok song after a Meta suggestion (or vice versa) simply
-    replaces the previous display value."""
-    state = StoriesState()
-    state.select_trend_audio("meta-1", "Meta Song")
-    assert state.selected_trend_audio_id == "meta-1"
-
-    state.select_trend_audio("tiktok-1", "TikTok Song")
-    assert state.selected_trend_audio_id == "tiktok-1"
-    assert state.selected_trend_audio_title == "TikTok Song"
-
-
 # ----------------------------------------------------------------------------------
-# Video-only resolution
+# Media resolution — MP4/MOV video or (QUA-113) JPEG image
 # ----------------------------------------------------------------------------------
 
 
-def test_resolve_video_accepts_mp4_and_mov_by_content_type() -> None:
-    assert _resolve_video("video/mp4", "clip.mp4") == "video/mp4"
-    assert _resolve_video("video/quicktime", "clip.mov") == "video/quicktime"
+def test_resolve_story_media_accepts_mp4_and_mov_by_content_type() -> None:
+    assert _resolve_story_media("video/mp4", "clip.mp4") == "video/mp4"
+    assert _resolve_story_media("video/quicktime", "clip.mov") == "video/quicktime"
 
 
-def test_resolve_video_falls_back_to_extension() -> None:
-    assert _resolve_video(None, "clip.MP4") == "video/mp4"
-    assert _resolve_video("application/octet-stream", "clip.mov") == "video/quicktime"
+def test_resolve_story_media_falls_back_to_extension() -> None:
+    assert _resolve_story_media(None, "clip.MP4") == "video/mp4"
+    assert _resolve_story_media("application/octet-stream", "clip.mov") == "video/quicktime"
 
 
-def test_resolve_video_rejects_images_and_unknown_types() -> None:
-    assert _resolve_video("image/jpeg", "photo.jpg") is None
-    assert _resolve_video(None, "clip.avi") is None
+def test_resolve_story_media_accepts_a_jpeg_image() -> None:
+    assert _resolve_story_media("image/jpeg", "photo.jpg") == "image/jpeg"
+    assert _resolve_story_media(None, "photo.JPEG") == "image/jpeg"
 
 
-# ----------------------------------------------------------------------------------
-# QUA-107: ScrapeCreators trending discovery — unlike suggest_audio/publish_background,
-# these handlers call neither get_state nor _session_tenant_id, so they ARE reachable
-# end-to-end on a bare instance (no live EventContext needed).
-# ----------------------------------------------------------------------------------
-
-
-def _video(**overrides: object) -> scrapecreators_trending.TrendingVideo:
-    defaults: dict[str, object] = {
-        "source": "tiktok",
-        "id": "1",
-        "caption": "a caption",
-        "author_handle": "someone",
-        "author_display_name": "Someone",
-        "likes": 10,
-        "comments": 2,
-        "plays": 100,
-        "created_at": None,
-        "permalink": "https://example.com/1",
-        "thumbnail_url": "",
-        "music_id": "m1",
-        "music_title": "a song",
-        "rank": 0,
-    }
-    defaults.update(overrides)
-    return scrapecreators_trending.TrendingVideo(**defaults)
+def test_resolve_story_media_rejects_other_image_formats_and_unknown_types() -> None:
+    """JPEG is the only image format Meta's Content Publishing API accepts."""
+    assert _resolve_story_media("image/png", "photo.png") is None
+    assert _resolve_story_media(None, "photo.webp") is None
+    assert _resolve_story_media(None, "clip.avi") is None
 
 
 @pytest.mark.asyncio
-async def test_discover_tiktok_trending_populates_state_on_success(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_add_file_buffers_a_jpeg_and_flags_it_as_an_image() -> None:
     state = StoriesState()
-    monkeypatch.setattr(
-        stories_state_module.scrapecreators_trending,
-        "fetch_tiktok_trending_feed",
-        lambda: (_video(),),
+
+    await state.add_file(
+        [_FakeUpload(data=b"\xff\xd8\xffjpeg", content_type="image/jpeg", filename="s.jpg")]
     )
 
-    await StoriesState.discover_tiktok_trending.fn(state)
-
-    assert len(state.tiktok_trending) == 1
-    assert state.tiktok_trending[0].external_id == "1"
-    assert state.tiktok_trending[0].music_id == "m1"
-    assert state.is_loading_tiktok_trending is False
-    assert state.tiktok_trending_error == ""
-    assert state.tiktok_trending_expanded is True
+    assert state.pending_filename == "s.jpg"
+    assert state._pending_content_type == "image/jpeg"
+    assert state.pending_is_image is True
 
 
 @pytest.mark.asyncio
-async def test_discover_tiktok_trending_degrades_to_empty_list_on_vendor_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_video_after_an_image_clears_the_image_flag() -> None:
     state = StoriesState()
-    state.tiktok_trending = ["stale"]  # type: ignore[list-item]
+    await state.add_file([_FakeUpload(content_type="image/jpeg", filename="s.jpg")])
 
-    def boom() -> tuple[scrapecreators_trending.TrendingVideo, ...]:
-        raise ScrapeCreatorsError("vendor down")
+    await state.add_file([_FakeUpload(content_type="video/mp4", filename="clip.mp4")])
 
-    monkeypatch.setattr(
-        stories_state_module.scrapecreators_trending, "fetch_tiktok_trending_feed", boom
-    )
-
-    await StoriesState.discover_tiktok_trending.fn(state)
-
-    assert state.tiktok_trending == []
-    assert state.is_loading_tiktok_trending is False
+    assert state.pending_is_image is False
+    assert state._pending_content_type == "video/mp4"
 
 
-def test_toggle_tiktok_trending_fetches_on_the_first_click() -> None:
+def test_clear_file_resets_the_image_flag() -> None:
     state = StoriesState()
+    state.pending_filename = "s.jpg"
+    state.pending_is_image = True
 
-    result = state.toggle_tiktok_trending()
+    state.clear_file()
 
-    assert result is StoriesState.discover_tiktok_trending
-    assert state.tiktok_trending_expanded is False  # the fetch itself sets it, not this
-
-
-def test_toggle_tiktok_trending_collapses_and_re_expands_without_refetching() -> None:
-    """Follow-up ("cómo cierro esto"): once data is cached, the SAME button toggles
-    visibility instantly — never a second vendor call, never a `discover_*`
-    dispatch."""
-    state = StoriesState()
-    state.tiktok_trending = ["cached"]  # type: ignore[list-item]
-    state.tiktok_trending_expanded = True
-
-    collapse_result = state.toggle_tiktok_trending()
-    assert collapse_result is None
-    assert state.tiktok_trending_expanded is False
-    assert state.tiktok_trending == ["cached"]  # untouched, still cached
-
-    expand_result = state.toggle_tiktok_trending()
-    assert expand_result is None
-    assert state.tiktok_trending_expanded is True
-    assert state.tiktok_trending == ["cached"]
+    assert state.pending_is_image is False
 
 
-@pytest.mark.asyncio
-async def test_discover_instagram_trending_populates_state_on_success(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    state = StoriesState()
-    reel = _video(source="instagram", id="r1", music_id="", music_title="")
-    monkeypatch.setattr(
-        stories_state_module.scrapecreators_trending,
-        "fetch_instagram_trending_reels",
-        lambda: (reel,),
-    )
-
-    await StoriesState.discover_instagram_trending.fn(state)
-
-    assert len(state.instagram_trending) == 1
-    assert state.instagram_trending[0].external_id == "r1"
-    assert state.instagram_trending[0].has_music is False
-    assert state.is_loading_instagram_trending is False
-    assert state.instagram_trending_expanded is True
-
-
-@pytest.mark.asyncio
-async def test_discover_instagram_trending_degrades_to_empty_list_on_vendor_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    state = StoriesState()
-    state.instagram_trending = ["stale"]  # type: ignore[list-item]
-
-    def boom() -> tuple[scrapecreators_trending.TrendingVideo, ...]:
-        raise ScrapeCreatorsError("vendor down")
-
-    monkeypatch.setattr(
-        stories_state_module.scrapecreators_trending, "fetch_instagram_trending_reels", boom
-    )
-
-    await StoriesState.discover_instagram_trending.fn(state)
-
-    assert state.instagram_trending == []
-    assert state.is_loading_instagram_trending is False
-
-
-def test_toggle_instagram_trending_fetches_on_the_first_click() -> None:
-    state = StoriesState()
-
-    result = state.toggle_instagram_trending()
-
-    assert result is StoriesState.discover_instagram_trending
-
-
-def test_toggle_instagram_trending_collapses_and_re_expands_without_refetching() -> None:
-    state = StoriesState()
-    state.instagram_trending = ["cached"]  # type: ignore[list-item]
-    state.instagram_trending_expanded = True
-
-    collapse_result = state.toggle_instagram_trending()
-    assert collapse_result is None
-    assert state.instagram_trending_expanded is False
-    assert state.instagram_trending == ["cached"]
-
-
-@pytest.mark.asyncio
-async def test_expand_song_populates_song_detail_with_trending_signals(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    detail = scrapecreators_trending.SongDetail(
-        id="s1",
-        title="Cancion Viral",
-        author="Artista",
-        user_count=100,
-        recommend_status=50,
-        preview_url="https://example.test/preview.mp3",
-    )
-    monkeypatch.setattr(
-        stories_state_module.scrapecreators_trending,
-        "fetch_tiktok_song",
-        lambda *, clip_id: detail,
-    )
-    state = StoriesState()
-
-    await StoriesState.expand_song.fn(state, "s1", "fallback title")
-
-    assert state.expanded_song_id == "s1"
-    assert state.song_detail is not None
-    assert state.song_detail.audio_id == "s1"
-    assert state.song_detail.title == "Cancion Viral"
-    assert state.song_detail.user_count == 100
-    assert state.song_detail.has_user_count is True
-    assert state.song_detail.recommend_status == 50
-    assert state.song_detail.has_recommend_status is True
-    assert state.song_detail.preview_url == "https://example.test/preview.mp3"
-    assert state.song_detail.has_preview is True
-    assert state.is_loading_song_detail is False
-
-
-@pytest.mark.asyncio
-async def test_expand_song_without_trending_signals_leaves_them_unset(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    detail = scrapecreators_trending.SongDetail(
-        id="s1", title="t", author="a", user_count=None, recommend_status=None
-    )
-    monkeypatch.setattr(
-        stories_state_module.scrapecreators_trending,
-        "fetch_tiktok_song",
-        lambda *, clip_id: detail,
-    )
-    state = StoriesState()
-
-    await StoriesState.expand_song.fn(state, "s1", "fallback title")
-
-    assert state.song_detail.has_user_count is False
-    assert state.song_detail.has_recommend_status is False
-
-
-@pytest.mark.asyncio
-async def test_expand_song_degrades_without_blocking_on_vendor_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def boom(*, clip_id: str) -> scrapecreators_trending.SongDetail:
-        raise ScrapeCreatorsError("vendor down")
-
-    monkeypatch.setattr(stories_state_module.scrapecreators_trending, "fetch_tiktok_song", boom)
-    state = StoriesState()
-
-    await StoriesState.expand_song.fn(state, "s1", "fallback title")
-
-    assert state.song_detail is None
-    assert state.is_loading_song_detail is False
-
-
-@pytest.mark.asyncio
-async def test_selecting_an_enriched_song_reuses_the_shared_selection_fields(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    detail = scrapecreators_trending.SongDetail(
-        id="s1", title="Cancion Viral", author="Artista", user_count=10, recommend_status=90
-    )
-    monkeypatch.setattr(
-        stories_state_module.scrapecreators_trending,
-        "fetch_tiktok_song",
-        lambda *, clip_id: detail,
-    )
-    state = StoriesState()
-
-    await StoriesState.expand_song.fn(state, "s1", "fallback")
-    state.select_trend_audio(state.song_detail.audio_id, state.song_detail.title)
-
-    assert state.selected_trend_audio_id == "s1"
-    assert state.selected_trend_audio_title == "Cancion Viral"
-
-
-def test_trending_discovery_handlers_take_no_tenant_or_connection_params() -> None:
-    for handler in (
-        StoriesState.discover_tiktok_trending.fn,
-        StoriesState.discover_instagram_trending.fn,
-        StoriesState.expand_song.fn,
-    ):
-        params = inspect.signature(handler).parameters
-        assert "tenant_id" not in params
-        assert "connection_id" not in params
-        source = inspect.getsource(handler)
-        assert "_session_tenant_id" not in source
-        assert "get_state" not in source
+def test_publish_background_sends_an_image_story_through_the_same_stories_call() -> None:
+    """An image Story is still `media_product_type=STORIES`; the backend routes it by
+    its content type (QUA-113). Invalid JPEG bytes and the 8 MB image ceiling get
+    their own messages, as in Publicaciones."""
+    source = inspect.getsource(StoriesState.publish_background.fn)
+    assert "media_product_type=MEDIA_TYPE_STORIES" in source
+    assert "content_type=content_type" in source
+    assert "except UnsupportedImageFormat:" in source
+    assert "_IMAGE_TOO_LARGE if content_type == _JPEG_CONTENT_TYPE else _TOO_LARGE" in source
 
 
 # ----------------------------------------------------------------------------------
@@ -789,45 +457,105 @@ def test_no_handler_awaits_load_stories_screen_or_publish_background_directly() 
     assert "yield StoriesState.poll_attempt" in source
 
 
-def test_suggest_audio_caps_trend_options_at_the_ui_presentation_limit() -> None:
-    """The cap lives in the shared `_run_audio_search` helper (QUA-107 follow-up:
-    `suggest_audio`/`search_audio`/`search_song_on_meta` all delegate to it), so
-    every one of those three handlers inherits it — not just `suggest_audio`."""
-    source = inspect.getsource(StoriesState._run_audio_search)
-    assert "options[:_MAX_TREND_AUDIO_OPTIONS]" in source
+# ----------------------------------------------------------------------------------
+# QUA-113: isolation from the trending panel, on-demand account loading, and the
+# share button reading only this flow's gallery
+# ----------------------------------------------------------------------------------
+
+_TRENDING_FIELDS = (
+    "trend_options",
+    "trend_expanded",
+    "selected_trend_audio_id",
+    "audio_search_query",
+    "tiktok_trending",
+    "instagram_trending",
+    "song_detail",
+    "playing_audio_url",
+)
 
 
-def test_run_audio_search_expands_the_list_on_a_successful_lookup() -> None:
-    """Follow-up ("que también se pueda cerrar"): a successful lookup re-opens the
-    list — same `_run_audio_search` helper every trend-audio entry point shares, so
-    `suggest_audio`/`search_audio`/`search_song_on_meta` all inherit it."""
-    source = inspect.getsource(StoriesState._run_audio_search)
-    assert "self.trend_expanded = True" in source
+def test_stories_state_no_longer_holds_any_trending_field() -> None:
+    fields = StoriesState.get_fields()
+    for name in _TRENDING_FIELDS:
+        assert name not in fields, f"{name} belongs to TrendingState now"
+        assert name in TrendingState.get_fields()
 
 
-def test_max_trend_audio_options_is_ten() -> None:
-    assert stories_state_module._MAX_TREND_AUDIO_OPTIONS == 10
-
-
-def test_suggest_audio_search_audio_and_search_song_delegate_to_the_shared_helper() -> None:
-    """Structural pin: one search implementation, three entry points — `suggest_audio`
-    (no query), `search_audio` (whatever is typed), `search_song_on_meta` (a TikTok
-    candidate's title). None reimplements the tenant/connection resolution or the
-    presentation cap."""
-    suggest_source = inspect.getsource(StoriesState.suggest_audio.fn)
-    assert 'await self._run_audio_search("")' in suggest_source
-
-    search_source = inspect.getsource(StoriesState.search_audio.fn)
-    assert "await self._run_audio_search(query)" in search_source
-
-    search_song_source = inspect.getsource(StoriesState.search_song_on_meta.fn)
-    assert "await self._run_audio_search(title)" in search_song_source
-    assert "self.audio_search_query = title" in search_song_source
-
-
-def test_set_audio_search_query_is_plain_synchronous() -> None:
+def test_select_connection_hands_the_account_to_the_trending_panel() -> None:
     state = StoriesState()
 
-    state.set_audio_search_query("some song")
+    result = state.select_connection("c-1")
 
-    assert state.audio_search_query == "some song"
+    assert state.selected_connection_id == "c-1"
+    assert result.handler.fn is TrendingState.set_audio_connection.fn
+    assert [str(value) for _, value in result.args] == ['"c-1"']
+
+
+def test_a_successful_publish_releases_the_trending_panels_account() -> None:
+    """Before the split, a successful publish cleared the selected audio inside
+    StoriesState itself; now that audio lives in TrendingState, both success paths
+    (settled on start, settled while polling) must hand the reset over."""
+    for handler in (StoriesState.publish_background.fn, StoriesState.poll_attempt.fn):
+        source = inspect.getsource(handler)
+        assert "yield TrendingState.release_audio_connection" in source
+        assert "selected_trend_audio" not in source
+
+
+def test_ensure_connections_loaded_starts_the_load_the_first_time() -> None:
+    state = StoriesState()
+
+    result = state.ensure_connections_loaded()
+
+    assert result is StoriesState.load_stories_screen
+    assert state.is_loading_connections is True
+
+
+def test_ensure_connections_loaded_never_starts_a_second_load_while_one_is_in_flight() -> None:
+    state = StoriesState()
+    state.ensure_connections_loaded()
+
+    assert state.ensure_connections_loaded() is None
+
+
+def test_ensure_connections_loaded_is_a_no_op_once_loaded() -> None:
+    state = StoriesState()
+    state._connections_loaded = True
+
+    assert state.ensure_connections_loaded() is None
+    assert state.is_loading_connections is False
+
+
+def test_ensure_connections_loaded_retries_after_a_failed_load() -> None:
+    """A failed load leaves `_connections_loaded` False and `is_loading_connections`
+    False (see `load_stories_screen`) — the next entry into the flow must try again."""
+    state = StoriesState()
+    state.is_loading_connections = False
+    state._connections_loaded = False
+    state.connections_error = "No se pudieron cargar las cuentas conectadas."
+
+    assert state.ensure_connections_loaded() is StoriesState.load_stories_screen
+
+
+def test_invalidate_connections_makes_the_next_entry_reload() -> None:
+    state = StoriesState()
+    state._connections_loaded = True
+
+    state.invalidate_connections()
+
+    assert state.ensure_connections_loaded() is StoriesState.load_stories_screen
+
+
+def test_load_stories_screen_marks_loaded_only_on_success() -> None:
+    source = inspect.getsource(StoriesState.load_stories_screen.fn)
+    assert source.count("self._connections_loaded = True") == 1
+    success_block = source[source.rindex("self.connections = connections") :]
+    assert "self._connections_loaded = True" in success_block
+
+
+def test_share_to_instagram_reads_only_the_stories_gallery_file() -> None:
+    """QUA-113 criterion 12: "Abrir en Instagram" shares the file of THIS gallery,
+    never the last file dropped anywhere on the page."""
+    script = stories_page._SHARE_TO_INSTAGRAM_SCRIPT
+    assert "lastFile" not in script
+    assert "__STORIES_GALLERY_FILE__" not in script
+    assert 'filesByRoot["stories-gallery-root"]' in script

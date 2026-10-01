@@ -35,13 +35,12 @@ from .leads_page import leads_index
 from .leads_state import LeadsState
 from .planner_page import planner_index
 from .planner_state import PlannerState
+from .publish_hub_state import PublishHubState
 from .publishing_page import publish_index
 from .publishing_state import PublishState
 from .r2_media import router as r2_media_router
 from .signals_page import signals_index
 from .state import DashboardState
-from .stories_page import stories_index
-from .stories_state import StoriesState
 from .styleguide_page import styleguide_index
 from .ui import app_shell, page_body
 from .vitrina_page import vitrina_index
@@ -159,7 +158,15 @@ app.add_page(
 app.add_page(
     publish_index,
     route="/publish",
-    on_load=[AuthState.require_login, PublishState.load_active_connections],
+    # QUA-113: Publicaciones and Stories are two flows of this one page. Only the
+    # Publicaciones accounts load here; `enter_publish_page` reads `?flow=`, and loads
+    # the Stories accounts only when the visit starts on Stories (otherwise the first
+    # switch to Stories does it).
+    on_load=[
+        AuthState.require_login,
+        PublishState.load_active_connections,
+        PublishHubState.enter_publish_page,
+    ],
     title="Qualify · Publicar",
 )
 app.add_page(
@@ -284,14 +291,19 @@ app.add_page(
     on_load=[AuthState.require_login, PlannerState.load_current_week],
     title="Qualify · Planificador",
 )
-# QUA-106 — Stories: un solo formulario de publicación (cuenta -> video -> preview
-# -> Publicar -> STORIES), mismo patrón que /publish, con un panel de tendencias
-# como referencia. No hay concepto de propuesta/aprobación/revisión ni pantalla de
-# detalle — ver el rediseño de QUA-106.
+
+
+# QUA-106's Stories flow lives inside /publish since QUA-113 (a second flow next to
+# Publicaciones, same form, same trending panel below). /stories stays as a
+# compatibility route for old links and bookmarks: it only redirects.
+def _stories_redirect() -> rx.Component:
+    return rx.fragment()
+
+
 app.add_page(
-    stories_index,
+    _stories_redirect,
     route="/stories",
-    on_load=[AuthState.require_login, StoriesState.load_stories_screen],
+    on_load=rx.redirect("/publish?flow=stories", replace=True),
     title="Qualify · Stories",
 )
 # UI demo, no backend: nothing to load, but the session gate still applies.

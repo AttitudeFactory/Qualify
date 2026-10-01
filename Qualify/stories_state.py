@@ -1,4 +1,5 @@
-"""Reflex state for `/stories` (QUA-106 V1 redesign): a single publish screen for
+"""Reflex state for the Stories flow of `/publish` (QUA-106 V1 redesign; a flow inside
+Publicar since QUA-113): a single publish form for
 Instagram Stories, structurally the same flow `/publish` already has — pick a
 connected account, select one video, see it in the gallery, hit "Publicar", poll
 until Meta settles — narrowed to exactly one file (a Story is never a carousel) and
@@ -13,26 +14,26 @@ for every other publish in this app) is the only record this produces — no sec
 table, no list screen, no detail screen.
 
 **Media is always the operator's own upload.** No AI generation, no reuse of
-scraped third-party content. Video only (`.mp4`/`.mov`) — a Story published via
-`create_image_container` would need a Meta parameter this repo has never sent, out
-of scope here, same as it always was.
+scraped third-party content. A video (`.mp4`/`.mov`) or, since QUA-113, a JPEG
+image (`.jpg`/`.jpeg`). The image goes through the SAME `start_publish` call with
+`media_product_type="STORIES"`; `PublishService` sees the image `content_type` and
+publishes it as an image container with `media_type=STORIES` (Meta fetches it from
+the public media URL — same requirement as a feed image).
 
 **No caption field.** Instagram never shows a caption on a Story published via the
 API — confirmed during manual testing — so there is nothing to collect from the
 operator; `publish_background` always sends `caption=""`.
 
-**Trending audio/content is reference-only, informational, and never persisted.**
-`suggest_audio` shows Meta's own `GET /ig_audio` list (`qualify_api.stories`);
-`search_audio`/`search_song_on_meta` use that SAME call with Meta's documented
-`search_query` param (QUA-107 follow-up) instead of the default trending list —
-same client, same seam, no new integration. `discover_tiktok_trending`/
-`discover_instagram_trending`/`expand_song` read ScrapeCreators (QUA-107,
-`scrapecreators_trending.py`) — a vendor with no per-tenant credential, independent
-of `selected_connection_id`. `select_trend_audio` only sets a display choice in
-THIS session's Reflex state (`selected_trend_audio_id`/`_title`) — nothing here is
-ever sent to Meta's publish call (`audio_configuration` stays out of scope — and per
-Meta's own docs is only ever defined for Reels, never Stories) or written to any
-database row: there is no row left to write it onto.
+**Trending audio/content lives in `TrendingState` (`trending_state.py`, QUA-113).**
+This state only tells it which account Meta's `ig_audio` lookup may use
+(`TrendingState.set_audio_connection` when the account changes,
+`release_audio_connection` after a successful publish). Nothing from the trending
+panel ever reaches `publish_background`'s call to `start_publish`.
+
+**Connected accounts load on demand (QUA-113).** `ensure_connections_loaded` loads
+them the first time the Stories flow is entered and is a no-op afterwards, so a
+screen that shows Stories as a second flow never queries for it up front;
+`invalidate_connections` marks the cached list stale so the next entry reloads.
 """
 
 from __future__ import annotations
@@ -47,34 +48,35 @@ from uuid import UUID, uuid4
 import reflex as rx
 from qualify_api.publishing import MEDIA_TYPE_STORIES
 from qualify_api.publishing.service import UnknownAttempt, UnknownConnection
+from qualify_api.publishing.staging import UnsupportedImageFormat
 from qualify_shared.objects.config import R2ConfigurationError
 from qualify_shared.objects.gate import ObjectSizeExceeded, UnsizedStream
 from qualify_shared.objects.keys import TenantPrefixViolation
 
-from . import scrapecreators_trending
 from .auth_state import AuthState
 from .publishing_provider import active_connections, poll_publish, start_publish
 from .publishing_vm import ConnectionOptionVM, PublishAttemptVM
-from .scrapecreators_client import ScrapeCreatorsError
-from .stories_provider import suggest_trend_audio as _suggest_trend_audio
-from .stories_vm import (
-    TrendAudioOptionVM,
-    TrendingVideoVM,
-    build_trend_audio_vm,
-    build_trending_video_vm,
-)
 from .tenant import tenant_uuid
+from .trending_state import TrendingState
 
 logger = logging.getLogger(__name__)
 
 _NO_TENANT = "No hay ningún tenant activo. Entra a Conexiones y elige uno primero."
 _NO_CONNECTIONS = "No se pudieron cargar las cuentas conectadas."
 _NO_CONNECTION_SELECTED = "Elige una cuenta conectada antes de publicar."
-_NO_FILE = "Sube el video de la Story antes de publicar."
-_UNSUPPORTED_FORMAT = "Formato no soportado. Usa MP4 o MOV para el video de la Story."
+_NO_FILE = "Sube el video o la imagen de la Story antes de publicar."
+_UNSUPPORTED_FORMAT = (
+    "Formato no soportado. Usa MP4 o MOV para video, o JPG/JPEG para imagen de la Story."
+)
+# Same wording `publishing_state.py` uses for its own magic-byte rejection.
+_UNSUPPORTED_IMAGE_FORMAT = (
+    "El archivo no es un JPEG válido. Solo se aceptan imágenes JPEG (.jpg/.jpeg) — "
+    "PNG, WebP, GIF y HEIC no son compatibles con Instagram."
+)
 _BAD_MEDIA = "No se pudo leer el archivo subido. Intenta con otro archivo."
 _NOT_CONFIGURED = "El almacenamiento (R2) todavía no está configurado en este entorno."
 _TOO_LARGE = "El video supera el tamaño máximo permitido (300 MB)."
+_IMAGE_TOO_LARGE = "La imagen supera el tamaño máximo permitido (8 MB)."
 _UNKNOWN_CONNECTION = "Esa cuenta ya no está disponible. Actualiza la lista e intenta de nuevo."
 _START_FAILED = "No se pudo iniciar la publicación. Vuelve a intentarlo en un momento."
 _POLL_FAILED = "No se pudo consultar el estado de la publicación."
@@ -83,11 +85,9 @@ _WAIT_EXPLANATION = "Meta está procesando la Story. Esto puede tardar varios mi
 _MP4_CONTENT_TYPE = "video/mp4"
 _MOV_CONTENT_TYPE = "video/quicktime"
 _VIDEO_CONTENT_TYPES = {_MP4_CONTENT_TYPE, _MOV_CONTENT_TYPE}
+_JPEG_CONTENT_TYPE = "image/jpeg"
 
 _UPLOAD_ID = "story_upload"
-
-#: UI presentation cap for Meta's `ig_audio` suggestion list — see `suggest_audio`.
-_MAX_TREND_AUDIO_OPTIONS = 10
 
 #: Client-side safety net only — the SERVER already settles an attempt as 'failed'
 #: once its own ceiling elapses (`publishing/client.py`). Same belt-and-suspenders
@@ -107,45 +107,29 @@ def _failure_toast(message: str) -> rx.event.EventSpec:
     )
 
 
-def _resolve_video(content_type: str | None, filename: str) -> str | None:
-    """`(canonical_content_type)` for one dropped/picked file, video-only — or `None`
-    if it cannot be resolved. Same "no silent fallback" discipline `publishing_state.
-    _resolve_media` documents for its own resolver, narrowed to video since a Story is
-    never a photo."""
+def _resolve_story_media(content_type: str | None, filename: str) -> str | None:
+    """`(canonical_content_type)` for one dropped/picked file — an MP4/MOV video or a
+    JPEG image (QUA-113) — or `None` if it cannot be resolved. Same "no silent
+    fallback" discipline `publishing_state._resolve_media` documents for its own
+    resolver. Only JPEG for images: it is the one image format Meta's Content
+    Publishing API accepts (`client.IMAGE_CONTENT_TYPE`)."""
     ct = (content_type or "").strip().lower()
-    if ct in _VIDEO_CONTENT_TYPES:
+    if ct in _VIDEO_CONTENT_TYPES or ct == _JPEG_CONTENT_TYPE:
         return ct
     name = filename.lower()
     if name.endswith(".mp4"):
         return _MP4_CONTENT_TYPE
     if name.endswith(".mov"):
         return _MOV_CONTENT_TYPE
+    if name.endswith((".jpg", ".jpeg")):
+        return _JPEG_CONTENT_TYPE
     return None
 
 
-def _trending_vm(video: scrapecreators_trending.TrendingVideo) -> TrendingVideoVM:
-    return build_trending_video_vm(
-        source=video.source,
-        external_id=video.id,
-        caption=video.caption,
-        author_handle=video.author_handle,
-        author_display_name=video.author_display_name,
-        likes=video.likes,
-        comments=video.comments,
-        plays=video.plays,
-        created_at=video.created_at,
-        permalink=video.permalink,
-        thumbnail_url=video.thumbnail_url,
-        music_id=video.music_id,
-        music_title=video.music_title,
-        rank=video.rank,
-    )
-
-
 class StoriesState(rx.State):
-    """Backs `/stories` — one screen, one file, one publish action. Structurally the
-    single-item path of `PublishState` (`publishing_state.py`), plus the QUA-107
-    trending/reference panel bolted on alongside it, untouched in behavior."""
+    """Backs the Stories publish flow — one file, one publish action. Structurally the
+    single-item path of `PublishState` (`publishing_state.py`). The trending panel
+    shown next to it is `TrendingState`, not part of this state."""
 
     connections: list[ConnectionOptionVM] = []
     is_loading_connections: bool = False
@@ -153,47 +137,9 @@ class StoriesState(rx.State):
 
     selected_connection_id: str = ""
     pending_filename: str = ""
-
-    trend_options: list[TrendAudioOptionVM] = []
-    # Follow-up ("que también se pueda cerrar"): a successful lookup opens the list,
-    # a close never clears `trend_options` — same cache-but-collapse posture
-    # `tiktok_trending_expanded`/`instagram_trending_expanded` already have.
-    trend_expanded: bool = False
-    is_loading_trend: bool = False
-    trend_error: str = ""
-    selected_trend_audio_id: str = ""
-    selected_trend_audio_title: str = ""
-    # Meta's `GET /ig_audio` accepts an optional `search_query` (audio-api.md) — this
-    # box searches Meta's own catalog by keyword instead of only browsing whatever
-    # "Sugerir audio en tendencia" returns. Independent of `trend_options`: typing
-    # here does not filter the CURRENT list client-side, it drives the NEXT lookup.
-    audio_search_query: str = ""
-
-    # QUA-107: ScrapeCreators trending discovery — independent of connection_id, so
-    # switching connections (unlike `select_connection` below) never clears these.
-    # `_expanded` (follow-up) is separate from "has data": the fetched list stays
-    # cached once loaded, so collapsing/re-expanding is instant and never re-fetches
-    # the vendor — only an explicit re-click on an ALREADY-expanded button refetches.
-    tiktok_trending: list[TrendingVideoVM] = []
-    tiktok_trending_expanded: bool = False
-    is_loading_tiktok_trending: bool = False
-    tiktok_trending_error: str = ""
-
-    instagram_trending: list[TrendingVideoVM] = []
-    instagram_trending_expanded: bool = False
-    is_loading_instagram_trending: bool = False
-    instagram_trending_error: str = ""
-
-    expanded_song_id: str = ""
-    song_detail: TrendAudioOptionVM | None = None
-    is_loading_song_detail: bool = False
-
-    # QUA-107 follow-up: audio preview player. Deliberately independent of
-    # `selected_trend_audio_id`/`_title` — listening to a track and choosing it as a
-    # reference are two separate actions, never coupled.
-    playing_audio_id: str = ""
-    playing_audio_url: str = ""
-    is_audio_playing: bool = False
+    # QUA-113: the buffered file is a JPEG (vs a video) — picks the tile's fallback
+    # icon and the size message; the publish call itself only needs the content type.
+    pending_is_image: bool = False
 
     # idle | staging_and_starting | polling | success | failure — same vocabulary
     # `PublishState.phase` already uses.
@@ -212,6 +158,10 @@ class StoriesState(rx.State):
     # `time.monotonic()` at the moment `phase` becomes "polling", purely to derive
     # `elapsed_label` — same posture `PublishState`'s own field documents.
     _poll_started_monotonic: float = 0.0
+    # True once `load_stories_screen` has succeeded for the current entry — lets
+    # `ensure_connections_loaded` skip the query on every later entry into the flow.
+    # Stays False after a failed load, so the next entry retries.
+    _connections_loaded: bool = False
 
     @rx.var
     def can_publish(self) -> bool:
@@ -270,24 +220,39 @@ class StoriesState(rx.State):
         async with self:
             self.connections = connections
             self.is_loading_connections = False
+            self._connections_loaded = True
+
+    @rx.event
+    def ensure_connections_loaded(self) -> rx.event.EventSpec | None:
+        """Load the connected accounts only if this flow has not loaded them yet —
+        the first entry into Stories pays for the query, later entries are free. A
+        load already in flight is not started twice: `is_loading_connections` is set
+        HERE, in the foreground, before the background load is even scheduled."""
+        if self._connections_loaded or self.is_loading_connections:
+            return None
+        self.is_loading_connections = True
+        return StoriesState.load_stories_screen
+
+    @rx.event
+    def invalidate_connections(self) -> None:
+        """Mark the loaded accounts stale — the next `ensure_connections_loaded`
+        queries again. Called when the screen itself is (re)entered, so a newly
+        connected account shows up on a fresh visit exactly as it did before."""
+        self._connections_loaded = False
 
     # -- form ------------------------------------------------------------------
 
     @rx.event
-    def select_connection(self, connection_id: str) -> None:
+    def select_connection(self, connection_id: str) -> rx.event.EventSpec:
         self.selected_connection_id = connection_id
-        # A new connection invalidates whatever trending audio was suggested for the
-        # PREVIOUS one — never carried across silently.
-        self.trend_options = []
-        self.trend_expanded = False
-        self.audio_search_query = ""
-        self.selected_trend_audio_id = ""
-        self.selected_trend_audio_title = ""
+        # The trending panel's Meta audio lookup follows this flow's account — and
+        # drops whatever it suggested for the PREVIOUS one (TrendingState owns that).
+        return TrendingState.set_audio_connection(connection_id)
 
     @rx.event
     async def add_file(self, files: list[rx.UploadFile]) -> rx.event.EventSpec | None:
-        """Buffers ONE video file — a second drop REPLACES the first, there is no
-        gallery/carousel for a Story. Must not be `background=True`: Reflex forbids
+        """Buffers ONE file (a video or a JPEG) — a second drop REPLACES the first,
+        there is no gallery/carousel for a Story. Must not be `background=True`: Reflex forbids
         that combination for a handler receiving `list[rx.UploadFile]` (same
         constraint `publishing_state.py`'s module docstring documents)."""
         if not files:
@@ -296,7 +261,7 @@ class StoriesState(rx.State):
             return None
         upload = files[0]
         filename = getattr(upload, "filename", None) or getattr(upload, "name", None) or "archivo"
-        content_type = _resolve_video(getattr(upload, "content_type", None), filename)
+        content_type = _resolve_story_media(getattr(upload, "content_type", None), filename)
         if content_type is None:
             return rx.toast.error(_UNSUPPORTED_FORMAT)
         try:
@@ -306,6 +271,7 @@ class StoriesState(rx.State):
         self._pending_bytes = data
         self._pending_content_type = content_type
         self.pending_filename = filename
+        self.pending_is_image = content_type == _JPEG_CONTENT_TYPE
         return None
 
     @rx.event
@@ -315,205 +281,7 @@ class StoriesState(rx.State):
         self._pending_bytes = b""
         self._pending_content_type = ""
         self.pending_filename = ""
-
-    async def _run_audio_search(self, search_query: str) -> None:
-        """Shared body for `suggest_audio`/`search_audio`/`search_song_on_meta` —
-        best-effort, an empty result is a normal outcome, never shown as an error
-        unless the call itself could not even be attempted (no tenant/connection).
-        See `qualify_api.stories.suggest_trend_audio_using`'s own
-        degrade-don't-block posture. `search_query` empty means Meta's own trending
-        list (`suggest_audio`'s behavior, unchanged); non-empty searches Meta's
-        catalog by keyword instead."""
-        async with self:
-            connection_id = self.selected_connection_id
-        if not connection_id:
-            return
-        tenant_id = await self._session_tenant_id()
-        if tenant_id is None:
-            return
-        async with self:
-            self.is_loading_trend = True
-            self.trend_error = ""
-        options = await _suggest_trend_audio(
-            tenant_id=tenant_id, connection_id=UUID(connection_id), search_query=search_query
-        )
-        async with self:
-            # UI-only presentation cap (QUA-107 follow-up) — Meta's own list is
-            # uncapped (~25 items measured), which read as a "wall of chips" once
-            # the trending-discovery cards landed next to it. The cap lives here,
-            # never in trend_audio_client.py: it is about how many we SHOW, not
-            # about what Meta returns.
-            self.trend_options = options[:_MAX_TREND_AUDIO_OPTIONS]
-            self.trend_expanded = True
-            self.is_loading_trend = False
-
-    @rx.event
-    def close_trend_audio(self) -> None:
-        """Collapse the Meta audio list (follow-up: "que también se pueda
-        cerrar") — never clears `trend_options`, same cache-but-collapse posture
-        the TikTok/Instagram toggles already have. Clicking "Sugerir"/"Buscar"
-        again re-opens it (with fresh results, since those always re-fetch)."""
-        self.trend_expanded = False
-
-    @rx.event(background=True)
-    async def suggest_audio(self) -> None:
-        """Browse Meta's own trending list — no search query, unchanged behavior."""
-        await self._run_audio_search("")
-
-    @rx.event(background=True)
-    async def search_audio(self) -> None:
-        """Search Meta's audio catalog using whatever is currently typed in
-        `audio_search_query`. An empty box behaves exactly like `suggest_audio`."""
-        async with self:
-            query = self.audio_search_query
-        await self._run_audio_search(query)
-
-    @rx.event(background=True)
-    async def search_song_on_meta(self, title: str) -> None:
-        """ "Buscar esta canción" from a TikTok/Instagram trending candidate's song
-        detail (QUA-107 follow-up) — fills the search box with that track's title
-        and searches Meta's OWN catalog for it. TikTok's and Meta's audio catalogs
-        are unrelated systems; this can only search by keyword, never guarantee a
-        match — same reference-only posture every trend-audio feature here has."""
-        async with self:
-            self.audio_search_query = title
-        await self._run_audio_search(title)
-
-    @rx.event
-    def set_audio_search_query(self, value: str) -> None:
-        self.audio_search_query = value
-
-    @rx.event
-    def select_trend_audio(self, audio_id: str, title: str) -> None:
-        self.selected_trend_audio_id = audio_id
-        self.selected_trend_audio_title = title
-
-    @rx.event
-    def clear_trend_audio(self) -> None:
-        self.selected_trend_audio_id = ""
-        self.selected_trend_audio_title = ""
-
-    @rx.event
-    def toggle_audio_preview(self, audio_id: str, url: str) -> None:
-        """Play/pause the ONE shared preview player. Toggling the currently-playing
-        row pauses it; anything else (a different row, or a paused row) switches the
-        player's source and plays. Never touches `selected_trend_audio_id`/`_title`
-        — listening and selecting are independent (QUA-107 follow-up)."""
-        if self.playing_audio_id == audio_id and self.is_audio_playing:
-            self.is_audio_playing = False
-            return
-        self.playing_audio_id = audio_id
-        self.playing_audio_url = url
-        self.is_audio_playing = True
-
-    @rx.event
-    def audio_preview_stopped(self) -> None:
-        """Fired by the player's own `on_ended`/`on_error` — a track finishing, or a
-        preview URL that expired/failed mid-playback, both degrade to the same
-        clean stopped state rather than leaving the ⏸ icon stuck showing sound that
-        is not actually playing."""
-        self.is_audio_playing = False
-
-    @rx.event
-    def toggle_tiktok_trending(self) -> rx.event.EventSpec | None:
-        """Collapse/expand — the same button drives both directions (follow-up).
-        Collapsing never clears `tiktok_trending`, so re-expanding right after is
-        instant and free; a fresh vendor call only happens the FIRST time (nothing
-        cached yet)."""
-        if self.tiktok_trending_expanded:
-            self.tiktok_trending_expanded = False
-            return None
-        if self.tiktok_trending:
-            self.tiktok_trending_expanded = True
-            return None
-        return StoriesState.discover_tiktok_trending
-
-    @rx.event(background=True)
-    async def discover_tiktok_trending(self) -> None:
-        """Explicit, operator-triggered — never runs on screen load. Needs no
-        tenant/connection: ScrapeCreators resolves against the one global
-        `SCRAPECREATORS_API_KEY`, not a per-tenant credential (QUA-107 architecture
-        decision). Any vendor failure degrades to an empty list, same "reference
-        only, never blocking" posture `suggest_audio` already has for Meta."""
-        async with self:
-            self.is_loading_tiktok_trending = True
-            self.tiktok_trending_error = ""
-        try:
-            videos = await asyncio.to_thread(scrapecreators_trending.fetch_tiktok_trending_feed)
-        except ScrapeCreatorsError as exc:
-            logger.warning("fetch_tiktok_trending_feed failed: %s", type(exc).__name__)
-            async with self:
-                self.tiktok_trending = []
-                self.tiktok_trending_expanded = True
-                self.is_loading_tiktok_trending = False
-            return
-        async with self:
-            self.tiktok_trending = [_trending_vm(v) for v in videos]
-            self.tiktok_trending_expanded = True
-            self.is_loading_tiktok_trending = False
-
-    @rx.event
-    def toggle_instagram_trending(self) -> rx.event.EventSpec | None:
-        """Same collapse/expand toggle as `toggle_tiktok_trending`, for Instagram."""
-        if self.instagram_trending_expanded:
-            self.instagram_trending_expanded = False
-            return None
-        if self.instagram_trending:
-            self.instagram_trending_expanded = True
-            return None
-        return StoriesState.discover_instagram_trending
-
-    @rx.event(background=True)
-    async def discover_instagram_trending(self) -> None:
-        """Same posture as `discover_tiktok_trending` — explicit trigger, no
-        tenant/connection, degrades to an empty list on any vendor failure."""
-        async with self:
-            self.is_loading_instagram_trending = True
-            self.instagram_trending_error = ""
-        try:
-            videos = await asyncio.to_thread(scrapecreators_trending.fetch_instagram_trending_reels)
-        except ScrapeCreatorsError as exc:
-            logger.warning("fetch_instagram_trending_reels failed: %s", type(exc).__name__)
-            async with self:
-                self.instagram_trending = []
-                self.instagram_trending_expanded = True
-                self.is_loading_instagram_trending = False
-            return
-        async with self:
-            self.instagram_trending = [_trending_vm(v) for v in videos]
-            self.instagram_trending_expanded = True
-            self.is_loading_instagram_trending = False
-
-    @rx.event(background=True)
-    async def expand_song(self, music_id: str, music_title: str) -> None:
-        """Enriches ONE TikTok candidate with `/song` — on demand, never batched
-        (QUA-107 decision). A failure here degrades to `song_detail` staying `None`;
-        it never blocks publishing or picking a different candidate."""
-        async with self:
-            self.expanded_song_id = music_id
-            self.is_loading_song_detail = True
-            self.song_detail = None
-        try:
-            detail = await asyncio.to_thread(
-                scrapecreators_trending.fetch_tiktok_song, clip_id=music_id
-            )
-        except ScrapeCreatorsError as exc:
-            logger.warning("fetch_tiktok_song failed: %s", type(exc).__name__)
-            async with self:
-                self.is_loading_song_detail = False
-            return
-        async with self:
-            self.song_detail = build_trend_audio_vm(
-                audio_id=detail.id or music_id,
-                title=detail.title or music_title,
-                artist_or_creator=detail.author,
-                duration_ms=None,
-                rank=0,
-                user_count=detail.user_count,
-                recommend_status=detail.recommend_status,
-                preview_url=detail.preview_url,
-            )
-            self.is_loading_song_detail = False
+        self.pending_is_image = False
 
     # -- share to Instagram (Web Share API handoff) -------------------------
 
@@ -529,7 +297,7 @@ class StoriesState(rx.State):
         current Instagram Platform docs (Content Publishing / Audio API references)."""
         if result == "shared":
             return rx.toast.success(
-                "Video compartido. Termina en Instagram: elige Historia, "
+                "Archivo compartido. Termina en Instagram: elige Historia, "
                 "agrega la música y publica ahí."
             )
         if result == "cancelled":
@@ -547,7 +315,7 @@ class StoriesState(rx.State):
                 "Prueba desde Chrome (Android) o Safari (iPhone)."
             )
         if result == "no_file":
-            return rx.toast.error("Sube el video de la Story antes de compartir.")
+            return rx.toast.error("Sube el video o la imagen de la Story antes de compartir.")
         if result == "cannot_share_file":
             return rx.toast.error(
                 "Este navegador no puede compartir este archivo (formato o tamaño no soportado)."
@@ -593,6 +361,7 @@ class StoriesState(rx.State):
             self._pending_bytes = b""
             self._pending_content_type = ""
             self.pending_filename = ""
+            self.pending_is_image = False
             return _failure_toast(message)
 
     @rx.event(background=True)
@@ -600,8 +369,8 @@ class StoriesState(rx.State):
         """Stage the bytes `publish` captured and start a `STORIES` publish attempt,
         then hand off to polling. Reads everything it needs from the private vars
         `publish` set — mirrors `PublishState.publish_background`'s single-item path
-        exactly, with `media_product_type` fixed to `MEDIA_TYPE_STORIES` instead of
-        resolved from the file's own type (a Story is always video)."""
+        exactly, with `media_product_type` fixed to `MEDIA_TYPE_STORIES` — for a video
+        AND for a JPEG (QUA-113): the backend routes an image Story by its content type."""
         async with self:
             if self.phase != "staging_and_starting":
                 return  # superseded, or nothing was actually queued
@@ -637,8 +406,16 @@ class StoriesState(rx.State):
             if toast is not None:
                 yield toast
             return
+        except UnsupportedImageFormat:
+            toast = await self._fail_pending(idempotency_key, _UNSUPPORTED_IMAGE_FORMAT)
+            if toast is not None:
+                yield toast
+            return
         except (ObjectSizeExceeded, UnsizedStream):
-            toast = await self._fail_pending(idempotency_key, _TOO_LARGE)
+            # 8 MB for an image Story, 300 MB for a video one — same split
+            # `publishing_state.py` makes for its own single item.
+            size_message = _IMAGE_TOO_LARGE if content_type == _JPEG_CONTENT_TYPE else _TOO_LARGE
+            toast = await self._fail_pending(idempotency_key, size_message)
             if toast is not None:
                 yield toast
             return
@@ -677,8 +454,6 @@ class StoriesState(rx.State):
             is_success = self.phase == "success"
             if is_success:
                 self.selected_connection_id = ""
-                self.selected_trend_audio_id = ""
-                self.selected_trend_audio_title = ""
             result_toast = (
                 _success_toast()
                 if is_success
@@ -688,6 +463,9 @@ class StoriesState(rx.State):
             )
         yield
 
+        if is_success:
+            # The account was just cleared above — the trending panel lets go of it too.
+            yield TrendingState.release_audio_connection
         if result_toast is not None:
             yield result_toast
 
@@ -753,8 +531,6 @@ class StoriesState(rx.State):
                 is_success = self.phase == "success"
                 if is_success:
                     self.selected_connection_id = ""
-                    self.selected_trend_audio_id = ""
-                    self.selected_trend_audio_title = ""
                 result_toast = (
                     _success_toast()
                     if is_success
@@ -763,6 +539,8 @@ class StoriesState(rx.State):
                     else None
                 )
             yield
+            if is_success:
+                yield TrendingState.release_audio_connection
             if result_toast is not None:
                 yield result_toast
             if settled:

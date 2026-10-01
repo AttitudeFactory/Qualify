@@ -50,6 +50,18 @@ capture (success or failure) — never held onto, so there is nothing to leak; t
 This never calls `preventDefault`/`stopPropagation`, so `rx.upload`'s own handling of
 the identical `drop`/`change` event (`PublishState.add_files`) is completely
 unaffected.
+
+**Per-gallery isolation (QUA-113).** Two galleries can live on the same page (the
+Publicaciones and Stories flows of `/publish`), and the store is one global object —
+so every entry is scoped to the gallery root that captured it:
+
+- thumbnails are keyed `"<root_id>/<filename>"` (`preview_key_js`), so the same
+  filename dropped in both galleries never shows the other gallery's frame, and each
+  reader passes its own `root_id`;
+- the raw `File` kept for "Abrir en Instagram" lives in `filesByRoot[root_id]`, one
+  slot per gallery (it replaced a single global `lastFile`, which would hand the
+  Stories share button whatever was dropped LAST on the page, in either gallery).
+  `gallery_file_js` is the only sanctioned way to read it back.
 """
 
 from __future__ import annotations
@@ -73,15 +85,33 @@ from reflex.vars.sequence import LiteralStringVar
 # and easy to reintroduce.
 _STORE_SETUP = """
     if (typeof window !== "undefined" && typeof window.__qualifyPreviews === "undefined") {
-      window.__qualifyPreviews = { data: {}, listeners: new Set(), lastFile: null };
-      window.__qualifyPreviews.setPreview = function (filename, dataUri) {
+      window.__qualifyPreviews = { data: {}, listeners: new Set(), filesByRoot: {} };
+      window.__qualifyPreviews.setPreview = function (key, dataUri) {
         var next = Object.assign({}, window.__qualifyPreviews.data);
-        next[filename] = dataUri;
+        next[key] = dataUri;
         window.__qualifyPreviews.data = next;
         window.__qualifyPreviews.listeners.forEach(function (cb) { cb(); });
       };
     }
 """
+
+
+def preview_key_js(root_id: str, filename_js: str) -> str:
+    """The JS expression for a thumbnail's key in the shared store — the gallery root
+    first, so two galleries never share an entry. `filename_js` is itself a JS
+    expression (a variable name or a compiled Var), not a Python string value."""
+    return f'({LiteralStringVar.create(root_id)!s} + "/" + {filename_js})'
+
+
+def gallery_file_js(root_id: str) -> str:
+    """The JS expression for the raw `File` most recently captured by the gallery
+    `root_id` — ONLY that gallery, never another one on the same page. `null` when
+    that gallery has captured nothing (or the store does not exist yet)."""
+    root = LiteralStringVar.create(root_id)
+    return (
+        "((window.__qualifyPreviews && window.__qualifyPreviews.filesByRoot && "
+        f"window.__qualifyPreviews.filesByRoot[{root!s}]) || null)"
+    )
 
 
 def gallery_preview_capture_anchor(*, root_id: str) -> Var[str]:
@@ -101,9 +131,12 @@ def gallery_preview_capture_anchor(*, root_id: str) -> Var[str]:
       const captureFile = (file) => {{
         // Kept alongside the thumbnail capture below so the "Abrir en
         // Instagram" button (`stories_page.py`) has a real File object to hand
-        // to `navigator.share()` -- Stories is single-file, so the LAST one
-        // dropped is always the one currently in the gallery.
-        window.__qualifyPreviews.lastFile = file;
+        // to `navigator.share()` -- scoped to THIS gallery's root (QUA-113), so
+        // a file dropped in another gallery on the same page never lands here.
+        // Stories is single-file, so the last one dropped on ITS root is always
+        // the one currently in that gallery.
+        window.__qualifyPreviews.filesByRoot = window.__qualifyPreviews.filesByRoot || {{}};
+        window.__qualifyPreviews.filesByRoot[{root_id_var!s}] = file;
         let blobUrl = null;
         const releaseBlob = () => {{
           if (blobUrl) {{ URL.revokeObjectURL(blobUrl); blobUrl = null; }}
@@ -128,7 +161,9 @@ def gallery_preview_capture_anchor(*, root_id: str) -> Var[str]:
             canvas.width = video.videoWidth || 320;
             canvas.height = video.videoHeight || 180;
             canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-            window.__qualifyPreviews.setPreview(file.name, canvas.toDataURL("image/jpeg", 0.7));
+            window.__qualifyPreviews.setPreview(
+              {preview_key_js(root_id, "file.name")}, canvas.toDataURL("image/jpeg", 0.7)
+            );
           }} catch (captureErr) {{
             // Capture failed (e.g. a codec the browser can decode but not paint to a
             // canvas) -- leave the fallback icon in place rather than a broken image.
@@ -164,13 +199,15 @@ def gallery_preview_capture_anchor(*, root_id: str) -> Var[str]:
     ).guess_type()
 
 
-def video_frame_preview_src(*, filename: Var[str]) -> Var[str]:
+def video_frame_preview_src(*, root_id: str, filename: Var[str]) -> Var[str]:
     """A reactive `Var[str]` — a `data:` URI of `filename`'s first video frame, once the
     gallery-wide capture anchor (`gallery_preview_capture_anchor`) has seen and
     processed it. Empty until then, or if a frame could never be captured (an
     unsupported codec) — callers treat empty as "not ready", not as an error, and show
     a fallback. `filename` is `PendingItemVM.filename`, a Var — it comes from
-    `rx.foreach`.
+    `rx.foreach`. `root_id` is the gallery the tile belongs to — the SAME id its
+    capture anchor was mounted with, so a tile only ever reads its own gallery's
+    entries (QUA-113).
 
     Reads the SAME shared store the anchor writes to via `useSyncExternalStore` — never
     its own `useState` (that only shared correctly within one compiled function scope,
@@ -196,7 +233,7 @@ def video_frame_preview_src(*, filename: Var[str]) -> Var[str]:
     );
     """
     return Var(
-        _js_expr=f'(previews[{filename!s}] || "")',
+        _js_expr=f'(previews[{preview_key_js(root_id, str(filename))}] || "")',
         _var_type=str,
         _var_data=VarData.merge(
             VarData(imports={"react": ["useSyncExternalStore"]}, hooks={hook: None}),
