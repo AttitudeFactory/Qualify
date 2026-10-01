@@ -34,6 +34,7 @@ from qualify_api.publishing.client import (
     JPEG_MAGIC_BYTES,
     MEDIA_TYPE_IMAGE,
     RESUMABLE_MEDIA_TYPES,
+    is_image_story,
 )
 
 # QUA-68: everything this service will stage for publication — the resumable video types
@@ -90,7 +91,10 @@ class MediaStagingService:
                 f"media_product_type {media_product_type!r} is not publishable; "
                 f"expected one of {sorted(PUBLISHABLE_MEDIA_TYPES)}"
             )
-        if media_product_type == MEDIA_TYPE_IMAGE:
+        # QUA-113: an image Story is an image to Meta — same JPEG-only, 8 MB rules.
+        if media_product_type == MEDIA_TYPE_IMAGE or is_image_story(
+            media_product_type, content_type
+        ):
             # QUA-103/QUA-68 ordering is deliberate: content-type (a string compare) and
             # size (`_reject_oversized_image`, `seek`-only, never a real `read`) both
             # reject WITHOUT touching a single byte of the stream — same "reject before

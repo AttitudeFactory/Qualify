@@ -108,6 +108,18 @@ IMAGE_MAX_BYTES = 8 * 1024 * 1024
 # staging/object-store layer.
 IMAGE_CONTENT_TYPE = "image/jpeg"
 
+
+def is_image_story(media_product_type: str, content_type: str | None) -> bool:
+    """QUA-113 — a Story whose media is an IMAGE. Meta publishes it through the image
+    container shape (`image_url`, Meta fetches it) plus `media_type=STORIES`
+    (`content-publishing.md` §"Story posts"), never the resumable video upload a video
+    Story uses. Decided by the declared `content_type`: anything `image/*` takes the
+    image path, where staging then enforces JPEG-only like any other image."""
+    return media_product_type == MEDIA_TYPE_STORIES and (content_type or "").lower().startswith(
+        "image/"
+    )
+
+
 # The first three bytes of every real JPEG file (the SOI marker `FFD8` followed by the
 # first byte of the next marker, always `FF` — every JPEG variant, including the ones
 # Meta rejects like MPO/JPS, shares this prefix since they ARE JPEG containers underneath).
@@ -237,6 +249,7 @@ class PublishClient(Protocol):
         image_url: str,
         caption: str | None = None,
         is_carousel_item: bool = False,
+        media_type: str | None = None,
     ) -> str: ...
 
     async def upload_bytes(
@@ -510,6 +523,7 @@ class HttpPublishClient:
         image_url: str,
         caption: str | None = None,
         is_carousel_item: bool = False,
+        media_type: str | None = None,
     ) -> str:
         """`POST /<IG_USER_ID>/media?image_url=<URL>` — QUA-68's whole reason to exist as a
         SEPARATE method rather than an overload of `create_container`: no `upload_type`, no
@@ -525,11 +539,22 @@ class HttpPublishClient:
         the one param the two shapes happen to share, not a sign they should become one
         method.
         """
+        if media_type not in (None, MEDIA_TYPE_STORIES):
+            # QUA-113: the only `media_type` an image container takes is STORIES (an
+            # image Story). A feed image and a carousel child send none at all.
+            raise PublishError(
+                f"media_type {media_type!r} is not valid for an image container; "
+                f"only {MEDIA_TYPE_STORIES!r} (an image Story) or none"
+            )
         params = {"image_url": image_url}
         if caption is not None:
             params["caption"] = caption
         if is_carousel_item:
             params["is_carousel_item"] = "true"
+        if media_type is not None:
+            # QUA-113 — `content-publishing.md` §"Story posts": a Story is a container
+            # with `media_type=STORIES`; with `image_url` that is an image Story.
+            params["media_type"] = media_type
         return _parse_image_container_response(
             await self._post_graph(f"/{ig_user_id}/media", params)
         )

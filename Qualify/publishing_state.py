@@ -69,6 +69,7 @@ from .publishing_provider import (
 )
 from .publishing_vm import ChildStatusVM, ConnectionOptionVM, PendingItemVM
 from .tenant import tenant_uuid
+from .trending_state import TrendingState
 
 logger = logging.getLogger(__name__)
 
@@ -392,8 +393,11 @@ class PublishState(rx.State):
         self.caption = value
 
     @rx.event
-    def select_connection(self, connection_id: str) -> None:
+    def select_connection(self, connection_id: str) -> rx.event.EventSpec:
         self.selected_connection_id = connection_id
+        # QUA-113: the trending panel under this flow uses this flow's account for
+        # Meta's audio lookup — same hand-off `StoriesState.select_connection` makes.
+        return TrendingState.set_audio_connection(connection_id)
 
     @rx.event
     async def add_files(self, files: list[rx.UploadFile]) -> rx.event.EventSpec | None:
@@ -722,6 +726,9 @@ class PublishState(rx.State):
             )
         yield
 
+        if is_success:
+            # The account was just cleared above — the trending panel lets go of it too.
+            yield TrendingState.release_audio_connection
         if result_toast is not None:
             yield result_toast
 
@@ -822,6 +829,8 @@ class PublishState(rx.State):
                     else None
                 )
             yield
+            if is_success:
+                yield TrendingState.release_audio_connection
             if result_toast is not None:
                 yield result_toast
             if settled:

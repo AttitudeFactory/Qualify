@@ -48,6 +48,7 @@ from qualify_api.publishing.client import (
     ContainerStatus,
     PublishClient,
     PublishError,
+    is_image_story,
 )
 from qualify_api.publishing.repository import (
     CHILD_TERMINAL_STATUSES,
@@ -375,7 +376,11 @@ class PublishService:
         # STRUCTURALLY VIDEO: it would send `media_type='IMAGE'` to `create_container`,
         # which `client.py`'s own `RESUMABLE_MEDIA_TYPES` guard already refuses. Nothing
         # below this branch is touched or reordered for the VIDEO path.
-        if media_product_type == MEDIA_TYPE_IMAGE:
+        # QUA-113: an image Story takes the SAME image branch — Meta fetches the image
+        # from `image_url` — and differs only by `media_type=STORIES` on the container.
+        # A video Story still falls through to the resumable path below, unchanged.
+        image_story = is_image_story(media_product_type, content_type)
+        if media_product_type == MEDIA_TYPE_IMAGE or image_story:
             return await self._start_image(
                 tenant_id=tenant_id,
                 attempt=attempt,
@@ -383,6 +388,7 @@ class PublishService:
                 media_object_key=media_object_key,
                 content_type=content_type,
                 caption=caption,
+                container_media_type=MEDIA_TYPE_STORIES if image_story else None,
             )
 
         client = await self._clients.client_for(tenant_id=tenant_id, connection_id=connection_id)
@@ -433,6 +439,7 @@ class PublishService:
         media_object_key: str,
         content_type: str | None,
         caption: str | None,
+        container_media_type: str | None = None,
     ) -> PublishState:
         """QUA-68's whole reason to exist: IMAGE has no upload phase, so this is `start()`'s
         `create_container`/`upload_bytes` pair collapsed into ONE Meta call plus a status
@@ -463,7 +470,11 @@ class PublishService:
         # attempt with no creation_id yet from the CLIENT side either) is not the exit here;
         # the caller simply sees the exception and the row is there to reconcile from later.
         container_id = await client.create_image_container(
-            ig_user_id=target.ig_user_id, image_url=image_url, caption=caption
+            ig_user_id=target.ig_user_id,
+            image_url=image_url,
+            caption=caption,
+            # None for a feed image; STORIES for an image Story (QUA-113).
+            media_type=container_media_type,
         )
         self._repo.record_creation_id(
             tenant_id=tenant_id, attempt_id=attempt.id, creation_id=container_id

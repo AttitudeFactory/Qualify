@@ -24,6 +24,7 @@ from qualify_api.publishing.client import (
     HttpPublishClient,
     PublishError,
     _parse_upload_response,
+    is_image_story,
 )
 
 SETTINGS = MetaOAuthSettings(
@@ -766,3 +767,50 @@ def test_image_is_not_a_resumable_media_type() -> None:
     """The scope boundary of ADR 28, asserted: image has no byte-upload path at all."""
     assert RESUMABLE_MEDIA_TYPES == {"REELS", "STORIES", "VIDEO"}
     assert "IMAGE" not in RESUMABLE_MEDIA_TYPES
+
+
+# --------------------------------------------------------------------------------------
+# Image Story (QUA-113)
+# --------------------------------------------------------------------------------------
+
+
+async def test_create_image_container_sends_media_type_stories_for_an_image_story() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(dict(request.url.params))
+        return _json({"id": IMAGE_CONTAINER})
+
+    await _client(handler).create_image_container(
+        ig_user_id=IG_USER, image_url="https://x/y", media_type="STORIES"
+    )
+    assert seen["media_type"] == "STORIES"
+    assert seen["image_url"] == "https://x/y"
+    assert "upload_type" not in seen
+
+
+@pytest.mark.parametrize("media_type", ["REELS", "VIDEO", "IMAGE", "stories"])
+async def test_create_image_container_refuses_any_other_media_type(media_type: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request may be sent for an invalid media_type")
+
+    with pytest.raises(PublishError, match="not valid for an image container"):
+        await _client(handler).create_image_container(
+            ig_user_id=IG_USER, image_url="https://x/y", media_type=media_type
+        )
+
+
+@pytest.mark.parametrize(
+    ("media_product_type", "content_type", "expected"),
+    [
+        ("STORIES", "image/jpeg", True),
+        ("STORIES", "IMAGE/JPEG", True),
+        ("STORIES", "image/png", True),  # routed to the image path; staging rejects it
+        ("STORIES", "video/mp4", False),
+        ("STORIES", None, False),
+        ("IMAGE", "image/jpeg", False),
+        ("REELS", "image/jpeg", False),
+    ],
+)
+def test_is_image_story(media_product_type: str, content_type: str | None, expected: bool) -> None:
+    assert is_image_story(media_product_type, content_type) is expected
