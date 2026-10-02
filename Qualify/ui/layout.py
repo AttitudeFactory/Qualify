@@ -294,9 +294,12 @@ def _guest_islands() -> rx.Component:
     """The rail of a pre-login Brand Kit (§ request 2026-10-02): no sections — every
     other page needs a login — only where the kit is being saved and the way into an
     account (the signup with that email adopts it)."""
+    # Same labels and routes as the logged-in rail's own entries ("Marca", and "Brand
+    # Kit" under "Negocio"), so the Brand Kit's own copy ("ve a Negocio → Brand Kit")
+    # holds for a guest too.
     return rx.fragment(
         _island(
-            _nav_item("Brand Kit", "palette", "/brand", True),
+            _nav_item("Marca", "palette", "/brand", True),
             rx.text(
                 "Guardando en ",
                 rx.text.strong(AuthState.guest_email),
@@ -309,6 +312,9 @@ def _guest_islands() -> rx.Component:
         ),
         rx.spacer(),
         _island(
+            _zone_head("Negocio", "business"),
+            _nav_item("Brand Kit", "swatch-book", "/brand/kit", True),
+            rx.divider(margin="0.15rem 0"),
             _nav_item("Crear cuenta", "user-plus", "/signup", True),
             _nav_item("Iniciar sesión", "log-in", "/login", True),
             rx.divider(margin="0.15rem 0"),
