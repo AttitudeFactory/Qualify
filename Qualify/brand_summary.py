@@ -36,7 +36,16 @@ from .creative_wizard_pages import (
     brand_choice_index,
 )
 from .r2_media import BACKEND_BASE
-from .ui import app_shell, callout, card, page_body, page_header, section, tag
+from .ui import (
+    app_shell,
+    callout,
+    card,
+    page_body,
+    page_header,
+    progress_panel,
+    section,
+    tag,
+)
 from .ui import tokens as T
 from .voice_lab import VoiceLabState, brand_voice_clone
 
@@ -409,7 +418,11 @@ def brand_home_index() -> rx.Component:
     """/brand: the summary for a finished kit (TEMPORAL), the usual question otherwise."""
     return rx.cond(
         BrandSummaryState.loading,
-        app_shell(page_header("Brandkit", "Cargando tu marca…"), page_body(rx.spinner())),
+        # § request 2026-10-02: every Brand Kit loader is the progress-bar one
+        app_shell(
+            page_header("Brandkit", "Cargando tu marca…"),
+            page_body(progress_panel("Cargando tu marca", creep_seconds=6)),
+        ),
         rx.cond(
             BrandSummaryState.has_kit & ~BrandWizardState.replacing_kit,
             _summary(),

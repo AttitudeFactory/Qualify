@@ -437,23 +437,20 @@ def demo_notice(message: str | rx.Var) -> rx.Component:
 
 
 def progress_step_row(row: rx.Var[dict[str, str]]) -> rx.Component:
-    """One stage of a `progress_panel`: `{"title", "status"}` with status `done`,
-    `running` or `pending`."""
-    return rx.hstack(
-        rx.match(
-            row["status"],
-            ("done", rx.icon("circle-check", size=16, color=T.tone_color("ok", 10))),
-            ("running", loading_spinner("sm")),
-            rx.icon("circle", size=16, color=T.TEXT_FAINT),
-        ),
+    """One stage of a `progress_panel` (`{"title", "status"}`, status `done`, `running`
+    or `pending`) as the comment over its bar: only the running stage shows, and it
+    fades in each time the stage changes (§ request 2026-10-02: the comments go above
+    the bar, with no spinning circle next to them)."""
+    return rx.cond(
+        row["status"] == "running",
         rx.text(
             row["title"],
             size="2",
-            color=rx.cond(row["status"] == "pending", T.TEXT_FAINT, T.TEXT_STRONG),
-            weight=rx.cond(row["status"] == "running", "medium", "regular"),
+            weight="medium",
+            color=T.TEXT_STRONG,
+            text_align="center",
+            class_name="q-progress-comment",
         ),
-        spacing="2",
-        align="center",
     )
 
 
@@ -470,7 +467,9 @@ def progress_panel(
     progress; without one — a single call that reports none — it creeps towards ~90%
     over `creep_seconds` and the screen goes away when the work ends. A light sweep
     over the bar says it is alive either way (`assets/qualify.css`, "Progress panel").
-    `steps` lists the stages (`progress_step_row`)."""
+    `steps` are the stages: the running one is the comment right above the bar
+    (`progress_step_row`). The panel fades in when the view switches to it, and it is
+    the Brand Kit's one loader (§ request 2026-10-02)."""
     if value is None:
         fill = rx.box(
             class_name="q-progress-fill q-progress-creep",
@@ -484,6 +483,16 @@ def progress_panel(
     return rx.vstack(
         rx.text(title, size="3", weight="medium", text_align="center"),
         *([rx.text(detail, size="2", color=T.TEXT_MUTED, text_align="center")] if detail else []),
+        *(
+            # min height = one line, so the bar does not jump between two stages
+            [
+                rx.box(
+                    rx.foreach(steps, progress_step_row), min_height="1.25rem", padding_top="0.5rem"
+                )
+            ]
+            if steps is not None
+            else []
+        ),
         rx.box(
             fill,
             class_name="q-progress-track",
@@ -493,20 +502,9 @@ def progress_panel(
             max_width="26rem",
         ),
         percent,
-        *(
-            [
-                rx.vstack(
-                    rx.foreach(steps, progress_step_row),
-                    spacing="2",
-                    align_items="start",
-                    padding_top="0.5rem",
-                )
-            ]
-            if steps is not None
-            else []
-        ),
         spacing="3",
         align="center",
         width="100%",
         padding="2.5rem 0",
+        class_name="q-progress-panel",
     )
