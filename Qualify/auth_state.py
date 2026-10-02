@@ -97,7 +97,7 @@ def _draft_destination_blocking(tenant_id) -> str:
 BRAND_START_ROUTE = "/brand/start"
 
 #: Where a login may land: the app, or the Brand Kit a signup just adopted.
-_POST_LOGIN_ROUTES = frozenset({"/", "/brand"})
+_POST_LOGIN_ROUTES = frozenset({"/", "/brand/kit"})
 
 
 def brand_tenant_id(auth: AuthState) -> str:
@@ -238,7 +238,6 @@ class AuthState(rx.State):
         """Drop the Brand Kit's in-memory draft (cached brand id, wizard cursor, staged
         files) when the tenant behind it changes without a logout."""
         from .brand_documents import BrandDocumentState
-        from .brand_summary import BrandSummaryState
         from .creative_state import CreativeState
         from .creative_wizard_pages import BrandConnectState, BrandWizardState
         from .voice_lab import VoiceLabState
@@ -249,7 +248,6 @@ class AuthState(rx.State):
             BrandConnectState,
             BrandDocumentState,
             VoiceLabState,
-            BrandSummaryState,
         ):
             substate = await self.get_state(state_cls)
             substate.reset()
@@ -334,7 +332,11 @@ class AuthState(rx.State):
         async with self:
             # Literal comparison (criterion 6): the field comes prefilled with it.
             adopted = bool(self.guest_email) and self.guest_email == email
-        credentials = {"email": email, "password": password, "next": "/brand" if adopted else "/"}
+        credentials = {
+            "email": email,
+            "password": password,
+            "next": "/brand/kit" if adopted else "/",
+        }
         async for event in AuthState.handle_login.fn(self, credentials):
             yield event
 
@@ -351,7 +353,6 @@ class AuthState(rx.State):
             # the next login on this browser. Imported here, not at module top: these
             # modules read AuthState, and a top-level import would be circular.
             from .brand_documents import BrandDocumentState
-            from .brand_summary import BrandSummaryState
             from .canva_state import CanvaState
             from .clarity_state import ClarityState
             from .connections_state import ConnectionsState
@@ -398,8 +399,6 @@ class AuthState(rx.State):
                 CanvaState,
                 # Tu voz (2026-09-30): the staged recording, the analysis and the clone
                 VoiceLabState,
-                # Marca's read-only summary (TEMPORAL, 2026-10-01)
-                BrandSummaryState,
             ):
                 substate = await self.get_state(state_cls)
                 substate.reset()

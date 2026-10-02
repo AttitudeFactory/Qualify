@@ -41,11 +41,12 @@
      - «Crear cuenta», «Iniciar sesión» y «Usar otro correo».
 4. **Se guarda en cada paso** (ver abajo). Al terminar, el invitado va a **`/signup`**
    (Señales necesita login), con el correo ya cargado y un aviso.
-   **Dentro de la sesión no hay Brand Kit que crear ni editar** (pedido del
-   2026-10-02): «Marca» muestra solo el resumen de lo guardado, sin «Crear uno nuevo»,
-   y la barra lateral de la sesión no lleva al editor. Un negocio que entra sin Brand Kit
-   (los sembrados, o un registro hecho directo en `/signup`) ve el resumen vacío con un
-   aviso. Un kit dejado a la mitad sí vuelve a su wizard para terminarlo.
+   **Dentro de la sesión no existe «Marca»** (pedido del 2026-10-02): el Brand Kit se
+   crea antes del login y, ya dentro, se edita desde **Negocio → Brand Kit**
+   (`/brand/kit`, el editor de siempre). El resumen de solo lectura y «Crear uno nuevo»
+   (lo temporal del 2026-10-01) se eliminaron. `/brand` queda como la entrada del
+   invitado («¿Tienes redes?»); con sesión redirige al editor, y un kit dejado a la mitad
+   vuelve a su wizard para terminarlo.
 5. **`register_business`** busca un borrador sin reclamar con ese correo. Si lo
    encuentra:
    - crea la identidad sellada con el tenant del borrador en lugar de uno nuevo;

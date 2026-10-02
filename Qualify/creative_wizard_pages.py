@@ -239,11 +239,6 @@ class BrandWizardState(rx.State):
     #: back on entry (`load_saved_assets`): a saved file's key is an R2 key, shown
     #: through its short-lived `/r2media/<token>` path kept here (R2 key → path).
     asset_views: dict[str, str] = {}
-    #: TEMPORAL (pruebas, § request 2026-10-01 — docs/brand-kit-resumen-temporal.md):
-    #: "Crear uno nuevo" on the Marca summary (`brand_summary`) starts a NEW kit that
-    #: replaces the saved one when it is finished. While set, nothing saved is loaded
-    #: into the wizard and the final save rewrites every document.
-    replacing_kit: bool = False
     #: Save-as-you-go in flight (`brand_finish.save_progress`), shared by both flows.
     _progress_saving: bool = False
     #: `load_saved_assets` finished: until then a save would drop the stored brandboard
@@ -338,7 +333,6 @@ class BrandWizardState(rx.State):
         self.logo_version_context = {}
         self.brand_extras = []
         self.asset_views = {}
-        self.replacing_kit = False
         self.picker_color = "#0A3D2E"
 
     @rx.event(background=True)
@@ -349,9 +343,6 @@ class BrandWizardState(rx.State):
         set, so everything stored has to be here for it not to be dropped."""
         from .brand_finish import load_saved, session_ids
 
-        async with self:
-            if self.replacing_kit:  # TEMPORAL: a new kit starts empty
-                return
         ids = await session_ids(self)
         if ids is None:
             return
@@ -2515,8 +2506,10 @@ def _fork_option(icon: str, title: str, description: str, href: str) -> rx.Compo
     )
 
 
-def brand_choice_index(notice: rx.Component | None = None) -> rx.Component:
-    """The entry the sidebar's «Marca» lands on — now a yes/no question instead of a
+def brand_choice_index() -> rx.Component:
+    """The entry the guest rail's «Marca» lands on (§ 2026-10-02: the Brand Kit is made
+    before the login; inside a session there is only the editor, Negocio → Brand Kit,
+    and `BrandConnectState.enter_brand_home` sends a login there) — a yes/no question instead of a
     manual-vs-connect fork (§ request 2026-09-09): every brand kit starts from a
     social profile now, "Empezar de cero" as a parallel path stopped making sense.
     "Sí" walks straight into the scraper (`/brand/connect`); "No" detours through
@@ -2530,7 +2523,6 @@ def brand_choice_index(notice: rx.Component | None = None) -> rx.Component:
         page_header("Brandkit", "¿Tienes redes sociales para tu marca?", title_size="8"),
         page_body(
             rx.vstack(
-                *([notice] if notice is not None else []),
                 card(
                     rx.vstack(
                         _fork_option(
@@ -4316,10 +4308,6 @@ class BrandConnectState(rx.State):
         where it was."""
         from .brand_finish import CONNECT_FLOW, PROGRESS_KEY, load_saved, session_ids
 
-        async with self:
-            wizard = await self.get_state(BrandWizardState)
-            if wizard.replacing_kit:  # TEMPORAL: a new kit starts empty
-                return
         ids = await session_ids(self)
         if ids is None:
             return
@@ -4784,15 +4772,30 @@ class BrandConnectState(rx.State):
                     self.discovery_running = ""
 
     @rx.event(background=True)
-    async def resume_referentes(self) -> None:
-        """/brand/connect's entry (§ request 2026-10-02): a walk resumed halfway gets the
-        referentes it already found back (`load_saved_referentes`, no credits). A "Crear
-        uno nuevo" replacement does not — a new kit searches afresh."""
+    async def enter_brand_home(self) -> AsyncIterator[rx.event.EventSpec]:
+        """/brand's entry (§ request 2026-10-02: no "Marca" inside a session). A login
+        goes to the editor (Negocio → Brand Kit); so does a guest whose kit is already
+        finished. A kit left halfway goes back into its wizard. Only a guest with no kit
+        yet stays, on the "¿Tienes redes?" question."""
+        from .brand_finish import tenant_kit_status
+
         async with self:
-            wizard = await self.get_state(BrandWizardState)
-            if wizard.replacing_kit:  # TEMPORAL
+            auth = await self.get_state(AuthState)
+            if auth.session_tenant_id:
+                yield rx.redirect("/brand/kit")
                 return
-        await BrandConnectState.load_saved_referentes.fn(self)
+            tenant_id = tenant_uuid(auth.guest_tenant_id) if auth.guest_tenant_id else None
+        if tenant_id is None:
+            return
+        try:
+            status = await asyncio.to_thread(tenant_kit_status, tenant_id)
+        except SQLAlchemyError as exc:
+            logger.warning("brand kit status unreadable: %s", type(exc).__name__)
+            return
+        if status.completed:
+            yield rx.redirect("/brand/kit")
+        elif status.resume_route is not None:
+            yield rx.redirect(status.resume_route)
 
     @rx.event(background=True)
     async def load_saved_referentes(self) -> None:

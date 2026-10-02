@@ -397,12 +397,6 @@ async def snapshot_states(state: Any, progress: dict[str, Any] | None = None) ->
         connect=_connect_document(connect, progress),
         profile=_profile_document(connect),
     )
-    if wizard.replacing_kit:
-        # TEMPORAL (docs/brand-kit-resumen-temporal.md): a replacement kit rewrites every
-        # document, so nothing of the old kit's answers survives under the new one
-        snapshot.logo_brief = snapshot.logo_brief or {}
-        snapshot.connect = snapshot.connect or {}
-        snapshot.profile = snapshot.profile or {}
     return snapshot
 
 
@@ -452,7 +446,7 @@ async def save_progress(state: Any, flow: str) -> None:
         wizard = await state.get_state(BrandWizardState)
         creative = await state.get_state(CreativeState)
         connect = await state.get_state(BrandConnectState)
-        if wizard.replacing_kit or creative.kit_saving or wizard._progress_saving:
+        if creative.kit_saving or wizard._progress_saving:
             return
         # Until the page's loads have put the stored kit, brandboard and answers in the
         # session, a save would overwrite them with an empty one: wait for the next step.
@@ -555,8 +549,4 @@ async def save_brand_kit(state: Any, flow: str | None = None) -> bool:
             creative.kit_error = error
             return False
         creative.kit_notice = _SAVED
-        from .creative_wizard_pages import BrandWizardState
-
-        wizard = await state.get_state(BrandWizardState)
-        wizard.replacing_kit = False  # TEMPORAL: the new kit is now the saved one
     return True

@@ -58,7 +58,9 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
         "publish",
         "Publicas",
         [
-            ("Marca", "palette", "/brand", True),
+            # No "Marca" inside a session (§ request 2026-10-02): the Brand Kit is made
+            # before the login and edited from Negocio → Brand Kit. The guest rail
+            # keeps "Marca" as the entry to make it.
             ("Crear pieza", "wand-sparkles", "/create", True),
             ("Borradores", "layout-list", "/drafts", True),
             ("Planificador", "calendar-days", "/planner", True),
@@ -73,8 +75,7 @@ NAV_LOOSE: list[Item] = [("Leads", "user-plus", "/leads", True)]
 NAV_BUSINESS: list[Item] = [
     ("Clarity", "activity", "/clarity", True),
     ("Vitrina", "store", "/vitrina", True),
-    # No Brand Kit editor inside a session (§ request 2026-10-02): the kit is made
-    # before the login and Marca shows its summary. The guest rail keeps the entry.
+    ("Brand Kit", "swatch-book", "/brand/kit", True),
     ("Configuración", "settings", "#", False),
 ]
 
