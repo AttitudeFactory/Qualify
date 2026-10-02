@@ -10,21 +10,13 @@ Scope, deliberately narrow:
     That is `packages/scraper` territory (Zyte + the multimodal cascade, Fase 1
     Partes 2/3, ADR 17/18) and this module has nothing to do with it: different
     vendor, different data, different lifecycle.
-  - Nothing here touches Postgres. The connect flow is not persisted yet — the caller
-    writes the normalized result to the one generic, OVERWRITABLE JSON snapshot at
-    `Qualify/fixtures/brand_connect_profile.json` (`save_profile_snapshot` /
-    `load_profile_snapshot` below) instead of a table. No history, no per-tenant
-    keying: this is scratch state for the operator currently in the wizard, not a
-    data store — it holds exactly ONE profile at a time. `Qualify/fixtures/
-    midu.dev_prueba.json` (the earlier hardcoded demo fixture `PROFILE_FIXTURE` used
-    to point at) is untouched and kept as a manual reference sample — it is no longer
-    read by the wizard.
-  - Because the snapshot holds only one profile, it doubles as a same-profile cache
-    (2026-09-04): `load_cached_profile` lets `BrandConnectState.analyze` check "is
-    this exact (network, handle) already what the file holds?" BEFORE calling
-    `fetch_profile` — re-analyzing the SAME handle costs zero API credits, a new
-    handle still always hits the API (and then overwrites the snapshot, so only the
-    latest handle is ever cached).
+  - Nothing here touches Postgres. Where a read is remembered is the caller's
+    business: since 2026-10-01 `BrandConnectState.analyze` keeps the normalized
+    result per tenant with a time to live in `creator_profile_cache`
+    (`creator_cache_provider`, migration 0035) — before that, one global,
+    overwritable JSON snapshot under `fixtures/` stood in for a table, with no
+    history and no tenant keying. `Qualify/fixtures/midu.dev_prueba.json` is a manual
+    reference sample only.
 
 Auth: `SCRAPECREATORS_API_KEY` in the environment. Reflex loads `.env` (gitignored,
 never committed) at startup — see `rxconfig.py`'s `env_file=".env"` comment, same
@@ -41,13 +33,11 @@ the observation that promotes this module past "shape from docs only", same disc
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
 import time
 from collections import Counter
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -60,17 +50,12 @@ _TIMEOUT_SECONDS = 20.0
 #: Networks this module knows how to read. Keys match `creative_wizard_pages.NETWORKS`.
 SUPPORTED_NETWORKS = ("instagram", "tiktok")
 
-#: The generic, overwritable snapshot file `BrandConnectState.analyze` writes to and
-#: then reads back from — one profile at a time. Resolved relative to this module so
-#: the app finds it from any cwd (same reasoning the old `PROFILE_FIXTURE` documented).
-PROFILE_SNAPSHOT_PATH = Path(__file__).resolve().parent / "fixtures" / "brand_connect_profile.json"
-
 #: Bumped whenever the normalized profile shape gains a field the wizard depends on,
-#: so a snapshot written by an older normalizer is a cache MISS (one re-fetch, one
-#: credit) instead of a profile silently missing the new fields. 3 = `fetchedAt` +
-#: `recentPosts` from the post-list endpoints (the inputs of `profile_metrics`,
-#: 2026-09-10; 2 was the short-lived profile-inline sample of the same day).
-SNAPSHOT_SCHEMA = 3
+#: so a cached profile written by an older normalizer is a cache MISS (one re-fetch,
+#: one credit) instead of a profile silently missing the new fields. 3 = `fetchedAt` +
+#: `recentPosts` (2026-09-10); 4 = `postId`, `shares` and the AI label per post, and
+#: `totalLikes` (2026-10-01).
+SNAPSHOT_SCHEMA = 4
 
 
 class ScrapeCreatorsError(Exception):
@@ -237,6 +222,9 @@ def _normalize_tiktok(payload: dict[str, Any]) -> dict[str, Any]:
         "followers": stats.get("followerCount"),
         "following": stats.get("followingCount"),
         "postsCount": stats.get("videoCount"),
+        # Likes received over every video (`heartCount`) — kept for the growth history
+        # (`qualify_api.growth`); Instagram's profile has no equivalent.
+        "totalLikes": stats.get("heartCount"),
         "isVerified": bool(user.get("verified", False)),
         "isPrivate": bool(user.get("privateAccount", False)),
         "profilePicUrl": str(user.get("avatarLarger") or user.get("avatarMedium") or ""),
@@ -262,10 +250,12 @@ METRICS_WINDOW_DAYS = 7
 _WINDOW_SECONDS = METRICS_WINDOW_DAYS * 24 * 3600
 
 #: Pagination cap for the post list — a hard ceiling on credits per analysis (profile +
-#: up to this many pages). Pages are ~12 (IG) / ~30 (TikTok) items; a week of posting
-#: fits in one page for almost every account, the cap is there for the ones where it
-#: does not (and to stop a runaway cursor loop, ever).
-_MAX_POST_PAGES = 3
+#: up to this many pages). Pages are ~12 (IG) / **10** (TikTok — measured 2026-10-01 on
+#: `/v3/tiktok/profile/videos`, with and without `trim`; the ~30 assumed before was the
+#: search endpoints' size). The walk stops as soon as a page's last post is older than
+#: the window, so the cap only costs on accounts that post more than ~a video a day;
+#: five pages cover a week of up to ~7/day and still stop a runaway cursor loop.
+_MAX_POST_PAGES = 5
 
 _POSTS_ENDPOINT = {
     "instagram": "/v2/instagram/user/posts",
@@ -277,20 +267,82 @@ def _int_or_none(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+#: What a post's "made with AI" label can say in the common shape (`aiLabel`), both
+#: platforms folded into one vocabulary (2026-10-01, measured live — see
+#: `docs/scrapecreators-crecimiento-organico-y-contenido-ia.md` §3):
+#:   "self_disclosed" — the author marked it (Instagram `SELF_DISCLOSURE_FLOW`; TikTok's
+#:                      label without a moderation pass, `aigc_label_type == 1`);
+#:   "detected"       — the platform detected it (Instagram `AI_EDITED`, which includes
+#:                      minor AI edits; TikTok `aigc_label_type == 2`, a moderation-side
+#:                      label, usually with C2PA provenance);
+#:   ""               — no label. Not "not AI": unlabeled AI content carries nothing.
+AI_LABEL_SELF_DISCLOSED = "self_disclosed"
+AI_LABEL_DETECTED = "detected"
+
+
 def _post(
-    taken_at: object, likes: object, comments: object, views: object
+    taken_at: object,
+    likes: object,
+    comments: object,
+    views: object,
+    *,
+    post_id: object = None,
+    shares: object = None,
+    ai_generated: bool | None = None,
+    ai_label: str = "",
+    ai_source: str = "",
 ) -> dict[str, Any] | None:
     """One post in the common shape, or None when it has no usable timestamp — an
-    undated post cannot be placed inside or outside the window, so it is dropped."""
+    undated post cannot be placed inside or outside the window, so it is dropped.
+    `aiGenerated` is True when the platform's own "made with AI" label is on the post,
+    None when nothing says either way (no platform labels "not AI"); `aiLabel` says
+    who put it there (`AI_LABEL_*`) and `aiSource` what C2PA named, when it did."""
     stamp = _int_or_none(taken_at)
     if stamp is None:
         return None
     return {
+        "postId": str(post_id) if post_id not in (None, "") else "",
         "takenAt": stamp,
         "likes": _int_or_none(likes),
         "comments": _int_or_none(comments),
         "views": _int_or_none(views),
+        "shares": _int_or_none(shares),
+        "aiGenerated": ai_generated,
+        "aiLabel": ai_label,
+        "aiSource": ai_source,
     }
+
+
+def _instagram_ai_label(item: dict[str, Any]) -> tuple[bool | None, str]:
+    """`/v2/instagram/user/posts` carries `ai_label_info` only on a labelled post
+    (3/12 measured 2026-10-01); `gen_ai_detection_method` inside says who labelled it."""
+    info = item.get("ai_label_info")
+    if not isinstance(info, dict):
+        return None, ""
+    method = str(info.get("gen_ai_detection_method") or "")
+    if method == "SELF_DISCLOSURE_FLOW":
+        return True, AI_LABEL_SELF_DISCLOSED
+    if method:
+        return True, AI_LABEL_DETECTED
+    return None, ""
+
+
+def _tiktok_ai_label(item: dict[str, Any]) -> tuple[bool | None, str, str]:
+    """`aweme.aigc_info.created_by_ai` is TikTok's label (27/30 of an "ai generated"
+    search carried it, 2026-10-01); `aigc_label_type` 1 vs 2 is read as who applied it
+    (undocumented by TikTok — inferred from `moderation_aigc_info` only appearing with
+    2); `c2pa_info.first_aigc_src` names the generator when the file kept its C2PA
+    signature ("Sora"). Absent on a `trim=true` read — never trim when this matters."""
+    info = item.get("aigc_info")
+    c2pa = item.get("c2pa_info")
+    source = str(c2pa.get("first_aigc_src") or "") if isinstance(c2pa, dict) else ""
+    if not isinstance(info, dict):
+        return None, "", source
+    label_type = _int_or_none(info.get("aigc_label_type")) or 0
+    created = info.get("created_by_ai") is True or label_type != 0
+    if not created:
+        return False, "", source
+    return True, (AI_LABEL_DETECTED if label_type == 2 else AI_LABEL_SELF_DISCLOSED), source
 
 
 def _normalize_instagram_posts(
@@ -302,11 +354,19 @@ def _normalize_instagram_posts(
     for item in items if isinstance(items, list) else []:
         if not isinstance(item, dict):
             continue
+        # `like_and_view_counts_disabled` leaves `like_count` as a placeholder (3 on a
+        # hidden post, measured 2026-10-01), not a figure: unknown, so `profile_metrics`
+        # leaves the post out of the means instead of averaging in a fake 3.
+        hidden = item.get("like_and_view_counts_disabled") is True
+        ai_generated, ai_label = _instagram_ai_label(item)
         post = _post(
             item.get("taken_at"),
-            item.get("like_count"),
+            None if hidden else item.get("like_count"),
             item.get("comment_count"),
-            item.get("play_count", item.get("ig_play_count")),
+            None if hidden else item.get("play_count", item.get("ig_play_count")),
+            post_id=item.get("code") or item.get("pk") or item.get("id"),
+            ai_generated=ai_generated,
+            ai_label=ai_label,
         )
         if post is not None:
             posts.append(post)
@@ -325,11 +385,17 @@ def _normalize_tiktok_videos(
             continue
         stats = item.get("statistics")
         stats = stats if isinstance(stats, dict) else {}
+        ai_generated, ai_label, ai_source = _tiktok_ai_label(item)
         post = _post(
             item.get("create_time"),
             stats.get("digg_count"),
             stats.get("comment_count"),
             stats.get("play_count"),
+            post_id=item.get("aweme_id"),
+            shares=stats.get("share_count"),
+            ai_generated=ai_generated,
+            ai_label=ai_label,
+            ai_source=ai_source,
         )
         if post is not None:
             posts.append(post)
@@ -583,69 +649,8 @@ def fetch_profile(
             active.close()
 
 
-# ---------------------------------------------------------------------------
-# The generic, overwritable JSON snapshot (no DB — see module docstring).
-
-
-def save_profile_snapshot(
-    network: str, handle: str, profile: dict[str, Any], *, path: Path = PROFILE_SNAPSHOT_PATH
-) -> None:
-    """Overwrite the one snapshot file with this read. Last-write-wins, on purpose —
-    this stands in for a table only until Parte 4 / a real persistence decision lands
-    (`docs/ui-brandkit-wizard.md` §4), so it never accumulates history."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    snapshot = {
-        "schema": SNAPSHOT_SCHEMA,
-        "network": network,
-        "handle": handle,
-        "fetched_at": time.time(),
-        "source": "scrapecreators",
-        "profile": profile,
-    }
-    path.write_text(json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
-
-def load_profile_snapshot(*, path: Path = PROFILE_SNAPSHOT_PATH) -> dict[str, Any]:
-    """Read back whatever `save_profile_snapshot` last wrote. Raises `OSError` (missing
-    file) or `ValueError` (malformed JSON, or no `profile` object in it) — the same two
-    exception shapes `BrandConnectState.analyze` already handled for the old fixture."""
-    raw = path.read_text(encoding="utf-8")
-    profile = json.loads(raw).get("profile")
-    if not isinstance(profile, dict):
-        raise ValueError("snapshot carried no profile object")
-    return profile
-
-
-def load_cached_profile(
-    network: str, handle: str, *, path: Path = PROFILE_SNAPSHOT_PATH
-) -> dict[str, Any] | None:
-    """The cheap check `BrandConnectState.analyze` runs BEFORE spending an API credit:
-    does the one JSON snapshot already hold this exact (network, handle)? Matching is
-    case-insensitive and ignores a leading "@" — the same normalization `fetch_profile`
-    applies (`_normalize_handle`).
-
-    Returns `None` for a different profile, a missing file, a malformed one, or one
-    written by an older normalizer (`schema` != `SNAPSHOT_SCHEMA`) — never raises. A
-    cache MISS is not an error, it is just "go fetch it for real", so the caller can
-    call this unconditionally without its own try/except.
-    """
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(raw, dict) or raw.get("network") != network:
-        return None
-    if raw.get("schema") != SNAPSHOT_SCHEMA:
-        return None
-    if _normalize_handle(str(raw.get("handle", ""))) != _normalize_handle(handle):
-        return None
-    profile = raw.get("profile")
-    return profile if isinstance(profile, dict) else None
-
-
 __all__ = [
     "BASE_URL",
-    "PROFILE_SNAPSHOT_PATH",
     "METRICS_WINDOW_DAYS",
     "SNAPSHOT_SCHEMA",
     "SUPPORTED_NETWORKS",
@@ -653,8 +658,5 @@ __all__ = [
     "fetch_profile",
     "fetch_profile_and_posts",
     "fetch_recent_posts",
-    "load_cached_profile",
-    "load_profile_snapshot",
     "profile_metrics",
-    "save_profile_snapshot",
 ]

@@ -58,9 +58,10 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 import unicodedata
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -493,6 +494,13 @@ class Candidate:
     hashtags_seen: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
     profile_url: str = ""
+    #: The link the profile points at (Instagram `external_url`, TikTok `bioLink.link`)
+    #: — kept with the full bio (§ 2026-10-01): where the business actually lives.
+    external_url: str = ""
+    #: Of `posts_seen`, how many carried the platform's own "made with AI" label
+    #: (TikTok `aigc_info`, read on the search feeds; § 2026-10-01). The card shows
+    #: the share so an AI account is told apart at a glance.
+    ai_posts_seen: int = 0
     #: The vendor's picture URL, when a payload carried one. Signed and short-lived
     #: on TikTok's CDN (hours), so it is never rendered directly — `avatar_path`
     #: hands it to the backend proxy (`avatar_proxy.py`), which fetches it once while
@@ -519,8 +527,18 @@ class Candidate:
     def evidence_text(self) -> str:
         return " ".join([self.bio, *self.texts])
 
-    def absorb_post(self, *, likes: object, comments: object, views: object, text: str) -> None:
+    def absorb_post(
+        self,
+        *,
+        likes: object,
+        comments: object,
+        views: object,
+        text: str,
+        ai_generated: bool | None = None,
+    ) -> None:
         self.posts_seen += 1
+        if ai_generated:
+            self.ai_posts_seen += 1
         self.likes_seen += likes if isinstance(likes, int) else 0
         self.comments_seen += comments if isinstance(comments, int) else 0
         self.views_seen += views if isinstance(views, int) else 0
@@ -540,8 +558,10 @@ class Candidate:
         self.is_private = self.is_private or other.is_private
         self.country_code = self.country_code or other.country_code
         self.profile_url = self.profile_url or other.profile_url
+        self.external_url = self.external_url or other.external_url
         self.avatar = self.avatar or other.avatar
         self.posts_seen += other.posts_seen
+        self.ai_posts_seen += other.ai_posts_seen
         self.likes_seen += other.likes_seen
         self.comments_seen += other.comments_seen
         self.views_seen += other.views_seen
@@ -746,9 +766,21 @@ def candidates_from_tiktok_videos(payload: dict[str, Any], source: str) -> list[
             comments=stats.get("comment_count"),
             views=stats.get("play_count"),
             text=text,
+            ai_generated=_video_is_ai(video),
         )
         out.append(candidate)
     return out
+
+
+def _video_is_ai(video: Mapping[str, Any]) -> bool | None:
+    """TikTok's own "AI-generated content" label on a feed video (`aigc_info`,
+    measured live 2026-10-01: present on the keyword and hashtag feeds unless the read
+    was trimmed). None when the video says nothing — never "not AI"."""
+    info = video.get("aigc_info")
+    if not isinstance(info, dict):
+        return None
+    label_type = info.get("aigc_label_type")
+    return bool(info.get("created_by_ai")) or (isinstance(label_type, int) and label_type != 0)
 
 
 def _ig_location_country(location: object) -> tuple[str | None, str | None]:
@@ -830,14 +862,50 @@ _PARSERS = {
 _RETRY_DELAY_SECONDS = 1.5
 
 
+#: The vendor's answers are remembered across searches and tenants (§ 2026-10-01: "primero
+#: busca en la db, luego al scraper"): a run's `client` may carry a `payload_cache` —
+#: anything with `get(path, params) -> payload | None` and `put(path, params, payload,
+#: status=)` — and `_get_retry` asks it before the network, answers it after. A 404 is
+#: remembered as a payload with this status, so a handle that does not exist is not
+#: looked up twice either. The cache is global data (the pool, `qualify_api.creators`):
+#: what one tenant's search fetched serves the next one inside the answer's TTL.
+NOT_FOUND_STATUS = 404
+
+
 def _get_retry(client: httpx.Client, path: str, params: dict[str, str]) -> dict[str, Any]:
+    cache = getattr(client, "payload_cache", None)
+    if cache is not None:
+        hit = cache.get(path, params)
+        if hit is not None:
+            if hit.status == NOT_FOUND_STATUS:
+                raise ScrapeCreatorsError(
+                    f"Scrape Creators {path} answered 404 (remembered)", status_code=404
+                )
+            # served from the pool: nothing was charged for it this time
+            return {**hit.payload, "credits_charged": 0}
     try:
-        return _get(client, path, params)
+        payload = _get(client, path, params)
     except ScrapeCreatorsError as exc:
+        if exc.status_code == NOT_FOUND_STATUS:
+            if cache is not None:
+                cache.put(path, params, {}, status=NOT_FOUND_STATUS)
+            raise
         if exc.status_code is not None and exc.status_code < 500:
             raise
         time.sleep(_RETRY_DELAY_SECONDS)
-        return _get(client, path, params)
+        payload = _get(client, path, params)
+    if cache is not None:
+        charged = payload.get("credits_charged")
+        cache.put(path, params, payload, credits_charged=charged if isinstance(charged, int) else 1)
+    return payload
+
+
+class PoolClient(httpx.Client):
+    """An `httpx.Client` that carries the pool's payload cache for `_get_retry`."""
+
+    def __init__(self, payload_cache: Any, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.payload_cache = payload_cache
 
 
 def run_query_pages(
@@ -918,6 +986,8 @@ class ProfileFacts:
     related: tuple[str, ...] = ()
     full_name: str = ""
     avatar: str = ""
+    #: The link the profile points at, when the read carried one.
+    external_url: str = ""
     #: The captions of the account's most recent posts, when the read carried them
     #: (Instagram: `edge_owner_to_timeline_media`, the last 12 — measured live
     #: 2026-09-25 on `mouredev`: 12 posts, 58 hashtags). The only place an Instagram
@@ -964,6 +1034,9 @@ def profile_facts(network: str, payload: dict[str, Any]) -> ProfileFacts:
             is_verified=bool(user.get("verified")),
             full_name=str(user.get("nickname") or ""),
             avatar=_tiktok_avatar(user),
+            external_url=str((user.get("bioLink") or {}).get("link") or "")
+            if isinstance(user.get("bioLink"), dict)
+            else "",
         )
     user = (payload.get("data") or {}).get("user") or {}
     edges = (user.get("edge_related_profiles") or {}).get("edges") or []
@@ -996,6 +1069,7 @@ def profile_facts(network: str, payload: dict[str, Any]) -> ProfileFacts:
         related=related,
         full_name=str(user.get("full_name") or ""),
         avatar=str(user.get("profile_pic_url_hd") or user.get("profile_pic_url") or ""),
+        external_url=str(user.get("external_url") or ""),
         captions=_instagram_captions(user),
     )
 
@@ -1007,6 +1081,7 @@ def _apply_facts(candidate: Candidate, facts: ProfileFacts, source: str) -> None
     )
     candidate.bio = facts.bio or candidate.bio
     candidate.full_name = candidate.full_name or facts.full_name
+    candidate.external_url = facts.external_url or candidate.external_url
     # a profile read is the freshest sighting: its (signed, expiring) URL wins
     candidate.avatar = facts.avatar or candidate.avatar
     candidate.is_private = candidate.is_private or facts.is_private
@@ -1233,8 +1308,13 @@ def save_result(result: DiscoveryResult, *, directory: Path = DISCOVERY_DIR) -> 
 #: and the sector phase searches up to three catalog hashtags, now chosen per brand by
 #: Claude — `hashtag_catalog.ai_hashtags_for`; 8 = the operator's own hashtag pills
 #: on Tu rubro y ubicación, `DiscoverySeed.chosen_hashtags`: they replace the catalog's
-#: choice, join the sector/local keys and run as up to `CHOSEN_HASHTAGS` sector queries).
-PHASED_PLAN_VERSION = 9
+#: choice, join the sector/local keys and run as up to `CHOSEN_HASHTAGS` sector queries;
+#: 9 = Claude reviews each phase's shortlist; 10 = no change in what is found — the two
+#: networks' walks run at once, `_run_networks`, and `run_phase`'s text changed with it;
+#: 11 = no change in what is found either — each account keeps its profile link and how
+#: many of its feed videos carried TikTok's AI label, and the profile reads are
+#: remembered in Postgres instead of a JSON file).
+PHASED_PLAN_VERSION = 11
 
 
 @dataclass(frozen=True)
@@ -1580,23 +1660,17 @@ _DISCOVERY_TIMEOUT_SECONDS = 45.0
 #: free. Discovery never needs a fresher follower count than this.
 _PROFILE_CACHE_MAX_AGE = "30d"
 
-#: The whole-result cache — one entry per seed signature, so walking the wizard again
-#: with the same account and answers costs zero credits. Gitignored with the other
-#: `discovery_*.json` outputs.
-DISCOVERY_CACHE_PATH = DISCOVERY_DIR / "discovery_cache.json"
-_CACHE_TTL_SECONDS = 7 * 24 * 3600
-_CACHE_MAX_ENTRIES = 60
-
-#: Profile reads remembered on disk ("de manera provisional por ahora" — a JSON under
-#: `fixtures/` until a table exists): an account's size, bio and related accounts
-#: change slowly, and a walk repeated with a different city should not re-read the
-#: sector's accounts. Same 30 days the vendor's own cache keeps.
-PROFILE_CACHE_PATH = DISCOVERY_DIR / "discovery_profiles.json"
-_PROFILE_CACHE_TTL_SECONDS = 30 * 24 * 3600
+#: Where the results and the profile reads are remembered: Postgres, per tenant, with
+#: a time to live (`qualify_api.referentes`: phases in `brand_discovery_phases` for 7
+#: days, profile reads in `creator_profile_cache` for 30 — § 2026-10-01, "no quiero
+#: más json"). This module only knows the in-memory `ProfileStore` a run carries; the
+#: wizard hands it the Postgres-backed one (`creator_cache_provider.PostgresProfileStore`).
 
 #: Vendor calls in flight at once. A phase used to be ~40 sequential calls of 1-5 s
-#: each — minutes; the vendor has no rate limit and the calls are independent.
-PARALLEL_CALLS = 6
+#: each — minutes; the vendor has no rate limit and the calls are independent. Since
+#: both networks walk at once (`_run_networks`, 2026-10-01) a round is up to twelve
+#: reads (`GOOGLE_READS` per network): enough workers for it to be one wave.
+PARALLEL_CALLS = 12
 
 
 def _flag(code: str) -> str:
@@ -2117,23 +2191,39 @@ def _interactions_per_post(candidate: Candidate) -> float:
     return (candidate.likes_seen + candidate.comments_seen) / max(candidate.posts_seen, 1)
 
 
-class ProfileStore:
-    """The on-disk memory of profile reads (`PROFILE_CACHE_PATH`): `network:handle` →
-    the `ProfileFacts` read, or the fact that the handle does not exist (a 404 is
-    worth remembering too — mirrored handles miss often). Loaded once per run,
-    written once at `save()`; `path=None` keeps it in memory only (tests)."""
+def facts_to_document(facts: ProfileFacts) -> dict[str, Any]:
+    """`ProfileFacts` as the JSON document the cache keeps (`creator_profile_cache`)."""
+    return {**asdict(facts), "related": list(facts.related), "captions": list(facts.captions)}
 
-    def __init__(self, path: Path | None) -> None:
-        self.path = path
-        self._entries: dict[str, dict[str, Any]] = {}
-        self._dirty = False
-        if path is not None:
-            try:
-                loaded = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    self._entries = loaded
-            except (OSError, ValueError):
-                self._entries = {}
+
+def facts_from_document(document: Mapping[str, Any]) -> ProfileFacts:
+    return ProfileFacts(
+        followers=_int(document.get("followers")),
+        bio=str(document.get("bio") or ""),
+        total_likes=_int(document.get("total_likes")),
+        is_private=bool(document.get("is_private")),
+        is_verified=bool(document.get("is_verified")),
+        category=str(document.get("category") or ""),
+        related=tuple(str(r) for r in document.get("related") or []),
+        full_name=str(document.get("full_name") or ""),
+        avatar=str(document.get("avatar") or ""),
+        external_url=str(document.get("external_url") or ""),
+        # Entries written before captions were kept have none: they fill in when the
+        # entry expires, rather than spending a credit per account now.
+        captions=tuple(str(c) for c in document.get("captions") or []),
+    )
+
+
+class ProfileStore:
+    """A run's memory of profile reads: `network:handle` -> the `ProfileFacts` read, or
+    the fact that the handle does not exist (a 404 is worth remembering too — mirrored
+    handles miss often). In memory only (tests, the CLI): the wizard's runs carry
+    `creator_cache_provider.PostgresProfileStore`, the same three methods over
+    `creator_profile_cache` with its time to live. `_read_profile` is what calls it,
+    from worker threads — one key at a time."""
+
+    def __init__(self) -> None:
+        self._entries: dict[str, tuple[bool, ProfileFacts | None]] = {}
 
     @staticmethod
     def _key(network: str, handle: str) -> str:
@@ -2143,51 +2233,16 @@ class ProfileStore:
         self, network: str, handle: str, *, now: float | None = None
     ) -> tuple[bool, ProfileFacts | None]:
         """`(known, facts)`: known+facts for a remembered account, known+None for a
-        remembered 404, unknown for anything else or anything expired."""
-        entry = self._entries.get(self._key(network, handle))
-        if not isinstance(entry, dict):
-            return False, None
-        if (now or time.time()) - float(entry.get("fetchedAt", 0)) > _PROFILE_CACHE_TTL_SECONDS:
-            return False, None
-        if entry.get("missing"):
-            return True, None
-        facts = entry.get("facts")
-        if not isinstance(facts, dict):
-            return False, None
-        return True, ProfileFacts(
-            followers=_int(facts.get("followers")),
-            bio=str(facts.get("bio") or ""),
-            total_likes=_int(facts.get("total_likes")),
-            is_private=bool(facts.get("is_private")),
-            is_verified=bool(facts.get("is_verified")),
-            category=str(facts.get("category") or ""),
-            related=tuple(str(r) for r in facts.get("related") or []),
-            full_name=str(facts.get("full_name") or ""),
-            avatar=str(facts.get("avatar") or ""),
-            # Entries written before captions were kept have none: they fill in when the
-            # 30-day entry expires, rather than spending a credit per account now.
-            captions=tuple(str(c) for c in facts.get("captions") or []),
-        )
+        remembered 404, unknown for anything else."""
+        return self._entries.get(self._key(network, handle), (False, None))
 
     def put(
         self, network: str, handle: str, facts: ProfileFacts | None, *, now: float | None = None
     ) -> None:
-        entry: dict[str, Any] = {"fetchedAt": now or time.time()}
-        if facts is None:
-            entry["missing"] = True
-        else:
-            entry["facts"] = {**asdict(facts), "related": list(facts.related)}
-        self._entries[self._key(network, handle)] = entry
-        self._dirty = True
+        self._entries[self._key(network, handle)] = (True, facts)
 
     def save(self) -> None:
-        if self.path is None or not self._dirty:
-            return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(self._entries, indent=1, ensure_ascii=False), encoding="utf-8"
-        )
-        self._dirty = False
+        """Nothing to flush in memory; the Postgres store writes as it goes."""
 
 
 def _read_profile(
@@ -2229,18 +2284,23 @@ def _read_profile(
 
 
 def lookup_account(
-    network: str, handle: str, *, store_path: Path | None = None
+    network: str, handle: str, *, store: Any | None = None, payload_cache: Any | None = None
 ) -> tuple[Candidate, bool, str | None]:
     """One account read outside a search — the referente the operator adds by hand.
     Returns `(candidate, found, error)`: the candidate always comes back (a stub with
     its profile URL when the read missed), `found` says whether the profile exists, and
-    a vendor failure is an error string, never an exception. Remembered in the same
-    on-disk store the search uses, so a handle already read costs nothing."""
+    a vendor failure is an error string, never an exception. With the pool's
+    `payload_cache` a handle anyone read inside 30 days costs nothing."""
     candidate = _account_stub(network, handle, f"{network}:manual")
-    store = ProfileStore(store_path)
-    with httpx.Client(timeout=_DISCOVERY_TIMEOUT_SECONDS) as client:
-        _charged, facts, error = _read_profile(client, candidate, None, store)
-    store.save()
+    active = store if store is not None else ProfileStore()
+    client = (
+        PoolClient(payload_cache, timeout=_DISCOVERY_TIMEOUT_SECONDS)
+        if payload_cache is not None
+        else httpx.Client(timeout=_DISCOVERY_TIMEOUT_SECONDS)
+    )
+    with client:
+        _charged, facts, error = _read_profile(client, candidate, None, active)
+    active.save()
     return candidate, facts is not None, error
 
 
@@ -2250,6 +2310,50 @@ def _run_parallel(executor: ThreadPoolExecutor | None, fn: Any, items: list[Any]
     if executor is None or len(items) <= 1:
         return [fn(item) for item in items]
     return list(executor.map(fn, items))
+
+
+NETWORKS = ("tiktok", "instagram")
+
+
+def _run_networks(
+    executor: ThreadPoolExecutor | None,
+    result: PhaseResult,
+    fn: Callable[[str, PhaseResult], None],
+) -> None:
+    """`fn(network, result)` for both networks. With an executor they run at the same
+    time (2026-10-01: a network's walk is Google → reads → neighbours' reads, several
+    vendor round trips, and Instagram's used to wait for TikTok's whole walk), each on
+    its own accumulator, folded into `result` in network order afterwards — the same
+    credits, queries and errors in the same order as one after the other. Safe because
+    a walk only ever creates and reads candidates of its own network (the pool's keys
+    are `(network, handle)`), and each one's own vendor calls still go through the
+    shared executor. Without an executor (`parallel=1`) they run one after the other,
+    as before."""
+    if executor is None:
+        for network in NETWORKS:
+            fn(network, result)
+        return
+    partials = {n: PhaseResult(key=result.key, title=result.title) for n in NETWORKS}
+    failures: dict[str, BaseException] = {}
+
+    def run(network: str) -> None:
+        try:
+            fn(network, partials[network])
+        except BaseException as exc:  # re-raised on the caller's thread below
+            failures[network] = exc
+
+    threads = [threading.Thread(target=run, args=(n,), daemon=True) for n in NETWORKS]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    for network in NETWORKS:
+        if network in failures:
+            raise failures[network]
+        partial = partials[network]
+        result.credits += partial.credits
+        result.queries.extend(partial.queries)
+        result.errors.extend(partial.errors)
 
 
 # --------------------------------------------------------------------------------------
@@ -2457,10 +2561,12 @@ def mirror_accounts(
     the bridge works in both directions (a TikTok creator found on Instagram, an
     Instagram one found on TikTok). A handle that does not exist answers 404 and
     costs nothing; one that does inherits the twin's words as evidence — same
-    person. The lookups run in parallel."""
+    person. The lookups run in parallel — and so do the two networks' rounds
+    (`_run_networks`), hence the snapshot of the pool: the other round adds its stubs
+    to it meanwhile, none of them a twin (a stub has no follower count yet)."""
     own = _slug(seed.handle)
     twins = sorted(
-        (c for c in pool.values() if c.network == _other(network) and c.followers),
+        (c for c in list(pool.values()) if c.network == _other(network) and c.followers),
         key=lambda c: c.followers or 0,
         reverse=True,
     )
@@ -2635,29 +2741,35 @@ def run_phase(
             else:
                 existing.merge(candidate)
 
-    for network in ("tiktok", "instagram"):
-        expand_accounts(
+    _run_networks(
+        executor,
+        result,
+        lambda network, acc: expand_accounts(
             key,
             seed,
             network,
             client=client,
             pool=pool,
-            result=result,
+            result=acc,
             raw_dir=raw_dir,
             store=store,
             executor=executor,
-        )
-    for network in ("tiktok", "instagram"):
-        mirror_accounts(
+        ),
+    )
+    _run_networks(
+        executor,
+        result,
+        lambda network, acc: mirror_accounts(
             seed,
             network,
             client=client,
             pool=pool,
-            result=result,
+            result=acc,
             raw_dir=raw_dir,
             store=store,
             executor=executor,
-        )
+        ),
+    )
 
     # Compared as slugs: the same person is `midu.dev` on Instagram and `midudev` on
     # TikTok (measured live 2026-09-11), and a brand's Instagram search finds its own
@@ -2710,18 +2822,27 @@ class PhasedDiscovery:
         *,
         client: httpx.Client | None = None,
         raw_dir: Path | None = None,
-        profile_cache: Path | None = None,
+        store: Any | None = None,
+        payload_cache: Any | None = None,
         parallel: int = PARALLEL_CALLS,
         reviewer: AccountReviewer | None = None,
     ) -> None:
         self.seed = seed
         self.reviewer = reviewer
         self._owns_client = client is None
-        self.client = client or httpx.Client(timeout=_DISCOVERY_TIMEOUT_SECONDS)
+        #: With a `payload_cache` (the shared pool's), every vendor answer of this run is
+        #: asked of the pool first and kept in it after (`_get_retry`).
+        self.client = client or (
+            PoolClient(payload_cache, timeout=_DISCOVERY_TIMEOUT_SECONDS)
+            if payload_cache is not None
+            else httpx.Client(timeout=_DISCOVERY_TIMEOUT_SECONDS)
+        )
         self.raw_dir = raw_dir
         self.pool: dict[tuple[str, str], Candidate] = {}
         self.picked: set[tuple[str, str]] = set()
-        self.store = ProfileStore(profile_cache)
+        #: `ProfileStore` or anything with its `get` / `put` / `save` (the wizard's
+        #: Postgres-backed one); a run of its own remembers only for itself.
+        self.store = store if store is not None else ProfileStore()
         self.executor = ThreadPoolExecutor(max_workers=max(parallel, 1)) if parallel > 1 else None
 
     def run(self, key: str) -> PhaseResult:
@@ -2808,6 +2929,13 @@ def account_card(candidate: Candidate) -> dict[str, str]:
         "kind_label": KIND_LABELS.get(candidate.account_kind, ""),
         "review": candidate.review_reason,
         "reviewed_by": candidate.reviewed_by,
+        # § 2026-10-01: the bio in full (web addresses, contacts) and the profile's link
+        "bio": " ".join(candidate.bio.split()),
+        "external_url": candidate.external_url,
+        # "3/5" when 3 of the 5 videos the search saw carried the AI label; "" otherwise
+        "ai": _ai_share(candidate),
+        # filled per phase by `phase_to_dict` (`reach_signals`): "" or the reason
+        "signal": "",
     }
 
 
@@ -2848,12 +2976,65 @@ def avatar_path(card: dict[str, str]) -> str:
     return path
 
 
+def _ai_share(candidate: Candidate) -> str:
+    if not candidate.ai_posts_seen:
+        return ""
+    return f"{candidate.ai_posts_seen}/{candidate.posts_seen}"
+
+
+#: An account whose videos reach far more than its peers' while being interacted with
+#: far less: the signature of paid reach (ads deliver views, not likes) or of an
+#: audience that does not react — `docs/crecimiento-organico-estimacion.md` §2.2, the
+#: same test the organic growth estimate runs per post, here per account against the
+#: phase. Views per post over `REACH_OUTLIER` x the phase median AND likes per view
+#: under `ENGAGEMENT_DEFICIT` x the phase median.
+REACH_OUTLIER = 3.0
+ENGAGEMENT_DEFICIT = 0.4
+REACH_SIGNAL = (
+    "Mucho alcance con poca interacción: señal de alcance pagado o de audiencia que no reacciona"
+)
+
+
+def reach_signals(accounts: Sequence[Candidate]) -> dict[tuple[str, str], str]:
+    """Per account, `REACH_SIGNAL` or "" — judged against the phase's own medians, with
+    at least three accounts whose feed sightings carried views."""
+    measured = [
+        (c, c.views_seen / c.posts_seen, c.likes_seen / c.views_seen)
+        for c in accounts
+        if c.posts_seen and c.views_seen
+    ]
+    if len(measured) < 3:
+        return {}
+    views_med = _median([views for _c, views, _er in measured])
+    er_med = _median([er for _c, _views, er in measured])
+    return {
+        c.key: (
+            REACH_SIGNAL
+            if views > REACH_OUTLIER * views_med and er < ENGAGEMENT_DEFICIT * er_med
+            else ""
+        )
+        for c, views, er in measured
+    }
+
+
+def _median(values: Sequence[float]) -> float:
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+
+
 def phase_to_dict(result: PhaseResult) -> dict[str, Any]:
+    signals = reach_signals(result.accounts)
+    cards = []
+    for candidate in result.accounts:
+        card = account_card(candidate)
+        card["signal"] = signals.get(candidate.key, "")
+        cards.append(card)
     return {
         "key": result.key,
         "title": result.title,
         "note": result.note,
-        "accounts": [account_card(c) for c in result.accounts],
+        "accounts": cards,
         "credits": result.credits,
         "errors": result.errors,
         "discarded": [
@@ -2890,78 +3071,6 @@ def phase_signature(key: str, seed: DiscoverySeed) -> str:
     if key == "local":
         parts.append(_slug(seed.city))
     return "|".join(parts)
-
-
-def _read_cache(path: Path) -> dict[str, Any]:
-    try:
-        cache = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return cache if isinstance(cache, dict) else {}
-
-
-def _write_cache(path: Path, cache: dict[str, Any]) -> None:
-    newest = sorted(cache.items(), key=lambda kv: kv[1].get("fetchedAt", 0), reverse=True)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(dict(newest[:_CACHE_MAX_ENTRIES]), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-
-def load_cached_phase(
-    key: str, seed: DiscoverySeed, *, path: Path = DISCOVERY_CACHE_PATH, now: float | None = None
-) -> dict[str, Any] | None:
-    """One phase's cached result for this seed, or None (missing, expired, unreadable).
-    Read BEFORE any vendor call — the file is the provisional store."""
-    entry = _read_cache(path).get(phase_signature(key, seed))
-    if not isinstance(entry, dict):
-        return None
-    if (now or time.time()) - float(entry.get("fetchedAt", 0)) > _CACHE_TTL_SECONDS:
-        return None
-    phase = entry.get("phase")
-    return phase if isinstance(phase, dict) else None
-
-
-def save_cached_phase(
-    key: str,
-    seed: DiscoverySeed,
-    phase: dict[str, Any],
-    *,
-    path: Path = DISCOVERY_CACHE_PATH,
-    now: float | None = None,
-) -> None:
-    """Upsert one phase, keeping the newest `_CACHE_MAX_ENTRIES` entries. A phase that
-    found accounts is worth keeping even if some vendor call failed along the way
-    (a single profile read answering 500 used to void the whole run — measured
-    2026-09-11 — so every walk searched everything again); only a phase with
-    errors AND nothing found is left uncached so the next walk retries it."""
-    if phase.get("errors") and not phase.get("accounts"):
-        return
-    cache = _read_cache(path)
-    cache[phase_signature(key, seed)] = {"fetchedAt": now or time.time(), "phase": phase}
-    _write_cache(path, cache)
-
-
-def load_cached_phases(
-    seed: DiscoverySeed, *, path: Path = DISCOVERY_CACHE_PATH, now: float | None = None
-) -> list[dict[str, Any]] | None:
-    """Every phase of a run from the cache, or None when any is missing."""
-    phases = [load_cached_phase(key, seed, path=path, now=now) for key in PHASES]
-    return None if any(p is None for p in phases) else [p for p in phases if p]
-
-
-def save_cached_phases(
-    seed: DiscoverySeed,
-    phases: list[dict[str, Any]],
-    *,
-    path: Path = DISCOVERY_CACHE_PATH,
-    now: float | None = None,
-) -> None:
-    for phase in phases:
-        key = str(phase.get("key", ""))
-        if key in PHASES:
-            save_cached_phase(key, seed, phase, path=path, now=now)
 
 
 # --------------------------------------------------------------------------------------

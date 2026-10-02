@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-import json
-
 import httpx
 import pytest
 
@@ -256,91 +254,6 @@ def test_fetch_profile_missing_api_key_is_a_scrapecreators_error(
 
 
 # --------------------------------------------------------------------------------------
-# The generic, overwritable JSON snapshot
-# --------------------------------------------------------------------------------------
-
-
-def test_save_and_load_profile_snapshot_round_trip(tmp_path) -> None:
-    path = tmp_path / "brand_connect_profile.json"
-    profile = {"username": "someone", "bio": "hi", "followers": 10}
-
-    sc.save_profile_snapshot("tiktok", "someone", profile, path=path)
-    loaded = sc.load_profile_snapshot(path=path)
-
-    assert loaded == profile
-    on_disk = json.loads(path.read_text(encoding="utf-8"))
-    assert on_disk["network"] == "tiktok"
-    assert on_disk["handle"] == "someone"
-    assert on_disk["source"] == "scrapecreators"
-
-
-def test_save_profile_snapshot_overwrites_the_previous_read(tmp_path) -> None:
-    path = tmp_path / "brand_connect_profile.json"
-
-    sc.save_profile_snapshot("instagram", "first", {"username": "first"}, path=path)
-    sc.save_profile_snapshot("tiktok", "second", {"username": "second"}, path=path)
-
-    loaded = sc.load_profile_snapshot(path=path)
-    assert loaded == {"username": "second"}
-
-
-def test_load_profile_snapshot_malformed_file_raises(tmp_path) -> None:
-    path = tmp_path / "brand_connect_profile.json"
-    path.write_text(json.dumps({"not_profile": {}}), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="profile"):
-        sc.load_profile_snapshot(path=path)
-
-
-# --------------------------------------------------------------------------------------
-# load_cached_profile — the pre-fetch cache check
-# --------------------------------------------------------------------------------------
-
-
-def test_load_cached_profile_hits_on_the_same_network_and_handle(tmp_path) -> None:
-    path = tmp_path / "brand_connect_profile.json"
-    profile = {"username": "midu.dev", "bio": "hola"}
-    sc.save_profile_snapshot("instagram", "midu.dev", profile, path=path)
-
-    assert sc.load_cached_profile("instagram", "midu.dev", path=path) == profile
-
-
-def test_load_cached_profile_hit_ignores_case_and_a_leading_at(tmp_path) -> None:
-    path = tmp_path / "brand_connect_profile.json"
-    profile = {"username": "midu.dev"}
-    sc.save_profile_snapshot("instagram", "Midu.Dev", profile, path=path)
-
-    assert sc.load_cached_profile("instagram", "@midu.dev", path=path) == profile
-
-
-def test_load_cached_profile_misses_on_a_different_handle(tmp_path) -> None:
-    path = tmp_path / "brand_connect_profile.json"
-    sc.save_profile_snapshot("instagram", "midu.dev", {"username": "midu.dev"}, path=path)
-
-    assert sc.load_cached_profile("instagram", "someone_else", path=path) is None
-
-
-def test_load_cached_profile_misses_on_the_same_handle_different_network(tmp_path) -> None:
-    path = tmp_path / "brand_connect_profile.json"
-    sc.save_profile_snapshot("instagram", "midu.dev", {"username": "midu.dev"}, path=path)
-
-    assert sc.load_cached_profile("tiktok", "midu.dev", path=path) is None
-
-
-def test_load_cached_profile_misses_when_the_file_does_not_exist(tmp_path) -> None:
-    path = tmp_path / "does_not_exist.json"
-
-    assert sc.load_cached_profile("instagram", "anyone", path=path) is None
-
-
-def test_load_cached_profile_misses_on_a_malformed_file_instead_of_raising(tmp_path) -> None:
-    path = tmp_path / "brand_connect_profile.json"
-    path.write_text("not json at all", encoding="utf-8")
-
-    assert sc.load_cached_profile("instagram", "anyone", path=path) is None
-
-
-# --------------------------------------------------------------------------------------
 # fetch_recent_posts / fetch_profile_and_posts / profile_metrics — windowed metrics
 # (2026-09-10, "por ahora semana")
 # --------------------------------------------------------------------------------------
@@ -351,13 +264,19 @@ _SINCE = _NOW - 7 * _DAY
 
 
 def _ig_item(
-    taken_at: int, likes: int | None = 100, comments: int = 5, plays: int | None = None
+    taken_at: int,
+    likes: int | None = 100,
+    comments: int = 5,
+    plays: int | None = None,
+    hidden: bool = False,
 ) -> dict:
     item: dict = {"taken_at": taken_at, "comment_count": comments, "code": "abc"}
     if likes is not None:
         item["like_count"] = likes
     if plays is not None:
         item["play_count"] = plays
+    if hidden:
+        item["like_and_view_counts_disabled"] = True
     return item
 
 
@@ -366,6 +285,18 @@ def _tt_item(create_time: int, likes: int = 100, comments: int = 5, plays: int =
         "aweme_id": "1",
         "create_time": create_time,
         "statistics": {"digg_count": likes, "comment_count": comments, "play_count": plays},
+    }
+
+
+def _shaped(**kw: object) -> dict:
+    """A post in the common shape with the new keys (2026-10-01) at their defaults."""
+    return {
+        "postId": "",
+        "shares": None,
+        "aiGenerated": None,
+        "aiLabel": "",
+        "aiSource": "",
+        **kw,
     }
 
 
@@ -381,7 +312,9 @@ def test_fetch_recent_posts_instagram_keeps_only_the_window_and_normalizes() -> 
                 "items": [
                     _ig_item(_NOW - 400 * _DAY, likes=9),  # pinned, old — first in the list
                     _ig_item(_NOW - 1 * _DAY, likes=500, comments=20, plays=9000),
-                    _ig_item(_NOW - 3 * _DAY, likes=None, comments=1),  # hidden like count
+                    _ig_item(_NOW - 3 * _DAY, likes=None, comments=1),  # no like count
+                    # counts hidden by the author: the 3 is a placeholder, not a figure
+                    _ig_item(_NOW - 4 * _DAY, likes=3, comments=2, plays=50, hidden=True),
                     "garbage",
                     _ig_item(_NOW - 10 * _DAY, likes=300),  # outside the window
                 ],
@@ -396,8 +329,9 @@ def test_fetch_recent_posts_instagram_keeps_only_the_window_and_normalizes() -> 
     # though `more_available` said there was one.
     assert seen == [{"handle": "someone"}]
     assert posts == [
-        {"takenAt": _NOW - 1 * _DAY, "likes": 500, "comments": 20, "views": 9000},
-        {"takenAt": _NOW - 3 * _DAY, "likes": None, "comments": 1, "views": None},
+        _shaped(postId="abc", takenAt=_NOW - 1 * _DAY, likes=500, comments=20, views=9000),
+        _shaped(postId="abc", takenAt=_NOW - 3 * _DAY, likes=None, comments=1, views=None),
+        _shaped(postId="abc", takenAt=_NOW - 4 * _DAY, likes=None, comments=2, views=None),
     ]
 
 
@@ -427,7 +361,9 @@ def test_fetch_recent_posts_tiktok_paginates_until_the_window_is_covered() -> No
 
     assert [p.get("max_cursor") for p in seen] == [None, "c1"]
     assert [p["takenAt"] for p in posts] == [_NOW - 1 * _DAY, _NOW - 2 * _DAY, _NOW - 5 * _DAY]
-    assert posts[2] == {"takenAt": _NOW - 5 * _DAY, "likes": 50, "comments": 5, "views": 1000}
+    assert posts[2] == _shaped(
+        postId="1", takenAt=_NOW - 5 * _DAY, likes=50, comments=5, views=1000
+    )
 
 
 def test_fetch_recent_posts_stops_at_max_pages_and_on_a_repeated_cursor() -> None:
@@ -487,7 +423,7 @@ def test_fetch_profile_and_posts_combines_both_reads(monkeypatch: pytest.MonkeyP
     assert profile["followers"] == 1000
     assert profile["fetchedAt"] == float(_NOW)
     assert profile["recentPosts"] == [
-        {"takenAt": _NOW - _DAY, "likes": 100, "comments": 5, "views": 1000}
+        _shaped(postId="1", takenAt=_NOW - _DAY, likes=100, comments=5, views=1000)
     ]
 
 
@@ -600,18 +536,6 @@ def test_profile_metrics_without_a_post_read_is_empty() -> None:
     assert sc.profile_metrics("instagram", {"followers": 100, "recentPosts": None}) == []
 
 
-def test_load_cached_profile_misses_a_snapshot_from_an_older_schema(tmp_path) -> None:
-    path = tmp_path / "snap.json"
-    sc.save_profile_snapshot("instagram", "midu.dev", {"username": "midu.dev"}, path=path)
-    assert sc.load_cached_profile("instagram", "midu.dev", path=path) == {"username": "midu.dev"}
-
-    stale = json.loads(path.read_text(encoding="utf-8"))
-    stale["schema"] = 2  # what a snapshot written by an older normalizer looks like
-    path.write_text(json.dumps(stale), encoding="utf-8")
-
-    assert sc.load_cached_profile("instagram", "midu.dev", path=path) is None
-
-
 # --------------------------------------------------------------------------------------
 # hashtags + status codes (2026-09-11, creator discovery)
 # --------------------------------------------------------------------------------------
@@ -682,3 +606,54 @@ def test_error_carries_the_http_status_only_when_the_vendor_answered() -> None:
     with pytest.raises(sc.ScrapeCreatorsError) as network_error:
         sc.fetch_profile("instagram", "ghost", client=_client(broken))
     assert network_error.value.status_code is None
+
+
+# -- the platforms' own "made with AI" label, in the common shape (2026-10-01) -----------
+
+
+def test_the_ai_label_is_read_from_both_platforms_as_measured_live() -> None:
+    ig, _ = sc._normalize_instagram_posts(
+        {
+            "items": [
+                _ig_item(_NOW)
+                | {"ai_label_info": {"gen_ai_detection_method": "SELF_DISCLOSURE_FLOW"}},
+                _ig_item(_NOW) | {"ai_label_info": {"gen_ai_detection_method": "AI_EDITED"}},
+                _ig_item(_NOW) | {"ai_label_info": None},  # present but empty: unknown
+                _ig_item(_NOW),  # absent: unknown, never "not AI"
+            ]
+        }
+    )
+    assert [(p["aiGenerated"], p["aiLabel"]) for p in ig] == [
+        (True, sc.AI_LABEL_SELF_DISCLOSED),
+        (True, sc.AI_LABEL_DETECTED),
+        (None, ""),
+        (None, ""),
+    ]
+
+    tt, _ = sc._normalize_tiktok_videos(
+        {
+            "aweme_list": [
+                _tt_item(_NOW)
+                | {
+                    "aigc_info": {"aigc_label_type": 2, "created_by_ai": True},
+                    "c2pa_info": {"first_aigc_src": "Sora"},
+                    "statistics": {
+                        "digg_count": 1,
+                        "comment_count": 2,
+                        "play_count": 3,
+                        "share_count": 4,
+                    },
+                },
+                _tt_item(_NOW) | {"aigc_info": {"aigc_label_type": 1, "created_by_ai": True}},
+                _tt_item(_NOW) | {"aigc_info": {"aigc_label_type": 0, "created_by_ai": False}},
+                _tt_item(_NOW),  # a `trim=true` item: nothing to read
+            ]
+        }
+    )
+    assert [(p["aiGenerated"], p["aiLabel"], p["aiSource"]) for p in tt] == [
+        (True, sc.AI_LABEL_DETECTED, "Sora"),
+        (True, sc.AI_LABEL_SELF_DISCLOSED, ""),
+        (False, "", ""),
+        (None, "", ""),
+    ]
+    assert tt[0]["shares"] == 4 and tt[0]["postId"] == "1"

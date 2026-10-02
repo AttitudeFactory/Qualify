@@ -41,25 +41,21 @@ _NOT_ALGORITHM = frozenset(
         "_DISCOVERY_TIMEOUT_SECONDS",
         "_RETRY_DELAY_SECONDS",
         "_get_retry",
+        "NOT_FOUND_STATUS",
+        "PoolClient",
         "_run_parallel",
+        "_run_networks",
+        "NETWORKS",
         "lookup_account",
         "PARALLEL_CALLS",
         "_PROFILE_CACHE_MAX_AGE",
         "_dump_raw",
-        # our caches (JSON files today, Postgres next)
-        "DISCOVERY_CACHE_PATH",
-        "_CACHE_TTL_SECONDS",
-        "_CACHE_MAX_ENTRIES",
-        "PROFILE_CACHE_PATH",
-        "_PROFILE_CACHE_TTL_SECONDS",
+        # the run's memory of profile reads (Postgres since 2026-10-01) and the runner
         "ProfileStore",
+        "facts_to_document",
+        "facts_from_document",
+        "PhasedDiscovery",
         "phase_signature",
-        "_read_cache",
-        "_write_cache",
-        "load_cached_phase",
-        "save_cached_phase",
-        "load_cached_phases",
-        "save_cached_phases",
         # avatars and card presentation
         "_tiktok_avatar",
         "_RENDERABLE_EXTENSIONS",
@@ -70,9 +66,16 @@ _NOT_ALGORITHM = frozenset(
         "_compact",
         "_reason",
         "_likes_label",
+        "_ai_share",
         "account_card",
         "KIND_LABELS",
         "phase_to_dict",
+        # the card's reach signal (presentation over the phase's medians, 2026-10-01)
+        "REACH_OUTLIER",
+        "ENGAGEMENT_DEFICIT",
+        "REACH_SIGNAL",
+        "reach_signals",
+        "_median",
         # the filter-JSON CLI bench
         "result_path",
         "save_result",
@@ -92,6 +95,11 @@ FINGERPRINTS: dict[int, str] = {
     7: "940189c1e6f88972ea55fd3cc8624719a9138ffd05f2f21771df392f65ecd6f8",
     8: "029d966521ac0bad41ad0523c75a129d7871ebbbaa2d35561c92c4a29abb2ab0",
     9: "7fad47a4258303b5324b3d1cfb53d5495d05b32cae01d0c07edcf7e747ee7317",
+    # 10: the same accounts as 9 — `run_phase` only changed to walk both networks at once
+    10: "1da80e375db2e53fbe9b9381725b0aa7b130100e63cca39937163a335c51607c",
+    # 11: the same accounts as 10 — `Candidate` gained the profile link and the count of
+    # AI-labelled videos seen, read on the feeds; the profile reads moved to Postgres
+    11: "c33c339245106ebaaae4f29fd9499e355b5b73d62d132fe528f8cfed82c08dda",
 }
 
 

@@ -106,8 +106,8 @@ def test_instagram_reel_owners_and_merges_keep_a_picture() -> None:
     assert bare.avatar == "https://fresh"  # a read without one keeps what there was
 
 
-def test_the_profile_cache_round_trips_the_picture(tmp_path) -> None:
-    cache = cd.ProfileStore(tmp_path / "profiles.json")
+def test_the_profile_cache_round_trips_the_picture() -> None:
+    cache = cd.ProfileStore()
     cache.put(
         "tiktok", "sof_lol", cd.ProfileFacts(followers=5, bio="b", avatar=_TT_SIGNED), now=100.0
     )
