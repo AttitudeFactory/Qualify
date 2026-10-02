@@ -73,7 +73,8 @@ NAV_LOOSE: list[Item] = [("Leads", "user-plus", "/leads", True)]
 NAV_BUSINESS: list[Item] = [
     ("Clarity", "activity", "/clarity", True),
     ("Vitrina", "store", "/vitrina", True),
-    ("Brand Kit", "swatch-book", "/brand/kit", True),
+    # No Brand Kit editor inside a session (§ request 2026-10-02): the kit is made
+    # before the login and Marca shows its summary. The guest rail keeps the entry.
     ("Configuración", "settings", "#", False),
 ]
 

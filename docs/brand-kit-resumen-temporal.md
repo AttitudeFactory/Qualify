@@ -1,5 +1,15 @@
 # Marca: resumen del Brand Kit y "Crear uno nuevo" — TEMPORAL (solo para pruebas)
 
+> **Cerrado el 2026-10-02.** El fundador pidió quitar el Brand Kit de dentro de la sesión:
+> «Marca» (`/brand`) muestra **solo el resumen de solo lectura**, sin «Crear uno nuevo»,
+> y la barra lateral de la sesión ya no lleva al editor (`/brand/kit`, que sigue para el
+> invitado que está creando su kit antes de registrarse). El reemplazo de un kit por otro
+> ya no existe desde la interfaz; la bandera `BrandWizardState.replacing_kit` y sus
+> comprobaciones quedan en el código sin nada que las active. El resumen dejó de ser
+> temporal: es la vista del Brand Kit dentro de la sesión. Lo de abajo es el registro de
+> cómo era mientras duró, para quien quiera retirar la bandera.
+
+
 `[TEMPORAL — 2026-10-01, pedido del fundador]` Esto existe **solo para probar** el Brand Kit de punta a punta. Hay que **eliminarlo** cuando terminen las pruebas. Este documento dice qué es, por qué está y cómo quitarlo sin dejar restos.
 
 ## Qué hace

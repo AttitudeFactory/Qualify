@@ -1,17 +1,13 @@
-"""TEMPORAL (pruebas) — Marca (/brand) as a read-only summary of the finished Brand Kit
-(§ request 2026-10-01: "cuando se complete el brandkit, en el apartado de marca solo el
-resumen sin poder editar nada y un botón para añadir uno nuevo y reemplazar el que está —
-por ahora solo para pruebas, déjalo documentado para posteriormente eliminarlo").
+"""Marca (/brand): the read-only summary of the Brand Kit — the only Brand Kit view
+inside a session (§ request 2026-10-02: "quita el brandkit dentro de la sesión iniciada,
+solo deja la vista del resumen y elimina el botón de crear uno nuevo"). The kit is made
+before the login (`docs/brand-kit-antes-del-login.md`); here it is only read.
 
-Documented for its removal in `docs/brand-kit-resumen-temporal.md`.
-
-- A brand WITH a saved kit lands on this summary: what was saved, nothing editable
-  (editing lives in Negocio → Brand Kit, `/brand/kit`).
-- "Crear uno nuevo" (after a confirmation) starts an EMPTY wizard that will REPLACE the
-  saved kit when finished (`BrandWizardState.replacing_kit`): the session's kit draft,
-  brandboard and answers are cleared and nothing saved is loaded back into it. The saved
-  kit stays active until the new one is finished; "Cancelar" goes back to it.
-- A brand WITHOUT a kit lands on the usual question (`brand_choice_index`).
+- Logged in: the summary, always. Without a kit it says so — there is no way to make
+  one from inside a session. No "Crear uno nuevo" (the 2026-10-01 TEMPORAL replacement
+  is gone; `docs/brand-kit-resumen-temporal.md` records it).
+- A kit left halfway (`brand_finish.kit_status`) is sent back into its wizard.
+- A guest: the summary once their kit is finished, the "¿Tienes redes?" question before.
 
 Reads straight from what is stored (`creative_provider.load_kit_form`,
 `brand_finish.load_saved`, the voice clone) — never the session's draft — so the summary
@@ -26,20 +22,18 @@ from collections.abc import AsyncIterator
 import reflex as rx
 from sqlalchemy.exc import SQLAlchemyError
 
+from .auth_state import AuthState
 from .brand_finish import PROGRESS_KEY, KitStatus, load_saved, session_ids
 from .creative_provider import load_kit_form
-from .creative_state import CreativeState
 from .creative_vm import KitFormVM
 from .creative_wizard_pages import (
     LOGO_VERSIONS,
-    BrandConnectState,
-    BrandWizardState,
     brand_choice_index,
 )
 from .r2_media import BACKEND_BASE
 from .ui import app_shell, callout, card, page_body, page_header, section, tag
 from .ui import tokens as T
-from .voice_lab import VoiceLabState, brand_voice_clone
+from .voice_lab import brand_voice_clone
 
 logger = logging.getLogger(__name__)
 
@@ -107,10 +101,7 @@ class BrandSummaryState(rx.State):
             and not (isinstance(raw, dict) and raw.get("completed") is False),
             progress=raw if isinstance(raw, dict) else None,
         )
-        async with self:
-            wizard = await self.get_state(BrandWizardState)
-            replacing = wizard.replacing_kit
-        if status.resume_route is not None and not replacing:
+        if status.resume_route is not None:
             async with self:
                 self.loading = False
                 self.has_kit = False
@@ -163,34 +154,6 @@ class BrandSummaryState(rx.State):
         self.cta_patterns = _lines(form.cta_patterns)
         self.banned_words = _lines(form.banned_words)
         self.forbidden_claims = _lines(form.forbidden_claims)
-
-    @rx.event
-    async def start_replacement(self) -> None:
-        """TEMPORAL — "Crear uno nuevo": an empty wizard that replaces this kit when it
-        is finished. The saved kit is NOT touched now: only the session's draft is."""
-        creative = await self.get_state(CreativeState)
-        creative._apply_kit_form(KitFormVM())
-        creative._kit_draft_loaded = True  # do not load the saved kit back into the draft
-        creative.kit_error = ""
-        creative.kit_notice = ""
-        wizard = await self.get_state(BrandWizardState)
-        wizard._reset_fields()
-        wizard.replacing_kit = True
-        connect = await self.get_state(BrandConnectState)
-        connect._reset_fields()
-        voice = await self.get_state(VoiceLabState)
-        voice.sample_key = ""
-        voice.sample_name = ""
-        voice.analysis_rows = []
-        voice.analysis_error = ""
-
-    @rx.event
-    async def cancel_replacement(self) -> None:
-        """Back to the saved kit: the next visit to a wizard loads it again."""
-        wizard = await self.get_state(BrandWizardState)
-        wizard._reset_fields()
-        creative = await self.get_state(CreativeState)
-        creative._kit_draft_loaded = False
 
 
 # ---------------------------------------------------------------------------------------
@@ -271,45 +234,28 @@ def _file_tile(file: rx.Var[dict[str, str]]) -> rx.Component:
     )
 
 
-def _replace_button() -> rx.Component:
-    return rx.alert_dialog.root(
-        rx.alert_dialog.trigger(
-            rx.button(rx.icon("refresh-cw", size=T.ICON_SM), "Crear uno nuevo", size="2")
-        ),
-        rx.alert_dialog.content(
-            rx.alert_dialog.title("¿Crear un Brand Kit nuevo?"),
-            rx.alert_dialog.description(
-                "Empiezas de cero. Cuando lo termines, reemplazará por completo al actual "
-                "(kit, brandboard y respuestas). Hasta entonces el actual sigue activo.",
-                size="2",
-            ),
-            rx.hstack(
-                rx.alert_dialog.cancel(rx.button("Cancelar", variant="soft", color_scheme="gray")),
-                rx.alert_dialog.action(
-                    rx.button("Crear uno nuevo", on_click=BrandSummaryState.start_replacement)
-                ),
-                spacing="3",
-                justify="end",
-                width="100%",
-                margin_top="1rem",
-            ),
-        ),
-    )
-
-
 def _summary() -> rx.Component:
+    """The read-only summary — the only Brand Kit view inside a session (§ request
+    2026-10-02: "quita el brandkit dentro de la sesión iniciada, solo deja la vista del
+    resumen"). A guest still has the editor in their rail, so only they are told."""
     return app_shell(
         page_header(
             "Tu Brand Kit",
-            "Así quedó tu marca. Para cambiar algo, ve a Negocio → Brand Kit.",
-            _replace_button(),
+            rx.cond(
+                AuthState.is_guest,
+                "Así quedó tu marca. Para cambiar algo, ve a Negocio → Brand Kit.",
+                "Así quedó tu marca.",
+            ),
         ),
         page_body(
             rx.vstack(
-                callout(
-                    "Vista temporal de pruebas: aquí solo se ve el resumen; crear uno nuevo "
-                    "reemplaza el actual al terminarlo.",
-                    "info",
+                rx.cond(
+                    ~BrandSummaryState.has_kit,
+                    callout(
+                        "Este negocio no tiene Brand Kit. Se crea antes de iniciar sesión, "
+                        "desde la pantalla del correo.",
+                        "info",
+                    ),
                 ),
                 rx.grid(
                     section(
@@ -404,35 +350,16 @@ def _summary() -> rx.Component:
     )
 
 
-def _replacing_notice() -> rx.Component:
-    return rx.vstack(
-        callout(
-            "Estás creando un Brand Kit nuevo: reemplazará al actual cuando lo termines.",
-            "warn",
-        ),
-        rx.button(
-            rx.icon("undo-2", size=T.ICON_SM),
-            "Volver al Brand Kit actual",
-            variant="soft",
-            size="1",
-            on_click=BrandSummaryState.cancel_replacement,
-        ),
-        spacing="2",
-        width="100%",
-        align_items="start",
-    )
-
-
 def brand_home_index() -> rx.Component:
-    """/brand: the summary for a finished kit (TEMPORAL), the usual question otherwise."""
+    """/brand: the summary, and nothing else (§ 2026-10-02). A kit left halfway is sent
+    back into its wizard by `BrandSummaryState.load`; a guest without a kit yet gets the
+    "¿Tienes redes?" question, since their Brand Kit is still to be made."""
     return rx.cond(
         BrandSummaryState.loading,
         app_shell(page_header("Brandkit", "Cargando tu marca…"), page_body(rx.spinner())),
         rx.cond(
-            BrandSummaryState.has_kit & ~BrandWizardState.replacing_kit,
+            AuthState.is_guest & ~BrandSummaryState.has_kit,
+            brand_choice_index(),
             _summary(),
-            brand_choice_index(
-                rx.cond(BrandWizardState.replacing_kit, _replacing_notice(), rx.fragment())
-            ),
         ),
     )
