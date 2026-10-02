@@ -10,6 +10,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -91,6 +92,10 @@ class BrandDiscoveredAccount(Base):
     followers: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     profile_url: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     avatar_url: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    #: The bio in full and the link the profile points at (migration 0035) — the
+    #: card's blurb is a cut, and a bio's web addresses matter.
+    bio: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    external_url: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     card: Mapped[dict] = mapped_column(JSONB, nullable=False)
     found_by: Mapped[list] = mapped_column(
         JSONB, nullable=False, server_default=text("'[]'::jsonb")
@@ -129,3 +134,37 @@ class BrandAccountLabel(Base):
     #: The operator's influence order inside its label, 0 = most influential; NULL until
     #: ordered (migration 0031).
     position: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class CreatorProfileCache(Base):
+    """A vendor read of a public creator, per tenant, with a time to live (migration
+    0035) — `qualify_api.referentes.profile_cache` reads and writes it."""
+
+    __tablename__ = "creator_profile_cache"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "network", "handle", "kind", name="uq_creator_profile_cache"),
+        CheckConstraint(
+            "network IN ('tiktok','instagram')", name="ck_creator_profile_cache_network"
+        ),
+        CheckConstraint(_HANDLE_CHECK, name="ck_creator_profile_cache_handle_normalized"),
+        CheckConstraint("kind IN ('snapshot')", name="ck_creator_profile_cache_kind"),
+        CheckConstraint("expires_at > fetched_at", name="ck_creator_profile_cache_ttl"),
+        Index("ix_creator_profile_cache_expires", "tenant_id", "expires_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    network: Mapped[str] = mapped_column(Text, nullable=False)
+    handle: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    document: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    missing: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )

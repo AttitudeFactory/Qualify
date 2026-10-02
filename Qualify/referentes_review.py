@@ -26,7 +26,6 @@ import unicodedata
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -337,7 +336,8 @@ def add_manual_account(
     config: ModelConfig | None = None,
     lookup: LookupFn = creator_discovery.lookup_account,
     review: ReviewFn = review_ai.review_accounts,
-    store_path: Path | None = creator_discovery.PROFILE_CACHE_PATH,
+    store: Any | None = None,
+    payload_cache: Any | None = None,
 ) -> ManualResult:
     """Look the account up (when it is on a network we read), review it with
     `manual=True`, and build its card. Never raises for a vendor or model failure —
@@ -345,7 +345,9 @@ def add_manual_account(
     errors: list[str] = []
     missing = False
     if target.network in READABLE_NETWORKS:
-        candidate, found, error = lookup(target.network, target.handle, store_path=store_path)
+        candidate, found, error = lookup(
+            target.network, target.handle, store=store, payload_cache=payload_cache
+        )
         missing = not found
         if error:
             errors.append(error)

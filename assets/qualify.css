@@ -664,6 +664,44 @@ body[data-rank-dragging] { cursor: grabbing; }
   .q-rank-card[data-over] { scale: 1; }
 }
 
+/* Progress panel (`ui.progress_panel`, § 2026-10-01): a track, its fill (a width with a
+   transition, or `.q-progress-creep` creeping towards ~90%) and a light sweep. */
+.q-progress-track {
+  position: relative;
+  height: 0.5rem;
+  border-radius: 9999px;
+  background: var(--gray-4);
+  overflow: hidden;
+}
+.q-progress-fill {
+  height: 100%;
+  border-radius: 9999px;
+  background: var(--accent-9);
+  transition: width 600ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes q-progress-creep {
+  from { width: 4%; }
+  to { width: 92%; }
+}
+.q-progress-creep {
+  animation: q-progress-creep var(--q-creep, 30s) cubic-bezier(0.1, 0.6, 0.3, 1) forwards;
+}
+@keyframes q-progress-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+.q-progress-track::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.28), transparent);
+  animation: q-progress-sweep 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .q-progress-track::after { animation: none; }
+  .q-progress-creep { animation: none; width: 60%; }
+}
+
 /* ── Publish flow selector (QUA-113) ─────────────────────────────────────────
  * `Publicaciones | Stories` on /publish. Radix's own segmented control marks the
  * active item with a near-surface pill that is easy to miss; here the active flow gets

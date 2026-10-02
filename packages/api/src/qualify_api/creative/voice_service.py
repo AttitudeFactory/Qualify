@@ -87,6 +87,37 @@ def _profile_from_row(row: VoiceProfileRow) -> BrandVoiceProfile:
     )
 
 
+def _kit_profile(kit: BrandKit) -> dict:
+    """The distilled voice fields S1 derives from the kit — the JSONB `profile`."""
+    return {
+        "tone_axes": kit.tone_axes.model_dump(),
+        "lexicon": list(_lexicon_from_kit(kit)),
+        "avoid_lexicon": list(kit.banned_words),
+        "sentence_rhythm": "",
+        "signature_moves": [],
+    }
+
+
+def _kit_sources(kit: BrandKit) -> list[dict]:
+    """Provenance (§4.4): S1 reads exactly one source — the manual kit."""
+    return [
+        {
+            "kind": VoiceSourceKind.MANUAL_KIT.value,
+            "ref": "brand_kit",
+            "excerpt": kit.positioning,
+        }
+    ]
+
+
+def _kit_only(sources: object) -> bool:
+    """Whether a stored profile came from the kit alone (so a kit save may replace it)."""
+    items = list(sources or ()) if isinstance(sources, list | tuple) else []
+    return all(
+        isinstance(item, dict) and item.get("kind") == VoiceSourceKind.MANUAL_KIT.value
+        for item in items
+    )
+
+
 class VoiceProfileService:
     def propose_from_kit(self, *, tenant_id: UUID, brand_id: UUID, user_id: UUID) -> int:
         """Create the next PROPOSED profile from the brand kit; returns its version.
@@ -112,21 +143,70 @@ class VoiceProfileService:
                     brand_id=brand_id,
                     version=version,
                     status=VoiceProfileStatus.PROPOSED.value,
-                    profile={
-                        "tone_axes": kit.tone_axes.model_dump(),
-                        "lexicon": list(_lexicon_from_kit(kit)),
-                        "avoid_lexicon": list(kit.banned_words),
-                        "sentence_rhythm": "",
-                        "signature_moves": [],
-                    },
-                    # Provenance (§4.4): S1 read exactly one source — the manual kit.
-                    sources=[
-                        {
-                            "kind": VoiceSourceKind.MANUAL_KIT.value,
-                            "ref": "brand_kit",
-                            "excerpt": kit.positioning,
-                        }
-                    ],
+                    profile=_kit_profile(kit),
+                    sources=_kit_sources(kit),
+                )
+            )
+            session.flush()
+            return version
+
+    def adopt_from_kit(self, *, tenant_id: UUID, brand_id: UUID, user_id: UUID) -> int:
+        """Saving the kit IS the approval (founder, 2026-09-30: "no quiero aprobación").
+
+        While the voice is a deterministic function of the kit (S1: one `MANUAL_KIT`
+        source, no model), the person saving the kit wrote every field it is made of and
+        reviewed them on ¿Todo correcto? — a second "Aprobar" click adds nothing, and a
+        voice left behind by a later kit edit puts two different tone targets in every
+        prompt. So: when the kit's voice fields changed, the next version is created
+        straight as ACTIVE, the previous one SUPERSEDED, and whoever saved is recorded as
+        approver. Same kit → nothing is written; the current version comes back.
+
+        Never replaces a voice distilled from other sources (owned media, public web —
+        a model's inference a person approved through `approve`): that one stays ACTIVE
+        and its version comes back. The single-ACTIVE invariant is also a database fact
+        (0032's partial unique index), so two racing saves cannot both win.
+        Raises `UnknownBrandKit` when the brand has no kit."""
+        now = datetime.now(UTC)
+        with tenant_session(tenant_id) as session:
+            kit_row = session.scalar(select(BrandKitRow).where(BrandKitRow.brand_id == brand_id))
+            if kit_row is None:
+                raise UnknownBrandKit(f"brand {brand_id} has no brand kit")
+            kit = kit_from_row(kit_row)
+            profile, sources = _kit_profile(kit), _kit_sources(kit)
+            actives = session.scalars(
+                select(VoiceProfileRow)
+                .where(
+                    VoiceProfileRow.brand_id == brand_id,
+                    VoiceProfileRow.status == VoiceProfileStatus.ACTIVE.value,
+                )
+                .with_for_update()
+            ).all()
+            for current in actives:
+                if not _kit_only(current.sources):
+                    return current.version
+                if current.profile == profile and list(current.sources or ()) == sources:
+                    return current.version
+            latest = session.scalar(
+                select(func.max(VoiceProfileRow.version)).where(
+                    VoiceProfileRow.brand_id == brand_id
+                )
+            )
+            for previous in actives:
+                previous.status = VoiceProfileStatus.SUPERSEDED.value
+                previous.updated_at = now
+            # the old ACTIVE must be gone before the new one exists (partial unique index)
+            session.flush()
+            version = (latest or 0) + 1
+            session.add(
+                VoiceProfileRow(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    version=version,
+                    status=VoiceProfileStatus.ACTIVE.value,
+                    profile=profile,
+                    sources=sources,
+                    approved_by=user_id,
+                    approved_at=now,
                 )
             )
             session.flush()
@@ -159,6 +239,9 @@ class VoiceProfileService:
             for previous in previous_actives:
                 previous.status = VoiceProfileStatus.SUPERSEDED.value
                 previous.updated_at = now
+            # the old ACTIVE must be gone before the new one is promoted: 0032's partial
+            # unique index checks each UPDATE, and one flush may order them either way
+            session.flush()
             row.status = VoiceProfileStatus.ACTIVE.value
             row.approved_by = user_id
             row.approved_at = now

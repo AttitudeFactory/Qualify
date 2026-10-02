@@ -45,10 +45,22 @@ def wizard(monkeypatch: pytest.MonkeyPatch) -> BrandWizardState:
     return state
 
 
-async def test_a_dropped_version_is_staged_under_its_own_key(wizard: BrandWizardState) -> None:
+async def test_a_dropped_version_is_staged_under_its_own_key(
+    wizard: BrandWizardState, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from .creative_state import CreativeState
+
+    creative = CreativeState()
+
+    async def get_state(_self: Any, state_cls: type) -> Any:
+        return creative
+
+    monkeypatch.setattr(BrandWizardState, "get_state", get_state)
     await BrandWizardState.handle_logo_version_upload.fn(wizard, ["iso.png"], "isotipo")
     assert wizard.logo_versions == {"isotipo": "uploads/t/logo/isotipo/x_iso.png"}
-    assert wizard.logo_colors == []  # a version adds no colours to the palette
+    # § 2026-10-01: the version's colours are read (this fake file has none to give);
+    # the palette tests in test_brand_logo_colours cover a real image
+    assert wizard.logo_colors == [] and creative.kit_palette == ""
 
 
 async def test_an_unknown_version_is_ignored(wizard: BrandWizardState) -> None:
@@ -56,13 +68,15 @@ async def test_an_unknown_version_is_ignored(wizard: BrandWizardState) -> None:
     assert wizard.logo_versions == {}
 
 
-def test_a_version_takes_a_context_and_removing_it_drops_both(wizard: BrandWizardState) -> None:
+async def test_a_version_takes_a_context_and_removing_it_drops_both(
+    wizard: BrandWizardState,
+) -> None:
     wizard.logo_versions = {"isotipo": "a", "isologo": "b"}
     BrandWizardState.set_logo_version_context.fn(wizard, "isotipo", "Solo en fondos oscuros")
     BrandWizardState.set_logo_version_context.fn(wizard, "favicon", "x")  # not a version
     assert wizard.logo_version_context == {"isotipo": "Solo en fondos oscuros"}
 
-    BrandWizardState.clear_logo_version.fn(wizard, "isotipo")
+    await BrandWizardState.clear_logo_version.fn(wizard, "isotipo")  # isologo still colours
     assert wizard.logo_versions == {"isologo": "b"}
     assert wizard.logo_version_context == {}
 

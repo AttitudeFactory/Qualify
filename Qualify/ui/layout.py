@@ -73,6 +73,7 @@ NAV_LOOSE: list[Item] = [("Leads", "user-plus", "/leads", True)]
 NAV_BUSINESS: list[Item] = [
     ("Clarity", "activity", "/clarity", True),
     ("Vitrina", "store", "/vitrina", True),
+    ("Brand Kit", "swatch-book", "/brand/kit", True),
     ("Configuración", "settings", "#", False),
 ]
 

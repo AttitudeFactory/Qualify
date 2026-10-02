@@ -1,11 +1,12 @@
-"""The content generator (§ request 2026-09-25), on /signals — where the operator tests
-generation — while /create keeps its original form. Two views:
+"""The content generator (§ request 2026-09-25), the whole of /create since 2026-09-30
+(it was tested on /signals first), laid out as a wizard like the Brand Kit: one
+decision per screen, "Paso N de M", Atrás / Continuar, and Generar on the last step.
 
-1. **Configura** — the form, interactive: the content kind picked decides which fields
-   appear (avatar and voice for the avatar kinds, images for the kinds that take them,
-   the carousel for a flyer in a feed format, the duration for scripts and videos) and
-   which formats can be chosen (`ContentKind.formats`).
-2. **Resultado** — one view per kind, filled in as the draft lands (`poll_generator`):
+1. **The steps**: ¿Qué quieres crear? (the content kind, which decides the rest) →
+   ¿Qué anuncias? → ¿Dónde se publica? → ¿Quién lo presenta? (avatar kinds only) → the
+   kind's own inputs (the script's length, the ad's photos, or the video's script and
+   background) → Lo que debe decir y evitar → ¿Todo listo? (recap + Generar).
+2. **Tu pieza**: one view per kind, filled in as the draft lands (`poll_generator`):
    the script alone for a real creator; the HeyGen video for both avatar kinds; the
    image or the carousel's slides for a flyer (composed locally).
 
@@ -19,12 +20,20 @@ import reflex as rx
 from .canva_state import CanvaState
 from .creative_state import CreativeState
 from .creative_vm import KIND_OPTIONS
+from .creative_wizard_pages import (  # the Brand Kit's own step chrome, shared
+    _CONTROL_RADIUS,
+    _loading_view,
+    _recap_row,
+    _step_body,
+)
 from .ui import (
+    app_shell,
     callout,
     card,
     loading_spinner,
+    page_body,
+    page_header,
     removable_pill,
-    section,
     signal_pill,
     tag,
     tone_badge,
@@ -129,17 +138,13 @@ def _kind_card(key: str, title: str, blurb: str, icon: str) -> rx.Component:
 
 
 def _kind_picker() -> rx.Component:
-    return _card(
-        rx.grid(
-            *(_kind_card(*option) for option in KIND_OPTIONS),
-            columns=rx.breakpoints(initial="1", sm="2"),
-            spacing="2",
-            width="100%",
-            role="radiogroup",
-            aria_label="Tipo de contenido",
-        ),
-        title="Tipo de contenido",
-        icon="layout-grid",
+    return rx.grid(
+        *(_kind_card(*option) for option in KIND_OPTIONS),
+        columns=rx.breakpoints(initial="1", sm="2"),
+        spacing="2",
+        width="100%",
+        role="radiogroup",
+        aria_label="Tipo de contenido",
     )
 
 
@@ -598,53 +603,6 @@ def _duration_select() -> rx.Component:
     )
 
 
-def _kind_inputs() -> rx.Component:
-    """What the chosen kind takes, beyond the brief."""
-    return _card(
-        rx.match(
-            CreativeState.brief_kind,
-            (
-                "creator_script",
-                rx.vstack(
-                    rx.text(
-                        "Generamos lo que dice la persona, toma por toma, y el texto del post.",
-                        size="2",
-                        color=T.TEXT_MUTED,
-                    ),
-                    _duration_select(),
-                    spacing="3",
-                    align_items="start",
-                ),
-            ),
-            (
-                "static_flyer",
-                _ad_image_section(),
-            ),
-            rx.vstack(
-                _avatar_section(),
-                rx.divider(),
-                _script_source(),
-                rx.divider(),
-                _field_label(
-                    "Fondo y productos",
-                    "Se componen en una sola imagen detrás del avatar.",
-                ),
-                _images_section(),
-                spacing="4",
-                align_items="start",
-                width="100%",
-            ),
-        ),
-        title=rx.match(
-            CreativeState.brief_kind,
-            ("creator_script", "El guion"),
-            ("static_flyer", "El anuncio"),
-            "El video",
-        ),
-        icon="sliders-horizontal",
-    )
-
-
 def _field(label: str, control: rx.Component, hint: str | None = None) -> rx.Component:
     return rx.vstack(
         _field_label(label, hint),
@@ -655,8 +613,29 @@ def _field(label: str, control: rx.Component, hint: str | None = None) -> rx.Com
     )
 
 
-def _brief_card() -> rx.Component:
-    return _card(
+# -- the wizard's steps (§ request 2026-09-30: one decision per screen, like the Brand
+# Kit). Each step is a `_step_body` — the Brand Kit's own centred column + anchor icon —
+# so both flows read as one. Which steps apply depends on the kind
+# (`creative_state.generator_steps`).
+
+
+def _step_kind() -> rx.Component:
+    return _step_body(_kind_picker(), icon="layout-grid")
+
+
+def _step_topic() -> rx.Component:
+    return _step_body(
+        _field(
+            "Tema o producto",
+            rx.text_area(
+                value=CreativeState.brief_topic,
+                on_change=CreativeState.set_brief_topic,
+                placeholder="Ej.: nuestra hamburguesa doble con papas, solo este fin de semana",
+                width="100%",
+                rows="3",
+            ),
+            "Qué anuncia esta pieza. Es lo único obligatorio.",
+        ),
         _field(
             "Objetivo",
             _choice(
@@ -670,43 +649,33 @@ def _brief_card() -> rx.Component:
                 ),
             ),
         ),
+        icon="megaphone",
+    )
+
+
+def _step_channel() -> rx.Component:
+    return _step_body(
         _field(
-            "Tema o producto",
-            rx.text_area(
-                value=CreativeState.brief_topic,
-                on_change=CreativeState.set_brief_topic,
-                placeholder="Ej.: nuestra hamburguesa doble con papas, solo este fin de semana",
-                width="100%",
-                rows="2",
-            ),
-            "Qué anuncia esta pieza. Es lo único obligatorio.",
-        ),
-        rx.grid(
-            _field(
-                "De qué trata",
-                rx.select.root(
-                    rx.select.trigger(width="100%"),
-                    rx.select.content(
-                        rx.foreach(
-                            CreativeState.content_type_choices,
-                            lambda pair: rx.select.item(pair[1], value=pair[0]),
-                        ),
+            "De qué trata",
+            rx.select.root(
+                rx.select.trigger(width="100%"),
+                rx.select.content(
+                    rx.foreach(
+                        CreativeState.content_type_choices,
+                        lambda pair: rx.select.item(pair[1], value=pair[0]),
                     ),
-                    value=CreativeState.brief_content_type,
-                    on_change=CreativeState.set_content_type,
                 ),
+                value=CreativeState.brief_content_type,
+                on_change=CreativeState.set_content_type,
             ),
-            _field(
-                "Destino",
-                _choice(
-                    CreativeState.brief_intent,
-                    CreativeState.set_intent,
-                    (("organic", "Orgánico"), ("ads", "Anuncio"), ("both", "Ambos")),
-                ),
+        ),
+        _field(
+            "Destino",
+            _choice(
+                CreativeState.brief_intent,
+                CreativeState.set_intent,
+                (("organic", "Orgánico"), ("ads", "Anuncio"), ("both", "Ambos")),
             ),
-            columns=rx.breakpoints(initial="1", sm="2"),
-            spacing="4",
-            width="100%",
         ),
         _field(
             "Formato",
@@ -720,122 +689,200 @@ def _brief_card() -> rx.Component:
                 size="2",
             ),
         ),
-        title="El encargo",
-        icon="clipboard-list",
+        icon="send",
     )
 
 
-def _restrictions_card() -> rx.Component:
-    return _card(
-        rx.grid(
-            _field(
-                "Debe mencionar",
-                rx.input(
-                    value=CreativeState.brief_must_mention,
-                    on_change=CreativeState.set_brief_must_mention,
-                    placeholder="Ej.: envío gratis, reserva por WhatsApp",
-                    width="100%",
+def _step_presenter() -> rx.Component:
+    """The two avatar kinds only: who presents the video and with which voice."""
+    return _step_body(_avatar_section(), icon="user-round")
+
+
+def _step_details() -> rx.Component:
+    """What the chosen kind takes beyond the brief (the presenter has its own step)."""
+    return _step_body(
+        rx.match(
+            CreativeState.brief_kind,
+            ("creator_script", _duration_select()),
+            ("static_flyer", _ad_image_section()),
+            rx.vstack(
+                _script_source(),
+                rx.divider(),
+                _field_label(
+                    "Fondo y productos",
+                    "Se componen en una sola imagen detrás del avatar.",
                 ),
-                "Separado por comas.",
+                _images_section(),
+                spacing="4",
+                align_items="start",
+                width="100%",
             ),
-            _field(
-                "Debe evitar",
-                rx.input(
-                    value=CreativeState.brief_must_avoid,
-                    on_change=CreativeState.set_brief_must_avoid,
-                    placeholder="Ej.: descuento, barato",
-                    width="100%",
-                ),
-                "Separado por comas.",
-            ),
-            columns=rx.breakpoints(initial="1", sm="2"),
-            spacing="4",
-            width="100%",
         ),
-        title="Restricciones (opcional)",
+        icon=rx.match(
+            CreativeState.brief_kind,
+            ("creator_script", "clapperboard"),
+            ("static_flyer", "image"),
+            "film",
+        ),
+    )
+
+
+def _step_rules() -> rx.Component:
+    return _step_body(
+        _field(
+            "Debe mencionar",
+            rx.input(
+                value=CreativeState.brief_must_mention,
+                on_change=CreativeState.set_brief_must_mention,
+                placeholder="Ej.: envío gratis, reserva por WhatsApp",
+                width="100%",
+            ),
+            "Separado por comas.",
+        ),
+        _field(
+            "Debe evitar",
+            rx.input(
+                value=CreativeState.brief_must_avoid,
+                on_change=CreativeState.set_brief_must_avoid,
+                placeholder="Ej.: descuento, barato",
+                width="100%",
+            ),
+            "Separado por comas.",
+        ),
         icon="shield-check",
     )
 
 
-def _step(number: str, label: str, active: rx.Var[bool]) -> rx.Component:
-    return rx.hstack(
-        rx.center(
-            rx.text(number, size="1", weight="bold", class_name="q-nums"),
-            width="1.5rem",
-            height="1.5rem",
-            border_radius="9999px",
-            background=rx.cond(active, T.tone_color("accent", 9), T.SURFACE_BG_RAISED),
-            color=rx.cond(active, T.tone_color("accent", 1), T.TEXT_MUTED),
+def _step_review() -> rx.Component:
+    return _step_body(
+        card(
+            rx.vstack(
+                rx.foreach(CreativeState.gen_recap, lambda row: _recap_row(row[0], row[1])),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            ),
+            padding="1.25rem 1.5rem",
+            width="100%",
         ),
         rx.text(
-            label,
-            size="2",
-            weight=rx.cond(active, "medium", "regular"),
-            color=rx.cond(active, T.TEXT_STRONG, T.TEXT_MUTED),
+            "Cada pieza queda también como borrador, para revisarla y aprobarla.",
+            size="1",
+            color=T.TEXT_MUTED,
         ),
-        spacing="2",
-        align="center",
-        aria_current=rx.cond(active, "step", "false"),
+        icon="clipboard-check",
     )
 
 
-def _stepper() -> rx.Component:
-    on_form = CreativeState.generator_view == "form"
+def _window() -> rx.Component:
+    """One step at a time; an unknown cursor falls back to the first step."""
+    return rx.match(
+        CreativeState.gen_step,
+        ("kind", _step_kind()),
+        ("topic", _step_topic()),
+        ("channel", _step_channel()),
+        ("presenter", _step_presenter()),
+        ("details", _step_details()),
+        ("rules", _step_rules()),
+        ("review", _step_review()),
+        _step_kind(),
+    )
+
+
+#: Title + subtitle per step. `details` is not here: its heading depends on the kind.
+_HEADINGS: dict[str, tuple[str, str]] = {
+    "kind": ("¿Qué quieres crear?", "Elige el tipo de pieza: de eso depende lo que sigue."),
+    "topic": ("¿Qué anuncias?", "El tema o producto, y lo que buscas con la pieza."),
+    "channel": ("¿Dónde se publica?", "De qué trata, a dónde va y en qué formato."),
+    "presenter": ("¿Quién lo presenta?", "El avatar y la voz que van a leer el guion."),
+    "rules": ("Lo que debe decir y evitar", "Opcional: reglas solo para esta pieza."),
+    "review": ("¿Todo listo?", "Revisa el encargo antes de generar."),
+}
+_DETAILS_HEADINGS: dict[str, tuple[str, str]] = {
+    "creator_script": (
+        "El guion",
+        "Generamos lo que dice la persona, toma por toma, y el texto del post.",
+    ),
+    "static_flyer": ("El anuncio", "Con qué fotos armamos la imagen."),
+    "video": ("Guion y fondo", "Quién escribe el guion y qué se ve detrás del avatar."),
+}
+_RESULT_HEADING = ("Tu pieza", "Así quedó. También está en Borradores para revisarla.")
+
+
+def _heading(index: int) -> rx.Var[str]:
+    details = rx.match(
+        CreativeState.brief_kind,
+        ("creator_script", _DETAILS_HEADINGS["creator_script"][index]),
+        ("static_flyer", _DETAILS_HEADINGS["static_flyer"][index]),
+        _DETAILS_HEADINGS["video"][index],
+    )
+    return rx.cond(
+        CreativeState.generator_view == "result",
+        _RESULT_HEADING[index],
+        rx.match(
+            CreativeState.gen_step,
+            ("details", details),
+            *((key, text[index]) for key, text in _HEADINGS.items()),
+            _HEADINGS["kind"][index],
+        ),
+    )
+
+
+def _counter() -> rx.Component:
+    """PASO 3 DE 7 above the title: the Brand Kit's `_step_counter` treatment, with a
+    total that follows the kind (the avatar kinds add ¿Quién lo presenta?)."""
+    return rx.text(
+        "Paso ",
+        CreativeState.gen_step_number,
+        " de ",
+        CreativeState.gen_step_total,
+        size="1",
+        weight="bold",
+        color=T.TEXT_MUTED,
+        letter_spacing="0.08em",
+        text_transform="uppercase",
+    )
+
+
+def _controls() -> rx.Component:
+    """Atrás bottom-left, Continuar bottom-right; Generar on the last step, the flow's
+    one solid action (§5.5). Continuar validates the step (`gen_next`) and says why it
+    cannot move; on ¿Qué anuncias? it is simply off until there is a topic."""
     return rx.hstack(
-        _step("1", "Configura", on_form),
-        rx.box(height="1px", width="2rem", background=rx.color("gray", 6)),
-        _step("2", "Resultado", ~on_form),
-        spacing="3",
-        align="center",
-    )
-
-
-def _form_view() -> rx.Component:
-    readiness = CreativeState.readiness
-    return rx.vstack(
         rx.cond(
-            readiness,
-            rx.cond(
-                ~readiness.can_generate,
-                callout(
-                    "La marca aún no está lista para generar: completa el Brand Kit y la "
-                    "voz en Marca.",
-                    "warn",
-                ),
-            ),
-        ),
-        # §5.6: the submit error sits above the form, where it is seen first
-        rx.cond(
-            CreativeState.create_error != "",
-            callout(CreativeState.create_error, "error"),
-        ),
-        _kind_picker(),
-        _brief_card(),
-        _kind_inputs(),
-        _restrictions_card(),
-        rx.hstack(
-            rx.text(
-                "Cada pieza queda también como borrador, para revisarla y aprobarla.",
-                size="1",
-                color=T.TEXT_MUTED,
-            ),
-            rx.spacer(),
-            # the screen's one solid action (§5.5)
+            CreativeState.gen_step != "kind",
             rx.button(
-                rx.icon("sparkles", size=16),
+                rx.icon("chevron-left", size=T.ICON_SM),
+                "Atrás",
+                variant="ghost",
+                size="2",
+                radius=_CONTROL_RADIUS,
+                on_click=CreativeState.gen_back,
+            ),
+        ),
+        rx.spacer(),
+        rx.cond(
+            CreativeState.gen_step == "review",
+            rx.button(
+                rx.icon("sparkles", size=T.ICON_SM),
                 "Generar",
+                size="2",
+                radius=_CONTROL_RADIUS,
                 on_click=CreativeState.submit_generator_form,
                 loading=CreativeState.is_submitting,
-                size="2",
             ),
-            width="100%",
-            align="center",
-            wrap="wrap",
-            spacing="3",
+            rx.button(
+                "Continuar",
+                rx.icon("chevron-right", size=T.ICON_SM),
+                size="2",
+                radius=_CONTROL_RADIUS,
+                on_click=CreativeState.gen_next,
+                disabled=(CreativeState.gen_step == "topic") & (CreativeState.brief_topic == ""),
+            ),
         ),
-        spacing="4",
         width="100%",
-        align_items="start",
+        align="center",
+        spacing="3",
     )
 
 
@@ -1245,13 +1292,103 @@ def _result_view() -> rx.Component:
     )
 
 
-def generator_panel() -> rx.Component:
-    """The whole generator, as one block of the /signals page (design system `section`):
-    step 1 configures, step 2 shows the piece."""
-    return section(
-        "Generador de contenido",
-        rx.cond(CreativeState.generator_view == "result", _result_view(), _form_view()),
-        description="Elige qué quieres crear, cuéntanos el encargo y genera la pieza.",
-        actions=(_stepper(),),
-        spacing="4",
+def generator_page() -> rx.Component:
+    """/create: the generator as a wizard, laid out exactly like the Brand Kit's
+    (`creative_wizard_pages.brand_manual_index`): `page_header` with the step counter,
+    one card that fills the panel, the step centred in it and the controls pinned to
+    its bottom. After Generar the same frame shows the piece (`_result_view`)."""
+    readiness = CreativeState.readiness
+    on_form = CreativeState.generator_view == "form"
+    return app_shell(
+        page_header(
+            _heading(0),
+            _heading(1),
+            kicker=rx.cond(on_form, _counter(), rx.fragment()),
+            title_size="8",
+        ),
+        page_body(
+            rx.vstack(
+                rx.vstack(
+                    # The BrandReadiness gate is lifted for now (§ request 2026-09-30):
+                    # the warning stays, but it never blocks Generar.
+                    rx.cond(
+                        on_form & readiness,
+                        rx.cond(
+                            ~readiness.can_generate,
+                            callout(
+                                "La marca aún no está lista para generar: completa el Brand "
+                                "Kit y la voz en Marca.",
+                                "warn",
+                            ),
+                        ),
+                    ),
+                    # §5.6: why the step cannot move on, above the card where it is seen
+                    rx.cond(
+                        on_form & (CreativeState.create_error != ""),
+                        callout(CreativeState.create_error, "error"),
+                    ),
+                    spacing="3",
+                    width="100%",
+                    max_width="36rem",
+                    align_self="center",
+                ),
+                rx.cond(
+                    CreativeState.create_loading,
+                    card(
+                        _loading_view("Cargando el generador"),
+                        padding="1.75rem",
+                        width="100%",
+                        flex="1",
+                        display="flex",
+                        align_items="center",
+                        justify_content="center",
+                    ),
+                    rx.cond(
+                        on_form,
+                        card(
+                            rx.vstack(
+                                _window(),
+                                width="100%",
+                                # the presenter's look grid wants more room than a field
+                                max_width=rx.cond(
+                                    CreativeState.gen_step == "presenter", "46rem", "36rem"
+                                ),
+                                align_self="center",
+                                align_items="center",
+                                flex="1",
+                                justify_content="center",
+                            ),
+                            _controls(),
+                            padding="1.75rem",
+                            width="100%",
+                            flex="1",
+                            display="flex",
+                            flex_direction="column",
+                            justify_content="space-between",
+                            # remount per step so the frame settles in too (see the
+                            # Brand Kit's own note on this `key`)
+                            key=CreativeState.gen_step,
+                            gap="1.5rem",
+                        ),
+                        card(
+                            rx.vstack(
+                                _result_view(),
+                                width="100%",
+                                max_width="48rem",
+                                align_self="center",
+                            ),
+                            padding="1.75rem",
+                            width="100%",
+                            flex="1",
+                            display="flex",
+                            flex_direction="column",
+                        ),
+                    ),
+                ),
+                spacing="4",
+                width="100%",
+                flex="1",
+                min_height="0",
+            ),
+        ),
     )

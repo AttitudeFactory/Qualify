@@ -118,6 +118,9 @@ class NewDiscoveredAccount:
     followers: int | None = None
     profile_url: str = ""
     avatar_url: str = ""
+    #: The bio in full and the profile's link (migration 0035).
+    bio: str = ""
+    external_url: str = ""
     #: Which searches surfaced the account (`Candidate.sources`).
     found_by: tuple[str, ...] = ()
 
@@ -171,6 +174,8 @@ class StoredDiscoveredAccount:
     avatar_url: str
     card: dict[str, Any]
     found_by: tuple[str, ...]
+    bio: str = ""
+    external_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -364,6 +369,8 @@ class MemoryReferentesRepository:
                     avatar_url=a.avatar_url,
                     card=json.loads(json.dumps(dict(a.card), ensure_ascii=False)),
                     found_by=a.found_by,
+                    bio=a.bio,
+                    external_url=a.external_url,
                 )
                 for rank, a in enumerate(phase.accounts)
             ),
@@ -521,6 +528,8 @@ def _load(session: Session, rows: list[BrandDiscoveryPhase]) -> tuple[StoredDisc
                 avatar_url=account.avatar_url,
                 card=dict(account.card),
                 found_by=tuple(account.found_by),
+                bio=account.bio,
+                external_url=account.external_url,
             )
         )
     return tuple(
@@ -607,6 +616,8 @@ class PostgresReferentesRepository:
                         followers=account.followers,
                         profile_url=account.profile_url,
                         avatar_url=account.avatar_url,
+                        bio=account.bio,
+                        external_url=account.external_url,
                         card=dict(account.card),
                         found_by=list(account.found_by),
                     )
@@ -731,6 +742,8 @@ class PostgresReferentesRepository:
                     avatar_url=account.avatar_url,
                     card=dict(account.card),
                     found_by=tuple(account.found_by),
+                    bio=account.bio,
+                    external_url=account.external_url,
                 )
             return out
 

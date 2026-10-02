@@ -244,7 +244,8 @@ def test_execute_refresh_stores_the_new_version_and_keeps_the_sort(
     (plan,) = rp.plan_refresh(TENANT)
     calls: list[tuple[cd.DiscoverySeed, list[str]]] = []
 
-    def fake_run(seed: cd.DiscoverySeed, keys: list[str]) -> list[cd.PhaseResult]:
+    def fake_run(seed: cd.DiscoverySeed, keys: list[str], tenant_id: UUID) -> list[cd.PhaseResult]:
+        assert tenant_id == plan.tenant_id
         calls.append((seed, keys))
         return [
             cd.PhaseResult(
@@ -267,7 +268,9 @@ def test_execute_refresh_stores_the_new_version_and_keeps_the_sort(
 def test_a_phase_that_fails_again_keeps_the_brand_in_the_next_plan(stored_v4: UUID) -> None:
     (plan,) = rp.plan_refresh(TENANT)
 
-    def failing_local(seed: cd.DiscoverySeed, keys: list[str]) -> list[cd.PhaseResult]:
+    def failing_local(
+        seed: cd.DiscoverySeed, keys: list[str], tenant_id: UUID
+    ) -> list[cd.PhaseResult]:
         return [
             cd.PhaseResult(key="sector", title="s", accounts=[_candidate("tiktok", "x", 1)]),
             cd.PhaseResult(key="local", title="l", errors=["tiktok: 500"], credits=1),
@@ -362,3 +365,59 @@ def test_the_operators_pills_round_trip_with_their_provenance() -> None:
     assert rebuilt.catalog_hashtags == ("foodie",)
     assert rebuilt.hashtags == ("smashburger",)
     assert rebuilt.signature() == seed.signature()
+
+
+# --------------------------------------------------------------------------------------
+# read back for the Brand Kit editor's Resultados e insights (§ request 2026-09-30)
+# --------------------------------------------------------------------------------------
+
+
+def test_load_saved_reads_the_phases_sort_and_order_back(
+    repo: MemoryReferentesRepository, brand: UUID
+) -> None:
+    _save(brand, "local", _result("local"), _seed())
+    _save(brand, "sector", cd.PhaseResult(key="sector", title="Sector", accounts=[]))
+    rp.write_labels(
+        TENANT,
+        brand,
+        None,
+        {"TikTok:@MiduDev": "referente", "Instagram:@carlosazaustre": "referente"},
+    )
+    rp.write_order(TENANT, brand, ["Instagram:@carlosazaustre", "TikTok:@MiduDev"])
+
+    saved = rp.load_saved(TENANT, brand)
+    assert [p["key"] for p in saved.phases] == ["sector", "local"]  # PHASES order
+    assert saved.buckets == {
+        "TikTok:@MiduDev": "referente",
+        "Instagram:@carlosazaustre": "referente",
+    }
+    assert saved.kept == []
+    assert saved.order == ["Instagram:@carlosazaustre", "TikTok:@MiduDev"]
+    # another tenant reads nothing
+    assert rp.load_saved(OTHER_TENANT, brand) == rp.SavedReferentes([], {}, [], [])
+
+
+async def test_the_wizard_applies_the_saved_referentes(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryReferentesRepository, brand: UUID
+) -> None:
+    _save(brand, "sector", _result())
+    rp.write_labels(TENANT, brand, None, {"TikTok:@MiduDev": "competencia"})
+    state = BrandConnectState()
+
+    async def ids(_self: BrandConnectState) -> tuple[UUID, UUID, None]:
+        return TENANT, brand, None
+
+    monkeypatch.setattr(BrandConnectState, "_referentes_ids", ids)
+    await BrandConnectState.load_saved_referentes.fn(state)
+    assert [a["handle"] for a in state.sector_accounts] == ["@MiduDev", "@carlosazaustre"]
+    assert state.account_buckets == {"TikTok:@MiduDev": "competencia"}
+    assert state._persisted_buckets == state.account_buckets  # nothing to re-write
+    assert [a["handle"] for a in state.competencia_accounts] == ["@MiduDev"]
+    assert state.referentes_loading is False
+
+    # a search this session already ran is left alone
+    state = BrandConnectState()
+    state.discovery_ran = True
+    state.local_accounts = [{"handle": "@propia", "network": "TikTok"}]
+    await BrandConnectState.load_saved_referentes.fn(state)
+    assert state.sector_accounts == [] and len(state.local_accounts) == 1

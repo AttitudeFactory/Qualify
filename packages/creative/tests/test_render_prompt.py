@@ -219,3 +219,58 @@ def test_fingerprint_is_sha256_of_the_prefix() -> None:
     rendered = render()
     expected = hashlib.sha256(rendered.stable_prefix.encode("utf-8")).hexdigest()
     assert rendered.prefix_fingerprint == expected
+
+
+# -- the business context (§ request 2026-10-01) -------------------------------------------
+
+
+def test_the_business_context_joins_the_standing_identity() -> None:
+    from qualify_creative.schemas import BrandContext, BrandElement
+
+    context = BrandContext(
+        sector="cafetería de especialidad",
+        location="Cúcuta, CO",
+        hashtags=("cafedeespecialidad", "cucuta"),
+        account_bio="Tostamos en casa",
+        elements=(BrandElement(name="Mascota", context="El granito; en stories"),),
+        referentes=("@baristaco (instagram)",),
+        competitors=("@cafevecino (instagram)",),
+    )
+    rendered = render_prompt(
+        kit=make_kit(),
+        voice=make_voice(),
+        brief=make_brief(),
+        task=GenerationTask.COPY,
+        context=context,
+    )
+    prefix = rendered.stable_prefix
+    assert "== Business context ==" in prefix
+    for text in (
+        "cafetería de especialidad",
+        "Cúcuta, CO",
+        "#cafedeespecialidad #cucuta",
+        "- Mascota: El granito; en stories",
+        "@baristaco (instagram)",
+        "never mention them",
+        "@cafevecino (instagram)",
+    ):
+        assert text in prefix, text
+    # standing identity, not the assignment: it lives in the cached prefix
+    assert "Business context" not in rendered.volatile_suffix
+
+
+def test_no_context_renders_exactly_as_before() -> None:
+    from qualify_creative.schemas import BrandContext
+
+    plain = render_prompt(
+        kit=make_kit(), voice=make_voice(), brief=make_brief(), task=GenerationTask.COPY
+    )
+    empty = render_prompt(
+        kit=make_kit(),
+        voice=make_voice(),
+        brief=make_brief(),
+        task=GenerationTask.COPY,
+        context=BrandContext(),
+    )
+    assert plain == empty
+    assert "Business context" not in plain.stable_prefix

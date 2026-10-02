@@ -45,6 +45,7 @@ class _Session:
             CreativeState: self.creative,
             BrandWizardState: self.wizard,
             BrandConnectState: self.connect,
+            wiz.AuthState: wiz.AuthState(),  # no tenant: `analyze` reads live, caches nothing
         }
 
         async def get_state(_self: Any, state_cls: type) -> Any:
@@ -236,7 +237,7 @@ async def test_an_influencer_gets_the_picture_colours_but_no_logo_screens(
     await session.connect._use_profile_picture_as_logo()
     session.connect.step = wiz._IDENTITY_STEP
     BrandConnectState.next_step.fn(session.connect)
-    assert session.connect.step == wiz._VOICE_TONE_STEP  # 2026-09-29: logo + palette skipped
+    assert session.connect.step == wiz._VOICE_STEP  # 2026-09-29: logo + palette skipped
 
 
 async def test_a_picture_that_cannot_be_fetched_is_not_taken_and_the_question_stays(
@@ -285,7 +286,9 @@ async def test_analyze_detects_a_real_picture_but_no_longer_preanswers_the_quest
         "followers": 12_000,
         "profilePicUrl": "https://scontent.cdninstagram.com/pic.jpg",
     }
-    monkeypatch.setattr(wiz.scrapecreators_client, "load_cached_profile", lambda *_a, **_k: profile)
+    monkeypatch.setattr(
+        wiz.scrapecreators_client, "fetch_profile_and_posts", lambda *_a, **_k: profile
+    )
     monkeypatch.setattr(
         wiz.creator_discovery,
         "seed_from_profile",
@@ -318,7 +321,9 @@ async def test_analyze_asks_the_question_when_the_picture_is_only_the_default_on
         "followers": 12_000,
         "profilePicUrl": "https://scontent.cdninstagram.com/default.jpg",
     }
-    monkeypatch.setattr(wiz.scrapecreators_client, "load_cached_profile", lambda *_a, **_k: profile)
+    monkeypatch.setattr(
+        wiz.scrapecreators_client, "fetch_profile_and_posts", lambda *_a, **_k: profile
+    )
     monkeypatch.setattr(
         wiz.creator_discovery,
         "seed_from_profile",
@@ -342,7 +347,9 @@ async def test_analyze_asks_the_question_when_the_profile_has_no_picture(
     session: _Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     profile = {"username": "marca.demo", "followers": 12_000, "profilePicUrl": ""}
-    monkeypatch.setattr(wiz.scrapecreators_client, "load_cached_profile", lambda *_a, **_k: profile)
+    monkeypatch.setattr(
+        wiz.scrapecreators_client, "fetch_profile_and_posts", lambda *_a, **_k: profile
+    )
     monkeypatch.setattr(
         wiz.creator_discovery,
         "seed_from_profile",
@@ -370,14 +377,16 @@ async def test_an_influencer_whose_picture_cannot_be_taken_skips_to_the_voice(
     assert session.connect.logo_from_profile is False
     session.connect.step = wiz._IDENTITY_STEP
     BrandConnectState.next_step.fn(session.connect)
-    assert session.connect.step == wiz._VOICE_TONE_STEP
+    assert session.connect.step == wiz._VOICE_STEP
 
 
 async def _analyze_as(
     session: _Session, monkeypatch: pytest.MonkeyPatch, *, kind: str, picture_url: str
 ) -> BrandConnectState:
     profile = {"username": "creador.demo", "followers": 12_000, "profilePicUrl": picture_url}
-    monkeypatch.setattr(wiz.scrapecreators_client, "load_cached_profile", lambda *_a, **_k: profile)
+    monkeypatch.setattr(
+        wiz.scrapecreators_client, "fetch_profile_and_posts", lambda *_a, **_k: profile
+    )
     monkeypatch.setattr(
         wiz.creator_discovery,
         "seed_from_profile",
@@ -400,7 +409,7 @@ async def test_analyze_does_not_ask_an_influencer_with_a_real_picture(
         session, monkeypatch, kind="influencer", picture_url="https://cdn.example/real.jpg"
     )
     assert state.logo_from_profile is False
-    assert state.step == wiz._VOICE_TONE_STEP
+    assert state.step == wiz._VOICE_STEP
 
 
 async def test_analyze_skips_an_influencer_whose_picture_is_the_default_one(
@@ -411,7 +420,7 @@ async def test_analyze_skips_an_influencer_whose_picture_is_the_default_one(
         session, monkeypatch, kind="influencer", picture_url="https://cdn.example/default.jpg"
     )
     assert state.logo_from_profile is False
-    assert state.step == wiz._VOICE_TONE_STEP
+    assert state.step == wiz._VOICE_STEP
 
 
 async def test_analyze_skips_an_influencer_with_no_picture_at_all(
@@ -419,7 +428,7 @@ async def test_analyze_skips_an_influencer_with_no_picture_at_all(
 ) -> None:
     state = await _analyze_as(session, monkeypatch, kind="influencer", picture_url="")
     assert state.logo_from_profile is False
-    assert state.step == wiz._VOICE_TONE_STEP
+    assert state.step == wiz._VOICE_STEP
 
 
 DEFAULT_TIKTOK = Path(__file__).resolve().parent / "fixtures" / "tiktok_default_avatar.jpg"
@@ -455,4 +464,70 @@ async def test_analyze_skips_an_influencer_whose_tiktok_picture_is_the_default_o
     state = await _analyze_as(session, monkeypatch, kind="influencer", picture_url=url)
     assert state.profile_pic_is_real is False
     assert state.logo_from_profile is False
-    assert state.step == wiz._VOICE_TONE_STEP
+    assert state.step == wiz._VOICE_STEP
+
+
+# -- the logo versions colour the palette (§ fix 2026-10-01) -----------------------------
+
+
+class _Upload:
+    def __init__(self, name: str, data: bytes) -> None:
+        self.name = name
+        self._data = data
+
+    async def read(self) -> bytes:
+        return self._data
+
+
+@pytest.fixture
+def staged(session: _Session, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Session:
+    """Uploads land in a temp upload dir, under a session with a tenant."""
+    monkeypatch.setattr(wiz.rx, "get_upload_dir", lambda: tmp_path)
+
+    class _Auth:
+        session_tenant_id = "a0000000-0000-4000-8000-0000000000c1"
+
+    original = BrandWizardState.get_state
+
+    async def get_state(self: Any, state_cls: type) -> Any:
+        if state_cls is wiz.AuthState:
+            return _Auth()
+        return await original(self, state_cls)
+
+    monkeypatch.setattr(BrandWizardState, "get_state", get_state)
+    return session
+
+
+async def test_uploading_a_logo_version_colours_the_palette(staged: _Session) -> None:
+    staged.creative.kit_palette = "#000000"  # hand-picked: always stays
+    await BrandWizardState.handle_logo_version_upload.fn(
+        staged.wizard, [_Upload("iso.png", _png("#0f766e"))], "isotipo"
+    )
+    assert staged.creative.kit_palette == "#000000,#0f766e"
+    # a fuller mark arrives: its colours replace the isotipo's
+    await BrandWizardState.handle_logo_version_upload.fn(
+        staged.wizard, [_Upload("imago.png", _png("#f97316"))], "imagotipo"
+    )
+    assert staged.creative.kit_palette == "#000000,#f97316"
+    # a lesser one does not take over the palette
+    await BrandWizardState.handle_logo_version_upload.fn(
+        staged.wizard, [_Upload("logo.png", _png("#7c3aed"))], "isologo"
+    )
+    assert staged.creative.kit_palette == "#000000,#f97316"
+
+
+async def test_removing_the_colouring_version_hands_the_palette_to_the_next(
+    staged: _Session,
+) -> None:
+    staged.creative.kit_palette = "#000000"
+    await BrandWizardState.handle_logo_version_upload.fn(
+        staged.wizard, [_Upload("iso.png", _png("#0f766e"))], "isotipo"
+    )
+    await BrandWizardState.handle_logo_version_upload.fn(
+        staged.wizard, [_Upload("imago.png", _png("#f97316"))], "imagotipo"
+    )
+    await BrandWizardState.clear_logo_version.fn(staged.wizard, "imagotipo")
+    assert staged.creative.kit_palette == "#000000,#0f766e"
+    await BrandWizardState.clear_logo_version.fn(staged.wizard, "isotipo")
+    assert staged.creative.kit_palette == "#000000"
+    assert staged.wizard.logo_colors == []

@@ -44,6 +44,10 @@
    - `.q-deck-zone[data-over]`      the panel the card is near */
 (function () {
   "use strict";
+  // Sent by `rx.call_script` when the deck mounts (head scripts were measured not to
+  // load, 2026-10-01): one set of document listeners, however many times it is sent.
+  if (window.__qDeckDrag) return;
+  window.__qDeckDrag = true;
 
   var CARD = ".q-deck-card";
   var ZONE = ".q-deck-zone";

@@ -86,6 +86,7 @@ __all__ = [
     "acting_user_id",
     "approve_draft",
     "approve_voice",
+    "brand_clone_voice",
     "brand_readiness",
     "default_brand_id",
     "draft_detail",
@@ -209,6 +210,10 @@ def save_kit(tenant_id: UUID, brand_id: UUID, user_id: UUID, form: KitFormVM) ->
         )
     kit = BrandKit.model_validate(data)
     service.upsert_kit(tenant_id=tenant_id, brand_id=brand_id, kit=kit, user_id=user_id)
+    # § 2026-09-30 (founder: no approval step): saving the kit adopts the voice — the
+    # next version goes ACTIVE when the kit's voice fields changed, so the generator is
+    # never blocked on an approval and never reads a voice older than the kit.
+    VoiceProfileService().adopt_from_kit(tenant_id=tenant_id, brand_id=brand_id, user_id=user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -574,6 +579,23 @@ _catalog_cache: dict[str, tuple[float, list[dict[str, str]], list[dict[str, str]
 
 class HeyGenNotConfigured(RuntimeError):
     """`QUALIFY_HEYGEN_API_KEY` is not set: the avatar kinds cannot be offered."""
+
+
+def brand_clone_voice(tenant_id: UUID, brand_id: UUID) -> dict[str, str] | None:
+    """The brand's own HeyGen voice clone (§ request 2026-09-30, `voice_lab`) as a voice
+    of the /create picker, once HeyGen finished it — None otherwise. `own` keeps it
+    listed whatever gender the picker shows."""
+    from qualify_api.creative.voice_clone import VoiceCloneService
+
+    clone = VoiceCloneService().current(tenant_id=tenant_id, brand_id=brand_id)
+    if clone is None or not clone.is_ready:
+        return None
+    return {
+        "id": clone.heygen_voice_id,
+        "name": f"Tu voz · {clone.name}",
+        "gender": clone.gender,
+        "own": "1",
+    }
 
 
 def heygen_catalog() -> tuple[list[dict[str, str]], list[dict[str, str]]]:

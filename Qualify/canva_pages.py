@@ -32,7 +32,7 @@ def _landing(title: str) -> rx.Component:
                     size="1",
                     color=T.TEXT_MUTED,
                 ),
-                rx.link(rx.button("Volver al generador", variant="soft"), href="/signals"),
+                rx.link(rx.button("Volver al generador", variant="soft"), href="/create"),
                 spacing="3",
                 align_items="start",
             ),

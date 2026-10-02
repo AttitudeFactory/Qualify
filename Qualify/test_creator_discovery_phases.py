@@ -4,6 +4,8 @@ result cache. Fully offline, same posture as `test_creator_discovery.py`."""
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
@@ -559,6 +561,11 @@ def test_phased_run_ranks_by_influence_and_never_repeats_an_account(tmp_path: Pa
         "kind_label": "",
         "review": "",
         "reviewed_by": "",
+        # § 2026-10-01: the bio in full, the profile's link, the AI share, the reach signal
+        "bio": "Foodie de Cúcuta",
+        "external_url": "",
+        "ai": "",
+        "signal": "",
     }
     assert cd.account_card(local.accounts[2])["reason"] == "#cucutafood"
     assert cd.account_card(local.accounts[2])["likes"] == "200K"  # heartCount from the read
@@ -700,7 +707,7 @@ def test_profile_facts_caps_the_captions_it_keeps() -> None:
     assert len(facts.captions) == cd.PROFILE_CAPTIONS
 
 
-def test_vendor_errors_are_recorded_and_the_run_is_not_cached(tmp_path: Path) -> None:
+def test_vendor_errors_are_recorded() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(402, json={"success": False, "error": "insufficient credits"})
 
@@ -710,84 +717,34 @@ def test_vendor_errors_are_recorded_and_the_run_is_not_cached(tmp_path: Path) ->
 
     assert result.accounts == []
     assert result.errors and "402" in result.errors[0]
-    cache = tmp_path / "cache.json"
-    cd.save_cached_phases(seed, [cd.phase_to_dict(result)], path=cache)
-    assert not cache.exists()
-    # …but a phase that FOUND accounts is kept even when one call failed on the way
-    found = {"key": "sector", "title": "t", "accounts": [{"handle": "@x"}], "errors": ["500"]}
-    cd.save_cached_phase("sector", seed, found, path=cache)
-    assert cd.load_cached_phase("sector", seed, path=cache) == found
 
 
 # --------------------------------------------------------------------------------------
-# cache + formatting
+# the run's memory of profile reads + formatting
 # --------------------------------------------------------------------------------------
 
 
-def test_cache_round_trip_expiry_and_cap(tmp_path: Path) -> None:
-    cache = tmp_path / "cache.json"
-    seed = cd.DiscoverySeed("x", ("food_drink",), (), "CO", "Cúcuta")
-    phases = [{"key": key, "title": key, "accounts": [], "errors": []} for key in cd.PHASES]
-
-    assert cd.load_cached_phases(seed, path=cache) is None
-    cd.save_cached_phases(seed, phases, path=cache, now=1_000.0)
-    assert cd.load_cached_phases(seed, path=cache, now=1_000.0 + 60) == phases
-    assert cd.load_cached_phases(seed, path=cache, now=1_000.0 + 8 * 24 * 3600) is None
-
-    for i in range(30):
-        other = cd.DiscoverySeed(f"h{i}", ("food_drink",))
-        cd.save_cached_phase("sector", other, phases[0], path=cache, now=2_000.0 + i)
-    import json
-
-    kept = json.loads(cache.read_text("utf-8"))
-    assert len(kept) == len(cd.PHASES) + 30 <= cd._CACHE_MAX_ENTRIES
-    assert cd.phase_signature("sector", cd.DiscoverySeed("h29", ("food_drink",))) in kept
-    for i in range(cd._CACHE_MAX_ENTRIES):
-        cd.save_cached_phase(
-            "local", cd.DiscoverySeed(f"z{i}", ()), phases[0], path=cache, now=3_000.0 + i
-        )
-    assert len(json.loads(cache.read_text("utf-8"))) == cd._CACHE_MAX_ENTRIES
-
-
-def test_a_changed_city_reuses_the_sector_and_country_phases(tmp_path: Path) -> None:
-    """The file first, per phase: only what the change touches is searched again."""
-    cache = tmp_path / "cache.json"
-    cucuta = cd.DiscoverySeed("x", ("food_drink",), (), "CO", "Cúcuta")
-    bogota = cd.DiscoverySeed("x", ("food_drink",), (), "CO", "Bogotá")
-    for key in cd.PHASES:
-        cd.save_cached_phase(key, cucuta, {"key": key, "accounts": [], "errors": []}, path=cache)
-
-    assert cd.load_cached_phase("sector", bogota, path=cache) is not None
-    assert cd.load_cached_phase("national", bogota, path=cache) is not None
-    assert cd.load_cached_phase("local", bogota, path=cache) is None
-    # a different country invalidates the national and local phases, not the sector
-    venezuela = cd.DiscoverySeed("x", ("food_drink",), (), "VE", "Cúcuta")
-    assert cd.load_cached_phase("sector", venezuela, path=cache) is not None
-    assert cd.load_cached_phase("national", venezuela, path=cache) is None
-
-
-def test_profile_store_remembers_reads_and_misses(tmp_path: Path) -> None:
-    import time
-
-    now = time.time()
-    path = tmp_path / "profiles.json"
-    store = cd.ProfileStore(path)
+def test_profile_store_remembers_reads_and_misses() -> None:
+    """The in-memory store (a run's own, the CLI's); the Postgres one with its time to
+    live is `creator_cache_provider.PostgresProfileStore`, same three methods."""
+    store = cd.ProfileStore()
     facts = cd.ProfileFacts(
         followers=5,
         bio="b",
         related=("a", "c"),
         category="Restaurant",
         captions=("menú del día #almuerzo",),
+        external_url="https://some.one",
     )
-    store.put("instagram", "Some.One", facts, now=now)
-    store.put("tiktok", "ghost", None, now=now)
-    store.save()
+    store.put("instagram", "Some.One", facts)
+    store.put("tiktok", "ghost", None)
+    store.save()  # nothing to flush
 
-    again = cd.ProfileStore(path)
-    assert again.get("instagram", "someone", now=now + 60) == (True, facts)
-    assert again.get("tiktok", "ghost", now=now + 60) == (True, None)
-    assert again.get("tiktok", "unknown") == (False, None)
-    assert again.get("instagram", "someone", now=now + 31 * 24 * 3600) == (False, None)
+    assert store.get("instagram", "someone") == (True, facts)
+    assert store.get("tiktok", "ghost") == (True, None)
+    assert store.get("tiktok", "unknown") == (False, None)
+    # the document shape the Postgres store keeps round-trips every field
+    assert cd.facts_from_document(cd.facts_to_document(facts)) == facts
 
     # a read served from the store costs nothing and never hits the vendor
     def handler(request: httpx.Request) -> httpx.Response:
@@ -795,13 +752,11 @@ def test_profile_store_remembers_reads_and_misses(tmp_path: Path) -> None:
 
     candidate = cd.Candidate("instagram", "someone")
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        charged, got, error = cd._read_profile(client, candidate, None, again)
+        charged, got, error = cd._read_profile(client, candidate, None, store)
     assert (charged, got, error) == (0, facts, None)
     assert candidate.followers == 5 and "Restaurant" in candidate.texts
     assert candidate.hashtags_seen == ["almuerzo"]
-
-    # an in-memory store (path=None) never writes
-    cd.ProfileStore(None).save()
+    assert candidate.external_url == "https://some.one"
 
 
 @pytest.mark.parametrize(
@@ -1080,3 +1035,110 @@ def test_changing_the_pills_is_a_new_sector_and_local_search_but_not_a_national_
     assert (
         catalog.signature() == cd.DiscoverySeed("smash", (), terms=("hamburgueseria",)).signature()
     )
+
+
+# -- the two networks walk at once (2026-10-01) ---------------------------------------------
+
+
+def test_both_networks_walk_at_the_same_time_and_fold_in_network_order() -> None:
+    """With an executor the TikTok and Instagram walks of a phase overlap (the barrier
+    only opens when both are inside); their credits, queries and errors land in `result`
+    in network order, whichever finished first."""
+    gate = threading.Barrier(2, timeout=5)
+    result = cd.PhaseResult(key="sector", title="Sector")
+
+    def walk(network: str, acc: cd.PhaseResult) -> None:
+        gate.wait()  # raises BrokenBarrierError if the walks ran one after the other
+        if network == "instagram":
+            acc.credits += 1
+            acc.queries.append("instagram:google:x")
+        else:
+            threading.Event().wait(0.05)  # TikTok finishes second on purpose
+            acc.credits += 2
+            acc.queries.append("tiktok:google:x")
+            acc.errors.append("tiktok:google:y: 500")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        cd._run_networks(executor, result, walk)
+    assert result.credits == 3
+    assert result.queries == ["tiktok:google:x", "instagram:google:x"]
+    assert result.errors == ["tiktok:google:y: 500"]
+
+
+def test_without_an_executor_the_networks_walk_one_after_the_other() -> None:
+    seen: list[str] = []
+    result = cd.PhaseResult(key="sector", title="Sector")
+    cd._run_networks(None, result, lambda network, acc: seen.append(network))
+    assert seen == ["tiktok", "instagram"]
+
+
+def test_a_failed_walk_raises_on_the_calling_thread() -> None:
+    result = cd.PhaseResult(key="sector", title="Sector")
+
+    def walk(network: str, acc: cd.PhaseResult) -> None:
+        if network == "instagram":
+            raise RuntimeError("instagram walk broke")
+        acc.credits += 1
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        with pytest.raises(RuntimeError, match="instagram walk broke"):
+            cd._run_networks(executor, result, walk)
+
+
+# -- what tells an account apart at a glance (2026-10-01) ----------------------------------
+
+
+def test_feed_videos_with_tiktoks_ai_label_are_counted_per_account() -> None:
+    def video(handle: str, aigc: dict | None, views: int = 1_000) -> dict:
+        item = {
+            "author": {"unique_id": handle, "nickname": handle, "follower_count": 10},
+            "statistics": {"digg_count": 10, "comment_count": 1, "play_count": views},
+            "desc": "hola",
+        }
+        if aigc is not None:
+            item["aigc_info"] = aigc
+        return item
+
+    found = cd.candidates_from_tiktok_videos(
+        {
+            "aweme_list": [
+                video("sora.fan", {"aigc_label_type": 2, "created_by_ai": True}),
+                video("sora.fan", {"aigc_label_type": 0, "created_by_ai": False}),
+                video("sora.fan", None),  # a trimmed read says nothing
+                video("plain", {"aigc_label_type": 0, "created_by_ai": False}),
+            ]
+        },
+        "tiktok:keyword:x",
+    )
+    pool: dict[tuple[str, str], cd.Candidate] = {}
+    for candidate in found:
+        existing = pool.get(candidate.key)
+        if existing is None:
+            pool[candidate.key] = candidate
+        else:
+            existing.merge(candidate)
+    fan, plain = pool[("tiktok", "sora.fan")], pool[("tiktok", "plain")]
+    assert (fan.posts_seen, fan.ai_posts_seen) == (3, 1)
+    assert cd.account_card(fan)["ai"] == "1/3"
+    assert cd.account_card(plain)["ai"] == ""
+
+
+def test_reach_far_above_the_phase_with_little_interaction_is_flagged() -> None:
+    def seen(handle: str, views: int, likes: int) -> cd.Candidate:
+        c = cd.Candidate("tiktok", handle, followers=1000)
+        c.absorb_post(likes=likes, comments=0, views=views, text="")
+        return c
+
+    peers = [seen(f"p{i}", 10_000, 500) for i in range(4)]  # 5 % likes per view
+    pushed = seen("ads", 100_000, 400)  # 10x the reach, 0.4 % per view
+    viral = seen("viral", 100_000, 6_000)  # 10x the reach, but the audience reacts
+    signals = cd.reach_signals([*peers, pushed, viral])
+    assert signals[("tiktok", "ads")] == cd.REACH_SIGNAL
+    assert signals[("tiktok", "viral")] == ""
+    assert all(signals[p.key] == "" for p in peers)
+    # too few measured accounts: nothing is judged
+    assert cd.reach_signals([pushed, viral]) == {}
+    # and the phase's cards carry it
+    result = cd.PhaseResult(key="sector", title="s", accounts=[*peers, pushed])
+    cards = cd.phase_to_dict(result)["accounts"]
+    assert [c["signal"] != "" for c in cards] == [False] * 4 + [True]

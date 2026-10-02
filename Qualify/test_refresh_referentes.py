@@ -45,7 +45,9 @@ class _FakeRun:
         self.calls: list[list[str]] = []
         self.credits = credits
 
-    def __call__(self, seed: cd.DiscoverySeed, keys: list[str]) -> list[cd.PhaseResult]:
+    def __call__(
+        self, seed: cd.DiscoverySeed, keys: list[str], tenant_id: object
+    ) -> list[cd.PhaseResult]:
         self.calls.append(keys)
         return [
             cd.PhaseResult(key=k, title=k, accounts=[_candidate("nueva")], credits=self.credits)

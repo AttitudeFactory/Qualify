@@ -20,15 +20,29 @@
    The ordering stays server-side: arming dispatches `dragstart` on the card (Reflex
    `on_drag_start` → `rank_pick`) and the target's `on_drop` (`rank_drop`) moves it.
    Loaded once for every page and delegated at the document level, so it survives React
-   re-rendering the grid after each move. Styled in `qualify.css` ("Influence ranking"). */
+   re-rendering the grid after each move. Styled in `qualify.css` ("Influence ranking").
+
+   The list itself moves too (§ request 2026-10-01, "una animación al momento de moverse
+   la lista") — FLIP: every card's place is noted just before the drop, and once React has
+   re-rendered the new order each card starts at its old place and slides to the new one.
+   The dropped card stays where it landed until then, so nothing snaps back meanwhile.
+
+   Sent by `rx.call_script` when the ranking mounts (`_ranking_panel`), since the app's
+   head scripts were measured not to load (2026-10-01) — hence the guard: one set of
+   document listeners, however many times it is sent. */
 (function () {
   "use strict";
+  if (window.__qRankDrag) return;
+  window.__qRankDrag = true;
 
   var CARD = ".q-rank-card";
   var LONG_PRESS_MS = 320; // same hold as the deck
   var MOVE_CANCEL_PX = 10;
   var RELEASE_MS = 220; // must match `.q-rank-release`'s transition
   var RETURN_MS = 420; // must outlast `.q-drag-return`'s transition
+  var FLIP_MS = 340; // the list's slide to its new order
+  var SETTLE_MS = 40; // React's re-render arrives as a burst of mutations: wait it out
+  var GIVE_UP_MS = 2500; // no new order came back (a failed move): settle the card
 
   var drag = null;
 
@@ -80,6 +94,62 @@
     card.style.transform = "";
     void card.offsetWidth; // flush, so the next change animates again
     card.style.transition = "";
+  }
+
+  /* Where every card is drawn right now, by its account (`data-rank-key`) — keys, not
+     nodes, so it holds whether React moves the nodes or reuses them in place. */
+  function snapshot() {
+    var places = {};
+    document.querySelectorAll(CARD).forEach(function (card) {
+      places[card.getAttribute("data-rank-key")] = card.getBoundingClientRect();
+    });
+    return places;
+  }
+
+  function slide(before) {
+    var cards = Array.prototype.slice.call(document.querySelectorAll(CARD));
+    cards.forEach(reset); // the landed card's flight, a reused node's leftovers
+    cards.forEach(function (card) {
+      var first = before[card.getAttribute("data-rank-key")];
+      if (!first) return;
+      var last = card.getBoundingClientRect();
+      var dx = first.left - last.left;
+      var dy = first.top - last.top;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+      card.style.transition = "none";
+      card.style.transform = "translate(" + dx + "px, " + dy + "px)";
+      void card.offsetWidth;
+      card.style.transition = "transform " + FLIP_MS + "ms cubic-bezier(0.22, 1, 0.36, 1)";
+      card.style.transform = "";
+      window.setTimeout(function () {
+        card.style.transition = "";
+      }, FLIP_MS + 60);
+    });
+  }
+
+  /* After the drop: wait for React to put the new order on screen, then slide. */
+  function slideAfterRerender(grid, before) {
+    var settle = null;
+    var done = false;
+    var observer = new MutationObserver(function () {
+      window.clearTimeout(settle);
+      settle = window.setTimeout(finish, SETTLE_MS);
+    });
+    function finish() {
+      if (done) return;
+      done = true;
+      observer.disconnect();
+      slide(before); // measuring forces layout: no animation frame needed (and a hidden
+      // tab never runs one)
+    }
+    observer.observe(grid, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["data-rank-key"],
+      characterData: true,
+    });
+    window.setTimeout(finish, GIVE_UP_MS);
   }
 
   document.addEventListener("pointerdown", function (e) {
@@ -174,7 +244,9 @@
       d.card.classList.add("q-rank-release");
       d.card.style.transform = "translate(" + tx + "px, " + ty + "px)";
       window.setTimeout(function () {
-        reset(d.card);
+        // note every place NOW — the dropped card where it landed, the rest where they
+        // stand — and slide from there once the new order is on screen
+        slideAfterRerender(d.card.parentElement || document.body, snapshot());
         target.dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
       }, RELEASE_MS);
       return;

@@ -838,3 +838,56 @@ def test_a_bad_prompt_avatar_request_never_reaches_heygen(prompt: str, ratio: st
             api_key=API_KEY, name="x", prompt=prompt, aspect_ratio=ratio
         )
     assert rec.requests == []
+
+
+# -- voice clones (§ request 2026-09-30) --------------------------------------------------
+
+
+def test_clone_voice_sends_the_uploaded_asset_and_returns_the_clone_id() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return ok({"voice_clone_id": "vc_1"})
+
+    voice_id = adapter_for(handler).clone_voice(
+        api_key=API_KEY, name="  Voz de Café del Parque ", audio_asset_id="aud_1", language="es"
+    )
+    assert voice_id == "vc_1"
+    request = seen[0]
+    assert request.method == "POST" and request.url.path == "/v3/voices/clone"
+    assert request.headers["x-api-key"] == API_KEY
+    assert json.loads(request.content) == {
+        "voice_name": "Voz de Café del Parque",
+        "audio": {"type": "asset_id", "asset_id": "aud_1"},
+        "remove_background_noise": True,
+        "language": "es",
+    }
+
+
+def test_clone_voice_surfaces_heygens_quota_and_plan_errors() -> None:
+    adapter = adapter_for(lambda _r: err(400, "resource_limit_reached", "Voice clone limit"))
+    with pytest.raises(HeyGenAPIError) as info:
+        adapter.clone_voice(api_key=API_KEY, name="x", audio_asset_id="aud_1")
+    assert info.value.code == "resource_limit_reached"
+    with pytest.raises(ValueError):
+        adapter.clone_voice(api_key=API_KEY, name="   ", audio_asset_id="aud_1")
+
+
+def test_get_and_delete_voice_hit_the_voice_by_id() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.method == "DELETE":
+            return httpx.Response(200, json={"data": None})
+        return ok({"voice_id": "vc_1", "status": "complete", "gender": "female"})
+
+    adapter = adapter_for(handler)
+    voice = adapter.get_voice(api_key=API_KEY, voice_id="vc_1")
+    assert voice["status"] == "complete"
+    adapter.delete_voice(api_key=API_KEY, voice_id="vc_1")
+    assert [(r.method, r.url.path) for r in seen] == [
+        ("GET", "/v3/voices/vc_1"),
+        ("DELETE", "/v3/voices/vc_1"),
+    ]

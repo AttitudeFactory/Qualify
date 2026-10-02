@@ -33,9 +33,10 @@ from qualify_creative.providers import ResolvedKey
 from qualify_creative.router import CreativeRouter
 from qualify_creative.schemas import BrandKit, BrandVoiceProfile
 
+from qualify_api.creative.brand_context import DbBrandContextReader
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.dispatch import InlineDispatcher
-from qualify_api.creative.media import LocalMediaStore, MediaProducer
+from qualify_api.creative.media import LocalMediaStore, MediaProducer, R2ReadingMediaStore
 from qualify_api.creative.service import ContentService
 from qualify_api.creative.voice_service import VoiceProfileService
 
@@ -133,8 +134,12 @@ def production_content_service() -> ContentService:
         credentials=credentials,
         voice_service=DbVoiceProfileReader(),
         brand_service=DbBrandKitReader(),
+        # what the Brand Kit saved beyond the kit (§ 2026-10-01): rubro, location,
+        # hashtags, the account, the brandboard's elements, referentes, competitors
+        context_reader=DbBrandContextReader(),
         media=MediaProducer(
-            store=LocalMediaStore(media_root()),
+            # the brand's logo may live in R2 (Brand Kit, 2026-10-01): read it there
+            store=R2ReadingMediaStore(LocalMediaStore(media_root())),
             router=router,
             credentials=credentials,
             pricing=pricing,

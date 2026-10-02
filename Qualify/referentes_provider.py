@@ -111,6 +111,8 @@ def _stored_account(candidate: Candidate, card: dict[str, str]) -> NewDiscovered
         followers=candidate.followers,
         profile_url=candidate.profile_url,
         avatar_url=candidate.avatar,
+        bio=" ".join(candidate.bio.split()),
+        external_url=candidate.external_url,
         found_by=tuple(candidate.sources),
     )
 
@@ -246,6 +248,38 @@ def load_sort(
             kept.append(card)
             buckets[_bucket_key(card)] = labels[identity]
     return buckets, kept
+
+
+@dataclass(frozen=True)
+class SavedReferentes:
+    """Everything the brand's referentes screen needs, read back from the store: the
+    current phases (`_apply_phase` shape, in `creator_discovery.PHASES` order), the sort
+    and its kept cards (`load_sort`) and the influence order (`load_order`)."""
+
+    phases: list[dict[str, Any]]
+    buckets: dict[str, str]
+    kept: list[dict[str, str]]
+    order: list[str]
+
+
+def load_saved(tenant_id: UUID, brand_id: UUID) -> SavedReferentes:
+    """The brand's referentes as they were last left (§ request 2026-09-30), for a
+    screen that shows them without running the search again (the Brand Kit editor's
+    Resultados e insights). Only the three search phases: the operator's hand-added
+    accounts come back through `load_sort`'s kept cards, like in the wizard."""
+    stored = [
+        phase
+        for phase in REPOSITORY.current_phases(tenant_id=tenant_id, brand_id=brand_id)
+        if phase.phase_key in creator_discovery.PHASES
+    ]
+    stored.sort(key=lambda phase: creator_discovery.PHASES.index(phase.phase_key))
+    phases = [to_phase_dict(phase) for phase in stored]
+    cards = [
+        {str(k): str(v) for k, v in card.items()} for phase in phases for card in phase["accounts"]
+    ]
+    buckets, kept = load_sort(tenant_id, brand_id, cards)
+    order = load_order(tenant_id, brand_id, [*cards, *kept])
+    return SavedReferentes(phases=phases, buckets=buckets, kept=kept, order=order)
 
 
 def label_changes(persisted: dict[str, str], current: dict[str, str]) -> dict[str, str]:
@@ -479,16 +513,19 @@ def plan_refresh(tenant_id: UUID, *, brand_id: UUID | None = None) -> list[Brand
     return plans
 
 
-PhaseRunner = Callable[[DiscoverySeed, list[str]], list[PhaseResult]]
+PhaseRunner = Callable[[DiscoverySeed, list[str], UUID], list[PhaseResult]]
 
 
-def run_phases(seed: DiscoverySeed, keys: list[str]) -> list[PhaseResult]:
+def run_phases(seed: DiscoverySeed, keys: list[str], tenant_id: UUID) -> list[PhaseResult]:
     """The real vendor run — one `PhasedDiscovery`, so the phases share their pool —
     reviewed by Claude like the wizard's run (`referentes_review.make_reviewer`) when an
-    API key is set."""
+    API key is set, and every vendor call through the shared pool
+    (`creator_pool_provider.PayloadCache`)."""
+    from .creator_pool_provider import payload_cache  # noqa: PLC0415 — lazy: sibling
+
     runner = creator_discovery.PhasedDiscovery(
         seed,
-        profile_cache=creator_discovery.PROFILE_CACHE_PATH,
+        payload_cache=payload_cache(tenant_id),
         reviewer=referentes_review.make_reviewer(referentes_review.brand_brief(seed)),
     )
     try:
@@ -501,7 +538,7 @@ def execute_refresh(plan: BrandRefresh, run: PhaseRunner = run_phases) -> tuple[
     """Recompute one brand and store every phase that came back usable. Returns
     `(credits spent, keys NOT stored)` — a phase with errors and nothing found keeps the
     old result current, so the brand is in the next plan again and gets retried."""
-    results = run(plan.seed, list(plan.keys))
+    results = run(plan.seed, list(plan.keys), plan.tenant_id)
     spent = 0
     not_stored: list[str] = []
     for key, result in zip(plan.keys, results, strict=True):

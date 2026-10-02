@@ -30,7 +30,7 @@ from qualify_api.creative import brief_ai
 from .auth_state import AuthState
 from .creative_state import CreativeState
 from .tenant import tenant_uuid
-from .ui import callout, card, loading_spinner, tone_badge
+from .ui import callout, card, loading_spinner, progress_panel, tone_badge
 from .ui import tokens as T
 
 logger = logging.getLogger(__name__)
@@ -105,12 +105,26 @@ def assign(creative: CreativeState, field: str, value: str) -> None:
     setattr(creative, _TARGETS[field], value)
 
 
+#: The brief's read, stage by stage, for its progress screen (§ request 2026-10-01: the
+#: same screen as the voice analysis, with the steps). Real milestones, not a timer:
+#: the Claude read is the long one and reports nothing until it is back.
+_BRIEF_STAGE_TITLES = (
+    ("preparing", "Preparamos el documento"),
+    ("reading", "Leemos lo que dice de tu marca"),
+    ("sorting", "Ordenamos lo encontrado"),
+)
+_BRIEF_STAGES = [stage for stage, _title in _BRIEF_STAGE_TITLES]
+_BRIEF_STAGE_PERCENT = {"preparing": 8, "reading": 30, "sorting": 90}
+
+
 class BrandDocumentState(rx.State):
     """The brief and the brandboard, and the changes they propose."""
 
     brief_name: str = ""
     brief_key: str = ""
     brief_busy: bool = False
+    #: Where the brief's read is while `brief_busy`: "" | "preparing" | "reading" | "sorting".
+    brief_stage: str = ""
     #: What the brief's card says under the button — `brief_tone` colours it.
     brief_message: str = ""
     brief_tone: str = "neutral"
@@ -128,6 +142,26 @@ class BrandDocumentState(rx.State):
     @rx.var
     def brief_proposals(self) -> list[dict[str, str]]:
         return [row for row in self.proposals if row["source"] == "brief"]
+
+    @rx.var
+    def brief_percent(self) -> int:
+        return _BRIEF_STAGE_PERCENT.get(self.brief_stage, 0)
+
+    @rx.var
+    def brief_steps(self) -> list[dict[str, str]]:
+        """The three stages for the progress screen, each done / running / pending."""
+        current = _BRIEF_STAGES.index(self.brief_stage) if self.brief_stage in _BRIEF_STAGES else -1
+        return [
+            {
+                "title": title,
+                "status": "done" if i < current else "running" if i == current else "pending",
+            }
+            for i, (_stage, title) in enumerate(_BRIEF_STAGE_TITLES)
+        ]
+
+    def _set_stage(self, source: str, stage: str) -> None:
+        if source == "brief":
+            self.brief_stage = stage
 
     @rx.var
     def brandboard_proposals(self) -> list[dict[str, str]]:
@@ -209,16 +243,21 @@ class BrandDocumentState(rx.State):
             creative = await self.get_state(CreativeState)
             current = kit_snapshot(creative)
             self._set_busy(source, True)
+            self._set_stage(source, "preparing")
             self._say(source, "Leyendo tu brief…")
         rows: list[dict[str, str]] = []
         message, tone = "", "neutral"
         try:
             data = await asyncio.to_thread((rx.get_upload_dir() / key).read_bytes)
             document = brief_ai.read_document(key, data)
-            api_key = api_key_from_env()
+            api_key = api_key_from_env()  # before the slow part: no key, no read
+            async with self:
+                self._set_stage(source, "reading")
             proposals, stats = await asyncio.to_thread(
                 brief_ai.propose_kit_changes, document, current, source=source, api_key=api_key
             )
+            async with self:
+                self._set_stage(source, "sorting")
             rows = proposal_rows(source, proposals)
             logger.info(
                 "brand documents: %s read by %s → %d proposals ($%.4f)",
@@ -244,6 +283,7 @@ class BrandDocumentState(rx.State):
         async with self:
             self.proposals = [r for r in self.proposals if r["source"] != source] + rows
             self._set_busy(source, False)
+            self._set_stage(source, "")
             self._say(source, message, tone)
 
     @rx.event
@@ -426,7 +466,23 @@ def proposals_panel(source: str) -> rx.Component:
 
 
 def brief_upload_card() -> rx.Component:
-    """¿Quién es la marca?'s shortcut: upload a brief and review what it fills in."""
+    """Tu brief de marca: upload a brief and review what it fills in. While Claude reads
+    it the whole block is the progress screen (§ request 2026-10-01), like the voice
+    analysis — and the wizard's Continuar waits for it."""
+    return rx.cond(
+        BrandDocumentState.brief_busy,
+        progress_panel(
+            "Leyendo tu brief",
+            "Claude lee el documento y propone con qué rellenar tu Brand Kit, "
+            "citando de dónde sale cada cosa.",
+            value=BrandDocumentState.brief_percent,
+            steps=BrandDocumentState.brief_steps,
+        ),
+        _brief_card(),
+    )
+
+
+def _brief_card() -> rx.Component:
     return rx.vstack(
         card(
             rx.hstack(

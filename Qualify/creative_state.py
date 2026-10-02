@@ -42,6 +42,7 @@ from .creative_provider import (
     acting_user_id,
     approve_draft,
     approve_voice,
+    brand_clone_voice,
     brand_readiness,
     default_brand_id,
     draft_detail,
@@ -57,6 +58,7 @@ from .creative_provider import (
     submit_brief,
 )
 from .creative_vm import (
+    KIND_LABELS,
     CopyVariantVM,
     DraftSummaryVM,
     DraftVM,
@@ -97,6 +99,24 @@ _GENDERS = ("female", "male")
 _AD_MODES = ("product", "background", "both")
 _OBJECTIVES = frozenset(o.value for o in BriefObjective)
 _INTENTS = frozenset(i.value for i in BriefIntent)
+#: The generator wizard's steps, in order (§ request 2026-09-30, one decision per
+#: screen like the Brand Kit). `presenter` only applies to the two avatar kinds.
+GENERATOR_STEPS = ("kind", "topic", "channel", "presenter", "details", "rules", "review")
+_OBJECTIVE_LABELS = {
+    "awareness": "Reconocimiento",
+    "consideration": "Consideración",
+    "lead": "Captar contacto",
+    "sale": "Vender",
+}
+_INTENT_LABELS = {"organic": "Orgánico", "ads": "Anuncio", "both": "Ambos"}
+
+
+def generator_steps(kind: str) -> list[str]:
+    """The wizard steps that apply to `kind`, in order."""
+    has_presenter = kind in ("avatar_video", "animated_avatar_video")
+    return [step for step in GENERATOR_STEPS if step != "presenter" or has_presenter]
+
+
 #: The Brand Kit's list fields edited as pills: pill-input key → the `kit_*` attr that
 #: stores the list (one value per line, the format the kit form and the brief/brandboard
 #: proposals already use).
@@ -204,7 +224,14 @@ class CreativeState(rx.State):
     kit_palette: str = ""
     #: What each list's pill input holds before Enter (`_KIT_PILL_FIELDS` keys). The
     #: lists themselves stay the newline-joined `kit_*` strings above.
+    #: The whole Brand Kit is being saved (`brand_finish.save_brand_kit`).
+    kit_saving: bool = False
     kit_pill_drafts: dict[str, str] = {key: "" for key in ("do", "dont", "cta", "banned", "claims")}
+    #: The one pill being edited in place on ¿Todo correcto? (§ request 2026-09-30):
+    #: its list (`_KIT_PILL_FIELDS` key, "" = none), its index and the text so far.
+    kit_pill_edit_field: str = ""
+    kit_pill_edit_index: int = -1
+    kit_pill_edit_value: str = ""
 
     # -- /brand/voice -------------------------------------------------------
     voice_loading: bool = False
@@ -266,8 +293,10 @@ class CreativeState(rx.State):
     avatar_engine: str = "avatar_iv"
     #: The format picked for the kind ("" = the kind's default, `ContentKind.formats`).
     brief_format: str = ""
-    # The generator's two views (/signals): "form" (configure) → "result" (the piece).
+    # The generator's two views (/create): "form" (configure) → "result" (the piece).
     generator_view: str = "form"
+    #: The form view is a wizard: the key of the step on screen (`GENERATOR_STEPS`).
+    gen_step: str = "kind"
     gen_draft_id: str = ""
     gen_draft: DraftVM | None = None
     #: Which variant the result view shows (index into `gen_draft.variants`).
@@ -362,6 +391,31 @@ class CreativeState(rx.State):
         return _FORMAT_LABELS.get(self.effective_format, "")
 
     @rx.var
+    def gen_step_number(self) -> int:
+        """1-based position of the wizard's step among the ones the kind uses."""
+        steps = generator_steps(self.brief_kind)
+        return steps.index(self.gen_step) + 1 if self.gen_step in steps else 1
+
+    @rx.var
+    def gen_step_total(self) -> int:
+        return len(generator_steps(self.brief_kind))
+
+    @rx.var
+    def gen_recap(self) -> list[list[str]]:
+        """[label, value] rows of the wizard's «¿Todo listo?» step ("" = not set)."""
+        content_types = {opt.value: opt.label for opt in content_type_options()}
+        return [
+            ["Tipo de pieza", KIND_LABELS.get(self.brief_kind, "")],
+            ["Tema o producto", self.brief_topic.strip()],
+            ["Objetivo", _OBJECTIVE_LABELS.get(self.brief_objective, "")],
+            ["De qué trata", content_types.get(self.brief_content_type, "")],
+            ["Destino", _INTENT_LABELS.get(self.brief_intent, "")],
+            ["Formato", self.effective_format_label],
+            ["Debe mencionar", self.brief_must_mention.strip()],
+            ["Debe evitar", self.brief_must_avoid.strip()],
+        ]
+
+    @rx.var
     def carousel_allowed(self) -> bool:
         """A carousel is a flyer in a feed format (Instagram takes none in a story)."""
         return self.brief_kind == "static_flyer" and self.effective_format.startswith("feed_")
@@ -440,7 +494,12 @@ class CreativeState(rx.State):
 
     @rx.var
     def visible_voices(self) -> list[dict[str, str]]:
-        return [voice for voice in self.heygen_voices if voice.get("gender") == self.voice_gender]
+        """The listed gender's voices — plus the brand's own clone, always."""
+        return [
+            voice
+            for voice in self.heygen_voices
+            if voice.get("own") == "1" or voice.get("gender") == self.voice_gender
+        ]
 
     @rx.var
     def selected_look_name(self) -> str:
@@ -622,6 +681,57 @@ class CreativeState(rx.State):
         if 0 <= index < len(items):
             del items[index]
             setattr(self, attr, "\n".join(items))
+        # the indices behind any open edit just moved
+        self._clear_kit_pill_edit()
+
+    @rx.event
+    def start_kit_pill_edit(self, field: str, index: int) -> None:
+        """Click on a pill of ¿Todo correcto?: that value becomes an input, in place."""
+        attr = _KIT_PILL_FIELDS.get(field)
+        if attr is None:
+            return
+        items = _pill_items(getattr(self, attr))
+        if 0 <= index < len(items):
+            self.kit_pill_edit_field = field
+            self.kit_pill_edit_index = index
+            self.kit_pill_edit_value = items[index]
+
+    @rx.event
+    def set_kit_pill_edit_value(self, value: str) -> None:
+        self.kit_pill_edit_value = value
+
+    @rx.event
+    def save_kit_pill_edit(self) -> None:
+        """Enter or leaving the input: the edited text replaces the value. Emptied, the
+        value goes; turned into one the list already has (ignoring case), the two merge."""
+        attr = _KIT_PILL_FIELDS.get(self.kit_pill_edit_field)
+        index = self.kit_pill_edit_index
+        if attr is not None:
+            items = _pill_items(getattr(self, attr))
+            if 0 <= index < len(items):
+                value = " ".join(self.kit_pill_edit_value.split())
+                others = {item.casefold() for i, item in enumerate(items) if i != index}
+                if not value or value.casefold() in others:
+                    del items[index]
+                else:
+                    items[index] = value
+                setattr(self, attr, "\n".join(items))
+        self._clear_kit_pill_edit()
+
+    @rx.event
+    def cancel_kit_pill_edit(self) -> None:
+        self._clear_kit_pill_edit()
+
+    @rx.event
+    def kit_pill_edit_key(self, key: str) -> None:
+        """Escape leaves the value as it was."""
+        if key == "Escape":
+            self._clear_kit_pill_edit()
+
+    def _clear_kit_pill_edit(self) -> None:
+        self.kit_pill_edit_field = ""
+        self.kit_pill_edit_index = -1
+        self.kit_pill_edit_value = ""
 
     @rx.event
     def set_brief_topic(self, value: str) -> None:
@@ -944,9 +1054,18 @@ class CreativeState(rx.State):
                 self.heygen_loading = False
                 self.heygen_error = _HEYGEN_DOWN
             return
+        # § 2026-09-30: the brand's own cloned voice (Tu voz, on ¿Cómo suena?) leads
+        # the list — and so becomes the default — once HeyGen finished it.
+        own = None
+        ids = await self._session_ids()
+        if ids is not None:
+            try:
+                own = await asyncio.to_thread(brand_clone_voice, ids[0], ids[1])
+            except SQLAlchemyError as exc:
+                logger.warning("brand voice clone unreadable: %s", type(exc).__name__)
         async with self:
             self.heygen_looks = looks
-            self.heygen_voices = voices
+            self.heygen_voices = [own, *voices] if own else voices
             self._sync_voice()
             self.heygen_loading = False
 
@@ -997,7 +1116,11 @@ class CreativeState(rx.State):
     def _sync_voice(self) -> None:
         """Keep the chosen voice inside the listed gender: the first one of that gender
         when the current one is not (or none is chosen yet)."""
-        voices = [v for v in self.heygen_voices if v.get("gender") == self.voice_gender]
+        voices = [
+            v
+            for v in self.heygen_voices
+            if v.get("own") == "1" or v.get("gender") == self.voice_gender
+        ]
         if not any(v.get("id") == self.voice_id for v in voices):
             self.voice_id = voices[0]["id"] if voices else ""
 
@@ -1051,8 +1174,9 @@ class CreativeState(rx.State):
 
     @rx.event
     def new_generation(self) -> None:
-        """Back to the form, the inputs kept — to try a variation."""
+        """Back to the form's first step, the inputs kept — to try a variation."""
         self.generator_view = "form"
+        self.gen_step = "kind"
         self.gen_draft = None
         self.gen_draft_id = ""
         self.gen_variant = 0
@@ -1160,21 +1284,17 @@ class CreativeState(rx.State):
 
     def _kind_problem(self) -> str:
         """What the chosen kind still needs, in the operator's words ("" when ready)."""
+        return self._presenter_problem() or self._details_problem()
+
+    def _presenter_problem(self) -> str:
+        """The wizard's «¿Quién lo presenta?» step: the avatar or character, and the
+        voice. Only the two avatar kinds have a presenter."""
         if self.brief_kind == "avatar_video":
             if self.human_avatar_mode == "custom":
                 if not self.human_avatar_prompt.strip():
                     return "Describe cómo es la persona que va a presentar el video."
             elif not self.avatar_look_id:
                 return "Elige el avatar que va a presentar el video."
-        if self.brief_kind == "static_flyer":
-            if self.ad_mode != "background" and not self.media_product_keys:
-                return "Sube la foto de tu producto."
-            if self.ad_mode != "product" and not self.media_background_key:
-                return "Sube la foto del fondo (por ejemplo, tu local)."
-        if self.brief_kind in ("avatar_video", "animated_avatar_video") and not self.voice_id:
-            return "Elige la voz que va a leer el guion."
-        if self.kind_is_video and self.own_script_on and not self.own_script.strip():
-            return "Escribe tu guion o apaga «Escribir mi propio guion»."
         if self.brief_kind == "animated_avatar_video":
             if self.avatar_source == "ai" and not self.avatar_prompt.strip():
                 return "Describe cómo es el personaje animado."
@@ -1183,7 +1303,51 @@ class CreativeState(rx.State):
                     return "Sube la imagen del personaje que quieres animar."
                 if not self.avatar_rights_confirmed:
                     return "Confirma que tienes derecho a animar esa imagen."
+        if self.brief_kind in ("avatar_video", "animated_avatar_video") and not self.voice_id:
+            return "Elige la voz que va a leer el guion."
         return ""
+
+    def _details_problem(self) -> str:
+        """The wizard's kind step: the ad's photos, or the operator's own script."""
+        if self.brief_kind == "static_flyer":
+            if self.ad_mode != "background" and not self.media_product_keys:
+                return "Sube la foto de tu producto."
+            if self.ad_mode != "product" and not self.media_background_key:
+                return "Sube la foto del fondo (por ejemplo, tu local)."
+        if self.kind_is_video and self.own_script_on and not self.own_script.strip():
+            return "Escribe tu guion o apaga «Escribir mi propio guion»."
+        return ""
+
+    def _gen_step_problem(self, step: str) -> str:
+        """What keeps the wizard from leaving `step` ("" when it may move on)."""
+        if step == "topic" and not self.brief_topic.strip():
+            return _TOPIC_REQUIRED
+        if step == "presenter":
+            return self._presenter_problem()
+        if step == "details":
+            return self._details_problem()
+        return ""
+
+    @rx.event
+    def gen_next(self) -> None:
+        """Continuar: validate the step on screen, then move to the next one that
+        applies to the chosen kind. The reason it cannot move shows above the card."""
+        problem = self._gen_step_problem(self.gen_step)
+        if problem:
+            self.create_error = problem
+            return
+        self.create_error = ""
+        steps = generator_steps(self.brief_kind)
+        index = steps.index(self.gen_step) if self.gen_step in steps else -1
+        self.gen_step = steps[min(index + 1, len(steps) - 1)]
+
+    @rx.event
+    def gen_back(self) -> None:
+        """Atrás: the previous step that applies to the chosen kind (never validates)."""
+        self.create_error = ""
+        steps = generator_steps(self.brief_kind)
+        index = steps.index(self.gen_step) if self.gen_step in steps else 0
+        self.gen_step = steps[max(index - 1, 0)]
 
     def _media_inputs(self) -> dict[str, object]:
         kind = self.brief_kind
