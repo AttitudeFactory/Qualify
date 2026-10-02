@@ -241,3 +241,183 @@ def test_voice_typed_exceptions(seeded: tuple[UUID, UUID, UUID, UUID, UUID]) -> 
     voice.approve(tenant_id=tenant_a, brand_id=brand_a, version=version, user_id=user_a)
     with pytest.raises(NotProposed):  # already ACTIVE — approving again rewrites history
         voice.approve(tenant_id=tenant_a, brand_id=brand_a, version=version, user_id=user_a)
+
+
+# -- saving the kit adopts the voice (§ 2026-09-30: no approval step) --------------------
+
+
+def _fresh_brand(tenant_id: UUID) -> UUID:
+    """A brand of its own per test: the voice tests count versions and ACTIVE rows, so
+    they must not see what other tests (or earlier runs) left on the shared brand."""
+    with admin_session() as session:
+        brand = Brand(tenant_id=tenant_id, name=f"voice-adopt-{uuid4()}")
+        session.add(brand)
+        session.flush()
+        return brand.id
+
+
+def _statuses(tenant_id: UUID, brand_id: UUID) -> dict[int, str]:
+    with tenant_session(tenant_id) as session:
+        rows = session.scalars(
+            select(VoiceProfileRow).where(VoiceProfileRow.brand_id == brand_id)
+        ).all()
+        return {row.version: row.status for row in rows}
+
+
+def test_adopting_the_kit_activates_the_voice_once_per_change(
+    seeded: tuple[UUID, UUID, UUID, UUID, UUID],
+) -> None:
+    tenant_a, _, user_a, _, _ = seeded
+    brand = _fresh_brand(tenant_a)
+    kits = BrandKitService()
+    voice = VoiceProfileService()
+    kit = _rich_kit(brand)
+    kits.upsert_kit(tenant_id=tenant_a, brand_id=brand, kit=kit, user_id=user_a)
+
+    v1 = voice.adopt_from_kit(tenant_id=tenant_a, brand_id=brand, user_id=user_a)
+    active = voice.active_profile(tenant_id=tenant_a, brand_id=brand)
+    assert active is not None and active.version == v1 == 1
+    assert active.tone_axes == kit.tone_axes  # the voice follows the kit, no approval
+    assert readiness(tenant_id=tenant_a, brand_id=brand).can_generate is True
+
+    # the same kit again: nothing new is written
+    assert voice.adopt_from_kit(tenant_id=tenant_a, brand_id=brand, user_id=user_a) == v1
+    assert _statuses(tenant_a, brand) == {1: VoiceProfileStatus.ACTIVE.value}
+
+    # a tone change: v2 goes ACTIVE, v1 is SUPERSEDED, the saver is the approver
+    louder = kit.model_copy(
+        update={"tone_axes": kit.tone_axes.model_copy(update={"sober_enthusiastic": 95})}
+    )
+    kits.upsert_kit(tenant_id=tenant_a, brand_id=brand, kit=louder, user_id=user_a)
+    v2 = voice.adopt_from_kit(tenant_id=tenant_a, brand_id=brand, user_id=user_a)
+    assert v2 == 2
+    assert _statuses(tenant_a, brand) == {
+        1: VoiceProfileStatus.SUPERSEDED.value,
+        2: VoiceProfileStatus.ACTIVE.value,
+    }
+    active = voice.active_profile(tenant_id=tenant_a, brand_id=brand)
+    assert active is not None and active.tone_axes.sober_enthusiastic == 95
+    with tenant_session(tenant_a) as session:
+        row = session.scalar(
+            select(VoiceProfileRow).where(
+                VoiceProfileRow.brand_id == brand, VoiceProfileRow.version == v2
+            )
+        )
+        assert row is not None and row.approved_by == user_a and row.approved_at is not None
+
+
+def test_adopting_never_replaces_a_voice_distilled_from_other_sources(
+    seeded: tuple[UUID, UUID, UUID, UUID, UUID],
+) -> None:
+    tenant_a, _, user_a, _, _ = seeded
+    brand = _fresh_brand(tenant_a)
+    BrandKitService().upsert_kit(
+        tenant_id=tenant_a, brand_id=brand, kit=_rich_kit(brand), user_id=user_a
+    )
+    with tenant_session(tenant_a) as session:
+        session.add(
+            VoiceProfileRow(
+                tenant_id=tenant_a,
+                brand_id=brand,
+                version=1,
+                status=VoiceProfileStatus.ACTIVE.value,
+                profile={"tone_axes": _rich_kit(brand).tone_axes.model_dump()},
+                sources=[
+                    {"kind": VoiceSourceKind.OWNED_MEDIA.value, "ref": "ig:1", "excerpt": "x"}
+                ],
+                distilled_by_model="some-model",
+                approved_by=user_a,
+            )
+        )
+    assert (
+        VoiceProfileService().adopt_from_kit(tenant_id=tenant_a, brand_id=brand, user_id=user_a)
+        == 1
+    )
+    assert _statuses(tenant_a, brand) == {1: VoiceProfileStatus.ACTIVE.value}
+
+
+def test_the_database_refuses_a_second_active_voice(
+    seeded: tuple[UUID, UUID, UUID, UUID, UUID],
+) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    tenant_a, _, user_a, _, _ = seeded
+    brand = _fresh_brand(tenant_a)
+    BrandKitService().upsert_kit(
+        tenant_id=tenant_a, brand_id=brand, kit=_rich_kit(brand), user_id=user_a
+    )
+    VoiceProfileService().adopt_from_kit(tenant_id=tenant_a, brand_id=brand, user_id=user_a)
+    with pytest.raises(IntegrityError):
+        with tenant_session(tenant_a) as session:
+            session.add(
+                VoiceProfileRow(
+                    tenant_id=tenant_a,
+                    brand_id=brand,
+                    version=99,
+                    status=VoiceProfileStatus.ACTIVE.value,
+                    profile={},
+                    sources=[],
+                )
+            )
+            session.flush()
+
+
+# -- the brand's HeyGen voice clone (0032) ------------------------------------------------
+
+
+def test_the_voice_clone_is_one_per_brand_and_tenant_isolated(
+    seeded: tuple[UUID, UUID, UUID, UUID, UUID],
+) -> None:
+    from qualify_api.creative.voice_clone import COMPLETE, PROCESSING, VoiceCloneService
+
+    tenant_a, _, user_a, tenant_b, _ = seeded
+    brand = _fresh_brand(tenant_a)
+    clones = VoiceCloneService()
+    assert clones.current(tenant_id=tenant_a, brand_id=brand) is None
+
+    assert (
+        clones.record(
+            tenant_id=tenant_a,
+            brand_id=brand,
+            heygen_voice_id="vc_1",
+            name="Voz",
+            consent_by=user_a,
+        )
+        is None
+    )
+    clone = clones.current(tenant_id=tenant_a, brand_id=brand)
+    assert clone is not None and clone.status == PROCESSING and not clone.is_ready
+
+    done = clones.update_status(
+        tenant_id=tenant_a,
+        brand_id=brand,
+        heygen_voice_id="vc_1",
+        status=COMPLETE,
+        gender="female",
+        preview_audio_url="https://files.heygen.ai/p.mp3",
+    )
+    assert done is not None and done.is_ready and done.gender == "female"
+
+    # a new clone replaces it and hands back the old HeyGen id to delete there
+    assert (
+        clones.record(
+            tenant_id=tenant_a,
+            brand_id=brand,
+            heygen_voice_id="vc_2",
+            name="Voz",
+            consent_by=user_a,
+        )
+        == "vc_1"
+    )
+    # a late poll of the old clone changes nothing
+    assert (
+        clones.update_status(
+            tenant_id=tenant_a, brand_id=brand, heygen_voice_id="vc_1", status=COMPLETE
+        )
+        is None
+    )
+    current = clones.current(tenant_id=tenant_a, brand_id=brand)
+    assert current is not None and current.heygen_voice_id == "vc_2"
+    assert current.status == PROCESSING and current.gender == ""
+    # another tenant sees nothing
+    assert clones.current(tenant_id=tenant_b, brand_id=brand) is None

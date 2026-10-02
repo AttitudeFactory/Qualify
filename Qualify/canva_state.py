@@ -1,4 +1,4 @@
-"""State for the Canva round trip on the generator's result (/signals) and the two pages
+"""State for the Canva round trip on the generator's result (/create) and the two pages
 Canva sends the user back to (`/canva/callback` after consent, `/canva/return` after
 editing).
 
@@ -51,7 +51,7 @@ _NOT_CONNECTED = "Tu conexión con Canva caducó. Conéctala de nuevo."
 _CANVA_DOWN = "Canva no respondió. Inténtalo de nuevo en un momento."
 _DB_ERROR = "No se pudo leer la base de datos."
 #: Where the user lands after connecting or returning from Canva.
-_HOME = "/signals"
+_HOME = "/create"
 
 
 class CanvaState(rx.State):

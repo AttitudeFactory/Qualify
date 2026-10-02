@@ -102,3 +102,20 @@ def test_discarding_and_removing_the_brandboard(session) -> None:
     docs.brandboard_name = "board.png"
     BrandDocumentState.clear_brandboard.fn(docs)
     assert (docs.brandboard_key, docs.brandboard_name, docs.proposals) == ("", "", [])
+
+
+# -- the brief behind a progress screen (2026-10-01) -----------------------------------------
+
+
+def test_the_brief_read_reports_its_stages() -> None:
+    docs = BrandDocumentState()
+    assert docs.brief_percent == 0
+    assert [row["status"] for row in docs.brief_steps] == ["pending"] * 3
+    docs._set_stage("brief", "reading")
+    assert docs.brief_percent == 30
+    assert [row["status"] for row in docs.brief_steps] == ["done", "running", "pending"]
+    docs._set_stage("brief", "sorting")
+    assert [row["title"] for row in docs.brief_steps][-1] == "Ordenamos lo encontrado"
+    assert [row["status"] for row in docs.brief_steps] == ["done", "done", "running"]
+    docs._set_stage("brandboard", "reading")  # the brandboard has no screen of its own
+    assert docs.brief_stage == "sorting"

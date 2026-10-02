@@ -31,6 +31,7 @@ from qualify_creative.schemas import (
     ADS_HEADLINE_MAX,
     HOOK_MAX,
     SCRIPT_MAX,
+    BrandContext,
     BrandKit,
     BrandVoiceProfile,
     ContentBrief,
@@ -73,7 +74,50 @@ def _tone_lines(axes: ToneAxes) -> str:
     )
 
 
-def _stable_prefix(kit: BrandKit, voice: BrandVoiceProfile) -> str:
+def _context_section(context: BrandContext | None) -> tuple[str, ...]:
+    """The business context (§ 2026-10-01) as one more standing section — none at all
+    when there is nothing to say, so a brand without it renders exactly as before."""
+    if context is None or context.is_empty:
+        return ()
+    lines = ["== Business context =="]
+    if context.sector:
+        lines.append(f"Business / sector: {context.sector}")
+    if context.location:
+        lines.append(f"Location: {context.location}. Local references are welcome when natural.")
+    if context.account_category or context.account_bio:
+        lines.append(
+            f"The brand's own account: {context.account_category or _NONE}."
+            f" Bio: {context.account_bio or _NONE}"
+        )
+    if context.hashtags:
+        lines.append(
+            "The brand's hashtags (pick the ones that fit, within the hashtag limits): "
+            + " ".join(f"#{tag}" for tag in context.hashtags)
+        )
+    if context.elements:
+        lines.append(
+            "Brandboard elements (reference them in scripts and visual directions when they"
+            " fit; follow each one's usage note):"
+        )
+        lines.extend(
+            f"- {e.name}: {e.context}" if e.context else f"- {e.name}" for e in context.elements
+        )
+    if context.referentes:
+        lines.append(
+            "Accounts the brand looks up to, most influential first (a reference for tone and"
+            " format; never copy them, never name them): " + ", ".join(context.referentes)
+        )
+    if context.competitors:
+        lines.append(
+            "Competitors (never mention them, never compare against them by name): "
+            + ", ".join(context.competitors)
+        )
+    return ("\n".join(lines),)
+
+
+def _stable_prefix(
+    kit: BrandKit, voice: BrandVoiceProfile, context: BrandContext | None = None
+) -> str:
     hashtag = kit.hashtag_policy
     lengths = kit.length_targets
     image = kit.image_policy
@@ -131,6 +175,7 @@ def _stable_prefix(kit: BrandKit, voice: BrandVoiceProfile) -> str:
         f"Reference images: {_listing(kit.reference_image_keys)}\n"
         f"Allowed image routes: {allowed_routes or _NONE}\n"
         f"Blocked image routes: {blocked_routes}",
+        *_context_section(context),
     )
     return "\n\n".join(sections) + "\n"
 
@@ -254,6 +299,7 @@ def render_prompt(
     voice: BrandVoiceProfile,
     brief: ContentBrief,
     task: GenerationTask,
+    context: BrandContext | None = None,
 ) -> RenderedPrompt:
     """Deterministic: the same (kit, voice, brief, task) renders the same bytes, always.
 
@@ -262,7 +308,7 @@ def render_prompt(
     carries the brief and the output instructions. `prefix_fingerprint` is the sha256 of
     the prefix, so a cache miss can be traced to the exact field that moved.
     """
-    prefix = _stable_prefix(kit, voice)
+    prefix = _stable_prefix(kit, voice, context)
     suffix = _volatile_suffix(brief, task)
     fingerprint = hashlib.sha256(prefix.encode("utf-8")).hexdigest()
     return RenderedPrompt(

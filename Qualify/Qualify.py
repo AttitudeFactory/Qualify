@@ -8,6 +8,8 @@ from qualify_api.planner.embedded import calendar_worker
 from .auth_pages import login_index, signup_index
 from .auth_state import AuthState
 from .avatar_proxy import avatar_api
+from .brand_kit_editor import BrandEditState, brand_edit_index
+from .brand_summary import BrandSummaryState, brand_home_index
 from .canva_pages import canva_callback_index, canva_return_index
 from .canva_state import CanvaState
 from .clarity_page import clarity_index
@@ -24,7 +26,6 @@ from .creative_state import CreativeState
 from .creative_wizard_pages import (
     BrandConnectState,
     BrandWizardState,
-    brand_choice_index,
     brand_connect_index,
     brand_connect_setup_index,
     brand_manual_index,
@@ -45,6 +46,7 @@ from .stories_state import StoriesState
 from .styleguide_page import styleguide_index
 from .ui import app_shell, page_body
 from .vitrina_page import vitrina_index
+from .voice_lab import VoiceLabState
 
 # QUA-99 latency follow-up: this app never configured Python's logging at all before
 # now — `logging.getLogger(__name__).info(...)` calls anywhere in the codebase (e.g.
@@ -185,13 +187,12 @@ app.add_page(
 app.add_page(
     signals_index,
     route="/signals",
-    # the content generator on this page needs the brand's readiness
-    on_load=[AuthState.require_login, CreativeState.load_create],
+    on_load=[AuthState.require_login],
     title="Qualify · Señales",
 )
 # Canva round trip (§ request 2026-09-28): where Canva sends the user back after the
 # OAuth consent and after "Return" in its editor. Both work in on_load and redirect to
-# /signals; both URLs must be registered in Canva's developer portal.
+# /create (the generator); both URLs must be registered in Canva's developer portal.
 app.add_page(
     canva_callback_index,
     route="/canva/callback",
@@ -206,15 +207,19 @@ app.add_page(
 )
 
 # Brand Content Engine (design §6): /brand is the default entry when the brand is not
-# ready; /create is gated server-side by BrandReadiness (the load stores the verdict).
+# ready. /create is the content generator; its BrandReadiness gate is lifted for now
+# (§ request 2026-09-30) — the service still needs a kit and a voice to exist.
 # The entry is now a yes/no question (¿tienes redes?, § request 2026-09-09) rather
 # than a manual-vs-lookup fork — "Sí" and "No" both end up scraping a profile.
 # `clear_entry` forgets a previous "No" answer, so only the answer given NOW decides
 # whether the connect flow treats the walk as a fresh start.
+# TEMPORAL (pruebas, docs/brand-kit-resumen-temporal.md): a brand with a finished kit
+# sees its read-only summary here, with "Crear uno nuevo" to replace it; without one,
+# the usual question (`brand_choice_index`, rendered by `brand_home_index`).
 app.add_page(
-    brand_choice_index,
+    brand_home_index,
     route="/brand",
-    on_load=[AuthState.require_login, BrandConnectState.clear_entry],
+    on_load=[AuthState.require_login, BrandConnectState.clear_entry, BrandSummaryState.load],
     title="Qualify · Marca",
 )
 
@@ -243,8 +248,33 @@ app.add_page(
         CreativeState.load_brand,
         CreativeState.load_voice,
         BrandWizardState.resume,
+        # Tu voz: the brand's HeyGen clone, if any
+        VoiceLabState.load_clone,
+        # the saved brandboard and logo brief (§ 2026-10-01)
+        BrandWizardState.load_saved_assets,
     ],
     title="Qualify · Brand Kit",
+)
+
+# Editing an existing kit (§ request 2026-09-30), from the sidebar's "Negocio" block:
+# the wizard's views over the same state, with a cursor of its own that every visit
+# puts back on the first view.
+app.add_page(
+    brand_edit_index,
+    route="/brand/kit",
+    on_load=[
+        AuthState.require_login,
+        CreativeState.load_brand,
+        BrandEditState.restart,
+        # Resultados e insights reads the stored referentes back (no search, no credits)
+        BrandConnectState.load_saved_referentes,
+        VoiceLabState.load_clone,
+        # everything else the Brand Kit saved (§ 2026-10-01): the brandboard, the
+        # connect flow's answers and the account as read, with its metrics
+        BrandWizardState.load_saved_assets,
+        BrandConnectState.load_saved_details,
+    ],
+    title="Qualify · Editar Brand Kit",
 )
 
 # The scraper flow — reached from BOTH /brand answers now. No `resume` here: its
@@ -253,7 +283,13 @@ app.add_page(
 app.add_page(
     brand_connect_index,
     route="/brand/connect",
-    on_load=[AuthState.require_login, CreativeState.load_brand, CreativeState.load_voice],
+    on_load=[
+        AuthState.require_login,
+        CreativeState.load_brand,
+        CreativeState.load_voice,
+        VoiceLabState.load_clone,
+        BrandWizardState.load_saved_assets,
+    ],
     title="Qualify · Conectar redes",
 )
 
@@ -261,7 +297,7 @@ app.add_page(
     create_index,
     route="/create",
     on_load=[AuthState.require_login, CreativeState.load_create],
-    title="Qualify · Nuevo encargo",
+    title="Qualify · Crear pieza",
 )
 app.add_page(
     drafts_index,

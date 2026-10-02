@@ -229,26 +229,32 @@ def pill_editor(
     placeholder: str,
     add_label: str = "Agregar",
     empty_hint: str = "",
+    show_items: bool = True,
 ) -> rx.Component:
     """A list the operator builds one value at a time: the values as `removable_pill`s,
-    and an input that adds one on Enter or "+". ``on_remove`` gets the pill's index."""
+    and an input that adds one on Enter, on "+" or on leaving it (so a typed value is
+    never lost by clicking elsewhere). ``on_remove`` gets the pill's index.
+    ``show_items=False`` leaves only the input, for a flow that lists and edits the
+    values on a later screen (the Brand Kit's ¿Todo correcto?)."""
     pills = rx.flex(
         rx.foreach(items, lambda item, index: removable_pill(item, on_remove(index))),
         wrap="wrap",
         gap="2",
         width="100%",
     )
+    listed = rx.cond(
+        items.length() > 0,
+        pills,
+        rx.text(empty_hint, size="1", color=T.TEXT_FAINT) if empty_hint else rx.fragment(),
+    )
     return rx.vstack(
-        rx.cond(
-            items.length() > 0,
-            pills,
-            rx.text(empty_hint, size="1", color=T.TEXT_FAINT) if empty_hint else rx.fragment(),
-        ),
+        listed if show_items else rx.fragment(),
         rx.form(
             rx.hstack(
                 rx.input(
                     value=draft,
                     on_change=on_draft_change,
+                    on_blur=on_add,
                     placeholder=placeholder,
                     width="100%",
                     size="2",
@@ -427,4 +433,80 @@ def demo_notice(message: str | rx.Var) -> rx.Component:
         border_radius=T.RADIUS_CONTROL,
         background=T.tone_color("warn", 2),
         width="100%",
+    )
+
+
+def progress_step_row(row: rx.Var[dict[str, str]]) -> rx.Component:
+    """One stage of a `progress_panel`: `{"title", "status"}` with status `done`,
+    `running` or `pending`."""
+    return rx.hstack(
+        rx.match(
+            row["status"],
+            ("done", rx.icon("circle-check", size=16, color=T.tone_color("ok", 10))),
+            ("running", loading_spinner("sm")),
+            rx.icon("circle", size=16, color=T.TEXT_FAINT),
+        ),
+        rx.text(
+            row["title"],
+            size="2",
+            color=rx.cond(row["status"] == "pending", T.TEXT_FAINT, T.TEXT_STRONG),
+            weight=rx.cond(row["status"] == "running", "medium", "regular"),
+        ),
+        spacing="2",
+        align="center",
+    )
+
+
+def progress_panel(
+    title: str | rx.Var,
+    detail: str | rx.Var = "",
+    *,
+    value: rx.Var[int] | int | None = None,
+    steps: rx.Var[list[dict[str, str]]] | None = None,
+    creep_seconds: int = 30,
+) -> rx.Component:
+    """A blocking wait with a progress bar (§ request 2026-10-01): voice analysis,
+    referentes search, hashtag suggestions. With a `value` (0-100) the bar shows real
+    progress; without one — a single call that reports none — it creeps towards ~90%
+    over `creep_seconds` and the screen goes away when the work ends. A light sweep
+    over the bar says it is alive either way (`assets/qualify.css`, "Progress panel").
+    `steps` lists the stages (`progress_step_row`)."""
+    if value is None:
+        fill = rx.box(
+            class_name="q-progress-fill q-progress-creep",
+            style={"--q-creep": f"{creep_seconds}s"},
+        )
+        percent = rx.fragment()
+    else:
+        width = (value.to_string() + "%") if isinstance(value, rx.Var) else f"{value}%"
+        fill = rx.box(class_name="q-progress-fill", width=width)
+        percent = rx.text(value, "%", size="1", color=T.TEXT_MUTED, class_name="q-nums")
+    return rx.vstack(
+        rx.text(title, size="3", weight="medium", text_align="center"),
+        *([rx.text(detail, size="2", color=T.TEXT_MUTED, text_align="center")] if detail else []),
+        rx.box(
+            fill,
+            class_name="q-progress-track",
+            role="progressbar",
+            aria_label=title if isinstance(title, str) else "Progreso",
+            width="100%",
+            max_width="26rem",
+        ),
+        percent,
+        *(
+            [
+                rx.vstack(
+                    rx.foreach(steps, progress_step_row),
+                    spacing="2",
+                    align_items="start",
+                    padding_top="0.5rem",
+                )
+            ]
+            if steps is not None
+            else []
+        ),
+        spacing="3",
+        align="center",
+        width="100%",
+        padding="2.5rem 0",
     )

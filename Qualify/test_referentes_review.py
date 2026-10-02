@@ -249,7 +249,7 @@ def test_manual_input_that_cannot_be_used_says_why(text: str, network: str) -> N
 
 def _lookup(found: bool, bio: str = "") -> Any:
     def lookup(
-        network: str, handle: str, *, store_path: Any = None
+        network: str, handle: str, *, store: Any = None, payload_cache: Any = None
     ) -> tuple[cd.Candidate, bool, None]:
         candidate = cd.Candidate(
             network=network,
@@ -273,7 +273,7 @@ def test_a_small_account_is_read_reviewed_and_carded() -> None:
         api_key="k",
         lookup=_lookup(True, bio="Cocina casera"),
         review=fake,
-        store_path=None,
+        store=None,
     )
     assert result.missing is False and result.warning == ""
     card = result.card
@@ -297,7 +297,7 @@ def test_a_manual_account_that_does_not_fit_is_added_with_a_warning() -> None:
         api_key="k",
         lookup=_lookup(True),
         review=fake,
-        store_path=None,
+        store=None,
     )
     assert result.warning == "Comida rápida, otro formato."
     assert result.card["fits"] == "no"  # still carded: the operator decides
@@ -316,7 +316,7 @@ def test_an_account_with_no_social_profile_is_carded_from_the_note() -> None:
         api_key="k",
         lookup=no_lookup,
         review=fake,
-        store_path=None,
+        store=None,
     )
     card = result.card
     assert card["network"] == "Sin redes"
@@ -336,7 +336,7 @@ def test_a_profile_that_is_not_found_is_still_added_and_a_failed_review_is_not_f
         api_key="k",
         lookup=_lookup(False),
         review=broken,
-        store_path=None,
+        store=None,
     )
     assert result.missing is True
     assert result.card["handle"] == "@noexiste" and result.card["fits"] == ""
@@ -369,7 +369,7 @@ def _manual(text: str, network: str) -> rr.ManualResult:
         api_key="k",
         lookup=_lookup(True),
         review=FakeReview({}),
-        store_path=None,
+        store=None,
     )
 
 

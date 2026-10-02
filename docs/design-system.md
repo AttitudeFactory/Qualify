@@ -277,6 +277,7 @@ Todo en `Qualify/ui/primitives.py` salvo lo indicado. Radix (`rx.button`, `rx.in
 | `empty_state(icon, title, description, action=None)` | lista vacía / sin configuración | como error |
 | `skeleton_card(lines=3)` / `skeleton_rows(n)` | carga inicial, con la forma del contenido esperado | espera de página/panel completo |
 | `loading_spinner(size="sm"\|"md"\|"lg")` | espera de página/panel completo — todo el contenido se reemplaza, no hay "forma esperada" que dibujar | carga inicial de una lista/tabla → skeleton; el spinner propio de un botón (`loading=Var`, §5.5) ya lo resuelve Radix solo |
+| `progress_panel(title, detail, value=None, steps=None, creep_seconds=30)` | espera que **bloquea** el paso (no se puede seguir hasta que termine): análisis de voz, búsqueda de referentes, sugerencia de hashtags. Con `value` (0-100) muestra progreso real; sin él, avanza con el tiempo hasta ~90 % y desaparece al terminar. `steps` lista las etapas (`progress_step_row`) | una espera corta sin etapas → `loading_spinner`; carga de una lista → skeleton |
 
 Iconos por defecto del callout: `error`/`warn` → `triangle-alert`, `ok` → `check`, `info` → `info`. Un callout de error lleva `role="alert"`; los demás `role="status"`.
 

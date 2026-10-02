@@ -64,3 +64,59 @@ def test_objective_and_intent_take_only_known_values() -> None:
     state.set_intent("ads")
     state.set_intent("nope")
     assert state.brief_intent == "ads"
+
+
+# -- edited in place on ¿Todo correcto? (§ request 2026-09-30) ---------------------------
+
+
+def test_editing_a_pill_replaces_only_that_value() -> None:
+    state = CreativeState()
+    state.kit_banned_words = "barato\nel mejor\ngratis"
+    state.start_kit_pill_edit("banned", 1)
+    assert (state.kit_pill_edit_field, state.kit_pill_edit_index) == ("banned", 1)
+    assert state.kit_pill_edit_value == "el mejor"
+    state.set_kit_pill_edit_value("  el   número uno ")
+    state.save_kit_pill_edit()
+    assert state.kit_banned_items == ["barato", "el número uno", "gratis"]
+    assert (state.kit_pill_edit_field, state.kit_pill_edit_index) == ("", -1)
+
+
+def test_emptying_a_pill_removes_it_and_a_duplicate_merges() -> None:
+    state = CreativeState()
+    state.kit_cta_patterns = "Reserva ya\nEscríbenos\nVen hoy"
+    state.start_kit_pill_edit("cta", 0)
+    state.set_kit_pill_edit_value("   ")
+    state.save_kit_pill_edit()
+    assert state.kit_cta_items == ["Escríbenos", "Ven hoy"]
+    state.start_kit_pill_edit("cta", 1)
+    state.set_kit_pill_edit_value("ESCRÍBENOS")  # already in the list, ignoring case
+    state.save_kit_pill_edit()
+    assert state.kit_cta_items == ["Escríbenos"]
+
+
+def test_escape_and_a_second_save_change_nothing() -> None:
+    state = CreativeState()
+    state.kit_do_examples = "Hola, vecino"
+    state.start_kit_pill_edit("do", 0)
+    state.set_kit_pill_edit_value("otra cosa")
+    state.kit_pill_edit_key("Enter")  # only Escape cancels
+    assert state.kit_pill_edit_field == "do"
+    state.kit_pill_edit_key("Escape")
+    assert state.kit_pill_edit_field == ""
+    state.save_kit_pill_edit()  # e.g. the input's blur right after Enter or Escape
+    assert state.kit_do_items == ["Hola, vecino"]
+
+
+def test_an_edit_can_only_start_on_a_real_value() -> None:
+    state = CreativeState()
+    state.start_kit_pill_edit("claims", 0)
+    state.start_kit_pill_edit("nope", 0)
+    assert state.kit_pill_edit_field == ""
+
+
+def test_removing_a_pill_closes_an_open_edit() -> None:
+    state = CreativeState()
+    state.kit_dont_examples = "a\nb\nc"
+    state.start_kit_pill_edit("dont", 2)
+    state.remove_kit_pill("dont", 0)
+    assert state.kit_pill_edit_field == "" and state.kit_dont_items == ["b", "c"]

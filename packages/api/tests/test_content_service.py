@@ -1096,3 +1096,89 @@ def test_a_media_failure_keeps_its_reason_in_words() -> None:
     detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
     assert detail is not None and detail.failure_reason == "provider_error"
     assert detail.failure_detail == "HeyGen: la cuenta no tiene créditos de API."
+
+
+# -- the business context reaches the prompt (§ request 2026-10-01) ----------------------
+
+
+class RecordingRouter(FakeRouter):
+    def __init__(self, script: list[object] | None = None) -> None:
+        super().__init__(script)
+        self.requests: list[object] = []
+
+    def run(self, *, tenant_id, brand_id, chain, request, budget):  # noqa: ANN001, ANN201
+        self.requests.append(request)
+        return super().run(
+            tenant_id=tenant_id, brand_id=brand_id, chain=chain, request=request, budget=budget
+        )
+
+
+class FakeContext:
+    def __init__(self, context: object = None, fail: bool = False) -> None:
+        self._context = context
+        self._fail = fail
+
+    def context(self, *, tenant_id: UUID, brand_id: UUID) -> object:
+        if self._fail:
+            raise RuntimeError("database down")
+        return self._context
+
+
+def _generate_with(reader: FakeContext) -> RecordingRouter:
+    router = RecordingRouter([ok_outcome(copy_dict("Hook uno"))])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    service._context = reader  # the composition passes `context_reader=`
+    draft_id = repo.seed_draft(make_brief(variants=1))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert repo.drafts[draft_id].status == GENERATED
+    return router
+
+
+def test_the_saved_business_context_is_part_of_the_prompt() -> None:
+    from qualify_creative.schemas import BrandContext
+
+    context = BrandContext(sector="cafetería", hashtags=("cafe",))
+    router = _generate_with(FakeContext(context))
+    prefix = router.requests[0].rendered_prompt.stable_prefix  # type: ignore[attr-defined]
+    assert "== Business context ==" in prefix and "#cafe" in prefix
+
+
+def test_an_unreadable_context_never_fails_generation() -> None:
+    router = _generate_with(FakeContext(fail=True))
+    prefix = router.requests[0].rendered_prompt.stable_prefix  # type: ignore[attr-defined]
+    assert "Business context" not in prefix
+
+
+# -- the costs are printed for auditing (§ request 2026-10-01) ---------------------------
+
+
+def test_every_call_and_the_draft_total_are_logged(caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    router = FakeRouter([ok_outcome(copy_dict("Hook uno")), ok_outcome(copy_dict("Hook dos"))])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    draft_id = repo.seed_draft(make_brief(variants=2))
+    with caplog.at_level(logging.INFO, logger="qualify_api.creative.costs"):
+        service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    lines = [r.getMessage() for r in caplog.records if r.name == "qualify_api.creative.costs"]
+    calls = [line for line in lines if line.startswith("creative.cost draft=")]
+    totals = [line for line in lines if line.startswith("creative.cost.total")]
+    assert len(calls) == 2 and len(totals) == 1
+    assert f"draft={draft_id}" in calls[0]
+    assert "model=claude-opus-5" in calls[0] and "in=1000 out=500" in calls[0]
+    assert "cost_usd=0.017500" in calls[0]
+    assert "calls=2 cost_usd=0.035000 outcome=ok" in totals[0]
+
+
+def test_a_failed_generation_still_logs_what_it_spent(caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    router = FakeRouter([ok_outcome(copy_dict("Hook uno")), BUDGET_BLOCKED])  # 2nd: no money left
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    draft_id = repo.seed_draft(make_brief(variants=2))
+    with caplog.at_level(logging.INFO, logger="qualify_api.creative.costs"):
+        service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    totals = [r.getMessage() for r in caplog.records if "creative.cost.total" in r.getMessage()]
+    # the first call's money was spent and is accounted for; the outcome says why it failed
+    assert len(totals) == 1 and "calls=1 cost_usd=0.017500" in totals[0]
+    assert "outcome=ok" not in totals[0]

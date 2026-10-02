@@ -94,6 +94,13 @@ class BrandVoiceProfile(Base):
     __table_args__ = (
         UniqueConstraint("brand_id", "version", name="uq_voice_profiles_brand_version"),
         Index("ix_voice_profiles_tenant", "tenant_id"),
+        # at most one ACTIVE profile per brand, as a database fact (0032)
+        Index(
+            "uq_voice_profiles_one_active",
+            "brand_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -115,6 +122,111 @@ class BrandVoiceProfile(Base):
         PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
+class BrandVoiceClone(Base):
+    """The brand's own voice cloned in HeyGen (0032): one per brand, replaced on a new
+    clone. Manual, with the operator's recorded consent (`consent_by`/`consent_at`).
+    `heygen_voice_id` works anywhere a HeyGen `voice_id` does once `status` is
+    `complete`."""
+
+    __tablename__ = "brand_voice_clones"
+    __table_args__ = (
+        UniqueConstraint("brand_id", name="uq_voice_clone_brand"),
+        Index("ix_voice_clones_tenant", "tenant_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
+    )
+    heygen_voice_id: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="processing")
+    failure_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    language: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gender: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preview_audio_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    consent_by: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    consent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
+class BrandKitAsset(Base):
+    """One file of the brand's brandboard, kept in R2 (0033): a version of the logo
+    (`kind = 'logo_version'`, `slot` = logotipo/isotipo/imagotipo/isologo), another
+    element added with the "+" (`kind = 'extra'`, `slot` = its id) or a standalone
+    logo (`kind = 'logo'`). `label`/`context` are the operator's own words about it."""
+
+    __tablename__ = "brand_kit_assets"
+    __table_args__ = (
+        UniqueConstraint("brand_id", "kind", "slot", name="uq_brand_kit_asset_slot"),
+        Index("ix_brand_kit_assets_tenant", "tenant_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    slot: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    object_key: Mapped[str] = mapped_column(Text, nullable=False)
+    filename: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    content_type: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    label: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    context: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    position: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
+class BrandKitDetails(Base):
+    """The wizards' own answers for a brand (0033), as three JSONB documents:
+    `logo_brief`, `connect` (network, user, account kind, rubro, location, hashtags) and
+    `profile` (the account as read, and its metrics)."""
+
+    __tablename__ = "brand_kit_details"
+    __table_args__ = (Index("ix_brand_kit_details_tenant", "tenant_id"),)
+
+    brand_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("brands.id"), primary_key=True
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    logo_brief: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'"))
+    connect: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'"))
+    profile: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'"))
+    updated_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

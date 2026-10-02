@@ -11,7 +11,7 @@ import pytest
 from qualify_creative.enums import ContentKind, ImageRoute
 
 from . import creative_provider
-from .creative_state import CreativeState
+from .creative_state import CreativeState, generator_steps
 from .creative_vm import KIND_OPTIONS, build_media_vms, build_variant_vm
 
 _TENANT_ID = UUID("a0000000-0000-4000-8000-000000000001")
@@ -471,3 +471,97 @@ def test_an_own_script_and_the_engine_reach_the_inputs() -> None:
     assert media["own_script"] == "Hola, soy Doña Rosa." and media["engine"] == "avatar_iii"
     state.set_own_script_on(False)
     assert "own_script" not in state._media_inputs()
+
+
+# -- the generator as a wizard (§ request 2026-09-30) ----------------------------------
+
+
+def test_only_the_avatar_kinds_ask_who_presents() -> None:
+    assert generator_steps("avatar_video") == [
+        "kind",
+        "topic",
+        "channel",
+        "presenter",
+        "details",
+        "rules",
+        "review",
+    ]
+    assert "presenter" in generator_steps("animated_avatar_video")
+    for kind in ("creator_script", "static_flyer"):
+        assert "presenter" not in generator_steps(kind)
+        assert len(generator_steps(kind)) == 6
+
+
+def test_the_counter_follows_the_kind() -> None:
+    state = CreativeState()
+    state.brief_kind = "creator_script"
+    state.gen_step = "details"
+    assert (state.gen_step_number, state.gen_step_total) == (4, 6)
+    state.brief_kind = "avatar_video"
+    assert (state.gen_step_number, state.gen_step_total) == (5, 7)
+
+
+def test_continuar_walks_the_kinds_steps_and_atras_walks_back() -> None:
+    state = CreativeState()
+    state.brief_kind = "creator_script"
+    state.brief_topic = "Smash doble"
+    seen = [state.gen_step]
+    for _ in range(10):
+        state.gen_next()
+        seen.append(state.gen_step)
+    assert seen[:6] == generator_steps("creator_script")
+    assert set(seen[6:]) == {"review"}  # the last step stays put: Generar takes over
+    state.gen_back()
+    assert state.gen_step == "rules"
+    for _ in range(10):
+        state.gen_back()
+    assert state.gen_step == "kind"
+
+
+def test_a_step_does_not_move_on_until_it_is_complete() -> None:
+    state = CreativeState()
+    state.brief_kind = "avatar_video"
+    state.gen_step = "topic"
+    state.gen_next()
+    assert state.gen_step == "topic" and state.create_error != ""
+    state.brief_topic = "Smash doble"
+    state.gen_next()
+    assert state.gen_step == "channel" and state.create_error == ""
+    state.gen_next()
+    assert state.gen_step == "presenter"
+    state.gen_next()
+    assert state.gen_step == "presenter" and "Elige el avatar" in state.create_error
+    state.avatar_look_id = "lk"
+    state.voice_id = "vo"
+    state.gen_next()
+    assert state.gen_step == "details"
+    state.own_script_on = True
+    state.gen_next()
+    assert state.gen_step == "details" and "Escribe tu guion" in state.create_error
+    state.gen_back()
+    assert state.gen_step == "presenter" and state.create_error == ""
+
+
+def test_the_review_recaps_the_brief() -> None:
+    state = CreativeState()
+    state.brief_kind = "static_flyer"
+    state.brief_topic = "  Smash doble  "
+    state.brief_objective = "sale"
+    state.brief_intent = "ads"
+    state.brief_must_mention = "envío gratis"
+    recap = dict(state.gen_recap)
+    assert recap["Tipo de pieza"] == {key: title for key, title, *_ in KIND_OPTIONS}["static_flyer"]
+    assert recap["Tema o producto"] == "Smash doble"
+    assert recap["Objetivo"] == "Vender"
+    assert recap["Destino"] == "Anuncio"
+    assert recap["Formato"] != ""
+    assert recap["Debe mencionar"] == "envío gratis"
+    assert recap["Debe evitar"] == ""
+
+
+def test_crear_otro_starts_the_wizard_again() -> None:
+    state = CreativeState()
+    state.gen_step = "review"
+    state.generator_view = "result"
+    state.new_generation()
+    assert state.gen_step == "kind"

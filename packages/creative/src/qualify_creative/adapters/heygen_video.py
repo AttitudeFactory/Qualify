@@ -25,7 +25,10 @@ billing (ADR 32 D5, backlog F5-MA-10). API facts pinned from developers.heygen.c
 
 Scope guard: this adapter renders with an avatar that ALREADY exists in the HeyGen
 account (stock or pre-approved). It never creates or clones an avatar — cloning a real
-person is blocked until the consent/licence gate of F5-MA-05 has its own ADR.
+person's likeness is blocked until the consent/licence gate of F5-MA-05 has its own ADR.
+The one clone it does make is a VOICE (`clone_voice`, § request 2026-09-30): the brand's
+own voice, cloned only when the operator asks for it and confirms consent — the caller
+records who and when (`brand_voice_clones`).
 """
 
 from __future__ import annotations
@@ -344,6 +347,55 @@ class HeyGenAvatarVideoAdapter:
             params["gender"] = gender
         with self._client(api_key) as client:
             return _list_or_raise(client.get("/v3/voices", params=params))
+
+    # -- voice clones (§ request 2026-09-30) ------------------------------------------------
+    #
+    # Instant clone from one recording (~30 s of clear speech is enough): `POST
+    # /v3/voices/clone` answers `{data: {voice_clone_id}}` at once and clones
+    # asynchronously; `GET /v3/voices/{id}` is polled until `status` is `complete` (or
+    # `failed`, with `failure_message`). The id then works anywhere a `voice_id` does —
+    # `generate`'s TTS included. A paid plan is required (403 `plan_upgrade_required`)
+    # and an account holds a limited number of clones (400 `resource_limit_reached`);
+    # `delete_voice` frees a slot. Shapes from HeyGen's reference, 2026-09-30.
+
+    def clone_voice(
+        self,
+        *,
+        api_key: str,
+        name: str,
+        audio_asset_id: str,
+        language: str | None = None,
+        remove_background_noise: bool = True,
+    ) -> str:
+        """Start cloning the voice in an uploaded audio asset (`upload_asset`); returns
+        the clone's voice id, still `processing`."""
+        name = name.strip()[:100]
+        if not name:
+            raise ValueError("a voice clone needs a name")
+        body: dict[str, Any] = {
+            "voice_name": name,
+            "audio": {"type": "asset_id", "asset_id": audio_asset_id},
+            "remove_background_noise": remove_background_noise,
+        }
+        if language:
+            body["language"] = language
+        with self._client(api_key) as client:
+            data = _data_or_raise(client.post("/v3/voices/clone", json=body))
+        voice_id = data.get("voice_clone_id")
+        if not isinstance(voice_id, str) or not voice_id:
+            raise HeyGenError(f"clone response carried no voice_clone_id: {data!r}")
+        return voice_id
+
+    def get_voice(self, *, api_key: str, voice_id: str) -> Mapping[str, Any]:
+        """One voice — for a clone, `status` (`processing`/`complete`/`failed`),
+        `failure_message`, `language`, `gender` and `preview_audio_url`."""
+        with self._client(api_key) as client:
+            return _data_or_raise(client.get(f"/v3/voices/{voice_id}"))
+
+    def delete_voice(self, *, api_key: str, voice_id: str) -> None:
+        """Remove a clone from the account (frees one of its clone slots)."""
+        with self._client(api_key) as client:
+            _body_or_raise(client.delete(f"/v3/voices/{voice_id}"))
 
     # -- upload ---------------------------------------------------------------------------
 

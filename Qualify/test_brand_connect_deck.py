@@ -220,6 +220,11 @@ async def test_advance_stage_if_exhausted_moves_to_the_next_category(
     monkeypatch.setattr(wiz.asyncio, "sleep", _instant_sleep)
     state = BrandConnectState()
     state.sort_stage = 0  # "sector" — not the last of the three
+    # sector already sorted; national has something left (an EMPTY next category would
+    # be skipped — § 2026-09-30, `test_finishing_a_category_jumps_over_an_empty_one`)
+    state.sector_accounts = [_card("@s")]
+    state.account_buckets = {"TikTok:@s": "referente"}
+    state.national_accounts = [_card("@n")]
     state.stage_cursor = 2
     async for _ in BrandConnectState.advance_stage_if_exhausted.fn(state):
         pass
@@ -322,3 +327,82 @@ def test_arriving_at_the_sort_step_starts_a_search_that_never_ran() -> None:
     already_ran.discovery_ran = True
     assert BrandConnectState.next_step.fn(already_ran) is None
     assert already_ran.step == wiz._SORT_STEP
+
+
+# -- empty categories are skipped (§ request 2026-09-30) ---------------------------------
+
+
+def test_the_shown_category_follows_every_phase_it_may_skip() -> None:
+    """The category on screen is derived from ALL three phases (an empty one is jumped
+    over), so a phase landing, failing or finishing must recompute it."""
+    everything = _PHASE_ACCOUNT_VARS | _PHASE_TITLE_VARS | _PHASE_NOTE_VARS
+    for var in ("stage_key", "stage_label", "is_first_stage", "is_last_stage"):
+        assert everything | {"discovering", "sort_stage"} <= _deps(var), var
+    assert everything | {"discovering"} <= _deps("nothing_to_sort")
+
+
+def test_an_empty_category_is_skipped_both_ways() -> None:
+    state = BrandConnectState()
+    state.national_accounts = [_card("@n")]
+    # the deck opens on the first category with something in it
+    assert state.stage_key == "national" and state.stage_label == "Categoría 2 de 3"
+    assert state.is_first_stage and state.is_last_stage
+    assert state.nothing_to_sort is False
+
+    state.local_accounts = [_card("@l")]
+    assert not state.is_last_stage
+    BrandConnectState.next_sort_stage.fn(state)
+    assert state.stage_key == "local"
+    BrandConnectState.prev_sort_stage.fn(state)
+    assert state.stage_key == "national"  # the empty sector is not a stop
+    BrandConnectState.prev_sort_stage.fn(state)
+    assert state.stage_key == "national"
+
+
+def test_a_failed_or_loading_category_is_not_skipped() -> None:
+    state = BrandConnectState()
+    state.sector_note = "No pudimos completar esta búsqueda ahora. Inténtalo más tarde."
+    state.local_accounts = [_card("@l")]
+    assert state.stage_key == "sector" and state.stage_failed  # its Reintentar stays
+
+    state = BrandConnectState()
+    state.discovering = True
+    assert state.stage_key == "sector" and state.stage_pending
+    assert state.nothing_to_sort is False
+
+
+def test_nothing_to_sort_when_every_category_came_back_empty() -> None:
+    state = BrandConnectState()
+    assert state.nothing_to_sort is True
+    assert state.stage_key == "sector" and not state.has_current_card
+    state.local_accounts = [_card("@l")]
+    assert state.nothing_to_sort is False and state.stage_key == "local"
+
+
+async def test_finishing_a_category_jumps_over_an_empty_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(wiz.asyncio, "sleep", _instant_sleep)
+    state = BrandConnectState()
+    state.sector_accounts = [_card("@s")]
+    state.local_accounts = [_card("@l")]
+    # sorting the sector's last card chains the auto-advance…
+    assert BrandConnectState.assign.fn(state, "TikTok:@s", "referente") == (
+        BrandConnectState.advance_stage_if_exhausted
+    )
+    async for _ in BrandConnectState.advance_stage_if_exhausted.fn(state):
+        pass
+    # …which jumps over the empty national category
+    assert state.stage_key == "local" and state.has_current_card
+
+
+def test_the_referentes_progress_bar_moves_one_category_at_a_time() -> None:
+    state = BrandConnectState()
+    state.discovering = True
+    assert state.discovery_percent == 12  # the first category is being searched
+    state.sector_title = "Referentes del sector"
+    assert state.discovery_percent == 45
+    state.national_title = "Nacionales"
+    state.local_title = "Locales"
+    state.discovering = False
+    assert state.discovery_percent == 100

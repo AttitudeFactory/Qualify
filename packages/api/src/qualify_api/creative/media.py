@@ -153,6 +153,36 @@ class LocalMediaStore:
         path.write_bytes(data)
 
 
+class R2ReadingMediaStore:
+    """`LocalMediaStore` plus the brand's R2 files (§ 2026-10-01): a key under a tenant's
+    R2 prefix (`t/{tenant}/…` — the Brand Kit's logo, `brand_kit_store`) is read from R2
+    through the tenant-checking `ObjectGate`; everything else stays local. Writes are
+    always local (what the pipeline generates is served from the upload store)."""
+
+    def __init__(self, local: MediaStore, gate: Any = None) -> None:
+        self._local = local
+        self._gate = gate
+
+    def _r2(self) -> Any:
+        if self._gate is None:
+            from qualify_shared.objects.config import R2Settings  # noqa: PLC0415
+            from qualify_shared.objects.gate import ObjectGate  # noqa: PLC0415
+            from qualify_shared.objects.s3 import R2ObjectStore  # noqa: PLC0415
+
+            self._gate = ObjectGate(R2ObjectStore(R2Settings.from_env()))
+        return self._gate
+
+    def read(self, key: str) -> bytes:
+        if key.startswith("t/"):
+            tenant = key.split("/", 2)[1]
+            with self._r2().open_object(UUID(tenant), key) as stream:
+                return stream.read()
+        return self._local.read(key)
+
+    def write(self, key: str, data: bytes) -> None:
+        self._local.write(key, data)
+
+
 #: HeyGen's failures, in the operator's words (from the smoke-test panel it replaces).
 #: Matched on the error text the adapter / router carry; the raw text follows.
 _HEYGEN_FAILURES: tuple[tuple[tuple[str, ...], str], ...] = (
@@ -298,8 +328,9 @@ class MediaProducer:
             return None
         try:
             return self._store.read(kit.logo_asset_key)
-        except (OSError, ValueError):
-            return None  # a logo kept elsewhere is not a reason to fail the flyer
+        except Exception as exc:  # R2 down, a missing object: never a reason to fail the flyer
+            logger.warning("brand logo %s unreadable: %s", kit.logo_asset_key, type(exc).__name__)
+            return None
 
     # -- flyer -------------------------------------------------------------------------
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .content_generator import generator_page
 from .creative_state import GENERATION_STAGES, CreativeState
 from .creative_vm import (
     CopyVariantVM,
@@ -499,7 +500,6 @@ def _voice_empty_state() -> rx.Component:
                 align_items="start",
                 width="100%",
             ),
-            _voice_section(),
         ),
     )
 
@@ -800,22 +800,14 @@ def _create_blocked() -> rx.Component:
 
 
 def create_index() -> rx.Component:
-    return _screen(
-        "Nuevo encargo",
-        "Un formulario corto a propósito: el valor está en el sustrato",
-        _padded(
-            rx.cond(CreativeState.create_error != "", _error_callout(CreativeState.create_error)),
-            rx.cond(
-                CreativeState.create_loading,
-                rx.skeleton(rx.box(height="20rem", width="100%")),
-                rx.cond(
-                    CreativeState.readiness & CreativeState.readiness.can_generate,
-                    _create_form(),
-                    _create_blocked(),
-                ),
-            ),
-        ),
-    )
+    """/create is the content generator (`content_generator.py`), moved here from
+    /signals (§ request 2026-09-30). The BrandReadiness gate is lifted for now: the
+    screen no longer swaps the form for `_create_blocked()`. The service still refuses
+    a brand with no kit or no voice at all, and that refusal shows as the generator's
+    error. `_create_form()` / `_create_blocked()` stay, unrouted, for when the gate
+    comes back. Since the same day it is a step-by-step wizard like the Brand Kit
+    (`content_generator.generator_page`)."""
+    return generator_page()
 
 
 # ---------------------------------------------------------------------------

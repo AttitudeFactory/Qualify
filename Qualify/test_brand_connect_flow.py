@@ -8,8 +8,6 @@ docstring for the general limitation)."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from . import creative_wizard_pages as wiz
@@ -36,6 +34,21 @@ def _existing_account(**fields: object) -> BrandConnectState:
         "sector": "technology",
     }
     return _state(**{**defaults, **fields})
+
+
+def _without_session(monkeypatch: pytest.MonkeyPatch, tenant: str = "") -> None:
+    """`analyze` asks the session for its tenant (to record the read); here there is
+    none — or the given one."""
+    from .auth_state import AuthState
+
+    auth = AuthState()
+    auth.session_tenant_id = tenant
+
+    async def get_state(_self: object, state_cls: type) -> object:
+        assert state_cls is AuthState
+        return auth
+
+    monkeypatch.setattr(BrandConnectState, "get_state", get_state)
 
 
 def _next(state: BrandConnectState) -> int:
@@ -133,7 +146,7 @@ def test_an_influencer_goes_straight_from_identity_to_the_voice(
         profile_pic_is_real=is_real,
         logo_from_profile=is_real,
     )
-    assert _next(state) == wiz._VOICE_TONE_STEP
+    assert _next(state) == wiz._VOICE_STEP
     assert _prev(state) == wiz._IDENTITY_STEP
 
 
@@ -195,7 +208,7 @@ def test_existing_influencer_is_still_asked_the_rubro_then_walks_to_identity() -
     assert _next(state) == wiz._IDENTITY_STEP
 
     # logo + palette skipped too (influencer): straight to the voice
-    assert _next(state) == wiz._VOICE_TONE_STEP
+    assert _next(state) == wiz._VOICE_STEP
     assert _prev(state) == wiz._IDENTITY_STEP
     assert _prev(state) == wiz._BRIEF_STEP
     assert _prev(state) == wiz._RUBRO_STEP
@@ -492,82 +505,6 @@ def test_a_decision_launches_a_ghost_of_the_card_the_way_it_went() -> None:
     assert state.fly_card == {} and state.fly_direction == ""
 
 
-async def test_analyze_never_seeds_from_a_concurrent_tenants_profile(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """The cross-tenant race this regression-guards: `analyze()` used to save its own
-    read to the one global, non-tenant-keyed snapshot file and then blindly re-read
-    THAT FILE (`scrapecreators_client.load_profile_snapshot`, no network/handle check)
-    instead of just using the profile it had already fetched. In a real multi-session
-    backend, another tenant's own `save_profile_snapshot` landing in that window handed
-    this session someone else's real business profile — reproduced directly against
-    `scrapecreators_client` before this fix (two interleaved saves, then a blind
-    re-read, returned the SECOND tenant's profile to the FIRST caller).
-
-    Simulates the worst case directly: `save_profile_snapshot` here does the real save
-    AND THEN a second tenant's save on top of it, in the same call — the exact
-    interleaving a concurrent session could produce. `analyze()` must still end up with
-    tenant A's own profile, because it no longer reads the shared file back at all."""
-    monkeypatch.setattr(wiz.scrapecreators_client, "load_cached_profile", lambda *a, **k: None)
-
-    tenant_a_profile = {
-        "username": "tenant_a_real_business",
-        "fullName": "Tenant A Real Business",
-        "bio": "",
-        "category": "",
-        "followers": 111,
-        "profilePicUrl": "",
-    }
-    snapshot_path = tmp_path / "shared_snapshot.json"
-    real_save = wiz.scrapecreators_client.save_profile_snapshot  # before it gets patched below
-
-    def _fetch(_network: str, _handle: str) -> dict[str, object]:
-        return tenant_a_profile
-
-    def _save_then_another_tenant_interleaves(
-        network: str, handle: str, profile: dict[str, object]
-    ) -> None:
-        real_save(network, handle, profile, path=snapshot_path)
-        # A DIFFERENT session's own save, landing in the same window a blind re-read
-        # (the code this test guards against reintroducing) would have been exposed to.
-        real_save(
-            "instagram",
-            "tenant_b_handle",
-            {"username": "tenant_b_real_business", "followers": 222},
-            path=snapshot_path,
-        )
-
-    monkeypatch.setattr(wiz.scrapecreators_client, "fetch_profile_and_posts", _fetch)
-    monkeypatch.setattr(
-        wiz.scrapecreators_client, "save_profile_snapshot", _save_then_another_tenant_interleaves
-    )
-    monkeypatch.setattr(
-        wiz.creator_discovery,
-        "seed_from_profile",
-        lambda _profile: wiz.creator_discovery.DiscoverySeed(
-            handle="tenant_a_real_business", niches=()
-        ),
-    )
-
-    state = BrandConnectState()
-    state.network = "instagram"
-    state.username = "tenant_a_handle"
-
-    async for _ in BrandConnectState.analyze.fn(state):
-        pass
-
-    # Sanity check the race actually happened on the shared file (proves this test
-    # exercises the real interleaving, not a no-op):
-    assert (
-        wiz.scrapecreators_client.load_profile_snapshot(path=snapshot_path)["username"]
-        == "tenant_b_real_business"
-    )
-    # ...yet tenant A's own session must never have picked that up.
-    assert state.profile_username == "tenant_a_real_business"
-    assert state.profile_fullname == "Tenant A Real Business"
-    assert state.error == ""
-
-
 def test_a_detected_profile_picture_preanswers_the_question_and_skips_only_tu_logo() -> None:
     """§ request 2026-09-21: a brand or "ambas" is ALWAYS asked ¿Tienes logo? — a real
     profile picture arrives as the selected answer ("Mi foto de perfil es mi logo"), and
@@ -580,3 +517,118 @@ def test_a_detected_profile_picture_preanswers_the_question_and_skips_only_tu_lo
         assert _next(state) == wiz._PALETTE_STEP
         assert _prev(state) == wiz._LOGO_QUESTION_STEP
         assert _prev(state) == wiz._IDENTITY_STEP
+
+
+def test_the_hashtag_input_only_shows_after_its_plus() -> None:
+    """§ request 2026-09-30: the pills end in a "+"; the input appears only after it,
+    and adding a hashtag, Escape or leaving it empty puts the "+" back."""
+    state = _state()
+    assert state.adding_hashtag is False
+    BrandConnectState.open_hashtag_input.fn(state)
+    assert state.adding_hashtag is True
+    BrandConnectState.set_new_hashtag.fn(state, "#StreetFood")
+    BrandConnectState.add_hashtag.fn(state)
+    assert [p["tag"] for p in state.rubro_hashtags] == ["streetfood"]
+    assert state.adding_hashtag is False
+
+    BrandConnectState.open_hashtag_input.fn(state)
+    BrandConnectState.hashtag_input_blur.fn(state, "  ")
+    assert state.adding_hashtag is False
+
+    # leaving the input with something typed adds it, like Enter
+    BrandConnectState.open_hashtag_input.fn(state)
+    BrandConnectState.set_new_hashtag.fn(state, "#Tacos")
+    BrandConnectState.hashtag_input_blur.fn(state, "#Tacos")
+    assert [p["tag"] for p in state.rubro_hashtags] == ["streetfood", "tacos"]
+    assert state.adding_hashtag is False and state.new_hashtag == ""
+
+    # a typed value that is not a hashtag stays in the open input, with the reason
+    BrandConnectState.open_hashtag_input.fn(state)
+    BrandConnectState.set_new_hashtag.fn(state, "dos palabras")
+    BrandConnectState.hashtag_input_blur.fn(state, "dos palabras")
+    assert state.adding_hashtag is True and state.new_hashtag == "dos palabras"
+    assert "una sola palabra" in state.hashtag_note
+
+    BrandConnectState.hashtag_input_key.fn(state, "Escape")
+    assert state.adding_hashtag is False and state.new_hashtag == ""
+
+
+async def test_a_live_profile_read_is_recorded_in_the_creator_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """§ 2026-10-01: Analizar's live read becomes a row of the creator history (the
+    series the organic growth estimate needs); a cached read is not recorded again."""
+    from uuid import UUID
+
+    from . import growth_provider
+
+    profile = {
+        "username": "nibbles",
+        "fullName": "Nibbles",
+        "bio": "",
+        "category": "",
+        "followers": 1_500,
+        "following": 10,
+        "postsCount": 40,
+        "profilePicUrl": "",
+        "fetchedAt": 1_790_000_000.0,
+        "recentPosts": [
+            {
+                "postId": "v1",
+                "takenAt": 1_789_900_000,
+                "likes": 50,
+                "comments": 2,
+                "views": 900,
+                "shares": 3,
+                "aiGenerated": True,
+                "aiLabel": "detected",
+                "aiSource": "Sora",
+            },
+            {"takenAt": 1_789_900_001, "likes": 1, "comments": 0, "views": 2},  # no id: no row
+        ],
+    }
+    recorded: list[tuple[UUID, str, str, int]] = []
+
+    def record(tenant_id: UUID, network: str, handle: str, read: dict[str, object]) -> int:
+        assert read is profile
+        recorded.append((tenant_id, network, handle, len(read["recentPosts"])))
+        return 1
+
+    monkeypatch.setattr(growth_provider, "record_profile_read", record)
+    from . import creator_cache_provider as cache
+
+    cached: dict[tuple[UUID, str, str], dict[str, object]] = {}
+    monkeypatch.setattr(cache, "cached_snapshot", lambda t, n, h: cached.get((t, n, h)))
+    monkeypatch.setattr(
+        cache, "remember_snapshot", lambda t, n, h, p: cached.__setitem__((t, n, h), p)
+    )
+    monkeypatch.setattr(wiz.scrapecreators_client, "fetch_profile_and_posts", lambda n, h: profile)
+    tenant = "a0000000-0000-4000-8000-0000000000a1"
+    _without_session(monkeypatch, tenant)
+
+    state = BrandConnectState()
+    state.network = "tiktok"
+    state.username = "@Nibbles"
+    async for _ in BrandConnectState.analyze.fn(state):
+        pass
+    assert recorded == [(UUID(tenant), "tiktok", "@Nibbles", 2)]
+    assert state.profile_username == "nibbles"
+    # § 2026-10-01: remembered per tenant in Postgres (no JSON), with a time to live
+    assert cached == {(UUID(tenant), "tiktok", "@Nibbles"): profile}
+
+    # the same handle again, now served from the tenant's cache: no read, no new row
+    monkeypatch.setattr(
+        wiz.scrapecreators_client,
+        "fetch_profile_and_posts",
+        lambda n, h: (_ for _ in ()).throw(AssertionError("no read expected")),
+    )
+    async for _ in BrandConnectState.analyze.fn(state):
+        pass
+    assert len(recorded) == 1 and state.profile_username == "nibbles"
+
+    # the rows the provider would write from that read
+    read, posts = growth_provider.reads_from_profile("tiktok", "@Nibbles", profile)
+    assert (read.handle, read.followers, read.posts_count) == ("nibbles", 1_500, 40)
+    assert [(p.post_id, p.shares, p.ai_generated, p.ai_source) for p in posts] == [
+        ("v1", 3, True, "Sora")
+    ]

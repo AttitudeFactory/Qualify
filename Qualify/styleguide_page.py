@@ -24,6 +24,7 @@ from .ui import (
     page_header,
     pill_editor,
     platform_badge,
+    progress_panel,
     removable_pill,
     section,
     sentiment_badge,
@@ -637,6 +638,22 @@ def _states() -> rx.Component:
                     spacing="5",
                     align="end",
                 ),
+                rx.text(
+                    "Espera que bloquea, con progreso real o estimado", size="1", color=T.TEXT_MUTED
+                ),
+                progress_panel(
+                    "Analizando tu voz",
+                    "Progreso real, por etapas",
+                    value=60,
+                    steps=rx.Var.create(
+                        [
+                            {"title": "Preparamos tu grabación", "status": "done"},
+                            {"title": "Transcribimos lo que dices", "status": "running"},
+                            {"title": "Leemos tu tono", "status": "pending"},
+                        ]
+                    ),
+                ),
+                progress_panel("Buscando hashtags", "Sin progreso medible: avanza con el tiempo"),
                 spacing="3",
                 width="100%",
                 align_items="start",

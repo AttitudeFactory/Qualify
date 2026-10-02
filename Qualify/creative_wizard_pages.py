@@ -48,6 +48,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import replace
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import reflex as rx
@@ -60,7 +61,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from . import (
     avatar_proxy,
     brand_documents,
+    creator_cache_provider,
     creator_discovery,
+    creator_pool_provider,
+    growth_provider,
     hashtag_catalog,
     logo_palette,
     referentes_provider,
@@ -71,6 +75,7 @@ from .auth_state import AuthState
 from .connections_provider import acting_user_id
 from .creative_provider import default_brand_id
 from .creative_state import CreativeState
+from .r2_media import BACKEND_BASE
 from .tenant import tenant_uuid
 from .ui import (
     app_shell,
@@ -81,11 +86,14 @@ from .ui import (
     page_body,
     page_header,
     pill_editor,
+    progress_panel,
     removable_pill,
     stat_card,
     tag,
+    tone_badge,
 )
 from .ui import tokens as T
+from .voice_lab import VoiceLabState, voice_analysis_result, voice_lab_panel
 
 logger = logging.getLogger(__name__)
 
@@ -111,12 +119,20 @@ _BRIEF_HEADING = (
     "Si tienes uno, súbelo y te proponemos cómo rellenar tu Brand Kit. Si no, continúa.",
 )
 
+#: Tu voz — its own view right before ¿Cómo suena? (§ request 2026-10-01): record or upload
+#: the brand's voice, analyse it to pre-fill the next screen's sliders, clone it.
+_VOICE_HEADING = (
+    "Tu voz",
+    "Grábala o súbela: ajustamos el tono con ella y, si quieres, la clonamos.",
+)
+
 STEPS: tuple[tuple[str, str], ...] = (
     _BRIEF_HEADING,
     ("¿Quién es la marca?", "Lo que define su lugar y a quién le habla."),
     ("¿Tienes brandboard?", "De tu respuesta depende el siguiente paso."),
     ("Tu brandboard", "Lo usaremos en cada pieza que generemos."),
     ("Paleta de colores", "Los colores con los que se te reconoce."),
+    _VOICE_HEADING,
     ("¿Cómo suena?", "Ajusta el tono en cuatro ejes."),
     ("Enséñale a hablar", "Ejemplos reales valen más que cualquier descripción."),
     ("Lo que nunca debe decir", "Reglas duras: una violación es un rechazo."),
@@ -124,6 +140,13 @@ STEPS: tuple[tuple[str, str], ...] = (
     ("Resultados e insights", "Tu marca, lista."),
 )
 LAST_STEP = len(STEPS) - 1
+#: The manual flow's steps a rule names (the rest are read off `_window`).
+_M_PALETTE_STEP = 4
+_M_VOICE_STEP = 5
+_M_EXAMPLES_STEP = 7
+assert STEPS[_M_PALETTE_STEP][0] == "Paleta de colores"
+assert STEPS[_M_VOICE_STEP] == _VOICE_HEADING
+assert STEPS[_M_EXAMPLES_STEP][0] == "Enséñale a hablar"
 #: ¿Todo correcto? — one before the true final screen. `resume` opens here on a kit
 #: with no gaps, not on `LAST_STEP`: re-entering should offer a review, not skip
 #: straight past it to the "you're done" screen.
@@ -210,8 +233,17 @@ class BrandWizardState(rx.State):
     logo_version_context: dict[str, str] = {}
     #: Anything else the brand is made of, added with Tu brandboard's "+" (stickers,
     #: patterns, a mascot...): one dict per file — `id`, `key` (upload key), `name`
-    #: (file name), `label` (what it is) and `context`. Session-only.
+    #: (file name), `label` (what it is) and `context`.
     brand_extras: list[dict[str, str]] = []
+    #: Since 2026-10-01 all of the above is SAVED at the end (`brand_finish`) and read
+    #: back on entry (`load_saved_assets`): a saved file's key is an R2 key, shown
+    #: through its short-lived `/r2media/<token>` path kept here (R2 key → path).
+    asset_views: dict[str, str] = {}
+    #: TEMPORAL (pruebas, § request 2026-10-01 — docs/brand-kit-resumen-temporal.md):
+    #: "Crear uno nuevo" on the Marca summary (`brand_summary`) starts a NEW kit that
+    #: replaces the saved one when it is finished. While set, nothing saved is loaded
+    #: into the wizard and the final save rewrites every document.
+    replacing_kit: bool = False
 
     # -- step 5 -----------------------------------------------------------------------
     # The wheel/readout's pending pick. They ONLY ever add a new colour — nothing here
@@ -245,9 +277,9 @@ class BrandWizardState(rx.State):
         elif self.has_logo == "no" and not self.logo_brief_1.strip():
             self.step = 3
         elif not creative.kit_palette.strip():
-            self.step = 4
+            self.step = _M_PALETTE_STEP
         elif not creative.kit_do_examples.strip():
-            self.step = 6
+            self.step = _M_EXAMPLES_STEP
         else:
             self.step = _CONFIRM_STEP
 
@@ -292,7 +324,76 @@ class BrandWizardState(rx.State):
         self.logo_versions = {}
         self.logo_version_context = {}
         self.brand_extras = []
+        self.asset_views = {}
+        self.replacing_kit = False
         self.picker_color = "#0A3D2E"
+
+    @rx.event(background=True)
+    async def load_saved_assets(self) -> AsyncIterator[None]:
+        """On entry: the brand's saved brandboard and logo brief (`brand_finish.
+        load_saved`), merged under what this session already staged — a slot the
+        session filled keeps the session's file. The save replaces the whole stored
+        set, so everything stored has to be here for it not to be dropped."""
+        from .brand_finish import load_saved, session_ids
+
+        async with self:
+            if self.replacing_kit:  # TEMPORAL: a new kit starts empty
+                return
+        ids = await session_ids(self)
+        if ids is None:
+            return
+        try:
+            saved = await asyncio.to_thread(load_saved, ids[0], ids[1])
+        except SQLAlchemyError as exc:
+            logger.warning("brand kit assets unreadable: %s", type(exc).__name__)
+            return
+        async with self:
+            versions = dict(self.logo_versions)
+            contexts = dict(self.logo_version_context)
+            extras = list(self.brand_extras)
+            known_extras = {extra["id"] for extra in extras}
+            for file in saved.files:
+                if file.kind == "logo" and not self.logo_key:
+                    self.logo_key, self.logo_name = file.key, file.name
+                elif file.kind == "logo_version" and file.slot not in versions:
+                    versions[file.slot] = file.key
+                    if file.context:
+                        contexts.setdefault(file.slot, file.context)
+                elif file.kind == "extra" and file.slot not in known_extras:
+                    extras.append(
+                        {
+                            "id": file.slot,
+                            "key": file.key,
+                            "name": file.name,
+                            "label": file.label,
+                            "context": file.context,
+                        }
+                    )
+            self.logo_versions = versions
+            self.logo_version_context = contexts
+            self.brand_extras = extras
+            self.asset_views = {**self.asset_views, **saved.views}
+            if saved.files and not self.has_logo:
+                self.has_logo = "si"
+            brief = saved.details.logo_brief
+            if not (self.logo_brief_1 or self.logo_brief_2 or self.logo_brief_3):
+                self.logo_brief_1 = str(brief.get("style", ""))
+                self.logo_brief_2 = str(brief.get("feeling", ""))
+                self.logo_brief_3 = str(brief.get("references", ""))
+
+    @rx.event(background=True)
+    async def finish(self) -> AsyncIterator[rx.event.EventSpec]:
+        """The manual flow's final button (§ request 2026-10-01): save EVERYTHING
+        (`brand_finish.save_brand_kit`) and only then move on — a failed save stays on
+        screen instead of being lost behind the redirect."""
+        from .brand_finish import save_brand_kit
+
+        if not await save_brand_kit(self):
+            return
+        async with self:
+            self._reset_fields()
+        yield brand_documents.BrandDocumentState.reset_documents
+        yield rx.redirect(_SIGNALS_ROUTE)
 
     @rx.event
     def finish_to_signals(self) -> rx.event.EventSpec:
@@ -417,20 +518,51 @@ class BrandWizardState(rx.State):
     @rx.event
     async def handle_logo_version_upload(self, files: list[rx.UploadFile], version: str) -> None:
         """Stage one version of the logo (Logotipo, Isotipo, ...) dropped on its own card
-        on Tu brandboard (§ request 2026-09-29). Adds no colours: the palette follows the
-        brandboard, not each variant of the same mark."""
+        on Tu brandboard (§ request 2026-09-29). Its colours go into the palette when it is
+        the brand's fullest mark so far (`_palette_version`) — § 2026-10-01: they used not
+        to, and since Tu brandboard takes only versions and extras, no upload ever
+        coloured the palette any more."""
         if version not in LOGO_VERSION_KEYS:
             return
         staged = await self._stage_logo_file(files, f"logo/{version}")
-        if staged is not None:
-            self.logo_versions = {**self.logo_versions, version: staged[0]}
+        if staged is None:
+            return
+        self.logo_versions = {**self.logo_versions, version: staged[0]}
+        if self._palette_version() == version:
+            await self.apply_logo_colours(staged[2], LOGO_SOURCE_UPLOAD)
 
     @rx.event
-    def clear_logo_version(self, version: str) -> None:
+    async def clear_logo_version(self, version: str) -> None:
+        was_palette = self._palette_version() == version
         self.logo_versions = {k: v for k, v in self.logo_versions.items() if k != version}
         self.logo_version_context = {
             k: v for k, v in self.logo_version_context.items() if k != version
         }
+        if was_palette:
+            await self._colour_from_versions()
+
+    def _palette_version(self) -> str | None:
+        """Which staged version colours the palette: the fullest mark first — the same
+        order the save picks the brand's main logo in (`brand_kit_store.MAIN_LOGO_ORDER`)."""
+        return next((v for v in _PALETTE_VERSION_ORDER if v in self.logo_versions), None)
+
+    async def _colour_from_versions(self) -> None:
+        """The palette follows the (new) fullest version; with none left, the colours an
+        upload put in go back out. A version saved in R2 already has its colours in the
+        saved palette, so it is not read again."""
+        version = self._palette_version()
+        if version is None:
+            if self.logo_source == LOGO_SOURCE_UPLOAD and not self.logo_key:
+                await self.retire_logo_colours()
+            return
+        key = self.logo_versions[version]
+        if key.startswith("t/"):
+            return
+        try:
+            data = (rx.get_upload_dir() / key).read_bytes()
+        except OSError:
+            return
+        await self.apply_logo_colours(data, LOGO_SOURCE_UPLOAD)
 
     @rx.event
     def set_logo_version_context(self, version: str, value: str) -> None:
@@ -878,6 +1010,8 @@ def _finish_button(on_click: rx.event.EventType[()]) -> rx.Component:
         size="2",
         radius=_CONTROL_RADIUS,
         on_click=on_click,
+        # the save is awaited now (§ 2026-10-01): show it working
+        loading=CreativeState.kit_saving,
     )
 
 
@@ -903,13 +1037,15 @@ def _step_identity() -> rx.Component:
             "Posicionamiento",
             CreativeState.kit_positioning,
             CreativeState.set_kit_positioning,
-            "Qué es la marca y por qué importa",
+            "Ej.: Cafetería de especialidad en Cúcuta que tuesta su propio café de "
+            "Santander y te lo sirve en menos de 5 minutos.",
         ),
         _labeled_area(
             "Audiencia",
             CreativeState.kit_audience,
             CreativeState.set_kit_audience,
-            "A quién le habla",
+            "Ej.: Oficinistas de 25 a 40 años del centro de Cúcuta que quieren un buen "
+            "café para llevar antes de las 9 a. m.",
         ),
         icon="compass",
     )
@@ -978,21 +1114,21 @@ def _logo_brief_form(next_handler: rx.event.EventHandler) -> rx.Component:
                 "¿Qué estilo buscas?",
                 BrandWizardState.logo_brief_1,
                 BrandWizardState.set_logo_brief_1,
-                "Minimalista, ilustrado, tipográfico…",
+                "Ej.: Minimalista, una taza dibujada con una sola línea",
                 height="3.25rem",
             ),
             _labeled_input(
                 "¿Qué quieres que transmita?",
                 BrandWizardState.logo_brief_2,
                 BrandWizardState.set_logo_brief_2,
-                "Confianza, cercanía, innovación…",
+                "Ej.: Cercanía y calidad, sin sentirse caro",
                 height="3.25rem",
             ),
             _labeled_input(
                 "¿Tienes referencias que te gusten?",
                 BrandWizardState.logo_brief_3,
                 BrandWizardState.set_logo_brief_3,
-                "Una marca, un logo o un estilo que admires",
+                "Ej.: Lo simple y redondo del logo de Airbnb",
                 height="3.25rem",
             ),
             icon="pencil-line",
@@ -1012,8 +1148,30 @@ LOGO_VERSIONS: tuple[tuple[str, str, str], ...] = (
     ("isologo", "Isologo", "Texto y símbolo fundidos o integrados."),
 )
 LOGO_VERSION_KEYS = frozenset(key for key, _, _ in LOGO_VERSIONS)
+#: The version whose colours seed the palette, fullest mark first (§ 2026-10-01).
+_PALETTE_VERSION_ORDER = ("imagotipo", "logotipo", "isologo", "isotipo")
 
-_REFERENCE_HEIGHT = "4.5rem"
+_REFERENCE_HEIGHT = "5.5rem"
+#: Tu brandboard's tiles (logo versions, other elements, the "+") share one responsive
+#: grid shape (§ request 2026-09-30): as many ~14rem columns as the card's width fits,
+#: stretched to fill it — the step itself takes the card's whole width.
+_TILE_GRID = {
+    "display": "grid",
+    "grid_template_columns": "repeat(auto-fill, minmax(min(100%, 14rem), 1fr))",
+    "gap": "0.75rem",
+    "width": "100%",
+}
+#: The frame every tile of that grid has, so an uploaded element and the "+" read as
+#: the same object as a logo version.
+_TILE_FRAME = {
+    "spacing": "2",
+    "align_items": "start",
+    "width": "100%",
+    "border": T.BORDER,
+    "border_radius": T.RADIUS_CARD,
+    "background": T.CARD_BG,
+    "padding": "0.75rem",
+}
 
 
 def _mark_icon(size: int) -> rx.Component:
@@ -1056,6 +1214,16 @@ def _logo_version_reference(key: str) -> rx.Component:
     return rx.center(mark, height=_REFERENCE_HEIGHT, width="100%", opacity="0.85")
 
 
+def _asset_src(key: rx.Var[str]) -> rx.Var[str]:
+    """Where to show a brandboard file from: a saved one (R2) through its `/r2media`
+    path (`BrandWizardState.asset_views`), a just-staged one from the upload store."""
+    return rx.cond(
+        BrandWizardState.asset_views.contains(key),
+        BACKEND_BASE + BrandWizardState.asset_views[key].to(str),
+        rx.get_upload_url(key),
+    )
+
+
 def _remove_button(label: rx.Var[str] | str, on_click: rx.event.EventSpec) -> rx.Component:
     return rx.icon_button(
         rx.icon("x", size=T.ICON_SM),
@@ -1075,7 +1243,7 @@ def _context_field(
     return rx.text_area(
         value=value,
         on_change=on_change,
-        placeholder="Contexto: cuándo y cómo se usa",
+        placeholder="Ej.: Va en los stories y sobre fondos oscuros; nunca encima de fotos.",
         size="2",
         rows="2",
         width="100%",
@@ -1096,7 +1264,7 @@ def _logo_version_card(key: str, name: str, blurb: str) -> rx.Component:
                 rx.cond(
                     staged,
                     rx.image(
-                        src=rx.get_upload_url(BrandWizardState.logo_versions[key].to(str)),
+                        src=_asset_src(BrandWizardState.logo_versions[key].to(str)),
                         alt=f"Tu {name.lower()}",
                         height=_REFERENCE_HEIGHT,
                         width="100%",
@@ -1138,42 +1306,36 @@ def _logo_version_card(key: str, name: str, blurb: str) -> rx.Component:
             width="100%",
         ),
         rx.text(blurb, size="1", color=T.TEXT_MUTED),
-        rx.cond(
-            staged,
-            _context_field(
-                BrandWizardState.logo_version_context.get(key, "").to(str),
-                lambda value: BrandWizardState.set_logo_version_context(key, value),
-            ),
-        ),
-        spacing="2",
-        align_items="start",
-        width="100%",
-        border=T.BORDER,
-        border_radius=T.RADIUS_CARD,
-        background=T.CARD_BG,
-        padding="0.75rem",
+        # no usage note here (§ request 2026-10-01): only the extras added with the "+"
+        # take one — a logo version is already defined by its own name
+        **_TILE_FRAME,
     )
 
 
 def _extra_card(extra: rx.Var[dict[str, str]]) -> rx.Component:
-    """One element added with the "+": its image, what it is, and its context."""
+    """One element added with the "+", shaped like a logo version's tile: its image on
+    top, then what it is (with the ✕), the file it came from and its context."""
     return rx.vstack(
-        rx.hstack(
+        rx.center(
             rx.image(
-                src=rx.get_upload_url(extra["key"]),
+                src=_asset_src(extra["key"]),
                 alt=extra["name"],
-                height="3.5rem",
-                width="3.5rem",
+                height=_REFERENCE_HEIGHT,
+                width="100%",
                 object_fit="contain",
-                border_radius=T.RADIUS_CONTROL,
-                flex_shrink="0",
             ),
+            border=f"1px solid {rx.color('gray', 5)}",
+            border_radius=T.RADIUS_CONTROL,
+            padding="0.5rem",
+            width="100%",
+        ),
+        rx.hstack(
             rx.input(
                 value=extra["label"],
                 on_change=lambda value: BrandWizardState.set_extra_field(
                     extra["id"], "label", value
                 ),
-                placeholder="¿Qué es? Sticker, patrón, mascota…",
+                placeholder="Ej.: Patrón de granos de café para fondos",
                 size="2",
                 width="100%",
                 radius=_CONTROL_RADIUS,
@@ -1183,54 +1345,71 @@ def _extra_card(extra: rx.Var[dict[str, str]]) -> rx.Component:
             spacing="2",
             width="100%",
         ),
+        rx.text(
+            extra["name"],
+            size="1",
+            color=T.TEXT_FAINT,
+            overflow="hidden",
+            text_overflow="ellipsis",
+            white_space="nowrap",
+            max_width="100%",
+        ),
         _context_field(
             extra["context"],
             lambda value: BrandWizardState.set_extra_field(extra["id"], "context", value),
         ),
-        spacing="2",
+        **_TILE_FRAME,
+    )
+
+
+def _add_extra_skeleton() -> rx.Component:
+    """The "+" tile's picture: just the "+", centred where a logo version shows
+    Qualify's example (§ request 2026-09-30: no text skeleton beside it)."""
+    return rx.center(
+        rx.center(
+            rx.icon("plus", size=22, color=T.tone_color("accent", 10)),
+            width="3.25rem",
+            height="3.25rem",
+            border_radius=T.RADIUS_CONTROL,
+            background=T.tone_color("accent", 3),
+        ),
+        height=_REFERENCE_HEIGHT,
         width="100%",
-        border=T.BORDER,
-        border_radius=T.RADIUS_CARD,
-        background=T.CARD_BG,
-        padding="0.75rem",
     )
 
 
 def _add_extra_button() -> rx.Component:
-    """The "+" (§ request 2026-09-29): drop or pick one or more images — stickers,
-    patterns, a mascot — and each becomes its own element below."""
+    """The "+" (§ request 2026-09-29), as a tile like the others (§ request 2026-09-30):
+    the dropzone on top — a skeleton of an element, since there is no example to show
+    — and its name and description below. Drop or pick one or more images; each
+    becomes its own tile before this one."""
     return rx.upload(
-        rx.hstack(
-            rx.center(
-                rx.icon("plus", size=18, color=T.tone_color("accent", 10)),
-                width="2.25rem",
-                height="2.25rem",
-                min_width="2.25rem",
-                border_radius="9999px",
-                background=T.tone_color("accent", 3),
-            ),
+        rx.vstack(
             rx.vstack(
-                rx.text("Añadir más", size="2", weight="medium"),
-                rx.text(
-                    "Stickers, patrones, mascota, íconos… arrástralos o haz clic",
-                    size="1",
-                    color=T.TEXT_MUTED,
-                ),
-                spacing="0",
-                align_items="start",
+                _add_extra_skeleton(),
+                rx.text("Arrastra o haz clic", size="1", color=T.TEXT_FAINT),
+                spacing="1",
+                align="center",
+                width="100%",
+                border=f"1px dashed {rx.color('gray', 7)}",
+                border_radius=T.RADIUS_CONTROL,
+                padding="0.5rem",
             ),
-            align="center",
-            spacing="3",
-            width="100%",
+            rx.text("Añadir más", size="2", weight="medium"),
+            rx.text(
+                "Stickers, patrones, mascota, íconos… cualquier otro elemento de tu marca.",
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            **_TILE_FRAME,
         ),
         id=_EXTRA_UPLOAD_ID,
         accept=_LOGO_VERSION_ACCEPT,
         max_files=_MAX_EXTRAS_PER_DROP,
         multiple=True,
         on_drop=BrandWizardState.handle_extra_upload(rx.upload_files(upload_id=_EXTRA_UPLOAD_ID)),
-        border=f"1px dashed {rx.color('gray', 7)}",
-        border_radius=T.RADIUS_CARD,
-        padding="0.75rem",
+        border="none",
+        padding="0",
         width="100%",
         cursor="pointer",
     )
@@ -1239,11 +1418,9 @@ def _add_extra_button() -> rx.Component:
 def _logo_versions() -> rx.Component:
     return rx.vstack(
         _section_label("Versiones de tu logo"),
-        rx.grid(
+        rx.box(
             *(_logo_version_card(key, name, blurb) for key, name, blurb in LOGO_VERSIONS),
-            columns=rx.breakpoints(initial="1", sm="2"),
-            spacing="3",
-            width="100%",
+            **_TILE_GRID,
         ),
         spacing="2",
         align_items="start",
@@ -1254,8 +1431,11 @@ def _logo_versions() -> rx.Component:
 def _brand_extras() -> rx.Component:
     return rx.vstack(
         _section_label("Otros elementos"),
-        rx.foreach(BrandWizardState.brand_extras, _extra_card),
-        _add_extra_button(),
+        rx.box(
+            rx.foreach(BrandWizardState.brand_extras, _extra_card),
+            _add_extra_button(),
+            **_TILE_GRID,
+        ),
         spacing="2",
         align_items="start",
         width="100%",
@@ -1561,7 +1741,13 @@ def _step_palette() -> rx.Component:
     the wheel — so whichever control you're looking at when you reach for it is the
     one telling you what it does.
     """
-    return _step_body(
+    return _step_body(*_palette_editor(), icon="palette")
+
+
+def _palette_editor() -> tuple[rx.Component, ...]:
+    """Paleta de colores's controls — the swatches and the wheel — shared by the
+    wizard step and the Brand Kit editor (§ request 2026-09-30)."""
+    return (
         card(
             rx.vstack(
                 _section_label("Tu paleta"),
@@ -1629,12 +1815,24 @@ def _step_palette() -> rx.Component:
             align="center",
             width="100%",
         ),
-        icon="palette",
     )
 
 
+def _step_voice() -> rx.Component:
+    """Tu voz (§ request 2026-10-01): its own view before ¿Cómo suena? — record or
+    upload, Analizar pre-fills the next screen's sliders, Clonar is manual. Optional:
+    nothing here gates Continuar."""
+    return _step_body(voice_lab_panel(), icon="mic")
+
+
 def _step_voice_tone() -> rx.Component:
-    return _step_body(
+    # § 2026-10-01: an analysis of Tu voz lands here, with its result above the sliders
+    return _step_body(voice_analysis_result(), *_tone_sliders(), icon="sliders-horizontal")
+
+
+def _tone_sliders() -> tuple[rx.Component, ...]:
+    """¿Cómo suena?'s four axes, shared with the Brand Kit editor."""
+    return (
         _tone_slider(
             "formal",
             "coloquial",
@@ -1659,15 +1857,17 @@ def _step_voice_tone() -> rx.Component:
             CreativeState.tone_brief_elaborate,
             CreativeState.set_tone_brief_elaborate,
         ),
-        icon="sliders-horizontal",
     )
 
 
 def _labeled_pills(
     label: str, field: str, items: rx.Var[list[str]], placeholder: str
 ) -> rx.Component:
-    """A Brand Kit list as pills (design system `pill_editor`): one value per pill,
-    typed and added with Enter, removed with its ✕."""
+    """A Brand Kit list's input (design system `pill_editor`): one value at a time, added
+    with Enter. The values are not listed here (§ request 2026-09-30): they are
+    reviewed, edited and removed on ¿Todo correcto? (`_editable_pills_row`); here only
+    a count says they landed."""
+    count = items.length()
     return rx.vstack(
         rx.text(label, size="2", weight="medium"),
         pill_editor(
@@ -1678,6 +1878,21 @@ def _labeled_pills(
             on_remove=lambda index: CreativeState.remove_kit_pill(field, index),
             placeholder=placeholder,
             add_label=f"Agregar a {label.lower()}",
+            show_items=False,
+        ),
+        rx.cond(
+            count > 0,
+            rx.hstack(
+                rx.icon("check", size=12, color=T.tone_color("ok", 10)),
+                rx.text(
+                    rx.cond(count == 1, "1 agregada", count.to_string() + " agregadas"),
+                    " · las revisas y editas en ¿Todo correcto?",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                spacing="1",
+                align="center",
+            ),
         ),
         spacing="1",
         width="100%",
@@ -1691,19 +1906,19 @@ def _step_voice_examples() -> rx.Component:
             "Ejemplos que SÍ suenan a la marca",
             "do",
             CreativeState.kit_do_items,
-            "Escribe una frase y pulsa Enter",
+            "Ej.: ¡Tu primer café del día corre por nuestra cuenta!",
         ),
         _labeled_pills(
             "Ejemplos que NO suenan a la marca",
             "dont",
             CreativeState.kit_dont_items,
-            "Escribe una frase y pulsa Enter",
+            "Ej.: Estimado cliente, le informamos que disponemos de café.",
         ),
         _labeled_pills(
             "Patrones de llamado a la acción",
             "cta",
             CreativeState.kit_cta_items,
-            "Ej.: Reserva tu mesa hoy",
+            "Ej.: Pide el tuyo por WhatsApp y pásalo a recoger",
         ),
         icon="message-square-text",
     )
@@ -1715,13 +1930,13 @@ def _step_restrictions() -> rx.Component:
             "Palabras vetadas",
             "banned",
             CreativeState.kit_banned_items,
-            "Escribe una palabra y pulsa Enter",
+            "Ej.: barato",
         ),
         _labeled_pills(
             "Claims prohibidos",
             "claims",
             CreativeState.kit_claims_items,
-            "Ej.: el mejor de la ciudad",
+            "Ej.: el mejor café de Colombia",
         ),
         callout(
             "Esto se comprueba siempre, incluso si desactivas el resto.",
@@ -1785,24 +2000,99 @@ def _palette_recap_row() -> rx.Component:
     )
 
 
-def _pills_recap_row(label: str, items: rx.Var[list[str]], fallback: str) -> rx.Component:
-    """Same label column as `_recap_row`; a list reads as its values (`tag`s), not as
-    the newline-joined string the kit stores."""
-    return rx.hstack(
-        rx.text(label, size="2", color=T.TEXT_MUTED, min_width="9rem", flex_shrink="0"),
+def _pill_button(**props: object) -> dict[str, object]:
+    """A button reset to sit inside a pill: no chrome of its own."""
+    return {
+        "type": "button",
+        "display": "flex",
+        "align_items": "center",
+        "background": "transparent",
+        "border": "none",
+        "padding": "0",
+        "color": "inherit",
+        "font": "inherit",
+        "cursor": "pointer",
+        **props,
+    }
+
+
+def _editable_pill(field: str, item: rx.Var[str], index: rx.Var[int]) -> rx.Component:
+    """One value of a kit list on ¿Todo correcto? (§ request 2026-09-30): click it to
+    edit it in place (Enter or leaving the input saves, Escape cancels, emptying it
+    removes it), or ✕ to remove it."""
+    editing = (CreativeState.kit_pill_edit_field == field) & (
+        CreativeState.kit_pill_edit_index == index
+    )
+    return rx.cond(
+        editing,
+        rx.form(
+            rx.input(
+                value=CreativeState.kit_pill_edit_value,
+                on_change=CreativeState.set_kit_pill_edit_value,
+                on_blur=CreativeState.save_kit_pill_edit,
+                on_key_down=CreativeState.kit_pill_edit_key,
+                auto_focus=True,
+                size="1",
+                radius="full",
+                min_width="12rem",
+                aria_label="Editar valor",
+            ),
+            on_submit=CreativeState.save_kit_pill_edit,
+            reset_on_submit=False,
+        ),
+        rx.badge(
+            rx.el.button(
+                rx.text(item, overflow="hidden", text_overflow="ellipsis", white_space="nowrap"),
+                rx.icon("pencil", size=11, opacity="0.55", flex_shrink="0"),
+                on_click=CreativeState.start_kit_pill_edit(field, index),
+                title="Editar",
+                gap="0.3rem",
+                min_width="0",
+                **_pill_button(),
+            ),
+            rx.el.button(
+                rx.icon("x", size=12),
+                on_click=CreativeState.remove_kit_pill(field, index),
+                aria_label="Quitar",
+                flex_shrink="0",
+                **_pill_button(),
+            ),
+            size="2",
+            radius="full",
+            variant="surface",
+            color_scheme="gray",
+            gap="2",
+            align_items="center",
+            max_width="100%",
+        ),
+    )
+
+
+def _editable_pills_row(
+    label: str, field: str, items: rx.Var[list[str]], fallback: str
+) -> rx.Component:
+    """A kit list on ¿Todo correcto?: its label, then its values as editable pills."""
+    return rx.vstack(
+        rx.text(label, size="2", color=T.TEXT_MUTED),
         rx.cond(
             items.length() > 0,
-            rx.flex(rx.foreach(items, lambda item: tag(item, size="2")), wrap="wrap", gap="2"),
+            rx.flex(
+                rx.foreach(items, lambda item, index: _editable_pill(field, item, index)),
+                wrap="wrap",
+                gap="2",
+                width="100%",
+            ),
             rx.text(fallback, size="2", color=T.TEXT_FAINT),
         ),
-        spacing="3",
+        spacing="1",
         width="100%",
-        align="start",
+        align_items="start",
     )
 
 
 def _step_confirm() -> rx.Component:
-    # No logo row here (per request) — the staged logo isn't part of this recap.
+    # No logo row here (per request) — the staged logo isn't part of this recap. The kit
+    # lists are edited HERE (§ request 2026-09-30), not on the steps that fill them.
     return _step_body(
         card(
             rx.vstack(
@@ -1811,8 +2101,37 @@ def _step_confirm() -> rx.Component:
                 rx.divider(),
                 _palette_recap_row(),
                 rx.divider(),
-                _pills_recap_row("Palabras vetadas", CreativeState.kit_banned_items, "Ninguna"),
-                spacing="2",
+                _editable_pills_row(
+                    "Ejemplos que SÍ suenan a la marca",
+                    "do",
+                    CreativeState.kit_do_items,
+                    "Ninguno",
+                ),
+                _editable_pills_row(
+                    "Ejemplos que NO suenan a la marca",
+                    "dont",
+                    CreativeState.kit_dont_items,
+                    "Ninguno",
+                ),
+                _editable_pills_row(
+                    "Patrones de llamado a la acción",
+                    "cta",
+                    CreativeState.kit_cta_items,
+                    "Ninguno",
+                ),
+                rx.divider(),
+                _editable_pills_row(
+                    "Palabras vetadas", "banned", CreativeState.kit_banned_items, "Ninguna"
+                ),
+                _editable_pills_row(
+                    "Claims prohibidos", "claims", CreativeState.kit_claims_items, "Ninguno"
+                ),
+                rx.text(
+                    "Haz clic en un valor para editarlo; la ✕ lo quita.",
+                    size="1",
+                    color=T.TEXT_FAINT,
+                ),
+                spacing="3",
                 width="100%",
                 align_items="start",
             ),
@@ -1836,7 +2155,7 @@ def _step_insights() -> rx.Component:
         rx.cond(
             BrandWizardState.logo_key != "",
             rx.image(
-                src=rx.get_upload_url(BrandWizardState.logo_key),
+                src=_asset_src(BrandWizardState.logo_key),
                 alt="Logo",
                 height="6rem",
                 max_width="100%",
@@ -1866,12 +2185,13 @@ def _window() -> rx.Component:
         (1, _step_identity()),
         (2, _step_has_logo()),
         (3, _step_logo(BrandWizardState.next_step)),
-        (4, _step_palette()),
-        (5, _step_voice_tone()),
-        (6, _step_voice_examples()),
-        (7, _step_restrictions()),
-        (8, _step_confirm()),
-        (9, _step_insights()),
+        (_M_PALETTE_STEP, _step_palette()),
+        (_M_VOICE_STEP, _step_voice()),
+        (6, _step_voice_tone()),
+        (_M_EXAMPLES_STEP, _step_voice_examples()),
+        (8, _step_restrictions()),
+        (_CONFIRM_STEP, _step_confirm()),
+        (LAST_STEP, _step_insights()),
         _step_brief(),
     )
 
@@ -1917,13 +2237,25 @@ def _manual_can_continue() -> rx.Var[bool]:
     suena? (the tone sliders default to 50 — never a gap), Lo que nunca debe decir
     (this module's own docstring: "legitimately optional") and ¿Todo correcto?
     (review only)."""
+    return rx.cond(
+        _manual_busy(),
+        False,  # § 2026-10-01: nothing moves while the voice or the brief is being read
+        _manual_requirement(),
+    )
+
+
+def _manual_busy() -> rx.Var[bool]:
+    return VoiceLabState.analyzing | brand_documents.BrandDocumentState.brief_busy
+
+
+def _manual_requirement() -> rx.Var[bool]:
     return rx.match(
         BrandWizardState.step,
         (1, _identity_complete()),
         (2, BrandWizardState.has_logo != ""),
         (3, _logo_step_complete()),
-        (4, CreativeState.kit_palette != ""),
-        (6, CreativeState.kit_do_examples != ""),
+        (_M_PALETTE_STEP, CreativeState.kit_palette != ""),
+        (_M_EXAMPLES_STEP, CreativeState.kit_do_examples != ""),
         True,
     )
 
@@ -1946,19 +2278,14 @@ def _controls() -> rx.Component:
         size="2",
         radius=_CONTROL_RADIUS,
         on_click=BrandWizardState.prev_step,
+        disabled=_manual_busy(),
     )
     return rx.hstack(
         back,
         rx.spacer(),
         rx.cond(
             BrandWizardState.step == LAST_STEP,
-            _finish_button(
-                [
-                    CreativeState.save_kit_form,
-                    brand_documents.BrandDocumentState.reset_documents,
-                    BrandWizardState.finish_to_signals,
-                ]
-            ),
+            _finish_button(BrandWizardState.finish),
             rx.button(
                 "Continuar",
                 rx.icon("chevron-right", size=T.ICON_SM),
@@ -1972,6 +2299,22 @@ def _controls() -> rx.Component:
         align="center",
         spacing="3",
     )
+
+
+def _step_column_width(on_logo_step: rx.Var[bool], on_confirm: rx.Var[bool]) -> rx.Var[str]:
+    """The step column's width, shared by both flows (§ request 2026-09-30): Tu
+    brandboard's tiles take the card's whole width once there is a brandboard to upload
+    (the brief form keeps the narrow column), ¿Todo correcto? gets room for its lists,
+    and every other step keeps 34rem."""
+    return rx.cond(
+        on_logo_step & (BrandWizardState.has_logo == "si"),
+        "100%",
+        rx.cond(on_confirm, "46rem", "34rem"),
+    )
+
+
+def _manual_column_width() -> rx.Var[str]:
+    return _step_column_width(BrandWizardState.step == 3, BrandWizardState.step == _CONFIRM_STEP)
 
 
 def brand_manual_index() -> rx.Component:
@@ -2029,7 +2372,7 @@ def brand_manual_index() -> rx.Component:
                         rx.vstack(
                             _window(),
                             width="100%",
-                            max_width="34rem",
+                            max_width=_manual_column_width(),
                             align_self="center",
                             align_items="center",
                             # Takes the card's free height and centres its content in it,
@@ -2133,7 +2476,7 @@ def _fork_option(icon: str, title: str, description: str, href: str) -> rx.Compo
     )
 
 
-def brand_choice_index() -> rx.Component:
+def brand_choice_index(notice: rx.Component | None = None) -> rx.Component:
     """The entry the sidebar's «Marca» lands on — now a yes/no question instead of a
     manual-vs-connect fork (§ request 2026-09-09): every brand kit starts from a
     social profile now, "Empezar de cero" as a parallel path stopped making sense.
@@ -2148,6 +2491,7 @@ def brand_choice_index() -> rx.Component:
         page_header("Brandkit", "¿Tienes redes sociales para tu marca?", title_size="8"),
         page_body(
             rx.vstack(
+                *([notice] if notice is not None else []),
                 card(
                     rx.vstack(
                         _fork_option(
@@ -2442,6 +2786,7 @@ CONNECT_STEPS: tuple[tuple[str, str], ...] = (
     ("¿Tienes brandboard?", "De tu respuesta depende el siguiente paso."),
     ("Tu brandboard", "Lo usaremos en cada pieza que generemos."),
     ("Paleta de colores", "Los colores con los que se te reconoce."),
+    _VOICE_HEADING,
     ("¿Cómo suena?", "Ajusta el tono en cuatro ejes."),
     ("Enséñale a hablar", "Ejemplos reales valen más que cualquier descripción."),
     ("Lo que nunca debe decir", "Reglas duras: una violación es un rechazo."),
@@ -2469,9 +2814,10 @@ _IDENTITY_STEP = 9
 _LOGO_QUESTION_STEP = 10
 _LOGO_UPLOAD_STEP = 11
 _PALETTE_STEP = 12
-_VOICE_TONE_STEP = 13
-_VOICE_EXAMPLES_STEP = 14
-_RESTRICTIONS_STEP = 15
+_VOICE_STEP = 13
+_VOICE_TONE_STEP = 14
+_VOICE_EXAMPLES_STEP = 15
+_RESTRICTIONS_STEP = 16
 assert CONNECT_STEPS[_BRIEF_STEP] == _BRIEF_HEADING
 assert CONNECT_STEPS[_RUBRO_STEP][0] == "Tu rubro y ubicación"
 assert CONNECT_STEPS[_MAPS_QUESTION_STEP][0] == "¿Tu negocio está en Google Maps?"
@@ -2480,6 +2826,8 @@ assert CONNECT_STEPS[_IDENTITY_STEP][0] == "¿Quién es la marca?"
 assert CONNECT_STEPS[_LOGO_QUESTION_STEP][0] == "¿Tienes brandboard?"
 assert CONNECT_STEPS[_LOGO_UPLOAD_STEP][0] == "Tu brandboard"
 assert CONNECT_STEPS[_PALETTE_STEP][0] == "Paleta de colores"
+assert CONNECT_STEPS[_VOICE_STEP] == _VOICE_HEADING
+assert CONNECT_STEPS[_VOICE_TONE_STEP][0] == "¿Cómo suena?"
 assert _LOGO_UPLOAD_STEP + 1 == _PALETTE_STEP
 assert CONNECT_STEPS[_RESTRICTIONS_STEP + 1][0] == "¿Todo correcto?"
 assert CONNECT_STEPS[_SORT_STEP][0] == "Referente, competencia o detractor"
@@ -2595,6 +2943,11 @@ _CARD_DEFAULTS: dict[str, str] = {
     "manual": "",
     "fits": "",
     "note": "",
+    # § 2026-10-01: the bio in full, the profile's link, the AI share, the reach signal
+    "bio": "",
+    "external_url": "",
+    "ai": "",
+    "signal": "",
 }
 
 
@@ -2719,6 +3072,11 @@ class BrandConnectState(rx.State):
     new_hashtag: str = ""
     suggesting_hashtags: bool = False
     hashtag_note: str = ""
+    #: The hashtag input shows only after its "+" is pressed (§ request 2026-09-30).
+    adding_hashtag: bool = False
+    #: The Brand Kit editor's Resultados e insights reading the stored referentes back
+    #: (`load_saved_referentes`).
+    referentes_loading: bool = False
 
     #: The phased creator discovery on Resultados e insights (`run_discovery`). One
     #: list of account cards per phase (`creator_discovery.account_card` shape), plus
@@ -3035,20 +3393,50 @@ class BrandConnectState(rx.State):
 
     @rx.event
     def add_hashtag(self) -> None:
-        """The pills' "+" (and Enter in its input): one hand-typed hashtag, normalised
-        the way the catalog stores them (no `#`, lowercase, one token)."""
+        """Enter in the hashtag input (and leaving it, `hashtag_input_blur`): one
+        hand-typed hashtag, normalised the way the catalog stores them (no `#`,
+        lowercase, one token)."""
+        self._add_typed_hashtag()
+
+    def _add_typed_hashtag(self) -> None:
         raw = self.new_hashtag.strip()
         if not raw:
             return
         try:
             tag = normalize_tag(raw)
         except ValueError:
+            # the input stays open with the text, so it can be fixed
             self.hashtag_note = "Un hashtag es una sola palabra, sin espacios."
             return
         self.new_hashtag = ""
+        self.adding_hashtag = False
         self.rubro_hashtags, self.hashtag_note = add_pills(
             self.rubro_hashtags, [{"tag": tag, "origin": "manual"}]
         )
+
+    @rx.event
+    def open_hashtag_input(self) -> None:
+        """The pills' "+": only now does the input appear."""
+        self.adding_hashtag = True
+        self.hashtag_note = ""
+
+    @rx.event
+    def hashtag_input_key(self, key: str) -> None:
+        """Escape closes the input and forgets what was typed."""
+        if key == "Escape":
+            self.adding_hashtag = False
+            self.new_hashtag = ""
+
+    @rx.event
+    def hashtag_input_blur(self, value: str) -> None:
+        """Leaving the input adds what was typed, like Enter (§ request 2026-09-30);
+        left empty, it just puts the "+" back."""
+        if not value.strip():
+            self.adding_hashtag = False
+            self.new_hashtag = ""
+            return
+        self.new_hashtag = value
+        self._add_typed_hashtag()
 
     @rx.event
     def remove_hashtag(self, tag: str) -> None:
@@ -3090,7 +3478,7 @@ class BrandConnectState(rx.State):
         else:
             try:
                 profile = await asyncio.to_thread(
-                    scrapecreators_client.load_cached_profile, network, handle
+                    creator_cache_provider.cached_snapshot, ids[0], network, handle
                 )
                 source = profile or fallback
                 seed = creator_discovery.seed_from_profile(source, **answers)
@@ -3232,6 +3620,7 @@ class BrandConnectState(rx.State):
         self.city = ""
         self.rubro_hashtags = []
         self.new_hashtag = ""
+        self.adding_hashtag = False
         self.suggesting_hashtags = False
         self.hashtag_note = ""
         self.rubro_asked = False
@@ -3414,13 +3803,58 @@ class BrandConnectState(rx.State):
             out.append({**item, "key": account_key, "bucket": bucket})
         return out
 
+    def _stage_is_empty(self, index: int) -> bool:
+        """A category with nothing in it (§ request 2026-09-30): its search finished,
+        did not fail, and found no account. The deck skips it on its own; a failed one
+        stays, since its Reintentar is something to do, and so does one still loading."""
+        key = creator_discovery.PHASES[index]
+        if self._phase_accounts(key):
+            return False
+        note = self._phase_note(key)
+        failed = note.startswith("No pudimos")
+        pending = self.discovering and not self._phase_title(key) and not note
+        return not failed and not pending
+
+    def _shown_stage(self) -> int:
+        """The category actually on screen: `sort_stage`, or — when that one is empty —
+        the next one that is not, else the previous one. Derived, never stored, so a
+        category that fills up later (a Reintentar, a late phase) is shown again."""
+        count = len(creator_discovery.PHASES)
+        stage = min(max(self.sort_stage, 0), count - 1)
+        if not self._stage_is_empty(stage):
+            return stage
+        for index in range(stage + 1, count):
+            if not self._stage_is_empty(index):
+                return index
+        for index in range(stage - 1, -1, -1):
+            if not self._stage_is_empty(index):
+                return index
+        return stage
+
+    def _neighbour_stage(self, step: int) -> int | None:
+        """The closest non-empty category before (`step=-1`) or after (`+1`) the one on
+        screen, or None when there is none."""
+        index = self._shown_stage() + step
+        while 0 <= index < len(creator_discovery.PHASES):
+            if not self._stage_is_empty(index):
+                return index
+            index += step
+        return None
+
     @rx.var
     def stage_key(self) -> str:
-        return creator_discovery.PHASES[min(self.sort_stage, len(creator_discovery.PHASES) - 1)]
+        return creator_discovery.PHASES[self._shown_stage()]
 
     @rx.var
     def stage_label(self) -> str:
-        return f"Categoría {self.sort_stage + 1} de {len(creator_discovery.PHASES)}"
+        return f"Categoría {self._shown_stage() + 1} de {len(creator_discovery.PHASES)}"
+
+    @rx.var
+    def nothing_to_sort(self) -> bool:
+        """Every category came back empty: there is nothing to classify at all."""
+        return not any(
+            not self._stage_is_empty(index) for index in range(len(creator_discovery.PHASES))
+        )
 
     @rx.var
     def stage_title(self) -> str:
@@ -3478,6 +3912,18 @@ class BrandConnectState(rx.State):
         return rows
 
     @rx.var
+    def discovery_percent(self) -> int:
+        """The referentes search's progress bar: each category found is a third, the
+        one being searched counts as a third of a third so the bar moves meanwhile."""
+        rows = self.discovery_progress
+        if not rows:
+            return 0
+        done = sum(1 for row in rows if row["status"] == "done")
+        running = any(row["status"] == "running" for row in rows)
+        share = (done + (0.35 if running else 0.0)) / len(rows)
+        return max(5, min(100, round(share * 100)))
+
+    @rx.var
     def stage_discarded(self) -> list[dict[str, str]]:
         """What the AI review dropped from the category on screen."""
         key = self.stage_key
@@ -3497,8 +3943,8 @@ class BrandConnectState(rx.State):
     @rx.var
     def manual_placeholder(self) -> str:
         if self.manual_network in ("web", "otro"):
-            return "Nombre del negocio o de la persona, o su página web"
-        return "Usuario (@cuenta) o enlace del perfil"
+            return "Ej.: Café del Parque o cafedelparque.co"
+        return "Ej.: @cafedelparque o instagram.com/cafedelparque"
 
     @rx.var
     def stage_pool(self) -> list[dict[str, str]]:
@@ -3616,9 +4062,14 @@ class BrandConnectState(rx.State):
         yield
 
         result: referentes_review.ManualResult | None = None
+        ids = await self._referentes_ids()
         try:
-            profile = await asyncio.to_thread(
-                scrapecreators_client.load_cached_profile, network, handle
+            profile = (
+                await asyncio.to_thread(
+                    creator_cache_provider.cached_snapshot, ids[0], network, handle
+                )
+                if ids is not None
+                else None
             )
             seed = creator_discovery.seed_from_profile(profile or fallback, **answers)
             if pills:
@@ -3631,10 +4082,17 @@ class BrandConnectState(rx.State):
                 audience=audience,
             )
             result = await asyncio.to_thread(
-                referentes_review.add_manual_account, target, brief, note=note
+                referentes_review.add_manual_account,
+                target,
+                brief,
+                note=note,
+                payload_cache=creator_pool_provider.payload_cache(ids[0] if ids else None),
             )
-            ids = await self._referentes_ids()
             if ids is not None:
+                # § 2026-10-01: the shared pool learns this account too
+                await asyncio.to_thread(
+                    creator_pool_provider.record_pool, ids[0], [result.candidate], seed
+                )
                 try:
                     await asyncio.to_thread(
                         referentes_provider.save_manual_account,
@@ -3686,20 +4144,25 @@ class BrandConnectState(rx.State):
 
     @rx.var
     def is_first_stage(self) -> bool:
-        return self.sort_stage <= 0
+        """No non-empty category before this one (the empty ones are skipped)."""
+        return self._neighbour_stage(-1) is None
 
     @rx.var
     def is_last_stage(self) -> bool:
-        return self.sort_stage >= len(creator_discovery.PHASES) - 1
+        return self._neighbour_stage(+1) is None
 
     @rx.event
     def next_sort_stage(self) -> None:
-        self.sort_stage = min(self.sort_stage + 1, len(creator_discovery.PHASES) - 1)
+        """Siguiente: the next category with something in it — an empty one is jumped
+        over (§ request 2026-09-30). With none left, the deck stays where it is."""
+        target = self._neighbour_stage(+1)
+        self.sort_stage = self._shown_stage() if target is None else target
         self.stage_cursor = 0
 
     @rx.event
     def prev_sort_stage(self) -> None:
-        self.sort_stage = max(self.sort_stage - 1, 0)
+        target = self._neighbour_stage(-1)
+        self.sort_stage = self._shown_stage() if target is None else target
         self.stage_cursor = 0
 
     @rx.event
@@ -3773,6 +4236,76 @@ class BrandConnectState(rx.State):
         fork."""
         self._reset_fields()
         return rx.redirect("/brand")
+
+    @rx.event(background=True)
+    async def finish(self) -> AsyncIterator[rx.event.EventSpec]:
+        """The connect flow's final button (§ request 2026-10-01): save EVERYTHING —
+        the kit, the brandboard, the answers and the account as read — and only then
+        move on (`brand_finish.save_brand_kit`)."""
+        from .brand_finish import save_brand_kit
+
+        if not await save_brand_kit(self):
+            return
+        async with self:
+            self._reset_fields()
+        yield brand_documents.BrandDocumentState.reset_documents
+        yield rx.redirect(_SIGNALS_ROUTE)
+
+    @rx.event(background=True)
+    async def load_saved_details(self) -> None:
+        """The Brand Kit editor (§ request 2026-10-01): the connect flow's saved
+        answers and the account as read, with its metrics, back into this state — only
+        where the session holds nothing of its own."""
+        from .brand_finish import load_saved, session_ids
+
+        ids = await session_ids(self)
+        if ids is None:
+            return
+        try:
+            saved = await asyncio.to_thread(load_saved, ids[0], ids[1])
+        except SQLAlchemyError as exc:
+            logger.warning("brand kit details unreadable: %s", type(exc).__name__)
+            return
+        connect, profile = saved.details.connect, saved.details.profile
+        async with self:
+            if connect and not (self.network or self.rubro_text or self.city):
+                self.network = str(connect.get("network", ""))
+                self.username = str(connect.get("username", ""))
+                self.account_kind = str(connect.get("account_kind", ""))
+                self.has_maps = str(connect.get("has_maps", ""))
+                self.sector = str(connect.get("sector", ""))
+                self.rubro_text = str(connect.get("rubro_text", ""))
+                self.country_code = str(connect.get("country_code", ""))
+                self.city = str(connect.get("city", ""))
+                self.rubro_hashtags = [
+                    {str(k): str(v) for k, v in item.items()}
+                    for item in connect.get("hashtags", [])
+                    if isinstance(item, dict)
+                ]
+                if not self.discovery_signals:
+                    self.discovery_signals = [
+                        chip
+                        for chip in (
+                            self.rubro_text,
+                            ", ".join(c for c in (self.city, self.country_code) if c),
+                            *(f"#{item.get('tag', '')}" for item in self.rubro_hashtags),
+                        )
+                        if chip and chip != "#"
+                    ]
+            if profile and not self.profile_username:
+                self.profile_username = str(profile.get("username", ""))
+                self.profile_fullname = str(profile.get("fullname", ""))
+                self.profile_bio = str(profile.get("bio", ""))
+                self.profile_category = str(profile.get("category", ""))
+                self.profile_followers = str(profile.get("followers", ""))
+                self.profile_followers_count = int(profile.get("followers_count", 0) or 0)
+                self.profile_pic = str(profile.get("pic", ""))
+                metrics = [m for m in profile.get("metrics", []) if isinstance(m, dict)]
+                try:
+                    self._set_metrics(metrics)
+                    self.metric_values = list(self.metric_targets)  # no count-up on entry
+                except (KeyError, TypeError, ValueError):
+                    self._set_metrics([])
 
     @rx.event
     def finish_to_signals(self) -> rx.event.EventSpec:
@@ -3877,34 +4410,37 @@ class BrandConnectState(rx.State):
             self.error = ""
             self.analyzing = True
             network, handle = self.network, self.username.strip()
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+        tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
         yield
 
+        fetched_live = False
         try:
-            profile = await asyncio.to_thread(
-                scrapecreators_client.load_cached_profile, network, handle
+            # § 2026-10-01: the tenant's own cache in Postgres, 7 days (the week the
+            # metrics describe) — no session, no cache: the read is live.
+            profile = (
+                await asyncio.to_thread(
+                    creator_cache_provider.cached_snapshot, tenant_id, network, handle
+                )
+                if tenant_id is not None
+                else None
             )
             if profile is None:
+                fetched_live = True
                 # Profile + the last `METRICS_WINDOW_DAYS` days of posts (two reads,
                 # one normalized dict — the posts are what the metrics are computed on).
                 profile = await asyncio.to_thread(
                     scrapecreators_client.fetch_profile_and_posts, network, handle
                 )
-                await asyncio.to_thread(
-                    scrapecreators_client.save_profile_snapshot, network, handle, profile
-                )
-                # Deliberately NOT re-read from the snapshot file after this save. The
-                # snapshot is one global, non-tenant-keyed JSON file (by design — see
-                # scrapecreators_client's module docstring); this is a multi-session
-                # async backend, so a concurrent session's own `save_profile_snapshot`
-                # can land in the window between this save and a re-read, handing this
-                # session someone else's real profile data (confirmed reproducible: two
-                # interleaved saves, then a blind re-read, return the SECOND tenant's
-                # profile to the FIRST). `profile` here is already the exact dict this
-                # call just fetched — using it directly costs nothing extra and has no
-                # race window, unlike reading it back from shared state. The save above
-                # stays: it is what makes `load_cached_profile` (which DOES validate
-                # network+handle before returning anything) a same-handle cache hit on
-                # a later analyze() call.
+                if tenant_id is not None:
+                    await asyncio.to_thread(
+                        creator_cache_provider.remember_snapshot,
+                        tenant_id,
+                        network,
+                        handle,
+                        profile,
+                    )
         except (scrapecreators_client.ScrapeCreatorsError, ValueError, OSError) as exc:
             # The vendor detail (HTTP status, "insufficient credits", etc. — see
             # scrapecreators_client._error_detail) is diagnostic, not for the operator:
@@ -3915,6 +4451,9 @@ class BrandConnectState(rx.State):
                 self.analyzing = False
                 self.error = _PROFILE_UNAVAILABLE
             return
+
+        if fetched_live and tenant_id is not None:
+            await self._record_read(tenant_id, network, handle, profile)
 
         followers = profile.get("followers")
         async with self:
@@ -4041,13 +4580,18 @@ class BrandConnectState(rx.State):
         yield
 
         runner: creator_discovery.PhasedDiscovery | None = None
-        # (tenant, brand, user) when the session has them — then phases and the sort
-        # live in Postgres (`referentes_provider`, migration 0020). Without them (no
-        # login, e.g. the offline tests) the JSON cache is used as before.
+        # (tenant, brand, user) when the session has them — then phases, the sort and
+        # every profile read live in Postgres (`referentes_provider`,
+        # `creator_cache_provider`). Without them (no login, e.g. the offline tests)
+        # nothing is remembered: the run reads live and keeps its results to itself.
         ids = await self._referentes_ids()
         try:
-            profile = await asyncio.to_thread(
-                scrapecreators_client.load_cached_profile, network, handle
+            profile = (
+                await asyncio.to_thread(
+                    creator_cache_provider.cached_snapshot, ids[0], network, handle
+                )
+                if ids is not None
+                else None
             )
             seed = creator_discovery.seed_from_profile(profile or fallback, **answers)
             if pills:
@@ -4096,9 +4640,10 @@ class BrandConnectState(rx.State):
                     category=str((profile or fallback).get("category") or ""),
                 )
             )
-            runner = creator_discovery.PhasedDiscovery(
-                seed, profile_cache=creator_discovery.PROFILE_CACHE_PATH, reviewer=reviewer
-            )
+            # § 2026-10-01: every vendor call asks the shared pool first
+            # (`creator_pool_provider.PayloadCache`); without a session, live as before.
+            cache = creator_pool_provider.payload_cache(ids[0] if ids else None)
+            runner = creator_discovery.PhasedDiscovery(seed, payload_cache=cache, reviewer=reviewer)
             for key in keys:
                 async with self:
                     if self.discovery_run_id != my_id:
@@ -4110,6 +4655,21 @@ class BrandConnectState(rx.State):
                 if result.errors:
                     logger.warning("brand discovery %s phase errors: %s", key, result.errors)
                 await self._store_phase(ids, key, seed, result, phase, hashtag_picks)
+                if ids is not None:
+                    # everything this run has seen so far, into the shared pool
+                    await asyncio.to_thread(
+                        creator_pool_provider.record_pool,
+                        ids[0],
+                        list(runner.pool.values()),
+                        seed,
+                    )
+                if cache is not None:
+                    logger.info(
+                        "referentes %s: %d vendor answers from the pool, %d from the vendor",
+                        key,
+                        cache.hits,
+                        cache.misses,
+                    )
                 async with self:
                     if self.discovery_run_id != my_id:
                         return
@@ -4145,7 +4705,47 @@ class BrandConnectState(rx.State):
                     self.discovering = False
                     self.discovery_running = ""
 
+    @rx.event(background=True)
+    async def load_saved_referentes(self) -> None:
+        """The Brand Kit editor's Resultados e insights (§ request 2026-09-30): the
+        brand's referentes as they were last left — phases, sort, kept cards and the
+        influence order — read from Postgres, with no search and no credits. A search
+        this session already ran (or is running) wins: its state is left alone."""
+        async with self:
+            if self.discovery_ran or self.discovering:
+                return
+            self.referentes_loading = True
+        ids = await self._referentes_ids()
+        saved: referentes_provider.SavedReferentes | None = None
+        if ids is not None:
+            try:
+                saved = await asyncio.to_thread(referentes_provider.load_saved, ids[0], ids[1])
+            except SQLAlchemyError as exc:
+                logger.warning("referentes: stored referentes unreadable: %s", exc)
+        async with self:
+            self.referentes_loading = False
+            if saved is None or self.discovery_ran or self.discovering:
+                return
+            self._clear_discovery()
+            for phase in saved.phases:
+                self._apply_phase(phase)
+            self.account_buckets = dict(saved.buckets)
+            self._persisted_buckets = dict(saved.buckets)
+            self.kept_accounts = [card_view(card) for card in saved.kept]
+            self.influence_order = list(saved.order)
+
     # -- Postgres persistence of phases and the sort (`referentes_provider`) --------
+
+    async def _record_read(self, tenant_id: UUID, network: str, handle: str, profile: dict) -> None:
+        """The read just made, into the creator history (`growth_provider`, 2026-10-01):
+        the brand's own figures and posts at this moment. Never fails the analysis — a
+        row lost is a point of the series lost, nothing more."""
+        try:
+            await asyncio.to_thread(
+                growth_provider.record_profile_read, tenant_id, network, handle, profile
+            )
+        except SQLAlchemyError as exc:
+            logger.warning("creator history: profile read not recorded: %s", exc)
 
     async def _referentes_ids(self) -> tuple[UUID, UUID, UUID | None] | None:
         """(tenant, brand, acting user) for the session, or None — no login, no brand,
@@ -4173,7 +4773,7 @@ class BrandConnectState(rx.State):
         seed: creator_discovery.DiscoverySeed,
     ) -> dict | None:
         if ids is None:
-            return await asyncio.to_thread(creator_discovery.load_cached_phase, key, seed)
+            return None  # no session: nothing remembered, nothing to reuse
         try:
             return await asyncio.to_thread(
                 referentes_provider.find_phase, ids[0], ids[1], key, seed
@@ -4193,9 +4793,7 @@ class BrandConnectState(rx.State):
         hashtag_picks: Mapping[str, Mapping[str, str]] | None = None,
     ) -> None:
         if ids is None:
-            if not result.review_failed:
-                await asyncio.to_thread(creator_discovery.save_cached_phase, key, seed, phase)
-            return
+            return  # no session: the result lives in this walk only
         try:
             await asyncio.to_thread(
                 referentes_provider.save_phase,
@@ -4207,6 +4805,8 @@ class BrandConnectState(rx.State):
                 phase,
                 hashtag_picks,
             )
+            # § 2026-10-01: each referente's size today, a point of its own series
+            await asyncio.to_thread(growth_provider.record_discovered, ids[0], result.accounts)
         except SQLAlchemyError as exc:
             # The operator still sees the result; only the reuse is lost.
             logger.warning("referentes: could not store the %s phase: %s", key, exc)
@@ -4425,7 +5025,7 @@ def _connect_step_username() -> rx.Component:
                 "Usuario",
                 BrandConnectState.username,
                 BrandConnectState.set_username,
-                "username",
+                "Ej.: cafedelparque.cuc",
             ),
             rx.cond(
                 BrandConnectState.error != "",
@@ -4573,6 +5173,24 @@ def _select_field(
 
 
 def _connect_step_rubro() -> rx.Component:
+    """Tu rubro y ubicación — behind a progress screen while the hashtags are being
+    suggested (§ request 2026-10-01): one Claude tool run that reports no progress, so
+    the bar creeps and the screen goes away when the pills land. The creep is paced to
+    the run as measured (`packages/api/evals/hashtag_ai`: 2-4 turns, 8-14 s live, p50
+    9.4 s) — the run itself is already the eval's pick for quality, not for speed."""
+    return rx.cond(
+        BrandConnectState.suggesting_hashtags,
+        progress_panel(
+            "Buscando hashtags para tu rubro",
+            "Revisamos el catálogo de hashtags con tu rubro, tu perfil y tu ciudad.",
+            steps=None,
+            creep_seconds=15,
+        ),
+        _rubro_fields(),
+    )
+
+
+def _rubro_fields() -> rx.Component:
     """Tu rubro y ubicación (§ request 2026-09-11: "si es marca decidir qué rubro es y
     dónde se encuentra ubicado"). The three inputs the creator discovery on Resultados
     e insights is seeded with. A brand (or both) gives the rubro in its own words
@@ -4591,7 +5209,7 @@ def _connect_step_rubro() -> rx.Component:
                     rx.input(
                         value=BrandConnectState.rubro_text,
                         on_change=BrandConnectState.set_rubro_text,
-                        placeholder="Ej. peluquería canina, fisioterapia deportiva",
+                        placeholder="Ej.: cafetería de especialidad para llevar",
                         width="100%",
                         size="3",
                         height="2.75rem",
@@ -4631,7 +5249,7 @@ def _connect_step_rubro() -> rx.Component:
             rx.input(
                 value=BrandConnectState.city,
                 on_change=BrandConnectState.set_city,
-                placeholder="Ej. Cúcuta",
+                placeholder="Ej.: Cúcuta",
                 width="100%",
                 size="3",
                 height="2.75rem",
@@ -4711,39 +5329,47 @@ def _rubro_hashtags_block() -> rx.Component:
             width="100%",
             align="center",
         ),
-        rx.cond(
-            BrandConnectState.rubro_hashtags.length() > 0,
-            rx.flex(
-                rx.foreach(BrandConnectState.rubro_hashtags, _hashtag_pill),
-                wrap="wrap",
-                gap="2",
-                width="100%",
+        # § request 2026-09-30: no input until the "+" is pressed — the pills, then a
+        # "+" at their end; pressing it swaps the "+" for the input (Enter adds,
+        # Escape or leaving it empty puts the "+" back).
+        rx.flex(
+            rx.foreach(BrandConnectState.rubro_hashtags, _hashtag_pill),
+            rx.cond(
+                ~BrandConnectState.adding_hashtag,
+                rx.icon_button(
+                    rx.icon("plus", size=T.ICON_SM),
+                    on_click=BrandConnectState.open_hashtag_input,
+                    variant="soft",
+                    color_scheme="gray",
+                    size="1",
+                    radius="full",
+                    aria_label="Agregar hashtag",
+                    margin_y="0.25rem",
+                ),
             ),
+            wrap="wrap",
+            gap="2",
+            align="center",
+            width="100%",
         ),
-        rx.form(
-            rx.hstack(
+        rx.cond(
+            BrandConnectState.adding_hashtag,
+            rx.form(
                 rx.input(
                     value=BrandConnectState.new_hashtag,
                     on_change=BrandConnectState.set_new_hashtag,
-                    placeholder="Agrega un hashtag, ej. #streetfood",
+                    on_key_down=BrandConnectState.hashtag_input_key,
+                    on_blur=BrandConnectState.hashtag_input_blur,
+                    auto_focus=True,
+                    placeholder="Ej.: #cafedeespecialidad",
                     width="100%",
                     size="2",
                     radius=_CONTROL_RADIUS,
                 ),
-                rx.icon_button(
-                    rx.icon("plus", size=T.ICON_SM),
-                    type="submit",
-                    variant="soft",
-                    color_scheme="gray",
-                    size="2",
-                    radius=_CONTROL_RADIUS,
-                    aria_label="Agregar hashtag",
-                ),
-                spacing="2",
+                on_submit=BrandConnectState.add_hashtag,
+                reset_on_submit=False,
                 width="100%",
             ),
-            on_submit=BrandConnectState.add_hashtag,
-            width="100%",
         ),
         rx.cond(
             BrandConnectState.hashtag_note != "",
@@ -4892,6 +5518,47 @@ def _metric_grid() -> rx.Component:
     )
 
 
+def _insights_profile_card() -> rx.Component:
+    """Resultados e insights' condensed profile recap — shared with the Brand Kit
+    editor, which shows it only while this session still holds the read profile."""
+    return card(
+        rx.hstack(
+            _profile_avatar("3rem", 18),
+            rx.vstack(
+                rx.text(BrandConnectState.profile_username, size="3", weight="bold"),
+                rx.text(
+                    BrandConnectState.profile_followers,
+                    " seguidores",
+                    size="2",
+                    color=T.TEXT_MUTED,
+                ),
+                spacing="0",
+                align_items="start",
+                min_width="0",
+            ),
+            spacing="3",
+            align="center",
+            width="100%",
+        ),
+        padding="1rem 1.25rem",
+        width="100%",
+    )
+
+
+def _insights_metrics() -> rx.Component:
+    """The metric grid, skipped for a new account or when nothing was computable."""
+    return rx.cond(
+        ~BrandConnectState.is_new_account & BrandConnectState.has_metrics,
+        rx.vstack(
+            _section_label(f"Métricas · últimos {scrapecreators_client.METRICS_WINDOW_DAYS} días"),
+            _metric_grid(),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+    )
+
+
 def _connect_step_insights() -> rx.Component:
     """The TRUE final screen of the whole flow (§ CONNECT_STEPS, `CONNECT_LAST`) —
     after ¿Todo correcto?, not before it: a condensed profile recap, the animated
@@ -4916,43 +5583,7 @@ def _connect_step_insights() -> rx.Component:
     principle the manual flow's `_step_insights` already follows by never showing
     metrics at all (it has no scraped account, new or old).
     """
-    main = _step_body(
-        card(
-            rx.hstack(
-                _profile_avatar("3rem", 18),
-                rx.vstack(
-                    rx.text(BrandConnectState.profile_username, size="3", weight="bold"),
-                    rx.text(
-                        BrandConnectState.profile_followers,
-                        " seguidores",
-                        size="2",
-                        color=T.TEXT_MUTED,
-                    ),
-                    spacing="0",
-                    align_items="start",
-                    min_width="0",
-                ),
-                spacing="3",
-                align="center",
-                width="100%",
-            ),
-            padding="1rem 1.25rem",
-            width="100%",
-        ),
-        rx.cond(
-            ~BrandConnectState.is_new_account & BrandConnectState.has_metrics,
-            rx.vstack(
-                _section_label(
-                    f"Métricas · últimos {scrapecreators_client.METRICS_WINDOW_DAYS} días"
-                ),
-                _metric_grid(),
-                spacing="2",
-                width="100%",
-                align_items="start",
-            ),
-        ),
-        _discovery_section(),
-    )
+    main = _step_body(_insights_profile_card(), _insights_metrics(), _discovery_section())
     # § requests 2026-09-29: once the operator sorted accounts, the referentes and the
     # competencia follow as a draggable grid of cards — the influence ranking — across
     # the full width, under the profile and its metrics.
@@ -4990,6 +5621,60 @@ def _kind_flag(item: rx.Var[dict[str, str]]) -> rx.Component:
     )
 
 
+def _signal_flags(item: rx.Var[dict[str, str]]) -> rx.Component:
+    """What tells an account apart at a glance (§ request 2026-10-01): **IA** when the
+    videos the search saw carry the platform's own "made with AI" label (`ai` = how many
+    of how many, hover for the words), and **Señales de pauta** when its reach is far
+    above the phase's with far less interaction per view (`signal`, the reason on
+    hover) — the same test the organic growth estimate runs, here on the search's own
+    sightings. Neither says "not AI" / "organic": a card without a flag is simply one
+    the search saw nothing on."""
+    return rx.fragment(
+        rx.cond(
+            item["ai"] != "",
+            rx.tooltip(
+                tone_badge(rx.text("IA ", item["ai"]), "info", icon="bot"),
+                content=item["ai"].to(str)
+                + " de los vídeos vistos llevan la etiqueta de contenido hecho con IA que "
+                "pone la propia red (declarada por el creador o detectada).",
+            ),
+        ),
+        rx.cond(
+            item["signal"] != "",
+            rx.tooltip(
+                tone_badge("Señales de pauta", "warn", icon="megaphone"),
+                content=item["signal"],
+            ),
+        ),
+    )
+
+
+def _bio_block(item: rx.Var[dict[str, str]], **props: object) -> rx.Component:
+    """The bio in full (§ request 2026-10-01: web addresses, contacts) — the blurb when
+    the search only saw a caption — and the link the profile points at."""
+    return rx.fragment(
+        rx.cond(
+            item["bio"] != "",
+            rx.text(item["bio"], size="2", color=T.TEXT_MUTED, white_space="pre-line", **props),
+            rx.cond(
+                item["blurb"] != "",
+                rx.text(item["blurb"], size="2", color=T.TEXT_MUTED, **props),
+            ),
+        ),
+        rx.cond(
+            item["external_url"] != "",
+            rx.hstack(
+                rx.icon("link", size=12, color=T.TEXT_FAINT, flex_shrink="0"),
+                rx.text(item["external_url"], size="1", color=T.tone_color("accent", 11)),
+                spacing="1",
+                align="center",
+                min_width="0",
+                overflow="hidden",
+            ),
+        ),
+    )
+
+
 def _review_line(item: rx.Var[dict[str, str]], **props: object) -> rx.Component:
     """Claude's one-line reason under a card — a warning tone when it thinks a manual
     account does not fit."""
@@ -5022,6 +5707,7 @@ def _discovery_account(item: rx.Var[dict[str, str]]) -> rx.Component:
                         mono(item["handle"], size="2"),
                         tag(item["network"]),
                         _kind_flag(item),
+                        _signal_flags(item),
                         rx.text(item["followers"], " seguidores", size="1", color=T.TEXT_MUTED),
                         rx.cond(
                             item["likes"] != "",
@@ -5031,10 +5717,7 @@ def _discovery_account(item: rx.Var[dict[str, str]]) -> rx.Component:
                         align="center",
                         wrap="wrap",
                     ),
-                    rx.cond(
-                        item["blurb"] != "",
-                        rx.text(item["blurb"], size="2", color=T.TEXT_MUTED),
-                    ),
+                    _bio_block(item),
                     _review_line(item),
                     spacing="1",
                     align_items="start",
@@ -5129,6 +5812,7 @@ def _rank_card(item: rx.Var[dict[str, str]], bucket: str) -> rx.Component:
             rx.vstack(
                 mono(item["handle"], size="2"),
                 rx.text(item["followers"], " seguidores", size="1", color=T.TEXT_MUTED),
+                rx.hstack(_signal_flags(item), spacing="1", wrap="wrap", justify="center"),
                 spacing="0",
                 align="center",
                 min_width="0",
@@ -5158,6 +5842,22 @@ def _rank_card(item: rx.Var[dict[str, str]], bucket: str) -> rx.Component:
         width="100%",
         min_width="0",
     )
+
+
+def _asset_script(name: str) -> str:
+    return (Path(__file__).resolve().parent.parent / "assets" / name).read_text(encoding="utf-8")
+
+
+#: The deck's and the ranking's pointer scripts, run when their screen mounts. They used
+#: to be `head_components` only, which go through react-helmet and were measured not to
+#: load at all (2026-10-01); both files guard against running twice, so the head copy
+#: (kept) and this one never stack listeners.
+_DECK_DRAG_JS = _asset_script("deck-drag.js")
+_RANK_DRAG_JS = _asset_script("rank-drag.js")
+
+
+def _script_on_mount(code: str) -> rx.Component:
+    return rx.box(display="none", on_mount=rx.call_script(code))
 
 
 def _ranking_grid(title: str, bucket: str, accounts: rx.Var[list[dict[str, str]]]) -> rx.Component:
@@ -5205,6 +5905,7 @@ def _ranking_panel() -> rx.Component:
             spacing="1",
             align_items="start",
         ),
+        _script_on_mount(_RANK_DRAG_JS),
         _ranking_grid("Referentes", "referente", BrandConnectState.ranked_referentes),
         _ranking_grid("Competencia", "competencia", BrandConnectState.ranked_competencia),
         spacing="4",
@@ -5445,6 +6146,7 @@ def _deck_face(item: rx.Var[dict[str, str]]) -> rx.Component:
             rx.hstack(
                 tag(item["network"]),
                 _kind_flag(item),
+                _signal_flags(item),
                 rx.text(item["followers"], " seguidores", size="1", color=T.TEXT_MUTED),
                 rx.cond(
                     item["likes"] != "",
@@ -5456,17 +6158,8 @@ def _deck_face(item: rx.Var[dict[str, str]]) -> rx.Component:
                 justify="center",
             ),
             _review_line(item, text_align="center"),
-            rx.cond(
-                item["blurb"] != "",
-                rx.text(
-                    item["blurb"],
-                    size="2",
-                    color=T.TEXT_MUTED,
-                    text_align="center",
-                    # clamped to 3 lines on a phone (`assets/qualify.css`)
-                    class_name="q-deck-blurb",
-                ),
-            ),
+            # the bio in full, clamped to 3 lines on a phone (`assets/qualify.css`)
+            _bio_block(item, text_align="center", class_name="q-deck-blurb"),
             rx.hstack(
                 rx.icon("external-link", size=14, color=T.TEXT_FAINT),
                 rx.text("Toca para ver el perfil", size="1", color=T.TEXT_FAINT),
@@ -5741,9 +6434,20 @@ def _connect_step_sort() -> rx.Component:
     )
     zones = {spec[-1]: _deck_zone(*spec) for spec in _DECK_ZONES}
     return _step_body(
+        _script_on_mount(_DECK_DRAG_JS),
         rx.cond(
             BrandConnectState.discovery_error != "",
             callout(BrandConnectState.discovery_error, "error"),
+        ),
+        # § request 2026-09-30: the empty categories are skipped on their own; when
+        # every one came back empty there is no deck to deal, and the step says so.
+        rx.cond(
+            BrandConnectState.nothing_to_sort,
+            callout(
+                "No hay nada para clasificar: la búsqueda no encontró cuentas en ninguna "
+                "categoría. Puedes añadir alguna a mano abajo o continuar.",
+                "warn",
+            ),
         ),
         stage_header,
         # A named-area grid: the two side panels stretch to the card's full height and
@@ -5907,7 +6611,9 @@ def _manual_form() -> rx.Component:
             rx.text_area(
                 value=BrandConnectState.manual_note,
                 on_change=BrandConnectState.set_manual_note,
-                placeholder="¿Qué hace y por qué la agregas? (opcional, ayuda a la IA)",
+                placeholder=(
+                    "Ej.: Cafetería del mismo barrio con el mismo menú; es competencia directa."
+                ),
                 width="100%",
                 rows="2",
                 radius=_CONTROL_RADIUS,
@@ -6011,6 +6717,7 @@ def _connect_window() -> rx.Component:
         (_BRIEF_STEP, _step_brief()),
         (_IDENTITY_STEP, _step_identity()),
         (_PALETTE_STEP, _step_palette()),
+        (_VOICE_STEP, _step_voice()),
         (_VOICE_TONE_STEP, _step_voice_tone()),
         (_VOICE_EXAMPLES_STEP, _step_voice_examples()),
         (_RESTRICTIONS_STEP, _step_restrictions()),
@@ -6058,25 +6765,13 @@ def _referentes_loading() -> rx.Component:
     and no Atrás/Continuar under it, so the step cannot be skipped half-loaded. Lists
     the three categories with a check for each one already found, so a long wait
     visibly moves. It clears on its own when the last category lands."""
-    return rx.vstack(
-        loading_spinner("lg"),
-        rx.text("Buscando referentes para tu marca", size="2", weight="medium"),
-        rx.text(
-            "En cuanto termine podrás clasificarlos. Puede tardar unos minutos.",
-            size="1",
-            color=T.TEXT_MUTED,
-            text_align="center",
-        ),
-        rx.vstack(
-            rx.foreach(BrandConnectState.discovery_progress, _discovery_progress_row),
-            spacing="2",
-            align_items="start",
-            padding_top="0.5rem",
-        ),
-        spacing="3",
-        align="center",
-        width="100%",
-        padding="3rem 0",
+    # § 2026-10-01: the same progress screen as the voice analysis and the hashtags,
+    # its bar moving one category at a time
+    return progress_panel(
+        "Buscando referentes para tu marca",
+        "En cuanto termine podrás clasificarlos. Puede tardar unos minutos.",
+        value=BrandConnectState.discovery_percent,
+        steps=BrandConnectState.discovery_progress,
     )
 
 
@@ -6125,6 +6820,23 @@ def _connect_can_continue() -> rx.Var[bool]:
     side by side with it so a future reorder of either STEPS tuple is easy to keep
     in sync. Tu rubro y ubicación needs a rubro always, and país + ciudad unless the
     account is a creator (`rubro_complete`)."""
+    return rx.cond(
+        _connect_busy(),
+        False,  # § 2026-10-01: nothing moves while a voice analysis or a hashtag
+        # suggestion is running (their progress screens are on)
+        _connect_requirement(),
+    )
+
+
+def _connect_busy() -> rx.Var[bool]:
+    return (
+        VoiceLabState.analyzing
+        | BrandConnectState.suggesting_hashtags
+        | brand_documents.BrandDocumentState.brief_busy
+    )
+
+
+def _connect_requirement() -> rx.Var[bool]:
     return rx.match(
         BrandConnectState.step,
         (0, BrandConnectState.network != ""),
@@ -6168,6 +6880,7 @@ def _connect_controls() -> rx.Component:
             size="2",
             radius=_CONTROL_RADIUS,
             on_click=BrandConnectState.restart,
+            disabled=_connect_busy(),
         ),
         rx.button(
             rx.icon("chevron-left", size=T.ICON_SM),
@@ -6176,17 +6889,12 @@ def _connect_controls() -> rx.Component:
             size="2",
             radius=_CONTROL_RADIUS,
             on_click=BrandConnectState.prev_step,
+            disabled=_connect_busy(),
         ),
     )
     right = rx.cond(
         BrandConnectState.step == CONNECT_LAST,
-        _finish_button(
-            [
-                CreativeState.save_kit_form,
-                brand_documents.BrandDocumentState.reset_documents,
-                BrandConnectState.finish_to_signals,
-            ]
-        ),
+        _finish_button(BrandConnectState.finish),
         rx.cond(
             BrandConnectState.step == 1,
             rx.button(
@@ -6300,7 +7008,10 @@ def brand_connect_index() -> rx.Component:
                                             (BrandConnectState.step == CONNECT_LAST)
                                             & BrandConnectState.has_sorted,
                                             _RESULTS_COLUMN_MAX,
-                                            "34rem",
+                                            _step_column_width(
+                                                BrandConnectState.step == _LOGO_UPLOAD_STEP,
+                                                BrandConnectState.step == _CONNECT_CONFIRM_STEP,
+                                            ),
                                         ),
                                     ),
                                     align_self="center",

@@ -49,6 +49,7 @@ from qualify_creative.providers import (
 )
 from qualify_creative.router import BudgetContext, CreativeRouter, Hop, HopAction
 from qualify_creative.schemas import (
+    BrandContext,
     BrandKit,
     BrandVoiceProfile,
     ContentBrief,
@@ -70,6 +71,11 @@ from qualify_api.creative.fsm import (
 from qualify_api.creative.media import MediaProducer, MediaWrite
 
 logger = logging.getLogger(__name__)
+#: Every vendor call of a generation and its cost, one line each plus a total per
+#: draft (§ request 2026-10-01: "que los costos del generador se impriman en la
+#: terminal para auditarlos"). Its own logger, so it can be filtered or routed; the
+#: same facts are stored durably in `creative_usage_events`.
+cost_logger = logging.getLogger("qualify_api.creative.costs")
 
 #: Stamped on every draft this service creates; provenance, per the hard architectural
 #: rule that every model-written artifact carries the pipeline that wrote it.
@@ -250,6 +256,14 @@ class BrandService(Protocol):
     when the brand has no usable kit — which IS the readiness signal."""
 
     def kit(self, *, tenant_id: UUID, brand_id: UUID) -> BrandKit | None: ...
+
+
+class BrandContextReader(Protocol):
+    """The business context the Brand Kit saved beyond the kit (§ 2026-10-01): rubro,
+    location, hashtags, the account, the brandboard's elements, referentes and
+    competitors — `None` when there is nothing."""
+
+    def context(self, *, tenant_id: UUID, brand_id: UUID) -> BrandContext | None: ...
 
 
 class VoiceService(Protocol):
@@ -776,6 +790,7 @@ class ContentService:
         dispatcher: TaskDispatcher | None = None,
         copy_chain: tuple[str, ...] = COPY_CHAIN,
         media: MediaProducer | None = None,
+        context_reader: BrandContextReader | None = None,
     ) -> None:
         self._media = media
         self._router = router
@@ -783,6 +798,7 @@ class ContentService:
         self._credentials = credentials
         self._voice = voice_service
         self._brand = brand_service
+        self._context = context_reader
         self._repo: ContentRepository = repository or PostgresContentRepository()
         self._chain = copy_chain
         self.dispatcher = dispatcher
@@ -857,6 +873,16 @@ class ContentService:
                 reason=FailureReason.PROVIDER_ERROR.value,
             )
 
+    def _brand_context(self, tenant_id: UUID, brand_id: UUID) -> BrandContext | None:
+        """The business context for the prompt; never a reason to fail generation."""
+        if self._context is None:
+            return None
+        try:
+            return self._context.context(tenant_id=tenant_id, brand_id=brand_id)
+        except Exception as exc:
+            logger.warning("brand context unreadable for %s: %s", brand_id, type(exc).__name__)
+            return None
+
     def _generate(self, *, tenant_id: UUID, draft: DraftRecord) -> None:
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=draft.brief_id)
         if brief is None:
@@ -877,7 +903,13 @@ class ContentService:
                 )
             )
 
-        rendered = render_prompt(kit=kit, voice=voice, brief=brief, task=GenerationTask.COPY)
+        rendered = render_prompt(
+            kit=kit,
+            voice=voice,
+            brief=brief,
+            task=GenerationTask.COPY,
+            context=self._brand_context(tenant_id, draft.brand_id),
+        )
         request = GenerationRequest(
             task=GenerationTask.COPY,
             rendered_prompt=rendered,
@@ -932,6 +964,7 @@ class ContentService:
             new_status = apply_transition(
                 DRAFTING, DraftTrigger.GENERATE_FAIL, failure_reason=failure
             )
+            self._log_costs(tenant_id, draft, brief, usage_writes, spent, failure_reason=failure)
             self._repo.finish_generation(
                 tenant_id=tenant_id,
                 draft_id=draft.id,
@@ -1024,6 +1057,7 @@ class ContentService:
             new_status = apply_transition(
                 DRAFTING, DraftTrigger.GENERATE_FAIL, failure_reason=failure_reason
             )
+        self._log_costs(tenant_id, draft, brief, usage_writes, spent, failure_reason=failure_reason)
         self._repo.finish_generation(
             tenant_id=tenant_id,
             draft_id=draft.id,
@@ -1036,6 +1070,54 @@ class ContentService:
             media=media_writes,
             failure_detail=media_detail or None,
         )
+
+    def _log_costs(
+        self,
+        tenant_id: UUID,
+        draft: DraftRecord,
+        brief: ContentBrief,
+        usage: list[UsageWrite],
+        spent: Decimal,
+        *,
+        failure_reason: str | None,
+    ) -> None:
+        """One `creative.cost` line per vendor call and one `creative.cost.total` per
+        draft, key=value so a grep or a spreadsheet reads them back. Never raises."""
+        try:
+            for item in usage:
+                cost_logger.info(
+                    "creative.cost draft=%s tenant=%s brand=%s kind=%s provider=%s model=%s"
+                    " unit=%s in=%d out=%d cache_read=%d cache_write=%d pieces=%d"
+                    " cost_usd=%s paid_by=%s pricing=%s",
+                    draft.id,
+                    tenant_id,
+                    draft.brand_id,
+                    brief.kind.value,
+                    item.provider,
+                    item.model_id,
+                    item.unit,
+                    item.input_tokens,
+                    item.output_tokens,
+                    item.cache_read_tokens,
+                    item.cache_creation_tokens,
+                    item.pieces,
+                    f"{item.cost_usd:.6f}",
+                    item.paid_by,
+                    item.pricing_table_version,
+                )
+            cost_logger.info(
+                "creative.cost.total draft=%s tenant=%s brand=%s kind=%s calls=%d"
+                " cost_usd=%s outcome=%s",
+                draft.id,
+                tenant_id,
+                draft.brand_id,
+                brief.kind.value,
+                len(usage),
+                f"{spent:.6f}",
+                failure_reason or "ok",
+            )
+        except Exception:  # an audit line must never break a generation
+            logger.exception("creative cost log failed for draft %s", draft.id)
 
     def _call_cost(self, usage: Usage, model_id: str) -> Decimal:
         """Cost of one call from the versioned pricing table. Deliberately conservative:

@@ -150,6 +150,49 @@ class VoiceSource(BaseModel):
     excerpt: str
 
 
+class BrandElement(BaseModel):
+    """One element of the brandboard, as the operator described it (a logo version, a
+    mascot, a pattern...): what it is and when to use it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    context: str = ""
+
+
+class BrandContext(BaseModel):
+    """What the Brand Kit knows about the business beyond the kit itself (§ request
+    2026-10-01): its rubro and location, its hashtags, the account as read, the
+    brandboard's elements and the accounts it looks up to / competes with. Every field
+    may be empty; an empty context renders nothing."""
+
+    model_config = ConfigDict(frozen=True)
+
+    sector: str = ""
+    location: str = ""
+    hashtags: tuple[str, ...] = ()
+    account_bio: str = ""
+    account_category: str = ""
+    elements: tuple[BrandElement, ...] = ()
+    referentes: tuple[str, ...] = ()
+    competitors: tuple[str, ...] = ()
+
+    @property
+    def is_empty(self) -> bool:
+        return not any(
+            (
+                self.sector,
+                self.location,
+                self.hashtags,
+                self.account_bio,
+                self.account_category,
+                self.elements,
+                self.referentes,
+                self.competitors,
+            )
+        )
+
+
 class BrandVoiceProfile(BaseModel):
     model_config = ConfigDict(frozen=True)
 
