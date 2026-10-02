@@ -245,7 +245,7 @@ def test_a_browser_recording_goes_to_heygen_as_wav(
     import io
     import wave
 
-    import numpy as np
+    np = pytest.importorskip("numpy")  # the `ml` group; CI's default sync has none
 
     recording = tmp_path / "grabacion-1.webm"
     recording.write_bytes(b"webm")
@@ -333,13 +333,18 @@ def test_the_local_whisper_is_faster_whisper_when_installed(
 ) -> None:
     """Default: large-v3-turbo through faster-whisper. The env var names any of its
     models; without faster-whisper the transformers pipeline keeps working."""
+    import importlib.util
+
     from qualify_models import providers
 
     monkeypatch.delenv(voice_lab.WHISPER_MODEL_ENV, raising=False)
-    assert isinstance(voice_lab._build_whisper(""), providers.FasterWhisperTranscriptionProvider)
-    small = voice_lab._build_whisper("small")
-    assert isinstance(small, providers.FasterWhisperTranscriptionProvider)
-    assert small.model_id == "small"
+    if importlib.util.find_spec("faster_whisper") is not None:  # the `ml` group; not in CI
+        assert isinstance(
+            voice_lab._build_whisper(""), providers.FasterWhisperTranscriptionProvider
+        )
+        small = voice_lab._build_whisper("small")
+        assert isinstance(small, providers.FasterWhisperTranscriptionProvider)
+        assert small.model_id == "small"
 
     import builtins
 
