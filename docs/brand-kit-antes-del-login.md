@@ -4,15 +4,16 @@
 > iniciar sesión, pero sus datos se siguen guardando. La primera vista pide el correo
 > con el que se guarda, y la cuenta que luego se cree con ese correo ya trae el Brand Kit.
 > Ampliado el mismo día: se puede dejar a la mitad (lo hecho queda en la base y se
-> retoma por correo), el scraper corre igual, y hay un botón para saltarlo en desarrollo.
+> retoma por correo) y el scraper corre igual. La primera vista es siempre el Brand Kit; el login va después.
 
 ## Flujo
 
-1. Un visitante sin sesión que entra a `/` (o a cualquier página del Brand Kit) llega a
-   **`/brand/start`**, donde se le pide el correo. Desde ahí también puede ir a
-   «Inicia sesión». En desarrollo aparece además un enlace pequeño **«Saltar
-   (desarrollo)»** que lleva a `/login`. Se decide al compilar
-   (`reflex.utils.exec.is_prod_mode`), así que una build `--env prod` no lo trae.
+1. **La primera vista siempre es el Brand Kit, nunca el login.** Un visitante sin
+   sesión que entra a `/`, a cualquier página protegida (`require_login`) o que acaba
+   de cerrar sesión llega a **`/brand/start`**, donde se le pide el correo. Si ya tiene
+   un borrador abierto en esa sesión, vuelve a `/brand`. El login viene después: desde
+   «¿Ya tienes cuenta? Inicia sesión», o solo, si el correo ya tiene cuenta. No hay
+   botón para saltarse el Brand Kit.
 2. **Según el correo:**
    - **Ya tiene cuenta** → `/login`, con el correo precargado y el aviso «Ese correo ya
      tiene una cuenta».

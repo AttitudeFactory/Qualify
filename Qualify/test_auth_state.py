@@ -176,15 +176,13 @@ def test_draft_destination_follows_the_kit_status(monkeypatch) -> None:
         assert auth_state_module._draft_destination_blocking(_DRAFT) == expected
 
 
-def test_the_dev_skip_link_exists_only_outside_production(monkeypatch) -> None:
-    from reflex.utils import exec as rx_exec
-
-    from . import auth_pages
-
-    monkeypatch.setattr(rx_exec, "is_prod_mode", lambda: False)
-    assert auth_pages._show_dev_skip() is True
-    monkeypatch.setattr(rx_exec, "is_prod_mode", lambda: True)
-    assert auth_pages._show_dev_skip() is False
+def test_the_first_view_is_the_brand_kit_not_the_login() -> None:
+    """§ 2026-10-02: "/brand/start y después /login" — no protected page sends an
+    anonymous visitor to the login, and the email screen has no way around it."""
+    source = inspect.getsource(AuthState.require_login.fn)
+    assert '"/login"' not in source and "BRAND_START_ROUTE" in source
+    pages = (_QUALIFY_DIR / "auth_pages.py").read_text(encoding="utf-8")
+    assert "Saltar" not in pages
 
 
 # --------------------------------------------------------------------------------------
@@ -224,7 +222,7 @@ def test_logout_revokes_server_side_before_destroying_state() -> None:
     source = inspect.getsource(AuthState.logout.fn)
     revoke_at = source.index("_sign_out_blocking")
     reset_at = source.index("substate.reset()")
-    redirect_at = source.index('rx.redirect("/login")')
+    redirect_at = source.index("rx.redirect(BRAND_START_ROUTE)")
     assert revoke_at < reset_at < redirect_at, (
         "criterion 1 ordering: revoke the session token server-side first, then destroy "
         "Reflex state, then leave via redirect — never 'clean the UI in place'"

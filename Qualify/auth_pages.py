@@ -139,25 +139,6 @@ def brand_start_index() -> rx.Component:
             rx.link("Inicia sesión", href="/login"),
             size="2",
         ),
-        *([_dev_skip_link()] if _show_dev_skip() else []),
-    )
-
-
-def _show_dev_skip() -> bool:
-    """§ request 2026-10-02: a way past the Brand Kit for development only. Decided at
-    compile time, so a `--env prod` build never contains it."""
-    from reflex.utils.exec import is_prod_mode
-
-    return not is_prod_mode()
-
-
-def _dev_skip_link() -> rx.Component:
-    return rx.link(
-        "Saltar (desarrollo)",
-        href="/login",
-        size="1",
-        color=T.TEXT_FAINT,
-        align_self="center",
     )
 
 

@@ -144,9 +144,12 @@ class AuthState(rx.State):
 
     @rx.event
     def require_login(self) -> rx.event.EventSpec | None:
-        """First `on_load` event of every protected page."""
+        """First `on_load` event of every protected page. Without a session the first
+        view is the Brand Kit, never the login (§ request 2026-10-02: "/brand/start y
+        después /login"): its email screen links to /login for an existing account, and
+        a guest already in a draft goes back to it."""
         if not self.session_tenant_id:
-            return rx.redirect("/login")
+            return rx.redirect("/brand" if self.guest_tenant_id else BRAND_START_ROUTE)
         return None
 
     @rx.event
@@ -401,4 +404,5 @@ class AuthState(rx.State):
                 substate = await self.get_state(state_cls)
                 substate.reset()
             self.reset()
-        yield rx.redirect("/login")
+        # § 2026-10-02: the first view after a logout is the Brand Kit, as on arrival
+        yield rx.redirect(BRAND_START_ROUTE)
