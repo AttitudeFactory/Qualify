@@ -36,7 +36,7 @@ from qualify_api.creative.voice_service import NotProposed, UnknownBrandKit, Unk
 from qualify_creative.enums import BriefIntent, BriefObjective, ContentKind, ContentType
 from sqlalchemy.exc import SQLAlchemyError
 
-from .auth_state import AuthState
+from .auth_state import AuthState, brand_tenant_id
 from .creative_provider import (
     HeyGenNotConfigured,
     acting_user_id,
@@ -539,7 +539,7 @@ class CreativeState(rx.State):
         reason already stored) when any of the three cannot be resolved."""
         async with self:
             auth = await self.get_state(AuthState)
-            session_tenant_id = auth.session_tenant_id
+            session_tenant_id = brand_tenant_id(auth)
             cached_brand_id = self._brand_id
         tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
         if tenant_id is None:

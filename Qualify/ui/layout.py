@@ -290,22 +290,65 @@ def logout_action() -> rx.Component:
     )
 
 
+def _guest_islands() -> rx.Component:
+    """The rail of a pre-login Brand Kit (§ request 2026-10-02): no sections — every
+    other page needs a login — only where the kit is being saved and the way into an
+    account (the signup with that email adopts it)."""
+    return rx.fragment(
+        _island(
+            _nav_item("Brand Kit", "palette", "/brand", True),
+            rx.text(
+                "Guardando en ",
+                rx.text.strong(AuthState.guest_email),
+                size="1",
+                color=T.TEXT_MUTED,
+                class_name="q-label",
+                padding="0.25rem 0.5rem",
+                overflow_wrap="anywhere",
+            ),
+        ),
+        rx.spacer(),
+        _island(
+            _nav_item("Crear cuenta", "user-plus", "/signup", True),
+            _nav_item("Iniciar sesión", "log-in", "/login", True),
+            rx.divider(margin="0.15rem 0"),
+            rx.el.button(
+                _nav_row("mail", "Usar otro correo"),
+                on_click=AuthState.leave_brand_draft,
+                width="100%",
+                padding="0",
+                border="none",
+                background="transparent",
+                cursor="pointer",
+                text_align="left",
+                font="inherit",
+            ),
+        ),
+    )
+
+
 def sidebar() -> rx.Component:
     return rx.el.nav(
         rx.script(_ZEN_SHORTCUT),
         tenant_block(),
-        _island(*[_nav_item(*item) for item in NAV_BASE]),
-        *[
-            _island(_zone_head(label, zone), *[_nav_item(*i) for i in items], tint=zone)
-            for zone, label, items in NAV_ZONES
-        ],
-        _island(*[_nav_item(*item) for item in NAV_LOOSE]),
-        rx.spacer(),
-        _island(
-            _zone_head("Negocio", "business"),
-            *[_nav_item(*item) for item in NAV_BUSINESS],
-            rx.divider(margin="0.15rem 0"),
-            logout_action(),
+        rx.cond(
+            AuthState.is_guest,
+            _guest_islands(),
+            rx.fragment(
+                _island(*[_nav_item(*item) for item in NAV_BASE]),
+                *[
+                    _island(_zone_head(label, zone), *[_nav_item(*i) for i in items], tint=zone)
+                    for zone, label, items in NAV_ZONES
+                ],
+                _island(*[_nav_item(*item) for item in NAV_LOOSE]),
+                rx.spacer(),
+                _island(
+                    _zone_head("Negocio", "business"),
+                    *[_nav_item(*item) for item in NAV_BUSINESS],
+                    rx.divider(margin="0.15rem 0"),
+                    logout_action(),
+                ),
+            ),
         ),
         aria_label="Secciones",
         class_name=rx.cond(

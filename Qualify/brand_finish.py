@@ -42,7 +42,7 @@ from qualify_api.creative.brand_kit_store import (
 )
 from sqlalchemy.exc import SQLAlchemyError
 
-from .auth_state import AuthState
+from .auth_state import AuthState, brand_tenant_id
 from .connections_provider import acting_user_id
 from .creative_provider import brand_readiness, default_brand_id, save_kit
 from .creative_vm import KitFormVM
@@ -216,7 +216,7 @@ async def session_ids(state: Any) -> tuple[UUID, UUID, UUID] | None:
     state, NOT under its lock."""
     async with state:
         auth = await state.get_state(AuthState)
-        session_tenant_id = auth.session_tenant_id
+        session_tenant_id = brand_tenant_id(auth)
     tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
     if tenant_id is None:
         return None

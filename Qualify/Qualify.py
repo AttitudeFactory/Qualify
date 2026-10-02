@@ -5,8 +5,8 @@ import logging
 import reflex as rx
 from qualify_api.planner.embedded import calendar_worker
 
-from .auth_pages import login_index, signup_index
-from .auth_state import AuthState
+from .auth_pages import brand_start_index, login_index, signup_index
+from .auth_state import BRAND_START_ROUTE, AuthState
 from .avatar_proxy import avatar_api
 from .brand_kit_editor import BrandEditState, brand_edit_index
 from .brand_summary import BrandSummaryState, brand_home_index
@@ -142,13 +142,22 @@ app.add_page(
     on_load=AuthState.redirect_if_authenticated,
     title="Qualify · Registrar negocio",
 )
+# The Brand Kit before login (§ request 2026-10-02): its first view asks for the email
+# the kit is saved to; from there the Brand Kit's pages accept that pre-login draft
+# (`AuthState.require_brand_access`) and the signup with the same email adopts it.
+app.add_page(
+    brand_start_index,
+    route=BRAND_START_ROUTE,
+    on_load=AuthState.enter_brand_start,
+    title="Qualify · Tu Brand Kit",
+)
 
 # Every business page requires a session: `require_login` runs FIRST in each on_load
 # chain and redirects to /login when there is none. The loads behind it also refuse on
 # their own when no tenant is present — the guard is UX, RLS + AuthState is the wall.
 app.add_page(
     index,
-    on_load=[AuthState.require_login, DashboardState.load_mentions],
+    on_load=[AuthState.require_login_or_brand_start, DashboardState.load_mentions],
     title="Qualify · Menciones",
 )
 app.add_page(
@@ -226,7 +235,7 @@ app.add_page(
 app.add_page(
     brand_home_index,
     route="/brand",
-    on_load=[AuthState.require_login, BrandConnectState.clear_entry, BrandSummaryState.load],
+    on_load=[AuthState.require_brand_access, BrandConnectState.clear_entry, BrandSummaryState.load],
     title="Qualify · Marca",
 )
 
@@ -236,7 +245,7 @@ app.add_page(
 app.add_page(
     brand_connect_setup_index,
     route="/brand/connect/setup",
-    on_load=[AuthState.require_login],
+    on_load=[AuthState.require_brand_access],
     title="Qualify · Crea tu cuenta",
 )
 
@@ -251,7 +260,7 @@ app.add_page(
     # `resume` runs LAST on purpose: it decides the opening step by reading the kit, so
     # it has to see what `load_brand` just put there.
     on_load=[
-        AuthState.require_login,
+        AuthState.require_brand_access,
         CreativeState.load_brand,
         CreativeState.load_voice,
         BrandWizardState.resume,
@@ -270,7 +279,7 @@ app.add_page(
     brand_edit_index,
     route="/brand/kit",
     on_load=[
-        AuthState.require_login,
+        AuthState.require_brand_access,
         CreativeState.load_brand,
         BrandEditState.restart,
         # Resultados e insights reads the stored referentes back (no search, no credits)
@@ -291,7 +300,7 @@ app.add_page(
     brand_connect_index,
     route="/brand/connect",
     on_load=[
-        AuthState.require_login,
+        AuthState.require_brand_access,
         CreativeState.load_brand,
         CreativeState.load_voice,
         VoiceLabState.load_clone,

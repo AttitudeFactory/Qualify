@@ -15,7 +15,15 @@ from qualify_api.auth import (
     RegistrationInvalid,
     register_business,
     resolve_login,
+    service,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_brand_kit_drafts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The signup's pre-login draft lookup (§ 2026-10-02) is a DB read; offline, there is
+    no draft to adopt. The adoption itself is covered in `test_brand_kit_drafts_db.py`."""
+    monkeypatch.setattr(service, "_open_draft_tenant_id", lambda email: None)
 
 
 def _register_kwargs(**overrides) -> dict:

@@ -57,6 +57,88 @@ def test_login_screens_bounce_an_authenticated_session() -> None:
 
 
 # --------------------------------------------------------------------------------------
+# The Brand Kit before login (§ request 2026-10-02)
+# --------------------------------------------------------------------------------------
+
+_DRAFT = "b0000000-0000-4000-8000-000000000002"
+
+
+def test_brand_pages_ask_for_the_email_without_login_or_draft() -> None:
+    state = _state()
+    assert AuthState.require_brand_access.fn(state) is not None
+    state.guest_tenant_id = _DRAFT
+    assert AuthState.require_brand_access.fn(state) is None
+
+
+def test_a_draft_opens_only_the_brand_kit() -> None:
+    """A pre-login draft passes the Brand Kit's guard and NOTHING else."""
+    state = _state()
+    state.guest_tenant_id = _DRAFT
+    assert AuthState.require_login.fn(state) is not None
+    assert state.is_authenticated is False
+    assert state.is_guest is True
+
+
+def test_index_sends_an_anonymous_visitor_to_the_brand_kit_first() -> None:
+    state = _state()
+    assert AuthState.require_login_or_brand_start.fn(state) is not None
+    state.session_tenant_id = "a0000000-0000-4000-8000-000000000001"
+    assert AuthState.require_login_or_brand_start.fn(state) is None
+
+
+def test_brand_tenant_prefers_the_login_over_the_draft() -> None:
+    state = _state()
+    assert auth_state_module.brand_tenant_id(state) == ""
+    state.guest_tenant_id = _DRAFT
+    assert auth_state_module.brand_tenant_id(state) == _DRAFT
+    state.session_tenant_id = "a0000000-0000-4000-8000-000000000001"
+    assert auth_state_module.brand_tenant_id(state) == state.session_tenant_id
+
+
+def test_only_the_brand_kit_reads_the_draft_tenant() -> None:
+    """`guest_tenant_id` must never become a general tenant source: outside AuthState
+    only the Brand Kit's modules may resolve it (through `brand_tenant_id`)."""
+    allowed = {
+        "auth_state.py",
+        "auth_pages.py",
+        "brand_documents.py",
+        "brand_finish.py",
+        "creative_state.py",
+        "creative_wizard_pages.py",
+        "voice_lab.py",
+        "layout.py",
+        "test_auth_state.py",
+    }
+    for path in _QUALIFY_DIR.rglob("*.py"):
+        if path.name in allowed or ".web" in path.parts:
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert "guest_tenant_id" not in source, path
+        assert "brand_tenant_id" not in source, path
+
+
+async def test_bad_email_on_the_first_view_stays_there() -> None:
+    state = _state()
+    async for _ in AuthState.start_brand_kit.fn(state, {"email": "sin-arroba"}):
+        raise AssertionError("a refused email must not navigate")
+    assert state.guest_tenant_id == ""
+    assert state.guest_error != ""
+    assert state.is_authenticating is False
+
+
+async def test_an_email_with_an_account_is_sent_to_login(monkeypatch) -> None:
+    def _has_account(email: str):
+        raise auth_state_module.EmailHasAccount()
+
+    monkeypatch.setattr(auth_state_module, "_start_draft_blocking", _has_account)
+    state = _state()
+    async for _ in AuthState.start_brand_kit.fn(state, {"email": "a@b.co"}):
+        raise AssertionError("an existing account must not navigate")
+    assert state.guest_has_account is True
+    assert state.guest_tenant_id == ""
+
+
+# --------------------------------------------------------------------------------------
 # Login refusals (they fire before any DB touch, so they run offline)
 # --------------------------------------------------------------------------------------
 

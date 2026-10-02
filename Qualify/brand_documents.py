@@ -27,7 +27,7 @@ import reflex as rx
 from qualify_api.claude_tools import ClaudeToolError, MissingAPIKey, api_key_from_env
 from qualify_api.creative import brief_ai
 
-from .auth_state import AuthState
+from .auth_state import AuthState, brand_tenant_id
 from .creative_state import CreativeState
 from .tenant import tenant_uuid
 from .ui import callout, card, loading_spinner, progress_panel, tone_badge
@@ -183,7 +183,7 @@ class BrandDocumentState(rx.State):
         """Save the upload under the tenant's namespace; the key, or None on failure
         (the message is already set)."""
         auth = await self.get_state(AuthState)
-        tenant_id = tenant_uuid(auth.session_tenant_id)
+        tenant_id = tenant_uuid(brand_tenant_id(auth))
         if tenant_id is None:
             self._say(source, _NO_SESSION, "error")
             return None

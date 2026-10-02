@@ -6,6 +6,12 @@ touch `qualify_api.auth.supabase` or the secret key directly (enforced by
 """
 
 from qualify_api.auth.config import AuthNotConfigured, SupabaseSettings, fake_auth_enabled
+from qualify_api.auth.drafts import (
+    BrandKitDraftResult,
+    DraftEmailInvalid,
+    EmailHasAccount,
+    start_brand_kit_draft,
+)
 from qualify_api.auth.fake import FakeAuthProvider
 from qualify_api.auth.provider import (
     AuthProvider,
@@ -30,7 +36,10 @@ __all__ = [
     "AuthProvider",
     "AuthProviderError",
     "AuthSession",
+    "BrandKitDraftResult",
+    "DraftEmailInvalid",
     "EmailAlreadyRegistered",
+    "EmailHasAccount",
     "FakeAuthProvider",
     "IncompleteRegistration",
     "InvalidCredentials",
@@ -44,4 +53,5 @@ __all__ = [
     "register_business",
     "reset_default_auth_provider",
     "resolve_login",
+    "start_brand_kit_draft",
 ]

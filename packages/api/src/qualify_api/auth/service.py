@@ -29,6 +29,7 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from qualify_api.auth.drafts import claim_draft, find_open_draft
 from qualify_api.auth.provider import (
     AuthProvider,
     AuthSession,
@@ -175,6 +176,13 @@ def _upsert_local_half(
         session.flush()
 
 
+def _open_draft_tenant_id(email: str) -> UUID | None:
+    """The tenant of the unclaimed pre-login Brand Kit started with this email."""
+    with admin_session() as session:
+        draft = find_open_draft(session, email)
+        return draft.tenant_id if draft is not None else None
+
+
 def register_business(
     provider: AuthProvider,
     *,
@@ -186,10 +194,29 @@ def register_business(
     currency: str,
     display_name: str | None = None,
 ) -> RegisteredBusiness:
-    """Signup: assigns a fresh `tenant_id` automatically and builds both halves."""
+    """Signup: assigns a fresh `tenant_id` automatically and builds both halves — unless
+    a Brand Kit was started before login with this email (§ request 2026-10-02): then
+    the signup adopts that draft's tenant, so the account opens with its Brand Kit."""
     _validate_signup(business_name, email, password)
-    auth_user_id, tenant_id = _resolve_identity_for_signup(provider, email, password, uuid4())
+    draft_tenant_id = _open_draft_tenant_id(email)
+    auth_user_id, tenant_id = _resolve_identity_for_signup(
+        provider, email, password, draft_tenant_id or uuid4()
+    )
     with admin_session() as session:
+        draft = find_open_draft(session, email) if draft_tenant_id is not None else None
+        # On the retry path the identity may already be stamped to another tenant: the
+        # draft is only adopted by the tenant it was provisioned as.
+        if draft is not None and draft.tenant_id == tenant_id:
+            claim_draft(
+                session,
+                draft,
+                email=email,
+                business_name=business_name.strip(),
+                country=country,
+                timezone=timezone,
+                currency=currency,
+                display_name=display_name or business_name.strip(),
+            )
         _upsert_local_half(
             session,
             tenant_id=tenant_id,

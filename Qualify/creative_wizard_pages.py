@@ -71,7 +71,7 @@ from . import (
     referentes_review,
     scrapecreators_client,
 )
-from .auth_state import AuthState
+from .auth_state import AuthState, brand_tenant_id
 from .connections_provider import acting_user_id
 from .creative_provider import default_brand_id
 from .creative_state import CreativeState
@@ -392,11 +392,12 @@ class BrandWizardState(rx.State):
             return
         async with self:
             self._reset_fields()
+            route = await _finish_route(self)
         yield brand_documents.BrandDocumentState.reset_documents
-        yield rx.redirect(_SIGNALS_ROUTE)
+        yield rx.redirect(route)
 
     @rx.event
-    def finish_to_signals(self) -> rx.event.EventSpec:
+    async def finish_to_signals(self) -> rx.event.EventSpec:
         """Mejorar tu perfil y posicionamiento, on this flow's own Resultados e
         insights — the TRUE final screen. Replaces Finalizar entirely (§ request
         2026-09-05): fired REGARDLESS of what `save_kit_form` does — for now this is
@@ -405,7 +406,7 @@ class BrandWizardState(rx.State):
         this screen's own navigation/staging state resets, same shape
         `BrandConnectState.finish_to_signals` uses for the connect flow."""
         self._reset_fields()
-        return rx.redirect(_SIGNALS_ROUTE)
+        return rx.redirect(await _finish_route(self))
 
     @rx.event
     def answer_has_logo(self, value: str) -> None:
@@ -610,7 +611,7 @@ class BrandWizardState(rx.State):
         if not files:
             return None
         auth = await self.get_state(AuthState)
-        tenant_id = tenant_uuid(auth.session_tenant_id)
+        tenant_id = tenant_uuid(brand_tenant_id(auth))
         if tenant_id is None:
             self.logo_error = _NO_SESSION
             return None
@@ -931,6 +932,18 @@ def _choice_card(
 #: the "Mejorar tu perfil y posicionamiento" CTA — final step of BOTH flows — has
 #: somewhere honest to land instead of a dead link or a made-up one.
 _SIGNALS_ROUTE = "/signals"
+
+#: Where a pre-login Brand Kit ends (§ request 2026-10-02): the signup, prefilled with
+#: the draft's email — creating the account with it adopts the kit just saved.
+_SIGNUP_ROUTE = "/signup"
+
+
+async def _finish_route(state: rx.State) -> str:
+    """Señales for a logged-in session; the signup for a pre-login draft (Señales
+    needs a login). Call it holding the state lock in a background handler."""
+    auth = await state.get_state(AuthState)
+    return _SIGNALS_ROUTE if auth.session_tenant_id else _SIGNUP_ROUTE
+
 
 #: Placeholder competitor/influencer suggestions (handle, role label, blurb).
 #: Placeholder explicit: hardcoded tuple, not a query — no connection to
@@ -4248,8 +4261,9 @@ class BrandConnectState(rx.State):
             return
         async with self:
             self._reset_fields()
+            route = await _finish_route(self)
         yield brand_documents.BrandDocumentState.reset_documents
-        yield rx.redirect(_SIGNALS_ROUTE)
+        yield rx.redirect(route)
 
     @rx.event(background=True)
     async def load_saved_details(self) -> None:
@@ -4308,14 +4322,14 @@ class BrandConnectState(rx.State):
                     self._set_metrics([])
 
     @rx.event
-    def finish_to_signals(self) -> rx.event.EventSpec:
+    async def finish_to_signals(self) -> rx.event.EventSpec:
         """Mejorar tu perfil y posicionamiento, on Resultados e insights — the TRUE
         final screen. Replaces Finalizar entirely (§ request 2026-09-05): same reset
         `restart` does, but the destination is Señales, not the fork — the same
         "regardless of the process" way `BrandWizardState.finish_to_signals` fires for
         the manual flow's own final screen."""
         self._reset_fields()
-        return rx.redirect(_SIGNALS_ROUTE)
+        return rx.redirect(await _finish_route(self))
 
     @rx.event(background=True)
     async def advance_stage_if_exhausted(self) -> AsyncIterator[None]:
@@ -4411,7 +4425,7 @@ class BrandConnectState(rx.State):
             self.analyzing = True
             network, handle = self.network, self.username.strip()
             auth = await self.get_state(AuthState)
-            session_tenant_id = auth.session_tenant_id
+            session_tenant_id = brand_tenant_id(auth)
         tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
         yield
 
@@ -4752,7 +4766,7 @@ class BrandConnectState(rx.State):
         or the database unreachable. Must NOT be called while holding the state lock."""
         async with self:
             auth = await self.get_state(AuthState)
-            session_tenant_id = auth.session_tenant_id
+            session_tenant_id = brand_tenant_id(auth)
         tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
         if tenant_id is None:
             return None
