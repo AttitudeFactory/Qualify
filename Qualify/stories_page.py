@@ -1,23 +1,31 @@
-"""The `/stories` screen (QUA-106 V1 redesign) — a single publish screen for
-Instagram Stories, structurally the same as `/publish`: pick a connected account,
+"""The Stories publish flow (QUA-106 V1 redesign) — since QUA-113 Fase 2 it is the
+second flow INSIDE `/publish` (`publishing_page.publish_index` mounts
+`stories_flow` when `PublishHubState.active_flow == "stories"`), no longer a screen of
+its own; `/stories` redirects to `/publish?flow=stories`. The flow itself is
+unchanged: pick a connected account,
 select one video (real thumbnail in the grid, reusing `ui/video_preview.py` exactly
 as `/publish` does), hit "Publicar", poll until Meta settles. A panel of trending
 content/audio (QUA-107 + Meta's `GET /ig_audio`) sits alongside the form, purely for
-reference — no field here ever reaches the publish call.
+reference — no field here ever reaches the publish call. Since QUA-113 that panel is
+`trending_panel.trending_card` (state: `TrendingState`), shared with any publish flow.
 
-No propuesta, no aprobación, no revisión, no historial: there is no second screen —
-`/stories` is it, same as `/publish` is one screen for itself.
+No propuesta, no aprobación, no revisión, no historial: there is no second screen.
 """
 
 from __future__ import annotations
 
 import reflex as rx
 
+from .publish_tips import tip_row, tips_card
 from .stories_state import _UPLOAD_ID, StoriesState
-from .stories_vm import TrendAudioOptionVM, TrendingVideoVM
-from .ui import app_shell, callout, card, page_body, page_header, section
+from .ui import callout, card, section
 from .ui import tokens as T
-from .ui.video_preview import gallery_preview_capture_anchor, video_frame_preview_src
+from .ui.image_preview import gallery_image_preview_capture_anchor
+from .ui.video_preview import (
+    gallery_file_js,
+    gallery_preview_capture_anchor,
+    video_frame_preview_src,
+)
 
 _GALLERY_ROOT_ID = "stories-gallery-root"
 
@@ -34,10 +42,12 @@ _GALLERY_ROOT_ID = "stories-gallery-root"
 #
 # The video File itself never round-trips through Reflex state or the
 # server: `ui/video_preview.py`'s existing drop/change capture listener
-# (already mounted for the real-thumbnail feature) stashes the raw File at
-# `window.__qualifyPreviews.lastFile`, and this script reads it directly —
-# a Story is never a carousel, so "the last file dropped" is always exactly
-# the one file currently in the gallery.
+# (already mounted for the real-thumbnail feature) stashes the raw File per
+# gallery root, and this script reads the slot of THIS gallery
+# (`_GALLERY_ROOT_ID`) via `gallery_file_js` — never a page-global "last file",
+# so a video dropped in another gallery on the same page (the Publicaciones
+# flow, QUA-113) can never be the one shared. A Story is never a carousel, so
+# the last file dropped on this root is always the one currently in it.
 _SHARE_TO_INSTAGRAM_SCRIPT = """
 (function () {
   try {
@@ -51,7 +61,7 @@ _SHARE_TO_INSTAGRAM_SCRIPT = """
     if (!isMobileOS) { return "desktop"; }
     if (!window.isSecureContext) { return "insecure"; }
     if (!navigator.share || !navigator.canShare) { return "unsupported"; }
-    var file = window.__qualifyPreviews && window.__qualifyPreviews.lastFile;
+    var file = __STORIES_GALLERY_FILE__;
     if (!file) { return "no_file"; }
     if (!navigator.canShare({ files: [file] })) { return "cannot_share_file"; }
     return navigator.share({ files: [file] }).then(
@@ -65,7 +75,7 @@ _SHARE_TO_INSTAGRAM_SCRIPT = """
     return "error:" + (e && e.message ? e.message : String(e));
   }
 })()
-"""
+""".replace("__STORIES_GALLERY_FILE__", gallery_file_js(_GALLERY_ROOT_ID))
 
 
 def _connection_item(conn) -> rx.Component:
@@ -98,11 +108,13 @@ def _connection_section() -> rx.Component:
 
 
 def _pending_tile() -> rx.Component:
-    """The one selected video, shown with a REAL first-frame thumbnail — same
-    mechanism `publishing_page._pending_tile` uses (`video_frame_preview_src`,
-    client-side only, no backend change), falling back to a film icon + filename
-    while the frame has not been captured yet or never could be."""
-    preview_src = video_frame_preview_src(filename=StoriesState.pending_filename)
+    """The one selected video or JPEG (QUA-113), shown with a REAL thumbnail — same
+    mechanism `publishing_page._pending_tile` uses (`video_frame_preview_src` is the
+    one generic reader for both kinds), falling back to a film/image icon + filename
+    while nothing has been captured yet or never could be."""
+    preview_src = video_frame_preview_src(
+        root_id=_GALLERY_ROOT_ID, filename=StoriesState.pending_filename
+    )
     return rx.box(
         rx.cond(
             preview_src != "",
@@ -117,7 +129,11 @@ def _pending_tile() -> rx.Component:
                 },
             ),
             rx.vstack(
-                rx.icon("film", size=24, color=T.tone_color("ok", 9)),
+                rx.cond(
+                    StoriesState.pending_is_image,
+                    rx.icon("image", size=24, color=T.tone_color("ok", 9)),
+                    rx.icon("film", size=24, color=T.tone_color("ok", 9)),
+                ),
                 rx.text(
                     StoriesState.pending_filename,
                     size="1",
@@ -169,11 +185,15 @@ def _empty_state_content() -> rx.Component:
     return rx.vstack(
         rx.icon("film", size=32, color=T.TEXT_FAINT),
         rx.text(
-            "Arrastra el video de la Story aquí o haz clic para elegirlo",
+            "Arrastra el video o la imagen de la Story aquí o haz clic para elegirlo",
             size="3",
             weight="medium",
         ),
-        rx.text("MP4 o MOV · hasta 300 MB", size="1", color=T.TEXT_MUTED),
+        rx.text(
+            "MP4, MOV o JPEG · hasta 300 MB (video) / 8 MB (imagen)",
+            size="1",
+            color=T.TEXT_MUTED,
+        ),
         spacing="2",
         align="center",
     )
@@ -183,13 +203,17 @@ def _upload_widget(children: rx.Component, *, compact: bool) -> rx.Component:
     return rx.upload(
         children,
         id=_UPLOAD_ID,
-        accept={"video/mp4": [".mp4"], "video/quicktime": [".mov"]},
+        accept={
+            "video/mp4": [".mp4"],
+            "video/quicktime": [".mov"],
+            "image/jpeg": [".jpg", ".jpeg"],
+        },
         multiple=False,
         max_files=1,
         disabled=~StoriesState.can_edit_gallery,
         on_drop=StoriesState.add_file,
         on_drop_rejected=rx.toast.error(
-            "Formato no permitido", description="Solo se aceptan archivos MP4 o MOV."
+            "Formato no permitido", description="Solo se aceptan archivos MP4, MOV o JPEG."
         ),
         border=f"1.5px dashed {rx.color('gray', 7)}",
         border_radius=T.RADIUS_CARD,
@@ -208,8 +232,13 @@ def _upload_widget(children: rx.Component, *, compact: bool) -> rx.Component:
 def _preview_capture_anchor() -> rx.Component:
     """Mounted UNCONDITIONALLY — see `publishing_page._preview_capture_anchor`'s
     docstring for why: without this, a video dropped while the empty-state prompt is
-    still showing (always true for the FIRST file) never gets a real thumbnail."""
-    return rx.box(gallery_preview_capture_anchor(root_id=_GALLERY_ROOT_ID), display="none")
+    still showing (always true for the FIRST file) never gets a real thumbnail. Both
+    anchors, as on `/publish`: video frames and (QUA-113) JPEG images."""
+    return rx.box(
+        gallery_preview_capture_anchor(root_id=_GALLERY_ROOT_ID),
+        gallery_image_preview_capture_anchor(root_id=_GALLERY_ROOT_ID),
+        display="none",
+    )
 
 
 def _gallery_zone() -> rx.Component:
@@ -227,472 +256,11 @@ def _gallery_zone() -> rx.Component:
 
 def _content_section() -> rx.Component:
     return section(
-        "Video de la Story",
+        "Contenido de la Story",
         _gallery_zone(),
-        description="Tu propio video — nunca se genera ni se reutiliza contenido de terceros.",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Meta trending-audio reference (`GET /ig_audio`) — informational only.
-
-
-def _trend_option(option: TrendAudioOptionVM) -> rx.Component:
-    """One row of the compact Meta audio list — title first (primary), artist and
-    duration secondary, the whole row clickable. Deliberately a plain list row, not
-    a card: no border box, no thumbnail (Meta's `ig_audio` never carries cover art).
-
-    The play button is a SIBLING of the selection button, never nested inside it —
-    a `<button>` cannot contain another `<button>` per the HTML5 spec."""
-    selected = StoriesState.selected_trend_audio_id == option.audio_id
-    is_playing_this = (
-        StoriesState.playing_audio_id == option.audio_id
-    ) & StoriesState.is_audio_playing
-    return rx.hstack(
-        rx.box(
-            rx.cond(
-                option.has_preview,
-                rx.button(
-                    rx.cond(is_playing_this, rx.icon("pause", size=12), rx.icon("play", size=12)),
-                    variant="ghost",
-                    color_scheme=rx.cond(is_playing_this, "iris", "gray"),
-                    size="1",
-                    on_click=StoriesState.toggle_audio_preview(option.audio_id, option.preview_url),
-                ),
-            ),
-            width="1.75rem",
-            flex_shrink="0",
+        description=(
+            "Tu propio video o imagen — nunca se genera ni se reutiliza contenido de terceros."
         ),
-        rx.button(
-            rx.hstack(
-                rx.cond(
-                    selected,
-                    rx.icon("circle-check", size=14, color=rx.color("iris", 9), flex_shrink="0"),
-                    rx.icon("music", size=14, color=T.TEXT_FAINT, flex_shrink="0"),
-                ),
-                rx.vstack(
-                    rx.text(option.title, size="2", weight="medium"),
-                    rx.cond(
-                        option.artist_or_creator != "",
-                        rx.text(option.artist_or_creator, size="1", color=T.TEXT_MUTED),
-                    ),
-                    align_items="start",
-                    spacing="0",
-                ),
-                rx.spacer(),
-                rx.cond(
-                    option.duration_label != "",
-                    rx.text(option.duration_label, size="1", color=T.TEXT_FAINT, flex_shrink="0"),
-                ),
-                align="center",
-                spacing="3",
-                width="100%",
-                padding_right="0.5rem",
-            ),
-            variant="ghost",
-            color_scheme=rx.cond(selected, "iris", "gray"),
-            background=rx.cond(selected, rx.color("iris", 3), "transparent"),
-            border_radius="0",
-            size="2",
-            width="100%",
-            on_click=StoriesState.select_trend_audio(option.audio_id, option.title),
-        ),
-        align="center",
-        spacing="0",
-        width="100%",
-        padding_right="0.5rem",
-        border_bottom=f"1px solid {rx.color('gray', 4)}",
-    )
-
-
-def _trend_audio_section() -> rx.Component:
-    return rx.vstack(
-        rx.hstack(
-            rx.button(
-                rx.icon("sparkles", size=14),
-                "Sugerir audio en tendencia",
-                variant="soft",
-                size="2",
-                loading=StoriesState.is_loading_trend,
-                disabled=StoriesState.selected_connection_id == "",
-                on_click=StoriesState.suggest_audio,
-            ),
-            rx.cond(
-                StoriesState.selected_trend_audio_id != "",
-                rx.badge(
-                    StoriesState.selected_trend_audio_title,
-                    rx.icon("x", size=12, on_click=StoriesState.clear_trend_audio),
-                    variant="soft",
-                    color_scheme="iris",
-                    size="2",
-                ),
-            ),
-            align="center",
-            spacing="2",
-            wrap="wrap",
-        ),
-        rx.hstack(
-            rx.input(
-                rx.input.slot(rx.icon("search", size=14)),
-                placeholder="Buscar audio por nombre o artista…",
-                value=StoriesState.audio_search_query,
-                on_change=StoriesState.set_audio_search_query,
-                disabled=StoriesState.selected_connection_id == "",
-                size="2",
-                width="100%",
-            ),
-            rx.button(
-                "Buscar",
-                variant="soft",
-                size="2",
-                loading=StoriesState.is_loading_trend,
-                disabled=StoriesState.selected_connection_id == "",
-                on_click=StoriesState.search_audio,
-            ),
-            align="center",
-            spacing="2",
-            width="100%",
-        ),
-        rx.text(
-            "Solo una referencia para ti — no se adjunta a la publicación.",
-            size="1",
-            color=T.TEXT_FAINT,
-        ),
-        rx.cond(
-            StoriesState.trend_expanded & (StoriesState.trend_options.length() > 0),
-            rx.vstack(
-                rx.hstack(
-                    rx.text("Resultados", size="1", weight="medium", color=T.TEXT_MUTED),
-                    rx.spacer(),
-                    rx.button(
-                        rx.icon("x", size=12),
-                        "Ocultar",
-                        variant="soft",
-                        color_scheme="gray",
-                        size="1",
-                        on_click=StoriesState.close_trend_audio,
-                    ),
-                    align="center",
-                    width="100%",
-                    padding_bottom="0.25rem",
-                ),
-                rx.foreach(StoriesState.trend_options, _trend_option),
-                spacing="0",
-                width="100%",
-            ),
-        ),
-        width="100%",
-        spacing="2",
-        align_items="start",
-    )
-
-
-# ---------------------------------------------------------------------------
-# QUA-107: ScrapeCreators trending discovery — TikTok + Instagram, reference only.
-# Independent of the connection selector above: these buttons are never disabled by
-# `selected_connection_id`, unlike `_trend_audio_section`'s Meta-backed suggestion.
-
-
-def _trending_thumbnail(candidate: TrendingVideoVM) -> rx.Component:
-    return rx.cond(
-        candidate.has_thumbnail,
-        rx.image(
-            src=candidate.thumbnail_url,
-            width="56px",
-            height="56px",
-            object_fit="cover",
-            border_radius="0.5rem",
-            flex_shrink="0",
-        ),
-        rx.center(
-            rx.icon("film", size=20, color=T.TEXT_FAINT),
-            width="56px",
-            height="56px",
-            border_radius="0.5rem",
-            background=T.SURFACE_BG_RAISED,
-            flex_shrink="0",
-        ),
-    )
-
-
-def _song_detail_panel() -> rx.Component:
-    """Renders `StoriesState.song_detail` — only mounted once it is non-`None` (see
-    `_trending_video_card`'s guard), so no field here needs its own None-check
-    besides `user_count`/`recommend_status`, which the vendor may omit."""
-    detail = StoriesState.song_detail
-    is_playing_this = (
-        StoriesState.playing_audio_id == detail.audio_id
-    ) & StoriesState.is_audio_playing
-    return rx.vstack(
-        rx.text(detail.display_label, size="2", weight="medium"),
-        rx.cond(
-            detail.has_preview,
-            rx.hstack(
-                rx.button(
-                    rx.cond(is_playing_this, rx.icon("pause", size=12), rx.icon("play", size=12)),
-                    variant="soft",
-                    color_scheme=rx.cond(is_playing_this, "iris", "gray"),
-                    size="1",
-                    on_click=StoriesState.toggle_audio_preview(detail.audio_id, detail.preview_url),
-                ),
-                rx.text("Escuchar preview", size="1", color=T.TEXT_MUTED),
-                spacing="2",
-                align="center",
-            ),
-        ),
-        rx.cond(
-            detail.has_user_count,
-            rx.hstack(
-                rx.icon("users", size=12, color=T.TEXT_FAINT),
-                rx.text(detail.user_count, " videos la usan", size="1", color=T.TEXT_MUTED),
-                spacing="1",
-            ),
-        ),
-        rx.cond(
-            detail.has_recommend_status,
-            rx.hstack(
-                rx.icon("flame", size=12, color=T.TEXT_FAINT),
-                rx.text(
-                    "Puntaje de tendencia del vendor: ",
-                    detail.recommend_status,
-                    size="1",
-                    color=T.TEXT_MUTED,
-                ),
-                spacing="1",
-            ),
-        ),
-        rx.hstack(
-            rx.button(
-                "Usar esta canción",
-                size="1",
-                variant="soft",
-                color_scheme="iris",
-                on_click=StoriesState.select_trend_audio(detail.audio_id, detail.title),
-            ),
-            rx.button(
-                rx.icon("search", size=12),
-                "Buscar en Meta",
-                size="1",
-                variant="soft",
-                color_scheme="gray",
-                disabled=StoriesState.selected_connection_id == "",
-                loading=StoriesState.is_loading_trend,
-                on_click=StoriesState.search_song_on_meta(detail.title),
-            ),
-            spacing="2",
-            wrap="wrap",
-        ),
-        spacing="2",
-        padding="0.5rem",
-        background=T.SURFACE_BG_RAISED,
-        border_radius="0.5rem",
-        align_items="start",
-        width="100%",
-    )
-
-
-def _trending_video_card(candidate: TrendingVideoVM) -> rx.Component:
-    is_expanded = StoriesState.expanded_song_id == candidate.music_id
-    return rx.box(
-        rx.hstack(
-            _trending_thumbnail(candidate),
-            rx.vstack(
-                rx.text(
-                    rx.cond(candidate.caption != "", candidate.caption, "(sin descripción)"),
-                    size="2",
-                    weight="medium",
-                    max_width="360px",
-                    overflow="hidden",
-                    text_overflow="ellipsis",
-                    white_space="nowrap",
-                ),
-                rx.text(candidate.author_label, size="1", color=T.TEXT_MUTED),
-                rx.hstack(
-                    rx.text("♥ ", candidate.likes_label, size="1", color=T.TEXT_FAINT),
-                    rx.text("💬 ", candidate.comments_label, size="1", color=T.TEXT_FAINT),
-                    rx.cond(
-                        candidate.plays_label != "",
-                        rx.text("▶ ", candidate.plays_label, size="1", color=T.TEXT_FAINT),
-                    ),
-                    spacing="3",
-                ),
-                rx.cond(
-                    candidate.permalink != "",
-                    rx.link("Ver original", href=candidate.permalink, target="_blank", size="1"),
-                ),
-                align_items="start",
-                spacing="1",
-            ),
-            align_items="start",
-            spacing="3",
-            width="100%",
-        ),
-        rx.box(
-            rx.cond(
-                candidate.has_music,
-                rx.vstack(
-                    rx.button(
-                        "Ver detalle de la canción",
-                        variant="ghost",
-                        size="1",
-                        loading=is_expanded & StoriesState.is_loading_song_detail,
-                        on_click=StoriesState.expand_song(
-                            candidate.music_id, candidate.music_title
-                        ),
-                    ),
-                    rx.cond(
-                        is_expanded,
-                        rx.cond(StoriesState.song_detail, _song_detail_panel()),
-                    ),
-                    spacing="1",
-                    width="100%",
-                ),
-            ),
-            min_height="2.25rem",
-            margin_top="0.5rem",
-            width="100%",
-        ),
-        padding="0.75rem",
-        border=f"1px solid {rx.color('gray', 5)}",
-        border_radius=T.RADIUS_CARD,
-        width="100%",
-    )
-
-
-def _trending_platform_section(
-    *,
-    label: str,
-    icon: str,
-    items: rx.Var[list[TrendingVideoVM]],
-    expanded: rx.Var[bool],
-    is_loading: rx.Var[bool],
-    on_toggle: rx.event.EventHandler,
-    on_refresh: rx.event.EventHandler,
-) -> rx.Component:
-    """One platform's trending block, full width — stacked with its sibling below
-    (never a side-by-side column) precisely because a TikTok card can expand a song
-    detail panel inline and an Instagram one never does (Reels carry no music), so
-    two columns of these next to each other drift out of alignment the moment one
-    expands. Stacking removes the "must match height" problem structurally instead
-    of bounding it with a fixed/scrollable height.
-
-    The main button drives fetch AND collapse/expand (follow-up: "cómo cierro
-    esto") — `on_toggle` never re-fetches once `items` is already cached, only the
-    very first click per platform does. The separate refresh icon (follow-up: "cómo
-    actualizo") ALWAYS re-fetches, bypassing that cache — it only appears once there
-    is something to refresh."""
-    return rx.vstack(
-        rx.hstack(
-            rx.button(
-                rx.icon(icon, size=14),
-                label,
-                rx.cond(
-                    items.length() > 0,
-                    rx.icon(rx.cond(expanded, "chevron-up", "chevron-down"), size=14),
-                    rx.fragment(),
-                ),
-                variant="soft",
-                size="2",
-                loading=is_loading,
-                on_click=on_toggle,
-            ),
-            rx.cond(
-                items.length() > 0,
-                rx.icon_button(
-                    rx.icon("refresh-cw", size=14),
-                    variant="ghost",
-                    color_scheme="gray",
-                    size="2",
-                    loading=is_loading,
-                    title="Actualizar con contenido nuevo",
-                    on_click=on_refresh,
-                ),
-                rx.fragment(),
-            ),
-            align="center",
-            spacing="2",
-        ),
-        rx.cond(
-            expanded & (items.length() > 0),
-            rx.vstack(rx.foreach(items, _trending_video_card), spacing="2", width="100%"),
-        ),
-        width="100%",
-        spacing="2",
-        align_items="start",
-    )
-
-
-def _trending_discovery_section() -> rx.Component:
-    """QUA-107: TikTok + Instagram trending, shown for reference only. Explicit,
-    operator-triggered per platform — never fetched on screen load."""
-    return rx.vstack(
-        rx.text(
-            "Contenido y audios en tendencia, de forma general — no representa "
-            "exclusivamente una región ni tu país. Solo referencia visual: nada se "
-            "descarga ni se adjunta automáticamente a la Story.",
-            size="1",
-            color=T.TEXT_FAINT,
-        ),
-        _trending_platform_section(
-            label="Tendencia en TikTok",
-            icon="music",
-            items=StoriesState.tiktok_trending,
-            expanded=StoriesState.tiktok_trending_expanded,
-            is_loading=StoriesState.is_loading_tiktok_trending,
-            on_toggle=StoriesState.toggle_tiktok_trending,
-            on_refresh=StoriesState.discover_tiktok_trending,
-        ),
-        rx.divider(),
-        _trending_platform_section(
-            label="Tendencia en Instagram",
-            icon="film",
-            items=StoriesState.instagram_trending,
-            expanded=StoriesState.instagram_trending_expanded,
-            is_loading=StoriesState.is_loading_instagram_trending,
-            on_toggle=StoriesState.toggle_instagram_trending,
-            on_refresh=StoriesState.discover_instagram_trending,
-        ),
-        width="100%",
-        spacing="3",
-    )
-
-
-def _audio_preview_player() -> rx.Component:
-    """The ONE shared player behind every play/pause button on this screen (Meta's
-    audio list and the TikTok song-detail panel) — driven entirely by
-    `playing_audio_url`/`is_audio_playing`, so only one preview is ever sounding at
-    a time."""
-    return rx.box(
-        rx.audio(
-            src=StoriesState.playing_audio_url,
-            playing=StoriesState.is_audio_playing,
-            controls=False,
-            on_ended=StoriesState.audio_preview_stopped,
-            on_error=StoriesState.audio_preview_stopped,
-        ),
-        display="none",
-    )
-
-
-def _trending_card() -> rx.Component:
-    return card(
-        rx.vstack(
-            _audio_preview_player(),
-            rx.hstack(
-                rx.icon("sparkles", size=T.ICON_MD, color=T.tone_color("info", 9)),
-                rx.heading("Tendencias e inspiración", size="3", as_="h2"),
-                spacing="2",
-                align="center",
-            ),
-            rx.divider(),
-            section("Audio en tendencia (Meta)", _trend_audio_section()),
-            rx.divider(),
-            section("Contenido en tendencia", _trending_discovery_section()),
-            spacing="4",
-            align_items="stretch",
-            width="100%",
-        ),
-        padding="1.5rem",
     )
 
 
@@ -793,9 +361,11 @@ def _share_to_instagram_button() -> rx.Component:
     )
 
 
-def _form_card() -> rx.Component:
+def _form_card(header: rx.Component) -> rx.Component:
     return card(
         rx.vstack(
+            header,
+            rx.divider(),
             _connection_section(),
             rx.divider(),
             _content_section(),
@@ -834,20 +404,38 @@ def _connections_error() -> rx.Component:
     return callout(StoriesState.connections_error, tone="error")
 
 
-def stories_index() -> rx.Component:
-    return app_shell(
-        page_header(
-            "Stories",
-            "Sube tu video, mira tendencias como referencia, y publícalo directo en Instagram",
+def stories_tips_card() -> rx.Component:
+    """The Stories counterpart of Publicaciones' "Antes de publicar" block (QUA-113) —
+    same shell, Stories' own facts. Each row mirrors a constraint this flow already
+    enforces: MP4/MOV video or JPEG image (`_resolve_story_media`), the 300 MB video /
+    8 MB image limits (`_TOO_LARGE` / `_IMAGE_TOO_LARGE`), one file that a new drop
+    replaces (`add_file`), no caption (`publish_background` always sends
+    `caption=""`), the account picked above, Meta's confirmation wait, and the
+    "Abrir en Instagram" phone handoff for official music."""
+    return tips_card(
+        tip_row("film", "Formatos aceptados: MP4, MOV (video) y JPEG (imagen)."),
+        tip_row("scale", "Tamaño máximo: 300 MB por video, 8 MB por imagen."),
+        tip_row("square", "Una pieza por Story: si eliges otra, reemplaza a la anterior."),
+        tip_row("type", "Sin caption: Instagram no muestra texto en una Story publicada así."),
+        tip_row("at-sign", "Se publica en la cuenta que elijas arriba."),
+        tip_row("clock", "La confirmación de Meta puede tardar unos minutos."),
+        tip_row(
+            "music",
+            "¿Música oficial? Usa «Abrir en Instagram» desde tu celular y termina la "
+            "Story en la app.",
         ),
-        page_body(
-            rx.cond(StoriesState.connections_error != "", _connections_error(), rx.fragment()),
-            rx.vstack(
-                _form_card(),
-                _trending_card(),
-                spacing="5",
-                width="100%",
-                align_items="stretch",
-            ),
-        ),
+    )
+
+
+def stories_flow(header: rx.Component) -> rx.Component:
+    """The whole Stories flow as `/publish` mounts it — `header` is the flow selector,
+    shown at the top of the form card (QUA-113). The accounts-load error stays above
+    the card, where `/stories` used to show it. Its "Antes de publicar" block is
+    `stories_tips_card`, placed by the page in the same column Publicaciones' uses."""
+    return rx.vstack(
+        rx.cond(StoriesState.connections_error != "", _connections_error(), rx.fragment()),
+        _form_card(header),
+        spacing="5",
+        width="100%",
+        align_items="stretch",
     )

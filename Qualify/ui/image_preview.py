@@ -2,10 +2,12 @@
 sibling of `video_preview.py`, extending the SAME shared mechanism rather than touching
 it.
 
-**Reuses, unmodified:** `window.__qualifyPreviews` (the shared, outside-React store) and
-`video_frame_preview_src` (`video_preview.py`) — that reader is already a generic
-`previews[filename] || ""` lookup, agnostic of whether the entry was written by a video
-frame capture or, as this module adds, a plain image read. There is exactly ONE reader
+**Reuses:** `window.__qualifyPreviews` (the shared, outside-React store — its setup and
+the per-gallery key, `preview_key_js`, are imported from `video_preview.py` so the two
+modules can never drift apart) and `video_frame_preview_src` (`video_preview.py`) —
+that reader is a generic `previews["<root_id>/<filename>"] || ""` lookup, agnostic of
+whether the entry was written by a video frame capture or, as this module adds, a plain
+image read. There is exactly ONE reader
 for both kinds; `publishing_page.py` calls the same function for an image tile and a
 video tile.
 
@@ -36,20 +38,10 @@ from reflex.vars import VarData
 from reflex.vars.base import Var
 from reflex.vars.sequence import LiteralStringVar
 
-# Same store-setup guard `video_preview.py` uses — idempotent, safe to prepend to every
-# hook string in this module too; whichever of the two capture anchors mounts first
-# initializes `window.__qualifyPreviews`, the other's setup is then a cheap no-op check.
-_STORE_SETUP = """
-    if (typeof window !== "undefined" && typeof window.__qualifyPreviews === "undefined") {
-      window.__qualifyPreviews = { data: {}, listeners: new Set() };
-      window.__qualifyPreviews.setPreview = function (filename, dataUri) {
-        var next = Object.assign({}, window.__qualifyPreviews.data);
-        next[filename] = dataUri;
-        window.__qualifyPreviews.data = next;
-        window.__qualifyPreviews.listeners.forEach(function (cb) { cb(); });
-      };
-    }
-"""
+# One definition of the store's shape, shared with `video_preview.py` — whichever of
+# the two capture anchors mounts first initializes `window.__qualifyPreviews`, the
+# other's setup is then a cheap no-op check, and both write keys the same way.
+from .video_preview import _STORE_SETUP, preview_key_js
 
 
 def gallery_image_preview_capture_anchor(*, root_id: str) -> Var[str]:
@@ -76,10 +68,17 @@ def gallery_image_preview_capture_anchor(*, root_id: str) -> Var[str]:
       }};
       const captureFile = (file) => {{
         if (!isJpeg(file)) {{ return; }}
+        // QUA-113: keep the raw File for THIS gallery too, exactly as the video anchor
+        // does, so "Abrir en Instagram" (Stories) can share an image Story as well —
+        // per gallery root, never a page-global "last file".
+        window.__qualifyPreviews.filesByRoot = window.__qualifyPreviews.filesByRoot || {{}};
+        window.__qualifyPreviews.filesByRoot[{root_id_var!s}] = file;
         const reader = new FileReader();
         reader.onload = () => {{
           if (typeof reader.result === "string") {{
-            window.__qualifyPreviews.setPreview(file.name, reader.result);
+            window.__qualifyPreviews.setPreview(
+              {preview_key_js(root_id, "file.name")}, reader.result
+            );
           }}
         }};
         // A read failure (corrupt file, browser quota) simply leaves no entry for this

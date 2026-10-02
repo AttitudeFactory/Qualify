@@ -197,10 +197,12 @@ class AuthState(rx.State):
             from .inbox_state import InboxState
             from .leads_state import LeadsState
             from .planner_state import PlannerState
+            from .publish_hub_state import PublishHubState
             from .publishing_state import PublishState
             from .replies_state import RepliesState
             from .state import DashboardState
             from .stories_state import StoriesState
+            from .trending_state import TrendingState
             from .voice_lab import VoiceLabState
 
             for state_cls in (
@@ -209,6 +211,8 @@ class AuthState(rx.State):
                 ClarityState,
                 InboxState,
                 PublishState,
+                # QUA-113: which publish flow is showing (Publicaciones / Stories)
+                PublishHubState,
                 DashboardState,
                 CreativeState,
                 # The Brand Kit wizard's OWN draft fields (request 2026-09-08) — step,
@@ -224,6 +228,8 @@ class AuthState(rx.State):
                 BrandDocumentState,
                 RepliesState,
                 StoriesState,
+                # the trending panel: its Meta audio list belongs to a tenant account
+                TrendingState,
                 PlannerState,
                 # the Canva card: links of a draft and the pending OAuth verifier
                 CanvaState,
