@@ -15,6 +15,7 @@ import inspect
 import pathlib
 import re
 
+import pytest
 from qualify_api.auth import FakeAuthProvider
 
 from . import auth_state as auth_state_module
@@ -132,10 +133,58 @@ async def test_an_email_with_an_account_is_sent_to_login(monkeypatch) -> None:
 
     monkeypatch.setattr(auth_state_module, "_start_draft_blocking", _has_account)
     state = _state()
-    async for _ in AuthState.start_brand_kit.fn(state, {"email": "a@b.co"}):
-        raise AssertionError("an existing account must not navigate")
+    events = [e async for e in AuthState.start_brand_kit.fn(state, {"email": "a@b.co"})]
+    assert len(events) == 1  # § 2026-10-02: straight to /login, not an error on screen
+    assert state.login_email_hint == "a@b.co"  # /login opens with it filled in
     assert state.guest_has_account is True
     assert state.guest_tenant_id == ""
+
+
+def _draft(tenant: str = _DRAFT):
+    from uuid import UUID
+
+    from qualify_api.auth import BrandKitDraftResult
+
+    return BrandKitDraftResult(tenant_id=UUID(tenant), email="a@b.co", resumed=True)
+
+
+@pytest.mark.parametrize(
+    ("destination"),
+    ["/signup", "/brand/connect", "/brand/manual", "/brand"],
+)
+async def test_the_email_lands_where_the_draft_stands(monkeypatch, destination: str) -> None:
+    """Finished kit → signup; halfway → back into its wizard; nothing → the start."""
+    monkeypatch.setattr(auth_state_module, "_start_draft_blocking", lambda email: _draft())
+    monkeypatch.setattr(auth_state_module, "_draft_destination_blocking", lambda t: destination)
+    state = _state()
+    events = [e async for e in AuthState.start_brand_kit.fn(state, {"email": "a@b.co"})]
+    assert len(events) == 1
+    assert state.guest_tenant_id == _DRAFT
+
+
+def test_draft_destination_follows_the_kit_status(monkeypatch) -> None:
+    from . import brand_finish
+
+    cases = [
+        (brand_finish.KitStatus(True, {"completed": True, "flow": "connect"}), "/signup"),
+        (brand_finish.KitStatus(False, {"completed": False, "flow": "connect"}), "/brand/connect"),
+        (brand_finish.KitStatus(False, {"completed": False, "flow": "manual"}), "/brand/manual"),
+        (brand_finish.KitStatus(False, None), "/brand"),
+    ]
+    for status, expected in cases:
+        monkeypatch.setattr(brand_finish, "tenant_kit_status", lambda t, s=status: s)
+        assert auth_state_module._draft_destination_blocking(_DRAFT) == expected
+
+
+def test_the_dev_skip_link_exists_only_outside_production(monkeypatch) -> None:
+    from reflex.utils import exec as rx_exec
+
+    from . import auth_pages
+
+    monkeypatch.setattr(rx_exec, "is_prod_mode", lambda: False)
+    assert auth_pages._show_dev_skip() is True
+    monkeypatch.setattr(rx_exec, "is_prod_mode", lambda: True)
+    assert auth_pages._show_dev_skip() is False
 
 
 # --------------------------------------------------------------------------------------

@@ -305,6 +305,10 @@ app.add_page(
         CreativeState.load_voice,
         VoiceLabState.load_clone,
         BrandWizardState.load_saved_assets,
+        # § 2026-10-02: a walk left halfway resumes — the saved answers and position,
+        # and the referentes already found (read back, never bought twice)
+        BrandConnectState.load_saved_details,
+        BrandConnectState.resume_referentes,
     ],
     title="Qualify · Conectar redes",
 )

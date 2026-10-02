@@ -169,12 +169,21 @@ def load_kit_form(tenant_id: UUID, brand_id: UUID) -> KitFormVM | None:
     )
 
 
-def save_kit(tenant_id: UUID, brand_id: UUID, user_id: UUID, form: KitFormVM) -> None:
+def save_kit(
+    tenant_id: UUID,
+    brand_id: UUID,
+    user_id: UUID,
+    form: KitFormVM,
+    *,
+    adopt_voice: bool = True,
+) -> None:
     """Parse the form back into the pydantic kit and upsert it through the service.
 
     The image policy, logo/template/reference keys are preserved from the stored kit —
     this form does not edit them, and an upsert must not erase what it does not model.
     Raises pydantic `ValidationError` when the form values do not make a legal kit.
+    `adopt_voice=False` is the wizard's save-as-you-go (§ 2026-10-02): a half-written
+    kit is kept, but no voice version is minted per step — finishing adopts it.
     """
     service = BrandKitService()
     current = service.get_kit(tenant_id=tenant_id, brand_id=brand_id)
@@ -210,6 +219,8 @@ def save_kit(tenant_id: UUID, brand_id: UUID, user_id: UUID, form: KitFormVM) ->
         )
     kit = BrandKit.model_validate(data)
     service.upsert_kit(tenant_id=tenant_id, brand_id=brand_id, kit=kit, user_id=user_id)
+    if not adopt_voice:
+        return
     # § 2026-09-30 (founder: no approval step): saving the kit adopts the voice — the
     # next version goes ACTIVE when the kit's voice fields changed, so the generator is
     # never blocked on an approval and never reads a voice older than the kit.

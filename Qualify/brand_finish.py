@@ -122,31 +122,16 @@ def persist_brand_kit(
     upload_dir: Path,
     store: BrandKitStore | None = None,
     gate: Any = None,
-) -> None:
-    """The kit form first (it is what generation needs), then the brandboard's files,
-    then the documents. Raises `FilesNotSaved` when only the files failed."""
-    save_kit(tenant_id, brand_id, user_id, snapshot.form)
+    adopt_voice: bool = True,
+) -> dict[str, str]:
+    """The kit form first (it is what generation needs), then the documents, then the
+    brandboard's files — last, so an R2 failure (or no R2 configured in development)
+    never loses the answers or the wizard's progress (§ 2026-10-02). Returns
+    `{local key: R2 key}` for what it uploaded, so the session can stop holding the
+    local key and the next save does not upload it again. Raises `FilesNotSaved` when
+    only the files failed."""
+    save_kit(tenant_id, brand_id, user_id, snapshot.form, adopt_voice=adopt_voice)
     store = store or BrandKitStore()
-    try:
-        prefix = brand_asset_prefix(tenant_id, brand_id)
-        gate = gate if gate is not None else (_r2_gate() if _needs_upload(snapshot) else None)
-        assets = [
-            BrandAsset(
-                kind=f.kind,
-                slot=f.slot,
-                object_key=_upload(gate, tenant_id, prefix, f, upload_dir),
-                filename=f.name,
-                content_type=mimetypes.guess_type(f.name)[0] or "",
-                label=f.label.strip(),
-                context=f.context.strip(),
-                position=f.position,
-            )
-            for f in snapshot.files
-        ]
-        store.replace_assets(tenant_id=tenant_id, brand_id=brand_id, assets=assets)
-    except Exception as exc:
-        logger.warning("brand kit files not saved: %s", type(exc).__name__)
-        raise FilesNotSaved(str(exc)) from exc
     documents = {
         name: document
         for name, document in (
@@ -160,6 +145,32 @@ def persist_brand_kit(
         store.save_details(
             tenant_id=tenant_id, brand_id=brand_id, user_id=user_id, documents=documents
         )
+    uploaded: dict[str, str] = {}
+    try:
+        prefix = brand_asset_prefix(tenant_id, brand_id)
+        gate = gate if gate is not None else (_r2_gate() if _needs_upload(snapshot) else None)
+        assets: list[BrandAsset] = []
+        for f in snapshot.files:
+            object_key = _upload(gate, tenant_id, prefix, f, upload_dir)
+            if object_key != f.key:
+                uploaded[f.key] = object_key
+            assets.append(
+                BrandAsset(
+                    kind=f.kind,
+                    slot=f.slot,
+                    object_key=object_key,
+                    filename=f.name,
+                    content_type=mimetypes.guess_type(f.name)[0] or "",
+                    label=f.label.strip(),
+                    context=f.context.strip(),
+                    position=f.position,
+                )
+            )
+        store.replace_assets(tenant_id=tenant_id, brand_id=brand_id, assets=assets)
+    except Exception as exc:
+        logger.warning("brand kit files not saved: %s", type(exc).__name__)
+        raise FilesNotSaved(str(exc)) from exc
+    return uploaded
 
 
 def _needs_upload(snapshot: KitSnapshot) -> bool:
@@ -230,8 +241,12 @@ async def session_ids(state: Any) -> tuple[UUID, UUID, UUID] | None:
     return tenant_id, brand_id, user_id
 
 
-def _connect_document(connect: Any) -> dict[str, Any] | None:
-    answers = {
+def _connect_document(
+    connect: Any, progress: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """The connect flow's answers; with `progress` (§ 2026-10-02) the wizard's position
+    rides along under its own key, written even before there is any answer."""
+    answers: dict[str, Any] = {
         "network": connect.network,
         "username": connect.username,
         "account_kind": connect.account_kind,
@@ -242,6 +257,8 @@ def _connect_document(connect: Any) -> dict[str, Any] | None:
         "city": connect.city,
         "hashtags": [dict(item) for item in connect.rubro_hashtags],
     }
+    if progress is not None:
+        return {**answers, PROGRESS_KEY: progress}
     return answers if any(answers.values()) else None
 
 
@@ -270,9 +287,70 @@ def _profile_document(connect: Any) -> dict[str, Any] | None:
     }
 
 
-async def snapshot_states(state: Any) -> KitSnapshot:
+#: The wizard's position inside the `connect` document (§ request 2026-10-02: "lo puede
+#: dejar a la mitad pero se guarda lo hecho en la db"). No migration: a JSONB key.
+PROGRESS_KEY = "progress"
+CONNECT_FLOW = "connect"
+MANUAL_FLOW = "manual"
+_FLOW_ROUTES = {CONNECT_FLOW: "/brand/connect", MANUAL_FLOW: "/brand/manual"}
+
+
+@dataclass(frozen=True)
+class KitStatus:
+    """Where a brand's kit stands: finished, or a wizard left halfway (`progress`)."""
+
+    completed: bool
+    progress: dict[str, Any] | None
+
+    @property
+    def resume_route(self) -> str | None:
+        """The wizard to go back to when it was left halfway; None otherwise."""
+        if self.completed or not self.progress:
+            return None
+        return _FLOW_ROUTES.get(str(self.progress.get("flow", "")))
+
+
+def kit_status(tenant_id: UUID, brand_id: UUID) -> KitStatus:
+    """A kit row plus no unfinished progress = finished. A kit saved before progress was
+    recorded has no `progress` key and counts as finished, as it always did."""
+    from .creative_provider import load_kit_form
+
+    form = load_kit_form(tenant_id, brand_id)
+    details = BrandKitStore().load_details(tenant_id=tenant_id, brand_id=brand_id)
+    raw = (details.connect or {}).get(PROGRESS_KEY)
+    progress = raw if isinstance(raw, dict) else None
+    unfinished = progress is not None and progress.get("completed") is False
+    return KitStatus(completed=form is not None and not unfinished, progress=progress)
+
+
+def tenant_kit_status(tenant_id: UUID) -> KitStatus:
+    """`kit_status` of the tenant's brand (the eldest, like every Brand Kit screen)."""
+    brand_id = default_brand_id(tenant_id)
+    if brand_id is None:
+        return KitStatus(completed=False, progress=None)
+    return kit_status(tenant_id, brand_id)
+
+
+async def _progress_document(state: Any, flow: str, *, completed: bool) -> dict[str, Any]:
+    """The wizard's position (caller holds the lock)."""
+    from .creative_wizard_pages import BrandConnectState, BrandWizardState
+
+    wizard = await state.get_state(BrandWizardState)
+    connect = await state.get_state(BrandConnectState)
+    return {
+        "flow": flow,
+        "step": connect.step if flow == CONNECT_FLOW else wizard.step,
+        "completed": completed,
+        "started_without_socials": connect.started_without_socials,
+        "rubro_asked": connect.rubro_asked,
+        "logo_from_profile": connect.logo_from_profile,
+        "profile_pic_is_real": connect.profile_pic_is_real,
+    }
+
+
+async def snapshot_states(state: Any, progress: dict[str, Any] | None = None) -> KitSnapshot:
     """Copy the kit out of `CreativeState`, `BrandWizardState` and `BrandConnectState`
-    (under `state`'s lock — the caller holds it)."""
+    (under `state`'s lock — the caller holds it). `progress` rides in `connect`."""
     from .creative_state import CreativeState
     from .creative_wizard_pages import LOGO_VERSIONS, BrandConnectState, BrandWizardState
 
@@ -316,7 +394,7 @@ async def snapshot_states(state: Any) -> KitSnapshot:
         form=creative._kit_form(),
         files=files,
         logo_brief=brief if any(v.strip() for v in brief.values()) else None,
-        connect=_connect_document(connect),
+        connect=_connect_document(connect, progress),
         profile=_profile_document(connect),
     )
     if wizard.replacing_kit:
@@ -328,10 +406,111 @@ async def snapshot_states(state: Any) -> KitSnapshot:
     return snapshot
 
 
-async def save_brand_kit(state: Any) -> bool:
+def _view_for(tenant_id: UUID, r2_key: str, local_key: str) -> str:
+    """A preview path for a file just moved to R2: a short-lived `/r2media` token, or the
+    local copy it came from (still on disk) when one cannot be issued."""
+    try:
+        content_type = mimetypes.guess_type(r2_key)[0]
+        return issue_view_path(tenant_id, r2_key, "image", content_type)
+    except Exception as exc:  # Redis down: the local copy still shows
+        logger.warning("brand asset view not issued: %s", type(exc).__name__)
+        return f"/_upload/{local_key}"
+
+
+async def _adopt_uploaded(state: Any, tenant_id: UUID, uploaded: dict[str, str]) -> None:
+    """Swap each staged local key for its R2 key in `BrandWizardState` (caller holds the
+    lock), so the next save does not upload the same file again."""
+    if not uploaded:
+        return
+    from .creative_wizard_pages import BrandWizardState
+
+    wizard = await state.get_state(BrandWizardState)
+    views = dict(wizard.asset_views)
+    for local, remote in uploaded.items():
+        views[remote] = _view_for(tenant_id, remote, local)
+    wizard.asset_views = views
+    if wizard.logo_key in uploaded:
+        wizard.logo_key = uploaded[wizard.logo_key]
+    wizard.logo_versions = {
+        version: uploaded.get(key, key) for version, key in wizard.logo_versions.items()
+    }
+    wizard.brand_extras = [
+        {**extra, "key": uploaded.get(extra["key"], extra["key"])} for extra in wizard.brand_extras
+    ]
+
+
+async def save_progress(state: Any, flow: str) -> None:
+    """Save-as-you-go (§ request 2026-10-02): the half-written kit, the answers and the
+    wizard's position, each time the step changes. Quiet — no banner; a failure is
+    logged and the next step tries again. One at a time per session (if the step moved
+    while saving, it saves again); never while the final save runs; never for a
+    "Crear uno nuevo" replacement, which still only replaces the kit when finished."""
+    from .creative_state import CreativeState
+    from .creative_wizard_pages import BrandConnectState, BrandWizardState
+
+    async with state:
+        wizard = await state.get_state(BrandWizardState)
+        creative = await state.get_state(CreativeState)
+        connect = await state.get_state(BrandConnectState)
+        if wizard.replacing_kit or creative.kit_saving or wizard._progress_saving:
+            return
+        # Until the page's loads have put the stored kit, brandboard and answers in the
+        # session, a save would overwrite them with an empty one: wait for the next step.
+        loaded = creative._kit_draft_loaded and wizard._assets_loaded
+        if flow == CONNECT_FLOW:
+            loaded = loaded and connect._details_loaded
+        if not loaded:
+            return
+        wizard._progress_saving = True
+    try:
+        ids = await session_ids(state)
+        if ids is None:
+            return
+        try:
+            status = await asyncio.to_thread(kit_status, ids[0], ids[1])
+        except SQLAlchemyError:
+            return
+        if status.completed:
+            # A finished kit is only rewritten by a finish (or the editor): walking a
+            # wizard over it must not turn it back into a half-written one.
+            return
+        saved_step: int | None = None
+        while True:
+            async with state:
+                connect = await state.get_state(BrandConnectState)
+                wizard = await state.get_state(BrandWizardState)
+                step = connect.step if flow == CONNECT_FLOW else wizard.step
+                if step == saved_step:
+                    return
+                progress = await _progress_document(state, flow, completed=False)
+                snapshot = await snapshot_states(state, progress)
+            try:
+                uploaded = await asyncio.to_thread(
+                    persist_brand_kit,
+                    *ids,
+                    snapshot,
+                    upload_dir=rx.get_upload_dir(),
+                    adopt_voice=False,
+                )
+            except FilesNotSaved:
+                uploaded = {}  # the answers and the step are saved; files retry next step
+            except Exception as exc:
+                logger.warning("brand kit progress not saved: %s", type(exc).__name__)
+                return
+            async with state:
+                await _adopt_uploaded(state, ids[0], uploaded)
+            saved_step = step
+    finally:
+        async with state:
+            wizard = await state.get_state(BrandWizardState)
+            wizard._progress_saving = False
+
+
+async def save_brand_kit(state: Any, flow: str | None = None) -> bool:
     """Save everything from a background handler's `state`; True on success. The outcome
     lands in `CreativeState.kit_notice` / `kit_error`, and `kit_saving` drives the
-    buttons' spinner."""
+    buttons' spinner. A wizard passes its `flow`: the kit is then marked finished
+    (`progress.completed`, § 2026-10-02)."""
     from .creative_state import CreativeState
 
     async with state:
@@ -348,11 +527,16 @@ async def save_brand_kit(state: Any) -> bool:
         error = _NO_SESSION
     else:
         async with state:
-            snapshot = await snapshot_states(state)
+            progress = (
+                await _progress_document(state, flow, completed=True) if flow is not None else None
+            )
+            snapshot = await snapshot_states(state, progress)
         try:
-            await asyncio.to_thread(
+            uploaded = await asyncio.to_thread(
                 persist_brand_kit, *ids, snapshot, upload_dir=rx.get_upload_dir()
             )
+            async with state:
+                await _adopt_uploaded(state, ids[0], uploaded)
         except FilesNotSaved:
             error = _FILES_FAILED
         except Exception as exc:  # the kit itself (validation, database)

@@ -21,11 +21,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 
 import reflex as rx
 from sqlalchemy.exc import SQLAlchemyError
 
-from .brand_finish import load_saved, session_ids
+from .brand_finish import PROGRESS_KEY, KitStatus, load_saved, session_ids
 from .creative_provider import load_kit_form
 from .creative_state import CreativeState
 from .creative_vm import KitFormVM
@@ -78,7 +79,9 @@ class BrandSummaryState(rx.State):
     voice_clone: str = ""
 
     @rx.event(background=True)
-    async def load(self) -> None:
+    async def load(self) -> AsyncIterator[rx.event.EventSpec]:
+        """The summary of a FINISHED kit. A kit left halfway (§ request 2026-10-02) is
+        not a kit yet: /brand sends the operator back into that wizard instead."""
         async with self:
             self.loading = True
             self.error = ""
@@ -98,10 +101,25 @@ class BrandSummaryState(rx.State):
                 self.loading = False
                 self.error = "No se pudo leer tu Brand Kit."
             return
+        raw = (saved.details.connect or {}).get(PROGRESS_KEY)
+        status = KitStatus(
+            completed=form is not None
+            and not (isinstance(raw, dict) and raw.get("completed") is False),
+            progress=raw if isinstance(raw, dict) else None,
+        )
+        async with self:
+            wizard = await self.get_state(BrandWizardState)
+            replacing = wizard.replacing_kit
+        if status.resume_route is not None and not replacing:
+            async with self:
+                self.loading = False
+                self.has_kit = False
+            yield rx.redirect(status.resume_route)
+            return
         async with self:
             self.loading = False
-            self.has_kit = form is not None
-            if form is None:
+            self.has_kit = status.completed
+            if form is None or not status.completed:
                 return
             self._show(form)
             files = []

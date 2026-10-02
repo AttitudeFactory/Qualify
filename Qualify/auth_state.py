@@ -81,6 +81,18 @@ def _start_draft_blocking(email: str):
     return start_brand_kit_draft(email, **_SIGNUP_DEFAULTS)
 
 
+def _draft_destination_blocking(tenant_id) -> str:
+    """Where a pre-login draft goes after its email (§ request 2026-10-02): a finished
+    kit to the signup (there is no account to log into yet), a wizard left halfway back
+    into it, anything else to the start of the Brand Kit."""
+    from .brand_finish import tenant_kit_status  # brand_finish imports this module
+
+    status = tenant_kit_status(tenant_id)
+    if status.completed:
+        return "/signup"
+    return status.resume_route or "/brand"
+
+
 #: The Brand Kit's first view, before any login: asks for the email (§ 2026-10-02).
 BRAND_START_ROUTE = "/brand/start"
 
@@ -115,6 +127,9 @@ class AuthState(rx.State):
     guest_email: str = ""
     guest_error: str = ""
     guest_has_account: bool = False
+    #: The email typed on /brand/start when it already has an account: /login opens
+    #: with it filled in (§ 2026-10-02). Never used to authenticate anything.
+    login_email_hint: str = ""
 
     # Backend-only (never serialized to the client). Held so logout can revoke.
     _access_token: str = ""
@@ -183,10 +198,12 @@ class AuthState(rx.State):
                 self.guest_error = exc.message
             return
         except EmailHasAccount:
+            # § 2026-10-02: an email with an account has its Brand Kit behind the login
             async with self:
                 self.is_authenticating = False
                 self.guest_has_account = True
-                self.guest_error = "Ese correo ya tiene una cuenta. Inicia sesión para seguir."
+                self.login_email_hint = email.strip()
+            yield rx.redirect("/login")
             return
         except SQLAlchemyError as exc:
             logger.error("brand kit draft failed: %s", type(exc).__name__)
@@ -194,11 +211,16 @@ class AuthState(rx.State):
                 self.is_authenticating = False
                 self.guest_error = _AUTH_DOWN
             return
+        try:
+            destination = await asyncio.to_thread(_draft_destination_blocking, draft.tenant_id)
+        except SQLAlchemyError as exc:
+            logger.warning("brand kit draft status unreadable: %s", type(exc).__name__)
+            destination = "/brand"
         async with self:
             self.guest_tenant_id = str(draft.tenant_id)
             self.guest_email = draft.email
             self.is_authenticating = False
-        yield rx.redirect("/brand")
+        yield rx.redirect(destination)
 
     @rx.event
     async def leave_brand_draft(self) -> rx.event.EventSpec:
@@ -270,6 +292,7 @@ class AuthState(rx.State):
                 await self._reset_brand_kit_states()
             self.guest_tenant_id = ""
             self.guest_email = ""
+            self.login_email_hint = ""
         # Only the in-app destinations below; never a URL from the form itself.
         next_route = str(form_data.get("next", "/"))
         yield rx.redirect(next_route if next_route in _POST_LOGIN_ROUTES else "/")
