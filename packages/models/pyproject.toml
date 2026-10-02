@@ -19,6 +19,8 @@ dependencies = [
     "torch>=2.13.0",
     "torchvision>=0.28.0",
     "transformers>=5.14.1",
+    "av>=14",
+    "faster-whisper>=1.1",
 ]
 
 [build-system]

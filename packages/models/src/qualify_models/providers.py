@@ -315,6 +315,155 @@ class LocalRobertuitoSentimentProvider:
         return str(output["label"]), float(output["score"])
 
 
+#: Whisper's own input rate.
+WHISPER_SAMPLING_RATE = 16_000
+
+
+def decode_audio(
+    audio_path: Path,
+    *,
+    sampling_rate: int = WHISPER_SAMPLING_RATE,
+    max_seconds: float | None = None,
+) -> Any:
+    """Any audio (mp3, m4a, wav, ogg, a browser's webm…) as mono float32 samples at
+    `sampling_rate` — through PyAV, which bundles FFmpeg's decoders, so no `ffmpeg`
+    binary has to be on PATH. `max_seconds` stops decoding early (what is analysed is
+    the first stretch of a recording, never an hour of it)."""
+    import av  # noqa: PLC0415 — lazy: only the transcription path needs it
+    import numpy as np  # noqa: PLC0415
+
+    limit = None if max_seconds is None else int(max_seconds * sampling_rate)
+    chunks: list[Any] = []
+    total = 0
+    with av.open(str(audio_path)) as container:
+        stream = next((s for s in container.streams if s.type == "audio"), None)
+        if stream is None:
+            raise ValueError(f"{audio_path.name} has no audio stream")
+        resampler = av.AudioResampler(format="flt", layout="mono", rate=sampling_rate)
+        for frame in container.decode(stream):
+            for out in resampler.resample(frame):
+                samples = out.to_ndarray().reshape(-1)
+                chunks.append(samples)
+                total += samples.size
+            if limit is not None and total >= limit:
+                break
+        else:
+            for out in resampler.resample(None):  # flush what the resampler holds
+                chunks.append(out.to_ndarray().reshape(-1))
+    audio = np.concatenate(chunks).astype(np.float32) if chunks else np.zeros(0, np.float32)
+    return audio[:limit] if limit is not None else audio
+
+
+class LocalWhisperTranscriptionProvider:
+    """Whisper on this machine through `transformers` (§ request 2026-09-30: transcribe
+    locally — no key, nothing sent out). Same checkpoint the hosted provider calls; the
+    weights download once (~1.6 GB for the turbo) and stay in the Hugging Face cache.
+    The pipeline is built once per process and calls are serialized (a `transformers`
+    pipeline is not meant for concurrent use). On a CPU prefer
+    `FasterWhisperTranscriptionProvider` — same weights, int8, ~30× faster (measured
+    2026-10-01); this one stays as the fallback when `faster-whisper` is not installed."""
+
+    def __init__(
+        self,
+        model_id: str = "openai/whisper-large-v3-turbo",
+        *,
+        language: str = "spanish",
+        max_seconds: float = 120.0,
+    ) -> None:
+        import threading  # noqa: PLC0415
+
+        self.model_id = model_id
+        self.language = language
+        self.max_seconds = max_seconds
+        self._pipeline: Any = None
+        self._lock = threading.Lock()
+
+    def _get_pipeline(self) -> Any:
+        if self._pipeline is None:
+            from transformers import pipeline  # noqa: PLC0415
+
+            self._pipeline = pipeline(task="automatic-speech-recognition", model=self.model_id)
+        return self._pipeline
+
+    def warm_up(self) -> None:
+        """Build the pipeline now (the weights' first read from disk takes seconds, the
+        first download minutes) so a `transcribe` that follows pays none of it — meant
+        for a background thread while the recording is still being made."""
+        with self._lock:
+            self._get_pipeline()
+
+    def transcribe(self, audio_path: Path) -> tuple[str, str | None]:
+        audio = decode_audio(audio_path, max_seconds=self.max_seconds)
+        if audio.size == 0:
+            return "", None
+        with self._lock:
+            output = self._get_pipeline()(
+                {"raw": audio, "sampling_rate": WHISPER_SAMPLING_RATE},
+                chunk_length_s=30,
+                generate_kwargs={"language": self.language, "task": "transcribe"},
+            )
+        return str(output.get("text", "")).strip(), "es"
+
+
+#: The large-v3-turbo weights converted for CTranslate2 (what `faster-whisper` loads).
+#: Same checkpoint as `TRANSCRIBE_MODEL`, same words out (compared on real recordings
+#: 2026-10-01); downloaded once (~1.6 GB) into the Hugging Face cache.
+FASTER_WHISPER_MODEL = "deepdml/faster-whisper-large-v3-turbo-ct2"
+
+
+class FasterWhisperTranscriptionProvider:
+    """Whisper on this machine through `faster-whisper` (CTranslate2, int8 on the CPU)
+    — the same weights as `LocalWhisperTranscriptionProvider`, 30× faster where it
+    matters (2026-10-01, a 4-core laptop CPU, a 35 s recording: 462 s through
+    `transformers` in float32 against 15.6 s here, the same transcript word for word;
+    the full large-v3 encoder is what `transformers` spends its time on, and int8 is
+    what tames it). The default for Tu voz for that reason. Decoding goes through
+    `decode_audio` as before (no `ffmpeg` binary on PATH); the model is built once per
+    process and calls are serialized."""
+
+    def __init__(
+        self,
+        model_id: str = FASTER_WHISPER_MODEL,
+        *,
+        language: str = "es",
+        max_seconds: float = 120.0,
+        compute_type: str = "int8",
+    ) -> None:
+        import threading  # noqa: PLC0415
+
+        self.model_id = model_id
+        self.language = language
+        self.max_seconds = max_seconds
+        self.compute_type = compute_type
+        self._model: Any = None
+        self._lock = threading.Lock()
+
+    def _get_model(self) -> Any:
+        if self._model is None:
+            from faster_whisper import WhisperModel  # noqa: PLC0415
+
+            self._model = WhisperModel(self.model_id, device="cpu", compute_type=self.compute_type)
+        return self._model
+
+    def warm_up(self) -> None:
+        """Build the model now (its first read from disk takes seconds, its first
+        download minutes), so a `transcribe` that follows pays none of it."""
+        with self._lock:
+            self._get_model()
+
+    def transcribe(self, audio_path: Path) -> tuple[str, str | None]:
+        audio = decode_audio(audio_path, max_seconds=self.max_seconds)
+        if audio.size == 0:
+            return "", None
+        with self._lock:
+            segments, _info = self._get_model().transcribe(
+                audio, language=self.language, beam_size=1, vad_filter=False
+            )
+            # A generator: the work happens as it is consumed, so inside the lock.
+            text = " ".join(segment.text.strip() for segment in segments)
+        return text.strip(), self.language
+
+
 class HFInferenceTranscriptionProvider:
     """Calls a hosted ASR model via HF Inference Providers. Swap for
     faster-whisper self-hosted once GPU serverless infra exists (Parte 3)."""
