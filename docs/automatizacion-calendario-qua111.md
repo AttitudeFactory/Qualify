@@ -98,6 +98,14 @@ Código: `planner/worker.py` → `planner/tick.py` (`TickRunner.run_once`) → `
    Solo se procesa la foto: lo que aparece o se inicia durante el tick espera al siguiente. `run_once()` nunca espera ni reintenta.
 3. **Errores:** el error de un evento se registra y el tick sigue con el siguiente; el de un tenant, lo mismo con el siguiente tenant. Un tick que falla entero lo registra el worker, que sigue.
 
+### Ventana de ejecución de 24 h (QUA-115)
+
+Un evento `scheduled` solo se ejecuta mientras `scheduled_at <= now < scheduled_at + 24 h` (`rules.EXECUTION_WINDOW`). La ventana es semiabierta: en el instante exacto `scheduled_at + 24 h` el evento ya está vencido. Aplica a **todo** evento `scheduled`, esté aprobado o no: un POST aprobado tarde se publica si la aprobación llega dentro de la ventana, y un worker caído más de 24 h no "recupera" publicaciones al volver.
+
+El vencimiento es **derivado** de `scheduled_at`: no hay estado ni columna nuevos, y la FSM no cambia. Tres capas lo garantizan, de fuera hacia dentro: `list_due` no devuelve vencidos (`scheduled_at > now - 24 h`), `claim` lleva la misma condición en su `WHERE` (un snapshot anterior al cierre de la ventana no puede reclamar después), y `EventExecutor.try_execute` lo comprueba con su reloj y devuelve `NOT_READY` con motivo `expired` antes de mirar la conexión o el POST.
+
+En el Planificador el evento sigue `scheduled` y se muestra como **"Venció"** (tiene precedencia sobre "Venció sin aprobación"), con la nota de reprogramar. **Reprogramar** es el único camino de vuelta y reutiliza el flujo existente: exige un instante futuro, sube `revision` (clave de idempotencia nueva) y el siguiente tick lo trata como cualquier evento pendiente.
+
 ### El POST que se publica (contrato con QUA-109/110)
 
 El ejecutor lee el POST con `PostReader.get_publishable()` ([`planner/publishable.py`](../packages/api/src/qualify_api/planner/publishable.py), la única regla, compartida con la tarjeta del calendario). Solo publica si **todo** esto se cumple; si no, devuelve el motivo y el evento sigue `scheduled`:

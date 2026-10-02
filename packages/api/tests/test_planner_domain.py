@@ -16,9 +16,12 @@ from qualify_api.planner.fsm import (
 )
 from qualify_api.planner.post_reader import ApprovalStatus, PostSummary
 from qualify_api.planner.rules import (
+    EXECUTION_WINDOW,
     ExecutionDecision,
     decide_execution,
     idempotency_key,
+    is_expired,
+    is_expired_scheduled,
     is_overdue_unapproved,
 )
 from qualify_api.planner.service import (
@@ -178,3 +181,82 @@ def test_week_window_covers_monday_to_monday_in_the_tenant_zone() -> None:
     start, end = week_window(date(2026, 9, 21), "America/Caracas")
     assert start == datetime(2026, 9, 21, 4, 0, tzinfo=UTC)
     assert end == datetime(2026, 9, 28, 4, 0, tzinfo=UTC)
+
+
+# --- execution window (QUA-115) --------------------------------------------------
+
+
+def test_the_execution_window_is_24_hours() -> None:
+    assert EXECUTION_WINDOW == timedelta(hours=24)
+
+
+def test_one_second_before_the_window_closes_is_still_ready() -> None:
+    decision = decide_execution(
+        status="scheduled",
+        scheduled_at=NOW - EXECUTION_WINDOW + timedelta(seconds=1),
+        post=_post(ApprovalStatus.APPROVED),
+        now=NOW,
+    )
+    assert decision is ExecutionDecision.READY
+
+
+def test_exactly_24_hours_after_scheduled_at_is_expired() -> None:
+    """Half-open window: `scheduled_at + 24 h` itself is already outside it."""
+    scheduled_at = NOW - EXECUTION_WINDOW
+    assert is_expired(scheduled_at=scheduled_at, now=NOW)
+    assert not is_expired(scheduled_at=scheduled_at + timedelta(microseconds=1), now=NOW)
+    decision = decide_execution(
+        status="scheduled", scheduled_at=scheduled_at, post=_post(ApprovalStatus.APPROVED), now=NOW
+    )
+    assert decision is ExecutionDecision.BLOCKED_EXPIRED
+
+
+@pytest.mark.parametrize(
+    "post",
+    [
+        None,
+        _post(ApprovalStatus.PENDING),
+        _post(ApprovalStatus.REJECTED),
+        _post(ApprovalStatus.APPROVED, publishable=False),
+        _post(ApprovalStatus.APPROVED),
+    ],
+)
+def test_expiry_takes_precedence_over_everything_about_the_post(post: PostSummary | None) -> None:
+    decision = decide_execution(
+        status="scheduled", scheduled_at=NOW - timedelta(days=3), post=post, now=NOW
+    )
+    assert decision is ExecutionDecision.BLOCKED_EXPIRED
+
+
+def test_an_expired_event_is_not_reported_as_overdue_unapproved() -> None:
+    """The calendar shows "Venció", never "Venció sin aprobación", once the window closed."""
+    pending = _post(ApprovalStatus.PENDING)
+    expired_at = NOW - EXECUTION_WINDOW
+    assert not is_overdue_unapproved(
+        status="scheduled", scheduled_at=expired_at, post=pending, now=NOW
+    )
+    assert is_expired_scheduled(status="scheduled", scheduled_at=expired_at, now=NOW)
+
+
+def test_a_future_or_in_window_event_is_not_expired() -> None:
+    assert not is_expired_scheduled(
+        status="scheduled", scheduled_at=NOW + timedelta(hours=1), now=NOW
+    )
+    assert not is_expired_scheduled(
+        status="scheduled", scheduled_at=NOW - timedelta(hours=23), now=NOW
+    )
+
+
+@pytest.mark.parametrize("status", ["cancelled", "publishing", "published", "failed"])
+def test_only_a_scheduled_event_can_expire(status: str) -> None:
+    """A finished or cancelled event already has its outcome; time cannot change it."""
+    assert not is_expired_scheduled(status=status, scheduled_at=NOW - timedelta(days=3), now=NOW)
+    assert (
+        decide_execution(status=status, scheduled_at=NOW - timedelta(days=3), post=None, now=NOW)
+        is ExecutionDecision.NOT_SCHEDULED
+    )
+
+
+def test_the_window_can_be_narrowed_for_a_caller_that_needs_it() -> None:
+    assert is_expired(scheduled_at=NOW - timedelta(hours=2), now=NOW, window=timedelta(hours=1))
+    assert not is_expired(scheduled_at=NOW - timedelta(hours=2), now=NOW)

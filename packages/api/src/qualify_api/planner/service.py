@@ -24,7 +24,7 @@ from qualify_api.planner.fsm import EventStatus, EventTrigger, InvalidTransition
 from qualify_api.planner.models import TAG_COLORS
 from qualify_api.planner.post_reader import ApprovalStatus, PostReader, PostSummary
 from qualify_api.planner.repository import EventRecord, NewEvent, PlannerRepository, TagRecord
-from qualify_api.planner.rules import is_overdue_unapproved
+from qualify_api.planner.rules import is_expired_scheduled, is_overdue_unapproved
 
 ACTIVE_CONNECTION_STATUS = "active"
 
@@ -113,6 +113,9 @@ class PlannedEvent:
     post: PostSummary | None
     overdue_unapproved: bool
     tags: tuple[TagRecord, ...] = ()
+    # QUA-115: a `scheduled` event past its execution window — shown as "Venció"; the
+    # worker will not pick it up until it is rescheduled.
+    expired: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +402,7 @@ class PlannerService:
     def _planned(
         self, record: EventRecord, post: PostSummary | None, tags: list[TagRecord] | None = None
     ) -> PlannedEvent:
+        now = self._clock()
         return PlannedEvent(
             event=record,
             post=post,
@@ -407,7 +411,10 @@ class PlannerService:
                 status=record.status,
                 scheduled_at=record.scheduled_at,
                 post=post,
-                now=self._clock(),
+                now=now,
+            ),
+            expired=is_expired_scheduled(
+                status=record.status, scheduled_at=record.scheduled_at, now=now
             ),
         )
 

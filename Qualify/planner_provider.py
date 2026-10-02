@@ -194,6 +194,7 @@ def _card_input(planned: PlannedEvent, video_urls: dict[str, str] | None = None)
         scheduled_at=event.scheduled_at,
         status=event.status,
         overdue=planned.overdue_unapproved,
+        expired=planned.expired,
         connection_id=str(event.connection_id),
         post_title=post.title if post is not None else None,
         caption_excerpt=post.caption_excerpt if post is not None else "",
@@ -451,7 +452,9 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
         is_publishable=post.is_publishable if post is not None else False,
         reason=post.unpublishable_reason if post is not None else "",
     )
-    s_label, s_tone = status_label(event.status, overdue=planned.overdue_unapproved)
+    s_label, s_tone = status_label(
+        event.status, overdue=planned.overdue_unapproved, expired=planned.expired
+    )
     actions = event_actions(
         status=event.status,
         approval=post.approval.value if post is not None else None,
@@ -479,6 +482,7 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
         can_remove_rejected=actions.can_remove_rejected,
         detail_href=post.detail_href if post is not None else "",
         publish_note=ready.note,
+        expired=planned.expired,
         video_url=_video_url(tenant_id, post.video_object_key if post is not None else None),
         local_date=local.date().isoformat(),
         local_time=local.strftime("%H:%M"),

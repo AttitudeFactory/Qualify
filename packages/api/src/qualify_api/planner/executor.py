@@ -81,7 +81,7 @@ from qualify_api.planner.post_reader import (
     UnpublishableReason,
 )
 from qualify_api.planner.repository import EventRecord, PlannerRepository
-from qualify_api.planner.rules import idempotency_key
+from qualify_api.planner.rules import idempotency_key, is_expired
 from qualify_api.publishing.client import MEDIA_TYPE_IMAGE
 from qualify_api.publishing.repository import AttemptRecord
 from qualify_api.publishing.service import (
@@ -213,6 +213,8 @@ class ConnectionStatusReader(Protocol):
 # The only connection status `PublishService` sends on.
 _ACTIVE_CONNECTION = "active"
 CONNECTION_NOT_ACTIVE = "connection_not_active"
+# QUA-115: the event's execution window closed before this executor got to it.
+EXPIRED = "expired"
 
 
 def _log(event: str, record: EventRecord, **fields: object) -> None:
@@ -258,7 +260,15 @@ class EventExecutor:
         tenant's) is treated like an unapproved POST: nothing is claimed, the event stays
         `scheduled`, and it publishes on the first tick after the account is reconnected.
         Without this, the publisher would settle the attempt as failed and the event with
-        it — an error for what is only "this account cannot publish right now"."""
+        it — an error for what is only "this account cannot publish right now".
+
+        An event past its execution window (QUA-115) is refused before anything else:
+        `list_due` already hides expired events, but the snapshot this call receives may
+        predate the window's end, and the claim's own `WHERE` is the last guard."""
+        now = self._clock()
+        if is_expired(scheduled_at=event.scheduled_at, now=now):
+            _log("not_ready", event, reason=EXPIRED)
+            return ExecutionResult(event.id, ExecutionOutcome.NOT_READY, reason=EXPIRED)
         if self._connections is not None:
             status = self._connections.status(
                 tenant_id=event.tenant_id, connection_id=event.connection_id
@@ -276,7 +286,7 @@ class EventExecutor:
             tenant_id=event.tenant_id,
             event_id=event.id,
             expected_revision=event.revision,
-            now=self._clock(),
+            now=now,
         )
         if claimed is None:
             return ExecutionResult(event.id, ExecutionOutcome.CLAIM_LOST)

@@ -71,6 +71,10 @@ _STATUS_LABEL: dict[str, tuple[str, str]] = {
     "failed": ("Falló", "error"),
 }
 OVERDUE_LABEL = ("Venció sin aprobación", "warn")
+# QUA-115: a scheduled event past its 24 h execution window. The worker will not touch
+# it; only "Reprogramar" brings it back. Takes precedence over OVERDUE_LABEL.
+EXPIRED_LABEL = ("Venció", "warn")
+EXPIRED_NOTE = "Pasaron más de 24 h de la hora programada. Reprográmalo para volver a publicarlo."
 
 # The POST category vocabulary is QUA-109's. These labels cover what the temporary
 # adapter returns plus the categories QUA-109 is expected to introduce.
@@ -172,7 +176,9 @@ def event_actions(*, status: str, approval: str | None, lifecycle: str | None) -
     )
 
 
-def status_label(status: str, *, overdue: bool) -> tuple[str, str]:
+def status_label(status: str, *, overdue: bool, expired: bool = False) -> tuple[str, str]:
+    if expired:
+        return EXPIRED_LABEL
     if overdue:
         return OVERDUE_LABEL
     return _STATUS_LABEL.get(status, (status, "neutral"))
@@ -549,6 +555,10 @@ class EventDetailVM:
     can_remove_rejected: bool = False  # the POST is rejected → "Quitar del calendario"
     detail_href: str = ""
     publish_note: str = ""  # why this POST cannot be published yet, if so
+    # QUA-115: past the execution window. The dialog then shows EXPIRED_NOTE instead of
+    # the "publishes in the next minute it is ready" wording, which is false until the
+    # event is rescheduled. `publish_note` keeps the POST's own reason for the form.
+    expired: bool = False
     # Backend path (`r2_media`) of the POST's R2-only video, "" when there is none.
     video_url: str = ""
     # Pre-filled values for the reschedule form.
@@ -586,6 +596,7 @@ class CardInput:
     is_publishable: bool = False  # `PostSummary.is_publishable`
     unpublishable_reason: str = ""  # `PostSummary.unpublishable_reason`
     video_url: str = ""  # backend path of the POST's R2-only video (`r2_media`), or ""
+    expired: bool = False  # QUA-115: `PlannedEvent.expired` — past the execution window
 
 
 def event_readiness(
@@ -611,7 +622,7 @@ def build_card(
         is_publishable=item.is_publishable,
         reason=item.unpublishable_reason,
     )
-    s_label, s_tone = status_label(item.status, overdue=item.overdue)
+    s_label, s_tone = status_label(item.status, overdue=item.overdue, expired=item.expired)
     return EventCardVM(
         event_id=item.event_id,
         post_id=item.post_id,
@@ -628,12 +639,16 @@ def build_card(
         approval_tone=ready.tone,
         status_label=s_label,
         status_tone=s_tone,
-        overdue=item.overdue,
+        # `overdue` is the card's "needs attention" flag (amber edge + warning icon); an
+        # expired event needs attention for the same reason: it will not publish as is.
+        overdue=item.overdue or item.expired,
         can_modify=event_actions(status=item.status, approval=approval, lifecycle=None).can_modify,
         muted=item.status == "cancelled",
         detail_href=item.detail_href,
         date_label=date_label(local.date()),
         tags=list(item.tags),
+        # The POST's own reason stays here (list view, reschedule form); the expiry note
+        # is the detail dialog's (`EXPIRED_NOTE` via `EventDetailVM.expired`).
         readiness_note=ready.note,
         video_url=item.video_url,
     )

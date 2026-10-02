@@ -23,6 +23,7 @@ from .planner_state import SCROLL_ID, PlannerState
 from .planner_vm import (
     AUTO_PUBLISH_ACTIVE,
     AUTO_PUBLISH_NO_CONNECTION,
+    EXPIRED_NOTE,
     TAG_COLORS,
     VIEW_CALENDAR,
     VIEW_LIST,
@@ -1395,13 +1396,19 @@ def _detail_dialog() -> rx.Component:
             width="100%",
         ),
         rx.cond(
-            d.publish_note != "",
-            callout(
-                "No se publicará hasta completarlo: "
-                + d.publish_note
-                + " El evento sigue programado y se publica en el siguiente minuto en que "
-                "esté listo.",
-                "warn",
+            # QUA-115: an expired event will NOT publish when it is ready — only a
+            # reschedule brings it back, so the expiry note replaces the readiness one.
+            d.expired,
+            callout(EXPIRED_NOTE, "warn"),
+            rx.cond(
+                d.publish_note != "",
+                callout(
+                    "No se publicará hasta completarlo: "
+                    + d.publish_note
+                    + " El evento sigue programado y se publica en el siguiente minuto en que "
+                    "esté listo.",
+                    "warn",
+                ),
             ),
         ),
         rx.match(
