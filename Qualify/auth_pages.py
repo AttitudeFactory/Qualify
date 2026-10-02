@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .auth_state import BRAND_START_ROUTE, AuthState
+from .auth_state import AuthState
 from .ui import brand_mark, callout, card
 from .ui import tokens as T
 
@@ -80,14 +80,11 @@ def login_index() -> rx.Component:
             on_submit=AuthState.handle_login,
             width="100%",
         ),
+        # No link back to the Brand Kit here (§ 2026-10-02): the Brand Kit comes first
+        # and the login after it, so whoever is here already came through /brand/start.
         rx.text(
             "¿Negocio nuevo? ",
             rx.link("Regístralo aquí", href="/signup"),
-            size="2",
-        ),
-        rx.text(
-            "¿Aún sin cuenta? ",
-            rx.link("Crea tu Brand Kit sin registrarte", href=BRAND_START_ROUTE),
             size="2",
         ),
     )

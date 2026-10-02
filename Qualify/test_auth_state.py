@@ -183,6 +183,8 @@ def test_the_first_view_is_the_brand_kit_not_the_login() -> None:
     assert '"/login"' not in source and "BRAND_START_ROUTE" in source
     pages = (_QUALIFY_DIR / "auth_pages.py").read_text(encoding="utf-8")
     assert "Saltar" not in pages
+    # and the login does not link back to it: the Brand Kit was already made first
+    assert "sin registrarte" not in pages
 
 
 # --------------------------------------------------------------------------------------
