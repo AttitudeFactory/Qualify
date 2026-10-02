@@ -29,6 +29,7 @@ from qualify_api.planner.post_reader import (
     UnpublishableReason,
 )
 from qualify_api.planner.repository import MemoryPlannerRepository, NewEvent
+from qualify_api.planner.rules import EXECUTION_WINDOW
 from qualify_api.planner.tick import TickRunner
 from qualify_api.publishing.service import PublishState, UnknownConnection
 
@@ -842,3 +843,86 @@ def test_a_scoped_source_needs_at_least_one_tenant() -> None:
     with pytest.raises(ValueError):
         ScopedTenants([])
     assert ScopedTenants([TENANT, TENANT]).tenants(now=NOW) == [TENANT]
+
+
+# --- execution window (QUA-115) --------------------------------------------------
+
+
+def _scheduled_at(world: World, when: datetime):
+    """A `scheduled` event at `when` whose POST is publishable."""
+    post_id = uuid4()
+    event = world.repo.add(
+        NewEvent(
+            tenant_id=TENANT,
+            brand_id=BRAND,
+            post_id=post_id,
+            connection_id=CONN,
+            scheduled_at=when,
+            scheduled_tz="America/Caracas",
+            created_by_user_id=uuid4(),
+        )
+    )
+    world.posts.set(post_id, _publishable(post_id))
+    return event
+
+
+async def test_an_expired_event_is_refused_before_the_claim_and_nothing_is_sent(
+    world: World,
+) -> None:
+    event = _scheduled_at(world, NOW - EXECUTION_WINDOW)  # exactly 24 h: already expired
+    result = await world.executor.try_execute(event)
+    assert result.outcome is Outcome.NOT_READY and result.reason == "expired"
+    assert _status(world, event) == ("scheduled", None)
+    assert not world.publisher.start_calls and world.publisher.meta_calls == 0
+
+
+async def test_an_event_inside_the_window_is_claimed_and_started(world: World) -> None:
+    event = _scheduled_at(world, NOW - EXECUTION_WINDOW + timedelta(seconds=1))
+    result = await world.executor.try_execute(event)
+    assert result.outcome is Outcome.STARTED
+    assert _status(world, event)[0] == "publishing"
+    assert len(world.publisher.start_calls) == 1
+
+
+def test_the_memory_repository_hides_and_refuses_expired_events(world: World) -> None:
+    expired = _scheduled_at(world, NOW - EXECUTION_WINDOW)
+    fresh = _scheduled_at(world, NOW - EXECUTION_WINDOW + timedelta(seconds=1))
+    assert [e.id for e in world.repo.list_due(tenant_id=TENANT, now=NOW)] == [fresh.id]
+    assert (
+        world.repo.claim(tenant_id=TENANT, event_id=expired.id, expected_revision=1, now=NOW)
+        is None
+    )
+    assert _status(world, expired) == ("scheduled", None)
+
+
+async def test_the_tick_never_hands_an_expired_event_to_the_executor(world: World) -> None:
+    expired = _scheduled_at(world, NOW - timedelta(days=2))
+    fresh = _scheduled_at(world, NOW - timedelta(minutes=5))
+    report = await _runner(world, _Source(TENANT)).run_once()
+    (tenant,) = report.tenants
+    assert [r.event_id for r in tenant.executed] == [fresh.id]
+    assert _status(world, expired) == ("scheduled", None)
+    assert _status(world, fresh)[0] == "publishing"
+
+
+async def test_a_rescheduled_expired_event_returns_to_the_normal_flow(world: World) -> None:
+    """Reschedule is the only way back, and the EXISTING flow is enough: it bumps
+    `revision`, so the executor starts the publication under a brand-new key."""
+    event = _scheduled_at(world, NOW - timedelta(days=2))
+    assert (await world.executor.try_execute(event)).outcome is Outcome.NOT_READY
+
+    moved = world.repo.reschedule(
+        tenant_id=TENANT,
+        event_id=event.id,
+        expected_revision=1,
+        scheduled_at=NOW - timedelta(minutes=1),  # inside the window again
+        scheduled_tz=event.scheduled_tz,
+        connection_id=CONN,
+    )
+    assert moved is not None and moved.revision == 2
+    assert [e.id for e in world.repo.list_due(tenant_id=TENANT, now=NOW)] == [event.id]
+
+    result = await world.executor.try_execute(moved)
+    assert result.outcome is Outcome.STARTED
+    assert (CONN, f"cal:{event.id}:2") in world.publisher.attempts
+    assert (CONN, f"cal:{event.id}:1") not in world.publisher.attempts

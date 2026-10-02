@@ -10,7 +10,7 @@ overwriting.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -19,6 +19,7 @@ from sqlalchemy import delete, func, or_, select, update
 
 from qualify_api.planner.fsm import EventStatus, EventTrigger, apply_transition
 from qualify_api.planner.models import CalendarEvent, CalendarEventTag, PlannerTag
+from qualify_api.planner.rules import EXECUTION_WINDOW
 
 # QUA-111's execution edges, read from the FSM once so the repository never spells a
 # status the transition table does not produce.
@@ -108,18 +109,35 @@ class PlannerRepository(Protocol):
         """Compare-and-set the status; `None` if the event was not in `expected_status`."""
         ...
 
-    def list_due(self, *, tenant_id: UUID, now: datetime, limit: int = 100) -> list[EventRecord]:
-        """`scheduled` events with `scheduled_at <= now`, oldest first — QUA-111's query."""
+    def list_due(
+        self,
+        *,
+        tenant_id: UUID,
+        now: datetime,
+        limit: int = 100,
+        window: timedelta = EXECUTION_WINDOW,
+    ) -> list[EventRecord]:
+        """`scheduled` events with `scheduled_at <= now` that have NOT expired
+        (`scheduled_at > now - window`, QUA-115), oldest first — QUA-111's query. An
+        expired event is never handed to the executor; it waits for a reschedule."""
         ...
 
     # -- execution (QUA-111) ---------------------------------------------------
 
     def claim(
-        self, *, tenant_id: UUID, event_id: UUID, expected_revision: int, now: datetime
+        self,
+        *,
+        tenant_id: UUID,
+        event_id: UUID,
+        expected_revision: int,
+        now: datetime,
+        window: timedelta = EXECUTION_WINDOW,
     ) -> EventRecord | None:
         """`scheduled` → `publishing` in ONE conditional write: only if the event is still
-        `scheduled`, at `expected_revision`, and due at `now`. `None` means another
-        executor claimed it first, or the operator moved/cancelled it — never both."""
+        `scheduled`, at `expected_revision`, due at `now` and still inside its execution
+        window (QUA-115 — a snapshot taken before the window closed cannot claim after
+        it). `None` means another executor claimed it first, the operator
+        moved/cancelled it, or the window closed — never both."""
         ...
 
     def link_attempt(
@@ -367,7 +385,14 @@ class MemoryPlannerRepository:
         self._rows[event_id] = updated
         return updated
 
-    def list_due(self, *, tenant_id: UUID, now: datetime, limit: int = 100) -> list[EventRecord]:
+    def list_due(
+        self,
+        *,
+        tenant_id: UUID,
+        now: datetime,
+        limit: int = 100,
+        window: timedelta = EXECUTION_WINDOW,
+    ) -> list[EventRecord]:
         due = sorted(
             (
                 r
@@ -375,13 +400,20 @@ class MemoryPlannerRepository:
                 if r.tenant_id == tenant_id
                 and r.status == EventStatus.SCHEDULED.value
                 and r.scheduled_at <= now
+                and r.scheduled_at > now - window  # QUA-115: not expired
             ),
             key=lambda r: r.scheduled_at,
         )
         return due[:limit]
 
     def claim(
-        self, *, tenant_id: UUID, event_id: UUID, expected_revision: int, now: datetime
+        self,
+        *,
+        tenant_id: UUID,
+        event_id: UUID,
+        expected_revision: int,
+        now: datetime,
+        window: timedelta = EXECUTION_WINDOW,
     ) -> EventRecord | None:
         current = self.get(tenant_id=tenant_id, event_id=event_id)
         if (
@@ -389,6 +421,7 @@ class MemoryPlannerRepository:
             or current.status != EventStatus.SCHEDULED.value
             or current.revision != expected_revision
             or current.scheduled_at > now
+            or current.scheduled_at <= now - window  # QUA-115: expired
         ):
             return None
         updated = replace(current, status=_CLAIMED.value, updated_at=datetime.now(UTC))
@@ -573,13 +606,21 @@ class PostgresPlannerRepository:
             ).one_or_none()
             return _snapshot(row) if row is not None else None
 
-    def list_due(self, *, tenant_id: UUID, now: datetime, limit: int = 100) -> list[EventRecord]:
+    def list_due(
+        self,
+        *,
+        tenant_id: UUID,
+        now: datetime,
+        limit: int = 100,
+        window: timedelta = EXECUTION_WINDOW,
+    ) -> list[EventRecord]:
         with tenant_session(tenant_id) as session:
             rows = session.scalars(
                 select(CalendarEvent)
                 .where(
                     CalendarEvent.status == EventStatus.SCHEDULED.value,
                     CalendarEvent.scheduled_at <= now,
+                    CalendarEvent.scheduled_at > now - window,  # QUA-115: not expired
                 )
                 .order_by(CalendarEvent.scheduled_at)
                 .limit(limit)
@@ -589,7 +630,13 @@ class PostgresPlannerRepository:
     # -- execution (QUA-111) ---------------------------------------------------
 
     def claim(
-        self, *, tenant_id: UUID, event_id: UUID, expected_revision: int, now: datetime
+        self,
+        *,
+        tenant_id: UUID,
+        event_id: UUID,
+        expected_revision: int,
+        now: datetime,
+        window: timedelta = EXECUTION_WINDOW,
     ) -> EventRecord | None:
         # One UPDATE, not read-then-write: a concurrent claim blocks on the row lock and,
         # once the winner commits, re-evaluates this WHERE against the new row — so it
@@ -602,6 +649,7 @@ class PostgresPlannerRepository:
                     CalendarEvent.status == EventStatus.SCHEDULED.value,
                     CalendarEvent.revision == expected_revision,
                     CalendarEvent.scheduled_at <= now,
+                    CalendarEvent.scheduled_at > now - window,  # QUA-115: not expired
                 )
                 .values(status=_CLAIMED.value, updated_at=datetime.now(UTC))
                 .returning(CalendarEvent)

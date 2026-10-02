@@ -2201,3 +2201,44 @@ def test_a_post_rejected_from_the_planner_is_never_published_and_can_be_removed(
     assert planner.remove_rejected_post(tenant_id=tenant_id, event_id=event.id) == 1
     assert _stored(tenant_id, event.id) is None
     assert DraftPostReader().get(tenant_id=tenant_id, post_id=post_id) is not None  # POST kept
+
+
+# --- execution window (QUA-115) --------------------------------------------------
+
+
+def test_list_due_hides_expired_events(repo, world_p) -> None:
+    # `limit` is raised so rows left behind by other tests in the shared test tenant
+    # (there is no teardown) cannot crowd this test's own events out of the page.
+    expired = _due_event(repo, world_p, hours=-25)
+    fresh = _due_event(repo, world_p, hours=-1)
+    due = {e.id for e in repo.list_due(tenant_id=TENANT_P, now=datetime.now(UTC), limit=10_000)}
+    assert fresh.id in due and expired.id not in due
+    _retire(repo, expired, fresh)
+
+
+def test_claim_of_an_expired_event_fails(repo, world_p) -> None:
+    expired = _due_event(repo, world_p, hours=-25)
+    claimed = repo.claim(
+        tenant_id=TENANT_P, event_id=expired.id, expected_revision=1, now=datetime.now(UTC)
+    )
+    assert claimed is None
+    assert repo.get(tenant_id=TENANT_P, event_id=expired.id).status == "scheduled"
+    _retire(repo, expired)
+
+
+def test_a_rescheduled_expired_event_is_due_and_claimable_again(repo, world_p) -> None:
+    _, _, conn_id = world_p
+    expired = _due_event(repo, world_p, hours=-25)
+    moved = repo.reschedule(
+        tenant_id=TENANT_P,
+        event_id=expired.id,
+        expected_revision=1,
+        scheduled_at=datetime.now(UTC) - timedelta(hours=1),
+        scheduled_tz=expired.scheduled_tz,
+        connection_id=conn_id,
+    )
+    assert moved is not None and moved.revision == 2
+    now = datetime.now(UTC)
+    assert expired.id in {e.id for e in repo.list_due(tenant_id=TENANT_P, now=now, limit=10_000)}
+    claimed = repo.claim(tenant_id=TENANT_P, event_id=expired.id, expected_revision=2, now=now)
+    assert claimed is not None and claimed.status == "publishing"

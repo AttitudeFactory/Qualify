@@ -16,13 +16,17 @@ This module never publishes, never writes content, and never approves.
 from qualify_api.planner.fsm import EventStatus, EventTrigger, InvalidTransition, apply_transition
 from qualify_api.planner.post_reader import ApprovalStatus, PostReader, PostSummary
 from qualify_api.planner.rules import (
+    EXECUTION_WINDOW,
     ExecutionDecision,
     decide_execution,
     idempotency_key,
+    is_expired,
+    is_expired_scheduled,
     is_overdue_unapproved,
 )
 
 __all__ = [
+    "EXECUTION_WINDOW",
     "ApprovalStatus",
     "EventStatus",
     "EventTrigger",
@@ -33,5 +37,7 @@ __all__ = [
     "apply_transition",
     "decide_execution",
     "idempotency_key",
+    "is_expired",
+    "is_expired_scheduled",
     "is_overdue_unapproved",
 ]

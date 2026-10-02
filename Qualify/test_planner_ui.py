@@ -45,6 +45,8 @@ from .planner_vm import (
     AUTO_PUBLISH_ACTIVE,
     AUTO_PUBLISH_NO_CONNECTION,
     AUTO_PUBLISH_UNAVAILABLE,
+    EXPIRED_LABEL,
+    EXPIRED_NOTE,
     HOUR_ROW_KEYS,
     OPENING_HOUR,
     TAG_SUGGESTIONS,
@@ -789,3 +791,53 @@ def test_a_rejected_posts_card_offers_no_reschedule() -> None:
         connections=CONNS,
     )
     assert card.can_modify is False
+
+
+# --- execution window (QUA-115) --------------------------------------------------
+
+
+def test_an_expired_event_is_labelled_vencio_and_can_still_be_rescheduled() -> None:
+    grid = _week(
+        _item(
+            "x",
+            datetime(2026, 9, 22, 9, 0, tzinfo=CARACAS),
+            expired=True,
+            approval="approved",
+            is_publishable=True,
+        )
+    )
+    card = grid.days[1].cards[0]
+    assert (card.status_label, card.status_tone) == EXPIRED_LABEL == ("Venció", "warn")
+    assert card.overdue is True  # amber edge + warning icon: it will not publish as is
+    assert card.can_modify is True  # "Reprogramar" is the way back
+    # The card keeps the POST's own reason (none here): the expiry note is the dialog's.
+    assert card.readiness_note == ""
+    assert card.approval_label == "Listo para publicar"  # approval is a separate axis
+
+
+def test_expired_takes_precedence_over_overdue_unapproved() -> None:
+    grid = _week(
+        _item(
+            "x",
+            datetime(2026, 9, 22, 9, 0, tzinfo=CARACAS),
+            expired=True,
+            overdue=True,
+            approval="pending",
+        )
+    )
+    card = grid.days[1].cards[0]
+    assert card.status_label == "Venció"
+    assert card.overdue is True
+
+
+def test_expired_detail_vm_carries_the_flag_the_dialog_switches_on() -> None:
+    assert EventDetailVM().expired is False
+    assert EventDetailVM(expired=True).expired is True
+    assert EXPIRED_NOTE.startswith("Pasaron más de 24 h")
+
+
+def test_status_label_expired_flag() -> None:
+    assert status_label("scheduled", overdue=False, expired=True) == ("Venció", "warn")
+    assert status_label("scheduled", overdue=True, expired=True) == ("Venció", "warn")
+    assert status_label("scheduled", overdue=True) == ("Venció sin aprobación", "warn")
+    assert status_label("scheduled", overdue=False) == ("Programado", "info")
