@@ -207,6 +207,23 @@ def test_draft_destination_follows_the_kit_status(monkeypatch) -> None:
         assert auth_state_module._draft_destination_blocking(_DRAFT) == expected
 
 
+def test_the_brand_kit_is_only_its_views() -> None:
+    """§ request 2026-10-02: no sidebar on the wizard pages, no Atrás on a first step."""
+    from . import creative_wizard_pages as wiz
+
+    for page in (
+        wiz.brand_choice_index,
+        wiz.brand_connect_index,
+        wiz.brand_connect_setup_index,
+        wiz.brand_manual_index,
+    ):
+        assert "_wizard_shell(" in inspect.getsource(page), page.__name__
+    assert "rail=False" in inspect.getsource(wiz._wizard_shell)
+    for controls in (wiz._controls, wiz._connect_controls):
+        source = inspect.getsource(controls)
+        assert "step == 0" in source and "rx.fragment()" in source, controls.__name__
+
+
 def test_the_first_view_is_the_brand_kit_not_the_login() -> None:
     """§ 2026-10-02: "/brand/start y después /login" — no protected page sends an
     anonymous visitor to the login, and the email screen has no way around it."""

@@ -2290,6 +2290,14 @@ def _manual_requirement() -> rx.Var[bool]:
     )
 
 
+def _wizard_shell(*children: rx.Component) -> rx.Component:
+    """The Brand Kit's frame: the panel alone, no sidebar (§ request 2026-10-02: "solo
+    las views, más nada"). Every wizard page — the question, the connect flow and its
+    account-setup detour, the manual flow — goes through here; the editor inside the
+    session (`brand_kit_editor`) keeps the app's rail."""
+    return app_shell(*children, rail=False)
+
+
 def _controls() -> rx.Component:
     """Small, quiet, at the bottom. The last step (Resultados e insights) swaps
     Continuar for `_finish_button` — it replaces Finalizar entirely (§ request
@@ -2311,7 +2319,8 @@ def _controls() -> rx.Component:
         disabled=_manual_busy(),
     )
     return rx.hstack(
-        back,
+        # § request 2026-10-02: the first view has no Atrás — nothing to go back to
+        rx.cond(BrandWizardState.step == 0, rx.fragment(), back),
         rx.spacer(),
         rx.cond(
             BrandWizardState.step == LAST_STEP,
@@ -2361,7 +2370,7 @@ def brand_manual_index() -> rx.Component:
     the card's FULL width and sits pinned to its bottom edge — Atrás at the
     bottom-left corner, Continuar/Finalizar at the bottom-right, not floating just
     under the fields."""
-    return app_shell(
+    return _wizard_shell(
         page_header(
             _heading_for(0),
             _heading_for(1),
@@ -2519,7 +2528,7 @@ def brand_choice_index() -> rx.Component:
     below it grows to fill the panel (`flex="1"` on the card, `min_height` on this
     vstack so there is room to grow into) instead of stopping short and leaving bare
     panel background below it."""
-    return app_shell(
+    return _wizard_shell(
         page_header("Brandkit", "¿Tienes redes sociales para tu marca?", title_size="8"),
         page_body(
             rx.vstack(
@@ -2629,7 +2638,7 @@ def brand_connect_setup_index() -> rx.Component:
     step 0 (choose network) — the exact same door the "Sí" answer walks through,
     since by the time the operator is back here they should have a profile to
     scrape."""
-    return app_shell(
+    return _wizard_shell(
         page_header(
             "Crea tu cuenta",
             "Necesitas un perfil en Instagram o TikTok antes de leer tu contenido.",
@@ -6980,14 +6989,19 @@ def _connect_controls() -> rx.Component:
             on_click=BrandConnectState.restart,
             disabled=_connect_busy(),
         ),
-        rx.button(
-            rx.icon("chevron-left", size=T.ICON_SM),
-            "Atrás",
-            variant="ghost",
-            size="2",
-            radius=_CONTROL_RADIUS,
-            on_click=BrandConnectState.prev_step,
-            disabled=_connect_busy(),
+        rx.cond(
+            # § request 2026-10-02: the first view has no Atrás — nothing to go back to
+            BrandConnectState.step == 0,
+            rx.fragment(),
+            rx.button(
+                rx.icon("chevron-left", size=T.ICON_SM),
+                "Atrás",
+                variant="ghost",
+                size="2",
+                radius=_CONTROL_RADIUS,
+                on_click=BrandConnectState.prev_step,
+                disabled=_connect_busy(),
+            ),
         ),
     )
     right = rx.cond(
@@ -7034,7 +7048,7 @@ def brand_connect_index() -> rx.Component:
     and `_connect_controls()` spanning the card's full width, pinned to its bottom
     corners. Two loading states, both a centred spinner with no footer row:
     `CreativeState.kit_loading` on page load, `BrandConnectState.analyzing` mid-scrape."""
-    return app_shell(
+    return _wizard_shell(
         page_header(
             _connect_heading_for(0),
             _connect_heading_for(1),

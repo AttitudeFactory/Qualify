@@ -491,9 +491,11 @@ def _mobile_nav_backdrop() -> rx.Component:
     )
 
 
-def app_shell(*children: rx.Component, spacing: str = "0") -> rx.Component:
+def app_shell(*children: rx.Component, spacing: str = "0", rail: bool = True) -> rx.Component:
     """Sidebar + page panel, floating on the app ground. Pass ``page_header`` first,
-    then the body blocks.
+    then the body blocks. ``rail=False`` drops the sidebar (and its phone toggle): the
+    panel alone, for a flow that is only its views — the Brand Kit wizard (§ request
+    2026-10-02: "solo las views, más nada").
 
     **The panel is the scroll container, not the document.** The shell is exactly one
     viewport tall and clips; the panel is a fixed ``calc(100vh - 2 * gap)`` box that
@@ -515,10 +517,13 @@ def app_shell(*children: rx.Component, spacing: str = "0") -> rx.Component:
     `creative_wizard_pages.py` was restored from another worktree while this file kept
     the new model — if you are reverting one of the two, revert both.
     """
+    chrome = (
+        [_mobile_nav_toggle(), rx.cond(NavState.mobile_open, _mobile_nav_backdrop()), sidebar()]
+        if rail
+        else []
+    )
     return rx.hstack(
-        _mobile_nav_toggle(),
-        rx.cond(NavState.mobile_open, _mobile_nav_backdrop()),
-        sidebar(),
+        *chrome,
         rx.el.main(
             rx.vstack(
                 *children,
@@ -536,7 +541,7 @@ def app_shell(*children: rx.Component, spacing: str = "0") -> rx.Component:
             flex="1",
             min_width="0",
             height=f"calc(100vh - 2 * {T.GAP})",
-            margin=f"{T.GAP} {T.GAP} {T.GAP} 0",
+            margin=f"{T.GAP} {T.GAP} {T.GAP} 0" if rail else T.GAP,
             overflow="hidden auto",
         ),
         width="100%",
