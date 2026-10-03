@@ -697,9 +697,23 @@ body[data-rank-dragging] { cursor: grabbing; }
   background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.28), transparent);
   animation: q-progress-sweep 1.6s ease-in-out infinite;
 }
+/* § 2026-10-02: a short fade-in when the view switches to the panel, and again for
+   each stage comment over the bar as the stage changes. */
+@keyframes q-progress-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+.q-progress-panel {
+  animation: q-progress-in var(--q-dur-slow) var(--q-ease) both;
+}
+.q-progress-comment {
+  animation: q-progress-in var(--q-dur-slow) var(--q-ease) both;
+}
 @media (prefers-reduced-motion: reduce) {
   .q-progress-track::after { animation: none; }
   .q-progress-creep { animation: none; width: 60%; }
+  .q-progress-panel,
+  .q-progress-comment { animation: none; }
 }
 
 /* ── Publish flow selector (QUA-113) ─────────────────────────────────────────

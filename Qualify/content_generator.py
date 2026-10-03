@@ -33,6 +33,7 @@ from .ui import (
     loading_spinner,
     page_body,
     page_header,
+    progress_panel,
     removable_pill,
     signal_pill,
     tag,
@@ -1048,21 +1049,13 @@ def _image_result() -> rx.Component:
 
 
 def _waiting() -> rx.Component:
+    # § request 2026-10-02: every Brand Kit loader is the progress-bar one. A render
+    # reports no progress, so the bar creeps; a video can outlast it (gen_timed_out).
     return _card(
-        rx.hstack(
-            loading_spinner("md"),
-            rx.vstack(
-                rx.text(CreativeState.gen_waiting_label, size="3", weight="medium"),
-                rx.text(
-                    "Puedes quedarte aquí: el resultado aparece solo cuando esté listo.",
-                    size="2",
-                    color=T.TEXT_MUTED,
-                ),
-                spacing="1",
-                align_items="start",
-            ),
-            spacing="4",
-            align="center",
+        progress_panel(
+            CreativeState.gen_waiting_label,
+            "Puedes quedarte aquí: el resultado aparece solo cuando esté listo.",
+            creep_seconds=60,
         ),
         rx.cond(
             CreativeState.gen_timed_out,

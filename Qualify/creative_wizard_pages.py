@@ -811,28 +811,18 @@ def _step_body(
     )
 
 
-def _loading_view(title: str, subtitle: str = "") -> rx.Component:
-    """The one loading affordance both flows use — a spinner, centred, wherever
-    something is still in flight (`CreativeState.kit_loading` on page load,
-    `BrandConnectState.analyzing` mid-scrape). Centring is the CALLER's job: this
-    returns the content, and every caller places it inside a `card(..., flex="1",
-    display="flex", align_items="center", justify_content="center")` — the exact shape
+def _loading_view(title: str, subtitle: str = "", *, creep_seconds: int = 6) -> rx.Component:
+    """The one loading affordance the Brand Kit uses, wherever something is still in
+    flight (`CreativeState.kit_loading` on page load, `BrandConnectState.analyzing`
+    mid-scrape): the progress bar (`progress_panel`), never a spinner (§ request
+    2026-10-02: every Brand Kit loader is the progress-bar one). None of these waits
+    reports progress, so the bar creeps over `creep_seconds` and the screen goes away
+    when the work ends. Centring is the CALLER's job: this returns the content, and
+    every caller places it inside a `card(..., flex="1", display="flex",
+    align_items="center", justify_content="center")` — the exact shape
     `brand_manual_index`/`brand_connect_index` already give the rest of each step, so a
-    loading screen sits in the middle of the same frame the real content would.
-
-    `loading_spinner("lg")` (design-system §5.4), not `rx.spinner` — bigger ring,
-    smaller text (`size="2"`, not `size="3"`) than a generic loading state: a
-    full-panel wait is the one thing on screen, so the ring can lead and the copy
-    can sit quietly under it instead of competing for size."""
-    return rx.vstack(
-        loading_spinner("lg"),
-        rx.text(title, size="2", weight="medium"),
-        *([rx.text(subtitle, size="1", color=T.TEXT_MUTED)] if subtitle else []),
-        spacing="3",
-        align="center",
-        width="100%",
-        padding="4rem 0",
-    )
+    loading screen sits in the middle of the same frame the real content would."""
+    return progress_panel(title, subtitle, creep_seconds=creep_seconds)
 
 
 def _choice_card(
@@ -5428,7 +5418,8 @@ def _suggest_hashtags_button() -> rx.Component:
 
 def _hashtag_pill_body(item: rx.Var[dict[str, str]], *, suggested: bool) -> rx.Component:
     return removable_pill(
-        rx.fragment("#", item["tag"]),
+        # § request 2026-10-02: a hair of space between the "#" and the word
+        rx.fragment(rx.el.span("#", margin_right="2px"), item["tag"]),
         BrandConnectState.remove_hashtag(item["tag"]),
         suggested=suggested,
         remove_label="Quitar este hashtag",
@@ -6870,26 +6861,8 @@ def _connect_heading_for(index: int) -> rx.Var[str]:
 
 
 def _connect_loading() -> rx.Component:
-    return _loading_view("Analizando perfil", "Esto tarda solo unos segundos.")
-
-
-def _discovery_progress_row(row: rx.Var[dict[str, str]]) -> rx.Component:
-    return rx.hstack(
-        rx.match(
-            row["status"],
-            ("done", rx.icon("circle-check", size=16, color=T.tone_color("ok", 10))),
-            ("running", loading_spinner("sm")),
-            rx.icon("circle", size=16, color=T.TEXT_FAINT),
-        ),
-        rx.text(
-            row["title"],
-            size="2",
-            color=rx.cond(row["status"] == "pending", T.TEXT_FAINT, T.TEXT_STRONG),
-            weight=rx.cond(row["status"] == "running", "medium", "regular"),
-        ),
-        spacing="2",
-        align="center",
-    )
+    # the profile plus up to five pages of posts: several reads, so a longer creep
+    return _loading_view("Analizando perfil", "Esto tarda solo unos segundos.", creep_seconds=20)
 
 
 def _referentes_loading() -> rx.Component:
