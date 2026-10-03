@@ -243,8 +243,8 @@ class AuthState(rx.State):
 
     @rx.event
     async def leave_brand_draft(self) -> rx.event.EventSpec:
-        """The guest bar's "Usar otro correo": forget the draft in this browser (it
-        stays saved under its email) and ask for an email again."""
+        """ "Usar otro correo" on the Brand Kit's first view: forget the draft in this
+        browser (it stays saved under its email) and ask for an email again."""
         await self._reset_brand_kit_states()
         self.guest_tenant_id = ""
         self.guest_email = ""

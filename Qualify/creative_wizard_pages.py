@@ -2515,6 +2515,26 @@ def _fork_option(icon: str, title: str, description: str, href: str) -> rx.Compo
     )
 
 
+def _change_email_button() -> rx.Component:
+    """Back to the screen that asks for the email (§ request 2026-10-02), on the Brand
+    Kit's first view. Guests only — a session has no email to change here. The draft
+    stays saved under its email; `AuthState.leave_brand_draft` only forgets it in this
+    browser."""
+    return rx.cond(
+        AuthState.is_guest,
+        rx.button(
+            rx.icon("mail", size=T.ICON_SM),
+            "Usar otro correo",
+            variant="ghost",
+            color_scheme="gray",
+            size="2",
+            radius=_CONTROL_RADIUS,
+            on_click=AuthState.leave_brand_draft,
+            title=AuthState.guest_email,
+        ),
+    )
+
+
 def brand_choice_index() -> rx.Component:
     """The entry the guest rail's «Marca» lands on (§ 2026-10-02: the Brand Kit is made
     before the login; inside a session there is only the editor, Negocio → Brand Kit,
@@ -2529,7 +2549,12 @@ def brand_choice_index() -> rx.Component:
     vstack so there is room to grow into) instead of stopping short and leaving bare
     panel background below it."""
     return _wizard_shell(
-        page_header("Brandkit", "¿Tienes redes sociales para tu marca?", title_size="8"),
+        page_header(
+            "Brandkit",
+            "¿Tienes redes sociales para tu marca?",
+            _change_email_button(),
+            title_size="8",
+        ),
         page_body(
             rx.vstack(
                 card(
