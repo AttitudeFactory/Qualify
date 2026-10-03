@@ -549,4 +549,9 @@ async def save_brand_kit(state: Any, flow: str | None = None) -> bool:
             creative.kit_error = error
             return False
         creative.kit_notice = _SAVED
+        if flow is not None:
+            # the kit is finished now: the session may leave the Brand Kit
+            # (`AuthState.require_login`, § request 2026-10-02)
+            auth = await state.get_state(AuthState)
+            auth.brand_kit_complete = True
     return True

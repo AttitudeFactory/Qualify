@@ -14,7 +14,7 @@ from qualify_api.auth import start_brand_kit_draft
 from qualify_api.creative.brand_kit_store import EXTRA, BrandKitStore
 
 from . import brand_finish
-from .auth_state import _draft_destination_blocking
+from .auth_state import _draft_destination_blocking, _kit_complete_blocking
 from .brand_finish import KitSnapshot, StagedFile
 from .connections_provider import acting_user_id
 from .creative_provider import default_brand_id
@@ -63,8 +63,11 @@ def test_the_email_lands_where_the_draft_stands(tmp_path: Path) -> None:
     assert status.completed is False and status.progress["step"] == 9
     assert _draft_destination_blocking(ids[0]) == "/brand/connect"  # back where it was
 
+    assert _kit_complete_blocking(ids[0]) is False  # a login here is sent to the Brand Kit
+
     _save(ids, step=19, completed=True, upload_dir=tmp_path)
     assert _draft_destination_blocking(ids[0]) == "/signup"  # finished: create the account
+    assert _kit_complete_blocking(ids[0]) is True
 
 
 def test_saving_at_every_step_keeps_one_copy_of_each_file(tmp_path: Path) -> None:

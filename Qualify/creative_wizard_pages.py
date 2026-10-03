@@ -4773,18 +4773,16 @@ class BrandConnectState(rx.State):
 
     @rx.event(background=True)
     async def enter_brand_home(self) -> AsyncIterator[rx.event.EventSpec]:
-        """/brand's entry (§ request 2026-10-02: no "Marca" inside a session). A login
-        goes to the editor (Negocio → Brand Kit); so does a guest whose kit is already
-        finished. A kit left halfway goes back into its wizard. Only a guest with no kit
-        yet stays, on the "¿Tienes redes?" question."""
+        """/brand's entry, for a login and a guest alike (§ request 2026-10-02): a
+        finished kit goes to the editor (Negocio → Brand Kit), a kit left halfway back
+        into its wizard, and no kit yet stays on the "¿Tienes redes?" question — which is
+        where `AuthState.require_login` sends a session without a complete kit."""
         from .brand_finish import tenant_kit_status
 
         async with self:
             auth = await self.get_state(AuthState)
-            if auth.session_tenant_id:
-                yield rx.redirect("/brand/kit")
-                return
-            tenant_id = tenant_uuid(auth.guest_tenant_id) if auth.guest_tenant_id else None
+            tenant = brand_tenant_id(auth)
+            tenant_id = tenant_uuid(tenant) if tenant else None
         if tenant_id is None:
             return
         try:

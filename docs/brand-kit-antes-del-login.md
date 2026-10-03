@@ -44,9 +44,17 @@
    **Dentro de la sesión no existe «Marca»** (pedido del 2026-10-02): el Brand Kit se
    crea antes del login y, ya dentro, se edita desde **Negocio → Brand Kit**
    (`/brand/kit`, el editor de siempre). El resumen de solo lectura y «Crear uno nuevo»
-   (lo temporal del 2026-10-01) se eliminaron. `/brand` queda como la entrada del
-   invitado («¿Tienes redes?»); con sesión redirige al editor, y un kit dejado a la mitad
-   vuelve a su wizard para terminarlo.
+   (lo temporal del 2026-10-01) se eliminaron. `/brand` es la entrada para crear el kit:
+   con un kit terminado redirige al editor, con uno a medias vuelve a su wizard y sin
+   kit muestra «¿Tienes redes?».
+
+   **Sesión sin Brand Kit completo → a crearlo** (pedido del 2026-10-02). Al iniciar
+   sesión se consulta una vez `brand_finish.tenant_kit_status` y queda en
+   `AuthState.brand_kit_complete`; mientras sea falso, `require_login` manda a `/brand`
+   desde cualquier página de la app (incluida `/`). Las páginas del propio Brand Kit
+   usan `require_brand_access` y siguen abiertas. Al terminar el wizard la sesión se
+   marca completa y sigue a Señales. Si la consulta falla en el login, se asume completo
+   para no dejar al negocio fuera de su app; el siguiente login vuelve a mirar.
 5. **`register_business`** busca un borrador sin reclamar con ese correo. Si lo
    encuentra:
    - crea la identidad sellada con el tenant del borrador en lugar de uno nuevo;

@@ -81,6 +81,14 @@ def _start_draft_blocking(email: str):
     return start_brand_kit_draft(email, **_SIGNUP_DEFAULTS)
 
 
+def _kit_complete_blocking(tenant_id) -> bool:
+    """Does the business have a finished Brand Kit? (§ request 2026-10-02: a session
+    without one is sent to make it.)"""
+    from .brand_finish import tenant_kit_status  # brand_finish imports this module
+
+    return tenant_kit_status(tenant_id).completed
+
+
 def _draft_destination_blocking(tenant_id) -> str:
     """Where a pre-login draft goes after its email (§ request 2026-10-02): a finished
     kit to the signup (there is no account to log into yet), a wizard left halfway back
@@ -130,6 +138,10 @@ class AuthState(rx.State):
     #: The email typed on /brand/start when it already has an account: /login opens
     #: with it filled in (§ 2026-10-02). Never used to authenticate anything.
     login_email_hint: str = ""
+    #: Whether the session's business has a FINISHED Brand Kit (§ request 2026-10-02:
+    #: a session without one is sent to make it). Read once at login
+    #: (`brand_finish.tenant_kit_status`), set again when a wizard finishes.
+    brand_kit_complete: bool = True
 
     # Backend-only (never serialized to the client). Held so logout can revoke.
     _access_token: str = ""
@@ -147,9 +159,13 @@ class AuthState(rx.State):
         """First `on_load` event of every protected page. Without a session the first
         view is the Brand Kit, never the login (§ request 2026-10-02: "/brand/start y
         después /login"): its email screen links to /login for an existing account, and
-        a guest already in a draft goes back to it."""
+        a guest already in a draft goes back to it. A session whose business has no
+        finished Brand Kit is sent to make it (/brand: the question, or the wizard it
+        left halfway) — the Brand Kit's own pages use `require_brand_access`."""
         if not self.session_tenant_id:
             return rx.redirect("/brand" if self.guest_tenant_id else BRAND_START_ROUTE)
+        if not self.brand_kit_complete:
+            return rx.redirect("/brand")
         return None
 
     @rx.event
@@ -165,7 +181,7 @@ class AuthState(rx.State):
         """`on_load` of `/`: the Brand Kit comes before the login (§ 2026-10-02), so an
         anonymous visitor lands on its first view — which links to /login."""
         if self.session_tenant_id:
-            return None
+            return None if self.brand_kit_complete else rx.redirect("/brand")
         return rx.redirect("/brand" if self.guest_tenant_id else BRAND_START_ROUTE)
 
     @rx.event
@@ -278,12 +294,20 @@ class AuthState(rx.State):
                 self.is_authenticating = False
                 self.auth_error = _AUTH_DOWN
             return
+        try:
+            kit_complete = await asyncio.to_thread(_kit_complete_blocking, result.tenant_id)
+        except SQLAlchemyError as exc:
+            # A transient read failure must not lock the business out of its app: it
+            # is treated as complete, and the next login checks again.
+            logger.warning("brand kit status unreadable at login: %s", type(exc).__name__)
+            kit_complete = True
 
         async with self:
             self.session_tenant_id = str(result.tenant_id)
             self.business_name = result.display_name
             self.user_email = result.email
             self._access_token = result.access_token
+            self.brand_kit_complete = kit_complete
             self.is_authenticating = False
             # A login supersedes the pre-login draft: after a signup that adopted it,
             # the session tenant IS the draft; after logging into another account, the

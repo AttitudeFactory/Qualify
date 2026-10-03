@@ -49,6 +49,37 @@ def test_require_login_passes_when_authenticated() -> None:
     assert AuthState.require_login.fn(state) is None
 
 
+def test_a_session_without_a_finished_brand_kit_is_sent_to_make_it() -> None:
+    """§ request 2026-10-02: logged in but no complete Brand Kit → the Brand Kit, from
+    every protected page and from `/`; the Brand Kit's own pages stay open."""
+    state = _state()
+    state.session_tenant_id = "a0000000-0000-4000-8000-000000000001"
+    state.brand_kit_complete = False
+    assert AuthState.require_login.fn(state) is not None
+    assert AuthState.require_login_or_brand_start.fn(state) is not None
+    assert AuthState.require_brand_access.fn(state) is None
+    state.brand_kit_complete = True
+    assert AuthState.require_login.fn(state) is None
+    assert AuthState.require_login_or_brand_start.fn(state) is None
+
+
+async def test_login_records_whether_the_brand_kit_is_finished(monkeypatch) -> None:
+    from uuid import UUID
+
+    from qualify_api.auth import LoginResult
+
+    tenant = UUID("a0000000-0000-4000-8000-000000000001")
+    result = LoginResult(tenant, UUID(int=1), UUID(int=2), "a@b.co", "Negocio", "tok")
+    monkeypatch.setattr(auth_state_module, "_login_blocking", lambda e, p: result)
+    monkeypatch.setattr(auth_state_module, "_kit_complete_blocking", lambda t: False)
+    state = _state()
+    events = [
+        e async for e in AuthState.handle_login.fn(state, {"email": "a@b.co", "password": "x" * 8})
+    ]
+    assert len(events) == 1 and state.session_tenant_id == str(tenant)
+    assert state.brand_kit_complete is False  # every protected page now sends to /brand
+
+
 def test_login_screens_bounce_an_authenticated_session() -> None:
     state = _state()
     state.session_tenant_id = "a0000000-0000-4000-8000-000000000001"
