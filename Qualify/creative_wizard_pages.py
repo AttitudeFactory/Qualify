@@ -2374,6 +2374,7 @@ def brand_manual_index() -> rx.Component:
         page_header(
             _heading_for(0),
             _heading_for(1),
+            _change_email_button(),
             kicker=_step_counter(BrandWizardState.step, len(STEPS)),
             title_size="8",
         ),
@@ -2516,10 +2517,11 @@ def _fork_option(icon: str, title: str, description: str, href: str) -> rx.Compo
 
 
 def _change_email_button() -> rx.Component:
-    """Back to the screen that asks for the email (§ request 2026-10-02), on the Brand
-    Kit's first view. Guests only — a session has no email to change here. The draft
-    stays saved under its email; `AuthState.leave_brand_draft` only forgets it in this
-    browser."""
+    """Back to the screen that asks for the email (§ request 2026-10-02), in the header
+    of EVERY wizard page — a draft left halfway resumes straight into /brand/connect
+    and never sees the question. Guests only: a session has no email to change here.
+    The draft stays saved under its email (its progress too); `AuthState.
+    leave_brand_draft` only forgets it in this browser."""
     return rx.cond(
         AuthState.is_guest,
         rx.button(
@@ -2667,6 +2669,7 @@ def brand_connect_setup_index() -> rx.Component:
         page_header(
             "Crea tu cuenta",
             "Necesitas un perfil en Instagram o TikTok antes de leer tu contenido.",
+            _change_email_button(),
             title_size="8",
         ),
         page_body(
@@ -7077,6 +7080,7 @@ def brand_connect_index() -> rx.Component:
         page_header(
             _connect_heading_for(0),
             _connect_heading_for(1),
+            _change_email_button(),
             kicker=_step_counter(BrandConnectState.step, len(CONNECT_STEPS)),
             title_size="8",
         ),
