@@ -534,6 +534,10 @@ def app_shell(*children: rx.Component, spacing: str = "0", rail: bool = True) ->
                 min_height="100%",
                 spacing=spacing,
                 align_items="start",
+                # Without the rail the panel spans the whole window while `page_body`
+                # stops at CONTENT_MAX: cap the header+body column to that width and
+                # centre it, so a wide screen does not leave the wizard hugging the left.
+                **({} if rail else {"max_width": T.CONTENT_MAX, "margin_x": "auto"}),
             ),
             background=T.SURFACE_BG,
             border=T.BORDER,
