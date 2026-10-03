@@ -221,7 +221,8 @@ def test_the_brand_kit_is_only_its_views() -> None:
     assert "rail=False" in inspect.getsource(wiz._wizard_shell)
     for controls in (wiz._controls, wiz._connect_controls):
         source = inspect.getsource(controls)
-        assert "step == 0" in source and "rx.fragment()" in source, controls.__name__
+        # step 0: no Atrás; its slot holds the way back to the email screen
+        assert "step == 0" in source and "_change_email_button()" in source, controls.__name__
 
 
 def test_the_first_view_is_the_brand_kit_not_the_login() -> None:

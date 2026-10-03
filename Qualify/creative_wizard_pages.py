@@ -2319,8 +2319,9 @@ def _controls() -> rx.Component:
         disabled=_manual_busy(),
     )
     return rx.hstack(
-        # § request 2026-10-02: the first view has no Atrás — nothing to go back to
-        rx.cond(BrandWizardState.step == 0, rx.fragment(), back),
+        # § request 2026-10-02: the first view has no Atrás — nothing to go back to;
+        # its slot, across from Continuar, holds the way back to the email screen
+        rx.cond(BrandWizardState.step == 0, _change_email_button(), back),
         rx.spacer(),
         rx.cond(
             BrandWizardState.step == LAST_STEP,
@@ -2374,7 +2375,6 @@ def brand_manual_index() -> rx.Component:
         page_header(
             _heading_for(0),
             _heading_for(1),
-            _change_email_button(),
             kicker=_step_counter(BrandWizardState.step, len(STEPS)),
             title_size="8",
         ),
@@ -2517,11 +2517,11 @@ def _fork_option(icon: str, title: str, description: str, href: str) -> rx.Compo
 
 
 def _change_email_button() -> rx.Component:
-    """Back to the screen that asks for the email (§ request 2026-10-02), in the header
-    of EVERY wizard page — a draft left halfway resumes straight into /brand/connect
-    and never sees the question. Guests only: a session has no email to change here.
-    The draft stays saved under its email (its progress too); `AuthState.
-    leave_brand_draft` only forgets it in this browser."""
+    """Back to the screen that asks for the email (§ request 2026-10-02), at the bottom
+    where Atrás would be — across from Continuar — on the question and on each flow's
+    first step (the only steps with nothing behind them). Guests only: a session has no
+    email to change here. The draft stays saved under its email (its progress too);
+    `AuthState.leave_brand_draft` only forgets it in this browser."""
     return rx.cond(
         AuthState.is_guest,
         rx.button(
@@ -2551,12 +2551,7 @@ def brand_choice_index() -> rx.Component:
     vstack so there is room to grow into) instead of stopping short and leaving bare
     panel background below it."""
     return _wizard_shell(
-        page_header(
-            "Brandkit",
-            "¿Tienes redes sociales para tu marca?",
-            _change_email_button(),
-            title_size="8",
-        ),
+        page_header("Brandkit", "¿Tienes redes sociales para tu marca?", title_size="8"),
         page_body(
             rx.vstack(
                 card(
@@ -2576,15 +2571,19 @@ def brand_choice_index() -> rx.Component:
                         ),
                         spacing="4",
                         width="100%",
+                        # Same centring as every step screen: the two options sit in the
+                        # middle of the frame rather than at its top.
+                        flex="1",
+                        justify_content="center",
                     ),
+                    # The same bottom row the steps have, with the one control this
+                    # screen needs where Atrás would be (§ request 2026-10-02).
+                    rx.hstack(_change_email_button(), rx.spacer(), width="100%", align="center"),
                     padding="1.75rem",
                     width="100%",
                     flex="1",
-                    # Same centring as every step screen: the two options sit in the
-                    # middle of the frame rather than at its top.
                     display="flex",
                     flex_direction="column",
-                    justify_content="center",
                 ),
                 spacing="4",
                 width="100%",
@@ -2669,7 +2668,6 @@ def brand_connect_setup_index() -> rx.Component:
         page_header(
             "Crea tu cuenta",
             "Necesitas un perfil en Instagram o TikTok antes de leer tu contenido.",
-            _change_email_button(),
             title_size="8",
         ),
         page_body(
@@ -7018,9 +7016,10 @@ def _connect_controls() -> rx.Component:
             disabled=_connect_busy(),
         ),
         rx.cond(
-            # § request 2026-10-02: the first view has no Atrás — nothing to go back to
+            # § request 2026-10-02: the first view has no Atrás — nothing to go back to;
+            # its slot, across from Continuar, holds the way back to the email screen
             BrandConnectState.step == 0,
-            rx.fragment(),
+            _change_email_button(),
             rx.button(
                 rx.icon("chevron-left", size=T.ICON_SM),
                 "Atrás",
@@ -7080,7 +7079,6 @@ def brand_connect_index() -> rx.Component:
         page_header(
             _connect_heading_for(0),
             _connect_heading_for(1),
-            _change_email_button(),
             kicker=_step_counter(BrandConnectState.step, len(CONNECT_STEPS)),
             title_size="8",
         ),

@@ -71,10 +71,10 @@ Las páginas del wizard (`/brand`, `/brand/connect`, `/brand/connect/setup`,
 `/brand/manual`) se dibujan **sin barra lateral** (`app_shell(..., rail=False)` vía
 `_wizard_shell`, pedido del 2026-10-02): el panel y nada más. Por eso el invitado ya no
 tiene a mano «Crear cuenta» ni «Iniciar sesión» dentro del wizard; entra desde
-`/brand/start`, y al terminar va a `/signup`. Todas las vistas del wizard llevan arriba
-a la derecha el botón **«Usar otro correo»**, que vuelve a la pantalla del correo (solo
-para el invitado; un borrador a medias entra directo al wizard, así que no basta con
-ponerlo en la pregunta inicial). El primer paso de cada flujo no muestra «Atrás». El editor de
+`/brand/start`, y al terminar va a `/signup`. El botón **«Usar otro correo»** vuelve a la
+pantalla del correo y va abajo, en el sitio de «Atrás», al otro lado de «Continuar»: en
+la pregunta inicial y en el primer paso de cada flujo (solo para el invitado). Desde los
+pasos siguientes se llega con «Atrás». El primer paso de cada flujo no muestra «Atrás». El editor de
 la sesión (`/brand/kit`) sí conserva la barra.
 
 ## Guardar a mitad y retomar
