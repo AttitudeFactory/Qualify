@@ -1,0 +1,8 @@
+# Known non-secrets, by fingerprint (commit:file:rule:line). Editing the line in a new
+# commit produces a new fingerprint and gets flagged again — that is intended.
+#
+# The documented dev-only Fernet default in connections/crypto.py (overridden by
+# QUALIFY_DEV_FERNET_KEY in any real environment; dev/CI never hold a real client token).
+95d066c7bf6bccec56715208241bc0a28c9a1c69:packages/api/src/qualify_api/connections/crypto.py:generic-api-key:22
+# A local e2e persona password (fake-auth test account) in a file since deleted from main.
+8cc309d9c5f04cfb6eac04e35734841ce2ec8367:tests/e2e/personas.py:generic-api-key:62

@@ -1,0 +1,30 @@
+# gitleaks config for `security.yml` (job `repo`). Extends the default ruleset; only
+# PATHS that can never hold a real credential are allowlisted here. Individual findings
+# that are known non-secrets but live in real code go in `.gitleaksignore` by fingerprint
+# (commit:file:rule:line), so any later edit of that line is flagged again.
+#
+# First full-history scan (2026-10-05): 334 hits — 321 content hashes in
+# graphify-out/cache/stat-index.json, 6 Meta CDN nonces/hashes in docs-harvester HTML
+# fixtures, 2 fixture ids in packages/scraper/tests, 3 vendored-doc examples, and the two
+# fingerprints in `.gitleaksignore`. Zero real credentials.
+title = "Qualify gitleaks"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Generated caches and vendored third-party material (never our secrets)"
+paths = [
+  '''^graphify-out/''',
+  '''^reference/''',
+  '''^\.agents/''',
+  '''^\.claude/''',
+]
+
+[[allowlists]]
+description = "Saved HTML/JSON fixtures: Meta CDN nonces, resource hashes, fake ids"
+paths = [
+  '''^packages/docs-harvester/tests/fixtures/''',
+  '''^packages/scraper/tests/''',
+  '''^packages/models/tests/fixtures/''',
+]

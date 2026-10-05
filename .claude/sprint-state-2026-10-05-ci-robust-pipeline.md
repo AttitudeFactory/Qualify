@@ -42,6 +42,22 @@ Agent: ci-engineer (pipeline-engineer role, DevOps hat). Branch `ci/robust-pipel
   is always up, which is why nobody noticed).
 - `test-db` (upgrade -> downgrade base -> upgrade -> `pytest -m db`) passed first time: 1m04s.
 
+- **`Qualify/test_referentes_review.py::test_the_manual_pseudo_phase_is_never_recomputed`
+  reached the real Postgres without a `db` marker** (second `ci` run, 2581 passed / 1 failed):
+  it called `monkeypatch.undo()`, which also undid the `repo` fixture's `rp.REPOSITORY`
+  patch, so `plan_refresh` went through the SQL repository. Fixed with a nested
+  `pytest.MonkeyPatch.context()`. Locally invisible because Postgres is always up.
+- **gitleaks full-history scan: 334 hits, zero real credentials** (classified by rule/path,
+  values never printed): 321 = content hashes in `graphify-out/cache/stat-index.json`;
+  6 = Meta CDN nonces in `packages/docs-harvester/tests/fixtures/*.html`; 2 = fixture ids in
+  `packages/scraper/tests`; 3 = vendored docs (`reference/`, `.agents/`); 1 = the documented
+  dev-only Fernet default in `connections/crypto.py:22`; 1 = an e2e persona password in
+  `tests/e2e/personas.py:62` (commit 8cc309d9, file since deleted). Paths allowlisted in
+  `.gitleaks.toml`, the two code hits pinned by fingerprint in `.gitleaksignore`. The
+  founder should confirm the e2e persona password never guarded a real account.
+- semgrep p/ci flags `${{ }}` expressions inside `run:` scripts as parse errors; summaries
+  now pass step outcomes through `env:` (also the script-injection-safe pattern).
+
 ## Decisions taken (and why)
 
 - Coverage comment: `py-cov-action/python-coverage-comment-action` needs `contents: write`

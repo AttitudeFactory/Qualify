@@ -409,12 +409,15 @@ def test_manual_referentes_accumulate_and_come_back_in_their_bucket(
 
 
 def test_the_manual_pseudo_phase_is_never_recomputed(
-    repo: MemoryReferentesRepository, brand: UUID, monkeypatch: pytest.MonkeyPatch
+    repo: MemoryReferentesRepository, brand: UUID
 ) -> None:
     result = _manual("@lachefita", "instagram")
-    monkeypatch.setattr(cd, "PHASED_PLAN_VERSION", cd.PHASED_PLAN_VERSION - 1)
-    rp.save_manual_account(TENANT, brand, result.candidate, result.card)
-    monkeypatch.undo()
+    # A nested context, NOT `monkeypatch.undo()`: undo() would also drop the `repo`
+    # fixture's REPOSITORY patch, and `plan_refresh` would then hit the real Postgres —
+    # which is exactly what happened in the offline CI job (no database there).
+    with pytest.MonkeyPatch.context() as older_algorithm:
+        older_algorithm.setattr(cd, "PHASED_PLAN_VERSION", cd.PHASED_PLAN_VERSION - 1)
+        rp.save_manual_account(TENANT, brand, result.candidate, result.card)
     assert rp.plan_refresh(TENANT) == []
 
 

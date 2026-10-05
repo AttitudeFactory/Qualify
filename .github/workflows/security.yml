@@ -55,6 +55,8 @@ jobs:
           --json-output=semgrep.json --text
       - name: semgrep summary
         if: always()
+        env:
+          OUTCOME: ${{ steps.semgrep.outcome }}
         run: |
           {
             echo "## semgrep (${SEMGREP_VERSION}) — informational"
@@ -64,11 +66,11 @@ jobs:
               jq -r '.results | group_by(.extra.severity) | map("- \(.[0].extra.severity): \(length)") | .[]' semgrep.json
               echo
               echo "| Severity | Rule | File:line |"; echo "|---|---|---|"
-              jq -r '.results[] | "| \(.extra.severity) | `\(.check_id)` | `\(.path):\(.start.line)` |"' semgrep.json | head -n 60
+              jq -r '.results[:60][] | "| \(.extra.severity) | `\(.check_id)` | `\(.path):\(.start.line)` |"' semgrep.json
               errs=$(jq '.errors | length' semgrep.json)
               if [ "$errs" != "0" ]; then echo "- semgrep reported **${errs}** internal errors (see log)"; fi
             else
-              echo "- semgrep did not produce a report (step outcome: ${{ steps.semgrep.outcome }})"
+              echo "- semgrep did not produce a report (step outcome: ${OUTCOME})"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -82,6 +84,8 @@ jobs:
           -ll -f json -o bandit.json
       - name: bandit summary
         if: always()
+        env:
+          OUTCOME: ${{ steps.bandit.outcome }}
         run: |
           {
             echo "## bandit (${BANDIT_VERSION}) — informational, medium+ severity"
@@ -91,9 +95,9 @@ jobs:
               jq -r '.results | group_by(.issue_severity) | map("- \(.[0].issue_severity): \(length)") | .[]' bandit.json
               echo
               echo "| Severity | Confidence | Test | File:line |"; echo "|---|---|---|---|"
-              jq -r '.results[] | "| \(.issue_severity) | \(.issue_confidence) | `\(.test_id) \(.test_name)` | `\(.filename):\(.line_number)` |"' bandit.json | head -n 60
+              jq -r '.results[:60][] | "| \(.issue_severity) | \(.issue_confidence) | `\(.test_id) \(.test_name)` | `\(.filename):\(.line_number)` |"' bandit.json
             else
-              echo "- bandit did not produce a report (step outcome: ${{ steps.bandit.outcome }})"
+              echo "- bandit did not produce a report (step outcome: ${OUTCOME})"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -129,10 +133,12 @@ jobs:
             --format markdown -o pip-audit.md
       - name: pip-audit summary
         if: always()
+        env:
+          OUTCOME: ${{ steps.pip-audit.outcome }}
         run: |
           {
             echo "## pip-audit (${PIP_AUDIT_VERSION}) — informational"
-            echo "- step outcome: **${{ steps.pip-audit.outcome }}** (failure = at least one known vulnerability)"
+            echo "- step outcome: **${OUTCOME}** (failure = at least one known vulnerability)"
             echo
             if [ -s pip-audit.md ]; then cat pip-audit.md; else echo "_No known vulnerabilities in the locked default groups._"; fi
           } >> "$GITHUB_STEP_SUMMARY"
@@ -147,10 +153,12 @@ jobs:
           npm audit --audit-level=high
       - name: npm audit summary
         if: always() && hashFiles('packages/render/package-lock.json') != ''
+        env:
+          OUTCOME: ${{ steps.npm-audit.outcome }}
         run: |
           {
             echo "## npm audit (packages/render) — informational, high+"
-            echo "- step outcome: **${{ steps.npm-audit.outcome }}**"
+            echo "- step outcome: **${OUTCOME}**"
             if [ -f npm-audit.json ]; then
               jq -r '.metadata.vulnerabilities | to_entries | map("- \(.key): \(.value)") | .[]' npm-audit.json
             fi
@@ -212,7 +220,7 @@ jobs:
           tar -xzf "$tarball" gitleaks
           ./gitleaks version
           code=0
-          ./gitleaks git --no-banner --redact --exit-code 2 \
+          ./gitleaks git --no-banner --redact --exit-code 2 --config .gitleaks.toml \
             --report-format json --report-path gitleaks.json . || code=$?
           count=0
           if [ -s gitleaks.json ]; then count=$(jq 'length' gitleaks.json); fi
@@ -222,7 +230,7 @@ jobs:
             if [ "$count" != "0" ]; then
               echo
               echo "| Rule | File | Commit |"; echo "|---|---|---|"
-              jq -r '.[] | "| `\(.RuleID)` | `\(.File):\(.StartLine)` | `\(.Commit[0:10])` |"' gitleaks.json | head -n 60
+              jq -r '.[:60][] | "| `\(.RuleID)` | `\(.File):\(.StartLine)` | `\(.Commit[0:10])` |"' gitleaks.json
               echo
               echo "Secrets are redacted everywhere. Rotate the credential, then purge or allowlist (`.gitleaks.toml`)."
             fi
