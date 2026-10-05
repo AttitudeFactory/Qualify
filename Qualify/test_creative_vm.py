@@ -475,3 +475,126 @@ def test_editable_statuses_mirror_the_fsm() -> None:
     from .creative_vm import EDITABLE_DRAFT_STATUSES
 
     assert EDITABLE_DRAFT_STATUSES == EDITABLE_STATUSES
+
+
+def test_template_outputs_are_labelled_by_port_not_as_slides() -> None:
+    from .creative_vm import build_media_vms
+
+    rows = [
+        ("t/d/story.png", "image", 2, {"port": "story", "template_id": "promo_producto"}),
+        ("t/d/reel.mp4", "video", 0, {"port": "reel"}),
+        ("t/d/feed.png", "image", 1, {"port": "feed"}),
+    ]
+    labels = [vm.label for vm in build_media_vms(rows)]
+    assert labels == ["Reel 9:16", "Feed 4:5", "Historia 9:16"]
+    # without a port the old behaviour stands: numbered slides and a plain video
+    plain = build_media_vms([("a", "image", 0, {}), ("b", "image", 1, None)])
+    assert [vm.label for vm in plain] == ["Slide 1 de 2", "Slide 2 de 2"]
+
+
+# ---------------------------------------------------------------------------
+# 9. The recipe step of the template kind (plan-mvp-plantillas-remotion.md §2.1 #4)
+
+_PROMO_MANIFEST: dict[str, object] = {
+    "id": "promo_producto",
+    "version": 1,
+    "name": "Promo de producto",
+    "niche": ["shawarma", "helado"],
+    "serves_angles": ["product", "new_product", "promotion", "price", "sold_out"],
+    "inputs": {
+        "hook": {"type": "string", "max": 60},
+        "price_line": {"type": "string", "max": 24, "optional": True},
+        "cta": {"type": "string", "max": 40},
+        "photos": {"type": "image[]", "min": 2, "max": 4},
+        "brand": {"type": "brand_kit"},
+    },
+    "outputs": {
+        "reel": {
+            "kind": "video",
+            "width": 1080,
+            "height": 1920,
+            "composition": "promo-producto-v1--reel",
+        },
+        "feed": {
+            "kind": "still",
+            "width": 1080,
+            "height": 1350,
+            "composition": "promo-producto-v1--feed",
+        },
+        "story": {
+            "kind": "still",
+            "width": 1080,
+            "height": 1920,
+            "composition": "promo-producto-v1--story",
+        },
+    },
+    "duration": {"from": "script", "min_sec": 8, "max_sec": 30},
+    "cost_model": {"seconds_per_video_sec": 2.0, "seconds_per_still": 4.0},
+}
+
+
+def _recipes(photo_count: int, video_count: int = 0):
+    from qualify_creative.render import (
+        PostFacts,
+        TemplateManifest,
+        TemplateRegistry,
+        suggest_recipes,
+    )
+
+    registry = TemplateRegistry([TemplateManifest.model_validate(_PROMO_MANIFEST)])
+    facts = PostFacts(angle=ContentType.PROMOTION, photo_count=photo_count, video_count=video_count)
+    return suggest_recipes(facts, registry)
+
+
+def test_recipe_cards_carry_engine_cost_eta_outputs_and_the_suggestion() -> None:
+    from .creative_vm import build_recipe_options
+
+    cards = build_recipe_options(_recipes(photo_count=3))
+    assert [c.key for c in cards] == ["remotion", "heygen", "ugc"]
+    remotion, heygen, ugc = cards
+
+    assert remotion.suggested and remotion.rule == 2  # ≥2 photos, no video
+    assert remotion.selectable and remotion.available
+    assert (remotion.template_id, remotion.template_version) == ("promo_producto", 1)
+    assert remotion.label == "Promo de producto"
+    assert (remotion.engine_label, remotion.engine_tone) == ("Remotion", "accent")
+    assert remotion.cost_label == "USD 0.00"  # our own machine: no money, only time
+    # 15 s of video × 2 s/s + two stills × 4 s = 38 s
+    assert remotion.eta_label == "~38 s"
+    assert remotion.outputs_label == "Reel · Feed · Historia"
+
+    assert not heygen.suggested and not heygen.available and not heygen.selectable
+    assert heygen.reason == "el negocio no tiene avatar configurado"
+    assert (heygen.engine_label, heygen.engine_tone) == ("HeyGen", "info")
+    assert heygen.cost_label == "USD 0.50 a 2.00"
+    assert heygen.eta_label == ""
+    assert heygen.outputs_label == "Reel"
+
+    assert ugc.engine_label == "UGC" and not ugc.selectable
+    assert "solo cotiza" in ugc.reason
+    assert ugc.cost_label == "USD 1.50 a 3.50"
+
+
+def test_a_template_short_of_photos_is_shown_disabled_with_the_reason() -> None:
+    from .creative_vm import build_recipe_options
+
+    remotion, _heygen, ugc = build_recipe_options(_recipes(photo_count=1))
+    assert not remotion.available and not remotion.selectable
+    assert "necesita 2 fotos" in remotion.reason
+    assert not remotion.suggested
+    # nothing renderable → nothing suggested, UGC still only quotes
+    assert not ugc.suggested and not ugc.selectable
+
+
+def test_eta_and_outputs_labels() -> None:
+    from .creative_vm import eta_label, outputs_label
+
+    assert eta_label(None) == ""
+    assert eta_label(0.4) == "~1 s"
+    assert eta_label(38.0) == "~38 s"
+    assert eta_label(90) == "~90 s"
+    assert eta_label(91) == "~2 min"
+    assert eta_label(600) == "~10 min"
+    assert outputs_label(("reel", "feed", "story")) == "Reel · Feed · Historia"
+    assert outputs_label(("square",)) == "Square"
+    assert outputs_label(()) == ""

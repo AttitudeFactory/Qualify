@@ -11,6 +11,8 @@ from .avatar_proxy import avatar_api
 from .brand_kit_editor import BrandEditState, brand_edit_index
 from .canva_pages import canva_callback_index, canva_return_index
 from .canva_state import CanvaState
+from .catalog_page import catalog_index
+from .catalog_state import CatalogState
 from .clarity_page import clarity_index
 from .clarity_state import ClarityState
 from .components import filter_bar, mentions_body, stats_row, topbar
@@ -359,6 +361,14 @@ app.add_page(
     route="/stories",
     on_load=rx.redirect("/publish?flow=stories", replace=True),
     title="Qualify · Stories",
+)
+# Catálogo de productos (plan-mvp-plantillas-remotion.md §2.1 #1): the brand's real
+# products and media — what the template engine composes. Negocio → Catálogo.
+app.add_page(
+    catalog_index,
+    route="/catalog",
+    on_load=[AuthState.require_login, CatalogState.load_catalog],
+    title="Qualify · Catálogo",
 )
 # UI demo, no backend: nothing to load, but the session gate still applies.
 app.add_page(

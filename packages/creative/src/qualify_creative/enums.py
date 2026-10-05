@@ -187,6 +187,12 @@ class FailureReason(StrEnum):
     REFUSAL = "refusal"
     MEDIA_EXPIRED = "media_expired"
     TIMEOUT = "timeout"
+    # Template render (packages/render/CONTRACT.md §4.2): the render service's typed
+    # reasons, kept 1:1 so a job's failure maps onto a draft's without interpretation.
+    RENDER_ERROR = "render_error"
+    INVALID_PARAMETERS = "invalid_parameters"
+    DEPENDENCY_FAILED = "dependency_failed"
+    CANCELLED = "cancelled"
 
 
 class VoiceProfileStatus(StrEnum):
@@ -225,6 +231,11 @@ class GenerationTask(StrEnum):
     # A spokesperson video: an existing vendor avatar lip-syncing a script. It is always
     # AI-generated footage, so it always carries Meta's disclosure label (F5-MA-10).
     AVATAR_VIDEO = "avatar_video"
+    # A brand template rendered by the Remotion service (plan-mvp-plantillas-remotion.md
+    # §2): the operator's real photos/video composed into a Reel + stills. Deterministic,
+    # no model touches a pixel, so no AI disclosure — but it IS a provider call (a
+    # separate process with a queue, an ETA and, one day, a price), unlike FROM_UPLOAD.
+    TEMPLATE_RENDER = "template_render"
 
 
 class ContentType(StrEnum):
@@ -319,7 +330,10 @@ class ContentKind(StrEnum):
       it is composed locally; the multi-reference image model that will render the
       scene (`MediaInputs.scene_prompt`) is chosen but not wired — see
       `docs/comparativa-apis-creativo-motor-angulos.md` §7.
-    - `TEMPLATE` — a brand template; declared, not built yet (`enabled` is False).
+    - `TEMPLATE` — a brand template (plan-mvp-plantillas-remotion.md): the operator's
+      real product photos (and optionally a short video) composed by a Remotion
+      template of their niche into a Reel 9:16 plus feed and story stills, in one run.
+      The template is chosen by the recipe router, not by the operator.
     """
 
     CREATOR_SCRIPT = "creator_script"
@@ -330,7 +344,17 @@ class ContentKind(StrEnum):
 
     @property
     def enabled(self) -> bool:
-        return self is not ContentKind.TEMPLATE
+        return True
+
+    @property
+    def is_template(self) -> bool:
+        return self is ContentKind.TEMPLATE
+
+    @property
+    def multi_output(self) -> bool:
+        """One run yields several assets with their own status (a Reel and its stills);
+        the draft shows each as it lands instead of waiting for the slowest."""
+        return self is ContentKind.TEMPLATE
 
     @property
     def is_video(self) -> bool:
@@ -354,6 +378,11 @@ class ContentKind(StrEnum):
         return (
             ContentFormat.FEED_4_5 if self is ContentKind.STATIC_FLYER else ContentFormat.REELS_9_16
         )
+
+    @property
+    def outputs_are_declared_by_template(self) -> bool:
+        """The template's manifest, not the brief's `format`, says which formats come out."""
+        return self is ContentKind.TEMPLATE
 
     @property
     def formats(self) -> tuple[ContentFormat, ...]:
@@ -414,7 +443,13 @@ _KIND_FORMATS: dict[ContentKind, tuple[ContentFormat, ...]] = {
         ContentFormat.FEED_1_1,
         ContentFormat.STORY_9_16,
     ),
-    ContentKind.TEMPLATE: (ContentFormat.FEED_4_5,),
+    # The manifest decides the outputs (Reel + feed + story); the brief's format is the
+    # one the operator previews first.
+    ContentKind.TEMPLATE: (
+        ContentFormat.REELS_9_16,
+        ContentFormat.FEED_4_5,
+        ContentFormat.STORY_9_16,
+    ),
 }
 
 

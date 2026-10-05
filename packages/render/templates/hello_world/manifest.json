@@ -1,0 +1,15 @@
+{
+  "id": "hello_world",
+  "version": 1,
+  "name": "Hello world (smoke test)",
+  "niche": [],
+  "serves_angles": [],
+  "inputs": {
+    "brand": {"type": "brand_kit", "optional": true}
+  },
+  "outputs": {
+    "reel": {"kind": "video", "width": 1080, "height": 1920, "composition": "hello-world-v1--reel"}
+  },
+  "duration": {"from": "fixed", "min_sec": 3, "max_sec": 3},
+  "cost_model": {"seconds_per_video_sec": 2.0, "seconds_per_still": 4.0}
+}

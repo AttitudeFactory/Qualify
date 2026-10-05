@@ -1,7 +1,10 @@
-# Local development infra for Sprint 1 (Fase 1 Parte 4-A).
-# Only the services this sprint actually exercises:
+# Local development infra.
+# Services:
 #   - postgres 16: CRM transactional plane (tenancy C-01, connections C-03) with RLS.
 #   - redis 7: refresh lock (C-03.4) and one-time OAuth `state` (C-04.2).
+#   - render: the Remotion render service (packages/render, CONTRACT.md) — Node +
+#     Chrome Headless Shell in one image, HTTP on :3200, renders/assets on the
+#     `renders` volume. Python talks to it over HTTP only (qualify_creative.render).
 # NOT here yet (added with their story): ClickHouse (Parte 3), Celery workers,
 # MinIO/R2 (no raw store this sprint).
 #
@@ -36,5 +39,28 @@ services:
       timeout: 3s
       retries: 20
 
+  render:
+    build: ./packages/render
+    ports:
+      - "3200:3200"
+    environment:
+      PORT: "3200"
+      RENDER_CONCURRENCY: "1"
+      RENDERS_DIR: /data/renders
+      ASSETS_DIR: /data/assets
+      TEMPLATES_DIR: /app/templates
+      RENDERS_TTL_HOURS: "24"
+      LOG_LEVEL: info
+    volumes:
+      - renders:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3200/health').then(r=>r.json()).then(j=>process.exit(j.ok&&j.bundleReady?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  renders:

@@ -1,0 +1,21 @@
+{
+  "id": "promo_producto",
+  "version": 1,
+  "name": "Promo de producto",
+  "niche": ["shawarma", "helado"],
+  "serves_angles": ["product", "new_product", "promotion", "price", "sold_out"],
+  "inputs": {
+    "hook":       {"type": "string", "max": 60},
+    "price_line": {"type": "string", "max": 24, "optional": true},
+    "cta":        {"type": "string", "max": 40},
+    "photos":     {"type": "image[]", "min": 2, "max": 4},
+    "brand":      {"type": "brand_kit"}
+  },
+  "outputs": {
+    "reel":  {"kind": "video", "width": 1080, "height": 1920, "composition": "promo-producto-v1--reel"},
+    "feed":  {"kind": "still", "width": 1080, "height": 1350, "composition": "promo-producto-v1--feed"},
+    "story": {"kind": "still", "width": 1080, "height": 1920, "composition": "promo-producto-v1--story"}
+  },
+  "duration": {"from": "script", "min_sec": 8, "max_sec": 30},
+  "cost_model": {"seconds_per_video_sec": 2.0, "seconds_per_still": 4.0}
+}
