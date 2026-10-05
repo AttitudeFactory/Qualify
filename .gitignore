@@ -32,3 +32,10 @@ Qualify/fixtures/brand_connect_profile.json
 uploaded_files/
 Qualify/fixtures/discovery_*.json
 Qualify/fixtures/discovery_raw/
+
+# Coverage / audit output of `just ci-test` and `just audit` (also produced in CI).
+.coverage
+coverage.xml
+coverage.json
+coverage-summary.md
+requirements.txt

@@ -1,0 +1,3 @@
+# Informational only: without branch protection GitHub does not enforce reviews, but
+# it still auto-requests the owner on every PR and shows ownership in the UI.
+* @hlrd93

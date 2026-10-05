@@ -1,0 +1,248 @@
+# Qualify security scans — INFORMATIONAL in this first version: every scanner writes its
+# findings to the job summary + an artifact and the job stays green, EXCEPT gitleaks,
+# which fails the job when it finds a committed secret (findings are redacted in logs).
+#
+# Everything here is free and open source, needs no account/token, and uploads no SARIF
+# (code-scanning upload needs GitHub Advanced Security, unavailable on a private Free repo).
+# Runs on PRs to main, weekly, and by hand. Reproduce the dependency half locally with
+# `just audit`.
+name: security
+
+on:
+  pull_request:
+    branches: ["main"]
+  schedule:
+    # Mondays 06:17 UTC (01:17 America/Bogota) — off the hour to dodge the GitHub rush.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  SEMGREP_VERSION: "1.179.0"
+  BANDIT_VERSION: "1.9.4"
+  PIP_AUDIT_VERSION: "2.10.1"
+  GITLEAKS_VERSION: "8.30.1"
+  UV_PYTHON_DOWNLOADS: automatic
+
+jobs:
+  # Static analysis of our own Python: semgrep (registry rulesets, no account, metrics
+  # off) + bandit (medium severity and up).
+  sast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: semgrep (p/ci + p/python + p/github-actions)
+        id: semgrep
+        continue-on-error: true
+        run: >-
+          uvx --from "semgrep==${SEMGREP_VERSION}" semgrep scan
+          --config p/ci --config p/python --config p/github-actions
+          --metrics=off --disable-version-check
+          --exclude .claude --exclude .agents --exclude graphify-out --exclude reference
+          --exclude bitacora --exclude docs --exclude packages/render/node_modules
+          --json-output=semgrep.json --text
+      - name: semgrep summary
+        if: always()
+        env:
+          OUTCOME: ${{ steps.semgrep.outcome }}
+        run: |
+          {
+            echo "## semgrep (${SEMGREP_VERSION}) — informational"
+            if [ -f semgrep.json ]; then
+              total=$(jq '.results | length' semgrep.json)
+              echo "- Findings: **${total}**"
+              jq -r '.results | group_by(.extra.severity) | map("- \(.[0].extra.severity): \(length)") | .[]' semgrep.json
+              echo
+              echo "| Severity | Rule | File:line |"; echo "|---|---|---|"
+              jq -r '.results[:60][] | "| \(.extra.severity) | `\(.check_id)` | `\(.path):\(.start.line)` |"' semgrep.json
+              errs=$(jq '.errors | length' semgrep.json)
+              if [ "$errs" != "0" ]; then echo "- semgrep reported **${errs}** internal errors (see log)"; fi
+            else
+              echo "- semgrep did not produce a report (step outcome: ${OUTCOME})"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: bandit (medium+ severity) on packages/*/src + Qualify/
+        id: bandit
+        continue-on-error: true
+        run: >-
+          uvx "bandit==${BANDIT_VERSION}" -r
+          packages/api/src packages/shared/src packages/scraper/src packages/creative/src
+          packages/models/src packages/docs-harvester/src Qualify
+          -ll -f json -o bandit.json
+      - name: bandit summary
+        if: always()
+        env:
+          OUTCOME: ${{ steps.bandit.outcome }}
+        run: |
+          {
+            echo "## bandit (${BANDIT_VERSION}) — informational, medium+ severity"
+            if [ -f bandit.json ]; then
+              total=$(jq '.results | length' bandit.json)
+              echo "- Findings: **${total}**"
+              jq -r '.results | group_by(.issue_severity) | map("- \(.[0].issue_severity): \(length)") | .[]' bandit.json
+              echo
+              echo "| Severity | Confidence | Test | File:line |"; echo "|---|---|---|---|"
+              jq -r '.results[:60][] | "| \(.issue_severity) | \(.issue_confidence) | `\(.test_id) \(.test_name)` | `\(.filename):\(.line_number)` |"' bandit.json
+            else
+              echo "- bandit did not produce a report (step outcome: ${OUTCOME})"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: sast-reports
+          path: |
+            semgrep.json
+            bandit.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # Known vulnerabilities in what we install: pip-audit over the resolved lock (default
+  # groups only — the ml/torch group is not shipped), npm audit for the render service.
+  deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: pip-audit over `uv export` (default groups, no workspace members)
+        id: pip-audit
+        continue-on-error: true
+        run: |
+          uv export --frozen --no-hashes --no-emit-workspace --no-annotate --no-header -o requirements.txt
+          echo "exported $(grep -c . requirements.txt) pinned requirements"
+          uvx "pip-audit==${PIP_AUDIT_VERSION}" -r requirements.txt --no-deps --desc on \
+            --format markdown -o pip-audit.md
+      - name: pip-audit summary
+        if: always()
+        env:
+          OUTCOME: ${{ steps.pip-audit.outcome }}
+        run: |
+          {
+            echo "## pip-audit (${PIP_AUDIT_VERSION}) — informational"
+            echo "- step outcome: **${OUTCOME}** (failure = at least one known vulnerability)"
+            echo
+            if [ -s pip-audit.md ]; then cat pip-audit.md; else echo "_No known vulnerabilities in the locked default groups._"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: npm audit (packages/render, high+)
+        id: npm-audit
+        if: hashFiles('packages/render/package-lock.json') != ''
+        continue-on-error: true
+        working-directory: packages/render
+        run: |
+          npm audit --audit-level=high --json > ../../npm-audit.json || true
+          npm audit --audit-level=high
+      - name: npm audit summary
+        if: always() && hashFiles('packages/render/package-lock.json') != ''
+        env:
+          OUTCOME: ${{ steps.npm-audit.outcome }}
+        run: |
+          {
+            echo "## npm audit (packages/render) — informational, high+"
+            echo "- step outcome: **${OUTCOME}**"
+            if [ -f npm-audit.json ]; then
+              jq -r '.metadata.vulnerabilities | to_entries | map("- \(.key): \(.value)") | .[]' npm-audit.json
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: dependency-audits
+          path: |
+            requirements.txt
+            pip-audit.md
+            npm-audit.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # Whole-repo scans: trivy (vulns + secrets + misconfig, HIGH/CRITICAL, never fails)
+  # and gitleaks over the full git history (FAILS on a committed secret).
+  repo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # gitleaks scans history, not just the tip
+
+      - name: trivy fs (vuln + secret + misconfig, HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          format: table
+          output: trivy.txt
+          skip-dirs: .claude,.agents,graphify-out,reference,bitacora
+      - name: trivy summary
+        if: always()
+        run: |
+          {
+            echo "## trivy fs (HIGH/CRITICAL) — informational"
+            if [ -s trivy.txt ]; then
+              echo '```'; head -c 60000 trivy.txt; echo '```'
+            else
+              echo "_trivy produced no output._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: gitleaks (full history; FAILS on a real secret; output redacted)
+        id: gitleaks
+        run: |
+          set -euo pipefail
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$tarball" "${base}/${tarball}"
+          curl -sSfL -o checksums.txt "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep " ${tarball}$" checksums.txt | sha256sum -c -
+          tar -xzf "$tarball" gitleaks
+          ./gitleaks version
+          code=0
+          ./gitleaks git --no-banner --redact --exit-code 2 --config .gitleaks.toml \
+            --report-format json --report-path gitleaks.json . || code=$?
+          count=0
+          if [ -s gitleaks.json ]; then count=$(jq 'length' gitleaks.json); fi
+          {
+            echo "## gitleaks (${GITLEAKS_VERSION}) — BLOCKING"
+            echo "- Leaks found: **${count}** (exit code ${code})"
+            if [ "$count" != "0" ]; then
+              echo
+              echo "| Rule | File | Commit |"; echo "|---|---|---|"
+              jq -r '.[:60][] | "| `\(.RuleID)` | `\(.File):\(.StartLine)` | `\(.Commit[0:10])` |"' gitleaks.json
+              echo
+              echo "Secrets are redacted everywhere. Rotate the credential, then purge or allowlist (`.gitleaks.toml`)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: repo-scans
+          path: |
+            trivy.txt
+            gitleaks.json
+          if-no-files-found: ignore
+          retention-days: 30
