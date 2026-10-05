@@ -306,6 +306,16 @@ Iconos por defecto del callout: `error`/`warn` → `triangle-alert`, `ok` → `c
 - Texto largo (captions) truncado con `text_overflow="ellipsis"` a un `max_width` fijo.
 - Envolver en `rx.box(overflow_x="auto")`.
 
+### 5.8 Temperatura del POST (`thermal_badge`, `thermal_glyph`, `lottie`) — 2026-10-05
+
+| Primitiva | Cuándo | Anatomía |
+|---|---|---|
+| `thermal_badge(state, animate=False, size="1")` | **el** estado de un POST en cualquier pantalla (lista, tarjeta del Planificador, detalle) | `signal_pill`-like: tono + glifo + palabra. `animate=True` sólo en el detalle y en el momento del cambio; en listas y tablas el glifo estático |
+| `thermal_glyph(state, size="4rem", melting=False)` | el héroe de una transición (congelar al aprobar, el check al publicar) | la animación sola, grande; `melting=True` es el deshielo de Congelado |
+| `lottie(src, loop=, autoplay=, size=, reduced_motion_fallback=, tone=)` | cualquier animación Lottie | `LottieLight` de `lottie-react` (MIT, carga diferida) + su gemelo estático; `prefers-reduced-motion` muestra el icono, nunca un fotograma congelado |
+
+El mapeo estado real → temperatura vive en `Qualify/ui/thermal.py` (`thermal_for`) y se prueba contra la FSM real (`Qualify/test_thermal_vm.py`). La lectura térmica de los tonos: **lado caliente = `warn`** (Caliente, Humeante: hay algo temporal que te va a pedir atención), **lado frío = `info`** (Congelado, Programado, En camino, Frío reutilizable: está en el sistema, nada que hacer), **entregado = `ok`**, Encendido/Apagado/Archivado `neutral`, Fallido `error`. Los archivos (`assets/lottie/`) son propios, generados por `Qualify/ui/lottie_shapes.py`, ≤ 7 KB cada uno, con el paso 9 de la escala del tono (idéntico en claro y oscuro). Regla de movimiento: a lo sumo **una** animación en bucle por pantalla; un error nunca se anima. Doc: [ux-post-journey-termico.md](ux-post-journey-termico.md).
+
 ---
 
 ## 6. Patrones de pantalla
