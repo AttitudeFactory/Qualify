@@ -42,6 +42,11 @@ def pytest_configure(config: pytest.Config) -> None:
         pytest.exit(str(exc), returncode=pytest.ExitCode.USAGE_ERROR)
 
 
+# `trylast`: pytest's own `-m` / `-k` deselection is ALSO a `pytest_collection_modifyitems`
+# hook, and conftest hooks run before built-in plugins. Without `trylast` this saw every
+# collected `db` test even under `-m "not db"`, tried to reach Postgres, and aborted the
+# offline-only CI job (found 2026-10-05 by the first `ci` run of the `test` job).
+@pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     needs_db = any(item.get_closest_marker("db") for item in items)
     reset = config.getoption("--reset-test-db")

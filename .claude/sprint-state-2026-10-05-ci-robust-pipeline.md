@@ -32,6 +32,16 @@ Agent: ci-engineer (pipeline-engineer role, DevOps hat). Branch `ci/robust-pipel
   ed142fd0673e97e23eac54620cfb913e5ce36c25 · gitleaks v8.30.1 · semgrep 1.179.0 ·
   bandit 1.9.4 · pip-audit 2.10.1.
 
+## Findings that change other agents' assumptions
+
+- **`pytest -m "not db"` needed Postgres anyway** (first `ci` run, job `test`, 37340016521):
+  root `conftest.py::pytest_collection_modifyitems` computed `needs_db` over the full
+  collection because pytest's own `-m` deselection is a later-running built-in hook.
+  Fixed with `@pytest.hookimpl(trylast=True)` on that hook in `conftest.py`. Anyone running
+  the offline suite on a machine without Docker was hitting this silently (locally Postgres
+  is always up, which is why nobody noticed).
+- `test-db` (upgrade -> downgrade base -> upgrade -> `pytest -m db`) passed first time: 1m04s.
+
 ## Decisions taken (and why)
 
 - Coverage comment: `py-cov-action/python-coverage-comment-action` needs `contents: write`

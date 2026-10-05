@@ -205,15 +205,17 @@ jobs:
         run: |
           set -euo pipefail
           base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
-          curl -sSfL -o gitleaks.tar.gz "${base}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$tarball" "${base}/${tarball}"
           curl -sSfL -o checksums.txt "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
-          grep " gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz$" checksums.txt | sha256sum -c -
-          tar -xzf gitleaks.tar.gz gitleaks
+          grep " ${tarball}$" checksums.txt | sha256sum -c -
+          tar -xzf "$tarball" gitleaks
           ./gitleaks version
+          code=0
           ./gitleaks git --no-banner --redact --exit-code 2 \
             --report-format json --report-path gitleaks.json . || code=$?
-          code=${code:-0}
-          count=0; [ -f gitleaks.json ] && count=$(jq 'length' gitleaks.json)
+          count=0
+          if [ -s gitleaks.json ]; then count=$(jq 'length' gitleaks.json); fi
           {
             echo "## gitleaks (${GITLEAKS_VERSION}) — BLOCKING"
             echo "- Leaks found: **${count}** (exit code ${code})"

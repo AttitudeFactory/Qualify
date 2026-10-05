@@ -100,7 +100,8 @@ jobs:
       - name: Coverage summary (per package)
         if: always()
         run: |
-          uv run coverage json -o coverage.json
+          # If pytest aborted before writing `.coverage`, the script prints a fallback.
+          uv run coverage json -o coverage.json || true
           uv run python .github/scripts/coverage_summary.py coverage.json > coverage-summary.md
           cat coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage reports
