@@ -94,6 +94,33 @@ lint:
 fmt:
     uv run ruff format .
 
+# --- CI mirrors (.github/workflows/ci.yml) ------------------------------------------
+# Same commands the workflow runs, so a red job can be reproduced here before pushing.
+
+# `lint` job: ruff check + format --check (the workflow installs only the `dev` group).
+ci-lint:
+    uv run --no-sync ruff check .
+    uv run --no-sync ruff format --check .
+
+# `test` job: offline tests with coverage per package. XML in coverage.xml, table in
+# coverage-summary.md (what the PR comment shows). `db` tests run in the `test-db` job
+# (`just test-db` here); `integration` never runs in CI.
+ci-test:
+    uv run --no-sync pytest -m "not integration and not db and not slow" \
+        --cov=packages/api/src --cov=packages/shared/src --cov=packages/scraper/src \
+        --cov=packages/creative/src --cov=Qualify \
+        --cov-report=xml:coverage.xml --cov-report=term-missing:skip-covered
+    uv run --no-sync coverage json -o coverage.json
+    uv run --no-sync python .github/scripts/coverage_summary.py coverage.json | tee coverage-summary.md
+
+# `deps` job of security.yml: known vulnerabilities in the locked default groups (never
+# `ml`/torch) via pip-audit, plus `npm audit` for packages/render when it exists. Needs
+# network (advisory DBs); informational, exit code is not a gate.
+audit:
+    uv export --frozen --no-hashes --no-emit-workspace --no-annotate --no-header -o requirements.txt
+    -uvx "pip-audit==2.10.1" -r requirements.txt --no-deps --desc on
+    if [ -f packages/render/package-lock.json ]; then (cd packages/render && npm audit --audit-level=high); fi
+
 # -v drops the pgdata volume: a clean slate for the next `just dev`.
 down:
     docker compose down -v

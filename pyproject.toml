@@ -40,6 +40,8 @@ ml = ["qualify-models"]
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=0.24.0",
+    # Coverage in CI (`just ci-test` / .github/workflows/ci.yml): per-package XML + summary.
+    "pytest-cov>=7.0.0",
     "ruff>=0.15.22",
     "pre-commit>=4.0.0",
 ]

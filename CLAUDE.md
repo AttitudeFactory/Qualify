@@ -115,6 +115,9 @@ just seed         # the two real tenants, via admin_session()
 just test         # uv run pytest -m "not integration"  — mirrors CI
 just test-db      # only the tests needing the compose Postgres/Redis
 just lint / fmt   # ruff check . / ruff format .
+just ci-lint      # exactly the CI `lint` job (ruff check + format --check), no sync
+just ci-test      # exactly the CI `test` job: offline tests + coverage per package
+just audit        # pip-audit over the lock + npm audit (packages/render) — informational
 just down         # docker compose down -v — DROPS the pgdata volume
 just calendar-tick --tenant <uuid>     # QUA-111: one Planificador tick — PUBLISHES FOR REAL
 just calendar-worker --tenant <uuid>   # QUA-111: a tick every 60 s until Ctrl+C
@@ -137,7 +140,22 @@ For the Reflex UI specifically, follow the **reflex-process-management** skill (
 
 **Both numbers cover the root `testpaths` only** (`packages/api|shared|scraper/tests` + `Qualify/`). `packages/models/tests` is deliberately excluded from the root gate (R11(b) — collecting it would drag the `ml`/torch group into the default run), so **neither number says anything about the models suite** — see the `jiwer` trap above before claiming it passes (with the `--with jiwer` workaround it measured 288/288 offline on 2026-08-08).
 
-## What Qualify is
+### CI (GitHub Actions, since 2026-10-05)
+
+Two workflows under `.github/workflows/`, both triggered by `pull_request` → `main`, `workflow_dispatch`, and (`ci` only) `push` to `main` — **never** by pushes to other branches, so a PR costs one run per push, not two. Older runs of the same PR are cancelled. The repo is private on GitHub Free (2,000 Actions min/month): every job has a timeout, uv/npm/Docker layers are cached, and nothing uploads SARIF (needs Advanced Security). All actions are pinned to commit SHAs; Dependabot (`.github/dependabot.yml`, weekly, grouped) bumps uv, npm (`packages/render`), actions and the render Dockerfile base image.
+
+| Workflow / job | Runs | What | Blocks? |
+|---|---|---|---|
+| `ci` / `lint` | always | `ruff check .` + `ruff format --check .` (dev group only) | **yes** |
+| `ci` / `test` | always | `pytest -m "not integration and not db and not slow"` + `--cov` per package; `coverage.xml`/`.json` as artifact, per-package table in the step summary and a sticky PR comment (`.github/scripts/coverage_summary.py`) | **yes** (coverage % informs only) |
+| `ci` / `test-db` | always | Postgres 16 + Redis 7 service containers, `alembic upgrade head` → `downgrade base` (must leave no revision) → `upgrade head`, then `pytest -m db` | **yes** (reversibility is a gate, ADR 27) |
+| `ci` / `node-render` | if `packages/render/package.json` exists | `npm ci` + `npm run typecheck` (Node 22, npm cache) | **yes** |
+| `ci` / `docker-render` | if `packages/render/Dockerfile` exists AND (PR touches `packages/render/**` OR main) | `docker build` with `push: false`, GHA layer cache | **yes** |
+| `security` / `sast` | PR, weekly (Mon 06:17 UTC), manual | semgrep (`p/ci`+`p/python`+`p/github-actions`, no account, metrics off) + bandit (medium+) over `packages/*/src` and `Qualify/` | no (summary + artifact) |
+| `security` / `deps` | same | `pip-audit` over `uv export` of the locked default groups (never `ml`) + `npm audit --audit-level=high` in `packages/render` | no |
+| `security` / `repo` | same | `trivy fs` (vuln + secret + misconfig, HIGH/CRITICAL) + `gitleaks git` over the full history (binary from the release, checksum-verified; the official Action needs an org licence) | trivy no; **gitleaks yes** when it finds a committed secret (redacted output — rotate, then purge or allowlist in `.gitleaks.toml`) |
+
+Reproduce locally: `just ci-lint`, `just ci-test`, `just test-db` (needs `just up`), `just audit`. Reading a run: `gh run list --workflow ci --limit 5`, `gh run view <id>` (job list + durations), `gh run view <id> --log-failed` (only the failing steps), `gh run watch <id>`; scanner findings live in each run's **Summary** tab and in the `sast-reports` / `dependency-audits` / `repo-scans` artifacts. The `ml`/torch group is never installed in CI — `packages/models/tests` is not part of the gate (R11(b) above).
 
 **Goal and audience:** Qualify is a planned agentive CRM/GTM platform for marketing/growth/community teams at brands who today juggle two separate categories of tool: social-listening platforms (Buzzmonitor-style) to *understand* the conversation, and GTM/CRM/outbound tools (Viralnetix-style) to *act* on it. Qualify fuses both: it listens to everything said about a brand and its competitors on TikTok / Instagram Reels — video, audio, captions, comments, not just text — turns that into AI-driven insights (sentiment, themes, crisis alerts, audience mapping), and converts those insights directly into marketing/sales actions (creator/lead identification and scoring, smart replies, campaign activation) without manual work in between.
 

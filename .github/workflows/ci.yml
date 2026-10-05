@@ -1,22 +1,145 @@
+# Qualify CI — the merge gate. Reproduce locally with `just ci-lint` / `just ci-test`
+# (same commands as the jobs below). What blocks vs. what only informs is documented in
+# CLAUDE.md § "CI".
+#
+# Minutes matter (GitHub Free, 2,000 min/month on a private repo): runs trigger once per
+# PR event or main push (never twice for push + pull_request on the same branch), older
+# runs of the same PR are cancelled, every job has a timeout, and the Docker build only
+# happens when packages/render changes (or on main).
+#
+# Every third-party action is pinned to a commit SHA (the tag is kept in the comment so
+# Dependabot can bump both).
 name: ci
 
 on:
-  push:
-    branches: ["**"]
   pull_request:
+    branches: ["main"]
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  # A newer push to the same PR supersedes the running one; main runs always complete.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # Make `uv run` refuse to re-resolve: the lock in the repo is the truth.
+  UV_LOCKED: "1"
+  # `setup-uv` installs the interpreter pinned in `.python-version` through uv itself.
+  UV_PYTHON_DOWNLOADS: automatic
 
 jobs:
+  # Cheap probe (seconds) that lets the Node/Docker jobs be conditional: on main today
+  # packages/render holds only CONTRACT.md; the Node code lands with PR #65.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      render_touched: ${{ steps.filter.outputs.render }}
+      render_package: ${{ steps.probe.outputs.package }}
+      render_dockerfile: ${{ steps.probe.outputs.dockerfile }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Did this PR touch packages/render?
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            render:
+              - 'packages/render/**'
+      - name: Does the render service exist on this ref?
+        id: probe
+        run: |
+          if [ -f packages/render/package.json ]; then echo "package=true"; else echo "package=false"; fi >> "$GITHUB_OUTPUT"
+          if [ -f packages/render/Dockerfile ]; then echo "dockerfile=true"; else echo "dockerfile=false"; fi >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      # ruff lives in the `dev` group; nothing else is needed to lint.
+      - run: uv sync --locked --only-group dev
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  # Offline unit tests: no Postgres/Redis, no vendors, no model weights. Default groups
+  # only (backend + crm + dev) — the `ml`/torch group is NEVER installed in CI.
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write # sticky coverage comment on the PR
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --locked
+      - name: pytest (offline) with coverage
+        run: >-
+          uv run pytest -m "not integration and not db and not slow"
+          --cov=packages/api/src --cov=packages/shared/src --cov=packages/scraper/src
+          --cov=packages/creative/src --cov=Qualify
+          --cov-report=xml:coverage.xml --cov-report=term-missing:skip-covered
+      - name: Coverage summary (per package)
+        if: always()
+        run: |
+          uv run coverage json -o coverage.json
+          uv run python .github/scripts/coverage_summary.py coverage.json > coverage-summary.md
+          cat coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage
+          path: |
+            coverage.xml
+            coverage.json
+            coverage-summary.md
+          retention-days: 14
+      - name: Post / refresh the coverage comment on the PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          marker='<!-- qualify-coverage -->'
+          { echo "$marker"; cat coverage-summary.md; } > comment.md
+          existing=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq ".[] | select(.body | startswith(\"${marker}\")) | .id" | head -n1)
+          if [ -n "$existing" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" -F body=@comment.md >/dev/null
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -F body=@comment.md >/dev/null
+          fi
 
-    # Service containers give `db`-marked tests a real Postgres + Redis. No
-    # `integration` tests run here — those hit paid/external vendors.
+  # `db`-marked tests against real service containers, plus the reversibility gate:
+  # `alembic upgrade head` -> `downgrade base` -> `upgrade head` must land clean
+  # (`just migrate-down` is a repo gate — ADR 27).
+  test-db:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16
         env:
-          # The test database name: the root conftest.py refuses any DSN whose database
-          # does not end in `_test`, in CI as locally.
+          # The root conftest.py refuses any DSN whose database does not end in `_test`.
           POSTGRES_DB: qualify_test
           POSTGRES_USER: qualify_owner
           POSTGRES_PASSWORD: ci
@@ -36,26 +159,69 @@ jobs:
           --health-interval 2s
           --health-timeout 3s
           --health-retries 20
-
     env:
-      # Owner DSN for Alembic (migrations run as qualify_owner). App/admin roles are
-      # created by migration 0001 with dev passwords, so those DSNs are identical in
-      # CI and local compose.
+      # Owner DSN for Alembic (migrations run as qualify_owner). App/admin/credential roles
+      # are created by migration 0001/0002 with dev passwords, identical in CI and compose.
       QUALIFY_MIGRATION_DSN: postgresql+psycopg://qualify_owner:ci@localhost:5432/qualify_test
       QUALIFY_APP_DSN: postgresql+psycopg://qualify_app:app_dev@localhost:5432/qualify_test
       QUALIFY_ADMIN_DSN: postgresql+psycopg://qualify_admin:admin_dev@localhost:5432/qualify_test
       QUALIFY_CREDENTIAL_DSN: postgresql+psycopg://qualify_credential:credential_dev@localhost:5432/qualify_test
       QUALIFY_REDIS_URL: redis://localhost:6379/15
-
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: "3.12.13"
-      # Default groups only (backend + crm + dev) — no torch in CI.
-      - run: uv sync
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      # Validates the migration (incl. RLS/roles) is reproducible against a fresh DB.
-      - run: uv run alembic upgrade head
-      - run: uv run pytest -m "not integration"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --locked
+      - name: alembic upgrade head (fresh database)
+        run: uv run alembic upgrade head
+      - name: alembic downgrade base (reversibility gate)
+        run: |
+          uv run alembic downgrade base
+          current=$(uv run alembic current 2>/dev/null | tr -d '[:space:]')
+          if [ -n "$current" ]; then
+            echo "::error::downgrade base left revision '$current' applied"; exit 1
+          fi
+      - name: alembic upgrade head (again, after downgrade)
+        run: uv run alembic upgrade head
+      - name: pytest -m db
+        run: uv run pytest -m "db and not integration and not slow"
+
+  # Typecheck the Remotion render service (packages/render). No Docker build here.
+  node-render:
+    needs: changes
+    if: needs.changes.outputs.render_package == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: packages/render
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: packages/render/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+
+  # Build (never push) the render image so a broken Dockerfile is caught before `just up`.
+  # Only when the PR touches packages/render/** or on main; layers cached in GHA.
+  docker-render:
+    needs: changes
+    if: >-
+      needs.changes.outputs.render_dockerfile == 'true' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.render_touched == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: packages/render
+          push: false
+          cache-from: type=gha,scope=render
+          cache-to: type=gha,scope=render,mode=max
