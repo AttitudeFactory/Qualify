@@ -739,3 +739,34 @@ body[data-rank-dragging] { cursor: grabbing; }
 @media (prefers-reduced-motion: reduce) {
   .q-flow-switch .rt-SegmentedControlItemLabel { transition: none; }
 }
+
+/* ── Lottie and the POST's temperature (`ui/lottie.py`, `ui/thermal.py`) ──────────
+   An animation always ships with its static twin (a lucide icon): `.q-lottie` is the
+   animation, `.q-lottie-static` the icon, and `prefers-reduced-motion` swaps which one
+   is visible — no JS media query, no flash, and the word next to the glyph never
+   changes (design-system P1). The animation is decorative: `aria-hidden` on both. */
+.q-lottie { display: inline-block; line-height: 0; }
+.q-lottie-static { display: none; align-items: center; justify-content: center; }
+@media (prefers-reduced-motion: reduce) {
+  .q-lottie { display: none; }
+  .q-lottie-static { display: inline-flex; }
+}
+
+/* The temperature badge changes tone when the POST changes state (humeante → congelado
+   is amber → blue). The colour itself eases instead of cutting, so the eye reads one
+   badge changing rather than a badge being replaced. */
+.q-thermal {
+  transition:
+    background-color var(--q-dur) var(--q-ease),
+    color var(--q-dur) var(--q-ease);
+}
+
+/* A thaw plays the freeze file backwards (0.8 s) and then the steam loop takes over:
+   the steam fades in under it, delayed so it lands as the flake disappears. */
+@keyframes q-thermal-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.q-thermal-after {
+  animation: q-thermal-in var(--q-dur-slow) var(--q-ease) 0.7s both;
+}

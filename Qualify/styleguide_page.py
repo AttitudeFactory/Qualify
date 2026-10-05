@@ -37,6 +37,16 @@ from .ui import (
 )
 from .ui import tokens as T
 from .ui.state import NavState
+from .ui.thermal import (
+    FROZEN,
+    SCALE_ORDER,
+    STEAMING,
+    TEMPERATURES,
+    allowed_next,
+    thermal_badge,
+    thermal_glyph,
+    transition,
+)
 
 _TONES = ["accent", "ok", "warn", "error", "info", "neutral"]
 _TONE_MEANING = {
@@ -767,6 +777,185 @@ def _components_section() -> rx.Component:
     )
 
 
+# ---------------------------------------------------------------------------------------
+# The POST's temperature (ui/thermal.py + ui/lottie.py)
+# ---------------------------------------------------------------------------------------
+
+
+class ThermalDemoState(rx.State):
+    """The Congelar / Descongelar demo. Three phases, because a thaw is two things in a
+    row (the flake melting, then the steam) and the page has no JS to chain them:
+    `steaming` shows the loop, `freezing` plays the freeze once and stays, `thawing`
+    plays it in reverse with the steam fading in underneath (`.q-thermal-after`)."""
+
+    phase: str = "steaming"
+
+    @rx.var
+    def is_frozen(self) -> bool:
+        return self.phase == "freezing"
+
+    @rx.var
+    def badge_state(self) -> str:
+        return FROZEN if self.phase == "freezing" else STEAMING
+
+    @rx.event
+    def freeze(self) -> None:
+        self.phase = "freezing"
+
+    @rx.event
+    def thaw(self) -> None:
+        self.phase = "thawing"
+
+
+def _thermal_row(key: str) -> rx.Component:
+    temp = TEMPERATURES[key]
+    nxt = ", ".join(TEMPERATURES[k].label for k in allowed_next(key)) or "—"
+    return rx.hstack(
+        rx.box(thermal_badge(key, animate=True, size="2"), min_width="11rem"),
+        rx.box(thermal_badge(key), min_width="9rem"),
+        rx.text(key, size="1", class_name="q-mono", min_width="5.5rem", color=T.TEXT_MUTED),
+        rx.text(temp.tone, size="1", class_name="q-mono", min_width="4rem", color=T.TEXT_MUTED),
+        rx.vstack(
+            rx.text(temp.verb or "—", size="2", weight="medium"),
+            rx.text(temp.hint, size="1", color=T.TEXT_MUTED),
+            rx.text("→ " + nxt, size="1", color=T.TEXT_FAINT),
+            spacing="0",
+            align_items="start",
+        ),
+        align="center",
+        spacing="3",
+        width="100%",
+        wrap="wrap",
+    )
+
+
+def _thermal_transition_demo() -> rx.Component:
+    """Congelar / Descongelar: the same freeze file forward and in reverse."""
+    stage = rx.box(
+        rx.match(
+            ThermalDemoState.phase,
+            ("freezing", thermal_glyph(FROZEN, size="4.5rem")),
+            (
+                "thawing",
+                rx.box(
+                    rx.box(
+                        thermal_glyph(FROZEN, size="4.5rem", melting=True),
+                        position="absolute",
+                        inset="0",
+                    ),
+                    rx.box(
+                        thermal_glyph(STEAMING, size="4.5rem"),
+                        position="absolute",
+                        inset="0",
+                        class_name="q-thermal-after",
+                    ),
+                    position="relative",
+                    width="4.5rem",
+                    height="4.5rem",
+                ),
+            ),
+            thermal_glyph(STEAMING, size="4.5rem"),
+        ),
+        display="flex",
+        align_items="center",
+        justify_content="center",
+        width="7rem",
+        height="7rem",
+        border_radius=T.RADIUS_CARD,
+        background=T.SURFACE_BG_RAISED,
+    )
+    return card(
+        rx.vstack(
+            rx.text("Congelar / Descongelar", size="2", weight="medium"),
+            rx.text(
+                "Aprobar congela el post: deja de cambiar. Editar lo descongela y vuelve a "
+                "humeante con una revisión nueva. Es una sola animación (freeze.json): hacia "
+                "adelante cristaliza; thaw.json es la misma invertida en el tiempo.",
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            rx.hstack(
+                stage,
+                rx.vstack(
+                    thermal_badge(ThermalDemoState.badge_state, animate=True, size="2"),
+                    rx.text(
+                        rx.cond(
+                            ThermalDemoState.is_frozen,
+                            "Al descongelar: " + str(transition(FROZEN, STEAMING)),
+                            "Al congelar: " + str(transition(STEAMING, FROZEN)),
+                        ),
+                        size="1",
+                        class_name="q-mono",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.cond(
+                        ThermalDemoState.is_frozen,
+                        rx.button(
+                            rx.icon("pencil", size=16),
+                            "Descongelar",
+                            variant="soft",
+                            size="2",
+                            on_click=ThermalDemoState.thaw,
+                        ),
+                        rx.button(
+                            rx.icon("snowflake", size=16),
+                            "Congelar",
+                            size="2",
+                            on_click=ThermalDemoState.freeze,
+                        ),
+                    ),
+                    spacing="2",
+                    align_items="start",
+                ),
+                spacing="4",
+                align="center",
+            ),
+            spacing="3",
+            width="100%",
+            align_items="start",
+        )
+    )
+
+
+def _thermal_section() -> rx.Component:
+    return section(
+        "Temperatura del POST",
+        rx.text(
+            "Un post se enciende, se calienta mientras se genera, humea mientras espera "
+            "revisión, se congela al aprobarse, recibe fecha, se publica y queda frío "
+            "reutilizable (recurrente) o archivado (promocional). Es UN badge en todas las "
+            "pantallas: tono + glifo + palabra. Lado caliente = warn, lado frío = info, "
+            "entregado = ok. Animado solo en el detalle y en el momento del cambio; en "
+            "listas y tablas, el glifo estático. Con prefers-reduced-motion la animación "
+            "se reemplaza por el icono, no por un fotograma congelado.",
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
+        card(
+            rx.vstack(
+                rx.hstack(
+                    rx.text("animado", size="1", color=T.TEXT_FAINT, min_width="11rem"),
+                    rx.text("estático (listas)", size="1", color=T.TEXT_FAINT, min_width="9rem"),
+                    rx.text("clave", size="1", color=T.TEXT_FAINT, min_width="5.5rem"),
+                    rx.text("tono", size="1", color=T.TEXT_FAINT, min_width="4rem"),
+                    rx.text("verbo · qué pasa · a dónde puede ir", size="1", color=T.TEXT_FAINT),
+                    spacing="3",
+                    width="100%",
+                ),
+                *[_thermal_row(key) for key in SCALE_ORDER],
+                spacing="3",
+                width="100%",
+            )
+        ),
+        _thermal_transition_demo(),
+        description=(
+            "ui/thermal.py + ui/lottie.py (lottie-react, MIT). Seis animaciones propias "
+            "en assets/lottie/, 22 KB en total. Regla: docs/ux-post-journey-termico.md."
+        ),
+        spacing="4",
+    )
+
+
 def styleguide_index() -> rx.Component:
     return app_shell(
         page_header(
@@ -780,6 +969,7 @@ def styleguide_index() -> rx.Component:
             _type_section(),
             _space_section(),
             _motion_section(),
+            _thermal_section(),
             _components_section(),
             spacing="6",
         ),

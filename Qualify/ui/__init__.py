@@ -23,6 +23,7 @@ from .layout import (
     sidebar,
     tenant_block,
 )
+from .lottie import LottieLight, lottie
 from .primitives import (
     callout,
     card,
@@ -46,13 +47,27 @@ from .primitives import (
     tone_badge,
 )
 from .state import NavState
+from .thermal import (
+    SCALE_ORDER,
+    TEMPERATURES,
+    Temperature,
+    temperature,
+    thermal_badge,
+    thermal_for,
+    thermal_glyph,
+    transition,
+)
 
 __all__ = [
     "LANDING_URL",
+    "LottieLight",
     "NAV_BUSINESS",
     "NAV_ITEMS",
     "NAV_ZONES",
     "NavState",
+    "SCALE_ORDER",
+    "TEMPERATURES",
+    "Temperature",
     "app_shell",
     "brand_mark",
     "callout",
@@ -64,6 +79,7 @@ __all__ = [
     "progress_panel",
     "progress_step_row",
     "logout_action",
+    "lottie",
     "mono",
     "page_body",
     "page_header",
@@ -80,7 +96,12 @@ __all__ = [
     "stat_card",
     "status_dot",
     "tag",
+    "temperature",
     "tenant_block",
+    "thermal_badge",
+    "thermal_for",
+    "thermal_glyph",
     "tokens",
     "tone_badge",
+    "transition",
 ]
