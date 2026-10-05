@@ -378,6 +378,7 @@ class AuthState(rx.State):
             # modules read AuthState, and a top-level import would be circular.
             from .brand_documents import BrandDocumentState
             from .canva_state import CanvaState
+            from .catalog_state import CatalogState
             from .clarity_state import ClarityState
             from .connections_state import ConnectionsState
             from .creative_state import CreativeState
@@ -423,6 +424,9 @@ class AuthState(rx.State):
                 CanvaState,
                 # Tu voz (2026-09-30): the staged recording, the analysis and the clone
                 VoiceLabState,
+                # the product catalog (2026-10-05): the tenant's products, the open
+                # editor and any files still parked for ingest
+                CatalogState,
             ):
                 substate = await self.get_state(state_cls)
                 substate.reset()

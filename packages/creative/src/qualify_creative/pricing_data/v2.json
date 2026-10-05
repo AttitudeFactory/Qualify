@@ -8,7 +8,8 @@
     "heygen_avatar_iv": "HeyGen API pay-as-you-go 2026-09, third-party breakdowns (g2.com, anam.ai); official sheet is behind app.heygen.com/developers/api?modal=pricing. Priced at the HIGHEST avatar type for the engine (digital twin / studio $0.0667/s; photo avatar is $0.05/s) because the adapter does not know the avatar type at pre-flight. 4K deliberately unpriced.",
     "heygen_avatar_iii": "Same sources. Priced at the photo-avatar rate ($0.0433/s; digital twin is $0.0167/s), again the conservative side. 4K deliberately unpriced.",
     "heygen_image": "developers.heygen.com/docs/enterprise-pricing (read 2026-09-25): Avatar IV photo avatar 0.1 credit/s = $0.05/s; the one-off image mode (`type: image`) runs on Avatar IV. 4K deliberately unpriced.",
-    "heygen_prompt_avatar": "Avatar creation is 1 credit per call on the same page; the prompt avatar's own price is not listed, so it is priced at 1 credit x $0.50 — the conservative reading."
+    "heygen_prompt_avatar": "Avatar creation is 1 credit per call on the same page; the prompt avatar's own price is not listed, so it is priced at 1 credit x $0.50 — the conservative reading.",
+    "remotion_selfhost": "Founder decision 2026-10-05 (docs/plan-mvp-plantillas-remotion.md §2.3, backlog §0.1): the render service runs in Docker on our own VPS, so a render costs nothing beyond the server; Remotion's Free License applies while the team is 3 people or fewer (remotion.dev/docs/terms, read 2026-10-05). An explicit 0 — the day Automators ($0.01/render, $100/month floor) or Lambda applies, this entry changes, not the code."
   },
   "entries": {
     "claude-opus-5": {
@@ -38,6 +39,9 @@
     },
     "heygen_prompt_avatar": {
       "per_piece": "0.50"
+    },
+    "remotion_selfhost": {
+      "per_render": "0.00"
     }
   }
 }

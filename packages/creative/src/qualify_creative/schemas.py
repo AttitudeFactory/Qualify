@@ -317,6 +317,10 @@ class MediaInputs(BaseModel):
     #: asked for. Stored with the brief today; rendered once the model is wired.
     ad_mode: AdImageMode | None = None
     scene_prompt: str = Field(default="", max_length=SCENE_PROMPT_MAX)
+    #: Template kind: the recipe the operator picked when they overrode the router's
+    #: suggestion (plan-mvp-plantillas-remotion.md §3). Empty = let the router choose.
+    template_id: str | None = None
+    template_version: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def _known_duration(self) -> MediaInputs:
@@ -364,6 +368,11 @@ class ContentBrief(BaseModel):
         media = self.media
         if not self.kind.enabled:
             raise ValueError(f"content kind {self.kind} is not available yet")
+        if self.kind is ContentKind.TEMPLATE and not media.product_keys:
+            # Rule 6 of the recipe router is "nothing applies → the product's main photo":
+            # a template with zero real photos is a generated image, which is the one
+            # thing this kind exists not to be.
+            raise ValueError("a template needs at least one product photo")
         if self.kind is ContentKind.AVATAR_VIDEO:
             if not media.voice_id:
                 raise ValueError("an avatar video needs a voice")

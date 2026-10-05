@@ -33,10 +33,15 @@ def test_the_picker_offers_the_five_kinds_in_order() -> None:
     )
 
 
-def test_the_template_is_shown_but_cannot_be_chosen() -> None:
+def test_the_template_kind_is_chosen_and_reads_the_catalog_once() -> None:
+    """Since the template engine landed (plan-mvp-plantillas-remotion.md, 2026-10-05)
+    «Con plantilla» is a real choice: picking it chains the catalog read for the
+    product picker — once, like the avatar kinds and HeyGen's catalog."""
     state = CreativeState()
-    state.choose_kind("template")
-    assert state.brief_kind == "static_flyer"
+    assert state.choose_kind("template") is not None  # chains load_catalog_products
+    assert state.brief_kind == "template"
+    state.catalog_items = [{"id": "p1", "name": "Shawarma mixto"}]
+    assert state.choose_kind("template") is None
     assert state.choose_kind("creator_script") is None
     assert state.brief_kind == "creator_script"
 
@@ -489,7 +494,17 @@ def test_only_the_avatar_kinds_ask_who_presents() -> None:
     assert "presenter" in generator_steps("animated_avatar_video")
     for kind in ("creator_script", "static_flyer"):
         assert "presenter" not in generator_steps(kind)
+        assert "recipe" not in generator_steps(kind)
         assert len(generator_steps(kind)) == 6
+
+
+def test_only_the_template_kind_asks_how_it_is_made() -> None:
+    """«¿Cómo la hacemos?» (the recipe step, plan §2.1 #4) sits right before the review
+    and only for the template kind."""
+    steps = generator_steps("template")
+    assert steps == ["kind", "topic", "channel", "details", "rules", "recipe", "review"]
+    for kind in ("creator_script", "avatar_video", "animated_avatar_video", "static_flyer"):
+        assert "recipe" not in generator_steps(kind)
 
 
 def test_the_counter_follows_the_kind() -> None:
@@ -565,3 +580,138 @@ def test_crear_otro_starts_the_wizard_again() -> None:
     state.generator_view = "result"
     state.new_generation()
     assert state.gen_step == "kind"
+
+
+# -- the template kind (plan-mvp-plantillas-remotion.md, 2026-10-05) ---------------------
+
+
+def _recipe(key: str, **kw: Any):
+    from .creative_vm import RecipeOptionVM
+
+    base: dict[str, Any] = {
+        "key": key,
+        "engine_label": key.title(),
+        "engine_tone": "accent",
+        "label": "Promo de producto",
+        "template_id": "promo_producto" if key == "remotion" else "",
+        "template_version": 1 if key == "remotion" else 0,
+        "cost_label": "USD 0.00",
+        "eta_label": "~38 s",
+        "outputs_label": "Reel · Feed · Historia",
+        "suggested": False,
+        "available": True,
+        "reason": "",
+        "selectable": key != "ugc",
+        "rule": 0,
+    }
+    base.update(kw)
+    return RecipeOptionVM(**base)
+
+
+def test_picking_a_catalog_product_sets_the_reference_photos_and_topic() -> None:
+    state = CreativeState()
+    state.brief_kind = "template"
+    state.catalog_items = [
+        {
+            "id": "p1",
+            "name": "Shawarma mixto",
+            "photo_key": "uploads/t/catalog/p1/a.jpg",
+            "photo_keys": "uploads/t/catalog/p1/a.jpg\nuploads/t/catalog/p1/b.jpg",
+        }
+    ]
+    state.choose_product("p1")
+    assert state.brief_product_ref == "Shawarma mixto"
+    assert state.brief_topic == "Shawarma mixto"  # an empty topic takes the name
+    assert state.selected_product_photo_key == "uploads/t/catalog/p1/a.jpg"
+    assert state.template_photo_count == 2
+    # the product's photos ride along in the brief, after the piece's own uploads
+    state.media_product_keys = ["uploads/t/extra.jpg", "uploads/t/catalog/p1/a.jpg"]
+    media = state._media_inputs()
+    assert media["product_keys"] == [
+        "uploads/t/extra.jpg",
+        "uploads/t/catalog/p1/a.jpg",
+        "uploads/t/catalog/p1/b.jpg",
+    ]
+    assert media["background_key"] is None  # a template takes no background
+    assert "template_id" not in media  # no recipe pinned yet
+    # a typed topic is never overwritten; picking the same product again unpicks it
+    state.brief_topic = "Promo de martes"
+    state.choose_product("p1")
+    assert state.selected_product_id == "" and state.brief_product_ref == ""
+    assert state.brief_topic == "Promo de martes"
+    assert state.template_photo_count == 2  # only the piece's own uploads remain
+
+
+def test_a_template_without_any_photo_cannot_leave_the_details_step() -> None:
+    state = CreativeState()
+    state.brief_kind = "template"
+    state.brief_topic = "Promo"
+    state.gen_step = "details"
+    assert state.gen_next() is None
+    assert state.gen_step == "details"
+    assert "foto" in state.create_error.lower()
+    state.media_product_keys = ["uploads/t/a.jpg"]
+    state.gen_next()
+    assert state.gen_step == "rules"
+    # Continuar out of the rules step lands on the recipes and quotes them
+    assert state.gen_next() is not None  # chains load_recipe_options
+    assert state.gen_step == "recipe"
+
+
+def test_choosing_a_remotion_recipe_pins_the_template_on_the_brief() -> None:
+    state = CreativeState()
+    state.brief_kind = "template"
+    state.media_product_keys = ["uploads/t/a.jpg", "uploads/t/b.jpg"]
+    state.recipe_items = [
+        _recipe("remotion", suggested=True, rule=2),
+        _recipe("heygen", available=False, selectable=False, reason="sin avatar"),
+        _recipe("ugc", reason="solo cotiza"),
+    ]
+    state.gen_step = "recipe"
+    # nothing picked yet: Continuar refuses
+    assert state.gen_next() is None and state.gen_step == "recipe"
+    assert state.create_error != ""
+
+    assert state.choose_recipe("remotion") is None
+    assert state.selected_recipe == "remotion"
+    assert (state.media_template_id, state.media_template_version) == ("promo_producto", 1)
+    media = state._media_inputs()
+    assert (media["template_id"], media["template_version"]) == ("promo_producto", 1)
+    assert state.selected_recipe_label == "Promo de producto · Remotion"
+    assert state.selected_recipe_cost == "USD 0.00 · ~38 s"
+    assert ["Receta", "Promo de producto · Remotion"] in state.gen_recap
+    assert ["Costo estimado", "USD 0.00 · ~38 s"] in state.gen_recap
+
+    state.gen_next()
+    assert state.gen_step == "review"
+
+
+def test_ugc_only_quotes_and_an_unavailable_recipe_says_why() -> None:
+    state = CreativeState()
+    state.brief_kind = "template"
+    state.recipe_items = [
+        _recipe("remotion", available=False, selectable=False, reason="necesita 2 fotos"),
+        _recipe("heygen", available=False, selectable=False, reason="sin avatar"),
+        _recipe("ugc", reason="solo cotiza"),
+    ]
+    assert state.choose_recipe("ugc") is None
+    assert state.selected_recipe == "" and "cotiza" in state.recipe_notice
+    assert state.choose_recipe("remotion") is None
+    assert state.selected_recipe == "" and "necesita 2 fotos" in state.recipe_notice
+
+
+def test_choosing_heygen_turns_the_piece_into_an_avatar_video() -> None:
+    state = CreativeState()
+    state.brief_kind = "template"
+    state.gen_step = "recipe"
+    state.recipe_items = [
+        _recipe("remotion"),
+        _recipe("heygen", engine_tone="info", label="Avatar hablando a cámara"),
+        _recipe("ugc"),
+    ]
+    assert state.choose_recipe("heygen") is not None  # chains load_heygen_catalog
+    assert state.brief_kind == "avatar_video"
+    assert state.gen_step == "presenter"
+    assert "avatar" in state.recipe_notice.lower()
+    assert state.media_template_id == "" and state.recipe_items == []
+    assert "recipe" not in generator_steps(state.brief_kind)

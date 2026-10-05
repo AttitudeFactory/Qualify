@@ -97,3 +97,18 @@ fmt:
 # -v drops the pgdata volume: a clean slate for the next `just dev`.
 down:
     docker compose down -v
+
+# Remotion Studio on the host (hot reload) for authoring packages/render templates.
+render-dev:
+    cd packages/render && npm install && npm run dev
+
+# Rebuild the render service image (packages/render/Dockerfile). `just up` starts it.
+render-build:
+    docker compose build render
+
+render-logs:
+    docker compose logs -f render
+
+# End-to-end smoke test against the running render service (uploads, renders, downloads).
+render-smoke base="http://127.0.0.1:3200":
+    packages/render/scripts/smoke.sh {{base}}

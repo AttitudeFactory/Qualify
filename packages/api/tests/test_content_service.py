@@ -203,6 +203,7 @@ class InMemoryRepository:
         self.budget: BudgetState | None = None
         self.spend_added = Decimal("0")
         self.media: dict[UUID, list[ImageRecord]] = {}
+        self.template_runs = {}
 
     def insert_brief_and_draft(
         self, *, tenant_id, user_id, brief, voice_profile_version, pipeline_version
@@ -261,7 +262,10 @@ class InMemoryRepository:
         spent_usd,
         media=(),
         failure_detail=None,
+        template_run=None,
     ):  # noqa: ANN001, ANN201
+        if template_run is not None:
+            self.template_runs[template_run.id] = template_run
         if media:
             self.drafts[draft_id] = replace(self.drafts[draft_id], preview_key=preview_of(media))
             self.media[draft_id] = [

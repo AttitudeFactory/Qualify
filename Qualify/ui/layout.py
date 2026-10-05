@@ -76,6 +76,9 @@ NAV_BUSINESS: list[Item] = [
     ("Clarity", "activity", "/clarity", True),
     ("Vitrina", "store", "/vitrina", True),
     ("Brand Kit", "swatch-book", "/brand/kit", True),
+    # The product catalog (plan-mvp-plantillas-remotion.md §2.1 #1): the real photos
+    # the templates compose. Next to the Brand Kit — both are what the brand IS.
+    ("Catálogo", "package", "/catalog", True),
     ("Configuración", "settings", "#", False),
 ]
 

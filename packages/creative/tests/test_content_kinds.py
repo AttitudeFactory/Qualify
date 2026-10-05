@@ -51,15 +51,13 @@ def _brief(kind: ContentKind, **media: object) -> ContentBrief:
 # --------------------------------------------------------------------------------------
 
 
-def test_every_kind_but_the_template_is_available() -> None:
-    assert [k for k in ContentKind if k.enabled] == [
-        ContentKind.CREATOR_SCRIPT,
-        ContentKind.AVATAR_VIDEO,
-        ContentKind.ANIMATED_AVATAR_VIDEO,
-        ContentKind.STATIC_FLYER,
-    ]
-    with pytest.raises(ValidationError, match="not available yet"):
+def test_every_kind_is_available_and_the_template_needs_a_photo() -> None:
+    """Since 2026-10-05 the template is the Remotion engine (plan-mvp-plantillas-remotion
+    .md): enabled, multi-output, and never without a real product photo."""
+    assert [k for k in ContentKind if k.enabled] == list(ContentKind)
+    with pytest.raises(ValidationError, match="at least one product photo"):
         _brief(ContentKind.TEMPLATE)
+    assert _brief(ContentKind.TEMPLATE, product_keys=("uploads/t/a.jpg",)).kind.multi_output
 
 
 def test_videos_are_vertical_scripted_and_always_disclosed() -> None:
@@ -313,7 +311,7 @@ def test_each_kind_offers_its_own_formats() -> None:
     assert ContentFormat.FEED_1_1 in ContentKind.ANIMATED_AVATAR_VIDEO.formats
     assert ContentFormat.FEED_1_1 not in ContentKind.CREATOR_SCRIPT.formats
     for kind in ContentKind:
-        assert kind.default_format is kind.formats[0] or kind is ContentKind.TEMPLATE
+        assert kind.default_format is kind.formats[0]
     assert ContentFormat.FEED_1_1.aspect_ratio == "1:1"
     assert ContentFormat.STORY_9_16.dimensions == (1080, 1920)
 

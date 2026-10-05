@@ -68,7 +68,7 @@ from qualify_api.creative.fsm import (
     DraftTrigger,
     apply_transition,
 )
-from qualify_api.creative.media import MediaProducer, MediaWrite
+from qualify_api.creative.media import MediaProducer, MediaWrite, TemplateRunWrite
 
 logger = logging.getLogger(__name__)
 #: Every vendor call of a generation and its cost, one line each plus a total per
@@ -307,6 +307,7 @@ class ContentRepository(Protocol):
         spent_usd: Decimal,
         media: tuple[MediaWrite, ...] = (),
         failure_detail: str | None = None,
+        template_run: TemplateRunWrite | None = None,
     ) -> None: ...
 
     def update_status(
@@ -533,6 +534,7 @@ class PostgresContentRepository:
         spent_usd: Decimal,
         media: tuple[MediaWrite, ...] = (),
         failure_detail: str | None = None,
+        template_run: TemplateRunWrite | None = None,
     ) -> None:
         """One transaction for the whole outcome. Usage rows and spend are written even
         if the draft lost a race with the reaper — the money was spent either way, and
@@ -581,6 +583,42 @@ class PostgresContentRepository:
                 ):
                     session.delete(old)
                 session.flush()
+            if template_run is not None:
+                # The render job as Python saw it (0038) — written before the assets that
+                # reference it, and also when the run failed: the attempt is the evidence.
+                # Idempotent on the job id: a retried draft updates the same row.
+                row = session.get(orm.TemplateRun, template_run.id)
+                if row is None:
+                    row = orm.TemplateRun(
+                        id=template_run.id,
+                        tenant_id=tenant_id,
+                        brand_id=brand_id,
+                        draft_id=draft_id,
+                        template_id=template_run.template_id,
+                        template_version=template_run.template_version,
+                        engine=template_run.engine,
+                        status=template_run.status,
+                        outputs=dict(template_run.outputs),
+                        props=dict(template_run.props),
+                    )
+                    session.add(row)
+                row.status = template_run.status
+                row.outputs = dict(template_run.outputs)
+                row.router_rule = template_run.router_rule
+                row.prompt_id = template_run.prompt_id
+                row.prompt_version = template_run.prompt_version
+                row.estimated_eta_sec = template_run.estimated_eta_sec
+                row.actual_sec = template_run.actual_sec
+                row.estimated_cost_usd = template_run.estimated_cost_usd
+                row.actual_cost_usd = template_run.actual_cost_usd
+                row.failure_reason = template_run.failure_reason
+                row.error_message = template_run.error_message
+                now = datetime.now(UTC)
+                if row.started_at is None:
+                    row.started_at = now
+                if template_run.status in ("completed", "failed", "cancelled"):
+                    row.finished_at = now
+                session.flush()
             for item in media:
                 session.add(
                     orm.ImageAsset(
@@ -596,6 +634,8 @@ class PostgresContentRepository:
                         params=dict(item.params),
                         media_type=item.media_type,
                         position=item.position,
+                        output_port=item.output_port,
+                        template_run_id=item.template_run_id,
                     )
                 )
             if spent_usd:
@@ -1001,6 +1041,7 @@ class ContentService:
         media_writes: tuple[MediaWrite, ...] = ()
         media_failure: str | None = None
         media_detail = ""
+        template_run: TemplateRunWrite | None = None
         if any_passed and self._media is not None and brief.kind is not ContentKind.CREATOR_SCRIPT:
             # The artifact is built from the FIRST variant that passed layer 1: the
             # flyer prints its hook/CTA, the avatar reads its script.
@@ -1038,7 +1079,10 @@ class ContentService:
             )
             media_writes = outcome.media
             media_failure = outcome.failure
-            media_detail = outcome.detail[:500] if outcome.failure else ""
+            template_run = outcome.template_run
+            # A failed run says why; a run with a sibling output missing says which
+            # (the draft is `generated` with what rendered — plan §2.2).
+            media_detail = outcome.detail[:500] if (outcome.failure or outcome.detail) else ""
 
         if any_passed and media_failure is None:
             new_status = apply_transition(DRAFTING, DraftTrigger.GENERATE_OK)
@@ -1069,6 +1113,7 @@ class ContentService:
             spent_usd=spent,
             media=media_writes,
             failure_detail=media_detail or None,
+            template_run=template_run,
         )
 
     def _log_costs(

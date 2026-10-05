@@ -16,6 +16,10 @@ default-groups = ["backend", "crm", "dev"]
 
 [tool.uv.workspace]
 members = ["packages/*"]
+# packages/render is the Node/Remotion render service (no pyproject.toml); without
+# this exclude uv refuses to run anywhere in the repo ("workspace member is missing a
+# pyproject.toml").
+exclude = ["packages/render"]
 
 # Workspace sources declared once at the root apply across every member: any member
 # depending on these names resolves to the in-tree package, no index publish needed.
