@@ -8,6 +8,14 @@ The checks run in a fixed order and the first failure is THE reason, so the same
 always gets the same answer. Order: approval → approved revision → approved copy →
 category → media count/order/type → category-and-media shape → R2 custody → content type.
 
+MP-11 — one event per output. A POST rendered by the template engine carries several
+outputs in `image_assets.output_port` (`reel` video 9:16, `feed` image 4:5, `story` image
+9:16). When the candidate names an `output_port`, only that port's media is evaluated
+(re-numbered from position 0) and `media_product_type` is derived from the PORT, not from
+the POST's category: `reel` → REELS, `feed` → IMAGE, `story` → STORIES (image or video —
+the publisher has published image stories since QUA-113). Without a port, the category
+contract below is untouched.
+
 What this does NOT decide, on purpose (QUA-109/110 contract gaps, recorded in QUA-111):
 - whether the approved copy/category is the one the human saw — only `revision ==
   approved_revision` is checkable, and `category` changes do not bump `revision` today;
@@ -56,6 +64,18 @@ _ALLOWED_CONTENT_TYPES: dict[str, frozenset[str]] = {
 # Categories that exist in QUA-109's vocabulary but are never published by this executor.
 _NEVER_PUBLISHED: frozenset[str] = frozenset({PostCategory.TIKTOK_VIDEO.value})
 
+# Template output ports (`packages/render/CONTRACT.md` §1, `image_assets.output_port`) →
+# what the publisher receives, and which single item type each port admits (MP-11).
+OUTPUT_PORT_REEL = "reel"
+OUTPUT_PORT_FEED = "feed"
+OUTPUT_PORT_STORY = "story"
+_PORT_PRODUCT_TYPE: dict[str, tuple[str, frozenset[str]]] = {
+    OUTPUT_PORT_REEL: (MEDIA_TYPE_REELS, frozenset({MEDIA_TYPE_VIDEO})),
+    OUTPUT_PORT_FEED: (MEDIA_TYPE_IMAGE, frozenset({MEDIA_TYPE_IMAGE})),
+    OUTPUT_PORT_STORY: (MEDIA_TYPE_STORIES, frozenset({MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO})),
+}
+OUTPUT_PORTS: tuple[str, ...] = tuple(_PORT_PRODUCT_TYPE)
+
 REASON_TEXT: Mapping[UnpublishableReason, str] = {
     R.POST_NOT_FOUND: "El POST ya no existe o no es visible.",
     R.NOT_APPROVED: "El POST no está aprobado.",
@@ -67,7 +87,8 @@ REASON_TEXT: Mapping[UnpublishableReason, str] = {
     R.TOO_MANY_MEDIA: f"Una galería admite como máximo {MAX_CAROUSEL_ITEMS} elementos.",
     R.MEDIA_ORDER_AMBIGUOUS: "El orden de los elementos del POST es ambiguo.",
     R.UNSUPPORTED_MEDIA_TYPE: "El POST tiene un tipo de archivo que no se publica.",
-    R.UNSUPPORTED_SHAPE: "La categoría no corresponde al contenido (p. ej. story de imagen).",
+    R.UNSUPPORTED_SHAPE: "La categoría no corresponde al contenido (p. ej. un reel con dos "
+    "archivos, o una salida sin el tipo de archivo que pide).",
     R.MEDIA_NOT_IN_R2: "Los archivos del POST todavía no están listos para publicar (R2).",
     R.CONTENT_TYPE_MISSING: "Falta el formato de algún archivo del POST.",
     R.UNSUPPORTED_CONTENT_TYPE: "Formato no admitido: las imágenes deben ser JPEG.",
@@ -82,6 +103,7 @@ class MediaCandidate:
     content_type: str | None
     media_type: str  # the POST's own vocabulary: "image" / "video"
     position: int
+    output_port: str | None = None  # `image_assets.output_port` (0038), None before MP-11
 
 
 @dataclass(frozen=True)
@@ -100,21 +122,39 @@ class PostCandidate:
     media: tuple[MediaCandidate, ...]
     requires_ai_disclosure: bool = False
     provenance: tuple[tuple[str, str], ...] = ()
+    # MP-11: evaluate ONE output (only media with this `output_port`), or the whole POST.
+    output_port: str | None = None
 
 
 def _refuse(
     candidate: PostCandidate, reason: UnpublishableReason, detail: str = ""
 ) -> NotPublishable:
-    return NotPublishable(post_id=candidate.post_id, reason=reason, detail=detail)
+    return NotPublishable(
+        post_id=candidate.post_id,
+        reason=reason,
+        detail=detail,
+        output_port=candidate.output_port,
+    )
 
 
-def media_product_type_for(category: str, media_types: tuple[str, ...]) -> str | None:
+def media_product_type_for(
+    category: str, media_types: tuple[str, ...], output_port: str | None = None
+) -> str | None:
     """QUA-109's category contract (`PostCategory`: galería → IMAGE/CAROUSEL, story →
     STORIES, reel → REELS) restricted to what `PublishService` can actually publish.
     None = that combination is not publishable. There is no default branch: a category
-    this function does not name never becomes a reel."""
+    this function does not name never becomes a reel.
+
+    With `output_port` (MP-11) the PORT decides, not the category: `reel` → REELS (one
+    video), `feed` → IMAGE (one image), `story` → STORIES (one image or one video). An
+    unknown port is never published."""
     count = len(media_types)
     single = media_types[0] if count == 1 else None
+    if output_port is not None:
+        if output_port not in _PORT_PRODUCT_TYPE:
+            return None
+        product_type, admitted = _PORT_PRODUCT_TYPE[output_port]
+        return product_type if single in admitted else None
     if category == PostCategory.GALERIA.value:
         if single == MEDIA_TYPE_IMAGE:
             return MEDIA_TYPE_IMAGE
@@ -124,9 +164,34 @@ def media_product_type_for(category: str, media_types: tuple[str, ...]) -> str |
     if category == PostCategory.REEL.value:
         return MEDIA_TYPE_REELS if single == MEDIA_TYPE_VIDEO else None
     if category == PostCategory.STORY.value:
-        # The publisher has no image story (`create_image_container` takes no media type).
+        # The publisher CAN publish an image story since QUA-113 (`is_image_story`); the
+        # category contract is deliberately left at "one video" — an image story is
+        # reached through the `story` output port (MP-11), which is where image stories
+        # actually come from (the template engine). Widening this branch is a separate
+        # decision over QUA-109's vocabulary, not a bug fix.
         return MEDIA_TYPE_STORIES if single == MEDIA_TYPE_VIDEO else None
     return None
+
+
+def _position(item: MediaCandidate) -> int:
+    return item.position
+
+
+def _port_media(media: tuple[MediaCandidate, ...], output_port: str) -> tuple[MediaCandidate, ...]:
+    """Only the port's assets, re-numbered from position 0 in their own order, so a
+    single-item port always lands as one item at position 0 whatever slot it occupied in
+    the POST."""
+    own = sorted((item for item in media if item.output_port == output_port), key=_position)
+    return tuple(
+        MediaCandidate(
+            object_key=item.object_key,
+            content_type=item.content_type,
+            media_type=item.media_type,
+            position=index,
+            output_port=item.output_port,
+        )
+        for index, item in enumerate(own)
+    )
 
 
 def evaluate(candidate: PostCandidate) -> PublishablePost | NotPublishable:
@@ -147,9 +212,10 @@ def evaluate(candidate: PostCandidate) -> PublishablePost | NotPublishable:
     if category in _NEVER_PUBLISHED or category not in {c.value for c in PostCategory}:
         return _refuse(candidate, R.CATEGORY_NOT_PUBLISHABLE, category)
 
-    media = candidate.media
+    port = candidate.output_port
+    media = _port_media(candidate.media, port) if port is not None else candidate.media
     if not media:
-        return _refuse(candidate, R.NO_MEDIA)
+        return _refuse(candidate, R.NO_MEDIA, f"port {port}" if port else "")
     if len(media) > MAX_CAROUSEL_ITEMS:
         return _refuse(candidate, R.TOO_MANY_MEDIA, str(len(media)))
     positions = [item.position for item in media]
@@ -164,11 +230,10 @@ def evaluate(candidate: PostCandidate) -> PublishablePost | NotPublishable:
             return _refuse(candidate, R.UNSUPPORTED_MEDIA_TYPE, item.media_type)
         publisher_types.append(publisher_type)
 
-    media_product_type = media_product_type_for(category, tuple(publisher_types))
+    media_product_type = media_product_type_for(category, tuple(publisher_types), port)
     if media_product_type is None:
-        return _refuse(
-            candidate, R.UNSUPPORTED_SHAPE, f"{category} with {', '.join(publisher_types)}"
-        )
+        shape = f"{category} with {', '.join(publisher_types)}"
+        return _refuse(candidate, R.UNSUPPORTED_SHAPE, f"port {port} ({shape})" if port else shape)
 
     items: list[PublishableMedia] = []
     for item, publisher_type in zip(ordered, publisher_types, strict=True):
@@ -200,5 +265,10 @@ def evaluate(candidate: PostCandidate) -> PublishablePost | NotPublishable:
         media_product_type=media_product_type,
         media=tuple(items),
         requires_ai_disclosure=candidate.requires_ai_disclosure,
-        provenance=candidate.provenance,
+        provenance=(
+            (*candidate.provenance, ("output_port", port))
+            if port is not None
+            else candidate.provenance
+        ),
+        output_port=port,
     )

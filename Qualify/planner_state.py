@@ -46,6 +46,7 @@ from .planner_vm import (
     DayColumnVM,
     EventDetailVM,
     HourRowVM,
+    OutputChipVM,
     PostOptionVM,
     TagSuggestionVM,
     TagVM,
@@ -60,6 +61,7 @@ logger = logging.getLogger(__name__)
 _NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
 _LOAD_FAILED = "No se pudo cargar el Planificador. Inténtalo de nuevo."
 _FORM_INCOMPLETE = "Completa el POST, la fecha, la hora y la cuenta."
+_OUTPUT_REQUIRED = "Elige qué salida programar (Reel, feed o historia)."
 
 MODE_ASSIGN = "assign"
 SCROLL_ID = "q-planner-scroll"
@@ -163,6 +165,9 @@ class PlannerState(rx.State):
     form_tag_query: str = ""
     form_error: str = ""
     saving: bool = False
+    # MP-11: the template output being planned ("reel" / "feed" / "story"); "" for a
+    # POST planned whole. Preselected to the first output without a live event.
+    form_output_port: str = ""
 
     # -- detail / cancel ------------------------------------------------------
     detail_open: bool = False
@@ -304,16 +309,48 @@ class PlannerState(rx.State):
     def form_is_reschedule(self) -> bool:
         return self.form_mode == MODE_RESCHEDULE
 
+    def _form_post(self) -> PostOptionVM | None:
+        for post in self.schedulable:
+            if post.post_id == self.form_post_id:
+                return post
+        return None
+
+    @rx.var
+    def form_outputs(self) -> list[OutputChipVM]:
+        """The chosen POST's template outputs — the «Salida» control's options (MP-11).
+        Empty for a POST planned whole, so the control is not shown."""
+        post = self._form_post()
+        return list(post.outputs) if post is not None else []
+
+    @rx.var
+    def form_has_outputs(self) -> bool:
+        return bool(self.form_outputs)
+
+    @rx.var
+    def form_output_label(self) -> str:
+        """ "Reel 9:16" for the output being (re)planned, "" for a whole POST."""
+        for chip in self.form_outputs:
+            if chip.port == self.form_output_port:
+                return chip.label
+        if self.form_mode == MODE_RESCHEDULE:
+            return self.detail.output_label
+        return ""
+
     @rx.var
     def form_post_note(self) -> str:
         """Why the POST being scheduled will not publish yet — the same `readiness_note` the
         card and the detail dialog show (`planner_vm.readiness`), "" when it is ready."""
         if self.form_mode == MODE_RESCHEDULE:
             return self.detail.publish_note
-        for post in self.schedulable:
-            if post.post_id == self.form_post_id:
-                return post.readiness_note
-        return ""
+        post = self._form_post()
+        if post is None:
+            return ""
+        # MP-11: with an output chosen, its own reason — the whole POST's readiness says
+        # "at least one output is publishable", which is not this output's answer.
+        for chip in post.outputs:
+            if chip.port == self.form_output_port:
+                return chip.note
+        return post.readiness_note
 
     # -- loading --------------------------------------------------------------
 
@@ -692,6 +729,13 @@ class PlannerState(rx.State):
         self.form_connection_id = self.connections[0].id if self.connections else ""
         self.form_tag_ids = []
         self.form_tag_query = ""
+        self.form_output_port = ""
+
+    def _preselect_output(self) -> None:
+        """MP-11: the first output of the chosen POST that has no live event (the next
+        one to plan); "" when the POST has no outputs or all are planned."""
+        post = self._form_post()
+        self.form_output_port = post.next_port if post is not None else ""
 
     def _open_assign(self, post_id: str = "", day_iso: str = "") -> None:
         """Open the assign dialog, optionally with a POST (from the Sin programar panel)
@@ -699,6 +743,7 @@ class PlannerState(rx.State):
         self._reset_form()
         self.form_mode = MODE_ASSIGN
         self.form_post_id = post_id
+        self._preselect_output()
         default_day = self.today_iso if self._week_contains_today() else self.monday_iso
         self.form_date = day_iso or default_day
         self.form_open = True
@@ -738,6 +783,12 @@ class PlannerState(rx.State):
     @rx.event
     def set_form_post_id(self, value: str) -> None:
         self.form_post_id = value
+        self._preselect_output()
+
+    @rx.event
+    def set_form_output_port(self, value: str | list[str]) -> None:
+        chosen = value[0] if isinstance(value, list) and value else value
+        self.form_output_port = chosen if isinstance(chosen, str) else ""
 
     @rx.event
     def set_form_date(self, value: str) -> None:
@@ -760,8 +811,12 @@ class PlannerState(rx.State):
             event_id, post_id = self.form_event_id, self.form_post_id
             day, at, connection_id = self.form_date, self.form_time, self.form_connection_id
             view_tz, tag_ids = self.view_tz, tuple(self.form_tag_ids)
+            output_port = self.form_output_port
             if (mode == MODE_ASSIGN and not post_id) or not day or not at or not connection_id:
                 self.form_error = _FORM_INCOMPLETE
+                return
+            if mode == MODE_ASSIGN and self.form_has_outputs and not output_port:
+                self.form_error = _OUTPUT_REQUIRED
                 return
             self.saving = True
             self.form_error = ""
@@ -778,7 +833,15 @@ class PlannerState(rx.State):
                 )
             else:
                 await asyncio.to_thread(
-                    schedule_post, tenant_id, post_id, day, at, connection_id, view_tz, tag_ids
+                    schedule_post,
+                    tenant_id,
+                    post_id,
+                    day,
+                    at,
+                    connection_id,
+                    view_tz,
+                    tag_ids,
+                    output_port,
                 )
         except PlannerError as exc:
             async with self:
@@ -846,6 +909,7 @@ class PlannerState(rx.State):
         self.form_time = self.detail.local_time
         self.form_connection_id = self.detail.connection_id
         self.form_tag_ids = list(self.detail.tag_ids)
+        self.form_output_port = self.detail.output_port  # shown, never changed by a move
         self.detail_open = False
         self.form_open = True
 

@@ -290,7 +290,7 @@ class EventExecutor:
         )
         if claimed is None:
             return ExecutionResult(event.id, ExecutionOutcome.CLAIM_LOST)
-        _log("claimed", claimed)
+        _log("claimed", claimed, output_port=claimed.output_port or "none")
         return await self.start_claimed(claimed)
 
     # -- C ----------------------------------------------------------------------------
@@ -342,7 +342,17 @@ class EventExecutor:
             _log("start_deferred", current, error=type(exc).__name__)
             return ExecutionResult(current.id, ExecutionOutcome.DEFERRED, reason=type(exc).__name__)
 
-        _log("started", current, attempt_id=state.attempt_id, status=state.status)
+        # The port is the event's (0040) and the attempt links back to the event, so a
+        # `publish_attempts` row is traceable to the output it published without a new
+        # column there; the log carries it too.
+        _log(
+            "started",
+            current,
+            attempt_id=state.attempt_id,
+            status=state.status,
+            media_product_type=verdict.media_product_type,
+            output_port=current.output_port or "none",
+        )
         return self._link(current, state.attempt_id, ExecutionOutcome.STARTED)
 
     # -- advancing (F4) -----------------------------------------------------------------
@@ -491,7 +501,11 @@ class EventExecutor:
     # -- helpers ----------------------------------------------------------------------
 
     def _publishable(self, event: EventRecord) -> PublishablePost | NotPublishable:
-        verdict = self._posts.get_publishable(tenant_id=event.tenant_id, post_id=event.post_id)
+        # MP-11: an event with an `output_port` publishes that one template output; the
+        # reader hands back only that port's media with the port-derived product type.
+        verdict = self._posts.get_publishable(
+            tenant_id=event.tenant_id, post_id=event.post_id, output_port=event.output_port
+        )
         if isinstance(verdict, PublishablePost) and verdict.brand_id != event.brand_id:
             # An event must publish its own brand's POST; a mismatch reads as "not there".
             return NotPublishable(
