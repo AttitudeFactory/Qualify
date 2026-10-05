@@ -383,7 +383,8 @@ def test_list_due_returns_only_scheduled_events_whose_instant_arrived() -> None:
     svc = _service(post, clock=clock)
     soon = _schedule(svc, post, hours=1)
     later = _schedule(svc, post, hours=48)
-    cancelled = _schedule(svc, post, hours=1)
+    # Its own instant: the same (POST, connection, instant) as `soon` is a duplicate (MP-11).
+    cancelled = _schedule(svc, post, scheduled_at=NOW + timedelta(hours=1, minutes=30))
     svc.cancel(tenant_id=TENANT, event_id=cancelled.id)
     clock[0] = NOW + timedelta(hours=2)
     due = svc.list_due(tenant_id=TENANT)

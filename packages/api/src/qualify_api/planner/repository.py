@@ -43,6 +43,9 @@ class EventRecord:
     created_by_user_id: UUID
     created_at: datetime
     updated_at: datetime
+    # MP-11: the template output this event publishes (`reel` / `feed` / `story`), or None
+    # for the whole POST. Frozen with the event: a reschedule never changes the output.
+    output_port: str | None = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,7 @@ class NewEvent:
     scheduled_at: datetime
     scheduled_tz: str
     created_by_user_id: UUID
+    output_port: str | None = None
 
 
 class PlannerRepository(Protocol):
@@ -83,6 +87,12 @@ class PlannerRepository(Protocol):
 
     def occupied_post_ids(self, *, tenant_id: UUID, brand_id: UUID) -> set[UUID]:
         """POSTs with at least one event whose status `occupies_post`."""
+        ...
+
+    def list_occupying(self, *, tenant_id: UUID, brand_id: UUID) -> list[EventRecord]:
+        """Every event of the brand whose status `occupies_post`, ordered by instant —
+        what decides, per POST and per output (MP-11), whether it is still "Sin
+        programar"."""
         ...
 
     def list_for_post(self, *, tenant_id: UUID, post_id: UUID) -> list[EventRecord]:
@@ -221,6 +231,7 @@ def _snapshot(row: CalendarEvent) -> EventRecord:
         created_by_user_id=row.created_by_user_id,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        output_port=row.output_port,
     )
 
 
@@ -305,6 +316,7 @@ class MemoryPlannerRepository:
             created_by_user_id=new.created_by_user_id,
             created_at=now,
             updated_at=now,
+            output_port=new.output_port,
         )
         self._rows[record.id] = record
         return record
@@ -340,6 +352,16 @@ class MemoryPlannerRepository:
             for r in self._rows.values()
             if r.tenant_id == tenant_id and r.brand_id == brand_id and r.status in _OCCUPYING
         }
+
+    def list_occupying(self, *, tenant_id: UUID, brand_id: UUID) -> list[EventRecord]:
+        return sorted(
+            (
+                r
+                for r in self._rows.values()
+                if r.tenant_id == tenant_id and r.brand_id == brand_id and r.status in _OCCUPYING
+            ),
+            key=lambda r: (r.scheduled_at, r.created_at),
+        )
 
     def list_for_post(self, *, tenant_id: UUID, post_id: UUID) -> list[EventRecord]:
         return sorted(
@@ -507,6 +529,7 @@ class PostgresPlannerRepository:
                 status=EventStatus.SCHEDULED.value,
                 revision=1,
                 created_by_user_id=new.created_by_user_id,
+                output_port=new.output_port,
             )
             session.add(row)
             session.flush()
@@ -553,6 +576,20 @@ class PostgresPlannerRepository:
                     .distinct()
                 )
             )
+
+    def list_occupying(self, *, tenant_id: UUID, brand_id: UUID) -> list[EventRecord]:
+        with tenant_session(tenant_id) as session:
+            return [
+                _snapshot(row)
+                for row in session.scalars(
+                    select(CalendarEvent)
+                    .where(
+                        CalendarEvent.brand_id == brand_id,
+                        CalendarEvent.status.in_(_OCCUPYING),
+                    )
+                    .order_by(CalendarEvent.scheduled_at, CalendarEvent.created_at)
+                )
+            ]
 
     def list_for_post(self, *, tenant_id: UUID, post_id: UUID) -> list[EventRecord]:
         with tenant_session(tenant_id) as session:

@@ -81,6 +81,22 @@ class PostNotRejected(PlannerError):
     """ "Quitar del calendario" is only for a POST the human rejected."""
 
 
+class UnknownOutput(PlannerError):
+    """MP-11: the `output_port` is not one of the POST's template outputs — or the POST
+    has no outputs and was given one."""
+
+
+class OutputRequired(PlannerError):
+    """MP-11: the POST has template outputs (Reel / feed / historia) and is planned one
+    event per output; `output_port=None` would create an event the executor can never
+    publish (`UNSUPPORTED_SHAPE` over the whole package)."""
+
+
+class DuplicateEvent(PlannerError):
+    """An event for the same (POST, output, connection) at the same instant already
+    occupies the calendar (scheduled, publishing or published)."""
+
+
 # The event statuses "Quitar del calendario" may remove: a plan that never reached Meta.
 # `publishing` / `published` / `failed` are history and are never deleted here.
 _REMOVABLE_WHEN_REJECTED: frozenset[str] = frozenset(
@@ -204,6 +220,40 @@ class PlannerService:
             raise UnknownEvent(str(event_id))
         return record
 
+    @staticmethod
+    def _require_output(post: PostSummary, output_port: str | None) -> None:
+        """MP-11: a POST with template outputs takes exactly one of its ports; a POST
+        without them takes only `None`."""
+        ports = post.output_ports
+        if output_port is None:
+            if ports:
+                raise OutputRequired(f"{post.post_id} has outputs {', '.join(ports)}")
+            return
+        if output_port not in ports:
+            raise UnknownOutput(f"{post.post_id} has no output {output_port!r}")
+
+    def _require_no_duplicate(
+        self,
+        *,
+        tenant_id: UUID,
+        post_id: UUID,
+        output_port: str | None,
+        connection_id: UUID,
+        scheduled_at: datetime,
+    ) -> None:
+        """No two live events for the same (POST, output, connection) at the same
+        instant. Before MP-11 the only guard was the Sin programar panel hiding an
+        occupied POST; now that a POST legitimately has several events, the rule is
+        explicit and per output."""
+        for event in self._repo.list_for_post(tenant_id=tenant_id, post_id=post_id):
+            if (
+                EventStatus(event.status).occupies_post
+                and event.output_port == output_port
+                and event.connection_id == connection_id
+                and event.scheduled_at == scheduled_at
+            ):
+                raise DuplicateEvent(str(event.id))
+
     # -- commands -----------------------------------------------------------
 
     def schedule(
@@ -216,22 +266,40 @@ class PlannerService:
         scheduled_at: datetime,
         scheduled_tz: str,
         user_id: UUID,
+        output_port: str | None = None,
     ) -> EventRecord:
         """Create an event for a POST. A pending (not yet approved) POST can be planned:
-        approval gates execution, not planning."""
+        approval gates execution, not planning.
+
+        MP-11: a POST with template outputs is planned one event per output —
+        `output_port` names which (`reel` / `feed` / `story`), validated against the
+        POST's own ports; the three events may share an instant or not. A POST without
+        outputs is planned whole (`output_port=None`, the pre-MP-11 behaviour)."""
         resolve_zone(scheduled_tz)
         self._require_future(scheduled_at)
-        self._require_schedulable_post(tenant_id=tenant_id, brand_id=brand_id, post_id=post_id)
+        post = self._require_schedulable_post(
+            tenant_id=tenant_id, brand_id=brand_id, post_id=post_id
+        )
+        self._require_output(post, output_port)
         self._require_active_connection(tenant_id=tenant_id, connection_id=connection_id)
+        instant = scheduled_at.astimezone(UTC)
+        self._require_no_duplicate(
+            tenant_id=tenant_id,
+            post_id=post_id,
+            output_port=output_port,
+            connection_id=connection_id,
+            scheduled_at=instant,
+        )
         return self._repo.add(
             NewEvent(
                 tenant_id=tenant_id,
                 brand_id=brand_id,
                 post_id=post_id,
                 connection_id=connection_id,
-                scheduled_at=scheduled_at.astimezone(UTC),
+                scheduled_at=instant,
                 scheduled_tz=scheduled_tz,
                 created_by_user_id=user_id,
+                output_port=output_port,
             )
         )
 
@@ -351,13 +419,33 @@ class PlannerService:
 
     def list_unscheduled(self, *, tenant_id: UUID, brand_id: UUID) -> list[PostSummary]:
         """Schedulable POSTs with no scheduled/publishing/published event — the "Sin
-        programar" panel. A cancelled or failed event frees its POST."""
-        occupied = self._repo.occupied_post_ids(tenant_id=tenant_id, brand_id=brand_id)
+        programar" panel. A cancelled or failed event frees its POST.
+
+        MP-11: a POST with template outputs stays here while at least one of its outputs
+        has no live event — the panel is where the remaining outputs get planned from."""
+        occupied = self.occupied_outputs(tenant_id=tenant_id, brand_id=brand_id)
         return [
             post
             for post in self._posts.list_schedulable(tenant_id=tenant_id, brand_id=brand_id)
-            if post.post_id not in occupied
+            if not self._fully_planned(post, occupied.get(post.post_id, {}))
         ]
+
+    @staticmethod
+    def _fully_planned(post: PostSummary, occupied: dict[str | None, EventRecord]) -> bool:
+        if post.outputs:
+            return all(port in occupied for port in post.output_ports)
+        return bool(occupied)
+
+    def occupied_outputs(
+        self, *, tenant_id: UUID, brand_id: UUID
+    ) -> dict[UUID, dict[str | None, EventRecord]]:
+        """Per POST, the live event (scheduled / publishing / published) of each of its
+        outputs — key `None` is the whole-POST event. The earliest event wins when an
+        output has several (different connections): one chip per output on the card."""
+        out: dict[UUID, dict[str | None, EventRecord]] = {}
+        for event in self._repo.list_occupying(tenant_id=tenant_id, brand_id=brand_id):
+            out.setdefault(event.post_id, {}).setdefault(event.output_port, event)
+        return out
 
     def list_due(self, *, tenant_id: UUID, limit: int = 100) -> list[EventRecord]:
         """QUA-111's entry point: scheduled events whose instant has arrived. Reading
@@ -422,17 +510,20 @@ class PlannerService:
 __all__ = [
     "ACTIVE_CONNECTION_STATUS",
     "ConnectionGate",
+    "DuplicateEvent",
     "EventConflict",
     "EventNotModifiable",
     "EventStatus",
     "InactiveConnection",
     "InvalidTag",
     "InvalidSchedule",
+    "OutputRequired",
     "PlannedEvent",
     "PlannerError",
     "PlannerService",
     "PostNotSchedulable",
     "UnknownEvent",
+    "UnknownOutput",
     "UnknownPost",
     "UnknownTag",
     "compose_instant",

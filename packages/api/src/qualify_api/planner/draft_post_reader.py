@@ -36,6 +36,7 @@ from qualify_api.creative import models as creative
 from qualify_api.planner.post_reader import (
     ApprovalStatus,
     NotPublishable,
+    PostOutput,
     PostSummary,
     PublishablePost,
     UnpublishableReason,
@@ -104,7 +105,11 @@ def _candidate(
     tenant_id: UUID,
     draft: creative.ContentDraft,
     images: Sequence[creative.ImageAsset],
+    output_port: str | None = None,
 ) -> PostCandidate:
+    """The whole POST, or — with `output_port` (MP-11) — the candidate for ONE of its
+    template outputs. All assets are handed over either way; `evaluate` keeps the port's
+    own and re-numbers them, so the filter lives in the one rule, not here."""
     return PostCandidate(
         tenant_id=tenant_id,
         post_id=draft.id,
@@ -120,6 +125,7 @@ def _candidate(
                 content_type=image.content_type,
                 media_type=image.media_type,
                 position=image.position,
+                output_port=image.output_port,
             )
             for image in images
         ),
@@ -128,7 +134,42 @@ def _candidate(
             ("pipeline_version", draft.pipeline_version),
             ("selected_variant_id", str(draft.selected_variant_id)),
         ),
+        output_port=output_port,
     )
+
+
+def output_ports_of(images: Sequence[creative.ImageAsset]) -> tuple[str, ...]:
+    """The POST's template ports, distinct, in `position` order (`reel`, `feed`, `story`
+    for a `promo_producto` run). Empty for a POST rendered before the template engine —
+    such a POST is planned whole."""
+    ordered = sorted(images, key=lambda image: image.position)
+    return tuple(dict.fromkeys(image.output_port for image in ordered if image.output_port))
+
+
+def _outputs(
+    session: Session,
+    tenant_id: UUID,
+    draft: creative.ContentDraft,
+    images: Sequence[creative.ImageAsset],
+) -> tuple[PostOutput, ...]:
+    outputs: list[PostOutput] = []
+    for port in output_ports_of(images):
+        first = min(
+            (image for image in images if image.output_port == port),
+            key=lambda image: image.position,
+        )
+        verdict = evaluate(_candidate(session, tenant_id, draft, images, output_port=port))
+        publishable = isinstance(verdict, PublishablePost)
+        outputs.append(
+            PostOutput(
+                port=port,
+                media_type=first.media_type,
+                media_product_type=verdict.media_product_type if publishable else None,
+                is_publishable=publishable,
+                unpublishable_reason="" if publishable else REASON_TEXT[verdict.reason],
+            )
+        )
+    return tuple(outputs)
 
 
 class _AssetView(Protocol):
@@ -230,13 +271,18 @@ class DraftPostReader:
             return [self._summarize(session, tenant_id, draft) for draft in drafts]
 
     def get_publishable(
-        self, *, tenant_id: UUID, post_id: UUID
+        self, *, tenant_id: UUID, post_id: UUID, output_port: str | None = None
     ) -> PublishablePost | NotPublishable:
         with tenant_session(tenant_id) as session:
             draft = session.get(creative.ContentDraft, post_id)
             if draft is None:
-                return NotPublishable(post_id=post_id, reason=UnpublishableReason.POST_NOT_FOUND)
-            return evaluate(_candidate(session, tenant_id, draft, _images(session, draft.id)))
+                return NotPublishable(
+                    post_id=post_id,
+                    reason=UnpublishableReason.POST_NOT_FOUND,
+                    output_port=output_port,
+                )
+            images = _images(session, draft.id)
+            return evaluate(_candidate(session, tenant_id, draft, images, output_port))
 
     def _summarize(
         self, session: Session, tenant_id: UUID, draft: creative.ContentDraft
@@ -257,8 +303,19 @@ class DraftPostReader:
             preview_key=draft.preview_key, assets=images, now=self._clock()
         )
 
-        verdict = evaluate(_candidate(session, tenant_id, draft, images))
-        publishable = isinstance(verdict, PublishablePost)
+        outputs = _outputs(session, tenant_id, draft, images)
+        if outputs:
+            # MP-11: a POST with template outputs is published one output at a time, so
+            # "publishable" means at least one output is; the whole-POST verdict would
+            # refuse the package (`reel` + video + two images is no single shape).
+            publishable = any(output.is_publishable for output in outputs)
+            media_product_type = None
+            reason = "" if publishable else outputs[0].unpublishable_reason
+        else:
+            verdict = evaluate(_candidate(session, tenant_id, draft, images))
+            publishable = isinstance(verdict, PublishablePost)
+            media_product_type = verdict.media_product_type if publishable else None
+            reason = "" if publishable else REASON_TEXT[verdict.reason]
         first = min(images, key=lambda image: image.position) if images else None
         video_object_key = (
             first.object_key
@@ -276,7 +333,7 @@ class DraftPostReader:
             approval=_APPROVAL_BY_DRAFT_STATUS.get(draft.status, ApprovalStatus.NOT_READY),
             approved_at=draft.approved_at.isoformat() if draft.approved_at else None,
             category=draft.category,
-            media_product_type=verdict.media_product_type if publishable else None,
+            media_product_type=media_product_type,
             content_type=brief.content_type if brief is not None else None,
             reuse_type=None,  # the draft model has no such concept — QUA-109
             lifecycle_status=draft.status,
@@ -286,6 +343,7 @@ class DraftPostReader:
             asset_count=len(images),
             asset_types=tuple("IMAGE" for _ in images),
             is_publishable=publishable,
-            unpublishable_reason="" if publishable else REASON_TEXT[verdict.reason],
+            unpublishable_reason=reason,
             detail_href=f"/drafts/{draft.id}",
+            outputs=outputs,
         )

@@ -70,11 +70,13 @@ class FakePosts:
 
     def __init__(self) -> None:
         self.answers: dict[UUID, list[PublishablePost | NotPublishable]] = {}
+        self.ports_asked: list[str | None] = []  # MP-11: what the executor asked for
 
     def set(self, post_id: UUID, *answers: PublishablePost | NotPublishable) -> None:
         self.answers[post_id] = list(answers)
 
-    def get_publishable(self, *, tenant_id: UUID, post_id: UUID):
+    def get_publishable(self, *, tenant_id: UUID, post_id: UUID, output_port: str | None = None):
+        self.ports_asked.append(output_port)
         queue = self.answers[post_id]
         answer = queue.pop(0) if len(queue) > 1 else queue[0]
         if isinstance(answer, Exception):
