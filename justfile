@@ -139,3 +139,37 @@ render-logs:
 # End-to-end smoke test against the running render service (uploads, renders, downloads).
 render-smoke base="http://127.0.0.1:3200":
     packages/render/scripts/smoke.sh {{base}}
+
+# --- Puerta de merge (infra/github/README.md) ---------------------------------------
+# Sin branch protection en GitHub Free, la regla "CI en verde para mergear" vive aquí:
+# `just merge 81` se niega si falta o falló alguno de los checks requeridos; un admin puede
+# forzar a propósito con `just merge 81 --admin` (queda un comentario en el PR).
+merge pr *flags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    required="lint test test-db node-render"
+    rollup=$(gh pr view {{pr}} --json statusCheckRollup --jq '.statusCheckRollup[] | "\(.name // .context)=\(.conclusion // .status)"')
+    missing=""; failed=""
+    for job in $required; do
+      state=$(printf '%s\n' "$rollup" | awk -F= -v j="$job" '$1==j {print $2; exit}')
+      case "${state:-}" in
+        SUCCESS|SKIPPED) ;;
+        "") missing="$missing $job" ;;
+        *) failed="$failed $job=$state" ;;
+      esac
+    done
+    if [ -n "$missing$failed" ] && [ "{{flags}}" != "--admin" ]; then
+      echo "just merge: NO se mergea #{{pr}}." >&2
+      [ -n "$failed" ] && echo "  checks fallidos o en curso:$failed" >&2
+      [ -n "$missing" ] && echo "  checks sin reportar:$missing" >&2
+      echo "  Un administrador puede forzar a propósito: just merge {{pr}} --admin" >&2
+      exit 1
+    fi
+    if [ "{{flags}}" = "--admin" ] && [ -n "$missing$failed" ]; then
+      gh pr comment {{pr}} --body "Merge forzado por un administrador con \`just merge --admin\` con checks pendientes o fallidos:$failed$missing"
+    fi
+    gh pr merge {{pr}} --merge --delete-branch=false
+
+# Aplica la regla de `main` (requiere GitHub Team o repo público; ver infra/github/README.md).
+protect-main:
+    gh api -X POST repos/AttitudeFactory/Qualify/rulesets --input infra/github/ruleset-main.json

@@ -102,6 +102,16 @@ Full handoff, including who was mid-what: `.claude/sprint-state-2026-07-26-c04-i
 
 **Resolved 2026-07-26 — ADR 25 is signed.** The login fork (Facebook Login for Business) is now `[APROBADO]` in `docs/arquitectura.md` §6, signed by the founder on 2026-07-26 unchanged. This closes the doc/code inconsistency that used to sit here: the decision was already materialized in applied DDL (`social_connections.linked_page_id NOT NULL`) with all of C-04 written against it, and the docs now say so too. Nothing to change in code — build on it as settled. Two properties of the row remain operationally load-bearing and are **not** softened by the signature: (a) the linked Facebook Page is a **hard precondition**, enforced as post-consent enumeration in the OAuth callback (ruling R4), not as pre-auth detection; and (b) the publish scope has **four spellings in circulation** — never hardcode one from documentation, resolve it empirically against the authorization endpoint.
 
+### Merging to `main` — the rule and the gate
+
+**Founder's rule (2026-10-05): nothing merges to `main` with CI red; only a repository
+administrator may bypass, deliberately.** GitHub cannot enforce it on this plan (private
+repo, organization on GitHub Free → branch protection and rulesets answer 403), so the
+gate is `just merge <pr>`: it refuses unless the required checks (`lint`, `test`, `test-db`,
+`node-render`) are green; `just merge <pr> --admin` forces it and leaves a comment on the PR.
+**Agents merge through `just merge`, never `gh pr merge` directly.** The ruleset to apply
+the day the plan allows it is `infra/github/ruleset-main.json` (`just protect-main`).
+
 ### Commands
 
 A `justfile` is the entry point for everything backend. Prefer it over ad-hoc commands — the recipes encode ordering that is easy to get wrong (e.g. `dev` = `up` → `migrate` → `seed`):
