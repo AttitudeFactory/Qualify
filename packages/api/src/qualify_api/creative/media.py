@@ -55,6 +55,8 @@ from qualify_creative.providers import (
 from qualify_creative.router import BudgetContext, CreativeRouter, HopAction
 from qualify_creative.schemas import BrandKit, ContentBrief, CopyPayload
 
+from .voice_access import VoiceGuard
+
 logger = logging.getLogger(__name__)
 
 HEYGEN = "heygen"
@@ -275,6 +277,7 @@ class MediaProducer:
         pricing: PricingTable,
         heygen: HeyGenTools | None,
         download: Downloader = _http_download,
+        voice_guard: VoiceGuard | None = None,
     ) -> None:
         self._store = store
         self._router = router
@@ -282,6 +285,10 @@ class MediaProducer:
         self._pricing = pricing
         self._heygen = heygen
         self._download = download
+        #: Which voices a brand may render with (`voice_access`, § 2026-10-05). None
+        #: = no check — only for tests with a fake HeyGen; `composition` always wires
+        #: `BrandVoiceGuard`.
+        self._voice_guard = voice_guard
 
     def produce(
         self,
@@ -420,6 +427,21 @@ class MediaProducer:
         stamp = hashlib.sha256(f"{draft_id}:{script}".encode()).hexdigest()[:24]
         key = self._key(tenant_id, brief.brand_id)
         media = brief.media
+        # § request 2026-10-05: the voice must be this brand's own clone or a public
+        # one — every clone sits in the same HeyGen account, so without this check a
+        # brand could render in another brand's cloned voice. Before any upload or
+        # render, so a refusal costs nothing.
+        if self._voice_guard is not None and not self._voice_guard(
+            tenant_id=tenant_id,
+            brand_id=brief.brand_id,
+            voice_id=media.voice_id or "",
+            api_key=key,
+        ):
+            raise _MediaFailed(
+                FailureReason.ROUTE_BLOCKED_BY_POLICY.value,
+                "La voz elegida no está disponible para esta marca: solo puedes usar "
+                "tu propia voz clonada o una voz pública de HeyGen.",
+            )
 
         params: dict[str, object] = {
             "script": script,

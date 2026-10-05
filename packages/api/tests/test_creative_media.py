@@ -17,6 +17,7 @@ from qualify_creative.enums import (
     BriefObjective,
     ContentFormat,
     ContentKind,
+    FailureReason,
     GenerationTask,
     ImageRoute,
     PaidBy,
@@ -147,7 +148,10 @@ def _brief(kind: ContentKind, fmt: ContentFormat | None = None, **media: object)
 
 
 def _producer(
-    store: MemoryStore, heygen: FakeHeyGen | None, downloads: dict[str, bytes] | None = None
+    store: MemoryStore,
+    heygen: FakeHeyGen | None,
+    downloads: dict[str, bytes] | None = None,
+    voice_guard: Any = None,
 ) -> MediaProducer:
     pricing = JsonPricingTable("v2")
     providers = {"heygen": heygen} if heygen is not None else {}
@@ -165,6 +169,7 @@ def _producer(
         pricing=pricing,
         heygen=heygen,
         download=download,
+        voice_guard=voice_guard,
     )
 
 
@@ -457,3 +462,37 @@ def test_a_failed_render_says_why_in_the_outcome() -> None:
     assert outcome.failure == "provider_error"
     assert outcome.detail.startswith("No se pudo generar el video:")
     assert "render failed" in outcome.detail
+
+
+# -- the voice guard (§ request 2026-10-05) -----------------------------------------------------
+
+
+def test_a_voice_the_guard_refuses_is_a_policy_failure_that_spends_nothing() -> None:
+    """Another brand's cloned voice (or a made-up id) never reaches HeyGen: refused before
+    any upload or render, as `route_blocked_by_policy`, with nothing billed."""
+    seen: list[tuple[UUID, UUID, str, str]] = []
+
+    def guard(*, tenant_id: UUID, brand_id: UUID, voice_id: str, api_key: str) -> bool:
+        seen.append((tenant_id, brand_id, voice_id, api_key))
+        return voice_id == "vo_mine"
+
+    heygen = FakeHeyGen()
+    producer = _producer(MemoryStore(), heygen, voice_guard=guard)
+    refused = _produce(
+        producer,
+        _brief(ContentKind.AVATAR_VIDEO, avatar_look_id="lk", voice_id="vo_theirs"),
+        uuid4(),
+    )
+    assert refused.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
+    assert "no está disponible para esta marca" in (refused.detail or "")
+    assert refused.media == () and refused.usage == () and refused.spent_usd == 0
+    assert heygen.requests == [] and heygen.uploads == []
+    assert seen == [(TENANT_ID, BRAND_ID, "vo_theirs", "key-heygen")]
+
+    allowed = _produce(
+        producer,
+        _brief(ContentKind.AVATAR_VIDEO, avatar_look_id="lk", voice_id="vo_mine"),
+        uuid4(),
+    )
+    assert allowed.failure is None and len(heygen.requests) == 1
+    assert heygen.requests[0].params["voice_id"] == "vo_mine"
