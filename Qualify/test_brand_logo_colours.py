@@ -91,8 +91,8 @@ async def test_the_profile_picture_as_logo_seeds_the_palette_and_skips_tu_logo(
     assert session.creative.kit_palette == "#be123c"
     assert session.wizard.logo_source == wiz.LOGO_SOURCE_PROFILE
     assert session.wizard.has_logo == wiz.HAS_LOGO_PROFILE
-    # nothing to upload or describe: straight to the palette, and back to the question
-    assert session.connect.step == wiz._PALETTE_STEP
+    # nothing to upload or describe: straight on to Tipografía, and back to the question
+    assert session.connect.step == wiz._TYPOGRAPHY_STEP
     BrandConnectState.prev_step.fn(session.connect)
     assert session.connect.step == wiz._LOGO_QUESTION_STEP
 
@@ -129,7 +129,7 @@ async def test_a_picture_that_cannot_be_fetched_leaves_the_palette_alone(
     await session.answer(wiz.HAS_LOGO_PROFILE)
     assert session.creative.kit_palette == "#000000"
     assert session.wizard.logo_source == ""
-    assert session.connect.step == wiz._PALETTE_STEP  # still the chosen logo
+    assert session.connect.step == wiz._TYPOGRAPHY_STEP  # still the chosen logo
 
 
 async def test_removing_the_uploaded_logo_takes_only_its_colours(session: _Session) -> None:
@@ -214,7 +214,7 @@ async def test_a_real_picture_preanswers_the_question_and_skips_only_tu_logo(
     BrandConnectState.next_step.fn(session.connect)
     assert session.connect.step == wiz._LOGO_QUESTION_STEP
     BrandConnectState.next_step.fn(session.connect)
-    assert session.connect.step == wiz._PALETTE_STEP
+    assert session.connect.step == wiz._TYPOGRAPHY_STEP
     BrandConnectState.prev_step.fn(session.connect)
     assert session.connect.step == wiz._LOGO_QUESTION_STEP
     BrandConnectState.prev_step.fn(session.connect)

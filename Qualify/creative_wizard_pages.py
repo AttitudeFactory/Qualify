@@ -49,6 +49,7 @@ import logging
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import reflex as rx
@@ -126,11 +127,17 @@ _VOICE_HEADING = (
     "Grábala o súbela: ajustamos el tono con ella y, si quieres, la clonamos.",
 )
 
+#: Tipografía's title + subtitle, shared by the three flows so the copy cannot drift.
+_TYPOGRAPHY_HEADING = ("Tipografía", "La letra con la que se te reconoce, antes que el color.")
 STEPS: tuple[tuple[str, str], ...] = (
     _BRIEF_HEADING,
     ("¿Quién es la marca?", "Lo que define su lugar y a quién le habla."),
     ("¿Tienes brandboard?", "De tu respuesta depende el siguiente paso."),
     ("Tu brandboard", "Lo usaremos en cada pieza que generemos."),
+    # Tipografía — its own view right before Paleta de colores (§ request 2026-10-05):
+    # the family names (and, optionally, the files) of the brand's type faces, editable
+    # whether or not a brandboard was uploaded. Optional: nothing blocks Continuar.
+    _TYPOGRAPHY_HEADING,
     ("Paleta de colores", "Los colores con los que se te reconoce."),
     _VOICE_HEADING,
     ("¿Cómo suena?", "Ajusta el tono en cuatro ejes."),
@@ -141,10 +148,13 @@ STEPS: tuple[tuple[str, str], ...] = (
 )
 LAST_STEP = len(STEPS) - 1
 #: The manual flow's steps a rule names (the rest are read off `_window`).
-_M_PALETTE_STEP = 4
-_M_VOICE_STEP = 5
-_M_EXAMPLES_STEP = 7
+_M_TYPOGRAPHY_STEP = 4
+_M_PALETTE_STEP = 5
+_M_VOICE_STEP = 6
+_M_EXAMPLES_STEP = 8
+assert STEPS[_M_TYPOGRAPHY_STEP] == _TYPOGRAPHY_HEADING
 assert STEPS[_M_PALETTE_STEP][0] == "Paleta de colores"
+assert _M_TYPOGRAPHY_STEP + 1 == _M_PALETTE_STEP
 assert STEPS[_M_VOICE_STEP] == _VOICE_HEADING
 assert STEPS[_M_EXAMPLES_STEP][0] == "Enséñale a hablar"
 #: ¿Todo correcto? — one before the true final screen. `resume` opens here on a kit
@@ -159,7 +169,48 @@ _CONFIRM_STEP = LAST_STEP - 1
 _EXTRA_UPLOAD_ID = "brand_extra"
 _MAX_EXTRAS_PER_DROP = 10
 #: What a logo version's card and the "+" take — an image.
+#: `detect_fonts`'s notes (Spanish, product voice).
+_FONTS_NEED_LOGO = "Sube primero una versión de tu logo: de ahí leemos la tipografía."
+_FONTS_NO_KEY = "La detección de tipografía no está configurada en este entorno."
+_FONTS_NO_IMAGE = "No podemos leer la tipografía de un SVG: sube una versión en PNG, JPG o WebP."
+_FONTS_FAILED = "No pudimos leer la tipografía de tu logo. Escríbela o inténtalo de nuevo."
+
+
+def _read_logo_files(tenant_id: UUID | None, keys: list[str]) -> list[tuple[str, bytes]]:
+    """The bytes behind each staged logo version — a local upload, or the R2 object a
+    previous save moved it to (read through the tenant-checked gate). Off the event
+    loop (`detect_fonts`). A file that cannot be read is skipped, not fatal."""
+    from .brand_finish import _r2_gate
+    from .r2_media import is_r2_key
+
+    files: list[tuple[str, bytes]] = []
+    gate = None
+    for key in keys:
+        try:
+            if is_r2_key(key):
+                if tenant_id is None:
+                    continue
+                gate = gate or _r2_gate()
+                data = gate.open_object(tenant_id, key).read()
+            else:
+                data = (rx.get_upload_dir() / key).read_bytes()
+        except Exception as exc:  # noqa: BLE001 — one unreadable version must not void the rest
+            logger.warning("brand fonts: %s unreadable: %s", key, type(exc).__name__)
+            continue
+        files.append((Path(key).name, data))
+    return files
+
+
 _LOGO_VERSION_ACCEPT = {"image/*": [".png", ".jpg", ".jpeg", ".webp", ".svg"]}
+#: What a typography tile's dropzone takes — a font file (§ request 2026-10-05). The
+#: browser reports fonts under several MIME types (or none), so the extensions are what
+#: actually matches.
+_FONT_ACCEPT = {
+    "font/ttf": [".ttf"],
+    "font/otf": [".otf"],
+    "font/woff": [".woff"],
+    "font/woff2": [".woff2"],
+}
 
 #: Where a logo's colours came from (`BrandWizardState.logo_source`). GENERATED is
 #: reserved for the logo generator the brief ("No, todavía no") will feed — it does not
@@ -235,6 +286,14 @@ class BrandWizardState(rx.State):
     #: patterns, a mascot...): one dict per file — `id`, `key` (upload key), `name`
     #: (file name), `label` (what it is) and `context`.
     brand_extras: list[dict[str, str]] = []
+    #: The font file dropped on each typography tile (`FONT_SLOTS` key → upload key, or
+    #: R2 key once saved), § request 2026-10-05. The family NAMES are kit fields
+    #: (`CreativeState.kit_font_heading` / `kit_font_body`); only the optional file is here.
+    font_files: dict[str, str] = {}
+    #: "Detectar desde tu logo" (`detect_fonts`) in flight, and what it had to say.
+    detecting_fonts: bool = False
+    font_note: str = ""
+    font_note_tone: str = "info"
     #: Since 2026-10-01 all of the above is SAVED at the end (`brand_finish`) and read
     #: back on entry (`load_saved_assets`): a saved file's key is an R2 key, shown
     #: through its short-lived `/r2media/<token>` path kept here (R2 key → path).
@@ -332,6 +391,9 @@ class BrandWizardState(rx.State):
         self.logo_versions = {}
         self.logo_version_context = {}
         self.brand_extras = []
+        self.font_files = {}
+        self.detecting_fonts = False
+        self.font_note = ""
         self.asset_views = {}
         self.picker_color = "#0A3D2E"
 
@@ -355,6 +417,7 @@ class BrandWizardState(rx.State):
             versions = dict(self.logo_versions)
             contexts = dict(self.logo_version_context)
             extras = list(self.brand_extras)
+            fonts = dict(self.font_files)
             known_extras = {extra["id"] for extra in extras}
             for file in saved.files:
                 if file.kind == "logo" and not self.logo_key:
@@ -363,6 +426,8 @@ class BrandWizardState(rx.State):
                     versions[file.slot] = file.key
                     if file.context:
                         contexts.setdefault(file.slot, file.context)
+                elif file.kind == "font" and file.slot not in fonts:
+                    fonts[file.slot] = file.key
                 elif file.kind == "extra" and file.slot not in known_extras:
                     extras.append(
                         {
@@ -376,6 +441,7 @@ class BrandWizardState(rx.State):
             self.logo_versions = versions
             self.logo_version_context = contexts
             self.brand_extras = extras
+            self.font_files = fonts
             self.asset_views = {**self.asset_views, **saved.views}
             if saved.files and not self.has_logo:
                 self.has_logo = "si"
@@ -575,6 +641,89 @@ class BrandWizardState(rx.State):
     def set_logo_version_context(self, version: str, value: str) -> None:
         if version in LOGO_VERSION_KEYS:
             self.logo_version_context = {**self.logo_version_context, version: value}
+
+    # -- typography (§ request 2026-10-05) -------------------------------------------
+
+    @rx.var
+    def font_file_names(self) -> dict[str, str]:
+        """The file name behind each staged font (slot → name), for the tile's dropzone
+        label: a key is `<folder>/<hex>_<name>` locally and in R2 alike."""
+        return {slot: Path(key).name.split("_", 1)[-1] for slot, key in self.font_files.items()}
+
+    @rx.event
+    async def handle_font_upload(self, files: list[rx.UploadFile], slot: str) -> None:
+        """Stage the font file dropped on a typography tile (Títulos / Cuerpo de texto).
+        The family name is a separate field: a file alone is fine, a name alone too."""
+        if slot not in FONT_SLOT_KEYS:
+            return
+        staged = await self._stage_logo_file(files, f"font/{slot}")
+        if staged is None:
+            return
+        self.font_files = {**self.font_files, slot: staged[0]}
+
+    @rx.event
+    def clear_font_file(self, slot: str) -> None:
+        self.font_files = {k: v for k, v in self.font_files.items() if k != slot}
+
+    @rx.event(background=True)
+    async def detect_fonts(self) -> None:
+        """\"Detectar desde tu logo\" (§ request 2026-10-05, \"que se pueda extraer la
+        tipografía desde las opciones del brandboard\"): Claude looks at the staged logo
+        versions — fullest mark first, the same order the palette follows — and names the
+        family their lettering most resembles (`qualify_api.creative.font_ai`). The guess
+        goes into the editable name fields: Títulos is replaced (that is what was asked
+        for), Cuerpo de texto only filled when empty, and the note under the tiles says
+        \"parece\" with the alternatives — a resemblance, never an identification.
+        Background: a vision call takes seconds. No key, no call (`MissingAPIKey`)."""
+        from qualify_api.claude_tools import ClaudeToolError, MissingAPIKey, api_key_from_env
+        from qualify_api.creative import font_ai
+
+        async with self:
+            if self.detecting_fonts:
+                return
+            keys = [
+                self.logo_versions[v] for v in _PALETTE_VERSION_ORDER if v in self.logo_versions
+            ]
+            if not keys:
+                self.font_note, self.font_note_tone = _FONTS_NEED_LOGO, "info"
+                return
+            auth = await self.get_state(AuthState)
+            tenant_id = tenant_uuid(brand_tenant_id(auth))
+            self.detecting_fonts = True
+            self.font_note = ""
+        note, tone = "", "info"
+        try:
+            api_key = api_key_from_env()  # before any read: no key, no work
+            files = await asyncio.to_thread(_read_logo_files, tenant_id, keys)
+            guess, stats = await asyncio.to_thread(font_ai.identify_fonts, files, api_key=api_key)
+            logger.info(
+                "brand fonts: %s read by %s → %r ($%.4f)",
+                len(files),
+                stats.model_revision or stats.model_id,
+                guess.heading,
+                stats.cost_usd,
+            )
+            async with self:
+                creative = await self.get_state(CreativeState)
+                if guess.heading:
+                    creative.kit_font_heading = guess.heading
+                if guess.body and not creative.kit_font_body.strip():
+                    creative.kit_font_body = guess.body
+            note = font_ai.describe(guess)
+            tone = "info" if guess.found_anything else "warn"
+        except MissingAPIKey:
+            note, tone = _FONTS_NO_KEY, "warn"
+        except font_ai.NoUsableImage:
+            note, tone = _FONTS_NO_IMAGE, "warn"
+        except (ClaudeToolError, OSError) as exc:
+            logger.warning("brand fonts: detection failed: %s", exc)
+            note, tone = _FONTS_FAILED, "error"
+        except Exception as exc:  # noqa: BLE001 — SDK/transport errors: never crash the step
+            logger.warning("brand fonts: detection failed: %s", exc)
+            note, tone = _FONTS_FAILED, "error"
+        async with self:
+            self.detecting_fonts = False
+            self.font_note, self.font_note_tone = note, tone
 
     @rx.event
     async def handle_extra_upload(self, files: list[rx.UploadFile]) -> None:
@@ -1160,15 +1309,40 @@ LOGO_VERSION_KEYS = frozenset(key for key, _, _ in LOGO_VERSIONS)
 #: The version whose colours seed the palette, fullest mark first (§ 2026-10-01).
 _PALETTE_VERSION_ORDER = ("imagotipo", "logotipo", "isologo", "isotipo")
 
+#: Tu brandboard's typography tiles (§ request 2026-10-05, "un apartado para la
+#: tipografía antes de la paleta de colores") — (key, name, what it is). Each takes the
+#: family's NAME (a kit field, `CreativeState.kit_font_*`) and, optionally, its FILE
+#: (`BrandWizardState.font_files`, saved with the brandboard).
+FONT_SLOTS: tuple[tuple[str, str, str], ...] = (
+    ("heading", "Títulos", "Titulares, nombres y lo que debe verse primero."),
+    ("body", "Cuerpo de texto", "Párrafos, descripciones y subtítulos."),
+)
+FONT_SLOT_KEYS = frozenset(key for key, _, _ in FONT_SLOTS)
+#: The `@font-face` family an uploaded font file is registered under, per slot.
+_FONT_FACE_FAMILY = {"heading": "q-brand-heading", "body": "q-brand-body"}
+
 _REFERENCE_HEIGHT = "5.5rem"
 #: Tu brandboard's tiles (logo versions, other elements, the "+") share one responsive
-#: grid shape (§ request 2026-09-30): as many ~14rem columns as the card's width fits,
-#: stretched to fill it — the step itself takes the card's whole width.
+#: grid shape (§ request 2026-09-30): as many ~14rem columns as the column's width fits,
+#: stretched to fill it. The step's column is capped at `_BRANDBOARD_COLUMN_MAX` and
+#: centred (§ request 2026-10-05, "la view Tu brandboard no está centrada"): with the
+#: card's whole width, a wide screen fitted six tracks and the four versions sat in the
+#: first four, leaving a void on the right — the block read as left-aligned.
 _TILE_GRID = {
     "display": "grid",
     "grid_template_columns": "repeat(auto-fill, minmax(min(100%, 14rem), 1fr))",
     "gap": "0.75rem",
     "width": "100%",
+}
+#: Four 14rem tiles plus their three gaps: the logo versions fill exactly one row, so the
+#: column is as wide as the brandboard's widest section and no wider.
+_BRANDBOARD_COLUMN_MAX = "min(100%, 58.25rem)"
+#: The typography tiles are wider (a preview, a name and a dropzone each): two per
+#: row in Tipografía's own column (`_TYPOGRAPHY_COLUMN_MAX`), one on a narrow screen.
+_TYPOGRAPHY_COLUMN_MAX = "min(100%, 46rem)"
+_FONT_GRID = {
+    **_TILE_GRID,
+    "grid_template_columns": "repeat(auto-fill, minmax(min(100%, 22rem), 1fr))",
 }
 #: The frame every tile of that grid has, so an uploaded element and the "+" read as
 #: the same object as a logo version.
@@ -1424,6 +1598,200 @@ def _add_extra_button() -> rx.Component:
     )
 
 
+def _font_face(slot: str) -> rx.Component:
+    """Registers the font file staged for `slot` under its `@font-face` family
+    (`_FONT_FACE_FAMILY`), so the tile's preview can be set in it. Built by Var
+    concatenation, not an f-string: the CSS braces would read as Var placeholders."""
+    src = _asset_src(BrandWizardState.font_files[slot].to(str)).to(str)
+    head = rx.Var.create(f'@font-face {{ font-family: "{_FONT_FACE_FAMILY[slot]}"; src: url("').to(
+        str
+    )
+    tail = rx.Var.create('"); }').to(str)
+    return rx.el.style(head + src + tail)
+
+
+#: Per slot: the kit field holding the family name, its setter, the preview family
+#: (`font_family_css` of the name) and the Google Fonts stylesheet for it.
+_FONT_NAME_FIELDS: dict[str, tuple[Any, Any, Any, Any]] = {
+    "heading": (
+        CreativeState.kit_font_heading,
+        CreativeState.set_kit_font_heading,
+        CreativeState.kit_font_heading_family,
+        CreativeState.kit_font_heading_css_url,
+    ),
+    "body": (
+        CreativeState.kit_font_body,
+        CreativeState.set_kit_font_body,
+        CreativeState.kit_font_body_family,
+        CreativeState.kit_font_body_css_url,
+    ),
+}
+
+
+def _font_card(key: str, name: str, blurb: str) -> rx.Component:
+    """One type face of the brand (§ request 2026-10-05), shaped like a logo version's
+    tile: a preview on top ("Aa" + a sample line, set in the uploaded file when there is
+    one, else in the typed family through Google Fonts), the name and ✕, what the face
+    is for, the family's name field and a small dropzone for the file — optional, the
+    name alone is a complete answer."""
+    upload_id = f"brand_font_{key}"
+    value, setter, name_family, css_url = _FONT_NAME_FIELDS[key]
+    staged = BrandWizardState.font_files.contains(key)
+    family = rx.cond(staged, f'"{_FONT_FACE_FAMILY[key]}", sans-serif', name_family)
+    return rx.vstack(
+        rx.cond(staged, _font_face(key)),
+        rx.cond(~staged & (css_url != ""), rx.el.link(rel="stylesheet", href=css_url)),
+        rx.center(
+            rx.vstack(
+                rx.text("Aa", size="8", weight="bold", line_height="1", font_family=family),
+                rx.text(
+                    "Así se lee tu marca.",
+                    size="2",
+                    color=T.TEXT_MUTED,
+                    font_family=family,
+                    text_align="center",
+                ),
+                spacing="1",
+                align="center",
+            ),
+            height=_REFERENCE_HEIGHT,
+            width="100%",
+            border=f"1px solid {rx.color('gray', 5)}",
+            border_radius=T.RADIUS_CONTROL,
+            padding="0.5rem",
+        ),
+        rx.hstack(
+            rx.text(name, size="2", weight="medium"),
+            rx.spacer(),
+            rx.cond(
+                staged,
+                _remove_button(
+                    f"Quitar el archivo de {name.lower()}", BrandWizardState.clear_font_file(key)
+                ),
+            ),
+            align="center",
+            width="100%",
+        ),
+        rx.text(blurb, size="1", color=T.TEXT_MUTED),
+        rx.input(
+            value=value,
+            on_change=setter,
+            placeholder="Nombre de la fuente. Ej.: Montserrat",
+            size="2",
+            width="100%",
+            radius=_CONTROL_RADIUS,
+            aria_label=f"Tipografía de {name.lower()}",
+        ),
+        rx.upload(
+            rx.hstack(
+                rx.icon("upload", size=T.ICON_SM, color=T.TEXT_FAINT),
+                rx.text(
+                    rx.cond(
+                        staged,
+                        BrandWizardState.font_file_names[key].to(str),
+                        "Archivo de la fuente (opcional): .ttf, .otf, .woff",
+                    ),
+                    size="1",
+                    color=T.TEXT_FAINT,
+                    overflow="hidden",
+                    text_overflow="ellipsis",
+                    white_space="nowrap",
+                    min_width="0",
+                ),
+                spacing="2",
+                align="center",
+                width="100%",
+            ),
+            id=upload_id,
+            accept=_FONT_ACCEPT,
+            max_files=1,
+            on_drop=BrandWizardState.handle_font_upload(rx.upload_files(upload_id=upload_id), key),
+            border=f"1px dashed {rx.color('gray', 7)}",
+            border_radius=T.RADIUS_CONTROL,
+            padding="0.5rem",
+            width="100%",
+            cursor="pointer",
+        ),
+        **_TILE_FRAME,
+    )
+
+
+def _detect_fonts_button() -> rx.Component:
+    """\"Detectar desde tu logo\" (§ request 2026-10-05): the same quiet AI affordance
+    as Tu rubro's \"Sugerir\" — soft, with the sparkles, spinning while the run lasts.
+    Disabled until a logo version is staged: nothing to look at before that."""
+    return rx.tooltip(
+        rx.button(
+            rx.cond(
+                BrandWizardState.detecting_fonts,
+                rx.spinner(size="1"),
+                rx.icon("sparkles", size=T.ICON_SM),
+            ),
+            "Detectar desde tu logo",
+            on_click=BrandWizardState.detect_fonts,
+            disabled=BrandWizardState.detecting_fonts
+            | (BrandWizardState.logo_versions.length() == 0),
+            variant="soft",
+            size="1",
+            radius=_CONTROL_RADIUS,
+            flex_shrink="0",
+        ),
+        content="Miramos las letras de tu logo y proponemos la tipografía que más se le parece",
+    )
+
+
+def _font_note() -> rx.Component:
+    """What the detection had to say, in its tone. `callout`'s tone is a plain str (it
+    picks the icon from a dict), so the three tones used are branched here."""
+    note, tone = BrandWizardState.font_note, BrandWizardState.font_note_tone
+    return rx.cond(
+        note != "",
+        rx.cond(
+            tone == "error",
+            callout(note, "error"),
+            rx.cond(tone == "warn", callout(note, "warn"), callout(note, "info")),
+        ),
+    )
+
+
+def _typography_editor() -> rx.Component:
+    """Tipografía's content (§ request 2026-10-05): what to do, \"Detectar desde tu
+    logo\", the detection's note and the two tiles (`FONT_SLOTS`). Shared by the three
+    flows through `_step_typography`."""
+    return rx.vstack(
+        rx.hstack(
+            rx.text(
+                "Escribe el nombre de cada fuente o sube su archivo. Si no tienes una, "
+                "deja el nombre de la que te gustaría usar.",
+                size="2",
+                color=T.TEXT_MUTED,
+                flex="1",
+                min_width="0",
+            ),
+            _detect_fonts_button(),
+            align="center",
+            spacing="3",
+            width="100%",
+        ),
+        _font_note(),
+        rx.box(
+            *(_font_card(key, name, blurb) for key, name, blurb in FONT_SLOTS),
+            **_FONT_GRID,
+        ),
+        spacing="3",
+        align_items="start",
+        width="100%",
+    )
+
+
+def _step_typography() -> rx.Component:
+    """Tipografía — its own view right before Paleta de colores in every flow (§ request
+    2026-10-05: \"que antes de la paleta de colores esté la view y pueda modificar la
+    tipografía si se quiere o poner una si no tiene\"). Optional: a brand may leave both
+    faces blank and still continue."""
+    return _step_body(_typography_editor(), icon="type")
+
+
 def _logo_versions() -> rx.Component:
     return rx.vstack(
         _section_label("Versiones de tu logo"),
@@ -1455,7 +1823,8 @@ def _step_logo(next_handler: rx.event.EventHandler) -> rx.Component:
     """Branches on ¿Tienes brandboard?. `has_logo == "si"` takes one file per logo
     version (`LOGO_VERSIONS`) plus any other element added with the "+", each with its
     own context; anything else asks the brief — so an unanswered question lands on the
-    brief rather than on a blank screen. § request 2026-09-29 removed both the
+    brief rather than on a blank screen. The typography is the NEXT step (§ 2026-10-05,
+    `_step_typography`), asked on both branches. § request 2026-09-29 removed both the
     whole-brandboard upload and the optional brief document that used to sit here.
     `next_handler` (§ request 2026-09-09) is which flow's cursor the brief form's
     Enter-to-submit should advance — see `_logo_brief_form`."""
@@ -2109,6 +2478,7 @@ def _step_confirm() -> rx.Component:
                 _recap_row("Audiencia", CreativeState.kit_audience),
                 rx.divider(),
                 _palette_recap_row(),
+                _recap_row("Tipografía", CreativeState.kit_typography_summary),
                 rx.divider(),
                 _editable_pills_row(
                     "Ejemplos que SÍ suenan a la marca",
@@ -2205,11 +2575,12 @@ def _manual_steps() -> rx.Component:
         (1, _step_identity()),
         (2, _step_has_logo()),
         (3, _step_logo(BrandWizardState.next_step)),
+        (_M_TYPOGRAPHY_STEP, _step_typography()),
         (_M_PALETTE_STEP, _step_palette()),
         (_M_VOICE_STEP, _step_voice()),
-        (6, _step_voice_tone()),
+        (7, _step_voice_tone()),
         (_M_EXAMPLES_STEP, _step_voice_examples()),
-        (8, _step_restrictions()),
+        (9, _step_restrictions()),
         (_CONFIRM_STEP, _step_confirm()),
         (LAST_STEP, _step_insights()),
         _step_brief(),
@@ -2331,20 +2702,35 @@ def _controls() -> rx.Component:
     )
 
 
-def _step_column_width(on_logo_step: rx.Var[bool], on_confirm: rx.Var[bool]) -> rx.Var[str]:
+def _step_column_width(
+    on_logo_step: rx.Var[bool],
+    on_confirm: rx.Var[bool],
+    *,
+    on_typography: rx.Var[bool] | bool = False,
+) -> rx.Var[str]:
     """The step column's width, shared by both flows (§ request 2026-09-30): Tu
-    brandboard's tiles take the card's whole width once there is a brandboard to upload
-    (the brief form keeps the narrow column), ¿Todo correcto? gets room for its lists,
-    and every other step keeps 34rem."""
+    brandboard's tiles get a wide column once there is a brandboard to upload — as wide
+    as one row of the four logo versions and centred in the card (`_BRANDBOARD_COLUMN_
+    MAX`, § request 2026-10-05; the brief form keeps the narrow column), Tipografía gets
+    room for its two tiles side by side (`_TYPOGRAPHY_COLUMN_MAX`), ¿Todo correcto? for
+    its lists, and every other step keeps 34rem."""
     return rx.cond(
         on_logo_step & (BrandWizardState.has_logo == "si"),
-        "100%",
-        rx.cond(on_confirm, "46rem", "34rem"),
+        _BRANDBOARD_COLUMN_MAX,
+        rx.cond(
+            on_typography,
+            _TYPOGRAPHY_COLUMN_MAX,
+            rx.cond(on_confirm, "46rem", "34rem"),
+        ),
     )
 
 
 def _manual_column_width() -> rx.Var[str]:
-    return _step_column_width(BrandWizardState.step == 3, BrandWizardState.step == _CONFIRM_STEP)
+    return _step_column_width(
+        BrandWizardState.step == 3,
+        BrandWizardState.step == _CONFIRM_STEP,
+        on_typography=BrandWizardState.step == _M_TYPOGRAPHY_STEP,
+    )
 
 
 def brand_manual_index() -> rx.Component:
@@ -2841,6 +3227,7 @@ CONNECT_STEPS: tuple[tuple[str, str], ...] = (
     # so the two flows cannot drift.
     ("¿Tienes brandboard?", "De tu respuesta depende el siguiente paso."),
     ("Tu brandboard", "Lo usaremos en cada pieza que generemos."),
+    _TYPOGRAPHY_HEADING,  # § request 2026-10-05, see the manual flow's STEPS
     ("Paleta de colores", "Los colores con los que se te reconoce."),
     _VOICE_HEADING,
     ("¿Cómo suena?", "Ajusta el tono en cuatro ejes."),
@@ -2869,11 +3256,12 @@ _BRIEF_STEP = 8
 _IDENTITY_STEP = 9
 _LOGO_QUESTION_STEP = 10
 _LOGO_UPLOAD_STEP = 11
-_PALETTE_STEP = 12
-_VOICE_STEP = 13
-_VOICE_TONE_STEP = 14
-_VOICE_EXAMPLES_STEP = 15
-_RESTRICTIONS_STEP = 16
+_TYPOGRAPHY_STEP = 12
+_PALETTE_STEP = 13
+_VOICE_STEP = 14
+_VOICE_TONE_STEP = 15
+_VOICE_EXAMPLES_STEP = 16
+_RESTRICTIONS_STEP = 17
 assert CONNECT_STEPS[_BRIEF_STEP] == _BRIEF_HEADING
 assert CONNECT_STEPS[_RUBRO_STEP][0] == "Tu rubro y ubicación"
 assert CONNECT_STEPS[_MAPS_QUESTION_STEP][0] == "¿Tu negocio está en Google Maps?"
@@ -2881,10 +3269,11 @@ assert CONNECT_STEPS[_MAPS_STEPS_STEP][0] == "Súmate a Google Maps"
 assert CONNECT_STEPS[_IDENTITY_STEP][0] == "¿Quién es la marca?"
 assert CONNECT_STEPS[_LOGO_QUESTION_STEP][0] == "¿Tienes brandboard?"
 assert CONNECT_STEPS[_LOGO_UPLOAD_STEP][0] == "Tu brandboard"
+assert CONNECT_STEPS[_TYPOGRAPHY_STEP] == _TYPOGRAPHY_HEADING
 assert CONNECT_STEPS[_PALETTE_STEP][0] == "Paleta de colores"
 assert CONNECT_STEPS[_VOICE_STEP] == _VOICE_HEADING
 assert CONNECT_STEPS[_VOICE_TONE_STEP][0] == "¿Cómo suena?"
-assert _LOGO_UPLOAD_STEP + 1 == _PALETTE_STEP
+assert _LOGO_UPLOAD_STEP + 1 == _TYPOGRAPHY_STEP and _TYPOGRAPHY_STEP + 1 == _PALETTE_STEP
 assert CONNECT_STEPS[_RESTRICTIONS_STEP + 1][0] == "¿Todo correcto?"
 assert CONNECT_STEPS[_SORT_STEP][0] == "Referente, competencia o detractor"
 
@@ -3330,7 +3719,7 @@ class BrandConnectState(rx.State):
           influencer también quiero que me deje escoger rubro y ubicación") — for an
           existing account it arrives prefilled from the profile read, which is the
           moment to correct it.
-        - ¿Tienes logo?, Tu logo and Paleta de colores: skipped as a block for
+        - ¿Tienes logo?, Tu logo, Tipografía and Paleta de colores: skipped as a block for
           "influencer" (§ request 2026-09-29, "se salte directo al apartado de voz") —
           ¿Quién es la marca? goes straight to ¿Cómo suena?.
         - ¿Tienes brandboard?: a brand or "ambas" is ALWAYS asked, and since 2026-09-29
@@ -3341,8 +3730,15 @@ class BrandConnectState(rx.State):
         - Súmate a Google Maps: skipped for "influencer" and on a "sí"."""
         if index == _RECOMMENDATIONS_STEP:
             return self._is_fresh()
-        if index in (_LOGO_QUESTION_STEP, _LOGO_UPLOAD_STEP, _PALETTE_STEP) and (
-            self.account_kind == "influencer"
+        if (
+            index
+            in (
+                _LOGO_QUESTION_STEP,
+                _LOGO_UPLOAD_STEP,
+                _TYPOGRAPHY_STEP,
+                _PALETTE_STEP,
+            )
+            and self.account_kind == "influencer"
         ):
             return True
         if index == _LOGO_UPLOAD_STEP:
@@ -6838,6 +7234,7 @@ def _connect_steps() -> rx.Component:
         (_MAPS_STEPS_STEP, _connect_step_maps_setup()),
         (_LOGO_QUESTION_STEP, _connect_step_has_logo()),
         (_LOGO_UPLOAD_STEP, _step_logo(BrandConnectState.next_step)),
+        (_TYPOGRAPHY_STEP, _step_typography()),
         (_BRIEF_STEP, _step_brief()),
         (_IDENTITY_STEP, _step_identity()),
         (_PALETTE_STEP, _step_palette()),
@@ -7123,6 +7520,8 @@ def brand_connect_index() -> rx.Component:
                                             _step_column_width(
                                                 BrandConnectState.step == _LOGO_UPLOAD_STEP,
                                                 BrandConnectState.step == _CONNECT_CONFIRM_STEP,
+                                                on_typography=BrandConnectState.step
+                                                == _TYPOGRAPHY_STEP,
                                             ),
                                         ),
                                     ),

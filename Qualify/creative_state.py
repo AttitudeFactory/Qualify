@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import AsyncIterator
 from uuid import UUID, uuid4
@@ -222,6 +223,11 @@ class CreativeState(rx.State):
     kit_forbidden_claims: str = ""
     kit_cta_patterns: str = ""
     kit_palette: str = ""
+    #: The brand's type faces by family name (§ request 2026-10-05, Tu brandboard's
+    #: typography tiles): headlines and body copy. The optional font FILES are
+    #: `BrandWizardState.font_files` — brandboard assets, not kit fields.
+    kit_font_heading: str = ""
+    kit_font_body: str = ""
     #: What each list's pill input holds before Enter (`_KIT_PILL_FIELDS` keys). The
     #: lists themselves stay the newline-joined `kit_*` strings above.
     #: The whole Brand Kit is being saved (`brand_finish.save_brand_kit`).
@@ -573,6 +579,8 @@ class CreativeState(rx.State):
         self.kit_forbidden_claims = form.forbidden_claims
         self.kit_cta_patterns = form.cta_patterns
         self.kit_palette = form.palette_rgb
+        self.kit_font_heading = form.font_heading
+        self.kit_font_body = form.font_body
 
     def _kit_form(self) -> KitFormVM:
         return KitFormVM(
@@ -589,6 +597,8 @@ class CreativeState(rx.State):
             forbidden_claims=self.kit_forbidden_claims,
             cta_patterns=self.kit_cta_patterns,
             palette_rgb=self.kit_palette,
+            font_heading=self.kit_font_heading,
+            font_body=self.kit_font_body,
         )
 
     # -- explicit setters (this Reflex version generates none) ----------------
@@ -628,6 +638,42 @@ class CreativeState(rx.State):
     @rx.event
     def set_kit_palette(self, value: str) -> None:
         self.kit_palette = value
+
+    @rx.event
+    def set_kit_font_heading(self, value: str) -> None:
+        self.kit_font_heading = value
+
+    @rx.event
+    def set_kit_font_body(self, value: str) -> None:
+        self.kit_font_body = value
+
+    # -- typography previews (Tu brandboard, § request 2026-10-05) ------------------
+    # A typed family name is previewed through Google Fonts: the tile links the family's
+    # stylesheet and sets it as `font-family`. A family not on Google Fonts just falls
+    # back (the browser ignores a 400 stylesheet), so the preview is best-effort by
+    # design — the uploaded file, when there is one, is what the tile really shows.
+
+    @rx.var
+    def kit_font_heading_family(self) -> str:
+        return font_family_css(self.kit_font_heading)
+
+    @rx.var
+    def kit_font_body_family(self) -> str:
+        return font_family_css(self.kit_font_body)
+
+    @rx.var
+    def kit_font_heading_css_url(self) -> str:
+        return google_fonts_url(self.kit_font_heading)
+
+    @rx.var
+    def kit_font_body_css_url(self) -> str:
+        return google_fonts_url(self.kit_font_body)
+
+    @rx.var
+    def kit_typography_summary(self) -> str:
+        """¿Todo correcto?'s one-line recap: "Montserrat · Inter", one alone, or ""."""
+        names = (self.kit_font_heading, self.kit_font_body)
+        return " · ".join(n.strip() for n in names if n.strip())
 
     # -- the Brand Kit's list fields, as pills ----------------------------------
     # One computed var per list, each naming its own `kit_*` attr: a `getattr` with a
@@ -1877,3 +1923,31 @@ class CreativeState(rx.State):
                 self._polling_draft_id = vm.draft_id
         if should_poll:
             yield CreativeState.poll_draft
+
+
+# ---------------------------------------------------------------------------------------
+# Typography previews (pure helpers, tested without Reflex)
+
+GOOGLE_FONTS_CSS = "https://fonts.googleapis.com/css2"
+
+
+def _clean_family(name: str) -> str:
+    """A family name as typed, minus what would break a CSS string or a URL: quotes,
+    backslashes, braces, semicolons — a family name never legitimately holds them."""
+    return " ".join(re.sub(r'["\\{};<>]', "", name).split())
+
+
+def font_family_css(name: str) -> str:
+    """The `font-family` for a typed family name — quoted, with a generic fallback so a
+    family the browser cannot load degrades to the page's own sans; `inherit` for none."""
+    clean = _clean_family(name)
+    return f'"{clean}", sans-serif' if clean else "inherit"
+
+
+def google_fonts_url(name: str) -> str:
+    """The Google Fonts stylesheet for a family name ("" for none): regular + bold, so
+    the "Aa" and the sample line both render in it when the family exists there."""
+    clean = _clean_family(name)
+    if not clean:
+        return ""
+    return f"{GOOGLE_FONTS_CSS}?family={clean.replace(' ', '+')}:wght@400;700&display=swap"

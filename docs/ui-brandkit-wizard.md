@@ -40,7 +40,7 @@ Los dos flujos escriben en el **mismo registro**: los campos de `CreativeState` 
 | `/brand/connect` | `brand_connect_index` | `+ CreativeState.load_brand/load_voice` (sin `resume` — ver §4) |
 | `/signals` *(nuevo, 2026-09-04)* | `signals_index` | `AuthState.require_login` — nada más que cargar |
 
-## 3. Flujo "Empezar de cero" — `/brand/manual`, 9 pasos
+## 3. Flujo "Empezar de cero" — `/brand/manual`, 10 pasos (Tipografía desde 2026-10-05)
 
 Estado: `BrandWizardState`. Cursor en `step: int`, `LAST_STEP = 8`. **"Elige tu plan" se quitó el 2026-09-11 de los dos flujos** (pedido: "quitemos la view de Elige tu plan, independientemente si tenga o no redes"): era copy placeholder sin columna detrás, así que no se pierde nada persistido. Se fueron con él `PLANS`, `_step_subscription`, `_plan_label`, `select_plan`, el campo `subscription` y la fila "Plan" de ¿Todo correcto?.
 
@@ -58,7 +58,7 @@ Estado: `BrandWizardState`. Cursor en `step: int`, `LAST_STEP = 8`. **"Elige tu 
 
 **`BrandWizardState.resume`** (evento en `on_load`, corre último a propósito): recorre los pasos en orden y abre el flujo en el **primer** paso con datos faltantes, no en el último visitado. Dos pasos nunca cuentan como hueco: los sliders de tono (arrancan en 50) y las restricciones (opcionales). Si no queda ningún hueco, abre en `_CONFIRM_STEP` (¿Todo correcto?) — **no** en `LAST_STEP`: reentrar al wizard debe ofrecer una revisión, no saltarse derecho a la pantalla de "ya terminaste".
 
-## 4. Flujo "Ya tengo redes" — `/brand/connect`, 18 pasos (reestructurado 2026-09-11)
+## 4. Flujo "Ya tengo redes" — `/brand/connect`, 19 pasos (reestructurado 2026-09-11; Tipografía desde 2026-10-05)
 
 Estado: `BrandConnectState`, **separado** de `BrandWizardState` a propósito — dos cursores, para que los dos puntos de entrada no compitan por el mismo `step`. Los pasos de configuración del kit **son literalmente las mismas funciones** que los del manual (`_step_identity`, `_step_palette`, `_step_voice_tone`, `_step_voice_examples`, `_step_restrictions`, `_step_confirm`), reutilizadas sin copiar — es la garantía de que los dos caminos no puedan divergir.
 
@@ -78,9 +78,10 @@ A este flujo llegan **las dos respuestas** de `/brand`. La diferencia: "No, toda
 | 8 | Súmate a Google Maps | influencer, o respondió "sí" |
 | 9 | ¿Quién es la marca? | — |
 | 10-11 | ¿Tienes logo? / Tu logo | ¿Tienes logo?: **nunca** (desde 2026-09-16); Tu logo: solo si respondió **"Mi foto de perfil es mi logo"** (no queda nada que subir ni describir). Antes se omitían cuando el perfil traía foto — casi todas las cuentas —, así que subir el logo o pedir uno con el formulario era inalcanzable. Una foto de perfil no es un logo. Van **justo antes de la Paleta**: al subir un logo, sus colores se proponen en la paleta (§4.5) |
-| 12-16 | Paleta … ¿Todo correcto? | — |
-| 17 | Referente, competencia o detractor *(nuevo)* | — las cuentas encontradas se ordenan en tres cubetas arrastrando la tarjeta a un panel-flecha o tocándolo (§4.4); nada obligatorio. Continuar dispara `advance_to_insights` |
-| 18 | Resultados e insights | recap + métricas + **Referentes para tu marca** (§4.3, agrupados por cubeta si se ordenaron) + Mejorar tu perfil |
+| 12 | Tipografía *(nuevo, 2026-10-05)* | influencer — ver §4.9 |
+| 13-17 | Paleta … ¿Todo correcto? | — |
+| 18 | Referente, competencia o detractor *(nuevo)* | — las cuentas encontradas se ordenan en tres cubetas arrastrando la tarjeta a un panel-flecha o tocándolo (§4.4); nada obligatorio. Continuar dispara `advance_to_insights` |
+| 19 | Resultados e insights | recap + métricas + **Referentes para tu marca** (§4.3, agrupados por cubeta si se ordenaron) + Mejorar tu perfil |
 
 **Tu rubro y ubicación** (`_connect_step_rubro`): **el rubro con las palabras del operador** (texto libre, `rubro_text` — "peluquería canina", "fisioterapia deportiva": la búsqueda usa esas palabras tal cual, así que sirve para cualquier rubro), una categoría opcional (`creator_discovery.NICHE_LABELS`, 8 categorías que solo añaden vocabulario), select de país (`COUNTRY_OPTIONS`, la misma tabla que usa la detección) y ciudad en texto libre. Marca/ambas: rubro obligatorio en cualquiera de sus dos formas, país + ciudad obligatorios. **Influencer: solo categoría (obligatoria) y ubicación (opcional)** — el texto libre no se le muestra (`is_influencer`, `rubro_complete`). El paso se muestra siempre; para una cuenta existente llega prellenado con lo detectado. Para una cuenta existente llega **prellenado** por `analyze()` con lo que `seed_from_profile` detecta, y la frase de ayuda lo dice. `rubro_asked` evita que el paso desaparezca de Atrás después de completarlo.
 
@@ -317,6 +318,17 @@ Cambiar de fuente **reemplaza** los colores de la anterior (responder "sí" o "n
 - **Cómo**: miniatura de 128 px; los píxeles transparentes no cuentan; en una imagen **sin** transparencia se descarta el casi-blanco (es el lienzo de un JPG, no la marca), y en una **con** transparencia el blanco sí cuenta (un logotipo blanco sobre fondo transparente). Los colores a menos de 40 de distancia se funden en el más frecuente —devolviendo el color **exacto**, no uno redondeado— y los que cubren menos del 3 % se descartan. Máximo 5, del más presente al menos.
 - **Nunca pisa lo elegido a mano**: `logo_colors` recuerda qué colores aportó el logo; cambiar el logo quita esos y pone los nuevos, y "Quitar" el logo quita solo esos (`merge_into_palette`).
 - **SVG** (o cualquier archivo que Pillow no abra) no aporta colores: la paleta empieza vacía, como antes.
+
+### 4.9 Tipografía — vista propia antes de la paleta (2026-10-05)
+
+Petición, en dos rondas el mismo día: "quiero que haya un apartado para la tipografía antes de la paleta de colores y quiero que se pueda extraer la tipografía desde las opciones del brandboard" → "que antes de la paleta de colores esté la view y pueda modificar la tipografía si se quiere o poner una si no tiene".
+
+- **Dónde.** **Tipografía** es un paso propio en los tres flujos, siempre justo antes de **Paleta de colores**: manual (paso 5, `_M_TYPOGRAPHY_STEP`), conectar (paso 13, `_TYPOGRAPHY_STEP`) y el editor `/brand/kit`. Se pide **haya o no brandboard** (también en la rama "Generar uno"); para "influencer" se omite junto con el resto del bloque visual (brandboard + paleta). Es **opcional**: nada bloquea Continuar. Tu brandboard vuelve a ser solo versiones del logo + otros elementos.
+- **Qué recoge.** Dos tiles con la forma de las versiones del logo (`FONT_SLOTS`): **Títulos** y **Cuerpo de texto**. Cada una tiene una vista previa ("Aa" + una línea de muestra), el **nombre de la familia** (campo del kit: `brand_kits.font_heading` / `font_body`, migración 0038 — editable siempre, o para "poner una" si la marca no tiene) y, **opcional**, el **archivo** de la fuente (.ttf, .otf, .woff, .woff2), guardado con el brandboard como `brand_kit_assets.kind = 'font'` (slot `heading`/`body`) en R2. Un nombre sin archivo es una respuesta completa; un archivo sin nombre también.
+- **Vista previa.** Con archivo, la tile registra un `@font-face` y se dibuja con él. Sin archivo, enlaza la hoja de Google Fonts de la familia escrita; si no existe allí, el navegador ignora el 400 y la muestra cae a la sans del sistema — best-effort por diseño.
+- **"Detectar desde tu logo".** Botón suave con las chispas, como "Sugerir" en Tu rubro. Claude (`qualify_api.creative.font_ai`, Sonnet 5, herramienta estricta `identificar_tipografia`) mira hasta dos versiones del logo subidas en Tu brandboard —la más completa primero, el mismo orden que sigue la paleta— y propone la familia a la que **más se parecen** sus letras, con alternativas. Escribe el nombre en **Títulos** y rellena **Cuerpo de texto** solo si está vacío; la nota dice siempre "Parece X (o Y, Z)", nunca "es": identificar una fuente a partir de un logotipo es un juicio de parecido, y el letrero suele estar retocado. Un SVG no viaja (la API no lo acepta como imagen); sin `QUALIFY_ANTHROPIC_API_KEY` el botón avisa y no llama. Deshabilitado hasta que haya una versión del logo subida.
+- **Centrado de Tu brandboard.** Su columna ya no ocupa todo el ancho de la tarjeta: mide lo que una fila de las cuatro versiones (`_BRANDBOARD_COLUMN_MAX` = 4 × 14rem + 3 huecos) y se centra. Antes, en pantallas anchas la rejilla `auto-fill` creaba seis columnas y las cuatro versiones quedaban pegadas a la izquierda con un vacío a la derecha. Tipografía usa una columna de 46rem (dos tiles de 22rem).
+- **¿Todo correcto?** muestra una fila "Tipografía" ("Montserrat · Inter") debajo de la paleta.
 
 ## 5. La paleta de colores
 

@@ -33,6 +33,7 @@ from uuid import UUID, uuid4
 import reflex as rx
 from qualify_api.creative.brand_kit_store import (
     EXTRA,
+    FONT,
     LOGO,
     LOGO_VERSION,
     BrandAsset,
@@ -108,9 +109,25 @@ def _upload(gate: Any, tenant_id: UUID, prefix: str, file: StagedFile, upload_di
     name = _SAFE_NAME.sub("_", file.name or Path(file.key).name)[-80:] or "archivo"
     folder = file.kind if not file.slot else f"{file.kind}/{file.slot}"
     object_key = f"{prefix}{folder}/{uuid4().hex}_{name}"
-    content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
-    gate.put_media(tenant_id, object_key, io.BytesIO(data), content_type)
+    gate.put_media(tenant_id, object_key, io.BytesIO(data), content_type_of(name))
     return object_key
+
+
+#: Font files by suffix — `mimetypes` knows none of them on Windows (measured
+#: 2026-10-05: `guess_type("a.ttf")` → None), and a font should not sit in R2 labelled
+#: as a generic octet-stream when its type is known.
+FONT_CONTENT_TYPES = {
+    ".ttf": "font/ttf",
+    ".otf": "font/otf",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+}
+
+
+def content_type_of(name: str, default: str = "application/octet-stream") -> str:
+    """The content type a brandboard file is stored and served with."""
+    suffix = Path(name).suffix.lower()
+    return FONT_CONTENT_TYPES.get(suffix) or mimetypes.guess_type(name)[0] or default
 
 
 def persist_brand_kit(
@@ -160,7 +177,7 @@ def persist_brand_kit(
                     slot=f.slot,
                     object_key=object_key,
                     filename=f.name,
-                    content_type=mimetypes.guess_type(f.name)[0] or "",
+                    content_type=content_type_of(f.name, ""),
                     label=f.label.strip(),
                     context=f.context.strip(),
                     position=f.position,
@@ -194,7 +211,10 @@ def load_saved(
     for asset in assets:
         try:
             views[asset.object_key] = issue_view_path(
-                tenant_id, asset.object_key, "image", asset.content_type or None
+                tenant_id,
+                asset.object_key,
+                "font" if asset.kind == FONT else "image",
+                asset.content_type or None,
             )
         except Exception as exc:  # Redis down: the file still loads, without a preview
             logger.warning("brand asset view not issued: %s", type(exc).__name__)
@@ -352,7 +372,12 @@ async def snapshot_states(state: Any, progress: dict[str, Any] | None = None) ->
     """Copy the kit out of `CreativeState`, `BrandWizardState` and `BrandConnectState`
     (under `state`'s lock — the caller holds it). `progress` rides in `connect`."""
     from .creative_state import CreativeState
-    from .creative_wizard_pages import LOGO_VERSIONS, BrandConnectState, BrandWizardState
+    from .creative_wizard_pages import (
+        FONT_SLOTS,
+        LOGO_VERSIONS,
+        BrandConnectState,
+        BrandWizardState,
+    )
 
     creative = await state.get_state(CreativeState)
     wizard = await state.get_state(BrandWizardState)
@@ -372,6 +397,12 @@ async def snapshot_states(state: Any, progress: dict[str, Any] | None = None) ->
                     context=wizard.logo_version_context.get(version, ""),
                     position=position,
                 )
+            )
+    for position, (slot, _name, _blurb) in enumerate(FONT_SLOTS):
+        key = wizard.font_files.get(slot, "")
+        if key:
+            files.append(
+                StagedFile(FONT, slot, key, Path(key).name.split("_", 1)[-1], position=position)
             )
     for position, extra in enumerate(wizard.brand_extras):
         files.append(
@@ -404,8 +435,7 @@ def _view_for(tenant_id: UUID, r2_key: str, local_key: str) -> str:
     """A preview path for a file just moved to R2: a short-lived `/r2media` token, or the
     local copy it came from (still on disk) when one cannot be issued."""
     try:
-        content_type = mimetypes.guess_type(r2_key)[0]
-        return issue_view_path(tenant_id, r2_key, "image", content_type)
+        return issue_view_path(tenant_id, r2_key, "image", content_type_of(r2_key, ""))
     except Exception as exc:  # Redis down: the local copy still shows
         logger.warning("brand asset view not issued: %s", type(exc).__name__)
         return f"/_upload/{local_key}"
@@ -431,6 +461,7 @@ async def _adopt_uploaded(state: Any, tenant_id: UUID, uploaded: dict[str, str])
     wizard.brand_extras = [
         {**extra, "key": uploaded.get(extra["key"], extra["key"])} for extra in wizard.brand_extras
     ]
+    wizard.font_files = {slot: uploaded.get(key, key) for slot, key in wizard.font_files.items()}
 
 
 async def save_progress(state: Any, flow: str) -> None:

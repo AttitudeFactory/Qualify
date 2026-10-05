@@ -21,6 +21,7 @@ import reflex as rx
 
 from .creative_state import CreativeState
 from .creative_wizard_pages import (  # the wizard's own views and chrome, shared on purpose
+    _BRANDBOARD_COLUMN_MAX,
     _CONTROL_RADIUS,
     _RESULTS_COLUMN_MAX,
     BrandConnectState,
@@ -39,6 +40,7 @@ from .creative_wizard_pages import (  # the wizard's own views and chrome, share
     _step_identity,
     _step_palette,
     _step_restrictions,
+    _step_typography,
     _step_voice,
     _step_voice_examples,
     _step_voice_tone,
@@ -51,6 +53,7 @@ from .voice_lab import VoiceLabState
 EDIT_STEPS: tuple[tuple[str, str], ...] = (
     ("¿Quién es la marca?", "Lo que define su lugar y a quién le habla."),
     ("Tu brandboard", "Las versiones de tu logo y los otros elementos de la marca."),
+    ("Tipografía", "La letra con la que se te reconoce, antes que el color."),
     ("Paleta de colores", "Los colores con los que se te reconoce."),
     ("Tu voz", "Grábala o súbela: ajustamos el tono con ella y, si quieres, la clonamos."),
     ("¿Cómo suena?", "Ajusta el tono en cuatro ejes."),
@@ -62,9 +65,12 @@ EDIT_STEPS: tuple[tuple[str, str], ...] = (
 EDIT_LAST = len(EDIT_STEPS) - 1
 _CONFIRM_STEP = EDIT_LAST - 1
 _BRANDBOARD_STEP = 1
-_PALETTE_STEP = 2
-_VOICE_STEP = 3
-_EXAMPLES_STEP = 5
+_TYPOGRAPHY_STEP = 2
+_PALETTE_STEP = 3
+_VOICE_STEP = 4
+_EXAMPLES_STEP = 6
+assert EDIT_STEPS[_TYPOGRAPHY_STEP][0] == "Tipografía"
+assert EDIT_STEPS[_PALETTE_STEP][0] == "Paleta de colores"
 
 
 class BrandEditState(rx.State):
@@ -176,11 +182,12 @@ def _window() -> rx.Component:
         BrandEditState.step,
         (0, _step_identity()),
         (_BRANDBOARD_STEP, _step_brandboard()),
+        (_TYPOGRAPHY_STEP, _step_typography()),
         (_PALETTE_STEP, _step_palette()),
         (_VOICE_STEP, _step_voice()),
-        (4, _step_voice_tone()),
+        (5, _step_voice_tone()),
         (_EXAMPLES_STEP, _step_voice_examples()),
-        (6, _step_restrictions()),
+        (7, _step_restrictions()),
         (_CONFIRM_STEP, _step_confirm()),
         (EDIT_LAST, _step_insights()),
         _step_identity(),
@@ -211,14 +218,14 @@ def _can_continue() -> rx.Var[bool]:
 
 
 def _column_width() -> rx.Var[str]:
-    """Same widths as the wizard: the brandboard's tiles take the card's whole width,
+    """Same widths as the wizard: the brandboard's tiles get their own centred column,
     ¿Todo correcto? gets room for its lists, Resultados e insights for its ranking
     once something was sorted, and every other view keeps 34rem."""
     return rx.cond(
         BrandEditState.step == _BRANDBOARD_STEP,
-        "100%",
+        _BRANDBOARD_COLUMN_MAX,
         rx.cond(
-            BrandEditState.step == _CONFIRM_STEP,
+            (BrandEditState.step == _CONFIRM_STEP) | (BrandEditState.step == _TYPOGRAPHY_STEP),
             "46rem",
             rx.cond(
                 (BrandEditState.step == EDIT_LAST) & BrandConnectState.has_sorted,

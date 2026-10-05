@@ -164,6 +164,8 @@ def load_kit_form(tenant_id: UUID, brand_id: UUID) -> KitFormVM | None:
         forbidden_claims="\n".join(kit.forbidden_claims),
         cta_patterns="\n".join(kit.cta_patterns),
         palette_rgb=", ".join(kit.palette_rgb),
+        font_heading=kit.font_heading,
+        font_body=kit.font_body,
         has_logo=kit.logo_asset_key is not None,
         has_template=kit.template_asset_key is not None,
     )
@@ -204,6 +206,8 @@ def save_kit(
         "forbidden_claims": _split_lines(form.forbidden_claims),
         "cta_patterns": _split_lines(form.cta_patterns),
         "palette_rgb": _split_commas(form.palette_rgb),
+        "font_heading": form.font_heading.strip(),
+        "font_body": form.font_body.strip(),
     }
     if current is not None:
         # Fields this form does not edit keep their stored values.

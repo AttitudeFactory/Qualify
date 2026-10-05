@@ -1,10 +1,11 @@
 """What finishing the Brand Kit keeps beyond `brand_kits` (§ request 2026-10-01; 0033):
 the brandboard's files and the wizards' own answers.
 
-- **Assets** (`brand_kit_assets`): the logo, its versions and the other elements, each a
-  file already in R2 under the tenant's prefix — this module stores only the record, the
-  caller uploads. `replace_assets` makes the stored set equal to the one given (what the
-  operator removed goes), and points `brand_kits.logo_asset_key` at the main logo.
+- **Assets** (`brand_kit_assets`): the logo, its versions, the other elements and the
+  font files (0038), each a file already in R2 under the tenant's prefix — this module
+  stores only the record, the caller uploads. `replace_assets` makes the stored set equal
+  to the one given (what the operator removed goes), and points
+  `brand_kits.logo_asset_key` at the main logo.
 - **Details** (`brand_kit_details`): `logo_brief`, `connect` and `profile`, each a JSON
   document. `save_details` writes only the documents it is given, so a screen that
   never saw the connect flow (the manual wizard) cannot erase what it saved."""
@@ -28,7 +29,9 @@ from qualify_api.creative.models import BrandKitDetails as DetailsRow
 LOGO = "logo"
 LOGO_VERSION = "logo_version"
 EXTRA = "extra"
-ASSET_KINDS = frozenset({LOGO, LOGO_VERSION, EXTRA})
+#: A font file of Tu brandboard's typography tiles (slot `heading` / `body`, 0038).
+FONT = "font"
+ASSET_KINDS = frozenset({LOGO, LOGO_VERSION, EXTRA, FONT})
 #: Which file is "the logo" of the brand (`brand_kits.logo_asset_key`, what a flyer
 #: stamps): a standalone logo first, then the versions that carry the whole mark.
 MAIN_LOGO_ORDER: tuple[tuple[str, str], ...] = (

@@ -94,6 +94,7 @@ def test_the_maps_pair_was_swapped_with_identity() -> None:
         "¿Quién es la marca?",
         "¿Tienes brandboard?",
         "Tu brandboard",
+        "Tipografía",
         "Paleta de colores",
     ]
 
@@ -109,6 +110,7 @@ def test_the_logo_pair_is_asked_while_the_profile_picture_has_not_been_taken() -
         assert state.profile_pic != ""
         assert _next(state) == wiz._LOGO_QUESTION_STEP
         assert _next(state) == wiz._LOGO_UPLOAD_STEP
+        assert _next(state) == wiz._TYPOGRAPHY_STEP
         assert _next(state) == wiz._PALETTE_STEP
 
 
@@ -125,6 +127,7 @@ def test_an_account_without_a_picture_is_asked_about_its_logo_too() -> None:
     assert _next(no_picture) == wiz._LOGO_UPLOAD_STEP
     # and back from the palette the walk passes through both logo screens again
     no_picture.step = wiz._PALETTE_STEP
+    assert _prev(no_picture) == wiz._TYPOGRAPHY_STEP
     assert _prev(no_picture) == wiz._LOGO_UPLOAD_STEP
     assert _prev(no_picture) == wiz._LOGO_QUESTION_STEP
 
@@ -514,7 +517,7 @@ def test_a_detected_profile_picture_preanswers_the_question_and_skips_only_tu_lo
             step=wiz._IDENTITY_STEP, account_kind=kind, logo_from_profile=True
         )
         assert _next(state) == wiz._LOGO_QUESTION_STEP
-        assert _next(state) == wiz._PALETTE_STEP
+        assert _next(state) == wiz._TYPOGRAPHY_STEP  # Tipografía is asked either way
         assert _prev(state) == wiz._LOGO_QUESTION_STEP
         assert _prev(state) == wiz._IDENTITY_STEP
 

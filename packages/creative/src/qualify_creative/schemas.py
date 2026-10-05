@@ -132,6 +132,9 @@ class BrandKit(BaseModel):
     cta_patterns: tuple[str, ...] = ()
     length_targets: LengthTargets = LengthTargets()
     palette_rgb: tuple[str, ...] = ()
+    #: The brand's type faces by family name ("" = not declared): headlines and body copy.
+    font_heading: str = ""
+    font_body: str = ""
     logo_asset_key: str | None = None
     template_asset_key: str | None = None
     reference_image_keys: tuple[str, ...] = Field(default=(), max_length=14)
