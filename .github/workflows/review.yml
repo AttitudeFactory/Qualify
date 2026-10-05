@@ -45,7 +45,7 @@ jobs:
       group: review-ruff-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12.13"
@@ -105,7 +105,7 @@ jobs:
           msg="Claude auto-review skipped: neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set (Settings → Secrets → Actions). See docs/calidad-codigo-revision-automatica.md"
           echo "::notice::$msg"
           echo "> $msg" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: env.HAS_CLAUDE_OAUTH == 'true' || env.HAS_ANTHROPIC_KEY == 'true'
         with:
           fetch-depth: 1
@@ -199,7 +199,7 @@ jobs:
           msg="@claude skipped: neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set. See docs/calidad-codigo-revision-automatica.md"
           echo "::notice::$msg"
           echo "> $msg" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: env.HAS_CLAUDE_OAUTH == 'true' || env.HAS_ANTHROPIC_KEY == 'true'
         with:
           fetch-depth: 1
