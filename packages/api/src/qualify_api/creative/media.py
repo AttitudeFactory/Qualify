@@ -77,6 +77,7 @@ from qualify_creative.render.registry import TemplateNotFound
 from qualify_creative.router import BudgetContext, CreativeRouter, HopAction
 from qualify_creative.schemas import BrandKit, ContentBrief, CopyPayload
 
+from . import trace
 from .voice_access import VoiceGuard
 
 logger = logging.getLogger(__name__)
@@ -567,6 +568,23 @@ class MediaProducer:
                 "render_count": manifest.render_count,
             },
         )
+        trace.media_request(
+            draft_id=draft_id,
+            provider="Remotion",
+            what=f"plantilla {manifest.id} v{manifest.version}, regla {rule}",
+            fields={
+                "salidas": ", ".join(manifest.outputs),
+                "textos que imprime": "\n".join(
+                    f"  {port}: {text}" for port, text in props.texts.items()
+                ),
+                "marca": props.brand.name,
+                "paleta": ", ".join(props.brand.palette),
+                "fuentes": props.brand.fonts or "por defecto",
+                "fotos": len(props.photos),
+                "costo estimado": f"USD {estimated_cost:.4f}",
+                "ETA": f"{eta:.0f} s",
+            },
+        )
         try:
             result = self._remotion.generate(request, api_key="")
         except RenderServiceError as exc:
@@ -793,7 +811,9 @@ class MediaProducer:
             subject = {"image_asset_id": self._upload(key, image, name, f"{stamp}-avatar")}
         else:
             subject = {
-                "avatar_id": self._prompt_avatar(key, brief, stamp, budget, usage),
+                "avatar_id": self._prompt_avatar(
+                    key, brief, stamp, budget, usage, draft_id=draft_id
+                ),
                 "engine": media.engine,
             }
         params.update(subject)
@@ -804,6 +824,21 @@ class MediaProducer:
                 stable_prefix="", volatile_suffix="", prefix_fingerprint=""
             ),
             params=params,
+        )
+        trace.media_request(
+            draft_id=draft_id,
+            provider="HeyGen",
+            what="video con avatar",
+            fields={
+                "guion (lo que dice el avatar)": params.get("script"),
+                "voz": params.get("voice_id"),
+                "avatar": params.get("avatar_id"),
+                "motor": params.get("engine"),
+                "foto animada": "sí" if "image_asset_id" in params else None,
+                "fondo compuesto": "sí" if "background_image_asset_id" in params else None,
+                "formato": f"{params.get('aspect_ratio')} · {params.get('resolution')}",
+                "locale": params.get("locale"),
+            },
         )
         spent = sum((u.cost_usd for u in usage), Decimal(0))
         outcome = self._router.run(
@@ -884,6 +919,8 @@ class MediaProducer:
         stamp: str,
         budget: BudgetContext,
         usage: list[MediaUsage],
+        *,
+        draft_id: UUID,
     ) -> str:
         """A synthetic avatar from the operator's description — a photoreal person for
         `AVATAR_VIDEO`, an animated character otherwise: created, then waited for — its
@@ -893,10 +930,17 @@ class MediaProducer:
         if budget.hard_stop and price > budget.remaining_usd:
             raise _MediaFailed(FailureReason.BUDGET_EXCEEDED.value, "prompt avatar over budget")
         style = HUMAN_STYLE if brief.kind is ContentKind.AVATAR_VIDEO else ANIMATED_STYLE
+        prompt = (style + brief.media.avatar_prompt.strip())[:1000]
+        trace.media_request(
+            draft_id=draft_id,
+            provider="HeyGen",
+            what="avatar a partir de una descripción",
+            fields={"prompt": prompt, "costo": f"USD {price:.4f}"},
+        )
         look_id = self._heygen.create_prompt_avatar(
             api_key=key,
             name=f"qualify-{stamp[:8]}",
-            prompt=(style + brief.media.avatar_prompt.strip())[:1000],
+            prompt=prompt,
             aspect_ratio=brief.format.aspect_ratio,
             idempotency_key=f"{stamp}-look",
         )
