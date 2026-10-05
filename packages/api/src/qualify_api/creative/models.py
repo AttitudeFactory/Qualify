@@ -23,6 +23,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -37,6 +38,13 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from qualify_api.tenancy.models import Base
+
+# `template_runs` vocabularies (0038). Strings, not enums — same contract style as the
+# draft FSM; the CHECK constraints in the migration pin the same sets.
+TEMPLATE_RUN_ENGINES: frozenset[str] = frozenset({"remotion", "heygen", "ugc"})
+TEMPLATE_RUN_STATUSES: frozenset[str] = frozenset(
+    {"pending", "generating", "completed", "failed", "cancelled"}
+)
 
 
 class BrandKit(Base):
@@ -73,7 +81,7 @@ class BrandKit(Base):
     cta_patterns: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     length_targets: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     palette_rgb: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
-    # the brand's type faces, by family name (0038) — the files, if any, are assets
+    # the brand's type faces, by family name (0039) — the files, if any, are assets
     font_heading: Mapped[str | None] = mapped_column(Text, nullable=True)
     font_body: Mapped[str | None] = mapped_column(Text, nullable=True)
     logo_asset_key: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -177,7 +185,7 @@ class BrandKitAsset(Base):
     """One file of the brand's brandboard, kept in R2 (0033): a version of the logo
     (`kind = 'logo_version'`, `slot` = logotipo/isotipo/imagotipo/isologo), another
     element added with the "+" (`kind = 'extra'`, `slot` = its id), a standalone logo
-    (`kind = 'logo'`) or a font file (`kind = 'font'`, `slot` = heading/body — 0038).
+    (`kind = 'logo'`) or a font file (`kind = 'font'`, `slot` = heading/body — 0039).
     `label`/`context` are the operator's own words about it."""
 
     __tablename__ = "brand_kit_assets"
@@ -333,6 +341,9 @@ class ContentDraft(Base):
     preview_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     approved_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The campaign this draft belongs to (0038). A bare uuid, NOT a declared FK: the
+    # `campaigns` table is a later revision; the FK is one ALTER once it exists.
+    campaign_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
@@ -382,6 +393,7 @@ class ImageAsset(Base):
     __table_args__ = (
         Index("ix_image_assets_draft", "draft_id"),
         Index("ix_image_assets_tenant", "tenant_id"),
+        Index("ix_image_assets_template_run", "template_run_id"),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -413,12 +425,79 @@ class ImageAsset(Base):
     # 'image' | 'video', and a carousel slide's order (0026)
     media_type: Mapped[str] = mapped_column(Text, nullable=False, server_default="image")
     position: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    # Which template port this output came from, and the run that produced it (0038).
+    # Both NULL for everything rendered before the Remotion engine.
+    output_port: Mapped[str | None] = mapped_column(Text, nullable=True)
+    template_run_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("template_runs.id", name="fk_image_assets_template_run"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
+
+
+class TemplateRun(Base):
+    """One render job (0038, `docs/plan-mvp-plantillas-remotion.md` §2.1 #6, §2.3). The
+    row's `id` IS the `jobId` handed to the render service, so its `status`/`cancel` and
+    this row agree by construction.
+
+    Provenance: `template_id`/`template_version`, `prompt_id`/`prompt_version`, the `engine`
+    the router chose (`TEMPLATE_RUN_ENGINES`), the `router_rule` that chose it and
+    `overridden_by` when the operator picked another option. Lifecycle in `status`
+    (`TEMPLATE_RUN_STATUSES`); `outputs` mirrors the per-port status the service reports;
+    `props` is the resolved template input, kept so a run can be re-rendered as-is."""
+
+    __tablename__ = "template_runs"
+    __table_args__ = (
+        CheckConstraint("engine IN ('remotion','heygen','ugc')", name="ck_template_runs_engine"),
+        CheckConstraint(
+            "status IN ('pending','generating','completed','failed','cancelled')",
+            name="ck_template_runs_status",
+        ),
+        Index("ix_template_runs_draft", "draft_id"),
+        Index("ix_template_runs_tenant_created", "tenant_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
+    )
+    draft_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("content_drafts.id"), nullable=False
+    )
+    template_id: Mapped[str] = mapped_column(Text, nullable=False)
+    template_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    prompt_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    engine: Mapped[str] = mapped_column(Text, nullable=False)  # TEMPLATE_RUN_ENGINES
+    router_rule: Mapped[str | None] = mapped_column(Text, nullable=True)
+    overridden_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False)  # TEMPLATE_RUN_STATUSES
+    outputs: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    estimated_eta_sec: Mapped[Decimal | None] = mapped_column(Numeric(8, 2), nullable=True)
+    actual_sec: Mapped[Decimal | None] = mapped_column(Numeric(8, 2), nullable=True)
+    estimated_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
+    actual_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    props: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class CreativeUsageEvent(Base):

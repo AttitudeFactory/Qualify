@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -67,12 +67,14 @@ from .creative_vm import (
     KitFormVM,
     MediaVM,
     ReadinessVM,
+    RecipeOptionVM,
     RouteOptionVM,
     VoiceProposalVM,
     build_draft_summary_vm,
     build_draft_vm,
     build_media_vms,
     build_readiness_vm,
+    build_recipe_options,
     build_route_options,
     build_variant_vm,
     build_voice_proposal_vm,
@@ -88,6 +90,7 @@ __all__ = [
     "approve_voice",
     "brand_clone_voice",
     "brand_readiness",
+    "catalog_products",
     "default_brand_id",
     "draft_detail",
     "edit_variant",
@@ -95,6 +98,7 @@ __all__ = [
     "load_kit_form",
     "load_voice_screen",
     "propose_voice",
+    "recipe_options",
     "reject_draft",
     "route_options_for",
     "save_kit",
@@ -374,6 +378,73 @@ def submit_brief(
     return production_content_service().create_draft(
         tenant_id=tenant_id, brand_id=brand_id, brief=brief, user_id=user_id
     )
+
+
+# ---------------------------------------------------------------------------
+# The template kind (plan-mvp-plantillas-remotion.md): the catalog picker and the recipes
+
+
+def catalog_products(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], ...]:
+    """The brand's products for the generator's picker, as flat string rows (a Reflex var
+    cannot carry the catalog's dataclasses): `{id, name, price_label, photo_key,
+    photo_count, video_count}`. Read through the catalog's own door."""
+    from .catalog_provider import list_products
+
+    return tuple(
+        {
+            "id": product.product_id,
+            "name": product.name,
+            "price_label": product.price_label,
+            "photo_key": product.primary_photo_key,
+            "photo_count": str(product.photo_count),
+            "video_count": str(product.video_count),
+            "counts_label": product.counts_label,
+            "photo_keys": "\n".join(m.key for m in product.media if m.media_type == "image"),
+        }
+        for product in list_products(tenant_id, brand_id)
+    )
+
+
+def recipe_options(
+    tenant_id: UUID,
+    brand_id: UUID,
+    *,
+    content_type: str,
+    product_ref: str,
+    product_keys: Sequence[str],
+    source_media_key: str,
+) -> tuple[RecipeOptionVM, ...]:
+    """The three options of «¿Cómo la hacemos?» (MP-09/MP-10): the router's rules over
+    what THIS Post has — the photos the operator uploaded for the piece plus the catalog
+    product's own (deduplicated), the catalog's clips (or a video the operator staged),
+    and the angle — against the templates published in the repo. `has_avatar` is False
+    until the tenant's HeyGen presenter is a stored fact, so HeyGen is offered as the
+    alternative it is, never as the suggestion."""
+    from qualify_api.catalog.read import DbProductCatalog
+    from qualify_creative.render import PostFacts, TemplateRegistry, suggest_recipes
+    from qualify_creative.video import is_video_filename
+
+    registry = TemplateRegistry.from_dir()
+    products = DbProductCatalog().products_for(
+        tenant_id=tenant_id, brand_id=brand_id, product_ref=product_ref or None
+    )
+    photo_keys = set(product_keys) | {key for p in products for key in p.photo_keys}
+    video_keys = {key for p in products for key in p.video_keys}
+    if source_media_key and is_video_filename(source_media_key):
+        video_keys.add(source_media_key)
+    try:
+        angle = ContentType(content_type)
+    except ValueError:
+        angle = ContentType.PRODUCT
+    facts = PostFacts(
+        angle=angle,
+        photo_count=len(photo_keys),
+        video_count=len(video_keys),
+        product_count=max(len(products), 1),
+        has_avatar=False,
+        niche=None,
+    )
+    return build_recipe_options(suggest_recipes(facts, registry))
 
 
 # ---------------------------------------------------------------------------

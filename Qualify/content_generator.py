@@ -16,6 +16,7 @@ Same `CreativeState` and the same service underneath: every piece is also a draf
 from __future__ import annotations
 
 import reflex as rx
+from qualify_creative.enums import ContentKind
 
 from .canva_state import CanvaState
 from .creative_state import CreativeState
@@ -98,10 +99,11 @@ _IMAGE_ACCEPT = {"image/*": [".png", ".jpg", ".jpeg", ".webp"]}
 
 
 def _kind_card(key: str, title: str, blurb: str, icon: str) -> rx.Component:
-    """One content kind (§ request 2026-09-25). `template` is shown but not selectable
-    yet — declared, with its badge, so the operator knows it is coming."""
+    """One content kind (§ request 2026-09-25). Every kind is selectable since the
+    template engine landed (plan-mvp-plantillas-remotion.md, 2026-10-05); `enabled`
+    stays as the one switch should a kind ever need to be shown but held back."""
     selected = CreativeState.brief_kind == key
-    enabled = key != "template"
+    enabled = ContentKind(key).enabled
     return rx.box(
         rx.hstack(
             rx.icon(
@@ -624,8 +626,160 @@ def _step_kind() -> rx.Component:
     return _step_body(_kind_picker(), icon="layout-grid")
 
 
+def _product_tile(item: rx.Var[dict[str, str]]) -> rx.Component:
+    """One catalog product of the picker: its primary photo, name, price, counts."""
+    selected = CreativeState.selected_product_id == item["id"]
+    return rx.box(
+        rx.cond(
+            item["photo_key"] != "",
+            rx.image(
+                src=rx.get_upload_url(item["photo_key"]),
+                width="100%",
+                height="5.25rem",
+                object_fit="cover",
+                border_radius="0.4rem",
+                alt=item["name"],
+            ),
+            rx.center(
+                rx.icon("image-off", size=22, color=T.TEXT_FAINT),
+                height="5.25rem",
+                width="100%",
+                background=T.SURFACE_BG_RAISED,
+                border_radius="0.4rem",
+            ),
+        ),
+        rx.text(
+            item["name"],
+            size="1",
+            weight="medium",
+            margin_top="0.25rem",
+            white_space="nowrap",
+            overflow="hidden",
+            text_overflow="ellipsis",
+        ),
+        rx.hstack(
+            rx.cond(
+                item["price_label"] != "",
+                rx.text(item["price_label"], size="1", class_name="q-nums"),
+            ),
+            rx.spacer(),
+            rx.text(item["counts_label"], size="1", color=T.TEXT_MUTED),
+            width="100%",
+        ),
+        key=item["id"],
+        on_click=CreativeState.choose_product(item["id"]),
+        role="radio",
+        aria_checked=rx.cond(selected, "true", "false"),
+        cursor="pointer",
+        padding="0.3rem",
+        border=rx.cond(
+            selected, f"2px solid {rx.color('accent', 9)}", f"1px solid {rx.color('gray', 5)}"
+        ),
+        border_radius="0.6rem",
+        width="100%",
+    )
+
+
+def _product_picker() -> rx.Component:
+    """The template kind's «¿Qué anuncias?»: the catalog product the piece is about.
+    Picking one fills the product reference (and the topic when empty) and brings its
+    photos to the template; it is optional — the details step still takes uploads."""
+    return rx.vstack(
+        rx.hstack(
+            _field_label(
+                "Producto del catálogo", "Sus fotos reales son lo que la plantilla compone."
+            ),
+            rx.spacer(),
+            rx.link(
+                rx.hstack(
+                    rx.icon("package", size=12),
+                    rx.text("Ir al catálogo", size="1"),
+                    spacing="1",
+                    align="center",
+                ),
+                href="/catalog",
+            ),
+            width="100%",
+            align="start",
+        ),
+        rx.cond(
+            CreativeState.catalog_error != "",
+            rx.text(CreativeState.catalog_error, size="1", color=T.tone_color("warn", 11)),
+        ),
+        rx.cond(
+            CreativeState.catalog_loading,
+            rx.hstack(
+                loading_spinner("sm"),
+                rx.text("Leyendo el catálogo…", size="2", color=T.TEXT_MUTED),
+                spacing="2",
+                align="center",
+            ),
+            rx.cond(
+                CreativeState.catalog_items.length() > 0,
+                rx.grid(
+                    rx.foreach(CreativeState.catalog_items, _product_tile),
+                    columns=rx.breakpoints(initial="2", sm="3"),
+                    spacing="2",
+                    width="100%",
+                    max_height="18rem",
+                    overflow_y="auto",
+                    role="radiogroup",
+                    aria_label="Producto del catálogo",
+                ),
+                rx.text(
+                    "Tu catálogo está vacío: crea el producto en Catálogo, o sube sus fotos "
+                    "en el paso siguiente.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+            ),
+        ),
+        rx.cond(
+            CreativeState.selected_product_id != "",
+            rx.hstack(
+                rx.cond(
+                    CreativeState.selected_product_photo_key != "",
+                    rx.image(
+                        src=rx.get_upload_url(CreativeState.selected_product_photo_key),
+                        width="2.5rem",
+                        height="2.5rem",
+                        object_fit="cover",
+                        border_radius="0.4rem",
+                    ),
+                ),
+                rx.text(CreativeState.brief_product_ref, size="2", weight="medium"),
+                rx.text(
+                    rx.cond(
+                        CreativeState.template_photo_count == 1,
+                        "· 1 foto",
+                        rx.text.span("· ", CreativeState.template_photo_count, " fotos"),
+                    ),
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                rx.spacer(),
+                rx.button(
+                    rx.icon("x", size=12),
+                    "Quitar",
+                    variant="ghost",
+                    color_scheme="gray",
+                    size="1",
+                    on_click=CreativeState.clear_product,
+                ),
+                width="100%",
+                align="center",
+                spacing="2",
+            ),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
 def _step_topic() -> rx.Component:
     return _step_body(
+        rx.cond(CreativeState.brief_kind == "template", _product_picker()),
         _field(
             "Tema o producto",
             rx.text_area(
@@ -699,6 +853,154 @@ def _step_presenter() -> rx.Component:
     return _step_body(_avatar_section(), icon="user-round")
 
 
+def _template_details() -> rx.Component:
+    """The template kind: the catalog product's photos already count; the operator may
+    add more for THIS piece (the template takes 2 to 4 — the router says which)."""
+    return rx.vstack(
+        rx.cond(
+            CreativeState.selected_product_id != "",
+            callout(
+                rx.text(
+                    "Del catálogo: ",
+                    rx.text.strong(CreativeState.brief_product_ref),
+                    rx.cond(
+                        CreativeState.template_photo_count == 1,
+                        " · 1 foto",
+                        rx.text.span(" · ", CreativeState.template_photo_count, " fotos"),
+                    ),
+                    size="2",
+                ),
+                "info",
+                icon="package",
+            ),
+            callout(
+                "Sin producto del catálogo: la plantilla trabajará solo con las fotos que "
+                "subas aquí.",
+                "info",
+            ),
+        ),
+        _products_upload("Fotos extra para esta pieza (opcional)"),
+        _upload_error(),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _recipe_card(option: rx.Var) -> rx.Component:
+    """One of the three recipes: label, engine, cost, ETA, outputs; the suggested one
+    carries its badge; an unavailable one is dimmed and says why."""
+    selected = CreativeState.selected_recipe == option.key
+    return rx.box(
+        rx.vstack(
+            rx.hstack(
+                rx.match(
+                    option.engine_tone,
+                    ("accent", tone_badge(option.engine_label, "accent")),
+                    ("info", tone_badge(option.engine_label, "info")),
+                    tone_badge(option.engine_label, "neutral"),
+                ),
+                rx.spacer(),
+                rx.cond(option.suggested, tone_badge("Sugerida", "ok", icon="sparkles")),
+                width="100%",
+                align="center",
+            ),
+            rx.text(option.label, size="3", weight="medium"),
+            rx.hstack(
+                rx.text(option.cost_label, size="2", weight="bold", class_name="q-nums"),
+                rx.cond(
+                    option.eta_label != "",
+                    rx.text(option.eta_label, size="2", color=T.TEXT_MUTED, class_name="q-nums"),
+                ),
+                spacing="3",
+                align="baseline",
+            ),
+            rx.cond(
+                option.outputs_label != "",
+                rx.text(option.outputs_label, size="1", color=T.TEXT_MUTED),
+            ),
+            rx.cond(
+                option.reason != "",
+                rx.text(option.reason, size="1", color=T.tone_color("warn", 11)),
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        key=option.key,
+        on_click=CreativeState.choose_recipe(option.key),
+        role="radio",
+        aria_checked=rx.cond(selected, "true", "false"),
+        aria_disabled=rx.cond(option.selectable, "false", "true"),
+        cursor=rx.cond(option.selectable, "pointer", "not-allowed"),
+        opacity=rx.cond(option.selectable, "1", "0.6"),
+        padding="0.85rem 1rem",
+        border=rx.cond(selected, f"2px solid {T.tone_color('accent', 8)}", T.BORDER),
+        background=rx.cond(selected, T.tone_color("accent", 2), T.CARD_BG),
+        border_radius=T.RADIUS_CONTROL,
+        transition=f"border-color {T.DUR_FAST} {T.EASE}, background {T.DUR_FAST} {T.EASE}",
+        width="100%",
+        height="100%",
+    )
+
+
+def _step_recipe() -> rx.Component:
+    """«¿Cómo la hacemos?» (plan §2.1 #4): the router's three options with their cost,
+    the suggested one marked and preselected; the operator can change it."""
+    return _step_body(
+        rx.cond(
+            CreativeState.recipe_loading,
+            rx.box(
+                progress_panel("Cotizando las tres recetas", creep_seconds=8),
+                width="100%",
+            ),
+            rx.vstack(
+                rx.cond(
+                    CreativeState.recipe_error != "",
+                    callout(
+                        CreativeState.recipe_error,
+                        "error",
+                    ),
+                ),
+                rx.cond(
+                    CreativeState.recipe_items.length() > 0,
+                    rx.grid(
+                        rx.foreach(CreativeState.recipe_items, _recipe_card),
+                        columns=rx.breakpoints(initial="1", sm="3"),
+                        spacing="3",
+                        width="100%",
+                        role="radiogroup",
+                        aria_label="Receta",
+                    ),
+                ),
+                rx.cond(
+                    CreativeState.recipe_notice != "",
+                    callout(CreativeState.recipe_notice, "info"),
+                ),
+                rx.cond(
+                    CreativeState.recipe_error != "",
+                    rx.button(
+                        rx.icon("refresh-cw", size=T.ICON_SM),
+                        "Cotizar de nuevo",
+                        variant="soft",
+                        size="1",
+                        on_click=CreativeState.load_recipe_options,
+                    ),
+                ),
+                rx.text(
+                    "El costo es el estimado por salida; el real queda en el borrador.",
+                    size="1",
+                    color=T.TEXT_FAINT,
+                ),
+                spacing="3",
+                width="100%",
+                align_items="start",
+            ),
+        ),
+        icon="route",
+    )
+
+
 def _step_details() -> rx.Component:
     """What the chosen kind takes beyond the brief (the presenter has its own step)."""
     return _step_body(
@@ -706,6 +1008,7 @@ def _step_details() -> rx.Component:
             CreativeState.brief_kind,
             ("creator_script", _duration_select()),
             ("static_flyer", _ad_image_section()),
+            ("template", _template_details()),
             rx.vstack(
                 _script_source(),
                 rx.divider(),
@@ -723,6 +1026,7 @@ def _step_details() -> rx.Component:
             CreativeState.brief_kind,
             ("creator_script", "clapperboard"),
             ("static_flyer", "image"),
+            ("template", "images"),
             "film",
         ),
     )
@@ -785,6 +1089,7 @@ def _window() -> rx.Component:
         ("presenter", _step_presenter()),
         ("details", _step_details()),
         ("rules", _step_rules()),
+        ("recipe", _step_recipe()),
         ("review", _step_review()),
         _step_kind(),
     )
@@ -797,6 +1102,7 @@ _HEADINGS: dict[str, tuple[str, str]] = {
     "channel": ("¿Dónde se publica?", "De qué trata, a dónde va y en qué formato."),
     "presenter": ("¿Quién lo presenta?", "El avatar y la voz que van a leer el guion."),
     "rules": ("Lo que debe decir y evitar", "Opcional: reglas solo para esta pieza."),
+    "recipe": ("¿Cómo la hacemos?", "Tres recetas con su costo; la sugerida ya está marcada."),
     "review": ("¿Todo listo?", "Revisa el encargo antes de generar."),
 }
 _DETAILS_HEADINGS: dict[str, tuple[str, str]] = {
@@ -805,6 +1111,7 @@ _DETAILS_HEADINGS: dict[str, tuple[str, str]] = {
         "Generamos lo que dice la persona, toma por toma, y el texto del post.",
     ),
     "static_flyer": ("El anuncio", "Con qué fotos armamos la imagen."),
+    "template": ("Tus fotos", "Las del catálogo ya cuentan; añade más si quieres."),
     "video": ("Guion y fondo", "Quién escribe el guion y qué se ve detrás del avatar."),
 }
 _RESULT_HEADING = ("Tu pieza", "Así quedó. También está en Borradores para revisarla.")
@@ -815,6 +1122,7 @@ def _heading(index: int) -> rx.Var[str]:
         CreativeState.brief_kind,
         ("creator_script", _DETAILS_HEADINGS["creator_script"][index]),
         ("static_flyer", _DETAILS_HEADINGS["static_flyer"][index]),
+        ("template", _DETAILS_HEADINGS["template"][index]),
         _DETAILS_HEADINGS["video"][index],
     )
     return rx.cond(
@@ -1048,6 +1356,62 @@ def _image_result() -> rx.Component:
     )
 
 
+def _template_item(item: rx.Var) -> rx.Component:
+    """One output of a template run — a Reel (video) or a still — named by its port."""
+    return rx.vstack(
+        rx.cond(
+            item.media_type == "video",
+            rx.video(src=_media_src(item.key), controls=True, width="100%", height="auto"),
+            rx.image(
+                src=_media_src(item.key),
+                width="100%",
+                border_radius=T.RADIUS_CONTROL,
+                border=T.BORDER,
+            ),
+        ),
+        rx.hstack(
+            rx.text(item.label, size="1", color=T.TEXT_MUTED),
+            rx.spacer(),
+            _download(item.key),
+            width="100%",
+        ),
+        spacing="1",
+        width="100%",
+    )
+
+
+def _template_result() -> rx.Component:
+    """Template run: every output as it lands (Reel, feed, story), then the post's text.
+    An output still rendering is simply not in the list yet (plan §2.2: a still never
+    waits for the video)."""
+    return _card(
+        rx.cond(
+            CreativeState.gen_draft.media.length() > 0,
+            rx.grid(
+                rx.foreach(CreativeState.gen_draft.media, _template_item),
+                columns=rx.breakpoints(initial="1", sm="3"),
+                spacing="3",
+                width="100%",
+            ),
+            rx.text("Las salidas aparecen aquí según van saliendo.", size="2", color=T.TEXT_MUTED),
+        ),
+        rx.cond(
+            CreativeState.selected_recipe_label != "",
+            rx.text(
+                "Receta: ",
+                CreativeState.selected_recipe_label,
+                size="1",
+                color=T.TEXT_FAINT,
+            ),
+        ),
+        rx.divider(),
+        _post_text(),
+        title="Tu paquete",
+        icon="layout-template",
+        actions=(_variant_switch(),),
+    )
+
+
 def _waiting() -> rx.Component:
     # § request 2026-10-02: every Brand Kit loader is the progress-bar one. A render
     # reports no progress, so the bar creeps; a video can outlast it (gen_timed_out).
@@ -1246,6 +1610,7 @@ def _result_view() -> rx.Component:
                 CreativeState.gen_kind,
                 ("creator_script", _script_result()),
                 ("static_flyer", _image_result()),
+                ("template", _template_result()),
                 _video_result(),
             ),
             rx.cond(CreativeState.gen_is_failed, _failed(), _waiting()),
@@ -1320,6 +1685,13 @@ def generator_page() -> rx.Component:
                         on_form & (CreativeState.create_error != ""),
                         callout(CreativeState.create_error, "error"),
                     ),
+                    # a recipe that changed the piece (HeyGen → avatar video) says so
+                    rx.cond(
+                        on_form
+                        & (CreativeState.recipe_notice != "")
+                        & (CreativeState.gen_step != "recipe"),
+                        callout(CreativeState.recipe_notice, "info"),
+                    ),
                     spacing="3",
                     width="100%",
                     max_width="36rem",
@@ -1342,9 +1714,13 @@ def generator_page() -> rx.Component:
                             rx.vstack(
                                 _window(),
                                 width="100%",
-                                # the presenter's look grid wants more room than a field
+                                # the presenter's look grid and the three recipe cards
+                                # want more room than a field
                                 max_width=rx.cond(
-                                    CreativeState.gen_step == "presenter", "46rem", "36rem"
+                                    (CreativeState.gen_step == "presenter")
+                                    | (CreativeState.gen_step == "recipe"),
+                                    "46rem",
+                                    "36rem",
                                 ),
                                 align_self="center",
                                 align_items="center",

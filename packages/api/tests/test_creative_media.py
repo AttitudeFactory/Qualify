@@ -496,3 +496,292 @@ def test_a_voice_the_guard_refuses_is_a_policy_failure_that_spends_nothing() -> 
     )
     assert allowed.failure is None and len(heygen.requests) == 1
     assert heygen.requests[0].params["voice_id"] == "vo_mine"
+
+
+# --------------------------------------------------------------------------------------
+# the template kind (plan-mvp-plantillas-remotion.md §2): one run, several outputs
+# --------------------------------------------------------------------------------------
+
+from qualify_creative.enums import ContentType  # noqa: E402
+from qualify_creative.render import TemplateManifest, TemplateRegistry  # noqa: E402
+from qualify_creative.render.adapter import MODEL_ID as REMOTION_MODEL  # noqa: E402
+from qualify_creative.render.client import RenderServiceError  # noqa: E402
+from qualify_creative.render.props import ProductFacts  # noqa: E402
+
+_PROMO = TemplateManifest.model_validate(
+    {
+        "id": "promo_producto",
+        "version": 1,
+        "name": "Promo de producto",
+        "niche": ["shawarma", "helado"],
+        "serves_angles": ["product", "promotion", "price"],
+        "inputs": {
+            "hook": {"type": "string", "max": 60},
+            "price_line": {"type": "string", "max": 24, "optional": True},
+            "cta": {"type": "string", "max": 40},
+            "photos": {"type": "image[]", "min": 2, "max": 4},
+            "brand": {"type": "brand_kit"},
+        },
+        "outputs": {
+            "reel": {
+                "kind": "video",
+                "width": 1080,
+                "height": 1920,
+                "composition": "promo-producto-v1--reel",
+            },
+            "feed": {
+                "kind": "still",
+                "width": 1080,
+                "height": 1350,
+                "composition": "promo-producto-v1--feed",
+            },
+            "story": {
+                "kind": "still",
+                "width": 1080,
+                "height": 1920,
+                "composition": "promo-producto-v1--story",
+            },
+        },
+    }
+)
+
+
+class FakeRemotion:
+    """Stands in for `RemotionTemplateAdapter`: records the request, answers like the
+    adapter does (bytes per completed port, typed reasons for the failed ones)."""
+
+    name = "remotion"
+
+    def __init__(self, fail_ports: tuple[str, ...] = (), error: RenderServiceError | None = None):
+        self.requests: list[GenerationRequest] = []
+        self.fail_ports = fail_ports
+        self.error = error
+
+    def generate(self, request: GenerationRequest, *, api_key: str) -> GenerationResult:
+        self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        ports = ("reel", "feed", "story")
+        outputs = {
+            p: {
+                "bytes": f"{p}-bytes".encode(),
+                "mime_type": "video/mp4" if p == "reel" else "image/png",
+                "width": 1080,
+                "height": 1350 if p == "feed" else 1920,
+                "duration_sec": 12.5 if p == "reel" else None,
+                "kind": "video" if p == "reel" else "still",
+            }
+            for p in ports
+            if p not in self.fail_ports
+        }
+        failed = {
+            p: {"failure_reason": "render_error", "error_message": "Chromium crashed"}
+            for p in self.fail_ports
+        }
+        return GenerationResult(
+            payload={
+                "job_id": request.params["job_id"],
+                "status": "failed" if failed else "completed",
+                "duration_sec": 12.5,
+                "warnings": [],
+                "outputs": outputs,
+                "failed_ports": failed,
+            },
+            model_id=REMOTION_MODEL,
+            provider="remotion",
+            usage=Usage(pieces=len(outputs), media_seconds=Decimal("12.5")),
+        )
+
+
+class FakeCatalog:
+    def __init__(self, products: tuple[ProductFacts, ...] = ()) -> None:
+        self.products = products
+
+    def products_for(self, *, tenant_id: UUID, brand_id: UUID, product_ref: str | None):
+        return self.products if product_ref else ()
+
+
+def _template_producer(
+    store: MemoryStore,
+    remotion: FakeRemotion | None,
+    *,
+    registry: TemplateRegistry | None = None,
+    catalog: FakeCatalog | None = None,
+) -> MediaProducer:
+    pricing = JsonPricingTable("v2")
+    router = CreativeRouter({}, pricing, KeysByProvider())  # type: ignore[arg-type]
+    return MediaProducer(
+        store=store,
+        router=router,
+        credentials=KeysByProvider(),
+        pricing=pricing,
+        heygen=None,
+        remotion=remotion,  # type: ignore[arg-type]
+        templates=registry if registry is not None else TemplateRegistry([_PROMO]),
+        brand_names=lambda *, tenant_id, brand_id: "Bianki",
+        catalog=catalog,
+    )
+
+
+def _template_brief(**media: object) -> ContentBrief:
+    return ContentBrief(
+        brand_id=BRAND_ID,
+        objective=BriefObjective.SALE,
+        content_type=ContentType.PROMOTION,
+        topic="Shawarma mixto",
+        product_ref="Shawarma mixto",
+        image_route=ImageRoute.FROM_UPLOAD,
+        source_media_key="uploads/t/a.jpg",
+        kind=ContentKind.TEMPLATE,
+        media=MediaInputs(**media),  # type: ignore[arg-type]
+    )
+
+
+def test_a_template_run_yields_every_output_with_its_port_and_run() -> None:
+    store = MemoryStore({"uploads/t/a.jpg": b"a", "uploads/t/b.jpg": b"b"})
+    remotion = FakeRemotion()
+    draft_id = uuid4()
+    outcome = _produce(
+        _template_producer(store, remotion),
+        _template_brief(product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg")),
+        draft_id,
+    )
+
+    assert outcome.failure is None and outcome.partial_failures == {}
+    ports = [m.output_port for m in outcome.media]
+    assert ports == ["reel", "feed", "story"]
+    reel, feed, story = outcome.media
+    assert reel.media_type == "video" and feed.media_type == "image"
+    assert reel.media_url == generated_key(TENANT_ID, draft_id, "reel.mp4")
+    assert store.files[feed.media_url] == b"feed-bytes"
+    assert (feed.width, feed.height, feed.aspect_ratio) == (1080, 1350, "4:5")
+    assert reel.provider == "remotion" and reel.model_id == REMOTION_MODEL
+    assert reel.params["template_id"] == "promo_producto" and reel.params["router_rule"] == 2
+    assert reel.params["duration_seconds"] == 12.5
+    run = outcome.template_run
+    assert run is not None and run.status == "completed" and run.router_rule == "2"
+    assert {m.template_run_id for m in outcome.media} == {run.id}
+    assert run.outputs["reel"]["status"] == "completed" and run.actual_cost_usd == Decimal("0.00")
+    assert run.estimated_eta_sec is not None and run.props["brand"]["name"] == "Bianki"
+    (usage,) = outcome.usage
+    assert usage.unit == "render" and usage.quantity == 3 and usage.cost_usd == Decimal("0.00")
+    # the adapter saw store-keyed props and the deterministic job id
+    request = remotion.requests[0]
+    assert request.params["job_id"] == str(run.id) and request.params["render_count"] == 3
+    # the same draft and recipe always name the same job (idempotent retries)
+    again = _produce(
+        _template_producer(store, FakeRemotion()),
+        _template_brief(product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg")),
+        draft_id,
+    )
+    assert again.template_run is not None and again.template_run.id == run.id
+
+
+def test_a_template_run_keeps_the_outputs_that_rendered() -> None:
+    store = MemoryStore({"uploads/t/a.jpg": b"a", "uploads/t/b.jpg": b"b"})
+    outcome = _produce(
+        _template_producer(store, FakeRemotion(fail_ports=("story",))),
+        _template_brief(product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg")),
+        uuid4(),
+    )
+    assert outcome.failure is None  # the draft is generated, with what rendered
+    assert [m.output_port for m in outcome.media] == ["reel", "feed"]
+    assert outcome.partial_failures["story"]["failure_reason"] == "render_error"
+    assert "story (render_error)" in outcome.detail
+    run = outcome.template_run
+    assert run is not None and run.status == "failed"
+    assert run.outputs["story"]["status"] == "failed" and run.failure_reason is None
+    assert outcome.usage[0].quantity == 2
+
+
+def test_props_that_break_the_manifest_fail_before_the_service_is_called() -> None:
+    store = MemoryStore({"uploads/t/a.jpg": b"a", "uploads/t/b.jpg": b"b"})
+    remotion = FakeRemotion()
+    producer = _template_producer(store, remotion)
+    long_cta = CopyPayload(hook="Hoy", caption="c", cta="x" * 41)
+    outcome = producer.produce(
+        tenant_id=TENANT_ID,
+        draft_id=uuid4(),
+        brief=_template_brief(product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg")),
+        kit=_kit(),
+        copy=long_cta,
+        budget=BUDGET,
+    )
+    assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
+    assert "'cta' has 41 chars" in outcome.detail
+    assert remotion.requests == [] and outcome.media == ()
+    assert outcome.template_run is not None and outcome.template_run.status == "failed"
+    assert outcome.template_run.failure_reason == "invalid_parameters"
+
+
+def test_too_few_photos_means_no_template_and_a_readable_reason() -> None:
+    store = MemoryStore({"uploads/t/a.jpg": b"a"})
+    outcome = _produce(
+        _template_producer(store, FakeRemotion()),
+        _template_brief(product_keys=("uploads/t/a.jpg",)),
+        uuid4(),
+    )
+    assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
+    assert "necesita 2 fotos" in outcome.detail
+
+
+def test_the_catalog_photos_complete_the_briefs_own_upload() -> None:
+    store = MemoryStore({"uploads/t/a.jpg": b"a", "cat/mixto-1.jpg": b"c"})
+    catalog = FakeCatalog(
+        (ProductFacts(name="Shawarma mixto", price_label="$5", photo_keys=("cat/mixto-1.jpg",)),)
+    )
+    remotion = FakeRemotion()
+    outcome = _produce(
+        _template_producer(store, remotion, catalog=catalog),
+        _template_brief(product_keys=("uploads/t/a.jpg",)),
+        uuid4(),
+    )
+    assert outcome.failure is None and len(outcome.media) == 3
+    props = remotion.requests[0].params["props"]
+    assert props.photos == ("key://uploads/t/a.jpg", "key://cat/mixto-1.jpg")
+    assert props.texts["price_line"] == "$5" and props.products[0].name == "Shawarma mixto"
+
+
+def test_the_operator_may_pin_a_template_and_the_rule_is_then_none() -> None:
+    store = MemoryStore({"uploads/t/a.jpg": b"a", "uploads/t/b.jpg": b"b"})
+    outcome = _produce(
+        _template_producer(store, FakeRemotion()),
+        _template_brief(
+            product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg"),
+            template_id="promo_producto",
+            template_version=1,
+        ),
+        uuid4(),
+    )
+    assert outcome.failure is None
+    assert outcome.template_run is not None and outcome.template_run.router_rule is None
+    unknown = _produce(
+        _template_producer(store, FakeRemotion()),
+        _template_brief(product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg"), template_id="nope"),
+        uuid4(),
+    )
+    assert unknown.failure == FailureReason.INVALID_PARAMETERS.value
+
+
+def test_a_service_error_fails_the_draft_with_the_services_reason() -> None:
+    store = MemoryStore({"uploads/t/a.jpg": b"a", "uploads/t/b.jpg": b"b"})
+    error = RenderServiceError("dependency_failed", 500, "asset a1 could not be fetched")
+    outcome = _produce(
+        _template_producer(store, FakeRemotion(error=error)),
+        _template_brief(product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg")),
+        uuid4(),
+    )
+    assert outcome.failure == FailureReason.DEPENDENCY_FAILED.value
+    assert outcome.template_run is not None and outcome.template_run.status == "failed"
+    assert outcome.template_run.error_message == "asset a1 could not be fetched"
+
+
+def test_without_the_render_service_a_template_fails_with_a_reason() -> None:
+    store = MemoryStore({"uploads/t/a.jpg": b"a", "uploads/t/b.jpg": b"b"})
+    outcome = _produce(
+        _template_producer(store, None),
+        _template_brief(product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg")),
+        uuid4(),
+    )
+    assert outcome.failure == FailureReason.PROVIDER_ERROR.value
+    assert "render service is not configured" in outcome.detail

@@ -303,6 +303,7 @@ def test_logout_resets_every_business_state() -> None:
         # purpose — only logout (this list) clears it.
         "BrandWizardState",
         "BrandConnectState",
+        "CatalogState",
     ):
         assert state_name in source, f"logout does not reset {state_name}"
 

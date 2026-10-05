@@ -119,6 +119,27 @@ FAILURE_INFO: dict[str, tuple[str, str, str]] = {
         "Crea un nuevo encargo para reintentarlo",
         "/create",
     ),
+    # Template render (plan-mvp-plantillas-remotion.md; packages/render/CONTRACT.md §4.2)
+    "render_error": (
+        "El motor de plantillas falló al renderizar la pieza.",
+        "Crea un nuevo encargo para reintentar el render",
+        "/create",
+    ),
+    "invalid_parameters": (
+        "El texto o las fotos no caben en la plantilla (gancho muy largo, fotos de menos).",
+        "Ajusta el encargo: acorta el texto o agrega fotos del producto",
+        "/create",
+    ),
+    "dependency_failed": (
+        "El motor no pudo leer una foto, un video o una fuente de la marca.",
+        "Revisa los archivos del producto y del kit y reintenta",
+        "/brand",
+    ),
+    "cancelled": (
+        "El render se canceló antes de terminar.",
+        "Crea un nuevo encargo para volver a renderizar",
+        "/create",
+    ),
 }
 
 
@@ -675,6 +696,14 @@ class MediaVM:
     url: str = ""
 
 
+#: Output ports of a template run (CONTRACT §1) → what the draft screen calls them.
+PORT_LABELS: dict[str, str] = {
+    "reel": "Reel 9:16",
+    "feed": "Feed 4:5",
+    "story": "Historia 9:16",
+}
+
+
 def build_media_vms(
     items: Sequence[tuple[str, str, int, Mapping[str, object] | None]],
 ) -> tuple[MediaVM, ...]:
@@ -683,7 +712,12 @@ def build_media_vms(
     images = [item for item in ordered if item[1] == "image"]
     out: list[MediaVM] = []
     for key, media_type, position, params in ordered:
-        if media_type == "video":
+        port = str((params or {}).get("port") or "")
+        if port:
+            # A template run's outputs are named by their port (one run → Reel + feed +
+            # story), not numbered as slides.
+            out.append(MediaVM(key, media_type, position, PORT_LABELS.get(port, port.title())))
+        elif media_type == "video":
             poster = str((params or {}).get("thumbnail_key") or "")
             out.append(MediaVM(key, media_type, position, "Video", poster))
         elif len(images) > 1:
@@ -723,7 +757,7 @@ KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     (
         "template",
         "Con plantilla",
-        "Tu plantilla de marca rellenada. Próximamente.",
+        "Tus fotos reales en una plantilla de tu nicho: Reel, feed e historia en una corrida.",
         "layout-template",
     ),
 )
@@ -899,6 +933,95 @@ class BriefFormVM:
     variants_requested: int = 3
 
 
+# ---------------------------------------------------------------------------
+# The recipe step of the template kind (plan-mvp-plantillas-remotion.md §2.1 #4, MP-10):
+# the router's three options as the cards the operator picks from.
+
+#: `Engine` value → (badge label, tone). Remotion is the product's own engine (accent);
+#: HeyGen is a vendor (info); UGC is a quote with no renderer behind it yet (neutral).
+ENGINE_BADGES: dict[str, tuple[str, str]] = {
+    "remotion": ("Remotion", "accent"),
+    "heygen": ("HeyGen", "info"),
+    "ugc": ("UGC", "neutral"),
+}
+#: Output port → the word the card prints, same vocabulary as `PORT_LABELS` but short:
+#: "Reel · Feed · Historia" has to fit one line of a card.
+OUTPUT_WORDS: dict[str, str] = {"reel": "Reel", "feed": "Feed", "story": "Historia"}
+UGC_QUOTE_ONLY = "solo cotiza"
+
+
+@dataclass(frozen=True)
+class RecipeOptionVM:
+    """One of the three cards of «¿Cómo la hacemos?». `key` is what the state stores
+    as the selection (the engine value — the router returns one option per engine)."""
+
+    key: str  # Engine value
+    engine_label: str  # "Remotion" | "HeyGen" | "UGC"
+    engine_tone: str
+    label: str  # the manifest's name, or the engine's own label
+    template_id: str  # "" for a non-template option
+    template_version: int  # 0 when none
+    cost_label: str  # "USD 0.00" | "USD 0.50 a 2.00"
+    eta_label: str  # "~40 s", "" when unknown
+    outputs_label: str  # "Reel · Feed · Historia"
+    suggested: bool
+    available: bool
+    reason: str  # why it cannot be chosen ("" when it can)
+    selectable: bool  # available AND an engine the generator can run from this step
+    rule: int  # the router rule that suggested it, 0 when not suggested
+
+
+def eta_label(eta_sec: float | None) -> str:
+    """Render time the operator can read: seconds under a minute and a half, minutes
+    (rounded up) after — a template takes "~40 s", a quote has no time at all."""
+    if eta_sec is None:
+        return ""
+    seconds = int(round(eta_sec))
+    if seconds <= 90:
+        return f"~{max(seconds, 1)} s"
+    minutes = -(-seconds // 60)
+    return f"~{minutes} min"
+
+
+def outputs_label(outputs: Sequence[str]) -> str:
+    return " · ".join(OUTPUT_WORDS.get(port, port.title()) for port in outputs)
+
+
+def build_recipe_options(options: Sequence[object]) -> tuple[RecipeOptionVM, ...]:
+    """`suggest_recipes`' options (`qualify_creative.render.RecipeOption`, duck-typed so
+    this module stays import-light) → the cards, in the router's order. UGC is never
+    selectable from the generator: it quotes, it does not render yet (plan §5, Vie 9)."""
+    out: list[RecipeOptionVM] = []
+    for option in options:
+        engine = str(getattr(option, "engine"))
+        label, tone = ENGINE_BADGES.get(engine, (engine.title(), "neutral"))
+        available = bool(getattr(option, "available"))
+        reason = str(getattr(option, "reason") or "")
+        selectable = available and engine != "ugc"
+        if engine == "ugc" and not reason:
+            reason = UGC_QUOTE_ONLY
+        rule = getattr(option, "rule")
+        out.append(
+            RecipeOptionVM(
+                key=engine,
+                engine_label=label,
+                engine_tone=tone,
+                label=str(getattr(option, "label")),
+                template_id=str(getattr(option, "template_id") or ""),
+                template_version=int(getattr(option, "template_version") or 0),
+                cost_label=str(getattr(option, "cost_label")),
+                eta_label=eta_label(getattr(option, "eta_sec")),
+                outputs_label=outputs_label(tuple(getattr(option, "outputs") or ())),
+                suggested=bool(getattr(option, "suggested")),
+                available=available,
+                reason=reason,
+                selectable=selectable,
+                rule=int(rule) if rule is not None else 0,
+            )
+        )
+    return tuple(out)
+
+
 __all__ = [
     "CONTENT_TYPE_LABELS",
     "FAILURE_INFO",
@@ -917,6 +1040,7 @@ __all__ = [
     "GapVM",
     "KitFormVM",
     "ReadinessVM",
+    "RecipeOptionVM",
     "RouteOptionVM",
     "SelectOptionVM",
     "SourceVM",
@@ -925,6 +1049,7 @@ __all__ = [
     "build_draft_summary_vm",
     "build_draft_vm",
     "build_readiness_vm",
+    "build_recipe_options",
     "build_route_options",
     "build_variant_vm",
     "build_voice_proposal_vm",

@@ -94,6 +94,82 @@ lint:
 fmt:
     uv run ruff format .
 
+# --- CI mirrors (.github/workflows/ci.yml) ------------------------------------------
+# Same commands the workflow runs, so a red job can be reproduced here before pushing.
+
+# `lint` job: ruff check + format --check (the workflow installs only the `dev` group).
+ci-lint:
+    uv run --no-sync ruff check .
+    uv run --no-sync ruff format --check .
+
+# `test` job: offline tests with coverage per package. XML in coverage.xml, table in
+# coverage-summary.md (what the PR comment shows). `db` tests run in the `test-db` job
+# (`just test-db` here); `integration` never runs in CI.
+ci-test:
+    uv run --no-sync pytest -m "not integration and not db and not slow" \
+        --cov=packages/api/src --cov=packages/shared/src --cov=packages/scraper/src \
+        --cov=packages/creative/src --cov=Qualify \
+        --cov-report=xml:coverage.xml --cov-report=term-missing:skip-covered
+    uv run --no-sync coverage json -o coverage.json
+    uv run --no-sync python .github/scripts/coverage_summary.py coverage.json | tee coverage-summary.md
+
+# `deps` job of security.yml: known vulnerabilities in the locked default groups (never
+# `ml`/torch) via pip-audit, plus `npm audit` for packages/render when it exists. Needs
+# network (advisory DBs); informational, exit code is not a gate.
+audit:
+    uv export --frozen --no-hashes --no-emit-workspace --no-annotate --no-header -o requirements.txt
+    -uvx "pip-audit==2.10.1" -r requirements.txt --no-deps --desc on
+    if [ -f packages/render/package-lock.json ]; then (cd packages/render && npm audit --audit-level=high); fi
+
 # -v drops the pgdata volume: a clean slate for the next `just dev`.
 down:
     docker compose down -v
+
+# Remotion Studio on the host (hot reload) for authoring packages/render templates.
+render-dev:
+    cd packages/render && npm install && npm run dev
+
+# Rebuild the render service image (packages/render/Dockerfile). `just up` starts it.
+render-build:
+    docker compose build render
+
+render-logs:
+    docker compose logs -f render
+
+# End-to-end smoke test against the running render service (uploads, renders, downloads).
+render-smoke base="http://127.0.0.1:3200":
+    packages/render/scripts/smoke.sh {{base}}
+
+# --- Puerta de merge (infra/github/README.md) ---------------------------------------
+# Sin branch protection en GitHub Free, la regla "CI en verde para mergear" vive aquí:
+# `just merge 81` se niega si falta o falló alguno de los checks requeridos; un admin puede
+# forzar a propósito con `just merge 81 --admin` (queda un comentario en el PR).
+merge pr *flags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    required="lint test test-db node-render"
+    rollup=$(gh pr view {{pr}} --json statusCheckRollup --jq '.statusCheckRollup[] | "\(.name // .context)=\(.conclusion // .status)"')
+    missing=""; failed=""
+    for job in $required; do
+      state=$(printf '%s\n' "$rollup" | awk -F= -v j="$job" '$1==j {print $2; exit}')
+      case "${state:-}" in
+        SUCCESS|SKIPPED) ;;
+        "") missing="$missing $job" ;;
+        *) failed="$failed $job=$state" ;;
+      esac
+    done
+    if [ -n "$missing$failed" ] && [ "{{flags}}" != "--admin" ]; then
+      echo "just merge: NO se mergea #{{pr}}." >&2
+      [ -n "$failed" ] && echo "  checks fallidos o en curso:$failed" >&2
+      [ -n "$missing" ] && echo "  checks sin reportar:$missing" >&2
+      echo "  Un administrador puede forzar a propósito: just merge {{pr}} --admin" >&2
+      exit 1
+    fi
+    if [ "{{flags}}" = "--admin" ] && [ -n "$missing$failed" ]; then
+      gh pr comment {{pr}} --body "Merge forzado por un administrador con \`just merge --admin\` con checks pendientes o fallidos:$failed$missing"
+    fi
+    gh pr merge {{pr}} --merge --delete-branch=false
+
+# Aplica la regla de `main` (requiere GitHub Team o repo público; ver infra/github/README.md).
+protect-main:
+    gh api -X POST repos/AttitudeFactory/Qualify/rulesets --input infra/github/ruleset-main.json

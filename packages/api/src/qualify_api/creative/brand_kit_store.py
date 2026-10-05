@@ -2,7 +2,7 @@
 the brandboard's files and the wizards' own answers.
 
 - **Assets** (`brand_kit_assets`): the logo, its versions, the other elements and the
-  font files (0038), each a file already in R2 under the tenant's prefix — this module
+  font files (0039), each a file already in R2 under the tenant's prefix — this module
   stores only the record, the caller uploads. `replace_assets` makes the stored set equal
   to the one given (what the operator removed goes), and points
   `brand_kits.logo_asset_key` at the main logo.
@@ -29,7 +29,7 @@ from qualify_api.creative.models import BrandKitDetails as DetailsRow
 LOGO = "logo"
 LOGO_VERSION = "logo_version"
 EXTRA = "extra"
-#: A font file of Tu brandboard's typography tiles (slot `heading` / `body`, 0038).
+#: A font file of Tu brandboard's typography tiles (slot `heading` / `body`, 0039).
 FONT = "font"
 ASSET_KINDS = frozenset({LOGO, LOGO_VERSION, EXTRA, FONT})
 #: Which file is "the logo" of the brand (`brand_kits.logo_asset_key`, what a flyer

@@ -16,6 +16,10 @@ default-groups = ["backend", "crm", "dev"]
 
 [tool.uv.workspace]
 members = ["packages/*"]
+# packages/render is the Node/Remotion render service (no pyproject.toml); without
+# this exclude uv refuses to run anywhere in the repo ("workspace member is missing a
+# pyproject.toml").
+exclude = ["packages/render"]
 
 # Workspace sources declared once at the root apply across every member: any member
 # depending on these names resolves to the in-tree package, no index publish needed.
@@ -30,14 +34,16 @@ qualify-creative = { workspace = true }
 # `qualify-creative[llm]` = the anthropic SDK: the CRM calls Claude for the hashtag
 # catalog (`qualify_api.hashtags.ai`) and for copy, so the app's venv needs it installed.
 backend = ["qualify-api", "qualify-shared", "qualify-scraper", "qualify-creative[llm]"]
-crm = ["reflex>=0.9.7", "sqlmodel>=0.0.39", "python-dotenv>=1.1.0"]
+crm = ["reflex>=0.9.12", "sqlmodel>=0.0.47", "python-dotenv>=1.2.3"]
 # Heavy ML tree (torch/transformers via qualify-models) — kept out of default-groups.
 ml = ["qualify-models"]
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=0.24.0",
-    "ruff>=0.15.22",
-    "pre-commit>=4.0.0",
+    # Coverage in CI (`just ci-test` / .github/workflows/ci.yml): per-package XML + summary.
+    "pytest-cov>=7.0.0",
+    "ruff>=0.16.9",
+    "pre-commit>=4.6.2",
 ]
 
 [tool.pytest.ini_options]

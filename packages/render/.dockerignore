@@ -1,0 +1,7 @@
+node_modules
+build
+.remotion
+out
+*.log
+.DS_Store
+scripts/smoke-out

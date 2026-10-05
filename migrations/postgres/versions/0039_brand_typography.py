@@ -1,7 +1,7 @@
 """brand typography: the kit's two type faces and their font files on the brandboard
 
-Revision ID: 0038
-Revises: 0037
+Revision ID: 0039
+Revises: 0038
 Create Date: 2026-10-05
 
 § request 2026-10-05: "quiero que haya un apartado para la tipografía antes de la paleta
@@ -18,6 +18,10 @@ Two things, both small:
   CHECK constraint of 0033 is recreated with the new value — a new revision rather than
   an in-place edit of 0033 (ADR 27 R8a allows the edit, but a dev database that already
   holds brandboards would need a full `just down` → `just dev` to see it).
+
+Numbered 0039: it was written as 0038 on the Brand Kit branch while `main` landed its own
+0038 (`catalog_and_template_runs`, the Remotion template engine), so it was renumbered
+on merging (2026-10-05). The two touch different tables and do not depend on each other.
 """
 
 from __future__ import annotations
@@ -25,8 +29,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0038"
-down_revision = "0037"
+revision = "0039"
+down_revision = "0038"
 branch_labels = None
 depends_on = None
 

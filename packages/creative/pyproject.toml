@@ -12,7 +12,7 @@ requires-python = ">=3.12"
 # caller that only needs the schemas never drags a network client into its tree.
 # Pillow arrives with the composition module, not before it exists.
 dependencies = [
-    "pydantic>=2.13.4",
+    "pydantic>=2.13.5",
     "pillow>=11.0",
     "pillow-heif>=0.18",
 ]
@@ -38,3 +38,6 @@ llm = ["anthropic>=0.40"]
 # HeyGen has no SDK worth the dependency; the avatar-video adapter speaks its REST API
 # over httpx, imported lazily for the same reason. Install with: `qualify-creative[video]`.
 video = ["httpx>=0.28.1"]
+# The Remotion render service (packages/render) is spoken to over HTTP by
+# `qualify_creative.render.client`, imported lazily for the same reason.
+render = ["httpx>=0.28.1"]

@@ -52,6 +52,20 @@ from qualify_creative.providers import (
     PricingTable,
     RenderedPrompt,
 )
+from qualify_creative.render import (
+    PostFacts,
+    TemplateRegistry,
+    build_props,
+    suggest_recipes,
+    validate_props,
+)
+from qualify_creative.render.adapter import MODEL_ID as REMOTION_MODEL
+from qualify_creative.render.adapter import RemotionTemplateAdapter
+from qualify_creative.render.client import RenderServiceError
+from qualify_creative.render.manifest import TemplateManifest
+from qualify_creative.render.props import ProductFacts
+from qualify_creative.render.recipes import Engine
+from qualify_creative.render.registry import TemplateNotFound
 from qualify_creative.router import BudgetContext, CreativeRouter, HopAction
 from qualify_creative.schemas import BrandKit, ContentBrief, CopyPayload
 
@@ -60,7 +74,12 @@ from .voice_access import VoiceGuard
 logger = logging.getLogger(__name__)
 
 HEYGEN = "heygen"
+REMOTION = "remotion"
 COMPOSE_MODEL = "qualify-compose-v1"
+#: Render jobs are named deterministically from the draft and the recipe, so a retry of
+#: the same draft re-uses the service's job (CONTRACT §4: `POST /render` is idempotent on
+#: the id) instead of rendering twice.
+TEMPLATE_JOB_NAMESPACE = UUID("6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f")
 PROMPT_AVATAR_MODEL = "heygen_prompt_avatar"
 VIDEO_RESOLUTION = "1080p"
 
@@ -96,6 +115,33 @@ class MediaWrite:
     model_id: str
     provider: str
     params: dict[str, Any] = field(default_factory=dict)
+    #: Template kind: which output port of the run this is (`reel`, `feed`, `story`) and
+    #: the run it came from — the provenance "template × metrics" needs (design D16).
+    output_port: str | None = None
+    template_run_id: UUID | None = None
+
+
+@dataclass(frozen=True)
+class TemplateRunWrite:
+    """One ``template_runs`` row (migration 0038): the render job as Python saw it. Its
+    ``id`` IS the render service's ``jobId``."""
+
+    id: UUID
+    template_id: str
+    template_version: int
+    engine: str
+    status: str  # pending | generating | completed | failed | cancelled
+    router_rule: str | None
+    outputs: dict[str, Any]
+    props: dict[str, Any]
+    estimated_eta_sec: Decimal | None = None
+    actual_sec: Decimal | None = None
+    estimated_cost_usd: Decimal | None = None
+    actual_cost_usd: Decimal | None = None
+    failure_reason: str | None = None
+    error_message: str | None = None
+    prompt_id: str | None = None
+    prompt_version: int | None = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +162,10 @@ class MediaOutcome:
     #: A `FailureReason` value when the artifact could not be produced.
     failure: str | None = None
     detail: str = ""
+    #: Template kind: the run to persist (also when it failed — the attempt is the
+    #: evidence) and the outputs that did NOT render while others did.
+    template_run: TemplateRunWrite | None = None
+    partial_failures: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def spent_usd(self) -> Decimal:
@@ -261,10 +311,25 @@ def _http_download(url: str) -> bytes:
 
 
 class _MediaFailed(Exception):
-    def __init__(self, failure: str, detail: str) -> None:
+    def __init__(
+        self, failure: str, detail: str, *, template_run: TemplateRunWrite | None = None
+    ) -> None:
+        self.template_run = template_run
         super().__init__(detail)
         self.failure = failure
         self.detail = detail
+
+
+class BrandNames(Protocol):
+    def __call__(self, *, tenant_id: UUID, brand_id: UUID) -> str: ...
+
+
+class ProductCatalog(Protocol):
+    """What the catalog (migration 0038) knows about the products a brief names."""
+
+    def products_for(
+        self, *, tenant_id: UUID, brand_id: UUID, product_ref: str | None
+    ) -> tuple[ProductFacts, ...]: ...
 
 
 class MediaProducer:
@@ -278,6 +343,10 @@ class MediaProducer:
         heygen: HeyGenTools | None,
         download: Downloader = _http_download,
         voice_guard: VoiceGuard | None = None,
+        remotion: RemotionTemplateAdapter | None = None,
+        templates: TemplateRegistry | None = None,
+        brand_names: BrandNames | None = None,
+        catalog: ProductCatalog | None = None,
     ) -> None:
         self._store = store
         self._router = router
@@ -289,6 +358,10 @@ class MediaProducer:
         #: = no check — only for tests with a fake HeyGen; `composition` always wires
         #: `BrandVoiceGuard`.
         self._voice_guard = voice_guard
+        self._remotion = remotion
+        self._templates = templates
+        self._brand_names = brand_names
+        self._catalog = catalog
 
     def produce(
         self,
@@ -308,11 +381,18 @@ class MediaProducer:
                 media = self._flyer(tenant_id, draft_id, brief, kit, copy)
             elif brief.kind.is_video:
                 media = self._video(tenant_id, draft_id, brief, kit, copy, budget, usage)
+            elif brief.kind is ContentKind.TEMPLATE:
+                return self._template(tenant_id, draft_id, brief, kit, copy, budget, usage)
             else:
                 media = ()
         except _MediaFailed as exc:
             logger.warning("creative media for draft %s failed: %s", draft_id, exc.detail)
-            return MediaOutcome(usage=tuple(usage), failure=exc.failure, detail=exc.detail)
+            return MediaOutcome(
+                usage=tuple(usage),
+                failure=exc.failure,
+                detail=exc.detail,
+                template_run=exc.template_run,
+            )
         except Exception as exc:  # a vendor error, a missing upload, a bad image file
             logger.warning("creative media for draft %s failed: %s", draft_id, exc)
             return MediaOutcome(
@@ -378,6 +458,220 @@ class MediaProducer:
                 )
             )
         return out
+
+    # -- template (Remotion) -------------------------------------------------------------
+
+    def _template(
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brief: ContentBrief,
+        kit: BrandKit,
+        copy: CopyPayload,
+        budget: BudgetContext,
+        usage: list[MediaUsage],
+    ) -> MediaOutcome:
+        """One run, several outputs (plan §2.2). The recipe router picks the template
+        unless the operator pinned one; the props are validated against the manifest
+        before the service is asked for anything; what rendered is kept even when a
+        sibling output failed; the run row is written in every case — it is the evidence
+        the cost and the "template × metrics" loop read."""
+        if self._remotion is None or self._templates is None:
+            raise _MediaFailed(
+                FailureReason.PROVIDER_ERROR.value, "the render service is not configured"
+            )
+        products = (
+            self._catalog.products_for(
+                tenant_id=tenant_id, brand_id=brief.brand_id, product_ref=brief.product_ref
+            )
+            if self._catalog is not None
+            else ()
+        )
+        manifest, rule = self._pick_template(brief, products, budget)
+        props = build_props(
+            manifest=manifest,
+            brief=brief,
+            copy=copy,
+            kit=kit,
+            brand_name=(
+                self._brand_names(tenant_id=tenant_id, brand_id=brief.brand_id)
+                if self._brand_names is not None
+                else ""
+            ),
+            products=products,
+            tenant_id=tenant_id,
+            draft_id=draft_id,
+        )
+        job_id = _template_job_id(draft_id, manifest)
+        eta = manifest.cost_model.eta_seconds(manifest.outputs, _expected_duration(manifest, props))
+        per_render = self._pricing.unit_price(model_id=REMOTION_MODEL, unit="per_render")
+        estimated_cost = per_render * manifest.render_count
+        run = TemplateRunWrite(
+            id=job_id,
+            template_id=manifest.id,
+            template_version=manifest.version,
+            engine=Engine.REMOTION.value,
+            status="pending",
+            router_rule=str(rule) if rule is not None else None,
+            outputs={
+                port: {"kind": out.kind.value, "status": "pending"}
+                for port, out in manifest.outputs.items()
+            },
+            props=props.to_payload(),
+            estimated_eta_sec=Decimal(str(eta)),
+            estimated_cost_usd=estimated_cost,
+        )
+
+        problems = validate_props(manifest, props)
+        if problems:
+            detail = "; ".join(p.message for p in problems)
+            raise _MediaFailed(
+                FailureReason.INVALID_PARAMETERS.value,
+                detail,
+                template_run=_finished(
+                    run, "failed", FailureReason.INVALID_PARAMETERS.value, detail
+                ),
+            )
+        if budget.hard_stop and estimated_cost > budget.remaining_usd:
+            detail = f"template render would cost {estimated_cost} with {budget.remaining_usd} left"
+            raise _MediaFailed(
+                FailureReason.BUDGET_EXCEEDED.value,
+                detail,
+                template_run=_finished(run, "failed", FailureReason.BUDGET_EXCEEDED.value, detail),
+            )
+
+        request = GenerationRequest(
+            task=GenerationTask.TEMPLATE_RENDER,
+            rendered_prompt=RenderedPrompt("", "", ""),
+            params={
+                "job_id": str(job_id),
+                "template_id": manifest.id,
+                "version": manifest.version,
+                "props": props,
+                "render_count": manifest.render_count,
+            },
+        )
+        try:
+            result = self._remotion.generate(request, api_key="")
+        except RenderServiceError as exc:
+            reason = _reason_from_service(exc.code)
+            raise _MediaFailed(
+                reason, exc.message, template_run=_finished(run, "failed", reason, exc.message)
+            ) from exc
+
+        payload = result.payload
+        assert isinstance(payload, dict)
+        outputs: dict[str, dict[str, Any]] = payload["outputs"]
+        failed: dict[str, dict[str, Any]] = dict(payload.get("failed_ports") or {})
+        writes: list[MediaWrite] = []
+        for position, (port, out) in enumerate(manifest.outputs.items()):
+            rendered = outputs.get(port)
+            if rendered is None:
+                continue
+            key = generated_key(tenant_id, draft_id, f"{port}.{out.extension}")
+            self._store.write(key, rendered["bytes"])
+            params: dict[str, Any] = {
+                "template_id": manifest.id,
+                "template_version": manifest.version,
+                "job_id": str(job_id),
+                "port": port,
+                "kind": out.kind.value,
+                "router_rule": rule,
+                "warnings": list(payload.get("warnings") or ()),
+            }
+            if rendered.get("duration_sec") is not None:
+                params["duration_seconds"] = rendered["duration_sec"]
+            writes.append(
+                MediaWrite(
+                    position=position,
+                    media_type=out.media_type,
+                    media_url=key,
+                    object_key=key,
+                    width=rendered.get("width") or out.width,
+                    height=rendered.get("height") or out.height,
+                    aspect_ratio=out.aspect_ratio,
+                    model_id=REMOTION_MODEL,
+                    provider=REMOTION,
+                    params=params,
+                    output_port=port,
+                    template_run_id=job_id,
+                )
+            )
+        actual_cost = per_render * len(writes)
+        usage.append(
+            MediaUsage(
+                provider=REMOTION,
+                model_id=REMOTION_MODEL,
+                unit="render",
+                quantity=len(writes),
+                cost_usd=actual_cost,
+            )
+        )
+        run_outputs = {
+            port: {
+                "kind": out.kind.value,
+                "status": "completed" if port in outputs else "failed",
+                **({} if port in outputs else failed.get(port, {})),
+            }
+            for port, out in manifest.outputs.items()
+        }
+        finished = TemplateRunWrite(
+            **{
+                **run.__dict__,
+                "status": str(payload.get("status") or "completed"),
+                "outputs": run_outputs,
+                "actual_sec": Decimal(str(payload.get("duration_sec") or 0)) or None,
+                "actual_cost_usd": actual_cost,
+                "failure_reason": (
+                    next(iter(failed.values()))["failure_reason"] if failed and not writes else None
+                ),
+            }
+        )
+        detail = ""
+        if failed:
+            detail = "no se renderizó: " + ", ".join(
+                f"{port} ({info.get('failure_reason')})" for port, info in failed.items()
+            )
+        return MediaOutcome(
+            media=tuple(writes),
+            usage=tuple(usage),
+            template_run=finished,
+            partial_failures=failed,
+            detail=detail,
+        )
+
+    def _pick_template(
+        self, brief: ContentBrief, products: tuple[ProductFacts, ...], budget: BudgetContext
+    ) -> tuple[TemplateManifest, int | None]:
+        """The operator's pinned recipe wins; otherwise the recipe router's suggestion.
+        Returns the manifest and the rule that chose it (None when pinned)."""
+        assert self._templates is not None
+        media = brief.media
+        if media.template_id:
+            try:
+                return self._templates.get(media.template_id, media.template_version), None
+            except TemplateNotFound as exc:
+                raise _MediaFailed(
+                    FailureReason.INVALID_PARAMETERS.value, f"unknown template {exc}"
+                ) from None
+        video_count = 1 if brief.source_media_key and _is_video_key(brief.source_media_key) else 0
+        video_count += sum(1 for p in products if p.video_keys)
+        facts = PostFacts(
+            angle=brief.content_type,
+            photo_count=len({*media.product_keys, *(k for p in products for k in p.photo_keys)}),
+            video_count=video_count,
+            product_count=max(len(products), 1),
+            cap_remaining_usd=budget.remaining_usd if budget.hard_stop else None,
+        )
+        options = suggest_recipes(facts, self._templates)
+        chosen = next((o for o in options if o.suggested and o.engine is Engine.REMOTION), None)
+        if chosen is None or chosen.template_id is None:
+            remotion = options[0]
+            raise _MediaFailed(
+                FailureReason.ROUTE_BLOCKED_BY_POLICY.value,
+                remotion.reason or "no published template serves this post",
+            )
+        return self._templates.get(chosen.template_id, chosen.template_version), chosen.rule
 
     # -- video -------------------------------------------------------------------------
 
@@ -592,3 +886,47 @@ class MediaProducer:
         )
         self._heygen.wait_for_look(look_id, api_key=key)
         return look_id
+
+
+# ---------------------------------------------------------------------------
+# template helpers
+
+
+def _template_job_id(draft_id: UUID, manifest: TemplateManifest) -> UUID:
+    from uuid import uuid5
+
+    return uuid5(TEMPLATE_JOB_NAMESPACE, f"{draft_id}:{manifest.key}")
+
+
+def _expected_duration(manifest: TemplateManifest, props: Any) -> float:
+    """What the composition will most likely derive: ~2.5 s per photo plus a hook and a
+    CTA scene, clamped to the manifest. Only an ETA — the service reports the real one."""
+    photos = len(getattr(props, "photos", ()))
+    guess = 2.5 * max(photos, 1) + 3.0
+    return float(min(max(guess, manifest.duration.min_sec), manifest.duration.max_sec))
+
+
+def _finished(
+    run: TemplateRunWrite, status: str, failure_reason: str | None, message: str | None
+) -> TemplateRunWrite:
+    return TemplateRunWrite(
+        **{
+            **run.__dict__,
+            "status": status,
+            "failure_reason": failure_reason,
+            "error_message": (message or "")[:500] or None,
+        }
+    )
+
+
+def _reason_from_service(code: str) -> str:
+    from qualify_creative.render.client import to_failure_reason
+
+    try:
+        return to_failure_reason(code).value
+    except ValueError:
+        return FailureReason.PROVIDER_ERROR.value
+
+
+def _is_video_key(key: str) -> bool:
+    return key.lower().rsplit(".", 1)[-1] in {"mp4", "mov", "m4v", "webm"}
