@@ -179,7 +179,8 @@ Construido y verificado en el worktree (sin commitear al escribir esto):
 | MP-09 | **hecha** | `suggest_recipes` con las seis reglas; 10 tests |
 | MP-10 | **hecha** | paso «Receta» en el generador con tres opciones, costo, ETA y sugerida; «Tu paquete» por salida |
 | Catálogo (plan §2.1 #1) | **hecho** | migración 0038, `CatalogService` (fotos Pillow, video FFmpeg), pantalla `/catalog` |
-| MP-07, MP-08, MP-11, MP-12, MP-13 | pendientes | según calendario de §5 del plan |
+| MP-11 | **hecha (PR `feat/mp11-publish-per-output`, pendiente de merge)** | «programar y publicar por salida»: migración **0040** `calendar_events.output_port` (0039 reservado a QUA-117), `PlannerService.schedule(output_port=)`, `get_publishable(output_port=)` con `media_product_type` derivado del puerto (`reel`→REELS, `feed`→IMAGE, `story`→STORIES, historia de imagen incluida), chips por salida y control «Salida» en el Planificador; sección «Eventos por salida (MP-11)» en `automatizacion-calendario-qua111.md`. Lo que el enunciado original de MP-11 llamaba «el video queda en el draft y sigue el flujo de publicación existente» es exactamente esto: el paquete llega a Instagram por el Planificador, una salida por evento |
+| MP-07, MP-08, MP-12, MP-13 | pendientes | según calendario de §5 del plan |
 
 **Huecos detectados al cablear la UI (semana 2):**
 
