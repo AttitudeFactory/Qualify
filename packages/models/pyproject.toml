@@ -30,7 +30,7 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
-    "ruff>=0.15.22",
+    "ruff>=0.16.9",
 ]
 # Eval-only: WER computation. The production cascade never computes WER, so this
 # stays out of [project].dependencies — kept in default-groups so `uv run` (local
