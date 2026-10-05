@@ -75,5 +75,32 @@ Agent: ci-engineer (pipeline-engineer role, DevOps hat). Branch `ci/robust-pipel
 - [x] security.yml (sast/deps/repo)
 - [x] dependabot.yml, PR template, CODEOWNERS, .gitignore (coverage outputs)
 - [x] justfile (`ci-lint`, `ci-test`, `audit`) + CLAUDE.md "### CI" section
-- [ ] push, PR, green runs (local validation: YAML parses, ruff clean; `just` not installed
-      locally so recipes are unverified until someone runs them)
+- [x] push, PR #67 (https://github.com/AttitudeFactory/Qualify/pull/67), green runs at
+      9be2bce: `ci` 37341055675 (changes 8s, lint 12s, test 1m14s, test-db 1m07s,
+      node-render/docker-render skipped — no package.json/Dockerfile on this ref) and
+      `security` 37341055709 (sast 1m36s, deps 29s, repo 26s). Three iterations were needed
+      (see Findings above).
+- [ ] `just ci-lint` / `just ci-test` / `just audit` never executed (`just` not installed on
+      the agent machine; syntax reviewed by hand).
+
+## Measured baseline (run 37341055675 / 37341055709, 2026-10-05)
+
+- Coverage (offline suite, 2582 passed / 1 skipped / 336 deselected): qualify_api 81.8%,
+  qualify_shared 90.5%, qualify_scraper 91.8%, qualify_creative 93.9%, Qualify (Reflex)
+  77.6%, total 80.1% (34,944 statements).
+- semgrep: 17 findings (12 ERROR = `avoid-sqlalchemy-text` in `hashtags/repository.py` x9 and
+  `testing/testdb.py` x3; 3 WARNING = sha1 in `scraper/shared.py:244`, logger credential
+  disclosure in `Qualify/planner_provider.py:434` + `creative_provider.py:470`; 2 MEDIUM =
+  uv dependency cooldown). 0 internal errors after the env fix.
+- bandit (medium+): 13 (1 HIGH = B324 sha1 `scraper/shared.py:244`; 12 MEDIUM = B608 SQL
+  string building x10 in `hashtags/repository.py` + `Qualify/stories_page.py:51`, B615
+  unpinned HF model revision x2 in `models/providers.py`).
+- pip-audit (locked default groups, 92 pins): 8 distinct advisories in 3 packages —
+  urllib3 2.7.0 (3, fix 2.8.0), cryptography 49.0.0 (1, fix 50.0.0), virtualenv 21.7.0
+  (4, fix 21.7.13). Dependabot's first weekly run should pick these up.
+- trivy fs (HIGH/CRITICAL): 2 HIGH, both react-router 7.15.0 inside `reflex.lock/bun.lock`
+  (Reflex's own frontend lock — not ours to bump directly).
+- gitleaks: 0 after the baseline allowlist (334 before, all classified as non-secrets).
+- Minutes per PR push (billed per job, rounded up): roughly 10 (changes 1, lint 1, test 2,
+  test-db 2, sast 2, deps 1, repo 1); +1 node-render and +5 docker-render once PR #65 lands
+  and the PR touches packages/render. Main push: `ci` only, ~6-7.
