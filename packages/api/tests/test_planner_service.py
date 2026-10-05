@@ -11,19 +11,22 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from qualify_api.planner.post_reader import ApprovalStatus, PostSummary
+from qualify_api.planner.post_reader import ApprovalStatus, PostOutput, PostSummary
 from qualify_api.planner.repository import MemoryPlannerRepository
 from qualify_api.planner.rules import ExecutionDecision, decide_execution
 from qualify_api.planner.service import (
+    DuplicateEvent,
     EventConflict,
     EventNotModifiable,
     InactiveConnection,
     InvalidSchedule,
     InvalidTag,
+    OutputRequired,
     PlannerService,
     PostNotRejected,
     PostNotSchedulable,
     UnknownEvent,
+    UnknownOutput,
     UnknownPost,
     UnknownTag,
 )
@@ -572,3 +575,107 @@ def test_another_tenant_cannot_remove_the_events() -> None:
     with pytest.raises(UnknownEvent):
         svc.remove_rejected_post(tenant_id=OTHER_TENANT, event_id=event.id)
     assert repo.get(tenant_id=TENANT, event_id=event.id).status == "scheduled"
+
+
+# --- MP-11: one event per output ----------------------------------------------------
+
+
+def _package_post(**kw: object) -> PostSummary:
+    """A template POST with the three `promo_producto` outputs."""
+    return _post(
+        outputs=(
+            PostOutput(port="reel", media_type="video", is_publishable=True),
+            PostOutput(port="feed", media_type="image", is_publishable=True),
+            PostOutput(port="story", media_type="image", is_publishable=True),
+        ),
+        **kw,
+    )
+
+
+def _events_of(svc: PlannerService, post: PostSummary) -> set[UUID]:
+    return {e.id for e in svc._repo.list_for_post(tenant_id=TENANT, post_id=post.post_id)}
+
+
+def test_a_package_is_planned_one_event_per_output() -> None:
+    post = _package_post()
+    svc = _service(post)
+    reel = _schedule(svc, post, output_port="reel")
+    feed = _schedule(svc, post, output_port="feed")  # same instant, same account: fine
+    story = _schedule(svc, post, hours=30, output_port="story")
+    assert (reel.output_port, feed.output_port, story.output_port) == ("reel", "feed", "story")
+    assert reel.scheduled_at == feed.scheduled_at
+    assert _events_of(svc, post) == {reel.id, feed.id, story.id}
+
+
+def test_a_package_requires_an_output_and_only_its_own() -> None:
+    post = _package_post()
+    svc = _service(post)
+    with pytest.raises(OutputRequired):
+        _schedule(svc, post)
+    with pytest.raises(UnknownOutput):
+        _schedule(svc, post, output_port="poster")
+    assert _events_of(svc, post) == set()
+
+
+def test_a_post_without_outputs_takes_only_none() -> None:
+    post = _post()
+    svc = _service(post)
+    with pytest.raises(UnknownOutput):
+        _schedule(svc, post, output_port="reel")
+    assert _schedule(svc, post).output_port is None
+
+
+def test_the_same_output_at_the_same_instant_on_the_same_account_is_a_duplicate() -> None:
+    post = _package_post()
+    svc = _service(post)
+    first = _schedule(svc, post, output_port="reel")
+    with pytest.raises(DuplicateEvent):
+        _schedule(svc, post, output_port="reel")
+    # A cancelled event no longer occupies the slot.
+    svc.cancel(tenant_id=TENANT, event_id=first.id)
+    again = _schedule(svc, post, output_port="reel")
+    assert again.id != first.id
+    # Another instant is a second publication of the same output, not a duplicate.
+    _schedule(svc, post, hours=48, output_port="reel")
+
+
+def test_a_whole_post_cannot_be_planned_twice_at_the_same_instant_either() -> None:
+    post = _post()
+    svc = _service(post)
+    _schedule(svc, post)
+    with pytest.raises(DuplicateEvent):
+        _schedule(svc, post)
+
+
+def test_a_package_leaves_sin_programar_only_when_every_output_is_planned() -> None:
+    post = _package_post()
+    svc = _service(post)
+
+    def unscheduled() -> list[UUID]:
+        return [p.post_id for p in svc.list_unscheduled(tenant_id=TENANT, brand_id=BRAND)]
+
+    assert unscheduled() == [post.post_id]
+    _schedule(svc, post, output_port="reel")
+    _schedule(svc, post, output_port="feed")
+    assert unscheduled() == [post.post_id]
+    story = _schedule(svc, post, hours=30, output_port="story")
+    assert unscheduled() == []
+    occupied = svc.occupied_outputs(tenant_id=TENANT, brand_id=BRAND)[post.post_id]
+    assert set(occupied) == {"reel", "feed", "story"} and occupied["story"].id == story.id
+    # Cancelling one output brings the POST back for that output.
+    svc.cancel(tenant_id=TENANT, event_id=story.id)
+    assert unscheduled() == [post.post_id]
+    assert "story" not in svc.occupied_outputs(tenant_id=TENANT, brand_id=BRAND)[post.post_id]
+
+
+def test_a_reschedule_keeps_the_output() -> None:
+    post = _package_post()
+    svc = _service(post)
+    feed = _schedule(svc, post, output_port="feed")
+    moved = svc.reschedule(
+        tenant_id=TENANT,
+        event_id=feed.id,
+        scheduled_at=NOW + timedelta(hours=72),
+        scheduled_tz="America/Caracas",
+    )
+    assert moved.output_port == "feed" and moved.revision == 2

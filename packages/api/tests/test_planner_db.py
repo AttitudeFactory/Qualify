@@ -1625,10 +1625,12 @@ def test_a_failing_tenant_does_not_stop_another(worlds_ab) -> None:
     event_a, event_b = _due_reel_event(a), _due_reel_event(b)
 
     class _ReaderDownForA(DraftPostReader):
-        def get_publishable(self, *, tenant_id, post_id):
+        def get_publishable(self, *, tenant_id, post_id, output_port=None):
             if tenant_id == a[0]:
                 raise ConnectionError("reader down for A")
-            return super().get_publishable(tenant_id=tenant_id, post_id=post_id)
+            return super().get_publishable(
+                tenant_id=tenant_id, post_id=post_id, output_port=output_port
+            )
 
     report = asyncio.run(
         _tick(ScopedTenants([a[0], b[0]]), _MetaCalls(), posts=_ReaderDownForA()).run_once()
@@ -2242,3 +2244,147 @@ def test_a_rescheduled_expired_event_is_due_and_claimable_again(repo, world_p) -
     assert expired.id in {e.id for e in repo.list_due(tenant_id=TENANT_P, now=now, limit=10_000)}
     claimed = repo.claim(tenant_id=TENANT_P, event_id=expired.id, expected_revision=2, now=now)
     assert claimed is not None and claimed.status == "publishing"
+
+
+# --- MP-11: one event per template output -------------------------------------------
+# A `promo_producto` run leaves three `image_assets` on the draft, named by port: a Reel
+# MP4, a feed JPEG and a story JPEG. The whole POST is no publishable shape; each output
+# is, through its own event.
+
+
+def _package_row(world: tuple[UUID, UUID, UUID], *, category: str | None = "reel") -> UUID:
+    tenant_id, _, conn_id = world
+    items = [
+        (media_key(tenant_id, conn_id, uuid4().hex), "video/mp4", "video", 0),
+        (media_key(tenant_id, conn_id, uuid4().hex), "image/jpeg", "image", 1),
+        (media_key(tenant_id, conn_id, uuid4().hex), "image/jpeg", "image", 2),
+    ]
+    post_id = _post_row(world, category=category, items=items)
+    with tenant_session(tenant_id) as session:
+        for image in session.scalars(
+            select(creative.ImageAsset).where(creative.ImageAsset.draft_id == post_id)
+        ):
+            image.output_port = {0: "reel", 1: "feed", 2: "story"}[image.position]
+        session.flush()
+    return post_id
+
+
+def _user_of(tenant_id: UUID) -> UUID:
+    with admin_session() as session:
+        return session.scalar(select(User.id).where(User.tenant_id == tenant_id))
+
+
+def test_output_port_round_trips_and_an_empty_string_is_refused(world_p) -> None:
+    brand_id, user_id, conn_id = world_p
+    repo = PostgresPlannerRepository()
+    new = _new_event(TENANT_P, brand_id, user_id, conn_id)
+    whole = repo.add(new)
+    reel = repo.add(replace(new, output_port="reel"))
+    assert whole.output_port is None and reel.output_port == "reel"
+    assert repo.get(tenant_id=TENANT_P, event_id=reel.id).output_port == "reel"
+    # A reschedule never changes the output.
+    moved = repo.reschedule(
+        tenant_id=TENANT_P,
+        event_id=reel.id,
+        expected_revision=1,
+        scheduled_at=reel.scheduled_at + timedelta(hours=1),
+        scheduled_tz=reel.scheduled_tz,
+        connection_id=conn_id,
+    )
+    assert moved.output_port == "reel" and moved.revision == 2
+    with pytest.raises(IntegrityError):
+        repo.add(replace(new, output_port=""))
+    occupying = repo.list_occupying(tenant_id=TENANT_P, brand_id=brand_id)
+    assert {e.id for e in occupying} >= {whole.id, reel.id}
+
+
+def test_a_package_evaluates_per_output_as_reels_image_and_stories(world_f2) -> None:
+    tenant_id = world_f2[0]
+    post_id = _package_row(world_f2)
+    reader = DraftPostReader()
+
+    whole = reader.get_publishable(tenant_id=tenant_id, post_id=post_id)
+    assert isinstance(whole, NotPublishable)
+    assert whole.reason is UnpublishableReason.UNSUPPORTED_SHAPE
+
+    by_port = {
+        port: reader.get_publishable(tenant_id=tenant_id, post_id=post_id, output_port=port)
+        for port in ("reel", "feed", "story")
+    }
+    assert all(isinstance(v, PublishablePost) for v in by_port.values()), by_port
+    assert {port: v.media_product_type for port, v in by_port.items()} == {
+        "reel": "REELS",
+        "feed": "IMAGE",
+        "story": "STORIES",
+    }
+    for port, verdict in by_port.items():
+        (item,) = verdict.media  # only that port's asset, at position 0
+        assert item.position == 0 and verdict.output_port == port
+    assert by_port["story"].media[0].content_type == "image/jpeg"
+    assert by_port["reel"].media[0].media_type == "VIDEO"
+
+    # The card sees the outputs and is publishable because each of them is.
+    summary = reader.get(tenant_id=tenant_id, post_id=post_id)
+    assert summary.output_ports == ("reel", "feed", "story")
+    assert all(o.is_publishable for o in summary.outputs)
+    assert summary.is_publishable and summary.media_product_type is None
+    assert {o.port: o.media_product_type for o in summary.outputs} == {
+        "reel": "REELS",
+        "feed": "IMAGE",
+        "story": "STORIES",
+    }
+
+
+def test_a_package_schedules_three_events_and_the_executor_asks_for_each_port(
+    world_f2,
+) -> None:
+    tenant_id, brand_id, conn_id = world_f2
+    post_id = _package_row(world_f2)
+    user_id = _user_of(tenant_id)
+    service = PlannerService(
+        repository=PostgresPlannerRepository(),
+        posts=DraftPostReader(),
+        connections=PostgresConnectionGate(),
+    )
+    at = datetime.now(UTC) + timedelta(hours=2)
+    events = {
+        port: service.schedule(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            post_id=post_id,
+            connection_id=conn_id,
+            scheduled_at=at if port != "story" else at + timedelta(hours=6),
+            scheduled_tz="America/Caracas",
+            user_id=user_id,
+            output_port=port,
+        )
+        for port in ("reel", "feed", "story")
+    }
+    assert {port: e.output_port for port, e in events.items()} == {
+        "reel": "reel",
+        "feed": "feed",
+        "story": "story",
+    }
+    assert events["reel"].scheduled_at == events["feed"].scheduled_at
+    # Fully planned: the POST leaves Sin programar.
+    assert post_id not in {
+        p.post_id for p in service.list_unscheduled(tenant_id=tenant_id, brand_id=brand_id)
+    }
+
+    # The Reel event, once due, is started as a REEL from its own port's asset.
+    repo = PostgresPlannerRepository()
+    with tenant_session(tenant_id) as session:
+        session.execute(
+            text(
+                "UPDATE calendar_events SET scheduled_at = now() - interval '1 minute' "
+                "WHERE id = :id"
+            ),
+            {"id": events["reel"].id},
+        )
+    due = repo.get(tenant_id=tenant_id, event_id=events["reel"].id)
+    calls: list[str] = []
+    result = asyncio.run(_executor(calls).try_execute(due))
+    assert result.outcome is ExecutionOutcome.STARTED
+    assert calls == ["REELS"]
+    stored = repo.get(tenant_id=tenant_id, event_id=due.id)
+    assert stored.output_port == "reel" and stored.publish_attempt_id == result.attempt_id
