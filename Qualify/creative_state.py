@@ -124,13 +124,6 @@ GENERATOR_STEPS = (
     "recipe",
     "review",
 )
-_OBJECTIVE_LABELS = {
-    "awareness": "Reconocimiento",
-    "consideration": "Consideración",
-    "lead": "Captar contacto",
-    "sale": "Vender",
-}
-_INTENT_LABELS = {"organic": "Orgánico", "ads": "Anuncio", "both": "Ambos"}
 
 
 def generator_steps(kind: str) -> list[str]:
@@ -468,9 +461,8 @@ class CreativeState(rx.State):
         return [
             ["Tipo de pieza", KIND_LABELS.get(self.brief_kind, "")],
             ["Tema o producto", self.brief_topic.strip()],
-            ["Objetivo", _OBJECTIVE_LABELS.get(self.brief_objective, "")],
+            # Objetivo and Destino left the wizard on 2026-10-05: not asked, not recapped
             ["De qué trata", content_types.get(self.brief_content_type, "")],
-            ["Destino", _INTENT_LABELS.get(self.brief_intent, "")],
             ["Formato", self.effective_format_label],
             ["Debe mencionar", self.brief_must_mention.strip()],
             ["Debe evitar", self.brief_must_avoid.strip()],
