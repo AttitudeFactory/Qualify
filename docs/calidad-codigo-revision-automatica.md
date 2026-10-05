@@ -185,8 +185,14 @@ login, crear el proyecto con key `qualify`, generar un *Project analysis token* 
   `if: needs.preflight.outputs.configured == 'true' && github.ref == 'refs/heads/main'`.
   Sin secretos: `preflight` verde con aviso, `analyze` **skipped**, workflow verde.
 
-Verificado en ejecuciones reales de la rama (ver el PR): sin ningún secreto configurado,
-`review.yml` y `sonar.yml` terminan en verde.
+Verificado en ejecuciones reales del PR #69 (2026-10-05, repo sin ningún secreto
+configurado): `review.yml` terminó en verde en ambos pushes — `claude-review` con el
+`::notice::` y el checkout/paso de Claude *skipped*, `@claude on demand` *skipped* por el
+`if`, y `ruff` en verde. La anotación positiva se probó con un archivo temporal con un
+`import os` sin usar: reviewdog publicó el comentario inline `[ruff] F401 'os' imported
+but unused` con sugerencia, firmado por `github-actions[bot]` (es decir, con el
+`GITHUB_TOKEN`, sin PAT), y se retiró el archivo en el commit siguiente. `sonar.yml` no
+corre en PRs; su salto limpio se verifica en el primer push a `main` tras el merge.
 
 ## 4. Alternativas descartadas (precio en repos privados)
 
