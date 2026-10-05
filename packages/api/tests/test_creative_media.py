@@ -202,8 +202,10 @@ def test_a_flyer_is_rendered_locally_and_stored_for_the_draft() -> None:
     assert outcome.failure is None and outcome.usage == ()  # local: free, no vendor
     (image,) = outcome.media
     assert image.media_type == "image" and image.position == 0
-    assert image.media_url == generated_key(TENANT_ID, draft_id, "slide-1.png")
-    assert store.files[image.media_url].startswith(b"\x89PNG")
+    # § 2026-10-05: stored as JPEG (real JPEG bytes, labelled as such) — Meta takes no PNG
+    assert image.media_url == generated_key(TENANT_ID, draft_id, "slide-1.jpg")
+    assert store.files[image.media_url][:3] == b"\xff\xd8\xff"
+    assert image.content_type == "image/jpeg"
     assert (image.width, image.height, image.aspect_ratio) == (1080, 1350, "4:5")
     assert image.provider == "local" and image.params["background"] is True
 
@@ -218,6 +220,9 @@ def test_a_carousel_stores_its_slides_in_order() -> None:
     outcome = _produce(_producer(store, None), brief, uuid4())
     assert [m.position for m in outcome.media] == [0, 1, 2, 3]
     assert all(m.params["slides"] == 4 for m in outcome.media)
+    assert all(
+        m.content_type == "image/jpeg" and m.media_url.endswith(".jpg") for m in outcome.media
+    )
 
 
 def test_an_avatar_video_composes_the_scene_renders_and_keeps_the_file() -> None:
@@ -246,6 +251,7 @@ def test_an_avatar_video_composes_the_scene_renders_and_keeps_the_file() -> None
 
     (video,) = outcome.media
     assert video.media_type == "video" and video.aspect_ratio == "9:16"
+    assert video.content_type == "video/mp4"  # the Planificador refuses a NULL type
     assert store.files[generated_key(TENANT_ID, draft_id, "video.mp4")] == b"mp4-bytes"
     assert video.params["thumbnail_key"] == generated_key(TENANT_ID, draft_id, "thumbnail.jpg")
     assert video.params["background_composed"] is True
@@ -564,7 +570,9 @@ class FakeRemotion:
         ports = ("reel", "feed", "story")
         outputs = {
             p: {
-                "bytes": f"{p}-bytes".encode(),
+                # the render service answers a still with real PNG bytes (with alpha:
+                # the stored JPEG must flatten it), a video with its MP4
+                "bytes": f"{p}-bytes".encode() if p == "reel" else _png((10, 120, 60, 128)),
                 "mime_type": "video/mp4" if p == "reel" else "image/png",
                 "width": 1080,
                 "height": 1350 if p == "feed" else 1920,
@@ -653,7 +661,12 @@ def test_a_template_run_yields_every_output_with_its_port_and_run() -> None:
     reel, feed, story = outcome.media
     assert reel.media_type == "video" and feed.media_type == "image"
     assert reel.media_url == generated_key(TENANT_ID, draft_id, "reel.mp4")
-    assert store.files[feed.media_url] == b"feed-bytes"
+    assert store.files[reel.media_url] == b"reel-bytes" and reel.content_type == "video/mp4"
+    # § 2026-10-05: the stills are stored as JPEG — the only image format Meta takes
+    for still in (feed, story):
+        assert still.media_url.endswith(f"{still.output_port}.jpg")
+        assert store.files[still.media_url][:3] == b"\xff\xd8\xff"
+        assert still.content_type == "image/jpeg"
     assert (feed.width, feed.height, feed.aspect_ratio) == (1080, 1350, "4:5")
     assert reel.provider == "remotion" and reel.model_id == REMOTION_MODEL
     assert reel.params["template_id"] == "promo_producto" and reel.params["router_rule"] == 2

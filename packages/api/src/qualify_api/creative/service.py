@@ -636,6 +636,7 @@ class PostgresContentRepository:
                         position=item.position,
                         output_port=item.output_port,
                         template_run_id=item.template_run_id,
+                        content_type=item.content_type,
                     )
                 )
             if spent_usd:

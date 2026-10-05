@@ -3,7 +3,9 @@ brief's `ContentKind` asks for (§ request 2026-09-25).
 
 - `CREATOR_SCRIPT` — nothing: the script IS the artifact, and it lives in the copy.
 - `STATIC_FLYER` — `qualify_creative.compose.render_flyer` over the operator's own
-  images: one PNG, or the carousel's slides. Local, deterministic, free.
+  images: one image, or the carousel's slides. Local, deterministic, free. Rendered as
+  PNG and STORED AS JPEG (§ 2026-10-05): Meta accepts only JPEG images, and so does the
+  publisher — every image this module writes goes through `to_meta_jpeg`.
 - `AVATAR_VIDEO` / `ANIMATED_AVATAR_VIDEO` — HeyGen, through the `GenerationProvider`
   seam and the `CreativeRouter` (credential resolution + the budget pre-flight):
   1. background + products composed into ONE background image
@@ -20,7 +22,12 @@ brief's `ContentKind` asks for (§ request 2026-09-25).
 
 Every vendor call that costs money is written as a usage row with its provenance, also
 when a later step fails. The store is a seam (`MediaStore`): local files next to the
-uploads today (`LocalMediaStore`, served by the app), the tenant's R2 prefix later.
+uploads today (`LocalMediaStore`, served by the app), the tenant's R2 prefix later —
+pending, see `docs/pendientes-generador-contenido.md` §1 (a generated POST is not
+publishable by the Planificador until its media is in R2).
+
+Every write carries its MIME type (`MediaWrite.content_type` → `image_assets.content_type`,
+0029), which the Planificador requires: NULL means "not publishable".
 """
 
 from __future__ import annotations
@@ -46,6 +53,7 @@ from qualify_creative.enums import (
     FailureReason,
     GenerationTask,
 )
+from qualify_creative.photo.normalize import to_meta_jpeg
 from qualify_creative.providers import (
     CredentialResolver,
     GenerationRequest,
@@ -76,6 +84,9 @@ logger = logging.getLogger(__name__)
 HEYGEN = "heygen"
 REMOTION = "remotion"
 COMPOSE_MODEL = "qualify-compose-v1"
+#: The MIME types this module stores, and that the publisher accepts.
+JPEG = "image/jpeg"
+MP4 = "video/mp4"
 #: Render jobs are named deterministically from the draft and the recipe, so a retry of
 #: the same draft re-uses the service's job (CONTRACT §4: `POST /render` is idempotent on
 #: the id) instead of rendering twice.
@@ -119,6 +130,9 @@ class MediaWrite:
     #: the run it came from — the provenance "template × metrics" needs (design D16).
     output_port: str | None = None
     template_run_id: UUID | None = None
+    #: The MIME type the file was stored with (`image_assets.content_type`, 0029): what
+    #: the Planificador checks before it lets a POST be published.
+    content_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -436,8 +450,9 @@ class MediaProducer:
         width, height = brief.format.dimensions
         out: list[MediaWrite] = []
         for position, png in enumerate(slides):
-            key = generated_key(tenant_id, draft_id, f"slide-{position + 1}.png")
-            self._store.write(key, png)
+            # rendered as PNG, stored as JPEG: the only image format Meta takes
+            key = generated_key(tenant_id, draft_id, f"slide-{position + 1}.jpg")
+            self._store.write(key, to_meta_jpeg(png))
             out.append(
                 MediaWrite(
                     position=position,
@@ -449,6 +464,7 @@ class MediaProducer:
                     aspect_ratio=brief.format.aspect_ratio,
                     model_id=COMPOSE_MODEL,
                     provider="local",
+                    content_type=JPEG,
                     params={
                         "carousel": brief.media.carousel,
                         "slides": len(slides),
@@ -568,8 +584,15 @@ class MediaProducer:
             rendered = outputs.get(port)
             if rendered is None:
                 continue
-            key = generated_key(tenant_id, draft_id, f"{port}.{out.extension}")
-            self._store.write(key, rendered["bytes"])
+            # a still comes back from the render service as PNG and is stored as JPEG
+            # (Meta takes no other image format); the Reel is stored as rendered
+            if out.media_type == "image":
+                data, extension, content_type = to_meta_jpeg(rendered["bytes"]), "jpg", JPEG
+            else:
+                data, extension = rendered["bytes"], out.extension
+                content_type = str(rendered.get("mime_type") or MP4)
+            key = generated_key(tenant_id, draft_id, f"{port}.{extension}")
+            self._store.write(key, data)
             params: dict[str, Any] = {
                 "template_id": manifest.id,
                 "template_version": manifest.version,
@@ -595,6 +618,7 @@ class MediaProducer:
                     params=params,
                     output_port=port,
                     template_run_id=job_id,
+                    content_type=content_type,
                 )
             )
         actual_cost = per_render * len(writes)
@@ -838,6 +862,7 @@ class MediaProducer:
                 aspect_ratio=brief.format.aspect_ratio,
                 model_id=result.model_id,
                 provider=result.provider,
+                content_type=MP4,
                 params={
                     "video_id": payload.get("video_id"),
                     "duration_seconds": payload.get("duration_seconds"),
