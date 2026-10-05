@@ -231,22 +231,24 @@ async def test_advance_stage_if_exhausted_moves_to_the_next_category(
     assert state.sort_stage == 1 and state.stage_cursor == 0
 
 
-async def test_advance_stage_if_exhausted_chains_to_insights_on_the_last_category(
+async def test_the_last_category_done_stays_put_until_continuar(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """On the last category, `advance_stage_if_exhausted` cannot just call
-    `advance_to_insights` itself — Reflex refuses a background handler calling
-    another one directly (`RuntimeError`, by design) — so it `yield`s it as the
-    chained event instead, the same idiom `assign()` uses to reach THIS handler.
-    Actually running that chained event is the dispatcher's job, not this test's;
-    `test_brand_connect_flow.py` already covers `advance_to_insights` reaching
-    `CONNECT_LAST` for the "Continuar" path this reuses."""
+    """§ request 2026-10-05 ("no quiero que se vaya a la otra view directamente, quiero
+    que eso sea manual"): on the last category `advance_stage_if_exhausted` neither
+    changes the stage nor chains `advance_to_insights` — the deck says "Todas
+    clasificadas" and Continuar is the only way to Resultados e insights (that path is
+    covered in `test_brand_connect_flow.py`)."""
     monkeypatch.setattr(wiz.asyncio, "sleep", _instant_sleep)
     state = BrandConnectState()
-    state.sort_stage = len(wiz.creator_discovery.PHASES) - 1  # "local" — the last one
+    last = len(wiz.creator_discovery.PHASES) - 1  # "local"
+    state.sort_stage = last
+    state.step = wiz._SORT_STEP
     yielded = [event async for event in BrandConnectState.advance_stage_if_exhausted.fn(state)]
-    assert yielded == [BrandConnectState.advance_to_insights]
-    assert state.step != wiz.CONNECT_LAST  # unchanged here — the chain hasn't run yet
+    assert BrandConnectState.advance_to_insights not in yielded
+    assert state.sort_stage == last and state.step == wiz._SORT_STEP
+    rendered = str(wiz._connect_step_sort())
+    assert "Pulsa Continuar para ver tus resultados" in rendered
 
 
 async def test_advance_stage_if_exhausted_cancels_when_the_stage_changed_meanwhile(

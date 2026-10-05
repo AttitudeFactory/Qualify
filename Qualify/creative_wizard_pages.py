@@ -4813,22 +4813,18 @@ class BrandConnectState(rx.State):
         hit-flash/the fly-ghost/the drag-release shrink to finish reading before the
         deck changes under the operator — then re-checks: a `Reintentar` or a slow
         phase landing more cards in the meantime cancels it. Moves to the next
-        category, or — on the last one (`local`) — to Resultados e insights, reusing
-        `advance_to_insights` exactly as Continuar would (same metric count-up)."""
+        category; on the last one (`local`) it does NOTHING — § request 2026-10-05
+        ("al terminar el drag and drop no quiero que se vaya a la otra view
+        directamente, quiero que eso sea manual"): the deck shows "Todas clasificadas"
+        and Resultados e insights is reached only through Continuar
+        (`advance_to_insights`). Until then it used to chain that handler itself."""
         await asyncio.sleep(_STAGE_ADVANCE_DELAY)
-        go_to_insights = False
         async with self:
             if self.has_current_card or self.stage_pending or self.stage_failed:
                 return
-            if self.is_last_stage:
-                go_to_insights = True
-            else:
+            if not self.is_last_stage:
                 self.next_sort_stage()
-        if go_to_insights:
-            # a background handler cannot call another one directly (Reflex raises
-            # `RuntimeError` on that, by design) — `yield` the chain instead, the
-            # same idiom `assign()` uses to hand off to THIS handler.
-            yield BrandConnectState.advance_to_insights
+        yield
 
     @rx.event(background=True)
     async def advance_to_insights(self) -> AsyncIterator[None]:
@@ -6171,20 +6167,44 @@ def _bio_block(item: rx.Var[dict[str, str]], **props: object) -> rx.Component:
     return rx.fragment(
         rx.cond(
             item["bio"] != "",
-            rx.text(item["bio"], size="2", color=T.TEXT_MUTED, white_space="pre-line", **props),
+            rx.text(
+                item["bio"],
+                size="2",
+                color=T.TEXT_MUTED,
+                white_space="pre-line",
+                max_width="100%",
+                overflow_wrap="anywhere",
+                **props,
+            ),
             rx.cond(
                 item["blurb"] != "",
-                rx.text(item["blurb"], size="2", color=T.TEXT_MUTED, **props),
+                rx.text(
+                    item["blurb"],
+                    size="2",
+                    color=T.TEXT_MUTED,
+                    max_width="100%",
+                    overflow_wrap="anywhere",
+                    **props,
+                ),
             ),
         ),
         rx.cond(
             item["external_url"] != "",
             rx.hstack(
                 rx.icon("link", size=12, color=T.TEXT_FAINT, flex_shrink="0"),
-                rx.text(item["external_url"], size="1", color=T.tone_color("accent", 11)),
+                rx.text(
+                    item["external_url"],
+                    size="1",
+                    color=T.tone_color("accent", 11),
+                    min_width="0",
+                    overflow="hidden",
+                    text_overflow="ellipsis",
+                    white_space="nowrap",
+                ),
                 spacing="1",
                 align="center",
                 min_width="0",
+                max_width="100%",
                 overflow="hidden",
             ),
         ),
@@ -6202,9 +6222,17 @@ def _review_line(item: rx.Var[dict[str, str]], **props: object) -> rx.Component:
                 rx.icon("triangle-alert", size=12, color=T.tone_color("warn", 11), flex_shrink="0"),
                 rx.icon("sparkles", size=12, color=T.TEXT_FAINT, flex_shrink="0"),
             ),
-            rx.text(item["review"], size="1", color=T.TEXT_FAINT, **props),
+            rx.text(
+                item["review"],
+                size="1",
+                color=T.TEXT_FAINT,
+                min_width="0",
+                overflow_wrap="anywhere",
+                **props,
+            ),
             spacing="1",
             align="start",
+            max_width="100%",
         ),
     )
 
@@ -6655,10 +6683,20 @@ def _profile_avatar(size: str, icon_size: int) -> rx.Component:
 
 def _deck_face(item: rx.Var[dict[str, str]]) -> rx.Component:
     """The face of a deck card — shared by the live card and its flying ghost."""
+    # Every text line is bounded by the card (bug 2026-10-05, "algunos textos se salen
+    # de la card"): a long handle, Claude's reason or a bio made of one unbroken URL has
+    # no space to wrap at, and a flex item's min-width is its content's width — so each
+    # gets `max_width="100%"` + `overflow_wrap="anywhere"`, and the column `min_width="0"`.
     return card(
         rx.vstack(
             _avatar(item, "4.5rem", 26),
-            mono(item["handle"], size="3"),
+            mono(
+                item["handle"],
+                size="3",
+                max_width="100%",
+                overflow_wrap="anywhere",
+                text_align="center",
+            ),
             rx.hstack(
                 tag(item["network"]),
                 _kind_flag(item),
@@ -6672,6 +6710,7 @@ def _deck_face(item: rx.Var[dict[str, str]]) -> rx.Component:
                 align="center",
                 wrap="wrap",
                 justify="center",
+                max_width="100%",
             ),
             _review_line(item, text_align="center"),
             # the bio in full, clamped to 3 lines on a phone (`assets/qualify.css`)
@@ -6691,9 +6730,12 @@ def _deck_face(item: rx.Var[dict[str, str]]) -> rx.Component:
             spacing=rx.breakpoints(initial="2", sm="3"),
             align="center",
             width="100%",
+            min_width="0",
         ),
         padding=rx.breakpoints(initial="1rem 0.75rem", sm="1.5rem 1.25rem"),
         width="100%",
+        min_width="0",
+        overflow="hidden",
         interactive=True,
     )
 
@@ -6943,7 +6985,18 @@ def _connect_step_sort() -> rx.Component:
                 rx.cond(
                     BrandConnectState.stage_note != "",
                     rx.text(BrandConnectState.stage_note, size="2", color=T.TEXT_MUTED),
-                    rx.text("Todas clasificadas.", size="2", color=T.TEXT_MUTED),
+                    # § request 2026-10-05: the last category done does not move on by
+                    # itself — Continuar does (see `advance_stage_if_exhausted`)
+                    rx.text(
+                        rx.cond(
+                            BrandConnectState.is_last_stage,
+                            "Todas clasificadas. Pulsa Continuar para ver tus resultados.",
+                            "Todas clasificadas.",
+                        ),
+                        size="2",
+                        color=T.TEXT_MUTED,
+                        text_align="center",
+                    ),
                 ),
             ),
         ),

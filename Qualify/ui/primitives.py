@@ -86,9 +86,10 @@ def kv(label: str, value: rx.Var | str, mono: bool = False) -> rx.Component:
     )
 
 
-def mono(text: rx.Var | str, size: str = "2") -> rx.Component:
-    """Inline identifier text (``@handle``, ids, keys) in the mono face."""
-    return rx.text(text, size=size, class_name="q-mono")
+def mono(text: rx.Var | str, size: str = "2", **props) -> rx.Component:
+    """Inline identifier text (``@handle``, ids, keys) in the mono face. ``props`` are
+    layout only (e.g. ``overflow_wrap="anywhere"`` for a handle inside a narrow card)."""
+    return rx.text(text, size=size, class_name="q-mono", **props)
 
 
 # ---------------------------------------------------------------------------------------
