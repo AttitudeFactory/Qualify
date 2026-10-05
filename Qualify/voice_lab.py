@@ -44,7 +44,7 @@ from qualify_api.creative.voice_clone import (
 )
 from sqlalchemy.exc import SQLAlchemyError
 
-from .auth_state import AuthState
+from .auth_state import AuthState, brand_tenant_id
 from .connections_provider import acting_user_id
 from .creative_provider import HEYGEN_KEY_ENV, HeyGenNotConfigured, default_brand_id
 from .creative_state import CreativeState
@@ -347,7 +347,7 @@ class VoiceLabState(rx.State):
         """(tenant, brand, acting user) for the session, or None. Not under the lock."""
         async with self:
             auth = await self.get_state(AuthState)
-            session_tenant_id = auth.session_tenant_id
+            session_tenant_id = brand_tenant_id(auth)
         tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
         if tenant_id is None:
             return None
@@ -371,7 +371,7 @@ class VoiceLabState(rx.State):
     @rx.event
     async def handle_sample_upload(self, files: list[rx.UploadFile]) -> None:
         auth = await self.get_state(AuthState)
-        tenant_id = tenant_uuid(auth.session_tenant_id)
+        tenant_id = tenant_uuid(brand_tenant_id(auth))
         if tenant_id is None:
             self.sample_error = _NO_SESSION
             return

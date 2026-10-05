@@ -5,11 +5,10 @@ import logging
 import reflex as rx
 from qualify_api.planner.embedded import calendar_worker
 
-from .auth_pages import login_index, signup_index
-from .auth_state import AuthState
+from .auth_pages import brand_start_index, login_index, signup_index
+from .auth_state import BRAND_START_ROUTE, AuthState
 from .avatar_proxy import avatar_api
 from .brand_kit_editor import BrandEditState, brand_edit_index
-from .brand_summary import BrandSummaryState, brand_home_index
 from .canva_pages import canva_callback_index, canva_return_index
 from .canva_state import CanvaState
 from .clarity_page import clarity_index
@@ -26,6 +25,7 @@ from .creative_state import CreativeState
 from .creative_wizard_pages import (
     BrandConnectState,
     BrandWizardState,
+    brand_choice_index,
     brand_connect_index,
     brand_connect_setup_index,
     brand_manual_index,
@@ -142,13 +142,22 @@ app.add_page(
     on_load=AuthState.redirect_if_authenticated,
     title="Qualify · Registrar negocio",
 )
+# The Brand Kit before login (§ request 2026-10-02): its first view asks for the email
+# the kit is saved to; from there the Brand Kit's pages accept that pre-login draft
+# (`AuthState.require_brand_access`) and the signup with the same email adopts it.
+app.add_page(
+    brand_start_index,
+    route=BRAND_START_ROUTE,
+    on_load=AuthState.enter_brand_start,
+    title="Qualify · Tu Brand Kit",
+)
 
 # Every business page requires a session: `require_login` runs FIRST in each on_load
 # chain and redirects to /login when there is none. The loads behind it also refuse on
 # their own when no tenant is present — the guard is UX, RLS + AuthState is the wall.
 app.add_page(
     index,
-    on_load=[AuthState.require_login, DashboardState.load_mentions],
+    on_load=[AuthState.require_login_or_brand_start, DashboardState.load_mentions],
     title="Qualify · Menciones",
 )
 app.add_page(
@@ -220,13 +229,18 @@ app.add_page(
 # than a manual-vs-lookup fork — "Sí" and "No" both end up scraping a profile.
 # `clear_entry` forgets a previous "No" answer, so only the answer given NOW decides
 # whether the connect flow treats the walk as a fresh start.
-# TEMPORAL (pruebas, docs/brand-kit-resumen-temporal.md): a brand with a finished kit
-# sees its read-only summary here, with "Crear uno nuevo" to replace it; without one,
-# the usual question (`brand_choice_index`, rendered by `brand_home_index`).
+# § 2026-10-02: this is the pre-login entry — a guest making their kit. Inside a session
+# there is no "Marca": `enter_brand_home` sends a login (and a guest whose kit is
+# already finished) to the editor, Negocio → Brand Kit, and a kit left halfway back
+# into its wizard.
 app.add_page(
-    brand_home_index,
+    brand_choice_index,
     route="/brand",
-    on_load=[AuthState.require_login, BrandConnectState.clear_entry, BrandSummaryState.load],
+    on_load=[
+        AuthState.require_brand_access,
+        BrandConnectState.clear_entry,
+        BrandConnectState.enter_brand_home,
+    ],
     title="Qualify · Marca",
 )
 
@@ -236,7 +250,7 @@ app.add_page(
 app.add_page(
     brand_connect_setup_index,
     route="/brand/connect/setup",
-    on_load=[AuthState.require_login],
+    on_load=[AuthState.require_brand_access],
     title="Qualify · Crea tu cuenta",
 )
 
@@ -251,7 +265,7 @@ app.add_page(
     # `resume` runs LAST on purpose: it decides the opening step by reading the kit, so
     # it has to see what `load_brand` just put there.
     on_load=[
-        AuthState.require_login,
+        AuthState.require_brand_access,
         CreativeState.load_brand,
         CreativeState.load_voice,
         BrandWizardState.resume,
@@ -270,7 +284,7 @@ app.add_page(
     brand_edit_index,
     route="/brand/kit",
     on_load=[
-        AuthState.require_login,
+        AuthState.require_brand_access,
         CreativeState.load_brand,
         BrandEditState.restart,
         # Resultados e insights reads the stored referentes back (no search, no credits)
@@ -291,11 +305,15 @@ app.add_page(
     brand_connect_index,
     route="/brand/connect",
     on_load=[
-        AuthState.require_login,
+        AuthState.require_brand_access,
         CreativeState.load_brand,
         CreativeState.load_voice,
         VoiceLabState.load_clone,
         BrandWizardState.load_saved_assets,
+        # § 2026-10-02: a walk left halfway resumes — the saved answers and position,
+        # and the referentes already found (read back, never bought twice)
+        BrandConnectState.load_saved_details,
+        BrandConnectState.load_saved_referentes,
     ],
     title="Qualify · Conectar redes",
 )

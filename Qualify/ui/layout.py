@@ -58,7 +58,9 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
         "publish",
         "Publicas",
         [
-            ("Marca", "palette", "/brand", True),
+            # No "Marca" inside a session (§ request 2026-10-02): the Brand Kit is made
+            # before the login and edited from Negocio → Brand Kit. The guest rail
+            # keeps "Marca" as the entry to make it.
             ("Crear pieza", "wand-sparkles", "/create", True),
             ("Borradores", "layout-list", "/drafts", True),
             ("Planificador", "calendar-days", "/planner", True),
@@ -290,22 +292,71 @@ def logout_action() -> rx.Component:
     )
 
 
+def _guest_islands() -> rx.Component:
+    """The rail of a pre-login Brand Kit (§ request 2026-10-02): no sections — every
+    other page needs a login — only where the kit is being saved and the way into an
+    account (the signup with that email adopts it)."""
+    # Same labels and routes as the logged-in rail's own entries ("Marca", and "Brand
+    # Kit" under "Negocio"), so the Brand Kit's own copy ("ve a Negocio → Brand Kit")
+    # holds for a guest too.
+    return rx.fragment(
+        _island(
+            _nav_item("Marca", "palette", "/brand", True),
+            rx.text(
+                "Guardando en ",
+                rx.text.strong(AuthState.guest_email),
+                size="1",
+                color=T.TEXT_MUTED,
+                class_name="q-label",
+                padding="0.25rem 0.5rem",
+                overflow_wrap="anywhere",
+            ),
+        ),
+        rx.spacer(),
+        _island(
+            _zone_head("Negocio", "business"),
+            _nav_item("Brand Kit", "swatch-book", "/brand/kit", True),
+            rx.divider(margin="0.15rem 0"),
+            _nav_item("Crear cuenta", "user-plus", "/signup", True),
+            _nav_item("Iniciar sesión", "log-in", "/login", True),
+            rx.divider(margin="0.15rem 0"),
+            rx.el.button(
+                _nav_row("mail", "Usar otro correo"),
+                on_click=AuthState.leave_brand_draft,
+                width="100%",
+                padding="0",
+                border="none",
+                background="transparent",
+                cursor="pointer",
+                text_align="left",
+                font="inherit",
+            ),
+        ),
+    )
+
+
 def sidebar() -> rx.Component:
     return rx.el.nav(
         rx.script(_ZEN_SHORTCUT),
         tenant_block(),
-        _island(*[_nav_item(*item) for item in NAV_BASE]),
-        *[
-            _island(_zone_head(label, zone), *[_nav_item(*i) for i in items], tint=zone)
-            for zone, label, items in NAV_ZONES
-        ],
-        _island(*[_nav_item(*item) for item in NAV_LOOSE]),
-        rx.spacer(),
-        _island(
-            _zone_head("Negocio", "business"),
-            *[_nav_item(*item) for item in NAV_BUSINESS],
-            rx.divider(margin="0.15rem 0"),
-            logout_action(),
+        rx.cond(
+            AuthState.is_guest,
+            _guest_islands(),
+            rx.fragment(
+                _island(*[_nav_item(*item) for item in NAV_BASE]),
+                *[
+                    _island(_zone_head(label, zone), *[_nav_item(*i) for i in items], tint=zone)
+                    for zone, label, items in NAV_ZONES
+                ],
+                _island(*[_nav_item(*item) for item in NAV_LOOSE]),
+                rx.spacer(),
+                _island(
+                    _zone_head("Negocio", "business"),
+                    *[_nav_item(*item) for item in NAV_BUSINESS],
+                    rx.divider(margin="0.15rem 0"),
+                    logout_action(),
+                ),
+            ),
         ),
         aria_label="Secciones",
         class_name=rx.cond(
@@ -440,9 +491,11 @@ def _mobile_nav_backdrop() -> rx.Component:
     )
 
 
-def app_shell(*children: rx.Component, spacing: str = "0") -> rx.Component:
+def app_shell(*children: rx.Component, spacing: str = "0", rail: bool = True) -> rx.Component:
     """Sidebar + page panel, floating on the app ground. Pass ``page_header`` first,
-    then the body blocks.
+    then the body blocks. ``rail=False`` drops the sidebar (and its phone toggle): the
+    panel alone, for a flow that is only its views — the Brand Kit wizard (§ request
+    2026-10-02: "solo las views, más nada").
 
     **The panel is the scroll container, not the document.** The shell is exactly one
     viewport tall and clips; the panel is a fixed ``calc(100vh - 2 * gap)`` box that
@@ -464,10 +517,13 @@ def app_shell(*children: rx.Component, spacing: str = "0") -> rx.Component:
     `creative_wizard_pages.py` was restored from another worktree while this file kept
     the new model — if you are reverting one of the two, revert both.
     """
+    chrome = (
+        [_mobile_nav_toggle(), rx.cond(NavState.mobile_open, _mobile_nav_backdrop()), sidebar()]
+        if rail
+        else []
+    )
     return rx.hstack(
-        _mobile_nav_toggle(),
-        rx.cond(NavState.mobile_open, _mobile_nav_backdrop()),
-        sidebar(),
+        *chrome,
         rx.el.main(
             rx.vstack(
                 *children,
@@ -478,6 +534,10 @@ def app_shell(*children: rx.Component, spacing: str = "0") -> rx.Component:
                 min_height="100%",
                 spacing=spacing,
                 align_items="start",
+                # Without the rail the panel spans the whole window while `page_body`
+                # stops at CONTENT_MAX: cap the header+body column to that width and
+                # centre it, so a wide screen does not leave the wizard hugging the left.
+                **({} if rail else {"max_width": T.CONTENT_MAX, "margin_x": "auto"}),
             ),
             background=T.SURFACE_BG,
             border=T.BORDER,
@@ -485,7 +545,7 @@ def app_shell(*children: rx.Component, spacing: str = "0") -> rx.Component:
             flex="1",
             min_width="0",
             height=f"calc(100vh - 2 * {T.GAP})",
-            margin=f"{T.GAP} {T.GAP} {T.GAP} 0",
+            margin=f"{T.GAP} {T.GAP} {T.GAP} 0" if rail else T.GAP,
             overflow="hidden auto",
         ),
         width="100%",

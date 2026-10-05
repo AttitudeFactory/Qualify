@@ -71,7 +71,7 @@ from . import (
     referentes_review,
     scrapecreators_client,
 )
-from .auth_state import AuthState
+from .auth_state import AuthState, brand_tenant_id
 from .connections_provider import acting_user_id
 from .creative_provider import default_brand_id
 from .creative_state import CreativeState
@@ -239,11 +239,19 @@ class BrandWizardState(rx.State):
     #: back on entry (`load_saved_assets`): a saved file's key is an R2 key, shown
     #: through its short-lived `/r2media/<token>` path kept here (R2 key → path).
     asset_views: dict[str, str] = {}
-    #: TEMPORAL (pruebas, § request 2026-10-01 — docs/brand-kit-resumen-temporal.md):
-    #: "Crear uno nuevo" on the Marca summary (`brand_summary`) starts a NEW kit that
-    #: replaces the saved one when it is finished. While set, nothing saved is loaded
-    #: into the wizard and the final save rewrites every document.
-    replacing_kit: bool = False
+    #: Save-as-you-go in flight (`brand_finish.save_progress`), shared by both flows.
+    _progress_saving: bool = False
+    #: `load_saved_assets` finished: until then a save would drop the stored brandboard
+    #: (the save replaces the whole stored set), so save-as-you-go waits for it.
+    _assets_loaded: bool = False
+
+    @rx.event(background=True)
+    async def persist_progress(self) -> None:
+        """Fired each time the manual flow's step changes (§ request 2026-10-02): the
+        half-written kit and the position go to the database."""
+        from .brand_finish import MANUAL_FLOW, save_progress
+
+        await save_progress(self, MANUAL_FLOW)
 
     # -- step 5 -----------------------------------------------------------------------
     # The wheel/readout's pending pick. They ONLY ever add a new colour — nothing here
@@ -325,7 +333,6 @@ class BrandWizardState(rx.State):
         self.logo_version_context = {}
         self.brand_extras = []
         self.asset_views = {}
-        self.replacing_kit = False
         self.picker_color = "#0A3D2E"
 
     @rx.event(background=True)
@@ -336,9 +343,6 @@ class BrandWizardState(rx.State):
         set, so everything stored has to be here for it not to be dropped."""
         from .brand_finish import load_saved, session_ids
 
-        async with self:
-            if self.replacing_kit:  # TEMPORAL: a new kit starts empty
-                return
         ids = await session_ids(self)
         if ids is None:
             return
@@ -380,23 +384,26 @@ class BrandWizardState(rx.State):
                 self.logo_brief_1 = str(brief.get("style", ""))
                 self.logo_brief_2 = str(brief.get("feeling", ""))
                 self.logo_brief_3 = str(brief.get("references", ""))
+            # save-as-you-go may write the brandboard from now on: what was stored is here
+            self._assets_loaded = True
 
     @rx.event(background=True)
     async def finish(self) -> AsyncIterator[rx.event.EventSpec]:
         """The manual flow's final button (§ request 2026-10-01): save EVERYTHING
         (`brand_finish.save_brand_kit`) and only then move on — a failed save stays on
         screen instead of being lost behind the redirect."""
-        from .brand_finish import save_brand_kit
+        from .brand_finish import MANUAL_FLOW, save_brand_kit
 
-        if not await save_brand_kit(self):
+        if not await save_brand_kit(self, MANUAL_FLOW):
             return
         async with self:
             self._reset_fields()
+            route = await _finish_route(self)
         yield brand_documents.BrandDocumentState.reset_documents
-        yield rx.redirect(_SIGNALS_ROUTE)
+        yield rx.redirect(route)
 
     @rx.event
-    def finish_to_signals(self) -> rx.event.EventSpec:
+    async def finish_to_signals(self) -> rx.event.EventSpec:
         """Mejorar tu perfil y posicionamiento, on this flow's own Resultados e
         insights — the TRUE final screen. Replaces Finalizar entirely (§ request
         2026-09-05): fired REGARDLESS of what `save_kit_form` does — for now this is
@@ -405,7 +412,7 @@ class BrandWizardState(rx.State):
         this screen's own navigation/staging state resets, same shape
         `BrandConnectState.finish_to_signals` uses for the connect flow."""
         self._reset_fields()
-        return rx.redirect(_SIGNALS_ROUTE)
+        return rx.redirect(await _finish_route(self))
 
     @rx.event
     def answer_has_logo(self, value: str) -> None:
@@ -610,7 +617,7 @@ class BrandWizardState(rx.State):
         if not files:
             return None
         auth = await self.get_state(AuthState)
-        tenant_id = tenant_uuid(auth.session_tenant_id)
+        tenant_id = tenant_uuid(brand_tenant_id(auth))
         if tenant_id is None:
             self.logo_error = _NO_SESSION
             return None
@@ -804,28 +811,18 @@ def _step_body(
     )
 
 
-def _loading_view(title: str, subtitle: str = "") -> rx.Component:
-    """The one loading affordance both flows use — a spinner, centred, wherever
-    something is still in flight (`CreativeState.kit_loading` on page load,
-    `BrandConnectState.analyzing` mid-scrape). Centring is the CALLER's job: this
-    returns the content, and every caller places it inside a `card(..., flex="1",
-    display="flex", align_items="center", justify_content="center")` — the exact shape
+def _loading_view(title: str, subtitle: str = "", *, creep_seconds: int = 6) -> rx.Component:
+    """The one loading affordance the Brand Kit uses, wherever something is still in
+    flight (`CreativeState.kit_loading` on page load, `BrandConnectState.analyzing`
+    mid-scrape): the progress bar (`progress_panel`), never a spinner (§ request
+    2026-10-02: every Brand Kit loader is the progress-bar one). None of these waits
+    reports progress, so the bar creeps over `creep_seconds` and the screen goes away
+    when the work ends. Centring is the CALLER's job: this returns the content, and
+    every caller places it inside a `card(..., flex="1", display="flex",
+    align_items="center", justify_content="center")` — the exact shape
     `brand_manual_index`/`brand_connect_index` already give the rest of each step, so a
-    loading screen sits in the middle of the same frame the real content would.
-
-    `loading_spinner("lg")` (design-system §5.4), not `rx.spinner` — bigger ring,
-    smaller text (`size="2"`, not `size="3"`) than a generic loading state: a
-    full-panel wait is the one thing on screen, so the ring can lead and the copy
-    can sit quietly under it instead of competing for size."""
-    return rx.vstack(
-        loading_spinner("lg"),
-        rx.text(title, size="2", weight="medium"),
-        *([rx.text(subtitle, size="1", color=T.TEXT_MUTED)] if subtitle else []),
-        spacing="3",
-        align="center",
-        width="100%",
-        padding="4rem 0",
-    )
+    loading screen sits in the middle of the same frame the real content would."""
+    return progress_panel(title, subtitle, creep_seconds=creep_seconds)
 
 
 def _choice_card(
@@ -931,6 +928,18 @@ def _choice_card(
 #: the "Mejorar tu perfil y posicionamiento" CTA — final step of BOTH flows — has
 #: somewhere honest to land instead of a dead link or a made-up one.
 _SIGNALS_ROUTE = "/signals"
+
+#: Where a pre-login Brand Kit ends (§ request 2026-10-02): the signup, prefilled with
+#: the draft's email — creating the account with it adopts the kit just saved.
+_SIGNUP_ROUTE = "/signup"
+
+
+async def _finish_route(state: rx.State) -> str:
+    """Señales for a logged-in session; the signup for a pre-login draft (Señales
+    needs a login). Call it holding the state lock in a background handler."""
+    auth = await state.get_state(AuthState)
+    return _SIGNALS_ROUTE if auth.session_tenant_id else _SIGNUP_ROUTE
+
 
 #: Placeholder competitor/influencer suggestions (handle, role label, blurb).
 #: Placeholder explicit: hardcoded tuple, not a query — no connection to
@@ -2179,6 +2188,17 @@ def _step_insights() -> rx.Component:
 def _window() -> rx.Component:
     """One step at a time. `rx.match` on the cursor, with step 0 as the fallback so an
     out-of-range cursor still renders a form instead of a blank screen."""
+    return rx.fragment(_progress_trigger(BrandWizardState), _manual_steps())
+
+
+def _progress_trigger(state: type[rx.State]) -> rx.Component:
+    """Save-as-you-go's one hook (§ request 2026-10-02): an invisible box keyed by the
+    step, so every step change — whichever handler made it — remounts it and fires
+    `persist_progress` once. Nothing per handler to keep in sync."""
+    return rx.box(key=state.step, on_mount=state.persist_progress, display="none")
+
+
+def _manual_steps() -> rx.Component:
     return rx.match(
         BrandWizardState.step,
         (0, _step_brief()),
@@ -2260,6 +2280,14 @@ def _manual_requirement() -> rx.Var[bool]:
     )
 
 
+def _wizard_shell(*children: rx.Component) -> rx.Component:
+    """The Brand Kit's frame: the panel alone, no sidebar (§ request 2026-10-02: "solo
+    las views, más nada"). Every wizard page — the question, the connect flow and its
+    account-setup detour, the manual flow — goes through here; the editor inside the
+    session (`brand_kit_editor`) keeps the app's rail."""
+    return app_shell(*children, rail=False)
+
+
 def _controls() -> rx.Component:
     """Small, quiet, at the bottom. The last step (Resultados e insights) swaps
     Continuar for `_finish_button` — it replaces Finalizar entirely (§ request
@@ -2281,7 +2309,9 @@ def _controls() -> rx.Component:
         disabled=_manual_busy(),
     )
     return rx.hstack(
-        back,
+        # § request 2026-10-02: the first view has no Atrás — nothing to go back to;
+        # its slot, across from Continuar, holds the way back to the email screen
+        rx.cond(BrandWizardState.step == 0, _change_email_button(), back),
         rx.spacer(),
         rx.cond(
             BrandWizardState.step == LAST_STEP,
@@ -2331,7 +2361,7 @@ def brand_manual_index() -> rx.Component:
     the card's FULL width and sits pinned to its bottom edge — Atrás at the
     bottom-left corner, Continuar/Finalizar at the bottom-right, not floating just
     under the fields."""
-    return app_shell(
+    return _wizard_shell(
         page_header(
             _heading_for(0),
             _heading_for(1),
@@ -2476,8 +2506,31 @@ def _fork_option(icon: str, title: str, description: str, href: str) -> rx.Compo
     )
 
 
-def brand_choice_index(notice: rx.Component | None = None) -> rx.Component:
-    """The entry the sidebar's «Marca» lands on — now a yes/no question instead of a
+def _change_email_button() -> rx.Component:
+    """Back to the screen that asks for the email (§ request 2026-10-02), at the bottom
+    where Atrás would be — across from Continuar — on the question and on each flow's
+    first step (the only steps with nothing behind them). Guests only: a session has no
+    email to change here. The draft stays saved under its email (its progress too);
+    `AuthState.leave_brand_draft` only forgets it in this browser."""
+    return rx.cond(
+        AuthState.is_guest,
+        rx.button(
+            rx.icon("mail", size=T.ICON_SM),
+            "Usar otro correo",
+            variant="ghost",
+            color_scheme="gray",
+            size="2",
+            radius=_CONTROL_RADIUS,
+            on_click=AuthState.leave_brand_draft,
+            title=AuthState.guest_email,
+        ),
+    )
+
+
+def brand_choice_index() -> rx.Component:
+    """The entry the guest rail's «Marca» lands on (§ 2026-10-02: the Brand Kit is made
+    before the login; inside a session there is only the editor, Negocio → Brand Kit,
+    and `BrandConnectState.enter_brand_home` sends a login there) — a yes/no question instead of a
     manual-vs-connect fork (§ request 2026-09-09): every brand kit starts from a
     social profile now, "Empezar de cero" as a parallel path stopped making sense.
     "Sí" walks straight into the scraper (`/brand/connect`); "No" detours through
@@ -2487,11 +2540,10 @@ def brand_choice_index(notice: rx.Component | None = None) -> rx.Component:
     below it grows to fill the panel (`flex="1"` on the card, `min_height` on this
     vstack so there is room to grow into) instead of stopping short and leaving bare
     panel background below it."""
-    return app_shell(
+    return _wizard_shell(
         page_header("Brandkit", "¿Tienes redes sociales para tu marca?", title_size="8"),
         page_body(
             rx.vstack(
-                *([notice] if notice is not None else []),
                 card(
                     rx.vstack(
                         _fork_option(
@@ -2509,15 +2561,19 @@ def brand_choice_index(notice: rx.Component | None = None) -> rx.Component:
                         ),
                         spacing="4",
                         width="100%",
+                        # Same centring as every step screen: the two options sit in the
+                        # middle of the frame rather than at its top.
+                        flex="1",
+                        justify_content="center",
                     ),
+                    # The same bottom row the steps have, with the one control this
+                    # screen needs where Atrás would be (§ request 2026-10-02).
+                    rx.hstack(_change_email_button(), rx.spacer(), width="100%", align="center"),
                     padding="1.75rem",
                     width="100%",
                     flex="1",
-                    # Same centring as every step screen: the two options sit in the
-                    # middle of the frame rather than at its top.
                     display="flex",
                     flex_direction="column",
-                    justify_content="center",
                 ),
                 spacing="4",
                 width="100%",
@@ -2598,7 +2654,7 @@ def brand_connect_setup_index() -> rx.Component:
     step 0 (choose network) — the exact same door the "Sí" answer walks through,
     since by the time the operator is back here they should have a profile to
     scrape."""
-    return app_shell(
+    return _wizard_shell(
         page_header(
             "Crea tu cuenta",
             "Necesitas un perfil en Instagram o TikTok antes de leer tu contenido.",
@@ -3008,6 +3064,19 @@ class BrandConnectState(rx.State):
     """Cursor and profile read for the connect flow. Kept apart from `BrandWizardState`
     so the two entry paths cannot fight over one cursor — the kit fields they share
     still live in `CreativeState`."""
+
+    @rx.event(background=True)
+    async def persist_progress(self) -> None:
+        """Fired each time this flow's step changes (§ request 2026-10-02: "lo puede
+        dejar a la mitad pero se guarda lo hecho en la db"): the half-written kit, the
+        answers, the account as read and the position go to the database."""
+        from .brand_finish import CONNECT_FLOW, save_progress
+
+        await save_progress(self, CONNECT_FLOW)
+
+    #: `load_saved_details` finished: until then a save would overwrite the stored
+    #: answers with an empty session, so save-as-you-go waits for it.
+    _details_loaded: bool = False
 
     step: int = 0
     network: str = ""
@@ -3474,7 +3543,10 @@ class BrandConnectState(rx.State):
         choice: hashtag_catalog.HashtagChoice | None = None
         note = ""
         if ids is None:
-            note = "Inicia sesión con tu negocio para que te sugiramos hashtags."
+            note = (
+                "No pudimos abrir tu Brand Kit para sugerirte hashtags. "
+                "Vuelve a empezar desde el correo."
+            )
         else:
             try:
                 profile = await asyncio.to_thread(
@@ -4242,21 +4314,24 @@ class BrandConnectState(rx.State):
         """The connect flow's final button (§ request 2026-10-01): save EVERYTHING —
         the kit, the brandboard, the answers and the account as read — and only then
         move on (`brand_finish.save_brand_kit`)."""
-        from .brand_finish import save_brand_kit
+        from .brand_finish import CONNECT_FLOW, save_brand_kit
 
-        if not await save_brand_kit(self):
+        if not await save_brand_kit(self, CONNECT_FLOW):
             return
         async with self:
             self._reset_fields()
+            route = await _finish_route(self)
         yield brand_documents.BrandDocumentState.reset_documents
-        yield rx.redirect(_SIGNALS_ROUTE)
+        yield rx.redirect(route)
 
     @rx.event(background=True)
     async def load_saved_details(self) -> None:
         """The Brand Kit editor (§ request 2026-10-01): the connect flow's saved
         answers and the account as read, with its metrics, back into this state — only
-        where the session holds nothing of its own."""
-        from .brand_finish import load_saved, session_ids
+        where the session holds nothing of its own. On /brand/connect it is also how a
+        walk left halfway resumes (§ 2026-10-02): the saved position puts the cursor back
+        where it was."""
+        from .brand_finish import CONNECT_FLOW, PROGRESS_KEY, load_saved, session_ids
 
         ids = await session_ids(self)
         if ids is None:
@@ -4267,7 +4342,23 @@ class BrandConnectState(rx.State):
             logger.warning("brand kit details unreadable: %s", type(exc).__name__)
             return
         connect, profile = saved.details.connect, saved.details.profile
+        raw_progress = (connect or {}).get(PROGRESS_KEY)
+        progress = raw_progress if isinstance(raw_progress, dict) else {}
         async with self:
+            self._details_loaded = True
+            if (
+                progress.get("flow") == CONNECT_FLOW
+                and progress.get("completed") is False
+                and self.step == 0
+            ):
+                self.started_without_socials = bool(progress.get("started_without_socials"))
+                self.rubro_asked = bool(progress.get("rubro_asked"))
+                self.logo_from_profile = bool(progress.get("logo_from_profile"))
+                self.profile_pic_is_real = bool(progress.get("profile_pic_is_real"))
+                try:
+                    self.step = max(0, min(int(progress.get("step", 0)), CONNECT_LAST))
+                except (TypeError, ValueError):
+                    self.step = 0
             if connect and not (self.network or self.rubro_text or self.city):
                 self.network = str(connect.get("network", ""))
                 self.username = str(connect.get("username", ""))
@@ -4308,14 +4399,14 @@ class BrandConnectState(rx.State):
                     self._set_metrics([])
 
     @rx.event
-    def finish_to_signals(self) -> rx.event.EventSpec:
+    async def finish_to_signals(self) -> rx.event.EventSpec:
         """Mejorar tu perfil y posicionamiento, on Resultados e insights — the TRUE
         final screen. Replaces Finalizar entirely (§ request 2026-09-05): same reset
         `restart` does, but the destination is Señales, not the fork — the same
         "regardless of the process" way `BrandWizardState.finish_to_signals` fires for
         the manual flow's own final screen."""
         self._reset_fields()
-        return rx.redirect(_SIGNALS_ROUTE)
+        return rx.redirect(await _finish_route(self))
 
     @rx.event(background=True)
     async def advance_stage_if_exhausted(self) -> AsyncIterator[None]:
@@ -4411,7 +4502,7 @@ class BrandConnectState(rx.State):
             self.analyzing = True
             network, handle = self.network, self.username.strip()
             auth = await self.get_state(AuthState)
-            session_tenant_id = auth.session_tenant_id
+            session_tenant_id = brand_tenant_id(auth)
         tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
         yield
 
@@ -4706,6 +4797,30 @@ class BrandConnectState(rx.State):
                     self.discovery_running = ""
 
     @rx.event(background=True)
+    async def enter_brand_home(self) -> AsyncIterator[rx.event.EventSpec]:
+        """/brand's entry, for a login and a guest alike (§ request 2026-10-02): a
+        finished kit goes to the editor (Negocio → Brand Kit), a kit left halfway back
+        into its wizard, and no kit yet stays on the "¿Tienes redes?" question — which is
+        where `AuthState.require_login` sends a session without a complete kit."""
+        from .brand_finish import tenant_kit_status
+
+        async with self:
+            auth = await self.get_state(AuthState)
+            tenant = brand_tenant_id(auth)
+            tenant_id = tenant_uuid(tenant) if tenant else None
+        if tenant_id is None:
+            return
+        try:
+            status = await asyncio.to_thread(tenant_kit_status, tenant_id)
+        except SQLAlchemyError as exc:
+            logger.warning("brand kit status unreadable: %s", type(exc).__name__)
+            return
+        if status.completed:
+            yield rx.redirect("/brand/kit")
+        elif status.resume_route is not None:
+            yield rx.redirect(status.resume_route)
+
+    @rx.event(background=True)
     async def load_saved_referentes(self) -> None:
         """The Brand Kit editor's Resultados e insights (§ request 2026-09-30): the
         brand's referentes as they were last left — phases, sort, kept cards and the
@@ -4733,6 +4848,10 @@ class BrandConnectState(rx.State):
             self._persisted_buckets = dict(saved.buckets)
             self.kept_accounts = [card_view(card) for card in saved.kept]
             self.influence_order = list(saved.order)
+            # A search found before (a walk resumed, § 2026-10-02): arriving at the sort
+            # step shows it instead of buying it again.
+            if saved.phases:
+                self.discovery_ran = True
 
     # -- Postgres persistence of phases and the sort (`referentes_provider`) --------
 
@@ -4752,7 +4871,7 @@ class BrandConnectState(rx.State):
         or the database unreachable. Must NOT be called while holding the state lock."""
         async with self:
             auth = await self.get_state(AuthState)
-            session_tenant_id = auth.session_tenant_id
+            session_tenant_id = brand_tenant_id(auth)
         tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
         if tenant_id is None:
             return None
@@ -5299,7 +5418,8 @@ def _suggest_hashtags_button() -> rx.Component:
 
 def _hashtag_pill_body(item: rx.Var[dict[str, str]], *, suggested: bool) -> rx.Component:
     return removable_pill(
-        rx.fragment("#", item["tag"]),
+        # § request 2026-10-02: a hair of space between the "#" and the word
+        rx.fragment(rx.el.span("#", margin_right="2px"), item["tag"]),
         BrandConnectState.remove_hashtag(item["tag"]),
         suggested=suggested,
         remove_label="Quitar este hashtag",
@@ -6702,6 +6822,10 @@ def _connect_window() -> rx.Component:
     needs a renderer for the sessions where it is shown. The kit-setup steps reuse the
     manual flow's renderers, so the shared half of the two paths is literally the
     same code."""
+    return rx.fragment(_progress_trigger(BrandConnectState), _connect_steps())
+
+
+def _connect_steps() -> rx.Component:
     return rx.match(
         BrandConnectState.step,
         (0, _connect_step_network()),
@@ -6737,26 +6861,8 @@ def _connect_heading_for(index: int) -> rx.Var[str]:
 
 
 def _connect_loading() -> rx.Component:
-    return _loading_view("Analizando perfil", "Esto tarda solo unos segundos.")
-
-
-def _discovery_progress_row(row: rx.Var[dict[str, str]]) -> rx.Component:
-    return rx.hstack(
-        rx.match(
-            row["status"],
-            ("done", rx.icon("circle-check", size=16, color=T.tone_color("ok", 10))),
-            ("running", loading_spinner("sm")),
-            rx.icon("circle", size=16, color=T.TEXT_FAINT),
-        ),
-        rx.text(
-            row["title"],
-            size="2",
-            color=rx.cond(row["status"] == "pending", T.TEXT_FAINT, T.TEXT_STRONG),
-            weight=rx.cond(row["status"] == "running", "medium", "regular"),
-        ),
-        spacing="2",
-        align="center",
-    )
+    # the profile plus up to five pages of posts: several reads, so a longer creep
+    return _loading_view("Analizando perfil", "Esto tarda solo unos segundos.", creep_seconds=20)
 
 
 def _referentes_loading() -> rx.Component:
@@ -6882,14 +6988,20 @@ def _connect_controls() -> rx.Component:
             on_click=BrandConnectState.restart,
             disabled=_connect_busy(),
         ),
-        rx.button(
-            rx.icon("chevron-left", size=T.ICON_SM),
-            "Atrás",
-            variant="ghost",
-            size="2",
-            radius=_CONTROL_RADIUS,
-            on_click=BrandConnectState.prev_step,
-            disabled=_connect_busy(),
+        rx.cond(
+            # § request 2026-10-02: the first view has no Atrás — nothing to go back to;
+            # its slot, across from Continuar, holds the way back to the email screen
+            BrandConnectState.step == 0,
+            _change_email_button(),
+            rx.button(
+                rx.icon("chevron-left", size=T.ICON_SM),
+                "Atrás",
+                variant="ghost",
+                size="2",
+                radius=_CONTROL_RADIUS,
+                on_click=BrandConnectState.prev_step,
+                disabled=_connect_busy(),
+            ),
         ),
     )
     right = rx.cond(
@@ -6936,7 +7048,7 @@ def brand_connect_index() -> rx.Component:
     and `_connect_controls()` spanning the card's full width, pinned to its bottom
     corners. Two loading states, both a centred spinner with no footer row:
     `CreativeState.kit_loading` on page load, `BrandConnectState.analyzing` mid-scrape."""
-    return app_shell(
+    return _wizard_shell(
         page_header(
             _connect_heading_for(0),
             _connect_heading_for(1),

@@ -15,6 +15,7 @@ import inspect
 import pathlib
 import re
 
+import pytest
 from qualify_api.auth import FakeAuthProvider
 
 from . import auth_state as auth_state_module
@@ -48,12 +49,191 @@ def test_require_login_passes_when_authenticated() -> None:
     assert AuthState.require_login.fn(state) is None
 
 
+def test_a_session_without_a_finished_brand_kit_is_sent_to_make_it() -> None:
+    """§ request 2026-10-02: logged in but no complete Brand Kit → the Brand Kit, from
+    every protected page and from `/`; the Brand Kit's own pages stay open."""
+    state = _state()
+    state.session_tenant_id = "a0000000-0000-4000-8000-000000000001"
+    state.brand_kit_complete = False
+    assert AuthState.require_login.fn(state) is not None
+    assert AuthState.require_login_or_brand_start.fn(state) is not None
+    assert AuthState.require_brand_access.fn(state) is None
+    state.brand_kit_complete = True
+    assert AuthState.require_login.fn(state) is None
+    assert AuthState.require_login_or_brand_start.fn(state) is None
+
+
+async def test_login_records_whether_the_brand_kit_is_finished(monkeypatch) -> None:
+    from uuid import UUID
+
+    from qualify_api.auth import LoginResult
+
+    tenant = UUID("a0000000-0000-4000-8000-000000000001")
+    result = LoginResult(tenant, UUID(int=1), UUID(int=2), "a@b.co", "Negocio", "tok")
+    monkeypatch.setattr(auth_state_module, "_login_blocking", lambda e, p: result)
+    monkeypatch.setattr(auth_state_module, "_kit_complete_blocking", lambda t: False)
+    state = _state()
+    events = [
+        e async for e in AuthState.handle_login.fn(state, {"email": "a@b.co", "password": "x" * 8})
+    ]
+    assert len(events) == 1 and state.session_tenant_id == str(tenant)
+    assert state.brand_kit_complete is False  # every protected page now sends to /brand
+
+
 def test_login_screens_bounce_an_authenticated_session() -> None:
     state = _state()
     state.session_tenant_id = "a0000000-0000-4000-8000-000000000001"
     assert AuthState.redirect_if_authenticated.fn(state) is not None
     state.session_tenant_id = ""
     assert AuthState.redirect_if_authenticated.fn(state) is None
+
+
+# --------------------------------------------------------------------------------------
+# The Brand Kit before login (§ request 2026-10-02)
+# --------------------------------------------------------------------------------------
+
+_DRAFT = "b0000000-0000-4000-8000-000000000002"
+
+
+def test_brand_pages_ask_for_the_email_without_login_or_draft() -> None:
+    state = _state()
+    assert AuthState.require_brand_access.fn(state) is not None
+    state.guest_tenant_id = _DRAFT
+    assert AuthState.require_brand_access.fn(state) is None
+
+
+def test_a_draft_opens_only_the_brand_kit() -> None:
+    """A pre-login draft passes the Brand Kit's guard and NOTHING else."""
+    state = _state()
+    state.guest_tenant_id = _DRAFT
+    assert AuthState.require_login.fn(state) is not None
+    assert state.is_authenticated is False
+    assert state.is_guest is True
+
+
+def test_index_sends_an_anonymous_visitor_to_the_brand_kit_first() -> None:
+    state = _state()
+    assert AuthState.require_login_or_brand_start.fn(state) is not None
+    state.session_tenant_id = "a0000000-0000-4000-8000-000000000001"
+    assert AuthState.require_login_or_brand_start.fn(state) is None
+
+
+def test_brand_tenant_prefers_the_login_over_the_draft() -> None:
+    state = _state()
+    assert auth_state_module.brand_tenant_id(state) == ""
+    state.guest_tenant_id = _DRAFT
+    assert auth_state_module.brand_tenant_id(state) == _DRAFT
+    state.session_tenant_id = "a0000000-0000-4000-8000-000000000001"
+    assert auth_state_module.brand_tenant_id(state) == state.session_tenant_id
+
+
+def test_only_the_brand_kit_reads_the_draft_tenant() -> None:
+    """`guest_tenant_id` must never become a general tenant source: outside AuthState
+    only the Brand Kit's modules may resolve it (through `brand_tenant_id`)."""
+    allowed = {
+        "auth_state.py",
+        "auth_pages.py",
+        "brand_documents.py",
+        "brand_finish.py",
+        "creative_state.py",
+        "creative_wizard_pages.py",
+        "voice_lab.py",
+        "layout.py",
+        "test_auth_state.py",
+    }
+    for path in _QUALIFY_DIR.rglob("*.py"):
+        if path.name in allowed or ".web" in path.parts:
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert "guest_tenant_id" not in source, path
+        assert "brand_tenant_id" not in source, path
+
+
+async def test_bad_email_on_the_first_view_stays_there() -> None:
+    state = _state()
+    async for _ in AuthState.start_brand_kit.fn(state, {"email": "sin-arroba"}):
+        raise AssertionError("a refused email must not navigate")
+    assert state.guest_tenant_id == ""
+    assert state.guest_error != ""
+    assert state.is_authenticating is False
+
+
+async def test_an_email_with_an_account_is_sent_to_login(monkeypatch) -> None:
+    def _has_account(email: str):
+        raise auth_state_module.EmailHasAccount()
+
+    monkeypatch.setattr(auth_state_module, "_start_draft_blocking", _has_account)
+    state = _state()
+    events = [e async for e in AuthState.start_brand_kit.fn(state, {"email": "a@b.co"})]
+    assert len(events) == 1  # § 2026-10-02: straight to /login, not an error on screen
+    assert state.login_email_hint == "a@b.co"  # /login opens with it filled in
+    assert state.guest_has_account is True
+    assert state.guest_tenant_id == ""
+
+
+def _draft(tenant: str = _DRAFT):
+    from uuid import UUID
+
+    from qualify_api.auth import BrandKitDraftResult
+
+    return BrandKitDraftResult(tenant_id=UUID(tenant), email="a@b.co", resumed=True)
+
+
+@pytest.mark.parametrize(
+    ("destination"),
+    ["/signup", "/brand/connect", "/brand/manual", "/brand"],
+)
+async def test_the_email_lands_where_the_draft_stands(monkeypatch, destination: str) -> None:
+    """Finished kit → signup; halfway → back into its wizard; nothing → the start."""
+    monkeypatch.setattr(auth_state_module, "_start_draft_blocking", lambda email: _draft())
+    monkeypatch.setattr(auth_state_module, "_draft_destination_blocking", lambda t: destination)
+    state = _state()
+    events = [e async for e in AuthState.start_brand_kit.fn(state, {"email": "a@b.co"})]
+    assert len(events) == 1
+    assert state.guest_tenant_id == _DRAFT
+
+
+def test_draft_destination_follows_the_kit_status(monkeypatch) -> None:
+    from . import brand_finish
+
+    cases = [
+        (brand_finish.KitStatus(True, {"completed": True, "flow": "connect"}), "/signup"),
+        (brand_finish.KitStatus(False, {"completed": False, "flow": "connect"}), "/brand/connect"),
+        (brand_finish.KitStatus(False, {"completed": False, "flow": "manual"}), "/brand/manual"),
+        (brand_finish.KitStatus(False, None), "/brand"),
+    ]
+    for status, expected in cases:
+        monkeypatch.setattr(brand_finish, "tenant_kit_status", lambda t, s=status: s)
+        assert auth_state_module._draft_destination_blocking(_DRAFT) == expected
+
+
+def test_the_brand_kit_is_only_its_views() -> None:
+    """§ request 2026-10-02: no sidebar on the wizard pages, no Atrás on a first step."""
+    from . import creative_wizard_pages as wiz
+
+    for page in (
+        wiz.brand_choice_index,
+        wiz.brand_connect_index,
+        wiz.brand_connect_setup_index,
+        wiz.brand_manual_index,
+    ):
+        assert "_wizard_shell(" in inspect.getsource(page), page.__name__
+    assert "rail=False" in inspect.getsource(wiz._wizard_shell)
+    for controls in (wiz._controls, wiz._connect_controls):
+        source = inspect.getsource(controls)
+        # step 0: no Atrás; its slot holds the way back to the email screen
+        assert "step == 0" in source and "_change_email_button()" in source, controls.__name__
+
+
+def test_the_first_view_is_the_brand_kit_not_the_login() -> None:
+    """§ 2026-10-02: "/brand/start y después /login" — no protected page sends an
+    anonymous visitor to the login, and the email screen has no way around it."""
+    source = inspect.getsource(AuthState.require_login.fn)
+    assert '"/login"' not in source and "BRAND_START_ROUTE" in source
+    pages = (_QUALIFY_DIR / "auth_pages.py").read_text(encoding="utf-8")
+    assert "Saltar" not in pages
+    # and the login does not link back to it: the Brand Kit was already made first
+    assert "sin registrarte" not in pages
 
 
 # --------------------------------------------------------------------------------------
@@ -93,7 +273,7 @@ def test_logout_revokes_server_side_before_destroying_state() -> None:
     source = inspect.getsource(AuthState.logout.fn)
     revoke_at = source.index("_sign_out_blocking")
     reset_at = source.index("substate.reset()")
-    redirect_at = source.index('rx.redirect("/login")')
+    redirect_at = source.index("rx.redirect(BRAND_START_ROUTE)")
     assert revoke_at < reset_at < redirect_at, (
         "criterion 1 ordering: revoke the session token server-side first, then destroy "
         "Reflex state, then leave via redirect — never 'clean the UI in place'"

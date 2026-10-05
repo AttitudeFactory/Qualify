@@ -47,7 +47,7 @@ class FakeStore:
 @pytest.fixture
 def saved_kits(monkeypatch: pytest.MonkeyPatch) -> list[KitFormVM]:
     saved: list[KitFormVM] = []
-    monkeypatch.setattr(brand_finish, "save_kit", lambda t, b, u, form: saved.append(form))
+    monkeypatch.setattr(brand_finish, "save_kit", lambda t, b, u, form, **_kw: saved.append(form))
     return saved
 
 
@@ -126,3 +126,117 @@ def test_the_connect_flow_answers_and_the_profile_become_documents() -> None:
     assert profile["metrics"] == [
         {"label": "Engagement", "hint": "h", "suffix": "%", "decimals": 1, "target": 4.2}
     ]
+
+
+# -- save-as-you-go (§ request 2026-10-02) ------------------------------------------
+
+
+def test_the_answers_are_saved_even_when_the_files_fail(
+    tmp_path: Path, saved_kits: list[KitFormVM]
+) -> None:
+    """Documents go before files: no R2 (or R2 down) never loses the answers or the
+    wizard's position."""
+    key = _staged(tmp_path, f"uploads/{TENANT}/logo/extra/x_s.png", b"png")
+    progress = {"flow": "connect", "step": 9, "completed": False}
+    snapshot = KitSnapshot(
+        form=KitFormVM(),
+        files=[StagedFile(EXTRA, "e1", key, "s.png")],
+        connect={"city": "Cúcuta", "progress": progress},
+    )
+    store = FakeStore()
+    with pytest.raises(FilesNotSaved):
+        brand_finish.persist_brand_kit(
+            TENANT, BRAND, USER, snapshot, upload_dir=tmp_path, store=store, gate=FakeGate(True)
+        )
+    assert store.documents == {"connect": {"city": "Cúcuta", "progress": progress}}
+
+
+def test_the_save_returns_the_r2_keys_of_what_it_uploaded(
+    tmp_path: Path, saved_kits: list[KitFormVM]
+) -> None:
+    local = _staged(tmp_path, f"uploads/{TENANT}/logo/isotipo/ab_iso.png", b"png")
+    already = f"t/{TENANT}/brand/{BRAND}/extra/e0/old.png"
+    snapshot = KitSnapshot(
+        form=KitFormVM(),
+        files=[
+            StagedFile(LOGO_VERSION, "isotipo", local, "iso.png"),
+            StagedFile(EXTRA, "e0", already, "old.png"),
+        ],
+    )
+    uploaded = brand_finish.persist_brand_kit(
+        TENANT, BRAND, USER, snapshot, upload_dir=tmp_path, store=FakeStore(), gate=FakeGate()
+    )
+    assert list(uploaded) == [local]  # only the local file moved
+    assert uploaded[local].startswith(f"t/{TENANT}/brand/{BRAND}/logo_version/isotipo/")
+
+
+def test_progress_rides_in_the_connect_document_even_before_any_answer() -> None:
+    state = BrandConnectState()
+    progress = {"flow": "connect", "step": 1, "completed": False}
+    document = brand_finish._connect_document(state, progress)
+    assert document is not None and document["progress"] == progress
+
+
+def _status(monkeypatch: pytest.MonkeyPatch, *, form: bool, connect: dict) -> Any:
+    from qualify_api.creative.brand_kit_store import BrandKitDetails
+
+    from . import creative_provider
+
+    monkeypatch.setattr(
+        creative_provider, "load_kit_form", lambda t, b: KitFormVM() if form else None
+    )
+    details = BrandKitDetails(logo_brief={}, connect=connect, profile={})
+    monkeypatch.setattr(brand_finish.BrandKitStore, "load_details", lambda self, **kw: details)
+    return brand_finish.kit_status(TENANT, BRAND)
+
+
+def test_a_kit_left_halfway_is_not_a_kit_yet(monkeypatch: pytest.MonkeyPatch) -> None:
+    status = _status(
+        monkeypatch, form=True, connect={"progress": {"flow": "connect", "completed": False}}
+    )
+    assert status.completed is False
+    assert status.resume_route == "/brand/connect"
+
+
+def test_a_finished_kit_and_an_old_kit_without_progress_are_kits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finished = _status(
+        monkeypatch, form=True, connect={"progress": {"flow": "manual", "completed": True}}
+    )
+    assert finished.completed is True and finished.resume_route is None
+    legacy = _status(monkeypatch, form=True, connect={"city": "Cúcuta"})
+    assert legacy.completed is True  # saved before progress existed: finished, as always
+
+
+def test_no_kit_row_is_never_finished(monkeypatch: pytest.MonkeyPatch) -> None:
+    status = _status(
+        monkeypatch, form=False, connect={"progress": {"flow": "manual", "completed": False}}
+    )
+    assert status.completed is False and status.resume_route == "/brand/manual"
+    assert _status(monkeypatch, form=False, connect={}).resume_route is None
+
+
+def test_save_as_you_go_does_not_mint_a_voice_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    from . import creative_provider
+
+    upserts: list[Any] = []
+    adopted: list[Any] = []
+
+    class FakeKits:
+        def get_kit(self, **_kw: Any) -> None:
+            return None
+
+        def upsert_kit(self, **kw: Any) -> None:
+            upserts.append(kw)
+
+    class FakeVoice:
+        def adopt_from_kit(self, **kw: Any) -> None:
+            adopted.append(kw)
+
+    monkeypatch.setattr(creative_provider, "BrandKitService", FakeKits)
+    monkeypatch.setattr(creative_provider, "VoiceProfileService", FakeVoice)
+    creative_provider.save_kit(TENANT, BRAND, USER, KitFormVM(), adopt_voice=False)
+    assert len(upserts) == 1 and adopted == []
+    creative_provider.save_kit(TENANT, BRAND, USER, KitFormVM())  # the finish adopts it
+    assert len(adopted) == 1

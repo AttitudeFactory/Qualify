@@ -45,6 +45,11 @@ def login_index() -> rx.Component:
             size="2",
             color=T.TEXT_MUTED,
         ),
+        # § 2026-10-02: an email typed on /brand/start that already has an account
+        rx.cond(
+            AuthState.login_email_hint != "",
+            callout("Ese correo ya tiene una cuenta: inicia sesión para ver tu Brand Kit.", "info"),
+        ),
         _error_banner(),
         rx.form(
             rx.vstack(
@@ -52,6 +57,7 @@ def login_index() -> rx.Component:
                     placeholder="Email",
                     name="email",
                     type="email",
+                    default_value=AuthState.login_email_hint,
                     required=True,
                     width="100%",
                 ),
@@ -74,9 +80,60 @@ def login_index() -> rx.Component:
             on_submit=AuthState.handle_login,
             width="100%",
         ),
+        # No link back to the Brand Kit here (§ 2026-10-02): the Brand Kit comes first
+        # and the login after it, so whoever is here already came through /brand/start.
         rx.text(
             "¿Negocio nuevo? ",
             rx.link("Regístralo aquí", href="/signup"),
+            size="2",
+        ),
+    )
+
+
+def brand_start_index() -> rx.Component:
+    """The Brand Kit's first view, before any login (§ request 2026-10-02): the email the
+    kit is saved to. The signup with the same email later opens with the kit in it."""
+    return _auth_card(
+        rx.heading("Crea tu Brand Kit", size="4"),
+        rx.text(
+            "Sin crear cuenta. Lo guardamos con tu correo y, cuando te registres con ese "
+            "mismo correo, tu cuenta ya lo tendrá.",
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
+        rx.cond(
+            AuthState.guest_has_account,
+            callout(
+                rx.fragment(AuthState.guest_error, " ", rx.link("Iniciar sesión", href="/login")),
+                "info",
+            ),
+            rx.cond(AuthState.guest_error != "", callout(AuthState.guest_error, "error")),
+        ),
+        rx.form(
+            rx.vstack(
+                rx.input(
+                    placeholder="tu@negocio.com",
+                    name="email",
+                    type="email",
+                    required=True,
+                    auto_focus=True,
+                    width="100%",
+                ),
+                rx.button(
+                    "Empezar mi Brand Kit",
+                    type="submit",
+                    width="100%",
+                    loading=AuthState.is_authenticating,
+                ),
+                spacing="3",
+                width="100%",
+            ),
+            on_submit=AuthState.start_brand_kit,
+            width="100%",
+        ),
+        rx.text(
+            "¿Ya tienes cuenta? ",
+            rx.link("Inicia sesión", href="/login"),
             size="2",
         ),
     )
@@ -91,6 +148,19 @@ def signup_index() -> rx.Component:
             size="2",
             color=T.TEXT_MUTED,
         ),
+        # A Brand Kit started before login (§ 2026-10-02) is adopted by the signup with
+        # the same email — the field comes prefilled with it.
+        rx.cond(
+            AuthState.guest_email != "",
+            callout(
+                rx.fragment(
+                    "Tu Brand Kit ya está guardado con ",
+                    rx.text.strong(AuthState.guest_email),
+                    ". Regístrate con ese mismo correo y lo tendrás en tu cuenta.",
+                ),
+                "info",
+            ),
+        ),
         _error_banner(),
         rx.form(
             rx.vstack(
@@ -104,6 +174,7 @@ def signup_index() -> rx.Component:
                     placeholder="Email (un alias por negocio)",
                     name="email",
                     type="email",
+                    default_value=AuthState.guest_email,
                     required=True,
                     width="100%",
                 ),
