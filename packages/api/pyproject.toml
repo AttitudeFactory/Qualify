@@ -17,7 +17,7 @@ dependencies = [
     "psycopg[binary]>=3.2.3",
     "alembic>=1.14.0",
     "pydantic>=2.13.4",
-    "cryptography>=44.0.0",
+    "cryptography>=50.0.1",
     "uvicorn>=0.34.0",
 ]
 
