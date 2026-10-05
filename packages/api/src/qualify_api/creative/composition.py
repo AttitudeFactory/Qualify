@@ -30,10 +30,15 @@ from qualify_creative.adapters.heygen_video import HeyGenAvatarVideoAdapter
 from qualify_creative.enums import PaidBy
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.providers import ResolvedKey
+from qualify_creative.render.adapter import RemotionTemplateAdapter
+from qualify_creative.render.client import RemotionRenderClient
+from qualify_creative.render.registry import TemplateRegistry
 from qualify_creative.router import CreativeRouter
 from qualify_creative.schemas import BrandKit, BrandVoiceProfile
 
+from qualify_api.catalog.read import DbProductCatalog
 from qualify_api.creative.brand_context import DbBrandContextReader
+from qualify_api.creative.brand_names import DbBrandNames
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.dispatch import InlineDispatcher
 from qualify_api.creative.media import LocalMediaStore, MediaProducer, R2ReadingMediaStore
@@ -47,6 +52,10 @@ PLATFORM_KEY_ENV = "QUALIFY_ANTHROPIC_API_KEY"
 #: One platform key per provider. Before the video lane every provider got the Anthropic
 #: key, which would have handed it to HeyGen.
 PROVIDER_KEY_ENVS = {"anthropic": PLATFORM_KEY_ENV, "heygen": "QUALIFY_HEYGEN_API_KEY"}
+#: The Remotion render service (packages/render, CONTRACT.md §4). `just up` starts it in
+#: compose on 3200; in the VPS it is the same container next to the app.
+RENDER_URL_ENV = "QUALIFY_RENDER_URL"
+DEFAULT_RENDER_URL = "http://localhost:3200"
 
 #: v2 carries the HeyGen per-second rates (and everything v1 had).
 PRICING_VERSION = "v2"
@@ -123,8 +132,14 @@ def production_content_service() -> ContentService:
     pricing = JsonPricingTable(PRICING_VERSION)
     credentials = PlatformKeyResolver()
     heygen = HeyGenAvatarVideoAdapter()
+    # the brand's logo may live in R2 (Brand Kit, 2026-10-01): read it there
+    store = R2ReadingMediaStore(LocalMediaStore(media_root()))
+    remotion = RemotionTemplateAdapter(
+        RemotionRenderClient(os.environ.get(RENDER_URL_ENV) or DEFAULT_RENDER_URL),
+        read_media=store.read,
+    )
     router = CreativeRouter(
-        providers={"anthropic": AnthropicCopyAdapter(), "heygen": heygen},
+        providers={"anthropic": AnthropicCopyAdapter(), "heygen": heygen, "remotion": remotion},
         pricing=pricing,
         credentials=credentials,
     )
@@ -138,12 +153,18 @@ def production_content_service() -> ContentService:
         # hashtags, the account, the brandboard's elements, referentes, competitors
         context_reader=DbBrandContextReader(),
         media=MediaProducer(
-            # the brand's logo may live in R2 (Brand Kit, 2026-10-01): read it there
-            store=R2ReadingMediaStore(LocalMediaStore(media_root())),
+            store=store,
             router=router,
             credentials=credentials,
             pricing=pricing,
             heygen=heygen,
+            # the template engine (plan-mvp-plantillas-remotion.md §2): the published
+            # manifests in packages/render/templates, the render service over HTTP, the
+            # brand's name for the composition and the catalog's products
+            remotion=remotion,
+            templates=TemplateRegistry.from_dir(),
+            brand_names=DbBrandNames(),
+            catalog=DbProductCatalog(),
         ),
     )
     service.dispatcher = InlineDispatcher(service.run_generation)
