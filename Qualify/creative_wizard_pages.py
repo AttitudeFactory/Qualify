@@ -3464,7 +3464,7 @@ def card_view(card: Mapping[str, object]) -> dict[str, str]:
 def manual_outcome(
     card: Mapping[str, str], bucket: str, result: referentes_review.ManualResult
 ) -> tuple[str, str]:
-    """The callout after a manual add: what happened, in the operator's words, and its
+    """The pop-up after a manual add: what happened, in the operator's words, and its
     tone — `warn` when the profile was not found or Claude thinks it does not fit."""
     title = next((t for b, t, _, _ in BUCKETS if b == bucket), "Referentes")
     who = card.get("handle") or "La cuenta"
@@ -3669,9 +3669,6 @@ class BrandConnectState(rx.State):
     manual_note: str = ""
     adding_manual: bool = False
     manual_error: str = ""
-    #: The last manual add's outcome, and its tone (`ok` / `warn`) for the callout.
-    manual_message: str = ""
-    manual_tone: str = "ok"
     #: The card being dragged, same key.
     dragging: str = ""
     #: Which category the sort step is on (index into `creator_discovery.PHASES`):
@@ -4241,7 +4238,6 @@ class BrandConnectState(rx.State):
         self.rank_dragging = ""
         self.kept_accounts = []
         self.discarded_accounts = []
-        self.manual_message = ""
         self.manual_error = ""
         self.dragging = ""
         self.sort_stage = 0
@@ -4654,11 +4650,10 @@ class BrandConnectState(rx.State):
         buckets.pop(key, None)
         self.account_buckets = buckets
         self.kept_accounts = [c for c in self.kept_accounts if _account_key(c) != key]
-        self.manual_message = ""  # "Agregamos…" must not outlive the account it names
         return BrandConnectState.sync_labels
 
     @rx.event(background=True)
-    async def add_manual_account(self) -> AsyncIterator[None]:
+    async def add_manual_account(self) -> AsyncIterator[rx.event.EventSpec | None]:
         """A referente the search could not find (§ request 2026-09-25): little activity,
         few followers or no TikTok / Instagram at all. Read from the vendor when it is
         on a network we read (1 credit, remembered), reviewed by Claude with the same
@@ -4675,7 +4670,6 @@ class BrandConnectState(rx.State):
                 return
             self.adding_manual = True
             self.manual_error = ""
-            self.manual_message = ""
             note = self.manual_note.strip()
             bucket = self.manual_bucket
             network = self.network
@@ -4752,11 +4746,13 @@ class BrandConnectState(rx.State):
             key = _account_key(card)
             self.kept_accounts = [c for c in self.kept_accounts if _account_key(c) != key] + [card]
             self.account_buckets = {**self.account_buckets, key: bucket}
-            self.manual_message, self.manual_tone = manual_outcome(card, bucket, result)
+            message, tone = manual_outcome(card, bucket, result)
             self.manual_input = ""
             self.manual_note = ""
             self.manual_open = False
         yield BrandConnectState.sync_labels
+        # § request 2026-10-05: what happened is a pop-up, never a message left on the page
+        yield brand_documents.notify(message, tone)
 
     @rx.event
     def skip_card(self) -> None:
@@ -7340,14 +7336,7 @@ def _manual_section(*, with_chips: bool = True) -> rx.Component:
         ),
     )
     return rx.vstack(
-        rx.cond(
-            BrandConnectState.manual_message != "",
-            rx.cond(
-                BrandConnectState.manual_tone == "warn",
-                callout(BrandConnectState.manual_message, "warn"),
-                callout(BrandConnectState.manual_message, "ok"),
-            ),
-        ),
+        # the outcome of an add is a toast (`add_manual_account`), not a callout here
         *([chips] if with_chips else []),
         rx.cond(
             BrandConnectState.manual_open,

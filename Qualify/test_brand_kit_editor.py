@@ -166,8 +166,15 @@ def test_no_pills_over_the_manual_button_and_an_x_on_each_ranked_card() -> None:
 def test_the_x_takes_a_searched_account_out_of_its_bucket() -> None:
     state = wiz.BrandConnectState()
     state.account_buckets = {"TikTok:@a": "referente", "TikTok:@b": "competencia"}
-    state.manual_message = "Agregamos @a a Referentes."
     fired = wiz.BrandConnectState.remove_manual.fn(state, "TikTok:@a")
     assert state.account_buckets == {"TikTok:@b": "competencia"}
-    assert state.manual_message == ""  # no "Agregamos…" left for an account that is gone
     assert "sync_labels" in str(fired)
+
+
+def test_a_manual_add_says_what_happened_in_a_toast_only() -> None:
+    """§ request 2026-10-05: "quita el mensaje… solo un pop up y ya"."""
+    assert "manual_message" not in wiz.BrandConnectState.__fields__
+    assert "Agregamos" not in str(wiz._manual_section())
+    source = Path(wiz.__file__).read_text(encoding="utf-8")
+    body = source.split("async def add_manual_account", 1)[1].split("@rx.event", 1)[0]
+    assert "brand_documents.notify(message, tone)" in body
