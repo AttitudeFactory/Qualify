@@ -1,4 +1,4 @@
-# Qualify production stack for ONE host (Hetzner CX22, Ubuntu 24.04). Runbook (Spanish):
+# Qualify production stack for ONE host (Hetzner CX23/CX33, Ubuntu 24.04). Runbook (Spanish):
 # docs/despliegue-hetzner.md. Always invoke with the server's env file, which provides
 # both the ${...} interpolation below and the containers' runtime secrets:
 #
@@ -46,6 +46,14 @@ x-app-env: &app-env
   # Dev-only escape hatches, forced empty whatever the env file says.
   QUALIFY_AUTH_FAKE: ""
   QUALIFY_AUTH_FAKE_STATE_PATH: ""
+  # `env_file` hands the WHOLE .env.prod to every app container; blank the raw database
+  # passwords there. Serving processes only need the per-role DSNs above — and the owner
+  # password in particular is a superuser that bypasses RLS, which none of them may hold.
+  # (`migrate` re-adds exactly what it needs.)
+  QUALIFY_DB_OWNER_PASSWORD: ""
+  QUALIFY_DB_APP_PASSWORD: ""
+  QUALIFY_DB_ADMIN_PASSWORD: ""
+  QUALIFY_DB_CREDENTIAL_PASSWORD: ""
 
 x-app-env-file: &app-env-file
   env_file:
@@ -102,6 +110,10 @@ services:
     environment:
       <<: *app-env
       QUALIFY_MIGRATION_DSN: postgresql+psycopg://qualify_owner:${QUALIFY_DB_OWNER_PASSWORD}@postgres:5432/qualify
+      # bootstrap_db_roles.py sets these on the three roles (blanked in every other service).
+      QUALIFY_DB_APP_PASSWORD: ${QUALIFY_DB_APP_PASSWORD}
+      QUALIFY_DB_ADMIN_PASSWORD: ${QUALIFY_DB_ADMIN_PASSWORD}
+      QUALIFY_DB_CREDENTIAL_PASSWORD: ${QUALIFY_DB_CREDENTIAL_PASSWORD}
     command:
       - sh
       - -c
@@ -211,6 +223,10 @@ services:
       - -m
       - qualify_api.planner.worker
       - ${QUALIFY_CALENDAR_WORKER_SCOPE:---all-tenants}
+      # The CLI worker takes its cadence from argv (the env var only configures the
+      # embedded worker), so it is passed through explicitly.
+      - --interval
+      - ${QUALIFY_CALENDAR_WORKER_INTERVAL:-60}
     volumes:
       - uploads:/data/uploaded_files
     depends_on:

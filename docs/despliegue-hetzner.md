@@ -248,5 +248,8 @@ QUALIFY_ENV_FILE=/ruta/.env.smoke docker compose -p qualify-smoke \
 | Perfil `calendar-worker` | Arranca `--all-tenants`, primer tick `tenants=0` |
 | `backup-db.sh` + restauración de §8 | Dump + globals escritos; `DROP/CREATE DATABASE` + `pg_restore` recupera una fila testigo, `alembic_version = 0040` y las 48 políticas RLS |
 | `caddy validate` con el dominio real | `Valid configuration` |
+| Contraseñas crudas de BD dentro de `api`/`reflex` | Vacías (sólo llegan los DSN por rol; la del dueño superusuario no la tiene ningún proceso que sirve tráfico) |
+| `QUALIFY_CALENDAR_WORKER_INTERVAL=45` con el perfil activo | El worker arranca con `interval=45s` |
+| `deploy.sh status` / `deploy.sh backup` (con un `ssh` de prueba que ejecuta en local) | `ok` en los tres chequeos y salida 0; si un chequeo no da el código esperado, `FAIL` y salida ≠ 0 (camino ejercitado en la primera corrida, que además destapó un fallo con arreglos vacíos en bash 3.2, ya corregido) |
 
-No verificado localmente: la emisión real del certificado (requiere DNS apuntando al servidor), el build en x86 del servidor (aquí fue arm64) y el perfil `render` (su imagen no se construyó en esta sesión).
+No verificado localmente: la emisión real del certificado (requiere DNS apuntando al servidor), el build en x86 del servidor (aquí fue arm64), el perfil `render` (su imagen no se construyó en esta sesión) y `deploy.sh deploy` contra un servidor real (su subida por `git archive` y el `compose build/up` se probaron por separado, no encadenados por ssh).

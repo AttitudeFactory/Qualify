@@ -7,7 +7,7 @@
 # Idempotent: safe to re-run. What it does:
 #   1. OS updates + unattended security upgrades.
 #   2. Docker Engine + Compose plugin from Docker's official apt repository.
-#   3. A 2 GB swapfile (a CX22 has 4 GB RAM; the frontend build peaks during `docker build`).
+#   3. A 2 GB swapfile (a CX23 has 4 GB RAM; the frontend build peaks during `docker build`).
 #   4. Non-root `deploy` user (member of `docker`), with root's authorized SSH keys.
 #   5. /opt/qualify/{releases,backups} owned by `deploy`.
 #   6. ufw: deny incoming except 22/tcp, 80/tcp, 443/tcp, 443/udp.
