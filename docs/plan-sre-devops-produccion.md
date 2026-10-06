@@ -38,7 +38,7 @@ Referencia: `reflex-dev/reflex` → `docker-example/production-compose` (Dockerf
 
 | # | Qué | Tipo | Bloqueado por |
 |---|---|---|---|
-| 1 | Reflex: copiar `.web/backend` a `app`; bun desde `oven/bun` con caché; quitar `curl`/`unzip` del runtime. Medir el arranque antes/después | PR | — |
+| 1 | ✅ Reflex: copiar `.web/backend` a `app`; bun desde `oven/bun` con caché; quitar `curl`/`unzip` del runtime. Medido en §5 | PR | — |
 | 2 | Cero recreaciones innecesarias: que un deploy sin cambios no recree `api`/`reflex` (p. ej. sacar `migrate` del grafo `depends_on` y correrlo como paso explícito en `deploy.sh` antes del `up`, o `up --no-recreate` condicionado) | PR | — |
 | 3 | Construir la imagen `deploy/Dockerfile` (targets `app` y `web`) **en el CI** — hoy ningún job la construye, un Dockerfile roto sólo se descubre al desplegar | PR | — |
 | 4 | CD: al quedar `main` en verde, Actions construye `app`/`web`(/`render`) y los publica en GHCR por SHA; el servidor sólo hace `pull` + `up`. Nunca compilar en producción. Rollback = desplegar el SHA anterior | PR | secretos de GitHub (llave ssh de deploy restringida, token GHCR) → **fundador** |
@@ -47,7 +47,27 @@ Referencia: `reflex-dev/reflex` → `docker-example/production-compose` (Dockerf
 | 7 | SRE: monitoreo externo de `/ping` y `/api/...` con alerta, respaldos fuera del servidor (R2 + `age`, `plan-cicd-staging.md` §5.6), backups de Hetzner activados (QUA-121) | PR + fundador | — |
 | 8 | Medir un deploy **con** cambio de código (antes y después de 1/3/4) y dejar los números en este documento | medición | acceso ssh → **fundador** |
 
-## 5. Reglas para quien ejecute este plan
+## 5. Resultados por punto
+
+### Punto 1 — Dockerfile según el ejemplo oficial de Reflex (2026-10-06)
+
+Cambios en `deploy/Dockerfile`: bun sale de `oven/bun:1.4` (Reflex 0.9.12 exige bun ≥ 1.4.0 y usa el que encuentra en `PATH`) con caché de `/root/.bun/install/cache`; ni la etapa de export ni la imagen `app` instalan paquetes con `apt` (fuera `curl`/`unzip`); `.web/backend` se copia del export a `app`, y el build falla si el export no dejó `stateful_pages.json`.
+
+Medido en la sesión en la nube (Docker 29, sin caché; **no** es el CX23):
+
+| Medida | Valor |
+|---|---|
+| Build `web` en frío (deps + `reflex export`) | 45 s (export 37 s) |
+| Build `app` tras `web` (capas compartidas) | 17 s |
+| Imagen `app` / `web` | 541 MB / 110 MB |
+| Arranque del backend hasta `/ping` 200, **con** `.web/backend` | 4,3–4,5 s (3 corridas) |
+| Ídem **sin** `.web/backend` (lo que pasaba antes) | 5,5–6,7 s (3 corridas) |
+
+`stateful_pages.json` sale `[]`: ninguna página crea clases de estado al evaluarse (los estados están a nivel de módulo), así que con el marcador el backend no evalúa ninguna página al arrancar. `.web/backend` también trae `upload_is_used` y `bundled_libraries.json`, que el backend lee al arrancar.
+
+No se pudo medir el Dockerfile **anterior** en esta sesión: el proxy de la organización bloquea `deb.debian.org` y la versión anterior necesitaba `apt-get`. Este Dockerfile tampoco depende ya de ese espejo. La comparación en el servidor la hace el fundador con el próximo `just deploy` (punto 8).
+
+## 6. Reglas para quien ejecute este plan
 
 - **Sin acceso al servidor.** La sesión en la nube no tiene llave ssh y no debe pedirla: todo cambio llega por PR; desplegar y medir en producción lo hace el fundador con `just deploy deploy@<IP>`.
 - **Merge sólo con CI en verde y vía `just merge <pr>`** (nunca `gh pr merge`, nunca push a `main`). `just` se instala con `uv tool install rust-just`.
