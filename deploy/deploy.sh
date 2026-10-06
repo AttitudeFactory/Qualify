@@ -13,9 +13,12 @@
 #   1. `git archive` of the ref — only COMMITTED files: never your dirty working tree, never
 #      .env — streamed over ssh into /opt/qualify/releases/<sha>. The server needs no GitHub
 #      access and no deploy key.
-#   2. /opt/qualify/current -> that release (older releases stay for rollback; last 5 kept).
-#   3. `docker compose build` + `up -d`: postgres/redis first, then the one-shot `migrate`
-#      (alembic upgrade head + role passwords); api/reflex start only if it exits 0.
+#   2. `docker compose build` + `up -d` FROM THAT RELEASE DIR: postgres/redis first, then the
+#      one-shot `migrate` (alembic upgrade head + role passwords); api/reflex start only if
+#      it exits 0.
+#   3. Only if that succeeded: /opt/qualify/current -> the release. A failed build or
+#      migration leaves `current` (and with it `status`, `logs`, the backup cron) on the last
+#      good release. Older releases stay for rollback; the last 5 are kept.
 #   4. Health: /ping (Reflex), /api/connections/callback (FastAPI; 403 = reached), /login (UI).
 #
 # Rollback = `deploy/deploy.sh deploy <target> <previous-sha>`. Migrations are forward-only
@@ -38,7 +41,12 @@ remote() {
   ssh -o BatchMode=yes "$TARGET" "$@"
 }
 
-COMPOSE="cd $REMOTE_ROOT/current && docker compose --env-file $ENV_FILE -f $COMPOSE_FILE"
+# `compose_in <dir>`: the compose invocation for a release directory. The project name is
+# fixed in the compose file (`qualify-prod`), so any release dir drives the same stack.
+compose_in() {
+  echo "cd $1 && docker compose --env-file $ENV_FILE -f $COMPOSE_FILE"
+}
+COMPOSE=$(compose_in "$REMOTE_ROOT/current")
 
 cmd_deploy() {
   local ref="${1:-origin/main}"
@@ -53,22 +61,27 @@ cmd_deploy() {
   remote "test -f $ENV_FILE" ||
     die "$ENV_FILE is missing on the server (docs/despliegue-hetzner.md, primer despliegue)"
 
+  local release=$REMOTE_ROOT/releases/$sha
   echo "==> Uploading release $sha"
   git archive --format=tar "$sha" | gzip -c | remote "
     set -e
-    rm -rf $REMOTE_ROOT/releases/$sha
-    mkdir -p $REMOTE_ROOT/releases/$sha
-    tar -xzf - -C $REMOTE_ROOT/releases/$sha
-    echo $sha > $REMOTE_ROOT/releases/$sha/RELEASE
-    ln -sfn $REMOTE_ROOT/releases/$sha $REMOTE_ROOT/current
+    rm -rf $release
+    mkdir -p $release
+    tar -xzf - -C $release
+    echo $sha > $release/RELEASE
   "
 
-  echo "==> Building images and starting the stack (migrations run first)"
+  echo "==> Building images and starting the stack from $release (migrations run first)"
+  local in_release
+  in_release=$(compose_in "$release")
   remote "
     set -e
-    $COMPOSE build
-    $COMPOSE up -d --remove-orphans
-  "
+    $in_release build
+    $in_release up -d --remove-orphans
+  " || die "build or start failed — $REMOTE_ROOT/current still points at the previous release"
+
+  remote "ln -sfn $release $REMOTE_ROOT/current"
+  echo "==> $REMOTE_ROOT/current -> $sha"
 
   echo "==> Pruning old releases (keeping $KEEP_RELEASES) and dangling images"
   remote "
