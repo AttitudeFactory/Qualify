@@ -18,18 +18,37 @@ states by tone through `signal_pill`, identity through `platform_badge`, colours
 from __future__ import annotations
 
 import reflex as rx
+from qualify_api.planner.recurrence import SERIES_CAP
 
 from .planner_state import SCROLL_ID, PlannerState
 from .planner_vm import (
+    ASSIGN_STEPS,
     AUTO_PUBLISH_ACTIVE,
     AUTO_PUBLISH_NO_CONNECTION,
     EXPIRED_NOTE,
+    REPEAT_BY_COUNT,
+    REPEAT_BY_UNTIL,
+    STEP_ACCOUNTS,
+    STEP_POST,
+    STEP_PREVIEW,
+    STEP_WHEN,
     TAG_COLORS,
     VIEW_CALENDAR,
     VIEW_LIST,
 )
 from .r2_media import BACKEND_BASE
-from .ui import app_shell, callout, card, page_body, page_header, platform_badge, signal_pill, tag
+from .ui import (
+    app_shell,
+    callout,
+    card,
+    drawer,
+    page_body,
+    page_header,
+    platform_badge,
+    signal_pill,
+    stepper,
+    tag,
+)
 from .ui import tokens as T
 
 _TONES = ("ok", "warn", "error", "info", "neutral", "accent")
@@ -220,21 +239,6 @@ def _card_menu(event) -> rx.Component:
 # Calendario — hour axis × seven days, compact
 
 
-def _delete_event_button(event) -> rx.Component:
-    """Trash for a cancelled event. Full opacity and no strike-through even inside a
-    muted chip, so it reads as the action it is."""
-    return rx.icon_button(
-        rx.icon("trash-2", size=12),
-        size="1",
-        variant="ghost",
-        color_scheme="red",
-        aria_label="Eliminar publicación cancelada",
-        title="Eliminar del calendario",
-        on_click=PlannerState.ask_delete_event(event.event_id).stop_propagation,
-        style={"opacity": "1", "text_decoration": "none"},
-    )
-
-
 def _chip_edge(event) -> rx.Var:
     """The chip's left edge carries the state at a glance: accent approved, amber pending
     or overdue, tomato rejected, gray cancelled/unknown."""
@@ -272,7 +276,6 @@ def _calendar_chip(event) -> rx.Component:
                         rx.icon("triangle-alert", size=12, color=rx.color("amber", 10)),
                     ),
                     rx.spacer(),
-                    rx.cond(event.muted, _delete_event_button(event)),
                     align="center",
                     spacing="1",
                     width="100%",
@@ -514,7 +517,6 @@ def _list_item(event) -> rx.Component:
                 min_width="0",
                 class_name="q-plist-body",
             ),
-            rx.cond(event.muted, _delete_event_button(event)),
             _card_menu(event),
             padding="0.75rem 0.9rem",
             border=T.BORDER,
@@ -1227,113 +1229,726 @@ def _output_chip(chip) -> rx.Component:
     )
 
 
-def _assign_dialog() -> rx.Component:
-    return rx.dialog.root(
-        rx.dialog.content(
-            rx.dialog.title(PlannerState.form_title),
-            rx.dialog.description(
-                "Zona horaria: " + PlannerState.tz_name,
-                size="2",
-                color=T.TEXT_MUTED,
+def _step_hint(text: str) -> rx.Component:
+    return rx.text(text, size="1", color=T.TEXT_MUTED)
+
+
+def _step_post() -> rx.Component:
+    """Step 1 · Post. D1: a POST that is not approved and publishable is refused right
+    here, with the evaluator's exact reason, and the flow does not go on."""
+    return rx.vstack(
+        rx.cond(
+            PlannerState.form_is_reschedule,
+            _field("POST", rx.text(PlannerState.form_post_title, size="2", weight="medium")),
+            _field(
+                "POST",
+                rx.select.root(
+                    rx.select.trigger(placeholder="Elige un POST", width="100%"),
+                    rx.select.content(
+                        rx.foreach(
+                            PlannerState.schedulable,
+                            lambda p: rx.select.item(
+                                p.title + " · " + p.approval_short, value=p.post_id
+                            ),
+                        )
+                    ),
+                    value=PlannerState.form_post_id,
+                    on_change=PlannerState.set_form_post_id,
+                ),
+            ),
+        ),
+        rx.cond(
+            PlannerState.form_has_outputs | (PlannerState.form_output_label != ""),
+            _field("Salida", _output_control()),
+        ),
+        rx.cond(
+            PlannerState.form_post_blocked != "",
+            callout("No se puede programar: " + PlannerState.form_post_blocked, "error"),
+        ),
+        rx.cond(
+            (PlannerState.form_post_blocked == "")
+            & (PlannerState.form_post_id != "")
+            & ~PlannerState.form_is_reschedule,
+            callout("Listo para programar.", "ok"),
+        ),
+        _step_hint(
+            "Solo entra al calendario un POST listo para publicar: aprobado, con su texto "
+            "aprobado y su media disponible."
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _series_summary() -> rx.Component:
+    """What the recurrence controls add up to: «Semanal · 4 veces · del 12 oct al 2
+    nov» and the dates, or the exact reason the series cannot be built."""
+    s = PlannerState.form_series
+    return rx.cond(
+        s.error != "",
+        callout(s.error, "error"),
+        rx.vstack(
+            rx.text(s.summary, size="2", weight="medium"),
+            rx.flex(rx.foreach(s.dates, lambda d: tag(d)), wrap="wrap", gap="0.25rem"),
+            spacing="1",
+            width="100%",
+        ),
+    )
+
+
+def _repeat_controls() -> rx.Component:
+    """QUA-118 A2/A4: weekly, same weekday and time, by count OR by end date, at most
+    SERIES_CAP occurrences. Hidden on a reschedule (a move is one event)."""
+    return rx.vstack(
+        rx.hstack(
+            rx.switch(
+                checked=PlannerState.form_repeat,
+                on_change=PlannerState.set_form_repeat,
+                aria_label="Repetir cada semana",
             ),
             rx.vstack(
-                rx.cond(
-                    PlannerState.form_is_reschedule,
-                    _field("POST", rx.text(PlannerState.form_post_title, size="2")),
-                    _field(
-                        "POST",
-                        rx.select.root(
-                            rx.select.trigger(placeholder="Elige un POST", width="100%"),
-                            rx.select.content(
-                                rx.foreach(
-                                    PlannerState.schedulable,
-                                    lambda p: rx.select.item(
-                                        p.title + " · " + p.approval_short, value=p.post_id
-                                    ),
-                                )
-                            ),
-                            value=PlannerState.form_post_id,
-                            on_change=PlannerState.set_form_post_id,
-                        ),
-                    ),
+                rx.text("Repetir cada semana", size="2", weight="medium"),
+                rx.text("Mismo día de la semana y misma hora.", size="1", color=T.TEXT_MUTED),
+                spacing="0",
+            ),
+            align="center",
+            spacing="3",
+        ),
+        rx.cond(
+            PlannerState.form_repeat,
+            rx.vstack(
+                rx.segmented_control.root(
+                    rx.segmented_control.item("Número de veces", value=REPEAT_BY_COUNT),
+                    rx.segmented_control.item("Hasta una fecha", value=REPEAT_BY_UNTIL),
+                    value=PlannerState.form_repeat_mode,
+                    on_change=PlannerState.set_form_repeat_mode,
+                    size="1",
                 ),
                 rx.cond(
-                    PlannerState.form_has_outputs | (PlannerState.form_output_label != ""),
-                    _field("Salida", _output_control()),
-                ),
-                rx.grid(
+                    PlannerState.form_repeat_mode == REPEAT_BY_UNTIL,
                     _field(
-                        "Fecha",
+                        "Fecha de fin (incluida)",
                         rx.input(
                             type="date",
-                            value=PlannerState.form_date,
-                            on_change=PlannerState.set_form_date,
+                            value=PlannerState.form_repeat_until,
+                            on_change=PlannerState.set_form_repeat_until,
+                            min=PlannerState.form_date,
                             width="100%",
                         ),
                     ),
-                    _field("Hora", _time_picker()),
-                    columns="1",
-                    spacing="3",
+                    _field(
+                        f"Número de veces (máximo {SERIES_CAP})",
+                        rx.input(
+                            type="number",
+                            min="1",
+                            max=str(SERIES_CAP),
+                            value=PlannerState.form_repeat_count,
+                            on_change=PlannerState.set_form_repeat_count,
+                            width="8rem",
+                        ),
+                    ),
+                ),
+                _series_summary(),
+                spacing="3",
+                width="100%",
+                padding_left="0.25rem",
+            ),
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _step_when() -> rx.Component:
+    """Step 2 · Fecha y hora: one publication, or a weekly series."""
+    return rx.vstack(
+        rx.grid(
+            _field(
+                "Fecha",
+                rx.input(
+                    type="date",
+                    value=PlannerState.form_date,
+                    on_change=PlannerState.set_form_date,
+                    min=PlannerState.today_iso,
                     width="100%",
                 ),
-                _field(
-                    "Cuenta",
-                    rx.select.root(
-                        rx.select.trigger(placeholder="Elige una cuenta", width="100%"),
-                        rx.select.content(
-                            rx.foreach(
-                                PlannerState.connections,
-                                lambda c: rx.select.item(c.label, value=c.id),
-                            )
+            ),
+            _field("Hora", _time_picker()),
+            columns="1",
+            spacing="3",
+            width="100%",
+        ),
+        _step_hint("Zona horaria: " + PlannerState.tz_name),
+        rx.cond(~PlannerState.form_is_reschedule, rx.fragment(rx.divider(), _repeat_controls())),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _account_row(c) -> rx.Component:
+    """One account to publish to. A compatible one toggles; an incompatible one is
+    listed disabled with the reason (QUA-118 AC 6) and can never be chosen."""
+    checked = PlannerState.form_connection_ids.contains(c.id)
+    return rx.box(
+        rx.hstack(
+            rx.checkbox(
+                checked=checked,
+                disabled=~c.compatible,
+                aria_label=c.label,
+                style={"pointer_events": "none"},
+            ),
+            platform_badge(c.platform),
+            rx.text(c.label, size="2", weight="medium"),
+            rx.spacer(),
+            rx.cond(~c.compatible, signal_pill("No compatible", "warn")),
+            align="center",
+            spacing="2",
+            width="100%",
+        ),
+        rx.cond(
+            c.note != "",
+            rx.text(c.note, size="1", color=T.TEXT_MUTED, padding_left="1.9rem"),
+        ),
+        on_click=PlannerState.toggle_form_connection(c.id),
+        role="checkbox",
+        aria_checked=checked,
+        aria_disabled=~c.compatible,
+        cursor=rx.cond(c.compatible, "pointer", "not-allowed"),
+        opacity=rx.cond(c.compatible, "1", "0.6"),
+        padding="0.6rem 0.75rem",
+        border=T.BORDER,
+        border_radius=T.RADIUS_CONTROL,
+        background=rx.cond(checked, rx.color("accent", 2), T.SURFACE_BG),
+        border_color=rx.cond(checked, rx.color("accent", 7), rx.color("gray", 5)),
+        width="100%",
+    )
+
+
+def _step_accounts() -> rx.Component:
+    """Step 3 · Cuentas: one event per chosen account (AC 5). A reschedule moves one
+    event, so there exactly one account is chosen."""
+    return rx.vstack(
+        rx.cond(
+            PlannerState.connections.length() > 0,
+            rx.vstack(
+                rx.foreach(PlannerState.connections, _account_row), spacing="2", width="100%"
+            ),
+            callout(
+                "No hay cuentas activas. Conecta o reactiva una en Conexiones para poder "
+                "planificar.",
+                "warn",
+            ),
+        ),
+        rx.cond(
+            PlannerState.form_is_reschedule,
+            _step_hint("Una publicación se mueve a una sola cuenta."),
+            _step_hint(
+                "Cada cuenta recibe su propia publicación, independiente de las demás: "
+                "cancelar una no afecta a las otras."
+            ),
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _frame(frame) -> rx.Component:
+    """A static mock of what one account will show (AC 7): the POST's media in the
+    channel's shape. Never a Meta rendering — a frame, not a promise."""
+    media = rx.cond(
+        frame.video_url != "",
+        rx.el.video(
+            src=BACKEND_BASE + frame.video_url + "#t=0.1",
+            muted=True,
+            preload="metadata",
+            plays_inline=True,
+            controls=True,
+            width="100%",
+            height="100%",
+            style={"object_fit": "cover", "display": "block"},
+        ),
+        rx.cond(
+            frame.thumbnail_url != "",
+            rx.image(
+                src=rx.cond(
+                    frame.thumbnail_url.startswith("http"),
+                    frame.thumbnail_url,
+                    rx.get_upload_url(frame.thumbnail_url),
+                ),
+                alt="",
+                width="100%",
+                height="100%",
+                object_fit="cover",
+                display="block",
+            ),
+            rx.center(rx.icon("image", size=T.ICON_MD, color=T.TEXT_FAINT), height="100%"),
+        ),
+    )
+    return rx.vstack(
+        rx.hstack(
+            platform_badge(frame.platform),
+            rx.text(frame.account_label, size="1", weight="medium", style=_ONE_LINE),
+            align="center",
+            spacing="1",
+            max_width="100%",
+        ),
+        rx.box(
+            media,
+            width="7.5rem",
+            style={"aspect_ratio": frame.aspect},
+            background="black",
+            border_radius=T.RADIUS_CONTROL,
+            border=T.BORDER,
+            overflow="hidden",
+        ),
+        tag(frame.kind_label),
+        spacing="1",
+        align="center",
+    )
+
+
+def _summary_row(label: str, value) -> rx.Component:
+    return rx.hstack(
+        rx.text(label, size="2", color=T.TEXT_MUTED, min_width="6.5rem"),
+        rx.box(value, flex="1", min_width="0"),
+        align="start",
+        width="100%",
+    )
+
+
+def _plan_label(text: str) -> rx.Component:
+    """The summary card's row label: small caps, muted — the mock-up's «CUÁNDO»."""
+    return rx.text(
+        text,
+        size="1",
+        weight="bold",
+        color=T.TEXT_MUTED,
+        letter_spacing="0.06em",
+        text_transform="uppercase",
+        flex_shrink="0",
+    )
+
+
+def _plan_row(label: str, value: rx.Component) -> rx.Component:
+    return rx.hstack(
+        _plan_label(label),
+        rx.spacer(),
+        rx.box(value, min_width="0", display="flex", justify_content="flex-end"),
+        align="start",
+        width="100%",
+        spacing="3",
+    )
+
+
+def _plan_card() -> rx.Component:
+    """What «Programar» will do, as a card: the POST and its media, when (and how
+    often), on which accounts, in which zone. The same facts the service will act on."""
+    s = PlannerState.form_series
+    return rx.box(
+        rx.vstack(
+            _plan_row(
+                "POST",
+                rx.vstack(
+                    rx.text(
+                        PlannerState.form_post_title_or_chosen,
+                        size="2",
+                        weight="bold",
+                        text_align="right",
+                    ),
+                    rx.hstack(
+                        rx.icon("film", size=12, color=T.TEXT_MUTED),
+                        rx.text(PlannerState.form_media_label, size="1", color=T.TEXT_MUTED),
+                        align="center",
+                        spacing="1",
+                    ),
+                    rx.cond(
+                        PlannerState.form_output_label != "",
+                        rx.text(
+                            "Salida: " + PlannerState.form_output_label,
+                            size="1",
+                            color=T.TEXT_MUTED,
                         ),
-                        value=PlannerState.form_connection_id,
-                        on_change=PlannerState.set_form_connection_id,
                     ),
+                    spacing="1",
+                    align="end",
                 ),
-                _field("Etiquetas (opcional)", _form_tags()),
+            ),
+            rx.divider(),
+            _plan_row("Cuándo", signal_pill(PlannerState.form_when_label, "accent", size="2")),
+            _plan_row(
+                "Repetición",
                 rx.cond(
-                    PlannerState.form_post_note != "",
-                    callout(
-                        "Quedará programado, pero no se publicará hasta que esté listo: "
-                        + PlannerState.form_post_note
-                        + " Si lo completas, se publica en el siguiente minuto, aunque ya "
-                        "haya pasado la hora.",
-                        "warn",
+                    s.enabled,
+                    rx.vstack(
+                        rx.text(s.summary, size="2", text_align="right"),
+                        rx.flex(
+                            rx.foreach(s.dates, lambda d: tag(d)),
+                            wrap="wrap",
+                            gap="0.3rem",
+                            justify="end",
+                        ),
+                        spacing="2",
+                        align="end",
                     ),
+                    rx.text("Una sola vez", size="2"),
                 ),
+            ),
+            rx.divider(),
+            _plan_row(
+                "Cuentas",
+                rx.flex(
+                    rx.foreach(
+                        PlannerState.form_selected_accounts,
+                        lambda c: rx.hstack(
+                            platform_badge(c.platform),
+                            rx.text(c.label, size="2", weight="medium"),
+                            align="center",
+                            spacing="2",
+                        ),
+                    ),
+                    wrap="wrap",
+                    gap="0.6rem",
+                    justify="end",
+                ),
+            ),
+            _plan_row(
+                "Zona horaria",
+                rx.hstack(
+                    rx.icon("globe", size=12, color=T.TEXT_MUTED),
+                    rx.text(PlannerState.tz_name, size="2"),
+                    align="center",
+                    spacing="1",
+                ),
+            ),
+            spacing="3",
+            width="100%",
+        ),
+        padding="1rem 1.1rem",
+        border=T.BORDER,
+        border_radius=T.RADIUS_CARD,
+        background=T.CARD_BG,
+        width="100%",
+    )
+
+
+def _phone(frame) -> rx.Component:
+    """A phone-shaped frame with the POST's media in the channel's shape: the format's
+    word on top, a play glyph over a video, the account under. A mock, never Meta."""
+    media = rx.cond(
+        frame.video_url != "",
+        rx.el.video(
+            src=BACKEND_BASE + frame.video_url + "#t=0.1",
+            muted=True,
+            preload="metadata",
+            plays_inline=True,
+            aria_hidden="true",
+            width="100%",
+            height="100%",
+            style={"object_fit": "cover", "display": "block", "pointer_events": "none"},
+        ),
+        rx.cond(
+            frame.thumbnail_url != "",
+            rx.image(
+                src=rx.cond(
+                    frame.thumbnail_url.startswith("http"),
+                    frame.thumbnail_url,
+                    rx.get_upload_url(frame.thumbnail_url),
+                ),
+                alt="",
+                width="100%",
+                height="100%",
+                object_fit="cover",
+                display="block",
+            ),
+            rx.center(rx.icon("image", size=T.ICON_MD, color=T.TEXT_FAINT), height="100%"),
+        ),
+    )
+    overlay_text = {"color": "white", "text_shadow": "0 1px 2px rgba(0,0,0,.6)"}
+    return rx.box(
+        rx.box(media, position="absolute", inset="0"),
+        rx.text(
+            frame.kind_label,
+            size="1",
+            weight="bold",
+            position="absolute",
+            top="0.45rem",
+            left="0.55rem",
+            style=overlay_text,
+        ),
+        rx.cond(
+            frame.video_url != "",
+            rx.center(
+                rx.center(
+                    rx.icon("play", size=14, color="white", fill="white"),
+                    width="2.1rem",
+                    height="2.1rem",
+                    border_radius="999px",
+                    background="rgba(0,0,0,.55)",
+                    border="1px solid rgba(255,255,255,.35)",
+                ),
+                position="absolute",
+                inset="0",
+                pointer_events="none",
+            ),
+        ),
+        rx.text(
+            frame.account_label,
+            size="1",
+            weight="medium",
+            position="absolute",
+            bottom="0.45rem",
+            left="0.55rem",
+            right="0.55rem",
+            style={**overlay_text, **_ONE_LINE},
+        ),
+        width="6.75rem",
+        style={"aspect_ratio": frame.aspect},
+        position="relative",
+        flex_shrink="0",
+        border_radius="0.9rem",
+        overflow="hidden",
+        background="black",
+        border=f"2px solid {rx.color('gray', 7)}",
+        box_shadow=T.ELEV_ISLAND,
+    )
+
+
+def _frame_block(frame) -> rx.Component:
+    """One account's preview: the phone frame and, beside it, what will be published
+    there, in words that stay true (format, medium, account — nothing we do not know)."""
+    return rx.hstack(
+        _phone(frame),
+        rx.vstack(
+            rx.hstack(
+                rx.box(
+                    width="8px",
+                    height="8px",
+                    border_radius="999px",
+                    background=T.tone_color("ok", 9),
+                ),
+                rx.text(frame.kind_label + " listo para publicar", size="2", weight="bold"),
+                align="center",
+                spacing="2",
+            ),
+            rx.text(
+                "Se publicará en "
+                + frame.account_label
+                + " como "
+                + frame.kind_label
+                + " · "
+                + frame.media_label
+                + " en formato "
+                + frame.ratio_label
+                + ".",
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            rx.hstack(
+                platform_badge(frame.platform),
+                tag(frame.kind_label),
+                spacing="1",
+                align="center",
+            ),
+            spacing="2",
+            min_width="0",
+            flex="1",
+        ),
+        spacing="3",
+        align="center",
+        width="100%",
+        padding="0.75rem",
+        background=T.SURFACE_BG_RAISED,
+        border=T.BORDER,
+        border_radius=T.RADIUS_CARD,
+    )
+
+
+def _preview_card() -> rx.Component:
+    return rx.box(
+        rx.hstack(
+            rx.icon("smartphone", size=14, color=T.tone_color("accent", 10)),
+            _plan_label("Vista previa en móvil"),
+            rx.spacer(),
+            rx.text(PlannerState.form_media_label, size="1", color=T.TEXT_MUTED),
+            align="center",
+            width="100%",
+            spacing="2",
+        ),
+        rx.vstack(
+            rx.foreach(PlannerState.form_frames, _frame_block),
+            spacing="2",
+            width="100%",
+            margin_top="0.75rem",
+        ),
+        rx.text(
+            "Vista previa orientativa: el formato de cada cuenta con la media actual del POST.",
+            size="1",
+            color=T.TEXT_FAINT,
+            margin_top="0.5rem",
+        ),
+        padding="1rem 1.1rem",
+        border=T.BORDER,
+        border_radius=T.RADIUS_CARD,
+        background=T.CARD_BG,
+        width="100%",
+    )
+
+
+def _tags_block() -> rx.Component:
+    count = PlannerState.form_tag_ids.length()
+    return rx.vstack(
+        rx.hstack(
+            rx.text("Etiquetas (opcional)", size="2", weight="medium"),
+            rx.spacer(),
+            rx.cond(
+                count > 0,
                 rx.text(
-                    "Solo se publica un POST listo para publicar: aprobado, con su texto "
-                    "aprobado y su media disponible.",
+                    rx.cond(count == 1, "1 seleccionada", count.to_string() + " seleccionadas"),
                     size="1",
                     color=T.TEXT_MUTED,
                 ),
-                rx.cond(PlannerState.form_error != "", callout(PlannerState.form_error, "error")),
-                rx.hstack(
-                    rx.dialog.close(
-                        rx.button(
-                            "Cancelar",
-                            variant="soft",
-                            color_scheme="gray",
-                            on_click=PlannerState.close_form,
-                        ),
-                    ),
-                    rx.button(
-                        rx.cond(PlannerState.form_is_reschedule, "Guardar cambios", "Programar"),
-                        loading=PlannerState.saving,
-                        on_click=PlannerState.submit_form,
-                    ),
-                    justify="end",
-                    spacing="2",
-                    width="100%",
-                ),
-                spacing="3",
-                margin_top="0.75rem",
-                width="100%",
             ),
-            max_width="30rem",
+            align="center",
+            width="100%",
+        ),
+        _form_tags(),
+        spacing="2",
+        width="100%",
+    )
+
+
+def _step_preview() -> rx.Component:
+    """Step 4 · Vista previa — and the confirmation: the count of events to create, the
+    plan card, one frame per account, the optional tags, and the service's answer right
+    here if it refuses (nothing is created then — the plan is atomic)."""
+    n = PlannerState.form_event_count
+    s = PlannerState.form_series
+    return rx.vstack(
+        callout(
+            rx.cond(
+                PlannerState.form_is_reschedule,
+                "Se moverá esta publicación a la nueva fecha y cuenta.",
+                rx.cond(
+                    n == 1,
+                    "Se creará 1 publicación programada.",
+                    "Se crearán "
+                    + n.to_string()
+                    + " publicaciones programadas, independientes entre sí"
+                    + rx.cond(s.enabled, ", mediante la regla de repetición.", "."),
+                ),
+            ),
+            "info",
+        ),
+        _plan_card(),
+        _preview_card(),
+        _tags_block(),
+        rx.cond(
+            PlannerState.form_post_note != "",
+            callout(
+                "Quedará programado, pero no se publicará hasta que esté listo: "
+                + PlannerState.form_post_note,
+                "warn",
+            ),
+        ),
+        rx.cond(PlannerState.form_error != "", callout(PlannerState.form_error, "error")),
+        spacing="4",
+        width="100%",
+    )
+
+
+def _drawer_footer() -> rx.Component:
+    return rx.hstack(
+        rx.button(
+            "Cancelar",
+            variant="ghost",
+            color_scheme="gray",
+            on_click=PlannerState.close_form,
+        ),
+        rx.spacer(),
+        rx.cond(
+            PlannerState.form_step > STEP_POST,
+            rx.button(
+                rx.icon("chevron-left", size=T.ICON_SM),
+                "Atrás",
+                variant="soft",
+                color_scheme="gray",
+                on_click=PlannerState.prev_step,
+            ),
+        ),
+        rx.cond(
+            PlannerState.form_is_last_step,
+            rx.button(
+                PlannerState.form_submit_label,
+                loading=PlannerState.saving,
+                on_click=PlannerState.submit_form,
+            ),
+            rx.button(
+                "Siguiente",
+                rx.icon("chevron-right", size=T.ICON_SM),
+                disabled=~PlannerState.form_can_advance,
+                title=PlannerState.form_step_error,
+                on_click=PlannerState.next_step,
+            ),
+        ),
+        align="center",
+        spacing="2",
+        width="100%",
+    )
+
+
+def _assign_drawer() -> rx.Component:
+    """The assign / reschedule flow (QUA-118 AC 4): a right-edge drawer with a stepper
+    — Post → Fecha y hora → Cuentas → Vista previa (where «Programar» lives). A step
+    must be valid to leave it; a completed step is one click away to fix; the last
+    step is where the service's answer lands."""
+    return drawer(
+        stepper(
+            list(ASSIGN_STEPS),
+            current=PlannerState.form_step,
+            completed=PlannerState.form_steps_done,
+            on_select=PlannerState.go_to_step,
+        ),
+        rx.box(
+            rx.match(
+                PlannerState.form_step,
+                (STEP_POST, _step_post()),
+                (STEP_WHEN, _step_when()),
+                (STEP_ACCOUNTS, _step_accounts()),
+                (STEP_PREVIEW, _step_preview()),
+                _step_post(),
+            ),
+            margin_top="1.25rem",
+            width="100%",
+        ),
+        rx.cond(
+            PlannerState.form_step_hint != "",
+            rx.text(
+                PlannerState.form_step_hint,
+                size="1",
+                color=rx.color("amber", 11),
+                margin_top="0.75rem",
+            ),
         ),
         open=PlannerState.form_open,
         on_open_change=PlannerState.set_form_open,
+        title=rx.hstack(
+            rx.text(PlannerState.form_title, size="5", weight="bold"),
+            rx.badge(
+                PlannerState.form_step_badge,
+                variant="soft",
+                radius="full",
+                size="1",
+            ),
+            align="center",
+            spacing="2",
+        ),
+        description=rx.cond(
+            PlannerState.form_is_reschedule,
+            "Mueve la publicación a otra fecha, hora o cuenta.",
+            "Elige el POST, cuándo sale y en qué cuentas. Nada se publica hasta su hora.",
+        ),
+        footer=_drawer_footer(),
+        width="34rem",
     )
 
 
@@ -1506,16 +2121,6 @@ def _detail_dialog() -> rx.Component:
                 ),
             ),
             rx.spacer(),
-            rx.cond(
-                d.can_delete,
-                rx.button(
-                    rx.icon("trash-2", size=T.ICON_SM),
-                    "Eliminar del calendario",
-                    variant="soft",
-                    color_scheme="red",
-                    on_click=PlannerState.ask_delete_event_from_detail,
-                ),
-            ),
             # A REJECTED POST: nothing to move or cancel — only take it off the calendar.
             rx.cond(
                 d.can_remove_rejected,
@@ -1575,36 +2180,6 @@ def _detail_dialog() -> rx.Component:
         ),
         open=PlannerState.detail_open,
         on_open_change=PlannerState.set_detail_open,
-    )
-
-
-def _delete_event_dialog() -> rx.Component:
-    return rx.alert_dialog.root(
-        rx.alert_dialog.content(
-            rx.alert_dialog.title("Eliminar publicación cancelada"),
-            rx.alert_dialog.description(
-                "Se quita del calendario. El POST no se modifica y vuelve a «Sin programar» "
-                "para planificarlo de nuevo cuando quieras.",
-                size="2",
-            ),
-            rx.hstack(
-                rx.alert_dialog.cancel(
-                    rx.button("Volver", variant="soft", color_scheme="gray"),
-                ),
-                rx.alert_dialog.action(
-                    rx.button(
-                        "Eliminar",
-                        color_scheme="red",
-                        on_click=PlannerState.confirm_delete_event,
-                    ),
-                ),
-                justify="end",
-                spacing="2",
-                margin_top="1rem",
-            ),
-        ),
-        open=PlannerState.delete_event_open,
-        on_open_change=PlannerState.set_delete_event_open,
     )
 
 
@@ -1764,10 +2339,9 @@ def planner_index() -> rx.Component:
             ),
             spacing="3",
         ),
-        _assign_dialog(),
+        _assign_drawer(),
         _detail_dialog(),
         _cancel_dialog(),
         _delete_tag_dialog(),
-        _delete_event_dialog(),
         _remove_rejected_dialog(),
     )

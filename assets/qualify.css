@@ -739,3 +739,118 @@ body[data-rank-dragging] { cursor: grabbing; }
 @media (prefers-reduced-motion: reduce) {
   .q-flow-switch .rt-SegmentedControlItemLabel { transition: none; }
 }
+
+
+/* ── Drawer (ui.drawer, QUA-118) ───────────────────────────────────────────────
+   A Radix dialog whose content is pinned to the right edge instead of centred:
+   same overlay, Esc, backdrop and focus trap; only the geometry changes. Width
+   comes from `--q-drawer-w` (set by the primitive); a phone gets the whole
+   viewport. `!important` beats the inline `max-height`/`transform` Radix Themes
+   puts on `.rt-DialogContent`. */
+.rt-DialogContent.q-drawer {
+  position: fixed !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: auto !important;
+  margin: 0 !important;
+  width: min(var(--q-drawer-w, 32rem), 100vw) !important;
+  max-width: 100vw !important;
+  height: 100dvh !important;
+  max-height: 100dvh !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  transform: none !important;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--q-elev-overlay);
+  animation: q-drawer-in var(--q-dur) var(--q-ease);
+}
+.q-drawer-head {
+  padding: 1.25rem 1.5rem 0.75rem;
+  border-bottom: 1px solid var(--gray-5);
+}
+.q-drawer-body {
+  padding: 1rem 1.5rem 1.25rem;
+  container-type: inline-size;
+}
+.q-drawer-foot {
+  padding: 0.75rem 1.5rem;
+  border-top: 1px solid var(--gray-5);
+  background: var(--color-panel-solid);
+}
+@keyframes q-drawer-in {
+  from { translate: 100% 0; }
+  to { translate: 0 0; }
+}
+@media (max-width: 640px) {
+  .rt-DialogContent.q-drawer { width: 100vw !important; }
+  .q-drawer-head, .q-drawer-body, .q-drawer-foot { padding-left: 1rem; padding-right: 1rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rt-DialogContent.q-drawer { animation: none; }
+}
+
+/* ── Stepper (ui.stepper, QUA-118) ──────────────────────────────────────────── */
+.q-stepper {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+/* Inside a narrow container (the drawer), only the current step keeps its label: the
+   checks and numbers still say where you are, and each step's `title` repeats the word. */
+@container (max-width: 30rem) {
+  .q-step:not(.q-step--current) .q-step-label { display: none; }
+}
+.q-step {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.35rem;
+  border: none;
+  border-radius: var(--q-radius-control);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.q-step:disabled { cursor: default; }
+.q-step:not(:disabled):hover { background: var(--gray-a3); }
+.q-step-dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  border: 1.5px solid var(--gray-7);
+  color: var(--gray-11);
+  background: var(--color-panel-solid);
+  flex: 0 0 auto;
+}
+.q-step-dot--current {
+  border-color: var(--accent-9);
+  color: var(--accent-11);
+  box-shadow: 0 0 0 3px var(--accent-a4);
+}
+.q-step-dot--done {
+  border-color: var(--accent-9);
+  background: var(--accent-9);
+  color: var(--accent-contrast);
+}
+.q-step-line {
+  flex: 1 1 0.75rem;
+  min-width: 0.5rem;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--gray-6);
+}
+.q-step-line--on { background: var(--accent-8); }
+@media (max-width: 640px) {
+  .q-step-label { display: none; }
+  .q-step--current .q-step-label { display: inline; }
+}

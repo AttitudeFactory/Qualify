@@ -24,7 +24,6 @@ from .planner_provider import (
     ALL_CONNECTIONS,
     cancel_event,
     create_tag,
-    delete_event,
     delete_tag,
     event_detail,
     load_week,
@@ -36,9 +35,16 @@ from .planner_provider import (
     set_event_tags,
 )
 from .planner_vm import (
+    ASSIGN_STEPS,
     AUTO_PUBLISH_UNAVAILABLE,
     CALENDAR_DEFAULT_TZ,
     OPENING_HOUR,
+    REPEAT_BY_COUNT,
+    REPEAT_BY_UNTIL,
+    STEP_ACCOUNTS,
+    STEP_LAST,
+    STEP_POST,
+    STEP_WHEN,
     TAG_SUGGESTIONS,
     VIEW_CALENDAR,
     VIEW_LIST,
@@ -48,9 +54,15 @@ from .planner_vm import (
     HourRowVM,
     OutputChipVM,
     PostOptionVM,
+    PreviewFrameVM,
+    SeriesPreviewVM,
     TagSuggestionVM,
     TagVM,
     TzOptionVM,
+    assign_steps_done,
+    media_label,
+    preview_frames,
+    series_preview,
     timezone_options,
     tz_option,
 )
@@ -60,8 +72,13 @@ logger = logging.getLogger(__name__)
 
 _NO_TENANT = "No hay una sesión activa. Vuelve a iniciar sesión."
 _LOAD_FAILED = "No se pudo cargar el Planificador. Inténtalo de nuevo."
-_FORM_INCOMPLETE = "Completa el POST, la fecha, la hora y la cuenta."
+_FORM_INCOMPLETE = "Completa el POST, la fecha, la hora y al menos una cuenta."
 _OUTPUT_REQUIRED = "Elige qué salida programar (Reel, feed o historia)."
+_POST_REQUIRED = "Elige un POST."
+_ACCOUNT_REQUIRED = "Elige al menos una cuenta compatible."
+_DATE_REQUIRED = "Elige la fecha y la hora."
+_DATE_PAST = "Esa fecha ya pasó. Elige una de hoy en adelante."
+_TIME_PAST = "Esa hora ya pasó. Elige una posterior."
 
 MODE_ASSIGN = "assign"
 SCROLL_ID = "q-planner-scroll"
@@ -145,6 +162,7 @@ class PlannerState(rx.State):
     # is a per-session view choice and is never written back to the tenant.
     view_tz: str = ""
     tenant_tz: str = ""
+    now_hhmm: str = ""  # the view zone's wall-clock time when the week was loaded
     auto_publish: str = AUTO_PUBLISH_UNAVAILABLE
     tz_query: str = ""
     # Planning tags (0025): the tenant's labels and the calendar's tag filter.
@@ -168,6 +186,17 @@ class PlannerState(rx.State):
     # MP-11: the template output being planned ("reel" / "feed" / "story"); "" for a
     # POST planned whole. Preselected to the first output without a live event.
     form_output_port: str = ""
+    # QUA-118: the assign drawer walks four steps (`ASSIGN_STEPS`); `form_step` is the
+    # current one and `form_reached` the furthest one visited (the preview counts as
+    # done only once seen). Accounts are a set (AC 5: one event per account); the
+    # recurrence controls feed `series_preview` (A2/A4: weekly, by count or by date).
+    form_step: int = 0
+    form_reached: int = 0
+    form_connection_ids: list[str] = []
+    form_repeat: bool = False
+    form_repeat_mode: str = REPEAT_BY_COUNT
+    form_repeat_count: str = "4"
+    form_repeat_until: str = ""
 
     # -- detail / cancel ------------------------------------------------------
     detail_open: bool = False
@@ -177,9 +206,7 @@ class PlannerState(rx.State):
     cancel_open: bool = False
     cancel_event_id: str = ""
     # -- delete a tag (confirmation) ------------------------------------------
-    delete_event_open: bool = False
     remove_rejected_open: bool = False  # confirm "Quitar del calendario" (rejected POST)
-    delete_event_id: str = ""
     delete_tag_open: bool = False
     delete_tag_id: str = ""
     delete_tag_name: str = ""
@@ -352,6 +379,192 @@ class PlannerState(rx.State):
                 return chip.note
         return post.readiness_note
 
+    # -- QUA-118: the drawer's steps --------------------------------------------
+
+    @rx.var
+    def form_post_blocked(self) -> str:
+        """D1: why the chosen POST cannot enter the calendar ("" when it can) — the
+        exact evaluator reason, shown as an error in the Post step and blocking it. A
+        reschedule never re-blocks on the POST here (the service re-checks it)."""
+        if self.form_mode == MODE_RESCHEDULE:
+            return ""
+        post = self._form_post()
+        if post is None:
+            return ""
+        if self.form_has_outputs:
+            if not self.form_output_port:
+                return _OUTPUT_REQUIRED
+            for chip in post.outputs:
+                if chip.port == self.form_output_port:
+                    return chip.note
+            return ""
+        return "" if post.schedulable else (post.readiness_note or "El POST no está aprobado.")
+
+    @rx.var
+    def form_post_ok(self) -> bool:
+        if self.form_mode == MODE_RESCHEDULE:
+            return True
+        return bool(self.form_post_id) and self.form_post_blocked == ""
+
+    @rx.var
+    def form_series(self) -> SeriesPreviewVM:
+        """The recurrence as the «Fecha y hora» step reads it (`series_preview`): the
+        occurrences, or why the series cannot be built. A reschedule moves one event,
+        so it never repeats."""
+        return series_preview(
+            self.form_date,
+            repeat=self.form_repeat and self.form_mode == MODE_ASSIGN,
+            mode=self.form_repeat_mode,
+            count_text=self.form_repeat_count,
+            until_iso=self.form_repeat_until,
+        )
+
+    @rx.var
+    def form_date_error(self) -> str:
+        """The date step's own refusals: no date, or a day already gone (the time of
+        day is the service's call — it knows the zone)."""
+        if not self.form_date or not self.form_time:
+            return _DATE_REQUIRED
+        if self.today_iso and self.form_date < self.today_iso:
+            return _DATE_PAST
+        if self.today_iso and self.now_hhmm and self.form_date == self.today_iso:
+            if self.form_time <= self.now_hhmm:
+                return _TIME_PAST
+        return ""
+
+    @rx.var
+    def form_when_ok(self) -> bool:
+        if self.form_date_error:
+            return False
+        return self.form_series.error == "" and self.form_series.count >= 1
+
+    @rx.var
+    def form_selected_accounts(self) -> list[ConnectionChoiceVM]:
+        chosen = set(self.form_connection_ids)
+        return [c for c in self.connections if c.id in chosen and c.compatible]
+
+    @rx.var
+    def form_accounts_ok(self) -> bool:
+        return bool(self.form_selected_accounts)
+
+    @rx.var
+    def form_steps_done(self) -> list[bool]:
+        return assign_steps_done(
+            post_ok=self.form_post_ok,
+            when_ok=self.form_when_ok,
+            accounts_ok=self.form_accounts_ok,
+            reached=self.form_reached,
+        )
+
+    @rx.var
+    def form_step_error(self) -> str:
+        """Why the current step cannot be left yet ("" when it can): the one message the
+        «Siguiente» button is disabled over, next to the thing to fix."""
+        if self.form_step == STEP_POST:
+            if not self.form_post_id and self.form_mode == MODE_ASSIGN:
+                return _POST_REQUIRED
+            return self.form_post_blocked
+        if self.form_step == STEP_WHEN:
+            return self.form_date_error or self.form_series.error
+        if self.form_step == STEP_ACCOUNTS:
+            return "" if self.form_accounts_ok else _ACCOUNT_REQUIRED
+        return ""
+
+    @rx.var
+    def form_step_hint(self) -> str:
+        """The step error as the footer prints it — only when the step body does not
+        already show it in a callout (a blocked POST, a bad series)."""
+        error = self.form_step_error
+        if not error or error == self.form_post_blocked or error == self.form_series.error:
+            return ""
+        return error
+
+    @rx.var
+    def form_can_advance(self) -> bool:
+        return self.form_step_error == "" and self.form_step < STEP_LAST
+
+    @rx.var
+    def form_is_last_step(self) -> bool:
+        return self.form_step == STEP_LAST
+
+    @rx.var
+    def form_step_title(self) -> str:
+        return ASSIGN_STEPS[self.form_step] if 0 <= self.form_step < len(ASSIGN_STEPS) else ""
+
+    @rx.var
+    def form_step_badge(self) -> str:
+        """ "Paso 2 de 4" — the header's pill."""
+        return f"Paso {self.form_step + 1} de {len(ASSIGN_STEPS)}"
+
+    @rx.var
+    def form_media_label(self) -> str:
+        """ "Video · Reel 9:16" — the chosen POST's media for the summary card."""
+        return media_label(self._form_post(), self.form_output_port)
+
+    @rx.var
+    def form_event_count(self) -> int:
+        """How many `calendar_events` «Programar» will create: occurrences × accounts."""
+        if self.form_mode == MODE_RESCHEDULE:
+            return 1
+        return max(self.form_series.count, 1) * len(self.form_selected_accounts)
+
+    @rx.var
+    def form_frames(self) -> list[PreviewFrameVM]:
+        """One frame per chosen account (AC 7): only what will be published there."""
+        return preview_frames(
+            post=self._form_post(),
+            output_port=self.form_output_port,
+            accounts=self.form_selected_accounts,
+        )
+
+    @rx.var
+    def form_when_label(self) -> str:
+        """ "lun 12 oct · 10:00 a. m." for the preview and the confirm step."""
+        if not self.form_date:
+            return ""
+        try:
+            day = date.fromisoformat(self.form_date)
+        except ValueError:
+            return ""
+        hour, minute = split_time(self.form_time)
+        h12 = hour % 12 or 12
+        suffix = "a. m." if hour < 12 else "p. m."
+        weekdays = ("lun", "mar", "mié", "jue", "vie", "sáb", "dom")
+        months = (
+            "ene",
+            "feb",
+            "mar",
+            "abr",
+            "may",
+            "jun",
+            "jul",
+            "ago",
+            "sep",
+            "oct",
+            "nov",
+            "dic",
+        )
+        return (
+            f"{weekdays[day.weekday()]} {day.day} {months[day.month - 1]} · "
+            f"{h12}:{minute:02d} {suffix}"
+        )
+
+    @rx.var
+    def form_post_title_or_chosen(self) -> str:
+        """The POST's title for the summary: the event's on a reschedule, the chosen
+        option's on an assign."""
+        if self.form_mode == MODE_RESCHEDULE:
+            return self.form_post_title
+        post = self._form_post()
+        return post.title if post is not None else ""
+
+    @rx.var
+    def form_submit_label(self) -> str:
+        if self.form_mode == MODE_RESCHEDULE:
+            return "Guardar cambios"
+        n = self.form_event_count
+        return "Programar" if n <= 1 else f"Programar {n} publicaciones"
+
     # -- loading --------------------------------------------------------------
 
     async def _tenant(self):
@@ -401,6 +614,7 @@ class PlannerState(rx.State):
             self.schedulable = data.schedulable
             self.connections = data.connections
             self.tenant_tz = data.tenant_tz
+            self.now_hhmm = data.now_hhmm
             self.auto_publish = data.auto_publish
             self.tags = data.tags
             known = {t.id for t in data.tags}
@@ -418,7 +632,6 @@ class PlannerState(rx.State):
         self.form_open = False
         self.detail_open = False
         self.cancel_open = False
-        self.delete_event_open = False
         self.delete_tag_open = False
         return PlannerState.load
 
@@ -520,43 +733,6 @@ class PlannerState(rx.State):
             if all(t.id != tag.id for t in self.tags):
                 self.tags = sorted([*self.tags, tag], key=lambda t: t.name.lower())
         return tag
-
-    # -- delete a cancelled event ---------------------------------------------
-
-    @rx.event
-    def ask_delete_event(self, event_id: str) -> None:
-        self.delete_event_id = event_id
-        self.delete_event_open = True
-
-    @rx.event
-    def ask_delete_event_from_detail(self) -> None:
-        self.delete_event_id = self.detail.event_id
-        self.delete_event_open = True
-
-    @rx.event
-    def set_delete_event_open(self, value: bool) -> None:
-        self.delete_event_open = value
-
-    @rx.event(background=True)
-    async def confirm_delete_event(self):
-        async with self:
-            event_id = self.delete_event_id
-            self.delete_event_open = False
-        tenant_id = await self._tenant()
-        if tenant_id is None or not event_id:
-            return
-        try:
-            await asyncio.to_thread(delete_event, tenant_id, event_id)
-        except Exception as exc:
-            if not isinstance(exc, PlannerError):
-                logger.error("planner delete_event failed: %s", type(exc).__name__)
-            yield rx.toast.error(planner_error_message(exc))
-            return
-        async with self:
-            self.detail_open = False
-            self.delete_event_id = ""
-        yield rx.toast.success("Publicación eliminada del calendario")
-        yield PlannerState.load
 
     # -- the POST's own review from the dialog ------------------------------------
 
@@ -730,6 +906,15 @@ class PlannerState(rx.State):
         self.form_tag_ids = []
         self.form_tag_query = ""
         self.form_output_port = ""
+        self.form_step = STEP_POST
+        self.form_reached = STEP_POST
+        # The first compatible account is preselected: one account is the common case.
+        first = next((c.id for c in self.connections if c.compatible), "")
+        self.form_connection_ids = [first] if first else []
+        self.form_repeat = False
+        self.form_repeat_mode = REPEAT_BY_COUNT
+        self.form_repeat_count = "4"
+        self.form_repeat_until = ""
 
     def _preselect_output(self) -> None:
         """MP-11: the first output of the chosen POST that has no live event (the next
@@ -746,7 +931,15 @@ class PlannerState(rx.State):
         self._preselect_output()
         default_day = self.today_iso if self._week_contains_today() else self.monday_iso
         self.form_date = day_iso or default_day
+        if self.form_date == self.today_iso and self.now_hhmm:
+            # Today: the next full hour, never a time already gone (09:00 at 21:00 was
+            # a refusal waiting at the last step).
+            hour = min(split_time(self.now_hhmm)[0] + 1, 23)
+            self._set_time(hour, 0)
         self.form_open = True
+        # A POST already chosen (the card's «Asignar») skips straight to the date.
+        if post_id and self.form_post_ok:
+            self._go_to(STEP_WHEN)
 
     @rx.event
     def open_assign_for_post(self, post_id: str) -> None:
@@ -802,22 +995,96 @@ class PlannerState(rx.State):
     def set_form_connection_id(self, value: str) -> None:
         self.form_connection_id = value
 
+    @rx.event
+    def toggle_form_connection(self, connection_id: str) -> None:
+        """«Cuentas»: a checkbox per account. An incompatible account cannot be chosen
+        (its row is disabled; the service would refuse it anyway). A reschedule moves one
+        event, so there the choice replaces instead of accumulating."""
+        if not any(c.id == connection_id and c.compatible for c in self.connections):
+            return
+        if self.form_mode == MODE_RESCHEDULE:
+            self.form_connection_ids = [connection_id]
+            self.form_connection_id = connection_id
+            return
+        self.form_connection_ids = (
+            [c for c in self.form_connection_ids if c != connection_id]
+            if connection_id in self.form_connection_ids
+            else [*self.form_connection_ids, connection_id]
+        )
+
+    @rx.event
+    def set_form_repeat(self, value: bool) -> None:
+        self.form_repeat = bool(value)
+
+    @rx.event
+    def set_form_repeat_mode(self, value: str | list[str]) -> None:
+        chosen = value[0] if isinstance(value, list) and value else value
+        self.form_repeat_mode = REPEAT_BY_UNTIL if chosen == REPEAT_BY_UNTIL else REPEAT_BY_COUNT
+
+    @rx.event
+    def set_form_repeat_count(self, value: str) -> None:
+        self.form_repeat_count = value
+
+    @rx.event
+    def set_form_repeat_until(self, value: str) -> None:
+        self.form_repeat_until = value
+
+    def _go_to(self, step: int) -> None:
+        self.form_step = max(STEP_POST, min(step, STEP_LAST))
+        self.form_reached = max(self.form_reached, self.form_step)
+        self.form_error = ""
+
+    @rx.event
+    def next_step(self) -> None:
+        """«Siguiente»: only past a valid step — the step's own message says otherwise."""
+        if self.form_can_advance:
+            self._go_to(self.form_step + 1)
+
+    @rx.event
+    def prev_step(self) -> None:
+        self._go_to(self.form_step - 1)
+
+    @rx.event
+    def go_to_step(self, step: int) -> None:
+        """The stepper: back to any step already reached (to fix something); never
+        forward past the steps not completed yet."""
+        if step <= self.form_step or (
+            step <= self.form_reached and all(self.form_steps_done[:step])
+        ):
+            self._go_to(step)
+
     @rx.event(background=True)
     async def submit_form(self):
+        """«Programar» / «Guardar cambios» from the Confirmar step. Everything the steps
+        validated is re-validated by the service; a refusal comes back as the error of
+        this step and nothing is created (the plan is atomic, QUA-118 A4)."""
         async with self:
             if self.saving:
                 return
             mode = self.form_mode
             event_id, post_id = self.form_event_id, self.form_post_id
-            day, at, connection_id = self.form_date, self.form_time, self.form_connection_id
+            day, at = self.form_date, self.form_time
+            accounts = tuple(c.id for c in self.form_selected_accounts)
             view_tz, tag_ids = self.view_tz, tuple(self.form_tag_ids)
             output_port = self.form_output_port
-            if (mode == MODE_ASSIGN and not post_id) or not day or not at or not connection_id:
+            series = self.form_series
+            if (mode == MODE_ASSIGN and not post_id) or not day or not at or not accounts:
                 self.form_error = _FORM_INCOMPLETE
                 return
-            if mode == MODE_ASSIGN and self.form_has_outputs and not output_port:
-                self.form_error = _OUTPUT_REQUIRED
+            if mode == MODE_ASSIGN and self.form_post_blocked:
+                self.form_error = self.form_post_blocked
                 return
+            if series.error:
+                self.form_error = series.error
+                return
+            repeat_until = (
+                self.form_repeat_until
+                if series.enabled and self.form_repeat_mode == REPEAT_BY_UNTIL
+                else ""
+            )
+            repeat_count = (
+                series.count if series.enabled and self.form_repeat_mode == REPEAT_BY_COUNT else 0
+            )
             self.saving = True
             self.form_error = ""
         tenant_id = await self._tenant()
@@ -826,22 +1093,26 @@ class PlannerState(rx.State):
                 self.saving = False
                 self.form_error = _NO_TENANT
             return
+        created = 1
         try:
             if mode == MODE_RESCHEDULE:
                 await asyncio.to_thread(
-                    reschedule_event, tenant_id, event_id, day, at, connection_id, view_tz, tag_ids
+                    reschedule_event, tenant_id, event_id, day, at, accounts[0], view_tz, tag_ids
                 )
             else:
-                await asyncio.to_thread(
+                created = await asyncio.to_thread(
                     schedule_post,
                     tenant_id,
                     post_id,
                     day,
                     at,
-                    connection_id,
+                    accounts[0],
                     view_tz,
                     tag_ids,
                     output_port,
+                    accounts,
+                    repeat_until,
+                    repeat_count,
                 )
         except PlannerError as exc:
             async with self:
@@ -858,11 +1129,15 @@ class PlannerState(rx.State):
             self.saving = False
             self.form_open = False
             self.detail_open = False
-            # Jump to the week the event landed in, so the operator sees it appear.
+            # Jump to the week the (first) event landed in, so the operator sees it appear.
             self.monday_iso = day
-        yield rx.toast.success(
-            "Publicación reprogramada" if mode == MODE_RESCHEDULE else "POST programado"
-        )
+        if mode == MODE_RESCHEDULE:
+            message = "Publicación reprogramada"
+        elif created == 1:
+            message = "POST programado"
+        else:
+            message = f"{created} publicaciones programadas"
+        yield rx.toast.success(message)
         yield PlannerState.load
 
     # -- detail -----------------------------------------------------------------
@@ -908,10 +1183,12 @@ class PlannerState(rx.State):
         self.form_date = self.detail.local_date
         self.form_time = self.detail.local_time
         self.form_connection_id = self.detail.connection_id
+        self.form_connection_ids = [self.detail.connection_id] if self.detail.connection_id else []
         self.form_tag_ids = list(self.detail.tag_ids)
         self.form_output_port = self.detail.output_port  # shown, never changed by a move
         self.detail_open = False
         self.form_open = True
+        self._go_to(STEP_WHEN)  # the POST is fixed: a move starts at the date
 
     @rx.event(background=True)
     async def open_reschedule(self, event_id: str):

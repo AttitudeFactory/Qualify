@@ -306,6 +306,15 @@ Iconos por defecto del callout: `error`/`warn` → `triangle-alert`, `ok` → `c
 - Texto largo (captions) truncado con `text_overflow="ellipsis"` a un `max_width` fijo.
 - Envolver en `rx.box(overflow_x="auto")`.
 
+### 5.8 Flujos por pasos: `drawer` y `stepper` (QUA-118, 2026-10-05)
+
+| Primitiva | Cuándo | Notas |
+|---|---|---|
+| `drawer(*children, open=, on_open_change=, title=, description=None, footer=None, width="32rem")` | un flujo más largo que un diálogo, que el operador recorre sin perder la pantalla de fondo: la asignación del Planificador | panel fijado al **borde derecho** (`.q-drawer`, `assets/qualify.css`), ancho fijo en escritorio y **pantalla completa en móvil**; construido sobre `rx.dialog`, así Esc, el clic en el fondo, el focus trap y el ARIA vienen de Radix; el cuerpo se desplaza, título y pie quedan fijos. Uno a la vez, nunca anidado |
+| `stepper(labels, current=, completed=, on_select=None)` | la cabecera de ese flujo: los pasos en orden | check lleno = completado (clicable con `on_select`, para volver a corregir); anillo = actual; número = aún no alcanzado (nunca clicable, así nada se confirma con un paso incompleto). Etiquetas estáticas, estado dinámico. En móvil solo se lee la etiqueta del paso actual |
+
+Reglas del flujo (Planificador, referencia): un paso solo se abandona cuando es válido y el motivo se lee junto a «Siguiente»; el paso de confirmación es donde aterriza la respuesta del servicio (`callout("error")` encima del botón); un rechazo no deja nada a medias. Demo en vivo: `/design` → «Flujo por pasos».
+
 ---
 
 ## 6. Patrones de pantalla

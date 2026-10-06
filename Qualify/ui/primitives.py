@@ -508,3 +508,138 @@ def progress_panel(
         padding="2.5rem 0",
         class_name="q-progress-panel",
     )
+
+
+# ---------------------------------------------------------------------------------------
+# Overlays and multi-step flows (QUA-118)
+# ---------------------------------------------------------------------------------------
+
+
+def drawer(
+    *children: rx.Component,
+    open: rx.Var[bool] | bool,
+    on_open_change: Any,
+    title: str | rx.Var | rx.Component,
+    description: str | rx.Var | None = None,
+    footer: rx.Component | None = None,
+    width: str = "32rem",
+) -> rx.Component:
+    """A panel that slides in from the right edge and stays there while the operator
+    works through something longer than a dialog — the Planificador's assign flow.
+    Built on Radix's dialog, so Esc, the backdrop click, the focus trap and the ARIA
+    wiring come for free; ``.q-drawer`` (assets/qualify.css) only moves the content to
+    the edge: fixed width on a desktop, the full viewport on a phone. The body scrolls;
+    ``title`` and ``footer`` stay put. One drawer at a time, never nested."""
+    body = rx.box(
+        *children,
+        class_name="q-drawer-body",
+        flex="1",
+        min_height="0",
+        overflow_y="auto",
+        width="100%",
+    )
+    head = rx.vstack(
+        rx.hstack(
+            rx.dialog.title(
+                title, margin="0", size="5", as_child=not isinstance(title, (str, rx.Var))
+            ),
+            rx.spacer(),
+            rx.dialog.close(
+                rx.icon_button(
+                    rx.icon("x", size=T.ICON_MD),
+                    variant="ghost",
+                    color_scheme="gray",
+                    size="2",
+                    aria_label="Cerrar",
+                ),
+            ),
+            align="center",
+            width="100%",
+        ),
+        *(
+            [rx.dialog.description(description, size="2", color=T.TEXT_MUTED, margin="0")]
+            if description is not None
+            else []
+        ),
+        spacing="1",
+        width="100%",
+        class_name="q-drawer-head",
+    )
+    parts: list[rx.Component] = [head, body]
+    if footer is not None:
+        parts.append(rx.box(footer, class_name="q-drawer-foot", width="100%"))
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.flex(*parts, direction="column", height="100%", width="100%", gap="0"),
+            class_name="q-drawer",
+            style={"--q-drawer-w": width},
+        ),
+        open=open,
+        on_open_change=on_open_change,
+    )
+
+
+def stepper(
+    labels: list[str],
+    *,
+    current: rx.Var[int] | int,
+    completed: rx.Var[list[bool]],
+    on_select: Callable[[int], Any] | None = None,
+) -> rx.Component:
+    """The steps of a flow, in order: a filled check for a step already completed, the
+    number for the rest, the current one highlighted. A completed step is clickable when
+    ``on_select`` is given (back to fix something); a step not reached yet never is, so
+    nothing can be confirmed with a step missing. Numbers are a fallback, not the
+    point: the label is what reads. Static labels, dynamic state."""
+    items: list[rx.Component] = []
+    for index, label in enumerate(labels):
+        is_current = current == index
+        is_done = completed[index]
+        reachable = is_done | is_current
+        dot = rx.box(
+            rx.cond(
+                is_done,
+                rx.icon("check", size=12, stroke_width=3),
+                rx.text(str(index + 1), size="1", weight="bold", line_height="1"),
+            ),
+            class_name=rx.cond(
+                is_done,
+                "q-step-dot q-step-dot--done",
+                rx.cond(is_current, "q-step-dot q-step-dot--current", "q-step-dot"),
+            ),
+            aria_hidden="true",
+        )
+        text = rx.text(
+            label,
+            size="1",
+            weight=rx.cond(is_current, "bold", "medium"),
+            color=rx.cond(is_current | is_done, T.TEXT_STRONG, T.TEXT_MUTED),
+            class_name="q-step-label",
+        )
+        step = rx.el.button(
+            dot,
+            text,
+            type="button",
+            title=label,
+            class_name=rx.cond(is_current, "q-step q-step--current", "q-step"),
+            aria_current=rx.cond(is_current, "step", "false"),
+            disabled=~reachable if on_select is not None else True,
+            on_click=on_select(index) if on_select is not None else None,
+        )
+        if index:
+            items.append(
+                rx.box(
+                    class_name=rx.cond(
+                        is_done | is_current, "q-step-line q-step-line--on", "q-step-line"
+                    ),
+                    aria_hidden="true",
+                )
+            )
+        items.append(step)
+    return rx.box(
+        *items,
+        class_name="q-stepper",
+        role="list",
+        aria_label="Pasos",
+        width="100%",
+    )

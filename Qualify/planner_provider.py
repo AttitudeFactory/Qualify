@@ -20,8 +20,8 @@ from zoneinfo import ZoneInfo
 from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransition
 from qualify_api.planner.composition import production_planner_service, tenant_timezone
 from qualify_api.planner.embedded import calendar_worker
-from qualify_api.planner.post_reader import PostSummary
-from qualify_api.planner.recurrence import SERIES_CAP
+from qualify_api.planner.post_reader import PostSummary, UnpublishableReason
+from qualify_api.planner.publishable import REASON_TEXT, SCHEDULABLE_PLATFORMS
 from qualify_api.planner.repository import EventRecord
 from qualify_api.planner.service import (
     DuplicateEvent,
@@ -51,6 +51,8 @@ from .creative_provider import default_brand_id
 from .planner_vm import (
     AUTO_PUBLISH_UNAVAILABLE,
     CALENDAR_DEFAULT_TZ,
+    SERIES_MESSAGES,
+    SERIES_UNKNOWN_MESSAGE,
     CardInput,
     ConnectionChoiceVM,
     DayColumnVM,
@@ -99,20 +101,10 @@ class WeekData:
     connections: list[ConnectionChoiceVM] = field(default_factory=list)
     total_events: int = 0
     tenant_tz: str = ""  # the business's own zone — the picker's suggestion
+    now_hhmm: str = ""  # the current wall-clock time in the view zone ("HH:MM")
     tags: list[TagVM] = field(default_factory=list)
     # One of planner_vm.AUTO_PUBLISH_* — worker running here + an active account (QUA-111).
     auto_publish: str = AUTO_PUBLISH_UNAVAILABLE
-
-
-_SERIES_MESSAGES: dict[str, str] = {
-    "end_required": (
-        "Indica cuándo termina la serie: una fecha de fin o un número de ocurrencias "
-        "(solo una de las dos)."
-    ),
-    "count_too_small": "La serie necesita al menos una ocurrencia.",
-    "too_many": f"Una serie admite como máximo {SERIES_CAP} ocurrencias.",
-    "until_before_first": "La fecha de fin de la serie es anterior a la primera publicación.",
-}
 
 
 def planner_error_message(exc: Exception) -> str:
@@ -121,7 +113,7 @@ def planner_error_message(exc: Exception) -> str:
         # QUA-118 D1: the evaluator's exact reason, the same text the card shows.
         return f"Ese POST no se puede planificar: {exc.reason}"
     if isinstance(exc, InvalidSeries):
-        return _SERIES_MESSAGES.get(exc.code, "La serie no es válida. Revisa cómo termina.")
+        return SERIES_MESSAGES.get(exc.code, SERIES_UNKNOWN_MESSAGE)
     messages: list[tuple[type[Exception], str]] = [
         (NoBrand, "Este negocio todavía no tiene una marca configurada."),
         (UnknownPost, "Ese POST ya no está disponible. Actualiza la página."),
@@ -188,8 +180,17 @@ def _connection_index(
         label = f"@{connection.external_username}" if connection.external_username else "Cuenta"
         index[connection.id] = (connection.platform, label)
         if connection.status == "active":
+            compatible = connection.platform in SCHEDULABLE_PLATFORMS
             active.append(
-                ConnectionChoiceVM(id=connection.id, label=label, platform=connection.platform)
+                ConnectionChoiceVM(
+                    id=connection.id,
+                    label=label,
+                    platform=connection.platform,
+                    compatible=compatible,
+                    note=""
+                    if compatible
+                    else REASON_TEXT[UnpublishableReason.CHANNEL_NOT_SUPPORTED],
+                )
             )
     return index, active
 
@@ -200,9 +201,11 @@ def _post_option(
     *,
     zone: ZoneInfo | None = None,
     connections: dict[str, tuple[str, str]] | None = None,
+    video_url: str = "",
 ) -> PostOptionVM:
     """`occupied` is the POST's live event per output (`PlannerService.occupied_outputs`),
-    so each chip can say when and where that output goes out."""
+    so each chip can say when and where that output goes out. `video_url` is the
+    short-lived path of an R2-only video, for the drawer's preview frame."""
     chips = []
     for output in post.outputs:
         event = (occupied or {}).get(output.port)
@@ -232,6 +235,7 @@ def _post_option(
         is_publishable=post.is_publishable,
         unpublishable_reason=post.unpublishable_reason,
         outputs=chips,
+        video_url=video_url,
     )
 
 
@@ -306,7 +310,8 @@ def load_week(
     tenant_tz = tenant_timezone(tenant_id)
     tz_name = view_zone(tenant_id, tz_override)
     zone = ZoneInfo(tz_name)
-    today = datetime.now(UTC).astimezone(zone).date()
+    now_local = datetime.now(UTC).astimezone(zone)
+    today = now_local.date()
     monday = week_start(date.fromisoformat(monday_iso) if monday_iso else today)
 
     index, active = _connection_index(tenant_id)
@@ -335,6 +340,12 @@ def load_week(
     unscheduled = service.list_unscheduled(tenant_id=tenant_id, brand_id=brand_id)
     occupied = service.occupied_outputs(tenant_id=tenant_id, brand_id=brand_id)
     video_urls = _week_video_urls(tenant_id, planned)
+    # The drawer previews the chosen POST: one short-lived URL per schedulable R2 video.
+    option_videos = {
+        str(p.post_id): url
+        for p in schedulable
+        if p.video_object_key and (url := _video_url(tenant_id, p.video_object_key))
+    }
     grid = build_week(
         monday=monday,
         today=today,
@@ -355,12 +366,19 @@ def load_week(
             for p in unscheduled
         ],
         schedulable=[
-            _post_option(p, occupied.get(p.post_id), zone=zone, connections=index)
+            _post_option(
+                p,
+                occupied.get(p.post_id),
+                zone=zone,
+                connections=index,
+                video_url=option_videos.get(str(p.post_id), ""),
+            )
             for p in schedulable
         ],
         connections=active,
         total_events=len(planned),
         tenant_tz=tenant_tz,
+        now_hhmm=now_local.strftime("%H:%M"),
         tags=[_tag_vm(t) for t in service.list_tags(tenant_id=tenant_id)],
         auto_publish=auto_publish_state(
             worker_covers_tenant=calendar_worker().status().covers(tenant_id),
@@ -602,7 +620,6 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
         account_label=account,
         revision=event.revision,
         can_modify=actions.can_modify,
-        can_delete=actions.can_delete,
         can_reject_post=actions.can_reject_post,
         can_remove_rejected=actions.can_remove_rejected,
         detail_href=post.detail_href if post is not None else "",

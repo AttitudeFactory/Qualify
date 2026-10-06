@@ -28,10 +28,35 @@ from importlib import resources
 from pathlib import Path
 from zoneinfo import ZoneInfo, available_timezones
 
+from qualify_api.planner.recurrence import SERIES_CAP, InvalidRecurrence, weekly_days
+
 from .creative_vm import OUTPUT_WORDS, PORT_LABELS
 
 VIEW_CALENDAR = "calendar"
 VIEW_LIST = "list"
+
+# QUA-118: the assign flow's steps, in order. One drawer, four steps — the preview is
+# where «Programar» lives (founder's mock-up, 2026-10-05: the plan in words, the frames,
+# the tags and the button on one screen, so the operator confirms what they see). The
+# reschedule flow walks the same steps with what applies (no recurrence, one account).
+ASSIGN_STEPS: tuple[str, ...] = ("Post", "Fecha y hora", "Cuentas", "Vista previa")
+STEP_POST, STEP_WHEN, STEP_ACCOUNTS, STEP_PREVIEW = range(4)
+STEP_LAST = STEP_PREVIEW
+
+REPEAT_BY_COUNT = "count"
+REPEAT_BY_UNTIL = "until"
+
+# The recurrence refusals, in the operator's words (`recurrence.InvalidRecurrence.code`).
+SERIES_MESSAGES: dict[str, str] = {
+    "end_required": (
+        "Indica cuándo termina la serie: una fecha de fin o un número de ocurrencias "
+        "(solo una de las dos)."
+    ),
+    "count_too_small": "La serie necesita al menos una ocurrencia.",
+    "too_many": f"Una serie admite como máximo {SERIES_CAP} ocurrencias.",
+    "until_before_first": "La fecha de fin de la serie es anterior a la primera publicación.",
+}
+SERIES_UNKNOWN_MESSAGE = "La serie no es válida. Revisa cómo termina."
 
 # Hour rows of the calendar view: one per hour of the day, 00 → 23. The calendar opens
 # scrolled to OPENING_HOUR so the working day is what the operator sees first.
@@ -195,7 +220,6 @@ class EventActions:
     again server-side — this only decides what is shown."""
 
     can_modify: bool  # Reprogramar / Cancelar publicación
-    can_delete: bool  # the trash of a cancelled event ("Eliminar del calendario")
     can_reject_post: bool  # "Rechazar POST"
     can_remove_rejected: bool  # "Quitar del calendario" for a rejected POST
 
@@ -204,7 +228,6 @@ def event_actions(*, status: str, approval: str | None, lifecycle: str | None) -
     rejected = approval == "rejected"
     return EventActions(
         can_modify=status == "scheduled" and not rejected,
-        can_delete=status == "cancelled" and not rejected,
         can_reject_post=status == "scheduled" and lifecycle == "generated",
         can_remove_rejected=rejected and status in ("scheduled", "cancelled"),
     )
@@ -486,11 +509,43 @@ class TagVM:
 
 @dataclass(frozen=True)
 class ConnectionChoiceVM:
-    """An account the operator can plan onto (active connections only)."""
+    """An account the operator can plan onto (active connections only). QUA-118 AC 6:
+    `compatible` says whether the Planificador can publish to its channel; an
+    incompatible one is listed disabled with `note` and never gets an event."""
 
     id: str
     label: str  # "@cuenta"
     platform: str
+    compatible: bool = True
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class SeriesPreviewVM:
+    """What the «Fecha y hora» step says about the recurrence being set up: how many
+    occurrences, on which days, or why the series cannot be built. `count == 1` with
+    `enabled=False` is a single publication."""
+
+    enabled: bool = False
+    count: int = 1
+    dates: list[str] = field(default_factory=list)  # "lun 12 oct", in order
+    summary: str = ""  # "Semanal · 4 veces · del 12 oct al 2 nov"
+    error: str = ""  # "" when valid
+
+
+@dataclass(frozen=True)
+class PreviewFrameVM:
+    """One account's frame in the «Vista previa» step: what will be published there,
+    in the shape that channel shows it (a static mock, never a Meta rendering)."""
+
+    account_label: str
+    platform: str
+    kind_label: str  # "Reel", "Feed 4:5", "Historia", "Galería", "Publicación"
+    aspect: str  # CSS aspect-ratio: "9 / 16", "4 / 5", "1 / 1"
+    thumbnail_url: str
+    video_url: str
+    ratio_label: str = ""  # "9:16" — the aspect as people say it
+    media_label: str = ""  # "Video" / "Imagen"
 
 
 @dataclass(frozen=True)
@@ -596,6 +651,11 @@ class PostOptionVM:
     outputs: list[OutputChipVM] = field(default_factory=list)
     has_outputs: bool = False
     next_port: str = ""
+    # QUA-118: the raw category (the preview frame's shape) and whether the POST may be
+    # planned at all (D1: approved and publishable — `readiness_note` says why not).
+    category: str = ""
+    schedulable: bool = False
+    video_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -616,7 +676,6 @@ class EventDetailVM:
     account_label: str = ""
     revision: int = 0
     can_modify: bool = False
-    can_delete: bool = False  # cancelled → removable from the calendar
     can_reject_post: bool = False  # the POST is in review → "Rechazar POST"
     can_remove_rejected: bool = False  # the POST is rejected → "Quitar del calendario"
     detail_href: str = ""
@@ -798,6 +857,7 @@ def build_post_option(
     is_publishable: bool,
     unpublishable_reason: str,
     outputs: Iterable[OutputChipVM] = (),
+    video_url: str = "",
 ) -> PostOptionVM:
     ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
     chips = list(outputs)
@@ -815,7 +875,139 @@ def build_post_option(
         outputs=chips,
         has_outputs=bool(chips),
         next_port=next((chip.port for chip in chips if not chip.scheduled), ""),
+        category=category or "",
+        schedulable=approval == "approved" and is_publishable,
+        video_url=video_url,
     )
+
+
+# ---------------------------------------------------------------------------
+# QUA-118: the assign drawer's pure pieces (tested without Reflex)
+
+
+def _short_day(day: date) -> str:
+    return f"{_WEEKDAYS[day.weekday()].lower()} {day.day} {_MONTHS[day.month - 1]}"
+
+
+def series_preview(
+    first_day_iso: str,
+    *,
+    repeat: bool,
+    mode: str,
+    count_text: str,
+    until_iso: str,
+) -> SeriesPreviewVM:
+    """The «Fecha y hora» step's reading of the recurrence controls — the same rule the
+    service applies (`recurrence.weekly_days`), so the step never promises a series
+    the backend will refuse. Not repeating → one occurrence, no summary."""
+    if not repeat:
+        return SeriesPreviewVM()
+    try:
+        first_day = date.fromisoformat(first_day_iso)
+    except ValueError:
+        return SeriesPreviewVM(enabled=True, count=0, error="Elige primero la fecha.")
+    try:
+        if mode == REPEAT_BY_UNTIL:
+            if not until_iso:
+                return SeriesPreviewVM(enabled=True, count=0, error="Elige la fecha de fin.")
+            days = weekly_days(first_day, until=date.fromisoformat(until_iso))
+        else:
+            try:
+                count = int(count_text.strip() or "0")
+            except ValueError:
+                count = 0
+            days = weekly_days(first_day, count=count)
+    except ValueError as exc:  # InvalidRecurrence is a ValueError; a bad until_iso too
+        code = exc.code if isinstance(exc, InvalidRecurrence) else ""
+        return SeriesPreviewVM(
+            enabled=True, count=0, error=SERIES_MESSAGES.get(code, SERIES_UNKNOWN_MESSAGE)
+        )
+    n = len(days)
+    times = "1 vez" if n == 1 else f"{n} veces"
+    span = (
+        f"el {_short_day(days[0])}"
+        if n == 1
+        else f"del {_short_day(days[0])} al {_short_day(days[-1])}"
+    )
+    return SeriesPreviewVM(
+        enabled=True,
+        count=n,
+        dates=[_short_day(d) for d in days],
+        summary=f"Semanal · {times} · {span}",
+    )
+
+
+def assign_steps_done(
+    *,
+    post_ok: bool,
+    when_ok: bool,
+    accounts_ok: bool,
+    reached: int,
+) -> list[bool]:
+    """Which steps count as completed: the three input steps by their own validity AND
+    only once reached (a defaulted date or a preselected account is not a step the
+    operator completed); never the last one — confirming is the act, not a state. A
+    later step is never done while an earlier one is not, so the stepper cannot show a
+    gap. `reached` is the furthest step visited."""
+    done = [
+        post_ok,
+        post_ok and when_ok and reached >= STEP_WHEN,
+        post_ok and when_ok and accounts_ok and reached >= STEP_ACCOUNTS,
+    ]
+    done.append(False)
+    return done
+
+
+def frame_shape(category: str, output_port: str) -> tuple[str, str]:
+    """(kind label, CSS aspect ratio) for a preview frame: the template output when the
+    event publishes one, else the POST's category."""
+    if output_port == "reel":
+        return "Reel", "9 / 16"
+    if output_port == "story":
+        return "Historia", "9 / 16"
+    if output_port == "feed":
+        return "Feed 4:5", "4 / 5"
+    if category in ("reel", "tiktok_video"):
+        return "Reel", "9 / 16"
+    if category == "story":
+        return "Historia", "9 / 16"
+    if category == "galeria":
+        return "Galería", "1 / 1"
+    return "Publicación", "4 / 5"
+
+
+def preview_frames(
+    *,
+    post: PostOptionVM | None,
+    output_port: str,
+    accounts: Iterable[ConnectionChoiceVM],
+) -> list[PreviewFrameVM]:
+    if post is None:
+        return []
+    kind, aspect = frame_shape(post.category, output_port)
+    return [
+        PreviewFrameVM(
+            account_label=account.label,
+            platform=account.platform,
+            kind_label=kind,
+            aspect=aspect,
+            thumbnail_url=post.thumbnail_url,
+            video_url=post.video_url,
+            ratio_label=aspect.replace(" / ", ":"),
+            media_label="Video" if post.video_url else "Imagen",
+        )
+        for account in accounts
+    ]
+
+
+def media_label(post: PostOptionVM | None, output_port: str) -> str:
+    """ "Video · Reel 9:16" — the POST's media as the summary card prints it."""
+    if post is None:
+        return ""
+    kind, aspect = frame_shape(post.category, output_port)
+    medium = "Video" if post.video_url else "Imagen"
+    ratio = aspect.replace(" / ", ":")
+    return f"{medium} · {kind}" + ("" if ratio in kind else f" {ratio}")
 
 
 def build_output_chip(
