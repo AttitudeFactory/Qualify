@@ -1,5 +1,10 @@
 import reflex as rx
 
+# `api_url` / `deploy_url` are deliberately NOT set here: Reflex reads every Config field from
+# a `REFLEX_<FIELD>` env var, so local dev keeps the localhost defaults while production sets
+# REFLEX_API_URL / REFLEX_DEPLOY_URL to the public origin (deploy/docker-compose.prod.yml, and
+# as a build arg for the static frontend export in deploy/Dockerfile). Frontend, backend and
+# FastAPI share that one origin behind Caddy, so no `cors_allowed_origins` is needed either.
 config = rx.Config(
     app_name="Qualify",
     db_url="sqlite:///reflex.db",

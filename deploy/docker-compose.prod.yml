@@ -1,0 +1,248 @@
+# Qualify production stack for ONE host (Hetzner CX22, Ubuntu 24.04). Runbook (Spanish):
+# docs/despliegue-hetzner.md. Always invoke with the server's env file, which provides
+# both the ${...} interpolation below and the containers' runtime secrets:
+#
+#   docker compose --env-file /opt/qualify/.env.prod -f deploy/docker-compose.prod.yml up -d --build
+#
+# Only Caddy publishes ports (80/443). Postgres and Redis are reachable on the internal
+# compose network only — never published, never reachable from the internet.
+#
+# Optional services, OFF unless their profile is enabled (COMPOSE_PROFILES in .env.prod):
+#   calendar-worker  QUA-111 executor — PUBLISHES FOR REAL to connected accounts.
+#   render           Remotion render service (Node + headless Chrome, ~1 GB RAM under load).
+
+name: ${COMPOSE_PROJECT_NAME:-qualify-prod}
+
+x-app-image: &app-image
+  image: qualify-app:${QUALIFY_IMAGE_TAG:-latest}
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+    target: app
+
+# Environment shared by every Python service. DSNs are ASSEMBLED here from the per-role
+# passwords so a password lives in exactly one variable (and is rotated in one place).
+# Passwords must be URL-safe (the docs generate them with `openssl rand -hex 24`).
+x-app-env: &app-env
+  QUALIFY_APP_DSN: postgresql+psycopg://qualify_app:${QUALIFY_DB_APP_PASSWORD:?set in .env.prod}@postgres:5432/qualify
+  QUALIFY_ADMIN_DSN: postgresql+psycopg://qualify_admin:${QUALIFY_DB_ADMIN_PASSWORD:?set in .env.prod}@postgres:5432/qualify
+  QUALIFY_CREDENTIAL_DSN: postgresql+psycopg://qualify_credential:${QUALIFY_DB_CREDENTIAL_PASSWORD:?set in .env.prod}@postgres:5432/qualify
+  QUALIFY_REDIS_URL: redis://redis:6379/0
+  # One public origin for everything (Caddy routes by path).
+  QUALIFY_PUBLIC_MEDIA_BASE_URL: ${QUALIFY_PUBLIC_URL:?set in .env.prod}
+  QUALIFY_META_REDIRECT_URI: ${QUALIFY_META_REDIRECT_URI:-${QUALIFY_PUBLIC_URL}/api/connections/callback}
+  QUALIFY_RENDER_URL: http://render:3200
+  REFLEX_API_URL: ${QUALIFY_PUBLIC_URL}
+  REFLEX_DEPLOY_URL: ${QUALIFY_PUBLIC_URL}
+  # Secrets whose CODE DEFAULT is a committed dev value (crypto.py, config.py): a missing
+  # one would not fail — it would silently run production on the dev key. Re-stating them
+  # with `:?` makes `docker compose` refuse to start instead.
+  QUALIFY_DEV_FERNET_KEY: ${QUALIFY_DEV_FERNET_KEY:?set in .env.prod (credential master key)}
+  QUALIFY_OAUTH_STATE_SECRET: ${QUALIFY_OAUTH_STATE_SECRET:?set in .env.prod}
+  QUALIFY_META_APP_ID: ${QUALIFY_META_APP_ID:?set in .env.prod}
+  QUALIFY_META_APP_SECRET: ${QUALIFY_META_APP_SECRET:?set in .env.prod}
+  QUALIFY_SUPABASE_URL: ${QUALIFY_SUPABASE_URL:?set in .env.prod}
+  QUALIFY_SUPABASE_PUBLISHABLE_KEY: ${QUALIFY_SUPABASE_PUBLISHABLE_KEY:?set in .env.prod}
+  # Dev-only escape hatches, forced empty whatever the env file says.
+  QUALIFY_AUTH_FAKE: ""
+  QUALIFY_AUTH_FAKE_STATE_PATH: ""
+
+x-app-env-file: &app-env-file
+  env_file:
+    - path: ${QUALIFY_ENV_FILE:-/opt/qualify/.env.prod}
+      required: true
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: qualify
+      # The owner role IS the bootstrap superuser of this container, exactly like the dev
+      # compose: migrations run as it, the app never does (it uses the three roles below).
+      POSTGRES_USER: qualify_owner
+      POSTGRES_PASSWORD: ${QUALIFY_DB_OWNER_PASSWORD:?set in .env.prod}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qualify_owner -d qualify"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    shm_size: 256m
+    <<: *logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # OAuth state, refresh locks, media tokens: short-lived by design, but an RDB snapshot
+    # keeps an in-flight OAuth round trip alive across a container restart.
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    <<: *logging
+
+  # One-shot: schema (Alembic, as qualify_owner) + production role passwords. `up` waits
+  # for it to exit 0 before starting api/reflex, so a failed migration never serves traffic.
+  migrate:
+    <<: [*app-image, *app-env-file, *logging]
+    restart: "no"
+    environment:
+      <<: *app-env
+      QUALIFY_MIGRATION_DSN: postgresql+psycopg://qualify_owner:${QUALIFY_DB_OWNER_PASSWORD}@postgres:5432/qualify
+    command:
+      - sh
+      - -c
+      - alembic upgrade head && python deploy/bootstrap_db_roles.py
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: [*app-image, *app-env-file, *logging]
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+    command:
+      - uvicorn
+      - --factory
+      - qualify_api.http.app:create_app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
+    volumes:
+      - uploads:/data/uploaded_files
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  reflex:
+    <<: [*app-image, *app-env-file, *logging]
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+      # The embedded calendar worker (QUA-111) is FORCED off here: a deploy must never start
+      # publishing as a side effect. Publishing runs only in the `calendar-worker` profile.
+      QUALIFY_CALENDAR_WORKER: "off"
+      # One worker process with Reflex's default (disk) state manager. Per-tab state —
+      # including the login, which lives only in backend state (Qualify/auth_state.py) — is
+      # pickled to /app/.states, kept on a volume so a deploy does not log everyone out.
+      # Scaling past one worker needs REFLEX_REDIS_URL (shared state) first.
+      GRANIAN_WORKERS: "1"
+    command: ["reflex", "run", "--env", "prod", "--backend-only", "--backend-port", "8000"]
+    volumes:
+      - uploads:/data/uploaded_files
+      - avatars:/data/avatars
+      - reflex_states:/app/.states
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ping', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 60s
+
+  caddy:
+    image: qualify-web:${QUALIFY_IMAGE_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: web
+      args:
+        QUALIFY_PUBLIC_URL: ${QUALIFY_PUBLIC_URL}
+    restart: unless-stopped
+    environment:
+      QUALIFY_DOMAIN: ${QUALIFY_DOMAIN:?set in .env.prod}
+      QUALIFY_ACME_EMAIL: ${QUALIFY_ACME_EMAIL:?set in .env.prod}
+    ports:
+      - "${QUALIFY_HTTP_PORT:-80}:80"
+      - "${QUALIFY_HTTPS_PORT:-443}:443"
+      - "${QUALIFY_HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_started
+      reflex:
+        condition: service_started
+    <<: *logging
+
+  # --- optional -------------------------------------------------------------------------
+
+  # QUA-111 calendar executor. PUBLISHES FOR REAL. Enable deliberately:
+  #   COMPOSE_PROFILES=calendar-worker   (in .env.prod), then `just deploy` / `up -d`.
+  calendar-worker:
+    <<: [*app-image, *app-env-file, *logging]
+    profiles: ["calendar-worker"]
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+    command:
+      - python
+      - -m
+      - qualify_api.planner.worker
+      - ${QUALIFY_CALENDAR_WORKER_SCOPE:---all-tenants}
+    volumes:
+      - uploads:/data/uploaded_files
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  # Remotion render service (packages/render). Needed only by the template generator.
+  render:
+    profiles: ["render"]
+    build: ../packages/render
+    image: qualify-render:${QUALIFY_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      PORT: "3200"
+      RENDER_CONCURRENCY: "1"
+      RENDERS_DIR: /data/renders
+      ASSETS_DIR: /data/assets
+      TEMPLATES_DIR: /app/templates
+      RENDERS_TTL_HOURS: "24"
+      LOG_LEVEL: info
+    volumes:
+      - renders:/data
+    <<: *logging
+
+volumes:
+  pgdata:
+  redisdata:
+  uploads:
+  avatars:
+  reflex_states:
+  renders:
+  caddy_data:
+  caddy_config:
