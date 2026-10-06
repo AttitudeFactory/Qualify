@@ -192,13 +192,15 @@ def test_the_font_file_toast_says_whether_it_is_open_source() -> None:
 
 
 class _Upload:
-    name = "Huge-Bold.ttf"
-
-    def __init__(self, data: bytes) -> None:
+    def __init__(self, data: bytes, name: str = "Huge-Bold.ttf", size: int | None = None) -> None:
         self._data = data
+        self.name = name
+        self.size = size
+        self.read_sizes: list[int] = []
 
-    async def read(self) -> bytes:
-        return self._data
+    async def read(self, size: int = -1) -> bytes:
+        self.read_sizes.append(size)
+        return self._data if size < 0 else self._data[:size]
 
 
 async def test_a_font_above_the_cap_is_refused_before_it_is_written(
@@ -332,3 +334,43 @@ def test_a_typed_family_cannot_add_parameters_to_the_stylesheet_url() -> None:
     family = url.split("family=", 1)[1].split(":wght", 1)[0]
     assert family == "Inter%26family%3DOtra%23x+100%25"
     assert url.count("&") == 1 and url.endswith("&display=swap")
+
+
+async def test_an_upload_is_read_only_up_to_the_cap_and_refused_by_its_size(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """PR #86 review: an oversized file is never read whole into memory."""
+    state = BrandWizardState()
+
+    class _Session:
+        session_tenant_id = str(UUID(int=1))
+
+    async def get_state(_self: Any, _cls: type) -> _Session:
+        return _Session()
+
+    monkeypatch.setattr(BrandWizardState, "get_state", get_state)
+    monkeypatch.setattr(wiz.rx, "get_upload_dir", lambda: tmp_path)
+
+    declared = _Upload(b"x" * 50, size=50)  # the upload says how big it is: not read at all
+    assert await BrandWizardState._stage_logo_file(state, [declared], "f", max_bytes=10) is None
+    assert declared.read_sizes == []
+    undeclared = _Upload(b"x" * 50)  # it does not: read one byte past the cap, no more
+    assert await BrandWizardState._stage_logo_file(state, [undeclared], "f", max_bytes=10) is None
+    assert undeclared.read_sizes == [11]
+
+
+@pytest.mark.parametrize(
+    ("raw", "safe"),
+    [
+        ("../../etc/passwd", "passwd"),
+        (r"..\..\Windows\win.ini", "win.ini"),
+        ("..", "archivo"),
+        (".hidden.ttf", "hidden.ttf"),
+        ("Café Bold.otf", "Café Bold.otf"),
+        ("a;b|c.ttf", "a_b_c.ttf"),
+        (None, "archivo"),
+    ],
+)
+def test_a_staged_name_never_leaves_the_tenant_folder(raw: str | None, safe: str) -> None:
+    """PR #86 review: the file name is the client's — only its last component, cleaned."""
+    assert wiz._safe_upload_name(raw) == safe

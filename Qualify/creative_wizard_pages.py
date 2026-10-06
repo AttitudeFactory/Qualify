@@ -46,9 +46,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -111,6 +112,21 @@ def _finish_background_task(task: asyncio.Task) -> None:
 
 
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
+#: What an uploaded file's name may keep in its staged key: letters (any script),
+#: digits, spaces, dots, dashes and underscores.
+_UNSAFE_NAME_CHARS = re.compile(r"[^\w .-]+")
+
+
+def _safe_upload_name(raw: str | None) -> str:
+    """The name a dropped file is staged under: its last path component only, without
+    separators, control characters or leading dots, so a crafted name can never write
+    outside the tenant's folder (PR #86 review). Reflex already reduces it to a
+    basename; this does not rely on that."""
+    name = PurePath((raw or "").replace("\\", "/")).name
+    name = _UNSAFE_NAME_CHARS.sub("_", name).lstrip(". ")[-120:]
+    return name or "archivo"
+
+
 _UPLOAD_FAILED = "No se pudo leer el archivo. Inténtalo de nuevo."
 _FONT_TOO_LARGE = (
     f"El archivo de fuente pesa más de {brand_fonts.MAX_FONT_BYTES // (1024 * 1024)} MB."
@@ -818,15 +834,20 @@ class BrandWizardState(rx.State):
             self.logo_error = _NO_SESSION
             return None
         upload = files[0]
+        # refused before it is read when the upload says its size; otherwise read at
+        # most one byte past the cap — never the whole of an oversized file
+        if max_bytes is not None and (getattr(upload, "size", None) or 0) > max_bytes:
+            self.logo_error = too_large
+            return None
         try:
-            data = await upload.read()
+            data = await (upload.read() if max_bytes is None else upload.read(max_bytes + 1))
         except Exception:
             self.logo_error = _UPLOAD_FAILED
             return None
         if max_bytes is not None and len(data) > max_bytes:
             self.logo_error = too_large
             return None
-        name = upload.name or "logo"
+        name = _safe_upload_name(upload.name)
         key = f"uploads/{tenant_id}/{folder}/{uuid4().hex}_{name}"
         target = rx.get_upload_dir() / key
         target.parent.mkdir(parents=True, exist_ok=True)
