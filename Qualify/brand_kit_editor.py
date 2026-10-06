@@ -495,7 +495,7 @@ def _results_view() -> rx.Component:
             ),
             # § request 2026-10-05: a referente, a competitor or a detractor the search
             # did not find, added by hand — the wizard's own form (`_manual_section`)
-            _manual_section(),
+            _manual_section(with_chips=False),
             spacing="5",
             width="100%",
             max_width=_RESULTS_COLUMN_MAX,

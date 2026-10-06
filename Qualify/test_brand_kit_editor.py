@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 from . import brand_finish
@@ -149,3 +150,24 @@ def test_a_tone_moved_off_its_defaults_counts_as_configured() -> None:
     assert state.tone_is_custom() is False
     state.tone_sober_enthusiastic = TONE_DEFAULT + 20
     assert state.tone_is_custom() is True
+
+
+def test_no_pills_over_the_manual_button_and_an_x_on_each_ranked_card() -> None:
+    """§ request 2026-10-05: no pills above "Agrégalo a mano" in the Brand Kit; a ✕ on the
+    ranking's cards takes an account out instead."""
+    from . import brand_kit_editor as editor
+
+    assert "remove_manual" not in str(wiz._manual_section(with_chips=False))
+    assert "remove_manual" in str(wiz._manual_section())  # the wizard keeps its pills
+    assert "Quitar del ranking" in str(wiz._ranking_panel())
+    assert "with_chips=False" in Path(editor.__file__).read_text(encoding="utf-8")
+
+
+def test_the_x_takes_a_searched_account_out_of_its_bucket() -> None:
+    state = wiz.BrandConnectState()
+    state.account_buckets = {"TikTok:@a": "referente", "TikTok:@b": "competencia"}
+    state.manual_message = "Agregamos @a a Referentes."
+    fired = wiz.BrandConnectState.remove_manual.fn(state, "TikTok:@a")
+    assert state.account_buckets == {"TikTok:@b": "competencia"}
+    assert state.manual_message == ""  # no "Agregamos…" left for an account that is gone
+    assert "sync_labels" in str(fired)

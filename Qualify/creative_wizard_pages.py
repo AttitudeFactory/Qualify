@@ -4646,12 +4646,15 @@ class BrandConnectState(rx.State):
 
     @rx.event
     def remove_manual(self, key: str) -> rx.event.EventSpec:
-        """Take a manual referente out: its label is cleared (`sync_labels`), and a card
-        with no label is not shown — the stored card stays for provenance only."""
+        """Take an account out of its bucket — a manual one, or (§ request 2026-10-05,
+        the ✕ on a ranking card) one the search found: its label is cleared
+        (`sync_labels`), and a card with no label is not shown in the ranking — the
+        stored card stays for provenance only, and a searched one can be sorted again."""
         buckets = dict(self.account_buckets)
         buckets.pop(key, None)
         self.account_buckets = buckets
         self.kept_accounts = [c for c in self.kept_accounts if _account_key(c) != key]
+        self.manual_message = ""  # "Agregamos…" must not outlive the account it names
         return BrandConnectState.sync_labels
 
     @rx.event(background=True)
@@ -6424,6 +6427,21 @@ def _rank_card(item: rx.Var[dict[str, str]], bucket: str) -> rx.Component:
                         color=T.tone_color("accent", 11),
                     ),
                 ),
+                rx.spacer(),
+                # § request 2026-10-05: the ✕ that takes it out of the ranking (a button,
+                # so `rank-drag.js` neither drags nor opens the profile from it)
+                rx.tooltip(
+                    rx.icon_button(
+                        rx.icon("x", size=12),
+                        on_click=BrandConnectState.remove_manual(item["key"]),
+                        variant="ghost",
+                        color_scheme="gray",
+                        size="1",
+                        radius="full",
+                        aria_label="Quitar " + item["handle"].to(str) + " del ranking",
+                    ),
+                    content="Quitar del ranking",
+                ),
                 align="center",
                 width="100%",
             ),
@@ -7306,10 +7324,21 @@ def _manual_form() -> rx.Component:
     )
 
 
-def _manual_section() -> rx.Component:
+def _manual_section(*, with_chips: bool = True) -> rx.Component:
     """Agregar a mano (§ request 2026-09-25): an account the search cannot find —
     little activity, few followers, or not on TikTok / Instagram at all — added by
-    handle, link or plain name, then reviewed by Claude like the search's."""
+    handle, link or plain name, then reviewed by Claude like the search's. The Brand Kit
+    editor passes `with_chips=False` (§ request 2026-10-05): its added accounts show —
+    and are taken out with their ✕ — in the ranking right above, not as pills here."""
+    chips = rx.cond(
+        BrandConnectState.manual_accounts.length() > 0,
+        rx.flex(
+            rx.foreach(BrandConnectState.manual_accounts, _manual_chip),
+            wrap="wrap",
+            gap="2",
+            width="100%",
+        ),
+    )
     return rx.vstack(
         rx.cond(
             BrandConnectState.manual_message != "",
@@ -7319,15 +7348,7 @@ def _manual_section() -> rx.Component:
                 callout(BrandConnectState.manual_message, "ok"),
             ),
         ),
-        rx.cond(
-            BrandConnectState.manual_accounts.length() > 0,
-            rx.flex(
-                rx.foreach(BrandConnectState.manual_accounts, _manual_chip),
-                wrap="wrap",
-                gap="2",
-                width="100%",
-            ),
-        ),
+        *([chips] if with_chips else []),
         rx.cond(
             BrandConnectState.manual_open,
             card(_manual_form(), padding="1rem", width="100%"),
