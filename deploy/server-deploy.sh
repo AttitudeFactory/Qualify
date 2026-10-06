@@ -39,6 +39,10 @@ read -r -a request <<<"${SSH_ORIGINAL_COMMAND:-$*}"
 sha=${request[1]}
 [[ $sha =~ ^[0-9a-f]{40}$ ]] || die "not a full commit sha: $sha"
 [[ -f $ENV_FILE ]] || die "$ENV_FILE is missing"
+# One CI deploy at a time on this host: the workflow serializes its own runs, this also
+# covers a manual run of the forced command. (`just deploy` from the Mac does not take it.)
+exec 9>"$ROOT/.deploy.lock"
+flock -n 9 || die "another deploy is running on this server"
 # CI publishes qualify-app and qualify-web only. qualify-render joins with punto 6 of the
 # plan; until then a stack with the `render` profile is deployed with `just deploy`.
 profiles=$( (grep -E '^COMPOSE_PROFILES=' "$ENV_FILE" || true) | tail -n 1 | cut -d= -f2-)
@@ -86,7 +90,10 @@ dc up -d --no-build --remove-orphans
 ln -sfn "$release" "$ROOT/current"
 echo "==> $ROOT/current -> $sha"
 
-(cd "$ROOT/releases" && ls -1t | tail -n +$((KEEP_RELEASES + 1)) | xargs -r rm -rf)
+# Prune by mtime, keeping the newest KEEP_RELEASES — and never the live one: a rollback
+# reuses an old release dir, so its mtime is refreshed first and it is skipped explicitly.
+touch "$release"
+(cd "$ROOT/releases" && ls -1t | { grep -vxF "$sha" || true; } | tail -n +"$KEEP_RELEASES" | xargs -r rm -rf)
 docker image prune -f >/dev/null
 
 "$release/deploy/healthcheck.sh" "$ENV_FILE"
