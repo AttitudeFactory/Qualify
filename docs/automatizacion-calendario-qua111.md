@@ -57,13 +57,21 @@ Configuración (variables de entorno, leídas al arrancar; `.env` sirve):
 
 **Cuenta sin conexión activa.** El tenant no se descubre. Si igualmente llega a un tick (por un worker restringido), el ejecutor comprueba la conexión antes del claim y devuelve `NOT_READY` con `reason=connection_not_active`: el evento sigue `scheduled`, sin error, sin intento y sin fallo, igual que un POST sin aprobar. Se publica en el primer tick después de reconectar la cuenta.
 
-**Aviso del Planificador** (modal del evento):
+**Aviso del Planificador** (panel del evento):
 
 | Estado | Mensaje |
 |---|---|
 | Worker activo y la cuenta tiene una conexión activa | "Publicación automática activa…" |
 | Worker activo y sin conexión activa | Aviso: conectar una cuenta en Conexiones |
 | Worker no activo (apagado, mal configurado o restringido a otros tenants) | Aviso: el servicio de publicación automática no está disponible |
+
+**Cómo sabe el Planificador que hay un worker activo (latido, QUA-118 2026-10-06).** Antes solo preguntaba al worker embebido de *su propio* proceso. En producción ese worker está forzado a `off` y la publicación corre en el contenedor `calendar-worker`, así que la pantalla decía "no está disponible" aunque el servicio funcionara. Ahora **todo worker —embebido o CLI, incluido `--once` por cron— deja un latido por tick en Redis** (`qualify:calendar-worker:heartbeats`, un campo por proceso con su alcance, intervalo, hora del último tick y error del tick). El Planificador considera activo el servicio para un tenant si el worker embebido lo cubre **o** algún latido:
+
+- es reciente: más joven que 3 intervalos + 30 s (con 60 s, 3,5 min) — un tick lento no apaga el aviso, un worker caído lo apaga en minutos;
+- su último tick no falló entero (`TickReport.error`, p. ej. no pudo listar tenants);
+- su alcance es `all` o incluye al tenant.
+
+Leer o escribir el latido nunca lanza: si Redis falla, el tick sigue y la pantalla cae en "no disponible". Módulo: `planner/heartbeat.py`; tests: `test_planner_heartbeat.py`.
 
 **Base de desarrollo compartida con los tests.** Con el valor por defecto, el worker local también procesa los tenants que dejan los tests `db` (hoy unos 200, con cientos de eventos en `publishing` sobre conexiones sin credenciales). No pueden llegar a Meta sin credenciales, pero cada tick tarda unos 50 s en recorrerlos. Mientras corren los tests `db`, conviene levantar la app con `QUALIFY_CALENDAR_WORKER=off` para que el worker no compita con ellos.
 

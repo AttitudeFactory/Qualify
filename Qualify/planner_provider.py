@@ -21,6 +21,7 @@ from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransit
 from qualify_api.planner.composition import production_planner_service, tenant_timezone
 from qualify_api.planner.embedded import calendar_worker
 from qualify_api.planner.gallery import gallery_state
+from qualify_api.planner.heartbeat import production_heartbeat_store, worker_covers
 from qualify_api.planner.post_reader import PostSummary, UnpublishableReason
 from qualify_api.planner.publishable import (
     REASON_TEXT,
@@ -464,7 +465,8 @@ def load_week(
         now_hhmm=now_local.strftime("%H:%M"),
         tags=[_tag_vm(t) for t in service.list_tags(tenant_id=tenant_id)],
         auto_publish=auto_publish_state(
-            worker_covers_tenant=calendar_worker().status().covers(tenant_id),
+            worker_covers_tenant=calendar_worker().status().covers(tenant_id)
+            or worker_covers(production_heartbeat_store(), tenant_id),
             has_active_connection=bool(active),
         ),
     )
