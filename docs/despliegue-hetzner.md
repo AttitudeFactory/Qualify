@@ -144,7 +144,7 @@ En el servidor directamente:
 
 ```bash
 cd /opt/qualify/current
-alias dc='docker compose --env-file /opt/qualify/.env.prod -f deploy/docker-compose.prod.yml'
+alias dc='docker compose --env-file /opt/qualify/.env.prod $(test -f deploy/release.env && echo --env-file deploy/release.env) -f deploy/docker-compose.prod.yml'
 dc ps
 dc logs -f --tail=200 api
 dc restart reflex
@@ -154,6 +154,54 @@ dc exec postgres psql -U qualify_owner qualify
 Se conservan los últimos 5 releases en `/opt/qualify/releases`. Revertir código es re-desplegar un SHA anterior; **revertir un esquema no**: si un release trajo una migración, el anterior debe ser compatible con el esquema nuevo (expandir → contraer en dos deploys), o restaurar un respaldo (§8).
 
 Cambiar un secreto: editar `/opt/qualify/.env.prod` y `just deploy` (o `dc run --rm migrate && dc up -d` en el servidor; el `migrate` es lo que aplica una contraseña de base de datos cambiada a su rol). Cambiar `QUALIFY_PUBLIC_URL` exige reconstruir (`--build`): está horneada en el frontend estático.
+
+### 7.1 Deploy desde GitHub Actions (CD) — opcional, lo activa el fundador
+
+Con esto montado, Actions construye `qualify-app` y `qualify-web` para un commit, las publica en GHCR (`ghcr.io/attitudefactory/qualify-{app,web}:<sha>`) y el servidor sólo hace `pull` → `migrate` → `up`. **Nunca compila en producción.** El workflow es `.github/workflows/deploy.yml` y el lado del servidor es `deploy/server-deploy.sh`. `just deploy` desde la Mac sigue funcionando igual y se puede alternar con el CD.
+
+Montaje (una vez):
+
+1. **Llave de deploy, sólo para esto.** En la Mac:
+   ```bash
+   ssh-keygen -t ed25519 -N '' -C qualify-ci-deploy -f ~/.ssh/qualify_ci_deploy
+   ```
+2. **Script fijo en el servidor.** Hacer primero un `just deploy` de un `main` que ya incluya `deploy/server-deploy.sh`, y después:
+   ```bash
+   ssh deploy@<IP> 'install -D -m 755 /opt/qualify/current/deploy/server-deploy.sh /opt/qualify/bin/server-deploy.sh'
+   ```
+   Vive fuera de `releases/` a propósito: un deploy no puede reemplazar el comando que la llave tiene permitido. Si el script cambia en el repo, se reinstala con el mismo comando.
+3. **Restringir la llave** en `~deploy/.ssh/authorized_keys` del servidor, en **una** línea:
+   ```
+   command="/opt/qualify/bin/server-deploy.sh",restrict ssh-ed25519 AAAA…(contenido de qualify_ci_deploy.pub)… qualify-ci-deploy
+   ```
+   Esa llave sólo puede pedir `deploy <sha>`: sin shell, sin túneles, sin pty. Ojo: `deploy` está en el grupo `docker`, que equivale a root, y por eso la restricción importa.
+4. **Permiso de lectura de GHCR en el servidor.** Las imágenes son privadas. Crear un token *classic* con sólo `read:packages` (GitHub Packages no acepta tokens *fine-grained*), con vencimiento, y:
+   ```bash
+   ssh deploy@<IP> 'docker login ghcr.io -u <usuario-github> --password-stdin' <<<"<token>"
+   ```
+5. **Secretos del repositorio** (*Settings → Secrets and variables → Actions*):
+
+   | Secreto | Valor |
+   |---|---|
+   | `QUALIFY_DEPLOY_SSH_KEY` | contenido de `~/.ssh/qualify_ci_deploy` (la mitad **privada**) |
+   | `QUALIFY_DEPLOY_SSH_TARGET` | `deploy@<IP>` |
+   | `QUALIFY_DEPLOY_SSH_KNOWN_HOSTS` | salida de `ssh-keyscan -t ed25519 <IP>`, después de comparar su huella con `ssh deploy@<IP> ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` |
+
+6. **Primer deploy manual:** *Actions → deploy → Run workflow* (ref `main`). Debe terminar con los tres chequeos `ok` en el servidor y el smoke externo en verde.
+7. **Opcional, deploy automático:** variable de repositorio `QUALIFY_AUTO_DEPLOY=true`. Con ella, cada run de `ci` en verde sobre `main` (después de un merge) despliega solo.
+
+Operación:
+
+| Tarea | Cómo |
+|---|---|
+| Desplegar un commit | *Run workflow* con su sha o rama |
+| Revertir | *Run workflow* con el sha anterior (sus imágenes siguen en GHCR) |
+| Ver qué imágenes corren | `cat /opt/qualify/current/deploy/release.env` |
+| Comandos a mano en el servidor | el alias `dc` de arriba, que ya agrega `--env-file deploy/release.env` cuando existe (sin él, Compose buscaría `qualify-app:latest` y compilaría en el servidor) |
+
+Límites:
+- **Perfil `render`:** el CD se niega si `COMPOSE_PROFILES` incluye `render`, porque su imagen todavía no se publica (punto 6 del plan). Mientras tanto, ese caso se despliega con `just deploy`.
+- **`calendar-worker`:** el CD no lo toca. Los perfiles salen sólo de `.env.prod`.
 
 ## 8. Respaldos de Postgres
 
@@ -179,7 +227,7 @@ En el servidor, con el stack arriba:
 
 ```bash
 cd /opt/qualify/current
-alias dc='docker compose --env-file /opt/qualify/.env.prod -f deploy/docker-compose.prod.yml'
+alias dc='docker compose --env-file /opt/qualify/.env.prod $(test -f deploy/release.env && echo --env-file deploy/release.env) -f deploy/docker-compose.prod.yml'
 dc stop api reflex calendar-worker
 dc exec -T postgres psql -U qualify_owner -d postgres -c 'DROP DATABASE qualify WITH (FORCE);'
 dc exec -T postgres psql -U qualify_owner -d postgres -c 'CREATE DATABASE qualify OWNER qualify_owner;'
