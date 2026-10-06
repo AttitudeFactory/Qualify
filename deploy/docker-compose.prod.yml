@@ -1,8 +1,10 @@
 # Qualify production stack for ONE host (Hetzner CX23/CX33, Ubuntu 24.04). Runbook (Spanish):
 # docs/despliegue-hetzner.md. Always invoke with the server's env file, which provides
-# both the ${...} interpolation below and the containers' runtime secrets:
+# both the ${...} interpolation below and the containers' runtime secrets — and migrate
+# FIRST: `up` alone never runs `migrate` (own profile, not a dependency; see that service):
 #
-#   docker compose --env-file /opt/qualify/.env.prod -f deploy/docker-compose.prod.yml up -d --build
+#   dc() { docker compose --env-file /opt/qualify/.env.prod -f deploy/docker-compose.prod.yml "$@"; }
+#   dc build && dc run --rm -T migrate && dc up -d
 #
 # Only Caddy publishes ports (80/443). Postgres and Redis are reachable on the internal
 # compose network only — never published, never reachable from the internet.
