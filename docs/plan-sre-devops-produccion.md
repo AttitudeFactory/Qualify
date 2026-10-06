@@ -91,7 +91,7 @@ Job `ci` / `docker-deploy`:
 - **Qué hace:** construye `web` y `app` sin publicarlos, con caché de GHA (`scope=deploy`), y después corre dos smoke tests: el backend de Reflex arranca y responde `/ping` 200, y Caddy sirve `/`, `/login` y una ruta dinámica.
 - **Cuándo corre:** en PRs que tocan alguna entrada de las imágenes (`deploy/**`, `Qualify/**`, `packages/*/src/**`, locks, `rxconfig.py`, `assets/**`, `migrations/**`) y siempre en `main`. Un PR sólo de docs no lo corre.
 
-Un Dockerfile roto, o una página que rompe `reflex export`, se descubre en el PR y ya no en el servidor de producción. Entra en la lista de checks que exige `just merge` (y en `infra/github/ruleset-main.json`); cuando se salta, el check queda `skipped` y cuenta como verde. **Efecto en PRs abiertos antes de este cambio:** no tienen ese check, así que `just merge` los rechaza hasta que se les mergee `main` (o se fuerza con `--admin`).
+Un Dockerfile roto, o una página que rompe `reflex export`, se descubre en el PR y ya no en el servidor de producción. Entra en la lista de checks que exige `just merge` (y en `infra/github/ruleset-main.json`), junto con `changes`. Cuando se salta, el check queda `skipped` y cuenta como verde, así que `changes` también tiene que ser requerido: si fallara, `docker-deploy` y `node-render` se saltarían y pasarían como verdes. **Efecto en PRs abiertos antes de este cambio:** no tienen ese check, así que `just merge` los rechaza hasta que se les mergee `main` (o se fuerza con `--admin`).
 
 ## 6. Reglas para quien ejecute este plan
 
