@@ -125,6 +125,16 @@ Un POST del motor de plantillas (`docs/plan-mvp-plantillas-remotion.md` §2.2) d
 - **Ejecutor:** `EventExecutor` pide al lector el puerto del evento y entrega al `PublishService` la salida con su `media_product_type`. El intento (`publish_attempts`) queda trazable a la salida por `calendar_events.publish_attempt_id` + `output_port` y por el log `calendar.started … output_port=`; no se añadió ninguna columna a `publish_attempts`. La clave de idempotencia sigue siendo `cal:{event_id}:{revision}`, distinta por evento, así que tres salidas son tres intentos.
 - **Planificador (UI):** la tarjeta de «Sin programar» muestra un chip por salida con su estado («Reel · sin programar», «Feed · lun 12 · 12:00 p. m. · @bianki», «Historia · publicada»); «Asignar» añade el control **Salida** (Reel 9:16 · Feed 4:5 · Historia 9:16, preseleccionada la primera sin programar); en el calendario y la lista el evento lleva la palabra de su salida, porque el mismo POST aparece hasta tres veces en la semana.
 
+### Destino del evento y metas del plan (QUA-118 v2, 2026-10-06)
+
+La categoría del POST deja de decidir sola dónde sale: es el **origen** (qué contenido es) y el **evento** decide el **destino**.
+
+- **`calendar_events.destination`** (migración 0041, `text NULL`, `post` / `reel` / `story`). La regla única es `publishable.destination_options`, verificada contra la referencia *IG User Media* de Meta guardada en `reference/meta-instagram-platform`: una imagen → **Publicación** (solo entre 4:5 y 1.91:1) o **Historia**; un vídeo → **Reel** o **Historia** (desde el 2023-11-09 la API no publica vídeo de feed: un vídeo en el feed *es* un reel, así que «Publicación» no se ofrece); un carrusel → solo **Publicación** (una historia es un solo archivo y un reel no va dentro de un carrusel). La duración de un vídeo no se guarda, así que el límite de 60 s de una historia de vídeo es un **aviso**, nunca un bloqueo.
+- **Relleno:** los eventos existentes toman el destino de lo que ya publicaban (su salida MP-11 o su categoría), así que ninguno cambia de comportamiento; `NULL` solo queda para un evento cuyo POST ya no existe y conserva la regla anterior.
+- **Lectura publicable y ejecutor:** `EventExecutor` pasa `destination` del evento a `PostReader.get_publishable`; con destino, `media_product_type` sale de `destination_product_type(destino, forma de los medios)` (y una imagen de publicación fuera del rango de Meta es `IMAGE_RATIO_NOT_ALLOWED`); sin destino, la regla de categoría/puerto queda intacta. La procedencia del intento lleva `("destination", …)`.
+- **`calendar_events.goals`** (migración 0042, `text[] NOT NULL DEFAULT '{}'`, solo `likes` / `views` / `comments` / `ads` / `followers` / `engagement`): las metas del plan con el que se creó el evento, guardadas en **cada** evento para el análisis posterior; editables desde el panel del evento (`PlannerService.set_event_goals`, no sube `revision`). Ambas migraciones son aditivas (regla expandir → contraer del deploy).
+- **Serie semanal en varios días:** `recurrence.weekly_days_on` + `PlannerService.schedule_weekly` — cada día elegido desde la fecha de inicio, N semanas, misma hora; todo-o-nada y el mismo tope de 12 ocurrencias.
+
 ---
 
 ## 4. Por qué nunca se publica dos veces
