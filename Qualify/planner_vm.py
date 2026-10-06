@@ -28,6 +28,8 @@ from importlib import resources
 from pathlib import Path
 from zoneinfo import ZoneInfo, available_timezones
 
+from .creative_vm import OUTPUT_WORDS, PORT_LABELS
+
 VIEW_CALENDAR = "calendar"
 VIEW_LIST = "list"
 
@@ -53,6 +55,28 @@ _MONTHS_LONG = (
     "noviembre",
     "diciembre",
 )
+
+# MP-11: what a template output's chip says about its planning state, by event status.
+OUTPUT_UNSCHEDULED = "sin programar"
+OUTPUT_NOT_PUBLISHABLE = "no publicable"
+_OUTPUT_STATE: dict[str, tuple[str, str]] = {
+    "publishing": ("publicando", "info"),
+    "published": ("publicada", "ok"),
+}
+
+
+def output_label(port: str | None) -> str:
+    """The word a card or chip prints for a template output ("Reel" / "Feed" /
+    "Historia"); "" for a whole-POST event."""
+    if not port:
+        return ""
+    return OUTPUT_WORDS.get(port, port.title())
+
+
+def output_long_label(port: str) -> str:
+    """The output's full name for the «Salida» control ("Reel 9:16")."""
+    return PORT_LABELS.get(port, port.title())
+
 
 # (long label, short label for the compact calendar card, tone)
 _APPROVAL_LABEL: dict[str, tuple[str, str, str]] = {
@@ -451,6 +475,20 @@ class ConnectionChoiceVM:
 
 
 @dataclass(frozen=True)
+class OutputChipVM:
+    """One template output of a POST as the Sin programar card and the «Salida»
+    control show it (MP-11): «Feed · lun 12:00 @bianki», «Historia · sin programar»."""
+
+    port: str  # "reel" / "feed" / "story"
+    label: str  # "Reel 9:16" — the «Salida» control
+    word: str  # "Reel" — the chip
+    state_label: str  # "sin programar" / "lun 12:00 · @bianki" / "publicada" / "no publicable"
+    tone: str  # neutral / ok / info / warn
+    scheduled: bool  # has a live event (scheduled / publishing / published)
+    note: str = ""  # why this output cannot be published yet ("" when it can)
+
+
+@dataclass(frozen=True)
 class EventCardVM:
     event_id: str
     post_id: str
@@ -476,6 +514,9 @@ class EventCardVM:
     readiness_note: str = ""  # why the POST cannot be published yet ("" when it can)
     # The POST's R2-only video: the card shows its first frame instead of a placeholder.
     video_url: str = ""
+    # MP-11: "Reel" / "Feed" / "Historia" when the event publishes one template output;
+    # "" for a whole-POST event. The same POST shows up to three times in a week.
+    output_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -530,6 +571,12 @@ class PostOptionVM:
     detail_href: str
     approval_short: str = ""
     readiness_note: str = ""  # why the POST cannot be published yet ("" when it can)
+    # MP-11: the POST's template outputs with their planning state; empty for a POST
+    # planned whole. `next_port` is the first output without a live event — what the
+    # «Salida» control preselects.
+    outputs: list[OutputChipVM] = field(default_factory=list)
+    has_outputs: bool = False
+    next_port: str = ""
 
 
 @dataclass(frozen=True)
@@ -567,6 +614,9 @@ class EventDetailVM:
     connection_id: str = ""
     tags: list[TagVM] = field(default_factory=list)
     tag_ids: list[str] = field(default_factory=list)
+    # MP-11: the output this event publishes ("" for the whole POST), and its word.
+    output_port: str = ""
+    output_label: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -597,6 +647,7 @@ class CardInput:
     unpublishable_reason: str = ""  # `PostSummary.unpublishable_reason`
     video_url: str = ""  # backend path of the POST's R2-only video (`r2_media`), or ""
     expired: bool = False  # QUA-115: `PlannedEvent.expired` — past the execution window
+    output_port: str | None = None  # MP-11: `EventRecord.output_port`
 
 
 def event_readiness(
@@ -651,6 +702,7 @@ def build_card(
         # is the detail dialog's (`EXPIRED_NOTE` via `EventDetailVM.expired`).
         readiness_note=ready.note,
         video_url=item.video_url,
+        output_label=output_label(item.output_port),
     )
 
 
@@ -725,8 +777,10 @@ def build_post_option(
     detail_href: str,
     is_publishable: bool,
     unpublishable_reason: str,
+    outputs: Iterable[OutputChipVM] = (),
 ) -> PostOptionVM:
     ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
+    chips = list(outputs)
     return PostOptionVM(
         post_id=post_id,
         title=title,
@@ -738,4 +792,40 @@ def build_post_option(
         detail_href=detail_href,
         approval_short=ready.short,
         readiness_note=ready.note,
+        outputs=chips,
+        has_outputs=bool(chips),
+        next_port=next((chip.port for chip in chips if not chip.scheduled), ""),
+    )
+
+
+def build_output_chip(
+    *,
+    port: str,
+    is_publishable: bool,
+    unpublishable_reason: str,
+    event_status: str | None,
+    when_label: str = "",
+    account_label: str = "",
+) -> OutputChipVM:
+    """One output's chip (MP-11). `event_status` is the live event's, or None when the
+    output has none. A scheduled output reads «lun 12:00 · @bianki»; an unscheduled one
+    that cannot be published yet reads «no publicable» with the reason as its note."""
+    if event_status is None:
+        if is_publishable:
+            state, tone, note = OUTPUT_UNSCHEDULED, "neutral", ""
+        else:
+            state, tone, note = OUTPUT_NOT_PUBLISHABLE, "warn", unpublishable_reason
+    elif event_status in _OUTPUT_STATE:
+        (state, tone), note = _OUTPUT_STATE[event_status], ""
+    else:
+        state = " · ".join(part for part in (when_label, account_label) if part) or "programada"
+        tone, note = "ok", ""
+    return OutputChipVM(
+        port=port,
+        label=output_long_label(port),
+        word=output_label(port),
+        state_label=state,
+        tone=tone,
+        scheduled=event_status is not None,
+        note=note,
     )

@@ -21,17 +21,21 @@ from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransit
 from qualify_api.planner.composition import production_planner_service, tenant_timezone
 from qualify_api.planner.embedded import calendar_worker
 from qualify_api.planner.post_reader import PostSummary
+from qualify_api.planner.repository import EventRecord
 from qualify_api.planner.service import (
+    DuplicateEvent,
     EventConflict,
     EventNotModifiable,
     InactiveConnection,
     InvalidSchedule,
     InvalidTag,
+    OutputRequired,
     PlannedEvent,
     PlannerError,
     PostNotRejected,
     PostNotSchedulable,
     UnknownEvent,
+    UnknownOutput,
     UnknownPost,
     UnknownTag,
     compose_instant,
@@ -52,6 +56,7 @@ from .planner_vm import (
     PostOptionVM,
     TagVM,
     auto_publish_state,
+    build_output_chip,
     build_post_option,
     build_week,
     category_label,
@@ -60,6 +65,7 @@ from .planner_vm import (
     event_actions,
     event_readiness,
     month_label,
+    output_label,
     status_label,
     time_label_12h,
     week_label,
@@ -124,6 +130,15 @@ def planner_error_message(exc: Exception) -> str:
             EventConflict,
             "Alguien más modificó este evento al mismo tiempo. Actualiza y vuelve a intentarlo.",
         ),
+        (
+            OutputRequired,
+            "Este POST tiene varias salidas (Reel, feed, historia): elige cuál programar.",
+        ),
+        (UnknownOutput, "Ese POST no tiene esa salida. Actualiza la página."),
+        (
+            DuplicateEvent,
+            "Esa salida ya está programada en esa cuenta a esa misma hora.",
+        ),
     ]
     for kind, message in messages:
         if isinstance(exc, kind):
@@ -155,7 +170,33 @@ def _connection_index(
     return index, active
 
 
-def _post_option(post: PostSummary) -> PostOptionVM:
+def _post_option(
+    post: PostSummary,
+    occupied: dict[str | None, EventRecord] | None = None,
+    *,
+    zone: ZoneInfo | None = None,
+    connections: dict[str, tuple[str, str]] | None = None,
+) -> PostOptionVM:
+    """`occupied` is the POST's live event per output (`PlannerService.occupied_outputs`),
+    so each chip can say when and where that output goes out."""
+    chips = []
+    for output in post.outputs:
+        event = (occupied or {}).get(output.port)
+        when, account = "", ""
+        if event is not None and zone is not None:
+            local = event.scheduled_at.astimezone(zone)
+            when = f"{_WEEKDAY_SHORT[local.weekday()]} {local.day} · {time_label_12h(local)}"
+            account = (connections or {}).get(str(event.connection_id), ("", ""))[1]
+        chips.append(
+            build_output_chip(
+                port=output.port,
+                is_publishable=output.is_publishable,
+                unpublishable_reason=output.unpublishable_reason,
+                event_status=event.status if event is not None else None,
+                when_label=when,
+                account_label=account,
+            )
+        )
     return build_post_option(
         post_id=str(post.post_id),
         title=post.title,
@@ -166,7 +207,11 @@ def _post_option(post: PostSummary) -> PostOptionVM:
         detail_href=post.detail_href,
         is_publishable=post.is_publishable,
         unpublishable_reason=post.unpublishable_reason,
+        outputs=chips,
     )
+
+
+_WEEKDAY_SHORT = ("lun", "mar", "mié", "jue", "vie", "sáb", "dom")
 
 
 def _tag_vm(tag) -> TagVM:
@@ -207,6 +252,7 @@ def _card_input(planned: PlannedEvent, video_urls: dict[str, str] | None = None)
         is_publishable=post.is_publishable if post is not None else False,
         unpublishable_reason=post.unpublishable_reason if post is not None else "",
         video_url=(video_urls or {}).get(str(event.post_id), ""),
+        output_port=event.output_port,
     )
 
 
@@ -256,6 +302,7 @@ def load_week(
     )
     schedulable = service.list_schedulable(tenant_id=tenant_id, brand_id=brand_id)
     unscheduled = service.list_unscheduled(tenant_id=tenant_id, brand_id=brand_id)
+    occupied = service.occupied_outputs(tenant_id=tenant_id, brand_id=brand_id)
     video_urls = _week_video_urls(tenant_id, planned)
     grid = build_week(
         monday=monday,
@@ -272,8 +319,14 @@ def load_week(
         today_iso=today.isoformat(),
         days=grid.days,
         rows=grid.rows,
-        unscheduled=[_post_option(p) for p in unscheduled],
-        schedulable=[_post_option(p) for p in schedulable],
+        unscheduled=[
+            _post_option(p, occupied.get(p.post_id), zone=zone, connections=index)
+            for p in unscheduled
+        ],
+        schedulable=[
+            _post_option(p, occupied.get(p.post_id), zone=zone, connections=index)
+            for p in schedulable
+        ],
         connections=active,
         total_events=len(planned),
         tenant_tz=tenant_tz,
@@ -317,7 +370,10 @@ def schedule_post(
     connection_id: str,
     tz_override: str = "",
     tag_ids: tuple[str, ...] = (),
+    output_port: str = "",
 ) -> None:
+    """`output_port` (MP-11) names the template output to plan ("reel" / "feed" /
+    "story"); "" plans the whole POST."""
     brand_id = _require_brand(tenant_id)
     tz_name = view_zone(tenant_id, tz_override)
     user_id = acting_user_id(tenant_id)
@@ -332,6 +388,7 @@ def schedule_post(
         scheduled_at=_parse_instant(day, at, tz_name),
         scheduled_tz=tz_name,
         user_id=user_id,
+        output_port=output_port or None,
     )
     if tag_ids:
         service.set_event_tags(
@@ -489,4 +546,6 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
         connection_id=str(event.connection_id),
         tags=[_tag_vm(t) for t in planned.tags],
         tag_ids=[str(t.id) for t in planned.tags],
+        output_port=event.output_port or "",
+        output_label=output_label(event.output_port),
     )

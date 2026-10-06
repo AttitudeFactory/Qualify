@@ -112,8 +112,18 @@ El ejecutor lee el POST con `PostReader.get_publishable()` ([`planner/publishabl
 
 - aprobado, y `revision == approved_revision` (una edición posterior a la aprobación bloquea);
 - variante elegida legible: el caption es `CopyPayload.rendered_caption()`;
-- categoría: `galeria` (1 imagen → IMAGE, 2–10 → CAROUSEL), `reel` (1 vídeo → REELS), `story` (1 vídeo → STORIES). No se publican la story de imagen, `tiktok_video`, ni una categoría nula o desconocida;
+- categoría: `galeria` (1 imagen → IMAGE, 2–10 → CAROUSEL), `reel` (1 vídeo → REELS), `story` (1 vídeo → STORIES). No se publican `tiktok_video` ni una categoría nula o desconocida. La story de **imagen** no entra por la categoría sino por la salida `story` de un POST del motor de plantillas (sección siguiente);
 - media en R2 bajo `t/{tenant_id}/…`, con `content_type` (`image/jpeg`, `video/mp4` o `video/quicktime`) y posiciones únicas.
+
+### Eventos por salida (MP-11)
+
+Un POST del motor de plantillas (`docs/plan-mvp-plantillas-remotion.md` §2.2) deja varias salidas en `image_assets`, nombradas por `output_port` (migración 0038): un Reel 9:16 en vídeo, un feed 4:5 y una historia 9:16 en imagen. Evaluado entero, ese paquete no es ninguna forma publicable (`category=reel` + vídeo + dos imágenes → `UNSUPPORTED_SHAPE`), así que **se programa y publica por salida** — el contrato que pidió `docs/ux-plantillas-en-el-post.md` §3.5:
+
+- **`calendar_events.output_port`** (migración 0040, `text NULL`). `NULL` = el POST entero, el comportamiento de todos los eventos anteriores. Un POST con salidas lleva **un evento por salida**, a la misma hora o a distinta; una reprogramación nunca cambia la salida.
+- **`PlannerService.schedule(output_port=…)`** valida que el puerto exista entre las salidas del POST (`PostSummary.outputs`) — un POST con salidas exige un puerto (`OutputRequired`), uno sin salidas solo admite `None` (`UnknownOutput`) — y rechaza un segundo evento vivo para la misma `(POST, salida, cuenta, instante)` (`DuplicateEvent`). El POST sigue en «Sin programar» mientras alguna salida no tenga evento vivo.
+- **Lectura publicable:** `PostReader.get_publishable(output_port=…)` entrega **solo** los `image_assets` de ese puerto (renumerados desde la posición 0) y `media_product_type` sale del **puerto**, no de la categoría: `reel` → REELS (un vídeo), `feed` → IMAGE (una imagen), `story` → STORIES (una imagen o un vídeo; el publicador publica stories de imagen desde QUA-113). Un puerto desconocido o con el tipo de archivo equivocado es `UNSUPPORTED_SHAPE` con el puerto en el detalle. Sin puerto, la regla anterior queda intacta.
+- **Ejecutor:** `EventExecutor` pide al lector el puerto del evento y entrega al `PublishService` la salida con su `media_product_type`. El intento (`publish_attempts`) queda trazable a la salida por `calendar_events.publish_attempt_id` + `output_port` y por el log `calendar.started … output_port=`; no se añadió ninguna columna a `publish_attempts`. La clave de idempotencia sigue siendo `cal:{event_id}:{revision}`, distinta por evento, así que tres salidas son tres intentos.
+- **Planificador (UI):** la tarjeta de «Sin programar» muestra un chip por salida con su estado («Reel · sin programar», «Feed · lun 12 · 12:00 p. m. · @bianki», «Historia · publicada»); «Asignar» añade el control **Salida** (Reel 9:16 · Feed 4:5 · Historia 9:16, preseleccionada la primera sin programar); en el calendario y la lista el evento lleva la palabra de su salida, porque el mismo POST aparece hasta tres veces en la semana.
 
 ---
 
@@ -232,5 +242,5 @@ stateDiagram-v2
 
 ## 8. Verificación
 
-- Tests: `test_planner_executor.py`, `test_planner_db.py` (Postgres real, concurrencia con hilos y barreras), `test_planner_publishable.py`, `test_planner_worker.py`, `test_planner_thumbnail.py`, `test_publishing_service.py` y `test_publishing_client.py`.
+- Tests: `test_planner_executor.py`, `test_planner_db.py` (Postgres real, concurrencia con hilos y barreras; MP-11: un POST con tres salidas → tres eventos → `evaluate` da REELS / IMAGE / STORIES y el ejecutor arranca el Reel desde su propio puerto), `test_planner_publishable.py` (matriz por puerto, historia de imagen), `test_planner_service.py` (puerto obligatorio, duplicados, «Sin programar» por salida), `test_planner_worker.py`, `test_planner_thumbnail.py`, `test_publishing_service.py`, `test_publishing_client.py` y, en `Qualify/`, `test_planner_ui.py` (chips, control «Salida», preselección).
 - E2E real en localhost (2026-09-27, PuntoServis, @qualifymkt.co): dos Reels publicados de principio a fin (`scheduled → publishing → published`), un intento por evento, caption idéntico en Graph y un tick posterior sin efecto. El worker se validó en local con `--once` y en bucle, sin publicar.

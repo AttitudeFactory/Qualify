@@ -23,11 +23,14 @@ from qualify_api.planner.post_reader import (
 )
 from qualify_api.planner.publishable import REASON_TEXT, MediaCandidate, PostCandidate, evaluate
 from qualify_api.planner.service import (
+    DuplicateEvent,
     EventConflict,
     EventNotModifiable,
     InactiveConnection,
     InvalidSchedule,
+    OutputRequired,
     PostNotSchedulable,
+    UnknownOutput,
     compose_instant,
 )
 
@@ -49,6 +52,8 @@ from .planner_vm import (
     EXPIRED_NOTE,
     HOUR_ROW_KEYS,
     OPENING_HOUR,
+    OUTPUT_NOT_PUBLISHABLE,
+    OUTPUT_UNSCHEDULED,
     TAG_SUGGESTIONS,
     VIEW_CALENDAR,
     VIEW_LIST,
@@ -59,12 +64,14 @@ from .planner_vm import (
     EventDetailVM,
     HourCellVM,
     HourRowVM,
+    OutputChipVM,
     PostOptionVM,
     TagVM,
     approval_label,
     approval_short,
     auto_publish_state,
     build_card,
+    build_output_chip,
     build_post_option,
     build_week,
     category_label,
@@ -74,6 +81,7 @@ from .planner_vm import (
     hour_row_for,
     hour_row_label,
     month_label,
+    output_label,
     readiness,
     status_label,
     time_label_12h,
@@ -841,3 +849,172 @@ def test_status_label_expired_flag() -> None:
     assert status_label("scheduled", overdue=True, expired=True) == ("Venció", "warn")
     assert status_label("scheduled", overdue=True) == ("Venció sin aprobación", "warn")
     assert status_label("scheduled", overdue=False) == ("Programado", "info")
+
+
+# --- MP-11: one event per template output ---------------------------------------------
+
+
+def _chip(port: str, *, scheduled: bool = False, publishable: bool = True) -> OutputChipVM:
+    return build_output_chip(
+        port=port,
+        is_publishable=publishable,
+        unpublishable_reason=""
+        if publishable
+        else "Los archivos del POST todavía no están listos.",
+        event_status="scheduled" if scheduled else None,
+        when_label="lun 28 · 12:00 p. m." if scheduled else "",
+        account_label="@bianki" if scheduled else "",
+    )
+
+
+def _package(post_id: str = "pkg", **chips: bool) -> PostOptionVM:
+    return build_post_option(
+        post_id=post_id,
+        title="Shawarma mixto · promo",
+        caption_excerpt="",
+        thumbnail_url=None,
+        category="reel",
+        approval="approved",
+        detail_href="/drafts/pkg",
+        is_publishable=True,
+        unpublishable_reason="",
+        outputs=[
+            _chip("reel", scheduled=chips.get("reel", False)),
+            _chip("feed", scheduled=chips.get("feed", False)),
+            _chip("story", scheduled=chips.get("story", False)),
+        ],
+    )
+
+
+def test_output_chips_say_the_output_and_its_planning_state() -> None:
+    unscheduled = _chip("feed")
+    assert (unscheduled.word, unscheduled.label) == ("Feed", "Feed 4:5")
+    assert (unscheduled.state_label, unscheduled.tone, unscheduled.scheduled) == (
+        OUTPUT_UNSCHEDULED,
+        "neutral",
+        False,
+    )
+    scheduled = _chip("story", scheduled=True)
+    assert scheduled.word == "Historia" and scheduled.scheduled
+    assert (scheduled.state_label, scheduled.tone) == ("lun 28 · 12:00 p. m. · @bianki", "ok")
+    blocked = _chip("reel", publishable=False)
+    assert (blocked.state_label, blocked.tone) == (OUTPUT_NOT_PUBLISHABLE, "warn")
+    assert blocked.note.startswith("Los archivos")
+    published = build_output_chip(
+        port="reel", is_publishable=True, unpublishable_reason="", event_status="published"
+    )
+    assert (published.state_label, published.tone, published.scheduled) == ("publicada", "ok", True)
+
+
+def test_a_package_option_knows_its_outputs_and_the_next_one_to_plan() -> None:
+    fresh = _package()
+    assert fresh.has_outputs and [c.port for c in fresh.outputs] == ["reel", "feed", "story"]
+    assert fresh.next_port == "reel"
+    partly = _package(reel=True, feed=True)
+    assert partly.next_port == "story"
+    done = _package(reel=True, feed=True, story=True)
+    assert done.has_outputs and done.next_port == ""
+    plain = build_post_option(
+        post_id="p",
+        title="Promo",
+        caption_excerpt="",
+        thumbnail_url=None,
+        category="galeria",
+        approval="approved",
+        detail_href="",
+        is_publishable=True,
+        unpublishable_reason="",
+    )
+    assert not plain.has_outputs and plain.outputs == [] and plain.next_port == ""
+
+
+def test_a_per_output_event_card_carries_the_output_word() -> None:
+    grid = _week(
+        _item("r", datetime(2026, 9, 22, 9, 0, tzinfo=CARACAS), output_port="reel"),
+        _item("f", datetime(2026, 9, 22, 9, 0, tzinfo=CARACAS), output_port="feed"),
+        _item("w", datetime(2026, 9, 22, 10, 0, tzinfo=CARACAS)),
+    )
+    labels = {card.event_id: card.output_label for card in grid.days[1].cards}
+    assert labels == {"r": "Reel", "f": "Feed", "w": ""}
+    assert output_label("story") == "Historia" and output_label(None) == ""
+
+
+def test_open_assign_for_a_package_preselects_its_next_output() -> None:
+    state = _state()
+    state.schedulable = [_package("pkg", reel=True), _package("other")]
+    state.open_assign_for_post("pkg")
+    assert state.form_output_port == "feed"
+    assert state.form_has_outputs and [c.port for c in state.form_outputs] == [
+        "reel",
+        "feed",
+        "story",
+    ]
+    assert state.form_output_label == "Feed 4:5"
+    state.set_form_output_port("story")
+    assert state.form_output_port == "story"
+    state.set_form_output_port(["reel"])  # a segmented control may hand a list
+    assert state.form_output_port == "reel"
+    # Picking another POST re-preselects; a POST without outputs clears the port.
+    state.set_form_post_id("other")
+    assert state.form_output_port == "reel"
+    state.schedulable.append(
+        build_post_option(
+            post_id="plain",
+            title="Promo",
+            caption_excerpt="",
+            thumbnail_url=None,
+            category="galeria",
+            approval="approved",
+            detail_href="",
+            is_publishable=True,
+            unpublishable_reason="",
+        )
+    )
+    state.set_form_post_id("plain")
+    assert state.form_output_port == "" and not state.form_has_outputs
+
+
+def test_the_form_note_is_the_chosen_outputs_own() -> None:
+    state = _state()
+    blocked = build_post_option(
+        post_id="pkg",
+        title="Promo",
+        caption_excerpt="",
+        thumbnail_url=None,
+        category="reel",
+        approval="approved",
+        detail_href="",
+        is_publishable=True,  # at least one output is
+        unpublishable_reason="",
+        outputs=[_chip("reel", publishable=False), _chip("feed")],
+    )
+    state.schedulable = [blocked]
+    state.open_assign_for_post("pkg")
+    assert state.form_output_port == "reel"
+    assert state.form_post_note.startswith("Los archivos")
+    state.set_form_output_port("feed")
+    assert state.form_post_note == ""
+
+
+def test_a_reschedule_shows_the_events_output_but_cannot_change_it() -> None:
+    state = _state()
+    state.detail = EventDetailVM(
+        event_id="e1",
+        post_id="pkg",
+        title="Promo",
+        local_date="2026-09-24",
+        local_time="15:00",
+        connection_id="c1",
+        output_port="story",
+        output_label="Historia",
+    )
+    state.reschedule_from_detail()
+    assert state.form_mode == MODE_RESCHEDULE and state.form_output_port == "story"
+    assert state.form_output_label == "Historia"
+
+
+def test_output_errors_have_their_own_spanish() -> None:
+    for exc in (OutputRequired("x"), UnknownOutput("x"), DuplicateEvent("x")):
+        message = planner_error_message(exc)
+        assert message and "Inténtalo de nuevo." not in message
+    assert "salida" in planner_error_message(OutputRequired("x")).lower()

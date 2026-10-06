@@ -277,3 +277,100 @@ def test_the_first_failing_rule_in_the_fixed_order_is_the_reason() -> None:
 def test_every_reason_has_operator_text() -> None:
     assert set(REASON_TEXT) == set(UnpublishableReason)
     assert all(REASON_TEXT[reason] for reason in UnpublishableReason)
+
+
+# --- MP-11: one output per event ---------------------------------------------------
+
+
+def _package(category: str = "reel") -> PostCandidate:
+    """A `promo_producto` run: a Reel video, a feed image and a story IMAGE, each on its
+    port — the shape the whole-POST rule refuses as `UNSUPPORTED_SHAPE`."""
+    return _post(
+        _video(0, output_port="reel"),
+        _image(1, output_port="feed"),
+        _image(2, output_port="story"),
+        category=category,
+    )
+
+
+@pytest.mark.parametrize(
+    ("port", "media_types", "expected"),
+    [
+        ("reel", ("VIDEO",), "REELS"),
+        ("reel", ("IMAGE",), None),
+        ("reel", ("VIDEO", "VIDEO"), None),
+        ("feed", ("IMAGE",), "IMAGE"),
+        ("feed", ("VIDEO",), None),  # a video in the feed port is never a reel by accident
+        ("feed", ("IMAGE", "IMAGE"), None),  # a port is one item; a carousel is a galería
+        ("story", ("IMAGE",), "STORIES"),  # image story — QUA-113, the publisher does it
+        ("story", ("VIDEO",), "STORIES"),
+        ("story", ("IMAGE", "VIDEO"), None),
+        ("poster", ("IMAGE",), None),  # an unknown port is never published
+    ],
+)
+def test_port_media_matrix(port: str, media_types: tuple[str, ...], expected: str | None) -> None:
+    # The category is irrelevant once a port decides — `reel` here would refuse an image.
+    assert media_product_type_for("reel", media_types, port) == expected
+    assert media_product_type_for("galeria", media_types, port) == expected
+
+
+def test_a_package_as_a_whole_is_unsupported_but_each_output_publishes() -> None:
+    whole = evaluate(_package())
+    assert isinstance(whole, NotPublishable) and whole.reason is R.UNSUPPORTED_SHAPE
+    assert whole.output_port is None
+
+    reel = evaluate(replace(_package(), output_port="reel"))
+    feed = evaluate(replace(_package(), output_port="feed"))
+    story = evaluate(replace(_package(), output_port="story"))
+    assert isinstance(reel, PublishablePost) and reel.media_product_type == "REELS"
+    assert isinstance(feed, PublishablePost) and feed.media_product_type == "IMAGE"
+    assert isinstance(story, PublishablePost) and story.media_product_type == "STORIES"
+    # Only the port's asset goes to the publisher, re-numbered from position 0.
+    for verdict, key, media_type in (
+        (reel, _key("vid0"), "VIDEO"),
+        (feed, _key("img1"), "IMAGE"),
+        (story, _key("img2"), "IMAGE"),
+    ):
+        (item,) = verdict.media
+        assert (item.object_key, item.media_type, item.position) == (key, media_type, 0)
+    assert story.media[0].content_type == "image/jpeg"  # what `is_image_story` keys on
+    assert reel.output_port == "reel" and ("output_port", "reel") in reel.provenance
+
+
+def test_the_port_decides_not_the_category() -> None:
+    # A package filed under `galeria` still publishes its Reel as a reel.
+    reel = evaluate(replace(_package(category="galeria"), output_port="reel"))
+    assert isinstance(reel, PublishablePost) and reel.media_product_type == "REELS"
+
+
+def test_a_port_the_post_does_not_have_has_no_media() -> None:
+    verdict = evaluate(replace(_package(), output_port="poster"))
+    assert isinstance(verdict, NotPublishable)
+    assert verdict.reason is R.NO_MEDIA and verdict.detail == "port poster"
+    assert verdict.output_port == "poster"
+
+
+def test_a_port_with_the_wrong_media_names_the_port_in_the_detail() -> None:
+    swapped = _post(_image(0, output_port="reel"), category="reel", output_port="reel")
+    verdict = evaluate(swapped)
+    assert isinstance(verdict, NotPublishable) and verdict.reason is R.UNSUPPORTED_SHAPE
+    assert verdict.detail == "port reel (reel with IMAGE)"
+
+
+def test_one_bad_output_does_not_block_the_others() -> None:
+    package = _post(
+        _video(0, output_port="reel", object_key="generated/local.mp4"),  # not in R2 yet
+        _image(1, output_port="feed"),
+        category="reel",
+    )
+    reel = evaluate(replace(package, output_port="reel"))
+    feed = evaluate(replace(package, output_port="feed"))
+    assert isinstance(reel, NotPublishable) and reel.reason is R.MEDIA_NOT_IN_R2
+    assert isinstance(feed, PublishablePost)
+
+
+def test_without_a_port_assets_with_ports_are_evaluated_as_before() -> None:
+    # A single-output run (one `feed` image, category galería) stays publishable whole.
+    verdict = evaluate(_post(_image(0, output_port="feed")))
+    assert isinstance(verdict, PublishablePost) and verdict.media_product_type == "IMAGE"
+    assert verdict.output_port is None

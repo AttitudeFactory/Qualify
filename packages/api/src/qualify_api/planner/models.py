@@ -50,6 +50,9 @@ class CalendarEvent(Base):
             name="ck_cal_event_status",
         ),
         CheckConstraint("revision >= 1", name="ck_cal_event_revision"),
+        CheckConstraint(
+            "output_port IS NULL OR output_port <> ''", name="ck_cal_event_output_port"
+        ),
         Index("ix_cal_event_tenant", "tenant_id"),
         Index("ix_cal_event_brand_scheduled", "brand_id", "scheduled_at"),
         Index("ix_cal_event_post", "tenant_id", "post_id"),
@@ -70,6 +73,9 @@ class CalendarEvent(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     publish_attempt_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    # MP-11 (0040): the one template output this event publishes (`image_assets.output_port`:
+    # `reel` / `feed` / `story`), or NULL for the whole POST — every pre-MP-11 event.
+    output_port: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_user_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )

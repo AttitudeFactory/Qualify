@@ -40,6 +40,20 @@ class ApprovalStatus(StrEnum):
 
 
 @dataclass(frozen=True)
+class PostOutput:
+    """One output of a POST rendered by the template engine (MP-11): the asset(s) of one
+    `image_assets.output_port` (`reel` / `feed` / `story`), with the publishability
+    verdict of THAT output alone — `publishable.evaluate` over the port's media. A POST
+    without ports has no outputs and is planned whole (`output_port=None`)."""
+
+    port: str
+    media_type: str  # the POST's vocabulary: "image" / "video" (first asset of the port)
+    media_product_type: str | None = None  # IMAGE / REELS / STORIES when publishable
+    is_publishable: bool = False
+    unpublishable_reason: str = ""
+
+
+@dataclass(frozen=True)
 class PostSummary:
     """Everything the Planificador needs to show and plan a POST, and nothing it would
     have to keep in sync. No assets, no full caption, no script: those stay on the POST.
@@ -73,6 +87,14 @@ class PostSummary:
     is_publishable: bool = False
     unpublishable_reason: str = ""
     detail_href: str = ""
+    # MP-11: the POST's template outputs, in asset order; empty for a POST without ports.
+    # With outputs, `is_publishable` means "at least one output is", and the POST is
+    # planned one event per output (`PlannerService.schedule(output_port=...)`).
+    outputs: tuple[PostOutput, ...] = ()
+
+    @property
+    def output_ports(self) -> tuple[str, ...]:
+        return tuple(output.port for output in self.outputs)
 
 
 class UnpublishableReason(StrEnum):
@@ -126,6 +148,9 @@ class PublishablePost:
     media: tuple[PublishableMedia, ...]
     requires_ai_disclosure: bool = False
     provenance: tuple[tuple[str, str], ...] = ()
+    # MP-11: the output this verdict covers (only that port's media is in `media`), or
+    # None for the whole POST.
+    output_port: str | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +158,7 @@ class NotPublishable:
     post_id: UUID
     reason: UnpublishableReason
     detail: str = ""
+    output_port: str | None = None
 
 
 class PostReader(Protocol):
@@ -143,10 +169,13 @@ class PostReader(Protocol):
     def get(self, *, tenant_id: UUID, post_id: UUID) -> PostSummary | None: ...
 
     def get_publishable(
-        self, *, tenant_id: UUID, post_id: UUID
+        self, *, tenant_id: UUID, post_id: UUID, output_port: str | None = None
     ) -> PublishablePost | NotPublishable:
         """The POST as QUA-111 may publish it, or the explicit reason it may not —
-        decided by `publishable.evaluate`, the same rule the calendar card shows."""
+        decided by `publishable.evaluate`, the same rule the calendar card shows.
+
+        With `output_port` (MP-11), only that port's assets are evaluated and the
+        publisher's `media_product_type` is derived from the port, not the category."""
         ...
 
     def get_many(self, *, tenant_id: UUID, post_ids: Iterable[UUID]) -> dict[UUID, PostSummary]: ...

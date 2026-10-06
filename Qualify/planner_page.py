@@ -265,6 +265,8 @@ def _calendar_chip(event) -> rx.Component:
                 rx.hstack(
                     _platform_icon(event.platform),
                     rx.text(event.time_label, size="1", weight="bold", class_name="q-nums"),
+                    # MP-11: the output's word — the same POST appears up to three times.
+                    rx.cond(event.output_label != "", tag(event.output_label)),
                     rx.cond(
                         event.overdue | (event.readiness_note != ""),
                         rx.icon("triangle-alert", size=12, color=rx.color("amber", 10)),
@@ -292,8 +294,14 @@ def _calendar_chip(event) -> rx.Component:
         on_click=PlannerState.open_detail(event.event_id).stop_propagation,
         cursor="pointer",
         role="button",
-        aria_label=event.time_label + " · " + event.title + " · " + event.approval_label,
+        aria_label=event.time_label
+        + " · "
+        + event.title
+        + rx.cond(event.output_label != "", " · " + event.output_label, "")
+        + " · "
+        + event.approval_label,
         title=event.title
+        + rx.cond(event.output_label != "", " · " + event.output_label, "")
         + " — "
         + event.approval_label
         + " · "
@@ -477,6 +485,7 @@ def _list_item(event) -> rx.Component:
                         platform_badge(event.platform),
                         rx.text(event.account_label, size="1", color=T.TEXT_MUTED),
                         tag(event.category_label),
+                        rx.cond(event.output_label != "", tag(event.output_label)),
                         rx.foreach(event.tags, _tag_badge_plain),
                         align="center",
                         spacing="2",
@@ -601,6 +610,16 @@ def _post_option(post) -> rx.Component:
                     _pill(post.approval_label, post.approval_tone),
                     wrap="wrap",
                     gap="0.25rem",
+                ),
+                # MP-11: one chip per template output with its planning state; the
+                # package stays one card and is taken apart when assigning.
+                rx.cond(
+                    post.has_outputs,
+                    rx.flex(
+                        rx.foreach(post.outputs, _output_chip),
+                        wrap="wrap",
+                        gap="0.25rem",
+                    ),
                 ),
                 _readiness_note(post.readiness_note),
                 spacing="1",
@@ -1171,6 +1190,43 @@ def _time_picker() -> rx.Component:
     )
 
 
+def _output_control() -> rx.Component:
+    """«Salida» (MP-11): which template output this event publishes. One POST, up to
+    three events — Reel 9:16, Feed 4:5, Historia 9:16. Shown only for a POST with outputs;
+    a reschedule shows the output as text (a move never changes it)."""
+    return rx.cond(
+        PlannerState.form_is_reschedule,
+        rx.text(PlannerState.form_output_label, size="2"),
+        rx.vstack(
+            rx.segmented_control.root(
+                rx.foreach(
+                    PlannerState.form_outputs,
+                    lambda o: rx.segmented_control.item(o.label, value=o.port),
+                ),
+                value=PlannerState.form_output_port,
+                on_change=PlannerState.set_form_output_port,
+                width="100%",
+            ),
+            rx.text(
+                "Cada salida se programa por separado: puedes asignar el mismo POST tres "
+                "veces, una por salida.",
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            spacing="1",
+            width="100%",
+        ),
+    )
+
+
+def _output_chip(chip) -> rx.Component:
+    """«Feed · lun 12 · 12:00 p. m. · @bianki» — one output's planning state, by tone."""
+    return rx.box(
+        _pill(chip.word + " · " + chip.state_label, chip.tone),
+        title=rx.cond(chip.note != "", chip.note, chip.label),
+    )
+
+
 def _assign_dialog() -> rx.Component:
     return rx.dialog.root(
         rx.dialog.content(
@@ -1200,6 +1256,10 @@ def _assign_dialog() -> rx.Component:
                             on_change=PlannerState.set_form_post_id,
                         ),
                     ),
+                ),
+                rx.cond(
+                    PlannerState.form_has_outputs | (PlannerState.form_output_label != ""),
+                    _field("Salida", _output_control()),
                 ),
                 rx.grid(
                     _field(
@@ -1373,6 +1433,7 @@ def _detail_dialog() -> rx.Component:
             width="100%",
         ),
         rx.cond(d.content_type_label != "", _detail_row("Contenido", d.content_type_label)),
+        rx.cond(d.output_label != "", _detail_row("Salida", d.output_label)),
         # `revision` is the event's reschedule counter (it keys the publish attempt, so a
         # moved event can never collide with the old one) — internal. Shown to people only
         # once it means something: how many times the publication was moved.
