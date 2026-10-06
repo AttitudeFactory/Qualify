@@ -287,23 +287,6 @@ _STAGE_PERCENT = {"preparing": 8, "transcribing": 30, "reading_tone": 80}
 _TRANSCRIPT_EXCERPT_CHARS = 280
 
 
-async def _show_tone_screen(state: Any) -> None:
-    """After a finished analysis, move the editor on screen from Tu voz to ¿Cómo suena?
-    (§ request 2026-10-01). Called under `state`'s lock. Since 2026-10-05 the voice is
-    configured only in the Brand Kit editor (the wizards no longer ask for it), so only
-    the editor's cursor moves; on any other page this does nothing."""
-    from .brand_kit_editor import _TONE_STEP, _VOICE_STEP, BrandEditState
-
-    try:
-        path = str(state.router.page.path or "")
-    except AttributeError:
-        path = ""
-    if path.startswith("/brand/kit"):
-        editor = await state.get_state(BrandEditState)
-        if editor.step == _VOICE_STEP:
-            editor.step = _TONE_STEP
-
-
 class VoiceLabState(rx.State):
     sample_key: str = ""
     sample_name: str = ""
@@ -504,7 +487,6 @@ class VoiceLabState(rx.State):
                 if len(heard) > _TRANSCRIPT_EXCERPT_CHARS
                 else heard
             )
-            await _show_tone_screen(self)
 
     # -- Clonar (manual, with consent) -------------------------------------------------
 

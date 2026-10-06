@@ -100,12 +100,12 @@ def test_the_manual_flow_is_seven_screens_and_resumes_on_the_review(
     assert state.step == wiz._CONFIRM_STEP
 
 
-def test_the_editor_keeps_the_voice_and_drops_the_list_screens() -> None:
-    from .brand_kit_editor import EDIT_STEPS
+def test_the_editor_keeps_the_voice_and_the_lists_as_sections() -> None:
+    from .brand_kit_editor import SECTIONS
 
-    titles = [t for t, _ in EDIT_STEPS]
-    assert "Tu voz" in titles and "¿Cómo suena?" in titles
-    assert "Enséñale a hablar" not in titles and "Lo que nunca debe decir" not in titles
+    titles = [title for _key, title, _icon, _blurb in SECTIONS]
+    assert "Voz y tono" in titles
+    assert "Cómo habla" in titles and "Lo que nunca dice" in titles
 
 
 # -- the city category ----------------------------------------------------------------------

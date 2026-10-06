@@ -1213,9 +1213,15 @@ def _step_identity() -> rx.Component:
     since 2026-09-29). Uploading one is optional; when Claude reads it, what it can quote
     goes straight into Posicionamiento and Audiencia below and into the lists that
     ¿Todo correcto? shows (`brand_documents.apply_directly`) — no review panel."""
+    return _step_body(*_identity_editor(), icon="compass")
+
+
+def _identity_editor() -> tuple[rx.Component, ...]:
+    """¿Quién es la marca?'s controls — the brief and the two fields — shared by the
+    wizard step and the Brand Kit editor's "Marca" section."""
     # § third round of 2026-10-05: while the brief is read, its progress screen is all
     # the step shows — the fields come back, filled, when the read is done
-    return _step_body(
+    return (
         brand_documents.brief_upload_card(),
         rx.cond(
             ~brand_documents.BrandDocumentState.brief_busy,
@@ -1236,7 +1242,6 @@ def _step_identity() -> rx.Component:
                 ),
             ),
         ),
-        icon="compass",
     )
 
 
@@ -3518,6 +3523,13 @@ class BrandConnectState(rx.State):
     #: `load_saved_details` finished: until then a save would overwrite the stored
     #: answers with an empty session, so save-as-you-go waits for it.
     _details_loaded: bool = False
+    #: The same, for the page: the Brand Kit editor decides what to show first only once
+    #: the saved details are in (§ request 2026-10-05).
+    details_loaded: bool = False
+    #: The operator saved Tu voz y tono from the Brand Kit editor (§ request 2026-10-05:
+    #: until then it is the first thing the editor shows). Stored in the `connect`
+    #: document (`brand_finish._connect_document`) — a JSONB key, no migration.
+    voice_configured: bool = False
 
     step: int = 0
     network: str = ""
@@ -4883,18 +4895,23 @@ class BrandConnectState(rx.State):
         from .brand_finish import CONNECT_FLOW, PROGRESS_KEY, load_saved, session_ids
 
         ids = await session_ids(self)
-        if ids is None:
-            return
-        try:
-            saved = await asyncio.to_thread(load_saved, ids[0], ids[1])
-        except SQLAlchemyError as exc:
-            logger.warning("brand kit details unreadable: %s", type(exc).__name__)
+        saved = None
+        if ids is not None:
+            try:
+                saved = await asyncio.to_thread(load_saved, ids[0], ids[1])
+            except SQLAlchemyError as exc:
+                logger.warning("brand kit details unreadable: %s", type(exc).__name__)
+        if saved is None:
+            async with self:
+                self.details_loaded = True  # nothing to read: the editor must not wait on it
             return
         connect, profile = saved.details.connect, saved.details.profile
         raw_progress = (connect or {}).get(PROGRESS_KEY)
         progress = raw_progress if isinstance(raw_progress, dict) else {}
         async with self:
             self._details_loaded = True
+            self.details_loaded = True
+            self.voice_configured = bool((connect or {}).get("voice_configured"))
             if (
                 progress.get("flow") == CONNECT_FLOW
                 and progress.get("completed") is False

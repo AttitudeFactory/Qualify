@@ -46,17 +46,18 @@ def test_the_detection_result_is_a_toast_not_a_note_under_the_tile() -> None:
 def test_tipografia_is_its_own_step_right_before_the_palette_in_every_flow() -> None:
     """§ second round of 2026-10-05: a view of its own, not a section of Tu brandboard, so
     it is asked whether or not a brandboard was uploaded."""
-    from .brand_kit_editor import _PALETTE_STEP, _TYPOGRAPHY_STEP, EDIT_STEPS
+    from .brand_kit_editor import SECTIONS
 
     for steps, index in (
         (wiz.STEPS, wiz._M_TYPOGRAPHY_STEP),
         (wiz.CONNECT_STEPS, wiz._TYPOGRAPHY_STEP),
-        (EDIT_STEPS, _TYPOGRAPHY_STEP),
     ):
         assert steps[index][0] == "Tipografía"
         assert steps[index + 1][0] == "Paleta de colores"
         assert steps[index - 1][0] == "Tu brandboard"
-    assert _TYPOGRAPHY_STEP + 1 == _PALETTE_STEP
+    keys = [key for key, *_ in SECTIONS]  # the editor's sections keep the same order
+    assert keys.index("brandboard") + 1 == keys.index("tipografia")
+    assert keys.index("tipografia") + 1 == keys.index("paleta")
     # Tu brandboard itself is back to logo versions + other elements
     brandboard = str(wiz._step_logo(BrandWizardState.next_step))
     assert TIPOGRAFIA not in brandboard and "brand_font_heading" not in brandboard

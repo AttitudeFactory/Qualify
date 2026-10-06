@@ -276,6 +276,9 @@ def _connect_document(
         "country_code": connect.country_code,
         "city": connect.city,
         "hashtags": [dict(item) for item in connect.rubro_hashtags],
+        # § request 2026-10-05: the Brand Kit editor's "Guardar voz" — until it is True,
+        # Tu voz y tono is the first thing the editor shows
+        "voice_configured": connect.voice_configured,
     }
     if progress is not None:
         return {**answers, PROGRESS_KEY: progress}

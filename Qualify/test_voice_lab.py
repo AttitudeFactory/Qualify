@@ -272,37 +272,14 @@ def test_the_analysis_reports_its_real_stages() -> None:
     assert [row["status"] for row in state.analysis_steps] == ["done", "done", "running"]
 
 
-async def test_a_finished_analysis_moves_the_editor_on_screen_to_the_tone() -> None:
-    """Since 2026-10-05 the voice lives only in the Brand Kit editor: a finished analysis
-    moves the editor from Tu voz to ¿Cómo suena?, and nothing happens on the wizards'
-    pages (they no longer have a voice screen)."""
-    from types import SimpleNamespace
-
+def test_the_editor_shows_the_analysis_with_the_sliders() -> None:
+    """Since the Brand Kit editor is one view (§ request 2026-10-05) there is no tone
+    screen to move to: Voz y tono holds the recorder, the analysis and the four axes."""
     from . import brand_kit_editor as editor
-    from . import creative_wizard_pages as wiz
 
-    states = {
-        wiz.BrandWizardState: wiz.BrandWizardState(),
-        wiz.BrandConnectState: wiz.BrandConnectState(),
-        editor.BrandEditState: editor.BrandEditState(),
-    }
-    states[editor.BrandEditState].step = editor._VOICE_STEP
-
-    class Fake:
-        def __init__(self, path: str) -> None:
-            self.router = SimpleNamespace(page=SimpleNamespace(path=path))
-
-        async def get_state(self, cls: type) -> Any:
-            return states[cls]
-
-    await voice_lab._show_tone_screen(Fake("/brand/connect"))
-    await voice_lab._show_tone_screen(Fake("/brand/manual"))
-    assert states[wiz.BrandConnectState].step == 0 and states[wiz.BrandWizardState].step == 0
-    await voice_lab._show_tone_screen(Fake("/brand/kit"))
-    assert states[editor.BrandEditState].step == editor._TONE_STEP
-    # an editor no longer on Tu voz is left where it is
-    await voice_lab._show_tone_screen(Fake("/brand/kit"))
-    assert states[editor.BrandEditState].step == editor._TONE_STEP
+    assert not hasattr(voice_lab, "_show_tone_screen")
+    parts = editor._editor(editor.VOICE_SECTION)
+    assert len(parts) == 2 + 4  # the lab, the analysis result, the four sliders
 
 
 def test_the_whisper_warm_up_runs_once_on_its_own_thread(monkeypatch: pytest.MonkeyPatch) -> None:
