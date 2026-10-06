@@ -157,7 +157,7 @@ Cambiar un secreto: editar `/opt/qualify/.env.prod` y `just deploy` (o `dc run -
 
 ### 7.1 Deploy desde GitHub Actions (CD) — opcional, lo activa el fundador
 
-Con esto montado, Actions construye `qualify-app` y `qualify-web` para un commit, las publica en GHCR (`ghcr.io/attitudefactory/qualify-{app,web}:<sha>`) y el servidor sólo hace `pull` → `migrate` → `up`. **Nunca compila en producción.** El workflow es `.github/workflows/deploy.yml` y el lado del servidor es `deploy/server-deploy.sh`. `just deploy` desde la Mac sigue funcionando igual y se puede alternar con el CD.
+Con esto montado, Actions construye para un commit de `main` tres imágenes y las publica en GHCR (`ghcr.io/attitudefactory/qualify-{app,web,deploy}:<sha>`). `qualify-deploy` lleva sólo el directorio `deploy/` de ese commit. El servidor hace `pull`, toma el compose y los scripts del release de `qualify-deploy`, y corre `migrate` → `up`. **Nunca compila en producción.** El workflow es `.github/workflows/deploy.yml` y el lado del servidor es `deploy/server-deploy.sh`. `just deploy` desde la Mac sigue funcionando igual y se puede alternar con el CD.
 
 Montaje (una vez):
 
@@ -174,7 +174,7 @@ Montaje (una vez):
    ```
    command="/opt/qualify/bin/server-deploy.sh",restrict ssh-ed25519 AAAA…(contenido de qualify_ci_deploy.pub)… qualify-ci-deploy
    ```
-   Esa llave sólo puede pedir `deploy <sha>`: sin shell, sin túneles, sin pty. Ojo: `deploy` está en el grupo `docker`, que equivale a root, y por eso la restricción importa.
+   Esa llave sólo puede pedir `deploy <sha>`: sin shell, sin túneles, sin pty, y sin mandar archivos. El compose y los scripts del release salen de `qualify-deploy:<sha>` en GHCR, nunca de quien tiene la llave. **Límite real:** la llave despliega cualquier commit que el CI haya publicado; publicar en GHCR exige permiso de escritura en el repositorio, que ya alcanza para cambiar lo que corre en producción. `deploy` está en el grupo `docker` (equivale a root), y por eso importa que la llave no pueda pedir nada más.
 4. **Permiso de lectura de GHCR en el servidor.** Las imágenes son privadas. Crear un token *classic* con sólo `read:packages` (GitHub Packages no acepta tokens *fine-grained*), con vencimiento, y:
    ```bash
    ssh deploy@<IP> 'docker login ghcr.io -u <usuario-github> --password-stdin' <<<"<token>"

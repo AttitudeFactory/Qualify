@@ -1,11 +1,13 @@
 # Production deploy (CD) — docs/plan-sre-devops-produccion.md §5, punto 4.
 #
-#   images:  build deploy/Dockerfile `app` + `web` for ONE commit and push them to GHCR as
-#            ghcr.io/attitudefactory/qualify-{app,web}:<full sha> (GITHUB_TOKEN; GHCR storage
-#            is free today, GitHub promises a month's notice before billing it).
+#   images:  build deploy/Dockerfile `app`, `web` and `deploy-bundle` (the commit's deploy/
+#            dir) for ONE commit of main and push them to GHCR as
+#            ghcr.io/attitudefactory/qualify-{app,web,deploy}:<full sha> (GITHUB_TOKEN; GHCR
+#            storage is free today, GitHub promises a month's notice before billing it).
 #   deploy:  ssh to the server with a key that can ONLY run deploy/server-deploy.sh (forced
-#            command), streaming that commit's deploy/ dir. The server pulls the two images,
-#            runs `migrate`, then `up`. It never compiles. Then an external smoke test.
+#            command) and only send `deploy <sha>`. The server pulls the three images, takes
+#            the release's compose file and scripts from qualify-deploy, runs `migrate`, then
+#            `up`. It never compiles. Then an external smoke test.
 #
 # Inert until the founder sets it up (nothing here is invented):
 #   secrets   QUALIFY_DEPLOY_SSH_KEY          private half of the restricted deploy key
@@ -25,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Commit sha or branch to deploy (default: main)"
+        description: "Commit sha (or main) to deploy — must be on main"
         required: false
         default: main
   workflow_run:
@@ -60,8 +62,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha || inputs.ref }}
+          fetch-depth: 0
+      # Production runs reviewed code only: any commit of main (older ones = rollback), never
+      # an unmerged branch.
       - id: sha
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          sha=$(git rev-parse HEAD)
+          git merge-base --is-ancestor "$sha" origin/main ||
+            { echo "::error::$sha is not on main; only commits of main are deployed."; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -88,6 +97,14 @@ jobs:
           push: true
           tags: ghcr.io/attitudefactory/qualify-web:${{ steps.sha.outputs.sha }}
           cache-from: type=gha,scope=deploy
+      - name: Build and push qualify-deploy (the commit's deploy/ dir)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: deploy-bundle
+          push: true
+          tags: ghcr.io/attitudefactory/qualify-deploy:${{ steps.sha.outputs.sha }}
 
   deploy:
     needs: images
@@ -97,9 +114,6 @@ jobs:
       SHA: ${{ needs.images.outputs.sha }}
       PUBLIC_URL: ${{ vars.QUALIFY_PUBLIC_URL || 'https://qualify.attitudefactory.co' }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.images.outputs.sha }}
       - name: Install the restricted deploy key
         env:
           KEY: ${{ secrets.QUALIFY_DEPLOY_SSH_KEY }}
@@ -117,9 +131,8 @@ jobs:
         env:
           TARGET: ${{ secrets.QUALIFY_DEPLOY_SSH_TARGET }}
         run: |
-          git archive "$SHA" deploy | gzip -c |
-            ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
-              -o StrictHostKeyChecking=yes "$TARGET" deploy "$SHA"
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes "$TARGET" deploy "$SHA" </dev/null
       - name: External smoke test
         run: |
           for probe in '/ping 200' '/login 200' '/api/connections/callback?code=x&state=x 403'; do

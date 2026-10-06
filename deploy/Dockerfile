@@ -95,6 +95,15 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
  && cp -a .web/build/client/. /srv/
 
 # --------------------------------------------------------------------------------------
+# deploy-bundle: the deploy/ directory of this commit, nothing else (`--target deploy-bundle`)
+# --------------------------------------------------------------------------------------
+# Published next to qualify-app/qualify-web by the CD workflow. The server's forced command
+# (deploy/server-deploy.sh) takes the compose file and scripts of a release FROM this image,
+# never from whoever holds the ssh key: the key can only deploy a commit CI already published.
+FROM scratch AS deploy-bundle
+COPY deploy /deploy
+
+# --------------------------------------------------------------------------------------
 # web: Caddy (automatic TLS) + the exported frontend
 # --------------------------------------------------------------------------------------
 FROM ${CADDY_IMAGE} AS web

@@ -99,7 +99,7 @@ Hoy cada deploy compila en el servidor de producción (export del frontend inclu
 
 | Opción | Cómo | Compila en producción | Qué secretos | Pros | Contras |
 |---|---|---|---|---|---|
-| **A. GHCR + ssh restringido** (recomendada) | Actions construye y publica `qualify-{app,web}:<sha>` en GHCR; después hace ssh con una llave que **sólo** puede ejecutar `server-deploy.sh deploy <sha>`. El servidor hace `pull` → `migrate` → `up` | **no** | GitHub: llave ssh restringida, destino, `known_hosts`. Servidor: token *classic* `read:packages` | Imagen idéntica a la que probó el CI; rollback = otro sha; resultado y logs en Actions; es el diseño de `plan-cicd-staging.md` §5.5 | La llave vive en GitHub (acotada por el forced command); GHCR es un registro nuevo |
+| **A. GHCR + ssh restringido** (recomendada) | Actions construye y publica `qualify-{app,web,deploy}:<sha>` en GHCR; después hace ssh con una llave que **sólo** puede ejecutar `server-deploy.sh deploy <sha>`. El servidor hace `pull`, saca compose y scripts de `qualify-deploy` (nunca del cliente) y corre `migrate` → `up` | **no** | GitHub: llave ssh restringida, destino, `known_hosts`. Servidor: token *classic* `read:packages` | Imagen idéntica a la que probó el CI; rollback = otro sha; resultado y logs en Actions; es el diseño de `plan-cicd-staging.md` §5.5 | La llave vive en GitHub (acotada por el forced command); GHCR es un registro nuevo |
 | B. GHCR + el servidor se actualiza solo | Igual que A para las imágenes, pero un timer en el servidor consulta un tag `:main` cada N minutos y despliega | no | Servidor: token `read:packages`. GitHub: nada | Ninguna llave del servidor en GitHub | Deploys silenciosos (el resultado no vuelve a Actions); el rollback exige "fijar" un tag a mano; más piezas en el servidor |
 | C. Sin registro: Actions dispara `deploy.sh` | Actions hace lo mismo que la Mac hoy (`git archive` por ssh) y el servidor compila | **sí** | GitHub: llave ssh | Ningún servicio nuevo | Sigue compilando en producción: deploys lentos y el CX23 cargado durante cada build |
 | D. Runner auto-hospedado en el servidor | Un runner de Actions en el propio CX23 hace build y `up` | sí | Token de registro del runner | Sin ssh entrante; minutos de Actions gratis | Cualquier workflow del repo ejecuta como `docker` (= root) en producción; compila en producción |
@@ -112,7 +112,7 @@ Hoy cada deploy compila en el servidor de producción (export del frontend inclu
 
 **Preparado en el repo (inerte hasta que el fundador lo monte):**
 - `.github/workflows/deploy.yml`: `workflow_dispatch`, más `workflow_run` de `ci` en `main` cuando la variable `QUALIFY_AUTO_DEPLOY` es `true`.
-- `deploy/server-deploy.sh`: el forced command.
+- `deploy/server-deploy.sh`: el forced command. No lee nada del cliente salvo el sha: el `deploy/` del release sale de la imagen `qualify-deploy:<sha>` (target `deploy-bundle` del Dockerfile), así que la llave sólo puede desplegar un commit que el CI publicó. Arma el release en un directorio temporal y lo mueve al final; si el release ya existe, lo reutiliza sin borrarlo. El workflow sólo acepta commits que estén en `main`.
 - `deploy/healthcheck.sh`: los chequeos que comparten `deploy.sh` y `server-deploy.sh`.
 - Prefijo de registro en `docker-compose.prod.yml` (`QUALIFY_IMAGE_PREFIX`; vacío = como hoy).
 - Pasos de montaje en `despliegue-hetzner.md` §7.1.
@@ -121,7 +121,9 @@ Probado en la sesión con un registro local en lugar de GHCR, sobre un "servidor
 - **Primer deploy:** `0001 → 0040`, chequeos `ok`, 20 s.
 - **Re-deploy del mismo sha:** no recrea nada.
 - **`up` con el comando de `deploy.sh` sobre ese release:** no compila (respeta `release.env`).
-- **La llave rechaza** todo lo que no sea `deploy <sha de 40 hex>`.
+- **La llave rechaza** todo lo que no sea `deploy <sha de 40 hex>`. Un sha que el CI no publicó falla en el `pull`, antes de tocar el disco: `current` no cambia.
+- **Re-deploy del sha al que ya apunta `current`:** reutiliza el release sin borrarlo.
+- El release incluye `backup-db.sh`, que el cron nocturno ejecuta desde `current/deploy/` (antes `.dockerignore` excluía `deploy/*.sh` del contexto; ningún target de la app los copia).
 - **Con el perfil `render` activo,** el CD se niega.
 
 **Lo que no se pudo probar acá:** el push real a GHCR (el proxy de la sesión bloquea las descargas de GHCR) y el ssh real. Lo prueba el primer *Run workflow* del fundador.
