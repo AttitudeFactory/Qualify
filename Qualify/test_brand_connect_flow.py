@@ -73,30 +73,45 @@ def test_plan_step_is_gone_from_both_flows() -> None:
     assert "subscription" not in wiz.BrandWizardState.__fields__
 
 
-def test_account_kind_comes_before_the_rubro_and_the_maps_pair() -> None:
+def test_account_kind_comes_before_the_rubro_then_the_identity() -> None:
     titles = _titles(wiz.CONNECT_STEPS)
     kind = titles.index("¿Eres influencer o una marca?")
     assert titles[kind + 1] == "Tu rubro y ubicación"
-    assert titles[kind + 2] == "¿Tu negocio está en Google Maps?"
+    assert titles[kind + 2] == "¿Quién es la marca?"
     assert kind == wiz._ACCOUNT_KIND_STEP
     assert wiz.CONNECT_STEPS[wiz._IDENTITY_STEP][0] == "¿Quién es la marca?"
-    assert wiz.CONNECT_STEPS[wiz._RECOMMENDATIONS_STEP][0] == "Lo que te proponemos"
 
 
-def test_the_maps_pair_was_swapped_with_identity() -> None:
-    """§ request 2026-09-15: the Google Maps pair runs where ¿Quién es la marca? used
-    to. § request 2026-09-16: the logo pair sits right before Paleta de colores."""
+def test_the_slimmed_connect_flow() -> None:
+    """§ request 2026-10-05: no Lo que te proponemos, no Google Maps pair, the brief
+    inside ¿Quién es la marca?, no voice / tone / examples / restrictions screens."""
     titles = _titles(wiz.CONNECT_STEPS)
-    assert titles[wiz._MAPS_QUESTION_STEP : wiz._PALETTE_STEP + 1] == [
-        "¿Tu negocio está en Google Maps?",
-        "Súmate a Google Maps",
-        "Tu brief de marca",
+    assert titles == [
+        "¿Qué red usas?",
+        "¿Cuál es tu usuario?",
+        "Esto es lo que vemos",
+        "¿Eres influencer o una marca?",
+        "Tu rubro y ubicación",
         "¿Quién es la marca?",
         "¿Tienes brandboard?",
         "Tu brandboard",
         "Tipografía",
         "Paleta de colores",
+        "¿Todo correcto?",
+        "Referente, competencia o detractor",
+        "Resultados e insights",
     ]
+    for gone in (
+        "Lo que te proponemos",
+        "¿Tu negocio está en Google Maps?",
+        "Súmate a Google Maps",
+        "Tu brief de marca",
+        "Tu voz",
+        "¿Cómo suena?",
+        "Enséñale a hablar",
+        "Lo que nunca debe decir",
+    ):
+        assert gone not in titles and gone not in _titles(wiz.STEPS)
 
 
 def test_the_logo_pair_is_asked_while_the_profile_picture_has_not_been_taken() -> None:
@@ -136,12 +151,13 @@ def test_an_account_without_a_picture_is_asked_about_its_logo_too() -> None:
     ("profile_pic", "is_real"),
     [("https://example.com/me.jpg", True), ("https://example.com/default.jpg", False), ("", False)],
 )
-def test_an_influencer_goes_straight_from_identity_to_the_voice(
+def test_an_influencer_goes_straight_from_identity_to_the_review(
     profile_pic: str, is_real: bool
 ) -> None:
-    """§ request 2026-09-29 ("se salte directo al apartado de voz"): whatever the profile
-    picture, a creator walks neither ¿Tienes logo?, Tu logo nor Paleta de colores —
-    forwards or backwards."""
+    """§ request 2026-09-29: whatever the profile picture, a creator walks neither
+    ¿Tienes logo?, Tu logo, Tipografía nor Paleta de colores — forwards or backwards.
+    Since the voice screens left the wizard (2026-10-05) the next one is ¿Todo
+    correcto?."""
     state = _existing_account(
         step=wiz._IDENTITY_STEP,
         profile_pic=profile_pic,
@@ -149,7 +165,7 @@ def test_an_influencer_goes_straight_from_identity_to_the_voice(
         profile_pic_is_real=is_real,
         logo_from_profile=is_real,
     )
-    assert _next(state) == wiz._VOICE_STEP
+    assert _next(state) == wiz._CONNECT_CONFIRM_STEP
     assert _prev(state) == wiz._IDENTITY_STEP
 
 
@@ -197,23 +213,22 @@ def test_a_brand_new_account_counts_as_a_fresh_start_too() -> None:
 
 def test_existing_influencer_is_still_asked_the_rubro_then_walks_to_identity() -> None:
     state = _existing_account(step=wiz._PROFILE_STEP)
-    assert state.shows_cancel is False
-    assert _next(state) == wiz._RECOMMENDATIONS_STEP
+    # Esto es lo que vemos is the last preview screen for everyone since Lo que te
+    # proponemos left the flow (§ request 2026-10-05)
     assert state.shows_cancel is True
     assert _next(state) == wiz._ACCOUNT_KIND_STEP
+    assert state.shows_cancel is False
 
     BrandConnectState.answer_account_kind.fn(state, "influencer")
     # the rubro step is always shown now (§ request 2026-09-11), prefilled
     assert state.step == wiz._RUBRO_STEP
     assert state.is_influencer is True and state.rubro_complete is True
-    # Maps pair skipped (influencer); the brief has its own screen before the identity
-    assert _next(state) == wiz._BRIEF_STEP
+    # straight to ¿Quién es la marca?, which carries the brief (§ 2026-10-05)
     assert _next(state) == wiz._IDENTITY_STEP
 
-    # logo + palette skipped too (influencer): straight to the voice
-    assert _next(state) == wiz._VOICE_STEP
+    # logo, typography and palette skipped (influencer): straight to the review
+    assert _next(state) == wiz._CONNECT_CONFIRM_STEP
     assert _prev(state) == wiz._IDENTITY_STEP
-    assert _prev(state) == wiz._BRIEF_STEP
     assert _prev(state) == wiz._RUBRO_STEP
     assert _prev(state) == wiz._ACCOUNT_KIND_STEP
 
@@ -227,7 +242,7 @@ def test_a_brand_without_location_is_asked_and_can_go_back_to_the_rubro() -> Non
     BrandConnectState.set_country_code.fn(state, "CO")
     BrandConnectState.set_city.fn(state, "Cúcuta")
     assert state.rubro_complete is True
-    assert _next(state) == wiz._MAPS_QUESTION_STEP
+    assert _next(state) == wiz._IDENTITY_STEP
     assert _prev(state) == wiz._RUBRO_STEP
 
 
@@ -236,7 +251,7 @@ def test_leaving_the_rubro_step_restarts_the_search_only_when_the_seed_changed()
     # the search that started at the profile read was seeded with these answers
     state.discovery_answers = state._answers()
     assert BrandConnectState.next_step.fn(state) is None  # nothing changed → no restart
-    assert state.step == wiz._BRIEF_STEP
+    assert state.step == wiz._IDENTITY_STEP
 
     state = _existing_account(step=wiz._RUBRO_STEP, account_kind="influencer")
     state.discovery_answers = state._answers()
@@ -244,21 +259,30 @@ def test_leaving_the_rubro_step_restarts_the_search_only_when_the_seed_changed()
     fired = BrandConnectState.next_step.fn(state)
     assert fired is not None and "run_discovery" in str(fired)
     # any other step never fires it
-    state.step = wiz._IDENTITY_STEP
+    state.step = wiz._LOGO_QUESTION_STEP
     assert BrandConnectState.next_step.fn(state) is None
 
 
-def test_both_behaves_as_a_brand_for_location_and_maps() -> None:
+def test_both_behaves_as_a_brand_for_location() -> None:
     state = _existing_account(
         step=wiz._RUBRO_STEP, account_kind="ambas", country_code="CO", city="Cúcuta"
     )
     assert state.needs_location is True
-    assert _next(state) == wiz._MAPS_QUESTION_STEP
+    # no Google Maps pair any more (§ 2026-10-05): the rubro leads to the identity, and
+    # a brand (or both) walks the logo screens after it
+    assert _next(state) == wiz._IDENTITY_STEP
+    assert _next(state) == wiz._LOGO_QUESTION_STEP
 
-    # "sí" skips Súmate a Google Maps, so the walk lands on Tu brief de marca
-    BrandConnectState.answer_has_maps.fn(state, "si")
-    assert state.step == wiz._BRIEF_STEP
-    assert _prev(state) == wiz._MAPS_QUESTION_STEP
+
+def test_arriving_at_the_rubro_creates_the_hashtags_once() -> None:
+    """§ 2026-10-05: the hashtags are created on their own when Tu rubro opens with no
+    suggestion yet — not again once there are suggested pills."""
+    state = _existing_account(step=wiz._ACCOUNT_KIND_STEP, account_kind="marca")
+    fired = BrandConnectState.next_step.fn(state)
+    assert state.step == wiz._RUBRO_STEP and "suggest_hashtags" in str(fired)
+    state.step = wiz._ACCOUNT_KIND_STEP
+    state.rubro_hashtags = [{"tag": "smashburger", "origin": "ai", "reason": "", "model": ""}]
+    assert BrandConnectState.next_step.fn(state) is None
 
 
 def test_free_text_rubro_completes_the_step_for_a_brand_but_a_creator_needs_a_category() -> None:

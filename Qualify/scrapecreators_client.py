@@ -411,6 +411,7 @@ def fetch_recent_posts(
     client: httpx.Client | None = None,
     max_pages: int = _MAX_POST_PAGES,
     hashtag_counts: Counter[str] | None = None,
+    caption_sink: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Every post published at or after `since` (unix seconds), newest first, in the
     common `{takenAt, likes, comments, views}` shape. Walks the paginated post list
@@ -447,6 +448,8 @@ def fetch_recent_posts(
             payload = _get(active, _POSTS_ENDPOINT[network], params)
             if hashtag_counts is not None:
                 hashtag_counts.update(_page_hashtags(network, payload))
+            if caption_sink is not None and len(caption_sink) < RECENT_CAPTIONS:
+                caption_sink.extend(_page_captions(network, payload))
             page, next_cursor = normalize(payload)
             if not page:
                 break
@@ -466,17 +469,10 @@ def _page_hashtags(network: str, payload: dict[str, Any]) -> list[str]:
     them only inline in the caption text (`caption.text`, or a bare string on some
     shapes); TikTok has them structured in `text_extra[].hashtag_name` AND inline in
     `desc` — both are read and de-duplicated per post, since either can be missing."""
-    items = payload.get("items" if network == "instagram" else "aweme_list")
     tags: list[str] = []
-    for item in items if isinstance(items, list) else []:
-        if not isinstance(item, dict):
-            continue
-        if network == "instagram":
-            caption = item.get("caption")
-            text = caption.get("text") if isinstance(caption, dict) else caption
-        else:
-            text = item.get("desc")
-        found = {t.lower() for t in _HASHTAG_RE.findall(text if isinstance(text, str) else "")}
+    for item in _page_items(network, payload):
+        text = _item_text(network, item)
+        found = {t.lower() for t in _HASHTAG_RE.findall(text)}
         for extra in item.get("text_extra") or []:
             name = extra.get("hashtag_name") if isinstance(extra, dict) else None
             if isinstance(name, str) and name:
@@ -485,10 +481,41 @@ def _page_hashtags(network: str, payload: dict[str, Any]) -> list[str]:
     return tags
 
 
+def _page_items(network: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    items = payload.get("items" if network == "instagram" else "aweme_list")
+    return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+
+
+def _item_text(network: str, item: dict[str, Any]) -> str:
+    """A post's own text: Instagram's caption (`caption.text`, or a bare string on some
+    shapes), TikTok's `desc`."""
+    if network == "instagram":
+        caption = item.get("caption")
+        text = caption.get("text") if isinstance(caption, dict) else caption
+    else:
+        text = item.get("desc")
+    return text if isinstance(text, str) else ""
+
+
+def _page_captions(network: str, payload: dict[str, Any]) -> list[str]:
+    """The text of every post on one raw post-list page, newest first, trimmed and cut to
+    `CAPTION_CHARS` — what the rubro step's hashtags are created from (§ 2026-10-05)."""
+    out = []
+    for item in _page_items(network, payload):
+        text = " ".join(_item_text(network, item).split())
+        if text:
+            out.append(text[:CAPTION_CHARS])
+    return out
+
+
 _HASHTAG_RE = re.compile(r"#(\w+)")
 
 #: How many of the account's own most-used hashtags the snapshot keeps.
 TOP_HASHTAGS = 12
+#: How many of its latest posts' texts the snapshot keeps, and how much of each
+#: (§ request 2026-10-05: the rubro step's hashtags are created from them).
+RECENT_CAPTIONS = 12
+CAPTION_CHARS = 300
 
 
 def fetch_profile_and_posts(
@@ -507,10 +534,13 @@ def fetch_profile_and_posts(
     `topHashtags` did NOT bump `SNAPSHOT_SCHEMA`: an older snapshot without it reads
     as "no hashtags" (every reader uses `.get(..., [])`), which only thins the
     discovery signal for one cached handle — not worth forcing a paid re-read.
+    `recentCaptions` (2026-10-05, the texts of the latest posts those pages carried)
+    follows the same rule.
     """
     owns_client = client is None
     active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
     hashtags: Counter[str] = Counter()
+    captions: list[str] = []
     try:
         profile = fetch_profile(network, handle, client=active)
         now = time.time()
@@ -522,11 +552,13 @@ def fetch_profile_and_posts(
                 since=now - _WINDOW_SECONDS,
                 client=active,
                 hashtag_counts=hashtags,
+                caption_sink=captions,
             )
         except ScrapeCreatorsError as exc:
             logger.warning("recent posts read failed, metrics will be unavailable: %s", exc)
             profile["recentPosts"] = None
         profile["topHashtags"] = [tag for tag, _ in hashtags.most_common(TOP_HASHTAGS)]
+        profile["recentCaptions"] = captions[:RECENT_CAPTIONS]
     finally:
         if owns_client:
             active.close()

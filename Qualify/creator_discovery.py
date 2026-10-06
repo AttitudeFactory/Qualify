@@ -1313,8 +1313,11 @@ def save_result(result: DiscoveryResult, *, directory: Path = DISCOVERY_DIR) -> 
 #: networks' walks run at once, `_run_networks`, and `run_phase`'s text changed with it;
 #: 11 = no change in what is found either — each account keeps its profile link and how
 #: many of its feed videos carried TikTok's AI label, and the profile reads are
-#: remembered in Postgres instead of a JSON file).
-PHASED_PLAN_VERSION = 11
+#: remembered in Postgres instead of a JSON file; 12 = the local phase searches up to
+#: `LOCAL_TERMS` rubro terms with the city instead of one — `local_terms` — because a
+#: niche rubro in a small city found nobody with its single head term (measured
+#: 2026-10-05: "programacion tachira" → 0 accounts, so the city category never showed).
+PHASED_PLAN_VERSION = 12
 
 
 @dataclass(frozen=True)
@@ -2005,6 +2008,30 @@ def head_term(seed: DiscoverySeed) -> str:
     return NICHE_TAXONOMY[seed.niches[0]]["queries"][0] if seed.niches else ""
 
 
+#: How many rubro terms the local phase pairs with the city (one TikTok keyword search
+#: each, one page — `TIKTOK_PAGES["local"]`), so at most this many credits more than the
+#: single-term plan it replaced.
+LOCAL_TERMS = 3
+
+
+def local_terms(seed: DiscoverySeed) -> list[str]:
+    """The rubro terms the city is appended to in the local phase, most specific first:
+    the head term, the national term, then the operator's first hashtag pill that is
+    not a place (`#smashburger`). De-duplicated as slugs, at most `LOCAL_TERMS`."""
+    candidates = [head_term(seed), *national_terms(seed)]
+    candidates.extend(t for t in seed.chosen_hashtags if not _is_place_tag(t, seed))
+    out: list[str] = []
+    seen: set[str] = set()
+    for term in candidates:
+        slug = _slug(term)
+        if term and slug and slug not in seen:
+            seen.add(slug)
+            out.append(term)
+        if len(out) == LOCAL_TERMS:
+            break
+    return out
+
+
 def national_terms(seed: DiscoverySeed) -> list[str]:
     if seed.terms:
         return [seed.terms[0]]
@@ -2019,8 +2046,7 @@ def google_terms(key: str, seed: DiscoverySeed) -> list[str]:
     if key == "national":
         name = country_name(seed.country_code)
         return [f"{t} {name}" for t in national_terms(seed)] if name else []
-    head = head_term(seed)
-    return [f"{head} {seed.city}"] if seed.city and head else []
+    return [f"{t} {seed.city}" for t in local_terms(seed)[:2]] if seed.city else []
 
 
 def phase_title(key: str, seed: DiscoverySeed) -> str:
@@ -2043,9 +2069,12 @@ def phase_queries(key: str, seed: DiscoverySeed) -> list[tuple[Query, str | None
       millions of followers that posted one video on the topic, and they out-rank
       every specialist once influence is follower-ranked.
     - national: the niche's second term + the country name, `region` pinned.
-    - local: the niche's head term + the city, `region` pinned, plus ONE city hashtag
-      — the account's own city hashtag when it has one (`#cucutafood` from its own
-      captions), else the provisional composed one (`hashtags_for`).
+    - local: up to `LOCAL_TERMS` rubro terms + the city (`local_terms`: the head term,
+      then the national term, then the operator's first hashtag pill), `region`
+      pinned, plus ONE city hashtag — the account's own city hashtag when it has one
+      (`#cucutafood` from its own captions), else the provisional composed one
+      (`hashtags_for`). One term used to be the whole plan, and a niche rubro in a
+      small city came back empty (2026-10-05).
     All keyword searches, except that last hashtag: the keyword feed carries real
     follower counts, the hashtag feed does not (the local phase enriches for that).
     """
@@ -2068,7 +2097,10 @@ def phase_queries(key: str, seed: DiscoverySeed) -> list[tuple[Query, str | None
     region = seed.country_code or None
     city_slug = _slug(seed.city)
     own_city_tags = [tag for tag in seed.hashtags if city_slug and city_slug in _slug(tag)]
-    plan = [(Query("tiktok", "keyword", f"{head} {seed.city}", label), region)]
+    plan = [
+        (Query("tiktok", "keyword", f"{term} {seed.city}", label), region)
+        for term in local_terms(seed)
+    ]
     if own_city_tags:
         plan.append((Query("tiktok", "hashtag", own_city_tags[0], label), region))
     elif niches:
@@ -2806,7 +2838,11 @@ def run_phase(
     # brand, whichever category would have shown it.
     picked.update(c.key for c in result.discarded)
     if not result.accounts:
-        result.note = "Todavía no encontramos cuentas para esta fase."
+        result.note = (
+            f"No encontramos cuentas de {seed.city} para tu rubro todavía."
+            if key == "local"
+            else "Todavía no encontramos cuentas para esta fase."
+        )
     return result
 
 

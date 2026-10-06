@@ -1,10 +1,11 @@
 """Brand documents in the Brand Kit wizard (§ request 2026-09-25): a BRIEF uploaded on
-¿Quién es la marca? and a BRANDBOARD uploaded next to the logo, both read by Claude
-through the `proponer_brand_kit` tool (`qualify_api.creative.brief_ai`) and shown as a
-reviewable list of proposed changes — current value, proposed value, the quote it comes
-from and whether that quote was found in the document. Nothing reaches the Brand Kit
-until the operator ticks it and presses "Aplicar": the tool proposes, the code verifies,
-the person decides.
+¿Quién es la marca? (and a BRANDBOARD source kept for its state), read by Claude through
+the `proponer_brand_kit` tool (`qualify_api.creative.brief_ai`). The tool proposes, the
+code verifies the quote against the document, and — since 2026-10-05 ("que las
+propuestas se pongan directamente en donde van") — every verified change goes straight
+into its field (`apply_directly`): no review panel. The person still decides, on the
+fields themselves: Posicionamiento and Audiencia on the same screen, the lists on
+¿Todo correcto?. The panel code (`proposals_panel`, `apply_proposals`) stays unused.
 
 Its own state, not `BrandWizardState`/`BrandConnectState`: both flows show the same
 two documents, the wizard module is already the largest file of the app, and the kit
@@ -103,6 +104,53 @@ def assign(creative: CreativeState, field: str, value: str) -> None:
     """Write one accepted proposal into the kit field it belongs to. The tone axes are
     not among them (§ request 2026-09-29): a brief never moves the tone sliders."""
     setattr(creative, _TARGETS[field], value)
+
+
+#: The two text fields a brief fills on ¿Quién es la marca? itself; the rest are lists.
+_TEXT_FIELDS = frozenset({"positioning", "audience"})
+
+
+def apply_directly(creative: CreativeState, proposals: list[brief_ai.FieldProposal]) -> list[str]:
+    """Every verified proposal into its field, no review panel (§ request 2026-10-05).
+    The proposals are always the same seven fields (`brief_ai.FIELDS`): the two texts are
+    REPLACED (the brief describes the brand better than an empty or half-typed field),
+    the five lists are MERGED — the brief's values are added after the ones already
+    there, duplicates folded — so nothing typed by hand is lost. A proposal whose quote
+    was not found in the document (`verified is False`) is left out. Returns the labels
+    of the fields that changed, in order."""
+    filled: list[str] = []
+    for p in proposals:
+        if p.verified is False or p.field not in _TARGETS:
+            continue
+        if p.field in _TEXT_FIELDS:
+            assign(creative, p.field, p.proposed)
+        else:
+            current = getattr(creative, _TARGETS[p.field])
+            assign(creative, p.field, _merge_lines(current, p.proposed))
+        filled.append(p.label)
+    return filled
+
+
+def _merge_lines(current: str, proposed: str) -> str:
+    """Two one-per-line lists as one: the current values first, then the new ones, each
+    value once (compared case- and accent-insensitively)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in (*current.splitlines(), *proposed.splitlines()):
+        value = line.strip()
+        key = brief_ai._fold(value) if value else ""
+        if value and key not in seen:
+            seen.add(key)
+            out.append(value)
+    return "\n".join(out)
+
+
+def filled_message(labels: list[str]) -> str:
+    """What the brief filled, said in one line under its card."""
+    if not labels:
+        return "El documento no trae cambios que podamos verificar en él."
+    names = ", ".join(labels)
+    return f"Rellenamos desde tu brief: {names}. Las listas las revisas en ¿Todo correcto?"
 
 
 #: The brief's read, stage by stage, for its progress screen (§ request 2026-10-01: the
@@ -234,8 +282,13 @@ class BrandDocumentState(rx.State):
 
     @rx.event(background=True)
     async def analyze(self, source: str) -> None:
-        """Claude reads the staged document with `proponer_brand_kit` and the verified
-        changes land in the review panel. Background: a document read takes seconds."""
+        """Claude reads the staged document with `proponer_brand_kit` and every verified
+        change goes STRAIGHT into the field it belongs to (§ request 2026-10-05, "que las
+        propuestas se pongan directamente en donde van, sin la mini view de la
+        propuesta"): Posicionamiento and Audiencia on this same screen, the five lists on
+        ¿Todo correcto?, where they are reviewed and edited (`apply_directly`). A proposal
+        whose quote was NOT found in the document is still left out — it used to start
+        unticked in the panel. Background: a document read takes seconds."""
         async with self:
             key = self.brief_key if source == "brief" else self.brandboard_key
             if not key:
@@ -245,7 +298,7 @@ class BrandDocumentState(rx.State):
             self._set_busy(source, True)
             self._set_stage(source, "preparing")
             self._say(source, "Leyendo tu brief…")
-        rows: list[dict[str, str]] = []
+        proposals: list[brief_ai.FieldProposal] = []
         message, tone = "", "neutral"
         try:
             data = await asyncio.to_thread((rx.get_upload_dir() / key).read_bytes)
@@ -258,17 +311,14 @@ class BrandDocumentState(rx.State):
             )
             async with self:
                 self._set_stage(source, "sorting")
-            rows = proposal_rows(source, proposals)
             logger.info(
                 "brand documents: %s read by %s → %d proposals ($%.4f)",
                 source,
                 stats.model_revision or stats.model_id,
-                len(rows),
+                len(proposals),
                 stats.cost_usd,
             )
-            if rows:
-                message = "Revisa lo que encontramos y aplica lo que quieras."
-            else:
+            if not proposals:
                 message, tone = "El documento no trae cambios para tu Brand Kit.", "info"
         except MissingAPIKey:
             message, tone = _NO_KEY, "warn"
@@ -281,7 +331,11 @@ class BrandDocumentState(rx.State):
             logger.warning("brand documents: %s failed: %s", source, exc)
             message, tone = _AI_FAILED, "error"
         async with self:
-            self.proposals = [r for r in self.proposals if r["source"] != source] + rows
+            if proposals:
+                creative = await self.get_state(CreativeState)
+                filled = apply_directly(creative, proposals)
+                message, tone = filled_message(filled), "ok" if filled else "info"
+            self.proposals = [r for r in self.proposals if r["source"] != source]
             self._set_busy(source, False)
             self._set_stage(source, "")
             self._say(source, message, tone)
@@ -473,8 +527,7 @@ def brief_upload_card() -> rx.Component:
         BrandDocumentState.brief_busy,
         progress_panel(
             "Leyendo tu brief",
-            "Claude lee el documento y propone con qué rellenar tu Brand Kit, "
-            "citando de dónde sale cada cosa.",
+            "Claude lee el documento y rellena tu Brand Kit con lo que puede citar de él.",
             value=BrandDocumentState.brief_percent,
             steps=BrandDocumentState.brief_steps,
         ),
@@ -493,7 +546,7 @@ def _brief_card() -> rx.Component:
                         rx.cond(
                             BrandDocumentState.brief_name != "",
                             BrandDocumentState.brief_name,
-                            "Súbelo y te proponemos cómo rellenar tu Brand Kit.",
+                            "Súbelo y rellenamos tu Brand Kit con lo que dice.",
                         ),
                         size="1",
                         color=T.TEXT_MUTED,
@@ -532,7 +585,8 @@ def _brief_card() -> rx.Component:
             BrandDocumentState.brief_message,
             BrandDocumentState.brief_tone,
         ),
-        proposals_panel("brief"),
+        # no review panel since 2026-10-05: what the brief says goes straight into the
+        # fields (`BrandDocumentState.analyze` → `apply_directly`)
         spacing="2",
         width="100%",
         align_items="start",

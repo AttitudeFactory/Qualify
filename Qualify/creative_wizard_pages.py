@@ -53,7 +53,8 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import reflex as rx
-from qualify_api.hashtags import fold, normalize_tag
+from qualify_api.claude_tools import ClaudeToolError, MissingAPIKey, api_key_from_env
+from qualify_api.hashtags import fold, from_profile, normalize_tag
 from reflex.constants import Dirs
 from reflex.utils.imports import ImportVar
 from reflex.vars import VarData
@@ -94,7 +95,7 @@ from .ui import (
     tone_badge,
 )
 from .ui import tokens as T
-from .voice_lab import VoiceLabState, voice_analysis_result, voice_lab_panel
+from .voice_lab import voice_analysis_result, voice_lab_panel
 
 logger = logging.getLogger(__name__)
 
@@ -114,24 +115,26 @@ _UPLOAD_FAILED = "No se pudo leer el archivo. Inténtalo de nuevo."
 
 # Title + one-line subtitle per step. The index IS the cursor value, so this tuple is
 # the single source of truth for the counter and the heading.
-#: Tu brief de marca's heading — one constant, both flows (§ request 2026-09-29).
-_BRIEF_HEADING = (
-    "Tu brief de marca",
-    "Si tienes uno, súbelo y te proponemos cómo rellenar tu Brand Kit. Si no, continúa.",
-)
+#
+# § request 2026-10-05, the wizard slimmed down — gone from BOTH flows:
+# - Tu brief de marca as its own view: it is now the top of ¿Quién es la marca?
+#   (`_IDENTITY_HEADING`), and what it says goes straight into the fields.
+# - Tu voz and ¿Cómo suena?: configured later, from the Brand Kit editor (/brand/kit)
+#   — "las guardamos aparte, porque quiero que se pueda configurar después".
+# - Enséñale a hablar and Lo que nunca debe decir: their five lists are filled on
+#   ¿Todo correcto?, with examples, instead of on two screens of their own.
+# - (connect flow only) Lo que te proponemos and the two Google Maps views.
 
-#: Tu voz — its own view right before ¿Cómo suena? (§ request 2026-10-01): record or upload
-#: the brand's voice, analyse it to pre-fill the next screen's sliders, clone it.
-_VOICE_HEADING = (
-    "Tu voz",
-    "Grábala o súbela: ajustamos el tono con ella y, si quieres, la clonamos.",
+#: ¿Quién es la marca?'s heading — one constant, both flows. Carries the brief now.
+_IDENTITY_HEADING = (
+    "¿Quién es la marca?",
+    "Lo que define su lugar y a quién le habla. Si tienes un brief, súbelo y lo rellenamos.",
 )
 
 #: Tipografía's title + subtitle, shared by the three flows so the copy cannot drift.
 _TYPOGRAPHY_HEADING = ("Tipografía", "La letra con la que se te reconoce, antes que el color.")
 STEPS: tuple[tuple[str, str], ...] = (
-    _BRIEF_HEADING,
-    ("¿Quién es la marca?", "Lo que define su lugar y a quién le habla."),
+    _IDENTITY_HEADING,
     ("¿Tienes brandboard?", "De tu respuesta depende el siguiente paso."),
     ("Tu brandboard", "Lo usaremos en cada pieza que generemos."),
     # Tipografía — its own view right before Paleta de colores (§ request 2026-10-05):
@@ -139,24 +142,21 @@ STEPS: tuple[tuple[str, str], ...] = (
     # whether or not a brandboard was uploaded. Optional: nothing blocks Continuar.
     _TYPOGRAPHY_HEADING,
     ("Paleta de colores", "Los colores con los que se te reconoce."),
-    _VOICE_HEADING,
-    ("¿Cómo suena?", "Ajusta el tono en cuatro ejes."),
-    ("Enséñale a hablar", "Ejemplos reales valen más que cualquier descripción."),
-    ("Lo que nunca debe decir", "Reglas duras: una violación es un rechazo."),
-    ("¿Todo correcto?", "Revisa antes de guardar."),
+    ("¿Todo correcto?", "Revisa, completa los ejemplos y las reglas, y guarda."),
     ("Resultados e insights", "Tu marca, lista."),
 )
 LAST_STEP = len(STEPS) - 1
 #: The manual flow's steps a rule names (the rest are read off `_window`).
-_M_TYPOGRAPHY_STEP = 4
-_M_PALETTE_STEP = 5
-_M_VOICE_STEP = 6
-_M_EXAMPLES_STEP = 8
+_M_IDENTITY_STEP = 0
+_M_HAS_LOGO_STEP = 1
+_M_LOGO_STEP = 2
+_M_TYPOGRAPHY_STEP = 3
+_M_PALETTE_STEP = 4
+assert STEPS[_M_IDENTITY_STEP] == _IDENTITY_HEADING
+assert STEPS[_M_LOGO_STEP][0] == "Tu brandboard"
 assert STEPS[_M_TYPOGRAPHY_STEP] == _TYPOGRAPHY_HEADING
 assert STEPS[_M_PALETTE_STEP][0] == "Paleta de colores"
 assert _M_TYPOGRAPHY_STEP + 1 == _M_PALETTE_STEP
-assert STEPS[_M_VOICE_STEP] == _VOICE_HEADING
-assert STEPS[_M_EXAMPLES_STEP][0] == "Enséñale a hablar"
 #: ¿Todo correcto? — one before the true final screen. `resume` opens here on a kit
 #: with no gaps, not on `LAST_STEP`: re-entering should offer a review, not skip
 #: straight past it to the "you're done" screen.
@@ -324,29 +324,24 @@ class BrandWizardState(rx.State):
         happened to be left. Runs on page load, after `CreativeState.load_brand` has
         filled the kit — so re-entering never parks you on step 6 while step 2 is empty.
 
-        Two steps are never gaps by construction: the tone sliders always hold a value
-        (they default to 50), and the restrictions are legitimately optional. A kit with
-        no gaps left opens on the confirmation screen (`_CONFIRM_STEP`), not on
-        `LAST_STEP` — Resultados e insights is a destination, not something to resume
-        into.
+        Tipografía is optional, so it is never a gap. A kit with no gaps left opens on the
+        confirmation screen (`_CONFIRM_STEP`) — also when its examples are still empty:
+        since 2026-10-05 that is where they are filled. Not on `LAST_STEP` — Resultados
+        e insights is a destination, not something to resume into.
         """
         creative = await self.get_state(CreativeState)
-        # Step 0 is Tu brief de marca (§ request 2026-09-29): an empty kit opens there,
-        # where a brief can fill most of what follows.
-        if not creative.kit_positioning.strip() and not creative.kit_audience.strip():
-            self.step = 0
-        elif not creative.kit_positioning.strip() or not creative.kit_audience.strip():
-            self.step = 1
+        # ¿Quién es la marca? carries the brief (§ request 2026-10-05): an empty or
+        # half-filled identity opens there, where a brief can fill most of what follows.
+        if not creative.kit_positioning.strip() or not creative.kit_audience.strip():
+            self.step = _M_IDENTITY_STEP
         elif not self.has_logo:
-            self.step = 2
+            self.step = _M_HAS_LOGO_STEP
         elif self.has_logo == "si" and not self.logo_versions and not self.brand_extras:
-            self.step = 3
+            self.step = _M_LOGO_STEP
         elif self.has_logo == "no" and not self.logo_brief_1.strip():
-            self.step = 3
+            self.step = _M_LOGO_STEP
         elif not creative.kit_palette.strip():
             self.step = _M_PALETTE_STEP
-        elif not creative.kit_do_examples.strip():
-            self.step = _M_EXAMPLES_STEP
         else:
             self.step = _CONFIRM_STEP
 
@@ -1177,20 +1172,14 @@ def _finish_button(on_click: rx.event.EventType[()]) -> rx.Component:
 # The nine steps
 
 
-def _step_brief() -> rx.Component:
-    """Tu brief de marca, in both flows — its own screen right before ¿Quién es la marca?
-    (§ request 2026-09-29, "quiero una view solo para el brief"; it used to open that
-    step, § 2026-09-25). A brief read by Claude proposes values for ¿Quién es la marca?
-    AND the later steps (tone, examples, restrictions), and whatever the operator
-    applies is already in place when they get there. Optional: Continuar always
-    passes, with or without a brief."""
-    return _step_body(brand_documents.brief_upload_card(), icon="file-text")
-
-
 def _step_identity() -> rx.Component:
-    """¿Quién es la marca?, in both flows. The brief that can prefill it has its own
-    screen just before (`_step_brief`)."""
+    """¿Quién es la marca?, in both flows — WITH the brief on top (§ request 2026-10-05,
+    "el brief y el quién es tu marca vamos a unificarlo"; the brief had its own screen
+    since 2026-09-29). Uploading one is optional; when Claude reads it, what it can quote
+    goes straight into Posicionamiento and Audiencia below and into the lists that
+    ¿Todo correcto? shows (`brand_documents.apply_directly`) — no review panel."""
     return _step_body(
+        brand_documents.brief_upload_card(),
         _labeled_area(
             "Posicionamiento",
             CreativeState.kit_positioning,
@@ -2238,90 +2227,92 @@ def _tone_sliders() -> tuple[rx.Component, ...]:
     )
 
 
-def _labeled_pills(
-    label: str, field: str, items: rx.Var[list[str]], placeholder: str
-) -> rx.Component:
-    """A Brand Kit list's input (design system `pill_editor`): one value at a time, added
-    with Enter. The values are not listed here (§ request 2026-09-30): they are
-    reviewed, edited and removed on ¿Todo correcto? (`_editable_pills_row`); here only
-    a count says they landed."""
-    count = items.length()
+#: The five kit lists ¿Todo correcto? fills (§ request 2026-10-05: "las views de enséñale
+#: a hablar y lo que nunca debe decir vamos a dejarlo solo en el ¿Todo correcto?, que allí
+#: se puedan poner y que aparezcan los ejemplos") — (pill field, label, what it is for,
+#: an example, what to show when empty).
+_KIT_LISTS: tuple[tuple[str, str, str, str, str], ...] = (
+    (
+        "do",
+        "Ejemplos que SÍ suenan a la marca",
+        "Frases reales de tu marca: las imitamos al escribir.",
+        "¡Tu primer café del día corre por nuestra cuenta!",
+        "Ninguno todavía",
+    ),
+    (
+        "dont",
+        "Ejemplos que NO suenan a la marca",
+        "Cómo no debe sonar nunca, para alejarnos de ahí.",
+        "Estimado cliente, le informamos que disponemos de café.",
+        "Ninguno todavía",
+    ),
+    (
+        "cta",
+        "Patrones de llamado a la acción",
+        "Cómo pides que te escriban, compren o visiten.",
+        "Pide el tuyo por WhatsApp y pásalo a recoger",
+        "Ninguno todavía",
+    ),
+    (
+        "banned",
+        "Palabras vetadas",
+        "Palabras que nunca deben aparecer.",
+        "barato",
+        "Ninguna",
+    ),
+    (
+        "claims",
+        "Claims prohibidos",
+        "Promesas o comparaciones que la marca no puede hacer.",
+        "el mejor café de Colombia",
+        "Ninguno",
+    ),
+)
+#: Which `CreativeState` list var each pill field renders.
+_KIT_LIST_ITEMS = {
+    "do": CreativeState.kit_do_items,
+    "dont": CreativeState.kit_dont_items,
+    "cta": CreativeState.kit_cta_items,
+    "banned": CreativeState.kit_banned_items,
+    "claims": CreativeState.kit_claims_items,
+}
+
+
+def _kit_list_editor(field: str, label: str, hint: str, example: str, empty: str) -> rx.Component:
+    """One kit list on ¿Todo correcto?: its label and what it is for, the values as
+    pills that edit in place (`_editable_pill`), and an input that adds one on Enter —
+    its example always in sight, as the placeholder and on its own line."""
+    items = _KIT_LIST_ITEMS[field]
     return rx.vstack(
-        rx.text(label, size="2", weight="medium"),
+        rx.vstack(
+            rx.text(label, size="2", weight="medium"),
+            rx.text(hint, size="1", color=T.TEXT_MUTED),
+            spacing="0",
+            align_items="start",
+        ),
+        rx.cond(
+            items.length() > 0,
+            rx.flex(
+                rx.foreach(items, lambda item, index: _editable_pill(field, item, index)),
+                wrap="wrap",
+                gap="2",
+                width="100%",
+            ),
+            rx.text(empty, size="1", color=T.TEXT_FAINT),
+        ),
         pill_editor(
             items,
             draft=CreativeState.kit_pill_drafts[field],
             on_draft_change=lambda value: CreativeState.set_kit_pill_draft(field, value),
             on_add=CreativeState.add_kit_pill(field),
             on_remove=lambda index: CreativeState.remove_kit_pill(field, index),
-            placeholder=placeholder,
+            placeholder=f"Ej.: {example}",
             add_label=f"Agregar a {label.lower()}",
             show_items=False,
         ),
-        rx.cond(
-            count > 0,
-            rx.hstack(
-                rx.icon("check", size=12, color=T.tone_color("ok", 10)),
-                rx.text(
-                    rx.cond(count == 1, "1 agregada", count.to_string() + " agregadas"),
-                    " · las revisas y editas en ¿Todo correcto?",
-                    size="1",
-                    color=T.TEXT_MUTED,
-                ),
-                spacing="1",
-                align="center",
-            ),
-        ),
-        spacing="1",
+        spacing="2",
         width="100%",
         align_items="start",
-    )
-
-
-def _step_voice_examples() -> rx.Component:
-    return _step_body(
-        _labeled_pills(
-            "Ejemplos que SÍ suenan a la marca",
-            "do",
-            CreativeState.kit_do_items,
-            "Ej.: ¡Tu primer café del día corre por nuestra cuenta!",
-        ),
-        _labeled_pills(
-            "Ejemplos que NO suenan a la marca",
-            "dont",
-            CreativeState.kit_dont_items,
-            "Ej.: Estimado cliente, le informamos que disponemos de café.",
-        ),
-        _labeled_pills(
-            "Patrones de llamado a la acción",
-            "cta",
-            CreativeState.kit_cta_items,
-            "Ej.: Pide el tuyo por WhatsApp y pásalo a recoger",
-        ),
-        icon="message-square-text",
-    )
-
-
-def _step_restrictions() -> rx.Component:
-    return _step_body(
-        _labeled_pills(
-            "Palabras vetadas",
-            "banned",
-            CreativeState.kit_banned_items,
-            "Ej.: barato",
-        ),
-        _labeled_pills(
-            "Claims prohibidos",
-            "claims",
-            CreativeState.kit_claims_items,
-            "Ej.: el mejor café de Colombia",
-        ),
-        callout(
-            "Esto se comprueba siempre, incluso si desactivas el resto.",
-            "warn",
-            icon="shield-alert",
-        ),
-        icon="shield-alert",
     )
 
 
@@ -2446,76 +2437,51 @@ def _editable_pill(field: str, item: rx.Var[str], index: rx.Var[int]) -> rx.Comp
     )
 
 
-def _editable_pills_row(
-    label: str, field: str, items: rx.Var[list[str]], fallback: str
-) -> rx.Component:
-    """A kit list on ¿Todo correcto?: its label, then its values as editable pills."""
-    return rx.vstack(
-        rx.text(label, size="2", color=T.TEXT_MUTED),
-        rx.cond(
-            items.length() > 0,
-            rx.flex(
-                rx.foreach(items, lambda item, index: _editable_pill(field, item, index)),
-                wrap="wrap",
-                gap="2",
-                width="100%",
-            ),
-            rx.text(fallback, size="2", color=T.TEXT_FAINT),
+def _confirm_section(title: str, *children: rx.Component) -> rx.Component:
+    return card(
+        rx.vstack(
+            _section_label(title),
+            *children,
+            spacing="4",
+            width="100%",
+            align_items="start",
         ),
-        spacing="1",
+        padding="1.25rem 1.5rem",
         width="100%",
-        align_items="start",
     )
 
 
 def _step_confirm() -> rx.Component:
-    # No logo row here (per request) — the staged logo isn't part of this recap. The kit
-    # lists are edited HERE (§ request 2026-09-30), not on the steps that fill them.
+    """¿Todo correcto?: the recap of the kit AND, since 2026-10-05, where its five lists
+    are filled (Enséñale a hablar and Lo que nunca debe decir left the wizard): each
+    with what it is for, its example, in-place editing and an input to add. The voice
+    and the tone sliders are configured later, in the Brand Kit editor. No logo row
+    (per request) — the staged logo isn't part of this recap."""
+    lists = {spec[0]: _kit_list_editor(*spec) for spec in _KIT_LISTS}
     return _step_body(
-        card(
-            rx.vstack(
-                _recap_row("Posicionamiento", CreativeState.kit_positioning),
-                _recap_row("Audiencia", CreativeState.kit_audience),
-                rx.divider(),
-                _palette_recap_row(),
-                _recap_row("Tipografía", CreativeState.kit_typography_summary),
-                rx.divider(),
-                _editable_pills_row(
-                    "Ejemplos que SÍ suenan a la marca",
-                    "do",
-                    CreativeState.kit_do_items,
-                    "Ninguno",
-                ),
-                _editable_pills_row(
-                    "Ejemplos que NO suenan a la marca",
-                    "dont",
-                    CreativeState.kit_dont_items,
-                    "Ninguno",
-                ),
-                _editable_pills_row(
-                    "Patrones de llamado a la acción",
-                    "cta",
-                    CreativeState.kit_cta_items,
-                    "Ninguno",
-                ),
-                rx.divider(),
-                _editable_pills_row(
-                    "Palabras vetadas", "banned", CreativeState.kit_banned_items, "Ninguna"
-                ),
-                _editable_pills_row(
-                    "Claims prohibidos", "claims", CreativeState.kit_claims_items, "Ninguno"
-                ),
-                rx.text(
-                    "Haz clic en un valor para editarlo; la ✕ lo quita.",
-                    size="1",
-                    color=T.TEXT_FAINT,
-                ),
-                spacing="3",
-                width="100%",
-                align_items="start",
+        _confirm_section(
+            "Tu marca",
+            _recap_row("Posicionamiento", CreativeState.kit_positioning),
+            _recap_row("Audiencia", CreativeState.kit_audience),
+            _palette_recap_row(),
+            _recap_row("Tipografía", CreativeState.kit_typography_summary),
+        ),
+        _confirm_section("Cómo habla tu marca", lists["do"], lists["dont"], lists["cta"]),
+        _confirm_section(
+            "Lo que nunca debe decir",
+            lists["banned"],
+            lists["claims"],
+            callout(
+                "Esto se comprueba siempre, incluso si desactivas el resto.",
+                "warn",
+                icon="shield-alert",
             ),
-            padding="1.25rem 1.5rem",
-            width="100%",
+        ),
+        rx.text(
+            "Haz clic en un valor para editarlo; la ✕ lo quita. Tu voz y el tono los "
+            "configuras después, desde Negocio → Brand Kit.",
+            size="1",
+            color=T.TEXT_FAINT,
         ),
         icon="clipboard-check",
     )
@@ -2571,19 +2537,14 @@ def _progress_trigger(state: type[rx.State]) -> rx.Component:
 def _manual_steps() -> rx.Component:
     return rx.match(
         BrandWizardState.step,
-        (0, _step_brief()),
-        (1, _step_identity()),
-        (2, _step_has_logo()),
-        (3, _step_logo(BrandWizardState.next_step)),
+        (_M_IDENTITY_STEP, _step_identity()),
+        (_M_HAS_LOGO_STEP, _step_has_logo()),
+        (_M_LOGO_STEP, _step_logo(BrandWizardState.next_step)),
         (_M_TYPOGRAPHY_STEP, _step_typography()),
         (_M_PALETTE_STEP, _step_palette()),
-        (_M_VOICE_STEP, _step_voice()),
-        (7, _step_voice_tone()),
-        (_M_EXAMPLES_STEP, _step_voice_examples()),
-        (9, _step_restrictions()),
         (_CONFIRM_STEP, _step_confirm()),
         (LAST_STEP, _step_insights()),
-        _step_brief(),
+        _step_identity(),
     )
 
 
@@ -2624,10 +2585,9 @@ def _manual_can_continue() -> rx.Var[bool]:
     gates `_controls`'s Continuar the same way `_connect_can_continue` gates the
     connect flow's, reading the exact same shared fields (`_identity_complete`/
     `_logo_step_complete` are the one place either flow checks them, so the two
-    gates cannot drift). Every step not named below always returns True: ¿Cómo
-    suena? (the tone sliders default to 50 — never a gap), Lo que nunca debe decir
-    (this module's own docstring: "legitimately optional") and ¿Todo correcto?
-    (review only)."""
+    gates cannot drift). Every step not named below always returns True: Tipografía
+    (optional) and ¿Todo correcto? (the examples and rules filled there are optional,
+    as they were on their own screens before 2026-10-05)."""
     return rx.cond(
         _manual_busy(),
         False,  # § 2026-10-01: nothing moves while the voice or the brief is being read
@@ -2636,17 +2596,16 @@ def _manual_can_continue() -> rx.Var[bool]:
 
 
 def _manual_busy() -> rx.Var[bool]:
-    return VoiceLabState.analyzing | brand_documents.BrandDocumentState.brief_busy
+    return brand_documents.BrandDocumentState.brief_busy
 
 
 def _manual_requirement() -> rx.Var[bool]:
     return rx.match(
         BrandWizardState.step,
-        (1, _identity_complete()),
-        (2, BrandWizardState.has_logo != ""),
-        (3, _logo_step_complete()),
+        (_M_IDENTITY_STEP, _identity_complete()),
+        (_M_HAS_LOGO_STEP, BrandWizardState.has_logo != ""),
+        (_M_LOGO_STEP, _logo_step_complete()),
         (_M_PALETTE_STEP, CreativeState.kit_palette != ""),
-        (_M_EXAMPLES_STEP, CreativeState.kit_do_examples != ""),
         True,
     )
 
@@ -2727,7 +2686,7 @@ def _step_column_width(
 
 def _manual_column_width() -> rx.Var[str]:
     return _step_column_width(
-        BrandWizardState.step == 3,
+        BrandWizardState.step == _M_LOGO_STEP,
         BrandWizardState.step == _CONFIRM_STEP,
         on_typography=BrandWizardState.step == _M_TYPOGRAPHY_STEP,
     )
@@ -2977,7 +2936,7 @@ def brand_choice_index() -> rx.Component:
 # own step 0, not inside it.
 
 #: (icon, network name, what to do, signup URL). Real Spanish copy, not lorem — same
-#: rule `RECOMMENDATIONS` follows: a first-time user reads this as the actual
+#: rule the account-setup copy follows: a first-time user reads this as the actual
 #: instructions, not filler.
 #: Lucide has no brand-logo icons (verified against `reflex_components_lucide.icon`
 #: — "instagram"/"tiktok" both fall back to a generic circle-help with a compile
@@ -3137,28 +3096,6 @@ NETWORKS: tuple[tuple[str, str, str, str], ...] = (
     ("tiktok", "TikTok", "Vídeos cortos y galerías de fotos.", "music_2"),
 )
 
-#: Placeholder recommendations — hardcoded until the real analysis produces them
-#: (no connection to `search.content_index`/`signals.events` yet), but written as
-#: real, generic-but-plausible advice, not lorem: this screen exists to feel like
-#: "we read your profile", and Latin filler text says the opposite.
-RECOMMENDATIONS: tuple[tuple[str, str], ...] = (
-    (
-        "Publica más vídeo corto",
-        "Es el formato que más se comparte en tu categoría ahora mismo.",
-    ),
-    (
-        "Refuerza tu llamada a la acción",
-        "Cierra cada pieza con una acción clara: seguir, comprar, escribir.",
-    ),
-    (
-        "Unifica la paleta",
-        "Usa los mismos colores en cada publicación para que te reconozcan de inmediato.",
-    ),
-    (
-        "Responde los comentarios",
-        "Contestar rápido mejora tu alcance y la confianza de tu audiencia.",
-    ),
-)
 
 #: Metrics are REAL since 2026-09-10 (§ request "quiero que las métricas sean
 #: reales") and WINDOWED over the last `scrapecreators_client.METRICS_WINDOW_DAYS`
@@ -3193,31 +3130,19 @@ CONNECT_STEPS: tuple[tuple[str, str], ...] = (
     ("¿Qué red usas?", "Empezamos por donde ya tienes audiencia."),
     ("¿Cuál es tu usuario?", "Lo leeremos para proponerte el kit."),
     ("Esto es lo que vemos", "Confirma que es tu perfil."),
-    # Lo que te proponemos — SKIPPED for a fresh start (§ request 2026-09-11: "quitemos
-    # la view de Lo que te proponemos, solo cuando no tenga redes"). See `is_fresh_start`.
-    ("Lo que te proponemos", "Podrás ajustarlo todo después."),
-    # "Elige tu plan" sat here until 2026-09-11 — removed from both flows.
+    # Gone on 2026-10-05 (see the note above STEPS): Lo que te proponemos (it sat here),
+    # the Google Maps pair (after Tu rubro), Tu brief de marca as its own screen (now the
+    # top of ¿Quién es la marca?), Tu voz, ¿Cómo suena?, Enséñale a hablar and Lo que
+    # nunca debe decir (their lists are filled on ¿Todo correcto?).
     #
-    # ¿Eres influencer o una marca? now comes BEFORE ¿Quién es la marca? (§ request
-    # 2026-09-11, "invertir" the two). It still gates the Google Maps pair: an
-    # influencer has no local business to list.
+    # ¿Eres influencer o una marca? comes BEFORE ¿Quién es la marca? (§ request
+    # 2026-09-11, "invertir" the two).
     ("¿Eres influencer o una marca?", "Así te mostramos los pasos que sí aplican para ti."),
     # Tu rubro y ubicación (2026-09-11) — the input the creator discovery on
-    # Resultados e insights needs. Always shown for a fresh start (no content to read
-    # it from); for an existing account only when the profile read could not detect
-    # what the discovery needs (`needs_rubro_step`).
+    # Resultados e insights needs; its hashtags are created on arrival from the
+    # account's own description, category and latest posts (§ 2026-10-05).
     ("Tu rubro y ubicación", "Así buscamos referentes de tu sector, tu país y tu ciudad."),
-    # ¿Estás en Google Maps? / Súmate a Google Maps — swapped with ¿Quién es la marca?
-    # (§ request 2026-09-15, "intercambiar las views"): the pair now runs right after
-    # Tu rubro y ubicación and ¿Quién es la marca? takes the slot they used to close.
-    # SKIPPED as a pair for "influencer"; for "marca"/"ambas" the question is always
-    # asked and only the follow-up screen is conditional, on the answer ("no").
-    ("¿Tu negocio está en Google Maps?", "Así te encuentran cuando buscan cerca."),
-    ("Súmate a Google Maps", "Son unos minutos y quedas visible en el mapa."),
-    # Tu brief de marca — its own screen right before ¿Quién es la marca? (§ request
-    # 2026-09-29), which then follows its usual flow. Shown to every kind of account.
-    _BRIEF_HEADING,
-    ("¿Quién es la marca?", "Lo que define su lugar y a quién le habla."),
+    _IDENTITY_HEADING,
     # ¿Tienes logo? / Tu logo — ALWAYS shown, right before Paleta de colores (§ request
     # 2026-09-16). They used to be skipped whenever the scraped profile had a picture,
     # which is nearly every account, so uploading a logo or asking for one through the
@@ -3229,11 +3154,7 @@ CONNECT_STEPS: tuple[tuple[str, str], ...] = (
     ("Tu brandboard", "Lo usaremos en cada pieza que generemos."),
     _TYPOGRAPHY_HEADING,  # § request 2026-10-05, see the manual flow's STEPS
     ("Paleta de colores", "Los colores con los que se te reconoce."),
-    _VOICE_HEADING,
-    ("¿Cómo suena?", "Ajusta el tono en cuatro ejes."),
-    ("Enséñale a hablar", "Ejemplos reales valen más que cualquier descripción."),
-    ("Lo que nunca debe decir", "Reglas duras: una violación es un rechazo."),
-    ("¿Todo correcto?", "Revisa antes de guardar."),
+    ("¿Todo correcto?", "Revisa, completa los ejemplos y las reglas, y guarda."),
     # Referente, competencia o detractor (§ request 2026-09-11, "algo divertido antes
     # del resultado"): the accounts the discovery found, sorted by the operator into
     # three buckets by drag and drop or a tap. Optional — nothing blocks Continuar.
@@ -3247,34 +3168,24 @@ _CONNECT_CONFIRM_STEP = CONNECT_LAST - 2
 #: Named indices into `CONNECT_STEPS` — every skip, gate and renderer refers to these,
 #: never to a literal, so the next reorder of the tuple is a one-place change.
 _PROFILE_STEP = 2
-_RECOMMENDATIONS_STEP = 3
-_ACCOUNT_KIND_STEP = 4
-_RUBRO_STEP = 5
-_MAPS_QUESTION_STEP = 6
-_MAPS_STEPS_STEP = 7
-_BRIEF_STEP = 8
-_IDENTITY_STEP = 9
-_LOGO_QUESTION_STEP = 10
-_LOGO_UPLOAD_STEP = 11
-_TYPOGRAPHY_STEP = 12
-_PALETTE_STEP = 13
-_VOICE_STEP = 14
-_VOICE_TONE_STEP = 15
-_VOICE_EXAMPLES_STEP = 16
-_RESTRICTIONS_STEP = 17
-assert CONNECT_STEPS[_BRIEF_STEP] == _BRIEF_HEADING
+_ACCOUNT_KIND_STEP = 3
+_RUBRO_STEP = 4
+_IDENTITY_STEP = 5
+_LOGO_QUESTION_STEP = 6
+_LOGO_UPLOAD_STEP = 7
+_TYPOGRAPHY_STEP = 8
+_PALETTE_STEP = 9
+assert CONNECT_STEPS[_PROFILE_STEP][0] == "Esto es lo que vemos"
+assert CONNECT_STEPS[_ACCOUNT_KIND_STEP][0] == "¿Eres influencer o una marca?"
 assert CONNECT_STEPS[_RUBRO_STEP][0] == "Tu rubro y ubicación"
-assert CONNECT_STEPS[_MAPS_QUESTION_STEP][0] == "¿Tu negocio está en Google Maps?"
-assert CONNECT_STEPS[_MAPS_STEPS_STEP][0] == "Súmate a Google Maps"
-assert CONNECT_STEPS[_IDENTITY_STEP][0] == "¿Quién es la marca?"
+assert CONNECT_STEPS[_IDENTITY_STEP] == _IDENTITY_HEADING
 assert CONNECT_STEPS[_LOGO_QUESTION_STEP][0] == "¿Tienes brandboard?"
 assert CONNECT_STEPS[_LOGO_UPLOAD_STEP][0] == "Tu brandboard"
 assert CONNECT_STEPS[_TYPOGRAPHY_STEP] == _TYPOGRAPHY_HEADING
 assert CONNECT_STEPS[_PALETTE_STEP][0] == "Paleta de colores"
-assert CONNECT_STEPS[_VOICE_STEP] == _VOICE_HEADING
-assert CONNECT_STEPS[_VOICE_TONE_STEP][0] == "¿Cómo suena?"
 assert _LOGO_UPLOAD_STEP + 1 == _TYPOGRAPHY_STEP and _TYPOGRAPHY_STEP + 1 == _PALETTE_STEP
-assert CONNECT_STEPS[_RESTRICTIONS_STEP + 1][0] == "¿Todo correcto?"
+assert _PALETTE_STEP + 1 == _CONNECT_CONFIRM_STEP
+assert CONNECT_STEPS[_CONNECT_CONFIRM_STEP][0] == "¿Todo correcto?"
 assert CONNECT_STEPS[_SORT_STEP][0] == "Referente, competencia o detractor"
 
 #: The three buckets of the sort step — (key, title, blurb, icon).
@@ -3372,10 +3283,52 @@ def merge_suggestions(
     out, note = add_pills(kept, suggested)
     if not choice.tags:
         note = (
-            "No encontramos hashtags de tu rubro en nuestra base todavía. Agrega los tuyos: "
+            "No encontramos hashtags en lo que tu cuenta publica. Agrega los tuyos: "
             "con ellos buscamos."
         )
     return out, note
+
+
+def _create_hashtags(
+    account: from_profile.AccountText,
+) -> tuple[hashtag_catalog.HashtagChoice | None, str]:
+    """`suggest_hashtags`' off-loop half: Claude creates the tags from the account's own
+    text (`from_profile.generate`); without a key, or when the call fails, the account's
+    own most-used hashtags stand in (`from_profile.from_posts`). Returns the choice for
+    `merge_suggestions`, or None with the note to show."""
+    cap = creator_discovery.CHOSEN_HASHTAGS
+    proposal: from_profile.Proposal | None = None
+    if account.has_content:
+        try:
+            proposal = from_profile.generate(account, api_key=api_key_from_env(), max_tags=cap)
+            if proposal.stats is not None:
+                logger.info(
+                    "hashtags: %s created %s for @%s ($%.4f)",
+                    proposal.model,
+                    [t.tag for t in proposal.tags],
+                    account.handle,
+                    proposal.stats.cost_usd,
+                )
+        except MissingAPIKey:
+            proposal = None
+        except (ClaudeToolError, ValueError) as exc:
+            logger.warning("hashtags: creation failed, using the account's own: %s", exc)
+            proposal = None
+        except Exception as exc:  # noqa: BLE001 — SDK/transport errors: never break the step
+            logger.warning("hashtags: creation failed, using the account's own: %s", exc)
+            proposal = None
+    if proposal is None or not proposal.tags:
+        proposal = from_profile.from_posts(account.used_hashtags, max_tags=cap)
+    if not proposal.tags and not account.has_content:
+        return None, "Escribe tu rubro (o elige una categoría) y te sugerimos hashtags."
+    return (
+        hashtag_catalog.HashtagChoice(
+            tags=tuple(t.tag for t in proposal.tags),
+            by="ai" if proposal.by == "ai" else "rule",
+            picks={t.tag: {"reason": t.reason, "model": proposal.model} for t in proposal.tags},
+        ),
+        "",
+    )
 
 
 #: Every key a card may carry beyond `account_card`'s original ones, defaulted so a
@@ -3714,22 +3667,19 @@ class BrandConnectState(rx.State):
 
     def _is_skipped(self, index: int) -> bool:
         """THE one place deciding which steps a session sees (2026-09-11):
-        - Lo que te proponemos: skipped on a fresh start — nothing to propose FROM.
         - Tu rubro y ubicación: ALWAYS shown since 2026-09-11 ("para cuando se es
           influencer también quiero que me deje escoger rubro y ubicación") — for an
           existing account it arrives prefilled from the profile read, which is the
           moment to correct it.
         - ¿Tienes logo?, Tu logo, Tipografía and Paleta de colores: skipped as a block for
-          "influencer" (§ request 2026-09-29, "se salte directo al apartado de voz") —
-          ¿Quién es la marca? goes straight to ¿Cómo suena?.
+          "influencer" (§ request 2026-09-29) — ¿Quién es la marca? goes straight to
+          ¿Todo correcto? since the voice screens left the wizard (2026-10-05).
         - ¿Tienes brandboard?: a brand or "ambas" is ALWAYS asked, and since 2026-09-29
           nothing pre-answers it.
         - Tu brandboard: skipped while `logo_from_profile` stands — no screen offers
           that answer any more (§ request 2026-09-29), so in practice never.
-        - ¿Tu negocio está en Google Maps?: skipped for "influencer".
-        - Súmate a Google Maps: skipped for "influencer" and on a "sí"."""
-        if index == _RECOMMENDATIONS_STEP:
-            return self._is_fresh()
+        Lo que te proponemos and the Google Maps pair, which this used to skip
+        conditionally, are gone altogether (§ request 2026-10-05)."""
         if (
             index
             in (
@@ -3743,10 +3693,6 @@ class BrandConnectState(rx.State):
             return True
         if index == _LOGO_UPLOAD_STEP:
             return self.logo_from_profile
-        if index == _MAPS_QUESTION_STEP:
-            return self.account_kind == "influencer"
-        if index == _MAPS_STEPS_STEP:
-            return self.account_kind == "influencer" or self.has_maps == "si"
         return False
 
     def _walk(self, start: int, direction: int) -> int:
@@ -3789,12 +3735,9 @@ class BrandConnectState(rx.State):
     @rx.var
     def shows_cancel(self) -> bool:
         """Cancelar replaces Atrás on the LAST screen of this flow's own preview
-        stretch — Lo que te proponemos, or Esto es lo que vemos when that one is
-        skipped for a fresh start."""
-        fresh = self.started_without_socials or (
-            self.profile_followers_count < _NEW_ACCOUNT_FOLLOWER_THRESHOLD
-        )
-        return self.step == (_PROFILE_STEP if fresh else _RECOMMENDATIONS_STEP)
+        stretch — Esto es lo que vemos, since Lo que te proponemos left the flow
+        (§ request 2026-10-05)."""
+        return self.step == _PROFILE_STEP
 
     @rx.event
     def next_step(self) -> rx.event.EventSpec | None:
@@ -3805,6 +3748,14 @@ class BrandConnectState(rx.State):
         self._land(self._walk(min(self.step + 1, CONNECT_LAST), +1))
         if leaving_rubro and self._answers() != self.discovery_answers:
             return BrandConnectState.run_discovery
+        # § 2026-10-05: arriving at Tu rubro with no suggested hashtag yet, they are
+        # created on their own from the account's description, category and latest posts
+        if (
+            self.step == _RUBRO_STEP
+            and not self.suggesting_hashtags
+            and not any(p["origin"] != "manual" for p in self.rubro_hashtags)
+        ):
+            return BrandConnectState.suggest_hashtags
         # Arriving at the sort step with no search ever started (a backend restart
         # wiped the session mid-walk, or nothing was detectable to start it from):
         # start it now, or the loading screen there would wait for nothing.
@@ -3910,56 +3861,49 @@ class BrandConnectState(rx.State):
 
     @rx.event(background=True)
     async def suggest_hashtags(self) -> None:
-        """The button next to Tu rubro: Claude explores the hashtag catalog with its
-        tools (`hashtag_catalog.suggest_hashtags`) for this rubro, this brand's profile
-        and place, and the answer lands as pills the operator can curate. Background:
-        a tool run takes several seconds and the step stays usable meanwhile."""
+        """Tu rubro's hashtags, CREATED from what the account says about itself (§ request
+        2026-10-05): its description, its category and the texts and hashtags of its
+        latest posts — read from this session's profile snapshot — plus the rubro and
+        place the operator confirmed (`qualify_api.hashtags.from_profile`). Runs on its
+        own when the step opens with no suggestion yet (`next_step`) and again from the
+        button. Without a key, or when the call fails, the account's own most-used
+        hashtags stand in. Background: the call takes a few seconds."""
         async with self:
             if self.suggesting_hashtags:
-                return
-            if not self.sector and not self.rubro_text.strip():
-                self.hashtag_note = "Escribe tu rubro (o elige una categoría) y te sugerimos."
                 return
             self.suggesting_hashtags = True
             self.hashtag_note = ""
             network = self.network
             handle = self.profile_username or self.username.strip()
-            answers = {
-                "sector": self.sector,
-                "rubro_text": self.rubro_text.strip(),
-                "country_code": self.country_code,
-                "city": self.city.strip(),
-            }
-            fallback = {
-                "username": self.profile_username,
-                "bio": self.profile_bio,
-                "category": self.profile_category,
-            }
-        ids = await self._referentes_ids()
-        choice: hashtag_catalog.HashtagChoice | None = None
-        note = ""
-        if ids is None:
-            note = (
-                "No pudimos abrir tu Brand Kit para sugerirte hashtags. "
-                "Vuelve a empezar desde el correo."
+            sector_label = creator_discovery.NICHE_LABELS.get(self.sector, "")
+            account = from_profile.AccountText(
+                handle=self.profile_username,
+                bio=self.profile_bio,
+                category=self.profile_category,
+                rubro=", ".join(p for p in (sector_label, self.rubro_text.strip()) if p),
+                city=self.city.strip(),
+                country=creator_discovery.country_name(self.country_code)
+                if self.country_code
+                else "",
             )
-        else:
+        ids = await self._referentes_ids()
+        if ids is not None and handle:
             try:
-                profile = await asyncio.to_thread(
+                snapshot = await asyncio.to_thread(
                     creator_cache_provider.cached_snapshot, ids[0], network, handle
                 )
-                source = profile or fallback
-                seed = creator_discovery.seed_from_profile(source, **answers)
-                choice = await asyncio.to_thread(
-                    hashtag_catalog.suggest_hashtags,
-                    ids[0],
-                    seed,
-                    bio=str(source.get("bio") or ""),
-                    category=str(source.get("category") or ""),
-                )
             except (SQLAlchemyError, OSError, ValueError) as exc:
-                logger.warning("hashtags: suggestion failed: %s", exc)
-                note = "No pudimos sugerir hashtags ahora. Agrega los tuyos o inténtalo luego."
+                logger.warning("hashtags: profile snapshot unreadable: %s", exc)
+                snapshot = None
+            if snapshot:
+                account = replace(
+                    account,
+                    bio=account.bio or str(snapshot.get("bio") or ""),
+                    category=account.category or str(snapshot.get("category") or ""),
+                    captions=tuple(str(c) for c in snapshot.get("recentCaptions") or ()),
+                    used_hashtags=tuple(str(t) for t in snapshot.get("topHashtags") or ()),
+                )
+        choice, note = await asyncio.to_thread(_create_hashtags, account)
         async with self:
             self.suggesting_hashtags = False
             if choice is not None:
@@ -4274,13 +4218,21 @@ class BrandConnectState(rx.State):
     def _stage_is_empty(self, index: int) -> bool:
         """A category with nothing in it (§ request 2026-09-30): its search finished,
         did not fail, and found no account. The deck skips it on its own; a failed one
-        stays, since its Reintentar is something to do, and so does one still loading."""
+        stays, since its Reintentar is something to do, and so does one still loading.
+
+        Except the CITY one (§ 2026-10-05: "nunca está entrando los referentes de tu
+        ciudad … solo me dice anterior en tu país"): skipping it made the city look
+        like a step that never ran. Once its search ran it is shown, with its note
+        ("No encontramos cuentas de Táchira…"), and Continuar goes on from there. Only
+        a city that was never asked for (no city given) is still skipped."""
         key = creator_discovery.PHASES[index]
         if self._phase_accounts(key):
             return False
         note = self._phase_note(key)
         failed = note.startswith("No pudimos")
         pending = self.discovering and not self._phase_title(key) and not note
+        if key == "local" and note and not note.startswith("Indica tu ciudad"):
+            return False
         return not failed and not pending
 
     def _shown_stage(self) -> int:
@@ -5587,32 +5539,6 @@ def _connect_step_profile() -> rx.Component:
     )
 
 
-def _recommendation_card(title: str, blurb: str) -> rx.Component:
-    return card(
-        rx.hstack(
-            rx.icon("sparkles", size=18, color=T.tone_color("accent", 10)),
-            rx.vstack(
-                rx.text(title, size="2", weight="bold"),
-                rx.text(blurb, size="2", color=T.TEXT_MUTED),
-                spacing="1",
-                align_items="start",
-            ),
-            spacing="3",
-            align="start",
-            width="100%",
-        ),
-        padding="1rem 1.25rem",
-        width="100%",
-    )
-
-
-def _connect_step_recommendations() -> rx.Component:
-    return _step_body(
-        icon="lightbulb",
-        *(_recommendation_card(title, blurb) for title, blurb in RECOMMENDATIONS),
-    )
-
-
 def _connect_step_has_logo() -> rx.Component:
     """Same question and copy as the manual flow's `_step_has_logo`, asked of every
     account right before Paleta de colores (§ request 2026-09-16). Cannot
@@ -5860,7 +5786,10 @@ def _rubro_hashtags_block() -> rx.Component:
                 ),
             ),
             wrap="wrap",
-            gap="2",
+            # § request 2026-10-05, "un spacing entre hashtags": 12 px between pills, and
+            # the same between rows when they wrap (was 8 px, read as one block)
+            column_gap="0.75rem",
+            row_gap="0.75rem",
             align="center",
             width="100%",
         ),
@@ -5898,119 +5827,6 @@ def _rubro_hashtags_block() -> rx.Component:
         spacing="2",
         width="100%",
         align_items="start",
-    )
-
-
-def _connect_step_has_maps() -> rx.Component:
-    """¿Tu negocio está en Google Maps?. Only reached when ¿Eres influencer o una
-    marca? was answered "marca" (an influencer skips straight past this pair — see
-    `answer_account_kind`); within that, always shown (no scraped signal exists to
-    skip it like the logo question does), and self-reported: "sí" trusts the answer
-    and moves straight to Paleta; "no" shows `_connect_step_maps_setup` first. Lives
-    entirely in `BrandConnectState` — unlike `has_logo`, this isn't a `brand_kits`
-    field either flow persists, so there is no manual-flow counterpart to keep in
-    sync with."""
-    return _step_body(
-        _choice_card(
-            "Sí, ya está",
-            "Perfecto, seguimos con el siguiente paso.",
-            BrandConnectState.has_maps == "si",
-            BrandConnectState.answer_has_maps("si"),
-        ),
-        _choice_card(
-            "No, todavía no",
-            "Te mostramos cómo sumarla en unos minutos.",
-            BrandConnectState.has_maps == "no",
-            BrandConnectState.answer_has_maps("no"),
-        ),
-        icon="map-pin",
-    )
-
-
-#: Real steps for creating a Google Business Profile — not lorem, same rule
-#: `ACCOUNT_SETUP_INFO` follows: a first-time user reads this as the actual
-#: instructions. No product-side verification exists for any of this (§
-#: `BrandConnectState.has_maps`'s own docstring) — it is a checklist, not a gate.
-MAPS_SETUP_STEPS: tuple[tuple[str, str], ...] = (
-    (
-        "Crea tu Perfil de Negocio",
-        'Entra a business.google.com con tu cuenta de Google y elige "Administrar ahora".',
-    ),
-    (
-        "Ingresa los datos de tu negocio",
-        "Nombre, categoría y la dirección exacta donde atiendes.",
-    ),
-    (
-        "Verifica la ubicación",
-        "Google te ofrece verificar por correo, teléfono o videollamada, según tu negocio.",
-    ),
-    (
-        "Espera la aprobación",
-        "Una vez verificado, apareces en Google Maps y en la Búsqueda de Google.",
-    ),
-)
-
-
-def _maps_setup_row(index: int, title: str, blurb: str) -> rx.Component:
-    """A numbered row — same "circle + text" language `_step_icon` already uses for
-    a single anchor icon, here repeated once per step so the sequence reads as an
-    ordered checklist rather than a flat list."""
-    return rx.hstack(
-        rx.box(
-            rx.text(str(index), size="2", weight="bold", color=T.tone_color("accent", 11)),
-            width="1.75rem",
-            height="1.75rem",
-            min_width="1.75rem",
-            border_radius="9999px",
-            background=T.tone_color("accent", 3),
-            display="flex",
-            align_items="center",
-            justify_content="center",
-        ),
-        rx.vstack(
-            rx.text(title, size="2", weight="bold"),
-            rx.text(blurb, size="2", color=T.TEXT_MUTED),
-            spacing="1",
-            align_items="start",
-        ),
-        spacing="3",
-        align="start",
-        width="100%",
-    )
-
-
-def _connect_step_maps_setup() -> rx.Component:
-    """Súmate a Google Maps — only reached on a "No" answer to ¿Tu negocio está en
-    Google Maps? (`answer_has_maps`). Purely instructional, same as
-    `brand_connect_setup_index`: Continuar (the generic `next_step`, wired in
-    `_connect_controls`) moves on to Paleta once read — nothing here is verified,
-    the question itself is already self-reported."""
-    return _step_body(
-        card(
-            rx.vstack(
-                *(
-                    _maps_setup_row(i, title, blurb)
-                    for i, (title, blurb) in enumerate(MAPS_SETUP_STEPS, start=1)
-                ),
-                spacing="4",
-                width="100%",
-            ),
-            padding="1.25rem 1.5rem",
-            width="100%",
-        ),
-        rx.link(
-            rx.hstack(
-                rx.text("Crear Perfil de Negocio en Google", size="2", weight="medium"),
-                rx.icon("external-link", size=T.ICON_SM),
-                spacing="1",
-                align="center",
-            ),
-            href="https://business.google.com/",
-            target="_blank",
-            rel="noopener noreferrer",
-            color=T.tone_color("accent", 11),
-        ),
-        icon="map-pin",
     )
 
 
@@ -6984,7 +6800,27 @@ def _connect_step_sort() -> rx.Component:
                 ),
                 rx.cond(
                     BrandConnectState.stage_note != "",
-                    rx.text(BrandConnectState.stage_note, size="2", color=T.TEXT_MUTED),
+                    # an empty category that is still shown (the city, § 2026-10-05):
+                    # why it is empty, and what to press
+                    rx.vstack(
+                        rx.icon("map-pin-off", size=22, color=T.TEXT_FAINT),
+                        rx.text(
+                            BrandConnectState.stage_note,
+                            size="2",
+                            color=T.TEXT_MUTED,
+                            text_align="center",
+                        ),
+                        rx.cond(
+                            BrandConnectState.is_last_stage,
+                            rx.text(
+                                "Pulsa Continuar para ver tus resultados.",
+                                size="1",
+                                color=T.TEXT_FAINT,
+                            ),
+                        ),
+                        spacing="2",
+                        align="center",
+                    ),
                     # § request 2026-10-05: the last category done does not move on by
                     # itself — Continuar does (see `advance_stage_if_exhausted`)
                     rx.text(
@@ -7280,21 +7116,13 @@ def _connect_steps() -> rx.Component:
         (0, _connect_step_network()),
         (1, _connect_step_username()),
         (_PROFILE_STEP, _connect_step_profile()),
-        (_RECOMMENDATIONS_STEP, _connect_step_recommendations()),
         (_ACCOUNT_KIND_STEP, _connect_step_account_kind()),
         (_RUBRO_STEP, _connect_step_rubro()),
-        (_MAPS_QUESTION_STEP, _connect_step_has_maps()),
-        (_MAPS_STEPS_STEP, _connect_step_maps_setup()),
+        (_IDENTITY_STEP, _step_identity()),
         (_LOGO_QUESTION_STEP, _connect_step_has_logo()),
         (_LOGO_UPLOAD_STEP, _step_logo(BrandConnectState.next_step)),
         (_TYPOGRAPHY_STEP, _step_typography()),
-        (_BRIEF_STEP, _step_brief()),
-        (_IDENTITY_STEP, _step_identity()),
         (_PALETTE_STEP, _step_palette()),
-        (_VOICE_STEP, _step_voice()),
-        (_VOICE_TONE_STEP, _step_voice_tone()),
-        (_VOICE_EXAMPLES_STEP, _step_voice_examples()),
-        (_RESTRICTIONS_STEP, _step_restrictions()),
         (_CONNECT_CONFIRM_STEP, _step_confirm()),
         (_SORT_STEP, _connect_step_sort()),
         (CONNECT_LAST, _connect_step_insights()),
@@ -7365,31 +7193,23 @@ def _connect_can_continue() -> rx.Var[bool]:
     can't be skipped unanswered and a required-input step can't be skipped empty.
 
     Every step not named below has nothing to require and always returns True:
-    Esto es lo que vemos / Lo que te proponemos (read-only recaps), Súmate a Google
-    Maps (informational, nothing to fill in), ¿Cómo suena? (the tone sliders always
-    hold a value — they default to 50, see the manual flow's own `resume` docstring),
-    Lo que nunca debe decir (`resume`'s docstring: "legitimately optional"), ¿Todo
-    correcto? (review only) and Resultados e insights (its own `_finish_button`, not
-    this gate, on step CONNECT_LAST). Shared steps (identidad, logo, paleta,
-    voz · ejemplos) read the SAME `BrandWizardState`/`CreativeState` fields the
-    manual flow's own `_manual_can_continue` checks — the two functions stay
-    side by side with it so a future reorder of either STEPS tuple is easy to keep
-    in sync. Tu rubro y ubicación needs a rubro always, and país + ciudad unless the
-    account is a creator (`rubro_complete`)."""
+    Esto es lo que vemos (read-only recap), Tipografía (optional), ¿Todo correcto?
+    (its examples and rules are optional) and Resultados e insights (its own
+    `_finish_button`, not this gate, on step CONNECT_LAST). Shared steps (identidad,
+    logo, paleta) read the SAME `BrandWizardState`/`CreativeState` fields the manual
+    flow's own `_manual_can_continue` checks — the two functions stay side by side
+    with it so a future reorder of either STEPS tuple is easy to keep in sync. Tu rubro
+    y ubicación needs a rubro always, and país + ciudad unless the account is a creator
+    (`rubro_complete`)."""
     return rx.cond(
         _connect_busy(),
-        False,  # § 2026-10-01: nothing moves while a voice analysis or a hashtag
-        # suggestion is running (their progress screens are on)
+        False,  # nothing moves while the hashtags are being created or the brief read
         _connect_requirement(),
     )
 
 
 def _connect_busy() -> rx.Var[bool]:
-    return (
-        VoiceLabState.analyzing
-        | BrandConnectState.suggesting_hashtags
-        | brand_documents.BrandDocumentState.brief_busy
-    )
+    return BrandConnectState.suggesting_hashtags | brand_documents.BrandDocumentState.brief_busy
 
 
 def _connect_requirement() -> rx.Var[bool]:
@@ -7399,12 +7219,10 @@ def _connect_requirement() -> rx.Var[bool]:
         (1, BrandConnectState.username != ""),
         (_ACCOUNT_KIND_STEP, BrandConnectState.account_kind != ""),
         (_RUBRO_STEP, BrandConnectState.rubro_complete),
-        (_MAPS_QUESTION_STEP, BrandConnectState.has_maps != ""),
         (_LOGO_QUESTION_STEP, BrandWizardState.has_logo != ""),
         (_LOGO_UPLOAD_STEP, _logo_step_complete()),
         (_IDENTITY_STEP, _identity_complete()),
         (_PALETTE_STEP, CreativeState.kit_palette != ""),
-        (_VOICE_EXAMPLES_STEP, CreativeState.kit_do_examples != ""),
         True,
     )
 

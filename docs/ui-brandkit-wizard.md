@@ -330,6 +330,18 @@ Petición, en dos rondas el mismo día: "quiero que haya un apartado para la tip
 - **Centrado de Tu brandboard.** Su columna ya no ocupa todo el ancho de la tarjeta: mide lo que una fila de las cuatro versiones (`_BRANDBOARD_COLUMN_MAX` = 4 × 14rem + 3 huecos) y se centra. Antes, en pantallas anchas la rejilla `auto-fill` creaba seis columnas y las cuatro versiones quedaban pegadas a la izquierda con un vacío a la derecha. Tipografía usa una columna de 46rem (dos tiles de 22rem).
 - **¿Todo correcto?** muestra una fila "Tipografía" ("Montserrat · Inter") debajo de la paleta.
 
+### 4.10 Wizard más corto (2026-10-05)
+
+Petición: quitar "Lo que te proponemos" y Google Maps; unificar el brief con "¿Quién es la marca?" y poner las propuestas directamente en sus campos; guardar la voz y "¿Cómo suena?" aparte para configurarlas después; llevar "Enséñale a hablar" y "Lo que nunca debe decir" a "¿Todo correcto?" con sus ejemplos; hashtags creados desde la cuenta y con más espacio entre ellos; y que la categoría de ciudad deje de desaparecer.
+
+- **Flujo manual (7 pantallas):** ¿Quién es la marca? (con el brief arriba) → ¿Tienes brandboard? → Tu brandboard → Tipografía → Paleta → ¿Todo correcto? → Resultados e insights.
+- **Flujo "Ya tengo redes" (13):** red → usuario → Esto es lo que vemos (ahí está Cancelar) → ¿Eres influencer o una marca? → Tu rubro y ubicación → ¿Quién es la marca? → brandboard ×2 → Tipografía → Paleta → ¿Todo correcto? → Referente, competencia o detractor → Resultados e insights. El influencer salta el bloque visual y va de la identidad a ¿Todo correcto?.
+- **Brief sin panel de revisión.** Claude propone siempre los mismos siete campos (`brief_ai.FIELDS`). Posicionamiento y Audiencia se **reemplazan**; las cinco listas se **suman** a lo que ya hubiera, sin duplicados (`brand_documents.apply_directly`). Las propuestas cuya cita no aparece en el documento se descartan, como antes quedaban sin marcar. Una línea bajo la tarjeta dice qué se rellenó.
+- **¿Todo correcto?** tiene tres bloques: *Tu marca* (resumen), *Cómo habla tu marca* (ejemplos SÍ / NO / CTA) y *Lo que nunca debe decir* (palabras vetadas / claims). Cada lista muestra para qué sirve, su ejemplo, sus valores editables en línea y un campo para añadir. Ninguna es obligatoria.
+- **La voz se configura después**, en el editor `/brand/kit` (vistas Tu voz y ¿Cómo suena?). El análisis de la voz solo mueve el cursor del editor.
+- **Hashtags creados desde la cuenta** (`qualify_api.hashtags.from_profile`, Sonnet 5 con esfuerzo bajo, herramienta estricta `proponer_hashtags`): lee la bio, la categoría, los textos de las últimas publicaciones (`recentCaptions`, nuevo en la lectura del perfil, sin créditos extra) y los hashtags que la cuenta ya usa, más el rubro y la ciudad. Se generan solos al llegar a Tu rubro si aún no hay sugerencias; "Sugerir" los regenera. Sin clave de Anthropic, o si la llamada falla, se usan los hashtags propios de la cuenta sin los de alcance (#fyp, #viral…). Entre píldoras hay 12 px.
+- **La ciudad ya no desaparece.** La búsqueda local empareja la ciudad con hasta tres términos del rubro en vez de uno (`local_terms`, plan 12); con uno solo, "programación Táchira" devolvía cero cuentas. Si aun así no encuentra nada, la categoría se muestra con el aviso "No encontramos cuentas de {ciudad} para tu rubro todavía" en lugar de saltarse.
+
 ## 5. La paleta de colores
 
 Es la parte con más iteración. Se sustituyó el campo de texto con hex manual por tres piezas, y **cada una hace exactamente un trabajo** (decisión del fundador, 2026-09-03):

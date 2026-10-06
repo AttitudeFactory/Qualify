@@ -8,7 +8,8 @@ wizard.
 The wizards (/brand/manual, /brand/connect) BUILD a kit; this walks the same screens to
 change one. Every view is the wizard's own step renderer on the same `CreativeState` /
 `BrandWizardState`, so the two can never drift; only the cursor is this module's
-(`BrandEditState`). There is no brief and no ¿Tienes brandboard? question (the
+(`BrandEditState`). ¿Quién es la marca? carries the brief upload, as in the wizards;
+there is no ¿Tienes brandboard? question (the
 brandboard view shows its tiles directly); an edit ends by saving.
 
 Tu brandboard's logo versions and other elements are session-only in the wizard too —
@@ -39,10 +40,8 @@ from .creative_wizard_pages import (  # the wizard's own views and chrome, share
     _step_counter,
     _step_identity,
     _step_palette,
-    _step_restrictions,
     _step_typography,
     _step_voice,
-    _step_voice_examples,
     _step_voice_tone,
 )
 from .ui import app_shell, callout, card, page_body, page_header
@@ -57,9 +56,11 @@ EDIT_STEPS: tuple[tuple[str, str], ...] = (
     ("Paleta de colores", "Los colores con los que se te reconoce."),
     ("Tu voz", "Grábala o súbela: ajustamos el tono con ella y, si quieres, la clonamos."),
     ("¿Cómo suena?", "Ajusta el tono en cuatro ejes."),
-    ("Enséñale a hablar", "Ejemplos reales valen más que cualquier descripción."),
-    ("Lo que nunca debe decir", "Reglas duras: una violación es un rechazo."),
-    ("¿Todo correcto?", "Revisa y edita lo que haga falta."),
+    # Enséñale a hablar and Lo que nunca debe decir left as views on 2026-10-05: their
+    # lists are filled on ¿Todo correcto?, as in the wizards. Tu voz and ¿Cómo suena?
+    # STAY here — this editor is where they are configured now that the wizards no
+    # longer ask (§ request 2026-10-05, "que se pueda configurar después").
+    ("¿Todo correcto?", "Revisa, completa los ejemplos y las reglas, y guarda."),
     ("Resultados e insights", "Tus referentes y tu competencia, en orden de influencia."),
 )
 EDIT_LAST = len(EDIT_STEPS) - 1
@@ -68,7 +69,10 @@ _BRANDBOARD_STEP = 1
 _TYPOGRAPHY_STEP = 2
 _PALETTE_STEP = 3
 _VOICE_STEP = 4
-_EXAMPLES_STEP = 6
+_TONE_STEP = 5
+assert EDIT_STEPS[_VOICE_STEP][0] == "Tu voz"
+assert EDIT_STEPS[_TONE_STEP][0] == "¿Cómo suena?"
+assert _TONE_STEP + 1 == _CONFIRM_STEP
 assert EDIT_STEPS[_TYPOGRAPHY_STEP][0] == "Tipografía"
 assert EDIT_STEPS[_PALETTE_STEP][0] == "Paleta de colores"
 
@@ -185,9 +189,7 @@ def _window() -> rx.Component:
         (_TYPOGRAPHY_STEP, _step_typography()),
         (_PALETTE_STEP, _step_palette()),
         (_VOICE_STEP, _step_voice()),
-        (5, _step_voice_tone()),
-        (_EXAMPLES_STEP, _step_voice_examples()),
-        (7, _step_restrictions()),
+        (_TONE_STEP, _step_voice_tone()),
         (_CONFIRM_STEP, _step_confirm()),
         (EDIT_LAST, _step_insights()),
         _step_identity(),
@@ -211,7 +213,6 @@ def _can_continue() -> rx.Var[bool]:
             BrandEditState.step,
             (0, _identity_complete()),
             (_PALETTE_STEP, CreativeState.kit_palette != ""),
-            (_EXAMPLES_STEP, CreativeState.kit_do_examples != ""),
             True,
         ),
     )

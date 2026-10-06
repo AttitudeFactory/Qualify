@@ -272,7 +272,10 @@ def test_the_analysis_reports_its_real_stages() -> None:
     assert [row["status"] for row in state.analysis_steps] == ["done", "done", "running"]
 
 
-async def test_a_finished_analysis_moves_the_wizard_on_screen_to_the_tone() -> None:
+async def test_a_finished_analysis_moves_the_editor_on_screen_to_the_tone() -> None:
+    """Since 2026-10-05 the voice lives only in the Brand Kit editor: a finished analysis
+    moves the editor from Tu voz to ¿Cómo suena?, and nothing happens on the wizards'
+    pages (they no longer have a voice screen)."""
     from types import SimpleNamespace
 
     from . import brand_kit_editor as editor
@@ -283,8 +286,6 @@ async def test_a_finished_analysis_moves_the_wizard_on_screen_to_the_tone() -> N
         wiz.BrandConnectState: wiz.BrandConnectState(),
         editor.BrandEditState: editor.BrandEditState(),
     }
-    states[wiz.BrandWizardState].step = wiz._M_VOICE_STEP
-    states[wiz.BrandConnectState].step = wiz._VOICE_STEP
     states[editor.BrandEditState].step = editor._VOICE_STEP
 
     class Fake:
@@ -295,15 +296,13 @@ async def test_a_finished_analysis_moves_the_wizard_on_screen_to_the_tone() -> N
             return states[cls]
 
     await voice_lab._show_tone_screen(Fake("/brand/connect"))
-    assert states[wiz.BrandConnectState].step == wiz._VOICE_TONE_STEP
-    assert states[wiz.BrandWizardState].step == wiz._M_VOICE_STEP  # not the page's wizard
     await voice_lab._show_tone_screen(Fake("/brand/manual"))
-    assert states[wiz.BrandWizardState].step == wiz._M_VOICE_STEP + 1
+    assert states[wiz.BrandConnectState].step == 0 and states[wiz.BrandWizardState].step == 0
     await voice_lab._show_tone_screen(Fake("/brand/kit"))
-    assert states[editor.BrandEditState].step == editor._VOICE_STEP + 1
-    # a wizard no longer on Tu voz is left where it is
+    assert states[editor.BrandEditState].step == editor._TONE_STEP
+    # an editor no longer on Tu voz is left where it is
     await voice_lab._show_tone_screen(Fake("/brand/kit"))
-    assert states[editor.BrandEditState].step == editor._VOICE_STEP + 1
+    assert states[editor.BrandEditState].step == editor._TONE_STEP
 
 
 def test_the_whisper_warm_up_runs_once_on_its_own_thread(monkeypatch: pytest.MonkeyPatch) -> None:
