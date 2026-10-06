@@ -60,6 +60,7 @@ jobs:
             # Everything that goes into deploy/Dockerfile's `app`/`web` images (or can break
             # `reflex export`): docs-only PRs skip the image build.
             app_image:
+              - '.github/workflows/ci.yml'
               - 'deploy/**'
               - '.dockerignore'
               - 'pyproject.toml'
