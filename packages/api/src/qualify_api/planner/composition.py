@@ -35,6 +35,11 @@ class PostgresConnectionGate:
             row = session.get(SocialConnection, connection_id)
             return row.status if row is not None else None
 
+    def platform(self, *, tenant_id: UUID, connection_id: UUID) -> str | None:
+        with tenant_session(tenant_id) as session:
+            row = session.get(SocialConnection, connection_id)
+            return row.platform if row is not None else None
+
 
 def production_post_reader() -> PostReader:
     # TEMPORARY (QUA-108): swap for QUA-109's POST reader when it exists.

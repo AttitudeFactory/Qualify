@@ -13,7 +13,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -57,7 +57,7 @@ from qualify_api.planner.repository import (
     PostgresPlannerRepository,
 )
 from qualify_api.planner.rules import idempotency_key
-from qualify_api.planner.service import PlannerService
+from qualify_api.planner.service import DuplicateEvent, PlannerService
 from qualify_api.planner.tick import TickRunner
 from qualify_api.publishing.client import (
     ContainerStatus,
@@ -400,6 +400,87 @@ def test_service_schedules_a_real_draft_and_it_leaves_unscheduled(world_p) -> No
         tz_name="UTC",
     )
     assert event.id in {p.event.id for p in week}
+
+
+# --- QUA-118 Phase 2: many events in one transaction ------------------------------------
+
+
+def test_add_many_is_all_or_nothing_on_postgres(world_p, world_q) -> None:
+    """Three events in one batch, the third pointing at another tenant's connection:
+    the FK/RLS refusal rolls the first two back as well — zero rows."""
+    brand_id, user_id, conn_id = world_p
+    _, _, foreign_conn = world_q
+    post_id = uuid4()
+    repo = PostgresPlannerRepository()
+    batch = [
+        _new_event(TENANT_P, brand_id, user_id, conn_id, hours=24),
+        _new_event(TENANT_P, brand_id, user_id, conn_id, hours=48),
+        _new_event(TENANT_P, brand_id, user_id, foreign_conn, hours=72),
+    ]
+    batch = [replace(new, post_id=post_id) for new in batch]
+    with pytest.raises(Exception):  # noqa: B017 — the FK / RLS refusal, whichever fires
+        repo.add_many(batch)
+    assert repo.list_for_post(tenant_id=TENANT_P, post_id=post_id) == []
+    # The same batch without the foreign row lands whole, in order.
+    created = repo.add_many(batch[:2])
+    assert [e.id for e in repo.list_for_post(tenant_id=TENANT_P, post_id=post_id)] == [
+        e.id for e in created
+    ]
+    with pytest.raises(ValueError):
+        repo.add_many([batch[0], replace(batch[1], tenant_id=TENANT_Q)])
+
+
+def test_service_creates_a_weekly_series_over_postgres(world_p) -> None:
+    """A real publishable POST, three Mondays, one account: three independent rows at
+    revision 1, seven days apart, every one of them visible to the week and due-list
+    queries on its own."""
+    brand_id, user_id, conn_id = world_p
+    draft_id = _post_row((TENANT_P, brand_id, conn_id))
+    svc = PlannerService(
+        repository=PostgresPlannerRepository(),
+        posts=DraftPostReader(),
+        connections=PostgresConnectionGate(),
+    )
+    first_day = (datetime.now(UTC) + timedelta(days=3)).date()
+    events = svc.schedule_series(
+        tenant_id=TENANT_P,
+        brand_id=brand_id,
+        post_id=draft_id,
+        connection_ids=[conn_id],
+        first_day=first_day,
+        at=time(10, 0),
+        scheduled_tz="America/Caracas",
+        user_id=user_id,
+        count=3,
+    )
+    stored = svc._repo.list_for_post(tenant_id=TENANT_P, post_id=draft_id)
+    assert [e.id for e in stored] == [e.id for e in events]
+    assert [e.revision for e in stored] == [1, 1, 1]
+    assert [e.scheduled_at - stored[0].scheduled_at for e in stored] == [
+        timedelta(0),
+        timedelta(days=7),
+        timedelta(days=14),
+    ]
+    # The POST's history sees the live series; a one-shot POST leaves Sin programar.
+    summary = DraftPostReader().get(tenant_id=TENANT_P, post_id=draft_id)
+    assert summary.has_live_event is True
+    assert draft_id not in {
+        p.post_id for p in svc.list_unscheduled(tenant_id=TENANT_P, brand_id=brand_id)
+    }
+    # Planning it again on the same Mondays is a duplicate, and creates nothing.
+    with pytest.raises(DuplicateEvent):
+        svc.schedule_series(
+            tenant_id=TENANT_P,
+            brand_id=brand_id,
+            post_id=draft_id,
+            connection_ids=[conn_id],
+            first_day=first_day,
+            at=time(10, 0),
+            scheduled_tz="America/Caracas",
+            user_id=user_id,
+            count=2,
+        )
+    assert len(svc._repo.list_for_post(tenant_id=TENANT_P, post_id=draft_id)) == 3
 
 
 # --- planning tags (0025) -------------------------------------------------------------

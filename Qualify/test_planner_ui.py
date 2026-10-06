@@ -27,7 +27,9 @@ from qualify_api.planner.service import (
     EventConflict,
     EventNotModifiable,
     InactiveConnection,
+    IncompatibleConnection,
     InvalidSchedule,
+    InvalidSeries,
     OutputRequired,
     PostNotSchedulable,
     UnknownOutput,
@@ -316,6 +318,14 @@ def test_provider_error_messages_are_specific_spanish() -> None:
     assert planner_error_message(refused) == (
         "Ese POST no se puede planificar: Falta el formato de algún archivo del POST."
     )
+    # QUA-118 Phase 2: every recurrence refusal has its own wording, with the cap.
+    assert planner_error_message(InvalidSeries("x", code="too_many")) == (
+        "Una serie admite como máximo 12 ocurrencias."
+    )
+    for code in ("end_required", "count_too_small", "until_before_first", "unknown"):
+        message = planner_error_message(InvalidSeries("x", code=code))
+        assert message and "Inténtalo de nuevo." not in message
+    assert "cuenta" in planner_error_message(IncompatibleConnection("x"))
 
 
 # --- navigation ----------------------------------------------------------------------

@@ -13,7 +13,7 @@ live in one place.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Protocol
@@ -29,7 +29,8 @@ from qualify_api.planner.post_reader import (
     PostSummary,
     UnpublishableReason,
 )
-from qualify_api.planner.publishable import REASON_TEXT
+from qualify_api.planner.publishable import REASON_TEXT, SCHEDULABLE_PLATFORMS
+from qualify_api.planner.recurrence import InvalidRecurrence, weekly_days
 from qualify_api.planner.repository import EventRecord, NewEvent, PlannerRepository, TagRecord
 from qualify_api.planner.rules import is_expired_scheduled, is_overdue_unapproved
 
@@ -111,6 +112,21 @@ class DuplicateEvent(PlannerError):
     occupies the calendar (scheduled, publishing or published)."""
 
 
+class IncompatibleConnection(PlannerError):
+    """QUA-118 AC 6: the account's channel cannot take scheduled publications from the
+    Planificador (`publishable.SCHEDULABLE_PLATFORMS`) — no event is ever created for it."""
+
+
+class InvalidSeries(PlannerError):
+    """QUA-118 A4: the recurrence cannot be built — no end, both ends, more than
+    `SERIES_CAP` occurrences, or an end date before the first day. `code` is the
+    recurrence's, stable for the UI's wording."""
+
+    def __init__(self, message: str, *, code: str = "") -> None:
+        super().__init__(message)
+        self.code = code
+
+
 # The event statuses "Quitar del calendario" may remove: a plan that never reached Meta.
 # `publishing` / `published` / `failed` are history and are never deleted here.
 _REMOVABLE_WHEN_REJECTED: frozenset[str] = frozenset(
@@ -132,6 +148,11 @@ def _transition(current: str, trigger: EventTrigger) -> EventStatus:
 class ConnectionGate(Protocol):
     def status(self, *, tenant_id: UUID, connection_id: UUID) -> str | None:
         """The connection's status, or None when it is not the tenant's."""
+        ...
+
+    def platform(self, *, tenant_id: UUID, connection_id: UUID) -> str | None:
+        """The connection's platform ("instagram", …), or None when it is not the
+        tenant's — what decides channel compatibility (QUA-118)."""
         ...
 
 
@@ -218,6 +239,14 @@ class PlannerService:
         if status != ACTIVE_CONNECTION_STATUS:
             raise InactiveConnection(str(connection_id))
 
+    def _require_compatible_connection(self, *, tenant_id: UUID, connection_id: UUID) -> None:
+        """QUA-118 AC 6: only a channel the Planificador can publish to gets an event.
+        The POST's shape was already proven publishable on that channel's contract
+        (`publishable.evaluate`); here only the channel itself is checked."""
+        platform = self._connections.platform(tenant_id=tenant_id, connection_id=connection_id)
+        if platform not in SCHEDULABLE_PLATFORMS:
+            raise IncompatibleConnection(f"{connection_id} is {platform!r}")
+
     def _require_schedulable_post(
         self, *, tenant_id: UUID, brand_id: UUID, post_id: UUID, output_port: str | None = None
     ) -> PostSummary:
@@ -264,11 +293,10 @@ class PlannerService:
         if output_port not in ports:
             raise UnknownOutput(f"{post.post_id} has no output {output_port!r}")
 
+    @staticmethod
     def _require_no_duplicate(
-        self,
+        existing: Sequence[EventRecord],
         *,
-        tenant_id: UUID,
-        post_id: UUID,
         output_port: str | None,
         connection_id: UUID,
         scheduled_at: datetime,
@@ -276,8 +304,8 @@ class PlannerService:
         """No two live events for the same (POST, output, connection) at the same
         instant. Before MP-11 the only guard was the Sin programar panel hiding an
         occupied POST; now that a POST legitimately has several events, the rule is
-        explicit and per output."""
-        for event in self._repo.list_for_post(tenant_id=tenant_id, post_id=post_id):
+        explicit and per output. `existing` is the POST's events, read once per plan."""
+        for event in existing:
             if (
                 EventStatus(event.status).occupies_post
                 and event.output_port == output_port
@@ -285,6 +313,67 @@ class PlannerService:
                 and event.scheduled_at == scheduled_at
             ):
                 raise DuplicateEvent(str(event.id))
+
+    def _plan(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        post_id: UUID,
+        connection_ids: Sequence[UUID],
+        instants: Sequence[datetime],
+        scheduled_tz: str,
+        user_id: UUID,
+        output_port: str | None,
+    ) -> list[EventRecord]:
+        """One plan = instants × accounts, validated entirely BEFORE anything is written
+        and then written in ONE repository transaction (`add_many`, QUA-118 A4). A single
+        refusal — a past instant, a non-publishable POST, an inactive or incompatible
+        account, a duplicate — creates nothing. The events come back in instant order,
+        accounts in the order given, and each is an independent `calendar_event`."""
+        if not connection_ids:
+            raise InactiveConnection("no connection given")
+        if len(set(connection_ids)) != len(connection_ids):
+            raise DuplicateEvent("the same account twice in one plan")
+        if not instants:
+            raise InvalidSchedule("no instant given")
+        resolve_zone(scheduled_tz)
+        for instant in instants:
+            self._require_future(instant)
+        self._require_schedulable_post(
+            tenant_id=tenant_id, brand_id=brand_id, post_id=post_id, output_port=output_port
+        )
+        for connection_id in connection_ids:
+            self._require_active_connection(tenant_id=tenant_id, connection_id=connection_id)
+            self._require_compatible_connection(tenant_id=tenant_id, connection_id=connection_id)
+        utc_instants = [instant.astimezone(UTC) for instant in instants]
+        if len(set(utc_instants)) != len(utc_instants):
+            raise DuplicateEvent("the same instant twice in one plan")
+        existing = self._repo.list_for_post(tenant_id=tenant_id, post_id=post_id)
+        for instant in utc_instants:
+            for connection_id in connection_ids:
+                self._require_no_duplicate(
+                    existing,
+                    output_port=output_port,
+                    connection_id=connection_id,
+                    scheduled_at=instant,
+                )
+        return self._repo.add_many(
+            [
+                NewEvent(
+                    tenant_id=tenant_id,
+                    brand_id=brand_id,
+                    post_id=post_id,
+                    connection_id=connection_id,
+                    scheduled_at=instant,
+                    scheduled_tz=scheduled_tz,
+                    created_by_user_id=user_id,
+                    output_port=output_port,
+                )
+                for instant in utc_instants
+                for connection_id in connection_ids
+            ]
+        )
 
     # -- commands -----------------------------------------------------------
 
@@ -308,31 +397,79 @@ class PlannerService:
         `output_port` names which (`reel` / `feed` / `story`), validated against the
         POST's own ports; the three events may share an instant or not. A POST without
         outputs is planned whole (`output_port=None`, the pre-MP-11 behaviour)."""
-        resolve_zone(scheduled_tz)
-        self._require_future(scheduled_at)
-        self._require_schedulable_post(
-            tenant_id=tenant_id, brand_id=brand_id, post_id=post_id, output_port=output_port
-        )
-        self._require_active_connection(tenant_id=tenant_id, connection_id=connection_id)
-        instant = scheduled_at.astimezone(UTC)
-        self._require_no_duplicate(
+        return self._plan(
             tenant_id=tenant_id,
+            brand_id=brand_id,
             post_id=post_id,
+            connection_ids=[connection_id],
+            instants=[scheduled_at],
+            scheduled_tz=scheduled_tz,
+            user_id=user_id,
             output_port=output_port,
-            connection_id=connection_id,
-            scheduled_at=instant,
+        )[0]
+
+    def schedule_many(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        post_id: UUID,
+        connection_ids: Sequence[UUID],
+        scheduled_at: datetime,
+        scheduled_tz: str,
+        user_id: UUID,
+        output_port: str | None = None,
+    ) -> list[EventRecord]:
+        """One POST (or one output of it) on N accounts at the same instant: N
+        independent `calendar_events`, created all-or-nothing (QUA-118 AC 5 / A4). An
+        inactive or incompatible account refuses the whole plan — nothing is created."""
+        return self._plan(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            post_id=post_id,
+            connection_ids=connection_ids,
+            instants=[scheduled_at],
+            scheduled_tz=scheduled_tz,
+            user_id=user_id,
+            output_port=output_port,
         )
-        return self._repo.add(
-            NewEvent(
-                tenant_id=tenant_id,
-                brand_id=brand_id,
-                post_id=post_id,
-                connection_id=connection_id,
-                scheduled_at=instant,
-                scheduled_tz=scheduled_tz,
-                created_by_user_id=user_id,
-                output_port=output_port,
-            )
+
+    def schedule_series(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        post_id: UUID,
+        connection_ids: Sequence[UUID],
+        first_day: date,
+        at: time,
+        scheduled_tz: str,
+        user_id: UUID,
+        until: date | None = None,
+        count: int | None = None,
+        output_port: str | None = None,
+    ) -> list[EventRecord]:
+        """A weekly series (QUA-118 A2/A4, `recurrence.weekly_days`): the same POST on the
+        same weekday at the same wall-clock time, ending on `until` or after `count`
+        occurrences (exactly one), at most `SERIES_CAP` occurrences, on one or more
+        accounts. Every occurrence is its own `calendar_event`; the set is created in one
+        transaction and refused as a whole if any occurrence cannot be (a past instant, a
+        wall-clock time that does not exist on one of the days, a duplicate…). Once
+        created, the occurrences never affect each other."""
+        try:
+            days = weekly_days(first_day, until=until, count=count)
+        except InvalidRecurrence as exc:
+            raise InvalidSeries(str(exc), code=exc.code) from exc
+        instants = [compose_instant(day, at, scheduled_tz) for day in days]
+        return self._plan(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            post_id=post_id,
+            connection_ids=connection_ids,
+            instants=instants,
+            scheduled_tz=scheduled_tz,
+            user_id=user_id,
+            output_port=output_port,
         )
 
     def reschedule(
@@ -359,6 +496,7 @@ class PlannerService:
         self._require_future(scheduled_at)
         target_connection = connection_id or current.connection_id
         self._require_active_connection(tenant_id=tenant_id, connection_id=target_connection)
+        self._require_compatible_connection(tenant_id=tenant_id, connection_id=target_connection)
         updated = self._repo.reschedule(
             tenant_id=tenant_id,
             event_id=event_id,
@@ -565,6 +703,8 @@ __all__ = [
     "EventNotModifiable",
     "EventStatus",
     "InactiveConnection",
+    "IncompatibleConnection",
+    "InvalidSeries",
     "InvalidTag",
     "InvalidSchedule",
     "OutputRequired",

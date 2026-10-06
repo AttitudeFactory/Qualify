@@ -21,13 +21,16 @@ from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransit
 from qualify_api.planner.composition import production_planner_service, tenant_timezone
 from qualify_api.planner.embedded import calendar_worker
 from qualify_api.planner.post_reader import PostSummary
+from qualify_api.planner.recurrence import SERIES_CAP
 from qualify_api.planner.repository import EventRecord
 from qualify_api.planner.service import (
     DuplicateEvent,
     EventConflict,
     EventNotModifiable,
     InactiveConnection,
+    IncompatibleConnection,
     InvalidSchedule,
+    InvalidSeries,
     InvalidTag,
     OutputRequired,
     PlannedEvent,
@@ -101,11 +104,24 @@ class WeekData:
     auto_publish: str = AUTO_PUBLISH_UNAVAILABLE
 
 
+_SERIES_MESSAGES: dict[str, str] = {
+    "end_required": (
+        "Indica cuándo termina la serie: una fecha de fin o un número de ocurrencias "
+        "(solo una de las dos)."
+    ),
+    "count_too_small": "La serie necesita al menos una ocurrencia.",
+    "too_many": f"Una serie admite como máximo {SERIES_CAP} ocurrencias.",
+    "until_before_first": "La fecha de fin de la serie es anterior a la primera publicación.",
+}
+
+
 def planner_error_message(exc: Exception) -> str:
     """Operator-facing Spanish for every refusal — what happened and what to do."""
     if isinstance(exc, PostNotSchedulable) and exc.reason:
         # QUA-118 D1: the evaluator's exact reason, the same text the card shows.
         return f"Ese POST no se puede planificar: {exc.reason}"
+    if isinstance(exc, InvalidSeries):
+        return _SERIES_MESSAGES.get(exc.code, "La serie no es válida. Revisa cómo termina.")
     messages: list[tuple[type[Exception], str]] = [
         (NoBrand, "Este negocio todavía no tiene una marca configurada."),
         (UnknownPost, "Ese POST ya no está disponible. Actualiza la página."),
@@ -141,7 +157,11 @@ def planner_error_message(exc: Exception) -> str:
         (UnknownOutput, "Ese POST no tiene esa salida. Actualiza la página."),
         (
             DuplicateEvent,
-            "Esa salida ya está programada en esa cuenta a esa misma hora.",
+            "Esa publicación ya está programada en esa cuenta a esa misma hora.",
+        ),
+        (
+            IncompatibleConnection,
+            "Esa cuenta no admite publicaciones programadas desde Qualify. Elige otra.",
         ),
     ]
     for kind, message in messages:
@@ -373,6 +393,13 @@ def _uuid(value: str, error: type[PlannerError]) -> UUID:
         raise error(value) from exc
 
 
+def _parse_day_time(day: str, at: str) -> tuple[date, time]:
+    try:
+        return date.fromisoformat(day), time.fromisoformat(at)
+    except ValueError as exc:
+        raise InvalidSchedule(f"bad date/time {day!r} {at!r}") from exc
+
+
 def schedule_post(
     tenant_id: UUID,
     post_id: str,
@@ -382,31 +409,55 @@ def schedule_post(
     tz_override: str = "",
     tag_ids: tuple[str, ...] = (),
     output_port: str = "",
-) -> None:
-    """`output_port` (MP-11) names the template output to plan ("reel" / "feed" /
-    "story"); "" plans the whole POST."""
+    connection_ids: tuple[str, ...] = (),
+    repeat_until: str = "",
+    repeat_count: int = 0,
+) -> int:
+    """Plan one POST (or one template output of it, `output_port` — MP-11) on one or
+    more accounts, once or weekly. Returns how many events were created.
+
+    - `connection_ids` (QUA-118 AC 5) are the accounts; when empty, `connection_id` alone.
+    - `repeat_until` (ISO date) OR `repeat_count` (> 0) make it a weekly series (QUA-118
+      A2/A4): the same weekday and time, at most `SERIES_CAP` occurrences, one
+      `calendar_event` per occurrence and account, created all-or-nothing.
+    - `tag_ids` are attached to every event created.
+    """
     brand_id = _require_brand(tenant_id)
     tz_name = view_zone(tenant_id, tz_override)
     user_id = acting_user_id(tenant_id)
     if user_id is None:
         raise NoBrand(str(tenant_id))
     service = production_planner_service()
-    event = service.schedule(
-        tenant_id=tenant_id,
-        brand_id=brand_id,
-        post_id=_uuid(post_id, UnknownPost),
-        connection_id=_uuid(connection_id, InactiveConnection),
-        scheduled_at=_parse_instant(day, at, tz_name),
-        scheduled_tz=tz_name,
-        user_id=user_id,
-        output_port=output_port or None,
-    )
-    if tag_ids:
-        service.set_event_tags(
-            tenant_id=tenant_id,
-            event_id=event.id,
-            tag_ids=[_uuid(t, UnknownTag) for t in tag_ids],
+    accounts = [_uuid(c, InactiveConnection) for c in (connection_ids or (connection_id,)) if c]
+    common = {
+        "tenant_id": tenant_id,
+        "brand_id": brand_id,
+        "post_id": _uuid(post_id, UnknownPost),
+        "connection_ids": accounts,
+        "scheduled_tz": tz_name,
+        "user_id": user_id,
+        "output_port": output_port or None,
+    }
+    if repeat_until or repeat_count:
+        first_day, at_time = _parse_day_time(day, at)
+        until = _parse_day_time(repeat_until, "00:00")[0] if repeat_until else None
+        events = service.schedule_series(
+            first_day=first_day,
+            at=at_time,
+            until=until,
+            count=repeat_count or None,
+            **common,  # type: ignore[arg-type]
         )
+    else:
+        events = service.schedule_many(
+            scheduled_at=_parse_instant(day, at, tz_name),
+            **common,  # type: ignore[arg-type]
+        )
+    if tag_ids:
+        tags = [_uuid(t, UnknownTag) for t in tag_ids]
+        for event in events:
+            service.set_event_tags(tenant_id=tenant_id, event_id=event.id, tag_ids=tags)
+    return len(events)
 
 
 def reschedule_event(

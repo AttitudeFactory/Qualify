@@ -9,6 +9,7 @@ overwriting.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -70,6 +71,12 @@ class NewEvent:
 
 class PlannerRepository(Protocol):
     def add(self, new: NewEvent) -> EventRecord: ...
+
+    def add_many(self, news: Sequence[NewEvent]) -> list[EventRecord]:
+        """Create every event or none (QUA-118 A4): one transaction, so a series or a
+        multi-account plan is never left half-written. All events belong to one tenant.
+        Returns the records in the order given."""
+        ...
 
     def get(self, *, tenant_id: UUID, event_id: UUID) -> EventRecord | None: ...
 
@@ -301,25 +308,37 @@ class MemoryPlannerRepository:
         return True
 
     def add(self, new: NewEvent) -> EventRecord:
+        return self.add_many([new])[0]
+
+    def add_many(self, news: Sequence[NewEvent]) -> list[EventRecord]:
+        """All-or-nothing like the Postgres one: every record is built before any is
+        stored, so a bad input (two tenants in one batch) leaves the dict untouched."""
+        if not news:
+            return []
+        _require_one_tenant(news)
         now = datetime.now(UTC)
-        record = EventRecord(
-            id=uuid4(),
-            tenant_id=new.tenant_id,
-            brand_id=new.brand_id,
-            post_id=new.post_id,
-            connection_id=new.connection_id,
-            scheduled_at=new.scheduled_at,
-            scheduled_tz=new.scheduled_tz,
-            status=EventStatus.SCHEDULED.value,
-            revision=1,
-            publish_attempt_id=None,
-            created_by_user_id=new.created_by_user_id,
-            created_at=now,
-            updated_at=now,
-            output_port=new.output_port,
-        )
-        self._rows[record.id] = record
-        return record
+        records = [
+            EventRecord(
+                id=uuid4(),
+                tenant_id=new.tenant_id,
+                brand_id=new.brand_id,
+                post_id=new.post_id,
+                connection_id=new.connection_id,
+                scheduled_at=new.scheduled_at,
+                scheduled_tz=new.scheduled_tz,
+                status=EventStatus.SCHEDULED.value,
+                revision=1,
+                publish_attempt_id=None,
+                created_by_user_id=new.created_by_user_id,
+                created_at=now,
+                updated_at=now,
+                output_port=new.output_port,
+            )
+            for new in news
+        ]
+        for record in records:
+            self._rows[record.id] = record
+        return records
 
     def get(self, *, tenant_id: UUID, event_id: UUID) -> EventRecord | None:
         record = self._rows.get(event_id)
@@ -514,27 +533,47 @@ class MemoryPlannerRepository:
         return updated
 
 
+def _require_one_tenant(news: Sequence[NewEvent]) -> UUID:
+    tenants = {new.tenant_id for new in news}
+    if len(tenants) != 1:
+        raise ValueError(f"a batch of events belongs to one tenant, got {len(tenants)}")
+    return news[0].tenant_id
+
+
 class PostgresPlannerRepository:
     """Every call opens its own `tenant_session` — RLS decides visibility."""
 
     def add(self, new: NewEvent) -> EventRecord:
-        with tenant_session(new.tenant_id) as session:
-            row = CalendarEvent(
-                tenant_id=new.tenant_id,
-                brand_id=new.brand_id,
-                post_id=new.post_id,
-                connection_id=new.connection_id,
-                scheduled_at=new.scheduled_at,
-                scheduled_tz=new.scheduled_tz,
-                status=EventStatus.SCHEDULED.value,
-                revision=1,
-                created_by_user_id=new.created_by_user_id,
-                output_port=new.output_port,
-            )
-            session.add(row)
+        return self.add_many([new])[0]
+
+    def add_many(self, news: Sequence[NewEvent]) -> list[EventRecord]:
+        """One `tenant_session` = one transaction (QUA-118 A4): the rows are flushed
+        together and the session commits on exit — any error (a constraint, RLS, the
+        connection) rolls every row back, so a series is never half-created."""
+        if not news:
+            return []
+        tenant_id = _require_one_tenant(news)
+        with tenant_session(tenant_id) as session:
+            rows = [
+                CalendarEvent(
+                    tenant_id=new.tenant_id,
+                    brand_id=new.brand_id,
+                    post_id=new.post_id,
+                    connection_id=new.connection_id,
+                    scheduled_at=new.scheduled_at,
+                    scheduled_tz=new.scheduled_tz,
+                    status=EventStatus.SCHEDULED.value,
+                    revision=1,
+                    created_by_user_id=new.created_by_user_id,
+                    output_port=new.output_port,
+                )
+                for new in news
+            ]
+            session.add_all(rows)
             session.flush()
-            session.refresh(row)
-            return _snapshot(row)
+            for row in rows:
+                session.refresh(row)
+            return [_snapshot(row) for row in rows]
 
     def get(self, *, tenant_id: UUID, event_id: UUID) -> EventRecord | None:
         with tenant_session(tenant_id) as session:

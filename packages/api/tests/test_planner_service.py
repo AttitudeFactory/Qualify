@@ -69,6 +69,11 @@ class FakeConnections:
             return None
         return {CONN: "active", DEGRADED_CONN: "degraded"}.get(connection_id)
 
+    def platform(self, *, tenant_id: UUID, connection_id: UUID) -> str | None:
+        if tenant_id != TENANT:
+            return None
+        return "instagram" if connection_id in (CONN, DEGRADED_CONN) else None
+
 
 def _post(approval: ApprovalStatus = ApprovalStatus.APPROVED, **kw: object) -> PostSummary:
     # QUA-118 D1: an approved POST is publishable unless the test says otherwise.
