@@ -2383,24 +2383,40 @@ def _kit_list_editor(field: str, label: str, hint: str, example: str) -> rx.Comp
 
 def _example_pill(example: str) -> rx.Component:
     """A list's example while it has no values: a pill in outline, faint and prefixed
-    "Ej.:", so it never reads as a value of the kit — it adds nothing and has no ✕."""
+    "Ej.:", so it never reads as a value of the kit — it adds nothing and has no ✕.
+    Wraps like a value pill (`_KIT_PILL_TEXT`); the italic's last glyph leans past its
+    box, so the text keeps a hair of room on the right instead of being clipped."""
     return rx.badge(
-        rx.text(
-            f"Ej.: {example}",
-            overflow="hidden",
-            text_overflow="ellipsis",
-            white_space="nowrap",
-        ),
+        rx.text(f"Ej.: {example}", padding_right="0.15em", **_KIT_PILL_TEXT),
         size="2",
-        radius="full",
         variant="outline",
         color_scheme="gray",
         color=T.TEXT_FAINT,
         border_style="dashed",
         font_style="italic",
-        max_width="100%",
         title="Un ejemplo: agrega los tuyos con +",
+        **_KIT_PILL_BOX,
     )
+
+
+#: A kit list's values are sentences, not tokens (§ 2026-10-06, "las pills recortan el
+#: contenido"): they wrap onto more lines instead of ending in "…" — a pill that hid a
+#: third of an example hid what the copy is told to imitate. The radius is a fixed
+#: half-height, not "full", so one line still reads as a pill and two as a rounded card.
+_KIT_PILL_TEXT: dict[str, str] = {
+    "white_space": "normal",
+    "overflow_wrap": "anywhere",
+    "text_align": "left",
+    "line_height": "1.35",
+}
+_KIT_PILL_BOX: dict[str, str] = {
+    "radius": "full",
+    "border_radius": "0.875rem",
+    "height": "auto",
+    "padding_y": "0.3rem",
+    "white_space": "normal",
+    "max_width": "100%",
+}
 
 
 def _recap_row(label: str, value: rx.Var[str], fallback: str = "Sin definir") -> rx.Component:
@@ -2498,7 +2514,7 @@ def _editable_pill(field: str, item: rx.Var[str], index: rx.Var[int]) -> rx.Comp
         ),
         rx.badge(
             rx.el.button(
-                rx.text(item, overflow="hidden", text_overflow="ellipsis", white_space="nowrap"),
+                rx.text(item, **_KIT_PILL_TEXT),
                 rx.icon("pencil", size=11, opacity="0.55", flex_shrink="0"),
                 on_click=CreativeState.start_kit_pill_edit(field, index),
                 title="Editar",
@@ -2514,12 +2530,11 @@ def _editable_pill(field: str, item: rx.Var[str], index: rx.Var[int]) -> rx.Comp
                 **_pill_button(),
             ),
             size="2",
-            radius="full",
             variant="surface",
             color_scheme="gray",
             gap="2",
             align_items="center",
-            max_width="100%",
+            **_KIT_PILL_BOX,
         ),
     )
 

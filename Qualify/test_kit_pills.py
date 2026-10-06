@@ -170,3 +170,13 @@ def test_the_example_is_a_pill_only_while_the_list_is_empty() -> None:
     assert "Ej.: " in rendered
     assert "kit_do_items" in rendered and "length" in rendered
     assert "kit_pill_adding" in rendered  # the input sits behind the "+"
+
+
+def test_kit_pills_wrap_their_sentences_instead_of_cutting_them() -> None:
+    """§ 2026-10-06, "las pills recortan el contenido": a kit value or example is a
+    sentence — it wraps onto more lines, never ends in "…" behind `overflow: hidden`."""
+    from . import creative_wizard_pages as wiz
+
+    for spec in wiz._KIT_LISTS:
+        rendered = str(wiz._kit_list_editor(*spec))
+        assert "ellipsis" not in rendered and "nowrap" not in rendered
