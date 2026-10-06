@@ -155,3 +155,33 @@ def test_a_drop_on_a_past_day_or_without_a_drag_does_nothing() -> None:
     state.start_drag("p1")
     state.end_drag()  # released outside any cell
     assert not state.dragging and not state.form_open
+
+
+# --- QUA-118 v2 polish: order and quick review ------------------------------------------
+
+
+def test_the_gallery_shows_ready_posts_first_and_history_last() -> None:
+    from .gallery_state import sort_for_gallery
+
+    posts = [
+        _post("a", state="discarded"),
+        _post("b", state="needs_action"),
+        _post("c", state="schedulable"),
+        _post("d", state="used"),
+        _post("e", state="schedulable"),
+    ]
+    assert [p.post_id for p in sort_for_gallery(posts)] == ["c", "e", "b", "d", "a"]
+
+
+def test_only_a_post_waiting_for_review_offers_approve_and_reject() -> None:
+    assert _post("a", state="needs_action", lifecycle_status="generated").can_review
+    assert not _post("b", state="schedulable", lifecycle_status="approved").can_review
+    assert not _post("c", state="discarded", lifecycle_status="rejected").can_review
+
+
+def test_rejecting_from_a_card_asks_first() -> None:
+    state = GalleryState()
+    state.ask_reject_post("p1", "Promo p1")
+    assert (state.reject_post_id, state.reject_post_title) == ("p1", "Promo p1")
+    state.set_reject_post_open(False)  # «Volver»
+    assert state.reject_post_id == "" and state.reject_post_title == ""

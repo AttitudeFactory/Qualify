@@ -237,3 +237,72 @@ def test_switching_variant_leaves_edit_mode(monkeypatch) -> None:
     state.start_edit()
     state.select_variant("v1")
     assert state.edit_mode is False
+
+
+def test_the_review_editor_adds_and_removes_hashtags_and_uses_a_cta(monkeypatch) -> None:
+    state = _state(monkeypatch)
+    state.edit_caption = "Promo de hamburguesas dobles este viernes"
+    state.edit_hashtags = "#promo"
+    assert "hamburguesas" in state.hashtag_suggestions
+    state.add_hashtag("hamburguesas")
+    assert state.edit_hashtag_chips == ["promo", "hamburguesas"]
+    assert "hamburguesas" not in state.hashtag_suggestions
+    state.edit_hashtag_query = "#Viernes"
+    state.add_typed_hashtag()
+    assert state.edit_hashtags == "#promo #hamburguesas #viernes"
+    assert state.edit_hashtag_query == ""
+    state.remove_hashtag("promo")
+    assert state.edit_hashtag_chips == ["hamburguesas", "viernes"]
+    assert state.hashtag_count_label == "2/30"
+    # Several calls to action, kept as one list in the `cta` field.
+    state.edit_cta = ""
+    state.add_cta("Escríbenos por DM")
+    state.edit_cta_query = "Reserva por WhatsApp"
+    state.add_typed_cta()
+    state.add_cta("Escríbenos por DM")  # once only
+    assert state.cta_chips == ["Escríbenos por DM", "Reserva por WhatsApp"]
+    assert state.edit_cta == "Escríbenos por DM · Reserva por WhatsApp"
+    assert "Escríbenos por DM" not in state.cta_suggestions
+    state.remove_cta("Escríbenos por DM")
+    assert state.cta_chips == ["Reserva por WhatsApp"]
+
+
+def test_ai_hashtag_ideas_are_grouped_and_hide_once_chosen(monkeypatch) -> None:
+    from .creative_vm import HashtagIdeaVM
+
+    state = _state(monkeypatch)
+    state.ai_hashtags = [
+        HashtagIdeaVM(tag="postres", kind="popular", reason="Amplio"),
+        HashtagIdeaVM(tag="heladoartesanal", kind="nicho", reason="El tema"),
+        HashtagIdeaVM(tag="caracas", kind="marca", reason="El lugar"),
+    ]
+    assert [h.tag for h in state.ai_popular] == ["postres"]
+    assert [h.tag for h in state.ai_niche] == ["heladoartesanal"]
+    assert [h.tag for h in state.ai_brand] == ["caracas"]
+    state.add_hashtag("postres")
+    assert state.ai_popular == [] and state.ai_pending_count == 2
+    state.add_all_ai_hashtags()
+    assert state.edit_hashtag_chips == ["postres", "heladoartesanal", "caracas"]
+
+
+def test_caption_rules_show_under_the_caption(monkeypatch) -> None:
+    state = _state(monkeypatch)
+    state.edit_blocking = [
+        "El caption tiene 23 caracteres y tu marca pide al menos 80: agrega 57 más.",
+        "Falta la palabra obligatoria «ofertas».",
+    ]
+    assert len(state.caption_blocking) == 1 and len(state.other_blocking) == 1
+
+
+def test_rejecting_asks_first_and_only_the_confirmation_discards(monkeypatch) -> None:
+    state = _state(monkeypatch)
+    state.ask_reject(False)
+    assert state.reject_confirm == "reject"
+    state.set_reject_confirm_open(False)  # «Volver»: nothing discarded
+    assert state.reject_confirm == ""
+    state.ask_reject(True)
+    assert state.reject_confirm == "regenerate"
+    event = state.confirm_reject()
+    assert state.reject_confirm == ""
+    assert event.handler.fn.__name__ == "reject_current"
+    assert "true" in str(event.args).lower()

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import AsyncIterator
 from uuid import UUID, uuid4
@@ -60,16 +61,28 @@ from .creative_provider import (
     submit_brief,
 )
 from .creative_vm import (
+    CAPTION_LIMIT,
+    CTA_SUGGESTIONS,
+    HASHTAG_LIMIT,
+    HOOK_LIMIT,
     KIND_LABELS,
     CopyVariantVM,
     DraftSummaryVM,
     DraftVM,
+    HashtagIdeaVM,
     KitFormVM,
     ReadinessVM,
     RecipeOptionVM,
     RouteOptionVM,
     VoiceProposalVM,
+    caption_hashtag_suggestions,
+    caption_keywords,
     content_type_options,
+    cta_list,
+    format_ctas,
+    format_hashtags,
+    hashtag_list,
+    seen_label,
 )
 from .tenant import tenant_uuid
 
@@ -378,6 +391,20 @@ class CreativeState(rx.State):
     # The copy fields are read-only until the operator presses "Editar"; "Cancelar" puts
     # the saved copy back. Approving is not offered over unsaved edits.
     edit_mode: bool = False
+    # Hashtags the brand's catalog associates with the caption's words (read when the
+    # editor opens and when the caption loses focus), and the free-form tag being typed.
+    edit_catalog_tags: list[str] = []
+    edit_hashtag_query: str = ""
+    # «Sugerir con IA»: Claude reads the WHOLE caption and proposes a mix of popular,
+    # niche and local/brand hashtags, grounded in the catalog (`hashtags.caption`).
+    ai_hashtags: list[HashtagIdeaVM] = []
+    ai_hashtags_loading: bool = False
+    ai_hashtags_note: str = ""
+    # The CTA field holds several calls to action (`cta_list`); this is the one typed.
+    edit_cta_query: str = ""
+    # The review decision asks before discarding: "reject" / "regenerate" while the
+    # confirmation is open, "" otherwise — a mis-click must not throw a draft away.
+    reject_confirm: str = ""
     action_error: str = ""
     poll_timed_out: bool = False
     poll_elapsed_label: str = ""
@@ -397,6 +424,214 @@ class CreativeState(rx.State):
             if variant.variant_id == self.selected_variant_id:
                 return variant
         return None
+
+    # -- the review editor's helpers -------------------------------------------------
+
+    @rx.var
+    def caption_blocking(self) -> list[str]:
+        """The brand rules the caption breaks — shown under the caption itself."""
+        return [m for m in self.edit_blocking if "caption" in m.lower()]
+
+    @rx.var
+    def other_blocking(self) -> list[str]:
+        return [m for m in self.edit_blocking if "caption" not in m.lower()]
+
+    @rx.var
+    def edit_hashtag_chips(self) -> list[str]:
+        return hashtag_list(self.edit_hashtags)
+
+    @rx.var
+    def hashtag_suggestions(self) -> list[str]:
+        """Suggested from what the caption says (catalog matches first)."""
+        return caption_hashtag_suggestions(
+            self.edit_caption, self.edit_hashtags, extra=self.edit_catalog_tags
+        )
+
+    @rx.var
+    def hook_count_label(self) -> str:
+        return f"{len(self.edit_hook)}/{HOOK_LIMIT}"
+
+    @rx.var
+    def caption_count_label(self) -> str:
+        return f"{len(self.edit_caption)}/{CAPTION_LIMIT}"
+
+    @rx.var
+    def hashtag_count_label(self) -> str:
+        return f"{len(hashtag_list(self.edit_hashtags))}/{HASHTAG_LIMIT}"
+
+    @rx.var
+    def cta_chips(self) -> list[str]:
+        return cta_list(self.edit_cta)
+
+    @rx.var
+    def cta_suggestions(self) -> list[str]:
+        chosen = set(cta_list(self.edit_cta))
+        return [c for c in CTA_SUGGESTIONS if c not in chosen]
+
+    @rx.event
+    def add_cta(self, text: str) -> None:
+        items = cta_list(self.edit_cta)
+        for item in cta_list(text):
+            if item not in items:
+                items.append(item)
+        self.edit_cta = format_ctas(items)
+
+    @rx.event
+    def remove_cta(self, text: str) -> None:
+        self.edit_cta = format_ctas([c for c in cta_list(self.edit_cta) if c != text])
+
+    @rx.event
+    def set_edit_cta_query(self, value: str) -> None:
+        self.edit_cta_query = value
+
+    @rx.event
+    def add_typed_cta(self) -> None:
+        self.add_cta(self.edit_cta_query)
+        self.edit_cta_query = ""
+
+    def _ai_ideas(self, kind: str) -> list[HashtagIdeaVM]:
+        chosen = set(hashtag_list(self.edit_hashtags))
+        return [h for h in self.ai_hashtags if h.kind == kind and h.tag not in chosen]
+
+    @rx.var
+    def ai_popular(self) -> list[HashtagIdeaVM]:
+        return self._ai_ideas("popular")
+
+    @rx.var
+    def ai_niche(self) -> list[HashtagIdeaVM]:
+        return self._ai_ideas("nicho")
+
+    @rx.var
+    def ai_brand(self) -> list[HashtagIdeaVM]:
+        return self._ai_ideas("marca")
+
+    @rx.var
+    def ai_pending_count(self) -> int:
+        chosen = set(hashtag_list(self.edit_hashtags))
+        return sum(1 for h in self.ai_hashtags if h.tag not in chosen)
+
+    @rx.event
+    def add_all_ai_hashtags(self) -> None:
+        self.add_hashtag(" ".join(h.tag for h in self.ai_hashtags))
+
+    @rx.event(background=True)
+    async def suggest_hashtags_ai(self):
+        """«Sugerir con IA»: the whole caption to Claude, with the catalog's real tags for
+        its words (and how often they were seen) as grounding."""
+        async with self:
+            if self.ai_hashtags_loading:
+                return
+            caption, current = self.edit_caption, hashtag_list(self.edit_hashtags)
+            if not caption.strip():
+                self.ai_hashtags_note = "Escribe primero el texto de la publicación."
+                return
+            self.ai_hashtags_loading = True
+            self.ai_hashtags_note = ""
+        ids = await self._session_ids()
+        api_key = os.environ.get("QUALIFY_ANTHROPIC_API_KEY", "").strip()
+        if not api_key:
+            async with self:
+                self.ai_hashtags_loading = False
+                self.ai_hashtags_note = (
+                    "Las sugerencias con IA no están configuradas en este entorno "
+                    "(falta QUALIFY_ANTHROPIC_API_KEY)."
+                )
+            return
+
+        def run() -> list[HashtagIdeaVM]:
+            from qualify_api.hashtags.caption import SeenTag, suggest_for_caption
+
+            seen: list[SeenTag] = []
+            if ids is not None:
+                try:
+                    from . import hashtag_catalog
+
+                    for term in caption_keywords(caption, limit=8):
+                        for hit in hashtag_catalog.REPOSITORY.resolve(
+                            ids[0], term, limit=4, min_similarity=0.5
+                        ):
+                            if all(s.tag != hit.hashtag.tag for s in seen):
+                                seen.append(SeenTag(hit.hashtag.tag, hit.hashtag.seen_count))
+                except Exception as exc:  # noqa: BLE001 — grounding is optional
+                    logger.info("caption hashtags: catalog skipped (%s)", type(exc).__name__)
+            picks = suggest_for_caption(caption, seen=seen, current=current, api_key=api_key)
+            return [
+                HashtagIdeaVM(
+                    tag=p.tag, kind=p.kind, reason=p.reason, seen_label=seen_label(p.seen_count)
+                )
+                for p in picks
+            ]
+
+        try:
+            ideas = await asyncio.to_thread(run)
+        except Exception as exc:  # noqa: BLE001 — the editor keeps working without it
+            logger.warning("caption hashtags failed: %s", type(exc).__name__)
+            async with self:
+                self.ai_hashtags_loading = False
+                self.ai_hashtags_note = (
+                    "No se pudieron generar sugerencias ahora. Inténtalo de nuevo."
+                )
+            return
+        async with self:
+            self.ai_hashtags = ideas
+            self.ai_hashtags_loading = False
+            self.ai_hashtags_note = "" if ideas else "No hubo sugerencias nuevas para este texto."
+
+    @rx.event
+    def add_hashtag(self, tag: str) -> None:
+        tags = hashtag_list(self.edit_hashtags)
+        for new in hashtag_list(tag):
+            if new not in tags and len(tags) < HASHTAG_LIMIT:
+                tags.append(new)
+        self.edit_hashtags = format_hashtags(tags)
+
+    @rx.event
+    def remove_hashtag(self, tag: str) -> None:
+        self.edit_hashtags = format_hashtags(
+            [t for t in hashtag_list(self.edit_hashtags) if t != tag]
+        )
+
+    @rx.event
+    def set_edit_hashtag_query(self, value: str) -> None:
+        self.edit_hashtag_query = value
+
+    @rx.event
+    def add_typed_hashtag(self) -> None:
+        self.add_hashtag(self.edit_hashtag_query)
+        self.edit_hashtag_query = ""
+
+    @rx.event(background=True)
+    async def load_catalog_hashtags(self) -> None:
+        """Ask the brand's hashtag catalog what people tag the caption's words with — real
+        tags first among the suggestions. Best effort: no catalog, no answer, no error."""
+        async with self:
+            terms = caption_keywords(self.edit_caption)
+        if not terms:
+            return
+        ids = await self._session_ids()
+        if ids is None:
+            return
+        tenant_id = ids[0]
+
+        def lookup() -> list[str]:
+            from . import hashtag_catalog  # the catalog pulls in discovery; load it late
+
+            found: list[str] = []
+            for term in terms:
+                for hit in hashtag_catalog.REPOSITORY.resolve(
+                    tenant_id, term, limit=2, min_similarity=0.55
+                ):
+                    if hit.hashtag.tag not in found:
+                        found.append(hit.hashtag.tag)
+            return found[:6]
+
+        try:
+            tags = await asyncio.to_thread(lookup)
+        except Exception as exc:  # noqa: BLE001 — suggestions never break the editor
+            logger.info("hashtag catalog lookup skipped: %s", type(exc).__name__)
+            return
+        async with self:
+            self.edit_catalog_tags = tags
 
     @rx.var
     def can_approve_now(self) -> bool:
@@ -1880,6 +2115,12 @@ class CreativeState(rx.State):
                 self.edit_cta = variant.cta
                 self.edit_script = variant.script
                 self.edit_blocking = list(variant.failure_labels)
+                # Suggestions belong to the text they were made for.
+                self.ai_hashtags = []
+                self.ai_hashtags_note = ""
+                self.edit_catalog_tags = []
+                self.edit_hashtag_query = ""
+                self.edit_cta_query = ""
                 return
 
     @rx.event(background=True)
@@ -1981,8 +2222,9 @@ class CreativeState(rx.State):
         self._fill_edit_fields()
 
     @rx.event
-    def start_edit(self) -> None:
+    def start_edit(self):
         self.edit_mode = True
+        return CreativeState.load_catalog_hashtags
 
     @rx.event
     def cancel_edit(self) -> None:
@@ -2069,8 +2311,9 @@ class CreativeState(rx.State):
 
     @rx.event(background=True)
     async def approve_selected(self) -> AsyncIterator[rx.event.EventSpec]:
-        """Approve the selected variant (the FSM guard requires one) and hand the
-        operator the paste-ready caption — 'Aprobar y descargar'."""
+        """Approve the selected variant (the FSM guard requires one). Approving no
+        longer downloads anything (founder, 2026-10-06): the media has its own download
+        under it, and the approved POST is ready for the Planificador."""
         async with self:
             draft = self.draft
             variant = self.selected_variant
@@ -2104,10 +2347,22 @@ class CreativeState(rx.State):
             return
         async with self:
             self._apply_detail(vm)
-        yield rx.download(
-            data=variant.rendered_caption,
-            filename=f"qualify-copy-{draft.draft_id[:8]}.txt",
-        )
+        yield rx.toast.success("POST aprobado: ya puedes programarlo en el Planificador.")
+
+    @rx.event
+    def ask_reject(self, regenerate: bool) -> None:
+        self.reject_confirm = "regenerate" if regenerate else "reject"
+
+    @rx.event
+    def set_reject_confirm_open(self, value: bool) -> None:
+        if not value:
+            self.reject_confirm = ""
+
+    @rx.event
+    def confirm_reject(self):
+        regenerate = self.reject_confirm == "regenerate"
+        self.reject_confirm = ""
+        return CreativeState.reject_current(regenerate)
 
     @rx.event(background=True)
     async def reject_current(self, regenerate: bool) -> AsyncIterator[None]:
