@@ -108,6 +108,15 @@ echo "==> $ROOT/current -> $sha"
 # reuses an old release dir, so its mtime is refreshed first and it is skipped explicitly.
 touch "$release"
 (cd "$ROOT/releases" && ls -1t | { grep -vxF "$sha" || true; } | tail -n +"$KEEP_RELEASES" | xargs -r rm -rf)
+# Tagged images are not "dangling", so `image prune` alone would keep every sha ever
+# deployed (the app image's /app layer is ~0.5 GB per commit). Drop the tags of releases
+# pruned above; rolling back to one of them pulls it from GHCR again.
+for image in qualify-app qualify-web qualify-deploy; do
+  docker image ls --format '{{.Tag}}' "$IMAGE_PREFIX$image" | while read -r tag; do
+    [[ $tag =~ ^[0-9a-f]{40}$ && ! -d $ROOT/releases/$tag ]] || continue
+    docker image rm "$IMAGE_PREFIX$image:$tag" >/dev/null || true
+  done
+done
 docker image prune -f >/dev/null
 
 "$release/deploy/healthcheck.sh" "$ENV_FILE"
