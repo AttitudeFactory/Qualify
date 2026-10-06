@@ -16,7 +16,10 @@
 #   2. FROM THAT RELEASE DIR: `docker compose build`, then `run --rm migrate` (alembic
 #      upgrade head + role passwords; starts postgres first), then `up -d` ONLY if migrate
 #      exited 0. migrate is an explicit step, not a depends_on of api/reflex, so a deploy
-#      that changes no image recreates nothing (no 502 window).
+#      that changes no image recreates nothing (no 502 window). The PREVIOUS release keeps
+#      serving while migrate runs (as it already did when migrate was a dependency), so
+#      every migration must be backward compatible with it: expand -> contract over two
+#      deploys (docs/despliegue-hetzner.md §7).
 #   3. Only if that succeeded: /opt/qualify/current -> the release. A failed build or
 #      migration leaves `current` (and with it `status`, `logs`, the backup cron) on the last
 #      good release. Older releases stay for rollback; the last 5 are kept.
@@ -78,7 +81,7 @@ cmd_deploy() {
   remote "
     set -e
     $in_release build
-    $in_release run --rm migrate
+    $in_release run --rm -T migrate
     $in_release up -d --remove-orphans
   " || die "build, migration or start failed — $REMOTE_ROOT/current still points at the previous release"
 
