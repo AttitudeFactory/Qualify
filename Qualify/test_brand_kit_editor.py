@@ -178,3 +178,11 @@ def test_a_manual_add_says_what_happened_in_a_toast_only() -> None:
     source = Path(wiz.__file__).read_text(encoding="utf-8")
     body = source.split("async def add_manual_account", 1)[1].split("@rx.event", 1)[0]
     assert "brand_documents.notify(message, tone)" in body
+
+
+def test_voz_y_tono_is_never_pending_while_editing() -> None:
+    """§ request 2026-10-05: past the first check, the section does not say "Pendiente"."""
+    from . import brand_kit_editor as editor
+
+    summary = str(editor._voice_summary())
+    assert "Pendiente" not in summary and "Sin voz clonada" in summary

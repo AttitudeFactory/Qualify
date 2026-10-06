@@ -245,9 +245,9 @@ def _voice_summary() -> rx.Component:
             ("complete", "Voz clonada"),
             ("processing", "Clonando tu voz…"),
             ("failed", "El clon de tu voz falló"),
-            rx.cond(
-                BrandConnectState.voice_configured, "Tono ajustado, sin voz clonada", "Pendiente"
-            ),
+            # no "Pendiente" here (§ request 2026-10-05): editing comes after the first
+            # check, which already asked for the voice — a missing clone is just a fact
+            "Sin voz clonada",
         ),
         size="2",
         color=T.TEXT_MUTED,
