@@ -29,7 +29,8 @@
           { "context": "lint" },
           { "context": "test" },
           { "context": "test-db" },
-          { "context": "node-render" }
+          { "context": "node-render" },
+          { "context": "docker-deploy" }
         ]
       }
     }
