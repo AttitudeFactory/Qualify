@@ -288,3 +288,64 @@ def test_the_ranking_makes_room_while_a_card_is_held() -> None:
     assert "FLIP_MS" not in script  # no slide AFTER the round trip any more
     css = (Path(__file__).parent.parent / "assets" / "qualify.css").read_text(encoding="utf-8")
     assert ".q-rank-card.q-shifting" in css
+
+
+# -- Tu rubro: autocompleted, catalog first (third round of 2026-10-05) ------------------------
+
+
+def test_there_is_no_suggest_button_and_leaving_the_rubro_reruns_the_search() -> None:
+    from . import brand_kit_editor  # noqa: F401 — every page still builds
+
+    rendered = str(wiz._rubro_fields())
+    assert "Sugerir" not in rendered
+    assert not hasattr(wiz, "_suggest_hashtags_button")
+    state = wiz.BrandConnectState()
+    state.hashtags_rubro = "hamburguesería smash"
+    assert wiz.BrandConnectState.rubro_input_blur.fn(state, "hamburguesería smash ") is None
+    assert wiz.BrandConnectState.rubro_input_blur.fn(state, "") is None
+    fired = wiz.BrandConnectState.rubro_input_blur.fn(state, "food truck de hamburguesas")
+    assert "suggest_hashtags" in str(fired) and state.rubro_text == "food truck de hamburguesas"
+
+
+def test_a_creator_changing_category_reruns_the_search() -> None:
+    state = wiz.BrandConnectState()
+    state.step = wiz._RUBRO_STEP
+    state.account_kind = "influencer"
+    assert "suggest_hashtags" in str(wiz.BrandConnectState.set_sector.fn(state, "food_drink"))
+    assert wiz.BrandConnectState.set_sector.fn(state, "food_drink") is None  # same one
+    brand = wiz.BrandConnectState()
+    brand.step = wiz._RUBRO_STEP
+    brand.account_kind = "marca"
+    assert wiz.BrandConnectState.set_sector.fn(brand, "food_drink") is None
+
+
+def test_without_claude_the_rubro_is_the_profiles_category(monkeypatch) -> None:
+    monkeypatch.delenv("QUALIFY_ANTHROPIC_API_KEY", raising=False)
+    account = wiz.from_profile.AccountText(handle="nibbles", category="Restaurante")
+    assert wiz._propose_rubro(account) == ("restaurante", None)
+    assert wiz._propose_rubro(wiz.from_profile.AccountText()) == ("", None)
+
+
+def test_the_catalog_answers_first_and_a_creation_is_stored(monkeypatch) -> None:
+    from uuid import UUID
+
+    from qualify_api.hashtags import MemoryHashtagRepository
+
+    from . import hashtag_catalog
+
+    monkeypatch.delenv("QUALIFY_ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(hashtag_catalog, "REPOSITORY", MemoryHashtagRepository())
+    monkeypatch.setattr(hashtag_catalog, "_seeded", False)
+    tenant = UUID("7a7a0000-0000-4000-8000-0000000000c9")
+    seed = wiz.creator_discovery.DiscoverySeed("nibbles", (), (), "VE", "", terms=("xilofonos",))
+    account = wiz.from_profile.AccountText(handle="nibbles", bio="Xilófonos hechos a mano")
+    created = wiz.from_profile.Proposal(
+        (wiz.from_profile.ProposedTag("xilofonosamano", "La bio."),), None, "ai", "m", "xilofonos"
+    )
+    # nothing in the catalog for that rubro: the created tags are used, and stored
+    choice, note = wiz._hashtags_db_first(tenant, seed, account, created=created)
+    assert choice is not None and choice.tags == ("xilofonosamano",) and note == ""
+    assert hashtag_catalog.REPOSITORY.get(tenant, "xilofonosamano") is not None
+    # the next search for that rubro finds them in the catalog — no creation
+    again, _ = wiz._hashtags_db_first(tenant, seed, account)
+    assert again is not None and again.tags == ("xilofonosamano",) and again.by == "rule"

@@ -3281,34 +3281,93 @@ def merge_suggestions(
     return out, note
 
 
-def _create_hashtags(
+def _generate_from_account(account: from_profile.AccountText) -> from_profile.Proposal | None:
+    """Claude reads the account (`from_profile.generate`): a rubro phrase and the tags its
+    content lives under. None without a key, with nothing to read, or when the call
+    fails — every caller has a fallback."""
+    if not account.has_content:
+        return None
+    try:
+        proposal = from_profile.generate(
+            account, api_key=api_key_from_env(), max_tags=creator_discovery.CHOSEN_HASHTAGS
+        )
+    except MissingAPIKey:
+        return None
+    except (ClaudeToolError, ValueError) as exc:
+        logger.warning("hashtags: creation failed: %s", exc)
+        return None
+    except Exception as exc:  # noqa: BLE001 — SDK/transport errors: never break the step
+        logger.warning("hashtags: creation failed: %s", exc)
+        return None
+    if proposal.stats is not None:
+        logger.info(
+            "hashtags: %s read @%s → rubro %r, created %s ($%.4f)",
+            proposal.model,
+            account.handle,
+            proposal.rubro,
+            [t.tag for t in proposal.tags],
+            proposal.stats.cost_usd,
+        )
+    return proposal
+
+
+def _propose_rubro(
     account: from_profile.AccountText,
+) -> tuple[str, from_profile.Proposal | None]:
+    """Tu rubro, autocompleted (§ third round of 2026-10-05, "que autocompletes el input de
+    tu rubro"): the phrase Claude reads off the account, and the proposal it came with (its
+    tags are kept for when the catalog has none). Without Claude, the profile's own
+    category ("Restaurante") stands in, or nothing."""
+    proposal = _generate_from_account(account)
+    rubro = proposal.rubro if proposal is not None else ""
+    return (rubro or account.category.strip().lower()), proposal
+
+
+def _hashtags_db_first(
+    tenant_id: UUID | None,
+    seed: creator_discovery.DiscoverySeed,
+    account: from_profile.AccountText,
+    *,
+    network: str = "",
+    created: from_profile.Proposal | None = None,
 ) -> tuple[hashtag_catalog.HashtagChoice | None, str]:
-    """`suggest_hashtags`' off-loop half: Claude creates the tags from the account's own
-    text (`from_profile.generate`); without a key, or when the call fails, the account's
-    own most-used hashtags stand in (`from_profile.from_posts`). Returns the choice for
+    """Tu rubro's hashtags (§ third round of 2026-10-05: "la tool necesita primero buscar
+    en la db; si no hay, los crea"): FIRST the shared catalog — Claude explores it with its
+    tools for this rubro and this account (`hashtag_catalog.suggest_hashtags`, the rule
+    path without a key); only when nothing there fits are they CREATED from the account's
+    own text (`_create_hashtags`), and what Claude created goes into the catalog
+    (`hashtag_catalog.remember_created`) so the next brand with that rubro finds it."""
+    if tenant_id is not None and (seed.terms or seed.niches):
+        try:
+            found = hashtag_catalog.suggest_hashtags(
+                tenant_id, seed, bio=account.bio, category=account.category
+            )
+        except (SQLAlchemyError, OSError, ValueError) as exc:
+            logger.warning("hashtags: catalog unreadable, creating them: %s", exc)
+        else:
+            if found.tags:
+                return found, ""
+    choice, note = _create_hashtags(account, created)
+    if choice is not None and choice.by == "ai" and tenant_id is not None and seed.terms:
+        try:
+            hashtag_catalog.remember_created(tenant_id, seed, choice.tags, network=network or None)
+        except (SQLAlchemyError, ValueError) as exc:
+            logger.warning("hashtags: created tags not stored in the catalog: %s", exc)
+    return choice, note
+
+
+def _create_hashtags(
+    account: from_profile.AccountText, created: from_profile.Proposal | None = None
+) -> tuple[hashtag_catalog.HashtagChoice | None, str]:
+    """The creation half of `_hashtags_db_first`: Claude creates the tags from the
+    account's own text (`from_profile.generate` — or the proposal `created` already made
+    while it named the rubro); without a key, or when the call fails, the account's own
+    most-used hashtags stand in (`from_profile.from_posts`). Returns the choice for
     `merge_suggestions`, or None with the note to show."""
     cap = creator_discovery.CHOSEN_HASHTAGS
-    proposal: from_profile.Proposal | None = None
-    if account.has_content:
-        try:
-            proposal = from_profile.generate(account, api_key=api_key_from_env(), max_tags=cap)
-            if proposal.stats is not None:
-                logger.info(
-                    "hashtags: %s created %s for @%s ($%.4f)",
-                    proposal.model,
-                    [t.tag for t in proposal.tags],
-                    account.handle,
-                    proposal.stats.cost_usd,
-                )
-        except MissingAPIKey:
-            proposal = None
-        except (ClaudeToolError, ValueError) as exc:
-            logger.warning("hashtags: creation failed, using the account's own: %s", exc)
-            proposal = None
-        except Exception as exc:  # noqa: BLE001 — SDK/transport errors: never break the step
-            logger.warning("hashtags: creation failed, using the account's own: %s", exc)
-            proposal = None
+    proposal = created if created is not None and created.tags else None
+    if proposal is None:
+        proposal = _generate_from_account(account)
     if proposal is None or not proposal.tags:
         proposal = from_profile.from_posts(account.used_hashtags, max_tags=cap)
     if not proposal.tags and not account.has_content:
@@ -3474,6 +3533,12 @@ class BrandConnectState(rx.State):
     rubro_hashtags: list[dict[str, str]] = []
     new_hashtag: str = ""
     suggesting_hashtags: bool = False
+    #: The run that is also naming the rubro (the input was empty): the whole step waits
+    #: behind its progress screen, since the field it would fill is on it.
+    filling_rubro: bool = False
+    #: The rubro the current pills were found for — leaving the input with a DIFFERENT
+    #: one runs the search again (`rubro_input_blur`).
+    hashtags_rubro: str = ""
     hashtag_note: str = ""
     #: The hashtag input shows only after its "+" is pressed (§ request 2026-09-30).
     adding_hashtag: bool = False
@@ -3783,12 +3848,29 @@ class BrandConnectState(rx.State):
         self.started_without_socials = False
 
     @rx.event
-    def set_sector(self, value: str) -> None:
+    def set_sector(self, value: str) -> rx.event.EventSpec | None:
+        """A creator has no rubro input — their category IS the rubro, so changing it
+        looks for their hashtags again, the way leaving a brand's rubro input does."""
+        changed = value != self.sector
         self.sector = value
+        if changed and self.account_kind == "influencer" and self.step == _RUBRO_STEP:
+            return BrandConnectState.suggest_hashtags
+        return None
 
     @rx.event
     def set_rubro_text(self, value: str) -> None:
         self.rubro_text = value
+
+    @rx.event
+    def rubro_input_blur(self, value: str) -> rx.event.EventSpec | None:
+        """Leaving Tu rubro (§ third round of 2026-10-05, "al salir del input cuando se
+        edite se vuelve a ejecutar la tool"): an edited rubro looks for its hashtags
+        again; the same one, or an empty field, changes nothing."""
+        self.rubro_text = value
+        rubro = value.strip()
+        if not rubro or rubro == self.hashtags_rubro or self.suggesting_hashtags:
+            return None
+        return BrandConnectState.suggest_hashtags
 
     @rx.event
     def set_country_code(self, value: str) -> None:
@@ -3856,20 +3938,32 @@ class BrandConnectState(rx.State):
 
     @rx.event(background=True)
     async def suggest_hashtags(self) -> None:
-        """Tu rubro's hashtags, CREATED from what the account says about itself (§ request
-        2026-10-05): its description, its category and the texts and hashtags of its
-        latest posts — read from this session's profile snapshot — plus the rubro and
-        place the operator confirmed (`qualify_api.hashtags.from_profile`). Runs on its
-        own when the step opens with no suggestion yet (`next_step`) and again from the
-        button. Without a key, or when the call fails, the account's own most-used
-        hashtags stand in. Background: the call takes a few seconds."""
+        """Tu rubro y sus hashtags (§ third round of 2026-10-05). Runs on its own when the
+        step opens with no suggestion yet (`next_step`) and again when the rubro is edited
+        (`rubro_input_blur`) — there is no "Sugerir" button any more:
+
+        1. An empty Tu rubro is autocompleted from what the account says about itself —
+           description, category, latest posts (`_propose_rubro`).
+        2. The hashtags come from the shared catalog FIRST; only when nothing there fits
+           are they created from the account's text, and stored in the catalog
+           (`_hashtags_db_first`).
+
+        Without a key the catalog's rule path and then the account's own most-used
+        hashtags stand in. Background: the Claude runs take seconds."""
         async with self:
             if self.suggesting_hashtags:
                 return
             self.suggesting_hashtags = True
+            self.filling_rubro = self.account_kind != "influencer" and not self.rubro_text.strip()
+            fill_rubro = self.filling_rubro
             self.hashtag_note = ""
             network = self.network
             handle = self.profile_username or self.username.strip()
+            fallback_profile = {
+                "username": self.profile_username,
+                "bio": self.profile_bio,
+                "category": self.profile_category,
+            }
             sector_label = creator_discovery.NICHE_LABELS.get(self.sector, "")
             account = from_profile.AccountText(
                 handle=self.profile_username,
@@ -3882,6 +3976,7 @@ class BrandConnectState(rx.State):
                 else "",
             )
         ids = await self._referentes_ids()
+        snapshot: dict[str, Any] | None = None
         if ids is not None and handle:
             try:
                 snapshot = await asyncio.to_thread(
@@ -3898,9 +3993,35 @@ class BrandConnectState(rx.State):
                     captions=tuple(str(c) for c in snapshot.get("recentCaptions") or ()),
                     used_hashtags=tuple(str(t) for t in snapshot.get("topHashtags") or ()),
                 )
-        choice, note = await asyncio.to_thread(_create_hashtags, account)
+        created: from_profile.Proposal | None = None
+        if fill_rubro:
+            rubro, created = await asyncio.to_thread(_propose_rubro, account)
+            async with self:
+                if rubro and not self.rubro_text.strip():
+                    self.rubro_text = rubro
+                self.filling_rubro = False
+                rubro_text = self.rubro_text.strip()
+            account = replace(account, rubro=", ".join(p for p in (sector_label, rubro_text) if p))
+        async with self:
+            answers = {
+                "sector": self.sector,
+                "rubro_text": self.rubro_text.strip(),
+                "country_code": self.country_code,
+                "city": self.city.strip(),
+            }
+        seed = creator_discovery.seed_from_profile(snapshot or fallback_profile, **answers)
+        choice, note = await asyncio.to_thread(
+            _hashtags_db_first,
+            ids[0] if ids is not None else None,
+            seed,
+            account,
+            network=network,
+            created=created,
+        )
         async with self:
             self.suggesting_hashtags = False
+            self.filling_rubro = False
+            self.hashtags_rubro = answers["rubro_text"]
             if choice is not None:
                 self.rubro_hashtags, self.hashtag_note = merge_suggestions(
                     self.rubro_hashtags, choice
@@ -4042,6 +4163,8 @@ class BrandConnectState(rx.State):
         self.new_hashtag = ""
         self.adding_hashtag = False
         self.suggesting_hashtags = False
+        self.filling_rubro = False
+        self.hashtags_rubro = ""
         self.hashtag_note = ""
         self.rubro_asked = False
         self._clear_discovery()
@@ -4746,6 +4869,7 @@ class BrandConnectState(rx.State):
                 self.has_maps = str(connect.get("has_maps", ""))
                 self.sector = str(connect.get("sector", ""))
                 self.rubro_text = str(connect.get("rubro_text", ""))
+                self.hashtags_rubro = self.rubro_text.strip()  # its pills come with it
                 self.country_code = str(connect.get("country_code", ""))
                 self.city = str(connect.get("city", ""))
                 self.rubro_hashtags = [
@@ -5628,13 +5752,15 @@ def _connect_step_rubro() -> rx.Component:
     the bar creeps and the screen goes away when the pills land. The creep is paced to
     the run as measured (`packages/api/evals/hashtag_ai`: 2-4 turns, 8-14 s live, p50
     9.4 s) — the run itself is already the eval's pick for quality, not for speed."""
+    # § third round of 2026-10-05: the whole step waits only while the rubro itself is
+    # being filled in; a re-run after an edit waits inside the hashtags block
     return rx.cond(
-        BrandConnectState.suggesting_hashtags,
+        BrandConnectState.suggesting_hashtags & BrandConnectState.filling_rubro,
         progress_panel(
-            "Creando los hashtags de tu cuenta",
+            "Preparando tu rubro y tus hashtags",
             "Leemos tu descripción, tu categoría y tus últimas publicaciones.",
             steps=None,
-            creep_seconds=15,
+            creep_seconds=20,
         ),
         _rubro_fields(),
     )
@@ -5655,20 +5781,17 @@ def _rubro_fields() -> rx.Component:
             ~BrandConnectState.is_influencer,
             rx.vstack(
                 rx.text("Tu rubro, con tus palabras", size="2", weight="medium"),
-                rx.hstack(
-                    rx.input(
-                        value=BrandConnectState.rubro_text,
-                        on_change=BrandConnectState.set_rubro_text,
-                        placeholder="Ej.: cafetería de especialidad para llevar",
-                        width="100%",
-                        size="3",
-                        height="2.75rem",
-                        radius=_CONTROL_RADIUS,
-                    ),
-                    _suggest_hashtags_button(),
-                    spacing="2",
+                # autocompleted from the account; leaving it edited looks for its
+                # hashtags again (§ third round of 2026-10-05 — no "Sugerir" button)
+                rx.input(
+                    value=BrandConnectState.rubro_text,
+                    on_change=BrandConnectState.set_rubro_text,
+                    on_blur=BrandConnectState.rubro_input_blur,
+                    placeholder="Ej.: cafetería de especialidad para llevar",
                     width="100%",
-                    align="center",
+                    size="3",
+                    height="2.75rem",
+                    radius=_CONTROL_RADIUS,
                 ),
                 spacing="2",
                 width="100%",
@@ -5723,30 +5846,6 @@ def _rubro_fields() -> rx.Component:
     )
 
 
-def _suggest_hashtags_button() -> rx.Component:
-    """The small button next to Tu rubro (§ request 2026-09-25): asks Claude, with its
-    catalog tools, for the hashtags to search with (`BrandConnectState.
-    suggest_hashtags`). Spins while the run lasts — a tool run takes a few seconds."""
-    return rx.tooltip(
-        rx.button(
-            rx.cond(
-                BrandConnectState.suggesting_hashtags,
-                rx.spinner(size="2"),
-                rx.icon("sparkles", size=T.ICON_SM),
-            ),
-            "Sugerir",
-            on_click=BrandConnectState.suggest_hashtags,
-            disabled=BrandConnectState.suggesting_hashtags,
-            variant="soft",
-            size="3",
-            height="2.75rem",
-            radius=_CONTROL_RADIUS,
-            flex_shrink="0",
-        ),
-        content="Sugerir hashtags de tu rubro para buscar referentes",
-    )
-
-
 def _hashtag_pill_body(item: rx.Var[dict[str, str]], *, suggested: bool) -> rx.Component:
     return removable_pill(
         # § request 2026-10-02: a hair of space between the "#" and the word
@@ -5769,17 +5868,24 @@ def _hashtag_pill(item: rx.Var[dict[str, str]]) -> rx.Component:
 
 
 def _rubro_hashtags_block() -> rx.Component:
-    """The hashtags the search will use, as pills (§ request 2026-09-25): filled by
-    "Sugerir" and/or typed here, each removable. An influencer has no rubro input, so
-    the suggest button sits in this block's header for them."""
-    return rx.vstack(
-        rx.hstack(
-            rx.text("Hashtags para buscar referentes", size="2", weight="medium"),
-            rx.spacer(),
-            rx.cond(BrandConnectState.is_influencer, _suggest_hashtags_button()),
-            width="100%",
-            align="center",
+    """The hashtags the search will use, as pills (§ request 2026-09-25): found for the
+    rubro (`suggest_hashtags`, on arrival and after each edit of the rubro) and/or typed
+    here, each removable. While a re-run looks for them, the block is its progress bar."""
+    return rx.cond(
+        BrandConnectState.suggesting_hashtags,
+        progress_panel(
+            "Buscando hashtags para tu rubro",
+            "Primero en nuestro catálogo; si no hay, los creamos con lo que publicas.",
+            steps=None,
+            creep_seconds=15,
         ),
+        _rubro_hashtags_editor(),
+    )
+
+
+def _rubro_hashtags_editor() -> rx.Component:
+    return rx.vstack(
+        rx.text("Hashtags para buscar referentes", size="2", weight="medium"),
         # § request 2026-09-30: no input until the "+" is pressed — the pills, then a
         # "+" at their end; pressing it swaps the "+" for the input (Enter adds,
         # Escape or leaving it empty puts the "+" back).

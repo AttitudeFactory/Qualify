@@ -474,9 +474,10 @@ def test_profile_metrics_over_the_window() -> None:
     posts, interaction, likes = metrics
     assert (posts["target"], posts["suffix"], posts["decimals"]) == (3.0, "", 0)
     assert "últimos 7 días" in posts["hint"]
-    # mean(likes + comments) = (520 + 310 + 400) / 3 = 410 -> 4.1% of 10_000 followers
+    # a snapshot without `latestPosts` averages the window's posts, per post:
+    # mean(5.2%, 3.1%, 4.0%) = 4.1% of 10_000 followers
     assert (interaction["target"], interaction["suffix"], interaction["decimals"]) == (4.1, "%", 1)
-    assert "últimos 7 días" in interaction["hint"]
+    assert "Promedio por publicación de tus últimas 3 publicaciones" in interaction["hint"]
     assert (likes["target"], likes["suffix"], likes["decimals"]) == (400.0, "", 0)
 
 
@@ -657,3 +658,31 @@ def test_the_ai_label_is_read_from_both_platforms_as_measured_live() -> None:
         (None, "", ""),
     ]
     assert tt[0]["shares"] == 4 and tt[0]["postId"] == "1"
+
+
+def test_the_interaction_is_an_average_per_video_over_the_latest_posts() -> None:
+    """§ third round of 2026-10-05: "quiero que esta interacción sea un promedio por vídeo,
+    no semanal" — over the latest posts read, whatever their date, not only the week's."""
+    latest = [
+        {"takenAt": _NOW - 2 * _DAY, "likes": 900, "comments": 100},  # 10%
+        {"takenAt": _NOW - 15 * _DAY, "likes": 450, "comments": 50},  # 5%
+        {"takenAt": _NOW - 40 * _DAY, "likes": 0, "comments": 0},  # 0%
+    ]
+    profile = {
+        "followers": 10_000,
+        "fetchedAt": _NOW,
+        "recentPosts": latest[:1],
+        "latestPosts": latest,
+    }
+    labels = {m["label"]: m for m in sc.profile_metrics("tiktok", profile)}
+    assert labels["Interacción"]["target"] == 5.0
+    assert "Promedio por vídeo de tus últimos 3 vídeos" in labels["Interacción"]["hint"]
+    assert labels["Publicaciones"]["target"] == 1.0  # the count is still the week's
+    # no post this week: the interaction is still there, from the latest posts
+    quiet = {**profile, "recentPosts": []}
+    assert [m["label"] for m in sc.profile_metrics("tiktok", quiet)] == [
+        "Publicaciones",
+        "Interacción",
+    ]
+    capped = {**profile, "latestPosts": latest * 10}
+    assert "últimos 12 vídeos" in sc.profile_metrics("tiktok", capped)[1]["hint"]

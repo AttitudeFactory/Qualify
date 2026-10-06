@@ -398,6 +398,61 @@ def ai_hashtags_for(
     return choice
 
 
+def remember_created(
+    tenant_id: UUID,
+    seed: DiscoverySeed,
+    tags: tuple[str, ...],
+    *,
+    network: str | None = None,
+    repository: HashtagRepository | None = None,
+) -> CaptureSummary:
+    """Hashtags Claude CREATED for a rubro the catalog had nothing for (§ third round of
+    2026-10-05: "la tool necesita primero buscar en la db; si no hay, los crea") go INTO
+    the catalog, so the next brand that types that rubro finds them there instead of
+    paying for a creation: each tag (`source='ai'`, classified by the same rule a search
+    uses) and a link from each of the rubro's words to it. The links are written with
+    `accumulate=False` — a creation is one model's proposal, not a sighting, so it never
+    gains weight by being repeated; a real search that sees the tag (`capture`) is what
+    makes it count. Places and generic tags are stored but never linked, like `capture`."""
+    repo = repository or REPOSITORY
+    new_tags: list[NewHashtag] = []
+    kinds: dict[str, str] = {}
+    skipped = 0
+    for raw in tags:
+        tag = raw.strip().lstrip("#").lower()
+        kind, niche, country = classify_tag(tag, seed)
+        try:
+            new_tags.append(
+                NewHashtag(
+                    tag=tag,
+                    source="ai",
+                    kind=kind,
+                    niche=niche,
+                    country_code=country,
+                    network=network,
+                    seen=0,
+                )
+            )
+        except ValueError:
+            skipped += 1
+            continue
+        kinds[tag] = kind
+    stored = repo.upsert_hashtags(tenant_id, new_tags) if new_tags else 0
+    links: list[NewTermLink] = []
+    # the operator's own words only: a taxonomy query ("restaurantes") is shared by every
+    # rubro of its niche, and one brand's created tags must not become all of theirs
+    for term in dict.fromkeys(seed.terms):
+        for tag, kind in kinds.items():
+            if kind in ("generic", "place", "noise"):
+                continue
+            try:
+                links.append(NewTermLink(term=term, tag=tag, source="ai", accumulate=False))
+            except ValueError:
+                skipped += 1
+    written = repo.link_terms(tenant_id, links) if links else 0
+    return CaptureSummary(hashtags=stored, links=written, skipped=skipped)
+
+
 def suggest_hashtags(
     tenant_id: UUID,
     seed: DiscoverySeed,
@@ -409,8 +464,9 @@ def suggest_hashtags(
     selector: Callable[..., tuple[list[hashtag_ai.HashtagPick], hashtag_ai.CallStats]]
     | None = None,
 ) -> HashtagChoice:
-    """The rubro step's "Sugerir hashtags" button: the same tool run as the search's own
-    choice, asking for up to `CHOSEN_HASHTAGS` so the operator has room to curate. The
+    """The rubro step's hashtags (run on arrival and whenever the rubro is edited, § third
+    round of 2026-10-05 — there is no "Sugerir" button any more): the same tool run as the
+    search's own choice, asking for up to `CHOSEN_HASHTAGS` so the operator can curate. The
     operator's pills then BECOME the search's hashtags (`DiscoverySeed.chosen_hashtags`)
     and the search makes no second call — one Claude run either way. Falls back to the
     rule path, like `ai_hashtags_for`, when there is no key or the run fails."""

@@ -99,3 +99,21 @@ def test_the_fallback_keeps_the_accounts_own_tags_minus_reach_only_ones() -> Non
     )
     assert [t.tag for t in proposal.tags] == ["smashburger", "sancristobal"]
     assert proposal.by == "posts" and proposal.stats is None
+
+
+def test_the_answer_also_names_the_rubro() -> None:
+    """§ third round of 2026-10-05: the same call fills Tu rubro when it is empty."""
+    answer = SimpleNamespace(
+        type="tool_use",
+        name=TOOL,
+        input={
+            "rubro": "  hamburguesería   smash para llevar ",
+            "hashtags": [{"tag": "smashburger", "reason": "La bio."}],
+        },
+    )
+    client, requests = _client(_response([answer]))
+    proposal = generate(ACCOUNT, api_key="k", max_tags=5, client_factory=lambda _k: client)
+    assert proposal.rubro == "hamburguesería smash para llevar"
+    schema = requests[0]["tools"][0]["input_schema"]
+    assert "rubro" in schema["properties"] and "rubro" in schema["required"]
+    assert from_posts(["smashburger"], max_tags=3).rubro == ""

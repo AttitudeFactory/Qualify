@@ -12,10 +12,12 @@ the account itself and proposes the tags its content lives under:
 - the captions of its latest posts / videos, and the hashtags it already uses most,
 - the rubro and place the operator confirmed, so local tags (`#cucutafood`) are possible.
 
-One strict tool call, `proponer_hashtags`; nothing is written anywhere — the answer
-becomes pills the operator curates, and those pills are what the referentes search uses
-(`DiscoverySeed.chosen_hashtags`). Without an API key, or when the call fails, the caller
-falls back to `from_posts`: the account's own most-used hashtags, which are real and free.
+One strict tool call, `proponer_hashtags`, which also names the account's RUBRO in a short
+phrase (§ third round of 2026-10-05: "que autocompletes el input de tu rubro"). Nothing is
+written here — the wizard asks the shared catalog first and only uses these tags when the
+catalog has none for the rubro, storing them there so the next search finds them
+(`Qualify/hashtag_catalog.remember_created`). Without an API key, or when the call fails,
+the caller falls back to `from_posts`: the account's own most-used hashtags, real and free.
 """
 
 from __future__ import annotations
@@ -49,6 +51,8 @@ TOOL = "proponer_hashtags"
 MAX_CAPTIONS = 12
 MAX_CAPTION_CHARS = 280
 MAX_BIO_CHARS = 600
+#: The rubro is one short phrase for an input field, not a description.
+MAX_RUBRO_CHARS = 80
 
 
 @dataclass(frozen=True)
@@ -88,6 +92,9 @@ class Proposal:
     #: `ai` (Claude created them) or `posts` (the fallback: the account's own hashtags).
     by: str = "ai"
     model: str = field(default="")
+    #: What the account does, in a few words ("hamburguesería smash para llevar") — what
+    #: fills Tu rubro when the operator has not written one. "" from the fallback.
+    rubro: str = ""
 
 
 SYSTEM = """\
@@ -108,14 +115,19 @@ vecino: una hamburguesería no es #comidacallejera; una academia de programació
 - Los hashtags que la cuenta ya usa son evidencia fuerte: inclúyelos si son del tema.
 - Sin el símbolo #, en minúsculas, sin espacios ni tildes (como se escriben en la red).
 - reason: una frase corta en español que diga de qué texto sale (la bio, la categoría, \
-una publicación, un hashtag que ya usa)."""
+una publicación, un hashtag que ya usa).
+- rubro: lo que hace o vende la cuenta en 2 a 6 palabras, en minúsculas y como lo diría \
+el dueño (hamburguesería smash para llevar, academia de programación online). Si el \
+negocio ya confirmó su rubro, devuélvelo tal cual."""
 
 
 def _tool(max_tags: int) -> dict[str, Any]:
     return strict_tool(
         TOOL,
-        f"Entrega hasta {max_tags} hashtags para buscar cuentas parecidas a esta.",
+        f"Entrega el rubro de la cuenta y hasta {max_tags} hashtags para buscar cuentas "
+        "parecidas a esta.",
         {
+            "rubro": {"type": "string", "description": "Lo que hace o vende, en pocas palabras."},
             "hashtags": {
                 "type": "array",
                 "items": {
@@ -127,7 +139,7 @@ def _tool(max_tags: int) -> dict[str, Any]:
                     "required": ["tag", "reason"],
                     "additionalProperties": False,
                 },
-            }
+            },
         },
     )
 
@@ -205,8 +217,10 @@ def generate(
         if calls:
             meter.tool_calls += 1
             stats = meter.stats()
-            tags = _clean((calls[0].input or {}).get("hashtags"), max_tags)
-            return Proposal(tags, stats, "ai", stats.model_revision or stats.model_id)
+            answer = calls[0].input or {}
+            tags = _clean(answer.get("hashtags"), max_tags)
+            rubro = " ".join(str(answer.get("rubro") or "").split())[:MAX_RUBRO_CHARS]
+            return Proposal(tags, stats, "ai", stats.model_revision or stats.model_id, rubro)
         if attempt == 0:
             messages.append({"role": "assistant", "content": response.content})
             messages.append({"role": "user", "content": f"Entrega la respuesta con {TOOL}."})
