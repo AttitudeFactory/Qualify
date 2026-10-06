@@ -28,11 +28,13 @@ from uuid import UUID
 from pydantic import ValidationError
 from qualify_creative.schemas import CopyPayload
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from qualify_api.creative import fsm as draft_fsm
 from qualify_api.creative import models as creative
+from qualify_api.planner.fsm import EventStatus
+from qualify_api.planner.models import CalendarEvent
 from qualify_api.planner.post_reader import (
     ApprovalStatus,
     NotPublishable,
@@ -47,6 +49,7 @@ from qualify_api.planner.publishable import (
     PostCandidate,
     evaluate,
 )
+from qualify_api.planner.rules import EXECUTION_WINDOW
 
 # Draft status → approval as the calendar sees it. STAGED/PUBLISHED drafts were approved
 # first (creative FSM), so they read as approved.
@@ -66,6 +69,7 @@ _SCHEDULABLE_DRAFT_STATUSES: tuple[str, ...] = tuple(
 
 _EXCERPT_CHARS = 140
 _SCHEDULABLE_LIMIT = 100
+_GALLERY_LIMIT = 200
 
 # Every object-store key starts with the tenant prefix (`qualify_shared.objects.keys`):
 # `t/{tenant_id}/…`. Local upload-store keys (`generated/…`, `uploads/…`) never do.
@@ -106,6 +110,7 @@ def _candidate(
     draft: creative.ContentDraft,
     images: Sequence[creative.ImageAsset],
     output_port: str | None = None,
+    destination: str | None = None,
 ) -> PostCandidate:
     """The whole POST, or — with `output_port` (MP-11) — the candidate for ONE of its
     template outputs. All assets are handed over either way; `evaluate` keeps the port's
@@ -126,6 +131,8 @@ def _candidate(
                 media_type=image.media_type,
                 position=image.position,
                 output_port=image.output_port,
+                width=image.width,
+                height=image.height,
             )
             for image in images
         ),
@@ -135,7 +142,28 @@ def _candidate(
             ("selected_variant_id", str(draft.selected_variant_id)),
         ),
         output_port=output_port,
+        destination=destination,
     )
+
+
+_PUBLISHER_TYPE = {"image": "IMAGE", "video": "VIDEO"}
+
+
+def media_shape(
+    images: Sequence[creative.ImageAsset],
+) -> tuple[tuple[str, ...], tuple[int, int] | None]:
+    """QUA-118 v2: the media as the publisher names it (IMAGE / VIDEO, position order)
+    and the first image's (width, height) when recorded — what
+    `publishable.destination_options` needs to say where the content may go."""
+    ordered = sorted(images, key=lambda image: image.position)
+    types = tuple(_PUBLISHER_TYPE.get(image.media_type, image.media_type) for image in ordered)
+    first_image = next((image for image in ordered if image.media_type == "image"), None)
+    size = (
+        (first_image.width, first_image.height)
+        if first_image is not None and first_image.width and first_image.height
+        else None
+    )
+    return types, size
 
 
 def output_ports_of(images: Sequence[creative.ImageAsset]) -> tuple[str, ...]:
@@ -160,6 +188,7 @@ def _outputs(
         )
         verdict = evaluate(_candidate(session, tenant_id, draft, images, output_port=port))
         publishable = isinstance(verdict, PublishablePost)
+        types, size = media_shape([image for image in images if image.output_port == port])
         outputs.append(
             PostOutput(
                 port=port,
@@ -167,6 +196,8 @@ def _outputs(
                 media_product_type=verdict.media_product_type if publishable else None,
                 is_publishable=publishable,
                 unpublishable_reason="" if publishable else REASON_TEXT[verdict.reason],
+                media_types=types,
+                image_size=size,
             )
         )
     return tuple(outputs)
@@ -225,6 +256,36 @@ def thumbnail_source(
     return None
 
 
+def _history(
+    session: Session, post_ids: Sequence[UUID], *, now: datetime
+) -> dict[UUID, tuple[int, bool]]:
+    """Per POST, how many of its events were published and whether one is live — one
+    aggregate over `calendar_events` for the whole batch (QUA-118 D2). Read-only, under
+    the same RLS session as the drafts.
+
+    "Live" = still going to be published: `publishing`, or `scheduled` and not yet past
+    its execution window (`rules.EXECUTION_WINDOW`, QUA-115). A `scheduled` event the
+    calendar already shows as «Vencido» is not live — the gallery's «En calendario» badge
+    must agree with the calendar's word. A published event is history (`times_published`).
+    """
+    if not post_ids:
+        return {}
+    live = (CalendarEvent.status == EventStatus.PUBLISHING.value) | (
+        (CalendarEvent.status == EventStatus.SCHEDULED.value)
+        & (CalendarEvent.scheduled_at > now - EXECUTION_WINDOW)
+    )
+    rows = session.execute(
+        select(
+            CalendarEvent.post_id,
+            func.count().filter(CalendarEvent.status == EventStatus.PUBLISHED.value),
+            func.count().filter(live),
+        )
+        .where(CalendarEvent.post_id.in_(list(post_ids)))
+        .group_by(CalendarEvent.post_id)
+    ).all()
+    return {post_id: (int(published), int(live) > 0) for post_id, published, live in rows}
+
+
 def _images(session: Session, draft_id: UUID) -> list[creative.ImageAsset]:
     """In creation order (the card's thumbnail is the first); `evaluate` orders the
     publishable media by `position` itself."""
@@ -255,7 +316,11 @@ class DraftPostReader:
             drafts = session.scalars(
                 select(creative.ContentDraft).where(creative.ContentDraft.id.in_(ids))
             ).all()
-            return {draft.id: self._summarize(session, tenant_id, draft) for draft in drafts}
+            history = _history(session, [draft.id for draft in drafts], now=self._clock())
+            return {
+                draft.id: self._summarize(session, tenant_id, draft, history.get(draft.id))
+                for draft in drafts
+            }
 
     def list_schedulable(self, *, tenant_id: UUID, brand_id: UUID) -> list[PostSummary]:
         with tenant_session(tenant_id) as session:
@@ -268,10 +333,33 @@ class DraftPostReader:
                 .order_by(creative.ContentDraft.created_at.desc())
                 .limit(_SCHEDULABLE_LIMIT)
             ).all()
-            return [self._summarize(session, tenant_id, draft) for draft in drafts]
+            history = _history(session, [draft.id for draft in drafts], now=self._clock())
+            return [
+                self._summarize(session, tenant_id, draft, history.get(draft.id))
+                for draft in drafts
+            ]
+
+    def list_for_brand(self, *, tenant_id: UUID, brand_id: UUID) -> list[PostSummary]:
+        with tenant_session(tenant_id) as session:
+            drafts = session.scalars(
+                select(creative.ContentDraft)
+                .where(creative.ContentDraft.brand_id == brand_id)
+                .order_by(creative.ContentDraft.created_at.desc())
+                .limit(_GALLERY_LIMIT)
+            ).all()
+            history = _history(session, [draft.id for draft in drafts], now=self._clock())
+            return [
+                self._summarize(session, tenant_id, draft, history.get(draft.id))
+                for draft in drafts
+            ]
 
     def get_publishable(
-        self, *, tenant_id: UUID, post_id: UUID, output_port: str | None = None
+        self,
+        *,
+        tenant_id: UUID,
+        post_id: UUID,
+        output_port: str | None = None,
+        destination: str | None = None,
     ) -> PublishablePost | NotPublishable:
         with tenant_session(tenant_id) as session:
             draft = session.get(creative.ContentDraft, post_id)
@@ -282,11 +370,16 @@ class DraftPostReader:
                     output_port=output_port,
                 )
             images = _images(session, draft.id)
-            return evaluate(_candidate(session, tenant_id, draft, images, output_port))
+            return evaluate(_candidate(session, tenant_id, draft, images, output_port, destination))
 
     def _summarize(
-        self, session: Session, tenant_id: UUID, draft: creative.ContentDraft
+        self,
+        session: Session,
+        tenant_id: UUID,
+        draft: creative.ContentDraft,
+        history: tuple[int, bool] | None = None,
     ) -> PostSummary:
+        times_published, has_live_event = history or (0, False)
         brief = session.get(creative.ContentBrief, draft.brief_id)
         variant = None
         if draft.selected_variant_id is not None:
@@ -326,6 +419,7 @@ class DraftPostReader:
             else None
         )
         title = (brief.topic if brief is not None else "") or _excerpt(_caption(variant))[:60]
+        types, size = media_shape(images)
         return PostSummary(
             post_id=draft.id,
             brand_id=draft.brand_id,
@@ -335,7 +429,7 @@ class DraftPostReader:
             category=draft.category,
             media_product_type=media_product_type,
             content_type=brief.content_type if brief is not None else None,
-            reuse_type=None,  # the draft model has no such concept — QUA-109
+            reuse_type=draft.reuse_type,  # `ReuseType` (0027, QUA-109); None until set
             lifecycle_status=draft.status,
             thumbnail_url=thumbnail,
             video_object_key=video_object_key,
@@ -346,4 +440,8 @@ class DraftPostReader:
             unpublishable_reason=reason,
             detail_href=f"/drafts/{draft.id}",
             outputs=outputs,
+            times_published=times_published,
+            has_live_event=has_live_event,
+            media_types=types,
+            image_size=size,
         )

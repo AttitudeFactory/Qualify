@@ -41,6 +41,11 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
+from qualify_api.planner.heartbeat import (
+    HeartbeatStore,
+    production_heartbeat_store,
+    record_beat,
+)
 from qualify_api.planner.tick import TickReport
 
 logger = logging.getLogger("qualify_api.planner.worker")
@@ -121,10 +126,12 @@ async def run_worker(
     clock: Callable[[], float] = time.monotonic,
     max_ticks: int | None = None,
     should_stop: Callable[[], bool] = lambda: False,
+    on_tick: Callable[[TickReport | None], None] | None = None,
 ) -> int:
     """Tick, then wait until `interval` seconds after that tick STARTED, then tick again.
     The runner is built once, after `.env` is loaded. `max_ticks` exists for tests;
-    `should_stop` lets an embedding host (`planner.embedded`) end the loop between ticks."""
+    `should_stop` lets an embedding host (`planner.embedded`) end the loop between ticks;
+    `on_tick` gets each tick's report (None when the tick raised) — the heartbeat."""
     runner = make_runner()
     ticks = 0
     while not should_stop():
@@ -135,6 +142,8 @@ async def run_worker(
             _log_report(report)
         except Exception:
             logger.exception("calendar.worker.tick_failed")
+        if on_tick is not None:
+            on_tick(report)
         ticks += 1
         if once:
             return 0 if report is not None and not report.error else 1
@@ -149,6 +158,7 @@ def main(
     *,
     scoped: Callable[[Iterable[UUID]], _Runner] | None = None,
     production: Callable[[], _Runner] | None = None,
+    heartbeat: HeartbeatStore | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
     if args.interval < MIN_INTERVAL_SECONDS:
@@ -163,7 +173,9 @@ def main(
 
         scoped = scoped or scoped_tick_runner
         production = production or production_tick_runner
+        heartbeat = heartbeat or production_heartbeat_store()
 
+    tenant_ids: list[UUID] = []
     if args.all_tenants:
         make_runner: Callable[[], _Runner] = production
         scope = "all-tenants"
@@ -177,8 +189,21 @@ def main(
         "once" if args.once else "loop",
         args.interval,
     )
+
+    def beat(report: TickReport | None) -> None:
+        # The Planificador reads this to say whether automatic publishing is on (heartbeat.py).
+        record_beat(
+            heartbeat,
+            all_tenants=args.all_tenants,
+            tenant_ids=tenant_ids,
+            interval=args.interval,
+            error="tick_failed" if report is None else report.error,
+        )
+
     try:
-        return asyncio.run(run_worker(make_runner, once=args.once, interval=args.interval))
+        return asyncio.run(
+            run_worker(make_runner, once=args.once, interval=args.interval, on_tick=beat)
+        )
     except KeyboardInterrupt:
         logger.info("calendar.worker.stopped")
         return 0

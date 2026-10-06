@@ -17,6 +17,7 @@ User-facing strings are Spanish (the operator is Spanish-speaking); code stays E
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
@@ -1057,3 +1058,135 @@ __all__ = [
     "status_label",
     "status_tone",
 ]
+
+
+# ---------------------------------------------------------------------------------------
+# Draft review (QUA-118 v2 polish): hashtags suggested from the caption, CTA ideas.
+
+# Words that never make a useful hashtag on their own (Spanish + a few English fillers).
+_HASHTAG_STOPWORDS: frozenset[str] = frozenset(
+    """
+    para como esta este esto estos estas pero porque sobre entre desde hasta donde cuando
+    todo toda todos todas tiene tienen hacer hace hacemos puede pueden nuestro nuestra
+    nuestros nuestras vuestro tuyo suyo cada otro otra otros otras mismo misma muy mucho
+    mucha muchos muchas poco poca algo nada solo sólo tambien también ahora aqui aquí alli
+    allí ellos ellas usted ustedes somos eres será sera fue fueron estar estamos están estan
+    tener tengo tienes había habia haber hoy ayer mañana manana siempre nunca contenido
+    unicamente únicamente prueba técnica tecnica publicacion publicación desde with that this
+    your from have will just more about into
+    """.split()
+)
+HASHTAG_LIMIT = 30  # Instagram's own limit per post
+CAPTION_LIMIT = 2200
+HOOK_LIMIT = 60
+
+#: Calls to action people recognise — what the operator can drop in with one click.
+CTA_SUGGESTIONS: tuple[str, ...] = (
+    "Escríbenos por DM",
+    "Reserva en el link de la bio",
+    "Guarda este post para después",
+    "Comenta tu favorito",
+    "Compártelo con alguien",
+    "Visítanos hoy",
+)
+
+
+def _fold(text: str) -> str:
+    """Lowercase without accents: «Promoción» → «promocion» (hashtags are typed so)."""
+    decomposed = unicodedata.normalize("NFKD", text.lower())
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+
+
+def hashtag_list(text: str) -> list[str]:
+    """ "#promo, #2x1 sabor" → ["promo", "2x1", "sabor"]: what the field holds, as tags
+    without «#», each once, in order."""
+    seen: list[str] = []
+    for raw in re.split(r"[\s,;]+", text or ""):
+        tag = _fold(raw.strip().lstrip("#"))
+        tag = re.sub(r"[^a-z0-9_ñ]", "", tag)
+        if tag and tag not in seen:
+            seen.append(tag)
+    return seen
+
+
+def format_hashtags(tags: list[str]) -> str:
+    return " ".join(f"#{tag}" for tag in tags)
+
+
+def caption_hashtag_suggestions(
+    caption: str, current: str, extra: tuple[str, ...] | list[str] = (), limit: int = 10
+) -> list[str]:
+    """Hashtags suggested from what the caption says: the brand's catalog matches first
+    (`extra`, real tags people use), then the caption's own #tags, then its strongest
+    words (repeated ones first, then in order of appearance). Never one already chosen."""
+    chosen = set(hashtag_list(current))
+    found: list[str] = []
+
+    def take(tag: str) -> None:
+        tag = re.sub(r"[^a-z0-9_ñ]", "", _fold(tag.lstrip("#")))
+        if len(tag) >= 3 and tag not in chosen and tag not in found:
+            found.append(tag)
+
+    for tag in extra:
+        take(tag)
+    for tag in re.findall(r"#(\w+)", caption or ""):
+        take(tag)
+    words = [
+        w
+        for w in re.findall(r"[a-záéíóúüñ]+", (caption or "").lower())
+        if len(w) >= 4 and _fold(w) not in _HASHTAG_STOPWORDS and w not in _HASHTAG_STOPWORDS
+    ]
+    order = {w: i for i, w in reversed(list(enumerate(words)))}
+    counts: dict[str, int] = {}
+    for w in words:
+        counts[w] = counts.get(w, 0) + 1
+    for w in sorted(counts, key=lambda w: (-counts[w], order[w])):
+        take(w)
+    return found[:limit]
+
+
+def caption_keywords(caption: str, limit: int = 5) -> list[str]:
+    """The caption's strongest words — what the hashtag catalog is asked about."""
+    return [t for t in caption_hashtag_suggestions(caption, "", limit=limit * 2) if t][:limit]
+
+
+# Several calls to action in the one `cta` field, separated so they read as a list.
+CTA_SEPARATOR = " · "
+
+
+def cta_list(text: str) -> list[str]:
+    """ "Escríbenos por DM · Guarda este post" → both, each once, in order."""
+    items: list[str] = []
+    for part in re.split(r"\s*(?:·|\n|\|)\s*", text or ""):
+        part = part.strip()
+        if part and part not in items:
+            items.append(part)
+    return items
+
+
+def format_ctas(items: list[str]) -> str:
+    return CTA_SEPARATOR.join(items)
+
+
+HASHTAG_KIND_LABELS: dict[str, str] = {
+    "popular": "Populares",
+    "nicho": "De nicho",
+    "marca": "Locales y de marca",
+}
+
+
+@dataclass(frozen=True)
+class HashtagIdeaVM:
+    """One AI-suggested hashtag for the caption (`qualify_api.hashtags.caption`)."""
+
+    tag: str
+    kind: str  # popular / nicho / marca
+    reason: str
+    seen_label: str = ""  # "visto 1.2k veces" when the catalog has seen it on real posts
+
+
+def seen_label(count: int) -> str:
+    if count <= 0:
+        return ""
+    shown = f"{count / 1000:.1f}k".replace(".0k", "k") if count >= 1000 else str(count)
+    return f"visto {shown} {'vez' if count == 1 else 'veces'} en publicaciones reales"
