@@ -87,8 +87,7 @@ def test_the_slimmed_connect_flow() -> None:
     inside ¿Quién es la marca?, no voice / tone / examples / restrictions screens."""
     titles = _titles(wiz.CONNECT_STEPS)
     assert titles == [
-        "¿Qué red usas?",
-        "¿Cuál es tu usuario?",
+        "Tu cuenta",
         "Esto es lo que vemos",
         "¿Eres influencer o una marca?",
         "Tu rubro y ubicación",

@@ -721,7 +721,10 @@ class CreativeState(rx.State):
 
     @rx.event
     def set_kit_font_heading(self, value: str) -> None:
+        """The brand's ONE typography (§ request 2026-10-05, "solo haz una tipografía"):
+        the body face follows it, so whatever reads `font_body` gets the same family."""
         self.kit_font_heading = value
+        self.kit_font_body = value
 
     @rx.event
     def set_kit_font_body(self, value: str) -> None:
@@ -751,9 +754,13 @@ class CreativeState(rx.State):
 
     @rx.var
     def kit_typography_summary(self) -> str:
-        """¿Todo correcto?'s one-line recap: "Montserrat · Inter", one alone, or ""."""
-        names = (self.kit_font_heading, self.kit_font_body)
-        return " · ".join(n.strip() for n in names if n.strip())
+        """¿Todo correcto?'s one-line recap: "Montserrat", or "Montserrat · Inter" for a kit
+        saved with two faces before there was only one, or ""."""
+        names: list[str] = []
+        for name in (self.kit_font_heading.strip(), self.kit_font_body.strip()):
+            if name and name not in names:
+                names.append(name)
+        return " · ".join(names)
 
     # -- the Brand Kit's list fields, as pills ----------------------------------
     # One computed var per list, each naming its own `kit_*` attr: a `getattr` with a

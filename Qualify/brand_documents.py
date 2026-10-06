@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from pathlib import PurePath
 from uuid import uuid4
 
@@ -31,7 +32,7 @@ from qualify_api.creative import brief_ai
 from .auth_state import AuthState, brand_tenant_id
 from .creative_state import CreativeState
 from .tenant import tenant_uuid
-from .ui import callout, card, loading_spinner, progress_panel, tone_badge
+from .ui import card, progress_panel, tone_badge
 from .ui import tokens as T
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,23 @@ def _merge_lines(current: str, proposed: str) -> str:
             seen.add(key)
             out.append(value)
     return "\n".join(out)
+
+
+#: How long a document's result stays on screen (§ request 2026-10-05: a pop-up, not a
+#: message under the card) — long enough to read the fields it names.
+_TOAST_MS = 7000
+
+
+def notify(message: str, tone: str) -> rx.event.EventSpec | None:
+    """A transient toast in the tone of `message` (docs/design-system.md §5.4,
+    "confirmaciones transitorias → rx.toast"), or nothing for an empty one. Shared with
+    Tipografía's detection, the other result that used to sit under its tile."""
+    if not message:
+        return None
+    show = {"ok": rx.toast.success, "error": rx.toast.error, "warn": rx.toast.warning}.get(
+        tone, rx.toast.info
+    )
+    return show(message, duration=_TOAST_MS)
 
 
 def filled_message(labels: list[str]) -> str:
@@ -261,7 +279,7 @@ class BrandDocumentState(rx.State):
             return None
         key = await self._stage("brief", files)
         if key is None:
-            return None
+            return notify(self.brief_message, self.brief_tone)
         self.brief_key = key
         self.brief_name = PurePath(key).name.split("_", 1)[-1]
         return BrandDocumentState.analyze("brief")
@@ -281,14 +299,16 @@ class BrandDocumentState(rx.State):
         return BrandDocumentState.analyze("brandboard")
 
     @rx.event(background=True)
-    async def analyze(self, source: str) -> None:
+    async def analyze(self, source: str) -> AsyncIterator[rx.event.EventSpec | None]:
         """Claude reads the staged document with `proponer_brand_kit` and every verified
         change goes STRAIGHT into the field it belongs to (§ request 2026-10-05, "que las
         propuestas se pongan directamente en donde van, sin la mini view de la
         propuesta"): Posicionamiento and Audiencia on this same screen, the five lists on
         ¿Todo correcto?, where they are reviewed and edited (`apply_directly`). A proposal
         whose quote was NOT found in the document is still left out — it used to start
-        unticked in the panel. Background: a document read takes seconds."""
+        unticked in the panel. What it filled pops up as a toast when it is done (§ request
+        2026-10-05: no message left under the card). Background: a document read takes
+        seconds."""
         async with self:
             key = self.brief_key if source == "brief" else self.brandboard_key
             if not key:
@@ -339,6 +359,7 @@ class BrandDocumentState(rx.State):
             self._set_busy(source, False)
             self._set_stage(source, "")
             self._say(source, message, tone)
+        yield notify(message, tone)
 
     @rx.event
     def toggle_proposal(self, source: str, field: str) -> None:
@@ -388,28 +409,6 @@ class BrandDocumentState(rx.State):
 # --------------------------------------------------------------------------------------
 # UI
 # --------------------------------------------------------------------------------------
-
-
-def _status(busy: rx.Var[bool], message: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
-    return rx.cond(
-        busy,
-        rx.hstack(
-            loading_spinner("sm"),
-            rx.text(message, size="1", color=T.TEXT_MUTED),
-            spacing="2",
-            align="center",
-        ),
-        rx.cond(
-            message != "",
-            rx.match(
-                tone,
-                ("error", callout(message, "error")),
-                ("warn", callout(message, "warn")),
-                ("ok", callout(message, "ok")),
-                rx.text(message, size="1", color=T.TEXT_MUTED),
-            ),
-        ),
-    )
 
 
 def _value(value: rx.Var[str]) -> rx.Component:
@@ -522,7 +521,8 @@ def proposals_panel(source: str) -> rx.Component:
 def brief_upload_card() -> rx.Component:
     """Tu brief de marca: upload a brief and review what it fills in. While Claude reads
     it the whole block is the progress screen (§ request 2026-10-01), like the voice
-    analysis — and the wizard's Continuar waits for it."""
+    analysis — and the wizard's Continuar waits for it. Its result is a toast
+    (`notify`), not a message under the card (§ request 2026-10-05)."""
     return rx.cond(
         BrandDocumentState.brief_busy,
         progress_panel(
@@ -579,11 +579,6 @@ def _brief_card() -> rx.Component:
             ),
             padding="0.75rem 1rem",
             width="100%",
-        ),
-        _status(
-            BrandDocumentState.brief_busy,
-            BrandDocumentState.brief_message,
-            BrandDocumentState.brief_tone,
         ),
         # no review panel since 2026-10-05: what the brief says goes straight into the
         # fields (`BrandDocumentState.analyze` → `apply_directly`)

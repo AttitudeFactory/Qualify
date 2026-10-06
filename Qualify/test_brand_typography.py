@@ -27,9 +27,20 @@ TIPOGRAFIA = "Tipograf\\u00eda"  # how the compiler escapes the label in the ren
 # -- the section ----------------------------------------------------------------------------
 
 
-def test_the_two_type_faces_in_order() -> None:
-    assert [name for _, name, _ in wiz.FONT_SLOTS] == ["Títulos", "Cuerpo de texto"]
-    assert wiz.FONT_SLOT_KEYS == {"heading", "body"}
+def test_there_is_one_type_face() -> None:
+    """§ third round of 2026-10-05, "solo haz una tipografía": one tile, not Títulos +
+    Cuerpo de texto, and the body face follows it so readers of either field agree."""
+    assert [name for _, name, _ in wiz.FONT_SLOTS] == ["Tu tipografía"]
+    assert wiz.FONT_SLOT_KEYS == {"heading"}
+    state = CreativeState()
+    CreativeState.set_kit_font_heading.fn(state, "Montserrat")
+    assert (state.kit_font_heading, state.kit_font_body) == ("Montserrat", "Montserrat")
+    assert state.kit_typography_summary == "Montserrat"
+
+
+def test_the_detection_result_is_a_toast_not_a_note_under_the_tile() -> None:
+    """§ third round of 2026-10-05: "no quiero ese tipo de notificación"."""
+    assert "font_note" not in str(wiz._step_typography())
 
 
 def test_tipografia_is_its_own_step_right_before_the_palette_in_every_flow() -> None:
@@ -51,7 +62,7 @@ def test_tipografia_is_its_own_step_right_before_the_palette_in_every_flow() -> 
     assert TIPOGRAFIA not in brandboard and "brand_font_heading" not in brandboard
 
 
-def test_the_typography_step_has_the_two_tiles_and_the_detection() -> None:
+def test_the_typography_step_has_the_tile_and_the_detection() -> None:
     rendered = str(wiz._step_typography())
     for key in wiz.FONT_SLOT_KEYS:
         assert f"brand_font_{key}" in rendered
@@ -87,9 +98,9 @@ def test_the_brandboard_column_is_capped_and_centred_not_full_width() -> None:
             on_typography=BrandWizardState.step == wiz._M_TYPOGRAPHY_STEP,
         )
     )
-    assert "58.25rem" in width and "46rem" in width and '"100%"' not in width
-    # the typography tiles are wider than a logo version's: two per row at that width
-    assert "22rem" in wiz._FONT_GRID["grid_template_columns"]
+    assert "58.25rem" in width and "26rem" in width and '"100%"' not in width
+    # the one typography tile fills its own narrow, centred column
+    assert wiz._FONT_GRID["grid_template_columns"] == "1fr"
 
 
 # -- the previews' helpers (pure) ------------------------------------------------------------
@@ -114,10 +125,12 @@ def test_the_typography_summary_joins_what_is_declared() -> None:
     assert state.kit_typography_summary == ""
     state.kit_font_heading = "Montserrat"
     assert state.kit_typography_summary == "Montserrat"
-    state.kit_font_body = " Inter "
+    state.kit_font_body = " Inter "  # a kit saved with two faces, before there was one
     assert state.kit_typography_summary == "Montserrat · Inter"
     assert state.kit_font_heading_family == '"Montserrat", sans-serif'
     assert "Inter" in state.kit_font_body_css_url
+    state.kit_font_body = "Montserrat"
+    assert state.kit_typography_summary == "Montserrat"
 
 
 def test_the_names_are_kit_fields_that_round_trip_through_the_form() -> None:
@@ -186,7 +199,10 @@ def test_finishing_uploads_the_font_files_with_the_brandboard(
 
 async def test_the_snapshot_carries_the_staged_font_files(monkeypatch: pytest.MonkeyPatch) -> None:
     wizard = BrandWizardState()
-    wizard.font_files = {"body": f"uploads/{TENANT}/font/body/ab12_Texto.woff2"}
+    wizard.font_files = {
+        "heading": f"uploads/{TENANT}/font/heading/ab12_Texto.woff2",
+        "body": f"uploads/{TENANT}/font/body/ef56_Old.woff2",  # a slot that is gone
+    }
     wizard.logo_versions = {"isotipo": f"uploads/{TENANT}/logo/isotipo/cd34_iso.png"}
     creative = CreativeState()
     connect = wiz.BrandConnectState()
@@ -198,7 +214,8 @@ async def test_the_snapshot_carries_the_staged_font_files(monkeypatch: pytest.Mo
 
     snapshot = await brand_finish.snapshot_states(Holder())
     kinds = {(f.kind, f.slot): f for f in snapshot.files}
-    assert kinds[(FONT, "body")].name == "Texto.woff2"
+    assert kinds[(FONT, "heading")].name == "Texto.woff2"
+    assert (FONT, "body") not in kinds
     assert (LOGO_VERSION, "isotipo") in kinds
 
 

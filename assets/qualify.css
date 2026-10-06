@@ -618,9 +618,10 @@ body[data-deck-dragging] .q-deck-zone {
    Driven by `assets/rank-drag.js` (§ requests 2026-09-29) with the deck's own motion
    ("Brand Kit deck" above): a click opens the profile; a long press arms the card at
    105% (`.q-armed`), 110% once it moves (`.q-moving`), and it follows the pointer
-   without tilting (`.q-dragging`, the script owns `transform`). Released on another card it
-   flies onto that spot (`.q-rank-release`); anywhere else it springs back
-   (`.q-drag-return`). The card it would land on is ringed and pops (`data-over`).
+   without tilting (`.q-dragging`, the script owns `transform`). While it is held the
+   other cards of its group slide out of its way (`.q-shifting`, § 2026-10-05: a live
+   sortable list, no waiting for the server); released, it settles into the free slot
+   (`.q-rank-release`), or everything springs back (`.q-drag-return`).
    Only `transform`, `scale`, `opacity`, `outline-color` — nothing that reflows. */
 .q-rank-card {
   position: relative;
@@ -647,11 +648,17 @@ body[data-deck-dragging] .q-deck-zone {
   pointer-events: none;
   z-index: 5;
 }
+.q-rank-card.q-shifting {
+  transition:
+    transform 0.2s var(--q-ease),
+    scale var(--q-rank-scale-dur) var(--q-ease),
+    outline-color var(--q-dur-fast) var(--q-ease);
+}
 .q-rank-card.q-rank-release {
   pointer-events: none;
   z-index: 5;
   transition:
-    transform 0.22s var(--q-ease),
+    transform 0.18s var(--q-ease),
     scale var(--q-rank-scale-dur) var(--q-ease);
 }
 .q-rank-card.q-drag-return {
@@ -666,6 +673,7 @@ body[data-rank-dragging] { cursor: grabbing; }
 }
 @media (prefers-reduced-motion: reduce) {
   .q-rank-card,
+  .q-rank-card.q-shifting,
   .q-rank-card.q-rank-release,
   .q-rank-card.q-drag-return { transition: none; }
   .q-rank-card.q-armed,

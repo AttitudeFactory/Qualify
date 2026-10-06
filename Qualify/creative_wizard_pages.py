@@ -661,14 +661,15 @@ class BrandWizardState(rx.State):
         self.font_files = {k: v for k, v in self.font_files.items() if k != slot}
 
     @rx.event(background=True)
-    async def detect_fonts(self) -> None:
+    async def detect_fonts(self) -> AsyncIterator[rx.event.EventSpec | None]:
         """\"Detectar desde tu logo\" (§ request 2026-10-05, \"que se pueda extraer la
         tipografía desde las opciones del brandboard\"): Claude looks at the staged logo
         versions — fullest mark first, the same order the palette follows — and names the
         family their lettering most resembles (`qualify_api.creative.font_ai`). The guess
-        goes into the editable name fields: Títulos is replaced (that is what was asked
-        for), Cuerpo de texto only filled when empty, and the note under the tiles says
-        \"parece\" with the alternatives — a resemblance, never an identification.
+        goes into the one editable name field, and what it found pops up as a toast
+        (§ request 2026-10-05, "no quiero ese tipo de notificación" — it was a callout
+        under the tile) saying \"parece\" with the alternatives — a resemblance, never
+        an identification.
         Background: a vision call takes seconds. No key, no call (`MissingAPIKey`)."""
         from qualify_api.claude_tools import ClaudeToolError, MissingAPIKey, api_key_from_env
         from qualify_api.creative import font_ai
@@ -681,6 +682,7 @@ class BrandWizardState(rx.State):
             ]
             if not keys:
                 self.font_note, self.font_note_tone = _FONTS_NEED_LOGO, "info"
+                yield brand_documents.notify(_FONTS_NEED_LOGO, "info")
                 return
             auth = await self.get_state(AuthState)
             tenant_id = tenant_uuid(brand_tenant_id(auth))
@@ -701,9 +703,7 @@ class BrandWizardState(rx.State):
             async with self:
                 creative = await self.get_state(CreativeState)
                 if guess.heading:
-                    creative.kit_font_heading = guess.heading
-                if guess.body and not creative.kit_font_body.strip():
-                    creative.kit_font_body = guess.body
+                    creative.kit_font_heading = creative.kit_font_body = guess.heading
             note = font_ai.describe(guess)
             tone = "info" if guess.found_anything else "warn"
         except MissingAPIKey:
@@ -719,6 +719,7 @@ class BrandWizardState(rx.State):
         async with self:
             self.detecting_fonts = False
             self.font_note, self.font_note_tone = note, tone
+        yield brand_documents.notify(note, tone)
 
     @rx.event
     async def handle_extra_upload(self, files: list[rx.UploadFile]) -> None:
@@ -906,11 +907,8 @@ def _step_icon(name: str | rx.Var[str]) -> rx.Component:
     on its own — one icon gives the eye something to land on before the small type
     starts).
 
-    `name` accepts a plain string OR an `rx.Var[str]` (§ request 2026-09-09):
-    `_connect_step_username` passes a Var that switches with the chosen network so
-    the anchor icon reads Instagram vs. TikTok apart, not just the generic "@" every
-    network used to share. `rx.icon` itself is fine either way — only the type hint
-    here used to claim otherwise."""
+    `name` accepts a plain string OR an `rx.Var[str]` — `rx.icon` is fine either
+    way."""
     return rx.box(
         rx.icon(name, size=22, color=T.tone_color("accent", 10)),
         width="3rem",
@@ -988,11 +986,9 @@ def _choice_card(
     screen reader, and this flow's first two decisions (plan, logo) had no other way to
     reach them without a mouse.
 
-    ``icon`` is optional and additive (§ request 2026-09-09) — every existing call
-    site is unaffected. `_connect_step_network` is the one caller that passes it: a
-    per-option leading icon so ¿Qué red usas? reads Instagram vs. TikTok apart at a
-    glance, not just by the label text next to it. Same tinted-circle treatment
-    `_step_icon` gives a whole step's own anchor icon, just smaller and inline."""
+    ``icon`` is optional and additive (§ request 2026-09-09): a per-option leading
+    icon in the same tinted-circle treatment `_step_icon` gives a whole step's own
+    anchor icon, just smaller and inline."""
     return rx.el.button(
         rx.hstack(
             *(
@@ -1178,21 +1174,28 @@ def _step_identity() -> rx.Component:
     since 2026-09-29). Uploading one is optional; when Claude reads it, what it can quote
     goes straight into Posicionamiento and Audiencia below and into the lists that
     ¿Todo correcto? shows (`brand_documents.apply_directly`) — no review panel."""
+    # § third round of 2026-10-05: while the brief is read, its progress screen is all
+    # the step shows — the fields come back, filled, when the read is done
     return _step_body(
         brand_documents.brief_upload_card(),
-        _labeled_area(
-            "Posicionamiento",
-            CreativeState.kit_positioning,
-            CreativeState.set_kit_positioning,
-            "Ej.: Cafetería de especialidad en Cúcuta que tuesta su propio café de "
-            "Santander y te lo sirve en menos de 5 minutos.",
-        ),
-        _labeled_area(
-            "Audiencia",
-            CreativeState.kit_audience,
-            CreativeState.set_kit_audience,
-            "Ej.: Oficinistas de 25 a 40 años del centro de Cúcuta que quieren un buen "
-            "café para llevar antes de las 9 a. m.",
+        rx.cond(
+            ~brand_documents.BrandDocumentState.brief_busy,
+            rx.fragment(
+                _labeled_area(
+                    "Posicionamiento",
+                    CreativeState.kit_positioning,
+                    CreativeState.set_kit_positioning,
+                    "Ej.: Cafetería de especialidad en Cúcuta que tuesta su propio café de "
+                    "Santander y te lo sirve en menos de 5 minutos.",
+                ),
+                _labeled_area(
+                    "Audiencia",
+                    CreativeState.kit_audience,
+                    CreativeState.set_kit_audience,
+                    "Ej.: Oficinistas de 25 a 40 años del centro de Cúcuta que quieren un "
+                    "buen café para llevar antes de las 9 a. m.",
+                ),
+            ),
         ),
         icon="compass",
     )
@@ -1298,13 +1301,15 @@ LOGO_VERSION_KEYS = frozenset(key for key, _, _ in LOGO_VERSIONS)
 #: The version whose colours seed the palette, fullest mark first (§ 2026-10-01).
 _PALETTE_VERSION_ORDER = ("imagotipo", "logotipo", "isologo", "isotipo")
 
-#: Tu brandboard's typography tiles (§ request 2026-10-05, "un apartado para la
-#: tipografía antes de la paleta de colores") — (key, name, what it is). Each takes the
-#: family's NAME (a kit field, `CreativeState.kit_font_*`) and, optionally, its FILE
-#: (`BrandWizardState.font_files`, saved with the brandboard).
+#: Tipografía's tile (§ request 2026-10-05, "un apartado para la tipografía antes de la
+#: paleta de colores") — (key, name, what it is): the family's NAME (a kit field,
+#: `CreativeState.kit_font_heading`) and, optionally, its FILE (`BrandWizardState.
+#: font_files`, saved with the brandboard). ONE face since the third round of that day
+#: ("solo haz una tipografía"): Títulos + Cuerpo de texto became a single tile, and
+#: `set_kit_font_heading` mirrors it into `kit_font_body`, so whatever reads either
+#: field gets the same family.
 FONT_SLOTS: tuple[tuple[str, str, str], ...] = (
-    ("heading", "Títulos", "Titulares, nombres y lo que debe verse primero."),
-    ("body", "Cuerpo de texto", "Párrafos, descripciones y subtítulos."),
+    ("heading", "Tu tipografía", "La usamos en los títulos y los textos de lo que generemos."),
 )
 FONT_SLOT_KEYS = frozenset(key for key, _, _ in FONT_SLOTS)
 #: The `@font-face` family an uploaded font file is registered under, per slot.
@@ -1326,13 +1331,10 @@ _TILE_GRID = {
 #: Four 14rem tiles plus their three gaps: the logo versions fill exactly one row, so the
 #: column is as wide as the brandboard's widest section and no wider.
 _BRANDBOARD_COLUMN_MAX = "min(100%, 58.25rem)"
-#: The typography tiles are wider (a preview, a name and a dropzone each): two per
-#: row in Tipografía's own column (`_TYPOGRAPHY_COLUMN_MAX`), one on a narrow screen.
-_TYPOGRAPHY_COLUMN_MAX = "min(100%, 46rem)"
-_FONT_GRID = {
-    **_TILE_GRID,
-    "grid_template_columns": "repeat(auto-fill, minmax(min(100%, 22rem), 1fr))",
-}
+#: The one typography tile (a preview, a name and a dropzone) in a column of its own
+#: (`_TYPOGRAPHY_COLUMN_MAX`), centred like every other step's fields.
+_TYPOGRAPHY_COLUMN_MAX = "min(100%, 26rem)"
+_FONT_GRID = {**_TILE_GRID, "grid_template_columns": "1fr"}
 #: The frame every tile of that grid has, so an uploaded element and the "+" read as
 #: the same object as a logo version.
 _TILE_FRAME = {
@@ -1655,7 +1657,7 @@ def _font_card(key: str, name: str, blurb: str) -> rx.Component:
             rx.cond(
                 staged,
                 _remove_button(
-                    f"Quitar el archivo de {name.lower()}", BrandWizardState.clear_font_file(key)
+                    "Quitar el archivo de la fuente", BrandWizardState.clear_font_file(key)
                 ),
             ),
             align="center",
@@ -1669,7 +1671,7 @@ def _font_card(key: str, name: str, blurb: str) -> rx.Component:
             size="2",
             width="100%",
             radius=_CONTROL_RADIUS,
-            aria_label=f"Tipografía de {name.lower()}",
+            aria_label="Nombre de la fuente",
         ),
         rx.upload(
             rx.hstack(
@@ -1729,28 +1731,14 @@ def _detect_fonts_button() -> rx.Component:
     )
 
 
-def _font_note() -> rx.Component:
-    """What the detection had to say, in its tone. `callout`'s tone is a plain str (it
-    picks the icon from a dict), so the three tones used are branched here."""
-    note, tone = BrandWizardState.font_note, BrandWizardState.font_note_tone
-    return rx.cond(
-        note != "",
-        rx.cond(
-            tone == "error",
-            callout(note, "error"),
-            rx.cond(tone == "warn", callout(note, "warn"), callout(note, "info")),
-        ),
-    )
-
-
 def _typography_editor() -> rx.Component:
     """Tipografía's content (§ request 2026-10-05): what to do, \"Detectar desde tu
-    logo\", the detection's note and the two tiles (`FONT_SLOTS`). Shared by the three
-    flows through `_step_typography`."""
+    logo\" and the one tile (`FONT_SLOTS`) — what the detection found is a toast, not a
+    note here. Shared by the three flows through `_step_typography`."""
     return rx.vstack(
         rx.hstack(
             rx.text(
-                "Escribe el nombre de cada fuente o sube su archivo. Si no tienes una, "
+                "Escribe el nombre de tu fuente o sube su archivo. Si no tienes una, "
                 "deja el nombre de la que te gustaría usar.",
                 size="2",
                 color=T.TEXT_MUTED,
@@ -1762,7 +1750,6 @@ def _typography_editor() -> rx.Component:
             spacing="3",
             width="100%",
         ),
-        _font_note(),
         rx.box(
             *(_font_card(key, name, blurb) for key, name, blurb in FONT_SLOTS),
             **_FONT_GRID,
@@ -3083,6 +3070,7 @@ def brand_connect_setup_index() -> rx.Component:
 # going back.
 
 _USERNAME_REQUIRED = "Escribe tu usuario para continuar."
+_NETWORK_REQUIRED = "Elige Instagram o TikTok para leer tu perfil."
 _PROFILE_UNAVAILABLE = "No pudimos leer el perfil. Revisa el usuario e inténtalo de nuevo."
 
 #: (key, label, blurb, icon) — the icon is the same generic stand-in
@@ -3127,8 +3115,10 @@ _METRIC_ANIMATION_STEPS = 24
 _NEW_ACCOUNT_FOLLOWER_THRESHOLD = 50
 
 CONNECT_STEPS: tuple[tuple[str, str], ...] = (
-    ("¿Qué red usas?", "Empezamos por donde ya tienes audiencia."),
-    ("¿Cuál es tu usuario?", "Lo leeremos para proponerte el kit."),
+    # ¿Qué red usas? and ¿Cuál es tu usuario? are ONE screen since 2026-10-05 (§ request
+    # "vamos a unificar el qué red usas y cuál es tu usuario"): the handle on top, the
+    # two networks as buttons below it — pressing one reads the profile on that network.
+    ("Tu cuenta", "Escribe tu usuario y elige la red donde lo tienes."),
     ("Esto es lo que vemos", "Confirma que es tu perfil."),
     # Gone on 2026-10-05 (see the note above STEPS): Lo que te proponemos (it sat here),
     # the Google Maps pair (after Tu rubro), Tu brief de marca as its own screen (now the
@@ -3167,14 +3157,16 @@ _CONNECT_CONFIRM_STEP = CONNECT_LAST - 2
 
 #: Named indices into `CONNECT_STEPS` — every skip, gate and renderer refers to these,
 #: never to a literal, so the next reorder of the tuple is a one-place change.
-_PROFILE_STEP = 2
-_ACCOUNT_KIND_STEP = 3
-_RUBRO_STEP = 4
-_IDENTITY_STEP = 5
-_LOGO_QUESTION_STEP = 6
-_LOGO_UPLOAD_STEP = 7
-_TYPOGRAPHY_STEP = 8
-_PALETTE_STEP = 9
+_ACCOUNT_STEP = 0
+_PROFILE_STEP = 1
+_ACCOUNT_KIND_STEP = 2
+_RUBRO_STEP = 3
+_IDENTITY_STEP = 4
+_LOGO_QUESTION_STEP = 5
+_LOGO_UPLOAD_STEP = 6
+_TYPOGRAPHY_STEP = 7
+_PALETTE_STEP = 8
+assert CONNECT_STEPS[_ACCOUNT_STEP][0] == "Tu cuenta"
 assert CONNECT_STEPS[_PROFILE_STEP][0] == "Esto es lo que vemos"
 assert CONNECT_STEPS[_ACCOUNT_KIND_STEP][0] == "¿Eres influencer o una marca?"
 assert CONNECT_STEPS[_RUBRO_STEP][0] == "Tu rubro y ubicación"
@@ -3917,11 +3909,23 @@ class BrandConnectState(rx.State):
                 self.hashtag_note = note
 
     @rx.event
-    def choose_network(self, key: str) -> None:
-        """Choosing advances — the screen holds nothing else, so a second click on
-        Continue would be a dead one."""
+    def analyze_on(self, key: str) -> rx.event.EventSpec | None:
+        """Tu cuenta's Instagram / TikTok buttons (§ request 2026-10-05): the network is
+        the button pressed, and pressing it reads the profile — the old two screens'
+        choose-then-Analizar in one gesture."""
+        if key not in scrapecreators_client.SUPPORTED_NETWORKS:
+            return None
         self.network = key
-        self.step = 1
+        return BrandConnectState.analyze
+
+    @rx.event
+    def submit_account(self) -> rx.event.EventSpec | None:
+        """Enter in Tu cuenta's field: reads the profile on the network already chosen
+        (a walk resumed, a retry); with none yet, asks for one."""
+        if self.network in scrapecreators_client.SUPPORTED_NETWORKS:
+            return BrandConnectState.analyze
+        self.error = _NETWORK_REQUIRED if self.username.strip() else _USERNAME_REQUIRED
+        return None
 
     @rx.event
     def set_username(self, value: str) -> None:
@@ -4859,16 +4863,11 @@ class BrandConnectState(rx.State):
                 self.error = _USERNAME_REQUIRED
                 return
             if self.network not in scrapecreators_client.SUPPORTED_NETWORKS:
-                # Defensive: step 1 is only reachable via `choose_network`, which sets
-                # `network` and `step` together — this should never fire from a normal
-                # click. Seen in practice after a dev backend restart (session state
-                # resets to defaults) while the client's own `step` survives the
-                # reconnect, landing on the username screen with no network chosen.
-                # Self-heal back to step 0 rather than surface Scrape Creators'
-                # `unsupported network: ''` — an implementation detail, not something
-                # the operator did wrong.
-                self.step = 0
-                self.error = ""
+                # Defensive: the network buttons set it before calling this. A dev
+                # backend restart can still wipe it under a page that survived — ask for
+                # the network rather than surface Scrape Creators' `unsupported network`.
+                self.step = _ACCOUNT_STEP
+                self.error = _NETWORK_REQUIRED
                 return
             self.error = ""
             self.analyzing = True
@@ -5468,48 +5467,28 @@ class BrandConnectState(rx.State):
 # The screens specific to this flow
 
 
-def _connect_step_network() -> rx.Component:
-    """No step-level anchor icon here (unlike most other steps) — § request
-    2026-09-09 gave each option its OWN icon instead (`_choice_card`'s `icon=`), so a
-    second generic "share-2" above both would be a redundant third icon on a screen
-    that already reads Instagram vs. TikTok apart at a glance."""
-    return _step_body(
-        *(
-            _choice_card(
-                label,
-                blurb,
-                BrandConnectState.network == key,
-                BrandConnectState.choose_network(key),
-                icon=icon,
-            )
-            for key, label, blurb, icon in NETWORKS
-        ),
+def _network_button(key: str, label: str, icon: str) -> rx.Component:
+    """One of Tu cuenta's two networks (§ request 2026-10-05): pressing it reads the
+    profile on that network. Disabled until a handle is typed — nothing to read yet."""
+    return rx.button(
+        rx.icon(icon, size=T.ICON_SM),
+        label,
+        type="button",
+        on_click=BrandConnectState.analyze_on(key),
+        disabled=BrandConnectState.username.strip() == "",
+        variant=rx.cond(BrandConnectState.network == key, "solid", "surface"),
+        size="3",
+        radius=_CONTROL_RADIUS,
+        width="100%",
     )
 
 
-def _connect_network_icon() -> rx.Var[str]:
-    """The chosen network's own icon (§ request 2026-09-09 — this, not ¿Qué red
-    usas? itself, is the "al momento de seleccionar la red social para hacer el
-    scraper" screen the request meant: choosing a network already got a per-option
-    icon on its OWN step; this is the icon on the step right after, while `network`
-    is still live). Same `NETWORKS` lookup `_connect_step_network` builds its cards
-    from, so the two screens can never show a different icon for the same network.
-    Falls back to the generic "at-sign" before a network is set — should not
-    happen in practice (this step is only reachable via `choose_network`, which
-    sets `network` and `step` together)."""
-    return rx.match(
-        BrandConnectState.network,
-        *((key, icon) for key, _, _, icon in NETWORKS),
-        "at-sign",
-    )
-
-
-def _connect_step_username() -> rx.Component:
-    """Wrapped in `rx.form` (same reasoning as `_logo_brief_form`, `_hidden_submit`
-    included) so Enter in the single Usuario field triggers `BrandConnectState.
-    analyze` — the same handler `_connect_controls`'s "Analizar" button already calls
-    on this step, not a plain `next_step` (this step never just advances; it kicks
-    off the profile read)."""
+def _connect_step_account() -> rx.Component:
+    """Tu cuenta — ¿Qué red usas? and ¿Cuál es tu usuario? as one screen (§ request
+    2026-10-05): the Usuario field on top and the two networks as buttons under it,
+    each one the screen's way forward (`analyze_on`), so there is no Continuar. Wrapped
+    in `rx.form` (`_hidden_submit` included) so Enter in the field reads the profile on
+    the network already chosen (`submit_account`)."""
     return rx.form(
         _step_body(
             _labeled_input(
@@ -5518,14 +5497,20 @@ def _connect_step_username() -> rx.Component:
                 BrandConnectState.set_username,
                 "Ej.: cafedelparque.cuc",
             ),
+            rx.grid(
+                *(_network_button(key, label, icon) for key, label, _blurb, icon in NETWORKS),
+                columns="2",
+                spacing="3",
+                width="100%",
+            ),
             rx.cond(
                 BrandConnectState.error != "",
                 callout(BrandConnectState.error, "error"),
             ),
-            icon=_connect_network_icon(),
+            icon="at-sign",
         ),
         _hidden_submit(),
-        on_submit=BrandConnectState.analyze,
+        on_submit=BrandConnectState.submit_account,
         width="100%",
     )
 
@@ -7205,8 +7190,7 @@ def _connect_window() -> rx.Component:
 def _connect_steps() -> rx.Component:
     return rx.match(
         BrandConnectState.step,
-        (0, _connect_step_network()),
-        (1, _connect_step_username()),
+        (_ACCOUNT_STEP, _connect_step_account()),
         (_PROFILE_STEP, _connect_step_profile()),
         (_ACCOUNT_KIND_STEP, _connect_step_account_kind()),
         (_RUBRO_STEP, _connect_step_rubro()),
@@ -7218,7 +7202,7 @@ def _connect_steps() -> rx.Component:
         (_CONNECT_CONFIRM_STEP, _step_confirm()),
         (_SORT_STEP, _connect_step_sort()),
         (CONNECT_LAST, _connect_step_insights()),
-        _connect_step_network(),
+        _connect_step_account(),
     )
 
 
@@ -7281,7 +7265,7 @@ def _logo_step_complete() -> rx.Var[bool]:
 
 def _connect_can_continue() -> rx.Var[bool]:
     """Whether the CURRENT step's requirement is satisfied (§ request 2026-09-09) —
-    gates `_connect_controls`'s forward button (Analizar/Continuar) so a choice step
+    gates `_connect_controls`'s forward button (Continuar) so a choice step
     can't be skipped unanswered and a required-input step can't be skipped empty.
 
     Every step not named below has nothing to require and always returns True:
@@ -7307,8 +7291,6 @@ def _connect_busy() -> rx.Var[bool]:
 def _connect_requirement() -> rx.Var[bool]:
     return rx.match(
         BrandConnectState.step,
-        (0, BrandConnectState.network != ""),
-        (1, BrandConnectState.username != ""),
         (_ACCOUNT_KIND_STEP, BrandConnectState.account_kind != ""),
         (_RUBRO_STEP, BrandConnectState.rubro_complete),
         (_LOGO_QUESTION_STEP, BrandWizardState.has_logo != ""),
@@ -7320,8 +7302,8 @@ def _connect_requirement() -> rx.Var[bool]:
 
 
 def _connect_controls() -> rx.Component:
-    """Same quiet chrome as the manual flow, with three exceptions: the username
-    screen's Continue kicks off the analysis instead of stepping; the last screen
+    """Same quiet chrome as the manual flow, with three exceptions: Tu cuenta has no
+    forward button (its network buttons read the profile, § 2026-10-05); the last screen
     before the shared kit-setup steps begin (§ `shows_cancel`) offers Cancel rather
     than Back; and the sort step's Continue kicks off the metric count-up
     (`advance_to_insights`) instead of a plain step (the creator discovery itself
@@ -7330,7 +7312,7 @@ def _connect_controls() -> rx.Component:
     Finalizar entirely (§ request 2026-09-05), not alongside it. `back` is never
     disabled: `prev_step` redirects to `/brand` once already at step 0.
 
-    Every forward button (Analizar/Continuar, not `_finish_button` — Confirmación
+    Every forward button (Continuar, not `_finish_button` — Confirmación
     already passed this gate) carries `disabled=~_connect_can_continue()` (§ request
     2026-09-09): a choice step with nothing selected, or a required field left
     empty, no longer lets Continuar through un-set."""
@@ -7368,15 +7350,9 @@ def _connect_controls() -> rx.Component:
         BrandConnectState.step == CONNECT_LAST,
         _finish_button(BrandConnectState.finish),
         rx.cond(
-            BrandConnectState.step == 1,
-            rx.button(
-                "Analizar",
-                rx.icon("chevron-right", size=T.ICON_SM),
-                size="2",
-                radius=_CONTROL_RADIUS,
-                on_click=BrandConnectState.analyze,
-                disabled=forward_disabled,
-            ),
+            # Tu cuenta's network buttons are its way forward (§ 2026-10-05)
+            BrandConnectState.step == _ACCOUNT_STEP,
+            rx.fragment(),
             rx.cond(
                 BrandConnectState.step == _SORT_STEP,
                 rx.button(

@@ -219,3 +219,72 @@ def test_answering_the_account_kind_fires_the_hashtag_creation() -> None:
     state.started_without_socials = True
     fired = wiz.BrandConnectState.answer_account_kind.fn(state, "marca")
     assert state.step == wiz._RUBRO_STEP and "suggest_hashtags" in str(fired)
+
+
+# -- third round of 2026-10-05 ----------------------------------------------------------------
+
+
+def test_network_and_username_are_one_screen() -> None:
+    """ "Vamos a unificar el qué red usas y cuál es tu usuario": the field on top, the two
+    networks as buttons under it — each one reads the profile, so there is no Continuar."""
+    titles = [title for title, _ in wiz.CONNECT_STEPS]
+    assert titles[wiz._ACCOUNT_STEP] == "Tu cuenta"
+    assert "¿Qué red usas?" not in titles and "¿Cuál es tu usuario?" not in titles
+    assert wiz._PROFILE_STEP == wiz._ACCOUNT_STEP + 1
+    rendered = str(wiz._connect_step_account())
+    assert rendered.index("Ej.: cafedelparque.cuc") < rendered.index("Instagram")
+    assert rendered.index("Instagram") < rendered.index("TikTok")
+    assert "Analizar" not in rendered
+
+
+def test_a_network_button_reads_the_profile_on_that_network() -> None:
+    state = wiz.BrandConnectState()
+    state.username = "nibbles.burger"
+    fired = wiz.BrandConnectState.analyze_on.fn(state, "tiktok")
+    assert state.network == "tiktok" and "analyze" in str(fired)
+    assert wiz.BrandConnectState.analyze_on.fn(state, "myspace") is None
+    assert state.network == "tiktok"
+
+
+def test_enter_without_a_network_asks_for_one() -> None:
+    state = wiz.BrandConnectState()
+    state.username = "nibbles.burger"
+    assert wiz.BrandConnectState.submit_account.fn(state) is None
+    assert state.error == wiz._NETWORK_REQUIRED
+    state.network = "instagram"
+    assert "analyze" in str(wiz.BrandConnectState.submit_account.fn(state))
+
+
+def test_the_account_screen_has_no_forward_button() -> None:
+    controls = str(wiz._connect_controls())
+    assert "Analizar" not in controls
+
+
+def test_the_identity_fields_hide_while_the_brief_is_read() -> None:
+    """ "Al momento de cargar el subido del brief vamos a ocultar los inputs mientras
+    carga": the fields sit behind `brief_busy`, and the card has no status line under it."""
+    rendered = str(wiz._step_identity())
+    assert "brief_busy" in rendered
+    busy_at = rendered.index("brief_busy", rendered.index("Leyendo tu brief"))
+    assert busy_at < rendered.index("Posicionamiento")
+    assert "brief_message" not in str(docs.brief_upload_card())
+
+
+def test_a_document_result_is_a_toast_in_its_tone() -> None:
+    assert docs.notify("", "ok") is None
+    for tone, kind in (("ok", "success"), ("error", "error"), ("warn", "warning"), ("x", "info")):
+        assert kind in str(docs.notify("Rellenamos desde tu brief: Audiencia.", tone))
+
+
+def test_the_ranking_makes_room_while_a_card_is_held() -> None:
+    """ "Hay un pequeño delay al momento de cambiar de posición": the other cards slide out
+    of the way during the drag, and the drop is only sent once the card has settled, so
+    the server's re-render lands under a screen that already shows the new order."""
+    from pathlib import Path
+
+    script = (Path(__file__).parent.parent / "assets" / "rank-drag.js").read_text(encoding="utf-8")
+    assert "function makeRoom" in script and "q-shifting" in script
+    assert "function clearWhenReordered" in script
+    assert "FLIP_MS" not in script  # no slide AFTER the round trip any more
+    css = (Path(__file__).parent.parent / "assets" / "qualify.css").read_text(encoding="utf-8")
+    assert ".q-rank-card.q-shifting" in css
