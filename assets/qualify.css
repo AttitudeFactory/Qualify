@@ -1732,20 +1732,36 @@ body[data-rank-dragging] { cursor: grabbing; }
 .q-gcard--discarded.q-chip-temp--hot,
 .q-gcard--discarded.q-chip-temp--cold { border-style: dashed; }
 
-/* Calendar cell: one-line chips and «+N más» (every hour the same height). */
+/* Calendar cell: up to five one-line chips, then «+N más» (the row grows with its fullest cell). */
 .q-chip-time { white-space: nowrap; }
-.q-cell-more {
-  all: unset; cursor: pointer;
-  align-self: flex-start;
+.q-cell-more.rt-Button {
+  align-self: stretch; width: 100%;
   position: relative; z-index: 1;
-  padding: 0.05rem 0.45rem;
-  border-radius: var(--q-radius-control);
-  font-size: 0.68rem; font-weight: 700;
-  color: var(--accent-11); background: var(--accent-a3);
+  height: 1.35rem; gap: 4px;
+  font-size: 0.7rem; font-weight: 700;
   box-shadow: inset 0 0 0 1px var(--accent-a6);
 }
-.q-cell-more:hover { background: var(--accent-a4); }
-.q-cell-more:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 1px; }
+
+/* The list «+N más» opens beside it: the events that did not fit, one compact row each. */
+.q-hour-list {
+  display: flex; flex-direction: column;
+  max-height: min(20rem, 60vh); overflow-y: auto;
+  margin: 0 -0.35rem; scrollbar-width: thin;
+}
+.q-hour-list-row {
+  all: unset; cursor: pointer; box-sizing: border-box;
+  display: grid; grid-template-columns: 3.6rem minmax(0, 1fr) auto;
+  align-items: center; column-gap: 0.5rem;
+  width: 100%; padding: 0.3rem 0.35rem;
+  border-radius: 6px;
+}
+.q-hour-list-row + .q-hour-list-row { box-shadow: 0 -1px 0 var(--gray-a4); }
+.q-hour-list-row:hover { background: var(--accent-a3); box-shadow: none; }
+.q-hour-list-row:hover + .q-hour-list-row { box-shadow: none; }
+.q-hour-list-row:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -2px; }
+.q-hour-list-time { white-space: nowrap; }
+.q-hour-list-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.3; }
+.q-hour-list-sub { font-size: 0.68rem; }
 
 /* One-line calendar chip: fits a seventh of the screen; the time yields first. */
 .q-chip-trigger { display: block; width: 100%; min-width: 0; }

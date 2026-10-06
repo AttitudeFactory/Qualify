@@ -659,11 +659,12 @@ class HourCellVM:
     is_today: bool
     is_past: bool
     cards: list[EventCardVM] = field(default_factory=list)
-    # The calendar keeps every hour the same height: at most `CELL_VISIBLE` chips show in
-    # a cell, the rest go behind a «+N más» pill (`more`), never stretching the row.
+    # Up to `CELL_VISIBLE` chips show in the cell (the hour row grows to fit them); from
+    # the next one on, a «+N más» pill opens, beside it, the ones that did not fit.
     visible: list[EventCardVM] = field(default_factory=list)
     more: list[EventCardVM] = field(default_factory=list)
     more_count: int = 0
+    heading: str = ""  # «Mar 6 · 6 p. m.» — the subtitle of that list
 
 
 @dataclass(frozen=True)
@@ -869,10 +870,12 @@ def build_card(
     )
 
 
-CELL_VISIBLE = 2
+CELL_VISIBLE = 5
 
 
-def _cell(*, day_iso: str, hour: int, is_today: bool, is_past: bool, cards) -> HourCellVM:
+def _cell(
+    *, day_iso: str, hour: int, is_today: bool, is_past: bool, cards, heading: str = ""
+) -> HourCellVM:
     """A calendar cell: all its cards (in time order), and the split the grid draws —
     the first `CELL_VISIBLE`, then the rest behind «+N más»."""
     cards = list(cards)
@@ -885,6 +888,7 @@ def _cell(*, day_iso: str, hour: int, is_today: bool, is_past: bool, cards) -> H
         visible=cards[:CELL_VISIBLE],
         more=cards[CELL_VISIBLE:],
         more_count=max(len(cards) - CELL_VISIBLE, 0),
+        heading=heading,
     )
 
 
@@ -939,6 +943,7 @@ def build_week(
                     is_today=d == today,
                     is_past=d < today,
                     cards=ordered(by_cell.get((key, d), [])),
+                    heading=f"{_WEEKDAYS[d.weekday()]} {d.day} · {hour_row_label(key)}",
                 )
                 for d in week_days
             ],

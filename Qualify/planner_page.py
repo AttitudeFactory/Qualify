@@ -192,7 +192,7 @@ def _chip_detail(event) -> rx.Component:
 
 def _calendar_chip(event) -> rx.Component:
     """A one-line event chip: picture, time, channel, destination and Cold/Hot by glyph
-    and colour. One line, so every hour of the grid keeps the same height; the full
+    and colour. One line, so five fit in an hour of the grid; the full
     detail opens on hover (`_chip_detail`) and the event's panel on click. A Hot POST
     glows like embers, a Cold one is frosted (`q-chip-temp--*`)."""
     chip = rx.box(
@@ -272,33 +272,105 @@ def _calendar_chip(event) -> rx.Component:
     )
 
 
-def _more_pill(cell) -> rx.Component:
-    """«+N más»: the cell's other events in a small list, without growing the row."""
-    return rx.popover.root(
-        rx.popover.trigger(
-            rx.el.button(
-                "+" + cell.more_count.to_string() + " más",
-                type="button",
-                class_name="q-cell-more",
-                on_click=rx.event.stop_propagation,
+def _status_glyph(event) -> rx.Component:
+    """The event's state as a small icon: ✓ published, ✕ failed, ⏱ otherwise."""
+    return rx.match(
+        event.status_label,
+        ("Publicado", rx.icon("circle-check", size=13, color=rx.color("green", 10))),
+        ("Fallido", rx.icon("circle-x", size=13, color=rx.color("tomato", 10))),
+        rx.icon("clock", size=13, color=T.TEXT_MUTED),
+    )
+
+
+def _hour_list_row(event) -> rx.Component:
+    """One compact row of the hour's full list: time, then the POST's title over
+    account · destination, then status/channel/destination glyphs. A click opens the
+    event's side panel."""
+    return rx.el.button(
+        rx.text(event.time_label, size="1", weight="bold", class_name="q-nums q-hour-list-time"),
+        rx.box(
+            rx.text(event.title, size="1", weight="medium", class_name="q-hour-list-title"),
+            rx.text(
+                event.account_label + " · " + event.destination_label,
+                size="1",
+                color=T.TEXT_MUTED,
+                class_name="q-hour-list-title q-hour-list-sub",
             ),
+            min_width="0",
         ),
-        rx.popover.content(
-            rx.vstack(
-                rx.text(
-                    cell.more_count.to_string() + " publicaciones más a esta hora",
-                    size="1",
-                    weight="bold",
-                    color=T.TEXT_MUTED,
+        rx.hstack(
+            channel_mark(event.platform),
+            rx.cond(
+                event.destination != "",
+                rx.center(
+                    destination_icon(event.destination, 10),
+                    class_name="q-dest-dot q-dest-dot--sm q-dest-" + event.destination,
                 ),
-                rx.foreach(cell.more, _calendar_chip),
-                spacing="2",
-                width="15rem",
             ),
-            side="bottom",
-            align="start",
-            size="1",
+            rx.box(_status_glyph(event), title=event.status_label, display="flex"),
+            align="center",
+            spacing="1",
         ),
+        type="button",
+        title=event.status_label,
+        class_name="q-hour-list-row",
+        on_click=PlannerState.open_detail(event.event_id).stop_propagation,
+    )
+
+
+def _more_pill(cell) -> rx.Component:
+    """«+N más»: from the sixth event of an hour on. Opens, right beside it, exactly
+    the N events that did not fit — title, account, destination and state — and each
+    row opens the event's panel."""
+    # Reflex wraps the trigger's child in a Flex that IS the trigger, so a stop on the
+    # button itself kept the list from ever opening. The stop lives out here instead:
+    # the trigger handles the click first, then the slot under it never sees it (it
+    # would open «Nueva publicación»).
+    return rx.box(
+        rx.popover.root(
+            rx.popover.trigger(
+                rx.button(
+                    rx.icon("layers", size=12),
+                    "+" + cell.more_count.to_string() + " más",
+                    type="button",
+                    variant="soft",
+                    size="1",
+                    class_name="q-cell-more",
+                    title="Ver las publicaciones que no caben en la celda",
+                ),
+            ),
+            rx.popover.content(
+                rx.vstack(
+                    rx.hstack(
+                        rx.text(
+                            "+" + cell.more_count.to_string() + " más",
+                            size="2",
+                            weight="bold",
+                            color=rx.color("accent", 11),
+                        ),
+                        rx.spacer(),
+                        rx.text(cell.heading, size="1", color=T.TEXT_MUTED),
+                        align="center",
+                        width="100%",
+                    ),
+                    rx.box(
+                        rx.foreach(cell.more, _hour_list_row),
+                        class_name="q-hour-list",
+                    ),
+                    spacing="2",
+                    width="19rem",
+                    max_width="calc(100vw - 2rem)",
+                ),
+                # Right beside the pill, pointing at it: «these are the +N». Radix flips it
+                # to the left on the last days of the week, where the right has no room.
+                side="right",
+                align="center",
+                side_offset=6,
+                size="1",
+            ),
+        ),
+        on_click=rx.event.stop_propagation,
+        width="100%",
     )
 
 
@@ -365,10 +437,11 @@ def _hour_cell(cell) -> rx.Component:
         position="relative",
         spacing="1",
         padding="0.25rem",
-        # Every hour the same height: two one-line chips (and «+N más») fit; nothing
-        # stretches the row, so the time axis stays an even ruler.
-        height="4.25rem",
-        overflow="hidden",
+        # An hour is at least this tall; one with more posts grows to show up to five
+        # chips (`CELL_VISIBLE`) and, past that, «+N más». The whole row grows with its
+        # fullest cell (grid rows stretch), so the seven days stay aligned.
+        min_height="4.25rem",
+        height="100%",  # fills its row when a neighbour cell made it taller
         border_top=_HAIRLINE,
         border_left=_HAIRLINE,
         background=rx.cond(cell.is_today, rx.color("accent", 2), "transparent"),
