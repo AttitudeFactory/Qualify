@@ -27,6 +27,13 @@ from pathlib import PurePath
 GOOGLE_FONTS_CSS = "https://fonts.googleapis.com/css2"
 #: A Google Fonts check is a nicety on top of the upload: it must answer fast or not at all.
 CHECK_TIMEOUT_SECONDS = 5.0
+#: The largest font file an upload accepts. A static weight is tens to hundreds of KB and a
+#: variable CJK face reaches ~20 MB; anything above is refused before it is read.
+MAX_FONT_BYTES = 20 * 1024 * 1024
+#: A `name` table is a few dozen strings — kilobytes. A WOFF declaring more is never
+#: inflated: the length comes from the (user-supplied) file itself, and a zlib bomb
+#: would otherwise expand to gigabytes inside the app process.
+_MAX_INFLATED_TABLE_BYTES = 1024 * 1024
 
 _TYPOGRAPHIC_FAMILY = 16  # "Montserrat" for every weight — preferred
 _FAMILY = 1  # "Montserrat SemiBold" style families for non-RIBBI weights
@@ -147,7 +154,13 @@ def _woff_table(data: bytes, wanted: bytes) -> bytes:
         )
         if tag == wanted:
             raw = data[offset : offset + comp_length]
-            return raw if comp_length == orig_length else zlib.decompress(raw)
+            if comp_length == orig_length:
+                return raw
+            if orig_length > _MAX_INFLATED_TABLE_BYTES:
+                return b""
+            # Bounded: never more than the declared length, whatever the stream holds.
+            table = zlib.decompressobj().decompress(raw, orig_length)
+            return table if len(table) == orig_length else b""
     return b""
 
 

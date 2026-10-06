@@ -149,7 +149,9 @@ def test_the_names_are_kit_fields_that_round_trip_through_the_form() -> None:
 def wizard(monkeypatch: pytest.MonkeyPatch) -> BrandWizardState:
     state = BrandWizardState()
 
-    async def stage(_self: Any, files: list[Any], folder: str) -> tuple[str, str, bytes] | None:
+    async def stage(
+        _self: Any, files: list[Any], folder: str, **_limits: Any
+    ) -> tuple[str, str, bytes] | None:
         return (f"uploads/t/{folder}/x_{files[0]}", str(files[0]), b"") if files else None
 
     monkeypatch.setattr(BrandWizardState, "_stage_logo_file", stage)
@@ -187,6 +189,44 @@ def test_the_font_file_toast_says_whether_it_is_open_source() -> None:
     assert "No está en Google Fonts" in message and tone == "info"
     assert wiz.font_file_message("Lato", None) == ("Detectamos «Lato» en tu archivo.", "info")
     assert "Escríbelo tú" in wiz.font_file_message("", None)[0]
+
+
+class _Upload:
+    name = "Huge-Bold.ttf"
+
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    async def read(self) -> bytes:
+        return self._data
+
+
+async def test_a_font_above_the_cap_is_refused_before_it_is_written(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """PR #86 review: an uploaded font is user-supplied bytes — above the cap it is never
+    written to disk nor handed to `family_name`."""
+    state = BrandWizardState()
+
+    class _Session:
+        session_tenant_id = str(UUID(int=1))
+
+    async def get_state(_self: Any, _cls: type) -> _Session:
+        return _Session()
+
+    monkeypatch.setattr(BrandWizardState, "get_state", get_state)
+    monkeypatch.setattr(wiz.rx, "get_upload_dir", lambda: tmp_path)
+
+    staged = await BrandWizardState._stage_logo_file(
+        state, [_Upload(b"x" * 11)], "font/heading", max_bytes=10, too_large="pesa mucho"
+    )
+    assert staged is None and state.logo_error == "pesa mucho"
+    assert not any(tmp_path.rglob("*.ttf"))
+
+    staged = await BrandWizardState._stage_logo_file(
+        state, [_Upload(b"x" * 10)], "font/heading", max_bytes=10, too_large="pesa mucho"
+    )
+    assert staged is not None and staged[2] == b"x" * 10 and state.logo_error == ""
 
 
 async def test_a_dropped_font_file_is_staged_under_its_slot(wizard: BrandWizardState) -> None:

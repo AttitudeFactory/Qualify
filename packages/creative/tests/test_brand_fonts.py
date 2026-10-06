@@ -61,6 +61,27 @@ def test_a_woff_is_inflated_and_read() -> None:
     assert fonts.family_name(_woff(table), "Nunito-Bold.woff") == "Nunito"
 
 
+def _woff_raw(packed: bytes, orig_length: int) -> bytes:
+    header = b"wOFF" + b"\x00\x01\x00\x00" + struct.pack(">IHH", 0, 1, 0) + b"\x00" * 32
+    entry = struct.pack(">4sIIII", b"name", 44 + 20, len(packed), orig_length, 0)
+    return header + entry + packed
+
+
+def test_a_woff_bomb_is_never_inflated() -> None:
+    """PR #86 review: 64 MB of zeros packs into ~64 KB. Declared honestly it is above the
+    table cap; declared small, inflation stops at the declared length — either way the
+    app never holds the expanded stream, and the name comes from the file name."""
+    bomb = zlib.compress(b"\x00" * (64 * 1024 * 1024))
+    assert fonts.family_name(_woff_raw(bomb, 64 * 1024 * 1024), "Marca-Bold.woff") == "Marca"
+    assert fonts.family_name(_woff_raw(bomb, 4096), "Marca-Bold.woff") == "Marca"
+
+
+def test_a_woff_that_lies_about_its_table_length_falls_back_to_the_file_name() -> None:
+    table = _name_table([(3, 1, 0x409, 1, "Nunito")])
+    packed = zlib.compress(table)
+    assert fonts.family_name(_woff_raw(packed, len(table) + 50), "Lato-Bold.woff") == "Lato"
+
+
 def test_a_woff2_or_garbage_falls_back_to_the_file_name() -> None:
     assert fonts.family_name(b"wOF2" + b"\x00" * 60, "OpenSans-SemiBoldItalic.woff2") == "Open Sans"
     assert fonts.family_name(b"not a font", "Baloo2-ExtraBold.ttf") == "Baloo 2"

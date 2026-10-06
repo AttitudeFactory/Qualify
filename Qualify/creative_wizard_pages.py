@@ -113,6 +113,10 @@ def _finish_background_task(task: asyncio.Task) -> None:
 
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _UPLOAD_FAILED = "No se pudo leer el archivo. Inténtalo de nuevo."
+_FONT_TOO_LARGE = (
+    f"El archivo de fuente pesa más de {brand_fonts.MAX_FONT_BYTES // (1024 * 1024)} MB."
+    " Sube solo el peso que usas (TTF, OTF o WOFF)."
+)
 
 # Title + one-line subtitle per step. The index IS the cursor value, so this tuple is
 # the single source of truth for the counter and the heading.
@@ -677,7 +681,9 @@ class BrandWizardState(rx.State):
         is asked of Google Fonts in the background (`check_font_file`)."""
         if slot not in FONT_SLOT_KEYS:
             return None
-        staged = await self._stage_logo_file(files, f"font/{slot}")
+        staged = await self._stage_logo_file(
+            files, f"font/{slot}", max_bytes=brand_fonts.MAX_FONT_BYTES, too_large=_FONT_TOO_LARGE
+        )
         if staged is None:
             return None
         self.font_files = {**self.font_files, slot: staged[0]}
@@ -794,10 +800,16 @@ class BrandWizardState(rx.State):
         self.brand_extras = [extra for extra in self.brand_extras if extra["id"] != extra_id]
 
     async def _stage_logo_file(
-        self, files: list[rx.UploadFile], folder: str
+        self,
+        files: list[rx.UploadFile],
+        folder: str,
+        *,
+        max_bytes: int | None = None,
+        too_large: str = _UPLOAD_FAILED,
     ) -> tuple[str, str, bytes] | None:
         """Write the first dropped file under the tenant's upload dir → (key, name, bytes),
-        or None (with `logo_error` set) when there is no session or it cannot be read."""
+        or None (with `logo_error` set) when there is no session, it cannot be read, or it
+        is above `max_bytes` (`too_large` says so; nothing is written)."""
         if not files:
             return None
         auth = await self.get_state(AuthState)
@@ -810,6 +822,9 @@ class BrandWizardState(rx.State):
             data = await upload.read()
         except Exception:
             self.logo_error = _UPLOAD_FAILED
+            return None
+        if max_bytes is not None and len(data) > max_bytes:
+            self.logo_error = too_large
             return None
         name = upload.name or "logo"
         key = f"uploads/{tenant_id}/{folder}/{uuid4().hex}_{name}"
@@ -1740,6 +1755,7 @@ def _font_card(key: str, name: str, blurb: str) -> rx.Component:
             id=upload_id,
             accept=_FONT_ACCEPT,
             max_files=1,
+            max_size=brand_fonts.MAX_FONT_BYTES,  # the server re-checks (`_stage_logo_file`)
             on_drop=BrandWizardState.handle_font_upload(rx.upload_files(upload_id=upload_id), key),
             border=f"1px dashed {rx.color('gray', 7)}",
             border_radius=T.RADIUS_CONTROL,
