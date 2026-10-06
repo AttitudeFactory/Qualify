@@ -584,6 +584,22 @@ def test_edit_variant_stores_only_passing_copy() -> None:
     assert repo.variants[variant_id].edited_copy["hook"] == "Editado a mano"
 
 
+def test_a_human_edit_may_have_any_caption_length() -> None:
+    """The kit's caption length guides generation; it never blocks the operator's own
+    text (founder, 2026-10-06). The other rules still do."""
+    router = FakeRouter([ok_outcome(copy_dict())])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    _, variant_id = _generated_draft_with_variant(service, repo)
+    short = CopyPayload.model_validate(copy_dict(caption="Corto."))
+    assert (
+        service.edit_variant(
+            tenant_id=TENANT_ID, variant_id=variant_id, copy=short, user_id=USER_ID
+        )
+        == ()
+    )
+    assert repo.variants[variant_id].edited_copy["caption"] == "Corto."
+
+
 def test_approve_stamps_and_requires_matching_variant() -> None:
     router = FakeRouter([ok_outcome(copy_dict())])
     service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())

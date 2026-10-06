@@ -234,7 +234,10 @@ class CopyPayload(BaseModel):
     caption: str
     hashtags: tuple[str, ...] = ()
     cta: str = ""
-    script: str = Field(default="", max_length=SCRIPT_MAX)
+    # No length cap on the stored script (founder, 2026-10-06): the operator writes as
+    # much as the video needs. `SCRIPT_MAX` stays the GENERATION target (`render.py`) and
+    # the cap of a script handed in for generation (`own_script`).
+    script: str = ""
     shots: tuple[ScriptShot, ...] = ()
 
     ads_primary_text: str | None = None
