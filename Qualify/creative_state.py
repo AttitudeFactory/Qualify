@@ -21,6 +21,7 @@ import asyncio
 import logging
 import re
 import time
+import urllib.parse
 from collections.abc import AsyncIterator
 from uuid import UUID, uuid4
 
@@ -2284,4 +2285,6 @@ def google_fonts_url(name: str) -> str:
     clean = _clean_family(name)
     if not clean:
         return ""
-    return f"{GOOGLE_FONTS_CSS}?family={clean.replace(' ', '+')}:wght@400;700&display=swap"
+    # encoded, so a typed "&", "#" or "%" can neither add a parameter nor break the URL
+    family = urllib.parse.quote_plus(clean)
+    return f"{GOOGLE_FONTS_CSS}?family={family}:wght@400;700&display=swap"

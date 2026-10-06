@@ -324,3 +324,11 @@ def test_reading_a_staged_logo_for_detection_skips_what_cannot_be_read(
     assert files == [("ab12_marca.png", b"png")]
     # an R2 key without a tenant to read it as is skipped, not fatal
     assert wiz._read_logo_files(None, [f"t/{TENANT}/brand/{BRAND}/logo_version/x.png"]) == []
+
+
+def test_a_typed_family_cannot_add_parameters_to_the_stylesheet_url() -> None:
+    """PR #86 review: the name is the operator's text — "&", "#" and "%" are encoded."""
+    url = google_fonts_url("Inter&family=Otra#x 100%")
+    family = url.split("family=", 1)[1].split(":wght", 1)[0]
+    assert family == "Inter%26family%3DOtra%23x+100%25"
+    assert url.count("&") == 1 and url.endswith("&display=swap")

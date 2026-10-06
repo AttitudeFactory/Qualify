@@ -137,16 +137,23 @@ class BrandEditState(rx.State):
         from .brand_finish import save_brand_kit
 
         async with self:
+            connect = await self.get_state(BrandConnectState)
+            was = connect.voice_configured
             if self.open_section == VOICE_SECTION:
                 # saving Voz y tono IS configuring it, cloned voice or not
-                (await self.get_state(BrandConnectState)).voice_configured = True
-        if await save_brand_kit(self):
-            async with self:
+                connect.voice_configured = True
+        saved = await save_brand_kit(self)
+        async with self:
+            if not saved:
+                # nothing was stored: Voz y tono is as configured as it was before
+                (await self.get_state(BrandConnectState)).voice_configured = was
+            else:
                 self.open_section = ""
                 self._before = {}
                 creative = await self.get_state(CreativeState)
                 creative.kit_notice = ""
                 creative.tone_saved_custom = creative.tone_is_custom()
+        if saved:
             yield brand_documents.notify("Sección guardada.", "ok")
 
     @rx.event

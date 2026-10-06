@@ -686,7 +686,8 @@ class BrandWizardState(rx.State):
         if staged is None:
             return None
         self.font_files = {**self.font_files, slot: staged[0]}
-        family = brand_fonts.family_name(staged[2], staged[1])
+        # off the event loop: a user's file, up to `MAX_FONT_BYTES`, inflated for a WOFF
+        family = await asyncio.to_thread(brand_fonts.family_name, staged[2], staged[1])
         if not family:
             return brand_documents.notify(*font_file_message("", None))
         creative = await self.get_state(CreativeState)

@@ -25,6 +25,7 @@ render (it changes when the operator re-clones, and the read is one indexed row)
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -92,17 +93,20 @@ class BrandVoiceGuard:
         self._clone_lookup = clone_lookup
         self._ttl = ttl_seconds
         self._clock = clock
-        self._public: tuple[float, frozenset[str]] | None = None
+        #: The public catalog per HeyGen key (by its digest, not the key itself): the key
+        #: is resolved per tenant and brand, and what an account lists can differ.
+        self._public: dict[str, tuple[float, frozenset[str]]] = {}
         self._lock = threading.Lock()
 
     def _public_ids(self, api_key: str) -> frozenset[str]:
+        account = hashlib.sha256(api_key.encode()).hexdigest()
         with self._lock:
-            cached = self._public
+            cached = self._public.get(account)
             if cached is not None and self._clock() - cached[0] < self._ttl:
                 return cached[1]
         ids = public_voice_ids(self._adapter, api_key)
         with self._lock:
-            self._public = (self._clock(), ids)
+            self._public[account] = (self._clock(), ids)
         return ids
 
     def __call__(self, *, tenant_id: UUID, brand_id: UUID, voice_id: str, api_key: str) -> bool:

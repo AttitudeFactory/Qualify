@@ -81,3 +81,16 @@ def test_the_public_catalog_is_cached_per_ttl_and_the_own_clone_needs_no_catalog
     now[0] += 61
     assert guard(tenant_id=TENANT_A, brand_id=BRAND_A, voice_id="vo_pub_male", api_key="k")
     assert len(heygen.calls) == 4
+
+
+def test_the_public_catalog_is_cached_per_heygen_key() -> None:
+    """PR #86 review: the key is resolved per tenant and brand, so one account's catalog
+    is never answered for another's."""
+    heygen = FakeHeyGen()
+    guard = BrandVoiceGuard(heygen, clone_lookup=lambda _t, _b: None)
+    assert guard(tenant_id=TENANT_A, brand_id=BRAND_A, voice_id="vo_pub_male", api_key="k1")
+    assert guard(tenant_id=TENANT_A, brand_id=BRAND_A, voice_id="vo_pub_male", api_key="k1")
+    assert len(heygen.calls) == 2  # one read, two genders
+    assert guard(tenant_id=TENANT_B, brand_id=BRAND_B, voice_id="vo_pub_male", api_key="k2")
+    assert len(heygen.calls) == 4  # the other key reads its own
+    assert {c["api_key"] for c in heygen.calls} == {"k1", "k2"}

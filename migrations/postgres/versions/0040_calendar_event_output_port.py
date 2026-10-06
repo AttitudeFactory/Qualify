@@ -2,7 +2,7 @@
 
 Revision ID: 0040
 Revises: 0039
-Create Date: 2026-10-05
+Create Date: 2026-10-05 (re-pointed from 0038 to 0039 on 2026-10-06, see below)
 
 **0039 is QUA-117** (Deivid's typography branch, `0039_brand_typography`). This revision
 was written chaining from 0038 so both branches could merge without a rebase; when 0039
