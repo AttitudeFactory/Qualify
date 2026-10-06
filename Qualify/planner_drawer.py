@@ -676,6 +676,7 @@ def _plan_card(row) -> rx.Component:
             align="start",
             spacing="3",
             width="100%",
+            class_name="q-plan-head",
         ),
         rx.box(
             rx.box(
@@ -1176,6 +1177,7 @@ def _assign_footer() -> rx.Component:
             flex="1",
             min_width="0",
             text_align="center",
+            class_name="q-assign-foot-status",
         ),
         rx.flex(
             rx.cond(
@@ -1212,10 +1214,12 @@ def _assign_footer() -> rx.Component:
             ),
             gap="0.75rem",
             flex_shrink="0",
+            class_name="q-assign-foot-nav",
         ),
         align="center",
         gap="0.75rem",
         width="100%",
+        class_name="q-assign-foot",
     )
 
 

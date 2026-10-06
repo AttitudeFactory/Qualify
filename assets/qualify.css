@@ -1908,3 +1908,25 @@ body[data-rank-dragging] { cursor: grabbing; }
 .rt-PopoverContent .q-chip-temp--hot {
   background-image: linear-gradient(90deg, rgba(255, 106, 61, 0.28), transparent) !important;
 }
+
+/* ── Phone widths (QUA-118 v2): what the new screens need below 640px ───────── */
+/* A piece's head: the date pill takes its own line instead of squeezing the title. */
+.q-plan-head { flex-wrap: wrap; }
+.q-plan-head > .q-when-pill { margin-left: auto; }
+/* The destination picker keeps its three buttons on one line in a narrow card. */
+.q-dest-seg { grid-template-columns: repeat(auto-fit, minmax(5.5rem, 1fr)); }
+@media (max-width: 640px) {
+  /* «Nueva publicación» foot: what is chosen on top, then Cancelar | Atrás · Continuar. */
+  .q-assign-foot { flex-wrap: wrap; row-gap: 0.6rem; }
+  .q-assign-foot-status { order: -1; flex: 1 0 100% !important; }
+  .q-assign-foot-nav { flex: 1 1 auto; justify-content: flex-end; }
+  .q-assign-foot .rt-Button { padding-inline: 0.85rem; }
+  /* Event panel foot: the two actions stacked, full width — easy to tap. */
+  .q-panel-actions { grid-template-columns: 1fr; }
+  /* Draft review: the sticky save bar and the decision cards breathe less. */
+  .q-rv-savebar--editing { bottom: 0.5rem; }
+  .q-decide-card { padding: 0.85rem; }
+  /* Gallery and drawer tiles: two per row is the most a phone holds. */
+  .q-tile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; }
+  .q-hero { padding: 0.9rem 1rem; }
+}
