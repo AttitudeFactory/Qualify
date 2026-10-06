@@ -47,6 +47,12 @@ class EventRecord:
     # MP-11: the template output this event publishes (`reel` / `feed` / `story`), or None
     # for the whole POST. Frozen with the event: a reschedule never changes the output.
     output_port: str | None = None
+    # QUA-118 v2 (0041): where the event goes out — `post` / `reel` / `story`. None only
+    # for an event whose POST could not be backfilled; the executor then derives it from
+    # the category as before. Frozen with the event, like the output.
+    destination: str | None = None
+    # QUA-118 v2 (0042): the plan's goals (`models.EVENT_GOALS`), kept on every event.
+    goals: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -67,6 +73,8 @@ class NewEvent:
     scheduled_tz: str
     created_by_user_id: UUID
     output_port: str | None = None
+    destination: str | None = None
+    goals: tuple[str, ...] = ()
 
 
 class PlannerRepository(Protocol):
@@ -214,6 +222,11 @@ class PlannerRepository(Protocol):
         """Set the event's tags to exactly `tag_ids`."""
         ...
 
+    def set_event_goals(self, *, tenant_id: UUID, event_id: UUID, goals: tuple[str, ...]) -> None:
+        """Set the event's goals (0042) to exactly `goals`. LookupError when the event
+        is not the tenant's."""
+        ...
+
     def delete_tag(self, *, tenant_id: UUID, tag_id: UUID) -> bool:
         """Remove the tag and every event's link to it. False if it was not the tenant's."""
         ...
@@ -239,6 +252,8 @@ def _snapshot(row: CalendarEvent) -> EventRecord:
         created_at=row.created_at,
         updated_at=row.updated_at,
         output_port=row.output_port,
+        destination=row.destination,
+        goals=tuple(row.goals or ()),
     )
 
 
@@ -290,6 +305,12 @@ class MemoryPlannerRepository:
                 raise LookupError(str(tag_id))
         self._event_tags[event_id] = set(tag_ids)
 
+    def set_event_goals(self, *, tenant_id: UUID, event_id: UUID, goals: tuple[str, ...]) -> None:
+        current = self.get(tenant_id=tenant_id, event_id=event_id)
+        if current is None:
+            raise LookupError(str(event_id))
+        self._rows[event_id] = replace(current, goals=tuple(goals))
+
     def delete_cancelled(self, *, tenant_id: UUID, event_id: UUID) -> bool:
         current = self.get(tenant_id=tenant_id, event_id=event_id)
         if current is None or current.status != EventStatus.CANCELLED.value:
@@ -333,6 +354,8 @@ class MemoryPlannerRepository:
                 created_at=now,
                 updated_at=now,
                 output_port=new.output_port,
+                destination=new.destination,
+                goals=tuple(new.goals),
             )
             for new in news
         ]
@@ -566,6 +589,8 @@ class PostgresPlannerRepository:
                     revision=1,
                     created_by_user_id=new.created_by_user_id,
                     output_port=new.output_port,
+                    destination=new.destination,
+                    goals=list(new.goals),
                 )
                 for new in news
             ]
@@ -846,6 +871,14 @@ class PostgresPlannerRepository:
             session.execute(delete(CalendarEventTag).where(CalendarEventTag.event_id == event_id))
             for tag_id in dict.fromkeys(tag_ids):
                 session.add(CalendarEventTag(tenant_id=tenant_id, event_id=event_id, tag_id=tag_id))
+            session.flush()
+
+    def set_event_goals(self, *, tenant_id: UUID, event_id: UUID, goals: tuple[str, ...]) -> None:
+        with tenant_session(tenant_id) as session:
+            row = session.get(CalendarEvent, event_id)
+            if row is None:
+                raise LookupError(str(event_id))
+            row.goals = list(goals)
             session.flush()
 
     def delete_cancelled(self, *, tenant_id: UUID, event_id: UUID) -> bool:

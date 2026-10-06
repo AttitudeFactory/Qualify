@@ -110,6 +110,7 @@ def _candidate(
     draft: creative.ContentDraft,
     images: Sequence[creative.ImageAsset],
     output_port: str | None = None,
+    destination: str | None = None,
 ) -> PostCandidate:
     """The whole POST, or — with `output_port` (MP-11) — the candidate for ONE of its
     template outputs. All assets are handed over either way; `evaluate` keeps the port's
@@ -130,6 +131,8 @@ def _candidate(
                 media_type=image.media_type,
                 position=image.position,
                 output_port=image.output_port,
+                width=image.width,
+                height=image.height,
             )
             for image in images
         ),
@@ -139,7 +142,28 @@ def _candidate(
             ("selected_variant_id", str(draft.selected_variant_id)),
         ),
         output_port=output_port,
+        destination=destination,
     )
+
+
+_PUBLISHER_TYPE = {"image": "IMAGE", "video": "VIDEO"}
+
+
+def media_shape(
+    images: Sequence[creative.ImageAsset],
+) -> tuple[tuple[str, ...], tuple[int, int] | None]:
+    """QUA-118 v2: the media as the publisher names it (IMAGE / VIDEO, position order)
+    and the first image's (width, height) when recorded — what
+    `publishable.destination_options` needs to say where the content may go."""
+    ordered = sorted(images, key=lambda image: image.position)
+    types = tuple(_PUBLISHER_TYPE.get(image.media_type, image.media_type) for image in ordered)
+    first_image = next((image for image in ordered if image.media_type == "image"), None)
+    size = (
+        (first_image.width, first_image.height)
+        if first_image is not None and first_image.width and first_image.height
+        else None
+    )
+    return types, size
 
 
 def output_ports_of(images: Sequence[creative.ImageAsset]) -> tuple[str, ...]:
@@ -164,6 +188,7 @@ def _outputs(
         )
         verdict = evaluate(_candidate(session, tenant_id, draft, images, output_port=port))
         publishable = isinstance(verdict, PublishablePost)
+        types, size = media_shape([image for image in images if image.output_port == port])
         outputs.append(
             PostOutput(
                 port=port,
@@ -171,6 +196,8 @@ def _outputs(
                 media_product_type=verdict.media_product_type if publishable else None,
                 is_publishable=publishable,
                 unpublishable_reason="" if publishable else REASON_TEXT[verdict.reason],
+                media_types=types,
+                image_size=size,
             )
         )
     return tuple(outputs)
@@ -327,7 +354,12 @@ class DraftPostReader:
             ]
 
     def get_publishable(
-        self, *, tenant_id: UUID, post_id: UUID, output_port: str | None = None
+        self,
+        *,
+        tenant_id: UUID,
+        post_id: UUID,
+        output_port: str | None = None,
+        destination: str | None = None,
     ) -> PublishablePost | NotPublishable:
         with tenant_session(tenant_id) as session:
             draft = session.get(creative.ContentDraft, post_id)
@@ -338,7 +370,7 @@ class DraftPostReader:
                     output_port=output_port,
                 )
             images = _images(session, draft.id)
-            return evaluate(_candidate(session, tenant_id, draft, images, output_port))
+            return evaluate(_candidate(session, tenant_id, draft, images, output_port, destination))
 
     def _summarize(
         self,
@@ -387,6 +419,7 @@ class DraftPostReader:
             else None
         )
         title = (brief.topic if brief is not None else "") or _excerpt(_caption(variant))[:60]
+        types, size = media_shape(images)
         return PostSummary(
             post_id=draft.id,
             brand_id=draft.brand_id,
@@ -409,4 +442,6 @@ class DraftPostReader:
             outputs=outputs,
             times_published=times_published,
             has_live_event=has_live_event,
+            media_types=types,
+            image_size=size,
         )

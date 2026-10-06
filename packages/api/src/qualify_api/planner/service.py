@@ -22,15 +22,20 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from qualify_api.planner.fsm import EventStatus, EventTrigger, InvalidTransition, apply_transition
 from qualify_api.planner.gallery import is_reusable
-from qualify_api.planner.models import TAG_COLORS
+from qualify_api.planner.models import EVENT_GOALS, TAG_COLORS
 from qualify_api.planner.post_reader import (
     ApprovalStatus,
     PostReader,
     PostSummary,
     UnpublishableReason,
 )
-from qualify_api.planner.publishable import REASON_TEXT, SCHEDULABLE_PLATFORMS
-from qualify_api.planner.recurrence import InvalidRecurrence, weekly_days
+from qualify_api.planner.publishable import (
+    REASON_TEXT,
+    SCHEDULABLE_PLATFORMS,
+    destination_for_product_type,
+    destination_options,
+)
+from qualify_api.planner.recurrence import InvalidRecurrence, weekly_days, weekly_days_on
 from qualify_api.planner.repository import EventRecord, NewEvent, PlannerRepository, TagRecord
 from qualify_api.planner.rules import is_expired_scheduled, is_overdue_unapproved
 
@@ -110,6 +115,20 @@ class OutputRequired(PlannerError):
 class DuplicateEvent(PlannerError):
     """An event for the same (POST, output, connection) at the same instant already
     occupies the calendar (scheduled, publishing or published)."""
+
+
+class UnknownGoal(PlannerError):
+    """QUA-118 v2: a plan goal that is not one of `models.EVENT_GOALS`."""
+
+
+class UnsupportedDestination(PlannerError):
+    """QUA-118 v2: the event's destination (`post` / `reel` / `story`) cannot take this
+    content — a carousel as a story, an image as a reel, a feed image outside Meta's
+    range. `reason` is the selector's own sentence."""
+
+    def __init__(self, message: str, *, reason: str = "") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class IncompatibleConnection(PlannerError):
@@ -275,6 +294,31 @@ class PlannerService:
         if not publishable:
             raise PostNotSchedulable(f"{post.post_id} is not publishable: {reason}", reason=reason)
 
+    @staticmethod
+    def _resolve_destination(
+        post: PostSummary, output_port: str | None, destination: str | None
+    ) -> str | None:
+        """QUA-118 v2: the event's destination. None → the one the POST (or the output)
+        publishes as today, so a caller that does not choose keeps the old behaviour.
+        A chosen one must be offered and available for this content
+        (`publishable.destination_options`), or nothing is created."""
+        if output_port is not None:
+            output = next(o for o in post.outputs if o.port == output_port)
+            types, size, product = output.media_types, output.image_size, output.media_product_type
+        else:
+            types, size, product = post.media_types, post.image_size, post.media_product_type
+        if destination is None:
+            return destination_for_product_type(product)
+        option = next(
+            (o for o in destination_options(types, size) if o.destination == destination), None
+        )
+        if option is None or not (option.offered and option.available):
+            raise UnsupportedDestination(
+                f"{post.post_id} cannot go out as {destination!r}",
+                reason=option.reason if option is not None else "",
+            )
+        return destination
+
     def _require_event(self, *, tenant_id: UUID, event_id: UUID) -> EventRecord:
         record = self._repo.get(tenant_id=tenant_id, event_id=event_id)
         if record is None:
@@ -300,6 +344,7 @@ class PlannerService:
         output_port: str | None,
         connection_id: UUID,
         scheduled_at: datetime,
+        destination: str | None = None,
     ) -> None:
         """No two live events for the same (POST, output, connection) at the same
         instant. Before MP-11 the only guard was the Sin programar panel hiding an
@@ -309,6 +354,7 @@ class PlannerService:
             if (
                 EventStatus(event.status).occupies_post
                 and event.output_port == output_port
+                and event.destination == destination
                 and event.connection_id == connection_id
                 and event.scheduled_at == scheduled_at
             ):
@@ -325,6 +371,8 @@ class PlannerService:
         scheduled_tz: str,
         user_id: UUID,
         output_port: str | None,
+        destination: str | None = None,
+        goals: Sequence[str] = (),
     ) -> list[EventRecord]:
         """One plan = instants × accounts, validated entirely BEFORE anything is written
         and then written in ONE repository transaction (`add_many`, QUA-118 A4). A single
@@ -333,6 +381,10 @@ class PlannerService:
         accounts in the order given, and each is an independent `calendar_event`."""
         if not connection_ids:
             raise InactiveConnection("no connection given")
+        unknown = [goal for goal in goals if goal not in EVENT_GOALS]
+        if unknown:
+            raise UnknownGoal(", ".join(unknown))
+        goals = tuple(dict.fromkeys(goals))
         if len(set(connection_ids)) != len(connection_ids):
             raise DuplicateEvent("the same account twice in one plan")
         if not instants:
@@ -340,9 +392,10 @@ class PlannerService:
         resolve_zone(scheduled_tz)
         for instant in instants:
             self._require_future(instant)
-        self._require_schedulable_post(
+        post = self._require_schedulable_post(
             tenant_id=tenant_id, brand_id=brand_id, post_id=post_id, output_port=output_port
         )
+        destination = self._resolve_destination(post, output_port, destination)
         for connection_id in connection_ids:
             self._require_active_connection(tenant_id=tenant_id, connection_id=connection_id)
             self._require_compatible_connection(tenant_id=tenant_id, connection_id=connection_id)
@@ -357,6 +410,7 @@ class PlannerService:
                     output_port=output_port,
                     connection_id=connection_id,
                     scheduled_at=instant,
+                    destination=destination,
                 )
         return self._repo.add_many(
             [
@@ -369,6 +423,8 @@ class PlannerService:
                     scheduled_tz=scheduled_tz,
                     created_by_user_id=user_id,
                     output_port=output_port,
+                    destination=destination,
+                    goals=goals,
                 )
                 for instant in utc_instants
                 for connection_id in connection_ids
@@ -388,6 +444,8 @@ class PlannerService:
         scheduled_tz: str,
         user_id: UUID,
         output_port: str | None = None,
+        destination: str | None = None,
+        goals: Sequence[str] = (),
     ) -> EventRecord:
         """Create an event for a POST that is approved AND publishable (QUA-118 D1 —
         until 2026-10-05 a pending POST could be planned; now nothing incomplete enters
@@ -396,7 +454,10 @@ class PlannerService:
         MP-11: a POST with template outputs is planned one event per output —
         `output_port` names which (`reel` / `feed` / `story`), validated against the
         POST's own ports; the three events may share an instant or not. A POST without
-        outputs is planned whole (`output_port=None`, the pre-MP-11 behaviour)."""
+        outputs is planned whole (`output_port=None`, the pre-MP-11 behaviour).
+
+        QUA-118 v2: `destination` (`post` / `reel` / `story`) is where the event goes out;
+        None keeps what the POST (or the output) publishes as today."""
         return self._plan(
             tenant_id=tenant_id,
             brand_id=brand_id,
@@ -406,6 +467,8 @@ class PlannerService:
             scheduled_tz=scheduled_tz,
             user_id=user_id,
             output_port=output_port,
+            destination=destination,
+            goals=goals,
         )[0]
 
     def schedule_many(
@@ -419,6 +482,8 @@ class PlannerService:
         scheduled_tz: str,
         user_id: UUID,
         output_port: str | None = None,
+        destination: str | None = None,
+        goals: Sequence[str] = (),
     ) -> list[EventRecord]:
         """One POST (or one output of it) on N accounts at the same instant: N
         independent `calendar_events`, created all-or-nothing (QUA-118 AC 5 / A4). An
@@ -432,6 +497,8 @@ class PlannerService:
             scheduled_tz=scheduled_tz,
             user_id=user_id,
             output_port=output_port,
+            destination=destination,
+            goals=goals,
         )
 
     def schedule_series(
@@ -448,6 +515,8 @@ class PlannerService:
         until: date | None = None,
         count: int | None = None,
         output_port: str | None = None,
+        destination: str | None = None,
+        goals: Sequence[str] = (),
     ) -> list[EventRecord]:
         """A weekly series (QUA-118 A2/A4, `recurrence.weekly_days`): the same POST on the
         same weekday at the same wall-clock time, ending on `until` or after `count`
@@ -470,6 +539,46 @@ class PlannerService:
             scheduled_tz=scheduled_tz,
             user_id=user_id,
             output_port=output_port,
+            destination=destination,
+            goals=goals,
+        )
+
+    def schedule_weekly(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        post_id: UUID,
+        connection_ids: Sequence[UUID],
+        start: date,
+        weekdays: Sequence[int],
+        weeks: int,
+        at: time,
+        scheduled_tz: str,
+        user_id: UUID,
+        output_port: str | None = None,
+        destination: str | None = None,
+        goals: Sequence[str] = (),
+    ) -> list[EventRecord]:
+        """A weekly series on several weekdays (`recurrence.weekly_days_on`): every chosen
+        weekday from `start` on, `weeks` times each, at the same wall-clock time, on one or
+        more accounts — created in one transaction or not at all, like `schedule_series`."""
+        try:
+            days = weekly_days_on(start, weekdays, weeks)
+        except InvalidRecurrence as exc:
+            raise InvalidSeries(str(exc), code=exc.code) from exc
+        instants = [compose_instant(day, at, scheduled_tz) for day in days]
+        return self._plan(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            post_id=post_id,
+            connection_ids=connection_ids,
+            instants=instants,
+            scheduled_tz=scheduled_tz,
+            user_id=user_id,
+            output_port=output_port,
+            destination=destination,
+            goals=goals,
         )
 
     def reschedule(
@@ -673,6 +782,18 @@ class PlannerService:
         if unknown:
             raise UnknownTag(str(unknown[0]))
         self._repo.replace_event_tags(tenant_id=tenant_id, event_id=event_id, tag_ids=tag_ids)
+
+    def set_event_goals(self, *, tenant_id: UUID, event_id: UUID, goals: Sequence[str]) -> None:
+        """Replace the event's goals (QUA-118 v2, 0042) — what this publication is meant
+        to achieve. Allowed in any status: the goals are for the later analysis, and a
+        published event is exactly what gets analysed. Does not bump `revision`."""
+        self._require_event(tenant_id=tenant_id, event_id=event_id)
+        unknown = [goal for goal in goals if goal not in EVENT_GOALS]
+        if unknown:
+            raise UnknownGoal(", ".join(unknown))
+        self._repo.set_event_goals(
+            tenant_id=tenant_id, event_id=event_id, goals=tuple(dict.fromkeys(goals))
+        )
 
     def delete_tag(self, *, tenant_id: UUID, tag_id: UUID) -> None:
         """Delete a label everywhere: it disappears from every event that had it. The

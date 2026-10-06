@@ -413,6 +413,33 @@ def test_service_schedules_a_real_draft_and_it_leaves_unscheduled(world_p) -> No
     # ...and stops seeing it once the calendar would call it «Vencido» (QUA-115 window).
     later = DraftPostReader(clock=lambda: at + timedelta(hours=25))
     assert later.get(tenant_id=TENANT_P, post_id=draft_id).has_live_event is False
+    # QUA-118 v2: no destination given → what the galería image publishes as today, stored
+    # on the event (0041); the reader exposes the media shape the selector reads.
+    assert event.destination == "post"
+    assert summary.media_types == ("IMAGE",)
+    # The same POST as a Historia: the event's destination round-trips through Postgres
+    # and decides what the publisher receives.
+    story = svc.schedule(
+        tenant_id=TENANT_P,
+        brand_id=brand_id,
+        post_id=draft_id,
+        connection_id=conn_id,
+        scheduled_at=at + timedelta(hours=1),
+        scheduled_tz="America/Caracas",
+        user_id=user_id,
+        destination="story",
+        goals=["likes", "followers"],
+    )
+    stored = PostgresPlannerRepository().get(tenant_id=TENANT_P, event_id=story.id)
+    assert stored is not None and stored.destination == "story"
+    assert stored.goals == ("likes", "followers")  # 0042: kept for the later analysis
+    svc.set_event_goals(tenant_id=TENANT_P, event_id=story.id, goals=["ads"])
+    reread = PostgresPlannerRepository().get(tenant_id=TENANT_P, event_id=story.id)
+    assert reread is not None and reread.goals == ("ads",)
+    verdict = DraftPostReader().get_publishable(
+        tenant_id=TENANT_P, post_id=draft_id, destination=stored.destination
+    )
+    assert verdict.media_product_type == "STORIES"
     monday = (at.astimezone(UTC).date()) - timedelta(days=at.astimezone(UTC).weekday())
     week = svc.list_week(
         tenant_id=TENANT_P,
@@ -1734,11 +1761,14 @@ def test_a_failing_tenant_does_not_stop_another(worlds_ab) -> None:
     event_a, event_b = _due_reel_event(a), _due_reel_event(b)
 
     class _ReaderDownForA(DraftPostReader):
-        def get_publishable(self, *, tenant_id, post_id, output_port=None):
+        def get_publishable(self, *, tenant_id, post_id, output_port=None, destination=None):
             if tenant_id == a[0]:
                 raise ConnectionError("reader down for A")
             return super().get_publishable(
-                tenant_id=tenant_id, post_id=post_id, output_port=output_port
+                tenant_id=tenant_id,
+                post_id=post_id,
+                output_port=output_port,
+                destination=destination,
             )
 
     report = asyncio.run(

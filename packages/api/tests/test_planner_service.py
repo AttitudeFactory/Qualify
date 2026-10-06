@@ -29,6 +29,7 @@ from qualify_api.planner.service import (
     UnknownOutput,
     UnknownPost,
     UnknownTag,
+    UnsupportedDestination,
 )
 
 NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
@@ -774,3 +775,94 @@ def test_a_reschedule_keeps_the_output() -> None:
         scheduled_tz="America/Caracas",
     )
     assert moved.output_port == "feed" and moved.revision == 2
+
+
+# --- QUA-118 v2: the event's destination ------------------------------------------------
+
+
+def test_without_a_destination_the_event_keeps_what_the_post_publishes_as() -> None:
+    reel = _post(category="reel", media_product_type="REELS", media_types=("VIDEO",))
+    assert _schedule(_service(reel), reel).destination == "reel"
+    image = _post(category="galeria", media_product_type="IMAGE", media_types=("IMAGE",))
+    assert _schedule(_service(image), image).destination == "post"
+
+
+def test_the_same_video_can_go_out_as_a_reel_and_as_a_historia() -> None:
+    video = _post(category="reel", media_product_type="REELS", media_types=("VIDEO",))
+    svc = _service(video)
+    as_reel = _schedule(svc, video, hours=24, destination="reel")
+    as_story = _schedule(svc, video, hours=24, destination="story")  # same instant: allowed
+    assert (as_reel.destination, as_story.destination) == ("reel", "story")
+    with pytest.raises(DuplicateEvent):
+        _schedule(svc, video, hours=24, destination="story")
+
+
+@pytest.mark.parametrize(
+    ("media", "size", "destination", "reason_part"),
+    [
+        (("VIDEO",), None, "post", ""),  # not offered for a video
+        (("IMAGE",), (1080, 1350), "reel", "necesita un video"),
+        (("IMAGE",), (1080, 1920), "post", "4:5"),
+        (("IMAGE", "VIDEO"), None, "story", "carruseles"),
+        (("IMAGE",), None, "nonsense", ""),
+    ],
+)
+def test_an_impossible_destination_creates_nothing(media, size, destination, reason_part) -> None:
+    post = _post(category="galeria", media_product_type="IMAGE", media_types=media, image_size=size)
+    svc = _service(post)
+    with pytest.raises(UnsupportedDestination) as exc:
+        _schedule(svc, post, destination=destination)
+    assert reason_part in exc.value.reason
+    assert svc._repo.list_for_post(tenant_id=TENANT, post_id=post.post_id) == []  # nothing
+
+
+def test_a_weekly_series_on_several_days_is_created_all_at_once() -> None:
+    from datetime import date, time
+
+    post = _post(category="reel", media_product_type="REELS", media_types=("VIDEO",))
+    svc = _service(post)
+    events = svc.schedule_weekly(
+        tenant_id=TENANT,
+        brand_id=BRAND,
+        post_id=post.post_id,
+        connection_ids=[CONN],
+        start=date(2026, 10, 6),  # a Tuesday
+        weekdays=[1, 3],  # Tuesday and Thursday
+        weeks=2,
+        at=time(10, 0),
+        scheduled_tz="America/Caracas",
+        user_id=USER,
+        destination="story",
+    )
+    local = [e.scheduled_at.astimezone(ZoneInfo("America/Caracas")) for e in events]
+    assert [d.date().isoformat() for d in local] == [
+        "2026-10-06",
+        "2026-10-08",
+        "2026-10-13",
+        "2026-10-15",
+    ]
+    assert all(d.hour == 10 for d in local) and {e.destination for e in events} == {"story"}
+
+
+def test_the_plan_goals_are_kept_on_every_event_and_unknown_ones_refused() -> None:
+    from qualify_api.planner.service import UnknownGoal
+
+    post = _post(category="reel", media_product_type="REELS", media_types=("VIDEO",))
+    svc = _service(post)
+    event = _schedule(svc, post, goals=["likes", "views", "likes"])
+    assert event.goals == ("likes", "views")  # each once, in order
+    with pytest.raises(UnknownGoal):
+        _schedule(svc, post, hours=48, goals=["fama"])
+
+
+def test_an_events_goals_can_be_changed_afterwards() -> None:
+    from qualify_api.planner.service import UnknownGoal
+
+    post = _post(category="reel", media_product_type="REELS", media_types=("VIDEO",))
+    svc = _service(post)
+    event = _schedule(svc, post, goals=["likes"])
+    svc.set_event_goals(tenant_id=TENANT, event_id=event.id, goals=["views", "ads", "views"])
+    stored = svc._repo.get(tenant_id=TENANT, event_id=event.id)
+    assert stored.goals == ("views", "ads") and stored.revision == event.revision
+    with pytest.raises(UnknownGoal):
+        svc.set_event_goals(tenant_id=TENANT, event_id=event.id, goals=["fama"])

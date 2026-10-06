@@ -71,3 +71,38 @@ def test_a_custom_cap_is_honoured() -> None:
     assert len(weekly_days(MONDAY, count=3, cap=3)) == 3
     with pytest.raises(InvalidRecurrence):
         weekly_days(MONDAY, count=4, cap=3)
+
+
+# --- QUA-118 v2: several weekdays ---------------------------------------------------------
+
+
+def test_weekly_days_on_takes_several_weekdays_in_date_order() -> None:
+    from qualify_api.planner.recurrence import weekly_days_on
+
+    start = date(2026, 10, 6)  # a Tuesday
+    days = weekly_days_on(start, [3, 1], 2)  # Tuesday and Thursday, 2 weeks
+    assert days == (
+        date(2026, 10, 6),
+        date(2026, 10, 8),
+        date(2026, 10, 13),
+        date(2026, 10, 15),
+    )
+    # A weekday earlier in the week than the start begins the following week.
+    assert weekly_days_on(start, [0], 1) == (date(2026, 10, 12),)
+
+
+def test_weekly_days_on_refuses_no_days_no_weeks_and_too_many() -> None:
+    import pytest
+
+    from qualify_api.planner.recurrence import InvalidRecurrence, weekly_days_on
+
+    start = date(2026, 10, 6)
+    for weekdays, weeks, code in (
+        ([], 4, "days_required"),
+        ([7], 4, "days_required"),
+        ([1], 0, "count_too_small"),
+        ([0, 1, 2, 3], 4, "too_many"),
+    ):
+        with pytest.raises(InvalidRecurrence) as exc:
+            weekly_days_on(start, weekdays, weeks)
+        assert exc.value.code == code

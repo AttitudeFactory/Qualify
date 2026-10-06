@@ -18,6 +18,7 @@ publish attempt; one being published, failed or expired never touches the others
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import date, timedelta
 
 # Hard cap on occurrences per series (founder, 2026-10-05): twelve weekly publications,
@@ -27,7 +28,7 @@ SERIES_CAP = 12
 
 class InvalidRecurrence(ValueError):
     """The series cannot be built. `code` is stable for the UI's wording:
-    `end_required`, `count_too_small`, `too_many`, `until_before_first`."""
+    `end_required`, `count_too_small`, `too_many`, `until_before_first`, `days_required`."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -68,4 +69,32 @@ def weekly_days(
     return tuple(first_day + timedelta(weeks=i) for i in range(weeks))
 
 
-__all__ = ["SERIES_CAP", "InvalidRecurrence", "weekly_days"]
+def weekly_days_on(
+    start: date,
+    weekdays: Collection[int],
+    weeks: int,
+    *,
+    cap: int = SERIES_CAP,
+) -> tuple[date, ...]:
+    """QUA-118 v2 (founder, 2026-10-06): a weekly series on SEVERAL weekdays — «martes y
+    jueves, 4 semanas». Each chosen weekday (0 = Monday … 6 = Sunday) starts on its first
+    occurrence on or after `start` and repeats `weeks` times; the days come back in date
+    order. The same cap as `weekly_days`, counted over every day of the series."""
+    chosen = sorted(set(weekdays))
+    if not chosen or any(day not in range(7) for day in chosen):
+        raise InvalidRecurrence("days_required", "a weekly series needs at least one weekday")
+    if weeks < 1:
+        raise InvalidRecurrence("count_too_small", f"{weeks} weeks: at least 1")
+    days = sorted(
+        start + timedelta(days=(weekday - start.weekday()) % 7) + timedelta(weeks=i)
+        for weekday in chosen
+        for i in range(weeks)
+    )
+    if len(days) > cap:
+        raise InvalidRecurrence(
+            "too_many", f"{len(days)} occurrences ({len(chosen)} days × {weeks}): at most {cap}"
+        )
+    return tuple(days)
+
+
+__all__ = ["SERIES_CAP", "InvalidRecurrence", "weekly_days", "weekly_days_on"]
