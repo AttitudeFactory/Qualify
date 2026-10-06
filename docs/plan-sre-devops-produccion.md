@@ -40,7 +40,7 @@ Referencia: `reflex-dev/reflex` → `docker-example/production-compose` (Dockerf
 |---|---|---|---|
 | 1 | ✅ Reflex: copiar `.web/backend` a `app`; bun desde `oven/bun` con caché; quitar `curl`/`unzip` del runtime. Medido en §5 | PR | — |
 | 2 | ✅ Cero recreaciones innecesarias (§5): que un deploy sin cambios no recree `api`/`reflex` (p. ej. sacar `migrate` del grafo `depends_on` y correrlo como paso explícito en `deploy.sh` antes del `up`, o `up --no-recreate` condicionado) | PR | — |
-| 3 | Construir la imagen `deploy/Dockerfile` (targets `app` y `web`) **en el CI** — hoy ningún job la construye, un Dockerfile roto sólo se descubre al desplegar | PR | — |
+| 3 | ✅ Construir la imagen `deploy/Dockerfile` (targets `app` y `web`) **en el CI** — hoy ningún job la construye, un Dockerfile roto sólo se descubre al desplegar | PR | — |
 | 4 | CD: al quedar `main` en verde, Actions construye `app`/`web`(/`render`) y los publica en GHCR por SHA; el servidor sólo hace `pull` + `up`. Nunca compilar en producción. Rollback = desplegar el SHA anterior | PR | secretos de GitHub (llave ssh de deploy restringida, token GHCR) → **fundador** |
 | 5 | Despliegue sin caída del backend: con Redis como state manager (punto 3.2) arrancar el `reflex` nuevo, esperar `healthy` y recién entonces retirar el viejo | PR | 1, 2, decisión 3.2 |
 | 6 | `render` en producción: chequeo de `/health` en `deploy.sh`, imagen desde GHCR, límites de memoria (`mem_limit`) para que un render no tumbe Postgres | PR | decisión CX23→CX33 → **fundador** |
@@ -84,6 +84,14 @@ Reproducido en la sesión con el stack de producción completo (`deploy/docker-c
 | Deploy con cambio de código Python | — | recrea `api`, `reflex` y `caddy` (correcto) |
 
 El primer deploy con este cambio recrea `api`/`reflex` una vez, por el cambio de configuración. Del deploy anterior queda un contenedor `qualify-prod-migrate-1` salido; es inocuo y se puede borrar a mano una vez (`docker rm qualify-prod-migrate-1`). **Cambia el procedimiento manual:** un `dc up -d` a secas ya no migra; es `dc run --rm migrate && dc up -d` (runbook actualizado).
+
+### Punto 3 — `deploy/Dockerfile` se construye en el CI (2026-10-06)
+
+Job `ci` / `docker-deploy`:
+- **Qué hace:** construye `web` y `app` sin publicarlos, con caché de GHA (`scope=deploy`), y después corre dos smoke tests: el backend de Reflex arranca y responde `/ping` 200, y Caddy sirve `/`, `/login` y una ruta dinámica.
+- **Cuándo corre:** en PRs que tocan alguna entrada de las imágenes (`deploy/**`, `Qualify/**`, `packages/*/src/**`, locks, `rxconfig.py`, `assets/**`, `migrations/**`) y siempre en `main`. Un PR sólo de docs no lo corre.
+
+Un Dockerfile roto, o una página que rompe `reflex export`, se descubre en el PR y ya no en el servidor de producción. Entra en la lista de checks que exige `just merge` (y en `infra/github/ruleset-main.json`), junto con `changes`. Cuando se salta, el check queda `skipped` y cuenta como verde, así que `changes` también tiene que ser requerido: si fallara, `docker-deploy` y `node-render` se saltarían y pasarían como verdes. **Efecto en PRs abiertos antes de este cambio:** no tienen ese check, así que `just merge` los rechaza hasta que se les mergee `main` (o se fuerza con `--admin`).
 
 ## 6. Reglas para quien ejecute este plan
 

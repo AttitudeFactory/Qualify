@@ -107,8 +107,9 @@ Full handoff, including who was mid-what: `.claude/sprint-state-2026-07-26-c04-i
 **Founder's rule (2026-10-05): nothing merges to `main` with CI red; only a repository
 administrator may bypass, deliberately.** GitHub cannot enforce it on this plan (private
 repo, organization on GitHub Free → branch protection and rulesets answer 403), so the
-gate is `just merge <pr>`: it refuses unless the required checks (`lint`, `test`, `test-db`,
-`node-render`) are green; `just merge <pr> --admin` forces it and leaves a comment on the PR.
+gate is `just merge <pr>`: it refuses unless the required checks (`changes`, `lint`, `test`, `test-db`,
+`node-render`, `docker-deploy`) are green or skipped — `changes` is required because a failed
+`changes` would otherwise turn the jobs gated on it into green skips; `just merge <pr> --admin` forces it and leaves a comment on the PR.
 **Agents merge through `just merge`, never `gh pr merge` directly.** The recipe talks to GitHub over REST only (`gh api`): Claude Code cloud sessions have `gh` authenticated through an injected token but **GraphQL is blocked there**, so `gh pr view/checks/merge/comment` fail in the cloud while `gh api` works — keep any new gh tooling on REST. The ruleset to apply
 the day the plan allows it is `infra/github/ruleset-main.json` (`just protect-main`).
 
@@ -161,6 +162,7 @@ Two workflows under `.github/workflows/`, both triggered by `pull_request` → `
 | `ci` / `test-db` | always | Postgres 16 + Redis 7 service containers, `alembic upgrade head` → `downgrade base` (must leave no revision) → `upgrade head`, then `pytest -m db` | **yes** (reversibility is a gate, ADR 27) |
 | `ci` / `node-render` | if `packages/render/package.json` exists | `npm ci` + `npm run typecheck` (Node 22, npm cache) | **yes** |
 | `ci` / `docker-render` | if `packages/render/Dockerfile` exists AND (PR touches `packages/render/**` OR main) | `docker build` with `push: false`, GHA layer cache | **yes** |
+| `ci` / `docker-deploy` | PR touching an input of the production images (`deploy/**`, `Qualify/**`, `packages/*/src/**`, lock files, `rxconfig.py`, `assets/**`, `migrations/**`…) OR main | builds `deploy/Dockerfile` `web` + `app` (`push: false`, GHA cache), then smoke: Reflex backend `/ping` 200 and Caddy serving `/`, `/login`, a dynamic route | **yes** (required by `just merge`; a skip counts as green) |
 | `security` / `sast` | PR, weekly (Mon 06:17 UTC), manual | semgrep (`p/ci`+`p/python`+`p/github-actions`, no account, metrics off) + bandit (medium+) over `packages/*/src` and `Qualify/` | no (summary + artifact) |
 | `security` / `deps` | same | `pip-audit` over `uv export` of the locked default groups (never `ml`) + `npm audit --audit-level=high` in `packages/render` | no |
 | `security` / `repo` | same | `trivy fs` (vuln + secret + misconfig, HIGH/CRITICAL) + `gitleaks git` over the full history (binary from the release, checksum-verified; the official Action needs an org licence) | trivy no; **gitleaks yes** when it finds a committed secret (redacted output — rotate, then purge or allowlist in `.gitleaks.toml`) |

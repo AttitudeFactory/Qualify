@@ -172,7 +172,7 @@ merge pr *flags:
     #!/usr/bin/env bash
     set -euo pipefail
     repo=repos/AttitudeFactory/Qualify
-    required="lint test test-db node-render"
+    required="changes lint test test-db node-render docker-deploy"
     pr_state=$(gh api "$repo/pulls/{{pr}}" --jq '"\(.state) \(.merged) \(.head.sha)"')
     read -r state merged sha <<<"$pr_state"
     [ "$state" = open ] || { echo "just merge: #{{pr}} no está abierto (state=$state merged=$merged)." >&2; exit 1; }
