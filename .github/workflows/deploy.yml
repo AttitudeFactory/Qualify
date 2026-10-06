@@ -18,7 +18,9 @@
 #   server    /opt/qualify/bin/server-deploy.sh + authorized_keys line + `docker login ghcr.io`
 #             (docs/despliegue-hetzner.md, "Deploy desde GitHub Actions")
 #
-# Rollback: run this workflow by hand with an older sha (its images are still in GHCR).
+# Rollback: run this workflow by hand with an older sha of main (its images are still in
+# GHCR). Across a migration, tick `skip_migrate`: the older image cannot run `alembic upgrade`
+# on a newer database.
 # The calendar-worker profile is never touched here: profiles come from the server's
 # .env.prod only.
 name: deploy
@@ -30,6 +32,11 @@ on:
         description: "Commit sha (or main) to deploy — must be on main"
         required: false
         default: main
+      skip_migrate:
+        description: "Rollback across a migration: skip `migrate` (the older code must run on the newer schema)"
+        type: boolean
+        required: false
+        default: false
   workflow_run:
     workflows: ["ci"]
     types: [completed]
@@ -130,9 +137,10 @@ jobs:
       - name: Deploy ${{ needs.images.outputs.sha }} (server pulls, migrates, starts)
         env:
           TARGET: ${{ secrets.QUALIFY_DEPLOY_SSH_TARGET }}
+          ACTION: ${{ inputs.skip_migrate && 'rollback' || 'deploy' }}
         run: |
           ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes "$TARGET" deploy "$SHA" </dev/null
+            -o StrictHostKeyChecking=yes "$TARGET" "$ACTION" "$SHA" </dev/null
       - name: External smoke test
         run: |
           for probe in '/ping 200' '/login 200' '/api/connections/callback?code=x&state=x 403'; do

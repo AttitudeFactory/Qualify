@@ -195,7 +195,8 @@ Operación:
 | Tarea | Cómo |
 |---|---|
 | Desplegar un commit | *Run workflow* con su sha o rama |
-| Revertir | *Run workflow* con el sha anterior (sus imágenes siguen en GHCR) |
+| Revertir | *Run workflow* con el sha anterior (sus imágenes siguen en GHCR). Si entre medio hubo una migración, marcar **`skip_migrate`**: la imagen vieja no conoce la revisión nueva y `alembic upgrade` fallaría con `Can't locate revision` (comprobado). Sólo es seguro porque las migraciones son expandir → contraer. Con `just deploy <sha-anterior>` desde la Mac pasa lo mismo y no hay atajo: el rollback a través de una migración se hace por el workflow |
+| Si fallan los chequeos después del `up` | el release nuevo ya está corriendo y `current` apunta a él; el workflow queda en rojo. Revertir como arriba |
 | Ver qué imágenes corren | `cat /opt/qualify/current/deploy/release.env` |
 | Comandos a mano en el servidor | el alias `dc` de arriba, que ya agrega `--env-file deploy/release.env` cuando existe (sin él, Compose buscaría `qualify-app:latest` y compilaría en el servidor) |
 

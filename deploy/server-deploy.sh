@@ -14,15 +14,23 @@
 #
 #   command="/opt/qualify/bin/server-deploy.sh",restrict ssh-ed25519 AAAA... qualify-ci-deploy
 #
-# Trust boundary: the key can only ask for `deploy <40-hex sha>`, and the release's compose
+# Requests: `deploy <40-hex sha>`, or `rollback <40-hex sha>` = the same without `migrate`.
+# A rollback across a migration needs it: the older image does not know the database's
+# newer revision and `alembic upgrade head` fails with "Can't locate revision" (verified).
+# Rolling back is only safe because migrations are expand -> contract: the previous code
+# must run on the newer schema.
+#
+# Trust boundary: the key can only ask for one of those two, and the release's compose
 # file and scripts come from qualify-deploy:<sha> in GHCR — so the key can only deploy a
 # commit that CI published. Publishing to GHCR takes write access to the repository, which
 # can already change what production runs.
 #
 # Steps: pull the 3 images -> release dir from qualify-deploy (staged, then moved into place)
-# -> `run --rm -T migrate` -> `up -d` (only if migrate exited 0) -> /opt/qualify/current ->
-# health checks. Any failure exits non-zero and leaves `current` where it was. Rollback =
-# deploy an older sha whose images are still in GHCR.
+# -> `run --rm -T migrate` (skipped by `rollback`) -> `up -d` (only if migrate exited 0) ->
+# /opt/qualify/current -> health checks. A failure BEFORE `up` (pull, bundle, migrate) exits
+# non-zero with the running stack and `current` untouched. After `up` the new release is
+# live and `current` points at it — so `dc` commands match what runs — and a failed health
+# check exits non-zero: recover by deploying (or rolling back to) the previous sha.
 set -euo pipefail
 
 ROOT=${QUALIFY_REMOTE_ROOT:-/opt/qualify}
@@ -35,7 +43,9 @@ die() { echo "server-deploy: $*" >&2; exit 1; }
 # Under a forced command the requested command arrives in SSH_ORIGINAL_COMMAND; run by hand,
 # it arrives as arguments.
 read -r -a request <<<"${SSH_ORIGINAL_COMMAND:-$*}"
-[[ ${#request[@]} -eq 2 && ${request[0]} == deploy ]] || die "usage: deploy <40-hex commit sha>"
+[[ ${#request[@]} -eq 2 && ${request[0]} =~ ^(deploy|rollback)$ ]] ||
+  die "usage: deploy|rollback <40-hex commit sha>"
+action=${request[0]}
 sha=${request[1]}
 [[ $sha =~ ^[0-9a-f]{40}$ ]] || die "not a full commit sha: $sha"
 [[ -f $ENV_FILE ]] || die "$ENV_FILE is missing"
@@ -82,8 +92,12 @@ dc() {
     -f deploy/docker-compose.prod.yml "$@")
 }
 
-echo "==> Migrating"
-dc run --rm -T migrate
+if [[ $action == rollback ]]; then
+  echo "==> Rollback: migrate skipped (the schema stays as it is; expand -> contract)"
+else
+  echo "==> Migrating"
+  dc run --rm -T migrate
+fi
 echo "==> Starting"
 dc up -d --no-build --remove-orphans
 

@@ -121,7 +121,9 @@ Probado en la sesión con un registro local en lugar de GHCR, sobre un "servidor
 - **Primer deploy:** `0001 → 0040`, chequeos `ok`, 20 s.
 - **Re-deploy del mismo sha:** no recrea nada.
 - **`up` con el comando de `deploy.sh` sobre ese release:** no compila (respeta `release.env`).
-- **La llave rechaza** todo lo que no sea `deploy <sha de 40 hex>`. Un sha que el CI no publicó falla en el `pull`, antes de tocar el disco: `current` no cambia.
+- **La llave rechaza** todo lo que no sea `deploy|rollback <sha de 40 hex>`. Un sha que el CI no publicó falla en el `pull`, antes de tocar el disco: `current` no cambia.
+- **Rollback a través de una migración:** con `deploy`, la imagen vieja falla en `migrate` (`Can't locate revision`, comprobado con la base en una revisión desconocida para la imagen), antes del `up`. Por eso existe `rollback <sha>` (casilla `skip_migrate` en el workflow), que salta `migrate`.
+- **Falla después del `up`** (chequeos de salud): el release nuevo queda corriendo, `current` apunta a él y el workflow sale en rojo. Se recupera revirtiendo.
 - **Re-deploy del sha al que ya apunta `current`:** reutiliza el release sin borrarlo.
 - El release incluye `backup-db.sh`, que el cron nocturno ejecuta desde `current/deploy/` (antes `.dockerignore` excluía `deploy/*.sh` del contexto; ningún target de la app los copia).
 - **Con el perfil `render` activo,** el CD se niega.
