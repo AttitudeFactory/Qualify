@@ -1,6 +1,6 @@
 """The influence ranking on Resultados e insights (§ request 2026-09-29): the sorted
-referentes and competencia as ONE list of cards in influence order (§ 2026-10-06), the
-accounts added by hand pinned first, a card only moving inside its group, and the order stored
+referentes and competencia as cards in influence order, the accounts added by hand
+pinned first, a card only moving inside its own list and group, and the order stored
 as `brand_account_labels.position`. Fully offline."""
 
 from __future__ import annotations
@@ -96,16 +96,10 @@ def _state() -> BrandConnectState:
     return state
 
 
-def test_referentes_and_competencia_share_one_ranking() -> None:
-    """§ request 2026-10-06, "solo quiero la lista": one ranking, each card keeping its
-    bucket for its label; a detractor is never ranked."""
+def test_the_state_ranks_each_bucket_on_its_own() -> None:
     state = _state()
-    state.sector_accounts = [*state.sector_accounts, wiz.card_view(_card("d"))]
-    state.account_buckets = {**state.account_buckets, _key("d"): "detractor"}
-    ranked = state.ranked_accounts
-    assert [a["key"] for a in ranked] == [_key("m1"), _key("a"), _key("b"), _key("c")]
-    assert [a["bucket"] for a in ranked] == ["referente", "referente", "referente", "competencia"]
-    assert state.has_ranking
+    assert [a["key"] for a in state.ranked_referentes] == [_key("m1"), _key("a"), _key("b")]
+    assert [a["key"] for a in state.ranked_competencia] == [_key("c")]
 
 
 def test_dragging_a_card_onto_another_takes_its_place() -> None:
@@ -113,53 +107,40 @@ def test_dragging_a_card_onto_another_takes_its_place() -> None:
     BrandConnectState.rank_pick.fn(state, _key("b"))
     fired = BrandConnectState.rank_drop.fn(state, _key("a"))
     assert fired is not None and "sync_order" in str(fired)
-    assert [a["key"] for a in state.ranked_accounts] == [
-        _key("m1"),
-        _key("b"),
-        _key("a"),
-        _key("c"),
-    ]
+    assert [a["key"] for a in state.ranked_referentes] == [_key("m1"), _key("b"), _key("a")]
+    # both buckets end up in the stored order, one after the other
     assert state.influence_order == [_key("m1"), _key("b"), _key("a"), _key("c")]
     assert state.rank_dragging == ""
 
 
-def test_a_competidor_and_a_referente_trade_places() -> None:
-    state = _state()
-    BrandConnectState.rank_pick.fn(state, _key("c"))
-    assert BrandConnectState.rank_drop.fn(state, _key("a")) is not None
-    assert [a["key"] for a in state.ranked_accounts] == [
-        _key("m1"),
-        _key("c"),
-        _key("a"),
-        _key("b"),
-    ]
-
-
-def test_with_only_one_kind_sorted_the_list_still_reorders() -> None:
-    """§ request 2026-10-06: "si por casualidad solo hay referentes o competencia igual
-    quiero que se pueda mutar la lista"."""
-    for only in ("referente", "competencia"):
-        state = BrandConnectState()
-        state.sector_accounts = [wiz.card_view(_card(h)) for h in ("a", "b", "c")]
-        state.account_buckets = {_key(h): only for h in ("a", "b", "c")}
-        BrandConnectState.rank_pick.fn(state, _key("c"))
-        assert BrandConnectState.rank_drop.fn(state, _key("a")) is not None
-        assert [a["key"] for a in state.ranked_accounts] == [_key("c"), _key("a"), _key("b")]
-
-
-def test_a_drop_across_groups_does_nothing() -> None:
+def test_a_drop_across_groups_or_lists_does_nothing() -> None:
     state = _state()
     BrandConnectState.rank_pick.fn(state, _key("a"))
     assert BrandConnectState.rank_drop.fn(state, _key("m1")) is None  # onto a pinned one
+    BrandConnectState.rank_pick.fn(state, _key("a"))
+    assert BrandConnectState.rank_drop.fn(state, _key("c")) is None  # onto the competencia
     assert BrandConnectState.rank_drop.fn(state, _key("b")) is None  # nothing lifted
     assert state.influence_order == []
+
+
+def test_with_only_one_kind_sorted_its_ranking_still_reorders() -> None:
+    """§ request 2026-10-06: "si por casualidad solo hay referentes o competencia igual
+    quiero que se pueda mutar la lista" — the other grid is simply not there."""
+    for only, ranked in (("referente", "ranked_referentes"), ("competencia", "ranked_competencia")):
+        state = BrandConnectState()
+        state.sector_accounts = [wiz.card_view(_card(h)) for h in ("a", "b", "c")]
+        state.account_buckets = {_key(h): only for h in ("a", "b", "c")}
+        assert state.has_ranking
+        BrandConnectState.rank_pick.fn(state, _key("c"))
+        assert BrandConnectState.rank_drop.fn(state, _key("a")) is not None
+        assert [a["key"] for a in getattr(state, ranked)] == [_key("c"), _key("a"), _key("b")]
 
 
 def test_only_detractores_sorted_is_no_ranking() -> None:
     state = BrandConnectState()
     state.sector_accounts = [wiz.card_view(_card("a"))]
     state.account_buckets = {_key("a"): "detractor"}
-    assert state.ranked_accounts == [] and not state.has_ranking
+    assert not state.has_ranking
 
 
 # -- storage ------------------------------------------------------------------------------

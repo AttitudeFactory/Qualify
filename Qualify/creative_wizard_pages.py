@@ -3301,8 +3301,6 @@ BUCKETS: tuple[tuple[str, str, str, str], ...] = (
     ("competencia", "Competencia", "Le hablan a tu misma audiencia.", "swords"),
     ("detractor", "Detractores", "No van con tu marca.", "thumbs-down"),
 )
-#: The buckets the influence ranking holds — a detractor is sorted, never ranked.
-_RANKED_BUCKETS = ("referente", "competencia")
 #: Where each bucket sits around the deck — the way the ghost card flies.
 _FLY_DIRECTION = {"referente": "left", "competencia": "right", "detractor": "down"}
 #: How long `advance_stage_if_exhausted` waits before moving the deck on, so the
@@ -4464,19 +4462,19 @@ class BrandConnectState(rx.State):
         )
 
     @rx.var
-    def ranked_accounts(self) -> list[dict[str, str]]:
-        """The referentes AND the competencia in one influence order (`_rank`) — the
-        ranking on Resultados (§ request 2026-10-06: "solo quiero la lista", one list
-        that can be reordered even when it holds only one kind). Each card keeps its
-        `bucket`, which the card shows as a label."""
-        sorted_ = [a for a in self.discovered_accounts if a["bucket"] in _RANKED_BUCKETS]
-        return _rank(sorted_, self.influence_order)
+    def ranked_referentes(self) -> list[dict[str, str]]:
+        """The referentes in influence order (`_rank`) — the ranking on Resultados."""
+        return _rank(self.referente_accounts, self.influence_order)
+
+    @rx.var
+    def ranked_competencia(self) -> list[dict[str, str]]:
+        return _rank(self.competencia_accounts, self.influence_order)
 
     @rx.var
     def has_ranking(self) -> bool:
         """Something was sorted as referente or competencia — the ranking replaces the
         plain list (an account only marked detractor is not ranked)."""
-        return len(self.ranked_accounts) > 0
+        return bool(self.ranked_referentes or self.ranked_competencia)
 
     def _phase_cards(self, key: str) -> list[dict[str, str]]:
         """One category's cards with their bucket key and current bucket."""
@@ -5658,24 +5656,29 @@ class BrandConnectState(rx.State):
 
     @rx.event
     def rank_drop(self, target_key: str) -> rx.event.EventSpec | None:
-        """The lifted card takes `target_key`'s place — a referente and a competidor
-        share the one ranking; only the group binds (pinned among pinned, the rest
-        among the rest)."""
+        """The lifted card takes `target_key`'s place — inside the same bucket and the
+        same group only (pinned among pinned, the rest among the rest)."""
         source, self.rank_dragging = self.rank_dragging, ""
         if not source or source == target_key:
             return None
         return self._reorder(source, target_key)
 
     def _reorder(self, source: str, target_key: str) -> rx.event.EventSpec | None:
-        ranked = self.ranked_accounts
-        keys = [a["key"] for a in ranked]
-        if source not in keys or target_key not in keys:
-            return None
-        moved = _move_in_ranking(ranked, source, keys.index(target_key))
-        if moved is None:
-            return None
-        self.influence_order = moved
-        return BrandConnectState.sync_order
+        lists = [self.ranked_referentes, self.ranked_competencia]
+        for i, ranked in enumerate(lists):
+            keys = [a["key"] for a in ranked]
+            if source not in keys:
+                continue
+            if target_key not in keys:
+                return None
+            moved = _move_in_ranking(ranked, source, keys.index(target_key))
+            if moved is None:
+                return None
+            orders = [[a["key"] for a in other] for other in lists]
+            orders[i] = moved
+            self.influence_order = [key for order in orders for key in order]
+            return BrandConnectState.sync_order
+        return None
 
     @rx.event(background=True)
     async def sync_order(self) -> None:
@@ -6159,8 +6162,8 @@ def _connect_step_insights() -> rx.Component:
     the whole card width (`_RESULTS_COLUMN_MAX`, it used to be a 34rem column), the
     profile and its metrics in one header band (`_insights_header`), then the
     referentes — one grid of compact cards, sector, country and city merged
-    (`_discovery_section`, § 2026-10-06) or, once the operator sorted, the one influence
-    ranking of Referentes and Competencia (`_ranking_panel`). Its Finalizar-replacing
+    (`_discovery_section`, § 2026-10-06) or, once the operator sorted, the influence
+    ranking with Referentes and Competencia side by side (`_ranking_panel`). Its Finalizar-replacing
     CTA (`_finish_button`) lives in `_connect_controls`.
 
     The metrics are REAL (2026-09-10) and cover the last
@@ -6402,13 +6405,12 @@ def _discovery_list() -> rx.Component:
     )
 
 
-def _rank_card(item: rx.Var[dict[str, str]]) -> rx.Component:
+def _rank_card(item: rx.Var[dict[str, str]], bucket: str) -> rx.Component:
     """One cell of the influence ranking grid: its position, picture and handle. The
     card IS the control (§ request 2026-09-29, same gestures as the deck): a click opens
     the profile (`data-profile-url`), a long press lifts it for `assets/rank-drag.js` to
-    drag onto another card. Referentes and competencia share the one ranking (§ request
-    2026-10-06), so the card says which it is (`tag`); `data-rank-group` (pinned/rest)
-    is what keeps a drop inside its own group."""
+    drag onto another card. `data-rank-group` (bucket + pinned/rest) is what keeps a drop
+    inside its own grid and group."""
     pinned = item["group"] == RANK_PINNED
     return _RankCard.create(
         rx.vstack(
@@ -6452,14 +6454,7 @@ def _rank_card(item: rx.Var[dict[str, str]]) -> rx.Component:
             rx.vstack(
                 mono(item["handle"], size="2"),
                 rx.text(item["followers"], " seguidores", size="1", color=T.TEXT_MUTED),
-                rx.hstack(
-                    tag(rx.cond(item["bucket"] == "competencia", "Competencia", "Referente")),
-                    _signal_flags(item),
-                    spacing="1",
-                    wrap="wrap",
-                    justify="center",
-                    margin_top="0.35rem",
-                ),
+                rx.hstack(_signal_flags(item), spacing="1", wrap="wrap", justify="center"),
                 spacing="0",
                 align="center",
                 min_width="0",
@@ -6473,7 +6468,7 @@ def _rank_card(item: rx.Var[dict[str, str]]) -> rx.Component:
         ),
         class_name="q-rank-card",
         custom_attrs={
-            "data-rank-group": "ranking:" + item["group"].to(str),
+            "data-rank-group": f"{bucket}:" + item["group"].to(str),
             "data-rank-key": item["key"],
             "data-profile-url": item["url"],
             "role": "link",
@@ -6507,22 +6502,42 @@ def _script_on_mount(code: str) -> rx.Component:
     return rx.box(display="none", on_mount=rx.call_script(code))
 
 
-def _ranking_panel() -> rx.Component:
-    """Resultados e insights' influence ranking (§ requests 2026-09-29, 2026-10-06):
-    the referentes and the competencia in ONE grid of cards, read left to right and top
-    to bottom — that reading order IS the influence order, and each card says whether
-    it is a referente or a competidor. A click on a card opens the profile; a long press
-    lifts it and dropping it on another card takes that card's place — with only one
-    kind sorted, the list still reorders. The accounts added by hand stay pinned first
-    and only move among themselves."""
-    return rx.vstack(
+def _ranking_grid(title: str, bucket: str, accounts: rx.Var[list[dict[str, str]]]) -> rx.Component:
+    return rx.cond(
+        accounts.length() > 0,
         rx.vstack(
             rx.hstack(
-                rx.text("Ranking de influencia", size="3", weight="bold"),
-                rx.text(BrandConnectState.ranked_accounts.length(), size="1", color=T.TEXT_FAINT),
+                _section_label(title),
+                rx.text(accounts.length(), size="1", color=T.TEXT_FAINT),
                 spacing="2",
-                align="baseline",
+                align="center",
             ),
+            rx.box(
+                rx.foreach(accounts, lambda item: _rank_card(item, bucket)),
+                # the width decides how many fit in a row — Referentes and Competencia
+                # sit side by side on a wide screen (§ 2026-10-05), so each grid only
+                # has half the card
+                display="grid",
+                grid_template_columns="repeat(auto-fill, minmax(min(100%, 8.5rem), 1fr))",
+                gap="0.75rem",
+                width="100%",
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+    )
+
+
+def _ranking_panel() -> rx.Component:
+    """Resultados e insights' influence ranking (§ requests 2026-09-29): the referentes
+    and the competencia as a grid of cards, read left to right and top to bottom — that
+    reading order IS the influence order. A click on a card opens the profile; a long
+    press lifts it and dropping it on another card takes that card's place. The accounts
+    added by hand stay pinned first and only move among themselves."""
+    return rx.vstack(
+        rx.vstack(
+            rx.text("Ranking de influencia", size="3", weight="bold"),
             rx.text(
                 "Mantén pulsada una card y suéltala sobre otra para cambiar su posición: de"
                 " izquierda a derecha y de arriba abajo, de la que más influye en tu marca a"
@@ -6535,13 +6550,13 @@ def _ranking_panel() -> rx.Component:
             align_items="start",
         ),
         _script_on_mount(_RANK_DRAG_JS),
-        rx.box(
-            rx.foreach(BrandConnectState.ranked_accounts, _rank_card),
-            # the width decides how many fit in a row
-            display="grid",
-            grid_template_columns="repeat(auto-fill, minmax(min(100%, 8.5rem), 1fr))",
-            gap="0.75rem",
+        rx.grid(
+            _ranking_grid("Referentes", "referente", BrandConnectState.ranked_referentes),
+            _ranking_grid("Competencia", "competencia", BrandConnectState.ranked_competencia),
+            columns=rx.breakpoints(initial="1", md="2"),
+            spacing="5",
             width="100%",
+            align_items="start",
         ),
         spacing="4",
         width="100%",
