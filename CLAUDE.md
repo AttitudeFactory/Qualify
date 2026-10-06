@@ -109,7 +109,7 @@ administrator may bypass, deliberately.** GitHub cannot enforce it on this plan 
 repo, organization on GitHub Free → branch protection and rulesets answer 403), so the
 gate is `just merge <pr>`: it refuses unless the required checks (`lint`, `test`, `test-db`,
 `node-render`) are green; `just merge <pr> --admin` forces it and leaves a comment on the PR.
-**Agents merge through `just merge`, never `gh pr merge` directly.** The ruleset to apply
+**Agents merge through `just merge`, never `gh pr merge` directly.** The recipe talks to GitHub over REST only (`gh api`): Claude Code cloud sessions have `gh` authenticated through an injected token but **GraphQL is blocked there**, so `gh pr view/checks/merge/comment` fail in the cloud while `gh api` works — keep any new gh tooling on REST. The ruleset to apply
 the day the plan allows it is `infra/github/ruleset-main.json` (`just protect-main`).
 
 ### Commands
