@@ -35,7 +35,7 @@ from .creative_wizard_pages import (  # the wizard's own controls, shared on pur
     BrandConnectState,
     BrandWizardState,
     _brand_extras,
-    _discovery_tabs,
+    _discovery_list,
     _identity_editor,
     _insights_header,
     _kit_list_editor,
@@ -473,9 +473,9 @@ def _voice_first_view() -> rx.Component:
 
 def _results_view() -> rx.Component:
     """Resultados e insights, from what is stored — the same screen as the wizard's final
-    one: the profile header while the saved read has it, then the referentes — the
-    categories as tabs over a card grid, or the influence ranking once something was
-    sorted."""
+    one: the profile header while the saved read has it, then the referentes — one card
+    grid, or the influence ranking once something was sorted as referente or
+    competencia."""
     has_referentes = (BrandConnectState.discovered_accounts.length() > 0) | (
         BrandConnectState.has_sorted
     )
@@ -486,7 +486,7 @@ def _results_view() -> rx.Component:
             rx.cond(BrandConnectState.profile_username != "", _insights_header()),
             rx.cond(
                 has_referentes,
-                rx.cond(BrandConnectState.has_sorted, _ranking_panel(), _discovery_tabs()),
+                rx.cond(BrandConnectState.has_ranking, _ranking_panel(), _discovery_list()),
                 callout(
                     "Todavía no hay referentes guardados para esta marca: se buscan al "
                     "conectar tus redes al crear el Brand Kit, o agrégalos a mano.",

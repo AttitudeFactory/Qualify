@@ -3301,6 +3301,8 @@ BUCKETS: tuple[tuple[str, str, str, str], ...] = (
     ("competencia", "Competencia", "Le hablan a tu misma audiencia.", "swords"),
     ("detractor", "Detractores", "No van con tu marca.", "thumbs-down"),
 )
+#: The buckets the influence ranking holds — a detractor is sorted, never ranked.
+_RANKED_BUCKETS = ("referente", "competencia")
 #: Where each bucket sits around the deck — the way the ghost card flies.
 _FLY_DIRECTION = {"referente": "left", "competencia": "right", "detractor": "down"}
 #: How long `advance_stage_if_exhausted` waits before moving the deck on, so the
@@ -3684,9 +3686,6 @@ class BrandConnectState(rx.State):
     discovery_ran: bool = False
     discovery_error: str = ""
     discovery_signals: list[str] = []
-    #: Which category Resultados e insights shows (§ request 2026-10-05: the three
-    #: phases as tabs instead of three stacked lists) — a key of `PHASES`.
-    results_phase: str = "sector"
     sector_title: str = ""
     sector_note: str = ""
     sector_accounts: list[dict[str, str]] = []
@@ -4312,7 +4311,6 @@ class BrandConnectState(rx.State):
         self.manual_error = ""
         self.dragging = ""
         self.sort_stage = 0
-        self.results_phase = "sector"
         self.stage_cursor = 0
         self.last_assigned = ""
         self.fly_card = {}
@@ -4445,27 +4443,15 @@ class BrandConnectState(rx.State):
         return len(self.account_buckets) > 0
 
     @rx.var
-    def results_tabs(self) -> list[list[str]]:
-        """Resultados e insights' category tabs (§ 2026-10-05) — `[key, label]` each, the
-        label short (Sector / the country / the city) with how many accounts it holds,
-        "…" while its search is still running."""
-        names = {
-            "sector": "Sector",
-            "national": creator_discovery.country_name(self.country_code) or "País",
-            "local": self.city.strip() or "Ciudad",
-        }
-        tabs = []
+    def results_note(self) -> str:
+        """Why Resultados e insights' list is empty once the search finished: the first
+        category's own note (a failed search says so), else a plain "nothing found"."""
+        if self.discovering or self.discovered_accounts:
+            return ""
         for key in creator_discovery.PHASES:
-            accounts = self._phase_accounts(key)
-            pending = self.discovering and not accounts and not self._phase_note(key)
-            count = "…" if pending else str(len(accounts))
-            tabs.append([key, f"{names[key]} · {count}"])
-        return tabs
-
-    @rx.event
-    def set_results_phase(self, value: str | list[str]) -> None:
-        if isinstance(value, str) and value in creator_discovery.PHASES:
-            self.results_phase = value
+            if note := self._phase_note(key):
+                return note
+        return "No encontramos referentes para tu rubro todavía." if self.discovery_ran else ""
 
     @rx.var
     def profile_avatar_src(self) -> str:
@@ -4478,13 +4464,19 @@ class BrandConnectState(rx.State):
         )
 
     @rx.var
-    def ranked_referentes(self) -> list[dict[str, str]]:
-        """The referentes in influence order (`_rank`) — the ranking on Resultados."""
-        return _rank(self.referente_accounts, self.influence_order)
+    def ranked_accounts(self) -> list[dict[str, str]]:
+        """The referentes AND the competencia in one influence order (`_rank`) — the
+        ranking on Resultados (§ request 2026-10-06: "solo quiero la lista", one list
+        that can be reordered even when it holds only one kind). Each card keeps its
+        `bucket`, which the card shows as a label."""
+        sorted_ = [a for a in self.discovered_accounts if a["bucket"] in _RANKED_BUCKETS]
+        return _rank(sorted_, self.influence_order)
 
     @rx.var
-    def ranked_competencia(self) -> list[dict[str, str]]:
-        return _rank(self.competencia_accounts, self.influence_order)
+    def has_ranking(self) -> bool:
+        """Something was sorted as referente or competencia — the ranking replaces the
+        plain list (an account only marked detractor is not ranked)."""
+        return len(self.ranked_accounts) > 0
 
     def _phase_cards(self, key: str) -> list[dict[str, str]]:
         """One category's cards with their bucket key and current bucket."""
@@ -5666,29 +5658,24 @@ class BrandConnectState(rx.State):
 
     @rx.event
     def rank_drop(self, target_key: str) -> rx.event.EventSpec | None:
-        """The lifted card takes `target_key`'s place — inside the same bucket and the
-        same group only (pinned among pinned, the rest among the rest)."""
+        """The lifted card takes `target_key`'s place — a referente and a competidor
+        share the one ranking; only the group binds (pinned among pinned, the rest
+        among the rest)."""
         source, self.rank_dragging = self.rank_dragging, ""
         if not source or source == target_key:
             return None
         return self._reorder(source, target_key)
 
     def _reorder(self, source: str, target_key: str) -> rx.event.EventSpec | None:
-        lists = [self.ranked_referentes, self.ranked_competencia]
-        for i, ranked in enumerate(lists):
-            keys = [a["key"] for a in ranked]
-            if source not in keys:
-                continue
-            if target_key not in keys:
-                return None
-            moved = _move_in_ranking(ranked, source, keys.index(target_key))
-            if moved is None:
-                return None
-            orders = [[a["key"] for a in other] for other in lists]
-            orders[i] = moved
-            self.influence_order = [key for order in orders for key in order]
-            return BrandConnectState.sync_order
-        return None
+        ranked = self.ranked_accounts
+        keys = [a["key"] for a in ranked]
+        if source not in keys or target_key not in keys:
+            return None
+        moved = _move_in_ranking(ranked, source, keys.index(target_key))
+        if moved is None:
+            return None
+        self.influence_order = moved
+        return BrandConnectState.sync_order
 
     @rx.event(background=True)
     async def sync_order(self) -> None:
@@ -6171,9 +6158,9 @@ def _connect_step_insights() -> rx.Component:
     after ¿Todo correcto?, not before it. Redesigned 2026-10-05 (UI only, same content):
     the whole card width (`_RESULTS_COLUMN_MAX`, it used to be a 34rem column), the
     profile and its metrics in one header band (`_insights_header`), then the
-    referentes — the three categories as tabs over a grid of compact cards
-    (`_discovery_section`) or, once the operator sorted, the influence ranking with
-    Referentes and Competencia side by side (`_ranking_panel`). Its Finalizar-replacing
+    referentes — one grid of compact cards, sector, country and city merged
+    (`_discovery_section`, § 2026-10-06) or, once the operator sorted, the one influence
+    ranking of Referentes and Competencia (`_ranking_panel`). Its Finalizar-replacing
     CTA (`_finish_button`) lives in `_connect_controls`.
 
     The metrics are REAL (2026-09-10) and cover the last
@@ -6182,7 +6169,7 @@ def _connect_step_insights() -> rx.Component:
     return rx.vstack(
         _insights_header(),
         _discovery_section(),
-        rx.cond(BrandConnectState.has_sorted, _ranking_panel()),
+        rx.cond(BrandConnectState.has_ranking, _ranking_panel()),
         spacing="5",
         width="100%",
         align_items="stretch",
@@ -6391,88 +6378,37 @@ _RESULTS_GRID = {
 }
 
 
-def _discovery_phase(
-    title: rx.Var[str] | str,
-    fallback_title: str,
-    note: rx.Var[str] | str,
-    accounts: rx.Var[list[dict[str, str]]],
-) -> rx.Component:
-    """One category of the results: its title, then its accounts as a grid of compact
-    cards — or, while nothing has landed yet, skeleton cards (§ 2026-10-05: no spinner
-    on the Brand Kit), or the category's own note once it finished empty."""
-    return rx.vstack(
-        rx.text(rx.cond(title != "", title, fallback_title), size="2", weight="bold"),
+def _discovery_list() -> rx.Component:
+    """Every account the search found, as ONE grid of compact cards (§ request
+    2026-10-06: "no quiero la separación entre el país… solo quiero la lista") — the
+    sector, the country and the city merged, each account once, in the order they were
+    found (`discovered_accounts`). While nothing has landed: skeleton cards (no spinner
+    on the Brand Kit); finished empty: why (`results_note`). Shared with the Brand Kit
+    editor."""
+    return rx.cond(
+        BrandConnectState.discovered_accounts.length() > 0,
+        rx.box(
+            rx.foreach(BrandConnectState.discovered_accounts, _discovery_account),
+            **_RESULTS_GRID,
+        ),
         rx.cond(
-            accounts.length() > 0,
-            rx.box(rx.foreach(accounts, _discovery_account), **_RESULTS_GRID),
+            BrandConnectState.discovering,
+            rx.box(*(skeleton_card(3) for _ in range(3)), **_RESULTS_GRID),
             rx.cond(
-                note != "",
-                rx.text(note, size="2", color=T.TEXT_FAINT),
-                rx.cond(
-                    BrandConnectState.discovering,
-                    rx.box(*(skeleton_card(3) for _ in range(3)), **_RESULTS_GRID),
-                ),
+                BrandConnectState.results_note != "",
+                rx.text(BrandConnectState.results_note, size="2", color=T.TEXT_FAINT),
             ),
         ),
-        spacing="3",
-        width="100%",
-        align_items="start",
     )
 
 
-def _discovery_tabs() -> rx.Component:
-    """The three categories as tabs (§ request 2026-10-05) — Sector / the country / the
-    city, each with how many accounts it holds — over the chosen one's grid. Replaces
-    three long stacked lists; shared with the Brand Kit editor."""
-    phases = {
-        "sector": _discovery_phase(
-            BrandConnectState.sector_title,
-            "Referentes del sector",
-            BrandConnectState.sector_note,
-            BrandConnectState.sector_accounts,
-        ),
-        "national": _discovery_phase(
-            BrandConnectState.national_title,
-            "Referentes nacionales",
-            BrandConnectState.national_note,
-            BrandConnectState.national_accounts,
-        ),
-        "local": _discovery_phase(
-            BrandConnectState.local_title,
-            "Referentes locales",
-            BrandConnectState.local_note,
-            BrandConnectState.local_accounts,
-        ),
-    }
-    return rx.vstack(
-        rx.segmented_control.root(
-            rx.foreach(
-                BrandConnectState.results_tabs,
-                lambda tab: rx.segmented_control.item(tab[1], value=tab[0]),
-            ),
-            value=BrandConnectState.results_phase,
-            on_change=BrandConnectState.set_results_phase,
-            size="2",
-            max_width="100%",
-        ),
-        rx.match(
-            BrandConnectState.results_phase,
-            ("national", phases["national"]),
-            ("local", phases["local"]),
-            phases["sector"],
-        ),
-        spacing="4",
-        width="100%",
-        align_items="start",
-    )
-
-
-def _rank_card(item: rx.Var[dict[str, str]], bucket: str) -> rx.Component:
+def _rank_card(item: rx.Var[dict[str, str]]) -> rx.Component:
     """One cell of the influence ranking grid: its position, picture and handle. The
     card IS the control (§ request 2026-09-29, same gestures as the deck): a click opens
     the profile (`data-profile-url`), a long press lifts it for `assets/rank-drag.js` to
-    drag onto another card. `data-rank-group` (bucket + pinned/rest) is what keeps a drop
-    inside its own grid and group."""
+    drag onto another card. Referentes and competencia share the one ranking (§ request
+    2026-10-06), so the card says which it is (`tag`); `data-rank-group` (pinned/rest)
+    is what keeps a drop inside its own group."""
     pinned = item["group"] == RANK_PINNED
     return _RankCard.create(
         rx.vstack(
@@ -6516,7 +6452,14 @@ def _rank_card(item: rx.Var[dict[str, str]], bucket: str) -> rx.Component:
             rx.vstack(
                 mono(item["handle"], size="2"),
                 rx.text(item["followers"], " seguidores", size="1", color=T.TEXT_MUTED),
-                rx.hstack(_signal_flags(item), spacing="1", wrap="wrap", justify="center"),
+                rx.hstack(
+                    tag(rx.cond(item["bucket"] == "competencia", "Competencia", "Referente")),
+                    _signal_flags(item),
+                    spacing="1",
+                    wrap="wrap",
+                    justify="center",
+                    margin_top="0.35rem",
+                ),
                 spacing="0",
                 align="center",
                 min_width="0",
@@ -6530,7 +6473,7 @@ def _rank_card(item: rx.Var[dict[str, str]], bucket: str) -> rx.Component:
         ),
         class_name="q-rank-card",
         custom_attrs={
-            "data-rank-group": f"{bucket}:" + item["group"].to(str),
+            "data-rank-group": "ranking:" + item["group"].to(str),
             "data-rank-key": item["key"],
             "data-profile-url": item["url"],
             "role": "link",
@@ -6564,42 +6507,22 @@ def _script_on_mount(code: str) -> rx.Component:
     return rx.box(display="none", on_mount=rx.call_script(code))
 
 
-def _ranking_grid(title: str, bucket: str, accounts: rx.Var[list[dict[str, str]]]) -> rx.Component:
-    return rx.cond(
-        accounts.length() > 0,
-        rx.vstack(
-            rx.hstack(
-                _section_label(title),
-                rx.text(accounts.length(), size="1", color=T.TEXT_FAINT),
-                spacing="2",
-                align="center",
-            ),
-            rx.box(
-                rx.foreach(accounts, lambda item: _rank_card(item, bucket)),
-                # the width decides how many fit in a row — Referentes and Competencia
-                # sit side by side on a wide screen (§ 2026-10-05), so each grid only
-                # has half the card
-                display="grid",
-                grid_template_columns="repeat(auto-fill, minmax(min(100%, 8.5rem), 1fr))",
-                gap="0.75rem",
-                width="100%",
-            ),
-            spacing="2",
-            width="100%",
-            align_items="start",
-        ),
-    )
-
-
 def _ranking_panel() -> rx.Component:
-    """Resultados e insights' influence ranking (§ requests 2026-09-29): the referentes
-    and the competencia as a grid of cards, read left to right and top to bottom — that
-    reading order IS the influence order. A click on a card opens the profile; a long
-    press lifts it and dropping it on another card takes that card's place. The accounts
-    added by hand stay pinned first and only move among themselves."""
+    """Resultados e insights' influence ranking (§ requests 2026-09-29, 2026-10-06):
+    the referentes and the competencia in ONE grid of cards, read left to right and top
+    to bottom — that reading order IS the influence order, and each card says whether
+    it is a referente or a competidor. A click on a card opens the profile; a long press
+    lifts it and dropping it on another card takes that card's place — with only one
+    kind sorted, the list still reorders. The accounts added by hand stay pinned first
+    and only move among themselves."""
     return rx.vstack(
         rx.vstack(
-            rx.text("Ranking de influencia", size="3", weight="bold"),
+            rx.hstack(
+                rx.text("Ranking de influencia", size="3", weight="bold"),
+                rx.text(BrandConnectState.ranked_accounts.length(), size="1", color=T.TEXT_FAINT),
+                spacing="2",
+                align="baseline",
+            ),
             rx.text(
                 "Mantén pulsada una card y suéltala sobre otra para cambiar su posición: de"
                 " izquierda a derecha y de arriba abajo, de la que más influye en tu marca a"
@@ -6612,13 +6535,13 @@ def _ranking_panel() -> rx.Component:
             align_items="start",
         ),
         _script_on_mount(_RANK_DRAG_JS),
-        rx.grid(
-            _ranking_grid("Referentes", "referente", BrandConnectState.ranked_referentes),
-            _ranking_grid("Competencia", "competencia", BrandConnectState.ranked_competencia),
-            columns=rx.breakpoints(initial="1", md="2"),
-            spacing="5",
+        rx.box(
+            rx.foreach(BrandConnectState.ranked_accounts, _rank_card),
+            # the width decides how many fit in a row
+            display="grid",
+            grid_template_columns="repeat(auto-fill, minmax(min(100%, 8.5rem), 1fr))",
+            gap="0.75rem",
             width="100%",
-            align_items="start",
         ),
         spacing="4",
         width="100%",
@@ -6661,12 +6584,11 @@ def _discovery_section() -> rx.Component:
                 on_click=BrandConnectState.run_discovery,
             ),
             rx.cond(
-                BrandConnectState.has_sorted,
+                BrandConnectState.has_ranking,
                 # § request 2026-09-29: the operator's own sorting (referentes and
-                # competencia) is the lateral ranking now (`_ranking_panel`), not a
-                # list here.
+                # competencia) is the ranking now (`_ranking_panel`), not a list here.
                 rx.fragment(),
-                _discovery_tabs(),
+                _discovery_list(),
             ),
         ),
         spacing="3",

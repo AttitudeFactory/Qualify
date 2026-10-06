@@ -166,31 +166,34 @@ def test_without_a_catalog_the_latest_posts_hashtags_come_next(
 # -- Resultados e insights, redesigned (UI only) --------------------------------------------
 
 
-def test_the_results_tabs_name_each_category_with_its_count() -> None:
+def test_the_results_are_one_list_without_country_or_city_tabs() -> None:
+    """§ request 2026-10-06: "no quiero la separación entre el país… solo quiero la
+    lista" — the sector, the country and the city in one grid, each account once."""
     state = wiz.BrandConnectState()
-    state.country_code = "VE"
-    state.city = "San Cristóbal"
-    state.sector_accounts = [{"handle": "@a", "network": "TikTok", "followers": "1"}] * 3
-    state.local_note = "No encontramos cuentas de San Cristóbal para tu rubro todavía."
-    state.discovering = True  # the national search is still running
-    labels = dict(state.results_tabs)
-    assert labels == {
-        "sector": "Sector · 3",
-        "national": "Venezuela · …",
-        "local": "San Cristóbal · 0",
-    }
-    wiz.BrandConnectState.set_results_phase.fn(state, "local")
-    assert state.results_phase == "local"
-    wiz.BrandConnectState.set_results_phase.fn(state, "nope")
-    assert state.results_phase == "local"
+    state.sector_accounts = [{"handle": "@a", "network": "TikTok", "followers": "1"}]
+    state.national_accounts = [
+        {"handle": "@b", "network": "TikTok", "followers": "1"},
+        {"handle": "@a", "network": "TikTok", "followers": "1"},  # already in the sector
+    ]
+    state.local_accounts = [{"handle": "@c", "network": "TikTok", "followers": "1"}]
+    assert [a["handle"] for a in state.discovered_accounts] == ["@a", "@b", "@c"]
+    assert not hasattr(wiz.BrandConnectState, "results_tabs")
 
-
-def test_the_results_screen_is_one_wide_header_tabs_and_a_card_grid() -> None:
     rendered = str(wiz._connect_step_insights())
-    assert "RadixThemesSegmentedControl" in rendered  # the category tabs
+    assert "RadixThemesSegmentedControl" not in rendered  # no category tabs
     assert "q-clamp-2" in rendered  # compact cards with a two-line bio
     assert "34rem" not in rendered  # no narrow column any more
     assert wiz._RESULTS_COLUMN_MAX == "62rem"
+
+
+def test_an_empty_finished_search_says_why() -> None:
+    state = wiz.BrandConnectState()
+    state.discovery_ran = True
+    assert state.results_note == "No encontramos referentes para tu rubro todavía."
+    state.sector_note = "No pudimos buscar en el sector: inténtalo de nuevo."
+    assert state.results_note.startswith("No pudimos")
+    state.discovering = True
+    assert state.results_note == ""
 
 
 async def test_mejorar_tu_perfil_goes_to_the_signup() -> None:
