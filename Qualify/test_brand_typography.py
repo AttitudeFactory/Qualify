@@ -152,7 +152,40 @@ def wizard(monkeypatch: pytest.MonkeyPatch) -> BrandWizardState:
         return (f"uploads/t/{folder}/x_{files[0]}", str(files[0]), b"") if files else None
 
     monkeypatch.setattr(BrandWizardState, "_stage_logo_file", stage)
+    creative = CreativeState()
+
+    async def get_state(_self: Any, _cls: type) -> CreativeState:
+        return creative
+
+    monkeypatch.setattr(BrandWizardState, "get_state", get_state)
+    state.__dict__["_test_creative"] = creative
     return state
+
+
+async def test_a_dropped_font_file_fills_the_name_and_asks_google_fonts(
+    wizard: BrandWizardState,
+) -> None:
+    """§ request 2026-10-05: "si le subes un archivo... la busca y rellena el input"."""
+    fired = await BrandWizardState.handle_font_upload.fn(
+        wizard, ["PlayfairDisplay-BoldItalic.woff2"], "heading"
+    )
+    creative = wizard.__dict__["_test_creative"]
+    assert (creative.kit_font_heading, creative.kit_font_body) == (
+        "Playfair Display",
+        "Playfair Display",
+    )
+    assert "check_font_file" in str(fired)
+
+
+def test_the_font_file_toast_says_whether_it_is_open_source() -> None:
+    assert wiz.font_file_message("Lato", True) == (
+        "Detectamos «Lato» en tu archivo. Es open source: está en Google Fonts.",
+        "ok",
+    )
+    message, tone = wiz.font_file_message("Marca Sans", False)
+    assert "No está en Google Fonts" in message and tone == "info"
+    assert wiz.font_file_message("Lato", None) == ("Detectamos «Lato» en tu archivo.", "info")
+    assert "Escríbelo tú" in wiz.font_file_message("", None)[0]
 
 
 async def test_a_dropped_font_file_is_staged_under_its_slot(wizard: BrandWizardState) -> None:

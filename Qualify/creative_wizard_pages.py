@@ -55,6 +55,7 @@ from uuid import UUID, uuid4
 import reflex as rx
 from qualify_api.claude_tools import ClaudeToolError, MissingAPIKey, api_key_from_env
 from qualify_api.hashtags import fold, from_profile, normalize_tag
+from qualify_creative.brand import fonts as brand_fonts
 from reflex.constants import Dirs
 from reflex.utils.imports import ImportVar
 from reflex.vars import VarData
@@ -174,6 +175,26 @@ _FONTS_NEED_LOGO = "Sube primero una versión de tu logo: de ahí leemos la tipo
 _FONTS_NO_KEY = "La detección de tipografía no está configurada en este entorno."
 _FONTS_NO_IMAGE = "No podemos leer la tipografía de un SVG: sube una versión en PNG, JPG o WebP."
 _FONTS_FAILED = "No pudimos leer la tipografía de tu logo. Escríbela o inténtalo de nuevo."
+#: What reading an uploaded font FILE found (§ request 2026-10-05, `check_font_file`).
+_FONT_FILE_UNNAMED = "No pudimos leer el nombre de la fuente en el archivo. Escríbelo tú."
+
+
+def font_file_message(family: str, open_source: bool | None) -> tuple[str, str]:
+    """The toast after a font file is read: its family, and whether it is open source
+    (on Google Fonts) — `(message, tone)` for `brand_documents.notify`."""
+    if not family:
+        return _FONT_FILE_UNNAMED, "info"
+    if open_source is True:
+        return (
+            f"Detectamos «{family}» en tu archivo. Es open source: está en Google Fonts.",
+            "ok",
+        )
+    if open_source is False:
+        return (
+            f"Detectamos «{family}» en tu archivo. No está en Google Fonts: usaremos tu archivo.",
+            "info",
+        )
+    return f"Detectamos «{family}» en tu archivo.", "info"
 
 
 def _read_logo_files(tenant_id: UUID | None, keys: list[str]) -> list[tuple[str, bytes]]:
@@ -646,15 +667,33 @@ class BrandWizardState(rx.State):
         return {slot: Path(key).name.split("_", 1)[-1] for slot, key in self.font_files.items()}
 
     @rx.event
-    async def handle_font_upload(self, files: list[rx.UploadFile], slot: str) -> None:
-        """Stage the font file dropped on a typography tile (Títulos / Cuerpo de texto).
-        The family name is a separate field: a file alone is fine, a name alone too."""
+    async def handle_font_upload(
+        self, files: list[rx.UploadFile], slot: str
+    ) -> rx.event.EventSpec | None:
+        """Stage the font file dropped on Tipografía's tile, then read it (§ request
+        2026-10-05, "la busca y rellena el input"): the family the file declares
+        (`qualify_creative.brand.fonts.family_name` — its own `name` table, or its file
+        name for a WOFF2) goes into the name field at once, and whether it is open source
+        is asked of Google Fonts in the background (`check_font_file`)."""
         if slot not in FONT_SLOT_KEYS:
-            return
+            return None
         staged = await self._stage_logo_file(files, f"font/{slot}")
         if staged is None:
-            return
+            return None
         self.font_files = {**self.font_files, slot: staged[0]}
+        family = brand_fonts.family_name(staged[2], staged[1])
+        if not family:
+            return brand_documents.notify(*font_file_message("", None))
+        creative = await self.get_state(CreativeState)
+        creative.kit_font_heading = creative.kit_font_body = family  # the one face
+        return BrandWizardState.check_font_file(family)
+
+    @rx.event(background=True)
+    async def check_font_file(self, family: str) -> AsyncIterator[rx.event.EventSpec | None]:
+        """Is the family just read off a font file on Google Fonts — and so open source?
+        One request to its CSS API, off the event loop; the answer is a toast."""
+        open_source = await asyncio.to_thread(brand_fonts.on_google_fonts, family)
+        yield brand_documents.notify(*font_file_message(family, open_source))
 
     @rx.event
     def clear_font_file(self, slot: str) -> None:
