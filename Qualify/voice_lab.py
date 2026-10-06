@@ -192,6 +192,14 @@ _CLONE_RATE = 44_100
 _CLONE_MAX_SECONDS = 300.0
 
 
+def _decode_for_clone(path: Path) -> Any:
+    """The recording as mono float32 samples at `_CLONE_RATE` — PyAV, through the `ml`
+    group's `qualify_models` (lazy: only a recording that is not mp3/wav needs it)."""
+    from qualify_models.providers import decode_audio
+
+    return decode_audio(path, sampling_rate=_CLONE_RATE, max_seconds=_CLONE_MAX_SECONDS)
+
+
 def clone_audio(path: Path) -> tuple[bytes, str, str]:
     """(bytes, filename, content type) of the recording, ready for HeyGen."""
     suffix = path.suffix.lower()
@@ -201,9 +209,8 @@ def clone_audio(path: Path) -> tuple[bytes, str, str]:
     import wave
 
     import numpy as np
-    from qualify_models.providers import decode_audio
 
-    samples = decode_audio(path, sampling_rate=_CLONE_RATE, max_seconds=_CLONE_MAX_SECONDS)
+    samples = _decode_for_clone(path)
     pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as out:

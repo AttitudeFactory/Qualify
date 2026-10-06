@@ -245,14 +245,14 @@ def test_a_browser_recording_goes_to_heygen_as_wav(
     import io
     import wave
 
-    np = pytest.importorskip("numpy")  # the `ml` group; CI's default sync has none
+    # numpy is in the `dev` group so this runs in CI too; the decoding itself (PyAV,
+    # the `ml` group) is replaced, so `qualify_models` need not be installed
+    import numpy as np
 
     recording = tmp_path / "grabacion-1.webm"
     recording.write_bytes(b"webm")
     second = np.full(44_100, 0.5, dtype=np.float32)
-    monkeypatch.setattr(
-        "qualify_models.providers.decode_audio", lambda path, **kw: second, raising=True
-    )
+    monkeypatch.setattr(voice_lab, "_decode_for_clone", lambda path: second)
     data, filename, content_type = voice_lab.clone_audio(recording)
     assert (filename, content_type) == ("grabacion-1.wav", "audio/wav")
     with wave.open(io.BytesIO(data)) as wav:

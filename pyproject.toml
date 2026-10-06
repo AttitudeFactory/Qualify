@@ -42,6 +42,9 @@ dev = [
     "pytest-asyncio>=0.24.0",
     # Coverage in CI (`just ci-test` / .github/workflows/ci.yml): per-package XML + summary.
     "pytest-cov>=7.0.0",
+    # `Qualify/test_voice_lab.py` builds a WAV from samples; numpy alone (no torch) lets
+    # it run in CI's default sync instead of being skipped there
+    "numpy>=2.5",
     "ruff>=0.16.9",
     "pre-commit>=4.6.2",
 ]

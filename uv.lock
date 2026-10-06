@@ -2129,6 +2129,7 @@ crm = [
     { name = "sqlmodel" },
 ]
 dev = [
+    { name = "numpy" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -2154,6 +2155,7 @@ crm = [
     { name = "sqlmodel", specifier = ">=0.0.47" },
 ]
 dev = [
+    { name = "numpy", specifier = ">=2.5" },
     { name = "pre-commit", specifier = ">=4.6.2" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
