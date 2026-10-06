@@ -120,3 +120,53 @@ def test_removing_a_pill_closes_an_open_edit() -> None:
     state.start_kit_pill_edit("dont", 2)
     state.remove_kit_pill("dont", 0)
     assert state.kit_pill_edit_field == "" and state.kit_dont_items == ["b", "c"]
+
+
+# -- the "+" that opens a list's input (§ request 2026-10-06) ----------------------------
+
+
+def test_the_plus_opens_one_list_input_and_enter_closes_it() -> None:
+    state = CreativeState()
+    state.open_kit_pill_input("do")
+    assert state.kit_pill_adding == "do"
+    state.set_kit_pill_draft("do", "¡Te esperamos!")
+    state.add_kit_pill("do")
+    assert state.kit_do_items == ["¡Te esperamos!"]
+    assert state.kit_pill_adding == ""  # back to "+"
+    state.open_kit_pill_input("nope")  # unknown list: nothing opens
+    assert state.kit_pill_adding == ""
+
+
+def test_leaving_the_input_adds_and_leaving_it_empty_just_closes() -> None:
+    state = CreativeState()
+    state.open_kit_pill_input("cta")
+    state.kit_pill_add_blur("  Escríbenos por WhatsApp ")
+    assert state.kit_cta_items == ["Escríbenos por WhatsApp"]
+    assert state.kit_pill_adding == ""
+
+    state.open_kit_pill_input("cta")
+    state.kit_pill_add_blur("   ")
+    assert state.kit_cta_items == ["Escríbenos por WhatsApp"]
+    assert state.kit_pill_adding == ""
+
+
+def test_escape_closes_the_input_and_forgets_the_draft() -> None:
+    state = CreativeState()
+    state.open_kit_pill_input("banned")
+    state.set_kit_pill_draft("banned", "barato")
+    state.kit_pill_add_key("a")  # any other key: still open
+    assert state.kit_pill_adding == "banned"
+    state.kit_pill_add_key("Escape")
+    assert state.kit_pill_adding == "" and state.kit_pill_drafts["banned"] == ""
+    assert state.kit_banned_words == ""
+
+
+def test_the_example_is_a_pill_only_while_the_list_is_empty() -> None:
+    """The example pill renders under `items.length() == 0`, and no input is mounted
+    until the "+" is pressed."""
+    from . import creative_wizard_pages as wiz
+
+    rendered = str(wiz._kit_list_editor(*wiz._KIT_LISTS[0]))
+    assert "Ej.: " in rendered
+    assert "kit_do_items" in rendered and "length" in rendered
+    assert "kit_pill_adding" in rendered  # the input sits behind the "+"

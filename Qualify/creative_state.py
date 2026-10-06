@@ -280,6 +280,9 @@ class CreativeState(rx.State):
     kit_pill_edit_field: str = ""
     kit_pill_edit_index: int = -1
     kit_pill_edit_value: str = ""
+    #: The list whose "+" was pressed, so its input is open (`_KIT_PILL_FIELDS` key, ""
+    #: = none) — no input until then, like Tu rubro's hashtags (§ request 2026-10-06).
+    kit_pill_adding: str = ""
 
     # -- /brand/voice -------------------------------------------------------
     voice_loading: bool = False
@@ -814,8 +817,11 @@ class CreativeState(rx.State):
 
     @rx.event
     def add_kit_pill(self, field: str) -> None:
-        """Enter / "+" in a list's pill input: the typed value joins the list (a value
-        already there, ignoring case, is not added twice)."""
+        """Enter in a list's pill input: the typed value joins the list (a value already
+        there, ignoring case, is not added twice) and the input closes back into "+"."""
+        self._add_kit_pill(field)
+
+    def _add_kit_pill(self, field: str) -> None:
         attr = _KIT_PILL_FIELDS.get(field)
         if attr is None:
             return
@@ -825,6 +831,36 @@ class CreativeState(rx.State):
             if value.casefold() not in {item.casefold() for item in items}:
                 setattr(self, attr, "\n".join([*items, value]))
         self.kit_pill_drafts = {**self.kit_pill_drafts, field: ""}
+        if self.kit_pill_adding == field:
+            self.kit_pill_adding = ""
+
+    @rx.event
+    def open_kit_pill_input(self, field: str) -> None:
+        """A list's "+": only now does its input appear (one list at a time)."""
+        if field in _KIT_PILL_FIELDS:
+            self._clear_kit_pill_edit()
+            self.kit_pill_adding = field
+
+    @rx.event
+    def kit_pill_add_key(self, key: str) -> None:
+        """Escape closes the open input and forgets what was typed."""
+        if key == "Escape" and self.kit_pill_adding:
+            self.kit_pill_drafts = {**self.kit_pill_drafts, self.kit_pill_adding: ""}
+            self.kit_pill_adding = ""
+
+    @rx.event
+    def kit_pill_add_blur(self, value: str) -> None:
+        """Leaving the input adds what was typed, like Enter; left empty, it just puts
+        the "+" back (the same rule as Tu rubro's hashtags)."""
+        field = self.kit_pill_adding
+        if not field:
+            return
+        if not value.strip():
+            self.kit_pill_drafts = {**self.kit_pill_drafts, field: ""}
+            self.kit_pill_adding = ""
+            return
+        self.kit_pill_drafts = {**self.kit_pill_drafts, field: value}
+        self._add_kit_pill(field)
 
     @rx.event
     def remove_kit_pill(self, field: str, index: int) -> None:

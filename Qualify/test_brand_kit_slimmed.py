@@ -64,7 +64,7 @@ def _js(text: str) -> str:
 
 def test_the_review_fills_the_five_lists_with_examples() -> None:
     rendered = str(wiz._step_confirm())
-    for _field, _label, _hint, example, _empty in wiz._KIT_LISTS:
+    for _field, _label, _hint, example in wiz._KIT_LISTS:
         assert _js(example) in rendered
     for section in ("Tu marca", "Cómo habla tu marca", "Lo que nunca debe decir"):
         assert _js(section) in rendered

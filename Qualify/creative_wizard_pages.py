@@ -88,7 +88,6 @@ from .ui import (
     mono,
     page_body,
     page_header,
-    pill_editor,
     progress_panel,
     removable_pill,
     skeleton_card,
@@ -2277,42 +2276,37 @@ def _tone_sliders() -> tuple[rx.Component, ...]:
 #: The five kit lists ¿Todo correcto? fills (§ request 2026-10-05: "las views de enséñale
 #: a hablar y lo que nunca debe decir vamos a dejarlo solo en el ¿Todo correcto?, que allí
 #: se puedan poner y que aparezcan los ejemplos") — (pill field, label, what it is for,
-#: an example, what to show when empty).
-_KIT_LISTS: tuple[tuple[str, str, str, str, str], ...] = (
+#: an example — shown as a pill while the list is empty).
+_KIT_LISTS: tuple[tuple[str, str, str, str], ...] = (
     (
         "do",
         "Ejemplos que SÍ suenan a la marca",
         "Frases reales de tu marca: las imitamos al escribir.",
         "¡Tu primer café del día corre por nuestra cuenta!",
-        "Ninguno todavía",
     ),
     (
         "dont",
         "Ejemplos que NO suenan a la marca",
         "Cómo no debe sonar nunca, para alejarnos de ahí.",
         "Estimado cliente, le informamos que disponemos de café.",
-        "Ninguno todavía",
     ),
     (
         "cta",
         "Patrones de llamado a la acción",
         "Cómo pides que te escriban, compren o visiten.",
         "Pide el tuyo por WhatsApp y pásalo a recoger",
-        "Ninguno todavía",
     ),
     (
         "banned",
         "Palabras vetadas",
         "Palabras que nunca deben aparecer.",
         "barato",
-        "Ninguna",
     ),
     (
         "claims",
         "Claims prohibidos",
         "Promesas o comparaciones que la marca no puede hacer.",
         "el mejor café de Colombia",
-        "Ninguno",
     ),
 )
 #: Which `CreativeState` list var each pill field renders.
@@ -2325,11 +2319,14 @@ _KIT_LIST_ITEMS = {
 }
 
 
-def _kit_list_editor(field: str, label: str, hint: str, example: str, empty: str) -> rx.Component:
-    """One kit list on ¿Todo correcto?: its label and what it is for, the values as
-    pills that edit in place (`_editable_pill`), and an input that adds one on Enter —
-    its example always in sight, as the placeholder and on its own line."""
+def _kit_list_editor(field: str, label: str, hint: str, example: str) -> rx.Component:
+    """One kit list (¿Todo correcto? and the Brand Kit editor): its label and what it is
+    for, the values as pills that edit in place (`_editable_pill`) and a "+" at their
+    end — no input until it is pressed, like Tu rubro's hashtags (§ request 2026-10-06);
+    Enter or leaving it adds, Escape or leaving it empty puts the "+" back. While the
+    list is empty its example sits there as a faint pill, and goes with the first value."""
     items = _KIT_LIST_ITEMS[field]
+    adding = CreativeState.kit_pill_adding == field
     return rx.vstack(
         rx.vstack(
             rx.text(label, size="2", weight="medium"),
@@ -2337,29 +2334,72 @@ def _kit_list_editor(field: str, label: str, hint: str, example: str, empty: str
             spacing="0",
             align_items="start",
         ),
+        rx.flex(
+            rx.foreach(items, lambda item, index: _editable_pill(field, item, index)),
+            rx.cond(items.length() == 0, _example_pill(example)),
+            rx.cond(
+                ~adding,
+                rx.icon_button(
+                    rx.icon("plus", size=T.ICON_SM),
+                    on_click=CreativeState.open_kit_pill_input(field),
+                    variant="soft",
+                    color_scheme="gray",
+                    size="1",
+                    radius="full",
+                    aria_label=f"Agregar a {label.lower()}",
+                    margin_y="0.25rem",
+                ),
+            ),
+            wrap="wrap",
+            column_gap="0.75rem",
+            row_gap="0.75rem",
+            align="center",
+            width="100%",
+        ),
         rx.cond(
-            items.length() > 0,
-            rx.flex(
-                rx.foreach(items, lambda item, index: _editable_pill(field, item, index)),
-                wrap="wrap",
-                gap="2",
+            adding,
+            rx.form(
+                rx.input(
+                    value=CreativeState.kit_pill_drafts[field],
+                    on_change=lambda value: CreativeState.set_kit_pill_draft(field, value),
+                    on_key_down=CreativeState.kit_pill_add_key,
+                    on_blur=CreativeState.kit_pill_add_blur,
+                    auto_focus=True,
+                    placeholder=f"Ej.: {example}",
+                    width="100%",
+                    size="2",
+                    radius=_CONTROL_RADIUS,
+                ),
+                on_submit=CreativeState.add_kit_pill(field),
+                reset_on_submit=False,
                 width="100%",
             ),
-            rx.text(empty, size="1", color=T.TEXT_FAINT),
-        ),
-        pill_editor(
-            items,
-            draft=CreativeState.kit_pill_drafts[field],
-            on_draft_change=lambda value: CreativeState.set_kit_pill_draft(field, value),
-            on_add=CreativeState.add_kit_pill(field),
-            on_remove=lambda index: CreativeState.remove_kit_pill(field, index),
-            placeholder=f"Ej.: {example}",
-            add_label=f"Agregar a {label.lower()}",
-            show_items=False,
         ),
         spacing="2",
         width="100%",
         align_items="start",
+    )
+
+
+def _example_pill(example: str) -> rx.Component:
+    """A list's example while it has no values: a pill in outline, faint and prefixed
+    "Ej.:", so it never reads as a value of the kit — it adds nothing and has no ✕."""
+    return rx.badge(
+        rx.text(
+            f"Ej.: {example}",
+            overflow="hidden",
+            text_overflow="ellipsis",
+            white_space="nowrap",
+        ),
+        size="2",
+        radius="full",
+        variant="outline",
+        color_scheme="gray",
+        color=T.TEXT_FAINT,
+        border_style="dashed",
+        font_style="italic",
+        max_width="100%",
+        title="Un ejemplo: agrega los tuyos con +",
     )
 
 
