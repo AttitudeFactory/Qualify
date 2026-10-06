@@ -16,7 +16,7 @@ from typing import Any
 
 import reflex as rx
 
-from .planner_vm import KIND_ICONS
+from .planner_vm import DESTINATION_ICONS, KIND_ICONS
 from .r2_media import BACKEND_BASE
 from .ui import card, signal_pill, tag
 from .ui import tokens as T
@@ -163,20 +163,84 @@ def kind_chip(kind: rx.Var[str], label: rx.Var[str], *, glass: bool = False) -> 
     )
 
 
-def temperature_badge(temperature: rx.Var[str], label: rx.Var[str], hint: rx.Var[str]):
+def temperature_badge(
+    temperature: rx.Var[str],
+    label: rx.Var[str],
+    hint: rx.Var[str],
+    *,
+    compact: bool = False,
+):
     """Cold (snowflake, ice gradient) or Hot (flame, fire gradient); nothing when the
-    POST's history is unknown."""
+    POST's history is unknown. `compact` keeps the glyph and drops the word (a calendar
+    chip); the word stays in the tooltip and the accessible name."""
     return rx.cond(
         temperature != "",
         rx.box(
             rx.cond(
                 temperature == "cold",
-                rx.icon("snowflake", size=12),
-                rx.icon("flame", size=12),
+                rx.icon("snowflake", size=11 if compact else 12),
+                rx.icon("flame", size=11 if compact else 12),
             ),
-            rx.text(label, as_="span"),
-            class_name="q-temp q-temp--" + temperature,
+            *([] if compact else [rx.text(label, as_="span")]),
+            class_name="q-temp q-temp--" + temperature + (" q-temp--mini" if compact else ""),
             title=hint,
+            aria_label=hint,
+        ),
+    )
+
+
+def media_fill(thumbnail_url: rx.Var[str], video_url: rx.Var[str], kind: rx.Var[str]):
+    """A POST's picture filling its frame: the R2 video's first frame, the image, or —
+    with neither — the format's own gradient and glyph."""
+    return rx.cond(
+        video_url != "",
+        rx.el.video(
+            src=BACKEND_BASE + video_url + "#t=0.1",
+            muted=True,
+            preload="metadata",
+            plays_inline=True,
+            aria_hidden="true",
+            class_name="q-media-fill",
+        ),
+        rx.cond(
+            thumbnail_url != "",
+            rx.image(
+                src=rx.cond(
+                    thumbnail_url.startswith("http"),
+                    thumbnail_url,
+                    rx.get_upload_url(thumbnail_url),
+                ),
+                alt="",
+                class_name="q-media-fill",
+            ),
+            rx.center(kind_icon(kind, 26), class_name="q-media-empty q-kind-" + kind),
+        ),
+    )
+
+
+def destination_icon(destination: rx.Var[str] | str, size: int = 12) -> rx.Component:
+    """The destination's glyph (`rx.icon` needs a literal name, hence the match)."""
+    if isinstance(destination, str):
+        return rx.icon(DESTINATION_ICONS.get(destination, "send"), size=size)
+    return rx.match(
+        destination,
+        *[(key, rx.icon(icon, size=size)) for key, icon in DESTINATION_ICONS.items()],
+        rx.icon("send", size=size),
+    )
+
+
+def destination_badge(
+    destination: rx.Var[str], label: rx.Var[str], *, prefix: str = ""
+) -> rx.Component:
+    """QUA-118 v2: where an event goes out — glyph AND word («Publicación», «Reel»,
+    «Historia»), in the destination's colour; never the colour alone. Nothing when the
+    destination is unknown."""
+    return rx.cond(
+        destination != "",
+        rx.box(
+            destination_icon(destination),
+            rx.text(prefix + label, as_="span"),
+            class_name="q-dest-badge q-dest-" + destination,
         ),
     )
 

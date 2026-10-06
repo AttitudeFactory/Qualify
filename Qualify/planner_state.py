@@ -33,6 +33,7 @@ from .planner_provider import (
     remove_rejected_post,
     reschedule_event,
     schedule_post,
+    set_event_goals,
     set_event_tags,
 )
 from .planner_vm import (
@@ -61,7 +62,6 @@ from .planner_vm import (
     TzOptionVM,
     assign_steps_done,
     build_plan_row,
-    post_kind,
     split_time,
     timezone_options,
     tz_option,
@@ -124,6 +124,21 @@ def search_timezones(query: str, day_iso: str) -> list[TzOptionVM]:
 def shift_week(monday_iso: str, weeks: int) -> str:
     """The Monday `weeks` weeks away from `monday_iso` (pure — tested directly)."""
     return (date.fromisoformat(monday_iso) + timedelta(weeks=weeks)).isoformat()
+
+
+def _weeks(text: str) -> int:
+    try:
+        return max(int(text.strip() or "0"), 0)
+    except ValueError:
+        return 0
+
+
+def _starting_destination(post: PostOptionVM, output_port: str) -> str:
+    """Where a piece starts: its output's default for a package, else the POST's."""
+    if output_port:
+        chip = next((c for c in post.outputs if c.port == output_port), None)
+        return chip.default_destination if chip is not None else ""
+    return post.default_destination
 
 
 class PlannerState(rx.State):
@@ -284,7 +299,6 @@ class PlannerState(rx.State):
         """The POST behind a piece of the plan. A reschedule's POST may no longer be in
         the schedulable list (it is already planned), so it is read from the event."""
         if self.form_mode == MODE_RESCHEDULE and post_id == self.detail.post_id:
-            kind_key, kind_word, _icon = post_kind("", output_port=self.detail.output_port)
             return PostOptionVM(
                 post_id=self.detail.post_id,
                 title=self.detail.title,
@@ -297,8 +311,8 @@ class PlannerState(rx.State):
                 readiness_note=self.detail.publish_note,
                 schedulable=True,
                 video_url=self.detail.video_url,
-                kind=kind_key,
-                kind_label=kind_word,
+                kind=self.detail.kind,
+                kind_label=self.detail.kind_label,
             )
         for post in self.schedulable:
             if post.post_id == post_id:
@@ -435,6 +449,12 @@ class PlannerState(rx.State):
             return "Guardar cambios"
         n = self.form_event_count
         return "Programar" if n <= 1 else f"Programar {n} publicaciones"
+
+    @rx.var
+    def form_story_warnings(self) -> int:
+        """Pieces whose destination carries a limit we cannot check here (a video story's
+        60 s) — «Confirmar» says so once, before the operator confirms."""
+        return sum(1 for row in self.plan_rows if row.destination_warning)
 
     @rx.var
     def form_goal_count(self) -> int:
@@ -744,6 +764,33 @@ class PlannerState(rx.State):
             self.detail = detail
         yield PlannerState.load
 
+    # -- goals of a planned publication (saved right away) -----------------------------
+
+    @rx.event(background=True)
+    async def toggle_detail_goal(self, key: str):
+        """A goal on or off for the open event (0042) — the same goals as «Nueva
+        publicación», editable afterwards for the later analysis."""
+        if key not in PLAN_GOAL_KEYS:
+            return
+        async with self:
+            event_id = self.detail.event_id
+            current = list(self.detail.goal_keys)
+            view_tz = self.view_tz
+        goals = tuple(g for g in current if g != key) if key in current else (*current, key)
+        tenant_id = await self._tenant()
+        if tenant_id is None or not event_id:
+            return
+        try:
+            await asyncio.to_thread(set_event_goals, tenant_id, event_id, goals)
+            detail = await asyncio.to_thread(event_detail, tenant_id, event_id, view_tz)
+        except Exception as exc:
+            if not isinstance(exc, PlannerError):
+                logger.error("planner set_event_goals failed: %s", type(exc).__name__)
+            yield rx.toast.error(planner_error_message(exc))
+            return
+        async with self:
+            self.detail = detail
+
     # -- tags in the form -----------------------------------------------------
 
     @rx.event
@@ -791,13 +838,15 @@ class PlannerState(rx.State):
 
     def _new_item(self, post: PostOptionVM) -> PlanItem:
         """A piece just picked: the drawer's default day and time, the first account,
-        and — for a template package (MP-11) — its next output without a live event."""
+        — for a template package (MP-11) — its next output without a live event, and
+        the destination it publishes as today (QUA-118 v2), changeable in the step."""
         return PlanItem(
             post_id=post.post_id,
             date=self.form_default_date,
             time=self.form_default_time,
             connection_ids=self._first_account(),
             output_port=post.next_port,
+            destination=_starting_destination(post, post.next_port),
         )
 
     def _add_post(self, post_id: str) -> bool:
@@ -945,8 +994,24 @@ class PlannerState(rx.State):
 
     @rx.event
     def set_item_output(self, post_id: str, value: str | list[str]) -> None:
+        """Another output of a package: its file decides where it may go, so the
+        destination starts again on that output's own."""
         chosen = value[0] if isinstance(value, list) and value else value
-        self._update_item(post_id, output_port=chosen if isinstance(chosen, str) else "")
+        port = chosen if isinstance(chosen, str) else ""
+        post = self._post_for(post_id)
+        destination = _starting_destination(post, port) if post is not None else ""
+        self._update_item(post_id, output_port=port, destination=destination)
+
+    @rx.event
+    def set_item_destination(self, post_id: str, destination: str) -> None:
+        """«¿Dónde quieres publicarlo?»: only an available destination is taken — a
+        disabled button never changes the piece. A move keeps its destination."""
+        if self.form_mode == MODE_RESCHEDULE:
+            return
+        row = next((r for r in self.plan_rows if r.post_id == post_id), None)
+        if row is None or not any(d.key == destination and d.available for d in row.destinations):
+            return
+        self._update_item(post_id, destination=destination)
 
     @rx.event
     def toggle_item_connection(self, post_id: str, connection_id: str) -> None:
@@ -980,7 +1045,34 @@ class PlannerState(rx.State):
 
     @rx.event
     def set_item_repeat(self, post_id: str, value: bool) -> None:
-        self._update_item(post_id, repeat=bool(value))
+        """Turning the weekly series on starts on the date's own weekday; the operator
+        then adds or removes days (`toggle_item_repeat_day`)."""
+        item = self._item(post_id)
+        if item is None:
+            return
+        days = list(item.repeat_days)
+        if value and not days:
+            try:
+                days = [date.fromisoformat(item.date).weekday()]
+            except ValueError:
+                days = []
+        self._update_item(post_id, repeat=bool(value), repeat_days=days)
+
+    @rx.event
+    def toggle_item_repeat_day(self, post_id: str, day: int) -> None:
+        """A weekday of the series on or off — never the last one (a series needs a day)."""
+        item = self._item(post_id)
+        if item is None or not 0 <= int(day) <= 6:
+            return
+        day = int(day)
+        days = list(item.repeat_days)
+        if day in days:
+            if len(days) == 1:
+                return
+            days.remove(day)
+        else:
+            days.append(day)
+        self._update_item(post_id, repeat_days=sorted(days))
 
     @rx.event
     def set_item_repeat_count(self, post_id: str, value: str) -> None:
@@ -1067,6 +1159,7 @@ class PlannerState(rx.State):
             mode, event_id = self.form_mode, self.form_event_id
             rows = list(self.plan_rows_by_time)
             view_tz = self.view_tz
+            plan_goals = tuple(self.form_goals)
             if not rows:
                 self.form_error = _FORM_INCOMPLETE
                 return
@@ -1111,7 +1204,11 @@ class PlannerState(rx.State):
                         row.output_port,
                         accounts,
                         "",
-                        row.series.count if row.series.enabled else 0,
+                        # A weekly series: its weeks and weekdays (`weekly_days_on`).
+                        _weeks(row.repeat_count) if row.series.enabled else 0,
+                        row.destination,
+                        tuple(row.repeat_days) if row.series.enabled else (),
+                        plan_goals,
                     )
             except Exception as exc:
                 if not isinstance(exc, PlannerError):
@@ -1225,6 +1322,7 @@ class PlannerState(rx.State):
                 connection_ids=[self.detail.connection_id] if self.detail.connection_id else [],
                 tag_ids=list(self.detail.tag_ids),
                 output_port=self.detail.output_port,  # shown, never changed by a move
+                destination=self.detail.destination,  # likewise: a move keeps it
             )
         ]
         self.detail_open = False

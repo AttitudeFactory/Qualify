@@ -523,13 +523,15 @@ def drawer(
     description: str | rx.Var | None = None,
     footer: rx.Component | None = None,
     width: str = "32rem",
+    icon: str | None = None,
 ) -> rx.Component:
     """A panel that slides in from the right edge and stays there while the operator
     works through something longer than a dialog — the Planificador's assign flow.
     Built on Radix's dialog, so Esc, the backdrop click, the focus trap and the ARIA
     wiring come for free; ``.q-drawer`` (assets/qualify.css) only moves the content to
     the edge: fixed width on a desktop, the full viewport on a phone. The body scrolls;
-    ``title`` and ``footer`` stay put. One drawer at a time, never nested."""
+    ``title`` and ``footer`` stay put. One drawer at a time, never nested. ``icon`` puts
+    an accent glyph before the title and sets it as a header (with ``.q-drawer-*``)."""
     body = rx.box(
         *children,
         class_name="q-drawer-body",
@@ -541,7 +543,17 @@ def drawer(
     head = rx.vstack(
         rx.hstack(
             rx.dialog.title(
-                title, margin="0", size="5", as_child=not isinstance(title, (str, rx.Var))
+                rx.hstack(
+                    rx.box(rx.icon(icon, size=18), class_name="q-drawer-glyph"),
+                    rx.text(title, class_name="q-drawer-title-text"),
+                    class_name="q-drawer-title",
+                    spacing="0",
+                )
+                if icon is not None
+                else title,
+                margin="0",
+                size="5",
+                as_child=icon is not None or not isinstance(title, (str, rx.Var)),
             ),
             rx.spacer(),
             rx.dialog.close(

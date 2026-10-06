@@ -26,6 +26,7 @@ speaking through `signal_pill` tones.
 from __future__ import annotations
 
 import reflex as rx
+from qualify_api.planner.publishable import STORY_CAPTION_NOTE
 
 from .planner_state import CONFIRM_CANCEL, CONFIRM_REMOVE, PlannerState
 from .planner_vm import (
@@ -40,10 +41,19 @@ from .planner_vm import (
     STEP_PREVIEW,
     STEP_WHEN,
     TAG_COLORS,
+    WEEKDAY_INITIALS,
+    WEEKDAY_NAMES,
 )
-from .post_card import kind_chip, kind_icon, pill, temperature_badge
+from .post_card import (
+    destination_badge,
+    destination_icon,
+    kind_chip,
+    media_fill,
+    pill,
+    temperature_badge,
+)
 from .r2_media import BACKEND_BASE
-from .ui import callout, drawer, platform_badge, stepper
+from .ui import callout, drawer, stepper
 from .ui import tokens as T
 
 _ONE_LINE = {"overflow": "hidden", "text_overflow": "ellipsis", "white_space": "nowrap"}
@@ -58,10 +68,9 @@ _CLAMP_2 = {
 _PLATFORM_ICON = {"instagram": "camera", "facebook": "users", "tiktok": "music-2"}
 _KIND_FILTERS: tuple[tuple[str, str], ...] = (
     ("all", "Todo"),
-    ("reel", "Reels"),
-    ("story", "Historias"),
-    ("gallery", "Carruseles"),
-    ("feed", "Feed"),
+    ("image", "Imágenes"),
+    ("video", "Videos"),
+    ("carousel", "Carruseles"),
     ("pack", "Multiformato"),
 )
 
@@ -78,6 +87,28 @@ def platform_icon(platform: rx.Var[str], size: int = T.ICON_SM) -> rx.Component:
             for key, icon in _PLATFORM_ICON.items()
         ],
         rx.icon("globe", size=size, color=T.TEXT_MUTED),
+    )
+
+
+def channel_mark(platform: rx.Var[str]) -> rx.Component:
+    """The channel at a glance: a small tile in the platform's own colours with a
+    generic glyph (Lucide has no brand logos), the platform's name as tooltip. Always
+    next to the account handle, so the word is there too."""
+    return rx.match(
+        platform,
+        *[
+            (
+                key,
+                rx.center(
+                    rx.icon(icon, size=10, color="white", stroke_width=2.5),
+                    class_name=f"q-ch q-ch-{key}",
+                    title=T.PLATFORM_LABEL.get(key, key),
+                    aria_label=T.PLATFORM_LABEL.get(key, key),
+                ),
+            )
+            for key, icon in _PLATFORM_ICON.items()
+        ],
+        rx.center(rx.icon("globe", size=10, color="white"), class_name="q-ch"),
     )
 
 
@@ -113,35 +144,6 @@ def tag_dot(tag) -> rx.Component:
     return rx.box(
         class_name="q-tag-dot q-tint-" + tag.color,
         title=tag.name,
-    )
-
-
-def media_fill(thumbnail_url: rx.Var[str], video_url: rx.Var[str], kind: rx.Var[str]):
-    """A POST's picture filling its frame: the R2 video's first frame, the image, or —
-    with neither — the format's own gradient and glyph."""
-    return rx.cond(
-        video_url != "",
-        rx.el.video(
-            src=BACKEND_BASE + video_url + "#t=0.1",
-            muted=True,
-            preload="metadata",
-            plays_inline=True,
-            aria_hidden="true",
-            class_name="q-media-fill",
-        ),
-        rx.cond(
-            thumbnail_url != "",
-            rx.image(
-                src=rx.cond(
-                    thumbnail_url.startswith("http"),
-                    thumbnail_url,
-                    rx.get_upload_url(thumbnail_url),
-                ),
-                alt="",
-                class_name="q-media-fill",
-            ),
-            rx.center(kind_icon(kind, 26), class_name="q-media-empty q-kind-" + kind),
-        ),
     )
 
 
@@ -225,7 +227,23 @@ def _tile(post) -> rx.Component:
             rx.text(post.title, size="1", weight="bold", style=_CLAMP_2, text_align="left"),
             rx.cond(
                 post.schedulable,
-                rx.text(post.media_label, size="1", color=T.TEXT_MUTED, style=_ONE_LINE),
+                rx.hstack(
+                    rx.text("Sale como", size="1", color=T.TEXT_MUTED),
+                    rx.foreach(
+                        post.destinations,
+                        lambda d: rx.cond(
+                            d.available,
+                            rx.box(
+                                destination_icon(d.key, 11),
+                                class_name="q-dest-dot q-dest-" + d.key,
+                                title=d.label,
+                                aria_label=d.label,
+                            ),
+                        ),
+                    ),
+                    spacing="1",
+                    align="center",
+                ),
                 rx.text(
                     rx.cond(post.readiness_note != "", post.readiness_note, post.approval_label),
                     size="1",
@@ -246,26 +264,56 @@ def _tile(post) -> rx.Component:
             "Aún no está listo: "
             + rx.cond(post.readiness_note != "", post.readiness_note, post.approval_label),
         ),
-        class_name="q-tile q-kind-" + post.kind + state_class,
+        # The same Cold/Hot frost and embers as the /drafts cards.
+        class_name="q-tile q-kind-"
+        + post.kind
+        + state_class
+        + " q-chip-temp q-chip-temp--"
+        + post.temperature,
         on_click=PlannerState.toggle_plan_post(post.post_id),
     )
 
 
-def _temperature_legend() -> rx.Component:
+def _legend_item(swatch: rx.Component, title: str, text: str) -> rx.Component:
     return rx.hstack(
-        rx.box(
-            rx.icon("snowflake", size=12),
-            rx.text("Cold", as_="span"),
-            class_name="q-temp q-temp--cold",
+        swatch,
+        rx.vstack(
+            rx.text(title, size="1", weight="bold"),
+            rx.text(text, size="1", color=T.TEXT_MUTED),
+            spacing="0",
+            min_width="0",
         ),
-        rx.text("probado, evergreen", size="1", color=T.TEXT_MUTED),
-        rx.box(
-            rx.icon("flame", size=12), rx.text("Hot", as_="span"), class_name="q-temp q-temp--hot"
-        ),
-        rx.text("nuevo, en prueba", size="1", color=T.TEXT_MUTED),
         align="center",
         spacing="2",
-        wrap="wrap",
+        min_width="0",
+    )
+
+
+def _legend() -> rx.Component:
+    """How to read a tile, in one box at the top of the step: its frame (ready or not)
+    and its temperature."""
+    return rx.box(
+        _legend_item(
+            rx.box(class_name="q-legend-solid"),
+            "Lista para programar",
+            "Marco sólido: puedes elegirla.",
+        ),
+        _legend_item(
+            rx.box(class_name="q-legend-dashed"),
+            "Aún no está lista",
+            "Marco punteado: falta aprobación, texto o media.",
+        ),
+        _legend_item(
+            rx.box(rx.icon("snowflake", size=12), class_name="q-temp q-temp--cold q-temp--mini"),
+            "Cold",
+            "Probado: ya funcionó, contenido evergreen.",
+        ),
+        _legend_item(
+            rx.box(rx.icon("flame", size=12), class_name="q-temp q-temp--hot q-temp--mini"),
+            "Hot",
+            "Nuevo: todavía en prueba.",
+        ),
+        class_name="q-legend-box",
     )
 
 
@@ -279,49 +327,40 @@ def _step_content() -> rx.Component:
             color=T.TEXT_MUTED,
             text_align="center",
         ),
-        rx.link(rx.button("Crear pieza", variant="soft"), href="/create"),
+        rx.link(
+            rx.button(rx.icon("sparkles", size=16), "Crear POST", variant="soft", size="3"),
+            href="/create",
+        ),
         align="center",
         spacing="3",
         padding="2.5rem 1rem",
+        class_name="q-step-panel",
+        width="100%",
     )
     return rx.vstack(
-        rx.flex(
+        # How to read a tile comes first, then the question and the pieces.
+        rx.cond(PlannerState.schedulable.length() > 0, _legend()),
+        # The question and how to pick, in one header panel.
+        rx.box(
             _section_title(
                 "layout-grid",
                 "¿Qué vas a publicar?",
                 "Elige una o varias piezas listas. Cada una tendrá su propio horario.",
             ),
-            _temperature_legend(),
-            justify="between",
-            align="center",
-            wrap="wrap",
-            gap="0.75rem",
-            width="100%",
-        ),
-        rx.cond(
-            PlannerState.schedulable.length() > 0,
-            rx.fragment(
+            rx.cond(
+                PlannerState.schedulable.length() > 0,
                 rx.flex(
                     *[_kind_filter(key, label) for key, label in _KIND_FILTERS],
                     wrap="wrap",
                     gap="0.4rem",
                     width="100%",
                 ),
-                rx.box(rx.foreach(PlannerState.form_tiles, _tile), class_name="q-tile-grid"),
-                rx.hstack(
-                    rx.box(class_name="q-legend-solid"),
-                    rx.text("Lista para programar", size="1", color=T.TEXT_MUTED),
-                    rx.box(class_name="q-legend-dashed"),
-                    rx.text(
-                        "Aún no está lista (aprobación, texto o media pendiente)",
-                        size="1",
-                        color=T.TEXT_MUTED,
-                    ),
-                    align="center",
-                    spacing="2",
-                    wrap="wrap",
-                ),
             ),
+            class_name="q-step-panel",
+        ),
+        rx.cond(
+            PlannerState.schedulable.length() > 0,
+            rx.box(rx.foreach(PlannerState.form_tiles, _tile), class_name="q-tile-grid"),
             empty,
         ),
         spacing="4",
@@ -418,8 +457,23 @@ def _suggested_chip(row, suggestion) -> rx.Component:
     )
 
 
+def _weekday_chip(row, day: int) -> rx.Component:
+    on = row.repeat_days.contains(day)
+    return rx.el.button(
+        WEEKDAY_INITIALS[day],
+        type="button",
+        role="checkbox",
+        aria_checked=on,
+        aria_label=WEEKDAY_NAMES[day],
+        title=WEEKDAY_NAMES[day].capitalize(),
+        class_name=rx.cond(on, "q-weekday q-weekday--on", "q-weekday"),
+        on_click=PlannerState.toggle_item_repeat_day(row.post_id, day),
+    )
+
+
 def _repeat(row) -> rx.Component:
-    """QUA-118 A2: weekly, same weekday and time, N times. Hidden on a reschedule."""
+    """QUA-118 v2: a weekly series — which days of the week, at what time, for how many
+    weeks — with the dates it adds up to. Hidden on a reschedule (a move is one event)."""
     return rx.cond(
         ~PlannerState.form_is_reschedule,
         rx.vstack(
@@ -428,41 +482,161 @@ def _repeat(row) -> rx.Component:
                     checked=row.repeat,
                     on_change=lambda v: PlannerState.set_item_repeat(row.post_id, v),
                     aria_label="Repetir cada semana",
-                    size="1",
+                    size="2",
                 ),
                 rx.icon("repeat", size=14, color=T.TEXT_MUTED),
-                rx.text("Repetir cada semana", size="2"),
-                rx.cond(
-                    row.repeat,
-                    rx.hstack(
-                        rx.input(
-                            type="number",
-                            min="1",
-                            max="12",
-                            value=row.repeat_count,
-                            on_change=lambda v: PlannerState.set_item_repeat_count(row.post_id, v),
-                            width="4.2rem",
-                            size="1",
-                            aria_label="Número de veces",
+                rx.text("Repetir cada semana", size="2", weight="medium"),
+                align="center",
+                spacing="2",
+            ),
+            rx.cond(
+                row.repeat,
+                rx.box(
+                    rx.box(
+                        _label("Días"),
+                        rx.flex(
+                            *[_weekday_chip(row, day) for day in range(7)],
+                            gap="0.35rem",
+                            wrap="wrap",
                         ),
-                        rx.text("veces", size="2", color=T.TEXT_MUTED),
-                        align="center",
-                        spacing="1",
                     ),
+                    rx.box(
+                        rx.box(_label("Hora"), _time_picker(row)),
+                        rx.box(
+                            _label("Durante"),
+                            rx.hstack(
+                                rx.input(
+                                    type="number",
+                                    min="1",
+                                    max="12",
+                                    value=row.repeat_count,
+                                    on_change=lambda v: PlannerState.set_item_repeat_count(
+                                        row.post_id, v
+                                    ),
+                                    width="4.5rem",
+                                    size="2",
+                                    aria_label="Semanas",
+                                ),
+                                rx.text("semanas", size="2", color=T.TEXT_MUTED),
+                                align="center",
+                                spacing="2",
+                            ),
+                        ),
+                        class_name="q-repeat-row",
+                    ),
+                    rx.cond(
+                        row.series.error != "",
+                        rx.text(row.series.error, size="1", color=rx.color("amber", 11)),
+                        rx.vstack(
+                            rx.text(
+                                row.series.summary,
+                                size="1",
+                                weight="bold",
+                                color=T.TEXT_MUTED,
+                            ),
+                            rx.flex(
+                                rx.foreach(
+                                    row.series.dates, lambda d: rx.box(d, class_name="q-date-chip")
+                                ),
+                                wrap="wrap",
+                                gap="0.25rem",
+                            ),
+                            spacing="1",
+                            width="100%",
+                        ),
+                    ),
+                    class_name="q-repeat-box",
                 ),
+            ),
+            spacing="2",
+            width="100%",
+        ),
+    )
+
+
+def _destination_button(row, d) -> rx.Component:
+    on = row.destination == d.key
+    return rx.el.button(
+        destination_icon(d.key, 18),
+        rx.text(d.label, as_="span", class_name="q-dest-word"),
+        rx.cond(on, rx.icon("check", size=12, stroke_width=3, class_name="q-dest-tick")),
+        type="button",
+        role="radio",
+        aria_checked=on,
+        disabled=~d.available,
+        title=rx.cond(d.available, d.label, d.label + ": " + d.reason),
+        class_name=rx.cond(
+            on, "q-dest-btn q-dest-btn--on q-dest-" + d.key, "q-dest-btn q-dest-" + d.key
+        ),
+        on_click=PlannerState.set_item_destination(row.post_id, d.key),
+    )
+
+
+def _destination_selector(row) -> rx.Component:
+    """«¿Dónde quieres publicarlo?» (QUA-118 v2): one button per destination Instagram
+    could take for this content; an impossible one is shown off, with its reason written
+    under it — not only on hover. A move keeps its destination (read-only)."""
+    return rx.cond(
+        PlannerState.form_is_reschedule,
+        rx.box(
+            _label("Destino"),
+            rx.hstack(
+                destination_badge(row.destination, row.destination_label, prefix="Sale como "),
+                rx.text("Reprogramar mantiene el destino.", size="1", color=T.TEXT_MUTED),
                 align="center",
                 spacing="2",
                 wrap="wrap",
             ),
+            width="100%",
+        ),
+        rx.box(
+            rx.text(
+                "¿Dónde quieres publicarlo?",
+                as_="div",
+                class_name="q-field-label",
+                id="dest-" + row.post_id,
+            ),
+            rx.box(
+                rx.foreach(row.destinations, lambda d: _destination_button(row, d)),
+                class_name="q-dest-seg",
+                role="radiogroup",
+                aria_labelledby="dest-" + row.post_id,
+            ),
+            rx.vstack(
+                rx.foreach(
+                    row.destinations,
+                    lambda d: rx.cond(
+                        ~d.available & (d.reason != ""),
+                        rx.hstack(
+                            rx.icon("info", size=12, flex_shrink="0", margin_top="2px"),
+                            rx.text(
+                                rx.text(d.label + ": ", as_="span", weight="bold"),
+                                d.reason,
+                                size="1",
+                            ),
+                            align="start",
+                            spacing="1",
+                            color=T.TEXT_MUTED,
+                        ),
+                    ),
+                ),
+                spacing="1",
+                margin_top="0.45rem",
+            ),
             rx.cond(
-                row.repeat & (row.series.error == ""),
-                rx.flex(
-                    rx.foreach(row.series.dates, lambda d: rx.box(d, class_name="q-date-chip")),
-                    wrap="wrap",
-                    gap="0.25rem",
+                row.destination_warning != "",
+                rx.hstack(
+                    rx.icon("triangle-alert", size=13, flex_shrink="0"),
+                    rx.text(row.destination_warning, size="1"),
+                    class_name="q-plan-status q-plan-status--todo",
+                    margin_top="0.45rem",
+                    align="start",
                 ),
             ),
-            spacing="2",
+            rx.cond(
+                row.destination == "story",
+                rx.text(STORY_CAPTION_NOTE, size="1", color=T.TEXT_MUTED, margin_top="0.3rem"),
+            ),
             width="100%",
         ),
     )
@@ -479,13 +653,14 @@ def _plan_card(row) -> rx.Component:
             rx.vstack(
                 rx.hstack(
                     kind_chip(row.kind, row.kind_label),
+                    rx.icon("arrow-right", size=12, color=T.TEXT_FAINT),
+                    destination_badge(row.destination, row.destination_label),
                     temperature_badge(row.temperature, row.temperature_label, row.temperature_hint),
                     spacing="1",
                     align="center",
                     wrap="wrap",
                 ),
                 rx.text(row.title, size="2", weight="bold", style=_CLAMP_2),
-                rx.text(row.media_label, size="1", color=T.TEXT_MUTED),
                 spacing="1",
                 min_width="0",
                 flex="1",
@@ -504,7 +679,7 @@ def _plan_card(row) -> rx.Component:
         ),
         rx.box(
             rx.box(
-                _label("Fecha"),
+                rx.cond(row.repeat, _label("Desde"), _label("Fecha")),
                 rx.input(
                     type="date",
                     value=row.date,
@@ -532,6 +707,7 @@ def _plan_card(row) -> rx.Component:
                 width="100%",
             ),
         ),
+        _destination_selector(row),
         rx.box(
             _label("Canales"),
             rx.cond(
@@ -735,7 +911,7 @@ def _feed_mock(row) -> rx.Component:
         rx.box(
             media_fill(row.thumbnail_url, row.video_url, row.kind),
             rx.cond(
-                row.kind == "gallery",
+                row.mock == "carousel",
                 rx.box("1/3", class_name="q-mock-counter"),
             ),
             class_name="q-mock-feed-media",
@@ -747,7 +923,7 @@ def _feed_mock(row) -> rx.Component:
             rx.icon("send", size=12),
             rx.spacer(),
             rx.cond(
-                row.kind == "gallery",
+                row.mock == "carousel",
                 rx.hstack(
                     rx.box(class_name="q-dot q-dot--on"),
                     rx.box(class_name="q-dot"),
@@ -774,7 +950,7 @@ def _feed_mock(row) -> rx.Component:
 
 def _mock(row) -> rx.Component:
     return rx.match(
-        row.kind,
+        row.mock,
         ("story", _story_mock(row)),
         ("reel", _reel_mock(row)),
         _feed_mock(row),
@@ -796,6 +972,8 @@ def _timeline_item(row) -> rx.Component:
             rx.vstack(
                 rx.hstack(
                     kind_chip(row.kind, row.kind_label),
+                    rx.icon("arrow-right", size=12, color=T.TEXT_FAINT),
+                    destination_badge(row.destination, row.destination_label),
                     temperature_badge(row.temperature, row.temperature_label, row.temperature_hint),
                     rx.spacer(),
                     rx.icon_button(
@@ -849,6 +1027,19 @@ def _timeline_item(row) -> rx.Component:
                         spacing="1",
                         color=T.TEXT_MUTED,
                     ),
+                ),
+                rx.cond(
+                    row.destination_warning != "",
+                    rx.hstack(
+                        rx.icon("triangle-alert", size=12, flex_shrink="0"),
+                        rx.text(row.destination_warning),
+                        class_name="q-plan-status q-plan-status--todo",
+                        align="start",
+                    ),
+                ),
+                rx.cond(
+                    row.destination == "story",
+                    rx.text(STORY_CAPTION_NOTE, size="1", color=T.TEXT_MUTED),
                 ),
                 rx.cond(
                     row.note != "",
@@ -929,6 +1120,14 @@ def _step_confirm() -> rx.Component:
         ),
         rx.box(rx.foreach(PlannerState.plan_rows_by_time, _timeline_item), class_name="q-tl"),
         rx.cond(~PlannerState.form_is_reschedule, _goals()),
+        rx.cond(
+            PlannerState.form_story_warnings > 0,
+            callout(
+                "Tienes historias de video en este plan. Instagram rechaza una Historia de "
+                "video de más de 60 segundos; revisa su duración antes de confirmar.",
+                "warn",
+            ),
+        ),
         rx.cond(PlannerState.form_error != "", callout(PlannerState.form_error, "error")),
         spacing="5",
         width="100%",
@@ -940,11 +1139,16 @@ def _step_confirm() -> rx.Component:
 
 
 def _assign_footer() -> rx.Component:
-    return rx.hstack(
+    """The drawer's foot: «Cancelar» on the left, what is chosen (or what is missing)
+    in the middle, «Atrás» / «Continuar» (or «Programar») on the right — every button
+    the same size, each with its glyph, a clear gap between them."""
+    return rx.flex(
         rx.button(
+            rx.icon("x", size=16),
             "Cancelar",
-            variant="ghost",
+            variant="soft",
             color_scheme="gray",
+            size="3",
             on_click=PlannerState.close_form,
         ),
         rx.box(
@@ -973,36 +1177,44 @@ def _assign_footer() -> rx.Component:
             min_width="0",
             text_align="center",
         ),
-        rx.cond(
-            (PlannerState.form_step > STEP_POST)
-            & ~(PlannerState.form_is_reschedule & (PlannerState.form_step == STEP_WHEN)),
-            rx.button(
-                rx.icon("chevron-left", size=T.ICON_SM),
-                "Atrás",
-                variant="soft",
-                color_scheme="gray",
-                on_click=PlannerState.prev_step,
+        rx.flex(
+            rx.cond(
+                (PlannerState.form_step > STEP_POST)
+                & ~(PlannerState.form_is_reschedule & (PlannerState.form_step == STEP_WHEN)),
+                rx.button(
+                    rx.icon("chevron-left", size=16),
+                    "Atrás",
+                    variant="soft",
+                    color_scheme="gray",
+                    size="3",
+                    on_click=PlannerState.prev_step,
+                ),
             ),
-        ),
-        rx.cond(
-            PlannerState.form_is_last_step,
-            rx.button(
-                rx.icon("calendar-check", size=T.ICON_SM),
-                PlannerState.form_submit_label,
-                loading=PlannerState.saving,
-                on_click=PlannerState.submit_form,
-                class_name="q-cta",
+            rx.cond(
+                PlannerState.form_is_last_step,
+                rx.button(
+                    rx.icon("calendar-check", size=16),
+                    PlannerState.form_submit_label,
+                    loading=PlannerState.saving,
+                    size="3",
+                    on_click=PlannerState.submit_form,
+                    class_name="q-cta",
+                ),
+                rx.button(
+                    "Continuar",
+                    rx.icon("chevron-right", size=16),
+                    size="3",
+                    disabled=~PlannerState.form_can_advance,
+                    title=PlannerState.form_step_error,
+                    on_click=PlannerState.next_step,
+                    class_name="q-cta",
+                ),
             ),
-            rx.button(
-                "Continuar",
-                rx.icon("chevron-right", size=T.ICON_SM),
-                disabled=~PlannerState.form_can_advance,
-                title=PlannerState.form_step_error,
-                on_click=PlannerState.next_step,
-            ),
+            gap="0.75rem",
+            flex_shrink="0",
         ),
         align="center",
-        spacing="2",
+        gap="0.75rem",
         width="100%",
     )
 
@@ -1044,6 +1256,7 @@ def assign_drawer() -> rx.Component:
         ),
         footer=_assign_footer(),
         width="46rem",
+        icon="calendar-plus",
     )
 
 
@@ -1086,22 +1299,64 @@ def _detail_add_tag() -> rx.Component:
     )
 
 
-def _fact(icon: str, label: str, value: rx.Component) -> rx.Component:
-    return rx.hstack(
-        rx.center(rx.icon(icon, size=14), class_name="q-fact-glyph"),
-        rx.text(label, size="1", color=T.TEXT_MUTED, min_width="5.5rem"),
-        rx.box(value, flex="1", min_width="0"),
-        align="center",
-        spacing="2",
-        width="100%",
+def _fact_tile(icon: str, label: str, *value: rx.Component) -> rx.Component:
+    """One fact of the event as a tile of the panel's grid: glyph, small caps label,
+    value. Every tile has the same edges, so the grid reads as one aligned block."""
+    return rx.box(
+        rx.hstack(
+            rx.center(rx.icon(icon, size=13), class_name="q-fact-glyph"),
+            rx.text(label, class_name="q-fact-label"),
+            align="center",
+            spacing="2",
+        ),
+        rx.box(*value, class_name="q-fact-value"),
+        class_name="q-fact-tile",
+    )
+
+
+def _panel_section(icon: str, title: str, *children: rx.Component, action=None) -> rx.Component:
+    return rx.box(
+        rx.hstack(
+            rx.icon(icon, size=14, color=T.TEXT_MUTED),
+            rx.text(title, class_name="q-fact-label"),
+            rx.spacer(),
+            *([action] if action is not None else []),
+            align="center",
+            spacing="2",
+            width="100%",
+        ),
+        *children,
+        class_name="q-panel-section",
+    )
+
+
+def _detail_goal(goal) -> rx.Component:
+    """One goal on the event's panel, in its own colour and glyph (as in «Nueva
+    publicación»); a click turns it on or off, saved right away."""
+    on = PlannerState.detail.goal_keys.contains(goal.key)
+    return rx.el.button(
+        rx.icon(goal.icon, size=13),
+        rx.text(goal.label, as_="span"),
+        rx.cond(on, rx.icon("check", size=12, stroke_width=3)),
+        type="button",
+        role="checkbox",
+        aria_checked=on,
+        title=goal.hint,
+        class_name=rx.cond(
+            on,
+            f"q-goal-chip q-goal-chip--on q-tint-{goal.color}",
+            f"q-goal-chip q-tint-{goal.color}",
+        ),
+        on_click=PlannerState.toggle_detail_goal(goal.key),
     )
 
 
 def _detail_body() -> rx.Component:
+    """The event panel's body (QUA-118 v2): a stage with the piece as it will look, the
+    title and its states, an aligned grid of facts (when, channel, destination, content),
+    then the POST's text, the tags and what may keep it from going out."""
     d = PlannerState.detail
     p = PlannerState.detail_post
-    kind = rx.cond(p.post_id != "", p.kind, "feed")
-    kind_label = rx.cond(p.post_id != "", p.kind_label, d.category_label)
     media = rx.cond(
         d.video_url != "",
         rx.video(
@@ -1113,108 +1368,96 @@ def _detail_body() -> rx.Component:
             height="100%",
             style={"object_fit": "cover", "background": "black"},
         ),
-        media_fill(d.thumbnail_url, "", kind),
+        media_fill(d.thumbnail_url, "", d.kind),
     )
-    return rx.vstack(
+    stage = rx.box(
         rx.box(
-            rx.box(media, class_name="q-detail-media"),
-            rx.vstack(
-                rx.hstack(
-                    kind_chip(kind, kind_label),
-                    temperature_badge(p.temperature, p.temperature_label, p.temperature_hint),
-                    wrap="wrap",
-                    spacing="1",
+            rx.cond(
+                d.thumbnail_url != "",
+                rx.image(
+                    src=rx.cond(
+                        d.thumbnail_url.startswith("http"),
+                        d.thumbnail_url,
+                        rx.get_upload_url(d.thumbnail_url),
+                    ),
+                    alt="",
+                    class_name="q-stage-blur",
                 ),
-                rx.text(d.title, size="4", weight="bold", line_height="1.25"),
-                rx.flex(
-                    pill(d.approval_label, d.approval_tone),
-                    pill(d.status_label, d.status_tone),
-                    wrap="wrap",
-                    gap="0.25rem",
-                ),
-                rx.box(
-                    rx.icon("calendar-clock", size=14),
-                    rx.text(d.when_label, as_="span"),
-                    class_name="q-when-pill q-when-pill--lg",
-                ),
-                rx.hstack(
-                    platform_icon(d.platform),
-                    platform_badge(d.platform),
-                    rx.text(d.account_label, size="2", weight="medium"),
-                    align="center",
-                    spacing="2",
-                ),
+            ),
+            class_name="q-stage-bg",
+        ),
+        rx.hstack(
+            kind_chip(d.kind, d.kind_label, glass=True),
+            rx.spacer(),
+            temperature_badge(p.temperature, p.temperature_label, p.temperature_hint),
+            class_name="q-stage-top",
+            align="center",
+        ),
+        rx.box(media, class_name="q-detail-media q-detail-media--" + d.destination),
+        rx.box(
+            destination_badge(d.destination, d.destination_label, prefix="Sale como "),
+            class_name="q-stage-bottom",
+        ),
+        class_name="q-stage q-dest-" + d.destination,
+    )
+    facts = rx.box(
+        _fact_tile(
+            "calendar-clock",
+            "Cuándo",
+            rx.text(d.when_label, size="2", weight="bold"),
+        ),
+        _fact_tile(
+            "radio-tower",
+            "Canal",
+            rx.hstack(
+                channel_mark(d.platform),
+                rx.text(d.account_label, size="2", weight="bold", style=_ONE_LINE),
+                align="center",
                 spacing="2",
                 min_width="0",
-                flex="1",
             ),
-            class_name="q-detail-hero",
         ),
-        rx.box(
+        _fact_tile(
+            "send",
+            "Destino",
+            destination_badge(d.destination, d.destination_label),
+        ),
+        _fact_tile(
+            "shapes",
+            "Contenido",
             rx.hstack(
-                rx.icon("file-text", size=14),
-                rx.text("El POST", size="2", weight="bold"),
-                rx.spacer(),
+                kind_chip(d.kind, d.kind_label),
                 rx.cond(
-                    d.detail_href != "",
-                    rx.link(
-                        rx.hstack(
-                            rx.text("Abrir en Borradores", size="1"),
-                            rx.icon("external-link", size=12),
-                            align="center",
-                            spacing="1",
-                        ),
-                        href=d.detail_href,
-                    ),
+                    d.content_type_label != "",
+                    rx.text(d.content_type_label, size="2", color=T.TEXT_MUTED),
                 ),
                 align="center",
                 spacing="2",
-                width="100%",
+                wrap="wrap",
             ),
-            rx.cond(
-                d.caption_excerpt != "",
-                rx.text(d.caption_excerpt, size="2", class_name="q-caption-quote"),
-                rx.text("Sin texto.", size="2", color=T.TEXT_MUTED),
-            ),
-            class_name="q-soft-box q-soft-box--stack",
         ),
-        rx.vstack(
-            rx.cond(
-                d.content_type_label != "",
-                _fact("shapes", "Contenido", rx.text(d.content_type_label, size="2")),
-            ),
-            rx.cond(
-                d.output_label != "",
-                _fact("layers", "Salida", rx.text(d.output_label, size="2")),
-            ),
-            # `revision` is the event's reschedule counter (it keys the publish attempt,
-            # so a moved event can never collide with the old one) — internal. Shown only
-            # once it means something: how many times the publication was moved.
-            rx.cond(
-                d.revision > 1,
-                _fact(
-                    "history",
-                    "Reprogramado",
-                    rx.text(
-                        rx.cond(d.revision == 2, "1 vez", (d.revision - 1).to_string() + " veces"),
-                        size="2",
-                    ),
+        rx.cond(
+            d.output_label != "",
+            _fact_tile("layers", "Salida", rx.text(d.output_label, size="2", weight="bold")),
+        ),
+        # `revision` is the event's reschedule counter (it keys the publish attempt, so a
+        # moved event can never collide with the old one) — internal. Shown only once it
+        # means something: how many times the publication was moved.
+        rx.cond(
+            d.revision > 1,
+            _fact_tile(
+                "history",
+                "Reprogramado",
+                rx.text(
+                    rx.cond(d.revision == 2, "1 vez", (d.revision - 1).to_string() + " veces"),
+                    size="2",
+                    weight="bold",
                 ),
             ),
-            _fact(
-                "tag",
-                "Etiquetas",
-                rx.flex(
-                    rx.foreach(d.tags, _detail_tag),
-                    _detail_add_tag(),
-                    wrap="wrap",
-                    gap="0.35rem",
-                    align="center",
-                ),
-            ),
-            spacing="3",
-            width="100%",
         ),
+        class_name="q-fact-grid",
+    )
+    notes = rx.fragment(
         rx.cond(
             # QUA-115: an expired event will NOT publish when it is ready — only a
             # reschedule brings it back, so the expiry note replaces the readiness one.
@@ -1230,6 +1473,10 @@ def _detail_body() -> rx.Component:
                     "warn",
                 ),
             ),
+        ),
+        rx.cond(
+            d.destination == "story",
+            callout(STORY_CAPTION_NOTE, "info"),
         ),
         rx.match(
             PlannerState.auto_publish,
@@ -1261,36 +1508,119 @@ def _detail_body() -> rx.Component:
                 "warn",
             ),
         ),
+    )
+    return rx.vstack(
+        stage,
+        rx.vstack(
+            rx.text(d.title, size="5", weight="bold", line_height="1.25"),
+            rx.flex(
+                pill(d.approval_label, d.approval_tone),
+                pill(d.status_label, d.status_tone),
+                wrap="wrap",
+                gap="0.35rem",
+            ),
+            spacing="2",
+            width="100%",
+        ),
+        facts,
+        _panel_section(
+            "file-text",
+            "El POST",
+            rx.cond(
+                d.caption_excerpt != "",
+                rx.text(d.caption_excerpt, size="2", class_name="q-caption-quote"),
+                rx.text("Sin texto.", size="2", color=T.TEXT_MUTED),
+            ),
+            action=rx.cond(
+                d.detail_href != "",
+                rx.link(
+                    rx.hstack(
+                        rx.text("Abrir en Borradores", size="1"),
+                        rx.icon("external-link", size=12),
+                        align="center",
+                        spacing="1",
+                    ),
+                    href=d.detail_href,
+                ),
+            ),
+        ),
+        _panel_section(
+            "target",
+            "Metas de esta publicación",
+            rx.box(*[_detail_goal(goal) for goal in PLAN_GOALS], class_name="q-goal-chips"),
+            rx.text(
+                "Toca para activar o quitar. Se guardan para analizar después qué buscaba "
+                "cada publicación.",
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+        ),
+        _panel_section(
+            "tag",
+            "Etiquetas",
+            rx.flex(
+                rx.foreach(d.tags, _detail_tag),
+                _detail_add_tag(),
+                wrap="wrap",
+                gap="0.35rem",
+                align="center",
+            ),
+        ),
+        notes,
         spacing="4",
         width="100%",
     )
 
 
 def _confirm_bar(text: str, action_label: str, on_confirm) -> rx.Component:
-    return rx.hstack(
-        rx.icon("triangle-alert", size=16, color=rx.color("red", 11), flex_shrink="0"),
-        rx.text(text, size="2", flex="1", min_width="0"),
-        rx.button(
-            "Volver", variant="soft", color_scheme="gray", on_click=PlannerState.dismiss_confirm
+    """The panel asks before cancelling or removing: the question on top, then «Volver»
+    and the red confirmation side by side — same size and shape as the actions."""
+    return rx.vstack(
+        rx.hstack(
+            rx.icon("triangle-alert", size=16, color=rx.color("red", 11), flex_shrink="0"),
+            rx.text(text, size="2"),
+            align="start",
+            spacing="2",
+            width="100%",
         ),
-        rx.button(action_label, color_scheme="red", on_click=on_confirm),
-        align="center",
-        spacing="2",
+        rx.box(
+            rx.button(
+                rx.icon("arrow-left", size=16),
+                "Volver",
+                variant="soft",
+                color_scheme="gray",
+                size="3",
+                on_click=PlannerState.dismiss_confirm,
+            ),
+            rx.button(
+                rx.icon("circle-x", size=16),
+                action_label,
+                color_scheme="red",
+                size="3",
+                on_click=on_confirm,
+            ),
+            class_name="q-panel-actions",
+        ),
+        spacing="3",
         width="100%",
         class_name="q-confirm-bar",
     )
 
 
 def _detail_footer() -> rx.Component:
+    """The event's actions as two equal buttons across the panel's foot — what undoes
+    the plan (outlined red) on the left, what moves it (solid) on the right. Every
+    button the same size, each with its glyph."""
     d = PlannerState.detail
-    actions = rx.hstack(
+    actions = rx.box(
         rx.cond(
             d.can_remove_rejected,
             rx.button(
-                rx.icon("trash-2", size=T.ICON_SM),
+                rx.icon("trash-2", size=16),
                 "Quitar del calendario",
-                variant="soft",
+                variant="outline",
                 color_scheme="red",
+                size="3",
                 on_click=PlannerState.ask_remove_rejected,
             ),
         ),
@@ -1298,35 +1628,34 @@ def _detail_footer() -> rx.Component:
         rx.cond(
             d.can_reject_post,
             rx.button(
-                rx.icon("thumbs-down", size=T.ICON_SM),
+                rx.icon("thumbs-down", size=16),
                 "Rechazar POST",
-                variant="soft",
+                variant="outline",
                 color_scheme="red",
+                size="3",
                 on_click=PlannerState.reject_post_from_detail,
             ),
         ),
-        rx.spacer(),
         rx.cond(
             d.can_modify,
-            rx.hstack(
+            rx.fragment(
                 rx.button(
+                    rx.icon("calendar-x", size=16),
                     "Cancelar publicación",
-                    variant="soft",
+                    variant="outline",
                     color_scheme="red",
+                    size="3",
                     on_click=PlannerState.ask_cancel_from_detail,
                 ),
                 rx.button(
-                    rx.icon("calendar-clock", size=T.ICON_SM),
+                    rx.icon("calendar-clock", size=16),
                     "Reprogramar",
+                    size="3",
                     on_click=PlannerState.reschedule_from_detail,
                 ),
-                spacing="2",
             ),
         ),
-        width="100%",
-        align="center",
-        wrap="wrap",
-        gap="2",
+        class_name="q-panel-actions",
     )
     return rx.match(
         PlannerState.detail_confirm,
@@ -1369,6 +1698,7 @@ def event_panel() -> rx.Component:
         open=PlannerState.detail_open,
         on_open_change=PlannerState.set_detail_open,
         title="Publicación planificada",
+        icon="calendar-check",
         description="Qué sale, cuándo y dónde. Desde aquí la mueves o la cancelas.",
         footer=_detail_footer(),
         width="36rem",

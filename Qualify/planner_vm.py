@@ -28,7 +28,13 @@ from importlib import resources
 from pathlib import Path
 from zoneinfo import ZoneInfo, available_timezones
 
-from qualify_api.planner.recurrence import SERIES_CAP, InvalidRecurrence, weekly_days
+from qualify_api.planner.publishable import destination_options
+from qualify_api.planner.recurrence import (
+    SERIES_CAP,
+    InvalidRecurrence,
+    weekly_days,
+    weekly_days_on,
+)
 
 from .creative_vm import OUTPUT_WORDS, PORT_LABELS
 
@@ -58,7 +64,19 @@ SERIES_MESSAGES: dict[str, str] = {
     "count_too_small": "La serie necesita al menos una ocurrencia.",
     "too_many": f"Una serie admite como máximo {SERIES_CAP} ocurrencias.",
     "until_before_first": "La fecha de fin de la serie es anterior a la primera publicación.",
+    "days_required": "Elige al menos un día de la semana.",
 }
+# The weekday picker of a weekly series, Monday first (`date.weekday()` order).
+WEEKDAY_INITIALS: tuple[str, ...] = ("L", "M", "X", "J", "V", "S", "D")
+WEEKDAY_NAMES: tuple[str, ...] = (
+    "lunes",
+    "martes",
+    "miércoles",
+    "jueves",
+    "viernes",
+    "sábado",
+    "domingo",
+)
 SERIES_UNKNOWN_MESSAGE = "La serie no es válida. Revisa cómo termina."
 
 # Hour rows of the calendar view: one per hour of the day, 00 → 23. The calendar opens
@@ -573,6 +591,11 @@ class OutputChipVM:
     tone: str  # neutral / ok / info / warn
     scheduled: bool  # has a live event (scheduled / publishing / published)
     note: str = ""  # why this output cannot be published yet ("" when it can)
+    # QUA-118 v2: where this output may go out, what it is, and where it starts.
+    destinations: list[DestinationChoiceVM] = field(default_factory=list)
+    default_destination: str = ""
+    kind: str = "image"
+    kind_label: str = "Imagen"
 
 
 @dataclass(frozen=True)
@@ -604,6 +627,15 @@ class EventCardVM:
     # MP-11: "Reel" / "Feed" / "Historia" when the event publishes one template output;
     # "" for a whole-POST event. The same POST shows up to three times in a week.
     output_label: str = ""
+    # QUA-118 v2: where the event goes out — `post` / `reel` / `story` and its word, on
+    # every card so it reads without opening the event ("" only when unknown).
+    destination: str = ""
+    destination_label: str = ""
+    # QUA-118 v2: the POST's temperature (`temperature`) — Cold (proven, evergreen) or
+    # Hot (new) — so the calendar shows it on the chip, with its frost or fire.
+    temperature: str = ""
+    temperature_label: str = ""
+    temperature_hint: str = ""
 
 
 @dataclass(frozen=True)
@@ -627,6 +659,11 @@ class HourCellVM:
     is_today: bool
     is_past: bool
     cards: list[EventCardVM] = field(default_factory=list)
+    # The calendar keeps every hour the same height: at most `CELL_VISIBLE` chips show in
+    # a cell, the rest go behind a «+N más» pill (`more`), never stretching the row.
+    visible: list[EventCardVM] = field(default_factory=list)
+    more: list[EventCardVM] = field(default_factory=list)
+    more_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -680,8 +717,14 @@ class PostOptionVM:
     media_label: str = ""  # "Video · Reel 9:16"
     # QUA-118 v2: the format the grid tile shows («Reel», «Historia», «Carrusel», «Feed»,
     # «Multiformato», key in `KIND_ICONS`), and the POST's temperature (`temperature`).
-    kind: str = "feed"
-    kind_label: str = "Feed"
+    kind: str = "image"
+    kind_label: str = "Imagen"
+    # QUA-118 v2: where it may go out and what the selector starts on.
+    destinations: list[DestinationChoiceVM] = field(default_factory=list)
+    default_destination: str = ""
+    # The POST waits for the human's decision (creative status `generated`): the gallery
+    # card offers «Aprobar» / «Rechazar» right there, without opening the POST.
+    can_review: bool = False
     temperature: str = "hot"
     temperature_label: str = "Hot"
     temperature_hint: str = ""
@@ -724,6 +767,13 @@ class EventDetailVM:
     # MP-11: the output this event publishes ("" for the whole POST), and its word.
     output_port: str = ""
     output_label: str = ""
+    # QUA-118 v2: where it goes out — fixed for the event, shown on the panel.
+    destination: str = ""
+    destination_label: str = ""
+    kind: str = "image"  # what the content IS — the panel's chip
+    kind_label: str = "Imagen"
+    goals: list[str] = field(default_factory=list)  # the plan's goals, as labels (0042)
+    goal_keys: list[str] = field(default_factory=list)  # the same goals, as keys
 
 
 # ---------------------------------------------------------------------------
@@ -755,6 +805,8 @@ class CardInput:
     video_url: str = ""  # backend path of the POST's R2-only video (`r2_media`), or ""
     expired: bool = False  # QUA-115: `PlannedEvent.expired` — past the execution window
     output_port: str | None = None  # MP-11: `EventRecord.output_port`
+    destination: str | None = None  # QUA-118 v2: `EventRecord.destination`
+    times_published: int | None = None  # the POST's history (D2) — None: POST unreadable
 
 
 def event_readiness(
@@ -811,6 +863,28 @@ def build_card(
         readiness_note=ready.note,
         video_url=item.video_url,
         output_label=output_label(item.output_port),
+        destination=item.destination or "",
+        destination_label=DESTINATION_LABELS.get(item.destination or "", ""),
+        **(_temperature_fields(item.times_published) if item.times_published is not None else {}),
+    )
+
+
+CELL_VISIBLE = 2
+
+
+def _cell(*, day_iso: str, hour: int, is_today: bool, is_past: bool, cards) -> HourCellVM:
+    """A calendar cell: all its cards (in time order), and the split the grid draws —
+    the first `CELL_VISIBLE`, then the rest behind «+N más»."""
+    cards = list(cards)
+    return HourCellVM(
+        day_iso=day_iso,
+        hour=hour,
+        is_today=is_today,
+        is_past=is_past,
+        cards=cards,
+        visible=cards[:CELL_VISIBLE],
+        more=cards[CELL_VISIBLE:],
+        more_count=max(len(cards) - CELL_VISIBLE, 0),
     )
 
 
@@ -859,7 +933,7 @@ def build_week(
             key=key,
             label=hour_row_label(key),
             cells=[
-                HourCellVM(
+                _cell(
                     day_iso=d.isoformat(),
                     hour=key,
                     is_today=d == today,
@@ -890,6 +964,10 @@ def build_post_option(
     gallery_state: str = "",
     times_published: int = 0,
     has_live_event: bool = False,
+    media_types: tuple[str, ...] = (),
+    image_size: tuple[int, int] | None = None,
+    preferred_destination: str | None = None,
+    lifecycle_status: str = "",
 ) -> PostOptionVM:
     ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
     chips = list(outputs)
@@ -920,8 +998,13 @@ def build_post_option(
         used_count=times_published,
         in_calendar=has_live_event,
         media_label=f"{medium} · {kind}" + ("" if ratio in kind else f" {ratio}"),
-        **_kind_fields(category or "", has_outputs=bool(chips)),
+        **_kind_fields(media_types, category or "", has_outputs=bool(chips)),
         **_temperature_fields(times_published),
+        destinations=(choices := destinations_for(media_types, image_size)),
+        default_destination=default_destination(
+            choices, preferred_destination or _CATEGORY_DESTINATION.get(category or "")
+        ),
+        can_review=lifecycle_status == "generated",
     )
 
 
@@ -960,6 +1043,7 @@ def series_preview(
     mode: str,
     count_text: str,
     until_iso: str,
+    weekdays: list[int] | None = None,
 ) -> SeriesPreviewVM:
     """The «Fecha y hora» step's reading of the recurrence controls — the same rule the
     service applies (`recurrence.weekly_days`), so the step never promises a series
@@ -971,7 +1055,15 @@ def series_preview(
     except ValueError:
         return SeriesPreviewVM(enabled=True, count=0, error="Elige primero la fecha.")
     try:
-        if mode == REPEAT_BY_UNTIL:
+        if weekdays is not None:
+            # QUA-118 v2: several weekdays, `count_text` weeks each
+            # (`recurrence.weekly_days_on`); no weekday chosen → the start date's own.
+            try:
+                weeks = int(count_text.strip() or "0")
+            except ValueError:
+                weeks = 0
+            days = weekly_days_on(first_day, weekdays or [first_day.weekday()], weeks)
+        elif mode == REPEAT_BY_UNTIL:
             if not until_iso:
                 return SeriesPreviewVM(enabled=True, count=0, error="Elige la fecha de fin.")
             days = weekly_days(first_day, until=date.fromisoformat(until_iso))
@@ -1046,6 +1138,9 @@ def build_output_chip(
     event_status: str | None,
     when_label: str = "",
     account_label: str = "",
+    media_types: tuple[str, ...] = (),
+    image_size: tuple[int, int] | None = None,
+    preferred_destination: str | None = None,
 ) -> OutputChipVM:
     """One output's chip (MP-11). `event_status` is the live event's, or None when the
     output has none. A scheduled output reads «lun 12:00 · @bianki»; an unscheduled one
@@ -1068,50 +1163,119 @@ def build_output_chip(
         tone=tone,
         scheduled=event_status is not None,
         note=note,
+        destinations=(choices := destinations_for(media_types, image_size)),
+        default_destination=default_destination(
+            choices, preferred_destination or _PORT_DESTINATION.get(port)
+        ),
+        **_kind_fields(media_types, "", has_outputs=False),
     )
 
 
 # ---------------------------------------------------------------------------
 # QUA-118 v2: format, temperature, goals and the multi-POST plan (pure, tested directly)
 
-# The format a tile announces: (key, word, lucide glyph). The key drives the colour and,
-# in the confirm step, the shape of the phone mock (story bars, reel rail, feed header).
-_KINDS: dict[str, tuple[str, str, str]] = {
-    "reel": ("reel", "Reel", "clapperboard"),
-    "tiktok_video": ("reel", "Reel", "clapperboard"),
-    "story": ("story", "Historia", "circle-fading-plus"),
-    "galeria": ("gallery", "Carrusel", "gallery-horizontal-end"),
-    "gallery": ("gallery", "Carrusel", "gallery-horizontal-end"),
-    "carousel": ("gallery", "Carrusel", "gallery-horizontal-end"),
-}
-_FEED_KIND = ("feed", "Feed", "image")
+# What the content IS (QUA-118 v2): read from its media, never from where it goes out.
+# The key drives the tile's colour (`q-kind-*`); the destination has its own (`q-dest-*`).
+_IMAGE_KIND = ("image", "Imagen", "image")
+_VIDEO_KIND = ("video", "Video", "film")
+_CAROUSEL_KIND = ("carousel", "Carrusel", "gallery-horizontal-end")
 _PACK_KIND = ("pack", "Multiformato", "layers")
-# Every format key with its glyph — the page matches over it (`rx.icon` needs a literal).
+# Every content key with its glyph — the page matches over it (`rx.icon` needs a literal).
 KIND_ICONS: dict[str, str] = {
-    key: icon for key, _word, icon in (*_KINDS.values(), _FEED_KIND, _PACK_KIND)
+    key: icon for key, _word, icon in (_IMAGE_KIND, _VIDEO_KIND, _CAROUSEL_KIND, _PACK_KIND)
 }
-_OUTPUT_KINDS: dict[str, tuple[str, str, str]] = {
-    "reel": _KINDS["reel"],
-    "story": _KINDS["story"],
-    "feed": _FEED_KIND,
+# Only when the media is unknown (a POST read without assets): the category's usual shape.
+_CATEGORY_KIND: dict[str, tuple[str, str, str]] = {
+    "reel": _VIDEO_KIND,
+    "tiktok_video": _VIDEO_KIND,
+    "story": _IMAGE_KIND,
+    "galeria": _CAROUSEL_KIND,
 }
 
 
 def post_kind(
-    category: str, *, has_outputs: bool = False, output_port: str = ""
+    media_types: tuple[str, ...] | list[str] = (),
+    *,
+    category: str = "",
+    has_outputs: bool = False,
 ) -> tuple[str, str, str]:
-    """(key, word, glyph) of what a POST — or one template output of it — publishes as.
-    A template package not yet split into one output reads «Multiformato»."""
-    if output_port in _OUTPUT_KINDS:
-        return _OUTPUT_KINDS[output_port]
+    """(key, word, glyph) of what the content is: one image, one video, a carousel, or a
+    template package not yet split into one output («Multiformato»). `media_types` is
+    the publisher's vocabulary (IMAGE / VIDEO), in order."""
     if has_outputs:
         return _PACK_KIND
-    return _KINDS.get(category, _FEED_KIND)
+    types = tuple(media_types)
+    if len(types) == 1:
+        return _VIDEO_KIND if types[0] == "VIDEO" else _IMAGE_KIND
+    if len(types) >= 2:
+        return _CAROUSEL_KIND
+    return _CATEGORY_KIND.get(category, _IMAGE_KIND)
 
 
-def _kind_fields(category: str, *, has_outputs: bool) -> dict[str, str]:
-    key, label, _icon = post_kind(category, has_outputs=has_outputs)
+def _kind_fields(
+    media_types: tuple[str, ...], category: str, *, has_outputs: bool
+) -> dict[str, str]:
+    key, label, _icon = post_kind(media_types, category=category, has_outputs=has_outputs)
     return {"kind": key, "kind_label": label}
+
+
+# Where an event goes out (QUA-118 v2, `publishable.DESTINATIONS`): the word the operator
+# reads everywhere — never «Feed» — and its glyph.
+DESTINATION_LABELS: dict[str, str] = {"post": "Publicación", "reel": "Reel", "story": "Historia"}
+DESTINATION_ICONS: dict[str, str] = {
+    "post": "grid-3x3",
+    "reel": "clapperboard",
+    "story": "circle-fading-plus",
+}
+DESTINATION_REQUIRED = "Elige dónde quieres publicarlo."
+
+
+@dataclass(frozen=True)
+class DestinationChoiceVM:
+    """One button of «¿Dónde quieres publicarlo?» (`publishable.DestinationOption`)."""
+
+    key: str  # post / reel / story
+    label: str
+    available: bool
+    reason: str = ""  # why it is off, printed under the selector
+    warning: str = ""  # what Meta may still refuse that cannot be checked here
+
+
+def destination_choices(options) -> list[DestinationChoiceVM]:
+    """The offered options of `publishable.destination_options`, as the selector shows
+    them; a destination that is not offered (a video's «Publicación») is left out."""
+    return [
+        DestinationChoiceVM(
+            key=o.destination,
+            label=DESTINATION_LABELS[o.destination],
+            available=o.available,
+            reason=o.reason,
+            warning=o.warning,
+        )
+        for o in options
+        if o.offered
+    ]
+
+
+_CATEGORY_DESTINATION: dict[str, str] = {"reel": "reel", "story": "story", "galeria": "post"}
+_PORT_DESTINATION: dict[str, str] = {"reel": "reel", "story": "story", "feed": "post"}
+
+
+def destinations_for(
+    media_types: tuple[str, ...], image_size: tuple[int, int] | None
+) -> list[DestinationChoiceVM]:
+    """The selector's buttons for content of this shape (`publishable.destination_options`
+    — the same rule the service and the executor apply)."""
+    return destination_choices(destination_options(tuple(media_types), image_size))
+
+
+def default_destination(choices: list[DestinationChoiceVM], preferred: str | None) -> str:
+    """What the selector starts on: what the POST publishes as today (its category or
+    output), when that is available; else the first available one; else ""."""
+    available = [c.key for c in choices if c.available]
+    if preferred in available:
+        return preferred or ""
+    return available[0] if available else ""
 
 
 # Cold / Hot (founder's brief, 2026-10-06). The words are the boss's, the idea is the
@@ -1165,6 +1329,13 @@ PLAN_GOALS: tuple[PlanGoalVM, ...] = (
 )
 PLAN_GOAL_KEYS: frozenset[str] = frozenset(g.key for g in PLAN_GOALS)
 
+
+def goal_labels(keys) -> list[str]:
+    """The stored goal keys (0042) as the panel prints them, in `PLAN_GOALS` order."""
+    chosen = set(keys or ())
+    return [g.label for g in PLAN_GOALS if g.key in chosen]
+
+
 PLAN_OUTPUT_REQUIRED = "Elige qué salida programar (Reel, feed o historia)."
 PLAN_ACCOUNT_REQUIRED = "Elige al menos una cuenta compatible."
 PLAN_DATE_REQUIRED = "Elige la fecha y la hora."
@@ -1212,7 +1383,19 @@ class PlanItem:
     tag_ids: list[str] = field(default_factory=list)
     output_port: str = ""
     repeat: bool = False
-    repeat_count: str = "4"
+    repeat_count: str = "4"  # weeks
+    destination: str = ""  # post / reel / story — where this piece goes out
+    # The weekdays of a weekly series (0 = Monday); empty → the date's own weekday.
+    repeat_days: list[int] = field(default_factory=list)
+
+    # A plan kept in a session from before a field existed (Reflex keeps dev state across
+    # reloads) reads the field's default instead of failing.
+    _LATER_DEFAULTS = {"destination": "", "repeat_days": ()}
+
+    def __getattr__(self, name: str):
+        if name in PlanItem._LATER_DEFAULTS:
+            return list(PlanItem._LATER_DEFAULTS[name]) if name == "repeat_days" else ""
+        raise AttributeError(name)
 
 
 @dataclass(frozen=True)
@@ -1224,7 +1407,7 @@ class PlanRowVM:
     caption_excerpt: str
     thumbnail_url: str
     video_url: str
-    kind: str  # reel / story / gallery / feed / pack — the mock's shape and colour
+    kind: str  # image / video / carousel / pack — what the content IS
     kind_label: str
     aspect: str  # CSS aspect-ratio of the frame
     media_label: str
@@ -1254,6 +1437,13 @@ class PlanRowVM:
     event_count: int
     note: str  # it will be scheduled but not published yet: why ("" when ready)
     error: str  # why this piece cannot be planned as set ("" when it can)
+    # QUA-118 v2: where it goes out, the selector's buttons, and what to say about it.
+    destination: str = ""
+    destination_label: str = ""
+    destinations: list[DestinationChoiceVM] = field(default_factory=list)
+    destination_warning: str = ""  # e.g. a video story longer than 60 s
+    mock: str = "post"  # the phone mock: post / carousel / reel / story
+    repeat_days: list[int] = field(default_factory=list)  # chosen weekdays (0 = Monday)
 
 
 def plan_item_error(
@@ -1265,15 +1455,23 @@ def plan_item_error(
     today_iso: str,
     now_hhmm: str,
     reschedule: bool = False,
+    destinations: list[DestinationChoiceVM] | None = None,
 ) -> str:
     """The first thing that keeps `item` from being planned, in the operator's words:
-    the output of a package, the date and time, the weekly series, the accounts."""
+    the output of a package, where it goes out, the date and time, the weekly series,
+    the accounts."""
     if not reschedule and post is not None and post.has_outputs:
         if not item.output_port:
             return PLAN_OUTPUT_REQUIRED
         for chip in post.outputs:
             if chip.port == item.output_port and chip.note:
                 return chip.note
+    if not reschedule and destinations is not None:
+        chosen = next((d for d in destinations if d.key == item.destination), None)
+        if chosen is None:
+            return DESTINATION_REQUIRED
+        if not chosen.available:
+            return chosen.reason
     if not item.date or not item.time:
         return PLAN_DATE_REQUIRED
     if today_iso and item.date < today_iso:
@@ -1318,15 +1516,23 @@ def build_plan_row(
         mode=REPEAT_BY_COUNT,
         count_text=item.repeat_count,
         until_iso="",
+        weekdays=list(item.repeat_days),
     )
-    key, label, _icon = post_kind(
-        post.category,
-        has_outputs=post.has_outputs and not item.output_port,
-        output_port=item.output_port,
-    )
-    _shape, aspect = frame_shape(post.category, item.output_port)
-    hour, minute = split_time(item.time)
     chip = next((c for c in post.outputs if c.port == item.output_port), None)
+    if chip is not None:
+        key, label = chip.kind, chip.kind_label
+        destinations = chip.destinations
+    elif post.has_outputs and not item.output_port:
+        key, label, _icon = post_kind(has_outputs=True)
+        destinations = []
+    else:
+        key, label = post.kind, post.kind_label
+        destinations = post.destinations
+    dest = item.destination
+    chosen = next((d for d in destinations if d.key == dest), None)
+    mock = {"reel": "reel", "story": "story"}.get(dest, "carousel" if key == "carousel" else "post")
+    aspect = {"reel": "9 / 16", "story": "9 / 16", "carousel": "1 / 1"}.get(mock, "4 / 5")
+    hour, minute = split_time(item.time)
     output_label = (
         chip.label if chip else (output_long_label(item.output_port) if item.output_port else "")
     )
@@ -1373,5 +1579,12 @@ def build_plan_row(
             today_iso=today_iso,
             now_hhmm=now_hhmm,
             reschedule=reschedule,
+            destinations=None if reschedule else destinations,
         ),
+        destination=dest,
+        destination_label=DESTINATION_LABELS.get(dest, ""),
+        destinations=[] if reschedule else list(destinations),
+        destination_warning=chosen.warning if chosen is not None else "",
+        mock=mock,
+        repeat_days=list(item.repeat_days),
     )

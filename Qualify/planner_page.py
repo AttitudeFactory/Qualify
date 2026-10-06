@@ -22,14 +22,23 @@ import reflex as rx
 
 from .planner_drawer import (
     assign_drawer,
+    channel_mark,
     event_panel,
-    platform_icon,
     tag_badge_plain,
     tag_dot,
 )
 from .planner_state import SCROLL_ID, PlannerState
 from .planner_vm import VIEW_CALENDAR, VIEW_LIST
-from .post_card import DropBox, card_media, pill, post_card, readiness_note
+from .post_card import (
+    DropBox,
+    card_media,
+    destination_badge,
+    destination_icon,
+    pill,
+    post_card,
+    readiness_note,
+    temperature_badge,
+)
 from .ui import app_shell, callout, page_body, page_header, platform_badge, tag
 from .ui import tokens as T
 
@@ -119,61 +128,110 @@ def _chip_edge(event) -> rx.Var:
     )
 
 
-def _calendar_chip(event) -> rx.Component:
-    """A compact event chip: platform + time on one line, the title under it. The rest
-    (approval wording, caption, actions) lives in the detail dialog, one click away."""
-    return rx.box(
+def _chip_detail(event) -> rx.Component:
+    """Everything about the event, on hover — the chip stays one line so every hour of
+    the grid keeps the same height, and nothing is lost: title, caption, when, channel,
+    destination, temperature, its states, tags and what may keep it from going out."""
+    return rx.vstack(
         rx.hstack(
-            card_media(event.thumbnail_url, event.video_url, "1.6rem"),
+            card_media(event.thumbnail_url, event.video_url, "3.25rem"),
             rx.vstack(
-                rx.hstack(
-                    platform_icon(event.platform),
-                    rx.text(event.time_label, size="1", weight="bold", class_name="q-nums"),
-                    # MP-11: the output's word — the same POST appears up to three times.
-                    rx.cond(event.output_label != "", tag(event.output_label)),
-                    rx.cond(
-                        event.overdue | (event.readiness_note != ""),
-                        rx.icon("triangle-alert", size=12, color=rx.color("amber", 10)),
-                    ),
-                    rx.spacer(),
-                    align="center",
-                    spacing="1",
-                    width="100%",
+                rx.text(event.title, size="2", weight="bold", style=_CLAMP_2),
+                rx.text(
+                    event.date_label + " · " + event.time_label,
+                    size="1",
+                    color=T.TEXT_MUTED,
+                    class_name="q-nums",
                 ),
-                rx.text(event.title, size="1", color=T.TEXT_MUTED, style=_ONE_LINE, width="100%"),
-                rx.cond(
-                    event.tags.length() > 0,
-                    rx.hstack(rx.foreach(event.tags, tag_dot), spacing="1", padding_top="2px"),
-                ),
-                spacing="0",
+                spacing="1",
                 min_width="0",
-                flex="1",
             ),
-            spacing="2",
-            align="center",
+            spacing="3",
+            align="start",
             width="100%",
+        ),
+        rx.cond(
+            event.caption_excerpt != "",
+            rx.text(event.caption_excerpt, size="1", color=T.TEXT_MUTED, style=_CLAMP_2),
+        ),
+        rx.flex(
+            rx.hstack(
+                channel_mark(event.platform),
+                rx.text(event.account_label, size="1", weight="medium"),
+                align="center",
+                spacing="1",
+            ),
+            destination_badge(event.destination, event.destination_label),
+            temperature_badge(event.temperature, event.temperature_label, event.temperature_hint),
+            wrap="wrap",
+            gap="0.4rem",
+            align="center",
+        ),
+        rx.flex(
+            pill(event.approval_label, event.approval_tone),
+            pill(event.status_label, event.status_tone),
+            wrap="wrap",
+            gap="0.3rem",
+        ),
+        rx.cond(
+            event.tags.length() > 0,
+            rx.flex(rx.foreach(event.tags, tag_badge_plain), wrap="wrap", gap="0.25rem"),
+        ),
+        readiness_note(event.readiness_note),
+        rx.text("Clic para ver y gestionar", size="1", color=T.TEXT_FAINT),
+        spacing="2",
+        width="17rem",
+    )
+
+
+def _calendar_chip(event) -> rx.Component:
+    """A one-line event chip: picture, time, channel, destination and Cold/Hot by glyph
+    and colour. One line, so every hour of the grid keeps the same height; the full
+    detail opens on hover (`_chip_detail`) and the event's panel on click. A Hot POST
+    glows like embers, a Cold one is frosted (`q-chip-temp--*`)."""
+    chip = rx.box(
+        # The picture lives in the hover card: a seventh of the screen fits the time
+        # and three glyphs, not a thumbnail too. The time gives way first (ellipsis);
+        # the glyphs never shrink.
+        rx.box(
+            rx.text(event.time_label, size="1", weight="bold", class_name="q-nums q-chip-time"),
+            rx.cond(
+                event.overdue | (event.readiness_note != ""),
+                rx.icon("triangle-alert", size=11, color=rx.color("amber", 10), flex_shrink="0"),
+            ),
+            rx.box(class_name="q-chip-gap"),
+            channel_mark(event.platform),
+            rx.cond(
+                event.destination != "",
+                rx.center(
+                    destination_icon(event.destination, 10),
+                    class_name="q-dest-dot q-dest-dot--sm q-dest-" + event.destination,
+                    title=event.destination_label,
+                ),
+            ),
+            temperature_badge(
+                event.temperature, event.temperature_label, event.temperature_hint, compact=True
+            ),
+            class_name="q-chip-line",
         ),
         # stop_propagation: the cell behind the chip opens "Nueva publicación" on click.
         on_click=PlannerState.open_detail(event.event_id).stop_propagation,
         cursor="pointer",
         role="button",
-        # The accessible name says what the dot-less chip says by colour: the event's
-        # state word (Programado · Pendiente · Publicado · Vencido · Fallido), QUA-118.
+        # The accessible name says everything the glyphs say: title, channel,
+        # destination, temperature and the event's state word (QUA-118).
         aria_label=event.time_label
         + " · "
         + event.title
+        + " · "
+        + event.account_label
+        + rx.cond(event.destination_label != "", " · " + event.destination_label, "")
+        + rx.cond(event.temperature_label != "", " · " + event.temperature_label, "")
         + rx.cond(event.output_label != "", " · " + event.output_label, "")
         + " · "
         + event.status_label
         + rx.cond(event.approval_label != event.status_label, " · " + event.approval_label, ""),
-        title=event.title
-        + rx.cond(event.output_label != "", " · " + event.output_label, "")
-        + " — "
-        + event.approval_label
-        + " · "
-        + event.status_label
-        + rx.cond(event.readiness_note != "", " · " + event.readiness_note, ""),
-        padding="0.3rem 0.4rem",
+        padding="0.2rem 0.35rem",
         border=T.BORDER,
         border_left="3px solid",
         border_left_color=_chip_edge(event),
@@ -183,7 +241,43 @@ def _calendar_chip(event) -> rx.Component:
         color=rx.cond(event.muted, T.TEXT_MUTED, "inherit"),
         text_decoration=rx.cond(event.muted, "line-through", "none"),
         width="100%",
-        class_name="q-lift",
+        class_name="q-lift q-chip-temp q-chip-temp--" + event.temperature,
+    )
+    return rx.hover_card.root(
+        rx.hover_card.trigger(rx.box(chip, class_name="q-chip-trigger")),
+        rx.hover_card.content(_chip_detail(event), side="right", align="start", size="1"),
+        open_delay=250,
+        close_delay=80,
+    )
+
+
+def _more_pill(cell) -> rx.Component:
+    """«+N más»: the cell's other events in a small list, without growing the row."""
+    return rx.popover.root(
+        rx.popover.trigger(
+            rx.el.button(
+                "+" + cell.more_count.to_string() + " más",
+                type="button",
+                class_name="q-cell-more",
+                on_click=rx.event.stop_propagation,
+            ),
+        ),
+        rx.popover.content(
+            rx.vstack(
+                rx.text(
+                    cell.more_count.to_string() + " publicaciones más a esta hora",
+                    size="1",
+                    weight="bold",
+                    color=T.TEXT_MUTED,
+                ),
+                rx.foreach(cell.more, _calendar_chip),
+                spacing="2",
+                width="15rem",
+            ),
+            side="bottom",
+            align="start",
+            size="1",
+        ),
     )
 
 
@@ -233,12 +327,11 @@ def _hour_cell(cell) -> rx.Component:
             ~cell.is_past & (cell.cards.length() == 0),
             rx.el.span(rx.icon("plus", size=T.ICON_SM), class_name="q-planner-slot-plus"),
         ),
-        rx.foreach(cell.cards, _calendar_chip),
-        # A slot that already has posts gets its "+" under the last chip instead of in
-        # the corner, so it never covers a chip. Its space is always reserved, so the
-        # row does not jump when it fades in.
+        rx.foreach(cell.visible, _calendar_chip),
+        rx.cond(cell.more_count > 0, _more_pill(cell)),
+        # One chip leaves room under it: the "+" shows there on hover, never over a chip.
         rx.cond(
-            ~cell.is_past & (cell.cards.length() > 0),
+            ~cell.is_past & (cell.cards.length() == 1),
             rx.el.span(
                 rx.icon("plus", size=12),
                 class_name="q-planner-slot-plus q-planner-slot-plus--below",
@@ -251,13 +344,15 @@ def _hour_cell(cell) -> rx.Component:
         position="relative",
         spacing="1",
         padding="0.25rem",
-        min_height="2.75rem",
+        # Every hour the same height: two one-line chips (and «+N más») fit; nothing
+        # stretches the row, so the time axis stays an even ruler.
+        height="4.25rem",
+        overflow="hidden",
         border_top=_HAIRLINE,
         border_left=_HAIRLINE,
         background=rx.cond(cell.is_today, rx.color("accent", 2), "transparent"),
         width="100%",
         min_width="0",
-        height="100%",
     )
     # QUA-118 drag & drop: a «Sin programar» card dropped here opens the drawer
     # prefilled with this day and hour. `on_drag_over` must prevent the default or the
@@ -353,6 +448,10 @@ def _list_item(event) -> rx.Component:
                     rx.hstack(
                         platform_badge(event.platform),
                         rx.text(event.account_label, size="1", color=T.TEXT_MUTED),
+                        destination_badge(event.destination, event.destination_label),
+                        temperature_badge(
+                            event.temperature, event.temperature_label, event.temperature_hint
+                        ),
                         tag(event.category_label),
                         rx.cond(event.output_label != "", tag(event.output_label)),
                         rx.foreach(event.tags, tag_badge_plain),

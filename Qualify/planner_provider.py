@@ -22,7 +22,11 @@ from qualify_api.planner.composition import production_planner_service, tenant_t
 from qualify_api.planner.embedded import calendar_worker
 from qualify_api.planner.gallery import gallery_state
 from qualify_api.planner.post_reader import PostSummary, UnpublishableReason
-from qualify_api.planner.publishable import REASON_TEXT, SCHEDULABLE_PLATFORMS
+from qualify_api.planner.publishable import (
+    REASON_TEXT,
+    SCHEDULABLE_PLATFORMS,
+    destination_for_product_type,
+)
 from qualify_api.planner.repository import EventRecord
 from qualify_api.planner.service import (
     DuplicateEvent,
@@ -39,9 +43,11 @@ from qualify_api.planner.service import (
     PostNotRejected,
     PostNotSchedulable,
     UnknownEvent,
+    UnknownGoal,
     UnknownOutput,
     UnknownPost,
     UnknownTag,
+    UnsupportedDestination,
     compose_instant,
     resolve_zone,
     week_start,
@@ -52,6 +58,7 @@ from .creative_provider import default_brand_id
 from .planner_vm import (
     AUTO_PUBLISH_UNAVAILABLE,
     CALENDAR_DEFAULT_TZ,
+    DESTINATION_LABELS,
     SERIES_MESSAGES,
     SERIES_UNKNOWN_MESSAGE,
     CardInput,
@@ -72,9 +79,11 @@ from .planner_vm import (
     date_label,
     event_actions,
     event_readiness,
+    goal_labels,
     is_pending,
     month_label,
     output_label,
+    post_kind,
     status_label,
     time_label_12h,
     week_label,
@@ -117,6 +126,9 @@ def planner_error_message(exc: Exception) -> str:
         return f"Ese POST no se puede planificar: {exc.reason}"
     if isinstance(exc, InvalidSeries):
         return SERIES_MESSAGES.get(exc.code, SERIES_UNKNOWN_MESSAGE)
+    if isinstance(exc, UnsupportedDestination):
+        # QUA-118 v2: the selector's own sentence for why that destination is off.
+        return exc.reason or "Instagram no publica este contenido en el destino elegido."
     messages: list[tuple[type[Exception], str]] = [
         (NoBrand, "Este negocio todavía no tiene una marca configurada."),
         (UnknownPost, "Ese POST ya no está disponible. Actualiza la página."),
@@ -150,6 +162,7 @@ def planner_error_message(exc: Exception) -> str:
             "Este POST tiene varias salidas (Reel, feed, historia): elige cuál programar.",
         ),
         (UnknownOutput, "Ese POST no tiene esa salida. Actualiza la página."),
+        (UnknownGoal, "Una de las metas elegidas no es válida. Actualiza la página."),
         (
             DuplicateEvent,
             "Esa publicación ya está programada en esa cuenta a esa misma hora.",
@@ -225,6 +238,9 @@ def _post_option(
                 event_status=event.status if event is not None else None,
                 when_label=when,
                 account_label=account,
+                media_types=output.media_types,
+                image_size=output.image_size,
+                preferred_destination=destination_for_product_type(output.media_product_type),
             )
         )
     return build_post_option(
@@ -242,7 +258,24 @@ def _post_option(
         gallery_state=gallery_state(post).value,
         times_published=post.times_published,
         has_live_event=post.has_live_event,
+        media_types=post.media_types,
+        image_size=post.image_size,
+        preferred_destination=destination_for_product_type(post.media_product_type),
+        lifecycle_status=post.lifecycle_status,
     )
+
+
+def event_destination(event: EventRecord, post: PostSummary | None) -> str:
+    """Where the event goes out: its own (0041), or — for an event the backfill could not
+    derive — what its POST publishes as, the rule the executor falls back to."""
+    if event.destination:
+        return event.destination
+    if post is None:
+        return ""
+    if event.output_port:
+        output = next((o for o in post.outputs if o.port == event.output_port), None)
+        return destination_for_product_type(output.media_product_type if output else None) or ""
+    return destination_for_product_type(post.media_product_type) or ""
 
 
 @dataclass(frozen=True)
@@ -322,6 +355,8 @@ def _card_input(planned: PlannedEvent, video_urls: dict[str, str] | None = None)
         unpublishable_reason=post.unpublishable_reason if post is not None else "",
         video_url=(video_urls or {}).get(str(event.post_id), ""),
         output_port=event.output_port,
+        destination=event_destination(event, post),
+        times_published=post.times_published if post is not None else None,
     )
 
 
@@ -478,6 +513,9 @@ def schedule_post(
     connection_ids: tuple[str, ...] = (),
     repeat_until: str = "",
     repeat_count: int = 0,
+    destination: str = "",
+    repeat_weekdays: tuple[int, ...] = (),
+    goals: tuple[str, ...] = (),
 ) -> int:
     """Plan one POST (or one template output of it, `output_port` — MP-11) on one or
     more accounts, once or weekly. Returns how many events were created.
@@ -503,8 +541,22 @@ def schedule_post(
         "scheduled_tz": tz_name,
         "user_id": user_id,
         "output_port": output_port or None,
+        # QUA-118 v2: where the events go out; "" → what the POST publishes as today.
+        "destination": destination or None,
+        # QUA-118 v2 (0042): the plan's goals, kept on every event for later analysis.
+        "goals": list(goals),
     }
-    if repeat_until or repeat_count:
+    if repeat_weekdays and repeat_count:
+        # QUA-118 v2: several weekdays, `repeat_count` weeks each, at the same time.
+        start, at_time = _parse_day_time(day, at)
+        events = service.schedule_weekly(
+            start=start,
+            weekdays=list(repeat_weekdays),
+            weeks=repeat_count,
+            at=at_time,
+            **common,  # type: ignore[arg-type]
+        )
+    elif repeat_until or repeat_count:
         first_day, at_time = _parse_day_time(day, at)
         until = _parse_day_time(repeat_until, "00:00")[0] if repeat_until else None
         events = service.schedule_series(
@@ -568,6 +620,13 @@ def set_event_tags(tenant_id: UUID, event_id: str, tag_ids: tuple[str, ...]) -> 
         tenant_id=tenant_id,
         event_id=_uuid(event_id, UnknownEvent),
         tag_ids=[_uuid(t, UnknownTag) for t in tag_ids],
+    )
+
+
+def set_event_goals(tenant_id: UUID, event_id: str, goals: tuple[str, ...]) -> None:
+    """QUA-118 v2: the goals of one planned publication, edited from its panel."""
+    production_planner_service().set_event_goals(
+        tenant_id=tenant_id, event_id=_uuid(event_id, UnknownEvent), goals=list(goals)
     )
 
 
@@ -681,4 +740,21 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
         tag_ids=[str(t.id) for t in planned.tags],
         output_port=event.output_port or "",
         output_label=output_label(event.output_port),
+        destination=(dest := event_destination(event, post)),
+        destination_label=DESTINATION_LABELS.get(dest, ""),
+        goals=goal_labels(event.goals),
+        goal_keys=list(event.goals),
+        **_detail_kind(post, event.output_port),
     )
+
+
+def _detail_kind(post: PostSummary | None, output_port: str | None) -> dict[str, str]:
+    """What the event's content IS (Imagen / Video / Carrusel) for the panel's chip."""
+    if post is None:
+        return {}
+    types = post.media_types
+    if output_port:
+        output = next((o for o in post.outputs if o.port == output_port), None)
+        types = output.media_types if output is not None else ()
+    key, label, _icon = post_kind(types, category=post.category or "")
+    return {"kind": key, "kind_label": label}

@@ -11,7 +11,7 @@ documents.
 from __future__ import annotations
 
 import dataclasses
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -918,6 +918,9 @@ def _chip(port: str, *, scheduled: bool = False, publishable: bool = True) -> Ou
         event_status="scheduled" if scheduled else None,
         when_label="lun 28 · 12:00 p. m." if scheduled else "",
         account_label="@bianki" if scheduled else "",
+        # The template ports' own files: a reel video, a 4:5 feed image, a 9:16 story image.
+        media_types=("VIDEO",) if port == "reel" else ("IMAGE",),
+        image_size=None if port == "reel" else ((1080, 1920) if port == "story" else (1080, 1350)),
     )
 
 
@@ -1004,22 +1007,25 @@ def test_open_assign_for_a_package_preselects_its_next_output() -> None:
         detail_href="",
         is_publishable=True,
         unpublishable_reason="",
+        media_types=("IMAGE",),
     )
     state = _drawer_state(_package("pkg", reel=True), _package("other"), plain)
     state.open_assign_for_post("pkg")
     row = state.plan_rows[0]
     assert row.output_port == "feed" and row.has_outputs
     assert [c.port for c in row.outputs] == ["reel", "feed", "story"]
-    assert row.output_label == "Feed 4:5" and row.kind == "feed"
+    assert row.output_label == "Feed 4:5" and row.kind == "image"
+    assert row.destination == "post"  # the feed output goes out as a Publicación
     state.set_item_output("pkg", "story")
-    assert state.plan_items[0].output_port == "story" and state.plan_rows[0].kind == "story"
+    assert state.plan_items[0].output_port == "story"
+    assert state.plan_rows[0].destination == "story"  # a new output starts on its own
     state.set_item_output("pkg", ["reel"])  # a segmented control may hand a list
     assert state.plan_items[0].output_port == "reel"
     # Every piece preselects its own; a POST without outputs has no port.
     state.toggle_plan_post("other")
     state.toggle_plan_post("plain")
     assert [i.output_port for i in state.plan_items] == ["reel", "reel", ""]
-    assert not state.plan_rows[2].has_outputs and state.plan_rows[2].kind == "gallery"
+    assert not state.plan_rows[2].has_outputs and state.plan_rows[2].kind == "image"
 
 
 def test_the_form_note_is_the_chosen_outputs_own() -> None:
@@ -1055,12 +1061,18 @@ def test_a_reschedule_shows_the_events_output_but_cannot_change_it() -> None:
         connection_id="c1",
         output_port="story",
         output_label="Historia",
+        destination="story",
+        destination_label="Historia",
     )
     state.reschedule_from_detail()
     row = state.plan_rows[0]
     assert state.form_mode == MODE_RESCHEDULE and row.output_port == "story"
-    assert row.output_label == output_long_label("story") and row.kind == "story"
+    assert row.output_label == output_long_label("story")
+    assert (row.destination, row.destination_label, row.mock) == ("story", "Historia", "story")
     assert not row.has_outputs  # nothing to choose: a move never changes the output
+    assert row.destinations == []  # nor the destination
+    state.set_item_destination("pkg", "post")
+    assert state.plan_items[0].destination == "story"
 
 
 def test_output_errors_have_their_own_spanish() -> None:
@@ -1084,6 +1096,10 @@ def _ready_post(post_id: str = "p1", **kw: object) -> PostOptionVM:
         "detail_href": "/drafts/" + post_id,
         "is_publishable": True,
         "unpublishable_reason": "",
+        # QUA-118 v2: one 4:5 image unless the test says otherwise — what decides
+        # where the piece may go out (`publishable.destination_options`).
+        "media_types": ("IMAGE",),
+        "image_size": (1080, 1350),
     }
     params.update(kw)
     return build_post_option(**params)  # type: ignore[arg-type]
@@ -1266,9 +1282,13 @@ def test_accounts_toggle_and_an_incompatible_one_can_never_be_chosen() -> None:
 
 def test_a_plan_holds_several_posts_each_with_its_own_time_and_channels() -> None:
     state = _drawer_state(
-        _ready_post("p1", title="Historia de la mañana", category="story"),
-        _ready_post("p2", title="Carrusel del menú", category="galeria"),
-        _ready_post("p3", title="Reel del día", category="reel"),
+        _ready_post("p1", title="Historia de la mañana", category="story", image_size=(1080, 1920)),
+        _ready_post(
+            "p2", title="Carrusel del menú", category="galeria", media_types=("IMAGE", "VIDEO")
+        ),
+        _ready_post(
+            "p3", title="Reel del día", category="reel", media_types=("VIDEO",), image_size=None
+        ),
     )
     state.open_assign_for_day("2026-10-12")
     for post_id in ("p1", "p2", "p3"):
@@ -1284,7 +1304,10 @@ def test_a_plan_holds_several_posts_each_with_its_own_time_and_channels() -> Non
     state.next_step()
     assert state.form_step == 2 and state.form_is_last_step
     assert state.form_steps_done == [True, True, False]
-    assert [r.kind for r in state.plan_rows] == ["story", "gallery", "reel"]
+    # What each piece IS, and where it goes out — two different things.
+    assert [r.kind for r in state.plan_rows] == ["image", "carousel", "video"]
+    assert [r.destination for r in state.plan_rows] == ["story", "post", "reel"]
+    assert [r.mock for r in state.plan_rows] == ["story", "carousel", "reel"]
     # «Confirmar» reads the day in the order it goes out.
     assert [r.post_id for r in state.plan_rows_by_time] == ["p2", "p3", "p1"]
     assert state.form_event_count == 6  # 3 weekly + 2 accounts + 1
@@ -1379,27 +1402,27 @@ def test_temperature_reads_cold_for_proven_content_and_hot_for_new() -> None:
     assert _ready_post().temperature == "hot"
 
 
-def test_post_kind_names_the_format_by_category_output_and_package() -> None:
-    assert post_kind("reel") == ("reel", "Reel", "clapperboard")
-    assert post_kind("tiktok_video")[0] == "reel"
-    assert post_kind("story")[:2] == ("story", "Historia")
-    assert post_kind("galeria")[:2] == ("gallery", "Carrusel")
-    assert post_kind("")[:2] == post_kind("feed")[:2] == ("feed", "Feed")
-    assert post_kind("reel", has_outputs=True)[:2] == ("pack", "Multiformato")
-    assert post_kind("reel", has_outputs=True, output_port="story")[0] == "story"
-    assert set(KIND_ICONS) == {"reel", "story", "gallery", "feed", "pack"}
+def test_post_kind_names_what_the_content_is_from_its_media() -> None:
+    assert post_kind(("IMAGE",)) == ("image", "Imagen", "image")
+    assert post_kind(("VIDEO",))[:2] == ("video", "Video")
+    assert post_kind(("IMAGE", "VIDEO"))[:2] == ("carousel", "Carrusel")
+    assert post_kind((), has_outputs=True)[:2] == ("pack", "Multiformato")
+    # Unknown media → the category's usual shape, never a destination word.
+    assert post_kind((), category="reel")[0] == "video"
+    assert post_kind((), category="galeria")[0] == "carousel"
+    assert set(KIND_ICONS) == {"image", "video", "carousel", "pack"}
     assert (_package().kind, _package().kind_label) == ("pack", "Multiformato")
 
 
-def test_the_grid_filters_by_format_and_counts_every_format() -> None:
+def test_the_grid_filters_by_content_and_counts_every_kind() -> None:
     state = _drawer_state(
-        _ready_post("p1", category="reel"),
+        _ready_post("p1", category="reel", media_types=("VIDEO",)),
         _ready_post("p2", category="story"),
-        _ready_post("p3", category="reel"),
+        _ready_post("p3", category="reel", media_types=("VIDEO",)),
     )
-    assert state.form_kind_counts["all"] == 3 and state.form_kind_counts["reel"] == 2
-    assert state.form_kind_counts["gallery"] == 0  # every format has a count
-    state.set_form_kind_filter("story")
+    assert state.form_kind_counts["all"] == 3 and state.form_kind_counts["video"] == 2
+    assert state.form_kind_counts["carousel"] == 0  # every kind has a count
+    state.set_form_kind_filter("image")
     assert [t.post_id for t in state.form_tiles] == ["p2"]
     state.set_form_kind_filter("")
     assert state.form_kind_filter == "all" and len(state.form_tiles) == 3
@@ -1437,3 +1460,132 @@ def test_apply_to_all_copies_one_pieces_channels_and_tags() -> None:
     state.apply_to_all("p1")
     assert [i.connection_ids for i in state.plan_items] == [["c1", "c2"], ["c1", "c2"]]
     assert [i.tag_ids for i in state.plan_items] == [["t1"], ["t1"]]
+
+
+# --- QUA-118 v2: «¿Dónde quieres publicarlo?» -------------------------------------------
+
+
+def _offered(post: PostOptionVM) -> dict[str, tuple[bool, str]]:
+    return {d.key: (d.available, d.reason) for d in post.destinations}
+
+
+def test_an_image_goes_to_publicacion_or_historia_never_reel() -> None:
+    post = _ready_post()  # one 4:5 image
+    assert _offered(post) == {
+        "post": (True, ""),
+        "reel": (False, "Un Reel necesita un video; esto es una imagen."),
+        "story": (True, ""),
+    }
+    assert post.default_destination == "post"  # a galería image publishes as a post today
+    labels = [d.label for d in post.destinations]
+    assert labels == ["Publicación", "Reel", "Historia"]  # never «Feed»
+
+
+def test_a_vertical_image_cannot_be_a_publicacion_and_says_why() -> None:
+    post = _ready_post(category="story", image_size=(1080, 1920))
+    available, reason = _offered(post)["post"]
+    assert not available and "4:5" in reason and "1080×1920" in reason
+    assert post.default_destination == "story"
+    # A 1.91:1 landscape and a square are inside Meta's range; unknown size is not blocked.
+    assert _offered(_ready_post(image_size=(1910, 1000)))["post"][0]
+    assert _offered(_ready_post(image_size=(1080, 1080)))["post"][0]
+    assert _offered(_ready_post(image_size=None))["post"][0]
+
+
+def test_a_video_offers_reel_and_historia_only() -> None:
+    post = _ready_post(category="reel", media_types=("VIDEO",), image_size=None)
+    assert [d.key for d in post.destinations] == ["reel", "story"]  # no «Publicación»
+    assert post.default_destination == "reel"  # an existing reel stays a Reel
+    story = next(d for d in post.destinations if d.key == "story")
+    assert story.available and "60 segundos" in story.warning
+
+
+def test_a_carousel_only_goes_out_as_a_publicacion() -> None:
+    post = _ready_post(media_types=("IMAGE", "VIDEO", "IMAGE"))
+    offered = _offered(post)
+    assert offered["post"] == (True, "")
+    assert offered["reel"] == (False, "Un Reel es un solo video; no puede ser un carrusel.")
+    assert offered["story"] == (False, "Instagram no publica carruseles como Historia.")
+
+
+def test_the_destination_is_chosen_per_piece_and_an_unavailable_one_is_ignored() -> None:
+    video = _ready_post("v", category="reel", media_types=("VIDEO",), image_size=None)
+    state = _drawer_state(video, _ready_post("i"))
+    state.open_assign_blank()
+    state.toggle_plan_post("v")
+    state.toggle_plan_post("i")
+    assert [i.destination for i in state.plan_items] == ["reel", "post"]
+    state.set_item_destination("v", "story")
+    state.set_item_destination("i", "reel")  # an image cannot be a reel: ignored
+    state.set_item_destination("i", "nonsense")
+    assert [i.destination for i in state.plan_items] == ["story", "post"]
+    row = state.plan_rows[0]
+    assert (row.destination_label, row.mock) == ("Historia", "story")
+    assert "60 segundos" in row.destination_warning
+    assert state.form_story_warnings == 1  # «Confirmar» warns once before confirming
+
+
+def test_a_piece_without_a_destination_cannot_go_on() -> None:
+    state = _drawer_state()
+    state.open_assign_for_post("p1")
+    state.plan_items = [dataclasses.replace(state.plan_items[0], destination="")]
+    assert state.plan_rows[0].error == "Elige dónde quieres publicarlo."
+    assert not state.form_can_advance
+    state.set_item_destination("p1", "story")
+    assert state.plan_rows[0].error == "" and state.form_can_advance
+
+
+def test_a_card_says_where_the_event_goes_out() -> None:
+    grid = _week(_item("e1", datetime(2026, 9, 23, 10, tzinfo=CARACAS), destination="story"))
+    card = next(c for row in grid.rows for cell in row.cells for c in cell.cards)
+    assert (card.destination, card.destination_label) == ("story", "Historia")
+
+
+def test_a_card_says_whether_its_post_is_cold_or_hot() -> None:
+    def card(**kw):
+        grid = _week(_item("e1", datetime(2026, 9, 23, 10, tzinfo=CARACAS), **kw))
+        return next(c for row in grid.rows for cell in row.cells for c in cell.cards)
+
+    assert (card(times_published=3).temperature, card(times_published=3).temperature_label) == (
+        "cold",
+        "Cold",
+    )
+    assert card(times_published=0).temperature == "hot"
+    assert card().temperature == ""  # history unknown → no badge, no effect
+
+
+def test_a_cell_shows_two_chips_and_keeps_the_rest_behind_more() -> None:
+    at = datetime(2026, 9, 23, 9, tzinfo=CARACAS)
+    grid = _week(*[_item(f"e{i}", at + timedelta(minutes=i)) for i in range(4)])
+    cell = _row(grid, 9).cells[2]  # Wednesday 23
+    assert [c.event_id for c in cell.cards] == ["e0", "e1", "e2", "e3"]
+    assert [c.event_id for c in cell.visible] == ["e0", "e1"]
+    assert [c.event_id for c in cell.more] == ["e2", "e3"] and cell.more_count == 2
+    quiet = _row(grid, 10).cells[2]
+    assert quiet.visible == [] and quiet.more_count == 0
+
+
+def test_a_weekly_series_picks_its_days_time_and_weeks() -> None:
+    state = _drawer_state()
+    state.open_assign_for_post("p1")
+    state.set_item_date("p1", "2026-10-06")  # a Tuesday
+    state.set_item_repeat("p1", True)
+    assert state.plan_items[0].repeat_days == [1]  # the date's own weekday
+    state.toggle_item_repeat_day("p1", 3)  # + Thursday
+    state.set_item_repeat_count("p1", "2")
+    row = state.plan_rows[0]
+    assert row.repeat_days == [1, 3]
+    assert row.series.dates == ["mar 6 oct", "jue 8 oct", "mar 13 oct", "jue 15 oct"]
+    assert row.event_count == 4 and row.error == ""
+    state.toggle_item_repeat_day("p1", 1)
+    state.toggle_item_repeat_day("p1", 3)  # the last day stays: a series needs one
+    assert state.plan_items[0].repeat_days == [3]
+    state.set_item_repeat_count("p1", "13")
+    assert state.plan_rows[0].error == "Una serie admite como máximo 12 ocurrencias."
+
+
+def test_stored_goals_read_as_labels_in_plan_order() -> None:
+    from .planner_vm import goal_labels
+
+    assert goal_labels(["followers", "likes"]) == ["Likes", "Seguidores"]
+    assert goal_labels([]) == [] and goal_labels(None) == []
