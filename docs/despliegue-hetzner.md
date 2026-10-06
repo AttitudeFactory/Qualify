@@ -114,9 +114,9 @@ just deploy deploy@<IP> <sha-o-rama>    # o un ref concreto (ya commiteado)
 
 Qué hace `deploy/deploy.sh deploy`:
 
-1. `git archive` del ref (sólo lo **commiteado** — nunca el árbol sucio ni el `.env`) → `/opt/qualify/releases/<sha>`, y `/opt/qualify/current` apunta ahí. El servidor no necesita acceso a GitHub.
+1. `git archive` del ref (sólo lo **commiteado** — nunca el árbol sucio ni el `.env`) → `/opt/qualify/releases/<sha>`. El servidor no necesita acceso a GitHub.
 2. `docker compose build` (la primera vez tarda ~10–15 min en un CX23: dependencias de Python + export del frontend; luego queda en caché).
-3. `docker compose up -d`: `postgres` y `redis` → `migrate` (`alembic upgrade head` como `qualify_owner` + `ALTER ROLE` con las contraseñas de `.env.prod`) → `api` y `reflex` arrancan **sólo si migrate terminó bien** → `caddy`.
+3. `docker compose up -d`: `postgres` y `redis` → `migrate` (`alembic upgrade head` como `qualify_owner` + `ALTER ROLE` con las contraseñas de `.env.prod`) → `api` y `reflex` arrancan **sólo si migrate terminó bien** → `caddy`. Recién entonces `/opt/qualify/current` pasa a apuntar al release nuevo: si el build o la migración fallan, `current` (y con él `status`, `logs` y el cron de respaldo) se queda en el último release bueno.
 4. Chequeos de salud a través de Caddy: `/ping` = 200, `/api/connections/callback?code=x&state=x` = **403** (estado inválido: prueba que llegó a FastAPI; un 502 sería falla), `/login` = 200.
 
 Después: abrir <https://qualify.attitudefactory.co/login>. Para crear el primer negocio usar `/signup`, o por consola:
@@ -250,6 +250,8 @@ QUALIFY_ENV_FILE=/ruta/.env.smoke docker compose -p qualify-smoke \
 | `caddy validate` con el dominio real | `Valid configuration` |
 | Contraseñas crudas de BD dentro de `api`/`reflex` | Vacías (sólo llegan los DSN por rol; la del dueño superusuario no la tiene ningún proceso que sirve tráfico) |
 | `QUALIFY_CALENDAR_WORKER_INTERVAL=45` con el perfil activo | El worker arranca con `interval=45s` |
-| `deploy.sh status` / `deploy.sh backup` (con un `ssh` de prueba que ejecuta en local) | `ok` en los tres chequeos y salida 0; si un chequeo no da el código esperado, `FAIL` y salida ≠ 0 (camino ejercitado en la primera corrida, que además destapó un fallo con arreglos vacíos en bash 3.2, ya corregido) |
+| `deploy.sh deploy HEAD` en un "servidor" vacío (con un `ssh` de prueba que ejecuta en local) | `git archive` → release → build → migrate → `up` → `current` → los tres chequeos `ok`, salida 0 |
+| `deploy.sh deploy` con `.env.prod` roto (sin llave Fernet) | Falla con salida 1 y `current` **sigue** en el release anterior, que sigue sirviendo |
+| `deploy.sh status` / `deploy.sh backup` (mismo `ssh` de prueba) | `ok` en los tres chequeos y salida 0; si un chequeo no da el código esperado, `FAIL` y salida ≠ 0 (camino ejercitado en la primera corrida, que además destapó un fallo con arreglos vacíos en bash 3.2, ya corregido) |
 
-No verificado localmente: la emisión real del certificado (requiere DNS apuntando al servidor), el build en x86 del servidor (aquí fue arm64), el perfil `render` (su imagen no se construyó en esta sesión) y `deploy.sh deploy` contra un servidor real (su subida por `git archive` y el `compose build/up` se probaron por separado, no encadenados por ssh).
+No verificado localmente: la emisión real del certificado (requiere DNS apuntando al servidor), el build en x86 del servidor (aquí fue arm64), el perfil `render` (su imagen no se construyó en esta sesión) y `deploy.sh` a través de un ssh real (se probó con un `ssh` de prueba que ejecuta los mismos comandos en local).
