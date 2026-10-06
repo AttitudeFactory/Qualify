@@ -1,13 +1,12 @@
 """calendar_events.output_port: one event per template output (MP-11)
 
 Revision ID: 0040
-Revises: 0038
+Revises: 0039
 Create Date: 2026-10-05
 
-**0039 is reserved** for QUA-117 (Deivid's typography branch), which renumbers its own
-revision to that slot; this revision deliberately chains from 0038 so both branches merge
-without a rebase. If 0039 lands first, its `down_revision` stays 0038 and this one is
-re-pointed at 0039 — one line.
+**0039 is QUA-117** (Deivid's typography branch, `0039_brand_typography`). This revision
+was written chaining from 0038 so both branches could merge without a rebase; when 0039
+landed (2026-10-06) it was re-pointed at 0039 — the one line this note promised.
 
 ## Why
 
@@ -37,7 +36,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0040"
-down_revision = "0038"
+down_revision = "0039"
 branch_labels = None
 depends_on = None
 
