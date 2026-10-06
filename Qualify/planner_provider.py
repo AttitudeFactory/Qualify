@@ -402,8 +402,15 @@ def load_week(
         today_iso=today.isoformat(),
         days=grid.days,
         rows=grid.rows,
+        # The panel's cards show the same first frame the gallery and the drawer do.
         unscheduled=[
-            _post_option(p, occupied.get(p.post_id), zone=zone, connections=index)
+            _post_option(
+                p,
+                occupied.get(p.post_id),
+                zone=zone,
+                connections=index,
+                video_url=option_videos.get(str(p.post_id), ""),
+            )
             for p in unscheduled
         ],
         schedulable=[

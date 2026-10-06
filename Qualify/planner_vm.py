@@ -35,12 +35,15 @@ from .creative_vm import OUTPUT_WORDS, PORT_LABELS
 VIEW_CALENDAR = "calendar"
 VIEW_LIST = "list"
 
-# QUA-118: the assign flow's steps, in order. One drawer, four steps — the preview is
-# where «Programar» lives (founder's mock-up, 2026-10-05: the plan in words, the frames,
-# the tags and the button on one screen, so the operator confirms what they see). The
-# reschedule flow walks the same steps with what applies (no recurrence, one account).
-ASSIGN_STEPS: tuple[str, ...] = ("Post", "Fecha y hora", "Cuentas", "Vista previa")
-STEP_POST, STEP_WHEN, STEP_ACCOUNTS, STEP_PREVIEW = range(4)
+# QUA-118 v2 (founder review, 2026-10-06): the assign flow plans SEVERAL POSTs at once —
+# a story at 2 a. m., a carousel at 10 a. m. and a reel at 11 a. m. are one plan. Three
+# steps, each named by an icon and a word, never a number: pick the content from a grid,
+# set each piece's date, time, accounts and tags, then confirm over a phone-shaped
+# preview of every piece (edit or drop any of them there) with the plan's goals. The
+# reschedule flow walks the same steps with one piece, already chosen.
+ASSIGN_STEPS: tuple[str, ...] = ("Contenido", "Programación", "Confirmar")
+ASSIGN_STEP_ICONS: tuple[str, ...] = ("layout-grid", "calendar-clock", "circle-check")
+STEP_POST, STEP_WHEN, STEP_PREVIEW = range(3)
 STEP_LAST = STEP_PREVIEW
 
 REPEAT_BY_COUNT = "count"
@@ -559,21 +562,6 @@ class SeriesPreviewVM:
 
 
 @dataclass(frozen=True)
-class PreviewFrameVM:
-    """One account's frame in the «Vista previa» step: what will be published there,
-    in the shape that channel shows it (a static mock, never a Meta rendering)."""
-
-    account_label: str
-    platform: str
-    kind_label: str  # "Reel", "Feed 4:5", "Historia", "Galería", "Publicación"
-    aspect: str  # CSS aspect-ratio: "9 / 16", "4 / 5", "1 / 1"
-    thumbnail_url: str
-    video_url: str
-    ratio_label: str = ""  # "9:16" — the aspect as people say it
-    media_label: str = ""  # "Video" / "Imagen"
-
-
-@dataclass(frozen=True)
 class OutputChipVM:
     """One template output of a POST as the Sin programar card and the «Salida»
     control show it (MP-11): «Feed · lun 12:00 @bianki», «Historia · sin programar»."""
@@ -690,6 +678,13 @@ class PostOptionVM:
     used_count: int = 0
     in_calendar: bool = False
     media_label: str = ""  # "Video · Reel 9:16"
+    # QUA-118 v2: the format the grid tile shows («Reel», «Historia», «Carrusel», «Feed»,
+    # «Multiformato», key in `KIND_ICONS`), and the POST's temperature (`temperature`).
+    kind: str = "feed"
+    kind_label: str = "Feed"
+    temperature: str = "hot"
+    temperature_label: str = "Hot"
+    temperature_hint: str = ""
 
 
 @dataclass(frozen=True)
@@ -925,6 +920,8 @@ def build_post_option(
         used_count=times_published,
         in_calendar=has_live_event,
         media_label=f"{medium} · {kind}" + ("" if ratio in kind else f" {ratio}"),
+        **_kind_fields(category or "", has_outputs=bool(chips)),
+        **_temperature_fields(times_published),
     )
 
 
@@ -1004,25 +1001,13 @@ def series_preview(
     )
 
 
-def assign_steps_done(
-    *,
-    post_ok: bool,
-    when_ok: bool,
-    accounts_ok: bool,
-    reached: int,
-) -> list[bool]:
-    """Which steps count as completed: the three input steps by their own validity AND
+def assign_steps_done(*, post_ok: bool, when_ok: bool, reached: int) -> list[bool]:
+    """Which steps count as completed: the two input steps by their own validity AND
     only once reached (a defaulted date or a preselected account is not a step the
     operator completed); never the last one — confirming is the act, not a state. A
     later step is never done while an earlier one is not, so the stepper cannot show a
     gap. `reached` is the furthest step visited."""
-    done = [
-        post_ok,
-        post_ok and when_ok and reached >= STEP_WHEN,
-        post_ok and when_ok and accounts_ok and reached >= STEP_ACCOUNTS,
-    ]
-    done.append(False)
-    return done
+    return [post_ok, post_ok and when_ok and reached >= STEP_WHEN, False]
 
 
 def frame_shape(category: str, output_port: str) -> tuple[str, str]:
@@ -1041,30 +1026,6 @@ def frame_shape(category: str, output_port: str) -> tuple[str, str]:
     if category == "galeria":
         return "Galería", "1 / 1"
     return "Publicación", "4 / 5"
-
-
-def preview_frames(
-    *,
-    post: PostOptionVM | None,
-    output_port: str,
-    accounts: Iterable[ConnectionChoiceVM],
-) -> list[PreviewFrameVM]:
-    if post is None:
-        return []
-    kind, aspect = frame_shape(post.category, output_port)
-    return [
-        PreviewFrameVM(
-            account_label=account.label,
-            platform=account.platform,
-            kind_label=kind,
-            aspect=aspect,
-            thumbnail_url=post.thumbnail_url,
-            video_url=post.video_url,
-            ratio_label=aspect.replace(" / ", ":"),
-            media_label="Video" if post.video_url else "Imagen",
-        )
-        for account in accounts
-    ]
 
 
 def media_label(post: PostOptionVM | None, output_port: str) -> str:
@@ -1107,4 +1068,310 @@ def build_output_chip(
         tone=tone,
         scheduled=event_status is not None,
         note=note,
+    )
+
+
+# ---------------------------------------------------------------------------
+# QUA-118 v2: format, temperature, goals and the multi-POST plan (pure, tested directly)
+
+# The format a tile announces: (key, word, lucide glyph). The key drives the colour and,
+# in the confirm step, the shape of the phone mock (story bars, reel rail, feed header).
+_KINDS: dict[str, tuple[str, str, str]] = {
+    "reel": ("reel", "Reel", "clapperboard"),
+    "tiktok_video": ("reel", "Reel", "clapperboard"),
+    "story": ("story", "Historia", "circle-fading-plus"),
+    "galeria": ("gallery", "Carrusel", "gallery-horizontal-end"),
+    "gallery": ("gallery", "Carrusel", "gallery-horizontal-end"),
+    "carousel": ("gallery", "Carrusel", "gallery-horizontal-end"),
+}
+_FEED_KIND = ("feed", "Feed", "image")
+_PACK_KIND = ("pack", "Multiformato", "layers")
+# Every format key with its glyph — the page matches over it (`rx.icon` needs a literal).
+KIND_ICONS: dict[str, str] = {
+    key: icon for key, _word, icon in (*_KINDS.values(), _FEED_KIND, _PACK_KIND)
+}
+_OUTPUT_KINDS: dict[str, tuple[str, str, str]] = {
+    "reel": _KINDS["reel"],
+    "story": _KINDS["story"],
+    "feed": _FEED_KIND,
+}
+
+
+def post_kind(
+    category: str, *, has_outputs: bool = False, output_port: str = ""
+) -> tuple[str, str, str]:
+    """(key, word, glyph) of what a POST — or one template output of it — publishes as.
+    A template package not yet split into one output reads «Multiformato»."""
+    if output_port in _OUTPUT_KINDS:
+        return _OUTPUT_KINDS[output_port]
+    if has_outputs:
+        return _PACK_KIND
+    return _KINDS.get(category, _FEED_KIND)
+
+
+def _kind_fields(category: str, *, has_outputs: bool) -> dict[str, str]:
+    key, label, _icon = post_kind(category, has_outputs=has_outputs)
+    return {"kind": key, "kind_label": label}
+
+
+# Cold / Hot (founder's brief, 2026-10-06). The words are the boss's, the idea is the
+# market's: «cold» is EVERGREEN content — it has worked every time it went out and can be
+# repeated safely (brands recycle their top performers every 60–90 days); «hot» is content
+# just made, still to prove itself on the channels. Until per-post performance metrics
+# land, "worked" is read from the POST's own publishing history (D2): reused from the
+# Planificador at least `COLD_MIN_USES` times means the team keeps choosing it.
+TEMPERATURE_COLD = "cold"
+TEMPERATURE_HOT = "hot"
+COLD_MIN_USES = 2
+
+
+def temperature(times_published: int) -> tuple[str, str, str]:
+    """(key, word, hint) for a POST published `times_published` times."""
+    n = max(times_published, 0)
+    if n >= COLD_MIN_USES:
+        return (
+            TEMPERATURE_COLD,
+            "Cold",
+            f"Cold · probado: salió {n} veces. Contenido evergreen, seguro para repetir.",
+        )
+    if n == 1:
+        return TEMPERATURE_HOT, "Hot", "Hot · en prueba: salió 1 vez, aún sin historial."
+    return TEMPERATURE_HOT, "Hot", "Hot · nuevo: todavía no ha salido en tus redes."
+
+
+def _temperature_fields(times_published: int) -> dict[str, str]:
+    key, label, hint = temperature(times_published)
+    return {"temperature": key, "temperature_label": label, "temperature_hint": hint}
+
+
+@dataclass(frozen=True)
+class PlanGoalVM:
+    """One goal the operator can set for a plan (the confirm step's checks)."""
+
+    key: str
+    label: str
+    icon: str
+    color: str  # a Radix scale — identity, like a tag colour, never a state
+    hint: str
+
+
+PLAN_GOALS: tuple[PlanGoalVM, ...] = (
+    PlanGoalVM("likes", "Likes", "heart", "pink", "Que guste: reacciones"),
+    PlanGoalVM("views", "Vistas", "eye", "blue", "Alcance: que lo vea más gente"),
+    PlanGoalVM("comments", "Comentarios", "message-circle", "violet", "Abrir conversación"),
+    PlanGoalVM("ads", "Ads", "megaphone", "amber", "Candidato a pauta pagada"),
+    PlanGoalVM("followers", "Seguidores", "user-plus", "green", "Crecer la comunidad"),
+    PlanGoalVM("engagement", "Interacción", "sparkles", "teal", "Guardados y compartidos"),
+)
+PLAN_GOAL_KEYS: frozenset[str] = frozenset(g.key for g in PLAN_GOALS)
+
+PLAN_OUTPUT_REQUIRED = "Elige qué salida programar (Reel, feed o historia)."
+PLAN_ACCOUNT_REQUIRED = "Elige al menos una cuenta compatible."
+PLAN_DATE_REQUIRED = "Elige la fecha y la hora."
+PLAN_DATE_PAST = "Esa fecha ya pasó. Elige una de hoy en adelante."
+PLAN_TIME_PAST = "Esa hora ya pasó. Elige una posterior."
+
+
+def split_time(value: str) -> tuple[int, int]:
+    """ "15:50" → (15, 50); anything unparsable → 09:00."""
+    try:
+        hour_text, minute_text = value.split(":")[:2]
+        hour, minute = int(hour_text), int(minute_text)
+    except ValueError:
+        return 9, 0
+    if not (0 <= hour < 24 and 0 <= minute < 60):
+        return 9, 0
+    return hour, minute
+
+
+def time_label(at: str) -> str:
+    """ "10:00 a. m." """
+    hour, minute = split_time(at)
+    return f"{hour % 12 or 12}:{minute:02d} {'a. m.' if hour < 12 else 'p. m.'}"
+
+
+def when_label(day_iso: str, at: str) -> str:
+    """ "lun 12 oct · 10:00 a. m." — "" without a valid date."""
+    try:
+        day = date.fromisoformat(day_iso)
+    except ValueError:
+        return ""
+    return f"{_short_day(day)} · {time_label(at)}"
+
+
+@dataclass(frozen=True)
+class PlanItem:
+    """One piece of a plan as the operator edits it: which POST (and output), when,
+    where, with which tags, and whether it repeats weekly. Raw values only; the row the
+    page renders is `build_plan_row`'s."""
+
+    post_id: str
+    date: str = ""
+    time: str = "09:00"
+    connection_ids: list[str] = field(default_factory=list)
+    tag_ids: list[str] = field(default_factory=list)
+    output_port: str = ""
+    repeat: bool = False
+    repeat_count: str = "4"
+
+
+@dataclass(frozen=True)
+class PlanRowVM:
+    """One piece of the plan, ready to render in «Programación» and «Confirmar»."""
+
+    post_id: str
+    title: str
+    caption_excerpt: str
+    thumbnail_url: str
+    video_url: str
+    kind: str  # reel / story / gallery / feed / pack — the mock's shape and colour
+    kind_label: str
+    aspect: str  # CSS aspect-ratio of the frame
+    media_label: str
+    temperature: str
+    temperature_label: str
+    temperature_hint: str
+    date: str
+    time: str
+    hour12: str
+    minute: str
+    meridiem: str
+    when_label: str
+    day_label: str  # "lun 12 oct"
+    time_label: str
+    connection_ids: list[str]
+    tag_ids: list[str]
+    accounts: list[ConnectionChoiceVM]
+    tags: list[TagVM]
+    first_account: str
+    output_port: str
+    output_label: str
+    outputs: list[OutputChipVM]
+    has_outputs: bool
+    repeat: bool
+    repeat_count: str
+    series: SeriesPreviewVM
+    event_count: int
+    note: str  # it will be scheduled but not published yet: why ("" when ready)
+    error: str  # why this piece cannot be planned as set ("" when it can)
+
+
+def plan_item_error(
+    item: PlanItem,
+    *,
+    post: PostOptionVM | None,
+    accounts: list[ConnectionChoiceVM],
+    series: SeriesPreviewVM,
+    today_iso: str,
+    now_hhmm: str,
+    reschedule: bool = False,
+) -> str:
+    """The first thing that keeps `item` from being planned, in the operator's words:
+    the output of a package, the date and time, the weekly series, the accounts."""
+    if not reschedule and post is not None and post.has_outputs:
+        if not item.output_port:
+            return PLAN_OUTPUT_REQUIRED
+        for chip in post.outputs:
+            if chip.port == item.output_port and chip.note:
+                return chip.note
+    if not item.date or not item.time:
+        return PLAN_DATE_REQUIRED
+    if today_iso and item.date < today_iso:
+        return PLAN_DATE_PAST
+    if today_iso and now_hhmm and item.date == today_iso and item.time <= now_hhmm:
+        return PLAN_TIME_PAST
+    if series.error:
+        return series.error
+    if not accounts:
+        return PLAN_ACCOUNT_REQUIRED
+    return ""
+
+
+def build_plan_row(
+    item: PlanItem,
+    *,
+    post: PostOptionVM | None,
+    connections: Iterable[ConnectionChoiceVM],
+    tags: Iterable[TagVM] = (),
+    today_iso: str = "",
+    now_hhmm: str = "",
+    reschedule: bool = False,
+) -> PlanRowVM:
+    """`item` as the page renders it. `post` is None only for a POST no longer listed."""
+    if post is None:
+        post = PostOptionVM(
+            post_id=item.post_id,
+            title="POST no disponible",
+            caption_excerpt="",
+            thumbnail_url="",
+            category_label="",
+            approval_label="",
+            approval_tone="neutral",
+            detail_href="",
+        )
+    chosen = set(item.connection_ids)
+    accounts = [c for c in connections if c.id in chosen and c.compatible]
+    tag_set = set(item.tag_ids)
+    series = series_preview(
+        item.date,
+        repeat=item.repeat and not reschedule,
+        mode=REPEAT_BY_COUNT,
+        count_text=item.repeat_count,
+        until_iso="",
+    )
+    key, label, _icon = post_kind(
+        post.category,
+        has_outputs=post.has_outputs and not item.output_port,
+        output_port=item.output_port,
+    )
+    _shape, aspect = frame_shape(post.category, item.output_port)
+    hour, minute = split_time(item.time)
+    chip = next((c for c in post.outputs if c.port == item.output_port), None)
+    output_label = (
+        chip.label if chip else (output_long_label(item.output_port) if item.output_port else "")
+    )
+    return PlanRowVM(
+        post_id=item.post_id,
+        title=post.title,
+        caption_excerpt=post.caption_excerpt,
+        thumbnail_url=post.thumbnail_url,
+        video_url=post.video_url,
+        kind=key,
+        kind_label=label,
+        aspect=aspect,
+        media_label=media_label(post, item.output_port),
+        temperature=post.temperature,
+        temperature_label=post.temperature_label,
+        temperature_hint=post.temperature_hint,
+        date=item.date,
+        time=item.time,
+        hour12=str(hour % 12 or 12),
+        minute=f"{minute:02d}",
+        meridiem="am" if hour < 12 else "pm",
+        when_label=when_label(item.date, item.time),
+        day_label=when_label(item.date, item.time).split(" · ")[0],
+        time_label=time_label(item.time),
+        connection_ids=list(item.connection_ids),
+        tag_ids=list(item.tag_ids),
+        accounts=accounts,
+        tags=[t for t in tags if t.id in tag_set],
+        first_account=accounts[0].label if accounts else "tu_cuenta",
+        output_port=item.output_port,
+        output_label=output_label,
+        outputs=[] if reschedule else list(post.outputs),
+        has_outputs=post.has_outputs and not reschedule,
+        repeat=item.repeat and not reschedule,
+        repeat_count=item.repeat_count,
+        series=series,
+        event_count=max(series.count, 1) * len(accounts),
+        note=chip.note if chip else post.readiness_note,
+        error=plan_item_error(
+            item,
+            post=post,
+            accounts=accounts,
+            series=series,
+            today_iso=today_iso,
+            now_hhmm=now_hhmm,
+            reschedule=reschedule,
+        ),
     )

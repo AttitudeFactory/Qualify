@@ -585,27 +585,37 @@ def stepper(
     current: rx.Var[int] | int,
     completed: rx.Var[list[bool]],
     on_select: Callable[[int], Any] | None = None,
+    icons: list[str] | None = None,
 ) -> rx.Component:
     """The steps of a flow, in order: a filled check for a step already completed, the
-    number for the rest, the current one highlighted. A completed step is clickable when
-    ``on_select`` is given (back to fix something); a step not reached yet never is, so
-    nothing can be confirmed with a step missing. Numbers are a fallback, not the
-    point: the label is what reads. Static labels, dynamic state."""
+    number for the rest — or, with ``icons``, one glyph per step instead of a number
+    (the Planificador's drawer: steps read by picture and word) — the current one
+    highlighted. When ``on_select`` is given, a
+    step is clickable once completed (back to fix something) or once the step before it
+    is — the last step is never "completed" (confirming is the act), yet it must be a
+    click away again after going back. A step further ahead never is, so nothing can be
+    confirmed with a step missing. Numbers are a fallback, not the point: the label is
+    what reads. Static labels, dynamic state."""
     items: list[rx.Component] = []
     for index, label in enumerate(labels):
         is_current = current == index
         is_done = completed[index]
         reachable = is_done | is_current
+        if index:
+            reachable = reachable | completed[index - 1]
+        base = "q-step-dot q-step-dot--icon" if icons else "q-step-dot"
         dot = rx.box(
             rx.cond(
                 is_done,
                 rx.icon("check", size=12, stroke_width=3),
-                rx.text(str(index + 1), size="1", weight="bold", line_height="1"),
+                rx.icon(icons[index], size=15)
+                if icons
+                else rx.text(str(index + 1), size="1", weight="bold", line_height="1"),
             ),
             class_name=rx.cond(
                 is_done,
-                "q-step-dot q-step-dot--done",
-                rx.cond(is_current, "q-step-dot q-step-dot--current", "q-step-dot"),
+                f"{base} q-step-dot--done",
+                rx.cond(is_current, f"{base} q-step-dot--current", base),
             ),
             aria_hidden="true",
         )

@@ -38,6 +38,8 @@ from qualify_api.planner.service import (
 
 from .planner_provider import planner_error_message, view_zone
 from .planner_state import (
+    CONFIRM_CANCEL,
+    CONFIRM_REMOVE,
     MODE_ASSIGN,
     MODE_RESCHEDULE,
     PlannerState,
@@ -47,16 +49,20 @@ from .planner_state import (
     to_24h,
 )
 from .planner_vm import (
+    ASSIGN_STEP_ICONS,
     ASSIGN_STEPS,
     AUTO_PUBLISH_ACTIVE,
     AUTO_PUBLISH_NO_CONNECTION,
     AUTO_PUBLISH_UNAVAILABLE,
+    COLD_MIN_USES,
     EXPIRED_LABEL,
     EXPIRED_NOTE,
     HOUR_ROW_KEYS,
+    KIND_ICONS,
     OPENING_HOUR,
     OUTPUT_NOT_PUBLISHABLE,
     OUTPUT_UNSCHEDULED,
+    PLAN_GOALS,
     TAG_SUGGESTIONS,
     VIEW_CALENDAR,
     VIEW_LIST,
@@ -69,7 +75,6 @@ from .planner_vm import (
     HourRowVM,
     OutputChipVM,
     PostOptionVM,
-    PreviewFrameVM,
     SeriesPreviewVM,
     TagVM,
     approval_label,
@@ -89,10 +94,12 @@ from .planner_vm import (
     hour_row_label,
     month_label,
     output_label,
-    preview_frames,
+    output_long_label,
+    post_kind,
     readiness,
     series_preview,
     status_label,
+    temperature,
     time_label_12h,
     timezone_options,
     tz_city,
@@ -374,18 +381,18 @@ def test_unscheduled_panel_starts_closed_and_toggles() -> None:
 
 
 def test_open_assign_for_post_preselects_post_connection_and_today() -> None:
-    state = _state()
+    state = _drawer_state()
     state.open_assign_for_post("p1")
     assert state.form_open and state.form_mode == MODE_ASSIGN
-    assert state.form_post_id == "p1"
-    assert state.form_connection_id == "c1"
-    assert state.form_date == "2026-09-23"  # today, because this week contains it
+    [item] = state.plan_items
+    assert item.post_id == "p1" and item.connection_ids == ["c1"]
+    assert item.date == "2026-09-23"  # today, because this week contains it
 
 
 def test_open_assign_for_day_uses_that_day() -> None:
     state = _state()
     state.open_assign_for_day("2026-09-26")
-    assert state.form_date == "2026-09-26" and state.form_post_id == ""
+    assert state.form_default_date == "2026-09-26" and state.plan_items == []
 
 
 def test_reschedule_from_detail_prefills_the_form_from_the_event() -> None:
@@ -402,14 +409,26 @@ def test_reschedule_from_detail_prefills_the_form_from_the_event() -> None:
     state.detail_open = True
     state.reschedule_from_detail()
     assert state.form_mode == MODE_RESCHEDULE and state.form_open
-    assert (state.form_event_id, state.form_date, state.form_time) == ("e1", "2026-09-25", "15:30")
+    [item] = state.plan_items
+    assert (state.form_event_id, item.date, item.time) == ("e1", "2026-09-25", "15:30")
+    assert state.plan_rows[0].title == "Promo"  # read from the event, not the POST list
     assert not state.detail_open
 
 
-def test_ask_cancel_opens_the_confirmation_for_that_event() -> None:
+def test_cancel_is_confirmed_inside_the_event_panel_not_a_dialog() -> None:
     state = _state()
-    state.ask_cancel("e9")
-    assert state.cancel_open and state.cancel_event_id == "e9"
+    event = state.ask_cancel("e9")  # a card's ⋯ menu: the panel opens, already asking
+    assert event.handler.fn.__name__ == "open_detail_asking"
+    assert list(event.args[1]) and "cancel" in str(event.args[1])
+    state.detail = EventDetailVM(event_id="e9", can_modify=True)
+    state.ask_cancel_from_detail()
+    assert state.detail_confirm == CONFIRM_CANCEL
+    state.dismiss_confirm()
+    assert state.detail_confirm == ""
+    state.ask_remove_rejected()
+    assert state.detail_confirm == CONFIRM_REMOVE
+    state.set_detail_open(False)  # closing the panel drops the question
+    assert state.detail_confirm == ""
 
 
 def test_is_current_week() -> None:
@@ -435,10 +454,12 @@ def test_cells_know_their_hour() -> None:
 
 
 def test_clicking_an_empty_slot_opens_nueva_publicacion_at_that_day_and_hour() -> None:
-    state = _state()
+    state = _drawer_state()
     state.open_assign_for_slot("2026-09-25", 15)
     assert state.form_open and state.form_mode == MODE_ASSIGN
-    assert (state.form_date, state.form_time) == ("2026-09-25", "15:00")
+    assert (state.form_default_date, state.form_default_time) == ("2026-09-25", "15:00")
+    state.toggle_plan_post("p1")  # a piece picked now lands on that slot
+    assert (state.plan_items[0].date, state.plan_items[0].time) == ("2026-09-25", "15:00")
 
 
 def test_clicking_a_past_day_slot_does_nothing() -> None:
@@ -448,22 +469,26 @@ def test_clicking_a_past_day_slot_does_nothing() -> None:
 
 
 def test_12_hour_picker_edits_the_24_hour_value() -> None:
-    state = _state()
-    state.form_time = "09:00"
-    assert (state.form_hour12, state.form_minute, state.form_meridiem) == ("9", "00", "am")
-    state.set_form_meridiem("pm")
-    assert state.form_time == "21:00"
-    state.set_form_hour12("12")
-    assert state.form_time == "12:00"  # 12 p. m. is noon
-    state.set_form_meridiem("am")
-    assert state.form_time == "00:00"  # 12 a. m. is midnight
-    state.set_form_minute("45")
-    assert state.form_time == "00:45"
+    state = _drawer_state()
+    state.open_assign_for_post("p1")
+    state.set_item_time("p1", "09:00")
+    row = state.plan_rows[0]
+    assert (row.hour12, row.minute, row.meridiem) == ("9", "00", "am")
+    state.set_item_meridiem("p1", "pm")
+    assert state.plan_items[0].time == "21:00"
+    state.set_item_hour12("p1", "12")
+    assert state.plan_items[0].time == "12:00"  # 12 p. m. is noon
+    state.set_item_meridiem("p1", "am")
+    assert state.plan_items[0].time == "00:00"  # 12 a. m. is midnight
+    state.set_item_minute("p1", "45")
+    assert state.plan_items[0].time == "00:45"
+    assert state.plan_rows[0].time_label == "12:45 a. m."
 
 
 def test_minute_options_keep_an_off_step_minute() -> None:
-    state = _state()
-    state.form_time = "15:47"
+    state = _drawer_state()
+    state.open_assign_for_post("p1")
+    state.set_item_time("p1", "15:47")
     assert "47" in state.minute_options and "45" in state.minute_options
 
 
@@ -576,16 +601,21 @@ def test_tag_search_and_create_availability() -> None:
     assert not state.can_create_tag
 
 
-def test_form_tags_reset_on_new_and_prefill_on_reschedule() -> None:
-    state = _state()
+def test_form_tags_are_per_piece_reset_on_new_and_prefill_on_reschedule() -> None:
+    state = _drawer_state()
     _tags(state)
-    state.toggle_form_tag("t1")
-    assert state.form_tag_ids == ["t1"]
+    state.open_assign_for_post("p1")
+    state.toggle_item_tag("p1", "t1")
+    assert state.plan_items[0].tag_ids == ["t1"]
+    assert [t.id for t in state.plan_rows[0].tags] == ["t1"]
+    state.toggle_item_tag("p1", "t1")
+    assert state.plan_items[0].tag_ids == []
+    state.toggle_item_tag("p1", "t2")
     state.open_assign_blank()
-    assert state.form_tag_ids == []
-    state.detail = EventDetailVM(event_id="e1", tag_ids=["t2"], can_modify=True)
+    assert state.plan_items == []
+    state.detail = EventDetailVM(event_id="e1", post_id="p1", tag_ids=["t2"], can_modify=True)
     state.reschedule_from_detail()
-    assert state.form_tag_ids == ["t2"]
+    assert state.plan_items[0].tag_ids == ["t2"]
 
 
 def test_timezones_carry_their_country_and_are_searchable_by_it() -> None:
@@ -610,10 +640,12 @@ def test_tag_suggestions_have_a_palette_colour_and_hide_once_created() -> None:
     assert "Promoción" not in names and "Lanzamiento" in names
 
 
-def test_ask_delete_tag_opens_the_confirmation() -> None:
+def test_ask_delete_tag_turns_the_row_into_an_inline_confirmation() -> None:
     state = _state()
     state.ask_delete_tag("t1", "Promo")
-    assert state.delete_tag_open and (state.delete_tag_id, state.delete_tag_name) == ("t1", "Promo")
+    assert (state.delete_tag_id, state.delete_tag_name) == ("t1", "Promo")
+    state.cancel_delete_tag()
+    assert (state.delete_tag_id, state.delete_tag_name) == ("", "")
 
 
 def test_detail_offers_only_the_tags_the_event_does_not_have() -> None:
@@ -623,13 +655,15 @@ def test_detail_offers_only_the_tags_the_event_does_not_have() -> None:
     assert [t.id for t in state.detail_available_tags] == ["t2"]
 
 
-def test_entering_the_page_closes_any_dialog_left_open() -> None:
+def test_entering_the_page_closes_any_panel_left_open() -> None:
     state = _state()
     state.detail = EventDetailVM(event_id="e1")
-    state.detail_open = state.form_open = state.cancel_open = True
-    state.delete_tag_open = True
+    state.detail_open = state.form_open = True
+    state.detail_confirm = CONFIRM_CANCEL
+    state.delete_tag_id = "t1"
     state.load_current_week()
-    assert not (state.detail_open or state.form_open or state.cancel_open or state.delete_tag_open)
+    assert not (state.detail_open or state.form_open)
+    assert state.detail_confirm == "" and state.delete_tag_id == ""
     assert state.monday_iso == ""
 
 
@@ -752,7 +786,7 @@ def test_an_event_that_already_ran_keeps_the_plain_approval_wording() -> None:
     assert (card.approval_label, card.readiness_note) == ("Aprobado", "")
 
 
-def test_the_schedule_form_warns_before_confirming_an_incomplete_post() -> None:
+def test_an_incomplete_post_cannot_enter_the_plan_and_a_move_keeps_its_note() -> None:
     ok, reason = _verdict(caption=None)
     option = build_post_option(
         post_id="p1",
@@ -766,18 +800,23 @@ def test_the_schedule_form_warns_before_confirming_an_incomplete_post() -> None:
         unpublishable_reason=reason,
     )
     assert (option.approval_short, option.readiness_note) == ("No listo", reason)
-    state = _state()
-    state.schedulable = [option]
-    state.form_post_id = "p1"
-    assert state.form_post_note == "No se encuentra el texto aprobado del POST."
-    ready_ok, _ = _verdict()
-    state.schedulable = [dataclasses.replace(option, readiness_note="", approval_short="Listo")]
-    assert state.form_post_note == ""  # ready → no warning
-    # Rescheduling reads the event's own detail, same note as the dialog.
-    state.form_mode = MODE_RESCHEDULE
-    state.detail = EventDetailVM(publish_note=REASON_TEXT[UnpublishableReason.NO_MEDIA])
-    assert state.form_post_note == "El POST no tiene imágenes ni video."
-    assert ready_ok
+    state = _drawer_state(option)
+    state.open_assign_blank()
+    state.toggle_plan_post("p1")
+    assert state.plan_items == []  # a dashed tile: never selectable (D1)
+    assert state.form_tiles[0].readiness_note == "No se encuentra el texto aprobado del POST."
+    # Rescheduling reads the event's own detail, same note as the panel.
+    state.detail = EventDetailVM(
+        event_id="e1",
+        post_id="p1",
+        title="Nuevo sabor: taro",
+        local_date="2026-10-12",
+        local_time="10:00",
+        connection_id="c1",
+        publish_note=REASON_TEXT[UnpublishableReason.NO_MEDIA],
+    )
+    state.reschedule_from_detail()
+    assert state.plan_rows[0].note == "El POST no tiene imágenes ni video."
 
 
 # --- event dialog actions: review, rejection and the event's own state (2026-09-30) ------
@@ -955,42 +994,35 @@ def test_a_per_output_event_card_carries_the_output_word() -> None:
 
 
 def test_open_assign_for_a_package_preselects_its_next_output() -> None:
-    state = _state()
-    state.schedulable = [_package("pkg", reel=True), _package("other")]
-    state.open_assign_for_post("pkg")
-    assert state.form_output_port == "feed"
-    assert state.form_has_outputs and [c.port for c in state.form_outputs] == [
-        "reel",
-        "feed",
-        "story",
-    ]
-    assert state.form_output_label == "Feed 4:5"
-    state.set_form_output_port("story")
-    assert state.form_output_port == "story"
-    state.set_form_output_port(["reel"])  # a segmented control may hand a list
-    assert state.form_output_port == "reel"
-    # Picking another POST re-preselects; a POST without outputs clears the port.
-    state.set_form_post_id("other")
-    assert state.form_output_port == "reel"
-    state.schedulable.append(
-        build_post_option(
-            post_id="plain",
-            title="Promo",
-            caption_excerpt="",
-            thumbnail_url=None,
-            category="galeria",
-            approval="approved",
-            detail_href="",
-            is_publishable=True,
-            unpublishable_reason="",
-        )
+    plain = build_post_option(
+        post_id="plain",
+        title="Promo",
+        caption_excerpt="",
+        thumbnail_url=None,
+        category="galeria",
+        approval="approved",
+        detail_href="",
+        is_publishable=True,
+        unpublishable_reason="",
     )
-    state.set_form_post_id("plain")
-    assert state.form_output_port == "" and not state.form_has_outputs
+    state = _drawer_state(_package("pkg", reel=True), _package("other"), plain)
+    state.open_assign_for_post("pkg")
+    row = state.plan_rows[0]
+    assert row.output_port == "feed" and row.has_outputs
+    assert [c.port for c in row.outputs] == ["reel", "feed", "story"]
+    assert row.output_label == "Feed 4:5" and row.kind == "feed"
+    state.set_item_output("pkg", "story")
+    assert state.plan_items[0].output_port == "story" and state.plan_rows[0].kind == "story"
+    state.set_item_output("pkg", ["reel"])  # a segmented control may hand a list
+    assert state.plan_items[0].output_port == "reel"
+    # Every piece preselects its own; a POST without outputs has no port.
+    state.toggle_plan_post("other")
+    state.toggle_plan_post("plain")
+    assert [i.output_port for i in state.plan_items] == ["reel", "reel", ""]
+    assert not state.plan_rows[2].has_outputs and state.plan_rows[2].kind == "gallery"
 
 
 def test_the_form_note_is_the_chosen_outputs_own() -> None:
-    state = _state()
     blocked = build_post_option(
         post_id="pkg",
         title="Promo",
@@ -1003,12 +1035,13 @@ def test_the_form_note_is_the_chosen_outputs_own() -> None:
         unpublishable_reason="",
         outputs=[_chip("reel", publishable=False), _chip("feed")],
     )
-    state.schedulable = [blocked]
+    state = _drawer_state(blocked)
     state.open_assign_for_post("pkg")
-    assert state.form_output_port == "reel"
-    assert state.form_post_note.startswith("Los archivos")
-    state.set_form_output_port("feed")
-    assert state.form_post_note == ""
+    assert state.plan_items[0].output_port == "reel"
+    assert state.plan_rows[0].note.startswith("Los archivos")
+    assert state.plan_rows[0].error.startswith("Los archivos")  # D1: it cannot go in
+    state.set_item_output("pkg", "feed")
+    assert state.plan_rows[0].note == "" and state.plan_rows[0].error == ""
 
 
 def test_a_reschedule_shows_the_events_output_but_cannot_change_it() -> None:
@@ -1024,8 +1057,10 @@ def test_a_reschedule_shows_the_events_output_but_cannot_change_it() -> None:
         output_label="Historia",
     )
     state.reschedule_from_detail()
-    assert state.form_mode == MODE_RESCHEDULE and state.form_output_port == "story"
-    assert state.form_output_label == "Historia"
+    row = state.plan_rows[0]
+    assert state.form_mode == MODE_RESCHEDULE and row.output_port == "story"
+    assert row.output_label == output_long_label("story") and row.kind == "story"
+    assert not row.has_outputs  # nothing to choose: a move never changes the output
 
 
 def test_output_errors_have_their_own_spanish() -> None:
@@ -1102,25 +1137,19 @@ def test_series_preview_refuses_the_same_way_the_service_does() -> None:
 
 
 def test_steps_done_never_shows_a_gap() -> None:
-    assert assign_steps_done(post_ok=True, when_ok=True, accounts_ok=True, reached=3) == [
-        True,
+    assert assign_steps_done(post_ok=True, when_ok=True, reached=2) == [
         True,
         True,
         False,  # the last step is the act of confirming, never "done"
     ]
     # An earlier step undone undoes everything after it.
-    assert (
-        assign_steps_done(post_ok=False, when_ok=True, accounts_ok=True, reached=3) == [False] * 4
-    )
+    assert assign_steps_done(post_ok=False, when_ok=True, reached=2) == [False] * 3
     # Valid but never seen is not done: a defaulted date or a preselected account.
-    assert assign_steps_done(post_ok=True, when_ok=True, accounts_ok=True, reached=0) == [
-        True,
-        False,
-        False,
-        False,
-    ]
-    assert assign_steps_done(post_ok=True, when_ok=True, accounts_ok=True, reached=1)[1] is True
-    assert len(ASSIGN_STEPS) == 4
+    assert assign_steps_done(post_ok=True, when_ok=True, reached=0) == [True, False, False]
+    assert assign_steps_done(post_ok=True, when_ok=True, reached=1)[1] is True
+    # Three steps, each named by a glyph and a word — never a number.
+    assert ASSIGN_STEPS == ("Contenido", "Programación", "Confirmar")
+    assert len(ASSIGN_STEP_ICONS) == len(ASSIGN_STEPS)
 
 
 def test_frame_shape_follows_the_output_then_the_category() -> None:
@@ -1131,184 +1160,169 @@ def test_frame_shape_follows_the_output_then_the_category() -> None:
     assert frame_shape("reel", "") == ("Reel", "9 / 16")
     assert frame_shape("story", "") == ("Historia", "9 / 16")
     assert frame_shape("", "") == ("Publicación", "4 / 5")
-    frames = preview_frames(
-        post=_ready_post(category="reel"),
-        output_port="",
-        accounts=[ConnectionChoiceVM(id="c1", label="@a", platform="instagram")],
-    )
-    assert frames == [
-        PreviewFrameVM(
-            account_label="@a",
-            platform="instagram",
-            kind_label="Reel",
-            aspect="9 / 16",
-            thumbnail_url="https://cdn.example/p.jpg",
-            video_url="",
-            ratio_label="9:16",
-            media_label="Imagen",
-        )
-    ]
-    assert preview_frames(post=None, output_port="", accounts=[]) == []
 
 
 def test_a_blank_assign_on_today_defaults_to_the_next_full_hour() -> None:
     state = _drawer_state()
     state.now_hhmm = "21:05"
     state.open_assign_blank()
-    assert state.form_date == "2026-09-23" and state.form_time == "22:00"
+    assert state.form_default_date == "2026-09-23" and state.form_default_time == "22:00"
     state.now_hhmm = "23:40"
     state.open_assign_blank()
-    assert state.form_time == "23:00"  # capped: the last hour of the day
+    assert state.form_default_time == "23:00"  # capped: the last hour of the day
     state.open_assign_for_slot("2026-09-25", 9)  # a chosen slot keeps its own hour
-    assert state.form_time == "09:00"
+    assert state.form_default_time == "09:00"
 
 
-def test_the_drawer_opens_on_the_post_step_and_a_chosen_post_skips_to_the_date() -> None:
+def test_the_drawer_opens_on_the_content_step_and_a_chosen_post_skips_ahead() -> None:
     state = _drawer_state()
     state.open_assign_blank()
     assert state.form_open and state.form_step == 0 and state.form_reached == 0
-    assert state.form_connection_ids == ["c1"]  # the first compatible account
-    assert state.form_step_error == "Elige un POST."
+    assert state.plan_items == [] and state.form_selection_label == "Nada seleccionado"
+    assert state.form_step_error == "Elige al menos un POST listo para publicar."
     assert not state.form_can_advance
+    state.toggle_plan_post("p1")
+    assert state.form_can_advance and state.form_selection_label == "1 pieza seleccionada"
+    state.next_step()
+    assert state.form_step == 1
     state.open_assign_for_post("p1")
     assert state.form_step == 1 and state.form_post_ok
     assert state.form_steps_done[0] is True
+    assert state.plan_items[0].connection_ids == ["c1"]  # the first compatible account
 
 
-def test_a_post_that_is_not_schedulable_blocks_the_post_step_with_the_reason() -> None:
+def test_a_post_that_is_not_schedulable_is_a_dashed_tile_that_cannot_be_picked() -> None:
     blocked = _ready_post(
         "p2", is_publishable=False, unpublishable_reason="Falta el formato de algún archivo."
     )
-    state = _drawer_state(_ready_post(), blocked)
+    state = _drawer_state(blocked, _ready_post())
     state.open_assign_for_post("p2")
-    assert state.form_step == 0  # no skip: the step has to show why
-    assert state.form_post_blocked == "Falta el formato de algún archivo."
-    assert state.form_step_error == state.form_post_blocked
-    assert not state.form_can_advance
-    state.next_step()
-    assert state.form_step == 0
-    state.set_form_post_id("p1")
-    assert state.form_post_blocked == "" and state.form_can_advance
-    state.next_step()
-    assert state.form_step == 1
+    assert state.form_step == 0 and state.plan_items == []  # no skip, nothing picked
+    assert [t.post_id for t in state.form_tiles] == ["p1", "p2"]  # ready tiles first
+    assert state.form_tiles[1].readiness_note == "Falta el formato de algún archivo."
+    state.toggle_plan_post("p2")
+    assert state.plan_items == []
+    state.toggle_plan_post("p1")
+    assert state.form_selected_ids == ["p1"]
+    state.toggle_plan_post("p1")  # a second click takes it out again
+    assert state.form_selected_ids == []
 
 
-def test_a_package_needs_an_output_before_the_post_step_is_done() -> None:
+def test_a_package_needs_a_publishable_output_before_its_programming_is_done() -> None:
     package = _ready_post(
         "p3",
         outputs=[_chip("reel"), _chip("story", publishable=False)],
     )
     state = _drawer_state(package)
     state.open_assign_for_post("p3")
-    assert state.form_output_port == "reel" and state.form_post_ok
-    state.set_form_output_port("story")
-    assert state.form_post_blocked == OUTPUT_NOT_PUBLISHABLE or state.form_post_blocked != ""
-    assert not state.form_post_ok
-    state.set_form_output_port("")
-    assert state.form_post_blocked == "Elige qué salida programar (Reel, feed o historia)."
+    assert state.plan_items[0].output_port == "reel" and state.plan_rows[0].error == ""
+    state.set_item_output("p3", "story")
+    assert state.plan_rows[0].error != "" and not state.form_when_ok
+    state.set_item_output("p3", "")
+    assert state.plan_rows[0].error == "Elige qué salida programar (Reel, feed o historia)."
 
 
-def test_the_date_step_validates_the_series_and_the_cap() -> None:
+def test_the_programming_step_validates_dates_and_the_series_cap() -> None:
     state = _drawer_state()
     state.open_assign_for_post("p1")
-    state.set_form_date("2026-10-12")
-    assert state.form_when_ok and state.form_series.enabled is False
-    state.set_form_repeat(True)
-    state.set_form_repeat_count("13")
-    assert state.form_step_error == "Una serie admite como máximo 12 ocurrencias."
+    state.set_item_date("p1", "2026-10-12")
+    assert state.form_when_ok and state.plan_rows[0].series.enabled is False
+    state.set_item_repeat("p1", True)
+    state.set_item_repeat_count("p1", "13")
+    assert state.form_step_error == "«Promo»: Una serie admite como máximo 12 ocurrencias."
     assert not state.form_can_advance and state.form_steps_done[1] is False
-    state.set_form_repeat_count("4")
-    assert state.form_can_advance and state.form_series.count == 4
-    state.set_form_repeat_mode("until")
-    assert state.form_step_error == "Elige la fecha de fin."
-    state.set_form_repeat_until("2026-11-09")
-    assert state.form_series.count == 5 and state.form_can_advance
-    state.set_form_date("")
-    assert state.form_step_error == "Elige la fecha y la hora."
-    assert state.form_step_hint == "Elige la fecha y la hora."  # no callout shows it
-    state.set_form_date("2026-09-01")  # before today (2026-09-23 in `_state`)
-    assert state.form_step_error == "Esa fecha ya pasó. Elige una de hoy en adelante."
+    state.set_item_repeat_count("p1", "4")
+    assert state.form_can_advance and state.plan_rows[0].series.count == 4
+    assert state.plan_rows[0].event_count == 4
+    state.set_item_date("p1", "")
+    assert state.plan_rows[0].error == "Elige la fecha y la hora."
+    state.set_item_date("p1", "2026-09-01")  # before today (2026-09-23 in `_state`)
+    assert state.plan_rows[0].error == "Esa fecha ya pasó. Elige una de hoy en adelante."
     assert not state.form_when_ok
     state.now_hhmm = "21:05"
-    state.set_form_date("2026-09-23")  # today, at a time already gone
-    state.set_form_time("09:00")
-    assert state.form_step_error == "Esa hora ya pasó. Elige una posterior."
-    state.set_form_time("22:00")
-    assert state.form_date_error == ""
-    state.set_form_date("2026-10-12")
-    state.set_form_repeat_mode("count")
-    state.set_form_repeat_count("13")
-    assert state.form_step_hint == ""  # the series callout already says it
+    state.set_item_date("p1", "2026-09-23")  # today, at a time already gone
+    state.set_item_time("p1", "09:00")
+    assert state.plan_rows[0].error == "Esa hora ya pasó. Elige una posterior."
+    state.set_item_time("p1", "22:00")
+    assert state.plan_rows[0].error == ""
 
 
 def test_accounts_toggle_and_an_incompatible_one_can_never_be_chosen() -> None:
     state = _drawer_state()
     state.open_assign_for_post("p1")
-    state.set_form_date("2026-10-12")
-    state.next_step()
-    assert state.form_step == 2
-    state.toggle_form_connection("c2")
-    assert state.form_connection_ids == ["c1", "c2"]
-    state.toggle_form_connection("c3")  # incompatible: ignored
-    assert state.form_connection_ids == ["c1", "c2"]
-    assert [c.id for c in state.form_selected_accounts] == ["c1", "c2"]
-    state.toggle_form_connection("c1")
-    state.toggle_form_connection("c2")
-    assert state.form_connection_ids == []
-    assert state.form_step_error == "Elige al menos una cuenta compatible."
+    state.toggle_item_connection("p1", "c2")
+    assert state.plan_items[0].connection_ids == ["c1", "c2"]
+    state.toggle_item_connection("p1", "c3")  # incompatible: ignored
+    assert state.plan_items[0].connection_ids == ["c1", "c2"]
+    assert [c.id for c in state.plan_rows[0].accounts] == ["c1", "c2"]
+    state.toggle_item_connection("p1", "c1")
+    state.toggle_item_connection("p1", "c2")
+    assert state.plan_items[0].connection_ids == []
+    assert state.plan_rows[0].error == "Elige al menos una cuenta compatible."
     assert not state.form_can_advance
-    state.toggle_form_connection("c2")
+    state.toggle_item_connection("p1", "c2")
     assert state.form_can_advance
 
 
-def test_the_preview_and_confirm_steps_say_what_will_be_created() -> None:
-    state = _drawer_state()
-    state.open_assign_for_post("p1")
-    state.set_form_date("2026-10-12")
-    state.set_form_time("15:30")
-    state.set_form_repeat(True)
-    state.set_form_repeat_count("3")
-    state.next_step()
-    state.toggle_form_connection("c2")
-    state.next_step()
-    assert state.form_step == 3 and state.form_is_last_step
-    assert state.form_step_badge == "Paso 4 de 4"
-    assert state.form_steps_done == [True, True, True, False]
-    assert state.form_event_count == 6  # 3 occurrences × 2 accounts
-    assert [f.account_label for f in state.form_frames] == ["@bianki", "@bianki2"]
-    assert state.form_frames[0].kind_label == "Galería"
-    assert (
-        state.form_frames[0].ratio_label == "1:1" and state.form_frames[0].media_label == "Imagen"
+def test_a_plan_holds_several_posts_each_with_its_own_time_and_channels() -> None:
+    state = _drawer_state(
+        _ready_post("p1", title="Historia de la mañana", category="story"),
+        _ready_post("p2", title="Carrusel del menú", category="galeria"),
+        _ready_post("p3", title="Reel del día", category="reel"),
     )
-    assert state.form_media_label == "Imagen · Galería 1:1"
-    assert state.form_when_label == "lun 12 oct · 3:30 p. m."
-    assert state.form_post_title_or_chosen == "Promo"
-    assert state.form_submit_label == "Programar 6 publicaciones"
-    assert state.form_can_advance is False  # nothing past the last step
+    state.open_assign_for_day("2026-10-12")
+    for post_id in ("p1", "p2", "p3"):
+        state.toggle_plan_post(post_id)
+    assert state.form_selection_label == "3 piezas seleccionadas"
     state.next_step()
-    assert state.form_step == 3
-    state.set_form_repeat(False)
-    assert state.form_event_count == 2 and state.form_submit_label == "Programar 2 publicaciones"
-    state.toggle_form_connection("c2")
-    assert state.form_submit_label == "Programar"
+    state.set_item_time("p1", "14:00")
+    state.set_item_time("p2", "10:00")
+    state.set_item_time("p3", "11:00")
+    state.set_item_repeat("p2", True)
+    state.set_item_repeat_count("p2", "3")
+    state.toggle_item_connection("p3", "c2")
+    state.next_step()
+    assert state.form_step == 2 and state.form_is_last_step
+    assert state.form_steps_done == [True, True, False]
+    assert [r.kind for r in state.plan_rows] == ["story", "gallery", "reel"]
+    # «Confirmar» reads the day in the order it goes out.
+    assert [r.post_id for r in state.plan_rows_by_time] == ["p2", "p3", "p1"]
+    assert state.form_event_count == 6  # 3 weekly + 2 accounts + 1
+    assert state.form_submit_label == "Programar 6 publicaciones"
+    assert state.form_plan_summary == "3 piezas · 6 publicaciones · lun 12 oct"
+    assert state.plan_rows[1].when_label == "lun 12 oct · 10:00 a. m."
+    # ✎ goes back to «Programación»; 🗑 drops the piece; an empty plan goes back to pick.
+    state.edit_plan_item("p2")
+    assert state.form_step == 1
+    state.go_to_step(2)
+    state.remove_plan_item("p2")
+    assert state.form_event_count == 3 and state.form_step == 2
+    state.remove_plan_item("p1")
+    state.remove_plan_item("p3")
+    assert state.plan_items == [] and state.form_step == 0
 
 
 def test_the_stepper_goes_back_freely_and_never_forward_past_an_incomplete_step() -> None:
     state = _drawer_state()
     state.open_assign_for_post("p1")
-    state.set_form_date("2026-10-12")
+    state.set_item_date("p1", "2026-10-12")
     state.next_step()
-    state.next_step()
-    assert state.form_step == 3 and state.form_reached == 3
+    assert state.form_step == 2 and state.form_reached == 2
     state.go_to_step(0)
-    assert state.form_step == 0 and state.form_reached == 3
-    state.go_to_step(3)  # reached and everything before it done
-    assert state.form_step == 3
-    state.go_to_step(4)  # never reached
-    assert state.form_step == 3
+    assert state.form_step == 0 and state.form_reached == 2
+    state.go_to_step(2)  # reached and everything before it done
+    assert state.form_step == 2
+    state.go_to_step(3)  # there is no such step
+    assert state.form_step == 2
     state.go_to_step(1)
-    state.set_form_date("")  # the date step is now incomplete
-    state.go_to_step(3)
+    state.form_reached = 1  # as if the confirmation had never been visited
+    state.go_to_step(2)  # the step after a completed one = «Continuar»
+    assert state.form_step == 2
+    state.go_to_step(0)
+    state.set_item_date("p1", "")  # the programming is now incomplete
+    state.go_to_step(2)
+    assert state.form_step == 0
+    state.go_to_step(1)
     assert state.form_step == 1
     state.prev_step()
     assert state.form_step == 0
@@ -1317,7 +1331,7 @@ def test_the_stepper_goes_back_freely_and_never_forward_past_an_incomplete_step(
 
 
 def test_a_reschedule_starts_at_the_date_with_one_account_and_no_recurrence() -> None:
-    state = _drawer_state()
+    state = _drawer_state(_ready_post(), _ready_post("p2"))
     state.detail = EventDetailVM(
         event_id="e1",
         post_id="p1",
@@ -1329,12 +1343,18 @@ def test_a_reschedule_starts_at_the_date_with_one_account_and_no_recurrence() ->
     )
     state.reschedule_from_detail()
     assert state.form_mode == MODE_RESCHEDULE and state.form_step == 1
-    assert state.form_connection_ids == ["c2"] and state.form_steps_done[0] is True
-    state.set_form_repeat(True)
-    assert state.form_series.enabled is False  # a move is one event
-    state.next_step()
-    state.toggle_form_connection("c1")  # replaces, never accumulates
-    assert state.form_connection_ids == ["c1"] and state.form_connection_id == "c1"
+    assert state.plan_items[0].connection_ids == ["c2"] and state.form_steps_done[0] is True
+    state.set_item_repeat("p1", True)
+    assert state.plan_rows[0].series.enabled is False  # a move is one event
+    state.toggle_item_connection("p1", "c1")  # replaces, never accumulates
+    assert state.plan_items[0].connection_ids == ["c1"]
+    # The piece is fixed: no «Contenido» to go back to, nothing to add or drop.
+    state.go_to_step(0)
+    state.prev_step()
+    assert state.form_step == 1
+    state.toggle_plan_post("p2")
+    state.remove_plan_item("p1")
+    assert state.form_selected_ids == ["p1"]
     state.next_step()
     assert state.form_is_last_step and state.form_submit_label == "Guardar cambios"
     assert state.form_event_count == 1
@@ -1344,3 +1364,76 @@ def test_series_preview_vm_defaults_are_a_single_publication() -> None:
     assert SeriesPreviewVM() == SeriesPreviewVM(
         enabled=False, count=1, dates=[], summary="", error=""
     )
+
+
+# --- QUA-118 v2: formats, Cold / Hot and the plan's goals ------------------------------
+
+
+def test_temperature_reads_cold_for_proven_content_and_hot_for_new() -> None:
+    assert temperature(0)[:2] == ("hot", "Hot")
+    assert temperature(1)[0] == "hot"  # once is not a track record
+    assert temperature(COLD_MIN_USES)[:2] == ("cold", "Cold")
+    assert "evergreen" in temperature(5)[2]
+    option = _ready_post(times_published=3)
+    assert (option.temperature, option.temperature_label) == ("cold", "Cold")
+    assert _ready_post().temperature == "hot"
+
+
+def test_post_kind_names_the_format_by_category_output_and_package() -> None:
+    assert post_kind("reel") == ("reel", "Reel", "clapperboard")
+    assert post_kind("tiktok_video")[0] == "reel"
+    assert post_kind("story")[:2] == ("story", "Historia")
+    assert post_kind("galeria")[:2] == ("gallery", "Carrusel")
+    assert post_kind("")[:2] == post_kind("feed")[:2] == ("feed", "Feed")
+    assert post_kind("reel", has_outputs=True)[:2] == ("pack", "Multiformato")
+    assert post_kind("reel", has_outputs=True, output_port="story")[0] == "story"
+    assert set(KIND_ICONS) == {"reel", "story", "gallery", "feed", "pack"}
+    assert (_package().kind, _package().kind_label) == ("pack", "Multiformato")
+
+
+def test_the_grid_filters_by_format_and_counts_every_format() -> None:
+    state = _drawer_state(
+        _ready_post("p1", category="reel"),
+        _ready_post("p2", category="story"),
+        _ready_post("p3", category="reel"),
+    )
+    assert state.form_kind_counts["all"] == 3 and state.form_kind_counts["reel"] == 2
+    assert state.form_kind_counts["gallery"] == 0  # every format has a count
+    state.set_form_kind_filter("story")
+    assert [t.post_id for t in state.form_tiles] == ["p2"]
+    state.set_form_kind_filter("")
+    assert state.form_kind_filter == "all" and len(state.form_tiles) == 3
+
+
+def test_the_plan_goals_are_the_six_of_the_brief_and_toggle() -> None:
+    assert [g.label for g in PLAN_GOALS] == [
+        "Likes",
+        "Vistas",
+        "Comentarios",
+        "Ads",
+        "Seguidores",
+        "Interacción",
+    ]
+    state = _drawer_state()
+    state.open_assign_for_post("p1")
+    state.toggle_goal("likes")
+    state.toggle_goal("views")
+    state.toggle_goal("nonsense")  # not a goal: ignored
+    assert state.form_goals == ["likes", "views"] and state.form_goal_count == 2
+    state.toggle_goal("likes")
+    assert state.form_goals == ["views"]
+    state.open_assign_blank()
+    assert state.form_goals == []  # a new plan starts without goals
+
+
+def test_apply_to_all_copies_one_pieces_channels_and_tags() -> None:
+    state = _drawer_state(_ready_post("p1"), _ready_post("p2"))
+    _tags(state)
+    state.open_assign_blank()
+    state.toggle_plan_post("p1")
+    state.toggle_plan_post("p2")
+    state.toggle_item_connection("p1", "c2")
+    state.toggle_item_tag("p1", "t1")
+    state.apply_to_all("p1")
+    assert [i.connection_ids for i in state.plan_items] == [["c1", "c2"], ["c1", "c2"]]
+    assert [i.tag_ids for i in state.plan_items] == [["t1"], ["t1"]]

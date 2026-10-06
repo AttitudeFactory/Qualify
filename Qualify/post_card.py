@@ -16,6 +16,7 @@ from typing import Any
 
 import reflex as rx
 
+from .planner_vm import KIND_ICONS
 from .r2_media import BACKEND_BASE
 from .ui import card, signal_pill, tag
 from .ui import tokens as T
@@ -144,6 +145,42 @@ def output_chip(chip: rx.Var) -> rx.Component:
     )
 
 
+def kind_icon(kind: rx.Var[str], size: int = 14) -> rx.Component:
+    """The format's glyph — `rx.icon` needs a literal name, so a match over the kinds."""
+    return rx.match(
+        kind,
+        *[(key, rx.icon(icon, size=size)) for key, icon in KIND_ICONS.items()],
+        rx.icon("image", size=size),
+    )
+
+
+def kind_chip(kind: rx.Var[str], label: rx.Var[str], *, glass: bool = False) -> rx.Component:
+    """«▶ Reel» in the format's colour; `glass` for a chip laid over media."""
+    return rx.box(
+        kind_icon(kind, 12),
+        rx.text(label, as_="span"),
+        class_name="q-kind-chip q-kind-" + kind + (" q-kind-chip--glass" if glass else ""),
+    )
+
+
+def temperature_badge(temperature: rx.Var[str], label: rx.Var[str], hint: rx.Var[str]):
+    """Cold (snowflake, ice gradient) or Hot (flame, fire gradient); nothing when the
+    POST's history is unknown."""
+    return rx.cond(
+        temperature != "",
+        rx.box(
+            rx.cond(
+                temperature == "cold",
+                rx.icon("snowflake", size=12),
+                rx.icon("flame", size=12),
+            ),
+            rx.text(label, as_="span"),
+            class_name="q-temp q-temp--" + temperature,
+            title=hint,
+        ),
+    )
+
+
 def history_badges(post: rx.Var) -> rx.Component:
     """D2: «Usado ×N» for the publications already out, «En calendario» for a live
     event. Never excluding — a `recurrente` POST reads Listo + Usado ×3."""
@@ -193,8 +230,15 @@ def post_card(
             rx.text(post.title, size="2", weight="medium", style=_CLAMP_2),
             rx.flex(
                 pill(post.gallery_label, post.gallery_tone),
-                tag(post.category_label),
-                rx.cond(show_media_label & (post.media_label != ""), tag(post.media_label)),
+                # The gallery prints «Video · Reel 9:16» — medium and format in one tag,
+                # the category word included — instead of «Reel» + «Video · Reel 9:16».
+                rx.cond(
+                    show_media_label & (post.media_label != ""),
+                    tag(post.media_label),
+                    tag(post.category_label),
+                ),
+                # QUA-118 v2: Cold (evergreen, proven) / Hot (new) — `planner_vm.temperature`.
+                temperature_badge(post.temperature, post.temperature_label, post.temperature_hint),
                 history_badges(post),
                 wrap="wrap",
                 gap="0.3rem",

@@ -138,10 +138,11 @@ def test_dropping_a_card_on_a_cell_opens_the_drawer_prefilled_and_creates_nothin
     assert state.dragging
     state.drop_on_slot("2026-09-25", 15)
     assert not state.dragging and state.form_open
-    assert state.form_mode == MODE_ASSIGN and state.form_post_id == "p1"
-    assert state.form_date == "2026-09-25" and state.form_time == "15:00"
-    assert state.form_step == STEP_WHEN  # the POST is chosen: straight to the date
-    assert state.form_connection_ids == ["c1"]
+    assert state.form_mode == MODE_ASSIGN
+    [item] = state.plan_items
+    assert item.post_id == "p1" and (item.date, item.time) == ("2026-09-25", "15:00")
+    assert state.form_step == STEP_WHEN  # the POST is chosen: straight to its programming
+    assert item.connection_ids == ["c1"]
 
 
 def test_a_drop_on_a_past_day_or_without_a_drag_does_nothing() -> None:
