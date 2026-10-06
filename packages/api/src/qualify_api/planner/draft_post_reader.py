@@ -28,11 +28,13 @@ from uuid import UUID
 from pydantic import ValidationError
 from qualify_creative.schemas import CopyPayload
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from qualify_api.creative import fsm as draft_fsm
 from qualify_api.creative import models as creative
+from qualify_api.planner.fsm import EventStatus
+from qualify_api.planner.models import CalendarEvent
 from qualify_api.planner.post_reader import (
     ApprovalStatus,
     NotPublishable,
@@ -225,6 +227,27 @@ def thumbnail_source(
     return None
 
 
+_LIVE_STATUSES: tuple[str, ...] = tuple(s.value for s in EventStatus if s.occupies_post)
+
+
+def _history(session: Session, post_ids: Sequence[UUID]) -> dict[UUID, tuple[int, bool]]:
+    """Per POST, how many of its events were published and whether one is live — one
+    aggregate over `calendar_events` for the whole batch (QUA-118 D2). Read-only, under
+    the same RLS session as the drafts."""
+    if not post_ids:
+        return {}
+    rows = session.execute(
+        select(
+            CalendarEvent.post_id,
+            func.count().filter(CalendarEvent.status == EventStatus.PUBLISHED.value),
+            func.count().filter(CalendarEvent.status.in_(_LIVE_STATUSES)),
+        )
+        .where(CalendarEvent.post_id.in_(list(post_ids)))
+        .group_by(CalendarEvent.post_id)
+    ).all()
+    return {post_id: (int(published), int(live) > 0) for post_id, published, live in rows}
+
+
 def _images(session: Session, draft_id: UUID) -> list[creative.ImageAsset]:
     """In creation order (the card's thumbnail is the first); `evaluate` orders the
     publishable media by `position` itself."""
@@ -255,7 +278,11 @@ class DraftPostReader:
             drafts = session.scalars(
                 select(creative.ContentDraft).where(creative.ContentDraft.id.in_(ids))
             ).all()
-            return {draft.id: self._summarize(session, tenant_id, draft) for draft in drafts}
+            history = _history(session, [draft.id for draft in drafts])
+            return {
+                draft.id: self._summarize(session, tenant_id, draft, history.get(draft.id))
+                for draft in drafts
+            }
 
     def list_schedulable(self, *, tenant_id: UUID, brand_id: UUID) -> list[PostSummary]:
         with tenant_session(tenant_id) as session:
@@ -268,7 +295,11 @@ class DraftPostReader:
                 .order_by(creative.ContentDraft.created_at.desc())
                 .limit(_SCHEDULABLE_LIMIT)
             ).all()
-            return [self._summarize(session, tenant_id, draft) for draft in drafts]
+            history = _history(session, [draft.id for draft in drafts])
+            return [
+                self._summarize(session, tenant_id, draft, history.get(draft.id))
+                for draft in drafts
+            ]
 
     def get_publishable(
         self, *, tenant_id: UUID, post_id: UUID, output_port: str | None = None
@@ -285,8 +316,13 @@ class DraftPostReader:
             return evaluate(_candidate(session, tenant_id, draft, images, output_port))
 
     def _summarize(
-        self, session: Session, tenant_id: UUID, draft: creative.ContentDraft
+        self,
+        session: Session,
+        tenant_id: UUID,
+        draft: creative.ContentDraft,
+        history: tuple[int, bool] | None = None,
     ) -> PostSummary:
+        times_published, has_live_event = history or (0, False)
         brief = session.get(creative.ContentBrief, draft.brief_id)
         variant = None
         if draft.selected_variant_id is not None:
@@ -335,7 +371,7 @@ class DraftPostReader:
             category=draft.category,
             media_product_type=media_product_type,
             content_type=brief.content_type if brief is not None else None,
-            reuse_type=None,  # the draft model has no such concept — QUA-109
+            reuse_type=draft.reuse_type,  # `ReuseType` (0027, QUA-109); None until set
             lifecycle_status=draft.status,
             thumbnail_url=thumbnail,
             video_object_key=video_object_key,
@@ -346,4 +382,6 @@ class DraftPostReader:
             unpublishable_reason=reason,
             detail_href=f"/drafts/{draft.id}",
             outputs=outputs,
+            times_published=times_published,
+            has_live_event=has_live_event,
         )

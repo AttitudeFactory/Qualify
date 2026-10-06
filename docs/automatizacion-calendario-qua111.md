@@ -231,6 +231,16 @@ stateDiagram-v2
     cancelled --> [*]
 ```
 
+### Estados visibles y regla de asignación (QUA-118, 2026-10-05)
+
+La FSM no cambia; cambia lo que el Planificador **muestra** y lo que **deja entrar**. Decisiones del fundador, `docs`/Linear QUA-118 Fase A:
+
+- **Cinco estados visibles, y solo cinco** (`Qualify/planner_vm.py`, `status_label`): **Programado** (`scheduled`, POST aprobado, dentro de la ventana), **Pendiente** (`scheduled` con el POST ya no aprobado — solo alcanzable editando un POST aprobado, que vuelve a `generated`), **Publicado** (`published`), **Vencido** (`scheduled` fuera de la ventana de 24 h, aprobado o no; sustituye a «Venció» y «Venció sin aprobación») y **Fallido** (`failed`). Ningún otro nombre: `publishing` se muestra como Programado durante los segundos del intento, y `cancelled` no se muestra nunca — «Cancelar publicación» recorre el edge `cancel` y retira la fila del calendario en el mismo paso (`PlannerService.cancel_and_delete`). La aprobación del POST es otro eje y no reutiliza esas palabras («En revisión», no «Pendiente»).
+- **D1 — solo entra al calendario un POST aprobado y publicable.** `ApprovalStatus.is_schedulable` es `APPROVED` únicamente y `PlannerService.schedule` / `reschedule` exigen además `publishable.evaluate` en verde (para un POST con salidas, verde en la salida que se programa); el rechazo `PostNotSchedulable` lleva el motivo exacto del evaluador. **Esto invierte QUA-108 AC 4** («approval gates execution, not planning»): los tests «pending es asignable» de `test_planner_service.py` y `test_planner_ui.py` se reescribieron a propósito. El worker no cambia: su regla «no aprobado → el evento sigue pendiente» (§3) sigue siendo la segunda línea para el caso de edición posterior a la aprobación.
+- **A2 — un POST `recurrente` nunca queda bloqueado** por una ocurrencia viva o publicada: `list_unscheduled` lo mantiene en «Sin programar» (`gallery.is_reusable`); cada ocurrencia es un `calendar_event` independiente con su propio estado, clave de idempotencia y resultado.
+- **Story de imagen por categoría** (QUA-118 AC 6): `story` + una imagen → `STORIES` también sin puerto (`publishable.compatibility`), la decisión que MP-11 había dejado abierta. `compatibility(platform, category, media_types, output_port)` es además la regla de «esta cuenta admite esta forma» con motivo tipado (`CHANNEL_NOT_SUPPORTED` fuera de Instagram).
+- **Historial del POST** (D2): `PostSummary.times_published` / `has_live_event` salen de un agregado sobre `calendar_events` en `DraftPostReader` (sin persistir nada) y alimentan el estado derivado de la galería (`planner/gallery.py`: Borrador · Por completar · Listo · Usado · Desechado), otra entidad distinta de los cinco estados del evento.
+
 ---
 
 ## 7. Límites conocidos (no bloquean el ticket)

@@ -21,8 +21,15 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from qualify_api.planner.fsm import EventStatus, EventTrigger, InvalidTransition, apply_transition
+from qualify_api.planner.gallery import is_reusable
 from qualify_api.planner.models import TAG_COLORS
-from qualify_api.planner.post_reader import ApprovalStatus, PostReader, PostSummary
+from qualify_api.planner.post_reader import (
+    ApprovalStatus,
+    PostReader,
+    PostSummary,
+    UnpublishableReason,
+)
+from qualify_api.planner.publishable import REASON_TEXT
 from qualify_api.planner.repository import EventRecord, NewEvent, PlannerRepository, TagRecord
 from qualify_api.planner.rules import is_expired_scheduled, is_overdue_unapproved
 
@@ -42,7 +49,14 @@ class UnknownPost(PlannerError):
 
 
 class PostNotSchedulable(PlannerError):
-    """The POST exists but cannot be planned (still being produced, failed, rejected)."""
+    """The POST exists but cannot be planned — QUA-118 D1: it is not approved (still in
+    production, in review, failed or rejected), or it is approved but `publishable.evaluate`
+    is not green. `reason` is the evaluator's own text, the same the card shows, so the
+    UI can say exactly what to fix."""
+
+    def __init__(self, message: str, *, reason: str = "") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class InactiveConnection(PlannerError):
@@ -205,14 +219,32 @@ class PlannerService:
             raise InactiveConnection(str(connection_id))
 
     def _require_schedulable_post(
-        self, *, tenant_id: UUID, brand_id: UUID, post_id: UUID
+        self, *, tenant_id: UUID, brand_id: UUID, post_id: UUID, output_port: str | None = None
     ) -> PostSummary:
         post = self._posts.get(tenant_id=tenant_id, post_id=post_id)
         if post is None or post.brand_id != brand_id:
             raise UnknownPost(str(post_id))
-        if not post.approval.is_schedulable:
-            raise PostNotSchedulable(f"{post_id} is {post.approval.value}")
+        self._require_plannable(post, output_port)
         return post
+
+    def _require_plannable(self, post: PostSummary, output_port: str | None) -> None:
+        """QUA-118 D1: a POST enters the calendar only APPROVED and with
+        `publishable.evaluate` green — for a template POST, green for the output being
+        planned. Approval first (the actionable reason), then the output, then
+        publishability, so the same POST always gets the same answer."""
+        if not post.approval.is_schedulable:
+            raise PostNotSchedulable(
+                f"{post.post_id} is {post.approval.value}",
+                reason=REASON_TEXT[UnpublishableReason.NOT_APPROVED],
+            )
+        self._require_output(post, output_port)
+        if output_port is not None:
+            output = next(o for o in post.outputs if o.port == output_port)
+            publishable, reason = output.is_publishable, output.unpublishable_reason
+        else:
+            publishable, reason = post.is_publishable, post.unpublishable_reason
+        if not publishable:
+            raise PostNotSchedulable(f"{post.post_id} is not publishable: {reason}", reason=reason)
 
     def _require_event(self, *, tenant_id: UUID, event_id: UUID) -> EventRecord:
         record = self._repo.get(tenant_id=tenant_id, event_id=event_id)
@@ -268,8 +300,9 @@ class PlannerService:
         user_id: UUID,
         output_port: str | None = None,
     ) -> EventRecord:
-        """Create an event for a POST. A pending (not yet approved) POST can be planned:
-        approval gates execution, not planning.
+        """Create an event for a POST that is approved AND publishable (QUA-118 D1 —
+        until 2026-10-05 a pending POST could be planned; now nothing incomplete enters
+        the calendar, and the worker's own approval gate stays as a second line).
 
         MP-11: a POST with template outputs is planned one event per output —
         `output_port` names which (`reel` / `feed` / `story`), validated against the
@@ -277,10 +310,9 @@ class PlannerService:
         outputs is planned whole (`output_port=None`, the pre-MP-11 behaviour)."""
         resolve_zone(scheduled_tz)
         self._require_future(scheduled_at)
-        post = self._require_schedulable_post(
-            tenant_id=tenant_id, brand_id=brand_id, post_id=post_id
+        self._require_schedulable_post(
+            tenant_id=tenant_id, brand_id=brand_id, post_id=post_id, output_port=output_port
         )
-        self._require_output(post, output_port)
         self._require_active_connection(tenant_id=tenant_id, connection_id=connection_id)
         instant = scheduled_at.astimezone(UTC)
         self._require_no_duplicate(
@@ -313,9 +345,16 @@ class PlannerService:
         connection_id: UUID | None = None,
     ) -> EventRecord:
         """Move a scheduled event to a new instant and/or connection. Bumps `revision`,
-        so QUA-111 treats it as a new planned execution (`rules.idempotency_key`)."""
+        so QUA-111 treats it as a new planned execution (`rules.idempotency_key`).
+
+        QUA-118 D1 applies here too: a POST that is no longer approved and publishable
+        (edited after approval, say) cannot be moved — it has to go through review again
+        and the event reads «Pendiente» meanwhile."""
         current = self._require_event(tenant_id=tenant_id, event_id=event_id)
         _transition(current.status, EventTrigger.RESCHEDULE)  # raises if not scheduled
+        post = self._posts.get(tenant_id=tenant_id, post_id=current.post_id)
+        if post is not None:
+            self._require_plannable(post, current.output_port)
         resolve_zone(scheduled_tz)
         self._require_future(scheduled_at)
         target_connection = connection_id or current.connection_id
@@ -344,6 +383,14 @@ class PlannerService:
         if updated is None:
             raise EventConflict(str(event_id))
         return updated
+
+    def cancel_and_delete(self, *, tenant_id: UUID, event_id: UUID) -> None:
+        """«Cancelar publicación» as the screen offers it (QUA-118 A1): the FSM `cancel`
+        edge, then the row leaves the calendar. `cancelled` stays a persisted status of
+        the FSM — it is just never shown: a cancelled event is none of the five visible
+        states, and it never reached Meta, so removing it loses no history."""
+        self.cancel(tenant_id=tenant_id, event_id=event_id)
+        self.delete(tenant_id=tenant_id, event_id=event_id)
 
     def delete(self, *, tenant_id: UUID, event_id: UUID) -> None:
         """Remove a cancelled event from the calendar. Only `cancelled` qualifies: a live
@@ -422,12 +469,15 @@ class PlannerService:
         programar" panel. A cancelled or failed event frees its POST.
 
         MP-11: a POST with template outputs stays here while at least one of its outputs
-        has no live event — the panel is where the remaining outputs get planned from."""
+        has no live event — the panel is where the remaining outputs get planned from.
+
+        QUA-118 A2: a `recurrente` POST is always here — a live or published occurrence
+        never blocks the next one (`gallery.is_reusable`)."""
         occupied = self.occupied_outputs(tenant_id=tenant_id, brand_id=brand_id)
         return [
             post
             for post in self._posts.list_schedulable(tenant_id=tenant_id, brand_id=brand_id)
-            if not self._fully_planned(post, occupied.get(post.post_id, {}))
+            if is_reusable(post) or not self._fully_planned(post, occupied.get(post.post_id, {}))
         ]
 
     @staticmethod

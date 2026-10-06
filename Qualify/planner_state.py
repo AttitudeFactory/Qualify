@@ -966,5 +966,5 @@ class PlannerState(rx.State):
         async with self:
             self.detail_open = False
             self.cancel_event_id = ""
-        yield rx.toast.success("Publicación cancelada")
+        yield rx.toast.success("Publicación cancelada: salió del calendario")
         yield PlannerState.load

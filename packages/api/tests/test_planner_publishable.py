@@ -21,6 +21,7 @@ from qualify_api.planner.publishable import (
     REASON_TEXT,
     MediaCandidate,
     PostCandidate,
+    compatibility,
     evaluate,
     media_product_type_for,
 )
@@ -129,7 +130,7 @@ def test_a_galeria_of_several_items_is_a_carousel_ordered_by_position() -> None:
         ("reel", ("IMAGE",), None),
         ("reel", ("VIDEO", "VIDEO"), None),
         ("story", ("VIDEO",), "STORIES"),
-        ("story", ("IMAGE",), None),  # no image story in the publisher
+        ("story", ("IMAGE",), "STORIES"),  # image story by category — QUA-118 AC 6
         ("story", ("VIDEO", "IMAGE"), None),
         ("tiktok_video", ("VIDEO",), None),
         ("feed", ("IMAGE",), None),  # the old brief-format label is not a category
@@ -158,8 +159,29 @@ def test_tiktok_video_is_not_publishable() -> None:
     assert _reason(_post(_video(), category="tiktok_video")) is R.CATEGORY_NOT_PUBLISHABLE
 
 
-def test_story_with_an_image_is_not_publishable() -> None:
-    assert _reason(_post(_image(), category="story")) is R.UNSUPPORTED_SHAPE
+def test_story_with_an_image_is_publishable_as_stories() -> None:
+    """QUA-118 AC 6: the publisher has published image stories since QUA-113; the
+    category contract now says so too (MP-11 had left it to the `story` port)."""
+    verdict = evaluate(_post(_image(), category="story"))
+    assert isinstance(verdict, PublishablePost) and verdict.media_product_type == "STORIES"
+    assert verdict.media[0].media_type == "IMAGE"
+    assert _reason(_post(_image(0), _image(1), category="story")) is R.UNSUPPORTED_SHAPE
+
+
+def test_compatibility_names_the_channel_and_the_shape() -> None:
+    """QUA-118: one rule for "can this account take this shape": a typed reason per
+    refusal, so the assign flow can disable an account and say why."""
+    ok = compatibility("instagram", "story", ("IMAGE",))
+    assert ok.ok and ok.media_product_type == "STORIES" and ok.reason is None
+    shape = compatibility("instagram", "reel", ("IMAGE",))
+    assert not shape.ok and shape.reason is R.UNSUPPORTED_SHAPE
+    for platform in ("tiktok", "facebook", ""):
+        channel = compatibility(platform, "reel", ("VIDEO",))
+        assert not channel.ok and channel.reason is R.CHANNEL_NOT_SUPPORTED
+    assert REASON_TEXT[R.CHANNEL_NOT_SUPPORTED]
+    # By port the port decides, on Instagram only.
+    assert compatibility("instagram", "reel", ("VIDEO",), "reel").media_product_type == "REELS"
+    assert compatibility("instagram", "reel", ("IMAGE",), "story").media_product_type == "STORIES"
 
 
 # --- approval and revision -------------------------------------------------------

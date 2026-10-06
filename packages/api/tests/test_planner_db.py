@@ -321,7 +321,8 @@ def test_draft_reader_maps_status_to_approval_and_reads_the_card_fields(world_p)
     # The POST's own category (0027), never the brief's render format; this row has none.
     assert card.category is None and card.media_product_type is None
     assert card.content_type == "promotion"
-    assert card.reuse_type is None  # the draft model has no such concept
+    assert card.reuse_type is None  # `content_drafts.reuse_type` (0027) not set on this row
+    assert card.times_published == 0 and card.has_live_event is False  # QUA-118 D2
     assert card.asset_count == 1 and card.asset_types == ("IMAGE",)
     assert card.detail_href == f"/drafts/{pending}"
     assert not card.is_publishable and card.unpublishable_reason
@@ -339,10 +340,12 @@ def test_draft_reader_hides_an_expired_thumbnail(world_p) -> None:
 def test_draft_reader_lists_only_schedulable_and_respects_rls(world_p, world_q) -> None:
     brand_id, _, _ = world_p
     pending = _draft(TENANT_P, brand_id, status="generated")
+    approved = _draft(TENANT_P, brand_id, status="approved")
     rejected = _draft(TENANT_P, brand_id, status="rejected")
     reader = DraftPostReader()
     listed = {p.post_id for p in reader.list_schedulable(tenant_id=TENANT_P, brand_id=brand_id)}
-    assert pending in listed and rejected not in listed
+    # QUA-118 D1: only an approved draft can be planned; a pending one is no longer listed.
+    assert approved in listed and pending not in listed and rejected not in listed
     assert reader.get(tenant_id=TENANT_Q, post_id=pending) is None
 
 
@@ -363,7 +366,8 @@ def test_draft_reader_never_writes(world_p) -> None:
 
 def test_service_schedules_a_real_draft_and_it_leaves_unscheduled(world_p) -> None:
     brand_id, user_id, conn_id = world_p
-    draft_id = _draft(TENANT_P, brand_id, status="approved")
+    # QUA-118 D1: approved AND publishable — `_post_row` shapes a real publishable POST.
+    draft_id = _post_row((TENANT_P, brand_id, conn_id))
     svc = PlannerService(
         repository=PostgresPlannerRepository(),
         posts=DraftPostReader(),
@@ -385,6 +389,9 @@ def test_service_schedules_a_real_draft_and_it_leaves_unscheduled(world_p) -> No
     assert draft_id not in {
         p.post_id for p in svc.list_unscheduled(tenant_id=TENANT_P, brand_id=brand_id)
     }
+    # QUA-118 D2: the reader sees the live event in the POST's history (one aggregate).
+    summary = DraftPostReader().get(tenant_id=TENANT_P, post_id=draft_id)
+    assert summary.has_live_event is True and summary.times_published == 0
     monday = (at.astimezone(UTC).date()) - timedelta(days=at.astimezone(UTC).weekday())
     week = svc.list_week(
         tenant_id=TENANT_P,

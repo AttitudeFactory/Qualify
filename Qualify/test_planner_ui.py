@@ -238,20 +238,32 @@ def test_card_shows_account_platform_category_and_both_states() -> None:
     card = grid.days[1].cards[0]
     assert (card.platform, card.account_label) == ("instagram", "@bianki")
     assert card.category_label == "Publicación"
-    assert (card.approval_label, card.approval_tone) == ("Pendiente de aprobación", "warn")
-    assert card.approval_short == "Pendiente"
-    assert (card.status_label, card.status_tone) == ("Programado", "info")
+    # The POST's approval is its own axis and never borrows one of the five state words.
+    assert (card.approval_label, card.approval_tone) == ("En revisión", "warn")
+    assert card.approval_short == "En revisión"
+    # QUA-118 A1 / P4: a scheduled event whose POST went back to review is «Pendiente».
+    assert (card.status_label, card.status_tone) == ("Pendiente", "warn")
+    assert card.overdue is True  # needs attention: it will not publish as is
     assert card.can_modify and not card.muted
 
 
-def test_overdue_unapproved_event_is_labelled_and_cancelled_is_muted() -> None:
-    grid = _week(
-        _item("o", datetime(2026, 9, 22, 9, 0, tzinfo=CARACAS), overdue=True, approval="pending"),
-        _item("c", datetime(2026, 9, 22, 10, 0, tzinfo=CARACAS), status="cancelled"),
-    )
-    overdue, cancelled = grid.days[1].cards
-    assert (overdue.status_label, overdue.status_tone) == ("Venció sin aprobación", "warn")
-    assert cancelled.muted and not cancelled.can_modify
+def test_a_scheduled_event_of_an_approved_post_reads_programado() -> None:
+    grid = _week(_item("x", datetime(2026, 9, 22, 9, 0, tzinfo=CARACAS), is_publishable=True))
+    card = grid.days[1].cards[0]
+    assert (card.status_label, card.status_tone) == ("Programado", "info")
+    assert card.overdue is False
+
+
+def test_the_five_visible_states_are_the_only_event_words() -> None:
+    """QUA-118 A1: Programado · Pendiente · Publicado · Vencido · Fallido, nothing else.
+    `publishing` reads Programado while the attempt runs; `cancelled` is never shown."""
+    words = {status_label(s)[0] for s in ("scheduled", "publishing", "published", "failed")}
+    words |= {
+        status_label("scheduled", pending=True)[0],
+        status_label("scheduled", expired=True)[0],
+    }
+    assert words == {"Programado", "Pendiente", "Publicado", "Vencido", "Fallido"}
+    assert status_label("publishing") == ("Programado", "info")
 
 
 def test_unreadable_post_is_shown_honestly() -> None:
@@ -273,8 +285,9 @@ def test_month_label_for_the_toolbar() -> None:
 def test_labels() -> None:
     assert approval_label("approved") == ("Aprobado", "ok")
     assert approval_label(None)[1] == "error"
-    assert approval_short("pending") == "Pendiente"
-    assert status_label("cancelled", overdue=False) == ("Cancelado", "neutral")
+    assert approval_short("pending") == "En revisión"
+    assert status_label("published") == ("Publicado", "ok")
+    assert status_label("failed") == ("Fallido", "error")
     assert category_label(None) == "Sin categoría"
     assert category_label("reel") == "Reel"
     assert week_label(MONDAY) == "21 – 27 sep 2026"
@@ -298,6 +311,11 @@ def test_provider_error_messages_are_specific_spanish() -> None:
         message = planner_error_message(exc)
         assert message and "Inténtalo de nuevo." not in message
     assert planner_error_message(RuntimeError("boom")).endswith("Inténtalo de nuevo.")
+    # QUA-118 D1: the evaluator's exact reason reaches the operator.
+    refused = PostNotSchedulable("x", reason="Falta el formato de algún archivo del POST.")
+    assert planner_error_message(refused) == (
+        "Ese POST no se puede planificar: Falta el formato de algún archivo del POST."
+    )
 
 
 # --- navigation ----------------------------------------------------------------------
@@ -691,7 +709,7 @@ def test_media_outside_r2_or_with_a_bad_format_is_not_ready() -> None:
 def test_a_post_that_is_not_approved_keeps_its_approval_wording() -> None:
     ok, reason = _verdict(approval=ApprovalStatus.PENDING)
     ready = readiness("pending", is_publishable=ok, reason=reason)
-    assert (ready.label, ready.tone) == ("Pendiente de aprobación", "warn")
+    assert (ready.label, ready.tone) == ("En revisión", "warn")
     assert ready.note == "El POST no está aprobado."
 
 
@@ -815,7 +833,7 @@ def test_an_expired_event_is_labelled_vencio_and_can_still_be_rescheduled() -> N
         )
     )
     card = grid.days[1].cards[0]
-    assert (card.status_label, card.status_tone) == EXPIRED_LABEL == ("Venció", "warn")
+    assert (card.status_label, card.status_tone) == EXPIRED_LABEL == ("Vencido", "warn")
     assert card.overdue is True  # amber edge + warning icon: it will not publish as is
     assert card.can_modify is True  # "Reprogramar" is the way back
     # The card keeps the POST's own reason (none here): the expiry note is the dialog's.
@@ -834,7 +852,7 @@ def test_expired_takes_precedence_over_overdue_unapproved() -> None:
         )
     )
     card = grid.days[1].cards[0]
-    assert card.status_label == "Venció"
+    assert card.status_label == "Vencido"
     assert card.overdue is True
 
 
@@ -845,10 +863,10 @@ def test_expired_detail_vm_carries_the_flag_the_dialog_switches_on() -> None:
 
 
 def test_status_label_expired_flag() -> None:
-    assert status_label("scheduled", overdue=False, expired=True) == ("Venció", "warn")
-    assert status_label("scheduled", overdue=True, expired=True) == ("Venció", "warn")
-    assert status_label("scheduled", overdue=True) == ("Venció sin aprobación", "warn")
-    assert status_label("scheduled", overdue=False) == ("Programado", "info")
+    assert status_label("scheduled", pending=False, expired=True) == ("Vencido", "warn")
+    assert status_label("scheduled", pending=True, expired=True) == ("Vencido", "warn")
+    assert status_label("scheduled", pending=True) == ("Pendiente", "warn")
+    assert status_label("scheduled", pending=False) == ("Programado", "info")
 
 
 # --- MP-11: one event per template output ---------------------------------------------

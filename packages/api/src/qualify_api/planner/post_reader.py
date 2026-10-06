@@ -34,9 +34,13 @@ class ApprovalStatus(StrEnum):
 
     @property
     def is_schedulable(self) -> bool:
-        """Whether the calendar may assign this POST. A pending POST can be planned —
-        planning and approval are separate decisions; the approval gate is at execution."""
-        return self in (ApprovalStatus.PENDING, ApprovalStatus.APPROVED)
+        """Whether the calendar may assign this POST — QUA-118 D1: only an APPROVED POST.
+
+        Until 2026-10-05 a pending POST could be planned ("approval gates execution, not
+        planning", QUA-108 AC 4). The founder reversed that rule so nothing incomplete
+        reaches the calendar. Publishability (`PostSummary.is_publishable`) is the second
+        half of the same gate and is enforced by `PlannerService`, not here."""
+        return self is ApprovalStatus.APPROVED
 
 
 @dataclass(frozen=True)
@@ -91,6 +95,12 @@ class PostSummary:
     # With outputs, `is_publishable` means "at least one output is", and the POST is
     # planned one event per output (`PlannerService.schedule(output_port=...)`).
     outputs: tuple[PostOutput, ...] = ()
+    # QUA-118 D2: the POST's publishing history, read from `calendar_events` — how many of
+    # its events were published, and whether one is live (scheduled / publishing /
+    # published). Derived at read time, never persisted on the POST; `gallery.gallery_state`
+    # turns them into the gallery's «Usado» badge.
+    times_published: int = 0
+    has_live_event: bool = False
 
     @property
     def output_ports(self) -> tuple[str, ...]:
@@ -115,6 +125,7 @@ class UnpublishableReason(StrEnum):
     MEDIA_NOT_IN_R2 = "media_not_in_r2"  # no key, or not under this tenant's prefix
     CONTENT_TYPE_MISSING = "content_type_missing"
     UNSUPPORTED_CONTENT_TYPE = "unsupported_content_type"
+    CHANNEL_NOT_SUPPORTED = "channel_not_supported"  # QUA-118: the account's platform
 
 
 @dataclass(frozen=True)

@@ -64,6 +64,7 @@ from .planner_vm import (
     date_label,
     event_actions,
     event_readiness,
+    is_pending,
     month_label,
     output_label,
     status_label,
@@ -102,12 +103,15 @@ class WeekData:
 
 def planner_error_message(exc: Exception) -> str:
     """Operator-facing Spanish for every refusal — what happened and what to do."""
+    if isinstance(exc, PostNotSchedulable) and exc.reason:
+        # QUA-118 D1: the evaluator's exact reason, the same text the card shows.
+        return f"Ese POST no se puede planificar: {exc.reason}"
     messages: list[tuple[type[Exception], str]] = [
         (NoBrand, "Este negocio todavía no tiene una marca configurada."),
         (UnknownPost, "Ese POST ya no está disponible. Actualiza la página."),
         (
             PostNotSchedulable,
-            "Ese POST no se puede planificar: está en producción, falló o fue rechazado.",
+            "Ese POST no se puede planificar: no está aprobado o no está listo para publicar.",
         ),
         (
             InactiveConnection,
@@ -292,14 +296,21 @@ def load_week(
         else None
     )
     service = production_planner_service()
-    planned = service.list_week(
-        tenant_id=tenant_id,
-        brand_id=brand_id,
-        monday=monday,
-        tz_name=tz_name,
-        connection_id=connection_id,
-        tag_ids=frozenset(UUID(t) for t in tag_filter if _is_uuid(t)),
-    )
+    planned = [
+        p
+        for p in service.list_week(
+            tenant_id=tenant_id,
+            brand_id=brand_id,
+            monday=monday,
+            tz_name=tz_name,
+            connection_id=connection_id,
+            tag_ids=frozenset(UUID(t) for t in tag_filter if _is_uuid(t)),
+        )
+        # QUA-118 A1: a cancelled event is none of the five visible states. The cancel
+        # flow removes the row (`cancel_event`); a row cancelled by another path (the
+        # repository, a test) stays invisible all the same.
+        if p.event.status != "cancelled"
+    ]
     schedulable = service.list_schedulable(tenant_id=tenant_id, brand_id=brand_id)
     unscheduled = service.list_unscheduled(tenant_id=tenant_id, brand_id=brand_id)
     occupied = service.occupied_outputs(tenant_id=tenant_id, brand_id=brand_id)
@@ -476,7 +487,11 @@ def delete_event(tenant_id: UUID, event_id: str) -> None:
 
 
 def cancel_event(tenant_id: UUID, event_id: str) -> None:
-    production_planner_service().cancel(tenant_id=tenant_id, event_id=_uuid(event_id, UnknownEvent))
+    """«Cancelar publicación»: the event leaves the calendar (QUA-118 A1 — `cancelled` is
+    not a visible state), through the FSM, never by a bare delete."""
+    production_planner_service().cancel_and_delete(
+        tenant_id=tenant_id, event_id=_uuid(event_id, UnknownEvent)
+    )
 
 
 def _video_url(tenant_id: UUID, key: str | None) -> str:
@@ -510,7 +525,9 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
         reason=post.unpublishable_reason if post is not None else "",
     )
     s_label, s_tone = status_label(
-        event.status, overdue=planned.overdue_unapproved, expired=planned.expired
+        event.status,
+        pending=is_pending(event.status, post.approval.value if post is not None else None),
+        expired=planned.expired,
     )
     actions = event_actions(
         status=event.status,

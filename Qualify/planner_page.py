@@ -1674,8 +1674,8 @@ def _cancel_dialog() -> rx.Component:
         rx.alert_dialog.content(
             rx.alert_dialog.title("Cancelar publicación"),
             rx.alert_dialog.description(
-                "El POST vuelve a «Sin programar» y no se publicará en esta fecha. "
-                "El contenido no se modifica.",
+                "La publicación sale del calendario y no se publicará en esta fecha. "
+                "El POST vuelve a «Sin programar» y su contenido no se modifica.",
                 size="2",
             ),
             rx.hstack(

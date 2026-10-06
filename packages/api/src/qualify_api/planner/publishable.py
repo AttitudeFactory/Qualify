@@ -14,7 +14,13 @@ outputs in `image_assets.output_port` (`reel` video 9:16, `feed` image 4:5, `sto
 (re-numbered from position 0) and `media_product_type` is derived from the PORT, not from
 the POST's category: `reel` → REELS, `feed` → IMAGE, `story` → STORIES (image or video —
 the publisher has published image stories since QUA-113). Without a port, the category
-contract below is untouched.
+contract below applies.
+
+QUA-118 — `compatibility(platform, category, media_types, output_port)` is the one rule
+for "can THIS channel take THIS shape, and as what?". It generalises the Instagram-only
+`media_product_type_for` so the assign flow can disable an incompatible account with a
+typed reason, and it makes the image story programmable by category (`story` + one
+image → STORIES), which the publisher has done since QUA-113 (QUA-118 AC 6).
 
 What this does NOT decide, on purpose (QUA-109/110 contract gaps, recorded in QUA-111):
 - whether the approved copy/category is the one the human saw — only `revision ==
@@ -76,6 +82,11 @@ _PORT_PRODUCT_TYPE: dict[str, tuple[str, frozenset[str]]] = {
 }
 OUTPUT_PORTS: tuple[str, ...] = tuple(_PORT_PRODUCT_TYPE)
 
+# Channels the Planificador can publish to. TikTok scheduled publishing is blocked by the
+# platform (ADR 23c) and Facebook has no publisher: only Instagram today (QUA-118).
+PLATFORM_INSTAGRAM = "instagram"
+SCHEDULABLE_PLATFORMS: frozenset[str] = frozenset({PLATFORM_INSTAGRAM})
+
 REASON_TEXT: Mapping[UnpublishableReason, str] = {
     R.POST_NOT_FOUND: "El POST ya no existe o no es visible.",
     R.NOT_APPROVED: "El POST no está aprobado.",
@@ -89,6 +100,7 @@ REASON_TEXT: Mapping[UnpublishableReason, str] = {
     R.UNSUPPORTED_MEDIA_TYPE: "El POST tiene un tipo de archivo que no se publica.",
     R.UNSUPPORTED_SHAPE: "La categoría no corresponde al contenido (p. ej. un reel con dos "
     "archivos, o una salida sin el tipo de archivo que pide).",
+    R.CHANNEL_NOT_SUPPORTED: "Esta cuenta no admite publicaciones programadas desde Qualify.",
     R.MEDIA_NOT_IN_R2: "Los archivos del POST todavía no están listos para publicar (R2).",
     R.CONTENT_TYPE_MISSING: "Falta el formato de algún archivo del POST.",
     R.UNSUPPORTED_CONTENT_TYPE: "Formato no admitido: las imágenes deben ser JPEG.",
@@ -137,17 +149,22 @@ def _refuse(
     )
 
 
-def media_product_type_for(
-    category: str, media_types: tuple[str, ...], output_port: str | None = None
-) -> str | None:
-    """QUA-109's category contract (`PostCategory`: galería → IMAGE/CAROUSEL, story →
-    STORIES, reel → REELS) restricted to what `PublishService` can actually publish.
-    None = that combination is not publishable. There is no default branch: a category
-    this function does not name never becomes a reel.
+@dataclass(frozen=True)
+class Compatibility:
+    """What one channel receives for one POST shape (QUA-118): the publisher's
+    `media_product_type`, or the typed reason that channel cannot take it."""
 
-    With `output_port` (MP-11) the PORT decides, not the category: `reel` → REELS (one
-    video), `feed` → IMAGE (one image), `story` → STORIES (one image or one video). An
-    unknown port is never published."""
+    media_product_type: str | None
+    reason: UnpublishableReason | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.media_product_type is not None
+
+
+def _shape_product_type(
+    category: str, media_types: tuple[str, ...], output_port: str | None
+) -> str | None:
     count = len(media_types)
     single = media_types[0] if count == 1 else None
     if output_port is not None:
@@ -164,13 +181,42 @@ def media_product_type_for(
     if category == PostCategory.REEL.value:
         return MEDIA_TYPE_REELS if single == MEDIA_TYPE_VIDEO else None
     if category == PostCategory.STORY.value:
-        # The publisher CAN publish an image story since QUA-113 (`is_image_story`); the
-        # category contract is deliberately left at "one video" — an image story is
-        # reached through the `story` output port (MP-11), which is where image stories
-        # actually come from (the template engine). Widening this branch is a separate
-        # decision over QUA-109's vocabulary, not a bug fix.
-        return MEDIA_TYPE_STORIES if single == MEDIA_TYPE_VIDEO else None
+        # One image OR one video: the publisher has published image stories since
+        # QUA-113 (`is_image_story`). Widened by category on 2026-10-05 (QUA-118 AC 6),
+        # the decision MP-11 had left open; before that only the `story` output port
+        # reached an image story.
+        return MEDIA_TYPE_STORIES if single in (MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO) else None
     return None
+
+
+def compatibility(
+    platform: str,
+    category: str,
+    media_types: tuple[str, ...],
+    output_port: str | None = None,
+) -> Compatibility:
+    """QUA-109's category contract (`PostCategory`: galería → IMAGE/CAROUSEL, story →
+    STORIES, reel → REELS) restricted to what `PublishService` can actually publish on
+    `platform`. There is no default branch: a category this function does not name
+    never becomes a reel, and a platform it does not name never gets an event.
+
+    With `output_port` (MP-11) the PORT decides, not the category: `reel` → REELS (one
+    video), `feed` → IMAGE (one image), `story` → STORIES (one image or one video). An
+    unknown port is never published."""
+    if platform not in SCHEDULABLE_PLATFORMS:
+        return Compatibility(None, R.CHANNEL_NOT_SUPPORTED)
+    product_type = _shape_product_type(category, media_types, output_port)
+    if product_type is None:
+        return Compatibility(None, R.UNSUPPORTED_SHAPE)
+    return Compatibility(product_type)
+
+
+def media_product_type_for(
+    category: str, media_types: tuple[str, ...], output_port: str | None = None
+) -> str | None:
+    """`compatibility` for Instagram, as the evaluator reads it: the product type, or None
+    when that combination is not publishable."""
+    return compatibility(PLATFORM_INSTAGRAM, category, media_types, output_port).media_product_type
 
 
 def _position(item: MediaCandidate) -> int:

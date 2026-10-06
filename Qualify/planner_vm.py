@@ -78,26 +78,36 @@ def output_long_label(port: str) -> str:
     return PORT_LABELS.get(port, port.title())
 
 
-# (long label, short label for the compact calendar card, tone)
+# (long label, short label for the compact calendar card, tone). This is the POST's
+# approval — a different axis from the event's state below, so it never reuses one of
+# the five state words ("pending" reads «En revisión», not «Pendiente»).
 _APPROVAL_LABEL: dict[str, tuple[str, str, str]] = {
     "approved": ("Aprobado", "Aprobado", "ok"),
-    "pending": ("Pendiente de aprobación", "Pendiente", "warn"),
+    "pending": ("En revisión", "En revisión", "warn"),
     "rejected": ("Rechazado", "Rechazado", "error"),
     "not_ready": ("En producción", "En producción", "neutral"),
 }
 _MISSING_POST = ("POST no disponible", "No disponible", "error")
 
+# QUA-118 A1 — the five visible states of a calendar event, and the only five words the
+# UI ever prints for one: Programado · Pendiente · Publicado · Vencido · Fallido. They are
+# derived from what already exists (`EventStatus`, `rules.is_expired_scheduled`, the
+# POST's approval); nothing new is persisted. Two persisted statuses have no word of
+# their own on purpose: `publishing` is a transient of seconds and reads «Programado»
+# while the attempt runs; `cancelled` never reaches a screen — «Cancelar publicación»
+# removes the event from the calendar (`PlannerService.cancel_and_delete`).
 _STATUS_LABEL: dict[str, tuple[str, str]] = {
     "scheduled": ("Programado", "info"),
-    "cancelled": ("Cancelado", "neutral"),
-    "publishing": ("Publicando", "info"),
+    "publishing": ("Programado", "info"),
     "published": ("Publicado", "ok"),
-    "failed": ("Falló", "error"),
+    "failed": ("Fallido", "error"),
 }
-OVERDUE_LABEL = ("Venció sin aprobación", "warn")
-# QUA-115: a scheduled event past its 24 h execution window. The worker will not touch
-# it; only "Reprogramar" brings it back. Takes precedence over OVERDUE_LABEL.
-EXPIRED_LABEL = ("Venció", "warn")
+# A scheduled event whose POST is no longer approved (edited after approval — the only
+# way there since D1): it must go through review again before the worker will take it.
+PENDING_LABEL = ("Pendiente", "warn")
+# QUA-115: a scheduled event past its 24 h execution window, approved or not. The worker
+# will not touch it; only "Reprogramar" brings it back. Takes precedence over PENDING.
+EXPIRED_LABEL = ("Vencido", "warn")
 EXPIRED_NOTE = "Pasaron más de 24 h de la hora programada. Reprográmalo para volver a publicarlo."
 
 # The POST category vocabulary is QUA-109's. These labels cover what the temporary
@@ -200,12 +210,21 @@ def event_actions(*, status: str, approval: str | None, lifecycle: str | None) -
     )
 
 
-def status_label(status: str, *, overdue: bool, expired: bool = False) -> tuple[str, str]:
+def status_label(status: str, *, pending: bool = False, expired: bool = False) -> tuple[str, str]:
+    """One of the five visible states (QUA-118 A1). `pending` = a scheduled event whose
+    POST is not approved; `expired` = past the execution window (QUA-115) — expiry wins,
+    whatever the POST says, because rescheduling is the only way forward."""
     if expired:
         return EXPIRED_LABEL
-    if overdue:
-        return OVERDUE_LABEL
+    if pending:
+        return PENDING_LABEL
     return _STATUS_LABEL.get(status, (status, "neutral"))
+
+
+def is_pending(status: str, approval: str | None) -> bool:
+    """The «Pendiente» rule, shared by the card and the detail dialog: a `scheduled` event
+    of a POST that exists and is not approved."""
+    return status == "scheduled" and approval is not None and approval != "approved"
 
 
 def category_label(category: str | None) -> str:
@@ -673,7 +692,8 @@ def build_card(
         is_publishable=item.is_publishable,
         reason=item.unpublishable_reason,
     )
-    s_label, s_tone = status_label(item.status, overdue=item.overdue, expired=item.expired)
+    pending = is_pending(item.status, approval)
+    s_label, s_tone = status_label(item.status, pending=pending, expired=item.expired)
     return EventCardVM(
         event_id=item.event_id,
         post_id=item.post_id,
@@ -690,9 +710,9 @@ def build_card(
         approval_tone=ready.tone,
         status_label=s_label,
         status_tone=s_tone,
-        # `overdue` is the card's "needs attention" flag (amber edge + warning icon); an
-        # expired event needs attention for the same reason: it will not publish as is.
-        overdue=item.overdue or item.expired,
+        # `overdue` is the card's "needs attention" flag (amber edge + warning icon): a
+        # Pendiente or Vencido event will not publish as is.
+        overdue=pending or item.expired,
         can_modify=event_actions(status=item.status, approval=approval, lifecycle=None).can_modify,
         muted=item.status == "cancelled",
         detail_href=item.detail_href,
