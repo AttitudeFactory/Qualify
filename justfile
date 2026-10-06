@@ -69,6 +69,26 @@ calendar-tick *args:
 calendar-worker *args:
     uv run --no-sync python -m qualify_api.planner.worker {{args}}
 
+# --- Production (Hetzner VPS, docs/despliegue-hetzner.md) ---------------------------------
+# `target` = the server's ssh target, e.g. deploy@203.0.113.10.
+#   just deploy deploy@<ip>               # origin/main
+#   just deploy deploy@<ip> <sha|branch>  # a specific ref (rollback = an older sha)
+# Ship a COMMITTED ref to the server: build there, migrate, restart, print health.
+deploy target ref="origin/main":
+    deploy/deploy.sh deploy {{target}} {{ref}}
+
+# Containers + health checks through Caddy.
+deploy-status target:
+    deploy/deploy.sh status {{target}}
+
+# Follow production logs: all services, or one (api | reflex | caddy | migrate | postgres | redis).
+deploy-logs target service="":
+    deploy/deploy.sh logs {{target}} {{service}}
+
+# pg_dump now (the nightly cron runs the same script on the server).
+deploy-backup target:
+    deploy/deploy.sh backup {{target}}
+
 # Default test pass: unit + db, never external network. Mirrors CI.
 # Tests use `qualify_test` + Redis db 15, NEVER the dev `qualify` (root conftest.py aborts
 # otherwise). Data a run leaves in `qualify_test` is kept for inspection — no auto reset.

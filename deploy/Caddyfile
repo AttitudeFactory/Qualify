@@ -1,0 +1,63 @@
+# Qualify edge: automatic TLS (Let's Encrypt) + one origin for everything.
+#
+# {$QUALIFY_DOMAIN} is the site address. In production it is the bare hostname
+# (`qualify.attitudefactory.co`), which makes Caddy obtain and renew the certificate on its
+# own (ports 80 + 443 must reach this box). For a local smoke test set it to
+# `http://localhost` — the `http://` prefix turns automatic HTTPS off.
+#
+# Routing table (first match wins inside `handle` blocks; every path not listed falls
+# through to the static frontend):
+#
+#   /api/*            -> api:8000     FastAPI (qualify_api.http.app:create_app); includes the
+#                                     Meta OAuth callback /api/connections/callback
+#   /public/media/*   -> api:8000     unauthenticated media route Meta's fetcher calls (QUA-68)
+#   /_event*          -> reflex:8000  Reflex websocket (state sync)
+#   /_upload*         -> reflex:8000  Reflex uploads (POST) and uploaded files (GET)
+#   /ping, /_health, /_all_routes
+#                     -> reflex:8000  Reflex health/ping/introspection
+#   /avatar/*         -> reflex:8000  api_transformer: creator avatar proxy (Qualify/avatar_proxy.py)
+#   /r2media/*        -> reflex:8000  api_transformer: R2 media for drafts (Qualify/r2_media.py)
+#   everything else   -> /srv         static Reflex export (SPA fallback to 404.html)
+{
+	# Admin API is not needed (config is reloaded by restarting the container).
+	admin off
+	email {$QUALIFY_ACME_EMAIL}
+}
+
+{$QUALIFY_DOMAIN} {
+	encode zstd gzip
+
+	@fastapi path /api/* /public/media/*
+	handle @fastapi {
+		reverse_proxy api:8000
+	}
+
+	@reflex_backend path /_event /_event/* /_upload /_upload/* /ping /_health /_all_routes /avatar/* /r2media/*
+	handle @reflex_backend {
+		reverse_proxy reflex:8000
+	}
+
+	handle {
+		root * /srv
+		# Reflex exports one HTML file per static route (`/login` -> login.html or
+		# login/index.html); dynamic routes (`/drafts/[draft_id]`) are resolved client-side
+		# from the SPA fallback page.
+		try_files {path} {path}.html {path}/index.html /404.html
+		# The export ships a .gz next to every file; serve those instead of re-compressing.
+		file_server {
+			precompressed gzip
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}
