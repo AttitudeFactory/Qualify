@@ -76,6 +76,9 @@ _FORM_INCOMPLETE = "Elige al menos un POST y completa su fecha, hora y cuenta."
 _POST_REQUIRED = "Elige al menos un POST listo para publicar."
 
 MODE_ASSIGN = "assign"
+# How often an open Planificador re-reads its week, so a publication the worker (which
+# ticks every 60 s) settled shows on its own.
+REFRESH_SECONDS = 30
 SCROLL_ID = "q-planner-scroll"
 
 # Opens the calendar at the start of the working day instead of midnight. Runs in the
@@ -470,8 +473,26 @@ class PlannerState(rx.State):
     @rx.event(background=True)
     async def load(self):
         """Load (or reload) the week currently in `monday_iso` ("" → this week)."""
+        async for update in self._load_week(quiet=False):
+            yield update
+
+    @rx.event(background=True)
+    async def refresh_week(self, _tick: str = ""):
+        """The calendar's own clock (every `REFRESH_SECONDS` while the page is open):
+        reload the week quietly so what the worker published — or failed — shows
+        without a manual reload. No spinner, no scroll jump, and never while a panel is
+        being filled or saved."""
         async with self:
-            self.loading = True
+            busy = self.form_open or self.saving or self.loading
+        if busy:
+            return
+        async for update in self._load_week(quiet=True):
+            yield update
+
+    async def _load_week(self, *, quiet: bool):
+        async with self:
+            if not quiet:
+                self.loading = True
             self.load_error = ""
             monday_iso, connection_filter = self.monday_iso, self.connection_filter
             view_tz, tag_filter = self.view_tz, tuple(self.tag_filter)
@@ -521,7 +542,8 @@ class PlannerState(rx.State):
             if wanted and wanted != self._url_post_opened:
                 self._url_post_opened = wanted
                 self._open_assign(post_id=wanted)
-        yield rx.call_script(_SCROLL_TO_OPENING_HOUR)
+        if not quiet:
+            yield rx.call_script(_SCROLL_TO_OPENING_HOUR)
 
     def _url_post(self) -> str:
         try:

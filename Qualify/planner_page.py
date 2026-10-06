@@ -27,7 +27,7 @@ from .planner_drawer import (
     tag_badge_plain,
     tag_dot,
 )
-from .planner_state import SCROLL_ID, PlannerState
+from .planner_state import REFRESH_SECONDS, SCROLL_ID, PlannerState
 from .planner_vm import VIEW_CALENDAR, VIEW_LIST
 from .post_card import (
     DropBox,
@@ -109,20 +109,26 @@ def _card_menu(event) -> rx.Component:
 
 
 def _chip_edge(event) -> rx.Var:
-    """The chip's left edge carries the state at a glance: accent approved, amber pending
-    or overdue, tomato rejected, gray cancelled/unknown."""
-    return rx.cond(
-        event.muted,
-        rx.color("gray", 8),
+    """The chip's left edge carries the state at a glance: green published, tomato
+    failed; for what is still planned, accent approved, amber pending or overdue,
+    tomato rejected, gray cancelled/unknown."""
+    return rx.match(
+        event.status_label,
+        ("Publicado", rx.color("green", 9)),
+        ("Fallido", rx.color("tomato", 9)),
         rx.cond(
-            event.overdue,
-            rx.color("amber", 9),
-            rx.match(
-                event.approval_tone,
-                ("ok", rx.color("accent", 9)),
-                ("warn", rx.color("amber", 9)),
-                ("error", rx.color("tomato", 9)),
-                rx.color("gray", 8),
+            event.muted,
+            rx.color("gray", 8),
+            rx.cond(
+                event.overdue,
+                rx.color("amber", 9),
+                rx.match(
+                    event.approval_tone,
+                    ("ok", rx.color("accent", 9)),
+                    ("warn", rx.color("amber", 9)),
+                    ("error", rx.color("tomato", 9)),
+                    rx.color("gray", 8),
+                ),
             ),
         ),
     )
@@ -195,9 +201,24 @@ def _calendar_chip(event) -> rx.Component:
         # the glyphs never shrink.
         rx.box(
             rx.text(event.time_label, size="1", weight="bold", class_name="q-nums q-chip-time"),
-            rx.cond(
-                event.overdue | (event.readiness_note != ""),
-                rx.icon("triangle-alert", size=11, color=rx.color("amber", 10), flex_shrink="0"),
+            # The event's state by glyph (the word is in the hover card and the name):
+            # ✓ published, ✕ failed, ⚠ pending / expired / not ready.
+            rx.match(
+                event.status_label,
+                (
+                    "Publicado",
+                    rx.icon("circle-check", size=12, color=rx.color("green", 10), flex_shrink="0"),
+                ),
+                (
+                    "Fallido",
+                    rx.icon("circle-x", size=12, color=rx.color("tomato", 10), flex_shrink="0"),
+                ),
+                rx.cond(
+                    event.overdue | (event.readiness_note != ""),
+                    rx.icon(
+                        "triangle-alert", size=11, color=rx.color("amber", 10), flex_shrink="0"
+                    ),
+                ),
             ),
             rx.box(class_name="q-chip-gap"),
             channel_mark(event.platform),
@@ -1069,4 +1090,12 @@ def planner_index() -> rx.Component:
         ),
         assign_drawer(),
         event_panel(),
+        # The page's clock: a quiet re-read of the week every REFRESH_SECONDS, so what
+        # the worker published (or failed) shows without a manual reload. Client-side,
+        # so it stops when the page is left.
+        rx.moment(
+            interval=REFRESH_SECONDS * 1000,
+            on_change=PlannerState.refresh_week,
+            display="none",
+        ),
     )
