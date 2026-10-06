@@ -412,7 +412,6 @@ def fetch_recent_posts(
     max_pages: int = _MAX_POST_PAGES,
     hashtag_counts: Counter[str] | None = None,
     caption_sink: list[str] | None = None,
-    latest_sink: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Every post published at or after `since` (unix seconds), newest first, in the
     common `{takenAt, likes, comments, views}` shape. Walks the paginated post list
@@ -427,8 +426,6 @@ def fetch_recent_posts(
     credits are already spent, and an account that did not publish this week still
     says what it is about in last month's captions. It is what the creator discovery
     reads as the account's own vocabulary (`creator_discovery.seed_from_profile`).
-    `latest_sink`, likewise, gets every normalized post of every page read, dated or not:
-    the per-video interaction is averaged over the latest of them (`LATEST_POSTS`).
     """
     handle = _normalize_handle(handle)
     if not handle:
@@ -456,8 +453,6 @@ def fetch_recent_posts(
             page, next_cursor = normalize(payload)
             if not page:
                 break
-            if latest_sink is not None:
-                latest_sink.extend(page)
             collected.extend(p for p in page if p["takenAt"] >= since)
             if page[-1]["takenAt"] < since or not next_cursor or next_cursor == cursor:
                 break
@@ -521,10 +516,6 @@ TOP_HASHTAGS = 12
 #: (§ request 2026-10-05: the rubro step's hashtags are created from them).
 RECENT_CAPTIONS = 12
 CAPTION_CHARS = 300
-#: How many of the account's latest posts the interaction is averaged over (§ third round
-#: of 2026-10-05: "un promedio por vídeo, no semanal") — whatever their date, from the
-#: pages the windowed read already paid for.
-LATEST_POSTS = 12
 
 
 def fetch_profile_and_posts(
@@ -550,7 +541,6 @@ def fetch_profile_and_posts(
     active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
     hashtags: Counter[str] = Counter()
     captions: list[str] = []
-    latest: list[dict[str, Any]] = []
     try:
         profile = fetch_profile(network, handle, client=active)
         now = time.time()
@@ -563,11 +553,7 @@ def fetch_profile_and_posts(
                 client=active,
                 hashtag_counts=hashtags,
                 caption_sink=captions,
-                latest_sink=latest,
             )
-            # newest first — pinned posts head the first page whatever their age
-            latest.sort(key=lambda p: p["takenAt"], reverse=True)
-            profile["latestPosts"] = latest[:LATEST_POSTS]
         except ScrapeCreatorsError as exc:
             logger.warning("recent posts read failed, metrics will be unavailable: %s", exc)
             profile["recentPosts"] = None
@@ -608,13 +594,9 @@ def profile_metrics(network: str, profile: dict[str, Any]) -> list[dict[str, Any
     `{label, target, suffix, decimals, hint}`, in display order:
 
       - Publicaciones: how many posts landed inside the window (0 is a real answer).
-      - Interacción: the AVERAGE PER POST of (likes + comments) / followers, as a
-        percentage, over the account's latest `LATEST_POSTS` posts whatever their date
-        (`latestPosts`, § third round of 2026-10-05: "un promedio por vídeo, no
-        semanal") — a snapshot read before that key existed averages the window's posts
-        instead. Omitted with no followers or no post carrying a like count.
-      - Likes por publicación / por vídeo: mean likes over the window's posts — same
-        omission.
+      - Interacción: mean(likes + comments) / followers over those posts, as a
+        percentage — omitted with no followers or no post carrying a like count.
+      - Likes por publicación / por vídeo: mean likes over those posts — same omission.
 
     The window is anchored at `profile["fetchedAt"]` (when the read happened), falling
     back to now, so a cached snapshot describes the week it was taken in rather than
@@ -642,38 +624,27 @@ def profile_metrics(network: str, profile: dict[str, Any]) -> list[dict[str, Any
     unit = "vídeo" if network == "tiktok" else "publicación"
 
     metrics = [_metric("Publicaciones", len(in_window), "", 0, f"Publicadas en los {window}.")]
-    latest = profile.get("latestPosts")
-    basis = latest if isinstance(latest, list) else in_window
-    per_post = [p for p in basis if isinstance(p, dict) and isinstance(p.get("likes"), int)]
-    per_post = per_post[:LATEST_POSTS]
-    if followers and per_post:
-        rates = [(p["likes"] + (p.get("comments") or 0)) / followers * 100 for p in per_post]
-        metrics.append(
-            _metric(
-                "Interacción",
-                sum(rates) / len(rates),
-                "%",
-                1,
-                f"Promedio por {unit} {_latest_phrase(network, len(rates))}: likes + "
-                "comentarios sobre seguidores.",
-            )
-        )
     with_likes = [p for p in in_window if isinstance(p.get("likes"), int)]
     if not with_likes:
         return metrics
-    mean_likes = sum(p["likes"] for p in with_likes) / len(with_likes)
+    n = len(with_likes)
+    mean_likes = sum(p["likes"] for p in with_likes) / n
+    mean_interactions = sum(p["likes"] + (p.get("comments") or 0) for p in with_likes) / n
+    if followers:
+        metrics.append(
+            _metric(
+                "Interacción",
+                mean_interactions / followers * 100,
+                "%",
+                1,
+                f"Likes + comentarios sobre seguidores, {window}.",
+            )
+        )
     figure, suffix, decimals = _scaled(mean_likes)
     metrics.append(
         _metric(f"Likes por {unit}", figure, suffix, decimals, f"Media por {unit}, {window}.")
     )
     return metrics
-
-
-def _latest_phrase(network: str, count: int) -> str:
-    """ "de tus últimos 12 vídeos" / "de tu última publicación" — what the average is over."""
-    if network == "tiktok":
-        return "de tu último vídeo" if count == 1 else f"de tus últimos {count} vídeos"
-    return "de tu última publicación" if count == 1 else f"de tus últimas {count} publicaciones"
 
 
 def _normalize_handle(handle: str) -> str:

@@ -3323,6 +3323,14 @@ def _propose_rubro(
     return (rubro or account.category.strip().lower()), proposal
 
 
+def _as_choice(proposal: from_profile.Proposal, by: str) -> hashtag_catalog.HashtagChoice:
+    return hashtag_catalog.HashtagChoice(
+        tags=tuple(t.tag for t in proposal.tags),
+        by=by,
+        picks={t.tag: {"reason": t.reason, "model": proposal.model} for t in proposal.tags},
+    )
+
+
 def _hashtags_db_first(
     tenant_id: UUID | None,
     seed: creator_discovery.DiscoverySeed,
@@ -3331,55 +3339,56 @@ def _hashtags_db_first(
     network: str = "",
     created: from_profile.Proposal | None = None,
 ) -> tuple[hashtag_catalog.HashtagChoice | None, str]:
-    """Tu rubro's hashtags (§ third round of 2026-10-05: "la tool necesita primero buscar
-    en la db; si no hay, los crea"): FIRST the shared catalog — Claude explores it with its
-    tools for this rubro and this account (`hashtag_catalog.suggest_hashtags`, the rule
-    path without a key); only when nothing there fits are they CREATED from the account's
-    own text (`_create_hashtags`), and what Claude created goes into the catalog
-    (`hashtag_catalog.remember_created`) so the next brand with that rubro finds it."""
+    """Tu rubro's hashtags, in three cases tried in order (§ fourth round of 2026-10-05):
+
+    1. **The database** — the shared catalog, which Claude explores with its tools for
+       this rubro and this account (`hashtag_catalog.suggest_hashtags`; the rule path
+       without a key).
+    2. **The latest posts** — when the catalog has nothing that fits: the hashtags the
+       account itself used in its latest posts (`from_profile.from_posts`, reach-only
+       tags like #fyp left out).
+    3. **Created** — when its posts carry none: Claude writes them from the description
+       and the posts (`from_profile.generate`, or the proposal `created` already made
+       while it named the rubro), and they are stored in the catalog
+       (`hashtag_catalog.remember_created`) so the next brand with that rubro finds them
+       in case 1.
+
+    Returns the choice for `merge_suggestions`, or None with the note to show."""
+    cap = creator_discovery.CHOSEN_HASHTAGS
+    # 1. the database
     if tenant_id is not None and (seed.terms or seed.niches):
         try:
             found = hashtag_catalog.suggest_hashtags(
                 tenant_id, seed, bio=account.bio, category=account.category
             )
         except (SQLAlchemyError, OSError, ValueError) as exc:
-            logger.warning("hashtags: catalog unreadable, creating them: %s", exc)
+            logger.warning("hashtags: catalog unreadable, trying the posts: %s", exc)
         else:
             if found.tags:
                 return found, ""
-    choice, note = _create_hashtags(account, created)
-    if choice is not None and choice.by == "ai" and tenant_id is not None and seed.terms:
-        try:
-            hashtag_catalog.remember_created(tenant_id, seed, choice.tags, network=network or None)
-        except (SQLAlchemyError, ValueError) as exc:
-            logger.warning("hashtags: created tags not stored in the catalog: %s", exc)
-    return choice, note
-
-
-def _create_hashtags(
-    account: from_profile.AccountText, created: from_profile.Proposal | None = None
-) -> tuple[hashtag_catalog.HashtagChoice | None, str]:
-    """The creation half of `_hashtags_db_first`: Claude creates the tags from the
-    account's own text (`from_profile.generate` — or the proposal `created` already made
-    while it named the rubro); without a key, or when the call fails, the account's own
-    most-used hashtags stand in (`from_profile.from_posts`). Returns the choice for
-    `merge_suggestions`, or None with the note to show."""
-    cap = creator_discovery.CHOSEN_HASHTAGS
+    # 2. the latest posts
+    own = from_profile.from_posts(account.used_hashtags, max_tags=cap)
+    if own.tags:
+        return _as_choice(own, "rule"), ""
+    # 3. created from the description and the posts
     proposal = created if created is not None and created.tags else None
     if proposal is None:
         proposal = _generate_from_account(account)
     if proposal is None or not proposal.tags:
-        proposal = from_profile.from_posts(account.used_hashtags, max_tags=cap)
-    if not proposal.tags and not account.has_content:
-        return None, "Escribe tu rubro (o elige una categoría) y te sugerimos hashtags."
-    return (
-        hashtag_catalog.HashtagChoice(
-            tags=tuple(t.tag for t in proposal.tags),
-            by="ai" if proposal.by == "ai" else "rule",
-            picks={t.tag: {"reason": t.reason, "model": proposal.model} for t in proposal.tags},
-        ),
-        "",
-    )
+        if not account.has_content:
+            return None, "Escribe tu rubro (o elige una categoría) y te sugerimos hashtags."
+        return None, (
+            "No encontramos hashtags para tu rubro ni en tus publicaciones. Agrega los tuyos: "
+            "con ellos buscamos."
+        )
+    if tenant_id is not None and seed.terms:
+        try:
+            hashtag_catalog.remember_created(
+                tenant_id, seed, tuple(t.tag for t in proposal.tags), network=network or None
+            )
+        except (SQLAlchemyError, ValueError) as exc:
+            logger.warning("hashtags: created tags not stored in the catalog: %s", exc)
+    return _as_choice(proposal, "ai"), ""
 
 
 #: Every key a card may carry beyond `account_card`'s original ones, defaulted so a
@@ -3944,12 +3953,10 @@ class BrandConnectState(rx.State):
 
         1. An empty Tu rubro is autocompleted from what the account says about itself —
            description, category, latest posts (`_propose_rubro`).
-        2. The hashtags come from the shared catalog FIRST; only when nothing there fits
-           are they created from the account's text, and stored in the catalog
-           (`_hashtags_db_first`).
+        2. The hashtags: the database, else the latest posts' own hashtags, else created
+           from the description and the posts (`_hashtags_db_first`, § fourth round).
 
-        Without a key the catalog's rule path and then the account's own most-used
-        hashtags stand in. Background: the Claude runs take seconds."""
+        Background: the Claude runs take seconds."""
         async with self:
             if self.suggesting_hashtags:
                 return
@@ -5875,7 +5882,7 @@ def _rubro_hashtags_block() -> rx.Component:
         BrandConnectState.suggesting_hashtags,
         progress_panel(
             "Buscando hashtags para tu rubro",
-            "Primero en nuestro catálogo; si no hay, los creamos con lo que publicas.",
+            "En nuestro catálogo, luego en tus publicaciones y, si no hay, los creamos.",
             steps=None,
             creep_seconds=15,
         ),

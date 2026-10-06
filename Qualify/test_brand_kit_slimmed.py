@@ -149,14 +149,17 @@ def test_the_post_pages_give_the_texts_the_hashtags_are_created_from() -> None:
     assert sc._page_captions("instagram", ig) == ["Arepas en Cúcuta", "bare string"]
 
 
-def test_without_a_key_the_accounts_own_hashtags_stand_in(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_without_a_catalog_the_latest_posts_hashtags_come_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("QUALIFY_ANTHROPIC_API_KEY", raising=False)
+    seed = wiz.creator_discovery.DiscoverySeed("nibbles", ())
     account = wiz.from_profile.AccountText(
         handle="nibbles", bio="Smash burgers", used_hashtags=("fyp", "smashburger")
     )
-    choice, note = wiz._create_hashtags(account)
+    choice, note = wiz._hashtags_db_first(None, seed, account)
     assert choice is not None and choice.tags == ("smashburger",) and note == ""
-    nothing, note = wiz._create_hashtags(wiz.from_profile.AccountText())
+    nothing, note = wiz._hashtags_db_first(None, seed, wiz.from_profile.AccountText())
     assert nothing is None and "rubro" in note
 
 
@@ -349,3 +352,34 @@ def test_the_catalog_answers_first_and_a_creation_is_stored(monkeypatch) -> None
     # the next search for that rubro finds them in the catalog — no creation
     again, _ = wiz._hashtags_db_first(tenant, seed, account)
     assert again is not None and again.tags == ("xilofonosamano",) and again.by == "rule"
+
+
+def test_the_three_cases_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    """§ fourth round of 2026-10-05: 1) the database, 2) the latest posts, 3) created from
+    the description and the posts — each only when the one before has nothing."""
+    from uuid import UUID
+
+    from qualify_api.hashtags import MemoryHashtagRepository
+
+    from . import hashtag_catalog
+
+    monkeypatch.delenv("QUALIFY_ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(hashtag_catalog, "REPOSITORY", MemoryHashtagRepository())
+    monkeypatch.setattr(hashtag_catalog, "_seeded", False)
+    tenant = UUID("7a7a0000-0000-4000-8000-0000000000ca")
+    seed = wiz.creator_discovery.DiscoverySeed("nibbles", (), (), "VE", "", terms=("xilofonos",))
+    created = wiz.from_profile.Proposal(
+        (wiz.from_profile.ProposedTag("xilofonosamano", "La bio."),), None, "ai", "m", "xilofonos"
+    )
+    posts = wiz.from_profile.AccountText(handle="nibbles", used_hashtags=("fyp", "marimba"))
+    # 2. nothing in the database → the posts' own hashtags, nothing created or stored
+    choice, _ = wiz._hashtags_db_first(tenant, seed, posts, created=created)
+    assert choice is not None and choice.tags == ("marimba",)
+    assert hashtag_catalog.REPOSITORY.get(tenant, "xilofonosamano") is None
+    # 3. no hashtags in the posts either → created, and stored in the database
+    bare = wiz.from_profile.AccountText(handle="nibbles", bio="Xilófonos hechos a mano")
+    choice, _ = wiz._hashtags_db_first(tenant, seed, bare, created=created)
+    assert choice is not None and choice.tags == ("xilofonosamano",) and choice.by == "ai"
+    # 1. the next search for that rubro finds them in the database first
+    choice, _ = wiz._hashtags_db_first(tenant, seed, posts)
+    assert choice is not None and choice.tags == ("xilofonosamano",) and choice.by == "rule"
