@@ -49,6 +49,7 @@ from qualify_api.planner.publishable import (
     PostCandidate,
     evaluate,
 )
+from qualify_api.planner.rules import EXECUTION_WINDOW
 
 # Draft status → approval as the calendar sees it. STAGED/PUBLISHED drafts were approved
 # first (creative FSM), so they read as approved.
@@ -228,22 +229,29 @@ def thumbnail_source(
     return None
 
 
-# "Live" = planned and not yet out (scheduled / publishing). A published event is history,
-# counted by `times_published`; the gallery's «En calendario» badge reads only this.
-_LIVE_STATUSES: tuple[str, ...] = (EventStatus.SCHEDULED.value, EventStatus.PUBLISHING.value)
+def _history(
+    session: Session, post_ids: Sequence[UUID], *, now: datetime
+) -> dict[UUID, tuple[int, bool]]:
+    """Per POST, how many of its events were published and whether one is live — one
+    aggregate over `calendar_events` for the whole batch (QUA-118 D2). Read-only, under
+    the same RLS session as the drafts.
 
-
-def _history(session: Session, post_ids: Sequence[UUID]) -> dict[UUID, tuple[int, bool]]:
-    """Per POST, how many of its events were published and whether one is live
-    (scheduled or publishing — not yet out) — one aggregate over `calendar_events` for
-    the whole batch (QUA-118 D2). Read-only, under the same RLS session as the drafts."""
+    "Live" = still going to be published: `publishing`, or `scheduled` and not yet past
+    its execution window (`rules.EXECUTION_WINDOW`, QUA-115). A `scheduled` event the
+    calendar already shows as «Vencido» is not live — the gallery's «En calendario» badge
+    must agree with the calendar's word. A published event is history (`times_published`).
+    """
     if not post_ids:
         return {}
+    live = (CalendarEvent.status == EventStatus.PUBLISHING.value) | (
+        (CalendarEvent.status == EventStatus.SCHEDULED.value)
+        & (CalendarEvent.scheduled_at > now - EXECUTION_WINDOW)
+    )
     rows = session.execute(
         select(
             CalendarEvent.post_id,
             func.count().filter(CalendarEvent.status == EventStatus.PUBLISHED.value),
-            func.count().filter(CalendarEvent.status.in_(_LIVE_STATUSES)),
+            func.count().filter(live),
         )
         .where(CalendarEvent.post_id.in_(list(post_ids)))
         .group_by(CalendarEvent.post_id)
@@ -281,7 +289,7 @@ class DraftPostReader:
             drafts = session.scalars(
                 select(creative.ContentDraft).where(creative.ContentDraft.id.in_(ids))
             ).all()
-            history = _history(session, [draft.id for draft in drafts])
+            history = _history(session, [draft.id for draft in drafts], now=self._clock())
             return {
                 draft.id: self._summarize(session, tenant_id, draft, history.get(draft.id))
                 for draft in drafts
@@ -298,7 +306,7 @@ class DraftPostReader:
                 .order_by(creative.ContentDraft.created_at.desc())
                 .limit(_SCHEDULABLE_LIMIT)
             ).all()
-            history = _history(session, [draft.id for draft in drafts])
+            history = _history(session, [draft.id for draft in drafts], now=self._clock())
             return [
                 self._summarize(session, tenant_id, draft, history.get(draft.id))
                 for draft in drafts
@@ -312,7 +320,7 @@ class DraftPostReader:
                 .order_by(creative.ContentDraft.created_at.desc())
                 .limit(_GALLERY_LIMIT)
             ).all()
-            history = _history(session, [draft.id for draft in drafts])
+            history = _history(session, [draft.id for draft in drafts], now=self._clock())
             return [
                 self._summarize(session, tenant_id, draft, history.get(draft.id))
                 for draft in drafts

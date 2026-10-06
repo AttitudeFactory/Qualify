@@ -96,8 +96,9 @@ class PostSummary:
     # planned one event per output (`PlannerService.schedule(output_port=...)`).
     outputs: tuple[PostOutput, ...] = ()
     # QUA-118 D2: the POST's publishing history, read from `calendar_events` — how many of
-    # its events were published, and whether one is live (scheduled / publishing — planned
-    # and not yet out). Derived at read time, never persisted on the POST;
+    # its events were published, and whether one is live (publishing, or scheduled and
+    # still inside its execution window — what the calendar does not call «Vencido»).
+    # Derived at read time, never persisted on the POST;
     # `gallery.gallery_state` turns them into the «Usado ×N» and «En calendario» badges.
     times_published: int = 0
     has_live_event: bool = False

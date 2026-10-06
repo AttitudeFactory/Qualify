@@ -410,6 +410,9 @@ def test_service_schedules_a_real_draft_and_it_leaves_unscheduled(world_p) -> No
     # QUA-118 D2: the reader sees the live event in the POST's history (one aggregate).
     summary = DraftPostReader().get(tenant_id=TENANT_P, post_id=draft_id)
     assert summary.has_live_event is True and summary.times_published == 0
+    # ...and stops seeing it once the calendar would call it «Vencido» (QUA-115 window).
+    later = DraftPostReader(clock=lambda: at + timedelta(hours=25))
+    assert later.get(tenant_id=TENANT_P, post_id=draft_id).has_live_event is False
     monday = (at.astimezone(UTC).date()) - timedelta(days=at.astimezone(UTC).weekday())
     week = svc.list_week(
         tenant_id=TENANT_P,
