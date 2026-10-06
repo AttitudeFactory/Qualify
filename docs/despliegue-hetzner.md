@@ -19,7 +19,7 @@ Un solo servidor, un solo `docker compose`, un solo origen público. Caddy es lo
         todo lo demás  ───────────────────┘    /srv     export estático del frontend de Reflex
 
   red interna (sin puertos publicados):  postgres (pgvector/pgvector:pg16)  ·  redis 7
-  una sola vez por deploy:               migrate  (alembic upgrade head + contraseñas de los roles)
+  paso explícito antes del `up`:         migrate  (`run --rm`; alembic upgrade head + contraseñas de los roles)
   opcionales (perfil, apagados):         calendar-worker (PUBLICA DE VERDAD) · render (Remotion)
 ```
 
@@ -115,8 +115,8 @@ just deploy deploy@<IP> <sha-o-rama>    # o un ref concreto (ya commiteado)
 Qué hace `deploy/deploy.sh deploy`:
 
 1. `git archive` del ref (sólo lo **commiteado** — nunca el árbol sucio ni el `.env`) → `/opt/qualify/releases/<sha>`. El servidor no necesita acceso a GitHub.
-2. `docker compose build` (la primera vez tarda ~10–15 min en un CX23: dependencias de Python + export del frontend; luego queda en caché).
-3. `docker compose up -d`: `postgres` y `redis` → `migrate` (`alembic upgrade head` como `qualify_owner` + `ALTER ROLE` con las contraseñas de `.env.prod`) → `api` y `reflex` arrancan **sólo si migrate terminó bien** → `caddy`. Recién entonces `/opt/qualify/current` pasa a apuntar al release nuevo: si el build o la migración fallan, `current` (y con él `status`, `logs` y el cron de respaldo) se queda en el último release bueno.
+2. `docker compose build` (la primera vez tarda ~10–15 min en un CX23: dependencias de Python + export del frontend; luego queda en caché). La imagen `qualify-app` la construye **sólo** el servicio `api`; los demás la nombran. Si varios servicios la construyeran, cada copia saldría con otra etiqueta de servicio y el ID cambiaría en cada deploy, lo que recrearía `api`/`reflex` aunque el código fuera el mismo.
+3. `docker compose run --rm migrate` (`alembic upgrade head` como `qualify_owner` + `ALTER ROLE` con las contraseñas de `.env.prod`; levanta `postgres` antes) y, **sólo si terminó bien**, `docker compose up -d`. `migrate` es un paso explícito con perfil propio, no una dependencia de `api`/`reflex`. Un deploy sin cambios de imagen no recrea ningún contenedor, así que no hay ventana de 502. Mientras `migrate` corre, el release anterior sigue atendiendo, igual que antes de este cambio. Por eso toda migración tiene que ser compatible con el código anterior (expandir → contraer en dos deploys, §7). Recién entonces `/opt/qualify/current` pasa a apuntar al release nuevo: si el build o la migración fallan, `current` (y con él `status`, `logs` y el cron de respaldo) se queda en el último release bueno.
 4. Chequeos de salud a través de Caddy: `/ping` = 200, `/api/connections/callback?code=x&state=x` = **403** (estado inválido: prueba que llegó a FastAPI; un 502 sería falla), `/login` = 200.
 
 Después: abrir <https://qualify.attitudefactory.co/login>. Para crear el primer negocio usar `/signup`, o por consola:
@@ -153,7 +153,7 @@ dc exec postgres psql -U qualify_owner qualify
 
 Se conservan los últimos 5 releases en `/opt/qualify/releases`. Revertir código es re-desplegar un SHA anterior; **revertir un esquema no**: si un release trajo una migración, el anterior debe ser compatible con el esquema nuevo (expandir → contraer en dos deploys), o restaurar un respaldo (§8).
 
-Cambiar un secreto: editar `/opt/qualify/.env.prod` y `just deploy` (o `dc up -d` en el servidor). Cambiar `QUALIFY_PUBLIC_URL` exige reconstruir (`--build`): está horneada en el frontend estático.
+Cambiar un secreto: editar `/opt/qualify/.env.prod` y `just deploy` (o `dc run --rm migrate && dc up -d` en el servidor; el `migrate` es lo que aplica una contraseña de base de datos cambiada a su rol). Cambiar `QUALIFY_PUBLIC_URL` exige reconstruir (`--build`): está horneada en el frontend estático.
 
 ## 8. Respaldos de Postgres
 
@@ -184,7 +184,7 @@ dc stop api reflex calendar-worker
 dc exec -T postgres psql -U qualify_owner -d postgres -c 'DROP DATABASE qualify WITH (FORCE);'
 dc exec -T postgres psql -U qualify_owner -d postgres -c 'CREATE DATABASE qualify OWNER qualify_owner;'
 dc exec -T postgres pg_restore -U qualify_owner -d qualify --exit-on-error < /opt/qualify/backups/qualify-<UTC>.dump
-dc up -d      # migrate re-aplica las contraseñas de .env.prod y queda en head
+dc run --rm migrate && dc up -d   # migrate re-aplica las contraseñas de .env.prod y queda en head
 ```
 
 Los roles son globales del clúster y sobreviven al `DROP DATABASE`, así que no hace falta `globals-*.sql` salvo que se haya perdido el volumen entero; en ese caso, con un volumen nuevo, primero `dc up -d postgres`, luego `dc exec -T postgres psql -U qualify_owner -d postgres < globals-<UTC>.sql` (ignorar el error de que `qualify_owner` ya existe), y después los pasos de arriba.
