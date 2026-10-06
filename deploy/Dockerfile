@@ -25,8 +25,13 @@
 ARG PYTHON_IMAGE=python:3.12-slim-bookworm
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11.29
 ARG CADDY_IMAGE=caddy:2.10-alpine
+# Reflex 0.9.12 requires bun >= 1.4.0 (reflex_base.constants.Bun.MIN_VERSION) and uses one
+# found on PATH instead of downloading its own — same pattern as Reflex's official
+# docker-example/production-compose.
+ARG BUN_IMAGE=oven/bun:1.4
 
 FROM ${UV_IMAGE} AS uv
+FROM ${BUN_IMAGE} AS bun
 
 # --------------------------------------------------------------------------------------
 # deps: the locked virtualenv (backend + crm groups), workspace members installed editable
@@ -74,17 +79,18 @@ ENV PATH="/app/.venv/bin:${PATH}" \
 # frontend-build: `reflex export --frontend-only` → static files
 # --------------------------------------------------------------------------------------
 FROM deps AS frontend-build
-# bun is fetched by Reflex itself during export; it needs curl + unzip to do that.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends curl unzip ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+# bun comes from its official image (no curl/unzip, no download from Reflex's install
+# script on every build); the cache mount keeps bun's package cache across builds.
+COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 # The public origin is baked into the static bundle (env.json): it is where the browser
 # opens the `/_event` websocket and fetches `/_upload/*`. Caddy serves frontend and backend
 # on this same origin, so there is no CORS and no second hostname.
 ARG QUALIFY_PUBLIC_URL=https://qualify.attitudefactory.co
 ENV REFLEX_API_URL=${QUALIFY_PUBLIC_URL} \
     REFLEX_DEPLOY_URL=${QUALIFY_PUBLIC_URL}
-RUN reflex export --frontend-only --no-zip --loglevel info \
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    reflex export --frontend-only --no-zip --loglevel info \
+ && test -f .web/backend/stateful_pages.json \
  && mkdir -p /srv \
  && cp -a .web/build/client/. /srv/
 
@@ -99,12 +105,9 @@ COPY --from=frontend-build /srv /srv
 # app: runtime for api / reflex backend / migrate / calendar-worker (command per service)
 # --------------------------------------------------------------------------------------
 FROM ${PYTHON_IMAGE} AS app
-# curl/unzip: `reflex run` checks its frontend toolchain on start even in backend-only mode
-# on some versions; keeping them costs ~5 MB and avoids a boot-time surprise.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends curl unzip ca-certificates \
- && rm -rf /var/lib/apt/lists/* \
- && groupadd --system --gid 10001 qualify \
+# No apt packages: a `--backend-only` prod backend never touches the JS toolchain (bun,
+# curl, unzip), same as Reflex's official production image.
+RUN groupadd --system --gid 10001 qualify \
  && useradd --system --uid 10001 --gid qualify --home-dir /app --shell /usr/sbin/nologin qualify \
  && mkdir -p /data/uploaded_files /data/avatars \
  && chown -R qualify:qualify /data
@@ -116,6 +119,11 @@ COPY --from=deps --chown=qualify:qualify /app /app
 # named volume mounted on it inherits this ownership).
 RUN chown qualify:qualify /app \
  && install -d -o qualify -g qualify /app/.web /app/.states
+# `.web/backend` from the export: its stateful_pages.json makes the prod backend evaluate
+# only the stateful pages on boot instead of every page (reflex/compiler/compiler.py),
+# which shortens the restart window of every deploy. Without it the marker would be
+# rebuilt on each boot inside a container that a deploy throws away.
+COPY --from=frontend-build --chown=qualify:qualify /app/.web/backend /app/.web/backend
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONPATH="/app/packages/models/src" \
     PYTHONUNBUFFERED=1 \
