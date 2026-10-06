@@ -13,7 +13,7 @@ Deploy de `main` (`d226124`, árbol idéntico al release previo `8a31f78`) con `
 | Tiempo total (Mac → chequeos en verde), todo en caché | **28 s** (subida 4 s · build 6 s · `up` + migrate ~7 s · poda 5 s · health 2 s) |
 | Chequeos de `deploy.sh` | 3/3 ok |
 | Caída observada | **~10 s de 502 en `/ping`** (backend de Reflex). `/login` (estático en Caddy) siguió en 200 |
-| Causa de la caída | `migrate` (one-shot) se recrea en cada `up` y Compose recrea `api` y `reflex`, que dependen de él, **aunque la imagen no cambió** |
+| Causa de la caída | `api` y `reflex` se recrean **aunque el código no cambió**. Hipótesis inicial: `migrate` los arrastra. Causa real, reproducida el 2026-10-06 (§5, punto 2): `qualify-app` se construía una vez por servicio y el ID de la imagen cambiaba de un deploy a otro |
 | Deploy con cambio de código | **no medido**. Compila en el propio servidor de producción (export del frontend incluido); el runbook estima 10–15 min en frío |
 
 Hoy **no hay deploy automático**: mergear a `main` no despliega. El deploy es manual desde la Mac del fundador.
@@ -39,7 +39,7 @@ Referencia: `reflex-dev/reflex` → `docker-example/production-compose` (Dockerf
 | # | Qué | Tipo | Bloqueado por |
 |---|---|---|---|
 | 1 | ✅ Reflex: copiar `.web/backend` a `app`; bun desde `oven/bun` con caché; quitar `curl`/`unzip` del runtime. Medido en §5 | PR | — |
-| 2 | Cero recreaciones innecesarias: que un deploy sin cambios no recree `api`/`reflex` (p. ej. sacar `migrate` del grafo `depends_on` y correrlo como paso explícito en `deploy.sh` antes del `up`, o `up --no-recreate` condicionado) | PR | — |
+| 2 | ✅ Cero recreaciones innecesarias (§5): que un deploy sin cambios no recree `api`/`reflex` (p. ej. sacar `migrate` del grafo `depends_on` y correrlo como paso explícito en `deploy.sh` antes del `up`, o `up --no-recreate` condicionado) | PR | — |
 | 3 | Construir la imagen `deploy/Dockerfile` (targets `app` y `web`) **en el CI** — hoy ningún job la construye, un Dockerfile roto sólo se descubre al desplegar | PR | — |
 | 4 | CD: al quedar `main` en verde, Actions construye `app`/`web`(/`render`) y los publica en GHCR por SHA; el servidor sólo hace `pull` + `up`. Nunca compilar en producción. Rollback = desplegar el SHA anterior | PR | secretos de GitHub (llave ssh de deploy restringida, token GHCR) → **fundador** |
 | 5 | Despliegue sin caída del backend: con Redis como state manager (punto 3.2) arrancar el `reflex` nuevo, esperar `healthy` y recién entonces retirar el viejo | PR | 1, 2, decisión 3.2 |
@@ -66,6 +66,24 @@ Medido en la sesión en la nube (Docker 29, sin caché; **no** es el CX23):
 `stateful_pages.json` sale `[]`: ninguna página crea clases de estado al evaluarse (los estados están a nivel de módulo), así que con el marcador el backend no evalúa ninguna página al arrancar. `.web/backend` también trae `upload_is_used` y `bundled_libraries.json`, que el backend lee al arrancar.
 
 No se pudo medir el Dockerfile **anterior** en esta sesión: el proxy de la organización bloquea `deb.debian.org` y la versión anterior necesitaba `apt-get`. Este Dockerfile tampoco depende ya de ese espejo. La comparación en el servidor la hace el fundador con el próximo `just deploy` (punto 8).
+
+### Punto 2 — un deploy sin cambios no recrea nada (2026-10-06)
+
+Reproducido en la sesión con el stack de producción completo (`deploy/docker-compose.prod.yml` con `.env` desechable, Postgres y Redis reales, `alembic upgrade head` real), simulando `deploy.sh`: build + `up` desde un directorio de release nuevo con el **mismo** árbol.
+
+**Causa real.** `api`, `reflex`, `migrate` y `calendar-worker` compartían `image: qualify-app:<tag>` **y** el mismo `build:`. Compose construye la imagen una vez por servicio, cada copia con su etiqueta `com.docker.compose.service`, y el tag se lo queda la que termina última (a veces `api`, a veces `reflex`). Por eso el ID de `qualify-app` cambiaba entre dos deploys del mismo árbol, y Compose recreaba `api`/`reflex` por cambio de imagen. `migrate` también se recreaba, pero era síntoma, no causa.
+
+**Arreglo.**
+1. Sólo `api` declara `build:` de `qualify-app`; los demás servicios sólo la nombran.
+2. `migrate` pasa a un perfil propio y deja de ser `depends_on` de `api`/`reflex`/`calendar-worker`. `deploy.sh` corre `run --rm migrate` y, sólo si sale 0, `up -d`. Una migración fallida sigue sin servir tráfico.
+
+| Escenario (mismo árbol, release dir nuevo) | Antes | Después |
+|---|---|---|
+| Contenedores recreados | `migrate`, `api`, `reflex` | **ninguno** (2 deploys seguidos) |
+| Tiempo `build` + `migrate` + `up` | 13 s | 6–7 s |
+| Deploy con cambio de código Python | — | recrea `api`, `reflex` y `caddy` (correcto) |
+
+El primer deploy con este cambio recrea `api`/`reflex` una vez, por el cambio de configuración. Del deploy anterior queda un contenedor `qualify-prod-migrate-1` salido; es inocuo y se puede borrar a mano una vez (`docker rm qualify-prod-migrate-1`). **Cambia el procedimiento manual:** un `dc up -d` a secas ya no migra; es `dc run --rm migrate && dc up -d` (runbook actualizado).
 
 ## 6. Reglas para quien ejecute este plan
 

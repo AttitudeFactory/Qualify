@@ -13,12 +13,14 @@
 
 name: ${COMPOSE_PROJECT_NAME:-qualify-prod}
 
+# The Python image is BUILT by exactly one service (`api`, below); every other service
+# that runs it only names it. When several services share one `image:` and each also has
+# `build:`, Compose builds it once PER SERVICE, each copy stamped with its own
+# `com.docker.compose.service` label, and whichever finishes last takes the tag — so the
+# image ID flipped between deploys of an identical tree and Compose recreated api/reflex
+# for nothing (the ~10 s of 502 measured 2026-10-06; docs/plan-sre-devops-produccion.md).
 x-app-image: &app-image
   image: qualify-app:${QUALIFY_IMAGE_TAG:-latest}
-  build:
-    context: ..
-    dockerfile: deploy/Dockerfile
-    target: app
 
 # Environment shared by every Python service. DSNs are ASSEMBLED here from the per-role
 # passwords so a password lives in exactly one variable (and is rotated in one place).
@@ -102,10 +104,19 @@ services:
       retries: 30
     <<: *logging
 
-  # One-shot: schema (Alembic, as qualify_owner) + production role passwords. `up` waits
-  # for it to exit 0 before starting api/reflex, so a failed migration never serves traffic.
+  # One-shot: schema (Alembic, as qualify_owner) + production role passwords. Run as an
+  # explicit step BEFORE `up` (deploy/deploy.sh):
+  #
+  #   docker compose ... run --rm migrate && docker compose ... up -d
+  #
+  # It used to be a `depends_on: service_completed_successfully` of api/reflex, which tied
+  # their lifecycle to a one-shot: anything that recreated migrate (its env, its image)
+  # recreated them too. The `migrate` profile keeps a bare `up` from starting it; `run`
+  # does not need the profile enabled. A failed migration still never serves traffic:
+  # deploy.sh stops before `up`.
   migrate:
     <<: [*app-image, *app-env-file, *logging]
+    profiles: ["migrate"]
     restart: "no"
     environment:
       <<: *app-env
@@ -124,6 +135,11 @@ services:
 
   api:
     <<: [*app-image, *app-env-file, *logging]
+    # The only `build:` of qualify-app (see x-app-image).
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: app
     restart: unless-stopped
     environment:
       <<: *app-env
@@ -141,8 +157,8 @@ services:
     volumes:
       - uploads:/data/uploaded_files
     depends_on:
-      migrate:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
@@ -171,8 +187,8 @@ services:
       - avatars:/data/avatars
       - reflex_states:/app/.states
     depends_on:
-      migrate:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
@@ -230,8 +246,8 @@ services:
     volumes:
       - uploads:/data/uploaded_files
     depends_on:
-      migrate:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
 

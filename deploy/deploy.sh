@@ -13,9 +13,10 @@
 #   1. `git archive` of the ref — only COMMITTED files: never your dirty working tree, never
 #      .env — streamed over ssh into /opt/qualify/releases/<sha>. The server needs no GitHub
 #      access and no deploy key.
-#   2. `docker compose build` + `up -d` FROM THAT RELEASE DIR: postgres/redis first, then the
-#      one-shot `migrate` (alembic upgrade head + role passwords); api/reflex start only if
-#      it exits 0.
+#   2. FROM THAT RELEASE DIR: `docker compose build`, then `run --rm migrate` (alembic
+#      upgrade head + role passwords; starts postgres first), then `up -d` ONLY if migrate
+#      exited 0. migrate is an explicit step, not a depends_on of api/reflex, so a deploy
+#      that changes no image recreates nothing (no 502 window).
 #   3. Only if that succeeded: /opt/qualify/current -> the release. A failed build or
 #      migration leaves `current` (and with it `status`, `logs`, the backup cron) on the last
 #      good release. Older releases stay for rollback; the last 5 are kept.
@@ -71,14 +72,15 @@ cmd_deploy() {
     echo $sha > $release/RELEASE
   "
 
-  echo "==> Building images and starting the stack from $release (migrations run first)"
+  echo "==> Building images, migrating, then starting the stack from $release"
   local in_release
   in_release=$(compose_in "$release")
   remote "
     set -e
     $in_release build
+    $in_release run --rm migrate
     $in_release up -d --remove-orphans
-  " || die "build or start failed — $REMOTE_ROOT/current still points at the previous release"
+  " || die "build, migration or start failed — $REMOTE_ROOT/current still points at the previous release"
 
   remote "ln -sfn $release $REMOTE_ROOT/current"
   echo "==> $REMOTE_ROOT/current -> $sha"
