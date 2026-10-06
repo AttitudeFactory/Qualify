@@ -68,6 +68,7 @@ _SCHEDULABLE_DRAFT_STATUSES: tuple[str, ...] = tuple(
 
 _EXCERPT_CHARS = 140
 _SCHEDULABLE_LIMIT = 100
+_GALLERY_LIMIT = 200
 
 # Every object-store key starts with the tenant prefix (`qualify_shared.objects.keys`):
 # `t/{tenant_id}/…`. Local upload-store keys (`generated/…`, `uploads/…`) never do.
@@ -227,13 +228,15 @@ def thumbnail_source(
     return None
 
 
-_LIVE_STATUSES: tuple[str, ...] = tuple(s.value for s in EventStatus if s.occupies_post)
+# "Live" = planned and not yet out (scheduled / publishing). A published event is history,
+# counted by `times_published`; the gallery's «En calendario» badge reads only this.
+_LIVE_STATUSES: tuple[str, ...] = (EventStatus.SCHEDULED.value, EventStatus.PUBLISHING.value)
 
 
 def _history(session: Session, post_ids: Sequence[UUID]) -> dict[UUID, tuple[int, bool]]:
-    """Per POST, how many of its events were published and whether one is live — one
-    aggregate over `calendar_events` for the whole batch (QUA-118 D2). Read-only, under
-    the same RLS session as the drafts."""
+    """Per POST, how many of its events were published and whether one is live
+    (scheduled or publishing — not yet out) — one aggregate over `calendar_events` for
+    the whole batch (QUA-118 D2). Read-only, under the same RLS session as the drafts."""
     if not post_ids:
         return {}
     rows = session.execute(
@@ -294,6 +297,20 @@ class DraftPostReader:
                 )
                 .order_by(creative.ContentDraft.created_at.desc())
                 .limit(_SCHEDULABLE_LIMIT)
+            ).all()
+            history = _history(session, [draft.id for draft in drafts])
+            return [
+                self._summarize(session, tenant_id, draft, history.get(draft.id))
+                for draft in drafts
+            ]
+
+    def list_for_brand(self, *, tenant_id: UUID, brand_id: UUID) -> list[PostSummary]:
+        with tenant_session(tenant_id) as session:
+            drafts = session.scalars(
+                select(creative.ContentDraft)
+                .where(creative.ContentDraft.brand_id == brand_id)
+                .order_by(creative.ContentDraft.created_at.desc())
+                .limit(_GALLERY_LIMIT)
             ).all()
             history = _history(session, [draft.id for draft in drafts])
             return [

@@ -1,0 +1,234 @@
+"""The POST card (QUA-118): one component for the Planificador's «Sin programar» panel
+and the `/drafts` gallery, over one view-model (`planner_vm.PostOptionVM`), so the two
+never drift apart. Also the small pieces both screens need around a POST — the tone
+pill, the thumbnail / first video frame, the evaluator's note, the per-output chip —
+and the two HTML drag-and-drop hosts the calendar uses.
+
+A card says the POST's state the design system's way (P1: colour + line + word): a
+`signal_pill` with the state word, the card's left edge in the same tone, and the
+«Usado ×N» / «En calendario» badges for its history (D2). «Programado» is never printed
+here — that word belongs to the calendar event.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import reflex as rx
+
+from .r2_media import BACKEND_BASE
+from .ui import card, signal_pill, tag
+from .ui import tokens as T
+
+_TONES = ("ok", "warn", "error", "info", "neutral", "accent")
+_CLAMP_2 = {
+    "display": "-webkit-box",
+    "-webkit-line-clamp": "2",
+    "-webkit-box-orient": "vertical",
+    "overflow": "hidden",
+}
+
+
+class DragBox(rx.el.Div):
+    """A `div` that can be dragged (native HTML drag and drop — no custom JavaScript).
+    The browser does the dragging; the handlers only record what is being dragged."""
+
+    on_drag_start: rx.EventHandler[rx.event.no_args_event_spec]
+    on_drag_end: rx.EventHandler[rx.event.no_args_event_spec]
+
+
+class DropBox(rx.el.Div):
+    """A `div` something can be dropped on. `on_drag_over` must prevent the default
+    (`rx.event.prevent_default`) or the browser refuses the drop."""
+
+    on_drag_over: rx.EventHandler[rx.event.no_args_event_spec]
+    on_drag_enter: rx.EventHandler[rx.event.no_args_event_spec]
+    on_drag_leave: rx.EventHandler[rx.event.no_args_event_spec]
+    on_drop: rx.EventHandler[rx.event.no_args_event_spec]
+
+
+def pill(label: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
+    """`signal_pill` for a tone that is only known at runtime."""
+    return rx.match(
+        tone,
+        *[(t, signal_pill(label, t)) for t in _TONES],
+        signal_pill(label, "neutral"),
+    )
+
+
+def tone_edge(tone: rx.Var[str]) -> rx.Var:
+    """The card's left edge in the tone's colour — the line of «colour + line + word»."""
+    return rx.match(
+        tone,
+        ("ok", f"3px solid {rx.color('green', 9)}"),
+        ("warn", f"3px solid {rx.color('amber', 9)}"),
+        ("error", f"3px solid {rx.color('tomato', 9)}"),
+        ("info", f"3px solid {rx.color('blue', 9)}"),
+        ("accent", f"3px solid {rx.color('accent', 9)}"),
+        f"3px solid {rx.color('gray', 8)}",
+    )
+
+
+def thumbnail(url: rx.Var[str], size: str) -> rx.Component:
+    """`url` is an http(s) URL or a local upload-store key (`PostSummary.thumbnail_url`);
+    a key is resolved the way the creative screens do, with `rx.get_upload_url`."""
+    return rx.cond(
+        url != "",
+        rx.image(
+            src=rx.cond(url.startswith("http"), url, rx.get_upload_url(url)),
+            alt="",
+            width=size,
+            height=size,
+            min_width=size,
+            object_fit="cover",
+            border_radius=T.RADIUS_CONTROL,
+            border=T.BORDER,
+        ),
+        rx.center(
+            rx.icon("image", size=T.ICON_SM, color=T.TEXT_FAINT),
+            width=size,
+            height=size,
+            min_width=size,
+            background=T.SURFACE_BG_RAISED,
+            border_radius=T.RADIUS_CONTROL,
+            border=T.BORDER,
+        ),
+    )
+
+
+def card_media(thumbnail_url: rx.Var[str], video_url: rx.Var[str], size: str) -> rx.Component:
+    """A card's picture: the first frame of the POST's R2-only video when it has one (a
+    muted, controls-less `<video>` that only loads metadata — served with HTTP Range, so
+    a card reads a few MB, not the reel), otherwise the image thumbnail / placeholder."""
+    return rx.cond(
+        video_url != "",
+        rx.el.video(
+            src=BACKEND_BASE + video_url + "#t=0.1",
+            muted=True,
+            preload="metadata",
+            plays_inline=True,
+            aria_hidden="true",
+            width=size,
+            height=size,
+            style={
+                "min_width": size,
+                "object_fit": "cover",
+                "border_radius": T.RADIUS_CONTROL,
+                "border": T.BORDER,
+                "background": "black",
+                "pointer_events": "none",
+            },
+        ),
+        thumbnail(thumbnail_url, size),
+    )
+
+
+def readiness_note(note: rx.Var[str]) -> rx.Component:
+    """The evaluator's reason, under an approved-but-not-ready POST (card, list, panel)."""
+    return rx.cond(
+        note != "",
+        rx.hstack(
+            rx.icon("triangle-alert", size=12, color=rx.color("amber", 10), flex_shrink="0"),
+            rx.text(note, size="1", color=rx.color("amber", 11)),
+            align="start",
+            spacing="1",
+        ),
+    )
+
+
+def output_chip(chip: rx.Var) -> rx.Component:
+    """«Feed · lun 12 · 12:00 p. m. · @bianki» — one output's planning state, by tone."""
+    return rx.box(
+        pill(chip.word + " · " + chip.state_label, chip.tone),
+        title=rx.cond(chip.note != "", chip.note, chip.label),
+    )
+
+
+def history_badges(post: rx.Var) -> rx.Component:
+    """D2: «Usado ×N» for the publications already out, «En calendario» for a live
+    event. Never excluding — a `recurrente` POST reads Listo + Usado ×3."""
+    return rx.fragment(
+        rx.cond(
+            post.used_count > 0,
+            rx.badge(
+                rx.icon("history", size=11),
+                "Usado ×" + post.used_count.to_string(),
+                variant="soft",
+                color_scheme=T.tone_scale("info"),
+                size="1",
+                radius="full",
+                title="Veces publicado desde el Planificador",
+            ),
+        ),
+        rx.cond(
+            post.in_calendar,
+            rx.badge(
+                rx.icon("calendar-check", size=11),
+                "En calendario",
+                variant="outline",
+                color_scheme="gray",
+                size="1",
+                radius="full",
+                title="Tiene una publicación programada o en curso",
+            ),
+        ),
+    )
+
+
+def post_card(
+    post: rx.Var,
+    *,
+    actions: rx.Component,
+    size: str = "2.75rem",
+    on_drag_start: Any = None,
+    on_drag_end: Any = None,
+    show_media_label: bool = False,
+) -> rx.Component:
+    """The POST as a card. `actions` is the row under the body (links, «Asignar»);
+    with `on_drag_start` the card becomes draggable (the calendar's «Sin programar»).
+    The left edge, the pill and the word all carry the gallery state (P1)."""
+    body = rx.hstack(
+        card_media(post.thumbnail_url, post.video_url, size),
+        rx.vstack(
+            rx.text(post.title, size="2", weight="medium", style=_CLAMP_2),
+            rx.flex(
+                pill(post.gallery_label, post.gallery_tone),
+                tag(post.category_label),
+                rx.cond(show_media_label & (post.media_label != ""), tag(post.media_label)),
+                history_badges(post),
+                wrap="wrap",
+                gap="0.3rem",
+                align="center",
+            ),
+            # MP-11: one chip per template output with its planning state; the
+            # package stays one card and is taken apart when assigning.
+            rx.cond(
+                post.has_outputs,
+                rx.flex(rx.foreach(post.outputs, output_chip), wrap="wrap", gap="0.25rem"),
+            ),
+            readiness_note(post.readiness_note),
+            spacing="1",
+            min_width="0",
+            flex="1",
+        ),
+        spacing="2",
+        align="start",
+        width="100%",
+    )
+    inner = card(
+        body,
+        rx.box(actions, width="100%", margin_top="0.5rem"),
+        padding="0.6rem 0.6rem 0.6rem 0.75rem",
+        border_left=tone_edge(post.gallery_tone),
+    )
+    if on_drag_start is None:
+        return inner
+    return DragBox.create(
+        inner,
+        draggable=True,
+        on_drag_start=on_drag_start,
+        on_drag_end=on_drag_end,
+        class_name="q-post-drag",
+        title="Arrastra al calendario, o pulsa «Asignar»",
+        width="100%",
+    )

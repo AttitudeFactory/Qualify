@@ -602,6 +602,11 @@ class PlannerService:
     def list_schedulable(self, *, tenant_id: UUID, brand_id: UUID) -> list[PostSummary]:
         return self._posts.list_schedulable(tenant_id=tenant_id, brand_id=brand_id)
 
+    def list_posts(self, *, tenant_id: UUID, brand_id: UUID) -> list[PostSummary]:
+        """Every POST of the brand for the gallery (QUA-118), newest first — including
+        the ones that cannot be planned; `gallery.gallery_state` says which is which."""
+        return self._posts.list_for_brand(tenant_id=tenant_id, brand_id=brand_id)
+
     def list_unscheduled(self, *, tenant_id: UUID, brand_id: UUID) -> list[PostSummary]:
         """Schedulable POSTs with no scheduled/publishing/published event — the "Sin
         programar" panel. A cancelled or failed event frees its POST.

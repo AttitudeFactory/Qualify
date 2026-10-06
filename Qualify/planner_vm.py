@@ -140,9 +140,11 @@ EXPIRED_NOTE = "Pasaron más de 24 h de la hora programada. Reprográmalo para v
 _CATEGORY_LABEL: dict[str, str] = {
     "feed": "Publicación",
     "gallery": "Galería",
+    "galeria": "Galería",  # `PostCategory.GALERIA` (QUA-109)
     "carousel": "Galería",
     "story": "Story",
     "reel": "Reel",
+    "tiktok_video": "Video TikTok",
 }
 
 
@@ -520,6 +522,29 @@ class ConnectionChoiceVM:
     note: str = ""
 
 
+# QUA-118: the POST's five gallery states (`planner.gallery.GalleryState`) as the card
+# prints them — a different entity from the five event states, deliberately other words.
+GALLERY_LABELS: dict[str, tuple[str, str]] = {
+    "draft": ("Borrador", "neutral"),
+    "needs_action": ("Por completar", "warn"),
+    "schedulable": ("Listo", "ok"),
+    "used": ("Usado", "info"),
+    "discarded": ("Desechado", "error"),
+}
+GALLERY_FILTER_ALL = "all"
+GALLERY_STATE_FILTERS: tuple[tuple[str, str], ...] = tuple(
+    (value, label) for value, (label, _tone) in GALLERY_LABELS.items()
+)
+
+
+@dataclass(frozen=True)
+class CategoryOptionVM:
+    """One category the gallery can filter by: the raw value and its label."""
+
+    value: str
+    label: str
+
+
 @dataclass(frozen=True)
 class SeriesPreviewVM:
     """What the «Fecha y hora» step says about the recurrence being set up: how many
@@ -656,6 +681,15 @@ class PostOptionVM:
     category: str = ""
     schedulable: bool = False
     video_url: str = ""
+    # QUA-118 gallery: the derived state (`GALLERY_LABELS` key), its word and tone, and
+    # the POST's history (D2) — «Usado ×N» and «En calendario» are badges, never the
+    # state itself, so a `recurrente` POST reads Listo + Usado ×3.
+    gallery_state: str = ""
+    gallery_label: str = ""
+    gallery_tone: str = "neutral"
+    used_count: int = 0
+    in_calendar: bool = False
+    media_label: str = ""  # "Video · Reel 9:16"
 
 
 @dataclass(frozen=True)
@@ -858,9 +892,16 @@ def build_post_option(
     unpublishable_reason: str,
     outputs: Iterable[OutputChipVM] = (),
     video_url: str = "",
+    gallery_state: str = "",
+    times_published: int = 0,
+    has_live_event: bool = False,
 ) -> PostOptionVM:
     ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
     chips = list(outputs)
+    g_label, g_tone = GALLERY_LABELS.get(gallery_state, ("", "neutral"))
+    kind, aspect = frame_shape(category or "", "")
+    ratio = aspect.replace(" / ", ":")
+    medium = "Video" if video_url else "Imagen"
     return PostOptionVM(
         post_id=post_id,
         title=title,
@@ -878,7 +919,33 @@ def build_post_option(
         category=category or "",
         schedulable=approval == "approved" and is_publishable,
         video_url=video_url,
+        gallery_state=gallery_state,
+        gallery_label=g_label,
+        gallery_tone=g_tone,
+        used_count=times_published,
+        in_calendar=has_live_event,
+        media_label=f"{medium} · {kind}" + ("" if ratio in kind else f" {ratio}"),
     )
+
+
+def filter_posts(posts: Iterable[PostOptionVM], *, state: str, category: str) -> list[PostOptionVM]:
+    """The gallery's filters: by derived state and by raw category; `GALLERY_FILTER_ALL`
+    (or "") means no filter on that axis."""
+    return [
+        post
+        for post in posts
+        if (state in ("", GALLERY_FILTER_ALL) or post.gallery_state == state)
+        and (category in ("", GALLERY_FILTER_ALL) or post.category == category)
+    ]
+
+
+def category_options(posts: Iterable[PostOptionVM]) -> list[CategoryOptionVM]:
+    """The categories present among `posts`, each once, in first-seen order."""
+    seen: dict[str, str] = {}
+    for post in posts:
+        if post.category and post.category not in seen:
+            seen[post.category] = post.category_label
+    return [CategoryOptionVM(value=value, label=label) for value, label in seen.items()]
 
 
 # ---------------------------------------------------------------------------

@@ -96,9 +96,9 @@ class PostSummary:
     # planned one event per output (`PlannerService.schedule(output_port=...)`).
     outputs: tuple[PostOutput, ...] = ()
     # QUA-118 D2: the POST's publishing history, read from `calendar_events` — how many of
-    # its events were published, and whether one is live (scheduled / publishing /
-    # published). Derived at read time, never persisted on the POST; `gallery.gallery_state`
-    # turns them into the gallery's «Usado» badge.
+    # its events were published, and whether one is live (scheduled / publishing — planned
+    # and not yet out). Derived at read time, never persisted on the POST;
+    # `gallery.gallery_state` turns them into the «Usado ×N» and «En calendario» badges.
     times_published: int = 0
     has_live_event: bool = False
 
@@ -194,4 +194,10 @@ class PostReader(Protocol):
     def list_schedulable(self, *, tenant_id: UUID, brand_id: UUID) -> list[PostSummary]:
         """POSTs of the brand that could be planned now (`approval.is_schedulable`),
         newest first."""
+        ...
+
+    def list_for_brand(self, *, tenant_id: UUID, brand_id: UUID) -> list[PostSummary]:
+        """Every POST of the brand, whatever its state, newest first — the gallery
+        (QUA-118): drafts, POSTs in review, discarded ones included, each with its
+        history (`times_published`, `has_live_event`)."""
         ...

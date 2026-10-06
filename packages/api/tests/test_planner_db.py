@@ -349,6 +349,24 @@ def test_draft_reader_lists_only_schedulable_and_respects_rls(world_p, world_q) 
     assert reader.get(tenant_id=TENANT_Q, post_id=pending) is None
 
 
+def test_draft_reader_lists_every_post_of_the_brand_for_the_gallery(world_p, world_q) -> None:
+    """QUA-118 gallery: `list_for_brand` returns drafts in every state, newest first,
+    each with its history — and nothing of another tenant or brand."""
+    brand_id, _, _ = world_p
+    drafting = _draft(TENANT_P, brand_id, status="drafting")
+    pending = _draft(TENANT_P, brand_id, status="generated")
+    approved = _draft(TENANT_P, brand_id, status="approved")
+    rejected = _draft(TENANT_P, brand_id, status="rejected")
+    reader = DraftPostReader()
+    listed = reader.list_for_brand(tenant_id=TENANT_P, brand_id=brand_id)
+    ids = [p.post_id for p in listed]
+    assert {drafting, pending, approved, rejected} <= set(ids)
+    assert ids.index(rejected) < ids.index(drafting)  # newest first
+    mine = [p for p in listed if p.post_id in {drafting, pending, approved, rejected}]
+    assert all(p.times_published == 0 and p.has_live_event is False for p in mine)
+    assert reader.list_for_brand(tenant_id=TENANT_Q, brand_id=brand_id) == []
+
+
 def test_draft_reader_never_writes(world_p) -> None:
     brand_id, _, _ = world_p
     draft_id = _draft(TENANT_P, brand_id, status="drafting")

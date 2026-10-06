@@ -197,6 +197,11 @@ class PlannerState(rx.State):
     form_repeat_mode: str = REPEAT_BY_COUNT
     form_repeat_count: str = "4"
     form_repeat_until: str = ""
+    # QUA-118 drag & drop: the POST being dragged from «Sin programar» (the browser
+    # drags, this only remembers what), and the `?post=` already turned into an open
+    # drawer so a reload or a week change does not reopen it.
+    drag_post_id: str = ""
+    _url_post_opened: str = ""
 
     # -- detail / cancel ------------------------------------------------------
     detail_open: bool = False
@@ -620,7 +625,19 @@ class PlannerState(rx.State):
             known = {t.id for t in data.tags}
             self.tag_filter = [t for t in self.tag_filter if t in known]
             self.loading = False
+            # `/planner?post=<id>` (the gallery's «Asignar»): the same drawer, opened on
+            # that POST once the week — and the POST list — is here. Once per id.
+            wanted = self._url_post()
+            if wanted and wanted != self._url_post_opened:
+                self._url_post_opened = wanted
+                self._open_assign(post_id=wanted)
         yield rx.call_script(_SCROLL_TO_OPENING_HOUR)
+
+    def _url_post(self) -> str:
+        try:
+            return str(self.router.url.query_parameters.get("post", "") or "")
+        except Exception:  # noqa: BLE001 — no router outside a page (tests)
+            return ""
 
     @rx.event
     def load_current_week(self):
@@ -961,6 +978,31 @@ class PlannerState(rx.State):
     @rx.event
     def open_assign_blank(self) -> None:
         self._open_assign()
+
+    # -- drag & drop from «Sin programar» to a day × hour cell --------------------
+
+    @rx.var
+    def dragging(self) -> bool:
+        return self.drag_post_id != ""
+
+    @rx.event
+    def start_drag(self, post_id: str) -> None:
+        self.drag_post_id = post_id
+
+    @rx.event
+    def end_drag(self) -> None:
+        self.drag_post_id = ""
+
+    @rx.event
+    def drop_on_slot(self, day_iso: str, hour: int) -> None:
+        """A card dropped on a cell: the drawer opens prefilled with that POST, day and
+        hour — exactly what a click on the cell does, with the POST already chosen.
+        Nothing is created here; only «Programar» creates. A past day takes nothing."""
+        post_id, self.drag_post_id = self.drag_post_id, ""
+        if not post_id or (self.today_iso and day_iso < self.today_iso):
+            return
+        self._open_assign(post_id=post_id, day_iso=day_iso)
+        self._set_time(int(hour), 0)
 
     @rx.event
     def close_form(self) -> None:

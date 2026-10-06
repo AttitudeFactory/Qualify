@@ -854,3 +854,20 @@ body[data-rank-dragging] { cursor: grabbing; }
   .q-step-label { display: none; }
   .q-step--current .q-step-label { display: inline; }
 }
+
+
+/* ── POST gallery and drag & drop (QUA-118) ─────────────────────────────────── */
+.q-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+  gap: 0.75rem;
+  width: 100%;
+}
+.q-post-drag { cursor: grab; }
+.q-post-drag:active { cursor: grabbing; }
+.q-drop-target { height: 100%; transition: background-color var(--q-dur-fast) var(--q-ease); }
+.q-drop-target--active {
+  background-color: var(--accent-a3);
+  outline: 1px dashed var(--accent-8);
+  outline-offset: -2px;
+}

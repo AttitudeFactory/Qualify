@@ -383,6 +383,7 @@ class AuthState(rx.State):
             from .connections_state import ConnectionsState
             from .creative_state import CreativeState
             from .creative_wizard_pages import BrandConnectState, BrandWizardState
+            from .gallery_state import GalleryState
             from .inbox_state import InboxState
             from .leads_state import LeadsState
             from .planner_state import PlannerState
@@ -420,6 +421,8 @@ class AuthState(rx.State):
                 # the trending panel: its Meta audio list belongs to a tenant account
                 TrendingState,
                 PlannerState,
+                # the POST gallery (QUA-118): the tenant's POSTs and the filters
+                GalleryState,
                 # the Canva card: links of a draft and the pending OAuth verifier
                 CanvaState,
                 # Tu voz (2026-09-30): the staged recording, the analysis and the clone

@@ -36,11 +36,11 @@ from .planner_vm import (
     VIEW_CALENDAR,
     VIEW_LIST,
 )
+from .post_card import DropBox, card_media, pill, post_card, readiness_note, thumbnail
 from .r2_media import BACKEND_BASE
 from .ui import (
     app_shell,
     callout,
-    card,
     drawer,
     page_body,
     page_header,
@@ -65,15 +65,6 @@ _CLAMP_2 = {
 _ONE_LINE = {"overflow": "hidden", "text_overflow": "ellipsis", "white_space": "nowrap"}
 
 
-def _pill(label: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
-    """`signal_pill` for a tone that is only known at runtime."""
-    return rx.match(
-        tone,
-        *[(t, signal_pill(label, t)) for t in _TONES],
-        signal_pill(label, "neutral"),
-    )
-
-
 def _platform_icon(platform: rx.Var[str]) -> rx.Component:
     return rx.match(
         platform,
@@ -82,60 +73,6 @@ def _platform_icon(platform: rx.Var[str]) -> rx.Component:
             for key, icon in _PLATFORM_ICON.items()
         ],
         rx.icon("globe", size=T.ICON_SM, color=T.TEXT_MUTED),
-    )
-
-
-def _card_media(thumbnail_url: rx.Var[str], video_url: rx.Var[str], size: str) -> rx.Component:
-    """A card's picture: the first frame of the POST's R2-only video when it has one (a
-    muted, controls-less `<video>` that only loads metadata — served with HTTP Range, so
-    a card reads a few MB, not the reel), otherwise the image thumbnail / placeholder."""
-    return rx.cond(
-        video_url != "",
-        rx.el.video(
-            src=BACKEND_BASE + video_url + "#t=0.1",
-            muted=True,
-            preload="metadata",
-            plays_inline=True,
-            aria_hidden="true",
-            width=size,
-            height=size,
-            style={
-                "min_width": size,
-                "object_fit": "cover",
-                "border_radius": T.RADIUS_CONTROL,
-                "border": T.BORDER,
-                "background": "black",
-                "pointer_events": "none",
-            },
-        ),
-        _thumbnail(thumbnail_url, size),
-    )
-
-
-def _thumbnail(url: rx.Var[str], size: str) -> rx.Component:
-    """`url` is an http(s) URL or a local upload-store key (`PostSummary.thumbnail_url`);
-    a key is resolved the way the creative screens do, with `rx.get_upload_url`."""
-    return rx.cond(
-        url != "",
-        rx.image(
-            src=rx.cond(url.startswith("http"), url, rx.get_upload_url(url)),
-            alt="",
-            width=size,
-            height=size,
-            min_width=size,
-            object_fit="cover",
-            border_radius=T.RADIUS_CONTROL,
-            border=T.BORDER,
-        ),
-        rx.center(
-            rx.icon("image", size=T.ICON_SM, color=T.TEXT_FAINT),
-            width=size,
-            height=size,
-            min_width=size,
-            background=T.SURFACE_BG_RAISED,
-            border_radius=T.RADIUS_CONTROL,
-            border=T.BORDER,
-        ),
     )
 
 
@@ -264,7 +201,7 @@ def _calendar_chip(event) -> rx.Component:
     (approval wording, caption, actions) lives in the detail dialog, one click away."""
     return rx.box(
         rx.hstack(
-            _card_media(event.thumbnail_url, event.video_url, "1.6rem"),
+            card_media(event.thumbnail_url, event.video_url, "1.6rem"),
             rx.vstack(
                 rx.hstack(
                     _platform_icon(event.platform),
@@ -365,7 +302,7 @@ def _hour_cell(cell) -> rx.Component:
     day and hour. A not-past slot shows a "+" on hover (`q-planner-slot*` in
     `assets/qualify.css`) so it reads as "you can add here": in the corner when the slot
     is empty, under the chips when it has posts. Past days get neither."""
-    return rx.vstack(
+    slot = rx.vstack(
         rx.cond(
             ~cell.is_past & (cell.cards.length() == 0),
             rx.el.span(rx.icon("plus", size=T.ICON_SM), class_name="q-planner-slot-plus"),
@@ -392,6 +329,22 @@ def _hour_cell(cell) -> rx.Component:
         border_top=_HAIRLINE,
         border_left=_HAIRLINE,
         background=rx.cond(cell.is_today, rx.color("accent", 2), "transparent"),
+        width="100%",
+        min_width="0",
+        height="100%",
+    )
+    # QUA-118 drag & drop: a «Sin programar» card dropped here opens the drawer
+    # prefilled with this day and hour. `on_drag_over` must prevent the default or the
+    # browser never fires the drop; a past day is not a target.
+    return DropBox.create(
+        slot,
+        on_drag_over=rx.event.prevent_default,
+        on_drop=PlannerState.drop_on_slot(cell.day_iso, cell.hour).prevent_default,
+        class_name=rx.cond(
+            PlannerState.dragging & ~cell.is_past,
+            "q-drop-target q-drop-target--active",
+            "q-drop-target",
+        ),
         width="100%",
         min_width="0",
     )
@@ -446,19 +399,6 @@ def _calendar() -> rx.Component:
 # Lista — grouped by day
 
 
-def _readiness_note(note) -> rx.Component:
-    """The evaluator's reason, under an approved-but-not-ready POST (card, list, panel)."""
-    return rx.cond(
-        note != "",
-        rx.hstack(
-            rx.icon("triangle-alert", size=12, color=rx.color("amber", 10), flex_shrink="0"),
-            rx.text(note, size="1", color=rx.color("amber", 11)),
-            spacing="1",
-            align="center",
-        ),
-    )
-
-
 def _list_item(event) -> rx.Component:
     return rx.hstack(
         rx.text(
@@ -471,7 +411,7 @@ def _list_item(event) -> rx.Component:
         ),
         rx.hstack(
             rx.hstack(
-                _card_media(event.thumbnail_url, event.video_url, "3.5rem"),
+                card_media(event.thumbnail_url, event.video_url, "3.5rem"),
                 rx.vstack(
                     rx.text(event.title, size="3", weight="bold", style=_ONE_LINE, width="100%"),
                     rx.cond(
@@ -494,14 +434,14 @@ def _list_item(event) -> rx.Component:
                         spacing="2",
                         wrap="wrap",
                     ),
-                    _readiness_note(event.readiness_note),
+                    readiness_note(event.readiness_note),
                     spacing="1",
                     min_width="0",
                     flex="1",
                 ),
                 rx.flex(
-                    _pill(event.approval_label, event.approval_tone),
-                    _pill(event.status_label, event.status_tone),
+                    pill(event.approval_label, event.approval_tone),
+                    pill(event.status_label, event.status_tone),
                     direction="column",
                     align="end",
                     gap="0.3rem",
@@ -602,37 +542,11 @@ def _list() -> rx.Component:
 
 
 def _post_option(post) -> rx.Component:
-    return card(
-        rx.hstack(
-            _thumbnail(post.thumbnail_url, "2.75rem"),
-            rx.vstack(
-                rx.text(post.title, size="2", weight="medium", style=_CLAMP_2),
-                rx.flex(
-                    tag(post.category_label),
-                    _pill(post.approval_label, post.approval_tone),
-                    wrap="wrap",
-                    gap="0.25rem",
-                ),
-                # MP-11: one chip per template output with its planning state; the
-                # package stays one card and is taken apart when assigning.
-                rx.cond(
-                    post.has_outputs,
-                    rx.flex(
-                        rx.foreach(post.outputs, _output_chip),
-                        wrap="wrap",
-                        gap="0.25rem",
-                    ),
-                ),
-                _readiness_note(post.readiness_note),
-                spacing="1",
-                min_width="0",
-                flex="1",
-            ),
-            spacing="2",
-            align="start",
-            width="100%",
-        ),
-        rx.hstack(
+    """A «Sin programar» card: the shared `post_card`, draggable onto a calendar cell
+    (QUA-118); «Asignar» stays as the click path for keyboard and touch."""
+    return post_card(
+        post,
+        actions=rx.hstack(
             rx.cond(
                 post.detail_href != "",
                 rx.link(rx.text("Ver POST", size="1"), href=post.detail_href),
@@ -648,9 +562,9 @@ def _post_option(post) -> rx.Component:
             ),
             width="100%",
             align="center",
-            margin_top="0.5rem",
         ),
-        padding="0.6rem",
+        on_drag_start=PlannerState.start_drag(post.post_id),
+        on_drag_end=PlannerState.end_drag,
     )
 
 
@@ -1218,14 +1132,6 @@ def _output_control() -> rx.Component:
             spacing="1",
             width="100%",
         ),
-    )
-
-
-def _output_chip(chip) -> rx.Component:
-    """«Feed · lun 12 · 12:00 p. m. · @bianki» — one output's planning state, by tone."""
-    return rx.box(
-        _pill(chip.word + " · " + chip.state_label, chip.tone),
-        title=rx.cond(chip.note != "", chip.note, chip.label),
     )
 
 
@@ -2019,14 +1925,14 @@ def _detail_dialog() -> rx.Component:
                         "border_radius": "0.375rem",
                     },
                 ),
-                _thumbnail(d.thumbnail_url, "4.5rem"),
+                thumbnail(d.thumbnail_url, "4.5rem"),
             ),
             rx.vstack(
                 rx.text(d.title, size="3", weight="bold"),
                 rx.flex(
                     tag(d.category_label),
-                    _pill(d.approval_label, d.approval_tone),
-                    _pill(d.status_label, d.status_tone),
+                    pill(d.approval_label, d.approval_tone),
+                    pill(d.status_label, d.status_tone),
                     wrap="wrap",
                     gap="0.25rem",
                 ),

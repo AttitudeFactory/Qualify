@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransition
 from qualify_api.planner.composition import production_planner_service, tenant_timezone
 from qualify_api.planner.embedded import calendar_worker
+from qualify_api.planner.gallery import gallery_state
 from qualify_api.planner.post_reader import PostSummary, UnpublishableReason
 from qualify_api.planner.publishable import REASON_TEXT, SCHEDULABLE_PLATFORMS
 from qualify_api.planner.repository import EventRecord
@@ -54,6 +55,7 @@ from .planner_vm import (
     SERIES_MESSAGES,
     SERIES_UNKNOWN_MESSAGE,
     CardInput,
+    CategoryOptionVM,
     ConnectionChoiceVM,
     DayColumnVM,
     EventDetailVM,
@@ -65,6 +67,7 @@ from .planner_vm import (
     build_post_option,
     build_week,
     category_label,
+    category_options,
     content_type_label,
     date_label,
     event_actions,
@@ -236,7 +239,45 @@ def _post_option(
         unpublishable_reason=post.unpublishable_reason,
         outputs=chips,
         video_url=video_url,
+        gallery_state=gallery_state(post).value,
+        times_published=post.times_published,
+        has_live_event=post.has_live_event,
     )
+
+
+@dataclass(frozen=True)
+class GalleryData:
+    posts: list[PostOptionVM] = field(default_factory=list)
+    categories: list[CategoryOptionVM] = field(default_factory=list)
+
+
+def load_gallery(tenant_id: UUID) -> GalleryData:
+    """Every POST of the brand as a card (QUA-118 gallery), with the same view-model and
+    the same per-output chips as the «Sin programar» panel. Blocking (DB) — run off
+    the event loop."""
+    brand_id = _require_brand(tenant_id)
+    tz_name = view_zone(tenant_id, "")
+    zone = ZoneInfo(tz_name)
+    index, _active = _connection_index(tenant_id)
+    service = production_planner_service()
+    posts = service.list_posts(tenant_id=tenant_id, brand_id=brand_id)
+    occupied = service.occupied_outputs(tenant_id=tenant_id, brand_id=brand_id)
+    videos = {
+        str(p.post_id): url
+        for p in posts
+        if p.video_object_key and (url := _video_url(tenant_id, p.video_object_key))
+    }
+    options = [
+        _post_option(
+            p,
+            occupied.get(p.post_id),
+            zone=zone,
+            connections=index,
+            video_url=videos.get(str(p.post_id), ""),
+        )
+        for p in posts
+    ]
+    return GalleryData(posts=options, categories=category_options(options))
 
 
 _WEEKDAY_SHORT = ("lun", "mar", "mié", "jue", "vie", "sáb", "dom")

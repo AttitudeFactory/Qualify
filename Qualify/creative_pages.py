@@ -15,13 +15,15 @@ from .content_generator import generator_page
 from .creative_state import GENERATION_STAGES, CreativeState
 from .creative_vm import (
     CopyVariantVM,
-    DraftSummaryVM,
     GapVM,
     MediaVM,
     RouteOptionVM,
     SourceVM,
     ToneRowVM,
 )
+from .gallery_state import GalleryState
+from .planner_vm import GALLERY_FILTER_ALL, GALLERY_STATE_FILTERS
+from .post_card import post_card
 from .r2_media import BACKEND_BASE
 from .ui import app_shell, callout, card, empty_state, page_body, page_header
 from .ui import tokens as T
@@ -811,84 +813,156 @@ def create_index() -> rx.Component:
 
 
 # ---------------------------------------------------------------------------
-# /drafts — the tray
+# /drafts — the POST gallery (QUA-118)
 
 
-def _draft_row(draft: DraftSummaryVM) -> rx.Component:
-    return rx.table.row(
-        rx.table.cell(
-            rx.link(
-                rx.text(
-                    rx.cond(draft.topic != "", draft.topic, "(sin tema)"),
-                    size="2",
-                    weight="medium",
-                ),
-                href=f"/drafts/{draft.draft_id}",
-                underline="none",
-            ),
-            max_width="360px",
-            overflow="hidden",
-            text_overflow="ellipsis",
-            white_space="nowrap",
-        ),
-        rx.table.cell(status_badge(draft.status, draft.status_label, draft.status_tone)),
-        rx.table.cell(
+def _gallery_card(post) -> rx.Component:
+    """One POST of the gallery: the shared `post_card`; «Asignar» only for a POST that
+    can enter the calendar — it hands the POST to the Planificador's drawer."""
+    return post_card(
+        post,
+        actions=rx.hstack(
+            rx.link(rx.text("Ver POST", size="1"), href=post.detail_href),
+            rx.spacer(),
+            # D2: «Asignar» only for a POST that reads Listo — a one-shot POST already
+            # used is done (`Usado`); a `recurrente` one stays Listo however often it ran.
             rx.cond(
-                draft.failure_label != "",
-                rx.text(draft.failure_label, size="1", color=rx.color("tomato", 10)),
-                rx.fragment(),
-            )
+                post.gallery_state == "schedulable",
+                rx.button(
+                    rx.icon("calendar-plus", size=T.ICON_SM),
+                    "Asignar",
+                    size="1",
+                    variant="soft",
+                    on_click=GalleryState.assign(post.post_id),
+                ),
+            ),
+            width="100%",
+            align="center",
         ),
-        rx.table.cell(draft.created_label, white_space="nowrap"),
+        size="3.5rem",
+        show_media_label=True,
+    )
+
+
+def _state_chip(value: str, label: str) -> rx.Component:
+    """A state filter: the word, its count, selected = solid. «Todos» first."""
+    selected = GalleryState.state_filter == value
+    return rx.button(
+        label,
+        rx.badge(
+            GalleryState.state_counts[value],
+            variant="solid" if False else "soft",
+            color_scheme="gray",
+            radius="full",
+            size="1",
+            class_name="q-nums",
+        ),
+        size="1",
+        variant=rx.cond(selected, "solid", "soft"),
+        color_scheme=rx.cond(selected, "teal", "gray"),
+        radius="full",
+        on_click=GalleryState.set_state_filter(value),
+        aria_pressed=selected,
+    )
+
+
+def _gallery_toolbar() -> rx.Component:
+    return rx.flex(
+        rx.flex(
+            _state_chip(GALLERY_FILTER_ALL, "Todos"),
+            *[_state_chip(value, label) for value, label in GALLERY_STATE_FILTERS],
+            wrap="wrap",
+            gap="0.35rem",
+            align="center",
+        ),
+        rx.spacer(),
+        rx.select.root(
+            rx.select.trigger(placeholder="Categoría", aria_label="Categoría", min_width="9rem"),
+            rx.select.content(
+                rx.select.item("Todas las categorías", value=GALLERY_FILTER_ALL),
+                rx.foreach(
+                    GalleryState.categories,
+                    lambda c: rx.select.item(c.label, value=c.value),
+                ),
+            ),
+            value=GalleryState.category_filter,
+            on_change=GalleryState.set_category_filter,
+            size="1",
+        ),
+        rx.link(
+            rx.button(rx.icon("plus", size=15), "Nuevo encargo", size="2"),
+            href="/create",
+        ),
+        wrap="wrap",
+        gap="0.75rem",
+        align="center",
+        width="100%",
+    )
+
+
+def _gallery_empty() -> rx.Component:
+    return rx.cond(
+        GalleryState.is_filtered,
+        empty_state(
+            "filter",
+            "Nada con esos filtros",
+            "Prueba otro estado u otra categoría, o quita los filtros.",
+            action=rx.button(
+                "Quitar filtros", variant="soft", size="2", on_click=GalleryState.clear_filters
+            ),
+        ),
+        empty_state(
+            "inbox",
+            "Todavía no hay POSTs",
+            "Cada pieza que encargues aparece aquí con su estado, lista para revisar y programar.",
+            action=rx.link(
+                rx.button(rx.icon("plus", size=16), "Crear el primero", size="3"),
+                href="/create",
+            ),
+        ),
     )
 
 
 def drafts_index() -> rx.Component:
+    """The gallery: every POST of the brand as a card with its state (Borrador · Por
+    completar · Listo · Usado · Desechado), filters, and «Asignar» into the
+    Planificador's drawer (QUA-118 AC 1 / AC 3)."""
     return _screen(
         "Borradores",
-        "Cada pieza espera tu revisión: nada sale sin aprobación humana",
+        "Tus POSTs y en qué punto está cada uno: nada sale sin aprobación humana.",
         _padded(
-            rx.cond(CreativeState.drafts_error != "", _error_callout(CreativeState.drafts_error)),
-            rx.hstack(
-                rx.spacer(),
-                rx.link(
-                    rx.button(rx.icon("plus", size=15), "Nuevo encargo", size="2"),
-                    href="/create",
-                ),
-                width="100%",
-            ),
+            rx.cond(GalleryState.error != "", _error_callout(GalleryState.error)),
+            _gallery_toolbar(),
             rx.cond(
-                CreativeState.drafts_loading,
-                rx.skeleton(rx.box(height="10rem", width="100%")),
+                GalleryState.loading,
+                rx.box(
+                    *[rx.skeleton(rx.box(height="7rem", width="100%")) for _ in range(6)],
+                    class_name="q-gallery",
+                ),
                 rx.cond(
-                    CreativeState.drafts.length() > 0,
-                    rx.box(
-                        rx.table.root(
-                            rx.table.header(
-                                rx.table.row(
-                                    rx.table.column_header_cell("Tema"),
-                                    rx.table.column_header_cell("Estado"),
-                                    rx.table.column_header_cell(""),
-                                    rx.table.column_header_cell("Creado"),
-                                )
+                    GalleryState.visible_count > 0,
+                    rx.vstack(
+                        rx.text(
+                            rx.cond(
+                                GalleryState.is_filtered,
+                                GalleryState.visible_count.to_string()
+                                + " de "
+                                + GalleryState.total_count.to_string()
+                                + " POSTs",
+                                GalleryState.total_count.to_string() + " POSTs",
                             ),
-                            rx.table.body(rx.foreach(CreativeState.drafts, _draft_row)),
-                            variant="surface",
-                            width="100%",
+                            size="1",
+                            color=T.TEXT_MUTED,
                         ),
-                        overflow_x="auto",
+                        rx.box(
+                            rx.foreach(GalleryState.visible, _gallery_card),
+                            class_name="q-gallery",
+                        ),
+                        spacing="2",
                         width="100%",
+                        align_items="start",
                     ),
-                    empty_state(
-                        "inbox",
-                        "Todavía no hay borradores",
-                        "Cada pieza que encargues aparece aquí para tu revisión antes de "
-                        "publicarse.",
-                        action=rx.link(
-                            rx.button(rx.icon("plus", size=16), "Crear el primero", size="3"),
-                            href="/create",
-                        ),
-                    ),
+                    _gallery_empty(),
                 ),
             ),
         ),
