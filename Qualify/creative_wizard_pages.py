@@ -90,7 +90,7 @@ from .ui import (
     pill_editor,
     progress_panel,
     removable_pill,
-    stat_card,
+    skeleton_card,
     tag,
     tone_badge,
 )
@@ -1067,22 +1067,22 @@ def _choice_card(
 # (`_step_insights` in the manual flow, `_connect_step_insights` in the connect one):
 # same "cuentas parecidas" section either way, so the two paths cannot drift on it.
 
-#: Fase 3 (typed signal detectors, `signals.events` — docs/plan-ingesta-social.md) is
-#: not built yet. `/signals` is a standalone placeholder route (`signals_page.py`) so
-#: the "Mejorar tu perfil y posicionamiento" CTA — final step of BOTH flows — has
-#: somewhere honest to land instead of a dead link or a made-up one.
-_SIGNALS_ROUTE = "/signals"
-
-#: Where a pre-login Brand Kit ends (§ request 2026-10-02): the signup, prefilled with
-#: the draft's email — creating the account with it adopts the kit just saved.
+#: Where "Mejorar tu perfil" — the final button of BOTH flows — goes (§ request
+#: 2026-10-05: "que el botón de mejorar tu perfil vaya al registro directamente"): the
+#: signup, prefilled with the draft's email — creating the account with it adopts the kit
+#: just saved. It used to go to Señales (a placeholder page) for a logged-in session.
 _SIGNUP_ROUTE = "/signup"
+#: A session that already has an account has nothing to sign up for: it goes into the
+#: app (the signup page would send it there anyway, `redirect_if_authenticated`).
+_APP_HOME_ROUTE = "/"
 
 
 async def _finish_route(state: rx.State) -> str:
-    """Señales for a logged-in session; the signup for a pre-login draft (Señales
-    needs a login). Call it holding the state lock in a background handler."""
+    """The signup for a pre-login draft — every Brand Kit starts as one since 2026-10-02 —
+    and the app's home for a session that already has an account. Call it holding the
+    state lock in a background handler."""
     auth = await state.get_state(AuthState)
-    return _SIGNALS_ROUTE if auth.session_tenant_id else _SIGNUP_ROUTE
+    return _APP_HOME_ROUTE if auth.session_tenant_id else _SIGNUP_ROUTE
 
 
 #: Placeholder competitor/influencer suggestions (handle, role label, blurb).
@@ -3496,6 +3496,9 @@ class BrandConnectState(rx.State):
     discovery_ran: bool = False
     discovery_error: str = ""
     discovery_signals: list[str] = []
+    #: Which category Resultados e insights shows (§ request 2026-10-05: the three
+    #: phases as tabs instead of three stacked lists) — a key of `PHASES`.
+    results_phase: str = "sector"
     sector_title: str = ""
     sector_note: str = ""
     sector_accounts: list[dict[str, str]] = []
@@ -3991,12 +3994,13 @@ class BrandConnectState(rx.State):
             await wizard.retire_logo_colours()
 
     @rx.event
-    def answer_account_kind(self, value: str) -> None:
+    def answer_account_kind(self, value: str) -> rx.event.EventSpec | None:
         """¿Eres influencer o una marca?'s own choice handler — records the answer and
-        moves on; which steps follow is `_is_skipped`'s call (the Maps pair for an
-        influencer, the rubro step when nothing is missing)."""
+        moves on (to Tu rubro y ubicación). It RETURNS what `next_step` fires: arriving
+        at Tu rubro creates the hashtags (§ 2026-10-05), and dropping that event here —
+        as this handler did — meant they were never created on this, the usual, path."""
         self.account_kind = value
-        self.next_step()
+        return self.next_step()
 
     @rx.event
     def answer_has_maps(self, value: str) -> None:
@@ -4056,6 +4060,7 @@ class BrandConnectState(rx.State):
         self.manual_error = ""
         self.dragging = ""
         self.sort_stage = 0
+        self.results_phase = "sector"
         self.stage_cursor = 0
         self.last_assigned = ""
         self.fly_card = {}
@@ -4186,6 +4191,29 @@ class BrandConnectState(rx.State):
     @rx.var
     def has_sorted(self) -> bool:
         return len(self.account_buckets) > 0
+
+    @rx.var
+    def results_tabs(self) -> list[list[str]]:
+        """Resultados e insights' category tabs (§ 2026-10-05) — `[key, label]` each, the
+        label short (Sector / the country / the city) with how many accounts it holds,
+        "…" while its search is still running."""
+        names = {
+            "sector": "Sector",
+            "national": creator_discovery.country_name(self.country_code) or "País",
+            "local": self.city.strip() or "Ciudad",
+        }
+        tabs = []
+        for key in creator_discovery.PHASES:
+            accounts = self._phase_accounts(key)
+            pending = self.discovering and not accounts and not self._phase_note(key)
+            count = "…" if pending else str(len(accounts))
+            tabs.append([key, f"{names[key]} · {count}"])
+        return tabs
+
+    @rx.event
+    def set_results_phase(self, value: str | list[str]) -> None:
+        if isinstance(value, str) and value in creator_discovery.PHASES:
+            self.results_phase = value
 
     @rx.var
     def profile_avatar_src(self) -> str:
@@ -5618,8 +5646,8 @@ def _connect_step_rubro() -> rx.Component:
     return rx.cond(
         BrandConnectState.suggesting_hashtags,
         progress_panel(
-            "Buscando hashtags para tu rubro",
-            "Revisamos el catálogo de hashtags con tu rubro, tu perfil y tu ciudad.",
+            "Creando los hashtags de tu cuenta",
+            "Leemos tu descripción, tu categoría y tus últimas publicaciones.",
             steps=None,
             creep_seconds=15,
         ),
@@ -5830,99 +5858,111 @@ def _rubro_hashtags_block() -> rx.Component:
     )
 
 
-def _metric_card(item: rx.Var[dict[str, str]]) -> rx.Component:
-    return stat_card(item["label"], item["value"], hint=item["hint"])
+def _metric_tile(item: rx.Var[dict[str, str]]) -> rx.Component:
+    """One metric of the read account, compact enough to sit three in a row beside the
+    profile (§ request 2026-10-05, the results screen's header). Same figure, label and
+    hint as the `stat_card` it replaces."""
+    return rx.vstack(
+        rx.text(item["label"], size="1", color=T.TEXT_MUTED),
+        rx.text(item["value"], size="6", weight="bold", class_name="q-nums", line_height="1.1"),
+        rx.text(item["hint"], size="1", color=T.TEXT_FAINT, line_height="1.3"),
+        spacing="1",
+        align_items="start",
+        padding="0.75rem 0.85rem",
+        border_radius=T.RADIUS_CONTROL,
+        background=T.SURFACE_BG_RAISED,
+        width="100%",
+        min_width="0",
+    )
 
 
 def _metric_grid() -> rx.Component:
-    """One `stat_card` per entry of `BrandConnectState.metric_cards` — real figures,
-    already formatted server-side (see that computed var). Up to three; the column
-    count stays 3 so a two-metric profile leaves a gap rather than stretching."""
+    """One tile per entry of `BrandConnectState.metric_cards` — real figures, already
+    formatted server-side (see that computed var), up to three in a row."""
     return rx.grid(
-        rx.foreach(BrandConnectState.metric_cards, _metric_card),
-        columns=rx.breakpoints(initial="1", sm="3"),
-        spacing="3",
+        rx.foreach(BrandConnectState.metric_cards, _metric_tile),
+        columns=rx.breakpoints(initial="1", xs="3"),
+        spacing="2",
         width="100%",
     )
 
 
-def _insights_profile_card() -> rx.Component:
-    """Resultados e insights' condensed profile recap — shared with the Brand Kit
-    editor, which shows it only while this session still holds the read profile."""
-    return card(
-        rx.hstack(
-            _profile_avatar("3rem", 18),
-            rx.vstack(
-                rx.text(BrandConnectState.profile_username, size="3", weight="bold"),
-                rx.text(
-                    BrandConnectState.profile_followers,
-                    " seguidores",
-                    size="2",
-                    color=T.TEXT_MUTED,
-                ),
-                spacing="0",
-                align_items="start",
-                min_width="0",
-            ),
-            spacing="3",
-            align="center",
-            width="100%",
-        ),
-        padding="1rem 1.25rem",
-        width="100%",
-    )
-
-
-def _insights_metrics() -> rx.Component:
-    """The metric grid, skipped for a new account or when nothing was computable."""
-    return rx.cond(
-        ~BrandConnectState.is_new_account & BrandConnectState.has_metrics,
+def _insights_profile() -> rx.Component:
+    """The read account: picture, handle, followers."""
+    return rx.hstack(
+        _profile_avatar("3.5rem", 22),
         rx.vstack(
-            _section_label(f"Métricas · últimos {scrapecreators_client.METRICS_WINDOW_DAYS} días"),
-            _metric_grid(),
-            spacing="2",
-            width="100%",
+            rx.text(BrandConnectState.profile_username, size="4", weight="bold"),
+            rx.text(
+                BrandConnectState.profile_followers,
+                " seguidores",
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
+            spacing="0",
             align_items="start",
+            min_width="0",
         ),
+        spacing="3",
+        align="center",
+        min_width="0",
+    )
+
+
+def _insights_header() -> rx.Component:
+    """Resultados e insights' header (§ request 2026-10-05): the read profile and its
+    metrics in ONE band — profile on the left, the metric tiles on the right, stacked on
+    a phone — where they used to be two blocks one under the other. Same content: the
+    metrics are still skipped for a new account or when nothing was computable. Shared
+    with the Brand Kit editor, which shows it only while this session holds the read."""
+    metrics = rx.vstack(
+        _section_label(f"Últimos {scrapecreators_client.METRICS_WINDOW_DAYS} días"),
+        _metric_grid(),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+    return card(
+        rx.cond(
+            ~BrandConnectState.is_new_account & BrandConnectState.has_metrics,
+            rx.grid(
+                _insights_profile(),
+                metrics,
+                grid_template_columns=rx.breakpoints(
+                    initial="minmax(0, 1fr)", sm="minmax(0, 1fr) minmax(0, 1.7fr)"
+                ),
+                gap="1.25rem",
+                align_items="center",
+                width="100%",
+            ),
+            _insights_profile(),
+        ),
+        padding="1.25rem 1.5rem",
+        width="100%",
     )
 
 
 def _connect_step_insights() -> rx.Component:
     """The TRUE final screen of the whole flow (§ CONNECT_STEPS, `CONNECT_LAST`) —
-    after ¿Todo correcto?, not before it: a condensed profile recap, the animated
-    metric grid (`_metric_grid`, counted up by `advance_to_insights` on the way in),
-    and the phased creator discovery (`_discovery_section`, filled in by
-    `run_discovery` on the way in). Its own Finalizar-replacing CTA
-    (`_finish_button`) lives in `_connect_controls`, not here — the fixed control bar,
-    not the scrolling content, is what both flows' final screen shares that button
-    through.
+    after ¿Todo correcto?, not before it. Redesigned 2026-10-05 (UI only, same content):
+    the whole card width (`_RESULTS_COLUMN_MAX`, it used to be a 34rem column), the
+    profile and its metrics in one header band (`_insights_header`), then the
+    referentes — the three categories as tabs over a grid of compact cards
+    (`_discovery_section`) or, once the operator sorted, the influence ranking with
+    Referentes and Competencia side by side (`_ranking_panel`). Its Finalizar-replacing
+    CTA (`_finish_button`) lives in `_connect_controls`.
 
     The metrics are REAL (2026-09-10) and cover the last
-    `scrapecreators_client.METRICS_WINDOW_DAYS` days: derived by `profile_metrics`
-    from the post list `analyze()` read alongside the profile — see the comment
-    above `_METRIC_ANIMATION_SECONDS`.
-    The referentes below them are REAL since 2026-09-11 (they replaced the
-    `COMPETITOR_SUGGESTIONS` placeholder here; the manual flow still shows it).
-
-    The metric grid is skipped outright for a brand-new account (§ request
-    2026-09-09, `BrandConnectState.is_new_account`) — a per-follower rate over a
-    handful of followers is noise, not a measurement — and whenever the read yielded
-    no computable metric at all (`has_metrics`). Same "nothing to report a rate FOR"
-    principle the manual flow's `_step_insights` already follows by never showing
-    metrics at all (it has no scraped account, new or old).
-    """
-    main = _step_body(_insights_profile_card(), _insights_metrics(), _discovery_section())
-    # § requests 2026-09-29: once the operator sorted accounts, the referentes and the
-    # competencia follow as a draggable grid of cards — the influence ranking — across
-    # the full width, under the profile and its metrics.
+    `scrapecreators_client.METRICS_WINDOW_DAYS` days; they are skipped for a brand-new
+    account (§ 2026-09-09) or when nothing was computable (`has_metrics`)."""
     return rx.vstack(
-        rx.box(main, width="100%", max_width="34rem", align_self="center"),
-        rx.cond(
-            BrandConnectState.has_sorted,
-            rx.box(_ranking_panel(), width="100%", padding_top="1.25rem", border_top=T.BORDER),
-        ),
-        spacing="4",
+        _insights_header(),
+        _discovery_section(),
+        rx.cond(BrandConnectState.has_sorted, _ranking_panel()),
+        spacing="5",
         width="100%",
+        align_items="stretch",
+        class_name="q-settle",
     )
 
 
@@ -6054,50 +6094,77 @@ def _review_line(item: rx.Var[dict[str, str]], **props: object) -> rx.Component:
 
 
 def _discovery_account(item: rx.Var[dict[str, str]]) -> rx.Component:
-    """One referente: the whole card links to the public profile (new tab). The
-    picture comes through `_avatar` — the backend proxy, never the vendor's signed
-    URL (which expires within hours and would leave a cached result full of broken
-    pictures; see `avatar_proxy.py`)."""
+    """One referente as a compact card of the results grid (§ request 2026-10-05, UI
+    only — same fields as the full-width row it replaces): picture, handle, network and
+    what it is on top; followers and likes; the bio clamped to two lines (whole on the
+    profile); Claude's reason as the footer. The whole card links to the public profile
+    (new tab). The picture comes through `_avatar` — the backend proxy, never the
+    vendor's signed URL (which expires within hours; see `avatar_proxy.py`)."""
     return rx.link(
         card(
-            rx.hstack(
-                _avatar(item, "2.5rem", 18),
-                rx.vstack(
-                    rx.hstack(
-                        mono(item["handle"], size="2"),
-                        tag(item["network"]),
-                        _kind_flag(item),
-                        _signal_flags(item),
-                        rx.text(item["followers"], " seguidores", size="1", color=T.TEXT_MUTED),
-                        rx.cond(
-                            item["likes"] != "",
-                            rx.text("♥ ", item["likes"], size="1", color=T.TEXT_MUTED),
+            rx.vstack(
+                rx.hstack(
+                    _avatar(item, "2.5rem", 18),
+                    rx.vstack(
+                        mono(item["handle"], size="2", max_width="100%", overflow_wrap="anywhere"),
+                        rx.hstack(
+                            tag(item["network"]),
+                            _kind_flag(item),
+                            _signal_flags(item),
+                            spacing="1",
+                            align="center",
+                            wrap="wrap",
                         ),
-                        spacing="2",
-                        align="center",
-                        wrap="wrap",
+                        spacing="1",
+                        align_items="start",
+                        min_width="0",
                     ),
-                    _bio_block(item),
-                    _review_line(item),
-                    spacing="1",
-                    align_items="start",
+                    spacing="3",
+                    align="center",
+                    width="100%",
                     min_width="0",
                 ),
-                spacing="3",
-                align="center",
+                rx.hstack(
+                    rx.text(item["followers"], " seguidores", size="1", color=T.TEXT_MUTED),
+                    rx.cond(
+                        item["likes"] != "",
+                        rx.text("♥ ", item["likes"], size="1", color=T.TEXT_MUTED),
+                    ),
+                    spacing="3",
+                    align="center",
+                    wrap="wrap",
+                ),
+                _bio_block(item, class_name="q-clamp-2"),
+                _review_line(item),
+                spacing="2",
+                align_items="start",
                 width="100%",
+                min_width="0",
             ),
-            padding="0.85rem 1rem",
+            padding="0.9rem 1rem",
             width="100%",
+            height="100%",
+            min_width="0",
+            overflow="hidden",
             interactive=True,
         ),
         href=item["url"],
         is_external=True,
         display="block",
         width="100%",
+        height="100%",
         text_decoration="none",
         color="inherit",
     )
+
+
+#: The results grid (§ 2026-10-05): as many ~16rem cards per row as the width fits.
+_RESULTS_GRID = {
+    "display": "grid",
+    "grid_template_columns": "repeat(auto-fill, minmax(min(100%, 16rem), 1fr))",
+    "gap": "0.75rem",
+    "width": "100%",
+}
 
 
 def _discovery_phase(
@@ -6106,33 +6173,71 @@ def _discovery_phase(
     note: rx.Var[str] | str,
     accounts: rx.Var[list[dict[str, str]]],
 ) -> rx.Component:
-    """One phase block: its title, then its accounts — or, while nothing has landed
-    yet, a small inline spinner (the run is still on an earlier phase or on this one),
-    or the phase's own note once it finished empty."""
+    """One category of the results: its title, then its accounts as a grid of compact
+    cards — or, while nothing has landed yet, skeleton cards (§ 2026-10-05: no spinner
+    on the Brand Kit), or the category's own note once it finished empty."""
     return rx.vstack(
         rx.text(rx.cond(title != "", title, fallback_title), size="2", weight="bold"),
         rx.cond(
             accounts.length() > 0,
-            rx.vstack(
-                rx.foreach(accounts, _discovery_account),
-                spacing="2",
-                width="100%",
-            ),
+            rx.box(rx.foreach(accounts, _discovery_account), **_RESULTS_GRID),
             rx.cond(
                 note != "",
                 rx.text(note, size="2", color=T.TEXT_FAINT),
                 rx.cond(
                     BrandConnectState.discovering,
-                    rx.hstack(
-                        loading_spinner("sm"),
-                        rx.text("Buscando…", size="2", color=T.TEXT_MUTED),
-                        spacing="2",
-                        align="center",
-                    ),
+                    rx.box(*(skeleton_card(3) for _ in range(3)), **_RESULTS_GRID),
                 ),
             ),
         ),
-        spacing="2",
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _discovery_tabs() -> rx.Component:
+    """The three categories as tabs (§ request 2026-10-05) — Sector / the country / the
+    city, each with how many accounts it holds — over the chosen one's grid. Replaces
+    three long stacked lists; shared with the Brand Kit editor."""
+    phases = {
+        "sector": _discovery_phase(
+            BrandConnectState.sector_title,
+            "Referentes del sector",
+            BrandConnectState.sector_note,
+            BrandConnectState.sector_accounts,
+        ),
+        "national": _discovery_phase(
+            BrandConnectState.national_title,
+            "Referentes nacionales",
+            BrandConnectState.national_note,
+            BrandConnectState.national_accounts,
+        ),
+        "local": _discovery_phase(
+            BrandConnectState.local_title,
+            "Referentes locales",
+            BrandConnectState.local_note,
+            BrandConnectState.local_accounts,
+        ),
+    }
+    return rx.vstack(
+        rx.segmented_control.root(
+            rx.foreach(
+                BrandConnectState.results_tabs,
+                lambda tab: rx.segmented_control.item(tab[1], value=tab[0]),
+            ),
+            value=BrandConnectState.results_phase,
+            on_change=BrandConnectState.set_results_phase,
+            size="2",
+            max_width="100%",
+        ),
+        rx.match(
+            BrandConnectState.results_phase,
+            ("national", phases["national"]),
+            ("local", phases["local"]),
+            phases["sector"],
+        ),
+        spacing="4",
         width="100%",
         align_items="start",
     )
@@ -6230,12 +6335,14 @@ def _ranking_grid(title: str, bucket: str, accounts: rx.Var[list[dict[str, str]]
                 spacing="2",
                 align="center",
             ),
-            rx.grid(
+            rx.box(
                 rx.foreach(accounts, lambda item: _rank_card(item, bucket)),
-                # § request 2026-09-29: the width decides — 3 columns when there is
-                # room, 2 on a narrower screen, 1 on a phone.
-                columns=rx.breakpoints(initial="1", xs="2", md="3"),
-                spacing="3",
+                # the width decides how many fit in a row — Referentes and Competencia
+                # sit side by side on a wide screen (§ 2026-10-05), so each grid only
+                # has half the card
+                display="grid",
+                grid_template_columns="repeat(auto-fill, minmax(min(100%, 8.5rem), 1fr))",
+                gap="0.75rem",
                 width="100%",
             ),
             spacing="2",
@@ -6266,8 +6373,14 @@ def _ranking_panel() -> rx.Component:
             align_items="start",
         ),
         _script_on_mount(_RANK_DRAG_JS),
-        _ranking_grid("Referentes", "referente", BrandConnectState.ranked_referentes),
-        _ranking_grid("Competencia", "competencia", BrandConnectState.ranked_competencia),
+        rx.grid(
+            _ranking_grid("Referentes", "referente", BrandConnectState.ranked_referentes),
+            _ranking_grid("Competencia", "competencia", BrandConnectState.ranked_competencia),
+            columns=rx.breakpoints(initial="1", md="2"),
+            spacing="5",
+            width="100%",
+            align_items="start",
+        ),
         spacing="4",
         width="100%",
         align_items="start",
@@ -6314,28 +6427,7 @@ def _discovery_section() -> rx.Component:
                 # competencia) is the lateral ranking now (`_ranking_panel`), not a
                 # list here.
                 rx.fragment(),
-                rx.vstack(
-                    _discovery_phase(
-                        BrandConnectState.sector_title,
-                        "Referentes del sector",
-                        BrandConnectState.sector_note,
-                        BrandConnectState.sector_accounts,
-                    ),
-                    _discovery_phase(
-                        BrandConnectState.national_title,
-                        "Referentes nacionales",
-                        BrandConnectState.national_note,
-                        BrandConnectState.national_accounts,
-                    ),
-                    _discovery_phase(
-                        BrandConnectState.local_title,
-                        "Referentes locales",
-                        BrandConnectState.local_note,
-                        BrandConnectState.local_accounts,
-                    ),
-                    spacing="4",
-                    width="100%",
-                ),
+                _discovery_tabs(),
             ),
         ),
         spacing="3",
@@ -6619,9 +6711,9 @@ _DECK_ZONES: tuple[tuple[str, str, str, str, str], ...] = (
 #: lifts the 34rem column cap and tightens the card's padding for this one step.
 _SORT_COLUMN_MAX = "100%"
 _SORT_CARD_PADDING = "1rem"
-#: Resultados e insights with its influence ranking grid (§ requests 2026-09-29): room for
-#: three card columns; the profile and metrics above keep their own 34rem.
-_RESULTS_COLUMN_MAX = "58rem"
+#: Resultados e insights (§ request 2026-10-05, the redesign): the whole screen takes this
+#: width — header band, tabs and card grid alike — instead of a 34rem column.
+_RESULTS_COLUMN_MAX = "62rem"
 
 
 def _deck_zone(bucket: str, title: str, blurb: str, arrow: str, area: str) -> rx.Component:
@@ -7385,8 +7477,7 @@ def brand_connect_index() -> rx.Component:
                                         BrandConnectState.step == _SORT_STEP,
                                         _SORT_COLUMN_MAX,
                                         rx.cond(
-                                            (BrandConnectState.step == CONNECT_LAST)
-                                            & BrandConnectState.has_sorted,
+                                            BrandConnectState.step == CONNECT_LAST,
                                             _RESULTS_COLUMN_MAX,
                                             _step_column_width(
                                                 BrandConnectState.step == _LOGO_UPLOAD_STEP,

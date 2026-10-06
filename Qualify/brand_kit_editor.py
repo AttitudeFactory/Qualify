@@ -28,10 +28,9 @@ from .creative_wizard_pages import (  # the wizard's own views and chrome, share
     BrandConnectState,
     BrandWizardState,
     _brand_extras,
-    _discovery_phase,
+    _discovery_tabs,
     _identity_complete,
-    _insights_metrics,
-    _insights_profile_card,
+    _insights_header,
     _loading_view,
     _logo_versions,
     _ranking_panel,
@@ -120,63 +119,32 @@ def _step_brandboard() -> rx.Component:
 
 
 def _step_insights() -> rx.Component:
-    """Resultados e insights, from what is stored: the profile and its metrics only
-    while this session still holds the read (the wizard's finish clears it), then the
-    referentes — the influence ranking once something was sorted, else each category's
-    list, like the wizard's own final screen."""
+    """Resultados e insights, from what is stored — the same screen as the wizard's final
+    one since its redesign (§ 2026-10-05, UI only): the profile header only while this
+    session still holds the read (the wizard's finish clears it), then the referentes —
+    the categories as tabs over a card grid, or the influence ranking once something was
+    sorted."""
     has_referentes = (BrandConnectState.discovered_accounts.length() > 0) | (
         BrandConnectState.has_sorted
-    )
-    main = _step_body(
-        rx.cond(BrandConnectState.profile_username != "", _insights_profile_card()),
-        _insights_metrics(),
-        rx.cond(
-            has_referentes,
-            rx.cond(
-                BrandConnectState.has_sorted,
-                rx.fragment(),
-                rx.vstack(
-                    _discovery_phase(
-                        BrandConnectState.sector_title,
-                        "Referentes del sector",
-                        BrandConnectState.sector_note,
-                        BrandConnectState.sector_accounts,
-                    ),
-                    _discovery_phase(
-                        BrandConnectState.national_title,
-                        "Referentes nacionales",
-                        BrandConnectState.national_note,
-                        BrandConnectState.national_accounts,
-                    ),
-                    _discovery_phase(
-                        BrandConnectState.local_title,
-                        "Referentes locales",
-                        BrandConnectState.local_note,
-                        BrandConnectState.local_accounts,
-                    ),
-                    spacing="4",
-                    width="100%",
-                ),
-            ),
-            callout(
-                "Todavía no hay referentes guardados para esta marca: se buscan al conectar "
-                "tus redes, en Marca.",
-                "info",
-            ),
-        ),
-        icon="trophy",
     )
     return rx.cond(
         BrandConnectState.referentes_loading,
         _loading_view("Cargando tus referentes"),
         rx.vstack(
-            rx.box(main, width="100%", max_width="34rem", align_self="center"),
+            rx.cond(BrandConnectState.profile_username != "", _insights_header()),
             rx.cond(
-                BrandConnectState.has_sorted,
-                rx.box(_ranking_panel(), width="100%", padding_top="1.25rem", border_top=T.BORDER),
+                has_referentes,
+                rx.cond(BrandConnectState.has_sorted, _ranking_panel(), _discovery_tabs()),
+                callout(
+                    "Todavía no hay referentes guardados para esta marca: se buscan al "
+                    "conectar tus redes, en Marca.",
+                    "info",
+                ),
             ),
-            spacing="4",
+            spacing="5",
             width="100%",
+            align_items="stretch",
+            class_name="q-settle",
         ),
     )
 
@@ -229,7 +197,7 @@ def _column_width() -> rx.Var[str]:
             (BrandEditState.step == _CONFIRM_STEP) | (BrandEditState.step == _TYPOGRAPHY_STEP),
             "46rem",
             rx.cond(
-                (BrandEditState.step == EDIT_LAST) & BrandConnectState.has_sorted,
+                BrandEditState.step == EDIT_LAST,
                 _RESULTS_COLUMN_MAX,
                 "34rem",
             ),

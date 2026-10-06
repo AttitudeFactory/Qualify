@@ -158,3 +158,64 @@ def test_without_a_key_the_accounts_own_hashtags_stand_in(monkeypatch: pytest.Mo
     assert choice is not None and choice.tags == ("smashburger",) and note == ""
     nothing, note = wiz._create_hashtags(wiz.from_profile.AccountText())
     assert nothing is None and "rubro" in note
+
+
+# -- Resultados e insights, redesigned (UI only) --------------------------------------------
+
+
+def test_the_results_tabs_name_each_category_with_its_count() -> None:
+    state = wiz.BrandConnectState()
+    state.country_code = "VE"
+    state.city = "San Cristóbal"
+    state.sector_accounts = [{"handle": "@a", "network": "TikTok", "followers": "1"}] * 3
+    state.local_note = "No encontramos cuentas de San Cristóbal para tu rubro todavía."
+    state.discovering = True  # the national search is still running
+    labels = dict(state.results_tabs)
+    assert labels == {
+        "sector": "Sector · 3",
+        "national": "Venezuela · …",
+        "local": "San Cristóbal · 0",
+    }
+    wiz.BrandConnectState.set_results_phase.fn(state, "local")
+    assert state.results_phase == "local"
+    wiz.BrandConnectState.set_results_phase.fn(state, "nope")
+    assert state.results_phase == "local"
+
+
+def test_the_results_screen_is_one_wide_header_tabs_and_a_card_grid() -> None:
+    rendered = str(wiz._connect_step_insights())
+    assert "RadixThemesSegmentedControl" in rendered  # the category tabs
+    assert "q-clamp-2" in rendered  # compact cards with a two-line bio
+    assert "34rem" not in rendered  # no narrow column any more
+    assert wiz._RESULTS_COLUMN_MAX == "62rem"
+
+
+async def test_mejorar_tu_perfil_goes_to_the_signup() -> None:
+    from .auth_state import AuthState
+
+    auth = AuthState()
+
+    class Holder:
+        async def get_state(self, _cls: type) -> Any:
+            return auth
+
+    assert await wiz._finish_route(Holder()) == "/signup"  # a pre-login draft
+    auth.session_tenant_id = "00000000-0000-4000-8000-000000000001"
+    assert await wiz._finish_route(Holder()) == "/"  # an account has nothing to sign up for
+
+
+def test_the_login_has_a_way_to_the_brand_kit() -> None:
+    from .auth_pages import login_index
+
+    rendered = str(login_index())
+    assert "/brand/start" in rendered and "Crear mi Brand Kit" in rendered
+
+
+def test_answering_the_account_kind_fires_the_hashtag_creation() -> None:
+    """Found live on 2026-10-05: the answer moved on through `next_step` but dropped the
+    event it returned, so the hashtags were never created on the usual path."""
+    state = wiz.BrandConnectState()
+    state.step = wiz._ACCOUNT_KIND_STEP
+    state.started_without_socials = True
+    fired = wiz.BrandConnectState.answer_account_kind.fn(state, "marca")
+    assert state.step == wiz._RUBRO_STEP and "suggest_hashtags" in str(fired)
