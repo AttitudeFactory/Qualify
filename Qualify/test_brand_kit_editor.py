@@ -58,7 +58,7 @@ def test_the_page_is_one_view_of_sections_not_steps() -> None:
 
 def test_the_voice_comes_first_until_it_is_saved_or_cloned() -> None:
     expression = str(needs_voice())
-    for part in ("voice_configured", "clone_status", "voice_skipped"):
+    for part in ("voice_configured", "clone_status", "tone_saved_custom", "voice_skipped"):
         assert part in expression
 
 
@@ -127,3 +127,25 @@ def test_skipping_the_voice_lasts_this_visit_only(monkeypatch) -> None:
     asyncio.run(BrandEditState.restart.fn(editor))
     assert editor.voice_skipped is False
     assert VoiceLabState().clone_status == ""  # a brand without a clone is asked
+
+
+def test_no_side_index_and_the_results_take_accounts_by_hand() -> None:
+    """§ request 2026-10-05: "quita los botones laterales" and a way to add referentes,
+    competencia y detractores by hand on Resultados e insights."""
+    from . import brand_kit_editor as editor
+
+    assert not hasattr(editor, "_section_index")
+    rendered = str(editor._results_view())
+    assert json.dumps("¿Falta alguien? Agrégalo a mano")[1:-1] in rendered
+    assert 'href:"#seccion-' not in str(editor._edit_view())
+
+
+def test_a_tone_moved_off_its_defaults_counts_as_configured() -> None:
+    """§ request 2026-10-05: cloning the voice is not required — a kit whose tone was
+    moved off the defaults does not open on Voz y tono again."""
+    from .creative_state import TONE_DEFAULT
+
+    state = CreativeState()
+    assert state.tone_is_custom() is False
+    state.tone_sober_enthusiastic = TONE_DEFAULT + 20
+    assert state.tone_is_custom() is True

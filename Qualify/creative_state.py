@@ -215,6 +215,10 @@ _POLL_BUDGET_SECONDS = 300.0
 GENERATION_STAGES = ("Copy", "Imagen", "Verificación")
 
 
+#: Where each of ¿Cómo suena?'s four axes starts — the middle.
+TONE_DEFAULT = 50
+
+
 class CreativeState(rx.State):
     """State for /brand, /brand/voice, /create, /drafts and /drafts/[draft_id]."""
 
@@ -246,10 +250,15 @@ class CreativeState(rx.State):
     kit_positioning: str = ""
     kit_audience: str = ""
     kit_regional_variant: str = "es-CO"
-    tone_formal_casual: int = 50
-    tone_sober_enthusiastic: int = 50
-    tone_technical_plain: int = 50
-    tone_brief_elaborate: int = 50
+    tone_formal_casual: int = TONE_DEFAULT
+    tone_sober_enthusiastic: int = TONE_DEFAULT
+    tone_technical_plain: int = TONE_DEFAULT
+    tone_brief_elaborate: int = TONE_DEFAULT
+    #: The kit as loaded already has a tone of its own — an axis moved off the default
+    #: (§ request 2026-10-05: "si se cambian los sliders, que ya se marque como
+    #: configurado", a cloned voice is not required). Read when the kit loads, not live,
+    #: so moving a slider does not whisk away the screen being edited.
+    tone_saved_custom: bool = False
     kit_do_examples: str = ""
     kit_dont_examples: str = ""
     kit_banned_words: str = ""
@@ -662,6 +671,18 @@ class CreativeState(rx.State):
         self.kit_font_heading = form.font_heading
         self.kit_font_body = form.font_body
 
+    def tone_is_custom(self) -> bool:
+        """Any of the four axes moved off `TONE_DEFAULT`."""
+        return any(
+            value != TONE_DEFAULT
+            for value in (
+                self.tone_formal_casual,
+                self.tone_sober_enthusiastic,
+                self.tone_technical_plain,
+                self.tone_brief_elaborate,
+            )
+        )
+
     def _kit_form(self) -> KitFormVM:
         return KitFormVM(
             positioning=self.kit_positioning,
@@ -966,6 +987,7 @@ class CreativeState(rx.State):
                 if form is not None:
                     self._apply_kit_form(form)
                 self._kit_draft_loaded = True
+            self.tone_saved_custom = self.tone_is_custom()
             self.kit_loading = False
 
     @rx.event(background=True)

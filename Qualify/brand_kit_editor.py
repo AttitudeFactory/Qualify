@@ -41,6 +41,7 @@ from .creative_wizard_pages import (  # the wizard's own controls, shared on pur
     _kit_list_editor,
     _loading_view,
     _logo_versions,
+    _manual_section,
     _palette_editor,
     _ranking_panel,
     _tone_sliders,
@@ -135,11 +136,17 @@ class BrandEditState(rx.State):
         callout the wizards leave on the page (§ 2026-10-05, no inline notices)."""
         from .brand_finish import save_brand_kit
 
+        async with self:
+            if self.open_section == VOICE_SECTION:
+                # saving Voz y tono IS configuring it, cloned voice or not
+                (await self.get_state(BrandConnectState)).voice_configured = True
         if await save_brand_kit(self):
             async with self:
                 self.open_section = ""
                 self._before = {}
-                (await self.get_state(CreativeState)).kit_notice = ""
+                creative = await self.get_state(CreativeState)
+                creative.kit_notice = ""
+                creative.tone_saved_custom = creative.tone_is_custom()
             yield brand_documents.notify("Sección guardada.", "ok")
 
     @rx.event
@@ -164,7 +171,9 @@ class BrandEditState(rx.State):
             else:
                 self.open_section = ""
                 self._before = {}
-                (await self.get_state(CreativeState)).kit_notice = ""
+                creative = await self.get_state(CreativeState)
+                creative.kit_notice = ""
+                creative.tone_saved_custom = creative.tone_is_custom()
         if saved:
             yield brand_documents.notify("Voz y tono guardados.", "ok")
 
@@ -178,10 +187,13 @@ def _copy(value: Any) -> Any:
 
 
 def needs_voice() -> rx.Var[bool]:
-    """Tu voz y tono is still to configure: never saved here, and no cloned voice."""
+    """Tu voz y tono is still to configure: never saved here, no cloned voice, and the
+    tone still on its defaults — moving any axis and saving is configuring it; cloning
+    the voice is optional (§ request 2026-10-05)."""
     return (
         ~BrandConnectState.voice_configured
         & (VoiceLabState.clone_status == "")
+        & ~CreativeState.tone_saved_custom
         & ~BrandEditState.voice_skipped
     )
 
@@ -380,43 +392,14 @@ def _section(key: str, title: str, icon: str, blurb: str) -> rx.Component:
     )
 
 
-def _section_index() -> rx.Component:
-    """The sections as a sticky list of anchors beside them (wide screens only)."""
-    return rx.vstack(
-        *(
-            rx.link(
-                title,
-                href=f"#seccion-{key}",
-                size="2",
-                weight=rx.cond(BrandEditState.open_section == key, "bold", "regular"),
-                color=rx.cond(BrandEditState.open_section == key, T.TEXT_STRONG, T.TEXT_MUTED),
-                underline="none",
-            )
-            for key, title, _icon, _blurb in SECTIONS
-        ),
-        spacing="3",
-        align_items="start",
-        position="sticky",
-        top="1rem",
-        display=rx.breakpoints(initial="none", md="flex"),
-        min_width="10rem",
-    )
-
-
 def _edit_view() -> rx.Component:
-    return rx.hstack(
-        _section_index(),
-        rx.vstack(
-            *(_section(*spec) for spec in SECTIONS),
-            spacing="3",
-            width="100%",
-            max_width="46rem",
-            min_width="0",
-        ),
-        spacing="6",
-        align="start",
+    """The sections, one column, centred (§ request 2026-10-05: no side index)."""
+    return rx.vstack(
+        *(_section(*spec) for spec in SECTIONS),
+        spacing="3",
         width="100%",
-        justify="center",
+        max_width="46rem",
+        align_self="center",
         class_name="q-settle",
     )
 
@@ -506,10 +489,13 @@ def _results_view() -> rx.Component:
                 rx.cond(BrandConnectState.has_sorted, _ranking_panel(), _discovery_tabs()),
                 callout(
                     "Todavía no hay referentes guardados para esta marca: se buscan al "
-                    "conectar tus redes al crear el Brand Kit.",
+                    "conectar tus redes al crear el Brand Kit, o agrégalos a mano.",
                     "info",
                 ),
             ),
+            # § request 2026-10-05: a referente, a competitor or a detractor the search
+            # did not find, added by hand — the wizard's own form (`_manual_section`)
+            _manual_section(),
             spacing="5",
             width="100%",
             max_width=_RESULTS_COLUMN_MAX,
