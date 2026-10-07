@@ -529,6 +529,22 @@ def test_verify_now_button_wires_a_per_card_loading_indicator() -> None:
     )
 
 
+def test_every_callback_code_has_a_notice() -> None:
+    """QUA-123: the callback redirects with `?connect=<code>`; each code it can emit has
+    copy here, and a junk value in the URL renders nothing instead of being echoed."""
+    emitted = {str(o) for o in ConnectOutcome} | {
+        connections_routes.INVALID_STATE,
+        connections_routes.DENIED,
+    }
+    assert set(CONNECT_RESULT_NOTICES) == emitted
+    for message, tone in CONNECT_RESULT_NOTICES.values():
+        assert message
+        assert tone in {"ok", "warn", "info"}
+    assert connect_result_notice("active")[1] == "ok"
+    assert connect_result_notice("") == ("", "info")
+    assert connect_result_notice("<script>") == ("", "info")
+
+
 def _run() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0
@@ -549,19 +565,3 @@ def _run() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_run())
-
-
-def test_every_callback_code_has_a_notice() -> None:
-    """QUA-123: the callback redirects with `?connect=<code>`; each code it can emit has
-    copy here, and a junk value in the URL renders nothing instead of being echoed."""
-    emitted = {str(o) for o in ConnectOutcome} | {
-        connections_routes.INVALID_STATE,
-        connections_routes.DENIED,
-    }
-    assert set(CONNECT_RESULT_NOTICES) == emitted
-    for message, tone in CONNECT_RESULT_NOTICES.values():
-        assert message
-        assert tone in {"ok", "warn", "info"}
-    assert connect_result_notice("active")[1] == "ok"
-    assert connect_result_notice("") == ("", "info")
-    assert connect_result_notice("<script>") == ("", "info")
