@@ -344,6 +344,8 @@ Petición: quitar "Lo que te proponemos" y Google Maps; unificar el brief con "�
 
 ### 4.11 Una cuenta propia pertenece a una sola marca (2026-10-06)
 
+Decisiones pendientes y comportamiento por caso: [decisiones-cuentas-propias.md](decisiones-cuentas-propias.md).
+
 Petición: si a@gmail.com se registró con su usuario de Instagram, b@gmail.com no puede usar ese usuario como su cuenta, porque los datos (perfil, seguidores, publicaciones y métricas) son sensibles.
 
 - **Reclamar antes de leer.** En Tu cuenta, `BrandConnectState.analyze` reclama la cuenta para la marca de la sesión (`account_claims_provider.claim` → `qualify_api.creative.account_claims`, migración **0044** `social_account_claims`) **antes** de mirar la caché o llamar a Scrape Creators. Si la cuenta ya es de otro tenant, no se lee nada y aparece: "Esta cuenta ya está registrada en Qualify con otro correo. Si es tuya, entra con el correo con el que la registraste." El aviso no dice de quién es.
