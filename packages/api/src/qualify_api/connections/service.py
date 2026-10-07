@@ -165,7 +165,7 @@ class ConnectService:
         return self._oauth.authorization_url(state=state)
 
     async def complete_connect(self, *, code: str, state: str) -> ConnectResult:
-        """Finish the flow. Raises `InvalidState` (→ 403) for a bad or replayed `state`."""
+        """Finish the flow. Raises `InvalidState` (→ `invalid_state`) for a bad/replayed `state`."""
         payload = verify_state(
             state, self._settings.state_secret, ttl_seconds=self._settings.state_ttl_seconds
         )

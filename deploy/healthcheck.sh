@@ -5,8 +5,10 @@
 #
 #   healthcheck.sh [/opt/qualify/.env.prod]
 #
-# Expected: /ping 200 (Reflex backend) · /api/connections/callback 403 (invalid state =
-# FastAPI reached; a 502 would be a failure) · /login 200 (static frontend).
+# Expected: /ping 200 (Reflex backend) · /api/connections/callback 303 (invalid state ->
+# /connections?connect=invalid_state = FastAPI reached; a 502 would be a failure) · /login
+# 200 (static frontend). The callback also accepts 403 — what releases before QUA-123
+# answer — so a rollback to one of them still passes. `want` may list codes with `|`.
 set -u
 ENV_FILE=${1:-/opt/qualify/.env.prod}
 
@@ -19,15 +21,15 @@ case "$domain" in
 esac
 code() { curl -s -o /dev/null -w '%{http_code}' --max-time 10 ${resolve[@]+"${resolve[@]}"} "$base$1" || true; }
 
-echo "==> Health (through Caddy): /ping 200 · callback 403 · /login 200"
+echo "==> Health (through Caddy): /ping 200 · callback 303 · /login 200"
 for _ in $(seq 1 45); do [ "$(code /ping)" = 200 ] && break; sleep 2; done
 failed=0
-for probe in '/ping 200' '/api/connections/callback?code=x&state=x 403' '/login 200'; do
+for probe in '/ping 200' '/api/connections/callback?code=x&state=x 303|403' '/login 200'; do
   path=${probe% *}
   want=${probe##* }
   got=$(code "$path")
   mark=ok
-  [ "$got" = "$want" ] || { mark=FAIL; failed=1; }
+  case "|$want|" in *"|$got|"*) ;; *) mark=FAIL; failed=1 ;; esac
   printf '  %-4s %-62s %s (want %s)\n' "$mark" "$base$path" "$got" "$want"
 done
 exit $failed

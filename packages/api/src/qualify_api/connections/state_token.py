@@ -37,9 +37,9 @@ from uuid import UUID, uuid4
 class InvalidState(Exception):
     """The `state` is malformed, mis-signed, expired, or already consumed.
 
-    Deliberately ONE exception for all four: the callback answers 403 either way, and
-    distinguishing them to the caller would tell an attacker which half of a forged token
-    was wrong.
+    Deliberately ONE exception for all four: the callback redirects to the same
+    `/connections?connect=invalid_state` either way (QUA-123), and distinguishing them to
+    the caller would tell an attacker which half of a forged token was wrong.
     """
 
 

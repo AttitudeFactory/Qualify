@@ -360,8 +360,21 @@ def _action_error() -> rx.Component:
     return callout(ConnectionsState.action_error, "warn")
 
 
+def _connect_notice() -> rx.Component:
+    """The result of the OAuth round trip (QUA-123). `callout` takes its tone at compile
+    time, so the runtime tone picks between three pre-built callouts."""
+    message = ConnectionsState.connect_notice
+    return rx.match(
+        ConnectionsState.connect_notice_tone,
+        ("ok", callout(message, "ok")),
+        ("info", callout(message, "info")),
+        callout(message, "warn"),
+    )
+
+
 def _connections_body() -> rx.Component:
     return page_body(
+        rx.cond(ConnectionsState.connect_notice != "", _connect_notice(), rx.fragment()),
         rx.cond(ConnectionsState.action_error != "", _action_error(), rx.fragment()),
         rx.cond(
             ConnectionsState.load_error != "",

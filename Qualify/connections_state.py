@@ -34,7 +34,7 @@ from .connections_provider import (
     connections_for,
     disconnect,
 )
-from .connections_vm import ConnectionVM
+from .connections_vm import ConnectionVM, connect_result_notice
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,9 @@ class ConnectionsState(rx.State):
     # is per-row: `.contains(conn.id)` on the frontend, `list[str]` (not `bool`) because
     # more than one card exists on screen simultaneously.
     checking_connection_ids: list[str] = []
+    # QUA-123: the result of the OAuth round trip, read from `?connect=` on arrival.
+    connect_notice: str = ""
+    connect_notice_tone: str = "info"
 
     @rx.var
     def has_connections(self) -> bool:
@@ -77,6 +80,13 @@ class ConnectionsState(rx.State):
     def show_empty_state(self) -> bool:
         # Only after loading finishes, and never on top of an error.
         return not self.is_loading and not self.load_error and len(self.connections) == 0
+
+    @rx.event
+    def read_connect_result(self) -> None:
+        """Turn the callback's `?connect=<code>` into a notice above the list. Runs on
+        every load, so arriving without the parameter clears a stale notice."""
+        code = str(self.router.url.query_parameters.get("connect", "") or "")
+        self.connect_notice, self.connect_notice_tone = connect_result_notice(code)
 
     @rx.event(background=True)
     async def load_connections(self) -> None:
@@ -125,6 +135,7 @@ class ConnectionsState(rx.State):
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
             self.action_error = ""
+            self.connect_notice = ""
 
         resolved_tenant = tenant_uuid(session_tenant_id)
         if resolved_tenant is None:

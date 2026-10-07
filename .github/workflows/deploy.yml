@@ -169,13 +169,13 @@ jobs:
             -o StrictHostKeyChecking=yes "$TARGET" "$ACTION" "$SHA" </dev/null
       - name: External smoke test
         run: |
-          for probe in '/ping 200' '/login 200' '/api/connections/callback?code=x&state=x 403'; do
+          for probe in '/ping 200' '/login 200' '/api/connections/callback?code=x&state=x 303|403'; do
             path=${probe% *}; want=${probe##* }; got=""
             for _ in $(seq 1 10); do
               got=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$PUBLIC_URL$path" || true)
-              [ "$got" = "$want" ] && break; sleep 3
+              case "|$want|" in *"|$got|"*) break ;; esac; sleep 3
             done
             echo "$PUBLIC_URL$path -> $got (want $want)"
-            [ "$got" = "$want" ] || exit 1
+            case "|$want|" in *"|$got|"*) ;; *) exit 1 ;; esac
           done
           echo "Deployed $SHA" >> "$GITHUB_STEP_SUMMARY"

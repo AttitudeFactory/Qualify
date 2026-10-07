@@ -23,7 +23,7 @@
 #   3. Only if that succeeded: /opt/qualify/current -> the release. A failed build or
 #      migration leaves `current` (and with it `status`, `logs`, the backup cron) on the last
 #      good release. Older releases stay for rollback; the last 5 are kept.
-#   4. Health: /ping (Reflex), /api/connections/callback (FastAPI; 403 = reached), /login (UI).
+#   4. Health: /ping (Reflex), /api/connections/callback (FastAPI; 303 = reached), /login (UI).
 #
 # Rollback = `deploy/deploy.sh deploy <target> <previous-sha>`. Migrations are forward-only
 # from the first production deploy, so a rollback across a migration needs a plan first.
