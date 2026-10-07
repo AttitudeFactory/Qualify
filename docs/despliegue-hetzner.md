@@ -153,7 +153,16 @@ dc exec postgres psql -U qualify_owner qualify
 
 Se conservan los últimos 5 releases en `/opt/qualify/releases`. Revertir código es re-desplegar un SHA anterior; **revertir un esquema no**: si un release trajo una migración, el anterior debe ser compatible con el esquema nuevo (expandir → contraer en dos deploys), o restaurar un respaldo (§8).
 
-Cambiar un secreto: editar `/opt/qualify/.env.prod` y `just deploy` (o `dc run --rm migrate && dc up -d` en el servidor; el `migrate` es lo que aplica una contraseña de base de datos cambiada a su rol). Cambiar `QUALIFY_PUBLIC_URL` exige reconstruir (`--build`): está horneada en el frontend estático.
+Cambiar un secreto (llaves de proveedores: Scrape Creators, Anthropic, HeyGen, BytePlus, Meta…): ponerlo en el `.env` local y empujarlo desde la Mac, sin desplegar código:
+
+```bash
+just env-push qualify-prod --dry-run SCRAPECREATORS_API_KEY   # compara huellas, no escribe
+just env-push qualify-prod SCRAPECREATORS_API_KEY             # escribe y recrea
+```
+
+Copia las claves nombradas (y sólo ésas) del `.env` local a `/opt/qualify/.env.prod`, deja un respaldo `.env.prod.bak-<UTC>` (se guardan los 10 más recientes) y corre `dc up -d --no-build`: Compose incluye el `env_file` en el hash de configuración de cada servicio, así que recrea exactamente los que leen `.env.prod` (`api`, `reflex`, `calendar-worker` si está activo) y no toca `postgres`, `redis` ni `caddy`. Los valores viajan por el stdin de ssh, nunca por argumentos ni por la terminal; la salida sólo muestra una huella sha256 de 8 caracteres por clave. Desde un worktree lee el `.env` del checkout principal (o el de `QUALIFY_ENV_SOURCE`).
+
+Se niega, a propósito, con: contraseñas de base de datos y `QUALIFY_PUBLIC_URL` (necesitan `migrate` o reconstruir: editar `.env.prod` y `just deploy`; el `migrate` es lo que aplica una contraseña cambiada a su rol, y `QUALIFY_PUBLIC_URL` está horneada en el frontend estático), `QUALIFY_DEV_FERNET_KEY` (rotarla deja indescifrables todas las credenciales OAuth guardadas) y `COMPOSE_*`/`QUALIFY_IMAGE_*` (cambian la forma del stack, no un secreto).
 
 ### 7.1 Deploy desde GitHub Actions (CD) — opcional, lo activa el fundador
 
