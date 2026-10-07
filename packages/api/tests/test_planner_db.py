@@ -13,7 +13,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -57,7 +57,7 @@ from qualify_api.planner.repository import (
     PostgresPlannerRepository,
 )
 from qualify_api.planner.rules import idempotency_key
-from qualify_api.planner.service import PlannerService
+from qualify_api.planner.service import DuplicateEvent, PlannerService
 from qualify_api.planner.tick import TickRunner
 from qualify_api.publishing.client import (
     ContainerStatus,
@@ -321,7 +321,8 @@ def test_draft_reader_maps_status_to_approval_and_reads_the_card_fields(world_p)
     # The POST's own category (0027), never the brief's render format; this row has none.
     assert card.category is None and card.media_product_type is None
     assert card.content_type == "promotion"
-    assert card.reuse_type is None  # the draft model has no such concept
+    assert card.reuse_type is None  # `content_drafts.reuse_type` (0027) not set on this row
+    assert card.times_published == 0 and card.has_live_event is False  # QUA-118 D2
     assert card.asset_count == 1 and card.asset_types == ("IMAGE",)
     assert card.detail_href == f"/drafts/{pending}"
     assert not card.is_publishable and card.unpublishable_reason
@@ -339,11 +340,31 @@ def test_draft_reader_hides_an_expired_thumbnail(world_p) -> None:
 def test_draft_reader_lists_only_schedulable_and_respects_rls(world_p, world_q) -> None:
     brand_id, _, _ = world_p
     pending = _draft(TENANT_P, brand_id, status="generated")
+    approved = _draft(TENANT_P, brand_id, status="approved")
     rejected = _draft(TENANT_P, brand_id, status="rejected")
     reader = DraftPostReader()
     listed = {p.post_id for p in reader.list_schedulable(tenant_id=TENANT_P, brand_id=brand_id)}
-    assert pending in listed and rejected not in listed
+    # QUA-118 D1: only an approved draft can be planned; a pending one is no longer listed.
+    assert approved in listed and pending not in listed and rejected not in listed
     assert reader.get(tenant_id=TENANT_Q, post_id=pending) is None
+
+
+def test_draft_reader_lists_every_post_of_the_brand_for_the_gallery(world_p, world_q) -> None:
+    """QUA-118 gallery: `list_for_brand` returns drafts in every state, newest first,
+    each with its history — and nothing of another tenant or brand."""
+    brand_id, _, _ = world_p
+    drafting = _draft(TENANT_P, brand_id, status="drafting")
+    pending = _draft(TENANT_P, brand_id, status="generated")
+    approved = _draft(TENANT_P, brand_id, status="approved")
+    rejected = _draft(TENANT_P, brand_id, status="rejected")
+    reader = DraftPostReader()
+    listed = reader.list_for_brand(tenant_id=TENANT_P, brand_id=brand_id)
+    ids = [p.post_id for p in listed]
+    assert {drafting, pending, approved, rejected} <= set(ids)
+    assert ids.index(rejected) < ids.index(drafting)  # newest first
+    mine = [p for p in listed if p.post_id in {drafting, pending, approved, rejected}]
+    assert all(p.times_published == 0 and p.has_live_event is False for p in mine)
+    assert reader.list_for_brand(tenant_id=TENANT_Q, brand_id=brand_id) == []
 
 
 def test_draft_reader_never_writes(world_p) -> None:
@@ -363,7 +384,8 @@ def test_draft_reader_never_writes(world_p) -> None:
 
 def test_service_schedules_a_real_draft_and_it_leaves_unscheduled(world_p) -> None:
     brand_id, user_id, conn_id = world_p
-    draft_id = _draft(TENANT_P, brand_id, status="approved")
+    # QUA-118 D1: approved AND publishable — `_post_row` shapes a real publishable POST.
+    draft_id = _post_row((TENANT_P, brand_id, conn_id))
     svc = PlannerService(
         repository=PostgresPlannerRepository(),
         posts=DraftPostReader(),
@@ -385,6 +407,39 @@ def test_service_schedules_a_real_draft_and_it_leaves_unscheduled(world_p) -> No
     assert draft_id not in {
         p.post_id for p in svc.list_unscheduled(tenant_id=TENANT_P, brand_id=brand_id)
     }
+    # QUA-118 D2: the reader sees the live event in the POST's history (one aggregate).
+    summary = DraftPostReader().get(tenant_id=TENANT_P, post_id=draft_id)
+    assert summary.has_live_event is True and summary.times_published == 0
+    # ...and stops seeing it once the calendar would call it «Vencido» (QUA-115 window).
+    later = DraftPostReader(clock=lambda: at + timedelta(hours=25))
+    assert later.get(tenant_id=TENANT_P, post_id=draft_id).has_live_event is False
+    # QUA-118 v2: no destination given → what the galería image publishes as today, stored
+    # on the event (0041); the reader exposes the media shape the selector reads.
+    assert event.destination == "post"
+    assert summary.media_types == ("IMAGE",)
+    # The same POST as a Historia: the event's destination round-trips through Postgres
+    # and decides what the publisher receives.
+    story = svc.schedule(
+        tenant_id=TENANT_P,
+        brand_id=brand_id,
+        post_id=draft_id,
+        connection_id=conn_id,
+        scheduled_at=at + timedelta(hours=1),
+        scheduled_tz="America/Caracas",
+        user_id=user_id,
+        destination="story",
+        goals=["likes", "followers"],
+    )
+    stored = PostgresPlannerRepository().get(tenant_id=TENANT_P, event_id=story.id)
+    assert stored is not None and stored.destination == "story"
+    assert stored.goals == ("likes", "followers")  # 0042: kept for the later analysis
+    svc.set_event_goals(tenant_id=TENANT_P, event_id=story.id, goals=["ads"])
+    reread = PostgresPlannerRepository().get(tenant_id=TENANT_P, event_id=story.id)
+    assert reread is not None and reread.goals == ("ads",)
+    verdict = DraftPostReader().get_publishable(
+        tenant_id=TENANT_P, post_id=draft_id, destination=stored.destination
+    )
+    assert verdict.media_product_type == "STORIES"
     monday = (at.astimezone(UTC).date()) - timedelta(days=at.astimezone(UTC).weekday())
     week = svc.list_week(
         tenant_id=TENANT_P,
@@ -393,6 +448,87 @@ def test_service_schedules_a_real_draft_and_it_leaves_unscheduled(world_p) -> No
         tz_name="UTC",
     )
     assert event.id in {p.event.id for p in week}
+
+
+# --- QUA-118 Phase 2: many events in one transaction ------------------------------------
+
+
+def test_add_many_is_all_or_nothing_on_postgres(world_p, world_q) -> None:
+    """Three events in one batch, the third pointing at another tenant's connection:
+    the FK/RLS refusal rolls the first two back as well — zero rows."""
+    brand_id, user_id, conn_id = world_p
+    _, _, foreign_conn = world_q
+    post_id = uuid4()
+    repo = PostgresPlannerRepository()
+    batch = [
+        _new_event(TENANT_P, brand_id, user_id, conn_id, hours=24),
+        _new_event(TENANT_P, brand_id, user_id, conn_id, hours=48),
+        _new_event(TENANT_P, brand_id, user_id, foreign_conn, hours=72),
+    ]
+    batch = [replace(new, post_id=post_id) for new in batch]
+    with pytest.raises(Exception):  # noqa: B017 — the FK / RLS refusal, whichever fires
+        repo.add_many(batch)
+    assert repo.list_for_post(tenant_id=TENANT_P, post_id=post_id) == []
+    # The same batch without the foreign row lands whole, in order.
+    created = repo.add_many(batch[:2])
+    assert [e.id for e in repo.list_for_post(tenant_id=TENANT_P, post_id=post_id)] == [
+        e.id for e in created
+    ]
+    with pytest.raises(ValueError):
+        repo.add_many([batch[0], replace(batch[1], tenant_id=TENANT_Q)])
+
+
+def test_service_creates_a_weekly_series_over_postgres(world_p) -> None:
+    """A real publishable POST, three Mondays, one account: three independent rows at
+    revision 1, seven days apart, every one of them visible to the week and due-list
+    queries on its own."""
+    brand_id, user_id, conn_id = world_p
+    draft_id = _post_row((TENANT_P, brand_id, conn_id))
+    svc = PlannerService(
+        repository=PostgresPlannerRepository(),
+        posts=DraftPostReader(),
+        connections=PostgresConnectionGate(),
+    )
+    first_day = (datetime.now(UTC) + timedelta(days=3)).date()
+    events = svc.schedule_series(
+        tenant_id=TENANT_P,
+        brand_id=brand_id,
+        post_id=draft_id,
+        connection_ids=[conn_id],
+        first_day=first_day,
+        at=time(10, 0),
+        scheduled_tz="America/Caracas",
+        user_id=user_id,
+        count=3,
+    )
+    stored = svc._repo.list_for_post(tenant_id=TENANT_P, post_id=draft_id)
+    assert [e.id for e in stored] == [e.id for e in events]
+    assert [e.revision for e in stored] == [1, 1, 1]
+    assert [e.scheduled_at - stored[0].scheduled_at for e in stored] == [
+        timedelta(0),
+        timedelta(days=7),
+        timedelta(days=14),
+    ]
+    # The POST's history sees the live series; a one-shot POST leaves Sin programar.
+    summary = DraftPostReader().get(tenant_id=TENANT_P, post_id=draft_id)
+    assert summary.has_live_event is True
+    assert draft_id not in {
+        p.post_id for p in svc.list_unscheduled(tenant_id=TENANT_P, brand_id=brand_id)
+    }
+    # Planning it again on the same Mondays is a duplicate, and creates nothing.
+    with pytest.raises(DuplicateEvent):
+        svc.schedule_series(
+            tenant_id=TENANT_P,
+            brand_id=brand_id,
+            post_id=draft_id,
+            connection_ids=[conn_id],
+            first_day=first_day,
+            at=time(10, 0),
+            scheduled_tz="America/Caracas",
+            user_id=user_id,
+            count=2,
+        )
+    assert len(svc._repo.list_for_post(tenant_id=TENANT_P, post_id=draft_id)) == 3
 
 
 # --- planning tags (0025) -------------------------------------------------------------
@@ -1625,11 +1761,14 @@ def test_a_failing_tenant_does_not_stop_another(worlds_ab) -> None:
     event_a, event_b = _due_reel_event(a), _due_reel_event(b)
 
     class _ReaderDownForA(DraftPostReader):
-        def get_publishable(self, *, tenant_id, post_id, output_port=None):
+        def get_publishable(self, *, tenant_id, post_id, output_port=None, destination=None):
             if tenant_id == a[0]:
                 raise ConnectionError("reader down for A")
             return super().get_publishable(
-                tenant_id=tenant_id, post_id=post_id, output_port=output_port
+                tenant_id=tenant_id,
+                post_id=post_id,
+                output_port=output_port,
+                destination=destination,
             )
 
     report = asyncio.run(

@@ -1,5 +1,6 @@
-"""Tu voz — the voice block on ¿Cómo suena? (§ request 2026-09-30), shared by the two
-Brand Kit wizards and the editor (it sits in `creative_wizard_pages._step_voice_tone`).
+"""Tu voz — the voice block (§ request 2026-09-30). Since 2026-10-05 it lives only in the
+Brand Kit editor (/brand/kit, views Tu voz and ¿Cómo suena?): the wizards no longer ask for
+it, so it is configured after the kit is made ("que se pueda configurar después").
 
 Two independent actions on one recording of the brand's voice:
 
@@ -191,6 +192,14 @@ _CLONE_RATE = 44_100
 _CLONE_MAX_SECONDS = 300.0
 
 
+def _decode_for_clone(path: Path) -> Any:
+    """The recording as mono float32 samples at `_CLONE_RATE` — PyAV, through the `ml`
+    group's `qualify_models` (lazy: only a recording that is not mp3/wav needs it)."""
+    from qualify_models.providers import decode_audio
+
+    return decode_audio(path, sampling_rate=_CLONE_RATE, max_seconds=_CLONE_MAX_SECONDS)
+
+
 def clone_audio(path: Path) -> tuple[bytes, str, str]:
     """(bytes, filename, content type) of the recording, ready for HeyGen."""
     suffix = path.suffix.lower()
@@ -200,9 +209,8 @@ def clone_audio(path: Path) -> tuple[bytes, str, str]:
     import wave
 
     import numpy as np
-    from qualify_models.providers import decode_audio
 
-    samples = decode_audio(path, sampling_rate=_CLONE_RATE, max_seconds=_CLONE_MAX_SECONDS)
+    samples = _decode_for_clone(path)
     pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as out:
@@ -284,38 +292,6 @@ _STAGE_TITLES = (
 _STAGES = [stage for stage, _title in _STAGE_TITLES]
 _STAGE_PERCENT = {"preparing": 8, "transcribing": 30, "reading_tone": 80}
 _TRANSCRIPT_EXCERPT_CHARS = 280
-
-
-async def _show_tone_screen(state: Any) -> None:
-    """After a finished analysis, move the wizard on screen from Tu voz to ¿Cómo suena?
-    (§ request 2026-10-01). Called under `state`'s lock. Which wizard is the page's: the
-    route says — all three cursors live in the session."""
-    from .brand_kit_editor import _VOICE_STEP as EDIT_VOICE_STEP
-    from .brand_kit_editor import BrandEditState
-    from .creative_wizard_pages import (
-        _M_VOICE_STEP,
-        _VOICE_STEP,
-        _VOICE_TONE_STEP,
-        BrandConnectState,
-        BrandWizardState,
-    )
-
-    try:
-        path = str(state.router.page.path or "")
-    except AttributeError:
-        path = ""
-    if path.startswith("/brand/manual"):
-        wizard = await state.get_state(BrandWizardState)
-        if wizard.step == _M_VOICE_STEP:
-            wizard.step = _M_VOICE_STEP + 1
-    elif path.startswith("/brand/connect"):
-        connect = await state.get_state(BrandConnectState)
-        if connect.step == _VOICE_STEP:
-            connect.step = _VOICE_TONE_STEP
-    elif path.startswith("/brand/kit"):
-        editor = await state.get_state(BrandEditState)
-        if editor.step == EDIT_VOICE_STEP:
-            editor.step = EDIT_VOICE_STEP + 1
 
 
 class VoiceLabState(rx.State):
@@ -518,7 +494,6 @@ class VoiceLabState(rx.State):
                 if len(heard) > _TRANSCRIPT_EXCERPT_CHARS
                 else heard
             )
-            await _show_tone_screen(self)
 
     # -- Clonar (manual, with consent) -------------------------------------------------
 

@@ -34,9 +34,13 @@ class ApprovalStatus(StrEnum):
 
     @property
     def is_schedulable(self) -> bool:
-        """Whether the calendar may assign this POST. A pending POST can be planned —
-        planning and approval are separate decisions; the approval gate is at execution."""
-        return self in (ApprovalStatus.PENDING, ApprovalStatus.APPROVED)
+        """Whether the calendar may assign this POST — QUA-118 D1: only an APPROVED POST.
+
+        Until 2026-10-05 a pending POST could be planned ("approval gates execution, not
+        planning", QUA-108 AC 4). The founder reversed that rule so nothing incomplete
+        reaches the calendar. Publishability (`PostSummary.is_publishable`) is the second
+        half of the same gate and is enforced by `PlannerService`, not here."""
+        return self is ApprovalStatus.APPROVED
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,11 @@ class PostOutput:
     media_product_type: str | None = None  # IMAGE / REELS / STORIES when publishable
     is_publishable: bool = False
     unpublishable_reason: str = ""
+    # QUA-118 v2: the port's media as the publisher names it ("IMAGE" / "VIDEO") and the
+    # first image's (width, height) when known — what `publishable.destination_options`
+    # reads to say where this output may go.
+    media_types: tuple[str, ...] = ()
+    image_size: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +100,18 @@ class PostSummary:
     # With outputs, `is_publishable` means "at least one output is", and the POST is
     # planned one event per output (`PlannerService.schedule(output_port=...)`).
     outputs: tuple[PostOutput, ...] = ()
+    # QUA-118 D2: the POST's publishing history, read from `calendar_events` — how many of
+    # its events were published, and whether one is live (publishing, or scheduled and
+    # still inside its execution window — what the calendar does not call «Vencido»).
+    # Derived at read time, never persisted on the POST;
+    # `gallery.gallery_state` turns them into the «Usado ×N» and «En calendario» badges.
+    times_published: int = 0
+    has_live_event: bool = False
+    # QUA-118 v2: the POST's media as the publisher names it ("IMAGE" / "VIDEO", in
+    # position order) and the first image's (width, height) when known — what
+    # `publishable.destination_options` reads to say where it may be published.
+    media_types: tuple[str, ...] = ()
+    image_size: tuple[int, int] | None = None
 
     @property
     def output_ports(self) -> tuple[str, ...]:
@@ -115,6 +136,11 @@ class UnpublishableReason(StrEnum):
     MEDIA_NOT_IN_R2 = "media_not_in_r2"  # no key, or not under this tenant's prefix
     CONTENT_TYPE_MISSING = "content_type_missing"
     UNSUPPORTED_CONTENT_TYPE = "unsupported_content_type"
+    CHANNEL_NOT_SUPPORTED = "channel_not_supported"  # QUA-118: the account's platform
+    # QUA-118 v2 destination: the event's destination cannot take this content (a
+    # carousel as a story), or a feed image outside Meta's 4:5–1.91:1 range.
+    DESTINATION_NOT_SUPPORTED = "destination_not_supported"
+    IMAGE_RATIO_NOT_ALLOWED = "image_ratio_not_allowed"
 
 
 @dataclass(frozen=True)
@@ -169,13 +195,20 @@ class PostReader(Protocol):
     def get(self, *, tenant_id: UUID, post_id: UUID) -> PostSummary | None: ...
 
     def get_publishable(
-        self, *, tenant_id: UUID, post_id: UUID, output_port: str | None = None
+        self,
+        *,
+        tenant_id: UUID,
+        post_id: UUID,
+        output_port: str | None = None,
+        destination: str | None = None,
     ) -> PublishablePost | NotPublishable:
         """The POST as QUA-111 may publish it, or the explicit reason it may not —
         decided by `publishable.evaluate`, the same rule the calendar card shows.
 
         With `output_port` (MP-11), only that port's assets are evaluated and the
-        publisher's `media_product_type` is derived from the port, not the category."""
+        publisher's `media_product_type` is derived from the port, not the category.
+        With `destination` (QUA-118 v2, the event's own), it is derived from the
+        destination and the media's shape instead."""
         ...
 
     def get_many(self, *, tenant_id: UUID, post_ids: Iterable[UUID]) -> dict[UUID, PostSummary]: ...
@@ -183,4 +216,10 @@ class PostReader(Protocol):
     def list_schedulable(self, *, tenant_id: UUID, brand_id: UUID) -> list[PostSummary]:
         """POSTs of the brand that could be planned now (`approval.is_schedulable`),
         newest first."""
+        ...
+
+    def list_for_brand(self, *, tenant_id: UUID, brand_id: UUID) -> list[PostSummary]:
+        """Every POST of the brand, whatever its state, newest first — the gallery
+        (QUA-118): drafts, POSTs in review, discarded ones included, each with its
+        history (`times_published`, `has_live_event`)."""
         ...

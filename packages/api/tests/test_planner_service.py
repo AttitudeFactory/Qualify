@@ -29,6 +29,7 @@ from qualify_api.planner.service import (
     UnknownOutput,
     UnknownPost,
     UnknownTag,
+    UnsupportedDestination,
 )
 
 NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
@@ -69,8 +70,15 @@ class FakeConnections:
             return None
         return {CONN: "active", DEGRADED_CONN: "degraded"}.get(connection_id)
 
+    def platform(self, *, tenant_id: UUID, connection_id: UUID) -> str | None:
+        if tenant_id != TENANT:
+            return None
+        return "instagram" if connection_id in (CONN, DEGRADED_CONN) else None
+
 
 def _post(approval: ApprovalStatus = ApprovalStatus.APPROVED, **kw: object) -> PostSummary:
+    # QUA-118 D1: an approved POST is publishable unless the test says otherwise.
+    kw.setdefault("is_publishable", approval is ApprovalStatus.APPROVED)
     return PostSummary(
         post_id=uuid4(),
         brand_id=BRAND,
@@ -130,10 +138,77 @@ def test_scheduled_at_is_stored_in_utc() -> None:
     assert event.scheduled_at.hour == 19
 
 
-def test_a_pending_post_can_be_planned_approval_gates_execution_not_planning() -> None:
-    post = _post(ApprovalStatus.PENDING)
+def test_a_pending_post_cannot_be_planned_nothing_incomplete_enters_the_calendar() -> None:
+    """QUA-118 D1 (2026-10-05) reverses QUA-108 AC 4 ("approval gates execution, not
+    planning"): a POST in review never reaches the calendar."""
+    post = _post(ApprovalStatus.PENDING, is_publishable=True)
     svc = _service(post)
-    assert _schedule(svc, post).status == "scheduled"
+    with pytest.raises(PostNotSchedulable) as excinfo:
+        _schedule(svc, post)
+    assert excinfo.value.reason == "El POST no está aprobado."
+    assert svc._repo.list_for_post(tenant_id=TENANT, post_id=post.post_id) == []
+
+
+def test_an_approved_but_unpublishable_post_cannot_be_planned_and_says_why() -> None:
+    reason = "Falta el formato de algún archivo del POST."
+    post = _post(is_publishable=False, unpublishable_reason=reason)
+    svc = _service(post)
+    with pytest.raises(PostNotSchedulable) as excinfo:
+        _schedule(svc, post)
+    assert excinfo.value.reason == reason  # the evaluator's exact text, for the screen
+    assert svc._repo.list_for_post(tenant_id=TENANT, post_id=post.post_id) == []
+
+
+def test_a_package_output_that_is_not_publishable_cannot_be_planned() -> None:
+    reason = "Los archivos del POST todavía no están listos para publicar (R2)."
+    post = _post(
+        outputs=(
+            PostOutput(port="reel", media_type="video", is_publishable=True),
+            PostOutput(
+                port="story", media_type="image", is_publishable=False, unpublishable_reason=reason
+            ),
+        )
+    )
+    svc = _service(post)
+    assert _schedule(svc, post, output_port="reel").status == "scheduled"
+    with pytest.raises(PostNotSchedulable) as excinfo:
+        _schedule(svc, post, hours=30, output_port="story")
+    assert excinfo.value.reason == reason
+
+
+def test_reschedule_is_refused_once_the_post_is_edited_after_approval() -> None:
+    """QUA-118 AC 2: neither assign nor move. The event stays (it reads «Pendiente»)."""
+    post = _post()
+    svc = _service(post)
+    event = _schedule(svc, post)
+    svc._posts.by_id[post.post_id] = replace(post, approval=ApprovalStatus.PENDING)
+    with pytest.raises(PostNotSchedulable):
+        svc.reschedule(
+            tenant_id=TENANT,
+            event_id=event.id,
+            scheduled_at=NOW + timedelta(hours=48),
+            scheduled_tz="America/Caracas",
+        )
+    assert svc.get(tenant_id=TENANT, event_id=event.id).event.revision == 1
+
+
+def test_cancel_and_delete_removes_the_event_through_the_fsm_and_frees_the_post() -> None:
+    """QUA-118 A1: «Cancelar publicación» leaves no visible row — `cancelled` is not one
+    of the five visible states. An event that already ran has no cancel edge and stays."""
+    post = _post()
+    svc = _service(post)
+    event = _schedule(svc, post)
+    svc.cancel_and_delete(tenant_id=TENANT, event_id=event.id)
+    with pytest.raises(UnknownEvent):
+        svc.get(tenant_id=TENANT, event_id=event.id)
+    assert [p.post_id for p in svc.list_unscheduled(tenant_id=TENANT, brand_id=BRAND)] == [
+        post.post_id
+    ]
+    published = _schedule(svc, post, hours=48)
+    svc._repo._rows[published.id] = replace(svc._repo._rows[published.id], status="published")
+    with pytest.raises(EventNotModifiable):
+        svc.cancel_and_delete(tenant_id=TENANT, event_id=published.id)
+    assert svc.get(tenant_id=TENANT, event_id=published.id).event.status == "published"
 
 
 @pytest.mark.parametrize("approval", [ApprovalStatus.REJECTED, ApprovalStatus.NOT_READY])
@@ -342,11 +417,30 @@ def test_list_week_can_filter_by_connection() -> None:
 
 
 def test_unscheduled_lists_schedulable_posts_without_an_active_event() -> None:
-    planned, free, rejected = _post(), _post(ApprovalStatus.PENDING), _post(ApprovalStatus.REJECTED)
-    svc = _service(planned, free, rejected)
+    planned, free = _post(), _post()
+    pending, rejected = _post(ApprovalStatus.PENDING), _post(ApprovalStatus.REJECTED)
+    svc = _service(planned, free, pending, rejected)
     _schedule(svc, planned)
     unscheduled = {p.post_id for p in svc.list_unscheduled(tenant_id=TENANT, brand_id=BRAND)}
-    assert unscheduled == {free.post_id}
+    assert unscheduled == {free.post_id}  # D1: a pending POST is not schedulable any more
+
+
+def test_a_recurrente_post_stays_unscheduled_while_an_occurrence_is_live_or_published() -> None:
+    """QUA-118 A2: a live or published occurrence never blocks the next one."""
+    post = _post(reuse_type="recurrente")
+    svc = _service(post)
+    event = _schedule(svc, post)
+
+    def unscheduled() -> list[UUID]:
+        return [p.post_id for p in svc.list_unscheduled(tenant_id=TENANT, brand_id=BRAND)]
+
+    assert unscheduled() == [post.post_id]
+    svc._repo._rows[event.id] = replace(svc._repo._rows[event.id], status="published")
+    assert unscheduled() == [post.post_id]
+    one_shot = _post(reuse_type="promocional")
+    svc._posts.by_id[one_shot.post_id] = one_shot
+    _schedule(svc, one_shot)
+    assert unscheduled() == [post.post_id]
 
 
 def test_cancelling_frees_the_post_back_into_unscheduled() -> None:
@@ -361,10 +455,12 @@ def test_cancelling_frees_the_post_back_into_unscheduled() -> None:
 
 
 def test_overdue_unapproved_event_is_flagged_and_would_not_execute() -> None:
-    post = _post(ApprovalStatus.PENDING, is_publishable=True)
+    post = _post()
     clock = [NOW]
     svc = _service(post, clock=clock)
     event = _schedule(svc, post, hours=1)
+    # Edited after approval (QUA-118 P4): the POST is back in review, the event stays.
+    svc._posts.by_id[post.post_id] = replace(post, approval=ApprovalStatus.PENDING)
     clock[0] = NOW + timedelta(hours=2)  # the instant has passed
     planned = svc.get(tenant_id=TENANT, event_id=event.id)
     assert planned.overdue_unapproved
@@ -527,7 +623,7 @@ def test_another_tenant_cannot_delete_the_event() -> None:
 
 def _rejectable_world():
     repo = MemoryPlannerRepository()
-    post = _post(ApprovalStatus.PENDING)
+    post = _post()  # approved when planned (D1); the tests then change its approval
     posts = FakePosts(post)
     svc = PlannerService(
         repository=repo, posts=posts, connections=FakeConnections(), clock=lambda: NOW
@@ -542,7 +638,7 @@ def test_a_rejected_posts_unpublished_events_are_removed_and_history_is_kept() -
     svc.cancel(tenant_id=TENANT, event_id=cancelled.id)
     published = _schedule(svc, post, hours=72)
     repo._rows[published.id] = replace(repo._rows[published.id], status="published")
-    other_post = _post(ApprovalStatus.PENDING)
+    other_post = _post()
     posts.by_id[other_post.post_id] = other_post
     unrelated = _schedule(svc, other_post, hours=24)
 
@@ -679,3 +775,94 @@ def test_a_reschedule_keeps_the_output() -> None:
         scheduled_tz="America/Caracas",
     )
     assert moved.output_port == "feed" and moved.revision == 2
+
+
+# --- QUA-118 v2: the event's destination ------------------------------------------------
+
+
+def test_without_a_destination_the_event_keeps_what_the_post_publishes_as() -> None:
+    reel = _post(category="reel", media_product_type="REELS", media_types=("VIDEO",))
+    assert _schedule(_service(reel), reel).destination == "reel"
+    image = _post(category="galeria", media_product_type="IMAGE", media_types=("IMAGE",))
+    assert _schedule(_service(image), image).destination == "post"
+
+
+def test_the_same_video_can_go_out_as_a_reel_and_as_a_historia() -> None:
+    video = _post(category="reel", media_product_type="REELS", media_types=("VIDEO",))
+    svc = _service(video)
+    as_reel = _schedule(svc, video, hours=24, destination="reel")
+    as_story = _schedule(svc, video, hours=24, destination="story")  # same instant: allowed
+    assert (as_reel.destination, as_story.destination) == ("reel", "story")
+    with pytest.raises(DuplicateEvent):
+        _schedule(svc, video, hours=24, destination="story")
+
+
+@pytest.mark.parametrize(
+    ("media", "size", "destination", "reason_part"),
+    [
+        (("VIDEO",), None, "post", ""),  # not offered for a video
+        (("IMAGE",), (1080, 1350), "reel", "necesita un video"),
+        (("IMAGE",), (1080, 1920), "post", "4:5"),
+        (("IMAGE", "VIDEO"), None, "story", "carruseles"),
+        (("IMAGE",), None, "nonsense", ""),
+    ],
+)
+def test_an_impossible_destination_creates_nothing(media, size, destination, reason_part) -> None:
+    post = _post(category="galeria", media_product_type="IMAGE", media_types=media, image_size=size)
+    svc = _service(post)
+    with pytest.raises(UnsupportedDestination) as exc:
+        _schedule(svc, post, destination=destination)
+    assert reason_part in exc.value.reason
+    assert svc._repo.list_for_post(tenant_id=TENANT, post_id=post.post_id) == []  # nothing
+
+
+def test_a_weekly_series_on_several_days_is_created_all_at_once() -> None:
+    from datetime import date, time
+
+    post = _post(category="reel", media_product_type="REELS", media_types=("VIDEO",))
+    svc = _service(post)
+    events = svc.schedule_weekly(
+        tenant_id=TENANT,
+        brand_id=BRAND,
+        post_id=post.post_id,
+        connection_ids=[CONN],
+        start=date(2026, 10, 6),  # a Tuesday
+        weekdays=[1, 3],  # Tuesday and Thursday
+        weeks=2,
+        at=time(10, 0),
+        scheduled_tz="America/Caracas",
+        user_id=USER,
+        destination="story",
+    )
+    local = [e.scheduled_at.astimezone(ZoneInfo("America/Caracas")) for e in events]
+    assert [d.date().isoformat() for d in local] == [
+        "2026-10-06",
+        "2026-10-08",
+        "2026-10-13",
+        "2026-10-15",
+    ]
+    assert all(d.hour == 10 for d in local) and {e.destination for e in events} == {"story"}
+
+
+def test_the_plan_goals_are_kept_on_every_event_and_unknown_ones_refused() -> None:
+    from qualify_api.planner.service import UnknownGoal
+
+    post = _post(category="reel", media_product_type="REELS", media_types=("VIDEO",))
+    svc = _service(post)
+    event = _schedule(svc, post, goals=["likes", "views", "likes"])
+    assert event.goals == ("likes", "views")  # each once, in order
+    with pytest.raises(UnknownGoal):
+        _schedule(svc, post, hours=48, goals=["fama"])
+
+
+def test_an_events_goals_can_be_changed_afterwards() -> None:
+    from qualify_api.planner.service import UnknownGoal
+
+    post = _post(category="reel", media_product_type="REELS", media_types=("VIDEO",))
+    svc = _service(post)
+    event = _schedule(svc, post, goals=["likes"])
+    svc.set_event_goals(tenant_id=TENANT, event_id=event.id, goals=["views", "ads", "views"])
+    stored = svc._repo.get(tenant_id=TENANT, event_id=event.id)
+    assert stored.goals == ("views", "ads") and stored.revision == event.revision
+    with pytest.raises(UnknownGoal):
+        svc.set_event_goals(tenant_id=TENANT, event_id=event.id, goals=["fama"])

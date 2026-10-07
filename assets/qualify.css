@@ -554,6 +554,15 @@ body[data-deck-dragging] .q-deck-zone {
   .q-lift:hover { transform: none; }
 }
 
+/* Resultados e insights (2026-10-05): a referente card's bio, cut to two lines so the
+   cards of the grid keep one height; the whole bio is on the profile the card opens. */
+.q-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* Planificador (QUA-108): desktop calendar vs phone list. On plain divs, because
    Radix's own base `display` on its components can outrank an emotion `display`. */
 .q-planner-desktop { display: block; }
@@ -609,9 +618,10 @@ body[data-deck-dragging] .q-deck-zone {
    Driven by `assets/rank-drag.js` (§ requests 2026-09-29) with the deck's own motion
    ("Brand Kit deck" above): a click opens the profile; a long press arms the card at
    105% (`.q-armed`), 110% once it moves (`.q-moving`), and it follows the pointer
-   without tilting (`.q-dragging`, the script owns `transform`). Released on another card it
-   flies onto that spot (`.q-rank-release`); anywhere else it springs back
-   (`.q-drag-return`). The card it would land on is ringed and pops (`data-over`).
+   without tilting (`.q-dragging`, the script owns `transform`). While it is held the
+   other cards of its group slide out of its way (`.q-shifting`, § 2026-10-05: a live
+   sortable list, no waiting for the server); released, it settles into the free slot
+   (`.q-rank-release`), or everything springs back (`.q-drag-return`).
    Only `transform`, `scale`, `opacity`, `outline-color` — nothing that reflows. */
 .q-rank-card {
   position: relative;
@@ -638,11 +648,17 @@ body[data-deck-dragging] .q-deck-zone {
   pointer-events: none;
   z-index: 5;
 }
+.q-rank-card.q-shifting {
+  transition:
+    transform 0.2s var(--q-ease),
+    scale var(--q-rank-scale-dur) var(--q-ease),
+    outline-color var(--q-dur-fast) var(--q-ease);
+}
 .q-rank-card.q-rank-release {
   pointer-events: none;
   z-index: 5;
   transition:
-    transform 0.22s var(--q-ease),
+    transform 0.18s var(--q-ease),
     scale var(--q-rank-scale-dur) var(--q-ease);
 }
 .q-rank-card.q-drag-return {
@@ -657,6 +673,7 @@ body[data-rank-dragging] { cursor: grabbing; }
 }
 @media (prefers-reduced-motion: reduce) {
   .q-rank-card,
+  .q-rank-card.q-shifting,
   .q-rank-card.q-rank-release,
   .q-rank-card.q-drag-return { transition: none; }
   .q-rank-card.q-armed,
@@ -738,4 +755,1211 @@ body[data-rank-dragging] { cursor: grabbing; }
 }
 @media (prefers-reduced-motion: reduce) {
   .q-flow-switch .rt-SegmentedControlItemLabel { transition: none; }
+}
+
+
+/* ── Drawer (ui.drawer, QUA-118) ───────────────────────────────────────────────
+   A Radix dialog whose content is pinned to the right edge instead of centred:
+   same overlay, Esc, backdrop and focus trap; only the geometry changes. Width
+   comes from `--q-drawer-w` (set by the primitive); a phone gets the whole
+   viewport. `!important` beats the inline `max-height`/`transform` Radix Themes
+   puts on `.rt-DialogContent`. */
+.rt-DialogContent.q-drawer {
+  position: fixed !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: auto !important;
+  margin: 0 !important;
+  width: min(var(--q-drawer-w, 32rem), 100vw) !important;
+  max-width: 100vw !important;
+  height: 100dvh !important;
+  max-height: 100dvh !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  transform: none !important;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--q-elev-overlay);
+  animation: q-drawer-in var(--q-dur) var(--q-ease);
+}
+.q-drawer-head {
+  padding: 1.25rem 1.5rem 0.75rem;
+  border-bottom: 1px solid var(--gray-5);
+}
+.q-drawer-body {
+  padding: 1rem 1.5rem 1.25rem;
+  container-type: inline-size;
+}
+.q-drawer-foot {
+  padding: 0.75rem 1.5rem;
+  border-top: 1px solid var(--gray-5);
+  background: var(--color-panel-solid);
+}
+@keyframes q-drawer-in {
+  from { translate: 100% 0; }
+  to { translate: 0 0; }
+}
+@media (max-width: 640px) {
+  .rt-DialogContent.q-drawer { width: 100vw !important; }
+  .q-drawer-head, .q-drawer-body, .q-drawer-foot { padding-left: 1rem; padding-right: 1rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rt-DialogContent.q-drawer { animation: none; }
+}
+
+/* ── Stepper (ui.stepper, QUA-118) ──────────────────────────────────────────── */
+.q-stepper {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+/* Inside a narrow container (the drawer), only the current step keeps its label: the
+   checks and numbers still say where you are, and each step's `title` repeats the word. */
+@container (max-width: 30rem) {
+  .q-step:not(.q-step--current) .q-step-label { display: none; }
+}
+.q-step {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.35rem;
+  border: none;
+  border-radius: var(--q-radius-control);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.q-step:disabled { cursor: default; }
+.q-step:not(:disabled):hover { background: var(--gray-a3); }
+.q-step-dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  border: 1.5px solid var(--gray-7);
+  color: var(--gray-11);
+  background: var(--color-panel-solid);
+  flex: 0 0 auto;
+}
+.q-step-dot--current {
+  border-color: var(--accent-9);
+  color: var(--accent-11);
+  box-shadow: 0 0 0 3px var(--accent-a4);
+}
+.q-step-dot--done {
+  border-color: var(--accent-9);
+  background: var(--accent-9);
+  color: var(--accent-contrast);
+}
+.q-step-line {
+  flex: 1 1 0.75rem;
+  min-width: 0.5rem;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--gray-6);
+}
+.q-step-line--on { background: var(--accent-8); }
+@media (max-width: 640px) {
+  .q-step-label { display: none; }
+  .q-step--current .q-step-label { display: inline; }
+}
+
+
+/* ── POST gallery and drag & drop (QUA-118) ─────────────────────────────────── */
+.q-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+  gap: 0.75rem;
+  width: 100%;
+}
+.q-post-drag { cursor: grab; }
+.q-post-drag:active { cursor: grabbing; }
+.q-drop-target { height: 100%; transition: background-color var(--q-dur-fast) var(--q-ease); }
+.q-drop-target--active {
+  background-color: var(--accent-a3);
+  outline: 1px dashed var(--accent-8);
+  outline-offset: -2px;
+}
+
+
+/* ── Planificador v2: «Nueva publicación» and the event panel (QUA-118 v2) ─────
+   Colour here is IDENTITY, never state: a format has its scale (q-kind-*), a tag or a
+   goal its own (q-tint-*), Cold/Hot their gradient. States stay on signal_pill tones.
+   Every colour is a Radix variable, so light and dark mode need no rules of their own. */
+/* What the content IS (image / video / carousel / package) — identity, not state. */
+.q-kind-image    { --kind: var(--amber-9);  --kind-soft: var(--amber-a3);  --kind-line: var(--amber-a7);  --kind-ink: var(--amber-11); }
+.q-kind-video    { --kind: var(--cyan-9);   --kind-soft: var(--cyan-a3);   --kind-line: var(--cyan-a7);   --kind-ink: var(--cyan-11); }
+.q-kind-carousel { --kind: var(--orange-9); --kind-soft: var(--orange-a3); --kind-line: var(--orange-a7); --kind-ink: var(--orange-11); }
+.q-kind-pack     { --kind: var(--teal-9);   --kind-soft: var(--teal-a3);   --kind-line: var(--teal-a7);   --kind-ink: var(--teal-11); }
+/* WHERE it goes out (QUA-118 v2): Publicación / Reel / Historia. Always glyph + word. */
+.q-dest-post  { --dest: var(--blue-9);    --dest-soft: var(--blue-a3);    --dest-line: var(--blue-a7);    --dest-ink: var(--blue-11); }
+.q-dest-reel  { --dest: var(--crimson-9); --dest-soft: var(--crimson-a3); --dest-line: var(--crimson-a7); --dest-ink: var(--crimson-11); }
+.q-dest-story { --dest: var(--purple-9);  --dest-soft: var(--purple-a3);  --dest-line: var(--purple-a7);  --dest-ink: var(--purple-11); }
+.q-tint-teal   { --tint: var(--teal-9);   --tint-soft: var(--teal-a3);   --tint-line: var(--teal-a7);   --tint-ink: var(--teal-11); }
+.q-tint-blue   { --tint: var(--blue-9);   --tint-soft: var(--blue-a3);   --tint-line: var(--blue-a7);   --tint-ink: var(--blue-11); }
+.q-tint-violet { --tint: var(--violet-9); --tint-soft: var(--violet-a3); --tint-line: var(--violet-a7); --tint-ink: var(--violet-11); }
+.q-tint-pink   { --tint: var(--pink-9);   --tint-soft: var(--pink-a3);   --tint-line: var(--pink-a7);   --tint-ink: var(--pink-11); }
+.q-tint-amber  { --tint: var(--amber-9);  --tint-soft: var(--amber-a3);  --tint-line: var(--amber-a7);  --tint-ink: var(--amber-11); }
+.q-tint-green  { --tint: var(--green-9);  --tint-soft: var(--green-a3);  --tint-line: var(--green-a7);  --tint-ink: var(--green-11); }
+.q-tint-orange { --tint: var(--orange-9); --tint-soft: var(--orange-a3); --tint-line: var(--orange-a7); --tint-ink: var(--orange-11); }
+.q-tint-gray   { --tint: var(--gray-9);   --tint-soft: var(--gray-a3);   --tint-line: var(--gray-a7);   --tint-ink: var(--gray-11); }
+
+/* Stepper with glyphs instead of numbers */
+.q-stepper-wrap {
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--q-radius-card);
+  background: linear-gradient(135deg, var(--accent-a2), var(--gray-a2));
+  border: 1px solid var(--gray-a4);
+}
+.q-step-dot--icon { width: 2rem; height: 2rem; border-width: 1.5px; }
+.q-step-dot--icon.q-step-dot--current {
+  background: var(--accent-9);
+  color: var(--accent-contrast);
+  box-shadow: 0 0 0 4px var(--accent-a4), 0 4px 12px var(--accent-a5);
+}
+
+/* Shared bits */
+.q-section-glyph {
+  width: 2rem; height: 2rem; flex-shrink: 0;
+  border-radius: 0.6rem;
+  background: var(--accent-a3);
+  color: var(--accent-11);
+}
+.q-glyph-lg { width: 3rem; height: 3rem; border-radius: 1rem; }
+.q-field-label {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--gray-10);
+}
+.q-soft-box {
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--q-radius-card);
+  background: var(--gray-a2);
+  border: 1px dashed var(--gray-a6);
+}
+.q-soft-box--stack { display: flex; flex-direction: column; gap: 0.5rem; border-style: solid; }
+.q-media-fill {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover; display: block;
+  pointer-events: none;
+}
+.q-media-empty {
+  position: absolute; inset: 0;
+  color: var(--kind-ink);
+  background:
+    radial-gradient(120% 80% at 20% 0%, var(--kind-soft), transparent 60%),
+    linear-gradient(160deg, var(--gray-a3), var(--gray-a5));
+}
+.q-tag-dot {
+  width: 8px; height: 8px; flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--tint, var(--gray-9));
+}
+
+/* Format chip: colour + glyph + word */
+.q-kind-chip {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.12rem 0.5rem 0.12rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.72rem; font-weight: 600; line-height: 1.3;
+  color: var(--kind-ink);
+  background: var(--kind-soft);
+  box-shadow: inset 0 0 0 1px var(--kind-line);
+  white-space: nowrap;
+}
+.q-kind-chip--glass {
+  color: white;
+  background: rgba(10, 10, 14, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(6px);
+}
+.q-kind-chip--glass svg { color: var(--kind); filter: brightness(1.35); }
+
+/* Cold / Hot */
+.q-temp {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  padding: 0.12rem 0.5rem 0.12rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.02em; line-height: 1.3;
+  color: white;
+  white-space: nowrap;
+}
+.q-temp--hot {
+  background: linear-gradient(135deg, #ff9a3c 0%, #ff4d4d 55%, #e0245e 100%);
+  box-shadow: 0 2px 10px rgba(255, 77, 77, 0.35);
+}
+.q-temp--cold {
+  background: linear-gradient(135deg, #7dd3fc 0%, #38bdf8 45%, #6366f1 100%);
+  box-shadow: 0 2px 10px rgba(56, 189, 248, 0.35);
+}
+.q-temp--hot svg { animation: q-flicker 2.4s ease-in-out infinite; }
+@keyframes q-flicker { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15) rotate(-4deg); } }
+
+/* «Contenido»: filters and the grid of tiles */
+.q-filter {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--gray-a6);
+  background: transparent;
+  color: var(--gray-11);
+  font-size: 0.8rem; font-weight: 500;
+  cursor: pointer;
+  transition: all var(--q-dur-fast) var(--q-ease);
+}
+.q-filter:hover { background: var(--gray-a3); }
+.q-filter--on {
+  color: var(--kind-ink, var(--accent-11));
+  background: var(--kind-soft, var(--accent-a3));
+  border-color: var(--kind-line, var(--accent-a7));
+}
+.q-filter-count {
+  min-width: 1.2rem; padding: 0 0.3rem;
+  border-radius: 999px;
+  background: var(--gray-a4);
+  font-size: 0.68rem; font-weight: 700; text-align: center;
+}
+.q-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.25rem, 1fr));
+  gap: 0.85rem;
+  width: 100%;
+}
+.q-tile {
+  all: unset;
+  box-sizing: border-box;
+  display: flex; flex-direction: column;
+  border-radius: 0.9rem;
+  background: var(--color-panel-solid);
+  border: 1.5px solid var(--gray-a5);
+  overflow: hidden;
+  transition: transform var(--q-dur) var(--q-ease), box-shadow var(--q-dur) var(--q-ease),
+    border-color var(--q-dur-fast) var(--q-ease);
+}
+.q-tile--ready { cursor: pointer; }
+.q-tile--ready:hover {
+  transform: translateY(-3px);
+  border-color: var(--kind-line);
+  box-shadow: 0 10px 24px -12px var(--kind), var(--q-elev-lift);
+}
+.q-tile:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+.q-tile--selected {
+  border-color: var(--accent-9);
+  box-shadow: 0 0 0 3px var(--accent-a5), 0 12px 28px -14px var(--accent-9);
+}
+.q-tile--pending {
+  cursor: not-allowed;
+  border: 2px dashed var(--gray-a8);
+  background: var(--gray-a2);
+}
+.q-tile--pending .q-media-fill,
+.q-tile--pending .q-media-empty { filter: grayscale(0.85) blur(1px); opacity: 0.45; }
+.q-tile-media { position: relative; aspect-ratio: 4 / 5; background: var(--gray-a3); overflow: hidden; }
+.q-tile-shade {
+  position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(180deg, rgba(0,0,0,0.38) 0%, transparent 32%, transparent 62%, rgba(0,0,0,0.5) 100%);
+}
+.q-tile-tl { position: absolute; top: 0.5rem; left: 0.5rem; }
+.q-tile-bl { position: absolute; bottom: 0.5rem; left: 0.5rem; }
+.q-tile-check {
+  position: absolute; top: 0.5rem; right: 0.5rem;
+  display: flex; align-items: center; justify-content: center;
+  width: 1.55rem; height: 1.55rem;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.25);
+  color: transparent;
+  transition: all var(--q-dur-fast) var(--q-ease);
+}
+.q-tile--selected .q-tile-check {
+  background: var(--accent-9);
+  border-color: var(--accent-9);
+  color: var(--accent-contrast);
+  transform: scale(1.08);
+}
+.q-tile-pending {
+  position: absolute; inset: 0;
+  color: var(--gray-12);
+  background: repeating-linear-gradient(-45deg, transparent 0 10px, var(--gray-a3) 10px 20px);
+}
+.q-tile-body { display: flex; flex-direction: column; gap: 0.15rem; padding: 0.55rem 0.65rem 0.65rem; min-width: 0; }
+.q-legend-solid, .q-legend-dashed { width: 1.1rem; height: 0.8rem; border-radius: 0.25rem; }
+.q-legend-solid { border: 1.5px solid var(--accent-9); background: var(--accent-a3); }
+.q-legend-dashed { border: 1.5px dashed var(--gray-a8); }
+
+/* «Programación»: one card per piece */
+.q-plan-card {
+  position: relative;
+  display: flex; flex-direction: column; gap: 1rem;
+  width: 100%;
+  padding: 1rem 1.1rem 0.9rem 1.25rem;
+  border-radius: var(--q-radius-card);
+  background: var(--color-panel-solid);
+  border: 1px solid var(--gray-a5);
+  box-shadow: var(--q-elev-island);
+  overflow: hidden;
+}
+.q-plan-card::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+  background: linear-gradient(180deg, var(--kind), var(--kind-line));
+}
+.q-plan-thumb {
+  position: relative; width: 3.4rem; flex-shrink: 0;
+  border-radius: 0.55rem; overflow: hidden;
+  background: var(--gray-a3);
+  box-shadow: 0 0 0 1px var(--gray-a5);
+}
+.q-plan-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.9rem; width: 100%; }
+@container (max-width: 30rem) { .q-plan-grid { grid-template-columns: 1fr; } }
+.q-when-pill {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: var(--accent-a3);
+  color: var(--accent-11);
+  font-size: 0.75rem; font-weight: 600;
+  white-space: nowrap;
+}
+.q-when-pill--lg { font-size: 0.85rem; padding: 0.3rem 0.75rem; align-self: flex-start; }
+.q-tz-chip {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.2rem 0.6rem; border-radius: 999px;
+  background: var(--gray-a3); color: var(--gray-11);
+  font-size: 0.75rem;
+}
+.q-ampm-group {
+  display: inline-flex; padding: 2px; gap: 2px;
+  border-radius: var(--q-radius-control);
+  background: var(--gray-a3);
+}
+.q-ampm {
+  all: unset; cursor: pointer;
+  padding: 0.25rem 0.5rem; border-radius: calc(var(--q-radius-control) - 2px);
+  font-size: 0.75rem; color: var(--gray-11);
+}
+.q-ampm--on { background: var(--accent-9); color: var(--accent-contrast); font-weight: 700; }
+.q-choice {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--gray-a6);
+  background: var(--color-panel-solid);
+  color: var(--gray-12);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all var(--q-dur-fast) var(--q-ease);
+}
+.q-choice:hover:not(:disabled) { border-color: var(--gray-a8); background: var(--gray-a2); }
+.q-choice:disabled { opacity: 0.45; cursor: not-allowed; text-decoration: line-through; }
+.q-choice--on {
+  border-color: var(--accent-8);
+  background: var(--accent-a3);
+  color: var(--accent-11);
+  font-weight: 600;
+}
+.q-choice--tag { border-color: var(--tint-line); background: var(--tint-soft); color: var(--tint-ink); font-weight: 600; }
+.q-choice--ghost { border-style: dashed; color: var(--gray-10); background: transparent; }
+.q-date-chip {
+  padding: 0.1rem 0.45rem; border-radius: 0.35rem;
+  background: var(--gray-a3); font-size: 0.7rem; color: var(--gray-11);
+}
+.q-plan-status { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.25rem 0.55rem; border-radius: 0.5rem; }
+.q-plan-status--ok { color: var(--green-11); background: var(--green-a3); }
+.q-plan-status--todo { color: var(--amber-11); background: var(--amber-a3); }
+
+/* «Confirmar»: hero, timeline and phone mocks */
+/* The confirm summary: a calm tint of the accent, not a saturated block — readable in
+   both themes, with the accent kept for the glyph and the edge. */
+.q-hero {
+  display: flex; align-items: center; gap: 1rem;
+  width: 100%;
+  padding: 1.1rem 1.25rem;
+  border-radius: var(--q-radius-card);
+  color: var(--gray-12);
+  border: 1px solid var(--accent-a6);
+  border-left: 4px solid var(--accent-9);
+  background:
+    radial-gradient(80% 120% at 100% 0%, var(--accent-a3), transparent 60%),
+    linear-gradient(135deg, var(--accent-a2), transparent 70%),
+    var(--color-panel-solid);
+}
+.q-hero-glyph {
+  width: 2.8rem; height: 2.8rem; flex-shrink: 0;
+  border-radius: 0.9rem;
+  background: var(--accent-a4);
+  color: var(--accent-11);
+}
+.q-tl { position: relative; display: flex; flex-direction: column; gap: 1rem; width: 100%; }
+.q-tl::before {
+  content: ""; position: absolute; top: 0.5rem; bottom: 0.5rem; left: 5.35rem; width: 2px;
+  background: linear-gradient(180deg, var(--accent-a6), var(--gray-a4));
+}
+.q-tl-item { display: grid; grid-template-columns: 4.6rem minmax(0, 1fr); gap: 1.4rem; align-items: start; }
+.q-tl-when { position: relative; padding-top: 0.4rem; }
+.q-tl-time { font-size: 0.95rem; font-weight: 800; color: var(--gray-12); white-space: nowrap; }
+.q-tl-node {
+  position: absolute; top: 0.6rem; right: -1.12rem;
+  width: 0.75rem; height: 0.75rem;
+  border-radius: 999px;
+  background: var(--accent-9);
+  box-shadow: 0 0 0 3px var(--color-panel-solid), 0 0 0 5px var(--accent-a5);
+}
+.q-tl-card {
+  display: flex; gap: 1rem; align-items: flex-start;
+  padding: 0.85rem;
+  border-radius: var(--q-radius-card);
+  background: linear-gradient(135deg, var(--kind-soft), transparent 60%), var(--color-panel-solid);
+  border: 1px solid var(--gray-a5);
+  box-shadow: var(--q-elev-island);
+  transition: box-shadow var(--q-dur) var(--q-ease);
+}
+.q-tl-card:hover { box-shadow: 0 10px 26px -16px var(--kind), var(--q-elev-island); }
+@container (max-width: 34rem) {
+  .q-tl::before { display: none; }
+  .q-tl-item { grid-template-columns: 1fr; gap: 0.4rem; }
+  .q-tl-when { flex-direction: row !important; align-items: baseline !important; gap: 0.5rem !important; }
+  .q-tl-node { display: none; }
+  .q-tl-card { flex-direction: column; }
+}
+.q-mini-chip {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  padding: 0.1rem 0.45rem; border-radius: 999px;
+  background: var(--gray-a3); font-size: 0.72rem; color: var(--gray-12);
+}
+.q-mock {
+  position: relative; flex-shrink: 0;
+  width: 8.4rem;
+  border-radius: 1rem;
+  overflow: hidden;
+  border: 3px solid var(--gray-12);
+  box-shadow: 0 16px 30px -18px rgba(0, 0, 0, 0.6);
+  color: white;
+  font-size: 0.62rem;
+}
+.q-mock--tall { aspect-ratio: 9 / 16; background: #111; }
+.q-mock--feed { background: var(--color-panel-solid); color: var(--gray-12); border-color: var(--gray-a7); width: 9.2rem; }
+.q-mock-avatar {
+  width: 1.15rem; height: 1.15rem; flex-shrink: 0;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #feda75, #fa7e1e, #d62976, #962fbf);
+  box-shadow: inset 0 0 0 2px rgba(255,255,255,0.85);
+}
+.q-mock-handle { font-weight: 700; font-size: 0.62rem; color: white; max-width: 4.6rem; }
+.q-mock-handle--ink { color: var(--gray-12); }
+.q-mock-meta { opacity: 0.75; font-size: 0.58rem; color: white; }
+.q-mock-top-shade, .q-mock-bottom-shade { position: absolute; left: 0; right: 0; height: 40%; pointer-events: none; }
+.q-mock-top-shade { top: 0; background: linear-gradient(180deg, rgba(0,0,0,0.55), transparent); }
+.q-mock-bottom-shade { bottom: 0; background: linear-gradient(0deg, rgba(0,0,0,0.65), transparent); }
+.q-story-bars { position: absolute; top: 0.4rem; left: 0.4rem; right: 0.4rem; display: flex; gap: 3px; }
+.q-story-bar { flex: 1; height: 2px; border-radius: 2px; background: rgba(255,255,255,0.35); }
+.q-story-bar--on { background: white; }
+.q-mock-story-head { position: absolute; top: 0.8rem; left: 0.45rem; right: 0.45rem; }
+.q-mock-story-foot {
+  position: absolute; bottom: 0.45rem; left: 0.45rem; right: 0.45rem;
+  display: flex; align-items: center; gap: 0.35rem;
+}
+.q-mock-reply {
+  flex: 1; padding: 0.2rem 0.45rem;
+  border: 1px solid rgba(255,255,255,0.6); border-radius: 999px;
+  font-size: 0.55rem; white-space: nowrap; overflow: hidden;
+}
+.q-mock-reels { position: absolute; top: 0.45rem; left: 0.55rem; font-weight: 800; font-size: 0.7rem; color: white; }
+.q-mock-rail { position: absolute; right: 0.4rem; bottom: 2.6rem; }
+.q-mock-reel-foot { position: absolute; left: 0.45rem; right: 1.8rem; bottom: 0.5rem; display: flex; flex-direction: column; gap: 0.2rem; }
+.q-mock-caption { font-size: 0.58rem; opacity: 0.9; color: white; }
+.q-mock-play {
+  position: absolute; top: 50%; left: 50%; translate: -50% -50%;
+  width: 2rem; height: 2rem; border-radius: 999px;
+  background: rgba(0,0,0,0.45); border: 1px solid rgba(255,255,255,0.4);
+}
+.q-mock-feed-head { padding: 0.35rem 0.45rem; }
+.q-mock-feed-media { position: relative; background: var(--gray-a3); overflow: hidden; }
+.q-mock-counter {
+  position: absolute; top: 0.35rem; right: 0.35rem;
+  padding: 0.05rem 0.35rem; border-radius: 999px;
+  background: rgba(0,0,0,0.6); color: white; font-size: 0.55rem; font-weight: 700;
+}
+.q-mock-feed-actions { padding: 0.35rem 0.45rem 0.15rem; }
+.q-mock-feed-caption { padding: 0 0.45rem 0.45rem; font-size: 0.6rem; color: var(--gray-12); }
+.q-dot { width: 4px; height: 4px; border-radius: 999px; background: var(--gray-a7); }
+.q-dot--on { background: var(--blue-9); }
+
+/* Goals: checkable cards */
+.q-goal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); gap: 0.6rem; width: 100%; }
+.q-goal {
+  all: unset; box-sizing: border-box;
+  position: relative;
+  display: flex; align-items: center; gap: 0.65rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: var(--q-radius-card);
+  border: 1.5px solid var(--gray-a5);
+  background: var(--color-panel-solid);
+  cursor: pointer;
+  transition: all var(--q-dur-fast) var(--q-ease);
+}
+.q-goal:hover { border-color: var(--tint-line); transform: translateY(-1px); }
+.q-goal:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+.q-goal-glyph {
+  width: 2.1rem; height: 2.1rem; flex-shrink: 0;
+  border-radius: 0.7rem;
+  background: var(--tint-soft); color: var(--tint-ink);
+  transition: all var(--q-dur-fast) var(--q-ease);
+}
+.q-goal-label { font-size: 0.85rem; font-weight: 700; color: var(--gray-12); }
+.q-goal-hint { font-size: 0.7rem; color: var(--gray-10); }
+.q-goal-check {
+  margin-left: auto; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  width: 1.2rem; height: 1.2rem; border-radius: 0.35rem;
+  border: 1.5px solid var(--gray-a7);
+  color: transparent;
+}
+.q-goal--on { border-color: var(--tint); background: linear-gradient(135deg, var(--tint-soft), transparent 70%), var(--color-panel-solid); }
+.q-goal--on .q-goal-glyph { background: var(--tint); color: white; }
+.q-goal--on .q-goal-check { background: var(--tint); border-color: var(--tint); color: white; }
+
+/* Footer bits */
+.q-selection-pill {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  padding: 0.25rem 0.7rem; border-radius: 999px;
+  background: var(--accent-a3); color: var(--accent-11);
+  font-size: 0.8rem; font-weight: 600;
+}
+.q-cta { box-shadow: 0 6px 16px -8px var(--accent-9); }
+
+/* The event panel */
+/* The stage: the piece as it will look, on a soft wash of its destination's colour
+   and a blurred echo of its own image. */
+.q-stage {
+  position: relative;
+  display: grid; place-items: center;
+  width: 100%;
+  min-height: 25rem;
+  padding: 3rem 1rem 3.2rem;
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--gray-a5);
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    radial-gradient(70% 60% at 50% 45%, var(--dest-soft, var(--accent-a3)), transparent 75%),
+    linear-gradient(180deg, var(--gray-a2), var(--gray-a3));
+}
+.q-stage-bg { position: absolute; inset: 0; z-index: -1; overflow: hidden; }
+.q-stage-blur {
+  position: absolute; inset: -10%; width: 120%; height: 120%;
+  object-fit: cover; filter: blur(30px) saturate(1.3); opacity: 0.35;
+}
+.q-stage-top { position: absolute; top: 0.75rem; left: 0.75rem; right: 0.75rem; z-index: 2; }
+.q-stage-bottom { position: absolute; bottom: 0.8rem; left: 0; right: 0; display: flex; justify-content: center; z-index: 2; }
+.q-detail-media {
+  position: relative; z-index: 1;
+  width: 11.5rem; max-width: 100%; aspect-ratio: 9 / 16;
+  border-radius: 1.2rem; overflow: hidden;
+  background: #111;
+  border: 4px solid var(--gray-12);
+  box-shadow: 0 24px 48px -22px rgba(0, 0, 0, 0.75), 0 0 0 1px var(--gray-a6);
+}
+.q-detail-media--post { width: 15rem; aspect-ratio: 4 / 5; border-radius: 0.9rem; }
+
+/* Facts: one aligned grid of equal tiles. */
+.q-fact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; width: 100%; }
+@container (max-width: 26rem) { .q-fact-grid { grid-template-columns: 1fr; } }
+.q-fact-tile {
+  display: flex; flex-direction: column; gap: 0.45rem;
+  padding: 0.7rem 0.8rem 0.75rem;
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--gray-a5);
+  background: var(--color-panel-solid);
+  min-width: 0;
+}
+.q-fact-label {
+  font-size: 0.66rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--gray-10);
+}
+.q-fact-value { min-width: 0; display: flex; align-items: center; }
+.q-panel-section {
+  display: flex; flex-direction: column; gap: 0.6rem;
+  width: 100%;
+  padding: 0.8rem 0.9rem 0.9rem;
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--gray-a5);
+  background: var(--gray-a2);
+}
+.q-caption-quote {
+  padding-left: 0.75rem;
+  border-left: 3px solid var(--accent-a7);
+  color: var(--gray-11);
+  white-space: pre-line;
+}
+.q-fact-glyph {
+  width: 1.6rem; height: 1.6rem; flex-shrink: 0;
+  border-radius: 0.5rem;
+  background: var(--gray-a3); color: var(--gray-11);
+}
+.q-live-dot {
+  width: 8px; height: 8px; flex-shrink: 0; border-radius: 999px;
+  background: var(--green-9);
+  box-shadow: 0 0 0 0 var(--green-a7);
+  animation: q-pulse 2s infinite;
+}
+@keyframes q-pulse { 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+.q-confirm-bar {
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--q-radius-card);
+  background: var(--red-a3);
+  border: 1px solid var(--red-a6);
+}
+@media (prefers-reduced-motion: reduce) {
+  .q-temp--hot svg, .q-live-dot { animation: none; }
+  .q-tile, .q-goal { transition: none; }
+}
+
+
+/* ── Destination (QUA-118 v2): «¿Dónde quieres publicarlo?» ─────────────────── */
+.q-dest-badge {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.1rem 0.5rem 0.1rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.72rem; font-weight: 600; line-height: 1.35;
+  color: var(--dest-ink); background: var(--dest-soft);
+  box-shadow: inset 0 0 0 1px var(--dest-line);
+  white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  align-self: flex-start;
+}
+.q-dest-dot {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.3rem; height: 1.3rem; border-radius: 999px;
+  color: var(--dest-ink); background: var(--dest-soft);
+}
+.q-dest-seg { display: grid; grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr)); gap: 0.45rem; width: 100%; }
+.q-dest-btn {
+  position: relative;
+  display: flex; flex-direction: column; align-items: center; gap: 0.25rem;
+  padding: 0.6rem 0.5rem 0.55rem;
+  border-radius: var(--q-radius-card);
+  border: 1.5px solid var(--gray-a6);
+  background: var(--color-panel-solid);
+  color: var(--gray-12);
+  font: inherit; cursor: pointer;
+  transition: border-color var(--q-dur-fast) var(--q-ease), background var(--q-dur-fast) var(--q-ease),
+    box-shadow var(--q-dur-fast) var(--q-ease);
+}
+.q-dest-btn svg { color: var(--dest); }
+.q-dest-word { font-size: 0.82rem; font-weight: 600; }
+.q-dest-btn:hover:not(:disabled) { border-color: var(--dest-line); background: var(--gray-a2); }
+.q-dest-btn:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+.q-dest-btn--on {
+  border-color: var(--dest);
+  background: var(--dest-soft);
+  color: var(--dest-ink);
+  box-shadow: 0 0 0 3px var(--dest-soft);
+}
+.q-dest-tick {
+  position: absolute; top: 0.35rem; right: 0.4rem;
+  color: var(--dest-ink) !important;
+}
+.q-dest-btn:disabled {
+  cursor: not-allowed;
+  border-style: dashed;
+  background: transparent;
+  color: var(--gray-9);
+}
+.q-dest-btn:disabled svg { color: var(--gray-8); }
+.q-dest-btn:disabled .q-dest-word { text-decoration: line-through; text-decoration-thickness: 1px; }
+
+/* ── Calendar chip: channel mark + Cold / Hot effect (QUA-118 v2) ───────────── */
+.q-ch {
+  width: 15px; height: 15px; flex-shrink: 0;
+  border-radius: 4px;
+  background: var(--gray-9);
+}
+.q-ch-instagram { background: radial-gradient(circle at 30% 107%, #fdf497 0%, #fd5949 45%, #d6249f 60%, #285aeb 90%); }
+.q-ch-facebook  { background: #1877f2; }
+.q-ch-tiktok    { background: linear-gradient(135deg, #25f4ee, #111 45%, #111 55%, #fe2c55); }
+.q-temp--mini { padding: 0.12rem 0.3rem; gap: 0; }
+
+.q-chip-temp { position: relative; overflow: hidden; isolation: isolate; }
+.q-chip-temp::after {
+  content: ""; position: absolute; inset: 0; z-index: 0;
+  pointer-events: none; border-radius: inherit;
+}
+/* Hot: embers rising from the bottom edge, flickering. */
+.q-chip-temp--hot { box-shadow: inset 0 -1px 0 rgba(255, 106, 61, 0.55); }
+.q-chip-temp--hot::after {
+  background:
+    radial-gradient(60% 55% at 20% 115%, rgba(255, 77, 77, 0.38), transparent 70%),
+    radial-gradient(55% 50% at 70% 120%, rgba(255, 154, 60, 0.40), transparent 70%),
+    linear-gradient(0deg, rgba(255, 106, 61, 0.14), transparent 55%);
+  animation: q-embers 2.6s ease-in-out infinite alternate;
+}
+@keyframes q-embers {
+  0%   { opacity: 0.65; transform: translateY(1px); }
+  50%  { opacity: 1;    transform: translateY(0); }
+  100% { opacity: 0.8;  transform: translateY(-1px); }
+}
+/* Cold: frost settling from the top, a crisp icy rim and a slow shimmer. */
+.q-chip-temp--cold { box-shadow: inset 0 1px 0 rgba(125, 211, 252, 0.7); }
+.q-chip-temp--cold::after {
+  background:
+    radial-gradient(1.5px 1.5px at 12% 18%, rgba(255, 255, 255, 0.9), transparent 60%),
+    radial-gradient(1px 1px at 38% 10%, rgba(255, 255, 255, 0.8), transparent 60%),
+    radial-gradient(1.5px 1.5px at 67% 22%, rgba(255, 255, 255, 0.85), transparent 60%),
+    radial-gradient(1px 1px at 88% 12%, rgba(255, 255, 255, 0.8), transparent 60%),
+    linear-gradient(180deg, rgba(125, 211, 252, 0.26), rgba(99, 102, 241, 0.06) 45%, transparent 70%);
+  animation: q-frost 4s ease-in-out infinite alternate;
+}
+@keyframes q-frost { from { opacity: 0.7; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .q-chip-temp::after { animation: none; }
+}
+
+/* ── Draft review («Revisión del borrador», QUA-118 v2 polish) ────────────────── */
+.q-rv-stage {
+  padding: 1rem;
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--gray-a5);
+  background:
+    radial-gradient(80% 60% at 50% 35%, var(--accent-a3), transparent 75%),
+    linear-gradient(180deg, var(--gray-a2), var(--gray-a3));
+}
+/* Desktop: the media stays in view while the copy scrolls beside it. */
+@media (min-width: 768px) { .q-rv-stage { position: sticky; top: 1rem; } }
+.q-rv-media {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  object-fit: cover;
+  background: #000;
+  border-radius: 1rem;
+  box-shadow: 0 22px 44px -24px rgba(0, 0, 0, 0.75), 0 0 0 1px var(--gray-a6);
+}
+.q-rv-media--video { aspect-ratio: 9 / 16; }
+.q-rv-media--image { aspect-ratio: 4 / 5; }
+.q-rv-section {
+  display: flex; flex-direction: column; gap: 0.65rem;
+  width: 100%;
+  padding: 0.9rem 1rem 1rem;
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--gray-a5);
+  background: var(--color-panel-solid);
+}
+.q-rv-glyph {
+  width: 1.9rem; height: 1.9rem; flex-shrink: 0;
+  border-radius: 0.6rem;
+  background: var(--accent-a3); color: var(--accent-11);
+}
+.q-rv-title { font-size: 0.86rem; font-weight: 700; color: var(--gray-12); }
+.q-rv-hint { font-size: 0.74rem; color: var(--gray-10); }
+.q-rv-count {
+  font-size: 0.7rem; color: var(--gray-10);
+  padding: 0.1rem 0.45rem; border-radius: 999px; background: var(--gray-a3);
+}
+.q-rv-read {
+  font-size: 0.92rem; line-height: 1.55; color: var(--gray-12);
+  padding: 0.55rem 0.75rem;
+  border-radius: var(--q-radius-control);
+  background: var(--gray-a2);
+  border-left: 3px solid var(--accent-a7);
+}
+.q-rv-read--multi { white-space: pre-line; }
+.q-rv-read--empty { color: var(--gray-9); font-style: italic; border-left-color: var(--gray-a5); }
+.q-rv-chip {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  min-height: 1.75rem;
+  padding: 0.22rem 0.65rem;
+  border-radius: var(--q-radius-control);
+  font-size: 0.8rem; font-weight: 600;
+  color: var(--blue-11); background: var(--blue-a3);
+  box-shadow: inset 0 0 0 1px var(--blue-a6);
+  border: none; font-family: inherit;
+}
+.q-rv-chip-x {
+  all: unset; cursor: pointer;
+  display: inline-flex; padding: 2px; border-radius: 4px; color: var(--blue-11);
+}
+.q-rv-chip-x:hover { background: var(--blue-a5); }
+.q-rv-chip--suggest {
+  cursor: pointer;
+  color: var(--gray-11); background: transparent;
+  box-shadow: inset 0 0 0 1px var(--gray-a7);
+  border: 1px dashed transparent;
+  transition: all var(--q-dur-fast) var(--q-ease);
+}
+.q-rv-chip--suggest:hover { color: var(--accent-11); background: var(--accent-a3); box-shadow: inset 0 0 0 1px var(--accent-a7); }
+.q-rv-chip--suggest:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+.q-rv-suggest {
+  display: flex; flex-direction: column; gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: var(--q-radius-control);
+  background: linear-gradient(135deg, var(--accent-a2), transparent 70%);
+  border: 1px dashed var(--accent-a6);
+}
+.q-rv-suggest-head { color: var(--accent-11); }
+.q-rv-pill {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  min-height: 1.75rem;
+  padding: 0.25rem 0.7rem; border-radius: var(--q-radius-control);
+  font-size: 0.78rem; font-weight: 500;
+  color: var(--gray-11); background: var(--gray-a3);
+}
+.q-rv-pill--ok { color: var(--green-11); background: var(--green-a3); }
+.q-rv-pill--warn { color: var(--amber-11); background: var(--amber-a3); }
+.q-rv-blocking { padding: 0.6rem 0.75rem; border-radius: var(--q-radius-control); background: var(--tomato-a3); }
+.q-rv-savebar {
+  width: 100%;
+  padding: 0.8rem 1rem;
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--gray-a5);
+  background: var(--gray-a2);
+}
+/* While editing the bar follows the scroll, so «Guardar» is always one click away. */
+.q-rv-savebar--editing {
+  position: sticky; bottom: 0.75rem; z-index: 2;
+  border-color: var(--accent-a7);
+  background: var(--color-panel-solid);
+  box-shadow: var(--q-elev-lift);
+}
+.q-rv-group-head { color: var(--gray-11); }
+
+/* Review decision: three cards, each with its sentence above its button. */
+.q-decide-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.85rem; width: 100%; }
+@media (max-width: 760px) { .q-decide-grid { grid-template-columns: 1fr; } }
+.q-decide-card {
+  display: flex; flex-direction: column; gap: 0.6rem;
+  padding: 0.95rem 1rem 1rem;
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--gray-a5);
+  background: var(--color-panel-solid);
+}
+.q-decide-card--red   { border-top: 3px solid var(--red-8); }
+.q-decide-card--amber { border-top: 3px solid var(--amber-8); }
+.q-decide-card--green { border-top: 3px solid var(--accent-9); background: linear-gradient(180deg, var(--accent-a2), transparent 60%), var(--color-panel-solid); }
+.q-decide-glyph { width: 1.9rem; height: 1.9rem; flex-shrink: 0; border-radius: 0.6rem; }
+.q-decide-red   { background: var(--red-a3);    color: var(--red-11); }
+.q-decide-amber { background: var(--amber-a3);  color: var(--amber-11); }
+.q-decide-green { background: var(--accent-a3); color: var(--accent-11); }
+
+/* ── /drafts gallery cards (QUA-118 v2 polish) ─────────────────────────────── */
+.q-gallery--cards { grid-template-columns: repeat(auto-fill, minmax(15.5rem, 1fr)); gap: 1rem; }
+.q-gcard {
+  display: flex; flex-direction: column;
+  border-radius: var(--q-radius-card);
+  background: var(--color-panel-solid);
+  border: 1.5px solid var(--gray-a6);
+  transition: transform var(--q-dur) var(--q-ease), box-shadow var(--q-dur) var(--q-ease);
+}
+.q-gcard > * { position: relative; z-index: 1; }
+.q-gcard:hover { transform: translateY(-2px); box-shadow: var(--q-elev-lift); }
+/* Ready: solid, accent, a soft glow — it can go out. */
+.q-gcard--schedulable {
+  border: 2px solid var(--accent-9);
+  box-shadow: 0 0 0 3px var(--accent-a3), 0 14px 30px -20px var(--accent-9);
+}
+/* Not ready yet: a dashed frame says «not finished». */
+.q-gcard--needs_action { border: 2px dashed var(--amber-a8); }
+.q-gcard--draft { border: 2px dashed var(--gray-a8); }
+/* History. */
+.q-gcard--used { border-color: var(--blue-a7); }
+.q-gcard--discarded { border: 2px dashed var(--red-a7); }
+.q-gcard--discarded .q-gcard-media { filter: grayscale(0.85); opacity: 0.6; }
+
+.q-gcard-media { position: relative; aspect-ratio: 4 / 3; overflow: hidden; background: var(--gray-a3); border-radius: calc(var(--q-radius-card) - 2px) calc(var(--q-radius-card) - 2px) 0 0; }
+.q-gcard-shade { position: absolute; inset: 0; pointer-events: none; background: linear-gradient(180deg, rgba(0,0,0,0.45), transparent 35%, transparent 65%, rgba(0,0,0,0.45)); }
+.q-gcard-tl { position: absolute; top: 0.6rem; left: 0.6rem; }
+.q-gcard-bl { position: absolute; bottom: 0.6rem; left: 0.6rem; }
+.q-gcard-media .q-temp--big { position: absolute; top: 0.6rem; right: 0.6rem; }
+.q-temp--big { padding: 0.3rem 0.7rem 0.3rem 0.55rem; font-size: 0.8rem; gap: 0.3rem; }
+
+.q-gstate {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.22rem 0.6rem; border-radius: var(--q-radius-control);
+  font-size: 0.74rem; font-weight: 700;
+  backdrop-filter: blur(6px);
+  background: rgba(10, 10, 14, 0.6); color: white;
+}
+.q-gstate--schedulable { background: var(--accent-9); color: var(--accent-contrast); }
+.q-gstate--needs_action { color: var(--amber-9); }
+.q-gstate--draft { color: var(--gray-5); }
+.q-gstate--used { color: var(--blue-8); }
+.q-gstate--discarded { color: var(--red-8); }
+
+.q-gcard-body { display: flex; flex-direction: column; gap: 0.45rem; padding: 0.8rem 0.9rem 0.4rem; flex: 1; }
+.q-gcard-title { font-size: 0.95rem; font-weight: 700; line-height: 1.3; color: var(--gray-12); }
+.q-gmeta {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  padding: 0.1rem 0.45rem; border-radius: var(--q-radius-control);
+  font-size: 0.7rem; color: var(--gray-11); background: var(--gray-a3);
+}
+.q-gcard-note { color: var(--amber-11); background: var(--amber-a2); border-radius: var(--q-radius-control); padding: 0.35rem 0.5rem; }
+.q-gcard-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; padding: 0.6rem 0.9rem 0.9rem; }
+.q-gcard-actions > :only-child { grid-column: 1 / -1; }
+.q-gcard-actions--review { grid-template-columns: 1fr 1fr; }
+.q-gcard-actions--review > :last-child { grid-column: 1 / -1; }
+
+
+/* The file bar under the review media. */
+.q-rv-mediabar {
+  padding: 0.6rem 0.7rem;
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--gray-a5);
+  background: var(--color-panel-solid);
+}
+
+/* Gallery cards: the picture covers the card's top, so the temperature also shows in the
+   card's lower half — frost for Cold, embers for Hot, equally visible. */
+.q-gcard.q-chip-temp--cold {
+  border-color: rgba(125, 211, 252, 0.55);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.14), 0 14px 30px -20px rgba(56, 189, 248, 0.7);
+}
+.q-gcard.q-chip-temp--cold::after {
+  background:
+    radial-gradient(1.5px 1.5px at 14% 72%, rgba(255, 255, 255, 0.85), transparent 60%),
+    radial-gradient(1px 1px at 33% 86%, rgba(255, 255, 255, 0.75), transparent 60%),
+    radial-gradient(1.5px 1.5px at 58% 78%, rgba(255, 255, 255, 0.8), transparent 60%),
+    radial-gradient(1px 1px at 81% 90%, rgba(255, 255, 255, 0.75), transparent 60%),
+    radial-gradient(60% 55% at 25% 115%, rgba(125, 211, 252, 0.34), transparent 70%),
+    radial-gradient(55% 50% at 75% 120%, rgba(99, 102, 241, 0.26), transparent 70%),
+    linear-gradient(0deg, rgba(125, 211, 252, 0.12), transparent 55%);
+}
+.q-gcard.q-chip-temp--hot {
+  border-color: rgba(255, 120, 70, 0.55);
+  box-shadow: 0 0 0 3px rgba(255, 106, 61, 0.12), 0 14px 30px -20px rgba(255, 90, 50, 0.7);
+}
+/* A ready card keeps its accent frame; the temperature shows in the glow inside. */
+.q-gcard--schedulable.q-chip-temp--cold,
+.q-gcard--schedulable.q-chip-temp--hot { border-color: var(--accent-9); }
+/* A dashed (not ready / discarded) frame keeps its dash in the temperature's colour. */
+.q-gcard--needs_action.q-chip-temp--cold,
+.q-gcard--draft.q-chip-temp--cold { border-style: dashed; }
+.q-gcard--needs_action.q-chip-temp--hot,
+.q-gcard--draft.q-chip-temp--hot,
+.q-gcard--discarded.q-chip-temp--hot,
+.q-gcard--discarded.q-chip-temp--cold { border-style: dashed; }
+
+/* Calendar cell: up to five one-line chips, then «+N más» (the row grows with its fullest cell). */
+.q-chip-time { white-space: nowrap; }
+.q-cell-more.rt-Button {
+  align-self: stretch; width: 100%;
+  position: relative; z-index: 1;
+  height: 1.35rem; gap: 4px;
+  font-size: 0.7rem; font-weight: 700;
+  box-shadow: inset 0 0 0 1px var(--accent-a6);
+}
+
+/* The list «+N más» opens beside it: the events that did not fit, one compact row each. */
+.q-hour-list {
+  display: flex; flex-direction: column;
+  max-height: min(20rem, 60vh); overflow-y: auto;
+  margin: 0 -0.35rem; scrollbar-width: thin;
+}
+.q-hour-list-row {
+  all: unset; cursor: pointer; box-sizing: border-box;
+  display: grid; grid-template-columns: 3.6rem minmax(0, 1fr) auto;
+  align-items: center; column-gap: 0.5rem;
+  width: 100%; padding: 0.3rem 0.35rem;
+  border-radius: 6px;
+}
+.q-hour-list-row + .q-hour-list-row { box-shadow: 0 -1px 0 var(--gray-a4); }
+.q-hour-list-row:hover { background: var(--accent-a3); box-shadow: none; }
+.q-hour-list-row:hover + .q-hour-list-row { box-shadow: none; }
+.q-hour-list-row:focus-visible { outline: 2px solid var(--accent-8); outline-offset: -2px; }
+.q-hour-list-time { white-space: nowrap; }
+.q-hour-list-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.3; }
+.q-hour-list-sub { font-size: 0.68rem; }
+
+/* One-line calendar chip: fits a seventh of the screen; the time yields first. */
+.q-chip-trigger { display: block; width: 100%; min-width: 0; }
+.q-chip-line {
+  position: relative; z-index: 1;
+  display: flex; align-items: center; gap: 3px;
+  width: 100%; min-width: 0;
+}
+.q-chip-line .q-chip-time { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-chip-line > :not(.q-chip-time):not(.q-chip-gap) { flex-shrink: 0; }
+.q-chip-gap { flex: 0 0 1px; }
+.q-dest-dot--sm { width: 1rem; height: 1rem; }
+.q-chip-line .q-ch { width: 13px; height: 13px; border-radius: 3px; }
+.q-chip-line .q-temp--mini { padding: 0.1rem 0.22rem; }
+
+/* The event panel's foot: equal buttons side by side, a clear gap between them. */
+.q-panel-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.75rem;
+  width: 100%;
+}
+.q-panel-actions:empty { display: none; }
+.q-panel-actions .rt-Button { width: 100%; }
+
+/* «Contenido» step: header panel and the legend box. */
+.q-step-panel {
+  display: flex; flex-direction: column; gap: 0.9rem;
+  width: 100%;
+  padding: 1rem 1.1rem;
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--gray-a5);
+  background: linear-gradient(135deg, var(--accent-a2), transparent 55%), var(--color-panel-solid);
+}
+.q-legend-box {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.75rem 1.25rem;
+  width: 100%;
+  padding: 0.85rem 1rem;
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--gray-a5);
+  background: var(--gray-a2);
+}
+.q-legend-box .q-legend-solid, .q-legend-box .q-legend-dashed { width: 1.6rem; height: 1.2rem; flex-shrink: 0; }
+.q-legend-box .q-temp--mini { width: 1.6rem; justify-content: center; flex-shrink: 0; }
+
+/* Weekly series: weekday picker, time and weeks. */
+.q-repeat-box {
+  display: flex; flex-direction: column; gap: 0.85rem;
+  width: 100%;
+  padding: 0.85rem 0.95rem;
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--accent-a5);
+  background: var(--accent-a2);
+}
+.q-repeat-row { display: flex; flex-wrap: wrap; gap: 0.9rem 1.5rem; align-items: flex-end; }
+.q-weekday {
+  all: unset; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 2.1rem; height: 2.1rem;
+  border-radius: var(--q-radius-control);
+  border: 1px solid var(--gray-a7);
+  background: var(--color-panel-solid);
+  font-size: 0.82rem; font-weight: 700; color: var(--gray-11);
+  transition: all var(--q-dur-fast) var(--q-ease);
+}
+.q-weekday:hover { border-color: var(--accent-8); color: var(--accent-11); }
+.q-weekday:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+.q-weekday--on { background: var(--accent-9); border-color: var(--accent-9); color: var(--accent-contrast); }
+
+
+/* Panel heads: a titled header — accent glyph, a real title, a quieter description. */
+.q-drawer-head {
+  background: linear-gradient(180deg, var(--accent-a2), transparent 85%);
+}
+.q-drawer-title {
+  display: flex; align-items: center; gap: 0.75rem;
+}
+.q-drawer-glyph {
+  display: flex; align-items: center; justify-content: center;
+  width: 2.4rem; height: 2.4rem; flex-shrink: 0;
+  border-radius: 0.75rem;
+  background: var(--accent-a4); color: var(--accent-11);
+  box-shadow: inset 0 0 0 1px var(--accent-a6);
+}
+.q-drawer-title-text {
+  font-size: 1.3rem; font-weight: 800; letter-spacing: -0.015em; line-height: 1.2;
+  color: var(--gray-12);
+}
+.q-drawer-head .rt-DialogDescription {
+  font-size: 0.88rem; line-height: 1.5; color: var(--gray-11);
+  padding-left: 3.15rem;
+}
+
+/* Goals on the event panel: each in its own colour, on = filled. */
+.q-goal-chips { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+.q-goal-chip {
+  all: unset; cursor: pointer; box-sizing: border-box;
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  min-height: 2rem; padding: 0.3rem 0.7rem;
+  border-radius: var(--q-radius-control);
+  border: 1px solid var(--tint-line);
+  color: var(--tint-ink); background: transparent;
+  font-size: 0.82rem; font-weight: 600;
+  transition: all var(--q-dur-fast) var(--q-ease);
+}
+.q-goal-chip:hover { background: var(--tint-soft); }
+.q-goal-chip:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+.q-goal-chip--on { background: var(--tint); border-color: var(--tint); color: white; }
+
+/* «Nueva publicación» tiles: the same Cold/Hot treatment as the /drafts cards — the
+   picture covers the top, so frost and embers show from the bottom, with a tinted frame. */
+.q-tile > * { position: relative; z-index: 1; }
+.q-tile.q-chip-temp--cold,
+.q-gcard.q-chip-temp--cold { border-color: rgba(56, 189, 248, 0.6); }
+.q-tile.q-chip-temp--cold {
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.14), 0 14px 30px -20px rgba(56, 189, 248, 0.7);
+}
+.q-tile.q-chip-temp--hot {
+  border-color: rgba(255, 120, 70, 0.6);
+  box-shadow: 0 0 0 3px rgba(255, 106, 61, 0.12), 0 14px 30px -20px rgba(255, 90, 50, 0.7);
+}
+.q-tile.q-chip-temp--cold::after {
+  background:
+    radial-gradient(1.5px 1.5px at 14% 82%, rgba(255, 255, 255, 0.85), transparent 60%),
+    radial-gradient(1px 1px at 40% 92%, rgba(255, 255, 255, 0.75), transparent 60%),
+    radial-gradient(1.5px 1.5px at 70% 86%, rgba(255, 255, 255, 0.8), transparent 60%),
+    radial-gradient(60% 45% at 25% 115%, rgba(125, 211, 252, 0.38), transparent 70%),
+    radial-gradient(55% 45% at 75% 118%, rgba(99, 102, 241, 0.28), transparent 70%),
+    linear-gradient(0deg, rgba(125, 211, 252, 0.14), transparent 45%);
+}
+/* A selected tile keeps its accent frame; a pending one keeps its dash. */
+.q-tile--selected.q-chip-temp--cold,
+.q-tile--selected.q-chip-temp--hot { border-color: var(--accent-9); }
+.q-tile--pending.q-chip-temp--cold,
+.q-tile--pending.q-chip-temp--hot { border-style: dashed; }
+.q-tile--pending.q-chip-temp--cold::after,
+.q-tile--pending.q-chip-temp--hot::after { opacity: 0.5; }
+
+/* Calendar chips: a visible frost or ember tint across the whole chip, in both themes. */
+.q-planner-slot .q-chip-temp--cold {
+  background-image: linear-gradient(90deg, rgba(125, 211, 252, 0.28), rgba(99, 102, 241, 0.10) 70%, transparent) !important;
+  /* top/right/bottom only: the left edge is the event's state */
+  border-top-color: rgba(56, 189, 248, 0.55) !important;
+  border-right-color: rgba(56, 189, 248, 0.55) !important;
+  border-bottom-color: rgba(56, 189, 248, 0.55) !important;
+  box-shadow: 0 0 10px -2px rgba(56, 189, 248, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+.q-planner-slot .q-chip-temp--hot {
+  background-image: linear-gradient(90deg, rgba(255, 106, 61, 0.28), rgba(255, 77, 77, 0.10) 70%, transparent) !important;
+  border-top-color: rgba(255, 120, 70, 0.6) !important;
+  border-right-color: rgba(255, 120, 70, 0.6) !important;
+  border-bottom-color: rgba(255, 120, 70, 0.6) !important;
+  box-shadow: 0 0 10px -2px rgba(255, 90, 50, 0.45);
+}
+.rt-PopoverContent .q-chip-temp--cold {
+  background-image: linear-gradient(90deg, rgba(125, 211, 252, 0.28), transparent) !important;
+}
+.rt-PopoverContent .q-chip-temp--hot {
+  background-image: linear-gradient(90deg, rgba(255, 106, 61, 0.28), transparent) !important;
+}
+
+/* ── Phone widths (QUA-118 v2): what the new screens need below 640px ───────── */
+/* A piece's head: the date pill takes its own line instead of squeezing the title. */
+.q-plan-head { flex-wrap: wrap; }
+.q-plan-head > .q-when-pill { margin-left: auto; }
+/* The destination picker keeps its three buttons on one line in a narrow card. */
+.q-dest-seg { grid-template-columns: repeat(auto-fit, minmax(5.5rem, 1fr)); }
+@media (max-width: 640px) {
+  /* «Nueva publicación» foot: what is chosen on top, then Cancelar | Atrás · Continuar. */
+  .q-assign-foot { flex-wrap: wrap; row-gap: 0.6rem; }
+  .q-assign-foot-status { order: -1; flex: 1 0 100% !important; }
+  .q-assign-foot-nav { flex: 1 1 auto; justify-content: flex-end; }
+  .q-assign-foot .rt-Button { padding-inline: 0.85rem; }
+  /* Event panel foot: the two actions stacked, full width — easy to tap. */
+  .q-panel-actions { grid-template-columns: 1fr; }
+  /* Draft review: the sticky save bar and the decision cards breathe less. */
+  .q-rv-savebar--editing { bottom: 0.5rem; }
+  .q-decide-card { padding: 0.85rem; }
+  /* Gallery and drawer tiles: two per row is the most a phone holds. */
+  .q-tile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; }
+  .q-hero { padding: 0.9rem 1rem; }
 }

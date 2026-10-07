@@ -21,9 +21,15 @@ from qualify_api.planner.publishable import (
     REASON_TEXT,
     MediaCandidate,
     PostCandidate,
+    compatibility,
+    destination_for_product_type,
+    destination_options,
+    destination_product_type,
     evaluate,
     media_product_type_for,
 )
+from qualify_api.publishing.client import MEDIA_TYPE_IMAGE, MEDIA_TYPE_REELS, MEDIA_TYPE_STORIES
+from qualify_api.publishing.service import MEDIA_TYPE_CAROUSEL
 
 R = UnpublishableReason
 TENANT = UUID("f2000000-0000-4000-8000-000000000001")
@@ -129,7 +135,7 @@ def test_a_galeria_of_several_items_is_a_carousel_ordered_by_position() -> None:
         ("reel", ("IMAGE",), None),
         ("reel", ("VIDEO", "VIDEO"), None),
         ("story", ("VIDEO",), "STORIES"),
-        ("story", ("IMAGE",), None),  # no image story in the publisher
+        ("story", ("IMAGE",), "STORIES"),  # image story by category — QUA-118 AC 6
         ("story", ("VIDEO", "IMAGE"), None),
         ("tiktok_video", ("VIDEO",), None),
         ("feed", ("IMAGE",), None),  # the old brief-format label is not a category
@@ -158,8 +164,29 @@ def test_tiktok_video_is_not_publishable() -> None:
     assert _reason(_post(_video(), category="tiktok_video")) is R.CATEGORY_NOT_PUBLISHABLE
 
 
-def test_story_with_an_image_is_not_publishable() -> None:
-    assert _reason(_post(_image(), category="story")) is R.UNSUPPORTED_SHAPE
+def test_story_with_an_image_is_publishable_as_stories() -> None:
+    """QUA-118 AC 6: the publisher has published image stories since QUA-113; the
+    category contract now says so too (MP-11 had left it to the `story` port)."""
+    verdict = evaluate(_post(_image(), category="story"))
+    assert isinstance(verdict, PublishablePost) and verdict.media_product_type == "STORIES"
+    assert verdict.media[0].media_type == "IMAGE"
+    assert _reason(_post(_image(0), _image(1), category="story")) is R.UNSUPPORTED_SHAPE
+
+
+def test_compatibility_names_the_channel_and_the_shape() -> None:
+    """QUA-118: one rule for "can this account take this shape": a typed reason per
+    refusal, so the assign flow can disable an account and say why."""
+    ok = compatibility("instagram", "story", ("IMAGE",))
+    assert ok.ok and ok.media_product_type == "STORIES" and ok.reason is None
+    shape = compatibility("instagram", "reel", ("IMAGE",))
+    assert not shape.ok and shape.reason is R.UNSUPPORTED_SHAPE
+    for platform in ("tiktok", "facebook", ""):
+        channel = compatibility(platform, "reel", ("VIDEO",))
+        assert not channel.ok and channel.reason is R.CHANNEL_NOT_SUPPORTED
+    assert REASON_TEXT[R.CHANNEL_NOT_SUPPORTED]
+    # By port the port decides, on Instagram only.
+    assert compatibility("instagram", "reel", ("VIDEO",), "reel").media_product_type == "REELS"
+    assert compatibility("instagram", "reel", ("IMAGE",), "story").media_product_type == "STORIES"
 
 
 # --- approval and revision -------------------------------------------------------
@@ -374,3 +401,81 @@ def test_without_a_port_assets_with_ports_are_evaluated_as_before() -> None:
     verdict = evaluate(_post(_image(0, output_port="feed")))
     assert isinstance(verdict, PublishablePost) and verdict.media_product_type == "IMAGE"
     assert verdict.output_port is None
+
+
+# --- QUA-118 v2: the event's destination ------------------------------------------------
+#
+# Rules verified against Meta's IG User Media reference (2026-10-06): a feed image only
+# inside 4:5…1.91:1; a feed video IS a reel (no feed VIDEO since 2023-11-09); a story is
+# one image or one video (≤ 60 s, not checkable here); a carousel is never a story nor a
+# reel.
+
+
+def _options(media_types: tuple[str, ...], size: tuple[int, int] | None = None) -> dict:
+    return {o.destination: (o.offered, o.available) for o in destination_options(media_types, size)}
+
+
+def test_destination_options_follow_instagram() -> None:
+    assert _options(("IMAGE",), (1080, 1350)) == {
+        "post": (True, True),
+        "reel": (True, False),
+        "story": (True, True),
+    }
+    assert _options(("IMAGE",), (1080, 1920))["post"] == (True, False)  # 9:16 is too tall
+    assert _options(("VIDEO",)) == {
+        "post": (False, False),  # not offered: it would be a reel anyway
+        "reel": (True, True),
+        "story": (True, True),
+    }
+    assert _options(("IMAGE", "VIDEO")) == {
+        "post": (True, True),
+        "reel": (True, False),
+        "story": (True, False),
+    }
+    story = next(o for o in destination_options(("VIDEO",)) if o.destination == "story")
+    assert "60 segundos" in story.warning
+
+
+def test_destination_product_type_and_its_inverse() -> None:
+    assert destination_product_type("post", ("IMAGE",)) == MEDIA_TYPE_IMAGE
+    assert destination_product_type("post", ("IMAGE", "VIDEO")) == MEDIA_TYPE_CAROUSEL
+    assert destination_product_type("post", ("VIDEO",)) is None
+    assert destination_product_type("reel", ("VIDEO",)) == MEDIA_TYPE_REELS
+    assert destination_product_type("reel", ("IMAGE",)) is None
+    assert destination_product_type("story", ("IMAGE",)) == MEDIA_TYPE_STORIES
+    assert destination_product_type("story", ("VIDEO",)) == MEDIA_TYPE_STORIES
+    assert destination_product_type("story", ("IMAGE", "IMAGE")) is None
+    for product, destination in (
+        (MEDIA_TYPE_IMAGE, "post"),
+        (MEDIA_TYPE_CAROUSEL, "post"),
+        (MEDIA_TYPE_REELS, "reel"),
+        (MEDIA_TYPE_STORIES, "story"),
+        (None, None),
+    ):
+        assert destination_for_product_type(product) == destination
+
+
+def test_the_events_destination_decides_what_meta_receives() -> None:
+    # The same reel POST, as a Reel and as a Historia: the category is only the origin.
+    reel = _post(_video(), category="reel")
+    assert evaluate(replace(reel, destination="reel")).media_product_type == MEDIA_TYPE_REELS
+    as_story = evaluate(replace(reel, destination="story"))
+    assert as_story.media_product_type == MEDIA_TYPE_STORIES
+    assert ("destination", "story") in as_story.provenance
+    # A galería image as a Historia, a carousel only as a post.
+    image = _post(_image(width=1080, height=1350))
+    assert evaluate(replace(image, destination="story")).media_product_type == MEDIA_TYPE_STORIES
+    carousel = _post(_image(0), _video(1))
+    assert _reason(replace(carousel, destination="story")) is R.DESTINATION_NOT_SUPPORTED
+    assert _reason(replace(reel, destination="post")) is R.DESTINATION_NOT_SUPPORTED
+    # No destination (an event the backfill could not derive) keeps the category rule.
+    assert evaluate(reel).media_product_type == MEDIA_TYPE_REELS
+
+
+def test_a_feed_image_outside_metas_range_is_refused_only_as_a_post() -> None:
+    tall = _post(_image(width=1080, height=1920), category="story")
+    assert _reason(replace(tall, destination="post")) is R.IMAGE_RATIO_NOT_ALLOWED
+    assert evaluate(replace(tall, destination="story")).media_product_type == MEDIA_TYPE_STORIES
+    unknown = _post(_image())  # no recorded size: Meta is the one to say
+    assert evaluate(replace(unknown, destination="post")).media_product_type == MEDIA_TYPE_IMAGE
+    assert REASON_TEXT[R.IMAGE_RATIO_NOT_ALLOWED] and REASON_TEXT[R.DESTINATION_NOT_SUPPORTED]

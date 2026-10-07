@@ -598,3 +598,47 @@ def test_eta_and_outputs_labels() -> None:
     assert outputs_label(("reel", "feed", "story")) == "Reel · Feed · Historia"
     assert outputs_label(("square",)) == "Square"
     assert outputs_label(()) == ""
+
+
+# --- draft review: hashtags suggested from the caption (QUA-118 v2 polish) -------------
+
+
+def test_hashtag_list_normalises_what_the_field_holds() -> None:
+    from .creative_vm import format_hashtags, hashtag_list
+
+    assert hashtag_list("#Promoción, #2x1  sabor #2x1") == ["promocion", "2x1", "sabor"]
+    assert hashtag_list("") == []
+    assert format_hashtags(["promo", "taro"]) == "#promo #taro"
+
+
+def test_suggestions_come_from_the_caption_and_skip_what_is_chosen() -> None:
+    from .creative_vm import caption_hashtag_suggestions
+
+    caption = "Nuevo sabor de taro en nuestra heladería. El taro llega por tiempo limitado #helado"
+    tags = caption_hashtag_suggestions(caption, "#postre #taro", extra=("heladoartesanal",))
+    assert tags[0] == "heladoartesanal"  # the catalog's real tag comes first
+    assert "helado" in tags and "heladeria" in tags  # the caption's own tag, then its words
+    assert "taro" not in tags  # already chosen
+    assert "nuestra" not in tags and "para" not in tags  # fillers never become hashtags
+    assert caption_hashtag_suggestions("", "") == []
+
+
+def test_the_stored_script_has_no_length_cap() -> None:
+    from qualify_creative.schemas import SCRIPT_MAX, CopyPayload
+
+    long_script = "palabra " * (SCRIPT_MAX // 4)
+    assert len(long_script) > SCRIPT_MAX
+    assert CopyPayload(hook="Hola", caption="x", script=long_script).script == long_script
+
+
+def test_cta_list_splits_and_formats() -> None:
+    from .creative_vm import cta_list, format_ctas, seen_label
+
+    assert cta_list("Escríbenos por DM · Guarda este post" + chr(10) + "Visítanos") == [
+        "Escríbenos por DM",
+        "Guarda este post",
+        "Visítanos",
+    ]
+    assert format_ctas(["A", "B"]) == "A · B"
+    assert seen_label(0) == "" and seen_label(1) == "visto 1 vez en publicaciones reales"
+    assert seen_label(1200) == "visto 1.2k veces en publicaciones reales"

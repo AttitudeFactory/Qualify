@@ -245,14 +245,14 @@ def test_a_browser_recording_goes_to_heygen_as_wav(
     import io
     import wave
 
-    np = pytest.importorskip("numpy")  # the `ml` group; CI's default sync has none
+    # numpy is in the `dev` group so this runs in CI too; the decoding itself (PyAV,
+    # the `ml` group) is replaced, so `qualify_models` need not be installed
+    import numpy as np
 
     recording = tmp_path / "grabacion-1.webm"
     recording.write_bytes(b"webm")
     second = np.full(44_100, 0.5, dtype=np.float32)
-    monkeypatch.setattr(
-        "qualify_models.providers.decode_audio", lambda path, **kw: second, raising=True
-    )
+    monkeypatch.setattr(voice_lab, "_decode_for_clone", lambda path: second)
     data, filename, content_type = voice_lab.clone_audio(recording)
     assert (filename, content_type) == ("grabacion-1.wav", "audio/wav")
     with wave.open(io.BytesIO(data)) as wav:
@@ -272,38 +272,14 @@ def test_the_analysis_reports_its_real_stages() -> None:
     assert [row["status"] for row in state.analysis_steps] == ["done", "done", "running"]
 
 
-async def test_a_finished_analysis_moves_the_wizard_on_screen_to_the_tone() -> None:
-    from types import SimpleNamespace
-
+def test_the_editor_shows_the_analysis_with_the_sliders() -> None:
+    """Since the Brand Kit editor is one view (§ request 2026-10-05) there is no tone
+    screen to move to: Voz y tono holds the recorder, the analysis and the four axes."""
     from . import brand_kit_editor as editor
-    from . import creative_wizard_pages as wiz
 
-    states = {
-        wiz.BrandWizardState: wiz.BrandWizardState(),
-        wiz.BrandConnectState: wiz.BrandConnectState(),
-        editor.BrandEditState: editor.BrandEditState(),
-    }
-    states[wiz.BrandWizardState].step = wiz._M_VOICE_STEP
-    states[wiz.BrandConnectState].step = wiz._VOICE_STEP
-    states[editor.BrandEditState].step = editor._VOICE_STEP
-
-    class Fake:
-        def __init__(self, path: str) -> None:
-            self.router = SimpleNamespace(page=SimpleNamespace(path=path))
-
-        async def get_state(self, cls: type) -> Any:
-            return states[cls]
-
-    await voice_lab._show_tone_screen(Fake("/brand/connect"))
-    assert states[wiz.BrandConnectState].step == wiz._VOICE_TONE_STEP
-    assert states[wiz.BrandWizardState].step == wiz._M_VOICE_STEP  # not the page's wizard
-    await voice_lab._show_tone_screen(Fake("/brand/manual"))
-    assert states[wiz.BrandWizardState].step == wiz._M_VOICE_STEP + 1
-    await voice_lab._show_tone_screen(Fake("/brand/kit"))
-    assert states[editor.BrandEditState].step == editor._VOICE_STEP + 1
-    # a wizard no longer on Tu voz is left where it is
-    await voice_lab._show_tone_screen(Fake("/brand/kit"))
-    assert states[editor.BrandEditState].step == editor._VOICE_STEP + 1
+    assert not hasattr(voice_lab, "_show_tone_screen")
+    parts = editor._editor(editor.VOICE_SECTION)
+    assert len(parts) == 2 + 4  # the lab, the analysis result, the four sliders
 
 
 def test_the_whisper_warm_up_runs_once_on_its_own_thread(monkeypatch: pytest.MonkeyPatch) -> None:
