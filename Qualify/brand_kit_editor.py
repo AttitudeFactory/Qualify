@@ -1,340 +1,571 @@
-"""/brand/kit — edit an existing Brand Kit (§ request 2026-09-30), from the sidebar's
-"Negocio" block, laid out as views exactly like the Brand Kit wizard: one decision per
-screen, "Paso N de M", Atrás / Continuar, and "Guardar cambios" on the last view,
-Resultados e insights — the brand's referentes as they were last left, read back from
-Postgres (`BrandConnectState.load_saved_referentes`), sortable and rankable as in the
-wizard.
+"""/brand/kit — the Brand Kit inside a session (§ request 2026-09-30), from the sidebar's
+"Negocio" block. Reworked on 2026-10-05 ("una vez logueado, que el botón del Brand Kit
+sirva para editar y terminar configuraciones"):
 
-The wizards (/brand/manual, /brand/connect) BUILD a kit; this walks the same screens to
-change one. Every view is the wizard's own step renderer on the same `CreativeState` /
-`BrandWizardState`, so the two can never drift; only the cursor is this module's
-(`BrandEditState`). There is no brief and no ¿Tienes brandboard? question (the
-brandboard view shows its tiles directly); an edit ends by saving.
+- **What is still to configure comes first.** Tu voz y tono is the one part the wizards
+  no longer ask (it is configured "después"), so until the operator saves it here — or
+  the brand already has a cloned voice — the page opens on it, with "Ahora no" (asked
+  again on the next visit) and "Guardar voz".
+- **Otherwise it opens on Resultados e insights** — the brand's referentes as last left,
+  read back from Postgres (`BrandConnectState.load_saved_referentes`) — with "Editar
+  Brand Kit" in the header.
+- **Editing is ONE view, not steps:** a card per section with a summary of what is there;
+  "Editar" opens it in place (one at a time) with the wizard's own controls, and each
+  section saves on its own ("Guardar") or puts back what it had ("Cancelar"). Saving
+  writes the whole kit (`brand_finish.save_brand_kit`), as the wizards do.
 
-Tu brandboard's logo versions and other elements are session-only in the wizard too —
-nothing writes them to the kit yet (see `creative_wizard_pages`' "NOT YET PERSISTED").
-The view says so rather than letting "Guardar cambios" imply otherwise."""
+Every control is the wizard's own renderer on the same `CreativeState` /
+`BrandWizardState`, so the two can never drift; only the page's mode is this module's
+(`BrandEditState`)."""
 
 from __future__ import annotations
 
+import dataclasses
+from collections.abc import AsyncIterator
+from typing import Any
+
 import reflex as rx
 
+from . import brand_documents
 from .creative_state import CreativeState
-from .creative_wizard_pages import (  # the wizard's own views and chrome, shared on purpose
-    _CONTROL_RADIUS,
+from .creative_vm import KitFormVM
+from .creative_wizard_pages import (  # the wizard's own controls, shared on purpose
+    _KIT_LISTS,
     _RESULTS_COLUMN_MAX,
     BrandConnectState,
     BrandWizardState,
     _brand_extras,
-    _discovery_phase,
-    _identity_complete,
-    _insights_metrics,
-    _insights_profile_card,
+    _discovery_list,
+    _identity_editor,
+    _insights_header,
+    _kit_list_editor,
     _loading_view,
     _logo_versions,
+    _manual_section,
+    _palette_editor,
     _ranking_panel,
-    _step_body,
-    _step_confirm,
-    _step_counter,
-    _step_identity,
-    _step_palette,
-    _step_restrictions,
-    _step_voice,
-    _step_voice_examples,
-    _step_voice_tone,
+    _tone_sliders,
+    _typography_editor,
 )
-from .ui import app_shell, callout, card, page_body, page_header
+from .ui import app_shell, callout, card, page_body, page_header, tone_badge
 from .ui import tokens as T
-from .voice_lab import VoiceLabState
+from .voice_lab import VoiceLabState, voice_analysis_result, voice_lab_panel
 
-#: Title + subtitle per view; the index IS the cursor value.
-EDIT_STEPS: tuple[tuple[str, str], ...] = (
-    ("¿Quién es la marca?", "Lo que define su lugar y a quién le habla."),
-    ("Tu brandboard", "Las versiones de tu logo y los otros elementos de la marca."),
-    ("Paleta de colores", "Los colores con los que se te reconoce."),
-    ("Tu voz", "Grábala o súbela: ajustamos el tono con ella y, si quieres, la clonamos."),
-    ("¿Cómo suena?", "Ajusta el tono en cuatro ejes."),
-    ("Enséñale a hablar", "Ejemplos reales valen más que cualquier descripción."),
-    ("Lo que nunca debe decir", "Reglas duras: una violación es un rechazo."),
-    ("¿Todo correcto?", "Revisa y edita lo que haga falta."),
-    ("Resultados e insights", "Tus referentes y tu competencia, en orden de influencia."),
+#: The editor's sections, in page order — (key, title, icon, what it holds).
+SECTIONS: tuple[tuple[str, str, str, str], ...] = (
+    ("marca", "Marca", "compass", "Posicionamiento, audiencia y tu brief."),
+    ("brandboard", "Brandboard", "image", "Las versiones de tu logo y los otros elementos."),
+    ("tipografia", "Tipografía", "type", "La letra con la que se te reconoce."),
+    ("paleta", "Paleta", "palette", "Los colores con los que se te reconoce."),
+    ("voz", "Voz y tono", "mic", "Tu voz, su clon y cómo suena tu marca."),
+    ("habla", "Cómo habla", "message-circle", "Ejemplos que sí, que no y tus llamados."),
+    ("nunca", "Lo que nunca dice", "shield-alert", "Palabras vetadas y claims prohibidos."),
 )
-EDIT_LAST = len(EDIT_STEPS) - 1
-_CONFIRM_STEP = EDIT_LAST - 1
-_BRANDBOARD_STEP = 1
-_PALETTE_STEP = 2
-_VOICE_STEP = 3
-_EXAMPLES_STEP = 5
+SECTION_KEYS = frozenset(key for key, *_ in SECTIONS)
+VOICE_SECTION = "voz"
+
+#: The brandboard's files, put back by "Cancelar" with the kit's fields.
+_ASSET_FIELDS = ("logo_versions", "logo_version_context", "brand_extras", "font_files")
 
 
 class BrandEditState(rx.State):
-    """The editor's cursor — the kit itself lives in `CreativeState`."""
+    """The page's mode — the kit itself lives in `CreativeState` / `BrandWizardState`."""
 
-    step: int = 0
-
-    @rx.event
-    def restart(self) -> None:
-        """Every visit starts on the first view."""
-        self.step = 0
-
-    @rx.event
-    def next_step(self) -> None:
-        self.step = min(self.step + 1, EDIT_LAST)
+    #: The single editing view is showing (else Resultados e insights, or Tu voz first).
+    editing: bool = False
+    #: The section open for editing ("" for none) — one at a time.
+    open_section: str = ""
+    #: "Ahora no" on Tu voz y tono: this visit goes to the results; the next one asks again.
+    voice_skipped: bool = False
+    #: What the open section had when it was opened, for "Cancelar".
+    _before: dict[str, Any] = {}
 
     @rx.event
-    def prev_step(self) -> None:
-        self.step = max(self.step - 1, 0)
+    async def restart(self) -> None:
+        """Every visit opens on what is still to configure, else on the results — and
+        waits for the saved details before deciding (`BrandConnectState.details_loaded`)."""
+        self.editing = False
+        self.open_section = ""
+        self.voice_skipped = False
+        self._before = {}
+        connect = await self.get_state(BrandConnectState)
+        connect.details_loaded = False
+
+    @rx.event
+    def start_editing(self) -> None:
+        self.editing = True
+
+    @rx.event
+    async def show_results(self) -> None:
+        """Back to Resultados e insights; a section left open puts back what it had."""
+        await self._put_back()
+        self.editing = False
+
+    @rx.event
+    async def open(self, key: str) -> None:
+        """Open one section; another one left open puts back its unsaved changes first."""
+        if key not in SECTION_KEYS or key == self.open_section:
+            return
+        await self._put_back()
+        creative = await self.get_state(CreativeState)
+        wizard = await self.get_state(BrandWizardState)
+        self._before = {
+            "form": dataclasses.asdict(creative._kit_form()),
+            **{field: _copy(getattr(wizard, field)) for field in _ASSET_FIELDS},
+        }
+        self.open_section = key
+
+    @rx.event
+    async def cancel(self) -> None:
+        await self._put_back()
+
+    async def _put_back(self) -> None:
+        if self.open_section and self._before:
+            creative = await self.get_state(CreativeState)
+            wizard = await self.get_state(BrandWizardState)
+            creative._apply_kit_form(KitFormVM(**self._before["form"]))
+            for field in _ASSET_FIELDS:
+                setattr(wizard, field, self._before[field])
+        self.open_section = ""
+        self._before = {}
 
     @rx.event(background=True)
-    async def save(self) -> None:
-        """Guardar cambios: everything — the kit, the brandboard's files, the answers
-        (`brand_finish.save_brand_kit`); the outcome shows above the card."""
+    async def save_section(self) -> AsyncIterator[rx.event.EventSpec | None]:
+        """A section's "Guardar": the whole kit is written (`save_brand_kit`); on success
+        the section closes with its changes kept, and says so with a toast — not the
+        callout the wizards leave on the page (§ 2026-10-05, no inline notices)."""
         from .brand_finish import save_brand_kit
 
-        await save_brand_kit(self)
+        async with self:
+            connect = await self.get_state(BrandConnectState)
+            was = connect.voice_configured
+            if self.open_section == VOICE_SECTION:
+                # saving Voz y tono IS configuring it, cloned voice or not
+                connect.voice_configured = True
+        saved = await save_brand_kit(self)
+        async with self:
+            if not saved:
+                # nothing was stored: Voz y tono is as configured as it was before
+                (await self.get_state(BrandConnectState)).voice_configured = was
+            else:
+                self.open_section = ""
+                self._before = {}
+                creative = await self.get_state(CreativeState)
+                creative.kit_notice = ""
+                creative.tone_saved_custom = creative.tone_is_custom()
+        if saved:
+            yield brand_documents.notify("Sección guardada.", "ok")
+
+    @rx.event
+    def skip_voice(self) -> None:
+        self.voice_skipped = True
+
+    @rx.event(background=True)
+    async def save_voice(self) -> AsyncIterator[rx.event.EventSpec | None]:
+        """Tu voz y tono's "Guardar voz" when it opens the page: marks it configured (the
+        page stops opening on it) and saves the kit with its tone; then the results."""
+        from .brand_finish import save_brand_kit
+
+        async with self:
+            connect = await self.get_state(BrandConnectState)
+            was = connect.voice_configured
+            connect.voice_configured = True
+        saved = await save_brand_kit(self)
+        async with self:
+            if not saved:
+                connect = await self.get_state(BrandConnectState)
+                connect.voice_configured = was
+            else:
+                self.open_section = ""
+                self._before = {}
+                creative = await self.get_state(CreativeState)
+                creative.kit_notice = ""
+                creative.tone_saved_custom = creative.tone_is_custom()
+        if saved:
+            yield brand_documents.notify("Voz y tono guardados.", "ok")
 
 
-def _step_brandboard() -> rx.Component:
-    """Tu brandboard's tiles, straight away: editing a kit does not ask again whether
-    there is a brandboard."""
-    return _step_body(
-        rx.cond(BrandWizardState.logo_error != "", callout(BrandWizardState.logo_error, "error")),
-        callout(
-            "Por ahora las versiones del logo y los otros elementos duran solo esta sesión: "
-            "todavía no se guardan en la marca.",
-            "info",
+def _copy(value: Any) -> Any:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, list):
+        return [dict(item) if isinstance(item, dict) else item for item in value]
+    return value
+
+
+def needs_voice() -> rx.Var[bool]:
+    """Tu voz y tono is still to configure: never saved here, no cloned voice, and the
+    tone still on its defaults — moving any axis and saving is configuring it; cloning
+    the voice is optional (§ request 2026-10-05)."""
+    return (
+        ~BrandConnectState.voice_configured
+        & (VoiceLabState.clone_status == "")
+        & ~CreativeState.tone_saved_custom
+        & ~BrandEditState.voice_skipped
+    )
+
+
+# --------------------------------------------------------------------------------------
+# summaries (a closed section) and editors (an open one)
+# --------------------------------------------------------------------------------------
+
+
+def _faint(text: str) -> rx.Component:
+    return rx.text(text, size="2", color=T.TEXT_FAINT)
+
+
+def _summary_text(value: rx.Var[str], empty: str) -> rx.Component:
+    return rx.cond(
+        value != "",
+        rx.text(value, size="2", color=T.TEXT_MUTED, class_name="q-clamp-2"),
+        _faint(empty),
+    )
+
+
+def _palette_summary() -> rx.Component:
+    return rx.cond(
+        CreativeState.has_palette_colors,
+        rx.hstack(
+            rx.foreach(
+                CreativeState.palette_colors,
+                lambda colour: rx.box(
+                    title=colour,
+                    width="1.1rem",
+                    height="1.1rem",
+                    border_radius="9999px",
+                    background=colour,
+                    box_shadow=f"inset 0 0 0 1px {rx.color('gray', 7)}",
+                    flex_shrink="0",
+                ),
+            ),
+            spacing="2",
+            wrap="wrap",
         ),
-        _logo_versions(),
-        _brand_extras(),
+        _faint("Sin colores"),
     )
 
 
-def _step_insights() -> rx.Component:
-    """Resultados e insights, from what is stored: the profile and its metrics only
-    while this session still holds the read (the wizard's finish clears it), then the
-    referentes — the influence ranking once something was sorted, else each category's
-    list, like the wizard's own final screen."""
-    has_referentes = (BrandConnectState.discovered_accounts.length() > 0) | (
-        BrandConnectState.has_sorted
+def _voice_summary() -> rx.Component:
+    return rx.text(
+        rx.match(
+            VoiceLabState.clone_status,
+            ("complete", "Voz clonada"),
+            ("processing", "Clonando tu voz…"),
+            ("failed", "El clon de tu voz falló"),
+            # no "Pendiente" here (§ request 2026-10-05): editing comes after the first
+            # check, which already asked for the voice — a missing clone is just a fact
+            "Sin voz clonada",
+        ),
+        size="2",
+        color=T.TEXT_MUTED,
     )
-    main = _step_body(
-        rx.cond(BrandConnectState.profile_username != "", _insights_profile_card()),
-        _insights_metrics(),
-        rx.cond(
-            has_referentes,
+
+
+def _summary(key: str) -> rx.Component:
+    if key == "marca":
+        return _summary_text(CreativeState.kit_positioning, "Sin posicionamiento")
+    if key == "brandboard":
+        return rx.text(
+            BrandWizardState.logo_versions.length(),
+            " versiones del logo · ",
+            BrandWizardState.brand_extras.length(),
+            " otros elementos",
+            size="2",
+            color=T.TEXT_MUTED,
+        )
+    if key == "tipografia":
+        return _summary_text(CreativeState.kit_typography_summary, "Sin definir")
+    if key == "paleta":
+        return _palette_summary()
+    if key == VOICE_SECTION:
+        return _voice_summary()
+    blurb = next(text for k, _t, _i, text in SECTIONS if k == key)
+    return rx.text(blurb, size="2", color=T.TEXT_MUTED)
+
+
+def _editor(key: str) -> tuple[rx.Component, ...]:
+    lists = {spec[0]: spec for spec in _KIT_LISTS}
+    if key == "marca":
+        return _identity_editor()
+    if key == "brandboard":
+        return (
             rx.cond(
-                BrandConnectState.has_sorted,
-                rx.fragment(),
+                BrandWizardState.logo_error != "", callout(BrandWizardState.logo_error, "error")
+            ),
+            _logo_versions(),
+            _brand_extras(),
+        )
+    if key == "tipografia":
+        return (_typography_editor(),)
+    if key == "paleta":
+        return _palette_editor()
+    if key == VOICE_SECTION:
+        return (voice_lab_panel(), voice_analysis_result(), *_tone_sliders())
+    if key == "habla":
+        return tuple(_kit_list_editor(*lists[k]) for k in ("do", "dont", "cta"))
+    return (
+        _kit_list_editor(*lists["banned"]),
+        _kit_list_editor(*lists["claims"]),
+        callout("Esto se comprueba siempre, incluso si desactivas el resto.", "warn"),
+    )
+
+
+def _busy() -> rx.Var[bool]:
+    """Nothing saves while the voice is analysed or the brief is read."""
+    return VoiceLabState.analyzing | brand_documents.BrandDocumentState.brief_busy
+
+
+def _section_icon(icon: str) -> rx.Component:
+    return rx.center(
+        rx.icon(icon, size=18, color=T.tone_color("accent", 10)),
+        width="2.25rem",
+        height="2.25rem",
+        border_radius="9999px",
+        background=T.tone_color("accent", 3),
+        flex_shrink="0",
+    )
+
+
+def _section(key: str, title: str, icon: str, blurb: str) -> rx.Component:
+    """One section: closed, its summary and "Editar"; open, the wizard's controls and
+    its own Cancelar / Guardar."""
+    is_open = BrandEditState.open_section == key
+    return card(
+        rx.vstack(
+            rx.hstack(
+                _section_icon(icon),
                 rx.vstack(
-                    _discovery_phase(
-                        BrandConnectState.sector_title,
-                        "Referentes del sector",
-                        BrandConnectState.sector_note,
-                        BrandConnectState.sector_accounts,
+                    rx.text(title, size="3", weight="bold"),
+                    rx.cond(is_open, rx.text(blurb, size="2", color=T.TEXT_MUTED), _summary(key)),
+                    spacing="1",
+                    align_items="start",
+                    min_width="0",
+                    flex="1",
+                ),
+                rx.cond(
+                    is_open,
+                    tone_badge("Editando", "info"),
+                    rx.button(
+                        rx.icon("pencil", size=T.ICON_SM),
+                        "Editar",
+                        variant="soft",
+                        size="2",
+                        on_click=BrandEditState.open(key),
+                        flex_shrink="0",
                     ),
-                    _discovery_phase(
-                        BrandConnectState.national_title,
-                        "Referentes nacionales",
-                        BrandConnectState.national_note,
-                        BrandConnectState.national_accounts,
-                    ),
-                    _discovery_phase(
-                        BrandConnectState.local_title,
-                        "Referentes locales",
-                        BrandConnectState.local_note,
-                        BrandConnectState.local_accounts,
+                ),
+                spacing="3",
+                align="center",
+                width="100%",
+            ),
+            rx.cond(
+                is_open,
+                rx.vstack(
+                    *_editor(key),
+                    rx.hstack(
+                        rx.spacer(),
+                        rx.button(
+                            "Cancelar",
+                            variant="soft",
+                            color_scheme="gray",
+                            size="2",
+                            on_click=BrandEditState.cancel,
+                            disabled=CreativeState.kit_saving,
+                        ),
+                        rx.button(
+                            rx.icon("save", size=T.ICON_SM),
+                            "Guardar",
+                            size="2",
+                            on_click=BrandEditState.save_section,
+                            loading=CreativeState.kit_saving,
+                            disabled=_busy(),
+                        ),
+                        spacing="2",
+                        width="100%",
                     ),
                     spacing="4",
                     width="100%",
+                    align_items="stretch",
+                    padding_top="0.5rem",
                 ),
             ),
-            callout(
-                "Todavía no hay referentes guardados para esta marca: se buscan al conectar "
-                "tus redes, en Marca.",
-                "info",
-            ),
+            spacing="3",
+            width="100%",
+            align_items="stretch",
         ),
-        icon="trophy",
+        id=f"seccion-{key}",
+        border=rx.cond(is_open, f"1px solid {T.tone_color('accent', 8)}", T.BORDER),
+        scroll_margin_top="1rem",
+    )
+
+
+def _edit_view() -> rx.Component:
+    """The sections, one column, centred (§ request 2026-10-05: no side index)."""
+    return rx.vstack(
+        *(_section(*spec) for spec in SECTIONS),
+        spacing="3",
+        width="100%",
+        max_width="46rem",
+        align_self="center",
+        class_name="q-settle",
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Tu voz y tono first, and Resultados e insights
+# --------------------------------------------------------------------------------------
+
+
+def _voice_first_view() -> rx.Component:
+    """What is still to configure, before anything else (§ request 2026-10-05)."""
+    return rx.vstack(
+        callout(
+            "Te falta configurar tu voz y cómo suena tu marca. Lo usamos al generar vídeos "
+            "y textos con tu marca.",
+            "warn",
+            icon="mic",
+        ),
+        card(
+            rx.vstack(
+                rx.hstack(
+                    _section_icon("mic"),
+                    rx.vstack(
+                        rx.text("Voz y tono", size="3", weight="bold"),
+                        rx.text(
+                            "Graba o sube tu voz, clónala si quieres y ajusta los cuatro ejes.",
+                            size="2",
+                            color=T.TEXT_MUTED,
+                        ),
+                        spacing="1",
+                        align_items="start",
+                    ),
+                    spacing="3",
+                    align="center",
+                    width="100%",
+                ),
+                *_editor(VOICE_SECTION),
+                rx.hstack(
+                    rx.spacer(),
+                    rx.button(
+                        "Ahora no",
+                        variant="soft",
+                        color_scheme="gray",
+                        size="2",
+                        on_click=BrandEditState.skip_voice,
+                    ),
+                    rx.button(
+                        rx.icon("save", size=T.ICON_SM),
+                        "Guardar voz",
+                        size="2",
+                        on_click=BrandEditState.save_voice,
+                        loading=CreativeState.kit_saving,
+                        disabled=_busy(),
+                    ),
+                    spacing="2",
+                    width="100%",
+                ),
+                spacing="4",
+                width="100%",
+                align_items="stretch",
+            ),
+            border=f"1px solid {T.tone_color('accent', 8)}",
+        ),
+        spacing="4",
+        width="100%",
+        max_width="46rem",
+        align_self="center",
+        class_name="q-settle",
+    )
+
+
+def _results_view() -> rx.Component:
+    """Resultados e insights, from what is stored — the same screen as the wizard's final
+    one: the profile header while the saved read has it, then the referentes — one card
+    grid, or the influence ranking once something was sorted as referente or
+    competencia."""
+    has_referentes = (BrandConnectState.discovered_accounts.length() > 0) | (
+        BrandConnectState.has_sorted
     )
     return rx.cond(
         BrandConnectState.referentes_loading,
         _loading_view("Cargando tus referentes"),
         rx.vstack(
-            rx.box(main, width="100%", max_width="34rem", align_self="center"),
+            rx.cond(BrandConnectState.profile_username != "", _insights_header()),
             rx.cond(
-                BrandConnectState.has_sorted,
-                rx.box(_ranking_panel(), width="100%", padding_top="1.25rem", border_top=T.BORDER),
+                has_referentes,
+                rx.cond(BrandConnectState.has_ranking, _ranking_panel(), _discovery_list()),
+                callout(
+                    "Todavía no hay referentes guardados para esta marca: se buscan al "
+                    "conectar tus redes al crear el Brand Kit, o agrégalos a mano.",
+                    "info",
+                ),
             ),
-            spacing="4",
+            # § request 2026-10-05: a referente, a competitor or a detractor the search
+            # did not find, added by hand — the wizard's own form (`_manual_section`)
+            _manual_section(with_chips=False),
+            spacing="5",
             width="100%",
+            max_width=_RESULTS_COLUMN_MAX,
+            align_self="center",
+            align_items="stretch",
+            class_name="q-settle",
         ),
     )
 
 
-def _window() -> rx.Component:
-    return rx.match(
-        BrandEditState.step,
-        (0, _step_identity()),
-        (_BRANDBOARD_STEP, _step_brandboard()),
-        (_PALETTE_STEP, _step_palette()),
-        (_VOICE_STEP, _step_voice()),
-        (4, _step_voice_tone()),
-        (_EXAMPLES_STEP, _step_voice_examples()),
-        (6, _step_restrictions()),
-        (_CONFIRM_STEP, _step_confirm()),
-        (EDIT_LAST, _step_insights()),
-        _step_identity(),
-    )
-
-
-def _heading_for(index: int) -> rx.Var[str]:
-    return rx.match(
-        BrandEditState.step,
-        *((position, text[index]) for position, text in enumerate(EDIT_STEPS)),
-        EDIT_STEPS[0][index],
-    )
-
-
-def _can_continue() -> rx.Var[bool]:
-    """The wizard's own requirements, for the views that have one."""
+def _header_action() -> rx.Component:
     return rx.cond(
-        VoiceLabState.analyzing,
-        False,  # § 2026-10-01: nothing moves while the voice is being analysed
-        rx.match(
-            BrandEditState.step,
-            (0, _identity_complete()),
-            (_PALETTE_STEP, CreativeState.kit_palette != ""),
-            (_EXAMPLES_STEP, CreativeState.kit_do_examples != ""),
-            True,
+        BrandEditState.editing,
+        rx.button(
+            rx.icon("chart-bar", size=T.ICON_SM),
+            "Ver resultados",
+            variant="soft",
+            size="2",
+            on_click=BrandEditState.show_results,
+        ),
+        rx.button(
+            rx.icon("pencil", size=T.ICON_SM),
+            "Editar Brand Kit",
+            size="2",
+            on_click=BrandEditState.start_editing,
         ),
     )
 
 
-def _column_width() -> rx.Var[str]:
-    """Same widths as the wizard: the brandboard's tiles take the card's whole width,
-    ¿Todo correcto? gets room for its lists, Resultados e insights for its ranking
-    once something was sorted, and every other view keeps 34rem."""
+def _subtitle() -> rx.Var[str]:
     return rx.cond(
-        BrandEditState.step == _BRANDBOARD_STEP,
-        "100%",
+        BrandEditState.editing,
+        "Edita cada sección y guárdala por separado.",
         rx.cond(
-            BrandEditState.step == _CONFIRM_STEP,
-            "46rem",
-            rx.cond(
-                (BrandEditState.step == EDIT_LAST) & BrandConnectState.has_sorted,
-                _RESULTS_COLUMN_MAX,
-                "34rem",
-            ),
+            needs_voice(),
+            "Antes de nada, termina de configurar tu marca.",
+            "Tus referentes y tu competencia, en orden de influencia.",
         ),
-    )
-
-
-def _controls() -> rx.Component:
-    return rx.hstack(
-        rx.cond(
-            BrandEditState.step > 0,
-            rx.button(
-                rx.icon("chevron-left", size=T.ICON_SM),
-                "Atrás",
-                variant="ghost",
-                size="2",
-                radius=_CONTROL_RADIUS,
-                on_click=BrandEditState.prev_step,
-                disabled=VoiceLabState.analyzing,
-            ),
-        ),
-        rx.spacer(),
-        rx.cond(
-            BrandEditState.step == EDIT_LAST,
-            # the flow's one solid action (§5.5): an edit ends by saving
-            rx.button(
-                rx.icon("save", size=T.ICON_SM),
-                "Guardar cambios",
-                size="2",
-                radius=_CONTROL_RADIUS,
-                on_click=BrandEditState.save,
-                loading=CreativeState.kit_saving,
-            ),
-            rx.button(
-                "Continuar",
-                rx.icon("chevron-right", size=T.ICON_SM),
-                size="2",
-                radius=_CONTROL_RADIUS,
-                on_click=BrandEditState.next_step,
-                disabled=~_can_continue(),
-            ),
-        ),
-        width="100%",
-        align="center",
-        spacing="3",
     )
 
 
 def brand_edit_index() -> rx.Component:
-    """The wizard's page shape (`creative_wizard_pages.brand_manual_index`): the header
-    with the step counter, one card filling the panel, the view centred in it and the
-    controls pinned to its bottom."""
+    loading = CreativeState.kit_loading | ~BrandConnectState.details_loaded
     return app_shell(
-        page_header(
-            _heading_for(0),
-            _heading_for(1),
-            kicker=_step_counter(BrandEditState.step, len(EDIT_STEPS)),
-            title_size="8",
-        ),
+        page_header("Tu Brand Kit", _subtitle(), _header_action(), title_size="7"),
         page_body(
             rx.vstack(
-                rx.vstack(
-                    rx.cond(
-                        CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")
-                    ),
-                    rx.cond(
-                        CreativeState.kit_notice != "",
-                        callout(CreativeState.kit_notice, "ok", icon="circle-check"),
-                    ),
-                    spacing="3",
-                    width="100%",
-                    max_width="34rem",
-                    align_self="center",
-                    align_items="center",
+                rx.cond(CreativeState.kit_error != "", callout(CreativeState.kit_error, "error")),
+                rx.cond(
+                    CreativeState.kit_notice != "",
+                    callout(CreativeState.kit_notice, "ok", icon="circle-check"),
                 ),
                 rx.cond(
-                    CreativeState.kit_loading,
-                    card(
-                        _loading_view("Cargando tu marca"),
-                        padding="1.75rem",
-                        width="100%",
-                        flex="1",
-                        display="flex",
-                        align_items="center",
-                        justify_content="center",
-                    ),
-                    card(
-                        rx.vstack(
-                            _window(),
-                            width="100%",
-                            max_width=_column_width(),
-                            align_self="center",
-                            align_items="center",
-                            flex="1",
-                            justify_content="center",
-                        ),
-                        _controls(),
-                        padding="1.75rem",
-                        width="100%",
-                        flex="1",
-                        display="flex",
-                        flex_direction="column",
-                        justify_content="space-between",
-                        # remount per view so the frame settles in too (the wizard's
-                        # own note on this `key` explains why it sits on the card)
-                        key=BrandEditState.step.to_string(),
-                        gap="1.5rem",
+                    loading,
+                    _loading_view("Cargando tu marca"),
+                    rx.cond(
+                        BrandEditState.editing,
+                        _edit_view(),
+                        rx.cond(needs_voice(), _voice_first_view(), _results_view()),
                     ),
                 ),
                 spacing="4",
                 width="100%",
-                flex="1",
-                min_height="0",
             ),
         ),
     )

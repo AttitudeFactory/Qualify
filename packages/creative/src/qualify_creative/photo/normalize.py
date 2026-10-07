@@ -81,3 +81,50 @@ def export_for_instagram(image: Image.Image, *, width: int = 1080, quality: int 
     buffer = io.BytesIO()
     image.convert("RGB").save(buffer, format="JPEG", quality=quality, optimize=True)
     return buffer.getvalue()
+
+
+#: Meta's cap for a feed or story image (`ig-user/media.md`), the same 8 MB the
+#: publisher enforces (`qualify_api.publishing.client.IMAGE_MAX_BYTES`).
+META_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+#: Tried in order until the file fits `META_IMAGE_MAX_BYTES`; at 1080 px the first one
+#: always does — the rest are a guard, not a plan.
+_META_JPEG_QUALITIES = (92, 85, 75, 65)
+
+
+class ImageTooLargeForMeta(ValueError):
+    """Even the lowest quality step leaves the JPEG over Meta's byte cap."""
+
+
+def to_meta_jpeg(
+    data: bytes,
+    *,
+    background: tuple[int, int, int] = (255, 255, 255),
+    max_bytes: int = META_IMAGE_MAX_BYTES,
+) -> bytes:
+    """Any image the pipeline PRODUCED (a flyer slide, a template still) as the JPEG Meta
+    accepts (§ request 2026-10-05): the publisher refuses anything that is not
+    `image/jpeg` with real JPEG bytes, up to 8 MB.
+
+    Unlike `export_for_instagram` (operator photos): no resize and no sharpening — these
+    are synthetic graphics already rendered at their target size, and an unsharp mask
+    would halo the text. Chroma is kept at full resolution (4:4:4) for the same reason:
+    the default 4:2:0 smears coloured type. JPEG has no alpha, so transparency is
+    flattened onto `background` instead of turning black. Quality steps down only if a
+    file would exceed `max_bytes`."""
+    with Image.open(io.BytesIO(data)) as source:
+        source.load()
+        has_alpha = source.mode in ("RGBA", "LA") or (
+            source.mode == "P" and "transparency" in source.info
+        )
+        if has_alpha:
+            rgba = source.convert("RGBA")
+            image = Image.new("RGB", rgba.size, background)
+            image.paste(rgba, mask=rgba.getchannel("A"))
+        else:
+            image = source.convert("RGB")
+    for quality in _META_JPEG_QUALITIES:
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=quality, optimize=True, subsampling=0)
+        if buffer.tell() <= max_bytes:
+            return buffer.getvalue()
+    raise ImageTooLargeForMeta(f"{image.width}x{image.height} stays over {max_bytes} bytes as JPEG")

@@ -3,7 +3,9 @@ brief's `ContentKind` asks for (§ request 2026-09-25).
 
 - `CREATOR_SCRIPT` — nothing: the script IS the artifact, and it lives in the copy.
 - `STATIC_FLYER` — `qualify_creative.compose.render_flyer` over the operator's own
-  images: one PNG, or the carousel's slides. Local, deterministic, free.
+  images: one image, or the carousel's slides. Local, deterministic, free. Rendered as
+  PNG and STORED AS JPEG (§ 2026-10-05): Meta accepts only JPEG images, and so does the
+  publisher — every image this module writes goes through `to_meta_jpeg`.
 - `AVATAR_VIDEO` / `ANIMATED_AVATAR_VIDEO` — HeyGen, through the `GenerationProvider`
   seam and the `CreativeRouter` (credential resolution + the budget pre-flight):
   1. background + products composed into ONE background image
@@ -20,7 +22,12 @@ brief's `ContentKind` asks for (§ request 2026-09-25).
 
 Every vendor call that costs money is written as a usage row with its provenance, also
 when a later step fails. The store is a seam (`MediaStore`): local files next to the
-uploads today (`LocalMediaStore`, served by the app), the tenant's R2 prefix later.
+uploads today (`LocalMediaStore`, served by the app), the tenant's R2 prefix later —
+pending, see `docs/pendientes-generador-contenido.md` §1 (a generated POST is not
+publishable by the Planificador until its media is in R2).
+
+Every write carries its MIME type (`MediaWrite.content_type` → `image_assets.content_type`,
+0029), which the Planificador requires: NULL means "not publishable".
 """
 
 from __future__ import annotations
@@ -46,6 +53,7 @@ from qualify_creative.enums import (
     FailureReason,
     GenerationTask,
 )
+from qualify_creative.photo.normalize import to_meta_jpeg
 from qualify_creative.providers import (
     CredentialResolver,
     GenerationRequest,
@@ -69,11 +77,17 @@ from qualify_creative.render.registry import TemplateNotFound
 from qualify_creative.router import BudgetContext, CreativeRouter, HopAction
 from qualify_creative.schemas import BrandKit, ContentBrief, CopyPayload
 
+from . import trace
+from .voice_access import VoiceGuard
+
 logger = logging.getLogger(__name__)
 
 HEYGEN = "heygen"
 REMOTION = "remotion"
 COMPOSE_MODEL = "qualify-compose-v1"
+#: The MIME types this module stores, and that the publisher accepts.
+JPEG = "image/jpeg"
+MP4 = "video/mp4"
 #: Render jobs are named deterministically from the draft and the recipe, so a retry of
 #: the same draft re-uses the service's job (CONTRACT §4: `POST /render` is idempotent on
 #: the id) instead of rendering twice.
@@ -117,6 +131,9 @@ class MediaWrite:
     #: the run it came from — the provenance "template × metrics" needs (design D16).
     output_port: str | None = None
     template_run_id: UUID | None = None
+    #: The MIME type the file was stored with (`image_assets.content_type`, 0029): what
+    #: the Planificador checks before it lets a POST be published.
+    content_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -340,6 +357,7 @@ class MediaProducer:
         pricing: PricingTable,
         heygen: HeyGenTools | None,
         download: Downloader = _http_download,
+        voice_guard: VoiceGuard | None = None,
         remotion: RemotionTemplateAdapter | None = None,
         templates: TemplateRegistry | None = None,
         brand_names: BrandNames | None = None,
@@ -351,6 +369,10 @@ class MediaProducer:
         self._pricing = pricing
         self._heygen = heygen
         self._download = download
+        #: Which voices a brand may render with (`voice_access`, § 2026-10-05). None
+        #: = no check — only for tests with a fake HeyGen; `composition` always wires
+        #: `BrandVoiceGuard`.
+        self._voice_guard = voice_guard
         self._remotion = remotion
         self._templates = templates
         self._brand_names = brand_names
@@ -429,8 +451,9 @@ class MediaProducer:
         width, height = brief.format.dimensions
         out: list[MediaWrite] = []
         for position, png in enumerate(slides):
-            key = generated_key(tenant_id, draft_id, f"slide-{position + 1}.png")
-            self._store.write(key, png)
+            # rendered as PNG, stored as JPEG: the only image format Meta takes
+            key = generated_key(tenant_id, draft_id, f"slide-{position + 1}.jpg")
+            self._store.write(key, to_meta_jpeg(png))
             out.append(
                 MediaWrite(
                     position=position,
@@ -442,6 +465,7 @@ class MediaProducer:
                     aspect_ratio=brief.format.aspect_ratio,
                     model_id=COMPOSE_MODEL,
                     provider="local",
+                    content_type=JPEG,
                     params={
                         "carousel": brief.media.carousel,
                         "slides": len(slides),
@@ -544,6 +568,23 @@ class MediaProducer:
                 "render_count": manifest.render_count,
             },
         )
+        trace.media_request(
+            draft_id=draft_id,
+            provider="Remotion",
+            what=f"plantilla {manifest.id} v{manifest.version}, regla {rule}",
+            fields={
+                "salidas": ", ".join(manifest.outputs),
+                "textos que imprime": "\n".join(
+                    f"  {port}: {text}" for port, text in props.texts.items()
+                ),
+                "marca": props.brand.name,
+                "paleta": ", ".join(props.brand.palette),
+                "fuentes": props.brand.fonts or "por defecto",
+                "fotos": len(props.photos),
+                "costo estimado": f"USD {estimated_cost:.4f}",
+                "ETA": f"{eta:.0f} s",
+            },
+        )
         try:
             result = self._remotion.generate(request, api_key="")
         except RenderServiceError as exc:
@@ -561,8 +602,15 @@ class MediaProducer:
             rendered = outputs.get(port)
             if rendered is None:
                 continue
-            key = generated_key(tenant_id, draft_id, f"{port}.{out.extension}")
-            self._store.write(key, rendered["bytes"])
+            # a still comes back from the render service as PNG and is stored as JPEG
+            # (Meta takes no other image format); the Reel is stored as rendered
+            if out.media_type == "image":
+                data, extension, content_type = to_meta_jpeg(rendered["bytes"]), "jpg", JPEG
+            else:
+                data, extension = rendered["bytes"], out.extension
+                content_type = str(rendered.get("mime_type") or MP4)
+            key = generated_key(tenant_id, draft_id, f"{port}.{extension}")
+            self._store.write(key, data)
             params: dict[str, Any] = {
                 "template_id": manifest.id,
                 "template_version": manifest.version,
@@ -588,6 +636,7 @@ class MediaProducer:
                     params=params,
                     output_port=port,
                     template_run_id=job_id,
+                    content_type=content_type,
                 )
             )
         actual_cost = per_render * len(writes)
@@ -714,6 +763,21 @@ class MediaProducer:
         stamp = hashlib.sha256(f"{draft_id}:{script}".encode()).hexdigest()[:24]
         key = self._key(tenant_id, brief.brand_id)
         media = brief.media
+        # § request 2026-10-05: the voice must be this brand's own clone or a public
+        # one — every clone sits in the same HeyGen account, so without this check a
+        # brand could render in another brand's cloned voice. Before any upload or
+        # render, so a refusal costs nothing.
+        if self._voice_guard is not None and not self._voice_guard(
+            tenant_id=tenant_id,
+            brand_id=brief.brand_id,
+            voice_id=media.voice_id or "",
+            api_key=key,
+        ):
+            raise _MediaFailed(
+                FailureReason.ROUTE_BLOCKED_BY_POLICY.value,
+                "La voz elegida no está disponible para esta marca: solo puedes usar "
+                "tu propia voz clonada o una voz pública de HeyGen.",
+            )
 
         params: dict[str, object] = {
             "script": script,
@@ -747,7 +811,9 @@ class MediaProducer:
             subject = {"image_asset_id": self._upload(key, image, name, f"{stamp}-avatar")}
         else:
             subject = {
-                "avatar_id": self._prompt_avatar(key, brief, stamp, budget, usage),
+                "avatar_id": self._prompt_avatar(
+                    key, brief, stamp, budget, usage, draft_id=draft_id
+                ),
                 "engine": media.engine,
             }
         params.update(subject)
@@ -758,6 +824,21 @@ class MediaProducer:
                 stable_prefix="", volatile_suffix="", prefix_fingerprint=""
             ),
             params=params,
+        )
+        trace.media_request(
+            draft_id=draft_id,
+            provider="HeyGen",
+            what="video con avatar",
+            fields={
+                "guion (lo que dice el avatar)": params.get("script"),
+                "voz": params.get("voice_id"),
+                "avatar": params.get("avatar_id"),
+                "motor": params.get("engine"),
+                "foto animada": "sí" if "image_asset_id" in params else None,
+                "fondo compuesto": "sí" if "background_image_asset_id" in params else None,
+                "formato": f"{params.get('aspect_ratio')} · {params.get('resolution')}",
+                "locale": params.get("locale"),
+            },
         )
         spent = sum((u.cost_usd for u in usage), Decimal(0))
         outcome = self._router.run(
@@ -816,6 +897,7 @@ class MediaProducer:
                 aspect_ratio=brief.format.aspect_ratio,
                 model_id=result.model_id,
                 provider=result.provider,
+                content_type=MP4,
                 params={
                     "video_id": payload.get("video_id"),
                     "duration_seconds": payload.get("duration_seconds"),
@@ -837,6 +919,8 @@ class MediaProducer:
         stamp: str,
         budget: BudgetContext,
         usage: list[MediaUsage],
+        *,
+        draft_id: UUID,
     ) -> str:
         """A synthetic avatar from the operator's description — a photoreal person for
         `AVATAR_VIDEO`, an animated character otherwise: created, then waited for — its
@@ -846,10 +930,17 @@ class MediaProducer:
         if budget.hard_stop and price > budget.remaining_usd:
             raise _MediaFailed(FailureReason.BUDGET_EXCEEDED.value, "prompt avatar over budget")
         style = HUMAN_STYLE if brief.kind is ContentKind.AVATAR_VIDEO else ANIMATED_STYLE
+        prompt = (style + brief.media.avatar_prompt.strip())[:1000]
+        trace.media_request(
+            draft_id=draft_id,
+            provider="HeyGen",
+            what="avatar a partir de una descripción",
+            fields={"prompt": prompt, "costo": f"USD {price:.4f}"},
+        )
         look_id = self._heygen.create_prompt_avatar(
             api_key=key,
             name=f"qualify-{stamp[:8]}",
-            prompt=(style + brief.media.avatar_prompt.strip())[:1000],
+            prompt=prompt,
             aspect_ratio=brief.format.aspect_ratio,
             idempotency_key=f"{stamp}-look",
         )

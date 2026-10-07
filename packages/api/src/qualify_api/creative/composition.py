@@ -43,6 +43,7 @@ from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.dispatch import InlineDispatcher
 from qualify_api.creative.media import LocalMediaStore, MediaProducer, R2ReadingMediaStore
 from qualify_api.creative.service import ContentService
+from qualify_api.creative.voice_access import BrandVoiceGuard
 from qualify_api.creative.voice_service import VoiceProfileService
 
 logger = logging.getLogger(__name__)
@@ -158,6 +159,8 @@ def production_content_service() -> ContentService:
             credentials=credentials,
             pricing=pricing,
             heygen=heygen,
+            # a brand renders only in its own cloned voice or a public one (§ 2026-10-05)
+            voice_guard=BrandVoiceGuard(heygen),
             # the template engine (plan-mvp-plantillas-remotion.md §2): the published
             # manifests in packages/render/templates, the render service over HTTP, the
             # brand's name for the composition and the catalog's products

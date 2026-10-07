@@ -100,6 +100,8 @@ def _rich_kit(brand_id: UUID) -> BrandKit:
         cta_patterns=("Pide por WhatsApp",),
         length_targets=LengthTargets(caption_min_chars=100, caption_max_chars=500),
         palette_rgb=("#FFD100", "#1A1A1A"),
+        font_heading="Montserrat",
+        font_body="Inter",
         logo_asset_key="brand/logo.png",
         template_asset_key="brand/template.png",
         reference_image_keys=("brand/ref-1.jpg", "brand/ref-2.jpg"),

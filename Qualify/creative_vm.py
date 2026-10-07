@@ -350,6 +350,9 @@ class KitFormVM:
     forbidden_claims: str = ""
     cta_patterns: str = ""
     palette_rgb: str = ""
+    #: The brand's type faces by family name (§ 2026-10-05): headlines and body copy.
+    font_heading: str = ""
+    font_body: str = ""
     has_logo: bool = False
     has_template: bool = False
 

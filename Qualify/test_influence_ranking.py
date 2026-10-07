@@ -123,6 +123,26 @@ def test_a_drop_across_groups_or_lists_does_nothing() -> None:
     assert state.influence_order == []
 
 
+def test_with_only_one_kind_sorted_its_ranking_still_reorders() -> None:
+    """§ request 2026-10-06: "si por casualidad solo hay referentes o competencia igual
+    quiero que se pueda mutar la lista" — the other grid is simply not there."""
+    for only, ranked in (("referente", "ranked_referentes"), ("competencia", "ranked_competencia")):
+        state = BrandConnectState()
+        state.sector_accounts = [wiz.card_view(_card(h)) for h in ("a", "b", "c")]
+        state.account_buckets = {_key(h): only for h in ("a", "b", "c")}
+        assert state.has_ranking
+        BrandConnectState.rank_pick.fn(state, _key("c"))
+        assert BrandConnectState.rank_drop.fn(state, _key("a")) is not None
+        assert [a["key"] for a in getattr(state, ranked)] == [_key("c"), _key("a"), _key("b")]
+
+
+def test_only_detractores_sorted_is_no_ranking() -> None:
+    state = BrandConnectState()
+    state.sector_accounts = [wiz.card_view(_card("a"))]
+    state.account_buckets = {_key("a"): "detractor"}
+    assert not state.has_ranking
+
+
 # -- storage ------------------------------------------------------------------------------
 
 

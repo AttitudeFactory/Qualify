@@ -217,9 +217,12 @@ def test_phase_queries_scope_sector_then_country_then_city() -> None:
         ("tiktok:keyword:recetas", None),
     ]
     assert _labels("national", seed) == [("tiktok:keyword:comida Colombia", "CO")]
-    # the account's own city hashtag is preferred over the composed one
+    # up to `LOCAL_TERMS` rubro terms with the city (plan 12, 2026-10-05: one term found
+    # nobody for a niche rubro in a small city), then the account's own city hashtag,
+    # preferred over the composed one
     assert _labels("local", seed) == [
         ("tiktok:keyword:foodie Cúcuta", "CO"),
+        ("tiktok:keyword:comida Cúcuta", "CO"),
         ("tiktok:hashtag:#cucutafood", "CO"),
     ]
 
@@ -244,7 +247,7 @@ def test_sector_prefers_the_accounts_own_topical_hashtags_over_broad_terms() -> 
 
 def test_local_falls_back_to_the_composed_city_hashtag() -> None:
     seed = cd.DiscoverySeed("x", ("fitness_health",), (), "CO", "Bogotá")
-    assert _labels("local", seed)[1] == ("tiktok:hashtag:#bogotafitness", "CO")
+    assert _labels("local", seed)[-1] == ("tiktok:hashtag:#bogotafitness", "CO")
 
 
 def test_phases_without_their_input_explain_instead_of_spending() -> None:
@@ -535,13 +538,17 @@ def test_phased_run_ranks_by_influence_and_never_repeats_an_account(tmp_path: Pa
         "local.chico",
         "oculto.dos",
     ]
-    # keyword, hashtag, 2 Google, ig read, 3 enrich (mirrors 404 → free)
-    assert local.credits == 1 + 1 + 2 + 1 + 3
+    # 2 keywords (plan 12: two rubro terms with the city), hashtag, 4 Google (2 terms ×
+    # 2 networks), ig read, 3 enrich (mirrors 404 → free)
+    assert local.credits == 2 + 1 + 4 + 1 + 3
     assert local.queries == [
         "tiktok:keyword:foodie Cúcuta",
+        "tiktok:keyword:comida Cúcuta",
         "tiktok:hashtag:#cucutafood",
         "tiktok:google:foodie Cúcuta",
+        "tiktok:google:comida Cúcuta",
         "instagram:google:foodie Cúcuta",
+        "instagram:google:comida Cúcuta",
     ]
     enriched = {"oculto.uno", "local.chico", "oculto.dos"}
     assert sum(1 for p, q in calls if p == "/v1/tiktok/profile" and q["handle"] in enriched) == 3
@@ -595,7 +602,8 @@ def test_google_terms_follow_the_phase_scoping() -> None:
     )
     assert cd.google_terms("sector", seed) == ["programacion", "software", "aprende a programar"]
     assert cd.google_terms("national", seed) == ["tecnología Colombia"]
-    assert cd.google_terms("local", seed) == ["programación Cúcuta"]
+    # the two most specific local terms (plan 12)
+    assert cd.google_terms("local", seed) == ["programación Cúcuta", "tecnología Cúcuta"]
     assert cd.google_terms("sector", cd.DiscoverySeed("x", ())) == []
 
 
@@ -952,11 +960,11 @@ def test_the_taxonomy_and_the_accounts_own_city_tag_still_win_over_the_catalog()
     niche = cd.DiscoverySeed(
         "x", ("food_drink",), (), "CO", "Bogotá", catalog_hashtags=("burgers",)
     )
-    assert _labels("local", niche)[1] == ("tiktok:hashtag:#bogotafood", "CO")
+    assert _labels("local", niche)[-1] == ("tiktok:hashtag:#bogotafood", "CO")
     own = cd.DiscoverySeed(
         "x", (), ("cucutafood",), "CO", "Cúcuta", terms=("burgers",), catalog_hashtags=("smash",)
     )
-    assert _labels("local", own)[1] == ("tiktok:hashtag:#cucutafood", "CO")
+    assert _labels("local", own)[-1] == ("tiktok:hashtag:#cucutafood", "CO")
 
 
 def test_no_catalog_means_no_extra_local_query() -> None:

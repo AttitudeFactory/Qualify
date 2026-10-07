@@ -82,19 +82,6 @@ def _field_label(text: str, hint: str | None = None) -> rx.Component:
     )
 
 
-def _choice(
-    value: rx.Var[str], on_change: object, options: tuple[tuple[str, str], ...]
-) -> rx.Component:
-    """A single choice among a few named options. A segmented control, not a row of
-    `solid` buttons: the screen keeps ONE solid action (Generar, §5.5)."""
-    return rx.segmented_control.root(
-        *(rx.segmented_control.item(label, value=key) for key, label in options),
-        value=value,
-        on_change=on_change,
-        size="2",
-    )
-
-
 _IMAGE_ACCEPT = {"image/*": [".png", ".jpg", ".jpeg", ".webp"]}
 
 
@@ -791,19 +778,8 @@ def _step_topic() -> rx.Component:
             ),
             "Qué anuncia esta pieza. Es lo único obligatorio.",
         ),
-        _field(
-            "Objetivo",
-            _choice(
-                CreativeState.brief_objective,
-                CreativeState.set_objective,
-                (
-                    ("awareness", "Reconocimiento"),
-                    ("consideration", "Consideración"),
-                    ("lead", "Captar contacto"),
-                    ("sale", "Vender"),
-                ),
-            ),
-        ),
+        # Objetivo was asked here until 2026-10-05 (§ request: "quitar objetivo y destino
+        # en todas las opciones"); the brief keeps `brief_objective` at its default.
         icon="megaphone",
     )
 
@@ -824,14 +800,8 @@ def _step_channel() -> rx.Component:
                 on_change=CreativeState.set_content_type,
             ),
         ),
-        _field(
-            "Destino",
-            _choice(
-                CreativeState.brief_intent,
-                CreativeState.set_intent,
-                (("organic", "Orgánico"), ("ads", "Anuncio"), ("both", "Ambos")),
-            ),
-        ),
+        # Destino was asked here until 2026-10-05 (same request as Objetivo); the brief
+        # keeps `brief_intent` at its default.
         _field(
             "Formato",
             rx.segmented_control.root(

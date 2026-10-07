@@ -423,3 +423,33 @@ def test_the_suggest_button_asks_for_room_to_curate(repo, fresh_choices) -> None
     )
     assert calls[0][-1] == creator_discovery.CHOSEN_HASHTAGS
     assert choice.tags == ("foodie",)
+
+
+# -- remember_created (§ third round of 2026-10-05) ---------------------------------------
+
+
+def test_created_hashtags_go_into_the_catalog_for_the_next_brand(repo, monkeypatch) -> None:
+    """ "La tool necesita primero buscar en la db; si no hay, los crea": what Claude created
+    for a rubro the catalog knew nothing about is stored, linked from the operator's words,
+    so the next brand that types that rubro finds it without a creation."""
+    monkeypatch.setattr(hashtag_catalog, "_seeded", False)
+    seed = _seed(terms=("xilofonos artesanales",))
+    assert hashtag_catalog.catalog_hashtags_for(TENANT, seed, repository=repo) == ()
+    summary = hashtag_catalog.remember_created(
+        TENANT, seed, ("xilofonosartesanales", "fyp", "cucuta"), network="tiktok", repository=repo
+    )
+    assert summary.hashtags == 3
+    stored = repo.get(TENANT, "xilofonosartesanales")
+    assert stored is not None and stored.source == "ai" and stored.seen_count == 0
+    found = hashtag_catalog.catalog_hashtags_for(TENANT, seed, repository=repo)
+    assert found == ("xilofonosartesanales",)  # generic and place tags are never linked
+
+
+def test_a_repeated_creation_does_not_gain_weight(repo, monkeypatch) -> None:
+    monkeypatch.setattr(hashtag_catalog, "_seeded", False)
+    seed = _seed(terms=("xilofonos",))
+    for _ in range(3):
+        hashtag_catalog.remember_created(TENANT, seed, ("xilofonista",), repository=repo)
+    hits = repo.resolve(TENANT, "xilofonos")
+    assert [h.hashtag.tag for h in hits] == ["xilofonista"]
+    assert repo.get(TENANT, "xilofonista").seen_count == 0

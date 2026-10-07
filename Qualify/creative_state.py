@@ -20,7 +20,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
+import urllib.parse
 from collections.abc import AsyncIterator
 from uuid import UUID, uuid4
 
@@ -136,13 +138,6 @@ GENERATOR_STEPS = (
     "recipe",
     "review",
 )
-_OBJECTIVE_LABELS = {
-    "awareness": "Reconocimiento",
-    "consideration": "Consideración",
-    "lead": "Captar contacto",
-    "sale": "Vender",
-}
-_INTENT_LABELS = {"organic": "Orgánico", "ads": "Anuncio", "both": "Ambos"}
 
 
 def generator_steps(kind: str) -> list[str]:
@@ -234,6 +229,10 @@ _POLL_BUDGET_SECONDS = 300.0
 GENERATION_STAGES = ("Copy", "Imagen", "Verificación")
 
 
+#: Where each of ¿Cómo suena?'s four axes starts — the middle.
+TONE_DEFAULT = 50
+
+
 class CreativeState(rx.State):
     """State for /brand, /brand/voice, /create, /drafts and /drafts/[draft_id]."""
 
@@ -265,16 +264,26 @@ class CreativeState(rx.State):
     kit_positioning: str = ""
     kit_audience: str = ""
     kit_regional_variant: str = "es-CO"
-    tone_formal_casual: int = 50
-    tone_sober_enthusiastic: int = 50
-    tone_technical_plain: int = 50
-    tone_brief_elaborate: int = 50
+    tone_formal_casual: int = TONE_DEFAULT
+    tone_sober_enthusiastic: int = TONE_DEFAULT
+    tone_technical_plain: int = TONE_DEFAULT
+    tone_brief_elaborate: int = TONE_DEFAULT
+    #: The kit as loaded already has a tone of its own — an axis moved off the default
+    #: (§ request 2026-10-05: "si se cambian los sliders, que ya se marque como
+    #: configurado", a cloned voice is not required). Read when the kit loads, not live,
+    #: so moving a slider does not whisk away the screen being edited.
+    tone_saved_custom: bool = False
     kit_do_examples: str = ""
     kit_dont_examples: str = ""
     kit_banned_words: str = ""
     kit_forbidden_claims: str = ""
     kit_cta_patterns: str = ""
     kit_palette: str = ""
+    #: The brand's type faces by family name (§ request 2026-10-05, Tu brandboard's
+    #: typography tiles): headlines and body copy. The optional font FILES are
+    #: `BrandWizardState.font_files` — brandboard assets, not kit fields.
+    kit_font_heading: str = ""
+    kit_font_body: str = ""
     #: What each list's pill input holds before Enter (`_KIT_PILL_FIELDS` keys). The
     #: lists themselves stay the newline-joined `kit_*` strings above.
     #: The whole Brand Kit is being saved (`brand_finish.save_brand_kit`).
@@ -285,6 +294,9 @@ class CreativeState(rx.State):
     kit_pill_edit_field: str = ""
     kit_pill_edit_index: int = -1
     kit_pill_edit_value: str = ""
+    #: The list whose "+" was pressed, so its input is open (`_KIT_PILL_FIELDS` key, ""
+    #: = none) — no input until then, like Tu rubro's hashtags (§ request 2026-10-06).
+    kit_pill_adding: str = ""
 
     # -- /brand/voice -------------------------------------------------------
     voice_loading: bool = False
@@ -697,9 +709,8 @@ class CreativeState(rx.State):
         return [
             ["Tipo de pieza", KIND_LABELS.get(self.brief_kind, "")],
             ["Tema o producto", self.brief_topic.strip()],
-            ["Objetivo", _OBJECTIVE_LABELS.get(self.brief_objective, "")],
+            # Objetivo and Destino left the wizard on 2026-10-05: not asked, not recapped
             ["De qué trata", content_types.get(self.brief_content_type, "")],
-            ["Destino", _INTENT_LABELS.get(self.brief_intent, "")],
             ["Formato", self.effective_format_label],
             ["Debe mencionar", self.brief_must_mention.strip()],
             ["Debe evitar", self.brief_must_avoid.strip()],
@@ -896,6 +907,20 @@ class CreativeState(rx.State):
         self.kit_forbidden_claims = form.forbidden_claims
         self.kit_cta_patterns = form.cta_patterns
         self.kit_palette = form.palette_rgb
+        self.kit_font_heading = form.font_heading
+        self.kit_font_body = form.font_body
+
+    def tone_is_custom(self) -> bool:
+        """Any of the four axes moved off `TONE_DEFAULT`."""
+        return any(
+            value != TONE_DEFAULT
+            for value in (
+                self.tone_formal_casual,
+                self.tone_sober_enthusiastic,
+                self.tone_technical_plain,
+                self.tone_brief_elaborate,
+            )
+        )
 
     def _kit_form(self) -> KitFormVM:
         return KitFormVM(
@@ -912,6 +937,8 @@ class CreativeState(rx.State):
             forbidden_claims=self.kit_forbidden_claims,
             cta_patterns=self.kit_cta_patterns,
             palette_rgb=self.kit_palette,
+            font_heading=self.kit_font_heading,
+            font_body=self.kit_font_body,
         )
 
     # -- explicit setters (this Reflex version generates none) ----------------
@@ -952,6 +979,49 @@ class CreativeState(rx.State):
     def set_kit_palette(self, value: str) -> None:
         self.kit_palette = value
 
+    @rx.event
+    def set_kit_font_heading(self, value: str) -> None:
+        """The brand's ONE typography (§ request 2026-10-05, "solo haz una tipografía"):
+        the body face follows it, so whatever reads `font_body` gets the same family."""
+        self.kit_font_heading = value
+        self.kit_font_body = value
+
+    @rx.event
+    def set_kit_font_body(self, value: str) -> None:
+        self.kit_font_body = value
+
+    # -- typography previews (Tu brandboard, § request 2026-10-05) ------------------
+    # A typed family name is previewed through Google Fonts: the tile links the family's
+    # stylesheet and sets it as `font-family`. A family not on Google Fonts just falls
+    # back (the browser ignores a 400 stylesheet), so the preview is best-effort by
+    # design — the uploaded file, when there is one, is what the tile really shows.
+
+    @rx.var
+    def kit_font_heading_family(self) -> str:
+        return font_family_css(self.kit_font_heading)
+
+    @rx.var
+    def kit_font_body_family(self) -> str:
+        return font_family_css(self.kit_font_body)
+
+    @rx.var
+    def kit_font_heading_css_url(self) -> str:
+        return google_fonts_url(self.kit_font_heading)
+
+    @rx.var
+    def kit_font_body_css_url(self) -> str:
+        return google_fonts_url(self.kit_font_body)
+
+    @rx.var
+    def kit_typography_summary(self) -> str:
+        """¿Todo correcto?'s one-line recap: "Montserrat", or "Montserrat · Inter" for a kit
+        saved with two faces before there was only one, or ""."""
+        names: list[str] = []
+        for name in (self.kit_font_heading.strip(), self.kit_font_body.strip()):
+            if name and name not in names:
+                names.append(name)
+        return " · ".join(names)
+
     # -- the Brand Kit's list fields, as pills ----------------------------------
     # One computed var per list, each naming its own `kit_*` attr: a `getattr` with a
     # dynamic name inside an `@rx.var` registers no dependency and never recomputes.
@@ -983,8 +1053,11 @@ class CreativeState(rx.State):
 
     @rx.event
     def add_kit_pill(self, field: str) -> None:
-        """Enter / "+" in a list's pill input: the typed value joins the list (a value
-        already there, ignoring case, is not added twice)."""
+        """Enter in a list's pill input: the typed value joins the list (a value already
+        there, ignoring case, is not added twice) and the input closes back into "+"."""
+        self._add_kit_pill(field)
+
+    def _add_kit_pill(self, field: str) -> None:
         attr = _KIT_PILL_FIELDS.get(field)
         if attr is None:
             return
@@ -994,6 +1067,36 @@ class CreativeState(rx.State):
             if value.casefold() not in {item.casefold() for item in items}:
                 setattr(self, attr, "\n".join([*items, value]))
         self.kit_pill_drafts = {**self.kit_pill_drafts, field: ""}
+        if self.kit_pill_adding == field:
+            self.kit_pill_adding = ""
+
+    @rx.event
+    def open_kit_pill_input(self, field: str) -> None:
+        """A list's "+": only now does its input appear (one list at a time)."""
+        if field in _KIT_PILL_FIELDS:
+            self._clear_kit_pill_edit()
+            self.kit_pill_adding = field
+
+    @rx.event
+    def kit_pill_add_key(self, key: str) -> None:
+        """Escape closes the open input and forgets what was typed."""
+        if key == "Escape" and self.kit_pill_adding:
+            self.kit_pill_drafts = {**self.kit_pill_drafts, self.kit_pill_adding: ""}
+            self.kit_pill_adding = ""
+
+    @rx.event
+    def kit_pill_add_blur(self, value: str) -> None:
+        """Leaving the input adds what was typed, like Enter; left empty, it just puts
+        the "+" back (the same rule as Tu rubro's hashtags)."""
+        field = self.kit_pill_adding
+        if not field:
+            return
+        if not value.strip():
+            self.kit_pill_drafts = {**self.kit_pill_drafts, field: ""}
+            self.kit_pill_adding = ""
+            return
+        self.kit_pill_drafts = {**self.kit_pill_drafts, field: value}
+        self._add_kit_pill(field)
 
     @rx.event
     def remove_kit_pill(self, field: str, index: int) -> None:
@@ -1156,6 +1259,7 @@ class CreativeState(rx.State):
                 if form is not None:
                     self._apply_kit_form(form)
                 self._kit_draft_loaded = True
+            self.tone_saved_custom = self.tone_is_custom()
             self.kit_loading = False
 
     @rx.event(background=True)
@@ -2409,3 +2513,33 @@ class CreativeState(rx.State):
                 self._polling_draft_id = vm.draft_id
         if should_poll:
             yield CreativeState.poll_draft
+
+
+# ---------------------------------------------------------------------------------------
+# Typography previews (pure helpers, tested without Reflex)
+
+GOOGLE_FONTS_CSS = "https://fonts.googleapis.com/css2"
+
+
+def _clean_family(name: str) -> str:
+    """A family name as typed, minus what would break a CSS string or a URL: quotes,
+    backslashes, braces, semicolons — a family name never legitimately holds them."""
+    return " ".join(re.sub(r'["\\{};<>]', "", name).split())
+
+
+def font_family_css(name: str) -> str:
+    """The `font-family` for a typed family name — quoted, with a generic fallback so a
+    family the browser cannot load degrades to the page's own sans; `inherit` for none."""
+    clean = _clean_family(name)
+    return f'"{clean}", sans-serif' if clean else "inherit"
+
+
+def google_fonts_url(name: str) -> str:
+    """The Google Fonts stylesheet for a family name ("" for none): regular + bold, so
+    the "Aa" and the sample line both render in it when the family exists there."""
+    clean = _clean_family(name)
+    if not clean:
+        return ""
+    # encoded, so a typed "&", "#" or "%" can neither add a parameter nor break the URL
+    family = urllib.parse.quote_plus(clean)
+    return f"{GOOGLE_FONTS_CSS}?family={family}:wght@400;700&display=swap"
