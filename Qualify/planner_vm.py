@@ -636,6 +636,10 @@ class EventCardVM:
     temperature: str = ""
     temperature_label: str = ""
     temperature_hint: str = ""
+    # QUA-143: the POST's campaign — name and palette key ("" for an independent POST).
+    # Identity, never state: drawn with the tag palette, never on the status edge.
+    campaign_name: str = ""
+    campaign_color: str = ""
 
 
 @dataclass(frozen=True)
@@ -729,6 +733,13 @@ class PostOptionVM:
     temperature: str = "hot"
     temperature_label: str = "Hot"
     temperature_hint: str = ""
+    # QUA-143: the POST's campaign ("" when independent) — the gallery card's badge and
+    # the drawer's piece header — and how many publications the POST already has (the
+    # drawer warns that a campaign change reaches all of them).
+    campaign_name: str = ""
+    campaign_color: str = ""
+    campaign_id: str = ""
+    event_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -775,6 +786,9 @@ class EventDetailVM:
     kind_label: str = "Imagen"
     goals: list[str] = field(default_factory=list)  # the plan's goals, as labels (0042)
     goal_keys: list[str] = field(default_factory=list)  # the same goals, as keys
+    # QUA-143: the POST's campaign ("" when independent), read through the POST.
+    campaign_name: str = ""
+    campaign_color: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -808,6 +822,8 @@ class CardInput:
     output_port: str | None = None  # MP-11: `EventRecord.output_port`
     destination: str | None = None  # QUA-118 v2: `EventRecord.destination`
     times_published: int | None = None  # the POST's history (D2) — None: POST unreadable
+    campaign_name: str = ""  # QUA-143: `PostSummary.campaign.name`, "" when independent
+    campaign_color: str = ""
 
 
 def event_readiness(
@@ -866,6 +882,8 @@ def build_card(
         output_label=output_label(item.output_port),
         destination=item.destination or "",
         destination_label=DESTINATION_LABELS.get(item.destination or "", ""),
+        campaign_name=item.campaign_name,
+        campaign_color=item.campaign_color,
         **(_temperature_fields(item.times_published) if item.times_published is not None else {}),
     )
 
@@ -973,6 +991,10 @@ def build_post_option(
     image_size: tuple[int, int] | None = None,
     preferred_destination: str | None = None,
     lifecycle_status: str = "",
+    campaign_name: str = "",
+    campaign_color: str = "",
+    campaign_id: str = "",
+    event_count: int = 0,
 ) -> PostOptionVM:
     ready = readiness(approval, is_publishable=is_publishable, reason=unpublishable_reason)
     chips = list(outputs)
@@ -1010,6 +1032,10 @@ def build_post_option(
             choices, preferred_destination or _CATEGORY_DESTINATION.get(category or "")
         ),
         can_review=lifecycle_status == "generated",
+        campaign_name=campaign_name,
+        campaign_color=campaign_color,
+        campaign_id=campaign_id,
+        event_count=event_count,
     )
 
 
@@ -1392,10 +1418,22 @@ class PlanItem:
     destination: str = ""  # post / reel / story — where this piece goes out
     # The weekdays of a weekly series (0 = Monday); empty → the date's own weekday.
     repeat_days: list[int] = field(default_factory=list)
+    # QUA-143: the campaign chosen for the piece's POST — a campaign id, `CAMPAIGN_NONE` or
+    # `CAMPAIGN_NEW` (then `new_campaign_name`/`_color`). "" = keep the POST's own. It is
+    # the POST's campaign: applied to the POST on «Confirmar», never to the publication.
+    campaign: str = ""
+    new_campaign_name: str = ""
+    new_campaign_color: str = ""
 
     # A plan kept in a session from before a field existed (Reflex keeps dev state across
     # reloads) reads the field's default instead of failing.
-    _LATER_DEFAULTS = {"destination": "", "repeat_days": ()}
+    _LATER_DEFAULTS = {
+        "destination": "",
+        "repeat_days": (),
+        "campaign": "",
+        "new_campaign_name": "",
+        "new_campaign_color": "",
+    }
 
     def __getattr__(self, name: str):
         if name in PlanItem._LATER_DEFAULTS:
@@ -1449,6 +1487,42 @@ class PlanRowVM:
     destination_warning: str = ""  # e.g. a video story longer than 60 s
     mock: str = "post"  # the phone mock: post / carousel / reel / story
     repeat_days: list[int] = field(default_factory=list)  # chosen weekdays (0 = Monday)
+    # QUA-143 — the POST's campaign: the one it HAS (the header badge) and the one chosen
+    # here (the selector, `campaign_value`), whether that is a change, what the change
+    # reaches («sus otras N publicaciones») and the new campaign being typed.
+    current_campaign_name: str = ""
+    current_campaign_color: str = ""
+    campaign_value: str = ""
+    chosen_campaign_name: str = ""
+    chosen_campaign_color: str = ""
+    campaign_changed: bool = False
+    campaign_warning: str = ""
+    creating_campaign: bool = False
+    new_campaign_name: str = ""
+    new_campaign_color: str = ""
+
+
+CAMPAIGN_NONE = "none"  # the selector's «Sin campaña» (same value as the POST detail)
+CAMPAIGN_NEW = "new"  # the selector's «Nueva campaña»
+CAMPAIGN_NAME_REQUIRED = "Escribe el nombre de la nueva campaña."
+
+
+def campaign_value(item: PlanItem, post: PostOptionVM | None) -> str:
+    """What the piece's selector shows: the operator's pick, else the POST's own."""
+    if item.campaign:
+        return item.campaign
+    return (post.campaign_id if post is not None and post.campaign_id else "") or CAMPAIGN_NONE
+
+
+def campaign_warning(existing: int) -> str:
+    """QUA-143 AC 19: a campaign change reaches every publication the POST already has."""
+    if existing <= 0:
+        return ""
+    if existing == 1:
+        return "La campaña pertenece al POST y también se aplicará a su otra publicación."
+    return (
+        f"La campaña pertenece al POST y también se aplicará a sus otras {existing} publicaciones."
+    )
 
 
 def plan_item_error(
@@ -1464,7 +1538,9 @@ def plan_item_error(
 ) -> str:
     """The first thing that keeps `item` from being planned, in the operator's words:
     the output of a package, where it goes out, the date and time, the weekly series,
-    the accounts."""
+    the accounts — and a new campaign without a name (QUA-143)."""
+    if not reschedule and item.campaign == CAMPAIGN_NEW and not item.new_campaign_name.strip():
+        return CAMPAIGN_NAME_REQUIRED
     if not reschedule and post is not None and post.has_outputs:
         if not item.output_port:
             return PLAN_OUTPUT_REQUIRED
@@ -1499,8 +1575,10 @@ def build_plan_row(
     today_iso: str = "",
     now_hhmm: str = "",
     reschedule: bool = False,
+    campaigns: Iterable = (),
 ) -> PlanRowVM:
-    """`item` as the page renders it. `post` is None only for a POST no longer listed."""
+    """`item` as the page renders it. `post` is None only for a POST no longer listed.
+    `campaigns` are the brand's (anything with `id`, `name`, `color`)."""
     if post is None:
         post = PostOptionVM(
             post_id=item.post_id,
@@ -1541,6 +1619,28 @@ def build_plan_row(
     output_label = (
         chip.label if chip else (output_long_label(item.output_port) if item.output_port else "")
     )
+    value = campaign_value(item, post)
+    current = post.campaign_id or CAMPAIGN_NONE
+    known = {c.id: c for c in campaigns}
+    if value == CAMPAIGN_NEW:
+        chosen_name, chosen_color = item.new_campaign_name.strip(), item.new_campaign_color
+    elif value in known:
+        chosen_name, chosen_color = known[value].name, known[value].color
+    else:
+        chosen_name, chosen_color = "", ""
+    changed = not reschedule and value != current
+    campaign_fields = {
+        "current_campaign_name": post.campaign_name,
+        "current_campaign_color": post.campaign_color,
+        "campaign_value": value,
+        "chosen_campaign_name": chosen_name,
+        "chosen_campaign_color": chosen_color,
+        "campaign_changed": changed,
+        "campaign_warning": campaign_warning(post.event_count) if changed else "",
+        "creating_campaign": value == CAMPAIGN_NEW and not reschedule,
+        "new_campaign_name": item.new_campaign_name,
+        "new_campaign_color": item.new_campaign_color,
+    }
     return PlanRowVM(
         post_id=item.post_id,
         title=post.title,
@@ -1592,4 +1692,5 @@ def build_plan_row(
         destination_warning=chosen.warning if chosen is not None else "",
         mock=mock,
         repeat_days=list(item.repeat_days),
+        **campaign_fields,
     )

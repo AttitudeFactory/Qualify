@@ -208,3 +208,26 @@ def test_response_never_carries_a_cacheable_header(
     response = client.get(f"/public/media/{token}")
 
     assert response.headers["cache-control"] == "private, no-store"
+
+
+def test_the_object_is_opened_off_the_event_loop(
+    harness: tuple[TestClient, MediaTokenStore, MemoryStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Opening (and, for HEAD, reading) the object is blocking network I/O against R2:
+    it runs in a worker thread so a slow object never stalls every other request."""
+    client, token_store, store = harness
+    offloaded: list[str] = []
+    real = public_media_routes.asyncio.to_thread
+
+    async def recording(fn, *args, **kwargs):
+        offloaded.append(getattr(fn, "__name__", "?"))
+        return await real(fn, *args, **kwargs)
+
+    monkeypatch.setattr(public_media_routes.asyncio, "to_thread", recording)
+    token = _issue_valid_token(token_store, store)
+    assert client.get(f"/public/media/{token}").status_code == 200
+    assert offloaded == ["open_object"]
+    offloaded.clear()
+    assert client.head(f"/public/media/{token}").status_code == 200
+    assert offloaded == ["open_object", "read"]

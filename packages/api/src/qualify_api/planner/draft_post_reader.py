@@ -38,6 +38,7 @@ from qualify_api.planner.models import CalendarEvent
 from qualify_api.planner.post_reader import (
     ApprovalStatus,
     NotPublishable,
+    PostCampaign,
     PostOutput,
     PostSummary,
     PublishablePost,
@@ -258,7 +259,7 @@ def thumbnail_source(
 
 def _history(
     session: Session, post_ids: Sequence[UUID], *, now: datetime
-) -> dict[UUID, tuple[int, bool]]:
+) -> dict[UUID, tuple[int, bool, int]]:
     """Per POST, how many of its events were published and whether one is live — one
     aggregate over `calendar_events` for the whole batch (QUA-118 D2). Read-only, under
     the same RLS session as the drafts.
@@ -267,6 +268,8 @@ def _history(
     its execution window (`rules.EXECUTION_WINDOW`, QUA-115). A `scheduled` event the
     calendar already shows as «Vencido» is not live — the gallery's «En calendario» badge
     must agree with the calendar's word. A published event is history (`times_published`).
+    The third value counts every event of the POST (QUA-143: the publications a campaign
+    change reaches).
     """
     if not post_ids:
         return {}
@@ -279,11 +282,27 @@ def _history(
             CalendarEvent.post_id,
             func.count().filter(CalendarEvent.status == EventStatus.PUBLISHED.value),
             func.count().filter(live),
+            func.count(),
         )
         .where(CalendarEvent.post_id.in_(list(post_ids)))
         .group_by(CalendarEvent.post_id)
     ).all()
-    return {post_id: (int(published), int(live) > 0) for post_id, published, live in rows}
+    return {
+        post_id: (int(published), int(live) > 0, int(total))
+        for post_id, published, live, total in rows
+    }
+
+
+def _campaigns(
+    session: Session, drafts: Sequence[creative.ContentDraft]
+) -> dict[UUID, PostCampaign]:
+    """The campaigns of a batch of POSTs (QUA-143), one query, under the same RLS
+    session. Read-only: the campaign is shown, never written, from here."""
+    ids = {draft.campaign_id for draft in drafts if draft.campaign_id is not None}
+    if not ids:
+        return {}
+    rows = session.scalars(select(creative.Campaign).where(creative.Campaign.id.in_(ids))).all()
+    return {row.id: PostCampaign(id=row.id, name=row.name, color=row.color) for row in rows}
 
 
 def _images(session: Session, draft_id: UUID) -> list[creative.ImageAsset]:
@@ -317,8 +336,11 @@ class DraftPostReader:
                 select(creative.ContentDraft).where(creative.ContentDraft.id.in_(ids))
             ).all()
             history = _history(session, [draft.id for draft in drafts], now=self._clock())
+            campaigns = _campaigns(session, drafts)
             return {
-                draft.id: self._summarize(session, tenant_id, draft, history.get(draft.id))
+                draft.id: self._summarize(
+                    session, tenant_id, draft, history.get(draft.id), campaigns
+                )
                 for draft in drafts
             }
 
@@ -334,8 +356,9 @@ class DraftPostReader:
                 .limit(_SCHEDULABLE_LIMIT)
             ).all()
             history = _history(session, [draft.id for draft in drafts], now=self._clock())
+            campaigns = _campaigns(session, drafts)
             return [
-                self._summarize(session, tenant_id, draft, history.get(draft.id))
+                self._summarize(session, tenant_id, draft, history.get(draft.id), campaigns)
                 for draft in drafts
             ]
 
@@ -348,8 +371,9 @@ class DraftPostReader:
                 .limit(_GALLERY_LIMIT)
             ).all()
             history = _history(session, [draft.id for draft in drafts], now=self._clock())
+            campaigns = _campaigns(session, drafts)
             return [
-                self._summarize(session, tenant_id, draft, history.get(draft.id))
+                self._summarize(session, tenant_id, draft, history.get(draft.id), campaigns)
                 for draft in drafts
             ]
 
@@ -377,9 +401,10 @@ class DraftPostReader:
         session: Session,
         tenant_id: UUID,
         draft: creative.ContentDraft,
-        history: tuple[int, bool] | None = None,
+        history: tuple[int, bool, int] | None = None,
+        campaigns: dict[UUID, PostCampaign] | None = None,
     ) -> PostSummary:
-        times_published, has_live_event = history or (0, False)
+        times_published, has_live_event, event_count = history or (0, False, 0)
         brief = session.get(creative.ContentBrief, draft.brief_id)
         variant = None
         if draft.selected_variant_id is not None:
@@ -442,6 +467,8 @@ class DraftPostReader:
             outputs=outputs,
             times_published=times_published,
             has_live_event=has_live_event,
+            campaign=(campaigns or {}).get(draft.campaign_id) if draft.campaign_id else None,
+            event_count=event_count,
             media_types=types,
             image_size=size,
         )

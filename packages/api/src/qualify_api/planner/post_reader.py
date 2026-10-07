@@ -63,6 +63,17 @@ class PostOutput:
 
 
 @dataclass(frozen=True)
+class PostCampaign:
+    """The campaign a POST belongs to (QUA-143), as the calendar shows it: every event of
+    the POST reads it from here — `calendar_events` never stores it. `color` is a palette
+    key shared with the planner tags."""
+
+    id: UUID
+    name: str
+    color: str
+
+
+@dataclass(frozen=True)
 class PostSummary:
     """Everything the Planificador needs to show and plan a POST, and nothing it would
     have to keep in sync. No assets, no full caption, no script: those stay on the POST.
@@ -107,6 +118,11 @@ class PostSummary:
     # `gallery.gallery_state` turns them into the «Usado ×N» and «En calendario» badges.
     times_published: int = 0
     has_live_event: bool = False
+    # QUA-143: the POST's campaign, or None for an independent POST. Read-only here.
+    campaign: PostCampaign | None = None
+    # QUA-143: how many publications (calendar events, any state) the POST already has —
+    # the drawer warns that a campaign change reaches all of them.
+    event_count: int = 0
     # QUA-118 v2: the POST's media as the publisher names it ("IMAGE" / "VIDEO", in
     # position order) and the first image's (width, height) when known — what
     # `publishable.destination_options` reads to say where it may be published.

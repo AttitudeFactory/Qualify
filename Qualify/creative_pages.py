@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .campaign_provider import COLOR_LABELS, NO_CAMPAIGN
+from .campaign_state import CampaignState
 from .content_generator import generator_page
 from .creative_state import GENERATION_STAGES, CreativeState
 from .creative_vm import (
@@ -23,7 +25,7 @@ from .creative_vm import (
 )
 from .gallery_state import GalleryState
 from .planner_vm import GALLERY_FILTER_ALL, GALLERY_STATE_FILTERS
-from .post_card import kind_chip, media_fill
+from .post_card import campaign_badge, color_swatches, kind_chip, media_fill
 from .r2_media import BACKEND_BASE
 from .ui import app_shell, callout, card, empty_state, page_body, page_header
 from .ui import tokens as T
@@ -929,6 +931,7 @@ def _gallery_card(post) -> rx.Component:
         ),
         rx.box(
             rx.text(post.title, class_name="q-gcard-title", style=_CLAMP_2),
+            campaign_badge(post.campaign_name, post.campaign_color),  # QUA-143
             rx.flex(
                 rx.text(post.media_label, size="1", color=T.TEXT_MUTED),
                 rx.cond(
@@ -2107,6 +2110,139 @@ window.qualifyDownload = async function (url, name) {
 """
 
 
+def _campaign_option(option) -> rx.Component:
+    return rx.select.item(option.name, value=option.id)
+
+
+def _campaign_recolor() -> rx.Component:
+    """Change the colour of the POST's campaign — for every POST and event of it."""
+    s = CampaignState
+    return rx.popover.root(
+        rx.popover.trigger(
+            rx.button(
+                rx.icon("palette", size=13),
+                "Color",
+                variant="ghost",
+                color_scheme="gray",
+                size="1",
+                disabled=s.busy,
+                aria_label="Cambiar el color de la campaña",
+            )
+        ),
+        rx.popover.content(
+            rx.vstack(
+                rx.text("Color de la campaña", size="2", weight="bold"),
+                color_swatches(
+                    s.current_color, s.recolor, COLOR_LABELS, label="Color de la campaña"
+                ),
+                rx.text(
+                    "Cambia el color en todos los posts y publicaciones de esta campaña.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                spacing="2",
+                max_width="16rem",
+            ),
+            side="bottom",
+            align="start",
+        ),
+    )
+
+
+def _campaign_field() -> rx.Component:
+    """QUA-143: the POST's campaign — the one place it is created and assigned. Pick one
+    of the brand's campaigns, create one by name right here, or leave the POST
+    independent. It never changes the POST's revision, status or approval, so it is
+    available in every state, an approved and scheduled POST included."""
+    s = CampaignState
+    picker = rx.select.root(
+        rx.select.trigger(placeholder="Sin campaña", aria_label="Campaña del POST"),
+        rx.select.content(
+            rx.select.item("Sin campaña (post independiente)", value=NO_CAMPAIGN),
+            rx.cond(
+                s.options.length() > 0,
+                rx.select.separator(),
+            ),
+            rx.foreach(s.options, _campaign_option),
+        ),
+        value=s.current_id,
+        on_change=s.choose,
+        disabled=s.busy | s.loading,
+        size="2",
+    )
+    create_form = rx.hstack(
+        rx.input(
+            value=s.new_name,
+            on_change=s.set_new_name,
+            on_key_down=s.create_on_enter,
+            placeholder="Nombre de la campaña",
+            max_length=60,
+            auto_focus=True,
+            size="2",
+            width="16rem",
+            aria_label="Nombre de la nueva campaña",
+        ),
+        color_swatches(
+            s.new_color, s.set_new_color, COLOR_LABELS, label="Color de la nueva campaña"
+        ),
+        rx.button("Crear", on_click=s.create, loading=s.busy, size="2"),
+        rx.button(
+            "Cancelar", on_click=s.cancel_create, variant="ghost", color_scheme="gray", size="2"
+        ),
+        align="center",
+        spacing="2",
+        wrap="wrap",
+    )
+    return _card(
+        rx.hstack(
+            rx.center(rx.icon("flag", size=15), class_name="q-section-glyph"),
+            rx.vstack(
+                rx.text("Campaña", size="2", weight="bold"),
+                rx.cond(
+                    s.current_name != "",
+                    rx.hstack(
+                        campaign_badge(s.current_name, s.current_color),
+                        _campaign_recolor(),
+                        align="center",
+                        spacing="2",
+                    ),
+                    rx.text(
+                        "Post independiente: no pertenece a ninguna campaña.",
+                        size="1",
+                        color=T.TEXT_MUTED,
+                    ),
+                ),
+                spacing="1",
+                min_width="0",
+            ),
+            rx.spacer(),
+            rx.cond(
+                s.creating,
+                create_form,
+                rx.hstack(
+                    picker,
+                    rx.button(
+                        rx.icon("plus", size=14),
+                        "Nueva campaña",
+                        on_click=s.start_create,
+                        variant="soft",
+                        size="2",
+                        disabled=s.busy | s.loading,
+                    ),
+                    align="center",
+                    spacing="2",
+                    wrap="wrap",
+                ),
+            ),
+            align="center",
+            width="100%",
+            wrap="wrap",
+            gap="0.75rem",
+        ),
+        rx.cond(s.error != "", _error_callout(s.error)),
+    )
+
+
 def draft_detail_index() -> rx.Component:
     return _screen(
         "Revisión del borrador",
@@ -2140,6 +2276,7 @@ def draft_detail_index() -> rx.Component:
                             width="100%",
                             align="center",
                         ),
+                        _campaign_field(),
                         rx.cond(
                             CreativeState.draft.is_drafting,
                             _drafting_panel(),

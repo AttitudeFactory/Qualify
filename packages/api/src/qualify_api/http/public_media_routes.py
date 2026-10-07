@@ -21,6 +21,7 @@ or anyone else, must never be able to distinguish any of these from one another.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from typing import IO
 
@@ -81,7 +82,7 @@ async def get_public_media(
         return _not_found()
 
     try:
-        fileobj = gate.open_object(target.tenant_id, target.object_key)
+        fileobj = await asyncio.to_thread(gate.open_object, target.tenant_id, target.object_key)
     except (TenantPrefixViolation, ObjectNotFound):
         return _not_found()
 
@@ -90,7 +91,7 @@ async def get_public_media(
         # `open`, which fully reads the object) — a known, accepted cost at the 8 MB IMAGE
         # ceiling this route exists to serve, not hidden: a real `HEAD` here still opens the
         # object, just discards the body instead of streaming it out.
-        body = fileobj.read()
+        body = await asyncio.to_thread(fileobj.read)
         return Response(
             status_code=200,
             media_type=target.content_type,
