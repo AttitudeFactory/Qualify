@@ -41,7 +41,7 @@ Referencia: `reflex-dev/reflex` → `docker-example/production-compose` (Dockerf
 | 1 | ✅ Reflex: copiar `.web/backend` a `app`; bun desde `oven/bun` con caché; quitar `curl`/`unzip` del runtime. Medido en §5 | PR | — |
 | 2 | ✅ Cero recreaciones innecesarias (§5): que un deploy sin cambios no recree `api`/`reflex` (p. ej. sacar `migrate` del grafo `depends_on` y correrlo como paso explícito en `deploy.sh` antes del `up`, o `up --no-recreate` condicionado) | PR | — |
 | 3 | ✅ Construir la imagen `deploy/Dockerfile` (targets `app` y `web`) **en el CI** — hoy ningún job la construye, un Dockerfile roto sólo se descubre al desplegar | PR | — |
-| 4 | CD: al quedar `main` en verde, Actions construye `app`/`web`(/`render`) y los publica en GHCR por SHA; el servidor sólo hace `pull` + `up`. Nunca compilar en producción. Rollback = desplegar el SHA anterior | PR | secretos de GitHub (llave ssh de deploy restringida, token GHCR) → **fundador** |
+| 4 | ⏳ CD (preparado, §5; espera decisión y secretos del fundador): al quedar `main` en verde, Actions construye `app`/`web`(/`render`) y los publica en GHCR por SHA; el servidor sólo hace `pull` + `up`. Nunca compilar en producción. Rollback = desplegar el SHA anterior | PR | secretos de GitHub (llave ssh de deploy restringida, token GHCR) → **fundador** |
 | 5 | Despliegue sin caída del backend: con Redis como state manager (punto 3.2) arrancar el `reflex` nuevo, esperar `healthy` y recién entonces retirar el viejo | PR | 1, 2, decisión 3.2 |
 | 6 | `render` en producción: chequeo de `/health` en `deploy.sh`, imagen desde GHCR, límites de memoria (`mem_limit`) para que un render no tumbe Postgres | PR | decisión CX23→CX33 → **fundador** |
 | 7 | SRE: monitoreo externo de `/ping` y `/api/...` con alerta, respaldos fuera del servidor (R2 + `age`, `plan-cicd-staging.md` §5.6), backups de Hetzner activados (QUA-121) | PR + fundador | — |
@@ -92,6 +92,45 @@ Job `ci` / `docker-deploy`:
 - **Cuándo corre:** en PRs que tocan alguna entrada de las imágenes (`deploy/**`, `Qualify/**`, `packages/*/src/**`, locks, `rxconfig.py`, `assets/**`, `migrations/**`) y siempre en `main`. Un PR sólo de docs no lo corre.
 
 Un Dockerfile roto, o una página que rompe `reflex export`, se descubre en el PR y ya no en el servidor de producción. Entra en la lista de checks que exige `just merge` (y en `infra/github/ruleset-main.json`), junto con `changes`. Cuando se salta, el check queda `skipped` y cuenta como verde, así que `changes` también tiene que ser requerido: si fallara, `docker-deploy` y `node-render` se saltarían y pasarían como verdes. **Efecto en PRs abiertos antes de este cambio:** no tienen ese check, así que `just merge` los rechaza hasta que se les mergee `main` (o se fuerza con `--admin`).
+
+### Punto 4 — CD: opciones para el fundador (2026-10-06) `[DECISIÓN PENDIENTE]`
+
+Hoy cada deploy compila en el servidor de producción (export del frontend incluido, ~10–15 min en frío en el CX23, compitiendo por CPU y RAM con los usuarios) y sólo se dispara a mano desde la Mac.
+
+| Opción | Cómo | Compila en producción | Qué secretos | Pros | Contras |
+|---|---|---|---|---|---|
+| **A. GHCR + ssh restringido** (recomendada) | Actions construye y publica `qualify-{app,web,deploy}:<sha>` en GHCR; después hace ssh con una llave que **sólo** puede ejecutar `server-deploy.sh deploy <sha>`. El servidor hace `pull`, saca compose y scripts de `qualify-deploy` (nunca del cliente) y corre `migrate` → `up` | **no** | GitHub: llave ssh restringida, destino, `known_hosts`. Servidor: token *classic* `read:packages` | Imagen idéntica a la que probó el CI; rollback = otro sha; resultado y logs en Actions; es el diseño de `plan-cicd-staging.md` §5.5 | La llave vive en GitHub (acotada por el forced command); GHCR es un registro nuevo |
+| B. GHCR + el servidor se actualiza solo | Igual que A para las imágenes, pero un timer en el servidor consulta un tag `:main` cada N minutos y despliega | no | Servidor: token `read:packages`. GitHub: nada | Ninguna llave del servidor en GitHub | Deploys silenciosos (el resultado no vuelve a Actions); el rollback exige "fijar" un tag a mano; más piezas en el servidor |
+| C. Sin registro: Actions dispara `deploy.sh` | Actions hace lo mismo que la Mac hoy (`git archive` por ssh) y el servidor compila | **sí** | GitHub: llave ssh | Ningún servicio nuevo | Sigue compilando en producción: deploys lentos y el CX23 cargado durante cada build |
+| D. Runner auto-hospedado en el servidor | Un runner de Actions en el propio CX23 hace build y `up` | sí | Token de registro del runner | Sin ssh entrante; minutos de Actions gratis | Cualquier workflow del repo ejecuta como `docker` (= root) en producción; compila en producción |
+
+**Recomendación: A**, primero sólo manual y con `QUALIFY_AUTO_DEPLOY=true` después de 2 o 3 deploys manuales sanos.
+
+**Costo:**
+- **GHCR:** hoy no cobra almacenamiento ni transferencia de imágenes de contenedor, tampoco privadas, y GitHub promete avisar con un mes de anticipación `[V: docs.github.com, "How use of GitHub Packages is measured", vía buscador; la página no fue accesible desde la sesión]`.
+- **Minutos de Actions:** ~4–8 min por deploy con la caché caliente `[H]`. Con auto-deploy y ~30 merges al mes son ~150–250 min, a sumar al presupuesto de `plan-cicd-staging.md` §4.
+
+**Preparado en el repo (inerte hasta que el fundador lo monte):**
+- `.github/workflows/deploy.yml`: `workflow_dispatch`, más `workflow_run` de `ci` en `main` cuando la variable `QUALIFY_AUTO_DEPLOY` es `true`.
+- `deploy/server-deploy.sh`: el forced command. No lee nada del cliente salvo el sha: el `deploy/` del release sale de la imagen `qualify-deploy:<sha>` (target `deploy-bundle` del Dockerfile), así que la llave sólo puede desplegar un commit que el CI publicó. Arma el release en un directorio temporal y lo mueve al final; si el release ya existe, lo reutiliza sin borrarlo. El workflow sólo acepta commits que estén en `main`.
+- `deploy/healthcheck.sh`: los chequeos que comparten `deploy.sh` y `server-deploy.sh`.
+- Prefijo de registro en `docker-compose.prod.yml` (`QUALIFY_IMAGE_PREFIX`; vacío = como hoy).
+- Pasos de montaje en `despliegue-hetzner.md` §7.1.
+
+Probado en la sesión con un registro local en lugar de GHCR, sobre un "servidor" vacío:
+- **Primer deploy:** `0001 → 0040`, chequeos `ok`, 20 s.
+- **Re-deploy del mismo sha:** no recrea nada.
+- **`up` con el comando de `deploy.sh` sobre ese release:** no compila (respeta `release.env`).
+- **La llave rechaza** todo lo que no sea `deploy|rollback <sha de 40 hex>`. Un sha que el CI no publicó falla en el `pull`, antes de tocar el disco: `current` no cambia.
+- **Rollback a través de una migración:** con `deploy`, la imagen vieja falla en `migrate` (`Can't locate revision`, comprobado con la base en una revisión desconocida para la imagen), antes del `up`. Por eso existe `rollback <sha>` (casilla `skip_migrate` en el workflow), que salta `migrate`.
+- **Auto-deploy fuera de orden:** en modo automático sólo se despliega la punta de `main`. Si un run de `ci` termina después del de un commit más nuevo, su deploy se salta.
+- **Disco:** cada deploy borra los tags de imagen de los releases ya podados. Sin eso, se acumularían ~0,5 GB por commit (la capa `/app` de `qualify-app`). Un rollback a uno de esos shas lo vuelve a bajar de GHCR.
+- **Falla después del `up`** (chequeos de salud): el release nuevo queda corriendo, `current` apunta a él y el workflow sale en rojo. Se recupera revirtiendo.
+- **Re-deploy del sha al que ya apunta `current`:** reutiliza el release sin borrarlo.
+- El release incluye `backup-db.sh`, que el cron nocturno ejecuta desde `current/deploy/` (antes `.dockerignore` excluía `deploy/*.sh` del contexto; ningún target de la app los copia).
+- **Con el perfil `render` activo,** el CD se niega.
+
+**Lo que no se pudo probar acá:** el push real a GHCR (el proxy de la sesión bloquea las descargas de GHCR) y el ssh real. Lo prueba el primer *Run workflow* del fundador.
 
 ## 6. Reglas para quien ejecute este plan
 

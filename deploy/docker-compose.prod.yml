@@ -21,8 +21,13 @@ name: ${COMPOSE_PROJECT_NAME:-qualify-prod}
 # `com.docker.compose.service` label, and whichever finishes last takes the tag — so the
 # image ID flipped between deploys of an identical tree and Compose recreated api/reflex
 # for nothing (the ~10 s of 502 measured 2026-10-06; docs/plan-sre-devops-produccion.md).
+#
+# QUALIFY_IMAGE_PREFIX / QUALIFY_IMAGE_TAG: empty/`latest` for images built ON the server
+# (`just deploy`). A CI deploy (deploy/server-deploy.sh) writes `ghcr.io/attitudefactory/`
+# and the commit sha to the release's deploy/release.env (pass it as a second --env-file),
+# so the stack runs exactly the images CI built and pushed.
 x-app-image: &app-image
-  image: qualify-app:${QUALIFY_IMAGE_TAG:-latest}
+  image: ${QUALIFY_IMAGE_PREFIX:-}qualify-app:${QUALIFY_IMAGE_TAG:-latest}
 
 # Environment shared by every Python service. DSNs are ASSEMBLED here from the per-role
 # passwords so a password lives in exactly one variable (and is rotated in one place).
@@ -201,7 +206,7 @@ services:
       start_period: 60s
 
   caddy:
-    image: qualify-web:${QUALIFY_IMAGE_TAG:-latest}
+    image: ${QUALIFY_IMAGE_PREFIX:-}qualify-web:${QUALIFY_IMAGE_TAG:-latest}
     build:
       context: ..
       dockerfile: deploy/Dockerfile
@@ -257,7 +262,7 @@ services:
   render:
     profiles: ["render"]
     build: ../packages/render
-    image: qualify-render:${QUALIFY_IMAGE_TAG:-latest}
+    image: ${QUALIFY_IMAGE_PREFIX:-}qualify-render:${QUALIFY_IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
       PORT: "3200"

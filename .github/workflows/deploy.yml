@@ -1,0 +1,181 @@
+# Production deploy (CD) — docs/plan-sre-devops-produccion.md §5, punto 4.
+#
+#   images:  build deploy/Dockerfile `app`, `web` and `deploy-bundle` (the commit's deploy/
+#            dir) for ONE commit of main and push them to GHCR as
+#            ghcr.io/attitudefactory/qualify-{app,web,deploy}:<full sha> (GITHUB_TOKEN; GHCR
+#            storage is free today, GitHub promises a month's notice before billing it).
+#   deploy:  ssh to the server with a key that can ONLY run deploy/server-deploy.sh (forced
+#            command) and only send `deploy <sha>`. The server pulls the three images, takes
+#            the release's compose file and scripts from qualify-deploy, runs `migrate`, then
+#            `up`. It never compiles. Then an external smoke test.
+#
+# Inert until the founder sets it up (nothing here is invented):
+#   secrets   QUALIFY_DEPLOY_SSH_KEY          private half of the restricted deploy key
+#             QUALIFY_DEPLOY_SSH_TARGET       e.g. deploy@203.0.113.10
+#             QUALIFY_DEPLOY_SSH_KNOWN_HOSTS  `ssh-keyscan -t ed25519 <ip>` output, verified
+#   variable  QUALIFY_AUTO_DEPLOY = true      also deploy every green `ci` run on main
+#                                             (without it: manual runs only)
+#   server    /opt/qualify/bin/server-deploy.sh + authorized_keys line + `docker login ghcr.io`
+#             (docs/despliegue-hetzner.md, "Deploy desde GitHub Actions")
+#
+# Rollback: run this workflow by hand with an older sha of main (its images are still in
+# GHCR). Across a migration, tick `skip_migrate`: the older image cannot run `alembic upgrade`
+# on a newer database.
+# The calendar-worker profile is never touched here: profiles come from the server's
+# .env.prod only.
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit sha (or main) to deploy — must be on main"
+        required: false
+        default: main
+      skip_migrate:
+        description: "Rollback across a migration: skip `migrate` (the older code must run on the newer schema)"
+        type: boolean
+        required: false
+        default: false
+  workflow_run:
+    workflows: ["ci"]
+    types: [completed]
+    branches: ["main"]
+
+# One production deploy at a time, never cancelled half-way.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Which commit, and whether to deploy it at all.
+  resolve:
+    # Auto: only a green `ci` push run on main, and only when the founder turned it on.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (vars.QUALIFY_AUTO_DEPLOY == 'true' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+      go: ${{ steps.sha.outputs.go }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || inputs.ref }}
+          fetch-depth: 0
+      # Production runs reviewed code only: any commit of main (older ones = rollback, by
+      # hand), never an unmerged branch. An AUTO deploy only ships the tip of main: `ci` runs
+      # can finish out of order, and the concurrency group serializes without ordering, so an
+      # older commit must never land on top of a newer one.
+      - id: sha
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          git merge-base --is-ancestor "$sha" origin/main ||
+            { echo "::error::$sha is not on main; only commits of main are deployed."; exit 1; }
+          go=true
+          if [ "$EVENT" = workflow_run ] && [ "$sha" != "$(git rev-parse origin/main)" ]; then
+            echo "::notice::$sha is no longer the tip of main; the auto-deploy of the tip will ship it."
+            go=false
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "go=$go" >> "$GITHUB_OUTPUT"
+
+  images:
+    needs: resolve
+    if: needs.resolve.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      # Same cache scope as ci/docker-deploy: on a green main commit the layers are warm.
+      - name: Build and push qualify-app
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: app
+          push: true
+          tags: ghcr.io/attitudefactory/qualify-app:${{ steps.sha.outputs.sha }}
+          cache-from: type=gha,scope=deploy
+          cache-to: type=gha,scope=deploy,mode=max
+      - name: Build and push qualify-web
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: web
+          push: true
+          tags: ghcr.io/attitudefactory/qualify-web:${{ steps.sha.outputs.sha }}
+          cache-from: type=gha,scope=deploy
+      - name: Build and push qualify-deploy (the commit's deploy/ dir)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: deploy-bundle
+          push: true
+          tags: ghcr.io/attitudefactory/qualify-deploy:${{ steps.sha.outputs.sha }}
+
+  deploy:
+    needs: images
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SHA: ${{ needs.images.outputs.sha }}
+      PUBLIC_URL: ${{ vars.QUALIFY_PUBLIC_URL || 'https://qualify.attitudefactory.co' }}
+    steps:
+      - name: Install the restricted deploy key
+        env:
+          KEY: ${{ secrets.QUALIFY_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.QUALIFY_DEPLOY_SSH_KNOWN_HOSTS }}
+          TARGET: ${{ secrets.QUALIFY_DEPLOY_SSH_TARGET }}
+        run: |
+          if [ -z "$KEY" ] || [ -z "$KNOWN_HOSTS" ] || [ -z "$TARGET" ]; then
+            echo "::error::Deploy secrets are not configured (see the header of this workflow)."
+            exit 1
+          fi
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Deploy ${{ needs.images.outputs.sha }} (server pulls, migrates, starts)
+        env:
+          TARGET: ${{ secrets.QUALIFY_DEPLOY_SSH_TARGET }}
+          ACTION: ${{ inputs.skip_migrate && 'rollback' || 'deploy' }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes "$TARGET" "$ACTION" "$SHA" </dev/null
+      - name: External smoke test
+        run: |
+          for probe in '/ping 200' '/login 200' '/api/connections/callback?code=x&state=x 303|403'; do
+            path=${probe% *}; want=${probe##* }; got=""
+            for _ in $(seq 1 10); do
+              got=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$PUBLIC_URL$path" || true)
+              case "|$want|" in *"|$got|"*) break ;; esac; sleep 3
+            done
+            echo "$PUBLIC_URL$path -> $got (want $want)"
+            case "|$want|" in *"|$got|"*) ;; *) exit 1 ;; esac
+          done
+          echo "Deployed $SHA" >> "$GITHUB_STEP_SUMMARY"
