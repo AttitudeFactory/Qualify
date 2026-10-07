@@ -511,7 +511,17 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
     media = _with_r2_urls(
         tenant_id,
         build_media_vms(
-            [(item.media_url, item.media_type, item.position, item.params) for item in detail.media]
+            [
+                # R2-only media has no provider URL: its object key is what the screen
+                # resolves (`_with_r2_urls` mints the backend URL for it).
+                (
+                    item.media_url or item.object_key or "",
+                    item.media_type,
+                    item.position,
+                    item.params,
+                )
+                for item in detail.media
+            ]
         ),
     )
     return build_draft_vm(

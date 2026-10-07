@@ -168,13 +168,15 @@ class ImageRecord:
     """One ``image_assets`` row: an image or (since 0026) a video, in carousel order."""
 
     id: UUID
-    media_url: str
+    # NULL for media that lives only in R2 (`object_key`); the column is nullable (0009).
+    media_url: str | None
     width: int | None
     height: int | None
     aspect_ratio: str | None
     media_type: str = "image"
     position: int = 0
     params: Mapping[str, object] | None = None
+    object_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -420,6 +422,7 @@ def _image_record(row: orm.ImageAsset) -> ImageRecord:
         media_type=row.media_type,
         position=row.position,
         params=row.params,
+        object_key=row.object_key,
     )
 
 
