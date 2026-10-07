@@ -245,6 +245,66 @@ def destination_badge(
     )
 
 
+def campaign_badge(name: rx.Var[str], color: rx.Var[str]) -> rx.Component:
+    """QUA-143: the POST's campaign — a flag AND its name, in the campaign's palette
+    colour (`q-tint-*`, shared with tags). Identity, never state: a squared, bordered
+    badge with a flag so it never reads as a tag pill or a status. Nothing when the POST
+    is independent."""
+    return rx.cond(
+        name != "",
+        rx.box(
+            rx.icon("flag", size=11, flex_shrink="0"),
+            rx.text(name, as_="span", class_name="q-campaign-name"),
+            class_name="q-campaign-badge q-tint-" + color,
+            title="Campaña: " + name,
+        ),
+    )
+
+
+def color_swatches(
+    selected: rx.Var[str], on_pick, choices: dict[str, str], *, label: str
+) -> rx.Component:
+    """QUA-143: the campaign colours — `choices` is the closed list of four (key → word),
+    never a state colour. A radio group of round swatches; the chosen one is ringed.
+    `on_pick(key)` returns the event to fire."""
+    return rx.hstack(
+        *[
+            rx.el.button(
+                type="button",
+                role="radio",
+                aria_checked=rx.cond(selected == key, "true", "false"),
+                aria_label=word,
+                title=word,
+                on_click=on_pick(key),
+                class_name=rx.cond(
+                    selected == key,
+                    f"q-swatch q-swatch--on q-tint-{key}",
+                    f"q-swatch q-tint-{key}",
+                ),
+            )
+            for key, word in choices.items()
+        ],
+        role="radiogroup",
+        aria_label=label,
+        spacing="2",
+        align="center",
+    )
+
+
+def campaign_mark(name: rx.Var[str], color: rx.Var[str]) -> rx.Component:
+    """QUA-143: the compact form for the one-line calendar chip and the «+N más» rows —
+    a small flag tile in the campaign's colour (its name is in the hover card, the
+    accessible name and the panel). Nothing when the POST is independent."""
+    return rx.cond(
+        name != "",
+        rx.center(
+            rx.icon("flag", size=9, color="white", stroke_width=2.75),
+            class_name="q-campaign-mark q-tint-" + color,
+            title="Campaña: " + name,
+        ),
+    )
+
+
 def history_badges(post: rx.Var) -> rx.Component:
     """D2: «Usado ×N» for the publications already out, «En calendario» for a live
     event. Never excluding — a `recurrente` POST reads Listo + Usado ×3."""

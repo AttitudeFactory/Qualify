@@ -28,6 +28,7 @@ from __future__ import annotations
 import reflex as rx
 from qualify_api.planner.publishable import STORY_CAPTION_NOTE
 
+from .campaign_provider import COLOR_LABELS
 from .planner_state import CONFIRM_CANCEL, CONFIRM_REMOVE, PlannerState
 from .planner_vm import (
     ASSIGN_STEP_ICONS,
@@ -45,6 +46,8 @@ from .planner_vm import (
     WEEKDAY_NAMES,
 )
 from .post_card import (
+    campaign_badge,
+    color_swatches,
     destination_badge,
     destination_icon,
     kind_chip,
@@ -642,6 +645,104 @@ def _destination_selector(row) -> rx.Component:
     )
 
 
+def _plan_campaign(row) -> rx.Component:
+    """QUA-143: the POST's campaign, from the piece. The campaign belongs to the POST:
+    the selector shows the POST's own, a change is applied to the POST on «Confirmar»
+    (only once its publications were created), and the warning says it reaches every
+    publication the POST already has."""
+    picker = rx.select.root(
+        rx.select.trigger(placeholder="Sin campaña", aria_label="Campaña del POST"),
+        rx.select.content(
+            rx.select.item("Sin campaña", value="none"),
+            rx.cond(PlannerState.campaigns.length() > 0, rx.select.separator()),
+            rx.foreach(
+                PlannerState.campaigns,
+                lambda c: rx.select.item(c.name, value=c.id),
+            ),
+            rx.select.separator(),
+            rx.select.item("+ Nueva campaña", value="new"),
+        ),
+        value=row.campaign_value,
+        on_change=lambda v: PlannerState.set_item_campaign(row.post_id, v),
+        size="2",
+    )
+    new_campaign = rx.hstack(
+        rx.input(
+            value=row.new_campaign_name,
+            on_change=lambda v: PlannerState.set_item_new_campaign_name(row.post_id, v),
+            placeholder="Nombre de la nueva campaña",
+            max_length=60,
+            size="2",
+            flex="1",
+            min_width="10rem",
+            aria_label="Nombre de la nueva campaña",
+        ),
+        color_swatches(
+            row.new_campaign_color,
+            lambda key: PlannerState.set_item_new_campaign_color(row.post_id, key),
+            COLOR_LABELS,
+            label="Color de la nueva campaña",
+        ),
+        align="center",
+        spacing="3",
+        wrap="wrap",
+        width="100%",
+    )
+    new_campaign = rx.vstack(
+        new_campaign,
+        rx.text("Se creará al confirmar la programación.", size="1", color=T.TEXT_MUTED),
+        spacing="1",
+        width="100%",
+    )
+    return rx.box(
+        _label("Campaña"),
+        rx.vstack(
+            picker,
+            rx.cond(row.creating_campaign, new_campaign),
+            rx.cond(
+                row.campaign_warning != "",
+                rx.hstack(
+                    rx.icon("info", size=14, flex_shrink="0"),
+                    rx.text(row.campaign_warning, size="1"),
+                    class_name="q-plan-status q-plan-status--todo",
+                    align="start",
+                    spacing="1",
+                ),
+            ),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+        width="100%",
+    )
+
+
+def _confirm_campaign(row) -> rx.Component:
+    """QUA-143, «Confirmar»: the campaign the piece's POST will have once programmed — and,
+    when that is a change, what happens (created, changed or cleared) and what it reaches."""
+    note = rx.cond(
+        row.creating_campaign,
+        "Campaña nueva: se creará al programar.",
+        rx.cond(
+            row.chosen_campaign_name == "",
+            "El POST quedará sin campaña al programar.",
+            "La campaña del POST cambiará al programar.",
+        ),
+    )
+    return rx.fragment(
+        campaign_badge(row.chosen_campaign_name, row.chosen_campaign_color),
+        rx.cond(
+            row.campaign_changed,
+            rx.text(
+                note,
+                rx.cond(row.campaign_warning != "", " " + row.campaign_warning, ""),
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+        ),
+    )
+
+
 def _plan_card(row) -> rx.Component:
     return rx.box(
         rx.hstack(
@@ -656,6 +757,8 @@ def _plan_card(row) -> rx.Component:
                     rx.icon("arrow-right", size=12, color=T.TEXT_FAINT),
                     destination_badge(row.destination, row.destination_label),
                     temperature_badge(row.temperature, row.temperature_label, row.temperature_hint),
+                    # QUA-143: the campaign the POST has today (nothing when independent).
+                    campaign_badge(row.current_campaign_name, row.current_campaign_color),
                     spacing="1",
                     align="center",
                     wrap="wrap",
@@ -726,6 +829,7 @@ def _plan_card(row) -> rx.Component:
             ),
             width="100%",
         ),
+        rx.cond(~PlannerState.form_is_reschedule, _plan_campaign(row)),
         rx.box(
             _label("Etiquetas"),
             rx.flex(
@@ -763,7 +867,7 @@ def _plan_card(row) -> rx.Component:
                 PlannerState.form_count > 1,
                 rx.button(
                     rx.icon("copy", size=12),
-                    "Usar canales y etiquetas en todas",
+                    "Usar canales, etiquetas y campaña en todas",
                     size="1",
                     variant="ghost",
                     on_click=PlannerState.apply_to_all(row.post_id),
@@ -1015,6 +1119,7 @@ def _timeline_item(row) -> rx.Component:
                     wrap="wrap",
                     gap="0.3rem",
                 ),
+                _confirm_campaign(row),
                 rx.cond(
                     row.tags.length() > 0,
                     rx.flex(rx.foreach(row.tags, tag_badge_plain), wrap="wrap", gap="0.25rem"),
@@ -1443,6 +1548,11 @@ def _detail_body() -> rx.Component:
         rx.cond(
             d.output_label != "",
             _fact_tile("layers", "Salida", rx.text(d.output_label, size="2", weight="bold")),
+        ),
+        # QUA-143: the POST's campaign — shown only when the POST belongs to one.
+        rx.cond(
+            d.campaign_name != "",
+            _fact_tile("flag", "Campaña", campaign_badge(d.campaign_name, d.campaign_color)),
         ),
         # `revision` is the event's reschedule counter (it keys the publish attempt, so a
         # moved event can never collide with the old one) — internal. Shown only once it

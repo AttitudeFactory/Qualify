@@ -15,12 +15,23 @@ import logging
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
+from uuid import UUID
 
 import reflex as rx
 from qualify_api.creative.fsm import InvalidTransition as CreativeInvalidTransition
 from qualify_api.planner.service import PlannerError
 
 from .auth_state import AuthState
+from .campaign_provider import (
+    COLOR_LABELS,
+    CampaignOptionVM,
+    apply_post_choice,
+    suggested_color,
+)
+from .campaign_provider import (
+    error_message as campaign_error_message,
+)
+from .creative_provider import acting_user_id
 from .planner_provider import (
     ALL_CONNECTIONS,
     cancel_event,
@@ -40,6 +51,7 @@ from .planner_vm import (
     ASSIGN_STEPS,
     AUTO_PUBLISH_UNAVAILABLE,
     CALENDAR_DEFAULT_TZ,
+    CAMPAIGN_NEW,
     KIND_ICONS,
     OPENING_HOUR,
     PLAN_GOAL_KEYS,
@@ -62,6 +74,7 @@ from .planner_vm import (
     TzOptionVM,
     assign_steps_done,
     build_plan_row,
+    campaign_value,
     split_time,
     timezone_options,
     tz_option,
@@ -144,6 +157,98 @@ def _starting_destination(post: PostOptionVM, output_port: str) -> str:
     return post.default_destination
 
 
+async def schedule_plan_rows(
+    tenant_id,
+    rows: list[PlanRowVM],
+    *,
+    mode: str,
+    event_id: str,
+    view_tz: str,
+    goals: tuple[str, ...],
+    schedule=None,
+    reschedule=None,
+    apply_campaign=None,
+    resolve_user=None,
+) -> tuple[int, list[str], str]:
+    """«Confirmar»'s work, piece by piece, off the state (so it is testable without a live
+    Reflex context): (publications created, POSTs planned, the failure message or "").
+
+    Each piece is planned on its own (atomic within the piece: its accounts and its
+    series, QUA-118 A4); the first refusal stops the loop. QUA-143 AC 21: a piece's
+    campaign choice is applied to its POST ONLY AFTER that piece's publications were
+    created — a refused schedule breaks out first, so the POST keeps its campaign and no
+    campaign typed for it is created. The dependencies default to the real providers.
+    """
+    schedule = schedule or schedule_post
+    reschedule = reschedule or reschedule_event
+    apply_campaign = apply_campaign or apply_post_choice
+    resolve_user = resolve_user or acting_user_id
+    created, planned, failure = 0, [], ""
+    user_id = None  # who creates a campaign typed in the drawer (resolved once, lazily)
+    for row in rows:
+        accounts = tuple(c.id for c in row.accounts)
+        try:
+            if mode == MODE_RESCHEDULE:
+                await asyncio.to_thread(
+                    reschedule,
+                    tenant_id,
+                    event_id,
+                    row.date,
+                    row.time,
+                    accounts[0],
+                    view_tz,
+                    tuple(row.tag_ids),
+                )
+                created += 1
+            else:
+                created += await asyncio.to_thread(
+                    schedule,
+                    tenant_id,
+                    row.post_id,
+                    row.date,
+                    row.time,
+                    accounts[0],
+                    view_tz,
+                    tuple(row.tag_ids),
+                    row.output_port,
+                    accounts,
+                    "",
+                    # A weekly series: its weeks and weekdays (`weekly_days_on`).
+                    _weeks(row.repeat_count) if row.series.enabled else 0,
+                    row.destination,
+                    tuple(row.repeat_days) if row.series.enabled else (),
+                    goals,
+                )
+        except Exception as exc:
+            if not isinstance(exc, PlannerError):
+                logger.error("planner %s failed: %s", mode, type(exc).__name__)
+            failure = f"«{row.title}»: {planner_error_message(exc)}"
+            break
+        planned.append(row.post_id)
+        if mode != MODE_RESCHEDULE and row.campaign_changed:
+            try:
+                if user_id is None:
+                    user_id = await asyncio.to_thread(resolve_user, tenant_id)
+                await asyncio.to_thread(
+                    lambda r=row, u=user_id: apply_campaign(
+                        tenant_id,
+                        UUID(r.post_id),
+                        r.campaign_value,
+                        new_name=r.new_campaign_name,
+                        new_color=r.new_campaign_color,
+                        user_id=u,
+                    )
+                )
+            except Exception as exc:
+                logger.error("planner campaign apply failed: %s", type(exc).__name__)
+                failure = (
+                    f"«{row.title}»: quedó programado, pero no se pudo guardar su campaña. "
+                    f"{campaign_error_message(exc)}"
+                )
+                break
+    return created, planned, failure
+
+
 class PlannerState(rx.State):
     # -- week -----------------------------------------------------------------
     loading: bool = True
@@ -172,6 +277,8 @@ class PlannerState(rx.State):
     tz_query: str = ""
     # Planning tags (0025): the tenant's labels and the calendar's tag filter.
     tags: list[TagVM] = []
+    # QUA-143: the brand's campaigns — the drawer's «Campaña» selector.
+    campaigns: list[CampaignOptionVM] = []
     tag_filter: list[str] = []
     tag_query: str = ""
 
@@ -362,6 +469,7 @@ class PlannerState(rx.State):
                 today_iso=self.today_iso,
                 now_hhmm=self.now_hhmm,
                 reschedule=reschedule,
+                campaigns=self.campaigns,
             )
             for item in self.plan_items
         ]
@@ -533,6 +641,7 @@ class PlannerState(rx.State):
             self.now_hhmm = data.now_hhmm
             self.auto_publish = data.auto_publish
             self.tags = data.tags
+            self.campaigns = data.campaigns
             known = {t.id for t in data.tags}
             self.tag_filter = [t for t in self.tag_filter if t in known]
             self.loading = False
@@ -1102,15 +1211,52 @@ class PlannerState(rx.State):
 
     @rx.event
     def apply_to_all(self, post_id: str) -> None:
-        """«Usar en todas»: this piece's accounts and tags on every piece of the plan —
-        the common case is one brand account for the whole day."""
+        """«Usar en todas»: this piece's accounts, tags and campaign (QUA-143) on every
+        piece of the plan — the common case is one brand account and one campaign for the
+        whole day. The campaign copied is the one the piece SHOWS (its pick, or its POST's
+        own), so every other POST is put in it on «Confirmar»."""
         source = self._item(post_id)
         if source is None:
             return
+        chosen = campaign_value(source, self._post_for(post_id))
         self.plan_items = [
-            replace(item, connection_ids=list(source.connection_ids), tag_ids=list(source.tag_ids))
+            replace(
+                item,
+                connection_ids=list(source.connection_ids),
+                tag_ids=list(source.tag_ids),
+                campaign=chosen,
+                new_campaign_name=source.new_campaign_name,
+                new_campaign_color=source.new_campaign_color,
+            )
             for item in self.plan_items
         ]
+
+    # QUA-143 — the piece's campaign: the POST's, applied only on «Confirmar».
+
+    @rx.event
+    def set_item_campaign(self, post_id: str, value: str) -> None:
+        """The selector: a campaign id, «Sin campaña» or «Nueva campaña» (which opens the
+        name and the four colours, the suggested one preselected)."""
+        item = self._item(post_id)
+        if item is None:
+            return
+        if value == CAMPAIGN_NEW:
+            self._update_item(
+                post_id,
+                campaign=CAMPAIGN_NEW,
+                new_campaign_color=item.new_campaign_color or suggested_color(self.campaigns),
+            )
+        else:
+            self._update_item(post_id, campaign=value)
+
+    @rx.event
+    def set_item_new_campaign_name(self, post_id: str, value: str) -> None:
+        self._update_item(post_id, new_campaign_name=value)
+
+    @rx.event
+    def set_item_new_campaign_color(self, post_id: str, color: str) -> None:
+        if color in COLOR_LABELS:  # the closed list of four, never a state colour
+            self._update_item(post_id, new_campaign_color=color)
 
     # «Confirmar»
 
@@ -1197,47 +1343,9 @@ class PlannerState(rx.State):
                 self.saving = False
                 self.form_error = _NO_TENANT
             return
-        created, planned, failure = 0, [], ""
-        for row in rows:
-            accounts = tuple(c.id for c in row.accounts)
-            try:
-                if mode == MODE_RESCHEDULE:
-                    await asyncio.to_thread(
-                        reschedule_event,
-                        tenant_id,
-                        event_id,
-                        row.date,
-                        row.time,
-                        accounts[0],
-                        view_tz,
-                        tuple(row.tag_ids),
-                    )
-                    created += 1
-                else:
-                    created += await asyncio.to_thread(
-                        schedule_post,
-                        tenant_id,
-                        row.post_id,
-                        row.date,
-                        row.time,
-                        accounts[0],
-                        view_tz,
-                        tuple(row.tag_ids),
-                        row.output_port,
-                        accounts,
-                        "",
-                        # A weekly series: its weeks and weekdays (`weekly_days_on`).
-                        _weeks(row.repeat_count) if row.series.enabled else 0,
-                        row.destination,
-                        tuple(row.repeat_days) if row.series.enabled else (),
-                        plan_goals,
-                    )
-            except Exception as exc:
-                if not isinstance(exc, PlannerError):
-                    logger.error("planner %s failed: %s", mode, type(exc).__name__)
-                failure = f"«{row.title}»: {planner_error_message(exc)}"
-                break
-            planned.append(row.post_id)
+        created, planned, failure = await schedule_plan_rows(
+            tenant_id, rows, mode=mode, event_id=event_id, view_tz=view_tz, goals=plan_goals
+        )
         if failure:
             async with self:
                 self.saving = False
