@@ -629,6 +629,9 @@ async def test_a_live_profile_read_is_recorded_in_the_creator_history(
         cache, "remember_snapshot", lambda t, n, h, p: cached.__setitem__((t, n, h), p)
     )
     monkeypatch.setattr(wiz.scrapecreators_client, "fetch_profile_and_posts", lambda n, h: profile)
+    brand = UUID("b0000000-0000-4000-8000-0000000000a1")
+    monkeypatch.setattr(wiz.account_claims_provider, "claim", lambda _t, _n, _h: (brand, True))
+    monkeypatch.setattr(wiz.account_claims_provider, "keep_only", lambda *_a: None)
     tenant = "a0000000-0000-4000-8000-0000000000a1"
     _without_session(monkeypatch, tenant)
 

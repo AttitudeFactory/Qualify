@@ -247,6 +247,45 @@ class BrandKitDetails(Base):
     )
 
 
+class SocialAccountClaim(Base):
+    """A brand's own social account, taken for that brand alone (0044, § request
+    2026-10-06: an account registered by one email may not be read by another).
+
+    `UNIQUE(network, handle_key)` is GLOBAL while RLS keeps every row private to its
+    tenant: the index is what tells a second tenant "taken" without letting it read whose
+    (`qualify_api.creative.account_claims`)."""
+
+    __tablename__ = "social_account_claims"
+    __table_args__ = (
+        UniqueConstraint("network", "handle_key", name="uq_social_account_claims_account"),
+        CheckConstraint(
+            "network IN ('instagram','tiktok')", name="ck_social_account_claims_network"
+        ),
+        CheckConstraint(
+            "handle_key <> '' AND handle_key = lower(btrim(handle_key)) "
+            "AND left(handle_key, 1) <> '@'",
+            name="ck_social_account_claims_handle_key",
+        ),
+        Index("ix_social_account_claims_tenant", "tenant_id", "brand_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
+    )
+    network: Mapped[str] = mapped_column(Text, nullable=False)
+    handle_key: Mapped[str] = mapped_column(Text, nullable=False)
+    handle: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
 class ContentBrief(Base):
     """The operator's order: what the piece is for, where it runs, what it must respect.
     Immutable input to a draft — regeneration re-reads the brief, never edits it."""

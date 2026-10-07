@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import pytest
 from PIL import Image, ImageDraw
@@ -17,6 +18,9 @@ from PIL import Image, ImageDraw
 from . import creative_wizard_pages as wiz
 from .creative_state import CreativeState
 from .creative_wizard_pages import BrandConnectState, BrandWizardState
+
+_TENANT = UUID("a0000000-0000-4000-8000-0000000000c1")
+_BRAND = UUID("b0000000-0000-4000-8000-0000000000c1")
 
 
 def _png(*fills: str) -> bytes:
@@ -41,11 +45,13 @@ class _Session:
         self.connect.profile_pic = "https://scontent.cdninstagram.com/pic.jpg"
         self.connect.profile_followers_count = 12_000
         self.connect.profile_pic_is_real = True
+        auth = wiz.AuthState()
+        auth.session_tenant_id = str(_TENANT)
         by_class: dict[type, Any] = {
             CreativeState: self.creative,
             BrandWizardState: self.wizard,
             BrandConnectState: self.connect,
-            wiz.AuthState: wiz.AuthState(),  # no tenant: `analyze` reads live, caches nothing
+            wiz.AuthState: auth,
         }
 
         async def get_state(_self: Any, state_cls: type) -> Any:
@@ -53,6 +59,15 @@ class _Session:
 
         monkeypatch.setattr(BrandWizardState, "get_state", get_state)
         monkeypatch.setattr(BrandConnectState, "get_state", get_state)
+        # `analyze` claims the account and reads through the tenant's cache: both are the
+        # database, stubbed here — the account is this brand's, nothing is cached yet
+        claims = wiz.account_claims_provider
+        monkeypatch.setattr(claims, "claim", lambda _t, _n, _h: (_BRAND, True))
+        monkeypatch.setattr(claims, "keep_only", lambda *_a: None)
+        monkeypatch.setattr(claims, "release", lambda *_a: None)
+        monkeypatch.setattr(wiz.creator_cache_provider, "cached_snapshot", lambda *_a: None)
+        monkeypatch.setattr(wiz.creator_cache_provider, "remember_snapshot", lambda *_a: None)
+        monkeypatch.setattr(wiz.growth_provider, "record_profile_read", lambda *_a: 0)
         self.picture: bytes | None = _png("#be123c")
         self.fetches: list[tuple[str, str, str]] = []
 

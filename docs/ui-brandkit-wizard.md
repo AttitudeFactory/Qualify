@@ -342,6 +342,20 @@ Petición: quitar "Lo que te proponemos" y Google Maps; unificar el brief con "�
 - **Hashtags creados desde la cuenta** (`qualify_api.hashtags.from_profile`, Sonnet 5 con esfuerzo bajo, herramienta estricta `proponer_hashtags`): lee la bio, la categoría, los textos de las últimas publicaciones (`recentCaptions`, nuevo en la lectura del perfil, sin créditos extra) y los hashtags que la cuenta ya usa, más el rubro y la ciudad. Se generan solos al llegar a Tu rubro si aún no hay sugerencias; "Sugerir" los regenera. Sin clave de Anthropic, o si la llamada falla, se usan los hashtags propios de la cuenta sin los de alcance (#fyp, #viral…). Entre píldoras hay 12 px.
 - **La ciudad ya no desaparece.** La búsqueda local empareja la ciudad con hasta tres términos del rubro en vez de uno (`local_terms`, plan 12); con uno solo, "programación Táchira" devolvía cero cuentas. Si aun así no encuentra nada, la categoría se muestra con el aviso "No encontramos cuentas de {ciudad} para tu rubro todavía" en lugar de saltarse.
 
+### 4.11 Una cuenta propia pertenece a una sola marca (2026-10-06)
+
+Petición: si a@gmail.com se registró con su usuario de Instagram, b@gmail.com no puede usar ese usuario como su cuenta, porque los datos (perfil, seguidores, publicaciones y métricas) son sensibles.
+
+- **Reclamar antes de leer.** En Tu cuenta, `BrandConnectState.analyze` reclama la cuenta para la marca de la sesión (`account_claims_provider.claim` → `qualify_api.creative.account_claims`, migración **0044** `social_account_claims`) **antes** de mirar la caché o llamar a Scrape Creators. Si la cuenta ya es de otro tenant, no se lee nada y aparece: "Esta cuenta ya está registrada en Qualify con otro correo. Si es tuya, entra con el correo con el que la registraste." El aviso no dice de quién es.
+- **Cómo se sabe sin leer al otro tenant.** La tabla tiene la política RLS estándar, así que cada tenant ve solo sus filas. Su `UNIQUE(network, handle_key)`, en cambio, es global: el `INSERT … ON CONFLICT DO NOTHING` de B no inserta nada y B tampoco ve la fila, así que la cuenta es de otro. No hace falta `admin_session` ni funciones `SECURITY DEFINER`. `handle_key` = `strip().lstrip("@").strip().lower()`: "@MiduDev" y "midudev" son la misma cuenta. Instagram y TikTok son cuentas distintas aunque el nombre coincida.
+- **Ciclo de vida.** Si la lectura falla (por ejemplo, un usuario mal escrito), la reclamación recién hecha se libera. Si la lectura sale bien, la marca se queda solo con esa cuenta en esa red (`keep_only`) y la anterior queda libre. Sin sesión de Brand Kit, o si la reclamación no se puede comprobar, no se lee.
+- **Relleno inicial (0044).** Las cuentas que los Brand Kits ya tenían guardadas (`brand_kit_details.connect`) se reclaman al migrar. Si varios tenants guardaron la misma cuenta, gana un tenant **registrado** frente a un borrador sin cuenta, y después el kit más antiguo.
+- **Fuera de alcance.**
+  - No hay verificación de propiedad: gana quien la reclama primero. Probar que una cuenta es tuya exige OAuth con Meta (`qualify_api.connections`).
+  - Los borradores abandonados retienen su cuenta: no caducan.
+  - Agregar una cuenta como referente, competencia o detractor sigue permitido, porque leer el perfil público de la competencia es parte del producto.
+- **Al probar en desarrollo.** Una cuenta de prueba (p. ej. `midu.dev`) queda reclamada por el primer tenant que la lee. Para leerla con otro correo, ese primer tenant tiene que leer antes otra cuenta, o hay que borrar su fila de `social_account_claims`.
+
 ## 5. La paleta de colores
 
 Es la parte con más iteración. Se sustituyó el campo de texto con hex manual por tres piezas, y **cada una hace exactamente un trabajo** (decisión del fundador, 2026-09-03):

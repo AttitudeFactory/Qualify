@@ -63,6 +63,7 @@ from reflex.vars import VarData
 from sqlalchemy.exc import SQLAlchemyError
 
 from . import (
+    account_claims_provider,
     avatar_proxy,
     brand_documents,
     creator_cache_provider,
@@ -3209,6 +3210,12 @@ def brand_connect_setup_index() -> rx.Component:
 _USERNAME_REQUIRED = "Escribe tu usuario para continuar."
 _NETWORK_REQUIRED = "Elige Instagram o TikTok para leer tu perfil."
 _PROFILE_UNAVAILABLE = "No pudimos leer el perfil. Revisa el usuario e inténtalo de nuevo."
+#: § request 2026-10-06: the account is another email's own account — said without naming
+#: who, and without reading anything of it.
+_ACCOUNT_TAKEN = (
+    "Esta cuenta ya está registrada en Qualify con otro correo. Si es tuya, entra con el "
+    "correo con el que la registraste."
+)
 
 #: (key, label, blurb, icon) — the icon is the same generic stand-in
 #: `ACCOUNT_SETUP_INFO` already uses for each network (Lucide ships no brand-logo
@@ -5146,16 +5153,20 @@ class BrandConnectState(rx.State):
         tenant_id = tenant_uuid(session_tenant_id) if session_tenant_id else None
         yield
 
+        # § request 2026-10-06: the account is claimed for this brand BEFORE anything of
+        # it is read — cache included — so another email's own account never reaches
+        # this session. No Brand Kit session means no brand to claim it for: no read.
+        claimed = await self._claim_account(tenant_id, network, handle)
+        if claimed is None:
+            return
+        brand_id, newly_claimed = claimed
+
         fetched_live = False
         try:
             # § 2026-10-01: the tenant's own cache in Postgres, 7 days (the week the
-            # metrics describe) — no session, no cache: the read is live.
-            profile = (
-                await asyncio.to_thread(
-                    creator_cache_provider.cached_snapshot, tenant_id, network, handle
-                )
-                if tenant_id is not None
-                else None
+            # metrics describe).
+            profile = await asyncio.to_thread(
+                creator_cache_provider.cached_snapshot, tenant_id, network, handle
             )
             if profile is None:
                 fetched_live = True
@@ -5164,26 +5175,34 @@ class BrandConnectState(rx.State):
                 profile = await asyncio.to_thread(
                     scrapecreators_client.fetch_profile_and_posts, network, handle
                 )
-                if tenant_id is not None:
-                    await asyncio.to_thread(
-                        creator_cache_provider.remember_snapshot,
-                        tenant_id,
-                        network,
-                        handle,
-                        profile,
-                    )
+                await asyncio.to_thread(
+                    creator_cache_provider.remember_snapshot,
+                    tenant_id,
+                    network,
+                    handle,
+                    profile,
+                )
         except (scrapecreators_client.ScrapeCreatorsError, ValueError, OSError) as exc:
             # The vendor detail (HTTP status, "insufficient credits", etc. — see
             # scrapecreators_client._error_detail) is diagnostic, not for the operator:
             # it stays in the server log. What reaches the screen is the one generic,
             # translated message every other provider-call failure in this flow uses.
             logger.warning("brand connect profile read failed: %s", exc)
+            if newly_claimed:  # a typo must not lock an account nobody was shown
+                await self._settle_claim(
+                    account_claims_provider.release, tenant_id, brand_id, network, handle
+                )
             async with self:
                 self.analyzing = False
                 self.error = _PROFILE_UNAVAILABLE
             return
 
-        if fetched_live and tenant_id is not None:
+        # The account read is now the brand's one account on this network: the one it
+        # read before is free again for whoever owns it.
+        await self._settle_claim(
+            account_claims_provider.keep_only, tenant_id, brand_id, network, handle
+        )
+        if fetched_live:
             await self._record_read(tenant_id, network, handle, profile)
 
         followers = profile.get("followers")
@@ -5228,6 +5247,43 @@ class BrandConnectState(rx.State):
         async with self:
             if self.profile_pic == read_pic:
                 self.profile_pic_is_real = is_real
+
+    async def _claim_account(
+        self, tenant_id: UUID | None, network: str, handle: str
+    ) -> tuple[UUID, bool] | None:
+        """(brand, whether this read took the account) once Tu cuenta's account is the
+        session brand's own (`account_claims_provider.claim`); None — with the reason on
+        screen — when it cannot be: no Brand Kit session, another email's account, or a
+        claim that could not be checked. Must NOT be called while holding the lock."""
+        error = _PROFILE_UNAVAILABLE
+        if tenant_id is not None:
+            try:
+                return await asyncio.to_thread(
+                    account_claims_provider.claim, tenant_id, network, handle
+                )
+            except account_claims_provider.AccountTaken:
+                error = _ACCOUNT_TAKEN
+            except (SQLAlchemyError, LookupError, ValueError) as exc:
+                logger.warning("brand connect: account claim not checked: %s", exc)
+        async with self:
+            self.analyzing = False
+            self.error = error
+        return None
+
+    @staticmethod
+    async def _settle_claim(
+        action: Callable[[UUID, UUID, str, str], None],
+        tenant_id: UUID,
+        brand_id: UUID,
+        network: str,
+        handle: str,
+    ) -> None:
+        """`release` / `keep_only` after the read. Never fails the analysis: a claim left
+        behind only keeps an account this brand already read reserved for it."""
+        try:
+            await asyncio.to_thread(action, tenant_id, brand_id, network, handle)
+        except SQLAlchemyError as exc:
+            logger.warning("brand connect: account claim not settled: %s", exc)
 
     async def _picture_is_real(self, network: str, handle: str, picture_url: str) -> bool:
         """True when the profile picture exists, can be fetched (`avatar_proxy.
