@@ -166,7 +166,11 @@ app.add_page(
 app.add_page(
     connections_index,
     route="/connections",
-    on_load=[AuthState.require_login, ConnectionsState.load_connections],
+    on_load=[
+        AuthState.require_login,
+        ConnectionsState.read_connect_result,
+        ConnectionsState.load_connections,
+    ],
     title="Qualify · Conexiones",
 )
 app.add_page(

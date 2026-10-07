@@ -23,7 +23,7 @@
 #   3. Only if that succeeded: /opt/qualify/current -> the release. A failed build or
 #      migration leaves `current` (and with it `status`, `logs`, the backup cron) on the last
 #      good release. Older releases stay for rollback; the last 5 are kept.
-#   4. Health: /ping (Reflex), /api/connections/callback (FastAPI; 403 = reached), /login (UI).
+#   4. Health: /ping (Reflex), /api/connections/callback (FastAPI; 303 = reached), /login (UI).
 #
 # Rollback = `deploy/deploy.sh deploy <target> <previous-sha>`. Migrations are forward-only
 # from the first production deploy, so a rollback across a migration needs a plan first.
@@ -100,7 +100,7 @@ cmd_deploy() {
 cmd_status() {
   remote "$COMPOSE ps"
   echo "==> Health (requested on the server, through Caddy)"
-  echo "    expected: /ping 200 · callback 403 (invalid state = FastAPI reached) · /login 200"
+  echo "    expected: /ping 200 · callback 303 (invalid state → /connections = FastAPI reached) · /login 200"
   # Exits non-zero when any probe misses its expected code, so `deploy` fails loudly.
   # shellcheck disable=SC2016 # the script is expanded on the server, on purpose
   remote 'bash -s' <<EOF
@@ -114,7 +114,7 @@ esac
 code() { curl -s -o /dev/null -w '%{http_code}' --max-time 10 \${resolve[@]+"\${resolve[@]}"} "\$base\$1" || true; }
 for _ in \$(seq 1 45); do [ "\$(code /ping)" = 200 ] && break; sleep 2; done
 failed=0
-for probe in '/ping 200' '/api/connections/callback?code=x&state=x 403' '/login 200'; do
+for probe in '/ping 200' '/api/connections/callback?code=x&state=x 303' '/login 200'; do
   path=\${probe% *}; want=\${probe##* }; got=\$(code "\$path")
   mark=ok; [ "\$got" = "\$want" ] || { mark=FAIL; failed=1; }
   printf '  %-4s %-62s %s (want %s)\n' "\$mark" "\$base\$path" "\$got" "\$want"

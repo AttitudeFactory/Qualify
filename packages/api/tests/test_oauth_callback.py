@@ -634,85 +634,176 @@ def test_authorization_url_omits_config_id_entirely_when_unset() -> None:
 # --------------------------------------------------------------------------------------
 
 
+PAGE_URL = "https://qualify.test/connections"
+
+
+def _client_for(harness: Harness) -> TestClient:
+    app = create_app(configure_production=False)
+    app.dependency_overrides[connections_routes.get_connect_service] = lambda: harness.service
+    app.dependency_overrides[connections_routes.get_connections_page_url] = lambda: PAGE_URL
+    return TestClient(app, follow_redirects=False)
+
+
 @pytest.fixture
 def client_and_harness() -> tuple[TestClient, Harness]:
     harness = build_harness()
-    app = create_app(configure_production=False)
-    app.dependency_overrides[connections_routes.get_connect_service] = lambda: harness.service
-    return TestClient(app), harness
+    return _client_for(harness), harness
 
 
-def test_callback_route_returns_outcome(client_and_harness: tuple[TestClient, Harness]) -> None:
+def _landing(response: httpx.Response) -> tuple[str, dict[str, str]]:
+    """(page the browser is sent to, its query) — asserting on the parsed query, not the
+    raw string, so the test pins the contract and not urlencode's formatting."""
+    assert response.status_code == 303
+    location = urlsplit(response.headers["location"])
+    return f"{location.scheme}://{location.netloc}{location.path}", dict(parse_qsl(location.query))
+
+
+def test_callback_route_redirects_to_connections_with_outcome(
+    client_and_harness: tuple[TestClient, Harness],
+) -> None:
+    """QUA-123: the browser Meta sent here lands on the UI, not on a JSON body."""
     client, harness = client_and_harness
     state = start_and_extract_state(harness)
 
     response = client.get("/api/connections/callback", params={"code": "c", "state": state})
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["outcome"] == "active"
-    assert body["connection_id"] is not None
+    assert _landing(response) == (PAGE_URL, {"connect": "active"})
+    assert len(harness.repo.connections) == 1
     assert TOKEN not in response.text
+    assert TOKEN not in response.headers["location"]
 
 
-def test_callback_route_rejects_bad_state_with_403(
+def test_callback_redirect_carries_no_identifier(
     client_and_harness: tuple[TestClient, Harness],
 ) -> None:
-    client, _ = client_and_harness
+    """Only the closed outcome code travels in the URL: no connection id, no username,
+    no counts. The page re-reads the list from Postgres; the counts are in the log."""
+    client, harness = client_and_harness
+    response = client.get(
+        "/api/connections/callback",
+        params={"code": "c", "state": start_and_extract_state(harness)},
+    )
+
+    location = response.headers["location"]
+    (stored,) = harness.repo.connections.values()
+    assert str(stored.connection_id) not in location
+    assert "puntoservis" not in location.lower()
+    assert set(_landing(response)[1]) == {"connect"}
+
+
+def test_callback_route_bad_state_redirects_as_invalid_state(
+    client_and_harness: tuple[TestClient, Harness],
+) -> None:
+    client, harness = client_and_harness
     response = client.get(
         "/api/connections/callback", params={"code": "c", "state": "not-a-real-state"}
     )
-    assert response.status_code == 403
+    assert _landing(response) == (PAGE_URL, {"connect": "invalid_state"})
+    assert harness.oauth.exchanged_codes == []  # a forged state costs nothing
     assert TOKEN not in response.text
 
 
-def test_callback_route_zero_pages_reports_page_access_required_with_counts(
+def test_callback_route_replayed_state_redirects_as_invalid_state(
     client_and_harness: tuple[TestClient, Harness],
 ) -> None:
-    """The response the operator will actually be looking at during step 1 of R9(e)."""
+    """A browser refresh on the callback URL replays the state: the second hit must land
+    on the same calm page, not on an error body, and must not exchange the code twice."""
+    client, harness = client_and_harness
+    params = {"code": "c", "state": start_and_extract_state(harness)}
+
+    first = client.get("/api/connections/callback", params=params)
+    second = client.get("/api/connections/callback", params=params)
+
+    assert _landing(first)[1] == {"connect": "active"}
+    assert _landing(second)[1] == {"connect": "invalid_state"}
+    assert harness.oauth.exchanged_codes == ["c"]
+
+
+def test_callback_route_user_cancel_redirects_as_denied(
+    client_and_harness: tuple[TestClient, Harness],
+) -> None:
+    """Meta's cancel comes back with `error=...` and no `code`; that used to be a 422."""
+    client, harness = client_and_harness
+    response = client.get(
+        "/api/connections/callback",
+        params={
+            "error": "access_denied",
+            "error_reason": "user_denied",
+            "error_description": "Permissions error",
+            "state": start_and_extract_state(harness),
+        },
+    )
+    assert _landing(response) == (PAGE_URL, {"connect": "denied"})
+    assert harness.oauth.exchanged_codes == []
+    assert harness.repo.connections == {}
+
+
+def test_callback_route_without_code_or_error_is_invalid_state(
+    client_and_harness: tuple[TestClient, Harness],
+) -> None:
+    client, _ = client_and_harness
+    assert _landing(client.get("/api/connections/callback"))[1] == {"connect": "invalid_state"}
+    assert _landing(client.get("/api/connections/callback", params={"code": "c"}))[1] == {
+        "connect": "invalid_state"
+    }
+
+
+def test_callback_route_zero_pages_redirects_as_page_access_required() -> None:
     harness = build_harness(pages=())
-    app = create_app(configure_production=False)
-    app.dependency_overrides[connections_routes.get_connect_service] = lambda: harness.service
-    client = TestClient(app)
-
-    response = client.get(
+    response = _client_for(harness).get(
         "/api/connections/callback",
         params={"code": "c", "state": start_and_extract_state(harness)},
     )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "outcome": "page_access_required",
-        "connection_id": None,
-        "external_username": None,
-        "page_count": 0,
-        "linked_page_count": 0,
-    }
+    assert _landing(response) == (PAGE_URL, {"connect": "page_access_required"})
+    assert harness.repo.connections == {}
 
 
-def test_callback_route_unlinked_page_reports_link_required_with_counts(
-    client_and_harness: tuple[TestClient, Harness],
-) -> None:
-    """The counts are what tell these two apart on the wire, so they are asserted on the
-    wire and not only on the service result."""
+def test_callback_route_unlinked_page_redirects_as_link_required() -> None:
     harness = build_harness(pages=(PAGE_WITHOUT_IG,))
-    app = create_app(configure_production=False)
-    app.dependency_overrides[connections_routes.get_connect_service] = lambda: harness.service
-    client = TestClient(app)
-
-    response = client.get(
+    response = _client_for(harness).get(
         "/api/connections/callback",
         params={"code": "c", "state": start_and_extract_state(harness)},
     )
+    assert _landing(response) == (PAGE_URL, {"connect": "link_required"})
+    assert harness.repo.connections == {}
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "outcome": "link_required",
-        "connection_id": None,
-        "external_username": None,
-        "page_count": 1,
-        "linked_page_count": 0,
+
+def test_callback_redirect_codes_are_exactly_the_ui_vocabulary() -> None:
+    """Every code the route can emit has a notice in the UI, and vice versa — the table in
+    `Qualify/connections_vm.py` is the other half of this contract."""
+    emitted = {str(o) for o in ConnectOutcome} | {
+        connections_routes.INVALID_STATE,
+        connections_routes.DENIED,
     }
+    assert emitted == {
+        "active",
+        "degraded",
+        "link_required",
+        "page_access_required",
+        "invalid_state",
+        "denied",
+    }
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({}, "http://localhost:3000/connections"),
+        ({"REFLEX_DEPLOY_URL": "https://qualify.example/"}, "https://qualify.example/connections"),
+        (
+            {"REFLEX_DEPLOY_URL": "https://a.example", "QUALIFY_APP_URL": "https://b.example"},
+            "https://b.example/connections",
+        ),
+    ],
+)
+def test_connections_page_url_from_env(
+    monkeypatch: pytest.MonkeyPatch, env: dict[str, str], expected: str
+) -> None:
+    monkeypatch.delenv("QUALIFY_APP_URL", raising=False)
+    monkeypatch.delenv("REFLEX_DEPLOY_URL", raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert connections_routes.get_connections_page_url() == expected
 
 
 def test_start_route_rejects_unauthenticated_with_401() -> None:

@@ -117,7 +117,7 @@ Qué hace `deploy/deploy.sh deploy`:
 1. `git archive` del ref (sólo lo **commiteado** — nunca el árbol sucio ni el `.env`) → `/opt/qualify/releases/<sha>`. El servidor no necesita acceso a GitHub.
 2. `docker compose build` (la primera vez tarda ~10–15 min en un CX23: dependencias de Python + export del frontend; luego queda en caché). La imagen `qualify-app` la construye **sólo** el servicio `api`; los demás la nombran. Si varios servicios la construyeran, cada copia saldría con otra etiqueta de servicio y el ID cambiaría en cada deploy, lo que recrearía `api`/`reflex` aunque el código fuera el mismo.
 3. `docker compose run --rm migrate` (`alembic upgrade head` como `qualify_owner` + `ALTER ROLE` con las contraseñas de `.env.prod`; levanta `postgres` antes) y, **sólo si terminó bien**, `docker compose up -d`. `migrate` es un paso explícito con perfil propio, no una dependencia de `api`/`reflex`. Un deploy sin cambios de imagen no recrea ningún contenedor, así que no hay ventana de 502. Mientras `migrate` corre, el release anterior sigue atendiendo, igual que antes de este cambio. Por eso toda migración tiene que ser compatible con el código anterior (expandir → contraer en dos deploys, §7). Recién entonces `/opt/qualify/current` pasa a apuntar al release nuevo: si el build o la migración fallan, `current` (y con él `status`, `logs` y el cron de respaldo) se queda en el último release bueno.
-4. Chequeos de salud a través de Caddy: `/ping` = 200, `/api/connections/callback?code=x&state=x` = **403** (estado inválido: prueba que llegó a FastAPI; un 502 sería falla), `/login` = 200.
+4. Chequeos de salud a través de Caddy: `/ping` = 200, `/api/connections/callback?code=x&state=x` = **303** hacia `/connections?connect=invalid_state` (estado inválido: prueba que llegó a FastAPI; un 502 sería falla), `/login` = 200.
 
 Después: abrir <https://qualify.attitudefactory.co/login>. Para crear el primer negocio usar `/signup`, o por consola:
 
@@ -214,7 +214,7 @@ Se activan con `COMPOSE_PROFILES` en `/opt/qualify/.env.prod` y un `just deploy`
 
 ## 11. Pendientes conocidos (no bloquean el despliegue)
 
-1. **El callback OAuth termina en JSON.** `/api/connections/callback` responde `{"outcome": ..., "connection_id": ...}` en vez de redirigir a `/connections`. Funciona, pero el revisor de Meta ve un JSON crudo al terminar de conectar. Pide un redirect a la UI (cambio de código en `connections_routes.py`, fuera de este PR).
+1. ~~**El callback OAuth termina en JSON.**~~ **Resuelto (QUA-123, 2026-10-06).** `/api/connections/callback` responde siempre `303` a `/connections?connect=<código>` (`active`, `degraded`, `link_required`, `page_access_required`, `invalid_state`, `denied`) y la pantalla muestra el aviso correspondiente. En la URL sólo viaja ese código: ni ids, ni usuario, ni conteos (los conteos de páginas siguen en el log del servicio `api`). El destino sale de `QUALIFY_APP_URL` o, si no está, de `REFLEX_DEPLOY_URL`, que el compose ya fija a `QUALIFY_PUBLIC_URL`.
 2. **Funciones que necesitan torch no corren en este servidor** (sentimiento de comentarios, borradores de respuesta, whisper local del Brand Kit). Para activarlas: o el grupo `ml` en la imagen (varios GB más; no cabe holgado en un CX23), o moverlas a proveedores hospedados.
 3. **La API HTTP no tiene login real.** Las rutas `/api/*` que exigen `Principal` usan `QUALIFY_DEV_PRINCIPALS`; vacío = 401 (seguro). La UI no las necesita (llama a los servicios en proceso). El callback OAuth y `/public/media/*` no la usan.
 4. **Nombres `DEV` en la llave maestra** (`QUALIFY_DEV_FERNET_KEY`, `QUALIFY_DEV_KEY_ID`) y default commiteado en `crypto.py`: el compose lo vuelve obligatorio, pero el código sigue cayendo a la llave de desarrollo si se ejecuta fuera de este compose. Renombrar + fail-closed en código es trabajo aparte (también lo pide `plan-cicd-staging.md` §5.4).
@@ -238,7 +238,7 @@ QUALIFY_ENV_FILE=/ruta/.env.smoke docker compose -p qualify-smoke \
 | `/`, `/login`, `/signup`, `/brand`, `/design` | 200 (estático desde Caddy) |
 | `/drafts/abc123` (ruta dinámica) | 200 (fallback SPA) |
 | `/ping`, `/_health` | 200 (backend de Reflex) |
-| `/api/connections/callback?code=x&state=x` | **403** `invalid or expired state` → llegó a FastAPI (no 502) |
+| `/api/connections/callback?code=x&state=x` | **403** `invalid or expired state` → llegó a FastAPI (no 502). *Desde QUA-123 la respuesta esperada es **303** a `/connections?connect=invalid_state`.* |
 | `/public/media/<token inexistente>` | 404 desde FastAPI |
 | `/avatar/tiktok/nobody`, `/r2media/<token malo>` | 200 / 404 desde el backend de Reflex (`api_transformer`) |
 | WebSocket `/_event` | `101 Switching Protocols` + paquete de apertura de Engine.IO; en un navegador real, `/connections` sin sesión ejecuta su `on_load` por el websocket y redirige a `/brand/start` |
