@@ -5,6 +5,8 @@
 #   deploy/deploy.sh status <ssh-target>             containers + health checks through Caddy
 #   deploy/deploy.sh logs   <ssh-target> [service]   follow logs (all services, or one)
 #   deploy/deploy.sh backup <ssh-target>             pg_dump now (same script as the nightly cron)
+#   deploy/deploy.sh env-push <ssh-target> [--dry-run] KEY...
+#                                                    copy KEYs from your local .env into .env.prod
 #
 # <ssh-target> is e.g. `deploy@203.0.113.10`, or a Host alias from ~/.ssh/config.
 # [git-ref] defaults to `origin/main` (fetched first).
@@ -37,7 +39,7 @@ KEEP_RELEASES=5
 die() { echo "deploy.sh: $*" >&2; exit 1; }
 
 usage() {
-  sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-1}"
 }
 
@@ -114,12 +116,101 @@ cmd_backup() {
   remote "$REMOTE_ROOT/current/deploy/backup-db.sh"
 }
 
+# Keys env-push refuses, with the command that does change them correctly.
+env_push_refusal() {
+  case "$1" in
+    QUALIFY_DB_*_PASSWORD) echo "a role password is applied by \`migrate\` (ALTER ROLE): edit .env.prod and \`just deploy\`" ;;
+    QUALIFY_DEV_FERNET_KEY) echo "rotating the credential master key makes every stored OAuth credential undecryptable" ;;
+    QUALIFY_PUBLIC_URL) echo "it is baked into the static frontend: edit .env.prod and \`just deploy\` (rebuild)" ;;
+    COMPOSE_* | QUALIFY_IMAGE_*) echo "it changes the shape of the stack, not a secret: edit .env.prod and \`just deploy\`" ;;
+  esac
+}
+
+# Runs ON THE SERVER: $1 = .env.prod, $2 = 1 for a dry run, stdin = KEY=VALUE lines. Values
+# travel only over the ssh channel's stdin — never argv (visible in `ps`), never a terminal.
+# shellcheck disable=SC2016  # expanded remotely
+ENV_PUSH_REMOTE='
+set -euo pipefail
+env_file=$1 dry=$2
+umask 077
+payload=$(mktemp) out=""
+trap '\''rm -f "$payload" ${out:+"$out"}'\'' EXIT
+cat >"$payload"
+fp() { printf %s "$1" | sha256sum | cut -c1-8; }
+while IFS= read -r line; do
+  key=${line%%=*} new=${line#*=}
+  old=$( (grep -E "^${key}=" "$env_file" || true) | tail -n 1 | cut -d= -f2-)
+  if ! grep -qE "^${key}=" "$env_file"; then state="add      (new $(fp "$new"))"
+  elif [ "$old" = "$new" ]; then state="same     ($(fp "$new"))"
+  else state="change   ($(fp "$old") -> $(fp "$new"))"; fi
+  printf "  %-34s %s\n" "$key" "$state"
+done <"$payload"
+[ "$dry" = 1 ] && { echo "==> Dry run: .env.prod untouched"; exit 0; }
+backup=$env_file.bak-$(date -u +%Y%m%dT%H%M%SZ)
+cp -p "$env_file" "$backup"
+out=$(mktemp "$env_file.XXXXXX")
+awk -F= '\''
+  NR == FNR { i = index($0, "="); val[substr($0, 1, i - 1)] = substr($0, i + 1); next }
+  ($1 in val) { print $1 "=" val[$1]; done[$1] = 1; next }
+  { print }
+  END { for (k in val) if (!(k in done)) print k "=" val[k] }
+'\'' "$payload" "$env_file" >"$out"
+chmod --reference="$env_file" "$out"
+chown --reference="$env_file" "$out"
+mv "$out" "$env_file"
+out=""
+ls -1t "$env_file".bak-* | tail -n +11 | xargs -r rm -f
+echo "==> .env.prod written (backup: $backup)"
+'
+
+cmd_env_push() {
+  local dry=0
+  if [[ "${1:-}" == --dry-run ]]; then
+    dry=1
+    shift
+  fi
+  [[ $# -ge 1 ]] || die "usage: env-push <ssh-target> [--dry-run] KEY..."
+
+  # Your local .env: the checkout's own, else the main checkout's (worktrees have none).
+  local src=${QUALIFY_ENV_SOURCE:-}
+  if [[ -z $src ]]; then
+    src=$(git rev-parse --show-toplevel)/.env
+    [[ -f $src ]] || src=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.env
+  fi
+  [[ -f $src ]] || die "no local env file at $src (set QUALIFY_ENV_SOURCE)"
+
+  local payload="" key value why
+  for key in "$@"; do
+    [[ $key =~ ^[A-Z_][A-Z0-9_]*$ ]] || die "not an env var name: $key"
+    why=$(env_push_refusal "$key")
+    [[ -z $why ]] || die "refusing $key — $why"
+    # Last occurrence wins, as in python-dotenv. Surrounding quotes and a CR are stripped.
+    value=$( (grep -E "^${key}=" "$src" || true) | tail -n 1 | cut -d= -f2- | tr -d '\r')
+    value=${value#\"}; value=${value%\"}; value=${value#\'}; value=${value%\'}
+    [[ -n $value ]] || die "$key is missing or empty in $src"
+    payload+="$key=$value"$'\n'
+  done
+
+  echo "==> $([[ $dry == 1 ]] && echo "Dry run: ")$# key(s) from $src -> $TARGET:$ENV_FILE"
+  # The script itself is not secret; base64 keeps it one shell word whatever the login shell.
+  printf %s "$payload" |
+    remote "bash -c \"\$(echo $(printf %s "$ENV_PUSH_REMOTE" | base64 | tr -d '\n') | base64 -d)\" env-push $ENV_FILE $dry"
+  [[ $dry == 1 ]] && return
+
+  # Compose hashes the env_file into each service's config: `up` recreates exactly the
+  # services that read .env.prod and nothing else (postgres/redis/caddy stay up). No build,
+  # no migrate — the running release, only with the new environment.
+  echo "==> Recreating the services whose environment changed"
+  remote "$COMPOSE up -d --no-build"
+  cmd_status
+}
+
 [[ $# -ge 1 ]] || usage
 action=$1
 shift
 case "$action" in
   -h | --help | help) usage 0 ;;
-  deploy | status | logs | backup) ;;
+  deploy | status | logs | backup | env-push) ;;
   *) usage ;;
 esac
 [[ $# -ge 1 ]] || die "missing <ssh-target> (e.g. deploy@203.0.113.10)"
@@ -131,4 +222,5 @@ case "$action" in
   status) cmd_status ;;
   logs) cmd_logs "$@" ;;
   backup) cmd_backup ;;
+  env-push) cmd_env_push "$@" ;;
 esac
