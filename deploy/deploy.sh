@@ -47,8 +47,10 @@ remote() {
 
 # `compose_in <dir>`: the compose invocation for a release directory. The project name is
 # fixed in the compose file (`qualify-prod`), so any release dir drives the same stack.
+# A release deployed by CI (deploy/server-deploy.sh) pins its GHCR images in
+# deploy/release.env; it is passed when present, or compose would look for local images.
 compose_in() {
-  echo "cd $1 && docker compose --env-file $ENV_FILE -f $COMPOSE_FILE"
+  echo "cd $1 && docker compose --env-file $ENV_FILE \$(test -f deploy/release.env && echo --env-file deploy/release.env) -f $COMPOSE_FILE"
 }
 COMPOSE=$(compose_in "$REMOTE_ROOT/current")
 
@@ -99,28 +101,9 @@ cmd_deploy() {
 
 cmd_status() {
   remote "$COMPOSE ps"
-  echo "==> Health (requested on the server, through Caddy)"
-  echo "    expected: /ping 200 · callback 403 (invalid state = FastAPI reached) · /login 200"
-  # Exits non-zero when any probe misses its expected code, so `deploy` fails loudly.
-  # shellcheck disable=SC2016 # the script is expanded on the server, on purpose
-  remote 'bash -s' <<EOF
-set -u
-val() { grep -E "^\$1=" $ENV_FILE | tail -n 1 | cut -d= -f2-; }
-domain=\$(val QUALIFY_DOMAIN); http_port=\$(val QUALIFY_HTTP_PORT)
-case "\$domain" in
-  http://*) host=\${domain#http://}; base="http://\$host:\${http_port:-80}"; resolve=() ;;
-  *) host=\${domain#https://}; base="https://\$host"; resolve=(--resolve "\$host:443:127.0.0.1") ;;
-esac
-code() { curl -s -o /dev/null -w '%{http_code}' --max-time 10 \${resolve[@]+"\${resolve[@]}"} "\$base\$1" || true; }
-for _ in \$(seq 1 45); do [ "\$(code /ping)" = 200 ] && break; sleep 2; done
-failed=0
-for probe in '/ping 200' '/api/connections/callback?code=x&state=x 403' '/login 200'; do
-  path=\${probe% *}; want=\${probe##* }; got=\$(code "\$path")
-  mark=ok; [ "\$got" = "\$want" ] || { mark=FAIL; failed=1; }
-  printf '  %-4s %-62s %s (want %s)\n' "\$mark" "\$base\$path" "\$got" "\$want"
-done
-exit \$failed
-EOF
+  # Exits non-zero when any probe misses its expected code, so `deploy` fails loudly. The
+  # LOCAL copy of the script is piped, so `status` works even before a release carries it.
+  remote "bash -s -- $ENV_FILE" <"$(git rev-parse --show-toplevel)/deploy/healthcheck.sh"
 }
 
 cmd_logs() {

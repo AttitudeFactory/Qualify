@@ -38,7 +38,6 @@ reference
 graphify-out
 infra
 testing
-deploy/*.sh
 **/tests
 Qualify/test_*.py
 packages/render/node_modules
