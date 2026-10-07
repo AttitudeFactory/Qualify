@@ -32,6 +32,7 @@ from .creative_wizard_pages import (
     brand_connect_setup_index,
     brand_manual_index,
 )
+from .gallery_state import GalleryState
 from .inbox_page import inbox_index
 from .inbox_state import InboxState
 from .leads_page import leads_index
@@ -329,7 +330,7 @@ app.add_page(
 app.add_page(
     drafts_index,
     route="/drafts",
-    on_load=[AuthState.require_login, CreativeState.load_drafts],
+    on_load=[AuthState.require_login, GalleryState.load],
     title="Qualify · Borradores",
 )
 app.add_page(

@@ -57,13 +57,21 @@ Configuración (variables de entorno, leídas al arrancar; `.env` sirve):
 
 **Cuenta sin conexión activa.** El tenant no se descubre. Si igualmente llega a un tick (por un worker restringido), el ejecutor comprueba la conexión antes del claim y devuelve `NOT_READY` con `reason=connection_not_active`: el evento sigue `scheduled`, sin error, sin intento y sin fallo, igual que un POST sin aprobar. Se publica en el primer tick después de reconectar la cuenta.
 
-**Aviso del Planificador** (modal del evento):
+**Aviso del Planificador** (panel del evento):
 
 | Estado | Mensaje |
 |---|---|
 | Worker activo y la cuenta tiene una conexión activa | "Publicación automática activa…" |
 | Worker activo y sin conexión activa | Aviso: conectar una cuenta en Conexiones |
 | Worker no activo (apagado, mal configurado o restringido a otros tenants) | Aviso: el servicio de publicación automática no está disponible |
+
+**Cómo sabe el Planificador que hay un worker activo (latido, QUA-118 2026-10-06).** Antes solo preguntaba al worker embebido de *su propio* proceso. En producción ese worker está forzado a `off` y la publicación corre en el contenedor `calendar-worker`, así que la pantalla decía "no está disponible" aunque el servicio funcionara. Ahora **todo worker —embebido o CLI, incluido `--once` por cron— deja un latido por tick en Redis** (`qualify:calendar-worker:heartbeats`, un campo por proceso con su alcance, intervalo, hora del último tick y error del tick). El Planificador considera activo el servicio para un tenant si el worker embebido lo cubre **o** algún latido:
+
+- es reciente: más joven que 3 intervalos + 30 s (con 60 s, 3,5 min) — un tick lento no apaga el aviso, un worker caído lo apaga en minutos;
+- su último tick no falló entero (`TickReport.error`, p. ej. no pudo listar tenants);
+- su alcance es `all` o incluye al tenant.
+
+Leer o escribir el latido nunca lanza: si Redis falla, el tick sigue y la pantalla cae en "no disponible". Módulo: `planner/heartbeat.py`; tests: `test_planner_heartbeat.py`.
 
 **Base de desarrollo compartida con los tests.** Con el valor por defecto, el worker local también procesa los tenants que dejan los tests `db` (hoy unos 200, con cientos de eventos en `publishing` sobre conexiones sin credenciales). No pueden llegar a Meta sin credenciales, pero cada tick tarda unos 50 s en recorrerlos. Mientras corren los tests `db`, conviene levantar la app con `QUALIFY_CALENDAR_WORKER=off` para que el worker no compita con ellos.
 
@@ -124,6 +132,16 @@ Un POST del motor de plantillas (`docs/plan-mvp-plantillas-remotion.md` §2.2) d
 - **Lectura publicable:** `PostReader.get_publishable(output_port=…)` entrega **solo** los `image_assets` de ese puerto (renumerados desde la posición 0) y `media_product_type` sale del **puerto**, no de la categoría: `reel` → REELS (un vídeo), `feed` → IMAGE (una imagen), `story` → STORIES (una imagen o un vídeo; el publicador publica stories de imagen desde QUA-113). Un puerto desconocido o con el tipo de archivo equivocado es `UNSUPPORTED_SHAPE` con el puerto en el detalle. Sin puerto, la regla anterior queda intacta.
 - **Ejecutor:** `EventExecutor` pide al lector el puerto del evento y entrega al `PublishService` la salida con su `media_product_type`. El intento (`publish_attempts`) queda trazable a la salida por `calendar_events.publish_attempt_id` + `output_port` y por el log `calendar.started … output_port=`; no se añadió ninguna columna a `publish_attempts`. La clave de idempotencia sigue siendo `cal:{event_id}:{revision}`, distinta por evento, así que tres salidas son tres intentos.
 - **Planificador (UI):** la tarjeta de «Sin programar» muestra un chip por salida con su estado («Reel · sin programar», «Feed · lun 12 · 12:00 p. m. · @bianki», «Historia · publicada»); «Asignar» añade el control **Salida** (Reel 9:16 · Feed 4:5 · Historia 9:16, preseleccionada la primera sin programar); en el calendario y la lista el evento lleva la palabra de su salida, porque el mismo POST aparece hasta tres veces en la semana.
+
+### Destino del evento y metas del plan (QUA-118 v2, 2026-10-06)
+
+La categoría del POST deja de decidir sola dónde sale: es el **origen** (qué contenido es) y el **evento** decide el **destino**.
+
+- **`calendar_events.destination`** (migración 0041, `text NULL`, `post` / `reel` / `story`). La regla única es `publishable.destination_options`, verificada contra la referencia *IG User Media* de Meta guardada en `reference/meta-instagram-platform`: una imagen → **Publicación** (solo entre 4:5 y 1.91:1) o **Historia**; un vídeo → **Reel** o **Historia** (desde el 2023-11-09 la API no publica vídeo de feed: un vídeo en el feed *es* un reel, así que «Publicación» no se ofrece); un carrusel → solo **Publicación** (una historia es un solo archivo y un reel no va dentro de un carrusel). La duración de un vídeo no se guarda, así que el límite de 60 s de una historia de vídeo es un **aviso**, nunca un bloqueo.
+- **Relleno:** los eventos existentes toman el destino de lo que ya publicaban (su salida MP-11 o su categoría), así que ninguno cambia de comportamiento; `NULL` solo queda para un evento cuyo POST ya no existe y conserva la regla anterior.
+- **Lectura publicable y ejecutor:** `EventExecutor` pasa `destination` del evento a `PostReader.get_publishable`; con destino, `media_product_type` sale de `destination_product_type(destino, forma de los medios)` (y una imagen de publicación fuera del rango de Meta es `IMAGE_RATIO_NOT_ALLOWED`); sin destino, la regla de categoría/puerto queda intacta. La procedencia del intento lleva `("destination", …)`.
+- **`calendar_events.goals`** (migración 0042, `text[] NOT NULL DEFAULT '{}'`, solo `likes` / `views` / `comments` / `ads` / `followers` / `engagement`): las metas del plan con el que se creó el evento, guardadas en **cada** evento para el análisis posterior; editables desde el panel del evento (`PlannerService.set_event_goals`, no sube `revision`). Ambas migraciones son aditivas (regla expandir → contraer del deploy).
+- **Serie semanal en varios días:** `recurrence.weekly_days_on` + `PlannerService.schedule_weekly` — cada día elegido desde la fecha de inicio, N semanas, misma hora; todo-o-nada y el mismo tope de 12 ocurrencias.
 
 ---
 
@@ -230,6 +248,17 @@ stateDiagram-v2
     failed --> [*]
     cancelled --> [*]
 ```
+
+### Estados visibles y regla de asignación (QUA-118, 2026-10-05)
+
+La FSM no cambia; cambia lo que el Planificador **muestra** y lo que **deja entrar**. Decisiones del fundador, `docs`/Linear QUA-118 Fase A:
+
+- **Cinco estados visibles, y solo cinco** (`Qualify/planner_vm.py`, `status_label`): **Programado** (`scheduled`, POST aprobado, dentro de la ventana), **Pendiente** (`scheduled` con el POST ya no aprobado — solo alcanzable editando un POST aprobado, que vuelve a `generated`), **Publicado** (`published`), **Vencido** (`scheduled` fuera de la ventana de 24 h, aprobado o no; sustituye a «Venció» y «Venció sin aprobación») y **Fallido** (`failed`). Ningún otro nombre: `publishing` se muestra como Programado durante los segundos del intento, y `cancelled` no se muestra nunca — «Cancelar publicación» recorre el edge `cancel` y retira la fila del calendario en el mismo paso (`PlannerService.cancel_and_delete`). La aprobación del POST es otro eje y no reutiliza esas palabras («En revisión», no «Pendiente»).
+- **D1 — solo entra al calendario un POST aprobado y publicable.** `ApprovalStatus.is_schedulable` es `APPROVED` únicamente y `PlannerService.schedule` / `reschedule` exigen además `publishable.evaluate` en verde (para un POST con salidas, verde en la salida que se programa); el rechazo `PostNotSchedulable` lleva el motivo exacto del evaluador. **Esto invierte QUA-108 AC 4** («approval gates execution, not planning»): los tests «pending es asignable» de `test_planner_service.py` y `test_planner_ui.py` se reescribieron a propósito. El worker no cambia: su regla «no aprobado → el evento sigue pendiente» (§3) sigue siendo la segunda línea para el caso de edición posterior a la aprobación.
+- **A2 — un POST `recurrente` nunca queda bloqueado** por una ocurrencia viva o publicada: `list_unscheduled` lo mantiene en «Sin programar» (`gallery.is_reusable`); cada ocurrencia es un `calendar_event` independiente con su propio estado, clave de idempotencia y resultado.
+- **Story de imagen por categoría** (QUA-118 AC 6): `story` + una imagen → `STORIES` también sin puerto (`publishable.compatibility`), la decisión que MP-11 había dejado abierta. `compatibility(platform, category, media_types, output_port)` es además la regla de «esta cuenta admite esta forma» con motivo tipado (`CHANNEL_NOT_SUPPORTED` fuera de Instagram).
+- **Series y varias cuentas, en una transacción** (A4, Fase 2): `PlannerService.schedule_many` (N cuentas, un instante) y `schedule_series` (semanal, mismo día y hora, fin por fecha **o** por número, tope `recurrence.SERIES_CAP = 12`, sin `rrule`) validan todo el plan antes de escribir y lo escriben con `PlannerRepository.add_many` en **una** `tenant_session`: un instante pasado, una hora inexistente por DST en alguna semana, una cuenta inactiva o incompatible (`IncompatibleConnection`, fuera de `SCHEDULABLE_PLATFORMS`) o un duplicado rechazan la serie entera y no crean nada. Una serie no es una entidad (sin fila, id ni columna): cada ocurrencia es un `calendar_event` independiente que el worker trata como cualquier otro.
+- **Historial del POST** (D2): `PostSummary.times_published` / `has_live_event` salen de un agregado sobre `calendar_events` en `DraftPostReader` (sin persistir nada; «vivo» = `publishing`, o `scheduled` dentro de la ventana de 24 h — un evento que el calendario muestra como Vencido no pone «En calendario» en la tarjeta) y alimentan el estado derivado de la galería (`planner/gallery.py`: Borrador · Por completar · Listo · Usado · Desechado), otra entidad distinta de los cinco estados del evento.
 
 ---
 

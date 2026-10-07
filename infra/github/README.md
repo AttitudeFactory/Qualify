@@ -10,8 +10,10 @@ regla no puede estar activa hoy.
 
 ## Cuando se active (GitHub Team, o repo público)
 
-`ruleset-main.json` es la regla lista: exige PR, exige los checks `lint`, `test`, `test-db` y
-`node-render` en verde (los nombres de job de `.github/workflows/ci.yml`), prohíbe borrar o
+`ruleset-main.json` es la regla lista: exige PR y exige en verde los jobs de
+`.github/workflows/ci.yml` `changes`, `lint`, `test`, `test-db`, `node-render` y `docker-deploy`.
+Un job saltado cuenta como verde; por eso `changes` también es requerido: si falla, los jobs que
+dependen de él se saltan y sin esa regla pasarían como verdes. También prohíbe borrar o
 reescribir `main`, y da bypass **solo** al rol *Admin* del repositorio (`actor_id: 5`,
 `RepositoryRole`). Aplicarla es un comando:
 

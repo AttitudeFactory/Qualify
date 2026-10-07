@@ -69,6 +69,26 @@ calendar-tick *args:
 calendar-worker *args:
     uv run --no-sync python -m qualify_api.planner.worker {{args}}
 
+# --- Production (Hetzner VPS, docs/despliegue-hetzner.md) ---------------------------------
+# `target` = the server's ssh target, e.g. deploy@203.0.113.10.
+#   just deploy deploy@<ip>               # origin/main
+#   just deploy deploy@<ip> <sha|branch>  # a specific ref (rollback = an older sha)
+# Ship a COMMITTED ref to the server: build there, migrate, restart, print health.
+deploy target ref="origin/main":
+    deploy/deploy.sh deploy {{target}} {{ref}}
+
+# Containers + health checks through Caddy.
+deploy-status target:
+    deploy/deploy.sh status {{target}}
+
+# Follow production logs: all services, or one (api | reflex | caddy | migrate | postgres | redis).
+deploy-logs target service="":
+    deploy/deploy.sh logs {{target}} {{service}}
+
+# pg_dump now (the nightly cron runs the same script on the server).
+deploy-backup target:
+    deploy/deploy.sh backup {{target}}
+
 # Default test pass: unit + db, never external network. Mirrors CI.
 # Tests use `qualify_test` + Redis db 15, NEVER the dev `qualify` (root conftest.py aborts
 # otherwise). Data a run leaves in `qualify_test` is kept for inspection — no auto reset.
@@ -144,11 +164,22 @@ render-smoke base="http://127.0.0.1:3200":
 # Sin branch protection en GitHub Free, la regla "CI en verde para mergear" vive aquí:
 # `just merge 81` se niega si falta o falló alguno de los checks requeridos; un admin puede
 # forzar a propósito con `just merge 81 --admin` (queda un comentario en el PR).
+#
+# REST only (`gh api`), never `gh pr view/merge/comment`: those go through GraphQL, which
+# Claude Code cloud sessions cannot reach — this way the same gate works from the Mac and
+# from the cloud. The rollup = latest check run per name + commit statuses on the PR head.
 merge pr *flags:
     #!/usr/bin/env bash
     set -euo pipefail
-    required="lint test test-db node-render"
-    rollup=$(gh pr view {{pr}} --json statusCheckRollup --jq '.statusCheckRollup[] | "\(.name // .context)=\(.conclusion // .status)"')
+    repo=repos/AttitudeFactory/Qualify
+    required="changes lint test test-db node-render docker-deploy"
+    pr_state=$(gh api "$repo/pulls/{{pr}}" --jq '"\(.state) \(.merged) \(.head.sha)"')
+    read -r state merged sha <<<"$pr_state"
+    [ "$state" = open ] || { echo "just merge: #{{pr}} no está abierto (state=$state merged=$merged)." >&2; exit 1; }
+    rollup=$(
+      gh api "$repo/commits/$sha/check-runs?per_page=100" --jq '.check_runs[] | "\(.name)=\((.conclusion // .status) | ascii_upcase)"'
+      gh api "$repo/commits/$sha/status" --jq '.statuses[] | "\(.context)=\(.state | ascii_upcase)"'
+    )
     missing=""; failed=""
     for job in $required; do
       state=$(printf '%s\n' "$rollup" | awk -F= -v j="$job" '$1==j {print $2; exit}')
@@ -166,9 +197,10 @@ merge pr *flags:
       exit 1
     fi
     if [ "{{flags}}" = "--admin" ] && [ -n "$missing$failed" ]; then
-      gh pr comment {{pr}} --body "Merge forzado por un administrador con \`just merge --admin\` con checks pendientes o fallidos:$failed$missing"
+      gh api "$repo/issues/{{pr}}/comments" -f body="Merge forzado por un administrador con \`just merge --admin\` con checks pendientes o fallidos:$failed$missing" >/dev/null
     fi
-    gh pr merge {{pr}} --merge --delete-branch=false
+    # `sha` pins the merge to the head that was checked: a push after the check is refused.
+    gh api -X PUT "$repo/pulls/{{pr}}/merge" -f merge_method=merge -f sha="$sha" --jq '"#{{pr}}: \(.message) (\(.sha))"'
 
 # Aplica la regla de `main` (requiere GitHub Team o repo público; ver infra/github/README.md).
 protect-main:

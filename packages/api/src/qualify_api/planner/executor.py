@@ -502,9 +502,14 @@ class EventExecutor:
 
     def _publishable(self, event: EventRecord) -> PublishablePost | NotPublishable:
         # MP-11: an event with an `output_port` publishes that one template output; the
-        # reader hands back only that port's media with the port-derived product type.
+        # reader hands back only that port's media. QUA-118 v2: the event's own
+        # `destination` (post / reel / story) decides the product type; None (an event
+        # the 0041 backfill could not derive) keeps the category/port rule.
         verdict = self._posts.get_publishable(
-            tenant_id=event.tenant_id, post_id=event.post_id, output_port=event.output_port
+            tenant_id=event.tenant_id,
+            post_id=event.post_id,
+            output_port=event.output_port,
+            destination=event.destination,
         )
         if isinstance(verdict, PublishablePost) and verdict.brand_id != event.brand_id:
             # An event must publish its own brand's POST; a mismatch reads as "not there".

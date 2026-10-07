@@ -4,7 +4,8 @@ Two views of the same week, switched from the header (see `planner_vm.py` for th
 reasoning): **Calendario** — seven day columns on a real hour axis — and **Lista** —
 events grouped by day. A "Sin programar" panel (toggled from the toolbar, closed by
 default so the calendar gets the full width) holds the POSTs waiting to be planned.
-Short dialogs cover assign / reschedule / detail / cancel. On a phone the list is always
+Planning, rescheduling and an event's detail open as side panels (`planner_drawer`) —
+never a modal. On a phone the list is always
 used: a seven-column hour grid does not fit a phone width.
 
 What the screen deliberately does not have: a publish button. Planning is not
@@ -19,17 +20,26 @@ from __future__ import annotations
 
 import reflex as rx
 
-from .planner_state import SCROLL_ID, PlannerState
-from .planner_vm import (
-    AUTO_PUBLISH_ACTIVE,
-    AUTO_PUBLISH_NO_CONNECTION,
-    EXPIRED_NOTE,
-    TAG_COLORS,
-    VIEW_CALENDAR,
-    VIEW_LIST,
+from .planner_drawer import (
+    assign_drawer,
+    channel_mark,
+    event_panel,
+    tag_badge_plain,
+    tag_dot,
 )
-from .r2_media import BACKEND_BASE
-from .ui import app_shell, callout, card, page_body, page_header, platform_badge, signal_pill, tag
+from .planner_state import REFRESH_SECONDS, SCROLL_ID, PlannerState
+from .planner_vm import VIEW_CALENDAR, VIEW_LIST
+from .post_card import (
+    DropBox,
+    card_media,
+    destination_badge,
+    destination_icon,
+    pill,
+    post_card,
+    readiness_note,
+    temperature_badge,
+)
+from .ui import app_shell, callout, page_body, page_header, platform_badge, tag
 from .ui import tokens as T
 
 _TONES = ("ok", "warn", "error", "info", "neutral", "accent")
@@ -44,128 +54,6 @@ _CLAMP_2 = {
     "overflow": "hidden",
 }
 _ONE_LINE = {"overflow": "hidden", "text_overflow": "ellipsis", "white_space": "nowrap"}
-
-
-def _pill(label: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
-    """`signal_pill` for a tone that is only known at runtime."""
-    return rx.match(
-        tone,
-        *[(t, signal_pill(label, t)) for t in _TONES],
-        signal_pill(label, "neutral"),
-    )
-
-
-def _platform_icon(platform: rx.Var[str]) -> rx.Component:
-    return rx.match(
-        platform,
-        *[
-            (key, rx.icon(icon, size=T.ICON_SM, color=rx.color(T.platform_scale(key), 9)))
-            for key, icon in _PLATFORM_ICON.items()
-        ],
-        rx.icon("globe", size=T.ICON_SM, color=T.TEXT_MUTED),
-    )
-
-
-def _card_media(thumbnail_url: rx.Var[str], video_url: rx.Var[str], size: str) -> rx.Component:
-    """A card's picture: the first frame of the POST's R2-only video when it has one (a
-    muted, controls-less `<video>` that only loads metadata — served with HTTP Range, so
-    a card reads a few MB, not the reel), otherwise the image thumbnail / placeholder."""
-    return rx.cond(
-        video_url != "",
-        rx.el.video(
-            src=BACKEND_BASE + video_url + "#t=0.1",
-            muted=True,
-            preload="metadata",
-            plays_inline=True,
-            aria_hidden="true",
-            width=size,
-            height=size,
-            style={
-                "min_width": size,
-                "object_fit": "cover",
-                "border_radius": T.RADIUS_CONTROL,
-                "border": T.BORDER,
-                "background": "black",
-                "pointer_events": "none",
-            },
-        ),
-        _thumbnail(thumbnail_url, size),
-    )
-
-
-def _thumbnail(url: rx.Var[str], size: str) -> rx.Component:
-    """`url` is an http(s) URL or a local upload-store key (`PostSummary.thumbnail_url`);
-    a key is resolved the way the creative screens do, with `rx.get_upload_url`."""
-    return rx.cond(
-        url != "",
-        rx.image(
-            src=rx.cond(url.startswith("http"), url, rx.get_upload_url(url)),
-            alt="",
-            width=size,
-            height=size,
-            min_width=size,
-            object_fit="cover",
-            border_radius=T.RADIUS_CONTROL,
-            border=T.BORDER,
-        ),
-        rx.center(
-            rx.icon("image", size=T.ICON_SM, color=T.TEXT_FAINT),
-            width=size,
-            height=size,
-            min_width=size,
-            background=T.SURFACE_BG_RAISED,
-            border_radius=T.RADIUS_CONTROL,
-            border=T.BORDER,
-        ),
-    )
-
-
-def _tag_badge(tag, *, solid: bool = False, closable: bool = False) -> rx.Component:
-    """A planning tag in its palette colour (identity, like a platform: never a state).
-    `closable` adds a trailing × so it reads as removable."""
-    content = [tag.name, rx.icon("x", size=11)] if closable else [tag.name]
-    return rx.match(
-        tag.color,
-        *[
-            (
-                c,
-                rx.badge(
-                    *content,
-                    color_scheme=c,
-                    variant="solid" if solid else "soft",
-                    radius="full",
-                    size="1",
-                ),
-            )
-            for c in TAG_COLORS
-        ],
-        rx.badge(tag.name, color_scheme="gray", variant="soft", radius="full", size="1"),
-    )
-
-
-def _tag_badge_plain(tag) -> rx.Component:
-    """One-parameter form for `rx.foreach`, which counts the render function's params."""
-    return _tag_badge(tag)
-
-
-def _tag_dot(tag) -> rx.Component:
-    return rx.match(
-        tag.color,
-        *[
-            (
-                c,
-                rx.box(
-                    width="7px",
-                    height="7px",
-                    border_radius="999px",
-                    background=rx.color(c, 9),
-                    title=tag.name,
-                ),
-            )
-            for c in TAG_COLORS
-        ],
-        rx.box(width="7px", height="7px", border_radius="999px", background=rx.color("gray", 9)),
-    )
 
 
 def _accent_edge(event) -> rx.Var:
@@ -220,94 +108,151 @@ def _card_menu(event) -> rx.Component:
 # Calendario — hour axis × seven days, compact
 
 
-def _delete_event_button(event) -> rx.Component:
-    """Trash for a cancelled event. Full opacity and no strike-through even inside a
-    muted chip, so it reads as the action it is."""
-    return rx.icon_button(
-        rx.icon("trash-2", size=12),
-        size="1",
-        variant="ghost",
-        color_scheme="red",
-        aria_label="Eliminar publicación cancelada",
-        title="Eliminar del calendario",
-        on_click=PlannerState.ask_delete_event(event.event_id).stop_propagation,
-        style={"opacity": "1", "text_decoration": "none"},
-    )
-
-
 def _chip_edge(event) -> rx.Var:
-    """The chip's left edge carries the state at a glance: accent approved, amber pending
-    or overdue, tomato rejected, gray cancelled/unknown."""
-    return rx.cond(
-        event.muted,
-        rx.color("gray", 8),
+    """The chip's left edge carries the state at a glance: green published, tomato
+    failed; for what is still planned, accent approved, amber pending or overdue,
+    tomato rejected, gray cancelled/unknown."""
+    return rx.match(
+        event.status_label,
+        ("Publicado", rx.color("green", 9)),
+        ("Fallido", rx.color("tomato", 9)),
         rx.cond(
-            event.overdue,
-            rx.color("amber", 9),
-            rx.match(
-                event.approval_tone,
-                ("ok", rx.color("accent", 9)),
-                ("warn", rx.color("amber", 9)),
-                ("error", rx.color("tomato", 9)),
-                rx.color("gray", 8),
+            event.muted,
+            rx.color("gray", 8),
+            rx.cond(
+                event.overdue,
+                rx.color("amber", 9),
+                rx.match(
+                    event.approval_tone,
+                    ("ok", rx.color("accent", 9)),
+                    ("warn", rx.color("amber", 9)),
+                    ("error", rx.color("tomato", 9)),
+                    rx.color("gray", 8),
+                ),
             ),
         ),
     )
 
 
-def _calendar_chip(event) -> rx.Component:
-    """A compact event chip: platform + time on one line, the title under it. The rest
-    (approval wording, caption, actions) lives in the detail dialog, one click away."""
-    return rx.box(
+def _chip_detail(event) -> rx.Component:
+    """Everything about the event, on hover — the chip stays one line so every hour of
+    the grid keeps the same height, and nothing is lost: title, caption, when, channel,
+    destination, temperature, its states, tags and what may keep it from going out."""
+    return rx.vstack(
         rx.hstack(
-            _card_media(event.thumbnail_url, event.video_url, "1.6rem"),
+            card_media(event.thumbnail_url, event.video_url, "3.25rem"),
             rx.vstack(
-                rx.hstack(
-                    _platform_icon(event.platform),
-                    rx.text(event.time_label, size="1", weight="bold", class_name="q-nums"),
-                    # MP-11: the output's word — the same POST appears up to three times.
-                    rx.cond(event.output_label != "", tag(event.output_label)),
-                    rx.cond(
-                        event.overdue | (event.readiness_note != ""),
-                        rx.icon("triangle-alert", size=12, color=rx.color("amber", 10)),
-                    ),
-                    rx.spacer(),
-                    rx.cond(event.muted, _delete_event_button(event)),
-                    align="center",
-                    spacing="1",
-                    width="100%",
+                rx.text(event.title, size="2", weight="bold", style=_CLAMP_2),
+                rx.text(
+                    event.date_label + " · " + event.time_label,
+                    size="1",
+                    color=T.TEXT_MUTED,
+                    class_name="q-nums",
                 ),
-                rx.text(event.title, size="1", color=T.TEXT_MUTED, style=_ONE_LINE, width="100%"),
-                rx.cond(
-                    event.tags.length() > 0,
-                    rx.hstack(rx.foreach(event.tags, _tag_dot), spacing="1", padding_top="2px"),
-                ),
-                spacing="0",
+                spacing="1",
                 min_width="0",
-                flex="1",
             ),
-            spacing="2",
-            align="center",
+            spacing="3",
+            align="start",
             width="100%",
+        ),
+        rx.cond(
+            event.caption_excerpt != "",
+            rx.text(event.caption_excerpt, size="1", color=T.TEXT_MUTED, style=_CLAMP_2),
+        ),
+        rx.flex(
+            rx.hstack(
+                channel_mark(event.platform),
+                rx.text(event.account_label, size="1", weight="medium"),
+                align="center",
+                spacing="1",
+            ),
+            destination_badge(event.destination, event.destination_label),
+            temperature_badge(event.temperature, event.temperature_label, event.temperature_hint),
+            wrap="wrap",
+            gap="0.4rem",
+            align="center",
+        ),
+        rx.flex(
+            pill(event.approval_label, event.approval_tone),
+            pill(event.status_label, event.status_tone),
+            wrap="wrap",
+            gap="0.3rem",
+        ),
+        rx.cond(
+            event.tags.length() > 0,
+            rx.flex(rx.foreach(event.tags, tag_badge_plain), wrap="wrap", gap="0.25rem"),
+        ),
+        readiness_note(event.readiness_note),
+        rx.text("Clic para ver y gestionar", size="1", color=T.TEXT_FAINT),
+        spacing="2",
+        width="17rem",
+    )
+
+
+def _calendar_chip(event) -> rx.Component:
+    """A one-line event chip: picture, time, channel, destination and Cold/Hot by glyph
+    and colour. One line, so five fit in an hour of the grid; the full
+    detail opens on hover (`_chip_detail`) and the event's panel on click. A Hot POST
+    glows like embers, a Cold one is frosted (`q-chip-temp--*`)."""
+    chip = rx.box(
+        # The picture lives in the hover card: a seventh of the screen fits the time
+        # and three glyphs, not a thumbnail too. The time gives way first (ellipsis);
+        # the glyphs never shrink.
+        rx.box(
+            rx.text(event.time_label, size="1", weight="bold", class_name="q-nums q-chip-time"),
+            # The event's state by glyph (the word is in the hover card and the name):
+            # ✓ published, ✕ failed, ⚠ pending / expired / not ready.
+            rx.match(
+                event.status_label,
+                (
+                    "Publicado",
+                    rx.icon("circle-check", size=12, color=rx.color("green", 10), flex_shrink="0"),
+                ),
+                (
+                    "Fallido",
+                    rx.icon("circle-x", size=12, color=rx.color("tomato", 10), flex_shrink="0"),
+                ),
+                rx.cond(
+                    event.overdue | (event.readiness_note != ""),
+                    rx.icon(
+                        "triangle-alert", size=11, color=rx.color("amber", 10), flex_shrink="0"
+                    ),
+                ),
+            ),
+            rx.box(class_name="q-chip-gap"),
+            channel_mark(event.platform),
+            rx.cond(
+                event.destination != "",
+                rx.center(
+                    destination_icon(event.destination, 10),
+                    class_name="q-dest-dot q-dest-dot--sm q-dest-" + event.destination,
+                    title=event.destination_label,
+                ),
+            ),
+            temperature_badge(
+                event.temperature, event.temperature_label, event.temperature_hint, compact=True
+            ),
+            class_name="q-chip-line",
         ),
         # stop_propagation: the cell behind the chip opens "Nueva publicación" on click.
         on_click=PlannerState.open_detail(event.event_id).stop_propagation,
         cursor="pointer",
         role="button",
+        # The accessible name says everything the glyphs say: title, channel,
+        # destination, temperature and the event's state word (QUA-118).
         aria_label=event.time_label
         + " · "
         + event.title
-        + rx.cond(event.output_label != "", " · " + event.output_label, "")
         + " · "
-        + event.approval_label,
-        title=event.title
+        + event.account_label
+        + rx.cond(event.destination_label != "", " · " + event.destination_label, "")
+        + rx.cond(event.temperature_label != "", " · " + event.temperature_label, "")
         + rx.cond(event.output_label != "", " · " + event.output_label, "")
-        + " — "
-        + event.approval_label
         + " · "
         + event.status_label
-        + rx.cond(event.readiness_note != "", " · " + event.readiness_note, ""),
-        padding="0.3rem 0.4rem",
+        + rx.cond(event.approval_label != event.status_label, " · " + event.approval_label, ""),
+        padding="0.2rem 0.35rem",
         border=T.BORDER,
         border_left="3px solid",
         border_left_color=_chip_edge(event),
@@ -317,7 +262,115 @@ def _calendar_chip(event) -> rx.Component:
         color=rx.cond(event.muted, T.TEXT_MUTED, "inherit"),
         text_decoration=rx.cond(event.muted, "line-through", "none"),
         width="100%",
-        class_name="q-lift",
+        class_name="q-lift q-chip-temp q-chip-temp--" + event.temperature,
+    )
+    return rx.hover_card.root(
+        rx.hover_card.trigger(rx.box(chip, class_name="q-chip-trigger")),
+        rx.hover_card.content(_chip_detail(event), side="right", align="start", size="1"),
+        open_delay=250,
+        close_delay=80,
+    )
+
+
+def _status_glyph(event) -> rx.Component:
+    """The event's state as a small icon: ✓ published, ✕ failed, ⏱ otherwise."""
+    return rx.match(
+        event.status_label,
+        ("Publicado", rx.icon("circle-check", size=13, color=rx.color("green", 10))),
+        ("Fallido", rx.icon("circle-x", size=13, color=rx.color("tomato", 10))),
+        rx.icon("clock", size=13, color=T.TEXT_MUTED),
+    )
+
+
+def _hour_list_row(event) -> rx.Component:
+    """One compact row of the hour's full list: time, then the POST's title over
+    account · destination, then status/channel/destination glyphs. A click opens the
+    event's side panel."""
+    return rx.el.button(
+        rx.text(event.time_label, size="1", weight="bold", class_name="q-nums q-hour-list-time"),
+        rx.box(
+            rx.text(event.title, size="1", weight="medium", class_name="q-hour-list-title"),
+            rx.text(
+                event.account_label + " · " + event.destination_label,
+                size="1",
+                color=T.TEXT_MUTED,
+                class_name="q-hour-list-title q-hour-list-sub",
+            ),
+            min_width="0",
+        ),
+        rx.hstack(
+            channel_mark(event.platform),
+            rx.cond(
+                event.destination != "",
+                rx.center(
+                    destination_icon(event.destination, 10),
+                    class_name="q-dest-dot q-dest-dot--sm q-dest-" + event.destination,
+                ),
+            ),
+            rx.box(_status_glyph(event), title=event.status_label, display="flex"),
+            align="center",
+            spacing="1",
+        ),
+        type="button",
+        title=event.status_label,
+        class_name="q-hour-list-row",
+        on_click=PlannerState.open_detail(event.event_id).stop_propagation,
+    )
+
+
+def _more_pill(cell) -> rx.Component:
+    """«+N más»: from the sixth event of an hour on. Opens, right beside it, exactly
+    the N events that did not fit — title, account, destination and state — and each
+    row opens the event's panel."""
+    # Reflex wraps the trigger's child in a Flex that IS the trigger, so a stop on the
+    # button itself kept the list from ever opening. The stop lives out here instead:
+    # the trigger handles the click first, then the slot under it never sees it (it
+    # would open «Nueva publicación»).
+    return rx.box(
+        rx.popover.root(
+            rx.popover.trigger(
+                rx.button(
+                    rx.icon("layers", size=12),
+                    "+" + cell.more_count.to_string() + " más",
+                    type="button",
+                    variant="soft",
+                    size="1",
+                    class_name="q-cell-more",
+                    title="Ver las publicaciones que no caben en la celda",
+                ),
+            ),
+            rx.popover.content(
+                rx.vstack(
+                    rx.hstack(
+                        rx.text(
+                            "+" + cell.more_count.to_string() + " más",
+                            size="2",
+                            weight="bold",
+                            color=rx.color("accent", 11),
+                        ),
+                        rx.spacer(),
+                        rx.text(cell.heading, size="1", color=T.TEXT_MUTED),
+                        align="center",
+                        width="100%",
+                    ),
+                    rx.box(
+                        rx.foreach(cell.more, _hour_list_row),
+                        class_name="q-hour-list",
+                    ),
+                    spacing="2",
+                    width="19rem",
+                    max_width="calc(100vw - 2rem)",
+                ),
+                # Right beside the pill, pointing at it: «these are the +N». Radix flips it
+                # to the left on the last days of the week, where the right has no room.
+                side="right",
+                align="center",
+                side_offset=6,
+                size="1",
+            ),
+        ),
+        on_click=rx.event.stop_propagation,
+        width="100%",
     )
 
 
@@ -362,17 +415,16 @@ def _hour_cell(cell) -> rx.Component:
     day and hour. A not-past slot shows a "+" on hover (`q-planner-slot*` in
     `assets/qualify.css`) so it reads as "you can add here": in the corner when the slot
     is empty, under the chips when it has posts. Past days get neither."""
-    return rx.vstack(
+    slot = rx.vstack(
         rx.cond(
             ~cell.is_past & (cell.cards.length() == 0),
             rx.el.span(rx.icon("plus", size=T.ICON_SM), class_name="q-planner-slot-plus"),
         ),
-        rx.foreach(cell.cards, _calendar_chip),
-        # A slot that already has posts gets its "+" under the last chip instead of in
-        # the corner, so it never covers a chip. Its space is always reserved, so the
-        # row does not jump when it fades in.
+        rx.foreach(cell.visible, _calendar_chip),
+        rx.cond(cell.more_count > 0, _more_pill(cell)),
+        # One chip leaves room under it: the "+" shows there on hover, never over a chip.
         rx.cond(
-            ~cell.is_past & (cell.cards.length() > 0),
+            ~cell.is_past & (cell.cards.length() == 1),
             rx.el.span(
                 rx.icon("plus", size=12),
                 class_name="q-planner-slot-plus q-planner-slot-plus--below",
@@ -385,10 +437,29 @@ def _hour_cell(cell) -> rx.Component:
         position="relative",
         spacing="1",
         padding="0.25rem",
-        min_height="2.75rem",
+        # An hour is at least this tall; one with more posts grows to show up to five
+        # chips (`CELL_VISIBLE`) and, past that, «+N más». The whole row grows with its
+        # fullest cell (grid rows stretch), so the seven days stay aligned.
+        min_height="4.25rem",
+        height="100%",  # fills its row when a neighbour cell made it taller
         border_top=_HAIRLINE,
         border_left=_HAIRLINE,
         background=rx.cond(cell.is_today, rx.color("accent", 2), "transparent"),
+        width="100%",
+        min_width="0",
+    )
+    # QUA-118 drag & drop: a «Sin programar» card dropped here opens the drawer
+    # prefilled with this day and hour. `on_drag_over` must prevent the default or the
+    # browser never fires the drop; a past day is not a target.
+    return DropBox.create(
+        slot,
+        on_drag_over=rx.event.prevent_default,
+        on_drop=PlannerState.drop_on_slot(cell.day_iso, cell.hour).prevent_default,
+        class_name=rx.cond(
+            PlannerState.dragging & ~cell.is_past,
+            "q-drop-target q-drop-target--active",
+            "q-drop-target",
+        ),
         width="100%",
         min_width="0",
     )
@@ -443,19 +514,6 @@ def _calendar() -> rx.Component:
 # Lista — grouped by day
 
 
-def _readiness_note(note) -> rx.Component:
-    """The evaluator's reason, under an approved-but-not-ready POST (card, list, panel)."""
-    return rx.cond(
-        note != "",
-        rx.hstack(
-            rx.icon("triangle-alert", size=12, color=rx.color("amber", 10), flex_shrink="0"),
-            rx.text(note, size="1", color=rx.color("amber", 11)),
-            spacing="1",
-            align="center",
-        ),
-    )
-
-
 def _list_item(event) -> rx.Component:
     return rx.hstack(
         rx.text(
@@ -468,7 +526,7 @@ def _list_item(event) -> rx.Component:
         ),
         rx.hstack(
             rx.hstack(
-                _card_media(event.thumbnail_url, event.video_url, "3.5rem"),
+                card_media(event.thumbnail_url, event.video_url, "3.5rem"),
                 rx.vstack(
                     rx.text(event.title, size="3", weight="bold", style=_ONE_LINE, width="100%"),
                     rx.cond(
@@ -484,21 +542,25 @@ def _list_item(event) -> rx.Component:
                     rx.hstack(
                         platform_badge(event.platform),
                         rx.text(event.account_label, size="1", color=T.TEXT_MUTED),
+                        destination_badge(event.destination, event.destination_label),
+                        temperature_badge(
+                            event.temperature, event.temperature_label, event.temperature_hint
+                        ),
                         tag(event.category_label),
                         rx.cond(event.output_label != "", tag(event.output_label)),
-                        rx.foreach(event.tags, _tag_badge_plain),
+                        rx.foreach(event.tags, tag_badge_plain),
                         align="center",
                         spacing="2",
                         wrap="wrap",
                     ),
-                    _readiness_note(event.readiness_note),
+                    readiness_note(event.readiness_note),
                     spacing="1",
                     min_width="0",
                     flex="1",
                 ),
                 rx.flex(
-                    _pill(event.approval_label, event.approval_tone),
-                    _pill(event.status_label, event.status_tone),
+                    pill(event.approval_label, event.approval_tone),
+                    pill(event.status_label, event.status_tone),
                     direction="column",
                     align="end",
                     gap="0.3rem",
@@ -514,7 +576,6 @@ def _list_item(event) -> rx.Component:
                 min_width="0",
                 class_name="q-plist-body",
             ),
-            rx.cond(event.muted, _delete_event_button(event)),
             _card_menu(event),
             padding="0.75rem 0.9rem",
             border=T.BORDER,
@@ -600,37 +661,11 @@ def _list() -> rx.Component:
 
 
 def _post_option(post) -> rx.Component:
-    return card(
-        rx.hstack(
-            _thumbnail(post.thumbnail_url, "2.75rem"),
-            rx.vstack(
-                rx.text(post.title, size="2", weight="medium", style=_CLAMP_2),
-                rx.flex(
-                    tag(post.category_label),
-                    _pill(post.approval_label, post.approval_tone),
-                    wrap="wrap",
-                    gap="0.25rem",
-                ),
-                # MP-11: one chip per template output with its planning state; the
-                # package stays one card and is taken apart when assigning.
-                rx.cond(
-                    post.has_outputs,
-                    rx.flex(
-                        rx.foreach(post.outputs, _output_chip),
-                        wrap="wrap",
-                        gap="0.25rem",
-                    ),
-                ),
-                _readiness_note(post.readiness_note),
-                spacing="1",
-                min_width="0",
-                flex="1",
-            ),
-            spacing="2",
-            align="start",
-            width="100%",
-        ),
-        rx.hstack(
+    """A «Sin programar» card: the shared `post_card`, draggable onto a calendar cell
+    (QUA-118); «Asignar» stays as the click path for keyboard and touch."""
+    return post_card(
+        post,
+        actions=rx.hstack(
             rx.cond(
                 post.detail_href != "",
                 rx.link(rx.text("Ver POST", size="1"), href=post.detail_href),
@@ -646,9 +681,9 @@ def _post_option(post) -> rx.Component:
             ),
             width="100%",
             align="center",
-            margin_top="0.5rem",
         ),
-        padding="0.6rem",
+        on_drag_start=PlannerState.start_drag(post.post_id),
+        on_drag_end=PlannerState.end_drag,
     )
 
 
@@ -839,10 +874,12 @@ def _search_box(value: rx.Var[str], on_change, placeholder: str) -> rx.Component
 
 
 def _tag_filter_row(tag) -> rx.Component:
+    """One tag in the filter: the row toggles it; the trash turns the row itself into
+    «¿Eliminar?» — the confirmation lives where the click was, no dialog."""
     selected = PlannerState.tag_filter.contains(tag.id)
-    return rx.hstack(
+    row = rx.hstack(
         rx.checkbox(checked=selected, size="1", pointer_events="none"),
-        _tag_dot(tag),
+        tag_dot(tag),
         rx.text(tag.name, size="2", style=_ONE_LINE),
         rx.spacer(),
         rx.icon_button(
@@ -864,6 +901,31 @@ def _tag_filter_row(tag) -> rx.Component:
         border_radius=T.RADIUS_CONTROL,
         _hover={"background": rx.color("gray", 3)},
     )
+    confirm = rx.vstack(
+        rx.text(
+            "¿Eliminar «" + tag.name + "»? Se quita de todas las publicaciones.",
+            size="1",
+        ),
+        rx.hstack(
+            rx.button(
+                "Volver",
+                size="1",
+                variant="soft",
+                color_scheme="gray",
+                on_click=PlannerState.cancel_delete_tag,
+            ),
+            rx.button(
+                "Eliminar", size="1", color_scheme="red", on_click=PlannerState.confirm_delete_tag
+            ),
+            spacing="2",
+        ),
+        spacing="2",
+        width="100%",
+        padding="0.5rem",
+        border_radius=T.RADIUS_CONTROL,
+        background=rx.color("red", 3),
+    )
+    return rx.cond(PlannerState.delete_tag_id == tag.id, confirm, row)
 
 
 def _tags_filter() -> rx.Component:
@@ -1034,671 +1096,6 @@ def _timezone_picker() -> rx.Component:
     )
 
 
-def _form_tag_toggle(tag) -> rx.Component:
-    selected = PlannerState.form_tag_ids.contains(tag.id)
-    return rx.box(
-        rx.cond(selected, _tag_badge(tag, solid=True, closable=True), _tag_badge(tag)),
-        on_click=PlannerState.toggle_form_tag(tag.id),
-        cursor="pointer",
-        opacity=rx.cond(selected, "1", "0.7"),
-    )
-
-
-def _suggested_tag(suggestion) -> rx.Component:
-    """A recommended tag not created yet: one click creates it and selects it."""
-    return rx.match(
-        suggestion.color,
-        *[
-            (
-                c,
-                rx.badge(
-                    rx.icon("plus", size=12),
-                    suggestion.name,
-                    color_scheme=c,
-                    variant="outline",
-                    radius="full",
-                    size="1",
-                    cursor="pointer",
-                    title=suggestion.hint,
-                    on_click=PlannerState.add_suggested_tag(suggestion.name, suggestion.color),
-                ),
-            )
-            for c in TAG_COLORS
-        ],
-        rx.fragment(),
-    )
-
-
-def _form_tags() -> rx.Component:
-    return rx.vstack(
-        rx.cond(
-            PlannerState.tags.length() > 0,
-            rx.flex(
-                rx.foreach(PlannerState.tags, _form_tag_toggle),
-                wrap="wrap",
-                gap="0.35rem",
-            ),
-            rx.text("Aún no hay etiquetas. Son opcionales.", size="1", color=T.TEXT_MUTED),
-        ),
-        rx.cond(
-            PlannerState.tag_suggestions.length() > 0,
-            rx.vstack(
-                rx.text("Sugeridas", size="1", color=T.TEXT_MUTED, weight="medium"),
-                rx.flex(
-                    rx.foreach(PlannerState.tag_suggestions, _suggested_tag),
-                    wrap="wrap",
-                    gap="0.35rem",
-                ),
-                spacing="1",
-                width="100%",
-            ),
-        ),
-        rx.hstack(
-            rx.input(
-                value=PlannerState.form_tag_query,
-                on_change=PlannerState.set_form_tag_query,
-                placeholder="Nueva etiqueta (p. ej. Campaña octubre)",
-                size="1",
-                flex="1",
-                max_length=40,
-            ),
-            rx.button(
-                rx.icon("plus", size=T.ICON_SM),
-                "Crear",
-                size="1",
-                variant="soft",
-                disabled=~PlannerState.form_can_create_tag,
-                on_click=PlannerState.create_tag_in_form,
-            ),
-            width="100%",
-            align="center",
-        ),
-        spacing="2",
-        width="100%",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Dialogs
-
-
-def _field(label: str, control: rx.Component) -> rx.Component:
-    return rx.vstack(
-        rx.text(label, size="2", weight="medium"),
-        control,
-        spacing="1",
-        width="100%",
-    )
-
-
-def _meridiem_option(label: str, value: str) -> rx.Component:
-    selected = PlannerState.form_meridiem == value
-    return rx.box(
-        rx.text(label, size="1", weight=rx.cond(selected, "bold", "regular")),
-        on_click=PlannerState.set_form_meridiem(value),
-        role="button",
-        aria_pressed=selected,
-        cursor="pointer",
-        text_align="center",
-        padding="0 0.55rem",
-        line_height="1rem",
-        border_radius="calc(var(--q-radius-control) - 2px)",
-        background=rx.cond(selected, rx.color("accent", 9), "transparent"),
-        color=rx.cond(selected, "white", T.TEXT_MUTED),
-        _hover={"background": rx.cond(selected, rx.color("accent", 10), rx.color("gray", 4))},
-    )
-
-
-def _meridiem_toggle() -> rx.Component:
-    """a. m. over p. m.: one compact control the height of the selects beside it."""
-    return rx.flex(
-        _meridiem_option("a. m.", "am"),
-        _meridiem_option("p. m.", "pm"),
-        direction="column",
-        gap="1px",
-        padding="2px",
-        border=T.BORDER,
-        border_radius=T.RADIUS_CONTROL,
-        background=T.SURFACE_BG,
-        aria_label="a. m. o p. m.",
-    )
-
-
-def _time_picker() -> rx.Component:
-    """Hour, minute and a. m./p. m. with the app's own controls. The native
-    `<input type="time">` popup is drawn by the browser and cannot be styled."""
-    return rx.hstack(
-        rx.select.root(
-            rx.select.trigger(aria_label="Hora", min_width="3.6rem"),
-            rx.select.content(*[rx.select.item(str(h), value=str(h)) for h in range(1, 13)]),
-            value=PlannerState.form_hour12,
-            on_change=PlannerState.set_form_hour12,
-        ),
-        rx.text(":", weight="bold", color=T.TEXT_MUTED),
-        rx.select.root(
-            rx.select.trigger(aria_label="Minutos", min_width="3.6rem"),
-            rx.select.content(
-                rx.foreach(PlannerState.minute_options, lambda m: rx.select.item(m, value=m))
-            ),
-            value=PlannerState.form_minute,
-            on_change=PlannerState.set_form_minute,
-        ),
-        _meridiem_toggle(),
-        align="center",
-        spacing="1",
-        wrap="wrap",
-    )
-
-
-def _output_control() -> rx.Component:
-    """«Salida» (MP-11): which template output this event publishes. One POST, up to
-    three events — Reel 9:16, Feed 4:5, Historia 9:16. Shown only for a POST with outputs;
-    a reschedule shows the output as text (a move never changes it)."""
-    return rx.cond(
-        PlannerState.form_is_reschedule,
-        rx.text(PlannerState.form_output_label, size="2"),
-        rx.vstack(
-            rx.segmented_control.root(
-                rx.foreach(
-                    PlannerState.form_outputs,
-                    lambda o: rx.segmented_control.item(o.label, value=o.port),
-                ),
-                value=PlannerState.form_output_port,
-                on_change=PlannerState.set_form_output_port,
-                width="100%",
-            ),
-            rx.text(
-                "Cada salida se programa por separado: puedes asignar el mismo POST tres "
-                "veces, una por salida.",
-                size="1",
-                color=T.TEXT_MUTED,
-            ),
-            spacing="1",
-            width="100%",
-        ),
-    )
-
-
-def _output_chip(chip) -> rx.Component:
-    """«Feed · lun 12 · 12:00 p. m. · @bianki» — one output's planning state, by tone."""
-    return rx.box(
-        _pill(chip.word + " · " + chip.state_label, chip.tone),
-        title=rx.cond(chip.note != "", chip.note, chip.label),
-    )
-
-
-def _assign_dialog() -> rx.Component:
-    return rx.dialog.root(
-        rx.dialog.content(
-            rx.dialog.title(PlannerState.form_title),
-            rx.dialog.description(
-                "Zona horaria: " + PlannerState.tz_name,
-                size="2",
-                color=T.TEXT_MUTED,
-            ),
-            rx.vstack(
-                rx.cond(
-                    PlannerState.form_is_reschedule,
-                    _field("POST", rx.text(PlannerState.form_post_title, size="2")),
-                    _field(
-                        "POST",
-                        rx.select.root(
-                            rx.select.trigger(placeholder="Elige un POST", width="100%"),
-                            rx.select.content(
-                                rx.foreach(
-                                    PlannerState.schedulable,
-                                    lambda p: rx.select.item(
-                                        p.title + " · " + p.approval_short, value=p.post_id
-                                    ),
-                                )
-                            ),
-                            value=PlannerState.form_post_id,
-                            on_change=PlannerState.set_form_post_id,
-                        ),
-                    ),
-                ),
-                rx.cond(
-                    PlannerState.form_has_outputs | (PlannerState.form_output_label != ""),
-                    _field("Salida", _output_control()),
-                ),
-                rx.grid(
-                    _field(
-                        "Fecha",
-                        rx.input(
-                            type="date",
-                            value=PlannerState.form_date,
-                            on_change=PlannerState.set_form_date,
-                            width="100%",
-                        ),
-                    ),
-                    _field("Hora", _time_picker()),
-                    columns="1",
-                    spacing="3",
-                    width="100%",
-                ),
-                _field(
-                    "Cuenta",
-                    rx.select.root(
-                        rx.select.trigger(placeholder="Elige una cuenta", width="100%"),
-                        rx.select.content(
-                            rx.foreach(
-                                PlannerState.connections,
-                                lambda c: rx.select.item(c.label, value=c.id),
-                            )
-                        ),
-                        value=PlannerState.form_connection_id,
-                        on_change=PlannerState.set_form_connection_id,
-                    ),
-                ),
-                _field("Etiquetas (opcional)", _form_tags()),
-                rx.cond(
-                    PlannerState.form_post_note != "",
-                    callout(
-                        "Quedará programado, pero no se publicará hasta que esté listo: "
-                        + PlannerState.form_post_note
-                        + " Si lo completas, se publica en el siguiente minuto, aunque ya "
-                        "haya pasado la hora.",
-                        "warn",
-                    ),
-                ),
-                rx.text(
-                    "Solo se publica un POST listo para publicar: aprobado, con su texto "
-                    "aprobado y su media disponible.",
-                    size="1",
-                    color=T.TEXT_MUTED,
-                ),
-                rx.cond(PlannerState.form_error != "", callout(PlannerState.form_error, "error")),
-                rx.hstack(
-                    rx.dialog.close(
-                        rx.button(
-                            "Cancelar",
-                            variant="soft",
-                            color_scheme="gray",
-                            on_click=PlannerState.close_form,
-                        ),
-                    ),
-                    rx.button(
-                        rx.cond(PlannerState.form_is_reschedule, "Guardar cambios", "Programar"),
-                        loading=PlannerState.saving,
-                        on_click=PlannerState.submit_form,
-                    ),
-                    justify="end",
-                    spacing="2",
-                    width="100%",
-                ),
-                spacing="3",
-                margin_top="0.75rem",
-                width="100%",
-            ),
-            max_width="30rem",
-        ),
-        open=PlannerState.form_open,
-        on_open_change=PlannerState.set_form_open,
-    )
-
-
-def _detail_tag(tag) -> rx.Component:
-    """A tag on the open event: click to take it off (saved right away)."""
-    return rx.box(
-        _tag_badge(tag, closable=True),
-        on_click=PlannerState.remove_detail_tag(tag.id),
-        cursor="pointer",
-        title="Quitar etiqueta",
-    )
-
-
-def _detail_add_tag() -> rx.Component:
-    return rx.dropdown_menu.root(
-        rx.dropdown_menu.trigger(
-            rx.button(rx.icon("plus", size=12), "Etiqueta", size="1", variant="ghost"),
-        ),
-        rx.dropdown_menu.content(
-            rx.cond(
-                PlannerState.detail_available_tags.length() > 0,
-                rx.foreach(
-                    PlannerState.detail_available_tags,
-                    lambda t: rx.dropdown_menu.item(
-                        rx.hstack(_tag_dot(t), rx.text(t.name), align="center", spacing="2"),
-                        on_click=PlannerState.add_detail_tag(t.id),
-                    ),
-                ),
-                rx.dropdown_menu.item(
-                    "No hay más etiquetas. Créalas desde «Etiquetas» o al programar.",
-                    disabled=True,
-                ),
-            ),
-            size="1",
-        ),
-    )
-
-
-def _detail_row(label: str, value: rx.Var[str]) -> rx.Component:
-    return rx.hstack(
-        rx.text(label, size="2", color=T.TEXT_MUTED, min_width="6.5rem"),
-        rx.text(value, size="2"),
-        align="start",
-        width="100%",
-    )
-
-
-def _detail_dialog() -> rx.Component:
-    d = PlannerState.detail
-    body = rx.vstack(
-        rx.hstack(
-            # A POST whose video lives only in R2 shows the video itself (its first frame,
-            # playable) through the backend's short-lived `/r2media/<token>`; anything
-            # else keeps the image thumbnail / placeholder.
-            rx.cond(
-                d.video_url != "",
-                rx.video(
-                    src=BACKEND_BASE + d.video_url,
-                    controls=True,
-                    muted=True,
-                    preload="metadata",
-                    width="6rem",
-                    min_width="6rem",
-                    height="auto",
-                    style={
-                        "aspect_ratio": "9 / 16",
-                        "background": "black",
-                        "border_radius": "0.375rem",
-                    },
-                ),
-                _thumbnail(d.thumbnail_url, "4.5rem"),
-            ),
-            rx.vstack(
-                rx.text(d.title, size="3", weight="bold"),
-                rx.flex(
-                    tag(d.category_label),
-                    _pill(d.approval_label, d.approval_tone),
-                    _pill(d.status_label, d.status_tone),
-                    wrap="wrap",
-                    gap="0.25rem",
-                ),
-                spacing="2",
-                min_width="0",
-            ),
-            spacing="3",
-            align="start",
-            width="100%",
-        ),
-        rx.cond(d.caption_excerpt != "", rx.text(d.caption_excerpt, size="2", color=T.TEXT_MUTED)),
-        rx.divider(),
-        _detail_row("Cuándo", d.when_label),
-        rx.hstack(
-            rx.text("Cuenta", size="2", color=T.TEXT_MUTED, min_width="6.5rem"),
-            platform_badge(d.platform),
-            rx.text(d.account_label, size="2"),
-            align="center",
-            width="100%",
-        ),
-        rx.cond(d.content_type_label != "", _detail_row("Contenido", d.content_type_label)),
-        rx.cond(d.output_label != "", _detail_row("Salida", d.output_label)),
-        # `revision` is the event's reschedule counter (it keys the publish attempt, so a
-        # moved event can never collide with the old one) — internal. Shown to people only
-        # once it means something: how many times the publication was moved.
-        rx.cond(
-            d.revision > 1,
-            _detail_row(
-                "Reprogramado",
-                rx.cond(d.revision == 2, "1 vez", (d.revision - 1).to_string() + " veces"),
-            ),
-        ),
-        rx.hstack(
-            rx.text("Etiquetas", size="2", color=T.TEXT_MUTED, min_width="6.5rem"),
-            rx.flex(
-                rx.foreach(d.tags, _detail_tag),
-                _detail_add_tag(),
-                wrap="wrap",
-                gap="0.35rem",
-                align="center",
-            ),
-            align="center",
-            width="100%",
-        ),
-        rx.cond(
-            # QUA-115: an expired event will NOT publish when it is ready — only a
-            # reschedule brings it back, so the expiry note replaces the readiness one.
-            d.expired,
-            callout(EXPIRED_NOTE, "warn"),
-            rx.cond(
-                d.publish_note != "",
-                callout(
-                    "No se publicará hasta completarlo: "
-                    + d.publish_note
-                    + " El evento sigue programado y se publica en el siguiente minuto en que "
-                    "esté listo.",
-                    "warn",
-                ),
-            ),
-        ),
-        rx.match(
-            PlannerState.auto_publish,
-            (
-                AUTO_PUBLISH_ACTIVE,
-                rx.text(
-                    "Publicación automática activa: un evento aprobado se publica a su "
-                    "hora (se revisa cada minuto).",
-                    size="1",
-                    color=T.TEXT_MUTED,
-                ),
-            ),
-            (
-                AUTO_PUBLISH_NO_CONNECTION,
-                callout(
-                    "No hay una cuenta conectada y activa para publicar. Conéctala en "
-                    "Conexiones: los eventos se publicarán en cuanto lo esté.",
-                    "warn",
-                ),
-            ),
-            callout(
-                "El servicio de publicación automática no está disponible en este "
-                "momento: los eventos no se publicarán a su hora.",
-                "warn",
-            ),
-        ),
-        rx.hstack(
-            rx.cond(
-                d.detail_href != "",
-                rx.link(
-                    rx.button("Ver POST", variant="soft", color_scheme="gray"),
-                    href=d.detail_href,
-                ),
-            ),
-            rx.spacer(),
-            rx.cond(
-                d.can_delete,
-                rx.button(
-                    rx.icon("trash-2", size=T.ICON_SM),
-                    "Eliminar del calendario",
-                    variant="soft",
-                    color_scheme="red",
-                    on_click=PlannerState.ask_delete_event_from_detail,
-                ),
-            ),
-            # A REJECTED POST: nothing to move or cancel — only take it off the calendar.
-            rx.cond(
-                d.can_remove_rejected,
-                rx.button(
-                    rx.icon("trash-2", size=T.ICON_SM),
-                    "Quitar del calendario",
-                    variant="soft",
-                    color_scheme="red",
-                    on_click=PlannerState.ask_remove_rejected,
-                ),
-            ),
-            # A POST still in review can be rejected from here (the creative FSM decides).
-            rx.cond(
-                d.can_reject_post,
-                rx.button(
-                    rx.icon("thumbs-down", size=T.ICON_SM),
-                    "Rechazar POST",
-                    variant="soft",
-                    color_scheme="red",
-                    on_click=PlannerState.reject_post_from_detail,
-                ),
-            ),
-            rx.cond(
-                d.can_modify,
-                rx.hstack(
-                    rx.button(
-                        "Cancelar publicación",
-                        variant="soft",
-                        color_scheme="red",
-                        on_click=PlannerState.ask_cancel_from_detail,
-                    ),
-                    rx.button("Reprogramar", on_click=PlannerState.reschedule_from_detail),
-                    spacing="2",
-                ),
-            ),
-            width="100%",
-            align="center",
-            wrap="wrap",
-            gap="2",
-        ),
-        spacing="3",
-        width="100%",
-    )
-    return rx.dialog.root(
-        rx.dialog.content(
-            rx.dialog.title("Publicación planificada"),
-            rx.cond(
-                PlannerState.detail_loading,
-                rx.center(rx.spinner(), padding="2rem"),
-                rx.cond(
-                    PlannerState.detail_error != "",
-                    callout(PlannerState.detail_error, "error"),
-                    body,
-                ),
-            ),
-            max_width="32rem",
-        ),
-        open=PlannerState.detail_open,
-        on_open_change=PlannerState.set_detail_open,
-    )
-
-
-def _delete_event_dialog() -> rx.Component:
-    return rx.alert_dialog.root(
-        rx.alert_dialog.content(
-            rx.alert_dialog.title("Eliminar publicación cancelada"),
-            rx.alert_dialog.description(
-                "Se quita del calendario. El POST no se modifica y vuelve a «Sin programar» "
-                "para planificarlo de nuevo cuando quieras.",
-                size="2",
-            ),
-            rx.hstack(
-                rx.alert_dialog.cancel(
-                    rx.button("Volver", variant="soft", color_scheme="gray"),
-                ),
-                rx.alert_dialog.action(
-                    rx.button(
-                        "Eliminar",
-                        color_scheme="red",
-                        on_click=PlannerState.confirm_delete_event,
-                    ),
-                ),
-                justify="end",
-                spacing="2",
-                margin_top="1rem",
-            ),
-        ),
-        open=PlannerState.delete_event_open,
-        on_open_change=PlannerState.set_delete_event_open,
-    )
-
-
-def _remove_rejected_dialog() -> rx.Component:
-    return rx.alert_dialog.root(
-        rx.alert_dialog.content(
-            rx.alert_dialog.title("Quitar POST rechazado del calendario"),
-            rx.alert_dialog.description(
-                "Se cancelan y se quitan del calendario las publicaciones de este POST que "
-                "todavía no salieron. Lo ya publicado se conserva. El POST rechazado no se "
-                "borra: puedes regenerarlo y volver a programarlo.",
-                size="2",
-            ),
-            rx.hstack(
-                rx.alert_dialog.cancel(
-                    rx.button("Volver", variant="soft", color_scheme="gray"),
-                ),
-                rx.alert_dialog.action(
-                    rx.button(
-                        "Quitar del calendario",
-                        color_scheme="red",
-                        on_click=PlannerState.confirm_remove_rejected,
-                    ),
-                ),
-                justify="end",
-                spacing="2",
-                margin_top="1rem",
-            ),
-        ),
-        open=PlannerState.remove_rejected_open,
-        on_open_change=PlannerState.set_remove_rejected_open,
-    )
-
-
-def _delete_tag_dialog() -> rx.Component:
-    return rx.alert_dialog.root(
-        rx.alert_dialog.content(
-            rx.alert_dialog.title("Eliminar etiqueta"),
-            rx.alert_dialog.description(
-                "Se eliminará «" + PlannerState.delete_tag_name + "» y se quitará de todas "
-                "las publicaciones que la tengan. Las publicaciones no se modifican.",
-                size="2",
-            ),
-            rx.hstack(
-                rx.alert_dialog.cancel(
-                    rx.button("Volver", variant="soft", color_scheme="gray"),
-                ),
-                rx.alert_dialog.action(
-                    rx.button(
-                        "Eliminar etiqueta",
-                        color_scheme="red",
-                        on_click=PlannerState.confirm_delete_tag,
-                    ),
-                ),
-                justify="end",
-                spacing="2",
-                margin_top="1rem",
-            ),
-        ),
-        open=PlannerState.delete_tag_open,
-        on_open_change=PlannerState.set_delete_tag_open,
-    )
-
-
-def _cancel_dialog() -> rx.Component:
-    return rx.alert_dialog.root(
-        rx.alert_dialog.content(
-            rx.alert_dialog.title("Cancelar publicación"),
-            rx.alert_dialog.description(
-                "El POST vuelve a «Sin programar» y no se publicará en esta fecha. "
-                "El contenido no se modifica.",
-                size="2",
-            ),
-            rx.hstack(
-                rx.alert_dialog.cancel(
-                    rx.button("Volver", variant="soft", color_scheme="gray"),
-                ),
-                rx.alert_dialog.action(
-                    rx.button(
-                        "Cancelar publicación",
-                        color_scheme="red",
-                        on_click=PlannerState.confirm_cancel,
-                    ),
-                ),
-                justify="end",
-                spacing="2",
-                margin_top="1rem",
-            ),
-        ),
-        open=PlannerState.cancel_open,
-        on_open_change=PlannerState.set_cancel_open,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Page
 
@@ -1764,10 +1161,14 @@ def planner_index() -> rx.Component:
             ),
             spacing="3",
         ),
-        _assign_dialog(),
-        _detail_dialog(),
-        _cancel_dialog(),
-        _delete_tag_dialog(),
-        _delete_event_dialog(),
-        _remove_rejected_dialog(),
+        assign_drawer(),
+        event_panel(),
+        # The page's clock: a quiet re-read of the week every REFRESH_SECONDS, so what
+        # the worker published (or failed) shows without a manual reload. Client-side,
+        # so it stops when the page is left.
+        rx.moment(
+            interval=REFRESH_SECONDS * 1000,
+            on_change=PlannerState.refresh_week,
+            display="none",
+        ),
     )

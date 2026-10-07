@@ -31,6 +31,7 @@ from uuid import UUID
 
 from qualify_creative.adapters.anthropic_copy import CopyRefused
 from qualify_creative.brand import check_hard_rules, check_route_allowed, render_prompt
+from qualify_creative.brand.fidelity import RULE_CAPTION_LENGTH
 from qualify_creative.enums import (
     ContentKind,
     FailureReason,
@@ -1294,7 +1295,10 @@ class ContentService:
         kit = self._brand.kit(tenant_id=tenant_id, brand_id=draft.brand_id)
         if kit is None:
             raise BrandNotReady(missing=("brand_kit",))
-        failures = check_hard_rules(copy, kit)
+        # The kit's caption length is a TARGET for generation, not a rule for the human
+        # (founder, 2026-10-06: «quiero agregar lo que yo quiera en el caption»). Every
+        # other layer-1 rule — banned words, forbidden claims, emoji — still holds.
+        failures = tuple(f for f in check_hard_rules(copy, kit) if f.rule != RULE_CAPTION_LENGTH)
         if failures:
             return failures
         self._repo.set_edited_copy(
