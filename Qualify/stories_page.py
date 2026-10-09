@@ -29,6 +29,10 @@ from .ui.video_preview import (
 
 _GALLERY_ROOT_ID = "stories-gallery-root"
 
+# A Story is one piece, so its tile is larger than a carousel's (6.5rem, the
+# `.q-pub-tile` default in assets/qualify-publish.css).
+_TILE_SIZE = "8rem"
+
 # ---------------------------------------------------------------------------
 # "Abrir en Instagram" -- Web Share API handoff (PoC validated on real
 # Android + iPhone devices: `navigator.share` with the video File opens
@@ -119,14 +123,7 @@ def _pending_tile() -> rx.Component:
         rx.cond(
             preview_src != "",
             rx.el.img(
-                src=preview_src,
-                alt=StoriesState.pending_filename,
-                style={
-                    "width": "100%",
-                    "height": "100%",
-                    "object_fit": "cover",
-                    "display": "block",
-                },
+                src=preview_src, alt=StoriesState.pending_filename, class_name="q-pub-tile-img"
             ),
             rx.vstack(
                 rx.cond(
@@ -151,33 +148,22 @@ def _pending_tile() -> rx.Component:
                 padding="0.4rem",
             ),
         ),
-        rx.button(
-            rx.icon("x", size=14, color="white"),
+        # Same chip as `/publish`'s tiles (`.q-pub-tile-x`): dark glass with a ring, so
+        # it reads on any first frame; soft, so «Publicar» stays the one solid button.
+        rx.icon_button(
+            rx.icon("x", size=14),
             on_click=StoriesState.clear_file,
             disabled=~StoriesState.can_edit_gallery,
             title="Quitar este archivo",
+            aria_label="Quitar este archivo",
             size="1",
-            variant="solid",
-            color_scheme="tomato",
+            variant="soft",
+            color_scheme=T.tone_scale("error"),
             radius="full",
-            position="absolute",
-            top="0.25rem",
-            right="0.25rem",
-            width="1.6rem",
-            height="1.6rem",
-            padding="0",
-            border=f"2px solid {T.CARD_BG}",
-            box_shadow="0 1px 3px rgba(0, 0, 0, 0.35)",
-            cursor="pointer",
-            _hover={"background": rx.color("tomato", 10)},
+            class_name="q-pub-tile-x",
         ),
-        position="relative",
-        width="8rem",
-        height="8rem",
-        overflow="hidden",
-        border=f"1.5px solid {rx.color('grass', 7)}",
-        border_radius=T.RADIUS_CARD,
-        background=T.tone_color("ok", 2),
+        class_name="q-pub-tile",
+        style={"--q-pub-tile-size": _TILE_SIZE},
     )
 
 
@@ -200,7 +186,9 @@ def _empty_state_content() -> rx.Component:
 
 
 def _upload_widget(children: rx.Component, *, compact: bool) -> rx.Component:
-    return rx.upload(
+    # `rx.upload.root` is `rx.upload` minus three style defaults the `.q-dropzone`
+    # material sets itself (border, padding, text-align).
+    return rx.upload.root(
         children,
         id=_UPLOAD_ID,
         accept={
@@ -215,17 +203,8 @@ def _upload_widget(children: rx.Component, *, compact: bool) -> rx.Component:
         on_drop_rejected=rx.toast.error(
             "Formato no permitido", description="Solo se aceptan archivos MP4, MOV o JPEG."
         ),
-        border=f"1.5px dashed {rx.color('gray', 7)}",
-        border_radius=T.RADIUS_CARD,
-        background=T.CARD_BG,
-        width="8rem" if compact else "100%",
-        height="8rem" if compact else "auto",
-        padding="0" if compact else "2.5rem 1.5rem",
-        display="flex",
-        align_items="center",
-        justify_content="center",
-        transition=f"border-color {T.DUR_FAST} {T.EASE}, background {T.DUR_FAST} {T.EASE}",
-        _hover={"border_color": rx.color("accent", 8), "background": T.tone_color("accent", 2)},
+        class_name="q-dropzone q-dropzone--tile" if compact else "q-dropzone",
+        style={"--q-pub-tile-size": _TILE_SIZE},
     )
 
 
@@ -273,20 +252,20 @@ def _status_block() -> rx.Component:
         StoriesState.phase,
         (
             "staging_and_starting",
-            rx.callout(
+            callout(
                 rx.hstack(
                     loading_spinner("sm"),
                     rx.text("Subiendo el video y arrancando la publicación...", size="2"),
                     spacing="2",
                     align="center",
                 ),
-                color_scheme="gray",
-                width="100%",
+                "neutral",
+                icon="upload",
             ),
         ),
         (
             "polling",
-            rx.callout(
+            callout(
                 rx.vstack(
                     rx.hstack(
                         loading_spinner("sm"),
@@ -301,7 +280,7 @@ def _status_block() -> rx.Component:
                                 StoriesState.elapsed_label,
                                 size="1",
                                 color=T.TEXT_FAINT,
-                                font_family="monospace",
+                                class_name="q-mono q-nums",
                             ),
                             rx.fragment(),
                         ),
@@ -318,17 +297,11 @@ def _status_block() -> rx.Component:
                     align_items="start",
                     width="100%",
                 ),
+                "warn",
                 icon="clock",
-                color_scheme="amber",
-                width="100%",
             ),
         ),
-        (
-            "failure",
-            rx.callout(
-                StoriesState.error, icon="triangle-alert", color_scheme="tomato", width="100%"
-            ),
-        ),
+        ("failure", callout(StoriesState.error, "error")),
         rx.fragment(),
     )
 

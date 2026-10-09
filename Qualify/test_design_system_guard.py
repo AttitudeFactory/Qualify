@@ -61,12 +61,6 @@ _PENDING: set[str] = {
     # lote A — shell, auth, escucha
     "connections_page.py",
     "vitrina_page.py",
-    # lote B — publicar y catálogo
-    "catalog_page.py",
-    "publishing_page.py",
-    "stories_page.py",
-    "trending_panel.py",
-    "post_card.py",
     # lote C — planificador
     "planner_page.py",
     "planner_drawer.py",

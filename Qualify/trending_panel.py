@@ -14,7 +14,7 @@ import reflex as rx
 
 from .stories_vm import TrendAudioOptionVM, TrendingVideoVM
 from .trending_state import TrendingState
-from .ui import card, section
+from .ui import card, removable_pill, section
 from .ui import tokens as T
 
 # ---------------------------------------------------------------------------
@@ -39,8 +39,11 @@ def _trend_option(option: TrendAudioOptionVM) -> rx.Component:
                 rx.button(
                     rx.cond(is_playing_this, rx.icon("pause", size=12), rx.icon("play", size=12)),
                     variant="ghost",
-                    color_scheme=rx.cond(is_playing_this, "iris", "gray"),
                     size="1",
+                    aria_label=rx.cond(is_playing_this, "Pausar", "Escuchar"),
+                    class_name=rx.cond(
+                        is_playing_this, "q-trend-play q-trend-play--on", "q-trend-play"
+                    ),
                     on_click=TrendingState.toggle_audio_preview(
                         option.audio_id, option.preview_url
                     ),
@@ -53,7 +56,9 @@ def _trend_option(option: TrendAudioOptionVM) -> rx.Component:
             rx.hstack(
                 rx.cond(
                     selected,
-                    rx.icon("circle-check", size=14, color=rx.color("iris", 9), flex_shrink="0"),
+                    rx.icon(
+                        "circle-check", size=14, color=T.tone_color("accent", 9), flex_shrink="0"
+                    ),
                     rx.icon("music", size=14, color=T.TEXT_FAINT, flex_shrink="0"),
                 ),
                 rx.vstack(
@@ -76,9 +81,11 @@ def _trend_option(option: TrendAudioOptionVM) -> rx.Component:
                 padding_right="0.5rem",
             ),
             variant="ghost",
-            color_scheme=rx.cond(selected, "iris", "gray"),
-            background=rx.cond(selected, rx.color("iris", 3), "transparent"),
-            border_radius="0",
+            color_scheme=T.tone_scale("neutral"),
+            # The chosen row is washed in the accent (`.q-trend-row[data-selected]`).
+            class_name="q-trend-row",
+            data_selected=rx.cond(selected, "true", "false"),
+            aria_pressed=rx.cond(selected, "true", "false"),
             size="2",
             width="100%",
             on_click=TrendingState.select_trend_audio(option.audio_id, option.title),
@@ -87,7 +94,7 @@ def _trend_option(option: TrendAudioOptionVM) -> rx.Component:
         spacing="0",
         width="100%",
         padding_right="0.5rem",
-        border_bottom=f"1px solid {rx.color('gray', 4)}",
+        class_name="q-trend-row-wrap",
     )
 
 
@@ -103,14 +110,16 @@ def _trend_audio_section() -> rx.Component:
                 disabled=TrendingState.audio_connection_id == "",
                 on_click=TrendingState.suggest_audio,
             ),
+            # The chosen audio is a value the product proposed and the operator keeps or
+            # drops — `removable_pill(suggested=True)`, with a real ✕ button.
             rx.cond(
                 TrendingState.selected_trend_audio_id != "",
-                rx.badge(
+                removable_pill(
                     TrendingState.selected_trend_audio_title,
-                    rx.icon("x", size=12, on_click=TrendingState.clear_trend_audio),
-                    variant="soft",
-                    color_scheme="iris",
-                    size="2",
+                    TrendingState.clear_trend_audio,
+                    icon="music",
+                    suggested=True,
+                    remove_label="Quitar el audio elegido",
                 ),
             ),
             align="center",
@@ -154,7 +163,7 @@ def _trend_audio_section() -> rx.Component:
                         rx.icon("x", size=12),
                         "Ocultar",
                         variant="soft",
-                        color_scheme="gray",
+                        color_scheme=T.tone_scale("neutral"),
                         size="1",
                         on_click=TrendingState.close_trend_audio,
                     ),
@@ -182,22 +191,8 @@ def _trend_audio_section() -> rx.Component:
 def _trending_thumbnail(candidate: TrendingVideoVM) -> rx.Component:
     return rx.cond(
         candidate.has_thumbnail,
-        rx.image(
-            src=candidate.thumbnail_url,
-            width="56px",
-            height="56px",
-            object_fit="cover",
-            border_radius="0.5rem",
-            flex_shrink="0",
-        ),
-        rx.center(
-            rx.icon("film", size=20, color=T.TEXT_FAINT),
-            width="56px",
-            height="56px",
-            border_radius="0.5rem",
-            background=T.SURFACE_BG_RAISED,
-            flex_shrink="0",
-        ),
+        rx.image(src=candidate.thumbnail_url, alt="", class_name="q-trend-thumb"),
+        rx.center(rx.icon("film", size=20, color=T.TEXT_FAINT), class_name="q-trend-thumb"),
     )
 
 
@@ -217,8 +212,12 @@ def _song_detail_panel() -> rx.Component:
                 rx.button(
                     rx.cond(is_playing_this, rx.icon("pause", size=12), rx.icon("play", size=12)),
                     variant="soft",
-                    color_scheme=rx.cond(is_playing_this, "iris", "gray"),
+                    color_scheme=T.tone_scale("neutral"),
                     size="1",
+                    aria_label=rx.cond(is_playing_this, "Pausar", "Escuchar"),
+                    class_name=rx.cond(
+                        is_playing_this, "q-trend-play q-trend-play--on", "q-trend-play"
+                    ),
                     on_click=TrendingState.toggle_audio_preview(
                         detail.audio_id, detail.preview_url
                     ),
@@ -254,7 +253,6 @@ def _song_detail_panel() -> rx.Component:
                 "Usar esta canción",
                 size="1",
                 variant="soft",
-                color_scheme="iris",
                 on_click=TrendingState.select_trend_audio(detail.audio_id, detail.title),
             ),
             rx.button(
@@ -262,7 +260,7 @@ def _song_detail_panel() -> rx.Component:
                 "Buscar en Meta",
                 size="1",
                 variant="soft",
-                color_scheme="gray",
+                color_scheme=T.tone_scale("neutral"),
                 disabled=TrendingState.audio_connection_id == "",
                 loading=TrendingState.is_loading_trend,
                 on_click=TrendingState.search_song_on_meta(detail.title),
@@ -271,17 +269,14 @@ def _song_detail_panel() -> rx.Component:
             wrap="wrap",
         ),
         spacing="2",
-        padding="0.5rem",
-        background=T.SURFACE_BG_RAISED,
-        border_radius="0.5rem",
         align_items="start",
-        width="100%",
+        class_name="q-trend-detail",
     )
 
 
 def _trending_video_card(candidate: TrendingVideoVM) -> rx.Component:
     is_expanded = TrendingState.expanded_song_id == candidate.music_id
-    return rx.box(
+    return card(
         rx.hstack(
             _trending_thumbnail(candidate),
             rx.vstack(
@@ -341,9 +336,6 @@ def _trending_video_card(candidate: TrendingVideoVM) -> rx.Component:
             width="100%",
         ),
         padding="0.75rem",
-        border=f"1px solid {rx.color('gray', 5)}",
-        border_radius=T.RADIUS_CARD,
-        width="100%",
     )
 
 
@@ -389,10 +381,11 @@ def _trending_platform_section(
                 rx.icon_button(
                     rx.icon("refresh-cw", size=14),
                     variant="ghost",
-                    color_scheme="gray",
+                    color_scheme=T.tone_scale("neutral"),
                     size="2",
                     loading=is_loading,
                     title="Actualizar con contenido nuevo",
+                    aria_label="Actualizar con contenido nuevo",
                     on_click=on_refresh,
                 ),
                 rx.fragment(),
