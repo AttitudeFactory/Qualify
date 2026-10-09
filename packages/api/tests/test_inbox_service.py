@@ -15,6 +15,7 @@ from qualify_shared.social.ig_shapes import COMMENTS_EDGE_PERMISSIONS, IGComment
 
 from qualify_api.inbox.client import CommentsReadError
 from qualify_api.inbox.media_client import MediaReadError, MediaSummary
+from qualify_api.inbox.monitoring import MediaMetadata
 from qualify_api.inbox.repository import MemoryInboxRepository
 from qualify_api.inbox.service import (
     META_CALL_BUDGET_PER_HOUR,
@@ -31,6 +32,12 @@ TENANT_ID = UUID("f0000000-0000-4000-8000-000000000001")
 CONNECTION_ID = UUID("f0000000-0000-4000-8000-000000000002")
 IG_USER_ID = "17841400000000000"
 NOW = datetime(2026, 8, 14, 12, 0, 0, tzinfo=UTC)
+
+# QUA-149: a row monitored after 0046 carries its metadata — published a day ago by the
+# REAL clock (sync calls without `now=` use it), so it is inside the window whatever
+# `now` a test passes. Seeding without it would model a legacy row, which now costs one
+# metadata read; the tests that mean that seed it explicitly.
+FRESH = MediaMetadata(posted_at=datetime.now(UTC) - timedelta(days=1))
 
 # `sync_comments` fails closed without this — every test below that calls it must opt in
 # explicitly, same discipline `FakeMediaClient({})` already uses to prove a code path
@@ -92,7 +99,11 @@ def _comment(comment_id: str) -> IGComment:
 async def test_sync_comments_only_processes_monitored_media() -> None:
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     repository.set_media_monitored(
         tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="B", monitored=False
@@ -120,7 +131,11 @@ async def test_sync_comments_only_processes_monitored_media() -> None:
 async def test_401_degrades_the_connection_and_raises_comments_auth_expired() -> None:
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     comments_client = FakeCommentsClient(
         {},
@@ -151,7 +166,11 @@ async def test_code_190_degrades_even_without_a_401_status() -> None:
     alone (no captured HTTP status) must trigger the same path."""
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     comments_client = FakeCommentsClient(
         {}, error_by_media={"A": CommentsReadError("boom", platform_code=190)}
@@ -178,7 +197,11 @@ async def test_other_comments_read_errors_do_not_degrade_or_change_type() -> Non
     (a bad media id, a transient 5xx) propagates exactly as it already did."""
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     original = CommentsReadError("GET /A/comments failed with HTTP 500", http_status=500)
     comments_client = FakeCommentsClient({}, error_by_media={"A": original})
@@ -229,6 +252,7 @@ async def test_a_deleted_reel_between_two_healthy_ones_does_not_abort_the_sync()
             connection_id=CONNECTION_ID,
             external_media_id=media_id,
             monitored=True,
+            metadata=FRESH,
         )
     comments_client = FakeCommentsClient(
         {"HEALTHY_1": [_comment("c1")], "HEALTHY_2": [_comment("c2")]},
@@ -261,6 +285,7 @@ async def test_sync_with_only_a_deleted_reel_succeeds_with_nothing_new() -> None
         connection_id=CONNECTION_ID,
         external_media_id="DELETED",
         monitored=True,
+        metadata=FRESH,
     )
     comments_client = FakeCommentsClient(
         {}, error_by_media={"DELETED": _missing_media_error("DELETED")}
@@ -289,6 +314,7 @@ async def test_a_deleted_reel_is_auto_unmonitored() -> None:
         connection_id=CONNECTION_ID,
         external_media_id="DELETED",
         monitored=True,
+        metadata=FRESH,
     )
     comments_client = FakeCommentsClient(
         {}, error_by_media={"DELETED": _missing_media_error("DELETED")}
@@ -322,7 +348,11 @@ async def test_a_code_100_error_with_a_different_subcode_is_not_treated_as_delet
     `CommentsReadError` did before this fix — never silently swallowed as "deleted"."""
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     original = CommentsReadError(
         "GET /A/comments failed with HTTP 400",
@@ -360,6 +390,7 @@ async def test_a_real_500_between_two_healthy_reels_still_aborts_the_sync() -> N
             connection_id=CONNECTION_ID,
             external_media_id=media_id,
             monitored=True,
+            metadata=FRESH,
         )
     real_error = CommentsReadError("GET /BROKEN/comments failed with HTTP 500", http_status=500)
     comments_client = FakeCommentsClient(
@@ -394,6 +425,7 @@ async def test_a_deleted_reel_does_not_short_circuit_a_401_elsewhere_in_the_batc
             connection_id=CONNECTION_ID,
             external_media_id=media_id,
             monitored=True,
+            metadata=FRESH,
         )
     comments_client = FakeCommentsClient(
         {},
@@ -424,7 +456,11 @@ async def test_a_deleted_reel_does_not_short_circuit_a_401_elsewhere_in_the_batc
 async def test_sync_comments_is_idempotent_across_two_runs() -> None:
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     comments_client = FakeCommentsClient({"A": [_comment("c1"), _comment("c2")]})
     service = InboxService(
@@ -479,7 +515,11 @@ async def test_sync_comments_walks_multiple_pages_via_the_after_cursor() -> None
     not just read page one and stopped."""
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     page_one = IGCommentsPage(
         data=[_comment("c1"), _comment("c2")], paging={"cursors": {"after": "CURSOR_1"}}
@@ -514,7 +554,11 @@ async def test_sync_comments_still_walks_to_completion_when_a_page_is_fully_know
     unchanged, nothing is (re)marked deleted."""
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     page_one = IGCommentsPage(data=[_comment("c1")], paging={"cursors": {"after": "CURSOR_1"}})
     page_two = IGCommentsPage(data=[_comment("c2")], paging=None)
@@ -612,7 +656,11 @@ async def test_disabling_monitoring_never_calls_meta() -> None:
     """Turning OFF is not gated by age — the window only bounds what can be ADDED."""
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     media_client = FakeMediaClient({})  # would raise MediaReadError if ever called
     service = InboxService(
@@ -641,7 +689,11 @@ async def test_disabling_monitoring_never_calls_meta() -> None:
 async def test_list_candidate_media_marks_already_monitored_items() -> None:
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     media_client = FakeMediaClient(
         {
@@ -727,7 +779,11 @@ async def test_sync_refuses_without_comments_permission() -> None:
     touched. This is `cannot_observe` — must never look like a normal empty result."""
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     comments_client = FakeCommentsClient({"A": [_comment("c1")]})
     service = InboxService(
@@ -771,10 +827,18 @@ async def test_sync_refuses_when_budget_insufficient_for_needed_calls() -> None:
     BEFORE any Meta call at all — the floor estimate alone is enough to refuse."""
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="B", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="B",
+        monitored=True,
+        metadata=FRESH,
     )
     for _ in range(META_CALL_BUDGET_PER_HOUR - 1):
         repository.record_call(tenant_id=TENANT_ID, connection_id=CONNECTION_ID, called_at=NOW)
@@ -799,7 +863,11 @@ async def test_calls_older_than_one_hour_do_not_count_against_the_budget() -> No
     must not still be counted against the budget."""
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     stale_call = NOW - timedelta(hours=1, minutes=1)
     for _ in range(META_CALL_BUDGET_PER_HOUR):
@@ -825,7 +893,11 @@ async def test_sync_records_one_ledger_entry_per_real_call_not_per_sync() -> Non
     one — the ledger counts Meta calls, not sync invocations."""
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     page_one = IGCommentsPage(data=[_comment("c1")], paging={"cursors": {"after": "CURSOR_1"}})
     page_two = IGCommentsPage(data=[_comment("c2")], paging=None)
@@ -852,7 +924,11 @@ async def test_budget_exhausted_mid_pagination_stops_and_returns_partial() -> No
     — not raise and discard already-useful work."""
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     for _ in range(META_CALL_BUDGET_PER_HOUR - 1):  # exactly 1 call left
         repository.record_call(tenant_id=TENANT_ID, connection_id=CONNECTION_ID, called_at=NOW)
@@ -885,7 +961,11 @@ async def test_a_comment_deleted_at_the_source_is_marked_deleted_and_excluded() 
     error) — Qualify must mark it deleted rather than leaving it looking active forever."""
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     comments_by_media: dict[str, list[IGComment]] = {"A": [_comment("c1")]}
     comments_client = FakeCommentsClient(comments_by_media)
@@ -915,7 +995,11 @@ async def test_a_comment_still_present_across_syncs_is_never_marked_deleted() ->
     across repeated syncs must never be (mis)marked deleted."""
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     comments_client = FakeCommentsClient({"A": [_comment("c1")]})
     service = InboxService(
@@ -939,7 +1023,11 @@ async def test_a_new_comment_alongside_an_existing_one_still_counts_as_new() -> 
     handled correctly — the existing one untouched, the new one landing as new."""
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     comments_by_media: dict[str, list[IGComment]] = {"A": [_comment("c1")]}
     comments_client = FakeCommentsClient(comments_by_media)
@@ -968,7 +1056,11 @@ async def test_a_soft_deleted_comment_that_reappears_is_restored() -> None:
     soft-deleted forever."""
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     comments_by_media: dict[str, list[IGComment]] = {"A": [_comment("c1")]}
     comments_client = FakeCommentsClient(comments_by_media)
@@ -1003,6 +1095,7 @@ async def test_a_deleted_reel_does_not_soft_delete_its_already_synced_comments()
         connection_id=CONNECTION_ID,
         external_media_id="DELETED",
         monitored=True,
+        metadata=FRESH,
     )
     priming_service = InboxService(
         repository=repository,
@@ -1037,7 +1130,11 @@ async def test_a_truncated_walk_never_reconciles_anything() -> None:
     reason a comment was not (yet) observed this pass."""
     repository = MemoryInboxRepository()
     repository.set_media_monitored(
-        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, external_media_id="A", monitored=True
+        tenant_id=TENANT_ID,
+        connection_id=CONNECTION_ID,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     # Prime c1 and c2 in an earlier, unconstrained sync.
     page_one = IGCommentsPage(data=[_comment("c1")], paging={"cursors": {"after": "CURSOR_1"}})

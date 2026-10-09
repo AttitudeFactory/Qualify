@@ -111,8 +111,16 @@ class InboxRepository(Protocol):
     ) -> tuple[MediaToSync, ...]:
         """QUA-149: the media the sync may call Meta for at `now` — monitored AND either
         inside the 14-day window or with an unknown publication date (a legacy row, see
-        `MediaToSync.needs_metadata`). An expired media is never returned, so it can never
-        cost a Meta call. Ordered by `external_media_id` (deterministic)."""
+        `MediaToSync.needs_metadata`). A media whose stored date is past the window is
+        never returned, so it can never cost a Meta call; a legacy row IS returned until
+        its date is known, even if it is in fact already expired. Ordered by
+        `external_media_id` (deterministic)."""
+        ...
+
+    def count_expired_media(self, *, tenant_id: UUID, connection_id: UUID, now: datetime) -> int:
+        """QUA-149: how many media are still `is_monitored` but past the window at `now` —
+        exactly the rows `list_media_to_sync` leaves out. For the sync summary only; no
+        Meta call is ever made for them."""
         ...
 
     def get_monitored_media(
@@ -252,6 +260,17 @@ class MemoryInboxRepository:
             if conn_id == connection_id
             and row.is_monitored
             and (row.media_posted_at is None or row.media_posted_at >= cutoff)
+        )
+
+    def count_expired_media(self, *, tenant_id: UUID, connection_id: UUID, now: datetime) -> int:
+        cutoff = window_start(now)
+        return sum(
+            1
+            for (conn_id, _), row in self._monitored.items()
+            if conn_id == connection_id
+            and row.is_monitored
+            and row.media_posted_at is not None
+            and row.media_posted_at < cutoff
         )
 
     def get_monitored_media(
@@ -410,6 +429,21 @@ class PostgresInboxRepository:
                 .order_by(MonitoredMedia.external_media_id)
             ).all()
             return tuple(_to_sync(_record_from_row(row)) for row in rows)
+
+    def count_expired_media(self, *, tenant_id: UUID, connection_id: UUID, now: datetime) -> int:
+        with tenant_session(tenant_id) as session:
+            return (
+                session.scalar(
+                    select(func.count())
+                    .select_from(MonitoredMedia)
+                    .where(
+                        MonitoredMedia.connection_id == connection_id,
+                        MonitoredMedia.is_monitored.is_(True),
+                        MonitoredMedia.media_posted_at < window_start(now),
+                    )
+                )
+                or 0
+            )
 
     def get_monitored_media(
         self, *, tenant_id: UUID, connection_id: UUID, external_media_id: str

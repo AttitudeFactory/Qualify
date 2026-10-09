@@ -782,6 +782,9 @@ def test_list_media_to_sync_applies_the_window_in_sql(
     )
     assert expired is not None and expired.is_monitored and expired.caption == "caption"
     assert expired.state(_NOW) is MonitoringState.EXPIRED
+    # QUA-149 phase 2: exactly the monitored rows the query above left out by date (the
+    # legacy row's date is unknown, the turned-off row is not monitored).
+    assert repo.count_expired_media(tenant_id=tenant_id, connection_id=connection_id, now=_NOW) == 1
 
 
 def test_metadata_failure_then_backfill_on_a_legacy_row(

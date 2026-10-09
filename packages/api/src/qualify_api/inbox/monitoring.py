@@ -20,9 +20,11 @@ client-supplied date is never trusted.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Final
 
 MONITORING_WINDOW: Final = timedelta(days=14)
@@ -35,7 +37,7 @@ class MonitoringState(StrEnum):
     - `EXPIRED` — was monitored, the window ended: not synced any more ("No monitoreado ·
       vencido"). Its history is kept.
     - `INACTIVE` — monitoring off (turned off by the user, or the media was confirmed
-      deleted on Instagram): not synced ("No monitoreado · histórico").
+      deleted on Instagram): not synced ("No monitoreado").
     """
 
     ACTIVE = "active"
@@ -76,9 +78,11 @@ class MediaMetadata:
 
 @dataclass(frozen=True)
 class MediaToSync:
-    """One media the sync may call Meta for: monitored and not expired. `needs_metadata`
-    is a legacy row (monitored before QUA-149) whose metadata was never fetched — its
-    publication date is unknown, so it cannot be judged expired until it is read once.
+    """One media the sync may call Meta for: monitored and not KNOWN to be expired.
+    `needs_metadata` is a legacy row (monitored before QUA-149) whose metadata was never
+    fetched — its publication date is unknown, so it cannot be judged expired until it is
+    read once, and until then it is synced like an active media (it may in fact already be
+    expired; see `InboxService.sync_comments`, "Known limitation").
     `metadata_attempted_at`/`metadata_error` describe the last failed read, if any, so
     the caller can space out retries."""
 
@@ -86,6 +90,30 @@ class MediaToSync:
     needs_metadata: bool
     metadata_attempted_at: datetime | None = None
     metadata_error: MetadataFetchError | None = None
+
+
+# How long a FAILED metadata read waits before it may be tried again (QUA-149). A legacy
+# row is never re-read on every sync: each pass checks this first, and a row still inside
+# its wait costs no Meta call. Longer for failures retrying cannot fix soon.
+METADATA_RETRY_AFTER: Final[Mapping[MetadataFetchError, timedelta]] = MappingProxyType(
+    {
+        MetadataFetchError.TRANSIENT: timedelta(minutes=15),
+        MetadataFetchError.RATE_LIMITED: timedelta(hours=1),
+        MetadataFetchError.UNKNOWN: timedelta(hours=6),
+        MetadataFetchError.PERMISSION: timedelta(hours=24),
+    }
+)
+
+
+def metadata_read_due(media: MediaToSync, now: datetime) -> bool:
+    """True when the sync should read this media's metadata from Meta now: it is still
+    missing, and either it was never tried or its last failure's wait is over. Complete
+    rows are never due — once read, a media is never asked for again."""
+    if not media.needs_metadata:
+        return False
+    if media.metadata_attempted_at is None or media.metadata_error is None:
+        return True
+    return now >= media.metadata_attempted_at + METADATA_RETRY_AFTER[media.metadata_error]
 
 
 def _require_aware(value: object, name: str) -> None:

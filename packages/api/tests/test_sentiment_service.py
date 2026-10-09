@@ -551,6 +551,11 @@ def test_reel_summary_domain_object_has_only_scalar_roll_up_fields() -> None:
         "negative": "int",
         "not_analyzed": "int",
         "is_monitored": "bool",
+        # QUA-149: the media's own persisted metadata — scalars about the Reel, never
+        # comment content.
+        "media_posted_at": "datetime | None",
+        "caption": "str | None",
+        "permalink": "str | None",
     }
 
 

@@ -14,12 +14,15 @@ import pytest
 from qualify_api.inbox import service as inbox_service
 from qualify_api.inbox.models import MonitoredMedia
 from qualify_api.inbox.monitoring import (
+    METADATA_RETRY_AFTER,
     MONITORING_WINDOW,
     MediaMetadata,
+    MediaToSync,
     MetadataFetchError,
     MonitoringState,
     effective_state,
     is_within_window,
+    metadata_read_due,
     window_start,
 )
 from qualify_api.inbox.repository import MemoryInboxRepository
@@ -83,6 +86,34 @@ def test_effective_state_unknown_date_is_active_because_it_is_still_synced() -> 
     """A legacy row (monitored before 0046) is still synced until its date is read once,
     so the state must say so — never `EXPIRED` on a guess."""
     assert effective_state(is_monitored=True, posted_at=None, now=NOW) is MonitoringState.ACTIVE
+
+
+def test_every_metadata_failure_has_a_retry_wait() -> None:
+    assert set(METADATA_RETRY_AFTER) == set(MetadataFetchError)
+    assert all(wait > timedelta(0) for wait in METADATA_RETRY_AFTER.values())
+
+
+def test_a_legacy_row_never_tried_is_due_and_a_complete_one_never_is() -> None:
+    assert metadata_read_due(MediaToSync(external_media_id="m", needs_metadata=True), NOW)
+    assert not metadata_read_due(MediaToSync(external_media_id="m", needs_metadata=False), NOW)
+
+
+def test_count_expired_media_counts_only_monitored_rows_past_the_window() -> None:
+    repo = MemoryInboxRepository()
+    for media_id, age_days, monitored in (("a", 3, True), ("b", 20, True), ("c", 20, False)):
+        repo.set_media_monitored(
+            tenant_id=TENANT,
+            connection_id=CONNECTION,
+            external_media_id=media_id,
+            monitored=monitored,
+            metadata=_metadata(NOW - timedelta(days=age_days)),
+            fetched_at=NOW,
+        )
+    repo.set_media_monitored(
+        tenant_id=TENANT, connection_id=CONNECTION, external_media_id="legacy", monitored=True
+    )
+
+    assert repo.count_expired_media(tenant_id=TENANT, connection_id=CONNECTION, now=NOW) == 1
 
 
 def test_a_naive_now_is_refused() -> None:

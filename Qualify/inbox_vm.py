@@ -14,6 +14,15 @@ test, same convention as `publishing_vm.py`/`connections_vm.py`.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Final
+
+# QUA-149: the four values `ReelSummaryVM.monitoring_state` can take — one per visible
+# label. Computed server-side (`inbox_provider`) from the shared rule
+# (`qualify_api.inbox.monitoring.effective_state`); the page only matches on them.
+MONITORING_ACTIVE: Final = "active"  # "Monitoreado"
+MONITORING_PENDING: Final = "pending"  # "Monitoreado · fecha por verificar"
+MONITORING_EXPIRED: Final = "expired"  # "No monitoreado · vencido"
+MONITORING_INACTIVE: Final = "inactive"  # "No monitoreado"
 
 
 @dataclass(frozen=True)
@@ -79,6 +88,10 @@ class SyncSummaryVM:
     COMPLETE walk of their (still-existing) media no longer returned them — the sibling
     case to `skipped_missing_media` above, one level down (a comment, not the whole
     Reel). Also always SUCCESS, folded into the same toast.
+
+    `expired_skipped`/`metadata_*` (QUA-149): media past their 14-day window (never
+    synced, no Meta call) and the legacy-metadata reads of this pass. Counts only, for the
+    `inbox.sync.done` log; not rendered.
     """
 
     media_checked: int
@@ -86,6 +99,10 @@ class SyncSummaryVM:
     truncated: bool = False
     skipped_missing_media: tuple[str, ...] = ()
     deleted_comments: int = 0
+    expired_skipped: int = 0
+    metadata_backfilled: int = 0
+    metadata_failed: int = 0
+    metadata_deferred: int = 0
 
 
 @dataclass(frozen=True)
@@ -95,17 +112,22 @@ class ReelSummaryVM:
     QUA-92's flat `CommentVM` list at the top level of `/inbox`; `CommentVM` itself is
     unchanged and now lives one level down, in the Reel detail view.
 
-    `thumbnail_url`/`caption`/`permalink` are opción A's one deliberate widening: cross-
-    referenced from `CandidateMediaVM` (already loaded for the Reels-monitoring list, ZERO
-    extra Meta calls) when this Reel is still inside that list's 2-week window — `""` for
-    a Reel monitored longer ago, same "no raw nullable reaching a `str` field" convention
-    every VM in this module follows.
+    `caption`/`permalink` (QUA-149) come first from the PERSISTED `monitored_media`
+    metadata, so they survive the 14-day window; the live `CandidateMediaVM` (opción A,
+    ZERO extra Meta calls) is only a fallback, e.g. for a legacy row not read yet.
+    `thumbnail_url` comes only from that live list (Meta's CDN URLs expire, so it is not
+    stored) — `""` once the Reel leaves it, and the page shows its generic icon. Same "no
+    raw nullable reaching a `str` field" convention every VM in this module follows.
 
-    `is_monitored` (QUA-94) mirrors `qualify_api.sentiment.repository.ReelSummary.
-    is_monitored` verbatim — a DECORATION, never a filter: this Reel is still listed and
-    its historical comments/sentiment are still fully visible when `False`, only the
-    badge in `inbox_page.py` changes. `False` means "not currently monitored", which
-    covers both "explicitly turned off" and "no `monitored_media` row at all".
+    `monitoring_state` (QUA-149) is what the badge shows — one of the `MONITORING_*`
+    constants above, computed from `is_monitored` AND the persisted publication date by
+    the shared rule, never from `is_monitored` alone: a monitored Reel past its window is
+    `expired` (no longer synced). `pending` is a monitored legacy Reel whose date is not
+    read yet — it IS still synced, so it reads as monitored, with a hint.
+
+    `is_monitored` (QUA-94) still mirrors the raw `monitored_media.is_monitored` flag —
+    a DECORATION, never a filter: this Reel is still listed and its historical
+    comments/sentiment stay fully visible whatever its state.
     """
 
     thread_id: str
@@ -120,6 +142,7 @@ class ReelSummaryVM:
     caption: str
     permalink: str
     is_monitored: bool
+    monitoring_state: str = MONITORING_INACTIVE
 
 
 @dataclass(frozen=True)

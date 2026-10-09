@@ -97,10 +97,15 @@ class MediaReadError(Exception):
         self,
         message: str,
         *,
+        http_status: int | None = None,
         platform_code: int | None = None,
         platform_subcode: int | None = None,
     ) -> None:
         super().__init__(message)
+        # QUA-149: the status is what separates a confirmed deletion (HTTP 400 + code
+        # 100/subcode 33, same signature `inbox.client.CommentsReadError` carries) from a
+        # rate limit or a server error. `None` for a malformed 200 response.
+        self.http_status = http_status
         self.platform_code = platform_code
         self.platform_subcode = platform_subcode
 
@@ -185,6 +190,7 @@ class HttpMediaClient:
             code, subcode = _error_codes(response)
             raise MediaReadError(
                 f"GET {path} failed with HTTP {response.status_code}",
+                http_status=response.status_code,
                 platform_code=code,
                 platform_subcode=subcode,
             )
