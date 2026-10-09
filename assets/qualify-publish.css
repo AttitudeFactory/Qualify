@@ -1,0 +1,205 @@
+/*
+ * Qualify — Publicar and catálogo (lote B): the publish flows (`/publish`, both
+ * Publicaciones and Stories), the trending panel, the POST card and `/catalog`.
+ *
+ * Loaded after qualify.css (rx.App(stylesheets=…) in Qualify/Qualify.py); the tokens
+ * (--q-*, --lq-*) and the Radix skin come from there. Reference: docs/design-system.md
+ * and docs/plan-migracion-liquid-glass.md §3 D5 (material by role) and D10.
+ *
+ * Material by role, as the plan fixes it: a dropzone or a media tile is a *control*
+ * (relief on `--q-control-*` / `--q-field-*`, never a backdrop blur — these sit in
+ * grids), a block inside the form card is `ui.card`. Nothing here names a colour: every
+ * value is a bridge token or a Radix scale step, so light and dark come for free.
+ */
+
+/* ── Publish flow selector (QUA-113) ─────────────────────────────────────────
+ * `Publicaciones | Stories` on /publish. The global segmented-control skin gives the
+ * sunken track and the glass tab; here the active flow gets the accent fill with
+ * contrast text — the one place on the screen that says "this is the mode you are in"
+ * — and the inactive one a hover tint. Colour only: Radix already renders both label
+ * weights stacked, so nothing resizes or shifts. */
+.radix-themes .rt-SegmentedControlRoot.q-flow-switch {
+  --segmented-control-indicator-background-color: var(--accent-9);
+}
+.q-flow-switch .rt-SegmentedControlItemLabel {
+  transition:
+    color var(--q-dur-fast) var(--q-ease),
+    background-color var(--q-dur-fast) var(--q-ease);
+}
+.q-flow-switch .rt-SegmentedControlItem[data-state='on'] .rt-SegmentedControlItemLabel {
+  color: var(--accent-contrast);
+}
+.q-flow-switch .rt-SegmentedControlItem[data-state='off']:hover .rt-SegmentedControlItemLabel {
+  background-color: var(--accent-a3);
+  color: var(--accent-11);
+}
+
+/* ── Dropzone ────────────────────────────────────────────────────────────────
+ * The one `rx.upload` of a flow (`/publish` Publicaciones and Stories, `/catalog`'s
+ * media block): a dashed well on the field material — the kit's `.lq-field` sunk into
+ * the card — that lights up with the accent when the pointer (or a dragged file) is
+ * over it. `--tile` is the same widget shrunk to a `+` tile inside the gallery grid
+ * (`--q-pub-tile-size`, below); `--compact` is the catalogue's smaller one. */
+/* `.q-dropzone` (+ --tile, --compact) is shared — defined once in qualify.css (lote 6). */
+/* ── Gallery tile (an already-selected file) ──────────────────────────────────
+ * A square frame in the ok tone — the file is in, the thumbnail is real — on the card
+ * material, no blur (D5: it lives in a grid). `--q-pub-tile-size` is set by the flow
+ * (6.5rem in Publicaciones, 8rem for the single Story piece). */
+.q-pub-tile {
+  position: relative;
+  width: var(--q-pub-tile-size, 6.5rem);
+  height: var(--q-pub-tile-size, 6.5rem);
+  overflow: hidden; /* keeps the thumbnail's object-fit:cover inside the rounded tile */
+  border: 1.5px solid var(--grass-a7);
+  border-radius: var(--q-radius-card);
+  background: linear-gradient(var(--grass-a2), var(--grass-a2)), var(--q-card-fill);
+  box-shadow: inset 0 1px 0 var(--q-card-hi), var(--q-control-shadow);
+}
+.q-pub-tile-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* The position number, top-left: the kit's dark glass chip in both themes (as the
+   tooltip), so it reads on any first frame. A chip, not a solid badge. */
+.q-pub-tile-pos {
+  position: absolute;
+  top: 0.35rem;
+  left: 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: var(--q-tooltip-fill);
+  box-shadow: inset 0 0 0 1px var(--q-tooltip-edge);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+/* The ✕, top-right: the same dark glass chip (a thumbnail can be almost any colour
+   underneath — the ring plus the shadow is what keeps it readable regardless), turning
+   the error tone on hover. A soft button under it, so the screen keeps one solid (P3). */
+.radix-themes .rt-IconButton.q-pub-tile-x {
+  position: absolute;
+  top: 0.3rem;
+  right: 0.3rem;
+  width: 1.6rem;
+  height: 1.6rem;
+  background: var(--q-tooltip-fill);
+  color: #fff;
+  box-shadow: inset 0 0 0 1px var(--q-tooltip-edge), 0 0 0 2px var(--q-card-hi), 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.radix-themes .rt-IconButton.q-pub-tile-x:where(:hover, :focus-visible) {
+  background: var(--tomato-9);
+  transform: none;
+  box-shadow: inset 0 0 0 1px var(--q-tooltip-edge), 0 0 0 2px var(--q-card-hi), 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.radix-themes .rt-IconButton.q-pub-tile-x:where(:disabled, [data-disabled]) {
+  background: var(--q-tooltip-fill);
+  color: #fff;
+  opacity: 0.55;
+}
+
+/* ── Trending panel ──────────────────────────────────────────────────────────
+ * Meta's audio list: plain rows (no border box, no thumbnail — `ig_audio` carries no
+ * cover art) separated by the card hairline; the chosen row is washed in the accent.
+ * The play/pause toggle is a ghost that turns accent while that preview sounds. */
+.radix-themes .rt-Button.q-trend-row {
+  border-radius: 0;
+  color: var(--gray-12);
+  box-shadow: none;
+}
+.radix-themes .rt-Button.q-trend-row:where(:hover) {
+  transform: none;
+  background: var(--gray-a3);
+  box-shadow: none;
+}
+.radix-themes .rt-Button.q-trend-row[data-selected="true"] {
+  background: var(--accent-a3);
+  color: var(--accent-11);
+}
+.q-trend-row-wrap {
+  border-bottom: 1px solid var(--q-card-edge);
+}
+.radix-themes .rt-Button.q-trend-play { color: var(--gray-11); }
+.radix-themes .rt-Button.q-trend-play--on {
+  color: var(--accent-11);
+  background: var(--accent-a3);
+}
+/* A trending video's 56px thumbnail (or its film placeholder) and the song-detail
+   panel that unfolds under a TikTok card: control material, no blur. */
+.q-trend-thumb {
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: var(--q-radius-control);
+  background: var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge);
+  object-fit: cover;
+}
+.q-trend-detail {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--q-radius-control);
+  background: var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge), inset 0 1px 0 var(--q-control-hi);
+}
+
+/* ── POST card (post_card.py, shared with the planner and /drafts) ───────────
+ * The card's picture: a square frame on the control radius with the card hairline; a
+ * video's first frame sits on a dark field so letterboxing never flashes the panel. */
+.q-post-media {
+  display: block;
+  object-fit: cover;
+  border-radius: var(--q-radius-control);
+  box-shadow: inset 0 0 0 1px var(--q-card-edge);
+  pointer-events: none;
+}
+.q-post-media--video { background: var(--gray-12); }
+.q-post-media--empty {
+  background: var(--q-control-fill);
+  color: var(--gray-8);
+}
+.q-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ── Catálogo ────────────────────────────────────────────────────────────────
+ * A product card in the grid is `ui.card` (interactive); the selected one is ringed
+ * and washed in the accent through its `data-selected` flag, so the card keeps its
+ * own material instead of an inline opaque fill. Thumbnails (grid and editor) share
+ * one frame on the control material. */
+.q-card[data-selected="true"] {
+  border-color: var(--accent-8);
+  background: linear-gradient(var(--accent-a3), var(--accent-a3)), var(--q-card-fill);
+  box-shadow: inset 0 1px 0 var(--q-card-hi), 0 0 0 3px var(--accent-a4), var(--q-elev-island);
+}
+.q-catalog-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: var(--q-catalog-thumb-h, 9.5rem);
+  overflow: hidden;
+  border-radius: var(--q-radius-control);
+  background: var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge);
+  color: var(--gray-8);
+  object-fit: cover;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .q-flow-switch .rt-SegmentedControlItemLabel,
+  .q-dropzone { transition: none; }
+}

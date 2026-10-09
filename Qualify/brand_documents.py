@@ -466,7 +466,7 @@ def _proposal_row(row: rx.Var[dict[str, str]]) -> rx.Component:
         align="start",
         width="100%",
         padding_y="0.5rem",
-        border_bottom=f"1px solid {rx.color('gray', 4)}",
+        border_bottom=T.BORDER,
     )
 
 
@@ -497,6 +497,7 @@ def proposals_panel(source: str) -> rx.Component:
                         rx.icon("check", size=T.ICON_SM),
                         "Aplicar seleccionados",
                         on_click=BrandDocumentState.apply_proposals(source),
+                        variant="soft",
                         size="2",
                     ),
                     rx.button(

@@ -57,6 +57,7 @@ from .ui import (
     progress_panel,
     removable_pill,
     signal_pill,
+    status_dot,
 )
 from .ui import tokens as T
 
@@ -688,13 +689,8 @@ def _recorder() -> rx.Component:
     return rx.cond(
         VoiceLabState.recording,
         rx.hstack(
-            rx.box(
-                width="0.6rem",
-                height="0.6rem",
-                border_radius="9999px",
-                background=T.tone_color("error", 9),
-                flex_shrink="0",
-            ),
+            # the system's dot (error tone), next to its word (P1)
+            status_dot("error", "0.6rem"),
             rx.text("Grabando", size="2", weight="medium"),
             rx.el.span("0:00", id="q-voice-clock", class_name="q-nums"),
             rx.spacer(),
@@ -825,6 +821,9 @@ def _voice_lab_card() -> rx.Component:
                             ),
                             spacing="1",
                             align="center",
+                            class_name="q-dropzone",
+                            padding="1rem",
+                            width="100%",
                         ),
                         id=VOICE_UPLOAD_ID,
                         accept=_AUDIO_ACCEPT,
@@ -832,9 +831,10 @@ def _voice_lab_card() -> rx.Component:
                         on_drop=VoiceLabState.handle_sample_upload(
                             rx.upload_files(upload_id=VOICE_UPLOAD_ID)
                         ),
-                        border=f"1px dashed {rx.color('gray', 7)}",
-                        border_radius=T.RADIUS_CONTROL,
-                        padding="1rem",
+                        # `rx.upload` paints its own dashed border unless told not to:
+                        # the vstack above is the dropzone's look (`.q-dropzone`)
+                        border="none",
+                        padding="0",
                         width="100%",
                         cursor="pointer",
                         display=rx.cond(VoiceLabState.recording, "none", "block"),

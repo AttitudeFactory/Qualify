@@ -12,7 +12,7 @@ from __future__ import annotations
 import reflex as rx
 
 from .canva_state import CanvaState
-from .ui import app_shell, page_body, page_header
+from .ui import app_shell, loading_spinner, page_body, page_header
 from .ui import tokens as T
 
 
@@ -22,7 +22,7 @@ def _landing(title: str) -> rx.Component:
         page_body(
             rx.vstack(
                 rx.hstack(
-                    rx.spinner(size="2"),
+                    loading_spinner("sm"),
                     rx.text(CanvaState.landing_message, size="3"),
                     spacing="3",
                     align="center",

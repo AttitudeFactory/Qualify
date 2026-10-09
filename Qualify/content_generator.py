@@ -11,7 +11,11 @@ decision per screen, "Paso N de M", Atrás / Continuar, and Generar on the last 
    image or the carousel's slides for a flyer (composed locally).
 
 Same `CreativeState` and the same service underneath: every piece is also a draft at
-/drafts/{id}, where it is edited and approved."""
+/drafts/{id}, where it is edited and approved.
+
+Material (Liquid Glass, lote E2): every block is `ui.card`; every "pick one" tile (kind,
+product, look, recipe) and drop zone is a control on the `.q-cr-*` classes of
+`assets/qualify-creative.css`. No colour, shadow or blur is written in this module."""
 
 from __future__ import annotations
 
@@ -31,12 +35,12 @@ from .ui import (
     app_shell,
     callout,
     card,
-    loading_spinner,
     page_body,
     page_header,
     progress_panel,
     removable_pill,
     signal_pill,
+    skeleton_rows,
     tag,
     tone_badge,
 )
@@ -119,11 +123,9 @@ def _kind_card(key: str, title: str, blurb: str, icon: str) -> rx.Component:
         cursor="pointer" if enabled else "not-allowed",
         opacity="1" if enabled else "0.55",
         padding="0.85rem 1rem",
-        border=rx.cond(selected, f"1px solid {T.tone_color('accent', 8)}", T.BORDER),
-        background=rx.cond(selected, T.tone_color("accent", 2), T.CARD_BG),
-        border_radius=T.RADIUS_CONTROL,
-        transition=f"border-color {T.DUR_FAST} {T.EASE}, background {T.DUR_FAST} {T.EASE}",
+        class_name=rx.cond(selected, "q-cr-option q-cr-option--selected", "q-cr-option"),
         width="100%",
+        **({} if enabled else {"aria_disabled": "true"}),
     )
 
 
@@ -139,7 +141,9 @@ def _kind_picker() -> rx.Component:
 
 
 def _upload_zone(upload_id: str, label: str, handler: object, *, multiple: bool) -> rx.Component:
-    return rx.upload(
+    """A drop zone on the control material (`.q-cr-dropzone`). `rx.upload.root`, not
+    `rx.upload`: the styled one injects an inline dashed border no class could override."""
+    return rx.upload.root(
         rx.vstack(
             rx.icon("image-up", size=T.ICON_MD, color=T.TEXT_FAINT),
             rx.text(label, size="1", text_align="center", color=T.TEXT_MUTED),
@@ -151,11 +155,7 @@ def _upload_zone(upload_id: str, label: str, handler: object, *, multiple: bool)
         max_files=10 if multiple else 1,
         multiple=multiple,
         on_drop=handler(rx.upload_files(upload_id=upload_id)),
-        border=f"1px dashed {rx.color('gray', 7)}",
-        border_radius=T.RADIUS_CONTROL,
-        background=T.CARD_BG,
-        padding="1rem",
-        cursor="pointer",
+        class_name="q-cr-dropzone",
         width="100%",
     )
 
@@ -346,10 +346,7 @@ def _look_card(look: rx.Var[dict[str, str]]) -> rx.Component:
         on_click=CreativeState.choose_look(look["id"]),
         cursor="pointer",
         padding="0.3rem",
-        border=rx.cond(
-            selected, f"2px solid {rx.color('accent', 9)}", f"1px solid {rx.color('gray', 5)}"
-        ),
-        border_radius="0.6rem",
+        class_name=rx.cond(selected, "q-cr-option q-cr-option--selected", "q-cr-option"),
         width="100%",
     )
 
@@ -511,12 +508,8 @@ def _avatar_section() -> rx.Component:
         callout(CreativeState.heygen_error, "warn"),
         rx.cond(
             CreativeState.heygen_loading,
-            rx.hstack(
-                loading_spinner("sm"),
-                rx.text("Cargando avatares y voces…", size="2", color=T.TEXT_MUTED),
-                spacing="2",
-                align="center",
-            ),
+            # content loading: the avatar/voice pickers that are about to appear
+            skeleton_rows(2, height="2.25rem"),
             rx.vstack(
                 rx.cond(CreativeState.brief_kind == "avatar_video", human, animated),
                 _voice_select(),
@@ -631,8 +624,7 @@ def _product_tile(item: rx.Var[dict[str, str]]) -> rx.Component:
                 rx.icon("image-off", size=22, color=T.TEXT_FAINT),
                 height="5.25rem",
                 width="100%",
-                background=T.SURFACE_BG_RAISED,
-                border_radius="0.4rem",
+                class_name="q-cr-thumb-empty",
             ),
         ),
         rx.text(
@@ -659,10 +651,7 @@ def _product_tile(item: rx.Var[dict[str, str]]) -> rx.Component:
         aria_checked=rx.cond(selected, "true", "false"),
         cursor="pointer",
         padding="0.3rem",
-        border=rx.cond(
-            selected, f"2px solid {rx.color('accent', 9)}", f"1px solid {rx.color('gray', 5)}"
-        ),
-        border_radius="0.6rem",
+        class_name=rx.cond(selected, "q-cr-option q-cr-option--selected", "q-cr-option"),
         width="100%",
     )
 
@@ -695,12 +684,8 @@ def _product_picker() -> rx.Component:
         ),
         rx.cond(
             CreativeState.catalog_loading,
-            rx.hstack(
-                loading_spinner("sm"),
-                rx.text("Leyendo el catálogo…", size="2", color=T.TEXT_MUTED),
-                spacing="2",
-                align="center",
-            ),
+            # content loading: the grid of product tiles that is about to appear
+            skeleton_rows(1, height="6rem", radius=T.RADIUS_CARD),
             rx.cond(
                 CreativeState.catalog_items.length() > 0,
                 rx.grid(
@@ -905,10 +890,7 @@ def _recipe_card(option: rx.Var) -> rx.Component:
         cursor=rx.cond(option.selectable, "pointer", "not-allowed"),
         opacity=rx.cond(option.selectable, "1", "0.6"),
         padding="0.85rem 1rem",
-        border=rx.cond(selected, f"2px solid {T.tone_color('accent', 8)}", T.BORDER),
-        background=rx.cond(selected, T.tone_color("accent", 2), T.CARD_BG),
-        border_radius=T.RADIUS_CONTROL,
-        transition=f"border-color {T.DUR_FAST} {T.EASE}, background {T.DUR_FAST} {T.EASE}",
+        class_name=rx.cond(selected, "q-cr-option q-cr-option--selected", "q-cr-option"),
         width="100%",
         height="100%",
     )
@@ -1197,14 +1179,9 @@ def _variant_switch() -> rx.Component:
 
 
 def _shot_row(line: rx.Var[str]) -> rx.Component:
-    return rx.box(
-        rx.text(line, size="2"),
-        padding="0.6rem 0.8rem",
-        border_left=f"3px solid {T.tone_color('accent', 7)}",
-        background=T.SURFACE_BG_RAISED,
-        border_radius=T.RADIUS_CONTROL,
-        width="100%",
-    )
+    # The review's own read-only field (`.q-rv-read`): a sunken well with the accent rule
+    # on its left — a shot reads the same here and in /drafts/[id].
+    return rx.box(rx.text(line, size="2"), class_name="q-rv-read", width="100%")
 
 
 def _script_result() -> rx.Component:
@@ -1292,12 +1269,7 @@ def _video_result() -> rx.Component:
 
 def _image_item(item: rx.Var) -> rx.Component:
     return rx.vstack(
-        rx.image(
-            src=_media_src(item.key),
-            width="100%",
-            border_radius=T.RADIUS_CONTROL,
-            border=T.BORDER,
-        ),
+        rx.image(src=_media_src(item.key), width="100%", class_name="q-cr-output"),
         rx.hstack(
             rx.text(item.label, size="1", color=T.TEXT_MUTED),
             rx.spacer(),
@@ -1332,12 +1304,7 @@ def _template_item(item: rx.Var) -> rx.Component:
         rx.cond(
             item.media_type == "video",
             rx.video(src=_media_src(item.key), controls=True, width="100%", height="auto"),
-            rx.image(
-                src=_media_src(item.key),
-                width="100%",
-                border_radius=T.RADIUS_CONTROL,
-                border=T.BORDER,
-            ),
+            rx.image(src=_media_src(item.key), width="100%", class_name="q-cr-output"),
         ),
         rx.hstack(
             rx.text(item.label, size="1", color=T.TEXT_MUTED),
@@ -1413,8 +1380,9 @@ def _failed() -> rx.Component:
 
 
 def _canva_link_item(item: rx.Var) -> rx.Component:
-    """One piece sent to Canva: its state, reopen, bring back, and the edited file."""
-    return rx.vstack(
+    """One piece sent to Canva: its state, reopen, bring back, and the edited file. A
+    block of its own, so `ui.card`."""
+    body = rx.vstack(
         rx.hstack(
             rx.match(
                 item["status"],
@@ -1474,10 +1442,8 @@ def _canva_link_item(item: rx.Var) -> rx.Component:
         ),
         spacing="2",
         width="100%",
-        padding="0.6rem",
-        border=f"1px solid {rx.color('gray', 5)}",
-        border_radius="0.6rem",
     )
+    return card(body, padding="0.6rem 0.75rem")
 
 
 def _canva_card() -> rx.Component:

@@ -1,0 +1,333 @@
+/*
+ * Qualify — Creative (lote E2 of the Liquid Glass migration): the generator (/create), the
+ * draft review (/drafts/[id]) and the /drafts gallery. Owned by that batch; the shared
+ * chips (q-kind-*, q-tint-*, q-temp, q-section-glyph) stay in qualify.css.
+ *
+ * Loaded after qualify.css (rx.App(stylesheets=…) in Qualify/Qualify.py); the tokens
+ * (--q-*, --lq-*) and the Radix skin come from there. Reference: docs/design-system.md
+ * and docs/plan-migracion-liquid-glass.md §3 D5 (material by role) and D10.
+ *
+ * Material by role, as the plan fixes it: a block (a review section, a decision card, a
+ * gallery card) is the *card* material — translucent relief on `--q-card-*`, never a
+ * backdrop blur; a control (an option tile, a drop zone, a chip, a count) is the *control*
+ * material — `--q-control-*` / `--q-field-fill`, relief only. The one blurred surface
+ * here is the sticky save bar of the review, which is an island while it floats over the
+ * scrolling copy.
+ */
+
+/* ── Selectable tiles and drop zones (/create wizard and the legacy brief) ───────
+   One recipe for every "pick one of these" box the generator draws — the content kind,
+   a catalog product, an avatar look, a recipe, the legacy image route. Control material;
+   the chosen one takes the accent ring. `--off` is the legacy route that cannot be
+   chosen (dashed, dimmed). The tile stays a `role="radio"` box with its `aria-checked`,
+   the class only draws it. */
+.q-cr-option {
+  border-radius: var(--q-radius-control);
+  background: var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge), inset 0 1px 0 var(--q-control-hi);
+  transition:
+    box-shadow var(--q-dur-fast) var(--q-ease),
+    background var(--q-dur-fast) var(--q-ease),
+    transform var(--q-dur) var(--q-spring);
+}
+.q-cr-option:where(:hover):not([aria-disabled="true"]) {
+  background: var(--q-control-fill-hover);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge-hover), inset 0 1px 0 var(--q-control-hi), var(--q-control-shadow);
+}
+.q-cr-option--selected,
+.q-cr-option--selected:where(:hover) {
+  background: var(--accent-a3);
+  box-shadow: inset 0 0 0 2px var(--accent-8), inset 0 1px 0 var(--q-control-hi), 0 0 0 4px var(--accent-a3);
+}
+.q-cr-option--off {
+  background: transparent;
+  box-shadow: none;
+  border: 1px dashed var(--q-control-edge);
+}
+.q-cr-option:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+
+/* The drop zone: a sunken field with a dashed edge, the accent when a file hovers it.
+   On `rx.upload.root` (the unstyled one: the styled upload injects its own inline dashed
+   border, which no class could override). */
+.q-cr-dropzone {
+  padding: 1rem;
+  border-radius: var(--q-radius-control);
+  border: 1px dashed var(--q-control-edge-hover);
+  background: var(--q-field-fill);
+  cursor: pointer;
+  transition: border-color var(--q-dur-fast) var(--q-ease), background var(--q-dur-fast) var(--q-ease);
+}
+.q-cr-dropzone:where(:hover, .rx-Upload--drag-active) {
+  border-color: var(--accent-8);
+  background: var(--q-field-fill-focus);
+}
+
+/* A thumbnail slot with nothing in it yet (a catalog product without a photo). */
+.q-cr-thumb-empty {
+  background: var(--q-field-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge);
+  border-radius: 0.4rem;
+}
+
+/* An output of the generator (an image, a still of a template run): framed by the card
+   edge, never a hard border. */
+.q-cr-output {
+  border-radius: var(--q-radius-control);
+  box-shadow: inset 0 0 0 1px var(--q-card-edge), var(--q-elev-island);
+}
+
+/* ── Draft review («Revisión del borrador», QUA-118 v2 polish) ────────────────── */
+.q-rv-stage {
+  padding: 1rem;
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--q-card-edge);
+  background:
+    radial-gradient(80% 60% at 50% 35%, var(--accent-a3), transparent 75%),
+    var(--q-card-fill);
+  box-shadow: inset 0 1px 0 var(--q-card-hi);
+}
+/* Desktop: the media stays in view while the copy scrolls beside it. */
+@media (min-width: 768px) { .q-rv-stage { position: sticky; top: 1rem; } }
+.q-rv-media {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  object-fit: cover;
+  background: var(--black-a12); /* the letterbox behind a video: black in both themes */
+  border-radius: var(--q-radius-control);
+  box-shadow: var(--q-elev-island), 0 0 0 1px var(--q-card-edge);
+}
+.q-rv-media--video { aspect-ratio: 9 / 16; }
+.q-rv-media--image { aspect-ratio: 4 / 5; }
+/* With no media (a copy-only piece, a script): the same frame, dashed and empty. */
+.q-rv-media-empty {
+  height: 275px;
+  flex-shrink: 0;
+  border: 1px dashed var(--q-control-edge-hover);
+  border-radius: var(--q-radius-control);
+  background: var(--q-field-fill);
+}
+.q-rv-section {
+  display: flex; flex-direction: column; gap: 0.65rem;
+  width: 100%;
+  padding: 0.9rem 1rem 1rem;
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--q-card-edge);
+  background: var(--q-card-fill);
+  box-shadow: inset 0 1px 0 var(--q-card-hi);
+}
+.q-rv-glyph {
+  width: 1.9rem; height: 1.9rem; flex-shrink: 0;
+  border-radius: 0.6rem;
+  background: var(--accent-a3); color: var(--accent-11);
+}
+.q-rv-title { font-size: 0.86rem; font-weight: 700; color: var(--gray-12); }
+.q-rv-hint { font-size: 0.74rem; color: var(--gray-10); }
+.q-rv-count {
+  font-size: 0.7rem; color: var(--gray-11);
+  padding: 0.1rem 0.45rem; border-radius: 999px;
+  background: var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge);
+}
+.q-rv-read {
+  font-size: 0.92rem; line-height: 1.55; color: var(--gray-12);
+  padding: 0.55rem 0.75rem;
+  border-radius: var(--q-radius-control);
+  background: var(--q-field-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge);
+  border-left: 3px solid var(--accent-a7);
+}
+.q-rv-read--multi { white-space: pre-line; }
+.q-rv-read--empty { color: var(--gray-9); font-style: italic; border-left-color: var(--gray-a5); }
+.q-rv-chip {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  min-height: 1.75rem;
+  padding: 0.22rem 0.65rem;
+  border-radius: var(--q-radius-control);
+  font-size: 0.8rem; font-weight: 600;
+  color: var(--blue-11); background: var(--blue-a3);
+  box-shadow: inset 0 0 0 1px var(--blue-a6), inset 0 1px 0 var(--q-control-hi);
+  border: none; font-family: inherit;
+}
+.q-rv-chip-x {
+  all: unset; cursor: pointer;
+  display: inline-flex; padding: 2px; border-radius: 4px; color: var(--blue-11);
+}
+.q-rv-chip-x:hover { background: var(--blue-a5); }
+.q-rv-chip--suggest {
+  cursor: pointer;
+  color: var(--gray-11); background: var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge), inset 0 1px 0 var(--q-control-hi);
+  border: 1px dashed transparent;
+  transition: all var(--q-dur-fast) var(--q-ease);
+}
+.q-rv-chip--suggest:hover { color: var(--accent-11); background: var(--accent-a3); box-shadow: inset 0 0 0 1px var(--accent-a7); }
+.q-rv-chip--suggest:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+.q-rv-suggest {
+  display: flex; flex-direction: column; gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: var(--q-radius-control);
+  background: linear-gradient(135deg, var(--accent-a2), transparent 70%);
+  border: 1px dashed var(--accent-a6);
+}
+.q-rv-suggest-head { color: var(--accent-11); }
+.q-rv-pill {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  min-height: 1.75rem;
+  padding: 0.25rem 0.7rem; border-radius: var(--q-radius-control);
+  font-size: 0.78rem; font-weight: 500;
+  color: var(--gray-11); background: var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge), inset 0 1px 0 var(--q-control-hi);
+}
+.q-rv-pill--ok { color: var(--grass-11); background: var(--grass-a3); box-shadow: inset 0 0 0 1px var(--grass-a6); }
+.q-rv-pill--warn { color: var(--amber-11); background: var(--amber-a3); box-shadow: inset 0 0 0 1px var(--amber-a6); }
+.q-rv-blocking { padding: 0.6rem 0.75rem; border-radius: var(--q-radius-control); background: var(--tomato-a3); }
+.q-rv-savebar {
+  width: 100%;
+  padding: 0.8rem 1rem;
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--q-card-edge);
+  background: var(--q-card-fill);
+  box-shadow: inset 0 1px 0 var(--q-card-hi);
+}
+/* While editing the bar follows the scroll, so «Guardar» is always one click away. It
+   floats over the copy, so here — and only here — it is an island: the header's glass. */
+.q-rv-savebar--editing {
+  position: sticky; bottom: 0.75rem; z-index: 2;
+  border-color: var(--accent-a7);
+  background: var(--q-header-fill);
+  box-shadow: inset 0 1px 0 var(--q-glass-hi), var(--q-elev-lift);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+}
+.q-rv-group-head { color: var(--gray-11); }
+
+/* Review decision: three cards, each with its sentence above its button. */
+.q-decide-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.85rem; width: 100%; }
+@media (max-width: 760px) { .q-decide-grid { grid-template-columns: 1fr; } }
+.q-decide-card {
+  display: flex; flex-direction: column; gap: 0.6rem;
+  padding: 0.95rem 1rem 1rem;
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--q-card-edge);
+  background: var(--q-card-fill);
+  box-shadow: inset 0 1px 0 var(--q-card-hi);
+}
+.q-decide-card--red   { border-top: 3px solid var(--tomato-8); }
+.q-decide-card--amber { border-top: 3px solid var(--amber-8); }
+.q-decide-card--green { border-top: 3px solid var(--accent-9); background: linear-gradient(180deg, var(--accent-a2), transparent 60%), var(--q-card-fill); }
+.q-decide-glyph { width: 1.9rem; height: 1.9rem; flex-shrink: 0; border-radius: 0.6rem; }
+.q-decide-red   { background: var(--tomato-a3); color: var(--tomato-11); }
+.q-decide-amber { background: var(--amber-a3);  color: var(--amber-11); }
+.q-decide-green { background: var(--accent-a3); color: var(--accent-11); }
+
+/* ── /drafts gallery cards (QUA-118 v2 polish) ─────────────────────────────── */
+.q-gallery--cards { grid-template-columns: repeat(auto-fill, minmax(15.5rem, 1fr)); gap: 1rem; }
+.q-gcard {
+  display: flex; flex-direction: column;
+  border-radius: var(--q-radius-card);
+  background: var(--q-card-fill);
+  border: 1px solid var(--q-card-edge);
+  box-shadow: inset 0 1px 0 var(--q-card-hi), var(--q-elev-island);
+  transition: transform var(--q-dur) var(--q-spring), box-shadow var(--q-dur) var(--q-ease), border-color var(--q-dur-fast) var(--q-ease);
+}
+.q-gcard > * { position: relative; z-index: 1; }
+.q-gcard:hover { transform: translateY(-2px); border-color: var(--q-card-edge-hover); box-shadow: inset 0 1px 0 var(--q-card-hi), var(--q-elev-lift); }
+/* Ready: solid, accent, a soft glow — it can go out. */
+.q-gcard--schedulable {
+  border: 2px solid var(--accent-9);
+  box-shadow: inset 0 1px 0 var(--q-card-hi), 0 0 0 3px var(--accent-a3), 0 14px 30px -20px var(--accent-9);
+}
+/* Not ready yet: a dashed frame says «not finished». */
+.q-gcard--needs_action { border: 2px dashed var(--amber-a8); }
+.q-gcard--draft { border: 2px dashed var(--gray-a8); }
+/* History. */
+.q-gcard--used { border-color: var(--blue-a7); }
+.q-gcard--discarded { border: 2px dashed var(--tomato-a7); }
+.q-gcard--discarded .q-gcard-media { filter: grayscale(0.85); opacity: 0.6; }
+
+.q-gcard-media { position: relative; aspect-ratio: 4 / 3; overflow: hidden; background: var(--q-field-fill); border-radius: calc(var(--q-radius-card) - 2px) calc(var(--q-radius-card) - 2px) 0 0; }
+.q-gcard-shade { position: absolute; inset: 0; pointer-events: none; background: linear-gradient(180deg, var(--black-a7), transparent 35%, transparent 65%, var(--black-a7)); }
+.q-gcard-tl { position: absolute; top: 0.6rem; left: 0.6rem; }
+.q-gcard-bl { position: absolute; bottom: 0.6rem; left: 0.6rem; }
+.q-gcard-media .q-temp--big { position: absolute; top: 0.6rem; right: 0.6rem; }
+.q-temp--big { padding: 0.3rem 0.7rem 0.3rem 0.55rem; font-size: 0.8rem; gap: 0.3rem; }
+
+/* The chips laid over a card's picture. No backdrop blur anywhere in the grid (plan D5):
+   a darker scrim does the legibility work the blur used to. The format chip's glass
+   (`.q-kind-chip--glass`, qualify.css) is switched off here for the same reason. */
+.q-gstate {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  padding: 0.22rem 0.6rem; border-radius: var(--q-radius-control);
+  font-size: 0.74rem; font-weight: 700;
+  background: var(--black-a9); color: white;
+  box-shadow: inset 0 0 0 1px var(--white-a4);
+}
+.q-gstate--schedulable { background: var(--accent-9); color: var(--accent-contrast); box-shadow: none; }
+.q-gstate--needs_action { color: var(--amber-9); }
+.q-gstate--draft { color: var(--gray-5); }
+.q-gstate--used { color: var(--blue-8); }
+.q-gstate--discarded { color: var(--tomato-8); }
+.q-gcard .q-kind-chip--glass {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: var(--black-a9);
+}
+
+.q-gcard-body { display: flex; flex-direction: column; gap: 0.45rem; padding: 0.8rem 0.9rem 0.4rem; flex: 1; }
+.q-gcard-title { font-size: 0.95rem; font-weight: 700; line-height: 1.3; color: var(--gray-12); }
+.q-gmeta {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  padding: 0.1rem 0.45rem; border-radius: var(--q-radius-control);
+  font-size: 0.7rem; color: var(--gray-11);
+  background: var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge);
+}
+.q-gcard-note { color: var(--amber-11); background: var(--amber-a2); border-radius: var(--q-radius-control); padding: 0.35rem 0.5rem; }
+.q-gcard-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; padding: 0.6rem 0.9rem 0.9rem; }
+.q-gcard-actions > :only-child { grid-column: 1 / -1; }
+.q-gcard-actions--review { grid-template-columns: 1fr 1fr; }
+.q-gcard-actions--review > :last-child { grid-column: 1 / -1; }
+
+
+/* The file bar under the review media. */
+.q-rv-mediabar {
+  padding: 0.6rem 0.7rem;
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--q-card-edge);
+  background: var(--q-card-fill);
+  box-shadow: inset 0 1px 0 var(--q-card-hi);
+}
+
+/* Gallery cards: the picture covers the card's top, so the temperature also shows in the
+   card's lower half — frost for Cold, embers for Hot, equally visible. The two palettes
+   are the ones `.q-temp--cold` / `.q-temp--hot` (qualify.css) paint the chip with — the
+   temperature's identity, not a theme colour — written here with their alpha. */
+.q-gcard.q-chip-temp--cold {
+  border-color: rgba(125, 211, 252, 0.55);
+  box-shadow: inset 0 1px 0 var(--q-card-hi), 0 0 0 3px rgba(56, 189, 248, 0.14), 0 14px 30px -20px rgba(56, 189, 248, 0.7);
+}
+.q-gcard.q-chip-temp--cold::after {
+  background:
+    radial-gradient(1.5px 1.5px at 14% 72%, rgba(255, 255, 255, 0.85), transparent 60%),
+    radial-gradient(1px 1px at 33% 86%, rgba(255, 255, 255, 0.75), transparent 60%),
+    radial-gradient(1.5px 1.5px at 58% 78%, rgba(255, 255, 255, 0.8), transparent 60%),
+    radial-gradient(1px 1px at 81% 90%, rgba(255, 255, 255, 0.75), transparent 60%),
+    radial-gradient(60% 55% at 25% 115%, rgba(125, 211, 252, 0.34), transparent 70%),
+    radial-gradient(55% 50% at 75% 120%, rgba(99, 102, 241, 0.26), transparent 70%),
+    linear-gradient(0deg, rgba(125, 211, 252, 0.12), transparent 55%);
+}
+.q-gcard.q-chip-temp--hot {
+  border-color: rgba(255, 120, 70, 0.55);
+  box-shadow: inset 0 1px 0 var(--q-card-hi), 0 0 0 3px rgba(255, 106, 61, 0.12), 0 14px 30px -20px rgba(255, 90, 50, 0.7);
+}
+/* A ready card keeps its accent frame; the temperature shows in the glow inside. */
+.q-gcard--schedulable.q-chip-temp--cold,
+.q-gcard--schedulable.q-chip-temp--hot { border-color: var(--accent-9); }
+/* A dashed (not ready / discarded) frame keeps its dash in the temperature's colour. */
+.q-gcard--needs_action.q-chip-temp--cold,
+.q-gcard--draft.q-chip-temp--cold { border-style: dashed; }
+.q-gcard--needs_action.q-chip-temp--hot,
+.q-gcard--draft.q-chip-temp--hot,
+.q-gcard--discarded.q-chip-temp--hot,
+.q-gcard--discarded.q-chip-temp--cold { border-style: dashed; }

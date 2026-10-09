@@ -32,20 +32,19 @@ def card(
     interactive: bool = False,
     **props,
 ) -> rx.Component:
-    """The surface everything sits on: gray-2 fill, gray-5 hairline, card radius and the
-    resting elevation of the system. ``interactive=True`` adds the hover lift — only for
-    a card that actually does something when clicked, so elevation keeps meaning
-    'this responds to you' rather than being decoration."""
-    style = {
-        "border": T.BORDER,
-        "border_radius": T.RADIUS_CARD,
-        "background": T.CARD_BG,
-        "box_shadow": T.ELEV_ISLAND,
+    """The surface everything sits on — the kit's *card* material (`.q-card`,
+    assets/qualify.css, "Liquid Glass: Radix skin"): a translucent relief inside the
+    opaque page panel, the card radius and the resting elevation of the system, no
+    backdrop blur (plan D5). ``interactive=True`` adds the hover lift — only for a card
+    that actually does something when clicked, so elevation keeps meaning 'this
+    responds to you' rather than being decoration. Inline ``props`` still win over the
+    class (`skeleton_card` passes ``background="transparent"``)."""
+    style: dict = {
         "padding": padding,
         "width": "100%",
+        "class_name": "q-card q-lift" if interactive else "q-card",
     }
     if interactive:
-        style["class_name"] = "q-lift"
         style["cursor"] = "pointer"
     style.update(props)
     return rx.box(*children, **style)
@@ -57,8 +56,13 @@ def stat_card(
     tone: str = "accent",
     hint: str | rx.Var | None = None,
 ) -> rx.Component:
-    """One figure with its label. Tone colours the figure only; the label stays muted."""
-    value_var = value.to_string() if isinstance(value, rx.Var) else value
+    """One figure with its label. Tone colours the figure only; the label stays muted.
+
+    A numeric Var is cast to text for the figure; a Var that already holds text is
+    passed as is — `to_string()` on a string Var compiles to `JSON.stringify`, which
+    renders the figure in quotes (found by lote A on Clarity's and Vitrina's stats)."""
+    is_text_var = isinstance(value, rx.Var) and getattr(value, "_var_type", None) is str
+    value_var = value.to_string() if isinstance(value, rx.Var) and not is_text_var else value
     return card(
         rx.text(label, size="2", color=T.TEXT_MUTED),
         # A text, not a heading: a figure is not a section of the document outline.
@@ -363,8 +367,26 @@ def empty_state(
     )
 
 
+# ---------------------------------------------------------------------------------------
+# Waiting. Two primitives, one rule (founder, 2026-10-08, docs/design-system.md §5.4):
+#
+#   * **skeleton = content loading.** Something is being READ and will appear in this
+#     place: a list, a detail, a catalogue, a calendar. The placeholder has the shape of
+#     what is coming. ALWAYS a skeleton — never a spinner — and always through
+#     `skeleton_card`/`skeleton_rows`, never `rx.skeleton` from a page.
+#   * **spinner = work in progress.** Something is being DONE: scraping, generating,
+#     syncing, publishing, uploading, cloning a voice. A spinner next to the sentence
+#     that says what is happening. ALWAYS `loading_spinner`, never `rx.spinner`.
+#
+# `Qualify/test_design_system_guard.py` fails the build on either `rx.spinner(` or
+# `rx.skeleton(` outside this package.
+# ---------------------------------------------------------------------------------------
+
+
 def skeleton_card(lines: int = 3) -> rx.Component:
-    """Loading placeholder shaped like ``card``. Use as many as rows you expect."""
+    """Content-loading placeholder shaped like ``card``: a title line and as many body
+    lines as the content will have. The shimmer is the kit's (`.rt-Skeleton` skin in
+    `assets/qualify.css`)."""
     widths = ["40%", "60%", "100%", "80%", "50%"]
     return card(
         rx.vstack(
@@ -380,32 +402,41 @@ def skeleton_card(lines: int = 3) -> rx.Component:
     )
 
 
-def skeleton_rows(rows: int = 3, height: str = "2.5rem") -> rx.Component:
-    """Loading placeholder for a table or list."""
+def skeleton_rows(
+    rows: int = 3, height: str = "2.5rem", width: str = "100%", radius: str | None = None
+) -> rx.Component:
+    """Content-loading placeholder for a table, a list, a grid of tiles, a media
+    block: ``rows`` blocks of ``height`` × ``width``. ``radius`` defaults to the control
+    radius; pass ``T.RADIUS_CARD`` for a card-sized block, ``"9999px"`` for an avatar.
+    One row with a height is how a page draws a single big block (a preview, a calendar)."""
     return rx.vstack(
-        *[rx.skeleton(rx.box(height=height, width="100%")) for _ in range(rows)],
+        *[
+            rx.skeleton(
+                rx.box(height=height, width=width, border_radius=radius or T.RADIUS_CONTROL)
+            )
+            for _ in range(rows)
+        ],
         spacing="2",
-        width="100%",
+        width=width,
         aria_busy="true",
     )
 
 
 #: `loading_spinner`'s one real variant — size. There is no light/dark variant to
-#: pick: the ring's colour (`.q-spinner` in `assets/qualify.css`) is built from the
-#: gray scale, so it adapts to the theme on its own. size -> (diameter, ring track).
+#: pick: the ring (`.q-spinner` in `assets/qualify.css`) is the kit's — a quiet track
+#: in the gray scale and the accent on top. size -> (diameter, ring track).
 _SPINNER_SIZES: dict[str, tuple[str, str]] = {
-    "sm": ("1.25rem", "2px"),  # inline, next to a line of text
+    "sm": ("1.25rem", "2px"),  # inline, next to the sentence that says what is happening
     "md": ("2.25rem", "3px"),  # a standalone wait (default)
     "lg": ("3.5rem", "4px"),  # a full-panel wait — e.g. the Brand Kit wizard's own
 }
 
 
 def loading_spinner(size: str = "md") -> rx.Component:
-    """The "spinner de página completa" §5.4 already names as `skeleton_card`/
-    `skeleton_rows`'s opposite case — a gradient ring (`.q-spinner`), not Radix's own
-    dashed `rx.spinner`. Use this, not `rx.spinner`, for a full-panel/full-content
-    wait; `rx.spinner` stays fine inline inside a button's own `loading=` state,
-    which already renders correctly on its own."""
+    """Work in progress — scraping, generating, syncing, publishing. The kit's ring
+    (`.q-spinner`), never Radix's own `rx.spinner`, and never for content that is merely
+    loading (that is a skeleton, see the rule above). Inside a button's busy state too:
+    `rx.cond(busy, loading_spinner("sm"), rx.icon(...))` keeps the icon slot."""
     diameter, track = _SPINNER_SIZES.get(size, _SPINNER_SIZES["md"])
     return rx.box(
         class_name="q-spinner",
