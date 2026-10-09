@@ -787,7 +787,7 @@ def _sync_now_button() -> rx.Component:
             rx.icon("refresh-cw", size=16),
         ),
         rx.cond(InboxState.is_syncing, "Sincronizando...", "Sincronizar comentarios"),
-        on_click=InboxState.sync_comments,
+        on_click=InboxState.sync_comments("manual"),
         disabled=~InboxState.can_sync,
         size="2",
         variant="surface",
@@ -832,7 +832,7 @@ def _polling_timer() -> rx.Component:
     """
     return rx.moment(
         interval=_POLL_INTERVAL_MS,
-        on_change=lambda _tick: InboxState.sync_comments(),
+        on_change=lambda _tick: InboxState.sync_comments("poll"),
         display="none",
     )
 

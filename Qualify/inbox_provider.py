@@ -79,7 +79,15 @@ import asyncio
 from datetime import datetime
 from uuid import UUID
 
-from qualify_api.inbox import list_candidate_media, set_media_monitored, sync_comments
+from qualify_api.inbox import (
+    list_candidate_media,
+    set_media_monitored,
+    sync_comments,
+    sync_in_progress,
+)
+from qualify_api.inbox import (
+    seconds_since_last_sync as _seconds_since_last_sync,
+)
 from qualify_api.inbox.service import CandidateMedia
 from qualify_api.sentiment import analyze_pending_comments
 from qualify_api.sentiment import global_sentiment_summary as _global_sentiment_summary
@@ -319,7 +327,9 @@ def thread_comments_page(
     return items, next_cursor, len(page) == DEFAULT_COMMENT_PAGE_SIZE
 
 
-async def sync_now(*, tenant_id: UUID, connection_id: UUID) -> SyncSummaryVM:
+async def sync_now(
+    *, tenant_id: UUID, connection_id: UUID, run_token: str | None = None
+) -> SyncSummaryVM:
     """One `InboxService.sync_comments` pass, in process, for the session's tenant — the
     transport both the manual button and the automatic poll share (QUA-89).
 
@@ -331,9 +341,13 @@ async def sync_now(*, tenant_id: UUID, connection_id: UUID) -> SyncSummaryVM:
     Every typed refusal of the seam propagates unchanged for `InboxState` to map to its
     own message: `UnknownInboxConnection`, `InboxConnectionInactive`,
     `CommentsPermissionMissing`, `SyncBudgetExhausted`, `CommentsAuthExpired` and
-    `CommentsReadError`.
+    `CommentsReadError` — plus `SyncAlreadyRunning` when another pass holds the
+    connection's lease. `run_token` names the pass so `sync_still_running` can ask about
+    it later.
     """
-    summary = await sync_comments(tenant_id=tenant_id, connection_id=connection_id)
+    summary = await sync_comments(
+        tenant_id=tenant_id, connection_id=connection_id, run_token=run_token
+    )
     return SyncSummaryVM(
         media_checked=summary.media_checked,
         new_comments=summary.new_comments,
@@ -341,6 +355,18 @@ async def sync_now(*, tenant_id: UUID, connection_id: UUID) -> SyncSummaryVM:
         skipped_missing_media=tuple(summary.skipped_missing_media),
         deleted_comments=summary.deleted_comments,
     )
+
+
+async def sync_still_running(*, tenant_id: UUID, connection_id: UUID, run_token: str) -> bool:
+    """Whether the pass `run_token` names still holds its lease (some process is executing
+    it). Unknown — Redis unreachable — answers True."""
+    return await sync_in_progress(tenant_id=tenant_id, connection_id=connection_id, token=run_token)
+
+
+async def seconds_since_last_sync(*, tenant_id: UUID, connection_id: UUID) -> float | None:
+    """Age of the last finished pass on this connection, shared across tabs and
+    processes; `None` when unknown. What the cooldown of the automatic triggers reads."""
+    return await _seconds_since_last_sync(tenant_id=tenant_id, connection_id=connection_id)
 
 
 async def analyze_sentiment_now(*, tenant_id: UUID, connection_id: UUID) -> AnalysisSummaryVM:

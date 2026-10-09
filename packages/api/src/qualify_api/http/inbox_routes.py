@@ -35,6 +35,7 @@ from qualify_api.inbox.service import (
     SyncBudgetExhausted,
     SyncSummary,
 )
+from qualify_api.inbox.sync_guard import SyncAlreadyRunning
 
 router = APIRouter(prefix="/api", tags=["inbox"])
 
@@ -112,6 +113,9 @@ async def sync_inbox(
         # 409, not 404: the connection exists and is the caller's — it is just not
         # `active`, so reading it is refused until it is reconnected.
         raise HTTPException(status_code=409, detail=str(exc)) from None
+    except SyncAlreadyRunning:
+        # Also 409: another pass on this connection is running right now — retry later.
+        raise HTTPException(status_code=409, detail="sync already running") from None
     except CommentsPermissionMissing as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from None
     except SyncBudgetExhausted as exc:
