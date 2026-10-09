@@ -5,16 +5,17 @@ lays out slide by slide (a generated scene, that scene animated, or a file of a 
 brand already made). Its slides travel in the brief's `media` JSONB like every other
 kind's inputs, so the only schema change is the CHECK of 0026 widened by one value.
 
-Numbering: PR #106 (signup invites) also proposes a 0046. Whichever merges second
-renumbers its revision and points `down_revision` at the other, as 0043 did.
+Numbering: written as 0046; PR #110 (monitored media metadata) merged first with that
+number on 2026-10-09, so this one became 0047, as 0043 did. PR #106 (signup invites)
+still proposes a 0046 and renumbers on merge.
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "0046"
-down_revision = "0045"
+revision = "0047"
+down_revision = "0046"
 branch_labels = None
 depends_on = None
 

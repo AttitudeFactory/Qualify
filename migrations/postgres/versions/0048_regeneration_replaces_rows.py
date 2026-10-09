@@ -8,16 +8,16 @@ now deletes the draft's previous variants first, which the app role could not do
 whose rows the same method already replaced on paper (the DELETE there failed the same
 way the moment a regeneration reached it).
 
-Numbering: PR #106 (signup invites) also proposes a 0046; this one follows 0046 (the
-carousel kind). Whichever merges second renumbers, as 0043 did.
+Numbering: written as 0047 after the carousel kind; both moved up one when PR #110
+took 0046 on 2026-10-09 (see 0047's docstring).
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "0047"
-down_revision = "0046"
+revision = "0048"
+down_revision = "0047"
 branch_labels = None
 depends_on = None
 

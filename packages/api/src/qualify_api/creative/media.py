@@ -1346,7 +1346,7 @@ class MediaProducer:
         """The piece behind every `EXISTING` slide, by slide position — all of them
         resolved up front, so a missing or foreign one fails the carousel before any
         provider is paid. Refused unless it IS one of this brand's pieces (a regenerated
-        source draft, 0047, no longer has its old files)."""
+        source draft, 0048, no longer has its old files)."""
         found: dict[int, PieceFile] = {}
         for position, slide in enumerate(brief.media.slides):
             if slide.source is not SlideSource.EXISTING:

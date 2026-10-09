@@ -744,7 +744,7 @@ def test_a_piece_of_another_brand_is_never_read_into_the_carousel() -> None:
 
 
 def test_a_missing_piece_on_a_later_slide_fails_before_any_slide_is_paid_for() -> None:
-    """PR #100 review: the source draft was regenerated (0047 dropped its files) — the
+    """PR #100 review: the source draft was regenerated (0048 dropped its files) — the
     carousel must not pay Seedream for slides 1-2 and then fail on slide 3."""
     gone = f"t/{TENANT_ID}/generated/{OTHER_DRAFT}/r1/slide-9.jpg"  # not a piece any more
     store, seedream, seedance = _carousel_store(), FakeSeedream(), FakeSeedance()

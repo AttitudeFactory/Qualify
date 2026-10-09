@@ -141,7 +141,7 @@ def test_a_regeneration_replaces_the_copy_variants_and_clears_the_selection() ->
         draft = session.get(creative.ContentDraft, draft_id)
         assert draft is not None
         assert draft.status == GENERATED and draft.selected_variant_id is None
-        # the media rows are the new revision's only (0047: the app role may DELETE)
+        # the media rows are the new revision's only (0048: the app role may DELETE)
         assets = session.scalars(
             select(creative.ImageAsset).where(creative.ImageAsset.draft_id == draft_id)
         ).all()
