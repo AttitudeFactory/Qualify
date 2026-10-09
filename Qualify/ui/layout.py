@@ -353,9 +353,10 @@ def sidebar() -> rx.Component:
         # The liquid glass capsule and zen label (assets/qualify.css, "Liquid glass
         # menu"). A plain `<script async src>` rendered here rather than an
         # `rx.App(head_components=…)` entry: React 19 hoists an async script to the
-        # head and loads it once per document whatever page mounts the rail, while
-        # `head_components` go through react-helmet, which injected nothing in the
-        # dev build measured on 2026-10-08. The file guards its own double-run.
+        # head and loads it once per document whatever page mounts the rail, and it
+        # does not depend on react-helmet (which `head_components` use, and which only
+        # injects on Reflex >= 0.9.9 — the shared venv was at 0.9.7 on 2026-10-08).
+        # The file guards its own double-run.
         rx.el.script(src="/glass-nav.js", async_=True),
         tenant_block(),
         rx.cond(

@@ -116,9 +116,12 @@ app = rx.App(
     api_transformer=avatar_api,
     # The Brand Kit deck's pointer drag (`assets/deck-drag.js`) and the influence
     # ranking's (`assets/rank-drag.js`): plain DOM, delegated at the document, so they
-    # are loaded once here rather than per page. (The sidebar's `assets/glass-nav.js`
-    # is NOT here: `head_components` go through react-helmet, which was observed
-    # injecting nothing in the dev build of 2026-10-08 — see `ui.layout.sidebar`.)
+    # are loaded once here rather than per page. These go through react-helmet, which
+    # only injects them on Reflex >= 0.9.9 (`defer=False`); a venv left at 0.9.7 shows
+    # them missing in dev while production (lock: 0.9.12) is fine — measured
+    # 2026-10-08, PR #101. The sidebar's `assets/glass-nav.js` is loaded by the rail
+    # itself (`ui.layout.sidebar`, an async `<script>` React hoists), independent of
+    # the Reflex version.
     head_components=[rx.script(src="/deck-drag.js"), rx.script(src="/rank-drag.js")],
 )
 

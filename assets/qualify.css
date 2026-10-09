@@ -1352,6 +1352,13 @@ body {
   backdrop-filter: blur(18px) saturate(140%);
 }
 
+/* On a phone the fixed hamburger (`.q-mobile-nav-toggle`, 40px at 14px/14px) sits over
+   the header's top-left corner: give the title room so the sticky sheet never hides
+   its first letters under the button. */
+@media (max-width: 640px) {
+  .q-page-header { padding-left: 66px; }
+}
+
 /* The stepper and the capsule take the accent gradient too. */
 .q-step-dot--done,
 .q-step-dot--icon.q-step-dot--current {
