@@ -1,0 +1,122 @@
+"""The monitoring lifecycle of one published media (QUA-149): the 14-day rule, in one place.
+
+Business rule (confirmed 2026-10-09, QUA-149): a media is monitored for **14 days from
+its publication on Instagram**. When that window ends it stops being synced — no more
+Meta calls for it — while everything already stored about it (its comments, their
+sentiment and reply drafts, and its caption/permalink) stays. It can never be turned on
+again once outside the window. The same rule applies to every format (QUA-146 D2), so
+nothing here knows about Reels, images or carousels.
+
+Every caller asks THIS module, never re-derives the comparison:
+
+- `is_within_window` — may this media be turned on, and is it still synced?
+- `window_start` — the same cutoff, for SQL (`media_posted_at >= :cutoff`), so the query
+  that picks what to sync and the Python check can never disagree on the boundary.
+- `effective_state` — what the UI shows and what the backend does, from one function.
+
+The window is measured from Meta's own `timestamp` of the media, read server-side; a
+client-supplied date is never trusted.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from enum import StrEnum
+from typing import Final
+
+MONITORING_WINDOW: Final = timedelta(days=14)
+
+
+class MonitoringState(StrEnum):
+    """The effective monitoring state of one media, as the UI must show it.
+
+    - `ACTIVE` — monitored and inside the window: it is synced ("Monitoreado").
+    - `EXPIRED` — was monitored, the window ended: not synced any more ("No monitoreado ·
+      vencido"). Its history is kept.
+    - `INACTIVE` — monitoring off (turned off by the user, or the media was confirmed
+      deleted on Instagram): not synced ("No monitoreado · histórico").
+    """
+
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    INACTIVE = "inactive"
+
+
+class MetadataFetchError(StrEnum):
+    """Why reading a media's metadata from Meta failed, recorded on `monitored_media.
+    metadata_error` so the attempt can be retried later without losing what is already
+    stored. A media confirmed DELETED is not one of these: that is evidence, and it turns
+    monitoring off instead (`InboxService._is_missing_media_error`). Every value here is a
+    failure that proves nothing about the media itself."""
+
+    TRANSIENT = "transient"
+    PERMISSION = "permission"
+    RATE_LIMITED = "rate_limited"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class MediaMetadata:
+    """What is persisted about a media so it stays readable after the window ends — all
+    straight from Meta's `GET /{media}` (`MediaSummary`). `caption`/`permalink`/
+    `media_product_type` may legitimately be `None` (no caption set, field not returned);
+    `posted_at` never is."""
+
+    posted_at: datetime
+    caption: str | None = None
+    permalink: str | None = None
+    media_product_type: str | None = None
+
+    def __post_init__(self) -> None:
+        # The one field the window is computed from: storing a row as "complete" without
+        # a real, timezone-aware date would make it impossible to ever expire.
+        _require_aware(self.posted_at, "posted_at")
+
+
+@dataclass(frozen=True)
+class MediaToSync:
+    """One media the sync may call Meta for: monitored and not expired. `needs_metadata`
+    is a legacy row (monitored before QUA-149) whose metadata was never fetched — its
+    publication date is unknown, so it cannot be judged expired until it is read once.
+    `metadata_attempted_at`/`metadata_error` describe the last failed read, if any, so
+    the caller can space out retries."""
+
+    external_media_id: str
+    needs_metadata: bool
+    metadata_attempted_at: datetime | None = None
+    metadata_error: MetadataFetchError | None = None
+
+
+def _require_aware(value: object, name: str) -> None:
+    """Naive datetimes are refused: compared against `timestamptz` they would be read in
+    the session's time zone and silently shift the window by hours."""
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} must be a timezone-aware datetime, got {value!r}")
+
+
+def window_start(now: datetime) -> datetime:
+    """The earliest publication time still inside the window at `now`."""
+    _require_aware(now, "now")
+    return now - MONITORING_WINDOW
+
+
+def is_within_window(posted_at: datetime, now: datetime) -> bool:
+    """True while `posted_at` is inside the 14-day window at `now`. The boundary itself
+    (exactly 14 days) is inside — the same comparison activation has always used."""
+    return posted_at >= window_start(now)
+
+
+def effective_state(
+    *, is_monitored: bool, posted_at: datetime | None, now: datetime
+) -> MonitoringState:
+    """The one definition of what a media's monitoring state is.
+
+    A monitored media whose publication date is still unknown (`posted_at is None`, a
+    legacy row awaiting its one metadata read) is `ACTIVE`: it is still being synced, and
+    the state must say what the backend does."""
+    if not is_monitored:
+        return MonitoringState.INACTIVE
+    if posted_at is None or is_within_window(posted_at, now):
+        return MonitoringState.ACTIVE
+    return MonitoringState.EXPIRED

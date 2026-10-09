@@ -43,7 +43,7 @@ http.inbox_routes.sync_inbox` (`POST /api/inbox/sync`, B2's acceptance-criterion
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Final, Protocol
 from uuid import UUID
 
@@ -51,11 +51,13 @@ from qualify_shared.social.ig_shapes import COMMENTS_EDGE_PERMISSIONS
 
 from qualify_api.inbox.client import CommentsClient, CommentsReadError
 from qualify_api.inbox.media_client import MediaClient, MediaReadError
+from qualify_api.inbox.monitoring import MONITORING_WINDOW
 from qualify_api.inbox.repository import InboxRepository
 
 # The product rule (Herwin, 2026-08-14): only the last 2 weeks of content is offered for
-# monitoring, and re-enforced here — not merely in what the candidate list returns.
-MONITORING_WINDOW = timedelta(days=14)
+# monitoring, and re-enforced here — not merely in what the candidate list returns. The
+# window itself lives in `monitoring.py` (QUA-149), the one place every caller reads it;
+# it is still importable from here for existing callers.
 
 # The only media type this product's monitoring (and publishing — see
 # `publishing_provider.start_publish`) ever operates on.

@@ -4,7 +4,7 @@ the Meta call ledger (QUA-88), in one file by deliberate choice — same precede
 (`SocialConnection`, `OAuthCredential`, `ConnectionEvent`, `PlatformApp`) in a single
 module per domain. Split into two files if this one grows unwieldy; not before.
 
-Four invariants live here, all database-owned, all merely TRANSLATED by this code:
+Five invariants live here, all database-owned, all merely TRANSLATED by this code:
 
 **Monitoring is a toggle, never a second row.** `uq_monitored_media_natural_key
 (connection_id, external_media_id)` — `set_media_monitored` is a get-or-create-then-UPDATE,
@@ -29,22 +29,59 @@ call `reconcile_media_comments`.
 Both `PostgresInboxRepository`'s and `MemoryInboxRepository`'s halves are real production
 code (same reasoning as everything else in this class); the former is exercised by
 `db`-marked tests, the latter by the offline suite.
+
+**A media's metadata outlives its monitoring (QUA-149).** `monitored_media` keeps the
+media's publication date, caption and permalink (migration `0046`). Turning monitoring
+off, the window ending, or a failed metadata read never clears them; only a later
+SUCCESSFUL read overwrites them. Which monitored media are still synced is decided by
+`qualify_api.inbox.monitoring` — `list_media_to_sync` applies its cutoff in SQL.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
 from qualify_shared.social.ig_shapes import SHAPE_VERSION, IGComment
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from qualify_api.inbox.models import InboxMetaCallLog, Message, MonitoredMedia, Thread
+from qualify_api.inbox.monitoring import (
+    MediaMetadata,
+    MediaToSync,
+    MetadataFetchError,
+    MonitoringState,
+    effective_state,
+    window_start,
+)
 
 _COMMENT_CHANNEL = "comment"
+
+
+@dataclass(frozen=True)
+class MonitoredMediaRecord:
+    """One `monitored_media` row as the inbox reads it (QUA-149). `state` is never stored:
+    it is derived at read time by `monitoring.effective_state`, so it can never disagree
+    with what `list_media_to_sync` picks."""
+
+    external_media_id: str
+    is_monitored: bool
+    media_posted_at: datetime | None = None
+    caption: str | None = None
+    permalink: str | None = None
+    media_product_type: str | None = None
+    metadata_fetched_at: datetime | None = None
+    metadata_attempted_at: datetime | None = None
+    metadata_error: MetadataFetchError | None = None
+
+    def state(self, now: datetime) -> MonitoringState:
+        return effective_state(
+            is_monitored=self.is_monitored, posted_at=self.media_posted_at, now=now
+        )
 
 
 class InboxRepository(Protocol):
@@ -53,8 +90,62 @@ class InboxRepository(Protocol):
     ) -> frozenset[str]: ...
 
     def set_media_monitored(
-        self, *, tenant_id: UUID, connection_id: UUID, external_media_id: str, monitored: bool
-    ) -> None: ...
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        monitored: bool,
+        metadata: MediaMetadata | None = None,
+        fetched_at: datetime | None = None,
+    ) -> None:
+        """Flips the toggle (get-or-create, then UPDATE). With `metadata` (QUA-149 — what
+        `InboxService.set_media_monitored` just read from Meta to validate the window),
+        also stores it as complete (`metadata_fetched_at = fetched_at`) and clears any
+        previous failed attempt. Without it, existing metadata is left untouched —
+        turning monitoring off never erases what is known about the media."""
+        ...
+
+    def list_media_to_sync(
+        self, *, tenant_id: UUID, connection_id: UUID, now: datetime
+    ) -> tuple[MediaToSync, ...]:
+        """QUA-149: the media the sync may call Meta for at `now` — monitored AND either
+        inside the 14-day window or with an unknown publication date (a legacy row, see
+        `MediaToSync.needs_metadata`). An expired media is never returned, so it can never
+        cost a Meta call. Ordered by `external_media_id` (deterministic)."""
+        ...
+
+    def get_monitored_media(
+        self, *, tenant_id: UUID, connection_id: UUID, external_media_id: str
+    ) -> MonitoredMediaRecord | None: ...
+
+    def record_media_metadata(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        metadata: MediaMetadata,
+        fetched_at: datetime,
+    ) -> None:
+        """QUA-149 backfill: stores a SUCCESSFUL metadata read for an existing row, marks
+        it complete and clears any previous failure. Never touches `is_monitored`. A
+        missing row is a no-op (nothing to complete)."""
+        ...
+
+    def record_media_metadata_failure(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        error: MetadataFetchError,
+        attempted_at: datetime,
+    ) -> None:
+        """QUA-149: records a FAILED metadata read (when and why) so it can be retried
+        later. Never touches `is_monitored` nor any metadata already stored — a failure
+        proves nothing about the media. A missing row is a no-op."""
+        ...
 
     def upsert_comment(
         self,
@@ -111,7 +202,9 @@ class MemoryInboxRepository:
     drift."""
 
     def __init__(self) -> None:
-        self._monitored: dict[tuple[UUID, str], bool] = {}
+        # (connection_id, external_media_id) -> the row, replaced whole on every write
+        # (frozen dataclass), mirroring `uq_monitored_media_natural_key`.
+        self._monitored: dict[tuple[UUID, str], MonitoredMediaRecord] = {}
         self._threads: dict[tuple[UUID, str], UUID] = {}  # (connection_id, media_id) -> thread_id
         self._messages: set[tuple[UUID, str]] = set()  # (connection_id, external_message_id)
         # (connection_id, external_message_id) -> external_media_id — which media a
@@ -126,14 +219,75 @@ class MemoryInboxRepository:
     def list_monitored_media_ids(self, *, tenant_id: UUID, connection_id: UUID) -> frozenset[str]:
         return frozenset(
             media_id
-            for (conn_id, media_id), monitored in self._monitored.items()
-            if conn_id == connection_id and monitored
+            for (conn_id, media_id), row in self._monitored.items()
+            if conn_id == connection_id and row.is_monitored
         )
 
     def set_media_monitored(
-        self, *, tenant_id: UUID, connection_id: UUID, external_media_id: str, monitored: bool
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        monitored: bool,
+        metadata: MediaMetadata | None = None,
+        fetched_at: datetime | None = None,
     ) -> None:
-        self._monitored[(connection_id, external_media_id)] = monitored
+        key = (connection_id, external_media_id)
+        row = self._monitored.get(key) or MonitoredMediaRecord(
+            external_media_id=external_media_id, is_monitored=monitored
+        )
+        row = replace(row, is_monitored=monitored)
+        if metadata is not None:
+            row = _with_metadata(row, metadata, fetched_at or datetime.now(UTC))
+        self._monitored[key] = row
+
+    def list_media_to_sync(
+        self, *, tenant_id: UUID, connection_id: UUID, now: datetime
+    ) -> tuple[MediaToSync, ...]:
+        cutoff = window_start(now)
+        return tuple(
+            _to_sync(row)
+            for (conn_id, _), row in sorted(self._monitored.items(), key=lambda kv: kv[0][1])
+            if conn_id == connection_id
+            and row.is_monitored
+            and (row.media_posted_at is None or row.media_posted_at >= cutoff)
+        )
+
+    def get_monitored_media(
+        self, *, tenant_id: UUID, connection_id: UUID, external_media_id: str
+    ) -> MonitoredMediaRecord | None:
+        return self._monitored.get((connection_id, external_media_id))
+
+    def record_media_metadata(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        metadata: MediaMetadata,
+        fetched_at: datetime,
+    ) -> None:
+        key = (connection_id, external_media_id)
+        row = self._monitored.get(key)
+        if row is not None:
+            self._monitored[key] = _with_metadata(row, metadata, fetched_at)
+
+    def record_media_metadata_failure(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        error: MetadataFetchError,
+        attempted_at: datetime,
+    ) -> None:
+        key = (connection_id, external_media_id)
+        row = self._monitored.get(key)
+        if row is not None:
+            self._monitored[key] = replace(
+                row, metadata_attempted_at=attempted_at, metadata_error=error
+            )
 
     def upsert_comment(
         self,
@@ -208,7 +362,14 @@ class PostgresInboxRepository:
             return frozenset(rows)
 
     def set_media_monitored(
-        self, *, tenant_id: UUID, connection_id: UUID, external_media_id: str, monitored: bool
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        monitored: bool,
+        metadata: MediaMetadata | None = None,
+        fetched_at: datetime | None = None,
     ) -> None:
         with tenant_session(tenant_id) as session:
             row = session.scalar(
@@ -218,17 +379,93 @@ class PostgresInboxRepository:
                 )
             )
             if row is None:
-                session.add(
-                    MonitoredMedia(
-                        tenant_id=tenant_id,
-                        connection_id=connection_id,
-                        external_media_id=external_media_id,
-                        is_monitored=monitored,
-                    )
+                row = MonitoredMedia(
+                    tenant_id=tenant_id,
+                    connection_id=connection_id,
+                    external_media_id=external_media_id,
+                    is_monitored=monitored,
                 )
+                session.add(row)
             else:
                 row.is_monitored = monitored
                 row.updated_at = datetime.now(UTC)
+            if metadata is not None:
+                _apply_metadata(row, metadata, fetched_at or datetime.now(UTC))
+            session.flush()
+
+    def list_media_to_sync(
+        self, *, tenant_id: UUID, connection_id: UUID, now: datetime
+    ) -> tuple[MediaToSync, ...]:
+        with tenant_session(tenant_id) as session:
+            rows = session.scalars(
+                select(MonitoredMedia)
+                .where(
+                    MonitoredMedia.connection_id == connection_id,
+                    MonitoredMedia.is_monitored.is_(True),
+                    or_(
+                        MonitoredMedia.media_posted_at.is_(None),
+                        MonitoredMedia.media_posted_at >= window_start(now),
+                    ),
+                )
+                .order_by(MonitoredMedia.external_media_id)
+            ).all()
+            return tuple(_to_sync(_record_from_row(row)) for row in rows)
+
+    def get_monitored_media(
+        self, *, tenant_id: UUID, connection_id: UUID, external_media_id: str
+    ) -> MonitoredMediaRecord | None:
+        with tenant_session(tenant_id) as session:
+            row = session.scalar(
+                select(MonitoredMedia).where(
+                    MonitoredMedia.connection_id == connection_id,
+                    MonitoredMedia.external_media_id == external_media_id,
+                )
+            )
+            return None if row is None else _record_from_row(row)
+
+    def record_media_metadata(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        metadata: MediaMetadata,
+        fetched_at: datetime,
+    ) -> None:
+        with tenant_session(tenant_id) as session:
+            row = session.scalar(
+                select(MonitoredMedia).where(
+                    MonitoredMedia.connection_id == connection_id,
+                    MonitoredMedia.external_media_id == external_media_id,
+                )
+            )
+            if row is None:
+                return
+            _apply_metadata(row, metadata, fetched_at)
+            row.updated_at = datetime.now(UTC)
+            session.flush()
+
+    def record_media_metadata_failure(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        error: MetadataFetchError,
+        attempted_at: datetime,
+    ) -> None:
+        with tenant_session(tenant_id) as session:
+            row = session.scalar(
+                select(MonitoredMedia).where(
+                    MonitoredMedia.connection_id == connection_id,
+                    MonitoredMedia.external_media_id == external_media_id,
+                )
+            )
+            if row is None:
+                return
+            row.metadata_attempted_at = attempted_at
+            row.metadata_error = error.value
+            row.updated_at = datetime.now(UTC)
             session.flush()
 
     def upsert_comment(
@@ -367,3 +604,56 @@ class PostgresInboxRepository:
                 )
             )
             session.flush()
+
+
+# --- QUA-149: one translation of the metadata columns, shared by both implementations ---
+
+
+def _with_metadata(
+    row: MonitoredMediaRecord, metadata: MediaMetadata, fetched_at: datetime
+) -> MonitoredMediaRecord:
+    """A successful read: store it as complete and forget any earlier failure."""
+    return replace(
+        row,
+        media_posted_at=metadata.posted_at,
+        caption=metadata.caption,
+        permalink=metadata.permalink,
+        media_product_type=metadata.media_product_type,
+        metadata_fetched_at=fetched_at,
+        metadata_attempted_at=fetched_at,
+        metadata_error=None,
+    )
+
+
+def _apply_metadata(row: MonitoredMedia, metadata: MediaMetadata, fetched_at: datetime) -> None:
+    """Postgres twin of `_with_metadata`, writing onto the ORM row."""
+    row.media_posted_at = metadata.posted_at
+    row.caption = metadata.caption
+    row.permalink = metadata.permalink
+    row.media_product_type = metadata.media_product_type
+    row.metadata_fetched_at = fetched_at
+    row.metadata_attempted_at = fetched_at
+    row.metadata_error = None
+
+
+def _record_from_row(row: MonitoredMedia) -> MonitoredMediaRecord:
+    return MonitoredMediaRecord(
+        external_media_id=row.external_media_id,
+        is_monitored=row.is_monitored,
+        media_posted_at=row.media_posted_at,
+        caption=row.caption,
+        permalink=row.permalink,
+        media_product_type=row.media_product_type,
+        metadata_fetched_at=row.metadata_fetched_at,
+        metadata_attempted_at=row.metadata_attempted_at,
+        metadata_error=MetadataFetchError(row.metadata_error) if row.metadata_error else None,
+    )
+
+
+def _to_sync(row: MonitoredMediaRecord) -> MediaToSync:
+    return MediaToSync(
+        external_media_id=row.external_media_id,
+        needs_metadata=row.metadata_fetched_at is None,
+        metadata_attempted_at=row.metadata_attempted_at,
+        metadata_error=row.metadata_error,
+    )
