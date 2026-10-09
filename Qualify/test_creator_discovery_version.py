@@ -100,6 +100,7 @@ FINGERPRINTS: dict[int, str] = {
     # 11: the same accounts as 10 — `Candidate` gained the profile link and the count of
     # AI-labelled videos seen, read on the feeds; the profile reads moved to Postgres
     11: "c33c339245106ebaaae4f29fd9499e355b5b73d62d132fe528f8cfed82c08dda",
+    12: "1f3513dc18d2911b3bdbe8766dc43b11a99ab2440f3301f8d59182bc40fa6efe",
 }
 
 

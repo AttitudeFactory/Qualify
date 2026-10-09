@@ -22,6 +22,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -50,6 +51,17 @@ class CalendarEvent(Base):
             name="ck_cal_event_status",
         ),
         CheckConstraint("revision >= 1", name="ck_cal_event_revision"),
+        CheckConstraint(
+            "output_port IS NULL OR output_port <> ''", name="ck_cal_event_output_port"
+        ),
+        CheckConstraint(
+            "destination IS NULL OR destination IN ('post','reel','story')",
+            name="ck_cal_event_destination",
+        ),
+        CheckConstraint(
+            "goals <@ ARRAY['likes','views','comments','ads','followers','engagement']::text[]",
+            name="ck_cal_event_goals",
+        ),
         Index("ix_cal_event_tenant", "tenant_id"),
         Index("ix_cal_event_brand_scheduled", "brand_id", "scheduled_at"),
         Index("ix_cal_event_post", "tenant_id", "post_id"),
@@ -70,6 +82,18 @@ class CalendarEvent(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     publish_attempt_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    # MP-11 (0040): the one template output this event publishes (`image_assets.output_port`:
+    # `reel` / `feed` / `story`), or NULL for the whole POST — every pre-MP-11 event.
+    output_port: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # QUA-118 v2 (0041): where this event goes out — `post` («Publicación»), `reel` or
+    # `story`. The POST's category stays the origin; the event decides the destination.
+    # NULL only for an event the backfill could not derive (its POST is gone).
+    destination: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # QUA-118 v2 (0042): the goals of the plan this event was created in (`EVENT_GOALS`
+    # keys) — kept for the later analysis of what each publication was meant to achieve.
+    goals: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, server_default=text("'{}'::text[]")
+    )
     created_by_user_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
@@ -80,6 +104,10 @@ class CalendarEvent(Base):
         DateTime(timezone=True), server_default=text("now()"), nullable=False
     )
 
+
+# The goals a plan may set (0042's `ck_cal_event_goals`): likes, vistas, comentarios,
+# ads, seguidores, interacción.
+EVENT_GOALS: tuple[str, ...] = ("likes", "views", "comments", "ads", "followers", "engagement")
 
 # Palette keys a tag may use — mirrors 0025's `ck_planner_tag_color`. The UI maps each
 # key to a Radix scale; adding a key means a migration AND a UI mapping.

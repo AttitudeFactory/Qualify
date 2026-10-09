@@ -1,0 +1,46 @@
+# Build context for deploy/Dockerfile (the repo root). Keep it small and secret-free:
+# everything below is either local state, a secret, or not needed to run the app.
+.git
+.github
+.claude
+.agents
+.venv
+**/.venv
+**/__pycache__
+**/*.py[cod]
+.ruff_cache
+.pytest_cache
+.coverage
+coverage*.xml
+coverage*.json
+
+# Secrets: never in an image layer. Runtime env comes from /opt/qualify/.env.prod.
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Reflex local state and build output (rebuilt inside the image).
+.web
+.states
+reflex.db
+*.db
+uploaded_files
+Qualify/fixtures/discovery_*.json
+Qualify/fixtures/discovery_raw
+Qualify/fixtures/brand_connect_profile.json
+
+# Not part of the running app.
+docs
+site
+bitacora
+reference
+graphify-out
+infra
+testing
+**/tests
+Qualify/test_*.py
+packages/render/node_modules
+packages/render/out
+packages/models/tests
+.python-version

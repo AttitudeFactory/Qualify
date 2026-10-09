@@ -138,3 +138,39 @@ def build_connection_vm(
         data_access_state=data_access_state,
         data_access_message=data_access_message,
     )
+
+
+# QUA-123: the OAuth callback ends with `303 → /connections?connect=<code>`. The code is a
+# closed vocabulary — the four `ConnectOutcome` values plus the route's `invalid_state` and
+# `denied` — so this table is the whole contract. Each entry is (message, tone); the tone
+# is a design-system tone (`ok`/`warn`/`info`), never a raw colour.
+CONNECT_RESULT_NOTICES: dict[str, tuple[str, str]] = {
+    "active": ("Cuenta conectada. Ya aparece en la lista con sus permisos.", "ok"),
+    "degraded": (
+        "La cuenta se conectó, pero Meta no confirmó el acceso. "
+        "Usa «Verificar ahora» en su tarjeta en unos minutos.",
+        "warn",
+    ),
+    "link_required": (
+        "Meta no devolvió ninguna Página con una cuenta de Instagram vinculada. "
+        "Vincula tu cuenta profesional de Instagram a tu Página de Facebook y vuelve a "
+        "conectar.",
+        "warn",
+    ),
+    "page_access_required": (
+        "Meta no compartió ninguna Página con Qualify. Al conectar, selecciona la Página "
+        "de Facebook vinculada a tu Instagram y vuelve a intentarlo.",
+        "warn",
+    ),
+    "denied": ("Cancelaste la conexión con Meta. No se guardó nada.", "info"),
+    "invalid_state": (
+        "El enlace de conexión expiró o ya se usó. Pulsa «Conectar cuenta» de nuevo.",
+        "warn",
+    ),
+}
+
+
+def connect_result_notice(code: str) -> tuple[str, str]:
+    """(message, tone) for a `?connect=` code; ("", "info") for none or an unknown one —
+    the parameter arrives in the URL, so junk is ignored rather than echoed."""
+    return CONNECT_RESULT_NOTICES.get(code, ("", "info"))

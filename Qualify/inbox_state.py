@@ -25,13 +25,12 @@ single re-entrancy lock shared by both — a tick that lands while the button's 
 still in flight (or vice versa) is a no-op, not a second concurrent sync. There is no
 separate scheduler process anywhere: the "automatic" half is a client-side timer, not a
 server-side loop — see `inbox_page.py::_polling_timer`'s docstring for why that is what
-makes it safe to leave running with nothing to cancel. As of 2026-08-16 it reaches that
-service through the real `POST /api/inbox/sync` route (B2's acceptance criterion) rather
-than calling `composition.sync_comments` in-process — see `inbox_provider.sync_now`'s
-docstring for how and for the one consequence worth knowing here: the bridge only
-authenticates ONE dev tenant (PuntoServis), so `sync_now` raises `UnknownInboxConnection`
-for any other selected tenant, surfacing as this handler's ordinary `_UNKNOWN_CONNECTION`
-message — not a new failure mode this handler needs to special-case.
+makes it safe to leave running with nothing to cancel. It reaches that service in
+process with the session's tenant (`inbox_provider.sync_now`; B8, 2026-10-08 — it used to
+go through a dev-only HTTP bridge that refused every tenant but one). Each failure gets its
+own message — session expired, account disconnected, permission missing, Meta auth
+expired, budget spent, Instagram failing, anything else — so «Esa cuenta ya no está
+disponible» only ever means what it says: the connection is not visible to this tenant.
 
 **`analyze_sentiment` is QUA-21's manual trigger, made visible as a button (QUA-92).** It
 is the only place in this file that calls `qualify_api.sentiment` for a WRITE —
@@ -75,11 +74,13 @@ import reflex as rx
 from qualify_api.inbox import (
     CommentsAuthExpired,
     CommentsPermissionMissing,
+    CommentsReadError,
+    InboxConnectionInactive,
     MediaNotEligible,
     SyncBudgetExhausted,
     UnknownInboxConnection,
 )
-from qualify_api.sentiment import UnknownSentimentConnection
+from qualify_api.sentiment import SentimentModelUnavailable, UnknownSentimentConnection
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
@@ -118,6 +119,19 @@ _NOT_ELIGIBLE = (
 )
 _UNKNOWN_CONNECTION = "Esa cuenta ya no está disponible. Actualiza la lista e intenta de nuevo."
 _SYNC_FAILED = "No se pudo sincronizar los comentarios. Intenta de nuevo."
+# B8: the two halves `_NO_TENANT` used to cover for sync/analysis. No tenant in the
+# session means there is no login (`AuthState.session_tenant_id` is set only by one).
+_SESSION_EXPIRED = "Tu sesión expiró. Vuelve a iniciar sesión."
+_NO_CONNECTION_SELECTED = "Elige primero una cuenta de Instagram."
+# The connection is the tenant's but no longer `active` (disconnected or degraded) —
+# never synced, and never confused with "not visible" (`_UNKNOWN_CONNECTION`).
+_CONNECTION_INACTIVE = (
+    "Esta cuenta está desconectada. Reconéctala en Conexiones para sincronizar sus comentarios."
+)
+# A Graph call that was attempted and failed (`CommentsReadError`) — Instagram's side.
+_SYNC_META_FAILED = (
+    "Instagram no respondió al sincronizar los comentarios. Intenta de nuevo en unos minutos."
+)
 # cannot_observe (QUA-88): the connection cannot read the comments edge AT ALL — never
 # shown as if it were a normal zero-comments result.
 _COMMENTS_PERMISSION_MISSING = (
@@ -133,6 +147,9 @@ _CONNECTION_AUTH_EXPIRED = (
     "Tu conexión con Instagram dejó de funcionar. Reconéctala en Conexiones e intenta de nuevo."
 )
 _ANALYZE_FAILED = "No se pudo analizar el sentimiento. Intenta de nuevo."
+# The local model's runtime (`ml` group) is not installed in this deployment — not a
+# transient failure, so "intenta de nuevo" would be a lie.
+_ANALYZE_UNAVAILABLE = "El análisis de sentimiento todavía no está disponible en este entorno."
 # QUA-93 — each of the three new sections has its own load error, same "independent
 # §6.1 lifecycle per section" posture the design doc documents.
 _REEL_SUMMARIES_LOAD_FAILED = "No se pudieron cargar los Reels con comentarios. Intenta de nuevo."
@@ -677,7 +694,7 @@ class InboxState(rx.State):
         if tenant_id is None or resolved_connection is None:
             async with self:
                 self.is_syncing = False
-                self.sync_error = _NO_TENANT
+                self.sync_error = _SESSION_EXPIRED if tenant_id is None else _NO_CONNECTION_SELECTED
             return
 
         try:
@@ -685,6 +702,10 @@ class InboxState(rx.State):
         except UnknownInboxConnection:
             async with self:
                 self.sync_error = _UNKNOWN_CONNECTION
+            return
+        except InboxConnectionInactive:
+            async with self:
+                self.sync_error = _CONNECTION_INACTIVE
             return
         except CommentsAuthExpired:
             async with self:
@@ -697,6 +718,11 @@ class InboxState(rx.State):
         except SyncBudgetExhausted:
             async with self:
                 self.sync_error = _SYNC_BUDGET_EXHAUSTED
+            return
+        except CommentsReadError:
+            logger.warning("sync_now: a Graph call failed")
+            async with self:
+                self.sync_error = _SYNC_META_FAILED
             return
         except Exception as exc:
             # Only the exception TYPE is logged — same posture as every other handler in
@@ -760,8 +786,8 @@ class InboxState(rx.State):
         in both directions: never called FROM `sync_comments` (QUA-21 stays manual-only,
         unchanged by QUA-89's polling) and never calls `sync_now` itself. Same
         double-click guard / `finally`-based reset shape as `sync_comments` above, over
-        `inbox_provider.analyze_sentiment_now` — see that function's docstring for why
-        it reuses `POST /api/sentiment/analyze` rather than a second analysis engine.
+        `inbox_provider.analyze_sentiment_now` — the same seam `POST /api/sentiment/
+        analyze` wraps, never a second analysis engine.
         """
         async with self:
             if self.is_analyzing:
@@ -779,7 +805,9 @@ class InboxState(rx.State):
         if tenant_id is None or resolved_connection is None:
             async with self:
                 self.is_analyzing = False
-                self.analyze_error = _NO_TENANT
+                self.analyze_error = (
+                    _SESSION_EXPIRED if tenant_id is None else _NO_CONNECTION_SELECTED
+                )
             return
 
         try:
@@ -789,6 +817,10 @@ class InboxState(rx.State):
         except UnknownSentimentConnection:
             async with self:
                 self.analyze_error = _UNKNOWN_CONNECTION
+            return
+        except SentimentModelUnavailable:
+            async with self:
+                self.analyze_error = _ANALYZE_UNAVAILABLE
             return
         except Exception as exc:
             # Only the exception TYPE is logged — same posture as every other handler in

@@ -35,6 +35,7 @@ from qualify_api.config import MetaOAuthSettings
 from qualify_api.connections.composition import degrade_connection_on_auth_error
 from qualify_api.connections.credential_reader import DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor
+from qualify_api.connections.fsm import ConnectionStatus
 from qualify_api.connections.models import SocialConnection
 from qualify_api.connections.read import connection_scopes
 from qualify_api.connections.resolver import InjectingCredentialResolver
@@ -52,6 +53,35 @@ class UnknownInboxConnection(Exception):
     same posture `connections_provider.disconnect`'s `ConnectionNotFound` and
     `publishing.service.UnknownConnection` already establish for this exact ambiguity.
     """
+
+
+class InboxConnectionInactive(Exception):
+    """The connection is visible to this tenant but no longer `active` (the operator
+    disconnected it, or a runtime auth failure degraded it). A sync is refused BEFORE any
+    credential is resolved or any Meta call is made: a disconnected account must stop
+    being read, and the stored credential of a `revoked` row is deliberately kept
+    (`connections/revoke.py`), so without this guard a sync would still succeed.
+
+    Carries only the status string — never an id the caller did not already send."""
+
+    def __init__(self, status: str) -> None:
+        super().__init__(f"connection is {status}, not active")
+        self.status = status
+
+
+def production_connection_status_for(*, tenant_id: UUID, connection_id: UUID) -> str:
+    """The connection's FSM status, read through `tenant_session` (RLS), so a row of
+    another tenant is invisible here exactly as it is to `PostgresIgUserIdReader`.
+    Module-level for the same monkeypatch reason as `production_ig_user_id_for`."""
+    with tenant_session(tenant_id) as session:
+        status = session.scalar(
+            select(SocialConnection.status).where(SocialConnection.id == connection_id)
+        )
+    if status is None:
+        raise UnknownInboxConnection(
+            f"connection {connection_id} is not visible to tenant {tenant_id}"
+        )
+    return status
 
 
 class PostgresIgUserIdReader:
@@ -163,7 +193,13 @@ async def sync_comments(*, tenant_id: UUID, connection_id: UUID) -> SyncSummary:
     even though `sync_comments` itself never needs `ig_user_id` — B1's comments edge is
     addressed directly by media id, not by IG user), so all three seam functions in this
     module fail identically for the same unknown-connection condition.
+
+    Raises `InboxConnectionInactive` when the connection is visible but not `active` —
+    checked before credentials are resolved, so a disconnected account is never read.
     """
     production_ig_user_id_for(tenant_id=tenant_id, connection_id=connection_id)
+    status = production_connection_status_for(tenant_id=tenant_id, connection_id=connection_id)
+    if status != ConnectionStatus.ACTIVE:
+        raise InboxConnectionInactive(status)
     service = await production_inbox_service_for(tenant_id=tenant_id, connection_id=connection_id)
     return await service.sync_comments(tenant_id=tenant_id, connection_id=connection_id)

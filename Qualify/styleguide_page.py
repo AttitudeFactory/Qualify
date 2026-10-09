@@ -16,6 +16,7 @@ from .ui import (
     callout,
     card,
     demo_notice,
+    drawer,
     empty_state,
     kv,
     loading_spinner,
@@ -32,6 +33,7 @@ from .ui import (
     skeleton_card,
     skeleton_rows,
     stat_card,
+    stepper,
     tag,
     tone_badge,
 )
@@ -47,6 +49,27 @@ from .ui.thermal import (
     thermal_glyph,
     transition,
 )
+
+
+class DrawerDemoState(rx.State):
+    """The style guide's only state: whether the sample drawer is open, and which of
+    its sample steps is current. Nothing tenant-bound."""
+
+    open: bool = False
+    step: int = 1
+
+    @rx.event
+    def set_open(self, value: bool) -> None:
+        self.open = value
+
+    @rx.event
+    def go(self, index: int) -> None:
+        self.step = index
+
+    @rx.var
+    def done(self) -> list[bool]:
+        return [i < self.step for i in range(4)]
+
 
 _TONES = ["accent", "ok", "warn", "error", "info", "neutral"]
 _TONE_MEANING = {
@@ -740,12 +763,80 @@ def _pills() -> rx.Component:
     )
 
 
+_DEMO_STEPS = ["Post", "Fecha y hora", "Cuentas", "Confirmar"]
+
+
+def _flow() -> rx.Component:
+    """`stepper` + `drawer` (QUA-118): a flow with steps lives in a right-edge panel, not
+    a centred dialog. Completed steps are clickable (back to fix), unreached ones are
+    not; the body scrolls, title and footer stay put; a phone gets the full width."""
+    return card(
+        rx.vstack(
+            stepper(
+                _DEMO_STEPS,
+                current=DrawerDemoState.step,
+                completed=DrawerDemoState.done,
+                on_select=DrawerDemoState.go,
+            ),
+            rx.text(
+                "check lleno = paso completado (clicable para volver) · anillo = paso actual · "
+                "número = paso aún no alcanzado (nunca clicable). La etiqueta es lo que se "
+                "lee; el número es el respaldo.",
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            rx.divider(),
+            rx.button(
+                rx.icon("panel-right-open", size=T.ICON_SM),
+                "Abrir drawer de ejemplo",
+                variant="soft",
+                on_click=DrawerDemoState.set_open(True),
+            ),
+            drawer(
+                stepper(
+                    _DEMO_STEPS,
+                    current=DrawerDemoState.step,
+                    completed=DrawerDemoState.done,
+                    on_select=DrawerDemoState.go,
+                ),
+                rx.text(
+                    "El cuerpo del drawer se desplaza; el título y el pie quedan fijos. "
+                    "Esc o el fondo lo cierran. En un teléfono ocupa toda la pantalla.",
+                    size="2",
+                    margin_top="1rem",
+                ),
+                open=DrawerDemoState.open,
+                on_open_change=DrawerDemoState.set_open,
+                title="Drawer de ejemplo",
+                description="Un flujo por pasos, al borde derecho.",
+                footer=rx.hstack(
+                    rx.button(
+                        "Cerrar",
+                        variant="soft",
+                        color_scheme="gray",
+                        on_click=DrawerDemoState.set_open(False),
+                    ),
+                    rx.button("Siguiente", on_click=DrawerDemoState.go(2)),
+                    justify="end",
+                    spacing="2",
+                    width="100%",
+                ),
+            ),
+            spacing="3",
+            width="100%",
+            align_items="start",
+        )
+    )
+
+
 def _components_section() -> rx.Component:
     return section(
         "Componentes",
         _buttons(),
         _forms(),
         card(_feedback()),
+        rx.text("Flujo por pasos (stepper + drawer — QUA-118)", size="2", weight="medium"),
+        _flow(),
         rx.text(
             "Pills (removable_pill / pill_editor — listas que el operador arma)",
             size="2",

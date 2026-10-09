@@ -56,6 +56,8 @@ def _apply_kit(row: BrandKitRow, kit: BrandKit) -> None:
     row.cta_patterns = list(kit.cta_patterns)
     row.length_targets = kit.length_targets.model_dump()
     row.palette_rgb = list(kit.palette_rgb)
+    row.font_heading = kit.font_heading or None
+    row.font_body = kit.font_body or None
     row.logo_asset_key = kit.logo_asset_key
     row.template_asset_key = kit.template_asset_key
     row.reference_image_keys = list(kit.reference_image_keys)
@@ -82,6 +84,8 @@ def kit_from_row(row: BrandKitRow) -> BrandKit:
         "forbidden_claims": tuple(row.forbidden_claims or ()),
         "cta_patterns": tuple(row.cta_patterns or ()),
         "palette_rgb": tuple(row.palette_rgb or ()),
+        "font_heading": row.font_heading or "",
+        "font_body": row.font_body or "",
         "logo_asset_key": row.logo_asset_key,
         "template_asset_key": row.template_asset_key,
         "reference_image_keys": tuple(row.reference_image_keys or ()),

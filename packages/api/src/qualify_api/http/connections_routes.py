@@ -16,13 +16,24 @@ client is an authorization bypass with extra steps, and a body-supplied `user_id
 same bypass one layer down: the caller choosing who the connection is attributed to, an
 id that ends up in `connection_events` as the actor. The callback reads neither from the
 request; it reconstitutes them from the signed `state`.
+
+**The callback ends in the UI, not in JSON (QUA-123).** Meta sends a real browser here, and
+whoever is in that browser — the operator, or Meta's App Reviewer — must land back on
+`/connections` with a readable result, not on a raw JSON body. So every outcome, failures
+included, is a `303 See Other` to `/connections?connect=<code>`. The code is a closed
+vocabulary (`ConnectOutcome` plus `invalid_state` / `denied`): no id, no username, no count
+travels in the URL — the page re-reads the connection list from Postgres on load, and the
+counts R9(e.1) needs are already logged by `ConnectService`.
 """
 
 from __future__ import annotations
 
+import os
+from urllib.parse import urlencode
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from qualify_api.connections.service import ConnectService
@@ -30,6 +41,19 @@ from qualify_api.connections.state_token import InvalidState
 from qualify_api.http.deps import Principal, current_principal
 
 router = APIRouter(prefix="/api/connections", tags=["connections"])
+
+# The two callback results that are not a `ConnectOutcome`. `invalid_state` deliberately
+# covers forged, expired AND replayed alike — naming which one would tell a caller what
+# to forge next (the reason the JSON version answered one 403 for all three).
+INVALID_STATE = "invalid_state"
+# The operator pressed "Cancel" in Meta's dialog: Meta comes back with `error=...` and no
+# `code`. Not an attack and not a bug, so it gets its own, calm message in the UI.
+DENIED = "denied"
+
+# Where the browser lands after the callback. In production the UI and the API share one
+# origin behind Caddy and `REFLEX_DEPLOY_URL` is that origin; in local dev the API runs on
+# :8000 and the UI on :3000, so the redirect has to be absolute.
+_DEV_APP_URL = "http://localhost:3000"
 
 
 def get_connect_service() -> ConnectService:
@@ -49,20 +73,22 @@ class StartConnectResponse(BaseModel):
     authorization_url: str
 
 
-class CallbackResponse(BaseModel):
-    """`connection_id` is null for both dead-end outcomes: no row was created (R4).
+def get_connections_page_url() -> str:
+    """Absolute URL of the Reflex `/connections` page. `QUALIFY_APP_URL` wins, then
+    `REFLEX_DEPLOY_URL` (set to the public origin by `deploy/docker-compose.prod.yml`),
+    then the local dev frontend. A dependency so tests can pin it."""
+    base = (
+        os.environ.get("QUALIFY_APP_URL", "").strip()
+        or os.environ.get("REFLEX_DEPLOY_URL", "").strip()
+        or _DEV_APP_URL
+    )
+    return f"{base.rstrip('/')}/connections"
 
-    `page_count`/`linked_page_count` are the two integers R9(e.1) ordered recorded. They are
-    returned as well as logged so step 1 of the empirical test can be read straight off the
-    callback response — the operator running it is looking at a browser, not at a log tail.
-    Counts carry no ids, no names and no token, so exposing them costs nothing.
-    """
 
-    outcome: str
-    connection_id: UUID | None = None
-    external_username: str | None = None
-    page_count: int = 0
-    linked_page_count: int = 0
+def _back_to_connections(page_url: str, code: str) -> RedirectResponse:
+    # 303, not 302/307: the browser must follow with a GET and never replay the callback
+    # (the `state` is single-use; a replay would only ever produce `invalid_state`).
+    return RedirectResponse(f"{page_url}?{urlencode({'connect': code})}", status_code=303)
 
 
 @router.post("/start", response_model=StartConnectResponse)
@@ -78,25 +104,23 @@ def start_connect(
     )
 
 
-@router.get("/callback", response_model=CallbackResponse)
+@router.get("/callback", response_class=RedirectResponse, status_code=303)
 async def oauth_callback(
-    code: str = Query(...),
-    state: str = Query(...),
+    code: str | None = Query(None),
+    state: str | None = Query(None),
+    error: str | None = Query(None),
     service: ConnectService = Depends(get_connect_service),
-) -> CallbackResponse:
+    page_url: str = Depends(get_connections_page_url),
+) -> RedirectResponse:
+    if code is None:
+        # No code: either Meta reports the operator declined (`error=access_denied`), or the
+        # request is not a real callback at all. Nothing is exchanged and no `state` is spent
+        # — an unspent jti simply expires on its TTL.
+        return _back_to_connections(page_url, DENIED if error else INVALID_STATE)
+    if state is None:
+        return _back_to_connections(page_url, INVALID_STATE)
     try:
         result = await service.complete_connect(code=code, state=state)
     except InvalidState:
-        # One 403 for every state failure — forged, expired, replayed. Telling the caller
-        # which one would help them work out what to forge next.
-        raise HTTPException(status_code=403, detail="invalid or expired state") from None
-    return CallbackResponse(
-        outcome=str(result.outcome),
-        connection_id=result.connection_id,
-        # Keyed off `connection_id` rather than off a list of dead-end outcomes: R9(f) added
-        # one such outcome and a future ruling may add another, and an enum check would have
-        # to be remembered each time. No connection, no username — that holds by definition.
-        external_username=result.external_username if result.connection_id is not None else None,
-        page_count=result.page_count,
-        linked_page_count=result.linked_page_count,
-    )
+        return _back_to_connections(page_url, INVALID_STATE)
+    return _back_to_connections(page_url, str(result.outcome))

@@ -48,6 +48,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID
 
+from qualify_api.planner.heartbeat import HeartbeatStore, production_heartbeat_store, record_beat
 from qualify_api.planner.tick import TickReport
 from qualify_api.planner.worker import (
     DEFAULT_INTERVAL_SECONDS,
@@ -160,8 +161,10 @@ class EmbeddedCalendarWorker:
         *,
         make_runner: Callable[[], object] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        heartbeat: HeartbeatStore | None = None,
     ) -> None:
         self._config = config
+        self._heartbeat = heartbeat
         self._make_runner = make_runner
         self._clock = clock
         self._stop = threading.Event()
@@ -216,6 +219,14 @@ class EmbeddedCalendarWorker:
     def _record(self, report: TickReport | None, error: str) -> None:
         self._last_tick_at = self._clock()
         self._last_tick_error = error
+        record_beat(
+            self._heartbeat,
+            all_tenants=self._config.all_tenants,
+            tenant_ids=self._config.tenant_ids,
+            interval=self._config.interval,
+            error=error,
+            now=self._last_tick_at,
+        )
 
     def _build_runner(self):
         if self._make_runner is not None:
@@ -262,5 +273,8 @@ def calendar_worker() -> EmbeddedCalendarWorker:
     global _instance
     with _instance_lock:
         if _instance is None:
-            _instance = EmbeddedCalendarWorker(EmbeddedWorkerConfig.from_env())
+            config = EmbeddedWorkerConfig.from_env()
+            _instance = EmbeddedCalendarWorker(
+                config, heartbeat=production_heartbeat_store() if config.startable else None
+            )
         return _instance

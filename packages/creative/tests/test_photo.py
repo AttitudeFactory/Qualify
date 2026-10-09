@@ -103,3 +103,36 @@ class TestDerive:
         """Research §3: past +10% food reads as fake. The type refuses to exist."""
         with pytest.raises(ValueError, match="fake"):
             FoodPreset(saturation=1.2)
+
+
+# -- to_meta_jpeg (§ request 2026-10-05: every generated image is stored as JPEG) ----------
+
+
+def test_a_generated_png_becomes_a_real_jpeg_of_the_same_size() -> None:
+    from qualify_creative.photo.normalize import to_meta_jpeg
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (1080, 1350), (196, 98, 45)).save(buffer, format="PNG")
+    jpeg = to_meta_jpeg(buffer.getvalue())
+    assert jpeg[:3] == b"\xff\xd8\xff"  # the bytes the publisher sniffs, not just a label
+    with Image.open(io.BytesIO(jpeg)) as out:
+        assert out.format == "JPEG" and out.size == (1080, 1350) and out.mode == "RGB"
+
+
+def test_transparency_is_flattened_onto_white_not_black() -> None:
+    from qualify_creative.photo.normalize import to_meta_jpeg
+
+    buffer = io.BytesIO()
+    Image.new("RGBA", (64, 64), (0, 0, 0, 0)).save(buffer, format="PNG")
+    with Image.open(io.BytesIO(to_meta_jpeg(buffer.getvalue()))) as out:
+        r, g, b = out.getpixel((32, 32))
+        assert min(r, g, b) > 245
+
+
+def test_a_file_that_cannot_fit_metas_cap_is_refused() -> None:
+    from qualify_creative.photo.normalize import ImageTooLargeForMeta, to_meta_jpeg
+
+    buffer = io.BytesIO()
+    Image.effect_noise((256, 256), 100).convert("RGB").save(buffer, format="PNG")
+    with pytest.raises(ImageTooLargeForMeta):
+        to_meta_jpeg(buffer.getvalue(), max_bytes=1024)

@@ -9,6 +9,7 @@ overwriting.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -43,6 +44,15 @@ class EventRecord:
     created_by_user_id: UUID
     created_at: datetime
     updated_at: datetime
+    # MP-11: the template output this event publishes (`reel` / `feed` / `story`), or None
+    # for the whole POST. Frozen with the event: a reschedule never changes the output.
+    output_port: str | None = None
+    # QUA-118 v2 (0041): where the event goes out — `post` / `reel` / `story`. None only
+    # for an event whose POST could not be backfilled; the executor then derives it from
+    # the category as before. Frozen with the event, like the output.
+    destination: str | None = None
+    # QUA-118 v2 (0042): the plan's goals (`models.EVENT_GOALS`), kept on every event.
+    goals: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -62,10 +72,19 @@ class NewEvent:
     scheduled_at: datetime
     scheduled_tz: str
     created_by_user_id: UUID
+    output_port: str | None = None
+    destination: str | None = None
+    goals: tuple[str, ...] = ()
 
 
 class PlannerRepository(Protocol):
     def add(self, new: NewEvent) -> EventRecord: ...
+
+    def add_many(self, news: Sequence[NewEvent]) -> list[EventRecord]:
+        """Create every event or none (QUA-118 A4): one transaction, so a series or a
+        multi-account plan is never left half-written. All events belong to one tenant.
+        Returns the records in the order given."""
+        ...
 
     def get(self, *, tenant_id: UUID, event_id: UUID) -> EventRecord | None: ...
 
@@ -83,6 +102,12 @@ class PlannerRepository(Protocol):
 
     def occupied_post_ids(self, *, tenant_id: UUID, brand_id: UUID) -> set[UUID]:
         """POSTs with at least one event whose status `occupies_post`."""
+        ...
+
+    def list_occupying(self, *, tenant_id: UUID, brand_id: UUID) -> list[EventRecord]:
+        """Every event of the brand whose status `occupies_post`, ordered by instant —
+        what decides, per POST and per output (MP-11), whether it is still "Sin
+        programar"."""
         ...
 
     def list_for_post(self, *, tenant_id: UUID, post_id: UUID) -> list[EventRecord]:
@@ -197,6 +222,11 @@ class PlannerRepository(Protocol):
         """Set the event's tags to exactly `tag_ids`."""
         ...
 
+    def set_event_goals(self, *, tenant_id: UUID, event_id: UUID, goals: tuple[str, ...]) -> None:
+        """Set the event's goals (0042) to exactly `goals`. LookupError when the event
+        is not the tenant's."""
+        ...
+
     def delete_tag(self, *, tenant_id: UUID, tag_id: UUID) -> bool:
         """Remove the tag and every event's link to it. False if it was not the tenant's."""
         ...
@@ -221,6 +251,9 @@ def _snapshot(row: CalendarEvent) -> EventRecord:
         created_by_user_id=row.created_by_user_id,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        output_port=row.output_port,
+        destination=row.destination,
+        goals=tuple(row.goals or ()),
     )
 
 
@@ -272,6 +305,12 @@ class MemoryPlannerRepository:
                 raise LookupError(str(tag_id))
         self._event_tags[event_id] = set(tag_ids)
 
+    def set_event_goals(self, *, tenant_id: UUID, event_id: UUID, goals: tuple[str, ...]) -> None:
+        current = self.get(tenant_id=tenant_id, event_id=event_id)
+        if current is None:
+            raise LookupError(str(event_id))
+        self._rows[event_id] = replace(current, goals=tuple(goals))
+
     def delete_cancelled(self, *, tenant_id: UUID, event_id: UUID) -> bool:
         current = self.get(tenant_id=tenant_id, event_id=event_id)
         if current is None or current.status != EventStatus.CANCELLED.value:
@@ -290,24 +329,39 @@ class MemoryPlannerRepository:
         return True
 
     def add(self, new: NewEvent) -> EventRecord:
+        return self.add_many([new])[0]
+
+    def add_many(self, news: Sequence[NewEvent]) -> list[EventRecord]:
+        """All-or-nothing like the Postgres one: every record is built before any is
+        stored, so a bad input (two tenants in one batch) leaves the dict untouched."""
+        if not news:
+            return []
+        _require_one_tenant(news)
         now = datetime.now(UTC)
-        record = EventRecord(
-            id=uuid4(),
-            tenant_id=new.tenant_id,
-            brand_id=new.brand_id,
-            post_id=new.post_id,
-            connection_id=new.connection_id,
-            scheduled_at=new.scheduled_at,
-            scheduled_tz=new.scheduled_tz,
-            status=EventStatus.SCHEDULED.value,
-            revision=1,
-            publish_attempt_id=None,
-            created_by_user_id=new.created_by_user_id,
-            created_at=now,
-            updated_at=now,
-        )
-        self._rows[record.id] = record
-        return record
+        records = [
+            EventRecord(
+                id=uuid4(),
+                tenant_id=new.tenant_id,
+                brand_id=new.brand_id,
+                post_id=new.post_id,
+                connection_id=new.connection_id,
+                scheduled_at=new.scheduled_at,
+                scheduled_tz=new.scheduled_tz,
+                status=EventStatus.SCHEDULED.value,
+                revision=1,
+                publish_attempt_id=None,
+                created_by_user_id=new.created_by_user_id,
+                created_at=now,
+                updated_at=now,
+                output_port=new.output_port,
+                destination=new.destination,
+                goals=tuple(new.goals),
+            )
+            for new in news
+        ]
+        for record in records:
+            self._rows[record.id] = record
+        return records
 
     def get(self, *, tenant_id: UUID, event_id: UUID) -> EventRecord | None:
         record = self._rows.get(event_id)
@@ -340,6 +394,16 @@ class MemoryPlannerRepository:
             for r in self._rows.values()
             if r.tenant_id == tenant_id and r.brand_id == brand_id and r.status in _OCCUPYING
         }
+
+    def list_occupying(self, *, tenant_id: UUID, brand_id: UUID) -> list[EventRecord]:
+        return sorted(
+            (
+                r
+                for r in self._rows.values()
+                if r.tenant_id == tenant_id and r.brand_id == brand_id and r.status in _OCCUPYING
+            ),
+            key=lambda r: (r.scheduled_at, r.created_at),
+        )
 
     def list_for_post(self, *, tenant_id: UUID, post_id: UUID) -> list[EventRecord]:
         return sorted(
@@ -492,26 +556,49 @@ class MemoryPlannerRepository:
         return updated
 
 
+def _require_one_tenant(news: Sequence[NewEvent]) -> UUID:
+    tenants = {new.tenant_id for new in news}
+    if len(tenants) != 1:
+        raise ValueError(f"a batch of events belongs to one tenant, got {len(tenants)}")
+    return news[0].tenant_id
+
+
 class PostgresPlannerRepository:
     """Every call opens its own `tenant_session` — RLS decides visibility."""
 
     def add(self, new: NewEvent) -> EventRecord:
-        with tenant_session(new.tenant_id) as session:
-            row = CalendarEvent(
-                tenant_id=new.tenant_id,
-                brand_id=new.brand_id,
-                post_id=new.post_id,
-                connection_id=new.connection_id,
-                scheduled_at=new.scheduled_at,
-                scheduled_tz=new.scheduled_tz,
-                status=EventStatus.SCHEDULED.value,
-                revision=1,
-                created_by_user_id=new.created_by_user_id,
-            )
-            session.add(row)
+        return self.add_many([new])[0]
+
+    def add_many(self, news: Sequence[NewEvent]) -> list[EventRecord]:
+        """One `tenant_session` = one transaction (QUA-118 A4): the rows are flushed
+        together and the session commits on exit — any error (a constraint, RLS, the
+        connection) rolls every row back, so a series is never half-created."""
+        if not news:
+            return []
+        tenant_id = _require_one_tenant(news)
+        with tenant_session(tenant_id) as session:
+            rows = [
+                CalendarEvent(
+                    tenant_id=new.tenant_id,
+                    brand_id=new.brand_id,
+                    post_id=new.post_id,
+                    connection_id=new.connection_id,
+                    scheduled_at=new.scheduled_at,
+                    scheduled_tz=new.scheduled_tz,
+                    status=EventStatus.SCHEDULED.value,
+                    revision=1,
+                    created_by_user_id=new.created_by_user_id,
+                    output_port=new.output_port,
+                    destination=new.destination,
+                    goals=list(new.goals),
+                )
+                for new in news
+            ]
+            session.add_all(rows)
             session.flush()
-            session.refresh(row)
-            return _snapshot(row)
+            for row in rows:
+                session.refresh(row)
+            return [_snapshot(row) for row in rows]
 
     def get(self, *, tenant_id: UUID, event_id: UUID) -> EventRecord | None:
         with tenant_session(tenant_id) as session:
@@ -553,6 +640,20 @@ class PostgresPlannerRepository:
                     .distinct()
                 )
             )
+
+    def list_occupying(self, *, tenant_id: UUID, brand_id: UUID) -> list[EventRecord]:
+        with tenant_session(tenant_id) as session:
+            return [
+                _snapshot(row)
+                for row in session.scalars(
+                    select(CalendarEvent)
+                    .where(
+                        CalendarEvent.brand_id == brand_id,
+                        CalendarEvent.status.in_(_OCCUPYING),
+                    )
+                    .order_by(CalendarEvent.scheduled_at, CalendarEvent.created_at)
+                )
+            ]
 
     def list_for_post(self, *, tenant_id: UUID, post_id: UUID) -> list[EventRecord]:
         with tenant_session(tenant_id) as session:
@@ -770,6 +871,14 @@ class PostgresPlannerRepository:
             session.execute(delete(CalendarEventTag).where(CalendarEventTag.event_id == event_id))
             for tag_id in dict.fromkeys(tag_ids):
                 session.add(CalendarEventTag(tenant_id=tenant_id, event_id=event_id, tag_id=tag_id))
+            session.flush()
+
+    def set_event_goals(self, *, tenant_id: UUID, event_id: UUID, goals: tuple[str, ...]) -> None:
+        with tenant_session(tenant_id) as session:
+            row = session.get(CalendarEvent, event_id)
+            if row is None:
+                raise LookupError(str(event_id))
+            row.goals = list(goals)
             session.flush()
 
     def delete_cancelled(self, *, tenant_id: UUID, event_id: UUID) -> bool:

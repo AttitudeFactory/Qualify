@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from qualify_api.http.deps import Principal, current_principal
 from qualify_api.sentiment.composition import UnknownSentimentConnection
-from qualify_api.sentiment.service import AnalysisSummary
+from qualify_api.sentiment.service import AnalysisSummary, SentimentModelUnavailable
 
 router = APIRouter(prefix="/api", tags=["sentiment"])
 
@@ -59,6 +59,8 @@ def analyze_sentiment(
         summary = analyze(tenant_id=principal.tenant_id, connection_id=body.connection_id)
     except UnknownSentimentConnection:
         raise HTTPException(status_code=404, detail="unknown connection") from None
+    except SentimentModelUnavailable:
+        raise HTTPException(status_code=503, detail="sentiment model unavailable") from None
     return AnalyzeResponse(
         comments_checked=summary.comments_checked,
         new_results=summary.new_results,

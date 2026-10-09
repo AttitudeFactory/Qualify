@@ -19,7 +19,13 @@ from sqlalchemy import select, text
 
 from qualify_api.catalog.models import MEDIA_TYPE_IMAGE, BrandProduct, ProductMedia
 from qualify_api.creative.fsm import DRAFTING
-from qualify_api.creative.models import ContentBrief, ContentDraft, ImageAsset, TemplateRun
+from qualify_api.creative.models import (
+    Campaign,
+    ContentBrief,
+    ContentDraft,
+    ImageAsset,
+    TemplateRun,
+)
 from qualify_api.tenancy.models import Brand, Tenant, User
 
 pytestmark = pytest.mark.db
@@ -97,9 +103,17 @@ def test_product_media_and_template_run_roundtrip(
 ) -> None:
     tenant_a, brand_a, user_a, _ = seeded_brands
     slug = f"shawarma-mixto-{uuid4().hex[:8]}"  # UNIQUE(brand_id, slug); fresh per run
-    campaign_id = uuid4()
-
     with tenant_session(tenant_a) as session:
+        # Since 0045 `campaign_id` has a real FK: the campaign must exist (QUA-143).
+        campaign = Campaign(
+            tenant_id=tenant_a,
+            brand_id=brand_a,
+            name=f"Lanzamiento {uuid4().hex[:8]}",
+            color="violet",
+        )
+        session.add(campaign)
+        session.flush()
+        campaign_id = campaign.id
         product = BrandProduct(
             tenant_id=tenant_a,
             brand_id=brand_a,
@@ -303,16 +317,21 @@ def test_widened_columns_exist_with_the_contracted_types() -> None:
     }
 
 
-def test_campaign_id_has_no_foreign_key_yet() -> None:
-    """Pinned on purpose: `campaigns` is a later revision, so 0038 leaves the column bare."""
+def test_campaign_id_gets_its_foreign_key_in_0045() -> None:
+    """0038 left the column bare on purpose; 0045 (QUA-143) declares the `campaigns` FK.
+
+    Read from `pg_constraint`, not `information_schema`: the latter only lists
+    constraints of tables the role owns or may write, and `qualify_admin` only has
+    SELECT — it would report zero FKs whatever the schema says."""
     with admin_session() as session:
-        n = session.scalar(
+        defs = session.scalars(
             text(
-                "SELECT count(*) FROM information_schema.key_column_usage k "
-                "JOIN information_schema.table_constraints c "
-                "  ON c.constraint_name = k.constraint_name AND c.table_schema = k.table_schema "
-                "WHERE k.table_schema = 'public' AND k.table_name = 'content_drafts' "
-                "  AND k.column_name = 'campaign_id' AND c.constraint_type = 'FOREIGN KEY'"
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'public.content_drafts'::regclass AND contype = 'f' "
+                "  AND conname = 'fk_content_draft_campaign'"
             )
-        )
-    assert n == 0
+        ).all()
+    assert len(defs) == 1
+    assert "(campaign_id, tenant_id, brand_id)" in defs[0]
+    assert "campaigns(id, tenant_id, brand_id)" in defs[0]
+    assert "ON DELETE SET NULL (campaign_id)" in defs[0]

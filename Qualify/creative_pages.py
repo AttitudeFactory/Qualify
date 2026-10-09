@@ -11,23 +11,35 @@ from __future__ import annotations
 
 import reflex as rx
 
+from .campaign_provider import COLOR_LABELS, NO_CAMPAIGN
+from .campaign_state import CampaignState
 from .content_generator import generator_page
 from .creative_state import GENERATION_STAGES, CreativeState
 from .creative_vm import (
     CopyVariantVM,
-    DraftSummaryVM,
     GapVM,
     MediaVM,
     RouteOptionVM,
     SourceVM,
     ToneRowVM,
 )
+from .gallery_state import GalleryState
+from .planner_vm import GALLERY_FILTER_ALL, GALLERY_STATE_FILTERS
+from .post_card import campaign_badge, color_swatches, kind_chip, media_fill
 from .r2_media import BACKEND_BASE
 from .ui import app_shell, callout, card, empty_state, page_body, page_header
 from .ui import tokens as T
 
 # ---------------------------------------------------------------------------
 # Shared scaffolding
+
+
+_CLAMP_2 = {
+    "display": "-webkit-box",
+    "-webkit-line-clamp": "2",
+    "-webkit-box-orient": "vertical",
+    "overflow": "hidden",
+}
 
 
 def _screen(topbar_title: str, topbar_subtitle: str, *body: rx.Component) -> rx.Component:
@@ -811,84 +823,301 @@ def create_index() -> rx.Component:
 
 
 # ---------------------------------------------------------------------------
-# /drafts — the tray
+# /drafts — the POST gallery (QUA-118)
 
 
-def _draft_row(draft: DraftSummaryVM) -> rx.Component:
-    return rx.table.row(
-        rx.table.cell(
-            rx.link(
-                rx.text(
-                    rx.cond(draft.topic != "", draft.topic, "(sin tema)"),
-                    size="2",
-                    weight="medium",
-                ),
-                href=f"/drafts/{draft.draft_id}",
-                underline="none",
+_GALLERY_STATE_ICON = {
+    "schedulable": "circle-check",
+    "needs_action": "circle-alert",
+    "draft": "pencil-line",
+    "used": "history",
+    "discarded": "circle-x",
+}
+
+
+def _gallery_state_badge(post) -> rx.Component:
+    """The POST's state on its media: glyph + word, in the state's tone."""
+    return rx.box(
+        rx.match(
+            post.gallery_state,
+            *[(key, rx.icon(icon, size=12)) for key, icon in _GALLERY_STATE_ICON.items()],
+            rx.icon("circle", size=12),
+        ),
+        rx.text(
+            rx.cond(post.gallery_state == "schedulable", "Listo para publicar", post.gallery_label),
+            as_="span",
+        ),
+        class_name="q-gstate q-gstate--" + post.gallery_state,
+    )
+
+
+def _gallery_card(post) -> rx.Component:
+    """One POST of the gallery, picture first: its state on the media (a ready one is
+    solid and glows, one that is not ready has a dashed frame), its temperature in big —
+    Cold frosted, Hot in embers — and the actions it allows right on the card: review
+    («Aprobar» / «Rechazar») while it waits for you, «Programar» once it is ready."""
+    busy = GalleryState.busy_post_id == post.post_id
+    view = rx.link(
+        rx.button(
+            rx.icon("eye", size=15),
+            "Ver POST",
+            variant="soft",
+            color_scheme="gray",
+            size="2",
+            width="100%",
+        ),
+        href=post.detail_href,
+        width="100%",
+    )
+    actions = rx.cond(
+        post.can_review,
+        rx.box(
+            rx.button(
+                rx.icon("circle-x", size=15),
+                "Rechazar",
+                variant="outline",
+                color_scheme="red",
+                size="2",
+                width="100%",
+                disabled=busy,
+                on_click=GalleryState.ask_reject_post(post.post_id, post.title),
             ),
-            max_width="360px",
-            overflow="hidden",
-            text_overflow="ellipsis",
-            white_space="nowrap",
+            rx.button(
+                rx.icon("circle-check", size=15),
+                "Aprobar",
+                size="2",
+                width="100%",
+                loading=busy,
+                on_click=GalleryState.quick_approve(post.post_id),
+            ),
+            view,
+            class_name="q-gcard-actions q-gcard-actions--review",
         ),
-        rx.table.cell(status_badge(draft.status, draft.status_label, draft.status_tone)),
-        rx.table.cell(
+        rx.box(
+            view,
             rx.cond(
-                draft.failure_label != "",
-                rx.text(draft.failure_label, size="1", color=rx.color("tomato", 10)),
-                rx.fragment(),
-            )
+                post.gallery_state == "schedulable",
+                rx.button(
+                    rx.icon("calendar-plus", size=15),
+                    "Programar",
+                    size="2",
+                    width="100%",
+                    on_click=GalleryState.assign(post.post_id),
+                ),
+            ),
+            class_name="q-gcard-actions",
         ),
-        rx.table.cell(draft.created_label, white_space="nowrap"),
+    )
+    return rx.box(
+        rx.box(
+            media_fill(post.thumbnail_url, post.video_url, post.kind),
+            rx.box(class_name="q-gcard-shade"),
+            rx.box(_gallery_state_badge(post), class_name="q-gcard-tl"),
+            rx.cond(
+                post.temperature != "",
+                rx.box(
+                    rx.cond(
+                        post.temperature == "cold",
+                        rx.icon("snowflake", size=15),
+                        rx.icon("flame", size=15),
+                    ),
+                    rx.text(post.temperature_label, as_="span"),
+                    class_name="q-temp q-temp--big q-temp--" + post.temperature,
+                    title=post.temperature_hint,
+                ),
+            ),
+            rx.box(kind_chip(post.kind, post.kind_label, glass=True), class_name="q-gcard-bl"),
+            class_name="q-gcard-media",
+        ),
+        rx.box(
+            rx.text(post.title, class_name="q-gcard-title", style=_CLAMP_2),
+            campaign_badge(post.campaign_name, post.campaign_color),  # QUA-143
+            rx.flex(
+                rx.text(post.media_label, size="1", color=T.TEXT_MUTED),
+                rx.cond(
+                    post.used_count > 0,
+                    rx.box(
+                        rx.icon("history", size=11),
+                        "Usado ×" + post.used_count.to_string(),
+                        class_name="q-gmeta",
+                    ),
+                ),
+                rx.cond(
+                    post.in_calendar,
+                    rx.box(
+                        rx.icon("calendar-check", size=11), "En calendario", class_name="q-gmeta"
+                    ),
+                ),
+                wrap="wrap",
+                gap="0.4rem",
+                align="center",
+            ),
+            rx.cond(
+                post.readiness_note != "",
+                rx.hstack(
+                    rx.icon("triangle-alert", size=13, flex_shrink="0"),
+                    rx.text(post.readiness_note, size="1"),
+                    class_name="q-gcard-note",
+                    align="start",
+                    spacing="1",
+                ),
+            ),
+            class_name="q-gcard-body",
+        ),
+        actions,
+        class_name="q-gcard q-gcard--"
+        + post.gallery_state
+        + " q-chip-temp q-chip-temp--"
+        + post.temperature,
+    )
+
+
+def _gallery_reject_dialog() -> rx.Component:
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title("¿Rechazar este POST?"),
+            rx.alert_dialog.description(
+                "«" + GalleryState.reject_post_title + "» se descarta y no se genera nada "
+                "nuevo. No se podrá aprobar ni publicar.",
+                size="2",
+            ),
+            rx.flex(
+                rx.alert_dialog.cancel(
+                    rx.button(
+                        rx.icon("arrow-left", size=15),
+                        "Volver",
+                        variant="soft",
+                        color_scheme="gray",
+                        size="2",
+                    ),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        rx.icon("circle-x", size=15),
+                        "Sí, rechazar",
+                        color_scheme="red",
+                        size="2",
+                        on_click=GalleryState.confirm_reject_post,
+                    ),
+                ),
+                justify="end",
+                gap="0.75rem",
+                margin_top="1.25rem",
+            ),
+            max_width="28rem",
+        ),
+        open=GalleryState.reject_post_id != "",
+        on_open_change=GalleryState.set_reject_post_open,
+    )
+
+
+def _state_chip(value: str, label: str) -> rx.Component:
+    """A state filter: the word, its count, selected = solid. «Todos» first."""
+    selected = GalleryState.state_filter == value
+    return rx.button(
+        label,
+        rx.badge(
+            GalleryState.state_counts[value],
+            variant="solid" if False else "soft",
+            color_scheme="gray",
+            radius="full",
+            size="1",
+            class_name="q-nums",
+        ),
+        size="1",
+        variant=rx.cond(selected, "solid", "soft"),
+        color_scheme=rx.cond(selected, "teal", "gray"),
+        radius="full",
+        on_click=GalleryState.set_state_filter(value),
+        aria_pressed=selected,
+    )
+
+
+def _gallery_toolbar() -> rx.Component:
+    return rx.flex(
+        rx.flex(
+            _state_chip(GALLERY_FILTER_ALL, "Todos"),
+            *[_state_chip(value, label) for value, label in GALLERY_STATE_FILTERS],
+            wrap="wrap",
+            gap="0.35rem",
+            align="center",
+        ),
+        rx.spacer(),
+        rx.link(
+            rx.button(rx.icon("sparkles", size=15), "Crear POST", size="2"),
+            href="/create",
+        ),
+        wrap="wrap",
+        gap="0.75rem",
+        align="center",
+        width="100%",
+    )
+
+
+def _gallery_empty() -> rx.Component:
+    return rx.cond(
+        GalleryState.is_filtered,
+        empty_state(
+            "filter",
+            "Nada con esos filtros",
+            "Prueba otro estado u otra categoría, o quita los filtros.",
+            action=rx.button(
+                "Quitar filtros", variant="soft", size="2", on_click=GalleryState.clear_filters
+            ),
+        ),
+        empty_state(
+            "inbox",
+            "Todavía no hay POSTs",
+            "Cada pieza que encargues aparece aquí con su estado, lista para revisar y programar.",
+            action=rx.link(
+                rx.button(rx.icon("plus", size=16), "Crear el primero", size="3"),
+                href="/create",
+            ),
+        ),
     )
 
 
 def drafts_index() -> rx.Component:
+    """The gallery: every POST of the brand as a card with its state (Borrador · Por
+    completar · Listo · Usado · Desechado), filters, and «Asignar» into the
+    Planificador's drawer (QUA-118 AC 1 / AC 3)."""
     return _screen(
         "Borradores",
-        "Cada pieza espera tu revisión: nada sale sin aprobación humana",
+        "Tus POSTs y en qué punto está cada uno: nada sale sin aprobación humana.",
         _padded(
-            rx.cond(CreativeState.drafts_error != "", _error_callout(CreativeState.drafts_error)),
-            rx.hstack(
-                rx.spacer(),
-                rx.link(
-                    rx.button(rx.icon("plus", size=15), "Nuevo encargo", size="2"),
-                    href="/create",
-                ),
-                width="100%",
-            ),
+            rx.cond(GalleryState.error != "", _error_callout(GalleryState.error)),
+            _gallery_toolbar(),
             rx.cond(
-                CreativeState.drafts_loading,
-                rx.skeleton(rx.box(height="10rem", width="100%")),
+                GalleryState.loading,
+                rx.box(
+                    *[rx.skeleton(rx.box(height="7rem", width="100%")) for _ in range(6)],
+                    class_name="q-gallery",
+                ),
                 rx.cond(
-                    CreativeState.drafts.length() > 0,
-                    rx.box(
-                        rx.table.root(
-                            rx.table.header(
-                                rx.table.row(
-                                    rx.table.column_header_cell("Tema"),
-                                    rx.table.column_header_cell("Estado"),
-                                    rx.table.column_header_cell(""),
-                                    rx.table.column_header_cell("Creado"),
-                                )
+                    GalleryState.visible_count > 0,
+                    rx.vstack(
+                        rx.text(
+                            rx.cond(
+                                GalleryState.is_filtered,
+                                GalleryState.visible_count.to_string()
+                                + " de "
+                                + GalleryState.total_count.to_string()
+                                + " POSTs",
+                                GalleryState.total_count.to_string() + " POSTs",
                             ),
-                            rx.table.body(rx.foreach(CreativeState.drafts, _draft_row)),
-                            variant="surface",
-                            width="100%",
+                            size="1",
+                            color=T.TEXT_MUTED,
                         ),
-                        overflow_x="auto",
+                        rx.box(
+                            rx.foreach(GalleryState.visible, _gallery_card),
+                            class_name="q-gallery q-gallery--cards",
+                        ),
+                        _gallery_reject_dialog(),
+                        spacing="2",
                         width="100%",
+                        align_items="start",
                     ),
-                    empty_state(
-                        "inbox",
-                        "Todavía no hay borradores",
-                        "Cada pieza que encargues aparece aquí para tu revisión antes de "
-                        "publicarse.",
-                        action=rx.link(
-                            rx.button(rx.icon("plus", size=16), "Crear el primero", size="3"),
-                            href="/create",
-                        ),
-                    ),
+                    _gallery_empty(),
                 ),
             ),
         ),
@@ -985,12 +1214,16 @@ def _failed_panel() -> rx.Component:
 def _media_item(item: rx.Var[MediaVM]) -> rx.Component:
     # R2-only media comes through the backend's `/r2media/<token>` (`r2_media.py`);
     # everything else from the local upload store, as before.
-    local = rx.get_upload_url(item.key)
+    # A provider/seed URL (`http…`) is shown as is — it is not an upload-store key.
+    local = rx.cond(item.key.startswith("http"), item.key, rx.get_upload_url(item.key))
     src = rx.cond(item.url != "", BACKEND_BASE + item.url, local)
     download_href = rx.cond(item.url != "", BACKEND_BASE + item.url + "?download=1", local)
+    file_name = rx.cond(item.media_type == "video", "qualify-video.mp4", "qualify-imagen.jpg")
     # Fluid up to 16rem: a fixed 240×427 box overflowed narrow screens and left a black
     # letterbox; the 9:16 ratio keeps a vertical video's shape at any width.
     return rx.vstack(
+        # One size per medium, filling the column: a video vertical 9:16, an image 4:5
+        # (Instagram's feed format), cropped to fill — never a small floating thumbnail.
         rx.cond(
             item.media_type == "video",
             rx.video(
@@ -998,23 +1231,51 @@ def _media_item(item: rx.Var[MediaVM]) -> rx.Component:
                 controls=True,
                 width="100%",
                 height="auto",
-                style={"aspect_ratio": "9 / 16", "background": "black", "border_radius": "0.5rem"},
+                class_name="q-rv-media q-rv-media--video",
             ),
-            rx.image(src=src, width="100%", border_radius="0.5rem"),
+            rx.image(src=src, alt="", class_name="q-rv-media q-rv-media--image"),
         ),
+        # The file under its preview: what it is and its format on the left, «Descargar»
+        # on the right — a bar of its own, not a loose icon.
         rx.hstack(
-            rx.text(item.label, size="1", color=T.TEXT_MUTED),
-            rx.link(
-                rx.icon("download", size=13),
-                href=download_href,
-                is_external=True,
-                download=True,
-                title="Descargar",
+            rx.center(
+                rx.cond(
+                    item.media_type == "video",
+                    rx.icon("film", size=15),
+                    rx.icon("image", size=15),
+                ),
+                class_name="q-rv-glyph",
             ),
-            spacing="2",
+            rx.vstack(
+                rx.text(item.label, size="2", weight="bold"),
+                rx.text(
+                    rx.cond(item.media_type == "video", "Vertical 9:16", "Publicación 4:5"),
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                spacing="0",
+                min_width="0",
+            ),
+            rx.spacer(),
+            rx.button(
+                rx.icon("download", size=15),
+                "Descargar",
+                variant="soft",
+                size="2",
+                # A browser ignores `<a download>` for another origin (the backend's
+                # upload store on its own port, a provider URL) and just opens the file;
+                # fetching it and saving the blob downloads it right away. If the origin
+                # refuses (no CORS), it opens in a new tab as before.
+                on_click=rx.call_script(
+                    f"window.qualifyDownload('{download_href.to(str)}', '{file_name}')"
+                ),
+            ),
             align="center",
+            spacing="2",
+            width="100%",
+            class_name="q-rv-mediabar",
         ),
-        spacing="1",
+        spacing="3",
         align="center",
         width="100%",
     )
@@ -1033,10 +1294,8 @@ def _media_column() -> rx.Component:
             rx.foreach(draft.media, _media_item),
             spacing="3",
             width=_MEDIA_COLUMN_WIDTH,
-            max_width=rx.breakpoints(initial="16rem", md="none"),
+            max_width=rx.breakpoints(initial="22rem", md="none"),
             margin_x=rx.breakpoints(initial="auto", md="0"),
-            max_height=rx.breakpoints(initial="none", md="40rem"),
-            overflow_y="auto",
         ),
         rx.center(
             rx.vstack(
@@ -1070,157 +1329,527 @@ def _media_column() -> rx.Component:
 
 
 def _edit_actions() -> rx.Component:
-    """Read-only by default: "Editar" unlocks the fields; "Guardar" re-runs the brand
-    rules and locks them again; "Cancelar" restores the saved copy."""
+    """One action bar, always at the foot of the copy, in both modes: «Editar texto»
+    while reading; «Cancelar» and «Guardar cambios» while editing (saving re-runs the
+    brand rules). Same size, same shape, every button with its glyph."""
     draft = CreativeState.draft
     return rx.cond(
         CreativeState.edit_mode,
-        rx.vstack(
+        rx.box(
             rx.flex(
-                rx.button(
-                    rx.icon("shield-check", size=15),
-                    "Guardar edición (revalida las reglas)",
-                    on_click=CreativeState.save_edit,
-                    loading=CreativeState.edit_saving,
-                    size="2",
-                ),
-                rx.button(
-                    "Cancelar",
-                    variant="soft",
-                    color_scheme="gray",
-                    on_click=CreativeState.cancel_edit,
-                    disabled=CreativeState.edit_saving,
-                    size="2",
-                ),
-                gap="2",
-                wrap="wrap",
-            ),
-            # Only while editing something already approved: saving sends it back to
-            # review (the FSM's `edit` edge) — said before the click, not after.
-            rx.cond(
-                draft.status == "approved",
                 rx.text(
-                    "Al guardar, el POST vuelve a revisión: apruébalo de nuevo para que se "
-                    "pueda publicar.",
+                    rx.cond(
+                        draft.status == "approved",
+                        "Al guardar, el POST vuelve a revisión: apruébalo de nuevo para que "
+                        "se pueda publicar.",
+                        "Al guardar se revisan las reglas de tu marca.",
+                    ),
                     size="1",
                     color=T.TEXT_MUTED,
+                    flex="1",
+                    min_width="12rem",
                 ),
+                rx.flex(
+                    rx.button(
+                        rx.icon("x", size=15),
+                        "Cancelar",
+                        variant="soft",
+                        color_scheme="gray",
+                        on_click=CreativeState.cancel_edit,
+                        disabled=CreativeState.edit_saving,
+                        size="2",
+                    ),
+                    rx.button(
+                        rx.icon("check", size=15),
+                        "Guardar cambios",
+                        on_click=CreativeState.save_edit,
+                        loading=CreativeState.edit_saving,
+                        size="2",
+                    ),
+                    gap="0.75rem",
+                ),
+                align="center",
+                justify="between",
+                gap="0.75rem",
+                wrap="wrap",
+                width="100%",
             ),
-            spacing="1",
-            align_items="start",
+            class_name="q-rv-savebar q-rv-savebar--editing",
         ),
         rx.cond(
             draft.can_edit,
-            rx.button(
-                rx.icon("pencil", size=15),
-                "Editar",
-                variant="soft",
-                on_click=CreativeState.start_edit,
-                size="2",
+            rx.box(
+                rx.flex(
+                    rx.text(
+                        "Edita el gancho, el texto, los hashtags, el llamado a la acción y el "
+                        "guion.",
+                        size="1",
+                        color=T.TEXT_MUTED,
+                        flex="1",
+                        min_width="12rem",
+                    ),
+                    rx.button(
+                        rx.icon("pencil", size=15),
+                        "Editar texto",
+                        variant="soft",
+                        on_click=CreativeState.start_edit,
+                        size="2",
+                    ),
+                    align="center",
+                    justify="between",
+                    gap="0.75rem",
+                    wrap="wrap",
+                    width="100%",
+                ),
+                class_name="q-rv-savebar",
             ),
+        ),
+    )
+
+
+def _field_head(icon: str, title: str, hint: str, counter: rx.Var | None = None) -> rx.Component:
+    return rx.hstack(
+        rx.center(rx.icon(icon, size=14), class_name="q-rv-glyph"),
+        rx.vstack(
+            rx.text(title, class_name="q-rv-title"),
+            rx.text(hint, class_name="q-rv-hint"),
+            spacing="0",
+            min_width="0",
+        ),
+        rx.spacer(),
+        *([rx.text(counter, class_name="q-rv-count q-nums")] if counter is not None else []),
+        align="center",
+        spacing="2",
+        width="100%",
+    )
+
+
+def _read_text(value: rx.Var[str], empty: str, *, multiline: bool = False) -> rx.Component:
+    """A saved field, shown as text — a disabled input reads as broken, not as saved."""
+    return rx.cond(
+        value != "",
+        rx.text(
+            value,
+            class_name="q-rv-read" + (" q-rv-read--multi" if multiline else ""),
+        ),
+        rx.text(empty, class_name="q-rv-read q-rv-read--empty"),
+    )
+
+
+def _rv_section(*children: rx.Component) -> rx.Component:
+    return rx.box(*children, class_name="q-rv-section")
+
+
+def _removable_chip(label: rx.Var[str], on_remove, *, prefix: str = "") -> rx.Component:
+    return rx.box(
+        rx.text(prefix + label, as_="span"),
+        rx.cond(
+            CreativeState.edit_mode,
+            rx.el.button(
+                rx.icon("x", size=11),
+                type="button",
+                class_name="q-rv-chip-x",
+                aria_label="Quitar " + prefix + label,
+                on_click=on_remove,
+            ),
+        ),
+        class_name="q-rv-chip",
+    )
+
+
+def _add_chip(label: rx.Var[str], on_add, *, prefix: str = "", title=None) -> rx.Component:
+    return rx.el.button(
+        rx.icon("plus", size=11),
+        rx.text(prefix + label, as_="span"),
+        type="button",
+        class_name="q-rv-chip q-rv-chip--suggest",
+        title=title,
+        on_click=on_add,
+    )
+
+
+def _add_row(value, on_change, on_add, placeholder: str, icon: str) -> rx.Component:
+    """A field to type one more item and the button that adds it — the same pair for
+    hashtags and calls to action."""
+    return rx.hstack(
+        rx.input(
+            rx.input.slot(rx.icon(icon, size=13)),
+            value=value,
+            on_change=on_change,
+            placeholder=placeholder,
+            size="2",
+            flex="1",
+        ),
+        rx.button(
+            rx.icon("plus", size=15),
+            "Agregar",
+            size="2",
+            variant="soft",
+            on_click=on_add,
+            disabled=value == "",
+        ),
+        width="100%",
+        spacing="2",
+    )
+
+
+def _idea_chip(idea) -> rx.Component:
+    return _add_chip(
+        idea.tag,
+        CreativeState.add_hashtag(idea.tag),
+        prefix="#",
+        title=idea.reason + rx.cond(idea.seen_label != "", " · " + idea.seen_label, ""),
+    )
+
+
+def _idea_group(icon: str, title: str, ideas) -> rx.Component:
+    return rx.cond(
+        ideas.length() > 0,
+        rx.vstack(
+            rx.hstack(
+                rx.icon(icon, size=12),
+                rx.text(title, size="1", weight="bold"),
+                align="center",
+                spacing="1",
+                class_name="q-rv-group-head",
+            ),
+            rx.flex(rx.foreach(ideas, _idea_chip), wrap="wrap", gap="0.4rem"),
+            spacing="1",
+            width="100%",
+        ),
+    )
+
+
+def _ai_hashtags() -> rx.Component:
+    """«Sugerir con IA»: hashtags for the whole caption — popular, niche, local/brand —
+    grounded in tags seen on real posts. The reason is on each chip's tooltip."""
+    return rx.box(
+        rx.flex(
+            rx.hstack(
+                rx.icon("sparkles", size=14),
+                rx.vstack(
+                    rx.text("Sugeridos para tu texto", size="2", weight="bold"),
+                    rx.text(
+                        "La IA lee todo el caption y propone populares, de nicho y locales, "
+                        "priorizando los que vemos en publicaciones reales.",
+                        size="1",
+                        color=T.TEXT_MUTED,
+                    ),
+                    spacing="0",
+                ),
+                align="start",
+                spacing="2",
+                flex="1",
+                min_width="14rem",
+            ),
+            rx.flex(
+                rx.cond(
+                    CreativeState.ai_pending_count > 1,
+                    rx.button(
+                        rx.icon("list-plus", size=15),
+                        "Agregar todos",
+                        size="2",
+                        variant="soft",
+                        color_scheme="gray",
+                        on_click=CreativeState.add_all_ai_hashtags,
+                    ),
+                ),
+                rx.button(
+                    rx.icon("sparkles", size=15),
+                    rx.cond(
+                        CreativeState.ai_hashtags.length() > 0, "Sugerir otra vez", "Sugerir con IA"
+                    ),
+                    size="2",
+                    variant="soft",
+                    loading=CreativeState.ai_hashtags_loading,
+                    on_click=CreativeState.suggest_hashtags_ai,
+                ),
+                gap="0.75rem",
+                wrap="wrap",
+            ),
+            align="center",
+            justify="between",
+            gap="0.75rem",
+            wrap="wrap",
+            width="100%",
+        ),
+        rx.cond(
+            CreativeState.ai_hashtags_note != "",
+            rx.text(CreativeState.ai_hashtags_note, size="1", color=T.TEXT_MUTED),
+        ),
+        _idea_group("flame", "Populares", CreativeState.ai_popular),
+        _idea_group("target", "De nicho", CreativeState.ai_niche),
+        _idea_group("map-pin", "Locales y de marca", CreativeState.ai_brand),
+        rx.cond(
+            (CreativeState.ai_hashtags.length() == 0)
+            & (CreativeState.hashtag_suggestions.length() > 0),
+            rx.vstack(
+                rx.hstack(
+                    rx.icon("text-search", size=12),
+                    rx.text("Palabras de tu texto", size="1", weight="bold"),
+                    align="center",
+                    spacing="1",
+                    class_name="q-rv-group-head",
+                ),
+                rx.flex(
+                    rx.foreach(
+                        CreativeState.hashtag_suggestions,
+                        lambda tag: _add_chip(tag, CreativeState.add_hashtag(tag), prefix="#"),
+                    ),
+                    wrap="wrap",
+                    gap="0.4rem",
+                ),
+                spacing="1",
+                width="100%",
+            ),
+        ),
+        class_name="q-rv-suggest",
+    )
+
+
+def _hashtags_field() -> rx.Component:
+    return _rv_section(
+        _field_head(
+            "hash",
+            "Hashtags",
+            "Ayudan a que te encuentre gente que aún no te sigue.",
+            CreativeState.hashtag_count_label,
+        ),
+        rx.cond(
+            CreativeState.edit_hashtag_chips.length() > 0,
+            rx.flex(
+                rx.foreach(
+                    CreativeState.edit_hashtag_chips,
+                    lambda tag: _removable_chip(tag, CreativeState.remove_hashtag(tag), prefix="#"),
+                ),
+                wrap="wrap",
+                gap="0.4rem",
+            ),
+            rx.text("Sin hashtags todavía.", class_name="q-rv-read q-rv-read--empty"),
+        ),
+        rx.cond(
+            CreativeState.edit_mode,
+            rx.vstack(
+                _add_row(
+                    CreativeState.edit_hashtag_query,
+                    CreativeState.set_edit_hashtag_query,
+                    CreativeState.add_typed_hashtag,
+                    "Escribe un hashtag",
+                    "hash",
+                ),
+                _ai_hashtags(),
+                spacing="3",
+                width="100%",
+            ),
+        ),
+    )
+
+
+def _cta_field() -> rx.Component:
+    return _rv_section(
+        _field_head(
+            "megaphone",
+            "Llamado a la acción (CTA)",
+            "Lo que le pides a tu público que haga después de verlo. Puedes poner varios.",
+        ),
+        rx.cond(
+            CreativeState.cta_chips.length() > 0,
+            rx.flex(
+                rx.foreach(
+                    CreativeState.cta_chips,
+                    lambda cta: _removable_chip(cta, CreativeState.remove_cta(cta)),
+                ),
+                wrap="wrap",
+                gap="0.4rem",
+            ),
+            rx.text("Sin llamado a la acción.", class_name="q-rv-read q-rv-read--empty"),
+        ),
+        rx.cond(
+            CreativeState.edit_mode,
+            rx.vstack(
+                _add_row(
+                    CreativeState.edit_cta_query,
+                    CreativeState.set_edit_cta_query,
+                    CreativeState.add_typed_cta,
+                    "Ej.: Reserva tu mesa por WhatsApp",
+                    "megaphone",
+                ),
+                rx.cond(
+                    CreativeState.cta_suggestions.length() > 0,
+                    rx.flex(
+                        rx.foreach(
+                            CreativeState.cta_suggestions,
+                            lambda cta: _add_chip(cta, CreativeState.add_cta(cta)),
+                        ),
+                        wrap="wrap",
+                        gap="0.4rem",
+                    ),
+                ),
+                spacing="3",
+                width="100%",
+            ),
+        ),
+    )
+
+
+def _blocking_list(messages) -> rx.Component:
+    return rx.cond(
+        messages.length() > 0,
+        rx.vstack(
+            rx.foreach(messages, _blocking_item),
+            spacing="1",
+            align_items="start",
+            width="100%",
+            class_name="q-rv-blocking",
         ),
     )
 
 
 def _variant_editor() -> rx.Component:
     variant = CreativeState.selected_variant
+    editing = CreativeState.edit_mode
     return rx.vstack(
         rx.hstack(
-            rx.foreach(CreativeState.draft.variants, _variant_selector),
-            spacing="2",
+            rx.hstack(
+                rx.foreach(CreativeState.draft.variants, _variant_selector),
+                spacing="2",
+                wrap="wrap",
+            ),
+            rx.spacer(),
+            rx.cond(
+                variant,
+                rx.cond(
+                    variant.was_edited,
+                    rx.badge(
+                        rx.icon("pencil", size=11),
+                        "Editada por ti",
+                        color_scheme="iris",
+                        variant="soft",
+                        size="2",
+                    ),
+                ),
+            ),
+            align="center",
+            width="100%",
             wrap="wrap",
+            gap="0.5rem",
         ),
         rx.cond(
             variant,
             rx.vstack(
-                rx.cond(
-                    variant.was_edited,
-                    rx.badge("editada por ti", color_scheme="iris", variant="soft", size="1"),
+                _rv_section(
+                    _field_head(
+                        "zap",
+                        "Gancho",
+                        "La primera frase: lo que hace que se detengan a mirar.",
+                        CreativeState.hook_count_label,
+                    ),
+                    rx.cond(
+                        editing,
+                        rx.input(
+                            value=CreativeState.edit_hook,
+                            on_change=CreativeState.set_edit_hook,
+                            max_length=60,
+                            width="100%",
+                            size="3",
+                            placeholder="Ej.: ¿Ya probaste el sabor del mes?",
+                        ),
+                        _read_text(CreativeState.edit_hook, "Sin gancho."),
+                    ),
                 ),
-                rx.text("Gancho", size="1", color=T.TEXT_MUTED),
-                rx.input(
-                    value=CreativeState.edit_hook,
-                    on_change=CreativeState.set_edit_hook,
-                    disabled=~CreativeState.edit_mode,
-                    max_length=60,
-                    width="100%",
+                _rv_section(
+                    _field_head(
+                        "align-left",
+                        "Texto de la publicación",
+                        "El caption que acompaña al post en Instagram.",
+                        CreativeState.caption_count_label,
+                    ),
+                    rx.cond(
+                        editing,
+                        rx.text_area(
+                            value=CreativeState.edit_caption,
+                            on_change=CreativeState.set_edit_caption,
+                            on_blur=CreativeState.load_catalog_hashtags,
+                            width="100%",
+                            rows="6",
+                            size="2",
+                        ),
+                        _read_text(CreativeState.edit_caption, "Sin texto.", multiline=True),
+                    ),
+                    # The brand rules the caption breaks, right where it is fixed.
+                    rx.cond(
+                        CreativeState.caption_blocking.length() > 0,
+                        rx.vstack(
+                            _blocking_list(CreativeState.caption_blocking),
+                            rx.hstack(
+                                rx.text(
+                                    "Es una regla de tu Brand Kit.", size="1", color=T.TEXT_MUTED
+                                ),
+                                rx.link("Cambiarla", href="/brand", size="1"),
+                                spacing="1",
+                            ),
+                            spacing="1",
+                            width="100%",
+                        ),
+                    ),
                 ),
-                rx.text("Caption", size="1", color=T.TEXT_MUTED),
-                rx.text_area(
-                    value=CreativeState.edit_caption,
-                    on_change=CreativeState.set_edit_caption,
-                    disabled=~CreativeState.edit_mode,
-                    width="100%",
-                    rows="6",
-                ),
-                rx.text("Hashtags", size="1", color=T.TEXT_MUTED),
-                rx.input(
-                    value=CreativeState.edit_hashtags,
-                    on_change=CreativeState.set_edit_hashtags,
-                    disabled=~CreativeState.edit_mode,
-                    width="100%",
-                ),
-                rx.text("CTA", size="1", color=T.TEXT_MUTED),
-                rx.input(
-                    value=CreativeState.edit_cta,
-                    on_change=CreativeState.set_edit_cta,
-                    disabled=~CreativeState.edit_mode,
-                    width="100%",
-                ),
+                _hashtags_field(),
+                _cta_field(),
                 rx.cond(
                     CreativeState.draft.has_script,
-                    rx.vstack(
-                        rx.text("Guion (lo que se dice)", size="1", color=T.TEXT_MUTED),
-                        rx.text_area(
-                            value=CreativeState.edit_script,
-                            on_change=CreativeState.set_edit_script,
-                            disabled=~CreativeState.edit_mode,
-                            width="100%",
-                            rows="8",
+                    _rv_section(
+                        _field_head(
+                            "mic",
+                            "Guion",
+                            "Lo que se dice en el video, palabra por palabra. Sin límite de largo.",
+                        ),
+                        rx.cond(
+                            editing,
+                            rx.text_area(
+                                value=CreativeState.edit_script,
+                                on_change=CreativeState.set_edit_script,
+                                width="100%",
+                                rows="10",
+                                size="2",
+                                resize="vertical",
+                            ),
+                            _read_text(CreativeState.edit_script, "Sin guion.", multiline=True),
                         ),
                         rx.cond(
                             variant.shots.length() > 0,
                             rx.vstack(
-                                rx.text("Tomas", size="1", color=T.TEXT_MUTED),
-                                rx.foreach(variant.shots, lambda line: rx.text(line, size="2")),
+                                rx.text("Tomas", class_name="q-rv-title"),
+                                rx.foreach(
+                                    variant.shots,
+                                    lambda line: rx.hstack(
+                                        rx.icon("video", size=12, color=T.TEXT_MUTED),
+                                        rx.text(line, size="2"),
+                                        align="start",
+                                        spacing="2",
+                                    ),
+                                ),
                                 spacing="1",
                                 align_items="start",
                                 width="100%",
                             ),
                         ),
-                        spacing="1",
-                        align_items="start",
-                        width="100%",
                     ),
                 ),
                 rx.cond(
                     variant.has_ads,
-                    rx.vstack(
-                        rx.divider(),
-                        rx.text("Ads", size="1", color=T.TEXT_MUTED),
-                        rx.text(variant.ads_headline, size="2", weight="medium"),
+                    _rv_section(
+                        _field_head("megaphone", "Anuncio", "Texto para la versión pagada."),
+                        rx.text(variant.ads_headline, size="2", weight="bold"),
                         rx.text(variant.ads_description, size="2"),
-                        spacing="1",
-                        align_items="start",
-                        width="100%",
                     ),
                 ),
+                _blocking_list(CreativeState.other_blocking),
                 _edit_actions(),
-                rx.cond(
-                    CreativeState.edit_blocking.length() > 0,
-                    rx.vstack(
-                        rx.foreach(CreativeState.edit_blocking, _blocking_item),
-                        spacing="1",
-                        align_items="start",
-                        width="100%",
-                    ),
-                ),
-                spacing="2",
-                align_items="start",
+                spacing="3",
                 width="100%",
             ),
         ),
-        spacing="3",
+        spacing="4",
         width="100%",
         align_items="start",
     )
@@ -1229,102 +1858,228 @@ def _variant_editor() -> rx.Component:
 def _review_panel() -> rx.Component:
     draft = CreativeState.draft
     return _card(
-        rx.cond(
-            draft.kind_label != "",
-            rx.badge(draft.kind_label, color_scheme="gray", variant="soft", size="1"),
+        rx.hstack(
+            rx.cond(
+                draft.kind_label != "",
+                rx.badge(
+                    rx.icon("sparkles", size=12),
+                    draft.kind_label,
+                    color_scheme="gray",
+                    variant="surface",
+                    size="2",
+                ),
+            ),
+            rx.spacer(),
+            rx.box(
+                rx.icon("shield-check", size=14),
+                rx.text(draft.fidelity_summary, as_="span"),
+                class_name="q-rv-pill q-rv-pill--ok",
+                title="Fidelidad de marca: las reglas de tu brand kit",
+            ),
+            rx.cond(
+                draft.requires_ai_disclosure,
+                rx.box(
+                    rx.icon("bot", size=14),
+                    rx.text("Requiere etiqueta de IA", as_="span"),
+                    class_name="q-rv-pill q-rv-pill--warn",
+                ),
+            ),
+            # §6.5: the cost is shown ALWAYS — hiding it is what produces the loop.
+            rx.box(
+                rx.icon("coins", size=14),
+                rx.text("Coste: ", draft.cost_label, as_="span"),
+                class_name="q-rv-pill",
+            ),
+            align="center",
+            width="100%",
+            wrap="wrap",
+            gap="0.5rem",
         ),
         # A grid, not a flex row: from `md` up the media gets its own track and a real
         # gutter, so the video never touches the form; on phones it stacks, media first.
         rx.box(
-            _media_column(),
+            rx.box(_media_column(), class_name="q-rv-stage"),
             rx.box(_variant_editor(), min_width="0", width="100%"),
             display="grid",
             grid_template_columns=rx.breakpoints(
                 initial="minmax(0, 1fr)",
-                md="15rem minmax(0, 1fr)",
-                xl="17rem minmax(0, 1fr)",
+                md="20rem minmax(0, 1fr)",
+                xl="24rem minmax(0, 1fr)",
             ),
-            column_gap=rx.breakpoints(initial="0", md="2.5rem", xl="3rem"),
+            column_gap=rx.breakpoints(initial="0", md="2rem", xl="2.5rem"),
             row_gap="1.5rem",
             align_items="start",
             width="100%",
         ),
-        rx.divider(),
-        rx.hstack(
-            rx.text("Fidelidad de marca:", size="2", color=T.TEXT_MUTED),
-            rx.text(draft.fidelity_summary, size="2"),
-            rx.cond(
-                draft.requires_ai_disclosure,
-                rx.badge("requiere etiqueta de IA", color_scheme="amber", variant="soft"),
-            ),
-            spacing="2",
-            align="center",
-            wrap="wrap",
-        ),
-        # §6.5: the cost is shown ALWAYS — hiding it is what produces the loop.
-        rx.text("Coste: ", draft.cost_label, size="2", color=T.TEXT_MUTED),
         rx.cond(
             draft.blocking_reason,
             _error_callout(draft.blocking_reason),
         ),
-        _decision_bar(),
+    )
+
+
+def _decision_card(
+    *,
+    tone: str,
+    icon: str,
+    title: str,
+    text: str,
+    button: rx.Component,
+) -> rx.Component:
+    """One way to decide on the draft: what it does, in a sentence, right above the
+    button that does it."""
+    return rx.box(
+        rx.hstack(
+            rx.center(rx.icon(icon, size=16), class_name=f"q-decide-glyph q-decide-{tone}"),
+            rx.text(title, class_name="q-rv-title"),
+            align="center",
+            spacing="2",
+        ),
+        rx.text(text, size="1", color=T.TEXT_MUTED, flex="1"),
+        button,
+        class_name=f"q-decide-card q-decide-card--{tone}",
+    )
+
+
+def _reject_dialog() -> rx.Component:
+    """A discard is asked once more: a mis-click must not throw a draft away."""
+    regenerate = CreativeState.reject_confirm == "regenerate"
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title(
+                rx.cond(regenerate, "¿Pedir otra versión?", "¿Rechazar este borrador?")
+            ),
+            rx.alert_dialog.description(
+                rx.cond(
+                    regenerate,
+                    "Este borrador se descarta y se generan variantes nuevas del mismo "
+                    "encargo. Consume créditos.",
+                    "El borrador se descarta y no se genera nada nuevo. No se podrá "
+                    "aprobar ni publicar.",
+                ),
+                size="2",
+            ),
+            rx.flex(
+                rx.alert_dialog.cancel(
+                    rx.button(
+                        rx.icon("arrow-left", size=15),
+                        "Volver",
+                        variant="soft",
+                        color_scheme="gray",
+                        size="2",
+                    ),
+                ),
+                rx.alert_dialog.action(
+                    rx.cond(
+                        regenerate,
+                        rx.button(
+                            rx.icon("refresh-cw", size=15),
+                            "Sí, pedir otra versión",
+                            color_scheme="amber",
+                            size="2",
+                            on_click=CreativeState.confirm_reject,
+                        ),
+                        rx.button(
+                            rx.icon("circle-x", size=15),
+                            "Sí, rechazar",
+                            color_scheme="red",
+                            size="2",
+                            on_click=CreativeState.confirm_reject,
+                        ),
+                    ),
+                ),
+                justify="end",
+                gap="0.75rem",
+                margin_top="1.25rem",
+            ),
+            max_width="28rem",
+        ),
+        open=CreativeState.reject_confirm != "",
+        on_open_change=CreativeState.set_reject_confirm_open,
     )
 
 
 def _decision_bar() -> rx.Component:
-    """The review decision (HITL #2). It only exists while the draft waits for one
-    (`generated`, or `rejected` for a regeneration): once approved, the buttons are gone
-    and the operator is told why, instead of three disabled buttons with no reason."""
+    """The review decision (HITL #2), as three cards — each one says what it does right
+    above its own button. Discarding asks first. It only exists while the draft waits
+    for a decision; once approved there is nothing to decide here."""
     draft = CreativeState.draft
     return rx.cond(
         draft.can_reject | draft.can_regenerate | draft.can_approve,
-        rx.vstack(
-            rx.flex(
-                rx.button(
-                    "Rechazar",
-                    variant="soft",
-                    color_scheme="gray",
-                    on_click=CreativeState.reject_current(False),
-                    disabled=~draft.can_reject,
-                    size="2",
-                    title="Descarta este borrador. No genera nada nuevo.",
+        _card(
+            rx.hstack(
+                rx.center(rx.icon("gavel", size=16), class_name="q-rv-glyph"),
+                rx.vstack(
+                    rx.text("¿Qué hacemos con este borrador?", class_name="q-rv-title"),
+                    rx.text(
+                        "Tú decides qué sale con el nombre de tu marca.",
+                        class_name="q-rv-hint",
+                    ),
+                    spacing="0",
                 ),
-                rx.button(
-                    rx.icon("refresh-cw", size=15),
-                    "Rechazar y regenerar",
-                    variant="soft",
-                    color_scheme="amber",
-                    on_click=CreativeState.reject_current(True),
-                    disabled=~draft.can_regenerate,
-                    size="2",
-                    title="Descarta este borrador y genera variantes nuevas del mismo encargo "
-                    "(consume créditos).",
-                ),
-                rx.button(
-                    rx.icon("circle-check", size=15),
-                    "Aprobar y descargar",
-                    on_click=CreativeState.approve_selected,
-                    disabled=~CreativeState.can_approve_now,
-                    size="2",
-                ),
-                gap="3",
-                wrap="wrap",
-                justify="end",
-                align=rx.breakpoints(initial="stretch", sm="center"),
-                direction=rx.breakpoints(initial="column", sm="row"),
-                width="100%",
+                align="center",
+                spacing="2",
             ),
-            rx.text(
-                "Rechazar descarta el borrador. Rechazar y regenerar lo descarta y genera "
-                "variantes nuevas del mismo encargo (consume créditos). Aprobar fija la "
-                "variante elegida como el texto aprobado del POST.",
-                size="1",
-                color=T.TEXT_MUTED,
-                text_align=rx.breakpoints(initial="left", sm="right"),
-                width="100%",
+            rx.box(
+                _decision_card(
+                    tone="red",
+                    icon="circle-x",
+                    title="Rechazar",
+                    text="Descarta este borrador. No se genera nada nuevo y no se publica.",
+                    button=rx.button(
+                        rx.icon("circle-x", size=15),
+                        "Rechazar",
+                        variant="outline",
+                        color_scheme="red",
+                        size="2",
+                        width="100%",
+                        disabled=~draft.can_reject,
+                        on_click=CreativeState.ask_reject(False),
+                    ),
+                ),
+                _decision_card(
+                    tone="amber",
+                    icon="refresh-cw",
+                    title="Pedir otra versión",
+                    text="Si la idea sirve pero el resultado no: descarta este y crea "
+                    "variantes nuevas del mismo encargo. Consume créditos.",
+                    button=rx.button(
+                        rx.icon("refresh-cw", size=15),
+                        "Regenerar",
+                        variant="soft",
+                        color_scheme="amber",
+                        size="2",
+                        width="100%",
+                        disabled=~draft.can_regenerate,
+                        on_click=CreativeState.ask_reject(True),
+                    ),
+                ),
+                _decision_card(
+                    tone="green",
+                    icon="circle-check",
+                    title="Aprobar",
+                    text="Fija esta variante como el texto del POST. Queda lista para "
+                    "programarla en el Planificador.",
+                    button=rx.button(
+                        rx.icon("circle-check", size=15),
+                        "Aprobar",
+                        size="2",
+                        width="100%",
+                        disabled=~CreativeState.can_approve_now,
+                        on_click=CreativeState.approve_selected,
+                    ),
+                ),
+                class_name="q-decide-grid",
             ),
-            spacing="2",
-            width="100%",
+            rx.cond(
+                CreativeState.edit_mode,
+                rx.text(
+                    "Guarda o cancela la edición antes de aprobar.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+            ),
+            _reject_dialog(),
         ),
         # Nothing to decide (already approved/staged/published): no bar at all — the
         # status badge at the top already says where the draft stands.
@@ -1332,10 +2087,167 @@ def _decision_bar() -> rx.Component:
     )
 
 
+# Download a file whatever its origin: fetch it and save the blob (a cross-origin
+# `<a download>` only opens the file). Falls back to a new tab when the origin refuses.
+_DOWNLOAD_SCRIPT = """
+window.qualifyDownload = async function (url, name) {
+  try {
+    const response = await fetch(url, { mode: "cors", credentials: "omit" });
+    if (!response.ok) throw new Error(String(response.status));
+    const blob = await response.blob();
+    const href = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = href;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(href), 5000);
+  } catch (error) {
+    window.open(url, "_blank", "noopener");
+  }
+};
+"""
+
+
+def _campaign_option(option) -> rx.Component:
+    return rx.select.item(option.name, value=option.id)
+
+
+def _campaign_recolor() -> rx.Component:
+    """Change the colour of the POST's campaign — for every POST and event of it."""
+    s = CampaignState
+    return rx.popover.root(
+        rx.popover.trigger(
+            rx.button(
+                rx.icon("palette", size=13),
+                "Color",
+                variant="ghost",
+                color_scheme="gray",
+                size="1",
+                disabled=s.busy,
+                aria_label="Cambiar el color de la campaña",
+            )
+        ),
+        rx.popover.content(
+            rx.vstack(
+                rx.text("Color de la campaña", size="2", weight="bold"),
+                color_swatches(
+                    s.current_color, s.recolor, COLOR_LABELS, label="Color de la campaña"
+                ),
+                rx.text(
+                    "Cambia el color en todos los posts y publicaciones de esta campaña.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                spacing="2",
+                max_width="16rem",
+            ),
+            side="bottom",
+            align="start",
+        ),
+    )
+
+
+def _campaign_field() -> rx.Component:
+    """QUA-143: the POST's campaign — the one place it is created and assigned. Pick one
+    of the brand's campaigns, create one by name right here, or leave the POST
+    independent. It never changes the POST's revision, status or approval, so it is
+    available in every state, an approved and scheduled POST included."""
+    s = CampaignState
+    picker = rx.select.root(
+        rx.select.trigger(placeholder="Sin campaña", aria_label="Campaña del POST"),
+        rx.select.content(
+            rx.select.item("Sin campaña (post independiente)", value=NO_CAMPAIGN),
+            rx.cond(
+                s.options.length() > 0,
+                rx.select.separator(),
+            ),
+            rx.foreach(s.options, _campaign_option),
+        ),
+        value=s.current_id,
+        on_change=s.choose,
+        disabled=s.busy | s.loading,
+        size="2",
+    )
+    create_form = rx.hstack(
+        rx.input(
+            value=s.new_name,
+            on_change=s.set_new_name,
+            on_key_down=s.create_on_enter,
+            placeholder="Nombre de la campaña",
+            max_length=60,
+            auto_focus=True,
+            size="2",
+            width="16rem",
+            aria_label="Nombre de la nueva campaña",
+        ),
+        color_swatches(
+            s.new_color, s.set_new_color, COLOR_LABELS, label="Color de la nueva campaña"
+        ),
+        rx.button("Crear", on_click=s.create, loading=s.busy, size="2"),
+        rx.button(
+            "Cancelar", on_click=s.cancel_create, variant="ghost", color_scheme="gray", size="2"
+        ),
+        align="center",
+        spacing="2",
+        wrap="wrap",
+    )
+    return _card(
+        rx.hstack(
+            rx.center(rx.icon("flag", size=15), class_name="q-section-glyph"),
+            rx.vstack(
+                rx.text("Campaña", size="2", weight="bold"),
+                rx.cond(
+                    s.current_name != "",
+                    rx.hstack(
+                        campaign_badge(s.current_name, s.current_color),
+                        _campaign_recolor(),
+                        align="center",
+                        spacing="2",
+                    ),
+                    rx.text(
+                        "Post independiente: no pertenece a ninguna campaña.",
+                        size="1",
+                        color=T.TEXT_MUTED,
+                    ),
+                ),
+                spacing="1",
+                min_width="0",
+            ),
+            rx.spacer(),
+            rx.cond(
+                s.creating,
+                create_form,
+                rx.hstack(
+                    picker,
+                    rx.button(
+                        rx.icon("plus", size=14),
+                        "Nueva campaña",
+                        on_click=s.start_create,
+                        variant="soft",
+                        size="2",
+                        disabled=s.busy | s.loading,
+                    ),
+                    align="center",
+                    spacing="2",
+                    wrap="wrap",
+                ),
+            ),
+            align="center",
+            width="100%",
+            wrap="wrap",
+            gap="0.75rem",
+        ),
+        rx.cond(s.error != "", _error_callout(s.error)),
+    )
+
+
 def draft_detail_index() -> rx.Component:
     return _screen(
         "Revisión del borrador",
         "HITL #2: tú decides qué sale con el nombre de tu marca",
+        rx.script(_DOWNLOAD_SCRIPT),
         _padded(
             rx.cond(CreativeState.detail_error != "", _error_callout(CreativeState.detail_error)),
             rx.cond(CreativeState.action_error != "", _error_callout(CreativeState.action_error)),
@@ -1364,13 +2276,19 @@ def draft_detail_index() -> rx.Component:
                             width="100%",
                             align="center",
                         ),
+                        _campaign_field(),
                         rx.cond(
                             CreativeState.draft.is_drafting,
                             _drafting_panel(),
                             rx.cond(
                                 CreativeState.draft.is_failed,
                                 _failed_panel(),
-                                _review_panel(),
+                                rx.vstack(
+                                    _review_panel(),
+                                    _decision_bar(),
+                                    spacing="4",
+                                    width="100%",
+                                ),
                             ),
                         ),
                         spacing="4",

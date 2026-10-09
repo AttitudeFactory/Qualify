@@ -377,12 +377,14 @@ class AuthState(rx.State):
             # the next login on this browser. Imported here, not at module top: these
             # modules read AuthState, and a top-level import would be circular.
             from .brand_documents import BrandDocumentState
+            from .campaign_state import CampaignState
             from .canva_state import CanvaState
             from .catalog_state import CatalogState
             from .clarity_state import ClarityState
             from .connections_state import ConnectionsState
             from .creative_state import CreativeState
             from .creative_wizard_pages import BrandConnectState, BrandWizardState
+            from .gallery_state import GalleryState
             from .inbox_state import InboxState
             from .leads_state import LeadsState
             from .planner_state import PlannerState
@@ -420,6 +422,10 @@ class AuthState(rx.State):
                 # the trending panel: its Meta audio list belongs to a tenant account
                 TrendingState,
                 PlannerState,
+                # the POST gallery (QUA-118): the tenant's POSTs and the filters
+                GalleryState,
+                # the POST's «Campaña» field (QUA-143): the brand's campaigns
+                CampaignState,
                 # the Canva card: links of a draft and the pending OAuth verifier
                 CanvaState,
                 # Tu voz (2026-09-30): the staged recording, the analysis and the clone

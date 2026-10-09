@@ -132,6 +132,9 @@ class BrandKit(BaseModel):
     cta_patterns: tuple[str, ...] = ()
     length_targets: LengthTargets = LengthTargets()
     palette_rgb: tuple[str, ...] = ()
+    #: The brand's type faces by family name ("" = not declared): headlines and body copy.
+    font_heading: str = ""
+    font_body: str = ""
     logo_asset_key: str | None = None
     template_asset_key: str | None = None
     reference_image_keys: tuple[str, ...] = Field(default=(), max_length=14)
@@ -234,7 +237,10 @@ class CopyPayload(BaseModel):
     caption: str
     hashtags: tuple[str, ...] = ()
     cta: str = ""
-    script: str = Field(default="", max_length=SCRIPT_MAX)
+    # No length cap on the stored script (founder, 2026-10-06): the operator writes as
+    # much as the video needs. `SCRIPT_MAX` stays the GENERATION target (`render.py`) and
+    # the cap of a script handed in for generation (`own_script`).
+    script: str = ""
     shots: tuple[ScriptShot, ...] = ()
 
     ads_primary_text: str | None = None

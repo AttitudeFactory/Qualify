@@ -557,6 +557,19 @@ def test_a_step_does_not_move_on_until_it_is_complete() -> None:
     assert state.gen_step == "presenter" and state.create_error == ""
 
 
+def test_no_kind_asks_for_objetivo_or_destino() -> None:
+    """§ request 2026-10-05 ("quitar objetivo y destino en todas las opciones"): every
+    kind shares the topic and channel steps, and neither asks any more; the brief still
+    carries both fields at their defaults."""
+    from .content_generator import _step_channel, _step_topic
+
+    for step in (_step_topic(), _step_channel()):
+        rendered = str(step)
+        assert '"Objetivo"' not in rendered and '"Destino"' not in rendered
+    state = CreativeState()
+    assert (state.brief_objective, state.brief_intent) == ("consideration", "organic")
+
+
 def test_the_review_recaps_the_brief() -> None:
     state = CreativeState()
     state.brief_kind = "static_flyer"
@@ -567,8 +580,8 @@ def test_the_review_recaps_the_brief() -> None:
     recap = dict(state.gen_recap)
     assert recap["Tipo de pieza"] == {key: title for key, title, *_ in KIND_OPTIONS}["static_flyer"]
     assert recap["Tema o producto"] == "Smash doble"
-    assert recap["Objetivo"] == "Vender"
-    assert recap["Destino"] == "Anuncio"
+    # § 2026-10-05: Objetivo and Destino are no longer asked nor recapped
+    assert "Objetivo" not in recap and "Destino" not in recap
     assert recap["Formato"] != ""
     assert recap["Debe mencionar"] == "envío gratis"
     assert recap["Debe evitar"] == ""

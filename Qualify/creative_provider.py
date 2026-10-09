@@ -168,6 +168,8 @@ def load_kit_form(tenant_id: UUID, brand_id: UUID) -> KitFormVM | None:
         forbidden_claims="\n".join(kit.forbidden_claims),
         cta_patterns="\n".join(kit.cta_patterns),
         palette_rgb=", ".join(kit.palette_rgb),
+        font_heading=kit.font_heading,
+        font_body=kit.font_body,
         has_logo=kit.logo_asset_key is not None,
         has_template=kit.template_asset_key is not None,
     )
@@ -208,6 +210,8 @@ def save_kit(
         "forbidden_claims": _split_lines(form.forbidden_claims),
         "cta_patterns": _split_lines(form.cta_patterns),
         "palette_rgb": _split_commas(form.palette_rgb),
+        "font_heading": form.font_heading.strip(),
+        "font_body": form.font_body.strip(),
     }
     if current is not None:
         # Fields this form does not edit keep their stored values.
@@ -507,7 +511,17 @@ def _detail_to_vm(tenant_id: UUID, detail: DraftDetail) -> DraftVM:
     media = _with_r2_urls(
         tenant_id,
         build_media_vms(
-            [(item.media_url, item.media_type, item.position, item.params) for item in detail.media]
+            [
+                # R2-only media has no provider URL: its object key is what the screen
+                # resolves (`_with_r2_urls` mints the backend URL for it).
+                (
+                    item.media_url or item.object_key or "",
+                    item.media_type,
+                    item.position,
+                    item.params,
+                )
+                for item in detail.media
+            ]
         ),
     )
     return build_draft_vm(

@@ -70,11 +70,22 @@ class FakePosts:
 
     def __init__(self) -> None:
         self.answers: dict[UUID, list[PublishablePost | NotPublishable]] = {}
+        self.ports_asked: list[str | None] = []  # MP-11: what the executor asked for
+        self.destinations_asked: list[str | None] = []  # QUA-118 v2
 
     def set(self, post_id: UUID, *answers: PublishablePost | NotPublishable) -> None:
         self.answers[post_id] = list(answers)
 
-    def get_publishable(self, *, tenant_id: UUID, post_id: UUID):
+    def get_publishable(
+        self,
+        *,
+        tenant_id: UUID,
+        post_id: UUID,
+        output_port: str | None = None,
+        destination: str | None = None,
+    ):
+        self.ports_asked.append(output_port)
+        self.destinations_asked.append(destination)
         queue = self.answers[post_id]
         answer = queue.pop(0) if len(queue) > 1 else queue[0]
         if isinstance(answer, Exception):
@@ -926,3 +937,24 @@ async def test_a_rescheduled_expired_event_returns_to_the_normal_flow(world: Wor
     assert result.outcome is Outcome.STARTED
     assert (CONN, f"cal:{event.id}:2") in world.publisher.attempts
     assert (CONN, f"cal:{event.id}:1") not in world.publisher.attempts
+
+
+async def test_the_executor_asks_the_reader_for_the_events_own_destination(world: World) -> None:
+    """QUA-118 v2: the event decides where it goes out, so the executor hands its
+    destination to the reader — the POST's category is only the origin."""
+    post_id = uuid4()
+    event = world.repo.add(
+        NewEvent(
+            tenant_id=TENANT,
+            brand_id=BRAND,
+            post_id=post_id,
+            connection_id=CONN,
+            scheduled_at=NOW - timedelta(minutes=5),
+            scheduled_tz="America/Caracas",
+            created_by_user_id=uuid4(),
+            destination="story",
+        )
+    )
+    world.posts.set(post_id, _publishable(post_id))
+    await world.executor.try_execute(event)
+    assert world.posts.destinations_asked and set(world.posts.destinations_asked) == {"story"}

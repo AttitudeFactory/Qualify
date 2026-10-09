@@ -80,8 +80,18 @@ def login_index() -> rx.Component:
             on_submit=AuthState.handle_login,
             width="100%",
         ),
-        # No link back to the Brand Kit here (§ 2026-10-02): the Brand Kit comes first
-        # and the login after it, so whoever is here already came through /brand/start.
+        # § request 2026-10-05: a way back to the Brand Kit from the login (it had been
+        # removed on 2026-10-02). Not solid — Entrar stays the screen's one solid action.
+        rx.link(
+            rx.button(
+                rx.icon("palette", size=T.ICON_SM),
+                "Crear mi Brand Kit",
+                variant="soft",
+                width="100%",
+            ),
+            href="/brand/start",
+            width="100%",
+        ),
         rx.text(
             "¿Negocio nuevo? ",
             rx.link("Regístralo aquí", href="/signup"),

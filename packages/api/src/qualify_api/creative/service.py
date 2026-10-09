@@ -31,6 +31,7 @@ from uuid import UUID
 
 from qualify_creative.adapters.anthropic_copy import CopyRefused
 from qualify_creative.brand import check_hard_rules, check_route_allowed, render_prompt
+from qualify_creative.brand.fidelity import RULE_CAPTION_LENGTH
 from qualify_creative.enums import (
     ContentKind,
     FailureReason,
@@ -60,6 +61,7 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
 from qualify_api.creative import models as orm
+from qualify_api.creative import trace
 from qualify_api.creative.dispatch import TaskDispatcher, reap_stale_drafts
 from qualify_api.creative.fsm import (
     DRAFT_STATUSES,
@@ -166,13 +168,15 @@ class ImageRecord:
     """One ``image_assets`` row: an image or (since 0026) a video, in carousel order."""
 
     id: UUID
-    media_url: str
+    # NULL for media that lives only in R2 (`object_key`); the column is nullable (0009).
+    media_url: str | None
     width: int | None
     height: int | None
     aspect_ratio: str | None
     media_type: str = "image"
     position: int = 0
     params: Mapping[str, object] | None = None
+    object_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -418,6 +422,7 @@ def _image_record(row: orm.ImageAsset) -> ImageRecord:
         media_type=row.media_type,
         position=row.position,
         params=row.params,
+        object_key=row.object_key,
     )
 
 
@@ -636,6 +641,7 @@ class PostgresContentRepository:
                         position=item.position,
                         output_port=item.output_port,
                         template_run_id=item.template_run_id,
+                        content_type=item.content_type,
                     )
                 )
             if spent_usd:
@@ -955,6 +961,15 @@ class ContentService:
             rendered_prompt=rendered,
             output_schema=CopyPayload.model_json_schema(),
         )
+        # § 2026-10-05: the exact prompt the copy adapter sends, readable in the console
+        trace.copy_prompt(
+            draft_id=draft.id,
+            kind=brief.kind.value,
+            chain=self._chain,
+            variants=brief.variants_requested,
+            system=rendered.stable_prefix,
+            user=rendered.volatile_suffix,
+        )
         budget = (
             self._repo.budget_state(tenant_id=tenant_id, brand_id=draft.brand_id)
             or _UNLIMITED_BUDGET
@@ -1005,6 +1020,7 @@ class ContentService:
                 DRAFTING, DraftTrigger.GENERATE_FAIL, failure_reason=failure
             )
             self._log_costs(tenant_id, draft, brief, usage_writes, spent, failure_reason=failure)
+            self._trace_spend(draft, brief, usage_writes, spent, budget, failure)
             self._repo.finish_generation(
                 tenant_id=tenant_id,
                 draft_id=draft.id,
@@ -1102,6 +1118,7 @@ class ContentService:
                 DRAFTING, DraftTrigger.GENERATE_FAIL, failure_reason=failure_reason
             )
         self._log_costs(tenant_id, draft, brief, usage_writes, spent, failure_reason=failure_reason)
+        self._trace_spend(draft, brief, usage_writes, spent, budget, failure_reason)
         self._repo.finish_generation(
             tenant_id=tenant_id,
             draft_id=draft.id,
@@ -1114,6 +1131,27 @@ class ContentService:
             media=media_writes,
             failure_detail=media_detail or None,
             template_run=template_run,
+        )
+
+    @staticmethod
+    def _trace_spend(
+        draft: DraftRecord,
+        brief: ContentBrief,
+        usage: list[UsageWrite],
+        spent: Decimal,
+        budget: BudgetState,
+        failure_reason: str | None,
+    ) -> None:
+        """The readable spend block (`trace.spend`). No budget row = unlimited, shown as
+        such rather than as a billion dollars."""
+        unlimited = budget is _UNLIMITED_BUDGET
+        trace.spend(
+            draft_id=draft.id,
+            kind=brief.kind.value,
+            calls=usage,
+            total=spent,
+            budget_remaining=None if unlimited else budget.remaining_usd - spent,
+            outcome=failure_reason or "ok",
         )
 
     def _log_costs(
@@ -1260,7 +1298,10 @@ class ContentService:
         kit = self._brand.kit(tenant_id=tenant_id, brand_id=draft.brand_id)
         if kit is None:
             raise BrandNotReady(missing=("brand_kit",))
-        failures = check_hard_rules(copy, kit)
+        # The kit's caption length is a TARGET for generation, not a rule for the human
+        # (founder, 2026-10-06: «quiero agregar lo que yo quiera en el caption»). Every
+        # other layer-1 rule — banned words, forbidden claims, emoji — still holds.
+        failures = tuple(f for f in check_hard_rules(copy, kit) if f.rule != RULE_CAPTION_LENGTH)
         if failures:
             return failures
         self._repo.set_edited_copy(

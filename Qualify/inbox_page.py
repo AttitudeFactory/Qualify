@@ -38,9 +38,9 @@ extra Meta calls — see `inbox_provider.reel_summaries_page`'s docstring); an o
 monitored Reel falls back to `external_thread_id` only, same as QUA-92's original scope.
 
 `_analyze_now_button()` (QUA-92) makes QUA-21's existing manual trigger visible on
-screen: it calls `InboxState.analyze_sentiment`, which reaches the real
-`POST /api/sentiment/analyze` route (see `inbox_provider.analyze_sentiment_now`'s
-docstring for why HTTP — reusing that route, never a second analysis engine). Same
+screen: it calls `InboxState.analyze_sentiment`, which runs the same seam the
+`POST /api/sentiment/analyze` route wraps (`inbox_provider.analyze_sentiment_now` —
+never a second analysis engine). Same
 "button + `rx.cond` loading label" shape `_sync_now_button()` already establishes, kept
 as its own control rather than merged into `_sync_now_button()`: syncing and analyzing
 are two independent actions with two independent guards (`is_syncing`/`is_analyzing`),

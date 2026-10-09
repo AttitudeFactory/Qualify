@@ -39,6 +39,8 @@ from uuid import UUID
 from qualify_api.connections import DATA_ACCESS_WARNING_THRESHOLD, ConnectionNotFound, RevokeResult
 from qualify_api.connections.fsm import ConnectionStatus as FsmStatus
 from qualify_api.connections.models import SocialConnection
+from qualify_api.connections.service import ConnectOutcome
+from qualify_api.http import connections_routes
 
 from . import connections_provider
 from .capabilities import (
@@ -52,7 +54,12 @@ from .capabilities import (
     resolve_scope_keys,
 )
 from .connections_provider import NoActingUser, _data_access_warning, _scope_labels, _to_vm
-from .connections_vm import CapabilityVM, ConnectionVM
+from .connections_vm import (
+    CONNECT_RESULT_NOTICES,
+    CapabilityVM,
+    ConnectionVM,
+    connect_result_notice,
+)
 
 # Field-name fragments that must never appear on a client-serialized view-model.
 _FORBIDDEN_FIELD_FRAGMENTS = (
@@ -520,6 +527,22 @@ def test_verify_now_button_wires_a_per_card_loading_indicator() -> None:
     assert "disabled=" not in button_call, (
         "loading= already disables the button; a separate disabled= would be redundant"
     )
+
+
+def test_every_callback_code_has_a_notice() -> None:
+    """QUA-123: the callback redirects with `?connect=<code>`; each code it can emit has
+    copy here, and a junk value in the URL renders nothing instead of being echoed."""
+    emitted = {str(o) for o in ConnectOutcome} | {
+        connections_routes.INVALID_STATE,
+        connections_routes.DENIED,
+    }
+    assert set(CONNECT_RESULT_NOTICES) == emitted
+    for message, tone in CONNECT_RESULT_NOTICES.values():
+        assert message
+        assert tone in {"ok", "warn", "info"}
+    assert connect_result_notice("active")[1] == "ok"
+    assert connect_result_notice("") == ("", "info")
+    assert connect_result_notice("<script>") == ("", "info")
 
 
 def _run() -> int:

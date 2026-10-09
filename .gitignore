@@ -17,6 +17,8 @@ reflex.log
 .env
 .env.*
 !.env.example
+# The production template (no values) is versioned; the real file lives only on the server.
+!deploy/.env.prod.example
 
 # MkDocs build output — generated from docs/, never source.
 site/

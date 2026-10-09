@@ -357,3 +357,68 @@ def test_ranged_responses_are_privately_cacheable(backend) -> None:
     assert response.status_code == 206
     cache = response.headers["cache-control"]
     assert cache.startswith("private, max-age=") and "no-store" not in cache
+
+
+# --- R2-only media without a provider URL; R2 calls off the event loop -------------------
+
+
+def test_is_r2_key_is_safe_for_a_missing_key() -> None:
+    assert r2_media.is_r2_key(None) is False
+    assert r2_media.is_r2_key("") is False
+    assert r2_media.is_r2_key(KEY_A) is True
+
+
+def test_a_draft_with_r2_only_media_opens(backend, monkeypatch) -> None:
+    """`image_assets.media_url` is NULL for media that lives only in R2 (nullable since
+    0009): the draft screen used to crash on it (`None.startswith`). It now resolves the
+    object key and gets a playable URL."""
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from qualify_api.creative.service import ImageRecord
+
+    monkeypatch.setattr(creative_provider, "_draft_costs", lambda t, d: (None, ()))
+    record = ImageRecord(
+        id=uuid4(),
+        media_url=None,
+        width=None,
+        height=None,
+        aspect_ratio=None,
+        media_type="video",
+        object_key=KEY_A,
+    )
+    detail = SimpleNamespace(
+        id=uuid4(),
+        status="approved",
+        failure_reason=None,
+        variants=(),
+        image=None,
+        voice_profile_version=None,
+        requires_ai_disclosure=False,
+        created_at=datetime.now(UTC),
+        kind="video",
+        media=(record,),
+        failure_detail=None,
+    )
+    vm = creative_provider._detail_to_vm(TENANT_A, detail)
+    assert vm.media[0].key == KEY_A
+    assert vm.media[0].url.startswith("/r2media/")
+
+
+def test_ranged_reads_run_off_the_event_loop(backend, monkeypatch) -> None:
+    """A video streams in 1 MB ranges; each R2 call is blocking network I/O. Run on the
+    event loop it froze every Reflex event of the (single-process) backend."""
+    client, _tokens = backend
+    offloaded: list[str] = []
+    real = r2_media.asyncio.to_thread
+
+    async def recording(fn, *args, **kwargs):
+        offloaded.append(getattr(fn, "__name__", "lambda"))
+        return await real(fn, *args, **kwargs)
+
+    monkeypatch.setattr(r2_media.asyncio, "to_thread", recording)
+    path = r2_media.issue_view_path(TENANT_A, KEY_A, "video")
+    response = client.get(path, headers={"Range": "bytes=0-3"})
+    assert response.status_code == 206
+    assert offloaded == ["object_size", "<lambda>"]  # the size probe and the range read

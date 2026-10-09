@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import pytest
 from PIL import Image, ImageDraw
@@ -17,6 +18,9 @@ from PIL import Image, ImageDraw
 from . import creative_wizard_pages as wiz
 from .creative_state import CreativeState
 from .creative_wizard_pages import BrandConnectState, BrandWizardState
+
+_TENANT = UUID("a0000000-0000-4000-8000-0000000000c1")
+_BRAND = UUID("b0000000-0000-4000-8000-0000000000c1")
 
 
 def _png(*fills: str) -> bytes:
@@ -41,11 +45,13 @@ class _Session:
         self.connect.profile_pic = "https://scontent.cdninstagram.com/pic.jpg"
         self.connect.profile_followers_count = 12_000
         self.connect.profile_pic_is_real = True
+        auth = wiz.AuthState()
+        auth.session_tenant_id = str(_TENANT)
         by_class: dict[type, Any] = {
             CreativeState: self.creative,
             BrandWizardState: self.wizard,
             BrandConnectState: self.connect,
-            wiz.AuthState: wiz.AuthState(),  # no tenant: `analyze` reads live, caches nothing
+            wiz.AuthState: auth,
         }
 
         async def get_state(_self: Any, state_cls: type) -> Any:
@@ -53,6 +59,15 @@ class _Session:
 
         monkeypatch.setattr(BrandWizardState, "get_state", get_state)
         monkeypatch.setattr(BrandConnectState, "get_state", get_state)
+        # `analyze` claims the account and reads through the tenant's cache: both are the
+        # database, stubbed here — the account is this brand's, nothing is cached yet
+        claims = wiz.account_claims_provider
+        monkeypatch.setattr(claims, "claim", lambda _t, _n, _h: (_BRAND, True))
+        monkeypatch.setattr(claims, "keep_only", lambda *_a: None)
+        monkeypatch.setattr(claims, "release", lambda *_a: None)
+        monkeypatch.setattr(wiz.creator_cache_provider, "cached_snapshot", lambda *_a: None)
+        monkeypatch.setattr(wiz.creator_cache_provider, "remember_snapshot", lambda *_a: None)
+        monkeypatch.setattr(wiz.growth_provider, "record_profile_read", lambda *_a: 0)
         self.picture: bytes | None = _png("#be123c")
         self.fetches: list[tuple[str, str, str]] = []
 
@@ -91,8 +106,8 @@ async def test_the_profile_picture_as_logo_seeds_the_palette_and_skips_tu_logo(
     assert session.creative.kit_palette == "#be123c"
     assert session.wizard.logo_source == wiz.LOGO_SOURCE_PROFILE
     assert session.wizard.has_logo == wiz.HAS_LOGO_PROFILE
-    # nothing to upload or describe: straight to the palette, and back to the question
-    assert session.connect.step == wiz._PALETTE_STEP
+    # nothing to upload or describe: straight on to Tipografía, and back to the question
+    assert session.connect.step == wiz._TYPOGRAPHY_STEP
     BrandConnectState.prev_step.fn(session.connect)
     assert session.connect.step == wiz._LOGO_QUESTION_STEP
 
@@ -129,7 +144,7 @@ async def test_a_picture_that_cannot_be_fetched_leaves_the_palette_alone(
     await session.answer(wiz.HAS_LOGO_PROFILE)
     assert session.creative.kit_palette == "#000000"
     assert session.wizard.logo_source == ""
-    assert session.connect.step == wiz._PALETTE_STEP  # still the chosen logo
+    assert session.connect.step == wiz._TYPOGRAPHY_STEP  # still the chosen logo
 
 
 async def test_removing_the_uploaded_logo_takes_only_its_colours(session: _Session) -> None:
@@ -214,7 +229,7 @@ async def test_a_real_picture_preanswers_the_question_and_skips_only_tu_logo(
     BrandConnectState.next_step.fn(session.connect)
     assert session.connect.step == wiz._LOGO_QUESTION_STEP
     BrandConnectState.next_step.fn(session.connect)
-    assert session.connect.step == wiz._PALETTE_STEP
+    assert session.connect.step == wiz._TYPOGRAPHY_STEP
     BrandConnectState.prev_step.fn(session.connect)
     assert session.connect.step == wiz._LOGO_QUESTION_STEP
     BrandConnectState.prev_step.fn(session.connect)
@@ -237,7 +252,7 @@ async def test_an_influencer_gets_the_picture_colours_but_no_logo_screens(
     await session.connect._use_profile_picture_as_logo()
     session.connect.step = wiz._IDENTITY_STEP
     BrandConnectState.next_step.fn(session.connect)
-    assert session.connect.step == wiz._VOICE_STEP  # 2026-09-29: logo + palette skipped
+    assert session.connect.step == wiz._CONNECT_CONFIRM_STEP  # logo + palette skipped
 
 
 async def test_a_picture_that_cannot_be_fetched_is_not_taken_and_the_question_stays(
@@ -377,7 +392,7 @@ async def test_an_influencer_whose_picture_cannot_be_taken_skips_to_the_voice(
     assert session.connect.logo_from_profile is False
     session.connect.step = wiz._IDENTITY_STEP
     BrandConnectState.next_step.fn(session.connect)
-    assert session.connect.step == wiz._VOICE_STEP
+    assert session.connect.step == wiz._CONNECT_CONFIRM_STEP
 
 
 async def _analyze_as(
@@ -409,7 +424,7 @@ async def test_analyze_does_not_ask_an_influencer_with_a_real_picture(
         session, monkeypatch, kind="influencer", picture_url="https://cdn.example/real.jpg"
     )
     assert state.logo_from_profile is False
-    assert state.step == wiz._VOICE_STEP
+    assert state.step == wiz._CONNECT_CONFIRM_STEP
 
 
 async def test_analyze_skips_an_influencer_whose_picture_is_the_default_one(
@@ -420,7 +435,7 @@ async def test_analyze_skips_an_influencer_whose_picture_is_the_default_one(
         session, monkeypatch, kind="influencer", picture_url="https://cdn.example/default.jpg"
     )
     assert state.logo_from_profile is False
-    assert state.step == wiz._VOICE_STEP
+    assert state.step == wiz._CONNECT_CONFIRM_STEP
 
 
 async def test_analyze_skips_an_influencer_with_no_picture_at_all(
@@ -428,7 +443,7 @@ async def test_analyze_skips_an_influencer_with_no_picture_at_all(
 ) -> None:
     state = await _analyze_as(session, monkeypatch, kind="influencer", picture_url="")
     assert state.logo_from_profile is False
-    assert state.step == wiz._VOICE_STEP
+    assert state.step == wiz._CONNECT_CONFIRM_STEP
 
 
 DEFAULT_TIKTOK = Path(__file__).resolve().parent / "fixtures" / "tiktok_default_avatar.jpg"
@@ -464,7 +479,7 @@ async def test_analyze_skips_an_influencer_whose_tiktok_picture_is_the_default_o
     state = await _analyze_as(session, monkeypatch, kind="influencer", picture_url=url)
     assert state.profile_pic_is_real is False
     assert state.logo_from_profile is False
-    assert state.step == wiz._VOICE_STEP
+    assert state.step == wiz._CONNECT_CONFIRM_STEP
 
 
 # -- the logo versions colour the palette (§ fix 2026-10-01) -----------------------------

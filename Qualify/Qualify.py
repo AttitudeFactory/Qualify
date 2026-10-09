@@ -9,6 +9,7 @@ from .auth_pages import brand_start_index, login_index, signup_index
 from .auth_state import BRAND_START_ROUTE, AuthState
 from .avatar_proxy import avatar_api
 from .brand_kit_editor import BrandEditState, brand_edit_index
+from .campaign_state import CampaignState
 from .canva_pages import canva_callback_index, canva_return_index
 from .canva_state import CanvaState
 from .catalog_page import catalog_index
@@ -32,6 +33,7 @@ from .creative_wizard_pages import (
     brand_connect_setup_index,
     brand_manual_index,
 )
+from .gallery_state import GalleryState
 from .inbox_page import inbox_index
 from .inbox_state import InboxState
 from .leads_page import leads_index
@@ -165,7 +167,11 @@ app.add_page(
 app.add_page(
     connections_index,
     route="/connections",
-    on_load=[AuthState.require_login, ConnectionsState.load_connections],
+    on_load=[
+        AuthState.require_login,
+        ConnectionsState.read_connect_result,
+        ConnectionsState.load_connections,
+    ],
     title="Qualify · Conexiones",
 )
 app.add_page(
@@ -329,13 +335,13 @@ app.add_page(
 app.add_page(
     drafts_index,
     route="/drafts",
-    on_load=[AuthState.require_login, CreativeState.load_drafts],
+    on_load=[AuthState.require_login, GalleryState.load],
     title="Qualify · Borradores",
 )
 app.add_page(
     draft_detail_index,
     route="/drafts/[draft_id]",
-    on_load=[AuthState.require_login, CreativeState.load_draft],
+    on_load=[AuthState.require_login, CreativeState.load_draft, CampaignState.load],
     title="Qualify · Borrador",
 )
 # QUA-108 — Planificador: calendario editorial (vista semanal por horas + lista).

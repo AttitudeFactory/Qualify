@@ -1,6 +1,6 @@
 # PRIORIDAD — despliegue de Qualify en `qualify.attitudefactory.co`
 
-**Estado:** **prioridad activa, bloqueante**. El dominio ya está comprado y operativo; lo que falta es el despliegue de Qualify. Queda **una sola decisión abierta**: dónde se aloja (§4).
+**Estado:** **prioridad activa, bloqueante — host DECIDIDO (2026-10-05): Hetzner.** El repo ya es desplegable: runbook, compose de producción, Caddy y scripts en **[`despliegue-hetzner.md`](despliegue-hetzner.md)**. Lo que queda es operación del fundador: crear el servidor, el registro DNS, el `.env.prod` y los ajustes de Meta (§7 de aquí, §2–§9 de allá).
 **Veredicto en una línea:** el dominio estable ya existe (`attitudefactory.co`, comprado 2026-08-12), lo que retira los túneles `cloudflared` efímeros de la ruta crítica; el bloqueante real es que **Qualify no tiene despliegue de ningún tipo**, y **Vercel no es opción** porque Reflex necesita backend persistente con WebSockets.
 **Pregunta que responde:** ¿qué falta exactamente para que Qualify tenga un redirect URI de OAuth estable, y cómo se encadena eso con la verificación de negocio de Meta y el programa Tech Provider?
 **Método:** sesión de trabajo con el fundador desde el repo `attitude-site` (2026-08-12). Disponibilidad de dominio verificada vía RDAP + whois de registro; precios vía API de registrador de Vercel; requisitos de Meta vía documentación oficial. Todas las verificaciones son de esa fecha y **caducan**.
@@ -45,7 +45,9 @@ Vercel aloja el sitio de Attitude (Next.js) y administra el DNS de la zona, pero
 
 **Lo que sí aporta Vercel:** la zona DNS. Apuntar `qualify.attitudefactory.co` a cualquier servidor es **un registro A/CNAME de un minuto** (`vercel dns add`) una vez exista el destino.
 
-## 4. La bifurcación pendiente — DECISIÓN DEL FUNDADOR
+## 4. La bifurcación de host — DECIDIDA: Hetzner (2026-10-05)
+
+> **Cerrada por el fundador el 2026-10-05: Hetzner VPS.** La tabla queda como registro de la decisión. Dos correcciones de hechos posteriores a 2026-08-12: el **CX22 ya no se vende** (su equivalente es el CX23; el CX33 si se activa Remotion) y los precios subieron el 2026-06-15 — ver [`plan-cicd-staging.md`](plan-cicd-staging.md) §5.8. Implementación: [`despliegue-hetzner.md`](despliegue-hetzner.md).
 
 | | **Hetzner VPS** | **Railway / Fly.io** |
 |---|---|---|
@@ -87,6 +89,8 @@ attitudefactory.co (✅ hecho)
 **Nota de arquitectura de marca (decidido con el fundador, 2026-08-12):** la entidad legal y verificada es **Attitude**; **Qualify es un producto/app dentro del portfolio**, no una entidad legal. En el RUT nunca va "Qualify". Business Portfolio existente: `Attitude.org.ve` (`218896178911983`).
 
 ## 7. Pasos concretos cuando se retome
+
+> Pasos 1–6 resueltos en el repo el 2026-10-05 (ver [`despliegue-hetzner.md`](despliegue-hetzner.md)): host decidido, `deploy/Dockerfile` (una imagen Python para API + Reflex, una de Caddy con el frontend exportado), `api_url`/`deploy_url` de Reflex por entorno (`REFLEX_API_URL`/`REFLEX_DEPLOY_URL`, sin tocar el desarrollo local; mismo origen, así que no hace falta CORS), compose con `pgvector/pgvector:pg16` + Redis 7 + migración y rotación de contraseñas de roles en cada deploy, llave maestra y secretos sólo en `/opt/qualify/.env.prod`, y Caddy con TLS automático. Pendientes del fundador: 7, 8 y 9.
 
 1. **Decidir host** (§4). Es lo único que bloquea todo lo demás.
 2. Escribir el `Dockerfile` de `qualify_api` (sirve igual para Hetzner, Railway o Fly — trabajo agnóstico del host).

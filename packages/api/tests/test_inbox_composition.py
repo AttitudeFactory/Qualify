@@ -19,7 +19,7 @@ import pytest
 from qualify_shared.social.ig_shapes import COMMENTS_EDGE_PERMISSIONS, IGComment, IGCommentsPage
 
 from qualify_api.inbox import composition
-from qualify_api.inbox.composition import UnknownInboxConnection
+from qualify_api.inbox.composition import InboxConnectionInactive, UnknownInboxConnection
 from qualify_api.inbox.media_client import MediaReadError, MediaSummary
 from qualify_api.inbox.repository import MemoryInboxRepository
 from qualify_api.inbox.service import InboxService, MediaNotEligible, SyncSummary
@@ -68,6 +68,8 @@ def _wire(
     *,
     media: dict[str, MediaSummary] | None = None,
     comments_by_media: dict[str, list[IGComment]] | None = None,
+    status: str = "active",
+    built: list[UUID] | None = None,
 ) -> tuple[InboxService, MemoryInboxRepository]:
     repository = MemoryInboxRepository()
     service = InboxService(
@@ -85,9 +87,17 @@ def _wire(
     async def service_for(*, tenant_id: UUID, connection_id: UUID) -> InboxService:
         if (tenant_id, connection_id) != (TENANT, CONNECTION):
             raise UnknownInboxConnection(f"connection {connection_id} not visible")
+        if built is not None:
+            built.append(connection_id)
         return service
 
+    def status_for(*, tenant_id: UUID, connection_id: UUID) -> str:
+        if (tenant_id, connection_id) != (TENANT, CONNECTION):
+            raise UnknownInboxConnection(f"connection {connection_id} not visible")
+        return status
+
     monkeypatch.setattr(composition, "production_ig_user_id_for", ig_user_id_for)
+    monkeypatch.setattr(composition, "production_connection_status_for", status_for)
     monkeypatch.setattr(composition, "production_inbox_service_for", service_for)
     return service, repository
 
@@ -229,3 +239,38 @@ async def test_sync_comments_propagates_unknown_connection(
 
     with pytest.raises(UnknownInboxConnection):
         await composition.sync_comments(tenant_id=TENANT, connection_id=UNKNOWN_CONNECTION)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["revoked", "degraded", "pending"])
+async def test_sync_comments_refuses_a_connection_that_is_not_active(
+    monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    """B8: a disconnected (or degraded) account is never read. The refusal comes BEFORE
+    the credential-resolved service is built, so no token is decrypted and no Meta call
+    is made — `revoke.py` keeps the stored credential, so without this guard a sync of a
+    revoked connection would still succeed."""
+    built: list[UUID] = []
+    _wire(monkeypatch, status=status, built=built)
+
+    with pytest.raises(InboxConnectionInactive) as excinfo:
+        await composition.sync_comments(tenant_id=TENANT, connection_id=CONNECTION)
+
+    assert excinfo.value.status == status
+    assert built == []
+
+
+@pytest.mark.asyncio
+async def test_sync_comments_of_another_tenant_never_reaches_the_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The seam takes the tenant from its caller (the session) and nothing else: a
+    connection id the tenant cannot see is `UnknownInboxConnection`, never a sync."""
+    built: list[UUID] = []
+    _wire(monkeypatch, built=built)
+    other_tenant = UUID("12121212-1212-4121-8121-121212121212")
+
+    with pytest.raises(UnknownInboxConnection):
+        await composition.sync_comments(tenant_id=other_tenant, connection_id=CONNECTION)
+
+    assert built == []
