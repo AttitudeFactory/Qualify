@@ -64,7 +64,7 @@ Las marcadas ⚑ necesitan OK del fundador antes del lote 0 completo; el resto s
 | D4 | ⚑ **Tipografía: mantener IBM Plex Sans + Plex Mono** (decisión 10.2 del DS). El kit trae Inter por defecto, pero no es parte de su valor. | Plex da mono hermano y numerales tabulares; el producto es cifras y `@handles`. |
 | D5 | **Material por rol, por rendimiento.** `island` (sidebar, drawer, dialog, popover/dropdown, toast, header sticky) = vidrio con `backdrop-filter`; `card` (tarjetas dentro del panel) = translúcido con relieve, **sin blur** (o ≤ 8 px); `control` (botón, campo, badge) = sin blur, solo relieve/inset del kit. **Nunca blur en grids** (tiles del planificador, galería de borradores, catálogo). Tope: ≤ 8 superficies con `backdrop-filter` por pantalla. | `backdrop-filter` se paga por elemento y por píxel; 72 `card` y las grids de tiles en vidrio pleno se arrastrarían en portátiles y móviles. |
 | D6 | ⚑ **El panel principal queda opaco** (`--color-panel-solid`), con el suelo *mesh* asomando por los bordes; vidrio solo en el header sticky de la página. Patrón macOS: sidebar translúcido, contenido opaco. Alternativa: panel de vidrio frosted (más fiel al kit, menos legible con tablas y texto denso). | Legibilidad de tablas y formularios; una tabla de 50 filas sobre vidrio es ruido. |
-| D7 | **Movimiento:** `--q-spring := --lq-ease-spring`, `--q-ease := --lq-ease`, `--q-dur := --lq-duration` escalado. Dos curvas siguen siendo dos curvas (P8). | Un cambio en tokens y todo el sistema (zen, lift, drawer, stepper) adopta la firma del kit. |
+| D7 | **Movimiento:** `--q-spring := --lq-ease-spring`, `--q-ease := --lq-ease` — **hecho**. Las duraciones se quedan en 140/240/380 ms (la `--lq-duration` de 420 ms del kit es solo registro: la app es una consola, no una demo, y sus transiciones cortas ya estaban calibradas). Dos curvas siguen siendo dos curvas (P8). | Un cambio en tokens y todo el sistema (zen, lift, drawer, stepper) adopta la firma del kit. |
 | D8 | **JS del kit:** se carga `liquidos.js` **no**. Se portan a `assets/` solo ripple y sheen por puntero (delegados al documento, como `glass-nav.js`), con guard `window.__q*`. Tabs/dialog/toast/reveal del kit quedan fuera (D1). | Dos sistemas de diálogos y de toasts en la misma app = foco y a11y rotos. |
 | D9 | **Enforcement = test estático.** `Qualify/test_design_system_guard.py` (mismo patrón que `packages/shared/tests/test_object_store_sanctity.py`): en `Qualify/*.py` fuera de `ui/` prohíbe colores hex, `rx.color(` (solo `T.*`), `box_shadow=` / `backdrop_filter=` / `background=` con valores que no sean `T.*`, y `color_scheme="<escala>"` crudo (solo `T.tone_scheme`/`T.platform_scale`). Lista de archivos cubiertos que crece lote a lote; CI lo corre (`just test`). | «SIEMPRE enforzar»: una regla que no falla en CI no es una regla. |
 | D11 | **Scripts del navegador** se cargan con `rx.el.script(src=…, async_=True)` dentro del componente que los necesita, no con `head_components`. | Medido 2026-10-08: `head_components` pasa por react-helmet y **no inyecta nada** en el build de desarrollo (afecta a `deck-drag.js`, `rank-drag.js` y al atajo ⌘.). Tarea abierta aparte. |
@@ -78,15 +78,15 @@ Las marcadas ⚑ necesitan OK del fundador antes del lote 0 completo; el resto s
 
 Cada equipo de lote = **1 UX/UI** (revisa contra el kit y contra `docs/design-system.md`, aprueba capturas claro/oscuro/móvil) + **1 frontend Reflex** (el lote E lleva 2). Archivos **disjuntos** por lote; la fundación es el único punto de contacto y por eso va primero y sola.
 
-### Lote 0 — Fundación (1 equipo, secuencial; bloquea a todos) — EN CURSO
+### Lote 0 — Fundación (1 equipo, secuencial; bloquea a todos) — HECHO (commits `82e547a`…`06adbcf`)
 
-Hecho: el menú (§7). Pendiente, en este orden:
+Entregado en este orden (el menú primero, §7):
 
-1. Vendorizar `liquidos.css` en `assets/liquidos.css` y registrarlo en `rx.App(stylesheets=[…])` antes de `qualify.css`; puente de tokens (D2, D7); material claro/oscuro por rol (D3, D5) como variables `--q-glass-*` / `--q-card-*` / `--q-control-*`.
+1. ~~Vendorizar `liquidos.css` en `assets/` y registrarlo~~ → **no se carga** (enmienda D2); el kit vive en `reference/liquid-glass/`. Puente de tokens `--lq-*` (D2, D7) y material claro/oscuro por rol (D3, D5) como variables `--q-glass-*` / `--q-card-*` / `--q-control-*` / `--q-field-*` / `--q-overlay-*` — **hecho**.
 2. Mutar primitivas para que emitan el material (nunca APIs nuevas): `card` (rol *card*, `interactive` = lift del kit), `stat_card`, `signal_pill` / `tone_badge` / `tag` / `platform_badge` / `removable_pill` (relieve `lq-badge`, tono por `T.*`), `callout`, `empty_state`, `skeleton_card` / `skeleton_rows` (shimmer `lq-skeleton`), `loading_spinner` (anillo `lq-spinner` con nuestro gris), `progress_panel` (`lq-progress`), `drawer` (material *island* + `lq-dialog` header/body/footer), `stepper`, `demo_notice`, `kv`, `mono`.
 3. Layout: `page_header` sticky con material *island*; `page_body` y `section` sin cambio de API; `app_shell` ya lleva el suelo.
 4. Re-skin global de Radix (CSS sobre `.rt-*`): `Button` (solid = `lq-button--primary` con gradiente teal 9→8; soft/outline/ghost = `lq-button` base/ghost), `IconButton`, `TextField` / `Select` / `TextArea` (`lq-field`), `Switch`, `SegmentedControl` (`lq-segmented`; sustituye a `.q-flow-switch`), `Checkbox` / `Radio`, `Table` (`lq-table`), `Tooltip`, `Popover` / `DropdownMenu` / `HoverCard` (*island*), `Dialog` / `AlertDialog` (`lq-dialog`), Sonner toast (`lq-toast`), `Accordion`, `Tabs`, `Badge`, `Callout`, `Skeleton`, `Progress`, `Slider` (`lq-range`), `Separator`.
-5. D8: portar ripple + sheen a `assets/glass-fx.js`.
+5. D8: del JS del kit solo se portó la luz que sigue al puntero, dentro de `assets/glass-nav.js` (hecho); el ripple de los botones queda fuera a propósito — ninguna pantalla lo pedía y es un listener global más.
 6. D10: partir `qualify.css` por dominio (mover bloques, sin cambiar reglas).
 7. D9: `test_design_system_guard.py` con la lista inicial = `Qualify/ui/*` + `styleguide_page.py` + `auth_pages.py` + `components.py`.
 8. `/design` actualizado (cada primitiva y cada skin visible, claro y oscuro) y `docs/design-system.md` v3 (§3 tokens, §5 componentes, §10 decisiones D1–D11).
@@ -139,7 +139,7 @@ Lote 0 (fundación) ──► A ─┐
 | Riesgo | Mitigación |
 |---|---|
 | `backdrop-filter` caro (Safari, móviles) | D5 (material por rol) + tope por pantalla medido en lote 6 |
-| Contraste de texto sobre vidrio claro | relleno claro al 74 % (`--q-glass-fill`) y verificación 4,5:1 en lote 6 |
+| Contraste de texto sobre vidrio claro | relleno claro al 64 % de blanco (`--q-glass-fill` claro = opacidad del dial + 0,55) y verificación 4,5:1 en lote 6 |
 | React re-renderiza el sidebar y pisa nodos añadidos por JS | ya mitigado en `glass-nav.js` (MutationObserver filtrado, re-settle, guard) |
 | `head_components` muertos (react-helmet) | D11; tarea abierta para `deck-drag.js` / `rank-drag.js` / ⌘. |
 | `uv.lock` pide reflex 0.9.12 y el venv compartido tiene 0.9.7 | no sincronizar en worktrees (trampa documentada); decidir el upgrade fuera de esta migración |
