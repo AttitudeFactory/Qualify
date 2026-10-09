@@ -346,6 +346,33 @@ def kit_status(tenant_id: UUID, brand_id: UUID) -> KitStatus:
     return KitStatus(completed=form is not None and not unfinished, progress=progress)
 
 
+def kit_voice_configured(tenant_id: UUID, brand_id: UUID) -> bool:
+    """Tu voz y tono counts as configured by the same test the Brand Kit editor uses to
+    open on it (`brand_kit_editor.needs_voice`): saved there, or the tone moved off its
+    defaults, or a cloned voice — any one is enough (§ request 2026-10-06, the
+    generator's flag)."""
+    from qualify_api.creative.voice_clone import VoiceCloneService
+
+    from .creative_provider import load_kit_form
+    from .creative_state import TONE_DEFAULT
+
+    details = BrandKitStore().load_details(tenant_id=tenant_id, brand_id=brand_id)
+    if (details.connect or {}).get("voice_configured"):
+        return True
+    form = load_kit_form(tenant_id, brand_id)
+    if form is not None and any(
+        value != TONE_DEFAULT
+        for value in (
+            form.tone_formal_casual,
+            form.tone_sober_enthusiastic,
+            form.tone_technical_plain,
+            form.tone_brief_elaborate,
+        )
+    ):
+        return True
+    return VoiceCloneService().current(tenant_id=tenant_id, brand_id=brand_id) is not None
+
+
 def tenant_kit_status(tenant_id: UUID) -> KitStatus:
     """`kit_status` of the tenant's brand (the eldest, like every Brand Kit screen)."""
     brand_id = default_brand_id(tenant_id)

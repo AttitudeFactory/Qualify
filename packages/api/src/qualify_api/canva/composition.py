@@ -10,7 +10,7 @@ from qualify_api.canva.repository import PostgresCanvaRepository
 from qualify_api.canva.service import CanvaConfig, CanvaService
 from qualify_api.connections.crypto import DevEncryptor
 from qualify_api.creative.composition import media_root
-from qualify_api.creative.media import LocalMediaStore
+from qualify_api.creative.media import LocalMediaStore, R2ReadingMediaStore
 
 
 def production_canva_service() -> CanvaService:
@@ -21,5 +21,6 @@ def production_canva_service() -> CanvaService:
         repository=PostgresCanvaRepository(),
         client=CanvaConnectClient(client_id=config.client_id, client_secret=config.client_secret),
         encryptor=DevEncryptor(),
-        store=LocalMediaStore(media_root()),
+        # a piece's `object_key` is its R2 copy since 2026-10-06: read it there
+        store=R2ReadingMediaStore(LocalMediaStore(media_root())),
     )

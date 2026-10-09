@@ -48,25 +48,55 @@ def _emit(lines: Iterable[str]) -> None:
 
 def copy_prompt(
     *,
-    draft_id: UUID,
+    draft_id: UUID | None,
     kind: str,
     chain: tuple[str, ...],
     variants: int,
     system: str,
-    user: str,
+    user: str | tuple[str, ...],
 ) -> None:
-    """The prompt the copy model receives, once per draft (every variant gets the same)."""
+    """The prompt the copy model receives, once per draft: the shared prefix, then each
+    variant's own assignment (§ request 2026-10-08 — each one has its angle).
+    With no `draft_id` it is the preview the generator prints on «¿Todo listo?», before
+    Generar (§ request 2026-10-06): the same bytes, nothing sent, nothing spent."""
+    head = (
+        f"PROMPT → Claude (copy)  draft={draft_id}"
+        if draft_id is not None
+        else "VISTA PREVIA DEL PROMPT → Claude (copy)  — aún no se envió nada"
+    )
     _emit(
         [
             _RULE,
-            f"PROMPT → Claude (copy)  draft={draft_id}  tipo={kind}  "
-            f"variantes={variants}  cadena={' → '.join(chain)}",
+            f"{head}  tipo={kind}  variantes={variants}  cadena={' → '.join(chain)}",
             _RULE,
             "[system — prefijo de marca, cacheado]",
             system,
             _THIN,
-            "[user — el encargo]",
-            user,
+            *_assignments((user,) if isinstance(user, str) else user),
+            _RULE,
+        ]
+    )
+
+
+def _assignments(users: tuple[str, ...]) -> list[str]:
+    if len(users) == 1:
+        return ["[user — el encargo]", users[0]]
+    lines: list[str] = []
+    for number, user in enumerate(users, 1):
+        if number > 1:
+            lines.append(_THIN)
+        lines.extend((f"[user — el encargo, variante {number}]", user))
+    return lines
+
+
+def prompt_unavailable(*, kind: str, missing: tuple[str, ...]) -> None:
+    """The preview could not render: the brand lacks what the prompt is built from —
+    the same reason Generar would refuse (`BrandNotReady`)."""
+    _emit(
+        [
+            _RULE,
+            f"VISTA PREVIA DEL PROMPT  tipo={kind}  — no se puede armar, falta: "
+            + ", ".join(missing),
             _RULE,
         ]
     )

@@ -171,9 +171,11 @@ class FakeRouter:
     def __init__(self, script: list[object] | None = None) -> None:
         self.script = list(script or [])
         self.budgets: list[BudgetContext] = []
+        self.requests: list[object] = []
 
     def run(self, *, tenant_id, brand_id, chain, request, budget):  # noqa: ANN001, ANN201
         self.budgets.append(budget)
+        self.requests.append(request)
         item = self.script.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -204,6 +206,7 @@ class InMemoryRepository:
         self.spend_added = Decimal("0")
         self.media: dict[UUID, list[ImageRecord]] = {}
         self.template_runs = {}
+        self.recent: tuple[str, ...] | Exception = ()
 
     def insert_brief_and_draft(
         self, *, tenant_id, user_id, brief, voice_profile_version, pipeline_version
@@ -248,6 +251,11 @@ class InMemoryRepository:
 
     def budget_state(self, *, tenant_id, brand_id):  # noqa: ANN001, ANN201
         return self.budget
+
+    def recent_openings(self, *, tenant_id, brand_id, limit=8):  # noqa: ANN001, ANN201
+        if isinstance(self.recent, Exception):
+            raise self.recent
+        return self.recent
 
     def finish_generation(
         self,
@@ -390,6 +398,43 @@ def make_service(
 
 
 # ---------------------------------------------------------------------------
+# preview_prompt (§ request 2026-10-06: the prompt in the console before Generar)
+
+
+def test_preview_prompt_prints_the_real_prompt_and_creates_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from qualify_creative.brand import render_prompt
+    from qualify_creative.enums import GenerationTask
+
+    caplog.set_level(logging.INFO, logger="qualify_api.creative.trace")
+    kit, voice, brief = make_kit(), make_voice(), make_brief()
+    router = FakeRouter()
+    service, repo, dispatcher = make_service(router=router, kit=kit, voice=voice)
+    assert service.preview_prompt(tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=brief)
+    first, second = (
+        render_prompt(kit=kit, voice=voice, brief=brief, task=GenerationTask.COPY, variant=index)
+        for index in range(2)
+    )
+    assert "VISTA PREVIA DEL PROMPT" in caplog.text
+    assert first.stable_prefix in caplog.text
+    assert first.volatile_suffix in caplog.text and second.volatile_suffix in caplog.text
+    assert repo.drafts == {} and repo.briefs == {} and dispatcher.calls == []
+    assert router.budgets == []  # no vendor call
+
+
+def test_preview_prompt_says_what_is_missing(caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    caplog.set_level(logging.INFO, logger="qualify_api.creative.trace")
+    service, _, _ = make_service(kit=make_kit(), voice=None)
+    assert not service.preview_prompt(tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=make_brief())
+    assert "no se puede armar, falta: voice_profile" in caplog.text
+
+
+# ---------------------------------------------------------------------------
 # create_draft
 
 
@@ -467,6 +512,45 @@ def test_run_generation_happy_path_generates_and_records_spend() -> None:
     # No config row → unlimited, soft; the second call's remaining reflects real spend.
     assert router.budgets[0].hard_stop is False
     assert router.budgets[0].remaining_usd - router.budgets[1].remaining_usd == per_call
+
+
+def test_each_variant_is_asked_its_own_angle_and_told_the_recent_openings() -> None:
+    router = FakeRouter([ok_outcome(copy_dict("Hook uno")), ok_outcome(copy_dict("Hook dos"))])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    repo.recent = ("Mano, pilla esta arepa", "Pide ya")
+    draft_id = repo.seed_draft(make_brief(variants=2))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    assert repo.drafts[draft_id].status == GENERATED
+    first, second = (request.rendered_prompt for request in router.requests)
+    assert first.stable_prefix == second.stable_prefix  # the cache still hits
+    assert "This is variant 1 of 2" in first.volatile_suffix
+    assert "This is variant 2 of 2" in second.volatile_suffix
+    assert all("- Mano, pilla esta arepa" in p.volatile_suffix for p in (first, second))
+
+
+def test_unreadable_recent_openings_never_fail_the_generation() -> None:
+    router = FakeRouter([ok_outcome(copy_dict("Hook uno")), ok_outcome(copy_dict("Hook dos"))])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    repo.recent = RuntimeError("db down")
+    draft_id = repo.seed_draft(make_brief(variants=2))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    assert repo.drafts[draft_id].status == GENERATED
+    assert all("used recently" not in r.rendered_prompt.volatile_suffix for r in router.requests)
+
+
+def test_recent_openings_are_hooks_and_ctas_newest_first_without_repeats() -> None:
+    from qualify_api.creative.service import _openings
+
+    assert _openings(
+        [
+            {"hook": "Pilla esta", "cta": "Pide ya"},
+            {"hook": "Pilla esta", "cta": ""},
+            None,
+            {"hook": " Otra ", "cta": "Pide ya"},
+        ]
+    ) == ("Pilla esta", "Pide ya", "Otra")
 
 
 def test_run_generation_passes_configured_budget_hard_stop() -> None:
@@ -868,7 +952,7 @@ class FakeMedia:
         self.outcome = outcome
         self.calls: list[tuple[ContentBrief, CopyPayload]] = []
 
-    def produce(self, *, tenant_id, draft_id, brief, kit, copy, budget):  # noqa: ANN001, ANN201
+    def produce(self, *, tenant_id, draft_id, brief, kit, copy, budget, revision=1):  # noqa: ANN001, ANN201, E501
         self.calls.append((brief, copy))
         return self.outcome
 
@@ -1102,7 +1186,10 @@ def test_a_story_format_makes_a_story_post() -> None:
 def test_a_media_failure_keeps_its_reason_in_words() -> None:
     router = FakeRouter([ok_outcome(copy_dict())])
     media = FakeMedia(
-        MediaOutcome(failure="provider_error", detail="HeyGen: la cuenta no tiene créditos de API.")
+        MediaOutcome(
+            failure="provider_error",
+            detail="La generación no está disponible ahora mismo. Avisa al equipo.",
+        )
     )
     service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
     brief = make_brief(
@@ -1115,7 +1202,7 @@ def test_a_media_failure_keeps_its_reason_in_words() -> None:
     service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
     detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
     assert detail is not None and detail.failure_reason == "provider_error"
-    assert detail.failure_detail == "HeyGen: la cuenta no tiene créditos de API."
+    assert detail.failure_detail == "La generación no está disponible ahora mismo. Avisa al equipo."
 
 
 # -- the business context reaches the prompt (§ request 2026-10-01) ----------------------

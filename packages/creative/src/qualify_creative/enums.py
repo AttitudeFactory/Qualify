@@ -231,6 +231,9 @@ class GenerationTask(StrEnum):
     # A spokesperson video: an existing vendor avatar lip-syncing a script. It is always
     # AI-generated footage, so it always carries Meta's disclosure label (F5-MA-10).
     AVATAR_VIDEO = "avatar_video"
+    # A generated scene video (Seedance, § request 2026-10-07): a prompt and the first
+    # frame it starts on. AI-generated footage, so it carries the disclosure label too.
+    SCENE_VIDEO = "scene_video"
     # A brand template rendered by the Remotion service (plan-mvp-plantillas-remotion.md
     # §2): the operator's real photos/video composed into a Reel + stills. Deterministic,
     # no model touches a pixel, so no AI disclosure — but it IS a provider call (a
@@ -326,10 +329,10 @@ class ContentKind(StrEnum):
     - `STATIC_FLYER` — an advertising image (or a carousel of them) built from the
       operator's product photo, their background (e.g. their venue) or both, as
       `AdImageMode` says, plus the generated copy. The value keeps its historical name
-      (it is stored on every draft); the product calls it "imagen publicitaria". Today
-      it is composed locally; the multi-reference image model that will render the
-      scene (`MediaInputs.scene_prompt`) is chosen but not wired — see
-      `docs/comparativa-apis-creativo-motor-angulos.md` §7.
+      (it is stored on every draft); the product calls it "imagen publicitaria". Since
+      2026-10-07 Seedream renders the scene (`MediaInputs.scene_prompt`) with those
+      photos as references, and the hook, the CTA and the real logo are set on top
+      locally — a model is never trusted to spell the brand.
     - `TEMPLATE` — a brand template (plan-mvp-plantillas-remotion.md): the operator's
       real product photos (and optionally a short video) composed by a Remotion
       template of their niche into a Reel 9:16 plus feed and story stills, in one run.
@@ -399,6 +402,17 @@ class AvatarSource(StrEnum):
     IMAGE = "image"
 
 
+class VideoEngine(StrEnum):
+    """Which vendor renders the two avatar kinds (§ request 2026-10-07). Stored on the
+    brief, so a draft regenerates on the engine it was asked for."""
+
+    #: A talking presenter over HeyGen API v3: the exact script, read by the chosen voice.
+    HEYGEN = "heygen"
+    #: A generated scene: Seedream composes the first frame from the operator's photos,
+    #: Seedance animates it. Seedance 1.0 is silent; the 2.x models speak the script.
+    SEEDANCE = "seedance"
+
+
 class AdImageMode(StrEnum):
     """What an advertising image (`ContentKind.STATIC_FLYER`) is built from — the
     operator's own photos, which the image model must keep recognisable."""
@@ -443,8 +457,9 @@ _KIND_FORMATS: dict[ContentKind, tuple[ContentFormat, ...]] = {
         ContentFormat.FEED_1_1,
         ContentFormat.STORY_9_16,
     ),
-    # The manifest decides the outputs (Reel + feed + story); the brief's format is the
-    # one the operator previews first.
+    # Since 2026-10-06 a template renders ONE output, the one of the brief's format
+    # (`media.template_port`): the Reel is the generator's «Video publicitario», a feed or
+    # story still is «Con plantilla».
     ContentKind.TEMPLATE: (
         ContentFormat.REELS_9_16,
         ContentFormat.FEED_4_5,
@@ -479,7 +494,12 @@ class ReuseType(StrEnum):
 def default_category(kind: ContentKind, fmt: ContentFormat | None = None) -> PostCategory:
     """The category a new POST starts with: a story format is a story; otherwise anything
     recorded or rendered as a video (the avatar kinds, a real creator's script) is a reel
-    and a flyer or carousel a galería. The operator can change it."""
+    and a flyer or carousel a galería — so is a template's feed still, since a template
+    renders the one output of its format (2026-10-06). The operator can change it."""
     if fmt is ContentFormat.STORY_9_16:
         return PostCategory.STORY
-    return PostCategory.GALERIA if kind is ContentKind.STATIC_FLYER else PostCategory.REEL
+    if kind is ContentKind.STATIC_FLYER or (
+        kind is ContentKind.TEMPLATE and fmt is not None and fmt.is_feed
+    ):
+        return PostCategory.GALERIA
+    return PostCategory.REEL

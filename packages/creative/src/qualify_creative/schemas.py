@@ -29,6 +29,7 @@ from qualify_creative.enums import (
     ImageRoute,
     Platform,
     VideoEffect,
+    VideoEngine,
     VoiceProfileStatus,
     VoiceSourceKind,
 )
@@ -38,6 +39,12 @@ from qualify_creative.enums import (
 ADS_HEADLINE_MAX = 40
 ADS_DESCRIPTION_MAX = 30
 HOOK_MAX = 60
+#: A hook and a CTA PRINTED on an image (the ad image, a template's outputs): what still
+#: reads at a glance and fits the template's text ports (hook 60, cta 40) with room to
+#: spare. Asked for in the prompt; the CTA came back at 46-57 characters without a
+#: number to aim at (§ request 2026-10-08).
+PRINTED_HOOK_MAX = 50
+PRINTED_CTA_MAX = 32
 
 #: HeyGen reads at most 5,000 characters per video (`heygen_video.MAX_SCRIPT_CHARS`); a
 #: script is capped well below it so a 60-second piece never gets near the vendor limit.
@@ -46,6 +53,8 @@ SCRIPT_MAX = 2000
 DURATIONS_SECONDS = (15, 30, 45, 60)
 #: Product images per brief — a carousel is at most 10 slides on Instagram.
 MAX_PRODUCT_IMAGES = 10
+#: Brand Kit elements (not the logo) one piece may draw on (§ request 2026-10-06).
+MAX_BRAND_ELEMENTS = 6
 AVATAR_PROMPT_MAX = 600
 #: The scene an advertising image asks the image model for ("a hand holding the glass,
 #: the bar blurred behind").
@@ -161,13 +170,34 @@ class BrandElement(BaseModel):
 
     name: str
     context: str = ""
+    #: Its R2 key and whether it is a logo ("logo") or another element ("element"):
+    #: what lets a piece that CHOSE it (`MediaInputs.brand_logo_key` /
+    #: `brand_element_keys`) be told its name and usage note. Never rendered in the
+    #: cached prefix.
+    key: str = ""
+    kind: str = "element"
+
+
+class BrandAccount(BaseModel):
+    """One account the operator sorted — referente, competencia or detractor — with what
+    the discovery learned about it (§ request 2026-10-06: the prompt carried only the
+    handle, so the model knew WHO but not WHY). Every text is one line, already capped."""
+
+    model_config = ConfigDict(frozen=True)
+
+    handle: str  # "@name"
+    network: str
+    kind: str = ""  # creador | marca | medio
+    why: str = ""  # the discovery's review of the account
+    note: str = ""  # the operator's own note
+    sample: str = ""  # their own words: a post (or the bio) as found
 
 
 class BrandContext(BaseModel):
     """What the Brand Kit knows about the business beyond the kit itself (§ request
     2026-10-01): its rubro and location, its hashtags, the account as read, the
-    brandboard's elements and the accounts it looks up to / competes with. Every field
-    may be empty; an empty context renders nothing."""
+    brandboard's elements and the accounts it looks up to / competes with / does not
+    want to resemble. Every field may be empty; an empty context renders nothing."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -177,8 +207,9 @@ class BrandContext(BaseModel):
     account_bio: str = ""
     account_category: str = ""
     elements: tuple[BrandElement, ...] = ()
-    referentes: tuple[str, ...] = ()
-    competitors: tuple[str, ...] = ()
+    referentes: tuple[BrandAccount, ...] = ()
+    competitors: tuple[BrandAccount, ...] = ()
+    detractors: tuple[BrandAccount, ...] = ()
 
     @property
     def is_empty(self) -> bool:
@@ -192,6 +223,7 @@ class BrandContext(BaseModel):
                 self.elements,
                 self.referentes,
                 self.competitors,
+                self.detractors,
             )
         )
 
@@ -319,14 +351,27 @@ class MediaInputs(BaseModel):
     own_script: str = Field(default="", max_length=SCRIPT_MAX)
     #: HeyGen engine for an avatar subject (an image subject always runs Avatar IV).
     engine: str = "avatar_iv"
+    #: Which vendor renders the avatar kinds (§ request 2026-10-07). HeyGen is the
+    #: default so a brief stored before Seedance regenerates exactly as it was asked;
+    #: the generator sends the platform's engine (`QUALIFY_VIDEO_ENGINE`) explicitly.
+    #: With Seedance there is no library look and no voice: the presenter is described
+    #: (`avatar_prompt`) or animated from `avatar_image_key`, and Seedream composes it
+    #: with the products and the background into the video's first frame.
+    video_engine: VideoEngine = VideoEngine.HEYGEN
     #: Advertising image only: what it is built from, and the scene the image model is
-    #: asked for. Stored with the brief today; rendered once the model is wired.
+    #: asked for — Seedream renders it with those photos as references (2026-10-07).
     ad_mode: AdImageMode | None = None
     scene_prompt: str = Field(default="", max_length=SCENE_PROMPT_MAX)
     #: Template kind: the recipe the operator picked when they overrode the router's
     #: suggestion (plan-mvp-plantillas-remotion.md §3). Empty = let the router choose.
     template_id: str | None = None
     template_version: int | None = Field(default=None, ge=1)
+    #: Resources of the Brand Kit chosen for THIS piece (§ request 2026-10-06) — apart
+    #: from the background and the products: the logo goes where the brand mark goes (the
+    #: template's and the flyer's logo slot, a corner of the avatar's scene), and each
+    #: element is used as its own usage note says. R2 keys of the brand's assets.
+    brand_logo_key: str | None = None
+    brand_element_keys: tuple[str, ...] = Field(default=(), max_length=MAX_BRAND_ELEMENTS)
 
     @model_validator(mode="after")
     def _known_duration(self) -> MediaInputs:
@@ -379,8 +424,9 @@ class ContentBrief(BaseModel):
             # a template with zero real photos is a generated image, which is the one
             # thing this kind exists not to be.
             raise ValueError("a template needs at least one product photo")
+        heygen = media.video_engine is VideoEngine.HEYGEN
         if self.kind is ContentKind.AVATAR_VIDEO:
-            if not media.voice_id:
+            if heygen and not media.voice_id:
                 raise ValueError("an avatar video needs a voice")
             # A library look, or a custom synthetic person described by the operator. An
             # uploaded photo is not offered for a human presenter: that is a real person's
@@ -390,10 +436,13 @@ class ContentBrief(BaseModel):
             if media.avatar_source is AvatarSource.AI:
                 if not media.avatar_prompt.strip():
                     raise ValueError("a custom human avatar needs a description")
+            elif not heygen:
+                # no library on Seedance: the presenter is always described
+                raise ValueError("a Seedance avatar video needs the presenter's description")
             elif not media.avatar_look_id:
                 raise ValueError("an avatar video needs an avatar look and a voice")
         if self.kind is ContentKind.ANIMATED_AVATAR_VIDEO:
-            if not media.voice_id:
+            if heygen and not media.voice_id:
                 raise ValueError("an animated avatar video needs a voice")
             if media.avatar_source is AvatarSource.AI and not media.avatar_prompt.strip():
                 raise ValueError("an AI-generated avatar needs a description")
@@ -426,7 +475,14 @@ class ContentBrief(BaseModel):
     def requires_ai_disclosure(self) -> bool:
         """Travels with the artifact to the ads module: forgetting the label is the
         third-largest cause of Meta ad rejections."""
-        return self.image_route.requires_ai_disclosure or self.kind.requires_ai_disclosure
+        # an advertising image with a mode is GENERATED by Seedream since 2026-10-07: its
+        # photograph is AI imagery even though the product in it is the operator's
+        generated_ad = self.kind is ContentKind.STATIC_FLYER and self.media.ad_mode is not None
+        return (
+            self.image_route.requires_ai_disclosure
+            or self.kind.requires_ai_disclosure
+            or generated_ad
+        )
 
 
 class HardFailure(BaseModel):

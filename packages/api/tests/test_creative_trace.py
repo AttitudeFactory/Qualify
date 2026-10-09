@@ -42,6 +42,15 @@ def test_the_copy_prompt_is_printed_whole(caplog: pytest.LogCaptureFixture) -> N
     assert "Encargo: shawarma mixto, 2x1 el jueves." in text
 
 
+def test_the_preview_is_marked_as_not_sent(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="qualify_api.creative.trace")
+    trace.copy_prompt(
+        draft_id=None, kind="creator_script", chain=("anthropic",), variants=3, system="s", user="u"
+    )
+    assert "VISTA PREVIA DEL PROMPT → Claude (copy)" in caplog.text
+    assert "aún no se envió nada" in caplog.text and "draft=" not in caplog.text
+
+
 def test_the_spend_lists_every_call_the_total_and_the_budget(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

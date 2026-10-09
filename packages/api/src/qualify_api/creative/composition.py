@@ -3,8 +3,9 @@ as ``connections/composition.py``: one function to audit, cached because callers
 per request/event, and nothing here does network work at import or compose time.
 
 D4 (design §4.1): only the PLATFORM credential path exists in the MVP — Qualify pays,
-the key comes from the process environment: ``QUALIFY_ANTHROPIC_API_KEY`` for copy and
-``QUALIFY_HEYGEN_API_KEY`` for the avatar videos (one env var per provider). The resolver
+the key comes from the process environment: ``QUALIFY_ANTHROPIC_API_KEY`` for copy,
+``QUALIFY_HEYGEN_API_KEY`` for the HeyGen avatar videos and
+``QUALIFY_BYTEPLUS_ARK_API_KEY`` for Seedream and Seedance (one env var per vendor). The resolver
 raises ``MissingPlatformKey`` at RESOLVE time, not at import or compose time, so a
 process without the key can still serve every read path and fails loudly exactly when a
 generation is attempted.
@@ -26,6 +27,15 @@ from pathlib import Path
 from uuid import UUID
 
 from qualify_creative.adapters.anthropic_copy import AnthropicCopyAdapter
+from qualify_creative.adapters.byteplus_ark import (
+    BASE_URL as ARK_BASE_URL,
+)
+from qualify_creative.adapters.byteplus_ark import (
+    DEFAULT_SEEDANCE_MODEL,
+    DEFAULT_SEEDREAM_MODEL,
+    SeedanceVideoAdapter,
+    SeedreamImageAdapter,
+)
 from qualify_creative.adapters.heygen_video import HeyGenAvatarVideoAdapter
 from qualify_creative.enums import PaidBy
 from qualify_creative.pricing import JsonPricingTable
@@ -52,14 +62,32 @@ logger = logging.getLogger(__name__)
 PLATFORM_KEY_ENV = "QUALIFY_ANTHROPIC_API_KEY"
 #: One platform key per provider. Before the video lane every provider got the Anthropic
 #: key, which would have handed it to HeyGen.
-PROVIDER_KEY_ENVS = {"anthropic": PLATFORM_KEY_ENV, "heygen": "QUALIFY_HEYGEN_API_KEY"}
+#: Seedream and Seedance are two router links over ONE BytePlus ModelArk key.
+ARK_KEY_ENV = "QUALIFY_BYTEPLUS_ARK_API_KEY"
+PROVIDER_KEY_ENVS = {
+    "anthropic": PLATFORM_KEY_ENV,
+    "heygen": "QUALIFY_HEYGEN_API_KEY",
+    "seedream": ARK_KEY_ENV,
+    "seedance": ARK_KEY_ENV,
+}
+#: BytePlus ModelArk (§ request 2026-10-07): the regional base URL and the models. The
+#: defaults are the founder's test pair — Seedance 1.0 pro (silent video) and Seedream
+#: 5.0 lite; a 2.x Seedance model id here makes the avatar speak its script.
+ARK_BASE_URL_ENV = "QUALIFY_BYTEPLUS_ARK_BASE_URL"
+SEEDANCE_MODEL_ENV = "QUALIFY_SEEDANCE_MODEL"
+SEEDREAM_MODEL_ENV = "QUALIFY_SEEDREAM_MODEL"
+#: Seedance's output resolution: 720p by default (1.0 pro bills the same per token at
+#: every resolution, so 1080p is ~2.4x the cost of 720p for the same seconds).
+SEEDANCE_RESOLUTION_ENV = "QUALIFY_SEEDANCE_RESOLUTION"
+DEFAULT_SEEDANCE_RESOLUTION = "720p"
 #: The Remotion render service (packages/render, CONTRACT.md §4). `just up` starts it in
 #: compose on 3200; in the VPS it is the same container next to the app.
 RENDER_URL_ENV = "QUALIFY_RENDER_URL"
 DEFAULT_RENDER_URL = "http://localhost:3200"
 
-#: v2 carries the HeyGen per-second rates (and everything v1 had).
-PRICING_VERSION = "v2"
+#: v3 adds the BytePlus ModelArk rates (Seedance per token, Seedream per image) to
+#: everything v2 had.
+PRICING_VERSION = "v3"
 
 #: Where uploads and generated media live — the app's upload directory, the same one
 #: Reflex serves (`rx.get_upload_dir()`, overridable with `REFLEX_UPLOADED_FILES_DIR`).
@@ -133,6 +161,15 @@ def production_content_service() -> ContentService:
     pricing = JsonPricingTable(PRICING_VERSION)
     credentials = PlatformKeyResolver()
     heygen = HeyGenAvatarVideoAdapter()
+    ark_base_url = os.environ.get(ARK_BASE_URL_ENV) or ARK_BASE_URL
+    seedream = SeedreamImageAdapter(
+        model=os.environ.get(SEEDREAM_MODEL_ENV) or DEFAULT_SEEDREAM_MODEL,
+        base_url=ark_base_url,
+    )
+    seedance = SeedanceVideoAdapter(
+        model=os.environ.get(SEEDANCE_MODEL_ENV) or DEFAULT_SEEDANCE_MODEL,
+        base_url=ark_base_url,
+    )
     # the brand's logo may live in R2 (Brand Kit, 2026-10-01): read it there
     store = R2ReadingMediaStore(LocalMediaStore(media_root()))
     remotion = RemotionTemplateAdapter(
@@ -140,7 +177,13 @@ def production_content_service() -> ContentService:
         read_media=store.read,
     )
     router = CreativeRouter(
-        providers={"anthropic": AnthropicCopyAdapter(), "heygen": heygen, "remotion": remotion},
+        providers={
+            "anthropic": AnthropicCopyAdapter(),
+            "heygen": heygen,
+            "remotion": remotion,
+            "seedream": seedream,
+            "seedance": seedance,
+        },
         pricing=pricing,
         credentials=credentials,
     )
@@ -168,6 +211,12 @@ def production_content_service() -> ContentService:
             templates=TemplateRegistry.from_dir(),
             brand_names=DbBrandNames(),
             catalog=DbProductCatalog(),
+            # § 2026-10-07: the advertising image's scene by Seedream, the avatar videos
+            # (VideoEngine.SEEDANCE) by Seedream + Seedance
+            generated_ad_images=True,
+            seedance_resolution=(
+                os.environ.get(SEEDANCE_RESOLUTION_ENV) or DEFAULT_SEEDANCE_RESOLUTION
+            ),
         ),
     )
     service.dispatcher = InlineDispatcher(service.run_generation)

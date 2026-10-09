@@ -71,12 +71,17 @@ def tone_edge(tone: rx.Var[str]) -> rx.Var:
 
 
 def thumbnail(url: rx.Var[str], size: str) -> rx.Component:
-    """`url` is an http(s) URL or a local upload-store key (`PostSummary.thumbnail_url`);
-    a key is resolved the way the creative screens do, with `rx.get_upload_url`."""
+    """`url` is an http(s) URL, a backend `/r2media/<token>` path (a generated piece,
+    in R2 only since 2026-10-06) or a local upload-store key, resolved the way the creative
+    screens do, with `rx.get_upload_url`."""
     return rx.cond(
         url != "",
         rx.image(
-            src=rx.cond(url.startswith("http"), url, rx.get_upload_url(url)),
+            src=rx.cond(
+                url.startswith("http"),
+                url,
+                rx.cond(url.startswith("/r2media"), BACKEND_BASE + url, rx.get_upload_url(url)),
+            ),
             alt="",
             width=size,
             height=size,

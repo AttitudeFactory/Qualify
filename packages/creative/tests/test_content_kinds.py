@@ -16,7 +16,9 @@ from qualify_creative.compose import (
     FEED_SIZE,
     REEL_SIZE,
     FlyerText,
+    _printable,
     compose_scene,
+    cta_lines,
     render_flyer,
 )
 from qualify_creative.enums import (
@@ -268,6 +270,22 @@ def test_a_flyer_is_one_feed_image_with_the_product_untouched() -> None:
     assert image.size == FEED_SIZE
     # the product's own colour is in the middle of the canvas, unaltered
     assert image.getpixel((FEED_SIZE[0] // 2, round(FEED_SIZE[1] * 0.53))) == (200, 40, 40)
+
+
+@pytest.mark.parametrize("size", [FEED_SIZE, REEL_SIZE, (1080, 1080)])
+def test_a_long_cta_is_printed_whole_on_two_lines_at_most(size: tuple[int, int]) -> None:
+    """§ request 2026-10-08: the CTA was forced onto ONE line and cut with «…»."""
+    from PIL import ImageDraw
+
+    cta = "Llégate al local, que la plancha ya está que arde."  # 50, a real one
+    _, lines = cta_lines(ImageDraw.Draw(Image.new("RGBA", size)), cta, size)
+    assert 1 <= len(lines) <= 2
+    assert " ".join(lines) == cta and "…" not in "".join(lines)
+
+
+def test_emoji_never_reach_the_printed_text() -> None:
+    assert _printable("Le di el primer mordisco 🤤") == "Le di el primer mordisco"
+    assert _printable("Marca al pana 🍔 hoy ❤️") == "Marca al pana hoy"
 
 
 def test_a_flyer_is_deterministic() -> None:

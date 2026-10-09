@@ -24,6 +24,7 @@ from .creative_vm import (
     ToneRowVM,
 )
 from .gallery_state import GalleryState
+from .media_carousel import media_carousel
 from .planner_vm import GALLERY_FILTER_ALL, GALLERY_STATE_FILTERS
 from .post_card import campaign_badge, color_swatches, kind_chip, media_fill
 from .r2_media import BACKEND_BASE
@@ -1291,7 +1292,20 @@ def _media_column() -> rx.Component:
     return rx.cond(
         draft.media.length() > 0,
         rx.vstack(
-            rx.foreach(draft.media, _media_item),
+            rx.cond(
+                # § request 2026-10-08: a carousel's slides as a real carousel
+                CreativeState.draft_is_carousel,
+                media_carousel(
+                    draft.media,
+                    CreativeState.draft_slide,
+                    on_prev=CreativeState.draft_slide_step(-1),
+                    on_next=CreativeState.draft_slide_step(1),
+                    on_pick=CreativeState.draft_slide_pick,
+                    on_tick=CreativeState.draft_slide_auto,
+                    render_item=_media_item,
+                ),
+                rx.foreach(draft.media, _media_item),
+            ),
             spacing="3",
             width=_MEDIA_COLUMN_WIDTH,
             max_width=rx.breakpoints(initial="22rem", md="none"),

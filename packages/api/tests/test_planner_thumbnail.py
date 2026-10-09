@@ -78,12 +78,14 @@ def test_a_video_without_a_poster_gets_the_placeholder() -> None:
     assert thumbnail_source(preview_key=video, assets=assets, now=NOW) is None
 
 
-def test_an_object_store_key_is_never_handed_to_the_browser() -> None:
-    """The QUA-111 E2E POSTs: an MP4 in R2, no poster. No route serves R2 to a browser."""
+def test_an_r2_video_is_never_a_thumbnail_but_an_r2_image_is() -> None:
+    """The QUA-111 E2E POSTs: an MP4 in R2, no poster — an `<img>` cannot show a video.
+    An R2 IMAGE is a thumbnail since 2026-10-06: generated pieces live in R2 only, and the
+    app serves it through `/r2media` (`planner_provider._thumbnail_url`)."""
     assets = [_asset("video", R2_VIDEO, object_key=R2_VIDEO)]
     assert thumbnail_source(preview_key=None, assets=assets, now=NOW) is None
-    image_in_r2 = "t/a0000000-0000-4000-8000-000000000001/media/conn/img"
-    assert thumbnail_source(preview_key=image_in_r2, assets=[], now=NOW) is None
+    image_in_r2 = "t/a0000000-0000-4000-8000-000000000001/generated/d/r1/slide-1.jpg"
+    assert thumbnail_source(preview_key=image_in_r2, assets=[], now=NOW) == image_in_r2
 
 
 def test_an_expired_provider_url_is_not_shown() -> None:

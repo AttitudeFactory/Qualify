@@ -32,8 +32,12 @@ from qualify_api.creative.media import (
     HUMAN_STYLE,
     LocalMediaStore,
     MediaProducer,
+    MediaWrite,
     generated_key,
+    generated_object_key,
     heygen_failure_text,
+    owned_by,
+    template_port,
 )
 
 TENANT_ID = UUID("7e7e0000-0000-4000-8000-000000000001")
@@ -190,12 +194,17 @@ def test_a_creator_script_has_no_media_and_costs_nothing() -> None:
 
 
 def test_a_flyer_is_rendered_locally_and_stored_for_the_draft() -> None:
-    store = MemoryStore({"uploads/t/p1.png": _png(), "uploads/t/bg.png": _png((0, 90, 0, 255))})
+    store = MemoryStore(
+        {
+            f"uploads/{TENANT_ID}/p1.png": _png(),
+            f"uploads/{TENANT_ID}/bg.png": _png((0, 90, 0, 255)),
+        }
+    )
     draft_id = uuid4()
     brief = _brief(
         ContentKind.STATIC_FLYER,
-        product_keys=("uploads/t/p1.png",),
-        background_key="uploads/t/bg.png",
+        product_keys=(f"uploads/{TENANT_ID}/p1.png",),
+        background_key=f"uploads/{TENANT_ID}/bg.png",
     )
     outcome = _produce(_producer(store, None), brief, draft_id)
 
@@ -211,10 +220,10 @@ def test_a_flyer_is_rendered_locally_and_stored_for_the_draft() -> None:
 
 
 def test_a_carousel_stores_its_slides_in_order() -> None:
-    store = MemoryStore({f"uploads/t/p{i}.png": _png() for i in range(3)})
+    store = MemoryStore({f"uploads/{TENANT_ID}/p{i}.png": _png() for i in range(3)})
     brief = _brief(
         ContentKind.STATIC_FLYER,
-        product_keys=tuple(f"uploads/t/p{i}.png" for i in range(3)),
+        product_keys=tuple(f"uploads/{TENANT_ID}/p{i}.png" for i in range(3)),
         carousel=True,
     )
     outcome = _produce(_producer(store, None), brief, uuid4())
@@ -226,15 +235,20 @@ def test_a_carousel_stores_its_slides_in_order() -> None:
 
 
 def test_an_avatar_video_composes_the_scene_renders_and_keeps_the_file() -> None:
-    store = MemoryStore({"uploads/t/p1.png": _png(), "uploads/t/bg.png": _png((0, 90, 0, 255))})
+    store = MemoryStore(
+        {
+            f"uploads/{TENANT_ID}/p1.png": _png(),
+            f"uploads/{TENANT_ID}/bg.png": _png((0, 90, 0, 255)),
+        }
+    )
     heygen = FakeHeyGen()
     draft_id = uuid4()
     brief = _brief(
         ContentKind.AVATAR_VIDEO,
         avatar_look_id="lk_stock",
         voice_id="vo_es",
-        product_keys=("uploads/t/p1.png",),
-        background_key="uploads/t/bg.png",
+        product_keys=(f"uploads/{TENANT_ID}/p1.png",),
+        background_key=f"uploads/{TENANT_ID}/bg.png",
     )
     outcome = _produce(_producer(store, heygen), brief, draft_id)
 
@@ -309,13 +323,13 @@ def test_a_custom_human_avatar_is_a_photoreal_prompt_avatar() -> None:
 
 
 def test_an_animated_avatar_from_an_image_animates_the_upload() -> None:
-    store = MemoryStore({"uploads/t/mascota.png": _png((250, 200, 0, 255))})
+    store = MemoryStore({f"uploads/{TENANT_ID}/mascota.png": _png((250, 200, 0, 255))})
     heygen = FakeHeyGen()
     brief = _brief(
         ContentKind.ANIMATED_AVATAR_VIDEO,
         voice_id="vo",
         avatar_source=AvatarSource.IMAGE,
-        avatar_image_key="uploads/t/mascota.png",
+        avatar_image_key=f"uploads/{TENANT_ID}/mascota.png",
         avatar_rights_confirmed=True,
     )
     outcome = _produce(_producer(store, heygen), brief, uuid4())
@@ -332,7 +346,8 @@ def test_an_animated_avatar_from_an_image_animates_the_upload() -> None:
 def test_without_heygen_a_video_fails_with_a_reason_and_nothing_spent() -> None:
     brief = _brief(ContentKind.AVATAR_VIDEO, avatar_look_id="lk", voice_id="vo")
     outcome = _produce(_producer(MemoryStore(), None), brief, uuid4())
-    assert outcome.failure == "provider_error" and "not configured" in outcome.detail
+    assert outcome.failure == "provider_error"
+    assert outcome.detail == "La generación no está disponible ahora mismo. Avisa al equipo."
     assert outcome.usage == ()
 
 
@@ -374,9 +389,11 @@ def test_a_video_that_cannot_be_downloaded_fails_but_its_render_is_billed() -> N
 
 
 def test_a_missing_upload_fails_the_flyer_with_a_reason() -> None:
-    brief = _brief(ContentKind.STATIC_FLYER, product_keys=("uploads/t/gone.png",))
+    brief = _brief(ContentKind.STATIC_FLYER, product_keys=(f"uploads/{TENANT_ID}/gone.png",))
     outcome = _produce(_producer(MemoryStore(), None), brief, uuid4())
-    assert outcome.failure == "provider_error" and "gone.png" in outcome.detail
+    assert outcome.failure == "provider_error"
+    assert outcome.detail == "No se pudo generar la pieza. Inténtalo de nuevo."
+    assert "gone.png" not in outcome.detail  # the raw error goes to the log, not the operator
 
 
 def test_the_local_store_refuses_keys_outside_its_root(tmp_path: Any) -> None:
@@ -388,9 +405,11 @@ def test_the_local_store_refuses_keys_outside_its_root(tmp_path: Any) -> None:
 
 
 def test_the_chosen_format_sizes_the_flyer_and_the_video() -> None:
-    store = MemoryStore({"uploads/t/p1.png": _png()})
+    store = MemoryStore({f"uploads/{TENANT_ID}/p1.png": _png()})
     square = _brief(
-        ContentKind.STATIC_FLYER, ContentFormat.FEED_1_1, product_keys=("uploads/t/p1.png",)
+        ContentKind.STATIC_FLYER,
+        ContentFormat.FEED_1_1,
+        product_keys=(f"uploads/{TENANT_ID}/p1.png",),
     )
     (image,) = _produce(_producer(store, None), square, uuid4()).media
     assert (image.width, image.height, image.aspect_ratio) == (1080, 1080, "1:1")
@@ -432,13 +451,13 @@ def test_the_operators_own_script_is_read_word_for_word_on_the_chosen_engine() -
 
 
 def test_an_image_subject_carries_no_engine() -> None:
-    store = MemoryStore({"uploads/t/m.png": _png()})
+    store = MemoryStore({f"uploads/{TENANT_ID}/m.png": _png()})
     heygen = FakeHeyGen()
     brief = _brief(
         ContentKind.ANIMATED_AVATAR_VIDEO,
         voice_id="vo",
         avatar_source=AvatarSource.IMAGE,
-        avatar_image_key="uploads/t/m.png",
+        avatar_image_key=f"uploads/{TENANT_ID}/m.png",
         avatar_rights_confirmed=True,
         engine="avatar_iii",
     )
@@ -449,16 +468,26 @@ def test_an_image_subject_carries_no_engine() -> None:
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("HeyGenAPIError: HTTP 402 insufficient_credit: Insufficient credit", "no tiene créditos"),
-        ("HeyGenRenderTimeout: render v_1 still running after 480s", "se va a"),
-        ("HeyGenRenderFailed: HeyGen render v_1 failed: moderation_failed", "no pudo generar"),
-        ("HeyGenAPIError: HTTP 401 unauthorized", "rechazó la llave"),
-        ("something else entirely", "No se pudo generar el video"),
+        (
+            "HeyGenAPIError: HTTP 402 insufficient_credit: Insufficient credit",
+            "no está disponible ahora mismo",
+        ),
+        ("HeyGenRenderTimeout: render v_1 still running after 480s", "tardando más de lo normal"),
+        ("HeyGenRenderFailed: HeyGen render v_1 failed: moderation_failed", "filtro de contenido"),
+        ("HeyGenRenderFailed: HeyGen render v_1 failed: boom", "No se pudo generar la pieza"),
+        ("HeyGenAPIError: HTTP 401 unauthorized", "no está disponible ahora mismo"),
+        ("HeyGenAPIError: HTTP 429 too many", "muchas generaciones en curso"),
+        ("no HeyGen key: QUALIFY_HEYGEN_API_KEY unset", "no está disponible ahora mismo"),
+        ("something else entirely", "No se pudo generar la pieza. Inténtalo de nuevo."),
     ],
 )
 def test_heygen_failures_are_explained_in_spanish(raw: str, expected: str) -> None:
     text = heygen_failure_text(raw)
-    assert expected in text and raw[:40] in text  # the vendor's text stays, for support
+    assert expected in text
+    # the vendor's raw error and any vendor / env var name stay in the log
+    assert raw[:40] not in text
+    for word in ("HeyGen", "QUALIFY_", "créditos", "USD"):
+        assert word not in text
 
 
 def test_a_failed_render_says_why_in_the_outcome() -> None:
@@ -466,8 +495,8 @@ def test_a_failed_render_says_why_in_the_outcome() -> None:
     brief = _brief(ContentKind.AVATAR_VIDEO, avatar_look_id="lk", voice_id="vo")
     outcome = _produce(_producer(MemoryStore(), heygen), brief, uuid4())
     assert outcome.failure == "provider_error"
-    assert outcome.detail.startswith("No se pudo generar el video:")
-    assert "render failed" in outcome.detail
+    assert outcome.detail == "No se pudo generar la pieza. Inténtalo de nuevo."
+    assert "render failed" not in outcome.detail and "HeyGen" not in outcome.detail
 
 
 # -- the voice guard (§ request 2026-10-05) -----------------------------------------------------
@@ -505,7 +534,8 @@ def test_a_voice_the_guard_refuses_is_a_policy_failure_that_spends_nothing() -> 
 
 
 # --------------------------------------------------------------------------------------
-# the template kind (plan-mvp-plantillas-remotion.md §2): one run, several outputs
+# the template kind (plan-mvp-plantillas-remotion.md §2): one run, ONE output since
+# 2026-10-06 — the one of the brief's format
 # --------------------------------------------------------------------------------------
 
 from qualify_creative.enums import ContentType  # noqa: E402
@@ -567,7 +597,8 @@ class FakeRemotion:
         self.requests.append(request)
         if self.error is not None:
             raise self.error
-        ports = ("reel", "feed", "story")
+        # like the service, only the outputs asked for are rendered
+        ports = tuple(request.params.get("outputs") or ("reel", "feed", "story"))
         outputs = {
             p: {
                 # the render service answers a still with real PNG bytes (with alpha:
@@ -585,6 +616,7 @@ class FakeRemotion:
         failed = {
             p: {"failure_reason": "render_error", "error_message": "Chromium crashed"}
             for p in self.fail_ports
+            if p in ports
         }
         return GenerationResult(
             payload={
@@ -631,7 +663,7 @@ def _template_producer(
     )
 
 
-def _template_brief(**media: object) -> ContentBrief:
+def _template_brief(fmt: ContentFormat = ContentFormat.FEED_4_5, **media: object) -> ContentBrief:
     return ContentBrief(
         brand_id=BRAND_ID,
         objective=BriefObjective.SALE,
@@ -639,99 +671,121 @@ def _template_brief(**media: object) -> ContentBrief:
         topic="Shawarma mixto",
         product_ref="Shawarma mixto",
         image_route=ImageRoute.FROM_UPLOAD,
-        source_media_key="uploads/t/a.jpg",
+        source_media_key=f"uploads/{TENANT_ID}/a.jpg",
         kind=ContentKind.TEMPLATE,
+        format=fmt,
         media=MediaInputs(**media),  # type: ignore[arg-type]
     )
 
 
-def test_a_template_run_yields_every_output_with_its_port_and_run() -> None:
-    store = MemoryStore({"uploads/t/a.jpg": b"a", "uploads/t/b.jpg": b"b"})
+@pytest.mark.parametrize(
+    ("fmt", "port"),
+    [
+        (ContentFormat.REELS_9_16, "reel"),
+        (ContentFormat.FEED_4_5, "feed"),
+        (ContentFormat.STORY_9_16, "story"),
+    ],
+)
+def test_a_template_renders_only_the_output_of_its_format(fmt: ContentFormat, port: str) -> None:
+    assert template_port(_PROMO, fmt) == port
+    store = MemoryStore({f"uploads/{TENANT_ID}/a.jpg": b"a", f"uploads/{TENANT_ID}/b.jpg": b"b"})
     remotion = FakeRemotion()
     draft_id = uuid4()
-    outcome = _produce(
-        _template_producer(store, remotion),
-        _template_brief(product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg")),
-        draft_id,
+    brief = _template_brief(
+        fmt, product_keys=(f"uploads/{TENANT_ID}/a.jpg", f"uploads/{TENANT_ID}/b.jpg")
     )
+    outcome = _produce(_template_producer(store, remotion), brief, draft_id)
 
     assert outcome.failure is None and outcome.partial_failures == {}
-    ports = [m.output_port for m in outcome.media]
-    assert ports == ["reel", "feed", "story"]
-    reel, feed, story = outcome.media
-    assert reel.media_type == "video" and feed.media_type == "image"
-    assert reel.media_url == generated_key(TENANT_ID, draft_id, "reel.mp4")
-    assert store.files[reel.media_url] == b"reel-bytes" and reel.content_type == "video/mp4"
-    # § 2026-10-05: the stills are stored as JPEG — the only image format Meta takes
-    for still in (feed, story):
-        assert still.media_url.endswith(f"{still.output_port}.jpg")
-        assert store.files[still.media_url][:3] == b"\xff\xd8\xff"
-        assert still.content_type == "image/jpeg"
-    assert (feed.width, feed.height, feed.aspect_ratio) == (1080, 1350, "4:5")
-    assert reel.provider == "remotion" and reel.model_id == REMOTION_MODEL
-    assert reel.params["template_id"] == "promo_producto" and reel.params["router_rule"] == 2
-    assert reel.params["duration_seconds"] == 12.5
+    (piece,) = outcome.media
+    assert piece.output_port == port and piece.position == 0
+    request = remotion.requests[0]
+    assert request.params["outputs"] == [port] and request.params["render_count"] == 1
     run = outcome.template_run
     assert run is not None and run.status == "completed" and run.router_rule == "2"
-    assert {m.template_run_id for m in outcome.media} == {run.id}
-    assert run.outputs["reel"]["status"] == "completed" and run.actual_cost_usd == Decimal("0.00")
-    assert run.estimated_eta_sec is not None and run.props["brand"]["name"] == "Bianki"
+    assert set(run.outputs) == {port} and run.outputs[port]["status"] == "completed"
+    assert piece.template_run_id == run.id and request.params["job_id"] == str(run.id)
+    assert run.actual_cost_usd == Decimal("0.00") and run.props["brand"]["name"] == "Bianki"
     (usage,) = outcome.usage
-    assert usage.unit == "render" and usage.quantity == 3 and usage.cost_usd == Decimal("0.00")
-    # the adapter saw store-keyed props and the deterministic job id
-    request = remotion.requests[0]
-    assert request.params["job_id"] == str(run.id) and request.params["render_count"] == 3
+    assert usage.unit == "render" and usage.quantity == 1 and usage.cost_usd == Decimal("0.00")
+    assert piece.provider == "remotion" and piece.model_id == REMOTION_MODEL
+    assert piece.params["template_id"] == "promo_producto" and piece.params["router_rule"] == 2
+    if port == "reel":
+        assert piece.media_type == "video" and piece.content_type == "video/mp4"
+        assert piece.media_url == generated_key(TENANT_ID, draft_id, "reel.mp4")
+        assert store.files[piece.media_url] == b"reel-bytes"
+        assert piece.params["duration_seconds"] == 12.5
+    else:
+        # § 2026-10-05: the stills are stored as JPEG — the only image format Meta takes
+        assert piece.media_type == "image" and piece.content_type == "image/jpeg"
+        assert piece.media_url.endswith(f"{port}.jpg")
+        assert store.files[piece.media_url][:3] == b"\xff\xd8\xff"
     # the same draft and recipe always name the same job (idempotent retries)
-    again = _produce(
-        _template_producer(store, FakeRemotion()),
-        _template_brief(product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg")),
-        draft_id,
-    )
+    again = _produce(_template_producer(store, FakeRemotion()), brief, draft_id)
     assert again.template_run is not None and again.template_run.id == run.id
 
 
-def test_a_template_run_keeps_the_outputs_that_rendered() -> None:
-    store = MemoryStore({"uploads/t/a.jpg": b"a", "uploads/t/b.jpg": b"b"})
+def test_a_template_without_that_format_fails_with_a_reason() -> None:
+    reel_only = _PROMO.model_copy(update={"outputs": {"reel": _PROMO.outputs["reel"]}})
+    assert template_port(reel_only, ContentFormat.FEED_4_5) is None
+    assert template_port(reel_only, ContentFormat.REELS_9_16) == "reel"
+    store = MemoryStore({f"uploads/{TENANT_ID}/a.jpg": b"a", f"uploads/{TENANT_ID}/b.jpg": b"b"})
+    remotion = FakeRemotion()
     outcome = _produce(
-        _template_producer(store, FakeRemotion(fail_ports=("story",))),
-        _template_brief(product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg")),
+        _template_producer(store, remotion, registry=TemplateRegistry([reel_only])),
+        _template_brief(
+            ContentFormat.FEED_4_5,
+            product_keys=(f"uploads/{TENANT_ID}/a.jpg", f"uploads/{TENANT_ID}/b.jpg"),
+        ),
         uuid4(),
     )
-    assert outcome.failure is None  # the draft is generated, with what rendered
-    assert [m.output_port for m in outcome.media] == ["reel", "feed"]
-    assert outcome.partial_failures["story"]["failure_reason"] == "render_error"
-    assert "story (render_error)" in outcome.detail
+    assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
+    assert "no tiene salida feed_4_5" in outcome.detail and remotion.requests == []
+
+
+def test_a_template_whose_output_failed_keeps_the_runs_evidence() -> None:
+    store = MemoryStore({f"uploads/{TENANT_ID}/a.jpg": b"a", f"uploads/{TENANT_ID}/b.jpg": b"b"})
+    outcome = _produce(
+        _template_producer(store, FakeRemotion(fail_ports=("feed",))),
+        _template_brief(product_keys=(f"uploads/{TENANT_ID}/a.jpg", f"uploads/{TENANT_ID}/b.jpg")),
+        uuid4(),
+    )
+    assert outcome.media == ()
+    assert outcome.partial_failures["feed"]["failure_reason"] == "render_error"
     run = outcome.template_run
     assert run is not None and run.status == "failed"
-    assert run.outputs["story"]["status"] == "failed" and run.failure_reason is None
-    assert outcome.usage[0].quantity == 2
+    assert run.outputs["feed"]["status"] == "failed" and run.failure_reason == "render_error"
 
 
 def test_props_that_break_the_manifest_fail_before_the_service_is_called() -> None:
-    store = MemoryStore({"uploads/t/a.jpg": b"a", "uploads/t/b.jpg": b"b"})
+    store = MemoryStore({f"uploads/{TENANT_ID}/a.jpg": b"a", f"uploads/{TENANT_ID}/b.jpg": b"b"})
     remotion = FakeRemotion()
     producer = _template_producer(store, remotion)
     long_cta = CopyPayload(hook="Hoy", caption="c", cta="x" * 41)
     outcome = producer.produce(
         tenant_id=TENANT_ID,
         draft_id=uuid4(),
-        brief=_template_brief(product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg")),
+        brief=_template_brief(
+            product_keys=(f"uploads/{TENANT_ID}/a.jpg", f"uploads/{TENANT_ID}/b.jpg")
+        ),
         kit=_kit(),
         copy=long_cta,
         budget=BUDGET,
     )
     assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
-    assert "'cta' has 41 chars" in outcome.detail
+    assert outcome.detail == "El llamado a la acción es demasiado largo para la plantilla."
+    # the manifest's own message is kept on the run row, for the team
+    assert "'cta' has 41 chars" in (outcome.template_run.error_message or "")
     assert remotion.requests == [] and outcome.media == ()
     assert outcome.template_run is not None and outcome.template_run.status == "failed"
     assert outcome.template_run.failure_reason == "invalid_parameters"
 
 
 def test_too_few_photos_means_no_template_and_a_readable_reason() -> None:
-    store = MemoryStore({"uploads/t/a.jpg": b"a"})
+    store = MemoryStore({f"uploads/{TENANT_ID}/a.jpg": b"a"})
     outcome = _produce(
         _template_producer(store, FakeRemotion()),
-        _template_brief(product_keys=("uploads/t/a.jpg",)),
+        _template_brief(product_keys=(f"uploads/{TENANT_ID}/a.jpg",)),
         uuid4(),
     )
     assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
@@ -739,28 +793,28 @@ def test_too_few_photos_means_no_template_and_a_readable_reason() -> None:
 
 
 def test_the_catalog_photos_complete_the_briefs_own_upload() -> None:
-    store = MemoryStore({"uploads/t/a.jpg": b"a", "cat/mixto-1.jpg": b"c"})
+    store = MemoryStore({f"uploads/{TENANT_ID}/a.jpg": b"a", "cat/mixto-1.jpg": b"c"})
     catalog = FakeCatalog(
         (ProductFacts(name="Shawarma mixto", price_label="$5", photo_keys=("cat/mixto-1.jpg",)),)
     )
     remotion = FakeRemotion()
     outcome = _produce(
         _template_producer(store, remotion, catalog=catalog),
-        _template_brief(product_keys=("uploads/t/a.jpg",)),
+        _template_brief(product_keys=(f"uploads/{TENANT_ID}/a.jpg",)),
         uuid4(),
     )
-    assert outcome.failure is None and len(outcome.media) == 3
+    assert outcome.failure is None and len(outcome.media) == 1
     props = remotion.requests[0].params["props"]
-    assert props.photos == ("key://uploads/t/a.jpg", "key://cat/mixto-1.jpg")
+    assert props.photos == (f"key://uploads/{TENANT_ID}/a.jpg", "key://cat/mixto-1.jpg")
     assert props.texts["price_line"] == "$5" and props.products[0].name == "Shawarma mixto"
 
 
 def test_the_operator_may_pin_a_template_and_the_rule_is_then_none() -> None:
-    store = MemoryStore({"uploads/t/a.jpg": b"a", "uploads/t/b.jpg": b"b"})
+    store = MemoryStore({f"uploads/{TENANT_ID}/a.jpg": b"a", f"uploads/{TENANT_ID}/b.jpg": b"b"})
     outcome = _produce(
         _template_producer(store, FakeRemotion()),
         _template_brief(
-            product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg"),
+            product_keys=(f"uploads/{TENANT_ID}/a.jpg", f"uploads/{TENANT_ID}/b.jpg"),
             template_id="promo_producto",
             template_version=1,
         ),
@@ -770,31 +824,269 @@ def test_the_operator_may_pin_a_template_and_the_rule_is_then_none() -> None:
     assert outcome.template_run is not None and outcome.template_run.router_rule is None
     unknown = _produce(
         _template_producer(store, FakeRemotion()),
-        _template_brief(product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg"), template_id="nope"),
+        _template_brief(
+            product_keys=(f"uploads/{TENANT_ID}/a.jpg", f"uploads/{TENANT_ID}/b.jpg"),
+            template_id="nope",
+        ),
         uuid4(),
     )
     assert unknown.failure == FailureReason.INVALID_PARAMETERS.value
 
 
 def test_a_service_error_fails_the_draft_with_the_services_reason() -> None:
-    store = MemoryStore({"uploads/t/a.jpg": b"a", "uploads/t/b.jpg": b"b"})
+    store = MemoryStore({f"uploads/{TENANT_ID}/a.jpg": b"a", f"uploads/{TENANT_ID}/b.jpg": b"b"})
     error = RenderServiceError("dependency_failed", 500, "asset a1 could not be fetched")
     outcome = _produce(
         _template_producer(store, FakeRemotion(error=error)),
-        _template_brief(product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg")),
+        _template_brief(product_keys=(f"uploads/{TENANT_ID}/a.jpg", f"uploads/{TENANT_ID}/b.jpg")),
         uuid4(),
     )
     assert outcome.failure == FailureReason.DEPENDENCY_FAILED.value
     assert outcome.template_run is not None and outcome.template_run.status == "failed"
     assert outcome.template_run.error_message == "asset a1 could not be fetched"
+    assert outcome.detail == "No se pudo generar la pieza. Inténtalo de nuevo."
 
 
 def test_without_the_render_service_a_template_fails_with_a_reason() -> None:
-    store = MemoryStore({"uploads/t/a.jpg": b"a", "uploads/t/b.jpg": b"b"})
+    store = MemoryStore({f"uploads/{TENANT_ID}/a.jpg": b"a", f"uploads/{TENANT_ID}/b.jpg": b"b"})
     outcome = _produce(
         _template_producer(store, None),
-        _template_brief(product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg")),
+        _template_brief(product_keys=(f"uploads/{TENANT_ID}/a.jpg", f"uploads/{TENANT_ID}/b.jpg")),
         uuid4(),
     )
     assert outcome.failure == FailureReason.PROVIDER_ERROR.value
-    assert "render service is not configured" in outcome.detail
+    assert outcome.detail == "La generación no está disponible ahora mismo. Avisa al equipo."
+
+
+# --------------------------------------------------------------------------------------
+# «Recursos de tu marca» (§ 2026-10-06): the chosen logo takes the brand mark's place
+# --------------------------------------------------------------------------------------
+
+
+def test_a_chosen_logo_is_composed_into_the_avatars_scene() -> None:
+    """With nothing else to compose, the logo alone is enough for a branded scene."""
+    logo_key = f"t/{TENANT_ID}/brand/iso.png"
+    store = MemoryStore({logo_key: _png((200, 30, 30, 255))})
+    heygen = FakeHeyGen()
+    brief = _brief(
+        ContentKind.AVATAR_VIDEO, avatar_look_id="lk", voice_id="vo", brand_logo_key=logo_key
+    )
+    outcome = _produce(_producer(store, heygen), brief, uuid4())
+    assert outcome.failure is None
+    assert heygen.uploads == [("scene.png", "as_1")]  # a scene WAS composed, for the logo
+    assert heygen.requests[0].params["background_image_asset_id"] == "as_1"
+
+
+def test_the_chosen_logo_takes_the_templates_logo_slot() -> None:
+    logo_key = f"t/{TENANT_ID}/brand/iso.png"
+    store = MemoryStore(
+        {
+            f"uploads/{TENANT_ID}/a.jpg": b"a",
+            f"uploads/{TENANT_ID}/b.jpg": b"b",
+            logo_key: _png((200, 30, 30, 255)),
+        }
+    )
+    remotion = FakeRemotion()
+    brief = _template_brief(
+        product_keys=(f"uploads/{TENANT_ID}/a.jpg", f"uploads/{TENANT_ID}/b.jpg"),
+        brand_logo_key=logo_key,
+    )
+    outcome = _produce(_template_producer(store, remotion), brief, uuid4())
+    assert outcome.failure is None
+    assert remotion.requests[0].params["props"].brand.logo == f"key://{logo_key}"
+
+
+# --------------------------------------------------------------------------------------
+# R2 (§ 2026-10-06, pendientes-generador-contenido.md §1): every generated file lives
+# in R2 only, under the tenant's prefix and unique per generation — no local copy
+# --------------------------------------------------------------------------------------
+
+
+class R2Store(MemoryStore):
+    """A store that can keep a durable copy (`R2ReadingMediaStore.keep`)."""
+
+    def __init__(self, files: dict[str, bytes] | None = None, *, up: bool = True) -> None:
+        super().__init__(files)
+        self.kept: dict[str, tuple[bytes, str]] = {}
+        self.up = up
+
+    def keep(self, tenant_id: UUID, key: str, data: bytes, content_type: str) -> bool:
+        assert key.startswith(f"t/{tenant_id}/")  # always under the tenant's own prefix
+        if not self.up:
+            return False
+        self.kept[key] = (data, content_type)
+        return True
+
+
+def _produce_revision(producer: MediaProducer, brief: ContentBrief, draft_id: UUID, rev: int):
+    return producer.produce(
+        tenant_id=TENANT_ID,
+        draft_id=draft_id,
+        brief=brief,
+        kit=_kit(),
+        copy=COPY,
+        budget=BUDGET,
+        revision=rev,
+    )
+
+
+def test_a_flyer_lives_in_r2_only_one_object_per_generation() -> None:
+    store = R2Store({f"uploads/{TENANT_ID}/p1.png": _png()})
+    draft_id = uuid4()
+    brief = _brief(ContentKind.STATIC_FLYER, product_keys=(f"uploads/{TENANT_ID}/p1.png",))
+    (first,) = _produce_revision(_producer(store, None), brief, draft_id, 1).media
+    (again,) = _produce_revision(_producer(store, None), brief, draft_id, 2).media
+
+    key = generated_object_key(TENANT_ID, draft_id, 1, "slide-1.jpg")
+    assert key == f"t/{TENANT_ID}/generated/{draft_id}/r1/slide-1.jpg"
+    assert (first.media_url, first.object_key) == (key, key)  # shown AND published from R2
+    data, content_type = store.kept[key]
+    assert content_type == "image/jpeg" and data[:3] == b"\xff\xd8\xff"
+    # § 2026-10-06 "no me sirve tenerlo en local": nothing is written to the disk
+    assert set(store.files) == {f"uploads/{TENANT_ID}/p1.png"}
+    # a regeneration never overwrites the object an approved revision may point at
+    assert again.object_key.endswith("/r2/slide-1.jpg") and key in store.kept
+
+
+def test_a_piece_r2_refuses_fails_and_says_so() -> None:
+    store = R2Store({f"uploads/{TENANT_ID}/p1.png": _png()}, up=False)
+    brief = _brief(ContentKind.STATIC_FLYER, product_keys=(f"uploads/{TENANT_ID}/p1.png",))
+    outcome = _produce_revision(_producer(store, None), brief, uuid4(), 1)
+    assert outcome.media == () and outcome.failure == FailureReason.PROVIDER_ERROR.value
+    assert "No pudimos guardar la pieza en R2" in outcome.detail
+    assert set(store.files) == {f"uploads/{TENANT_ID}/p1.png"} and store.kept == {}
+
+
+def test_an_avatar_video_and_its_poster_live_in_r2() -> None:
+    store = R2Store()
+    draft_id = uuid4()
+    brief = _brief(ContentKind.AVATAR_VIDEO, avatar_look_id="lk", voice_id="vo")
+    (video,) = _produce_revision(_producer(store, FakeHeyGen()), brief, draft_id, 3).media
+    key = generated_object_key(TENANT_ID, draft_id, 3, "video.mp4")
+    assert (video.media_url, video.object_key) == (key, key)
+    assert store.kept[key] == (b"mp4-bytes", "video/mp4")
+    poster = generated_object_key(TENANT_ID, draft_id, 3, "thumbnail.jpg")
+    assert video.params["thumbnail_key"] == poster and store.kept[poster][1] == "image/jpeg"
+    assert store.files == {}  # nothing on the disk
+
+
+def test_a_template_output_keeps_its_r2_copy() -> None:
+    store = R2Store({f"uploads/{TENANT_ID}/a.jpg": b"a", f"uploads/{TENANT_ID}/b.jpg": b"b"})
+    draft_id = uuid4()
+    brief = _template_brief(
+        ContentFormat.REELS_9_16,
+        product_keys=(f"uploads/{TENANT_ID}/a.jpg", f"uploads/{TENANT_ID}/b.jpg"),
+    )
+    outcome = _template_producer(store, FakeRemotion()).produce(
+        tenant_id=TENANT_ID,
+        draft_id=draft_id,
+        brief=brief,
+        kit=_kit(),
+        copy=COPY,
+        budget=BUDGET,
+        revision=2,
+    )
+    (reel,) = outcome.media
+    assert reel.object_key == generated_object_key(TENANT_ID, draft_id, 2, "reel.mp4")
+    assert store.kept[reel.object_key] == (b"reel-bytes", "video/mp4")
+
+
+def test_the_r2_store_keeps_through_the_gate_and_never_raises() -> None:
+    import io as _io
+
+    from qualify_api.creative.media import R2ReadingMediaStore
+
+    class Gate:
+        def __init__(self, fail: bool = False) -> None:
+            self.puts: list[tuple[UUID, str, bytes, str]] = []
+            self.fail = fail
+
+        def put_media(self, tenant_id: UUID, key: str, fileobj: _io.BytesIO, ctype: str):
+            if self.fail:
+                raise RuntimeError("R2 down")
+            self.puts.append((tenant_id, key, fileobj.read(), ctype))
+
+    gate = Gate()
+    store = R2ReadingMediaStore(MemoryStore(), gate)
+    key = f"t/{TENANT_ID}/generated/d/r1/video.mp4"
+    assert store.keep(TENANT_ID, key, b"mp4", "video/mp4") is True
+    assert gate.puts == [(TENANT_ID, key, b"mp4", "video/mp4")]
+    assert (
+        R2ReadingMediaStore(MemoryStore(), Gate(fail=True)).keep(
+            TENANT_ID, key, b"mp4", "video/mp4"
+        )
+        is False
+    )
+
+
+def test_the_posts_preview_is_the_key_the_app_shows() -> None:
+    from qualify_api.creative.service import preview_of
+
+    image = MediaWrite(
+        position=0,
+        media_type="image",
+        media_url="generated/t/d/slide-1.jpg",
+        object_key=f"t/{TENANT_ID}/generated/d/r1/slide-1.jpg",
+        width=1080,
+        height=1350,
+        aspect_ratio="4:5",
+        model_id="local",
+        provider="local",
+    )
+    assert preview_of((image,)) == "generated/t/d/slide-1.jpg"
+
+
+# -- a piece reads only its own brand's files (PR #100 review) ---------------------------
+
+_OTHER_TENANT = UUID("0b0b0000-0000-4000-8000-0000000000ff")
+
+
+@pytest.mark.parametrize(
+    ("key", "owned"),
+    [
+        (f"t/{TENANT_ID}/brand/logo.png", True),
+        (f"uploads/{TENANT_ID}/a.jpg", True),
+        (f"generated/{TENANT_ID}/d/flyer.jpg", True),
+        (f"t/{_OTHER_TENANT}/brand/logo.png", False),
+        (f"uploads/{_OTHER_TENANT}/a.jpg", False),
+        (f"uploads/{TENANT_ID}/../{_OTHER_TENANT}/a.jpg", False),
+        (f"secrets/{TENANT_ID}/a.jpg", False),
+        ("", False),
+    ],
+)
+def test_a_file_is_the_brands_only_under_its_own_prefix(key: str, owned: bool) -> None:
+    assert owned_by(TENANT_ID, key) is owned
+
+
+class _CountingStore(MemoryStore):
+    def __init__(self, files: dict[str, bytes] | None = None) -> None:
+        super().__init__(files)
+        self.reads: list[str] = []
+
+    def read(self, key: str) -> bytes:
+        self.reads.append(key)
+        return super().read(key)
+
+
+@pytest.mark.parametrize(
+    "media",
+    [
+        {"background_key": f"uploads/{_OTHER_TENANT}/local.jpg"},
+        {"product_keys": (f"uploads/{TENANT_ID}/a.jpg", f"t/{_OTHER_TENANT}/p.jpg")},
+        {"brand_element_keys": (f"t/{_OTHER_TENANT}/brand/sello.png",)},
+    ],
+)
+def test_another_brands_file_is_refused_before_any_read_or_spend(media: dict) -> None:
+    """A key in a brief can come from the browser: one of another brand never reaches
+    the store, the vendor or the budget — the piece fails saying why."""
+    store = _CountingStore({f"uploads/{TENANT_ID}/a.jpg": b"a"})
+    heygen = FakeHeyGen()
+    outcome = _produce(
+        _producer(store, heygen),
+        _brief(ContentKind.STATIC_FLYER, **media),
+        uuid4(),
+    )
+    assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
+    assert outcome.detail == "Uno de los archivos de la pieza no es de tu marca."
+    assert store.reads == [] and outcome.spent_usd == 0
+    assert heygen.requests == [] and heygen.uploads == []

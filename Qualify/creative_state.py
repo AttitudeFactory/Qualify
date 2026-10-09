@@ -36,7 +36,14 @@ from qualify_api.creative.service import (
     UnknownVariant,
 )
 from qualify_api.creative.voice_service import NotProposed, UnknownBrandKit, UnknownVersion
-from qualify_creative.enums import BriefIntent, BriefObjective, ContentKind, ContentType
+from qualify_creative.enums import (
+    BriefIntent,
+    BriefObjective,
+    ContentFormat,
+    ContentKind,
+    ContentType,
+)
+from qualify_creative.schemas import MAX_BRAND_ELEMENTS
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState, brand_tenant_id
@@ -46,8 +53,10 @@ from .creative_provider import (
     approve_draft,
     approve_voice,
     brand_clone_voice,
+    brand_media,
     brand_readiness,
     catalog_products,
+    configured_video_engine,
     default_brand_id,
     draft_detail,
     edit_variant,
@@ -55,12 +64,13 @@ from .creative_provider import (
     list_drafts,
     load_kit_form,
     load_voice_screen,
+    preview_brief_prompt,
     propose_voice,
-    recipe_options,
     reject_draft,
     route_options_for,
     save_kit,
     submit_brief,
+    template_blocker,
 )
 from .creative_vm import (
     CAPTION_LIMIT,
@@ -68,13 +78,13 @@ from .creative_vm import (
     HASHTAG_LIMIT,
     HOOK_LIMIT,
     KIND_LABELS,
+    VIDEO_TYPE_LABELS,
     CopyVariantVM,
     DraftSummaryVM,
     DraftVM,
     HashtagIdeaVM,
     KitFormVM,
     ReadinessVM,
-    RecipeOptionVM,
     RouteOptionVM,
     VoiceProposalVM,
     caption_hashtag_suggestions,
@@ -105,9 +115,10 @@ _ROUTE_BLOCKED = "Esa ruta de imagen está bloqueada para esta marca: "
 _BRIEF_INVALID = "El encargo no se puede ejecutar: "
 _UPLOAD_FAILED = "No se pudo leer la foto subida. Intenta con otro archivo."
 _UPLOAD_REQUIRED = "Esta ruta trabaja sobre tu foto: súbela antes de enviar el encargo."
-_TOPIC_REQUIRED = "Describe el tema o producto del encargo."
-_HEYGEN_OFF = "Los videos con avatar no están disponibles: falta configurar HeyGen."
-_HEYGEN_DOWN = "No pudimos cargar los avatares y voces de HeyGen. Inténtalo de nuevo."
+_TOPIC_REQUIRED = "Cuéntanos qué quieres en la pieza: es lo único obligatorio."
+_SCENE_REQUIRED = "Describe la escena de la imagen: es lo único obligatorio."
+_HEYGEN_OFF = "Los videos con avatar no están disponibles ahora mismo."
+_HEYGEN_DOWN = "No pudimos cargar los avatares. Inténtalo de nuevo."
 
 #: `ContentKind` values that can be chosen today — all five since the template engine
 #: landed (plan-mvp-plantillas-remotion.md, 2026-10-05).
@@ -118,36 +129,75 @@ _ENABLED_KINDS = (
     "static_flyer",
     "template",
 )
+#: «¿Qué quieres crear?» since 2026-10-06: three categories, and Video has its types.
+#: `ad_video` is the template kind rendering its Reel; «Con plantilla» is the same
+#: kind rendering one still (feed or story).
+GEN_CATEGORIES = ("script", "video", "image", "template")
+VIDEO_TYPES = ("avatar_video", "animated_avatar_video", "ad_video")
+_CATEGORY_KIND = {
+    "script": "creator_script",
+    "video": "avatar_video",
+    "image": "static_flyer",
+    "template": "template",
+}
+#: A Seedance presenter has no library: «Mujer» / «Hombre» are a described synthetic
+#: person like «Personalizado», with this description (§ request 2026-10-07).
+_SEEDANCE_PRESENTERS = {
+    "female": "Mujer latina de unos 30 años, sonriente y cercana, ropa casual moderna.",
+    "male": "Hombre latino de unos 30 años, sonriente y cercano, ropa casual moderna.",
+}
+#: The formats each template use renders — ONE output, the one of this format.
+_TEMPLATE_FORMATS = {
+    "video": (ContentFormat.REELS_9_16,),
+    "template": (ContentFormat.FEED_4_5, ContentFormat.STORY_9_16),
+}
+#: Copy options per piece (§ request 2026-10-08): only a real creator's script offers
+#: several — it has no media made from one of them; every other kind asks for ONE until
+#: the angles engine exists.
+_SCRIPT_OPTIONS = 3
+#: The template's photos (`promo_producto`, photos.min): asked for in its own section,
+#: not discovered on Generar. The ad image takes one (§ request 2026-10-08).
+_TEMPLATE_MIN_PHOTOS = 2
 #: HeyGen's own gender values, as the catalog carries them on looks and voices.
 _GENDERS = ("female", "male")
 #: `AdImageMode` values, in the picker's order.
 _AD_MODES = ("product", "background", "both")
 _OBJECTIVES = frozenset(o.value for o in BriefObjective)
 _INTENTS = frozenset(i.value for i in BriefIntent)
-#: The generator wizard's steps, in order (§ request 2026-09-30, one decision per
-#: screen like the Brand Kit). `presenter` only applies to the two avatar kinds;
-#: `recipe` («¿Cómo la hacemos?», the router's three options with their cost — plan
-#: §2.1 #4) only to the template kind.
-GENERATOR_STEPS = (
-    "kind",
-    "topic",
-    "channel",
-    "presenter",
-    "details",
-    "rules",
-    "recipe",
-    "review",
-)
+#: The generator's numbered sections, in order, under «¿Qué creamos?» (§ request
+#: 2026-10-08: one view with sections replaced the step-by-step wizard). `presenter`
+#: only applies to the two avatar kinds; «Reglas» is a folded, unnumbered extra.
+GENERATOR_SECTIONS = ("topic", "channel", "presenter", "details")
 
 
-def generator_steps(kind: str) -> list[str]:
-    """The wizard steps that apply to `kind`, in order."""
+def _is_carousel(draft: DraftVM | None) -> bool:
+    """A piece whose media is more than one image (a carousel's slides)."""
+    if draft is None:
+        return False
+    return sum(1 for item in draft.media if item.media_type == "image") > 1
+
+
+def _next_slide(draft: DraftVM | None, index: int) -> int:
+    """The slide after `index`, wrapping to the first."""
+    total = len(draft.media) if draft is not None else 0
+    return (index + 1) % total if total else 0
+
+
+def _slide(draft: DraftVM | None, index: int) -> int:
+    """`index` kept within the piece's slides."""
+    last = len(draft.media) - 1 if draft is not None else 0
+    return max(0, min(int(index), max(last, 0)))
+
+
+def generator_sections(kind: str) -> list[str]:
+    """The sections `kind` shows, in order. The ad image asks no «¿Qué quieres en la
+    imagen?» (§ request 2026-10-08): its scene, in its details, is it."""
     has_presenter = kind in ("avatar_video", "animated_avatar_video")
-    has_recipe = kind == "template"
     return [
-        step
-        for step in GENERATOR_STEPS
-        if (step != "presenter" or has_presenter) and (step != "recipe" or has_recipe)
+        section
+        for section in GENERATOR_SECTIONS
+        if (section != "presenter" or has_presenter)
+        and (section != "topic" or kind != "static_flyer")
     ]
 
 
@@ -175,31 +225,21 @@ _FORMAT_LABELS = {
     "reels_9_16": "Reel 9:16",
     "story_9_16": "Story 9:16",
 }
-#: What the result view says while the piece is being made, per kind.
+#: What the result view says while the piece is being made, per kind — generic, with
+#: no vendor or model (§ request 2026-10-08).
 _GEN_WAITING = {
-    "creator_script": "Escribiendo el guion…",
-    "avatar_video": (
-        "Escribiendo el guion y generando el video en HeyGen. Puede tardar unos minutos."
-    ),
-    "animated_avatar_video": (
-        "Creando el personaje y generando el video en HeyGen. Puede tardar varios minutos."
-    ),
-    "static_flyer": "Escribiendo el texto y componiendo la imagen…",
-    "template": (
-        "Escribiendo el gancho y renderizando la plantilla: el Reel, el feed y la historia "
-        "aparecen según van saliendo."
-    ),
+    "creator_script": "Escribiendo tu guion…",
+    "avatar_video": "Generando tu video. Puede tardar unos minutos…",
+    "animated_avatar_video": "Generando tu video. Puede tardar unos minutos…",
+    "static_flyer": "Generando tu imagen, ya casi está…",
+    "template": "Generando tu pieza, ya casi está…",
 }
-_RECIPE_REQUIRED = "Elige cómo hacemos la pieza."
-_RECIPE_UNAVAILABLE = "Esa receta no está disponible para este encargo: "
-_RECIPE_UGC = "La escena sintética solo se cotiza por ahora: el motor UGC no renderiza todavía."
-_RECIPE_HEYGEN = "Cambiamos la pieza a video con avatar: elige quién la presenta y con qué voz."
 _TEMPLATE_PHOTO_REQUIRED = (
-    "Una plantilla trabaja sobre fotos reales: elige un producto del catálogo que tenga "
-    "fotos o sube al menos una."
+    "Una plantilla trabaja sobre fotos reales: necesita al menos 2 (las del producto del "
+    "catálogo cuentan)."
 )
 _CATALOG_ERROR = "No pudimos leer el catálogo. Puedes seguir subiendo tus fotos."
-_RECIPE_ERROR = "No pudimos cotizar las recetas. Inténtalo de nuevo."
+_TEMPLATE_BLOCKED = "No podemos hacer esta pieza con plantilla: "
 _GEN_POLL_SECONDS = 3.0
 #: An AI avatar plus its render can take many minutes; the draft's reaper is 20.
 _GEN_POLL_BUDGET_SECONDS = 20 * 60
@@ -307,6 +347,10 @@ class CreativeState(rx.State):
     # -- /create ------------------------------------------------------------
     create_loading: bool = False
     create_error: str = ""
+    #: The Brand Kit's Tu voz y tono is still to configure (`brand_finish.
+    #: kit_voice_configured`): the generator flags it and sends there (§ request
+    #: 2026-10-06). Read on load; a failed read never flags.
+    kit_voice_missing: bool = False
     brief_objective: str = "consideration"
     brief_content_type: str = "product"
     brief_topic: str = ""
@@ -321,11 +365,21 @@ class CreativeState(rx.State):
     upload_error: str = ""
     is_submitting: bool = False
     # The content kind and its inputs (§ request 2026-09-25, `ContentKind`/`MediaInputs`).
-    brief_kind: str = "static_flyer"
+    #: Imagen publicitaria left the picker on 2026-10-06: the guion opens the wizard.
+    brief_kind: str = "creator_script"
     media_background_key: str = ""
     media_background_name: str = ""
     media_product_keys: list[str] = []
     media_product_names: list[str] = []
+    #: The Brand Kit's images (`creative_provider.brand_media`): `{key, label, view,
+    #: kind, usage}` — «Recursos de tu marca», a section of its own apart from the
+    #: background and the products (§ request 2026-10-06). Read on load; only a key in
+    #: this list is ever accepted from the picker.
+    brand_media_items: list[dict[str, str]] = []
+    #: The piece's chosen resources: one logo (the brand mark's place) and the elements
+    #: it uses as each one's usage note says (`MediaInputs.brand_logo_key` / `…_keys`).
+    brand_logo_key: str = ""
+    brand_element_keys: list[str] = []
     media_carousel: bool = False
     media_duration: str = "30"
     #: The advertising image: built from the product, the background or both
@@ -356,27 +410,33 @@ class CreativeState(rx.State):
     own_script_on: bool = False
     own_script: str = ""
     avatar_engine: str = "avatar_iv"
+    #: Which vendor renders the avatar kinds ("seedance" | "heygen",
+    #: `QUALIFY_VIDEO_ENGINE`), read when an avatar kind is chosen. With Seedance there is
+    #: no library look, no voice and no HeyGen engine to pick.
+    video_engine: str = "seedance"
     #: The format picked for the kind ("" = the kind's default, `ContentKind.formats`).
     brief_format: str = ""
     # -- the template kind (plan-mvp-plantillas-remotion.md): the catalog product the
-    # piece is about, and the recipe the router proposed / the operator pinned
+    # piece is about
     catalog_items: list[dict[str, str]] = []
     catalog_loading: bool = False
     catalog_error: str = ""
     selected_product_id: str = ""
     selected_product_photo_key: str = ""
     _selected_product_photo_keys: list[str] = []
-    recipe_items: list[RecipeOptionVM] = []
-    recipe_loading: bool = False
-    recipe_error: str = ""
-    recipe_notice: str = ""
-    selected_recipe: str = ""
-    media_template_id: str = ""
-    media_template_version: int = 0
-    # The generator's two views (/create): "form" (configure) → "result" (the piece).
+    #: «¿Qué quieres crear?» (§ request 2026-10-06): the category — "script" | "video" |
+    #: "template" — and, within Video, the type: an avatar kind or "ad_video" (the
+    #: template's Reel). `brief_kind` stays the real `ContentKind`.
+    gen_category: str = "script"
+    #: "result" once Generar created a piece: it shows below the form, on the same page
+    #: (§ request 2026-10-08); "form" = nothing generated yet, or «Crear otro».
     generator_view: str = "form"
-    #: The form view is a wizard: the key of the step on screen (`GENERATOR_STEPS`).
-    gen_step: str = "kind"
+    #: «Reglas (opcional)» is folded until the operator opens it.
+    rules_open: bool = False
+    #: The carousel slide in view (§ request 2026-10-08): the generator's result, and
+    #: the draft screen's.
+    gen_slide: int = 0
+    draft_slide: int = 0
     gen_draft_id: str = ""
     gen_draft: DraftVM | None = None
     #: Which variant the result view shows (index into `gen_draft.variants`).
@@ -544,10 +604,7 @@ class CreativeState(rx.State):
         if not api_key:
             async with self:
                 self.ai_hashtags_loading = False
-                self.ai_hashtags_note = (
-                    "Las sugerencias con IA no están configuradas en este entorno "
-                    "(falta QUALIFY_ANTHROPIC_API_KEY)."
-                )
+                self.ai_hashtags_note = "Las sugerencias con IA no están disponibles ahora mismo."
             return
 
         def run() -> list[HashtagIdeaVM]:
@@ -679,7 +736,12 @@ class CreativeState(rx.State):
             kind = ContentKind(self.brief_kind)
         except ValueError:
             return []
-        return [[fmt.value, _FORMAT_LABELS[fmt.value]] for fmt in kind.formats]
+        formats = (
+            _TEMPLATE_FORMATS["video" if self.gen_category == "video" else "template"]
+            if kind is ContentKind.TEMPLATE
+            else kind.formats
+        )
+        return [[fmt.value, _FORMAT_LABELS[fmt.value]] for fmt in formats]
 
     @rx.var
     def effective_format(self) -> str:
@@ -693,54 +755,24 @@ class CreativeState(rx.State):
         return _FORMAT_LABELS.get(self.effective_format, "")
 
     @rx.var
-    def gen_step_number(self) -> int:
-        """1-based position of the wizard's step among the ones the kind uses."""
-        steps = generator_steps(self.brief_kind)
-        return steps.index(self.gen_step) + 1 if self.gen_step in steps else 1
+    def gen_sections(self) -> list[str]:
+        """The sections the chosen kind shows (`generator_sections`)."""
+        return generator_sections(self.brief_kind)
 
     @rx.var
-    def gen_step_total(self) -> int:
-        return len(generator_steps(self.brief_kind))
+    def gen_section_numbers(self) -> dict[str, int]:
+        """Each shown section's number, 1-based: they renumber as the kind changes."""
+        return {key: n for n, key in enumerate(generator_sections(self.brief_kind), 1)}
 
     @rx.var
-    def gen_recap(self) -> list[list[str]]:
-        """[label, value] rows of the wizard's «¿Todo listo?» step ("" = not set)."""
-        content_types = {opt.value: opt.label for opt in content_type_options()}
-        return [
-            ["Tipo de pieza", KIND_LABELS.get(self.brief_kind, "")],
-            ["Tema o producto", self.brief_topic.strip()],
-            # Objetivo and Destino left the wizard on 2026-10-05: not asked, not recapped
-            ["De qué trata", content_types.get(self.brief_content_type, "")],
-            ["Formato", self.effective_format_label],
-            ["Debe mencionar", self.brief_must_mention.strip()],
-            ["Debe evitar", self.brief_must_avoid.strip()],
-        ] + (
-            [
-                ["Receta", self.selected_recipe_label],
-                ["Costo estimado", self.selected_recipe_cost],
-            ]
-            if self.brief_kind == "template"
-            else []
-        )
-
-    @rx.var
-    def selected_recipe_vm(self) -> RecipeOptionVM | None:
-        return next((o for o in self.recipe_items if o.key == self.selected_recipe), None)
-
-    @rx.var
-    def selected_recipe_label(self) -> str:
-        option = self.selected_recipe_vm
-        if option is None:
-            return ""
-        return f"{option.label} · {option.engine_label}"
-
-    @rx.var
-    def selected_recipe_cost(self) -> str:
-        option = self.selected_recipe_vm
-        if option is None:
-            return ""
+    def gen_generating(self) -> bool:
+        """A piece is being created or is still generating: Generar waits for it."""
+        if self.is_submitting:
+            return True
         return (
-            f"{option.cost_label} · {option.eta_label}" if option.eta_label else option.cost_label
+            self.generator_view == "result"
+            and not self.gen_timed_out
+            and (self.gen_draft is None or self.gen_draft.is_drafting)
         )
 
     @rx.var
@@ -771,6 +803,46 @@ class CreativeState(rx.State):
         )
 
     @rx.var
+    def gen_is_done(self) -> bool:
+        """The piece finished generating, well or not: until then «Revisar y aprobar» is
+        held back (§ request 2026-10-06 — nothing moves on before the video is there)."""
+        return self.gen_draft is not None and not self.gen_draft.is_drafting
+
+    @rx.var
+    def gen_is_carousel(self) -> bool:
+        """More than one image: shown as a carousel, not one under the other."""
+        return _is_carousel(self.gen_draft)
+
+    @rx.var
+    def draft_is_carousel(self) -> bool:
+        return _is_carousel(self.draft)
+
+    @rx.event
+    def gen_slide_step(self, delta: int) -> None:
+        self.gen_slide = _slide(self.gen_draft, self.gen_slide + delta)
+
+    @rx.event
+    def gen_slide_pick(self, index: int) -> None:
+        self.gen_slide = _slide(self.gen_draft, index)
+
+    @rx.event
+    def draft_slide_step(self, delta: int) -> None:
+        self.draft_slide = _slide(self.draft, self.draft_slide + delta)
+
+    @rx.event
+    def draft_slide_pick(self, index: int) -> None:
+        self.draft_slide = _slide(self.draft, index)
+
+    @rx.event
+    def gen_slide_auto(self) -> None:
+        """The carousel's own tick: the next slide, back to the first after the last."""
+        self.gen_slide = _next_slide(self.gen_draft, self.gen_slide)
+
+    @rx.event
+    def draft_slide_auto(self) -> None:
+        self.draft_slide = _next_slide(self.draft, self.draft_slide)
+
+    @rx.var
     def gen_kind(self) -> str:
         return self.gen_draft.kind if self.gen_draft is not None else self.brief_kind
 
@@ -793,6 +865,10 @@ class CreativeState(rx.State):
         return _GEN_WAITING.get(self.gen_kind, "Generando…")
 
     @rx.var
+    def video_on_seedance(self) -> bool:
+        return self.video_engine == "seedance"
+
+    @rx.var
     def gen_failure_label(self) -> str:
         """The precise reason when the media step gave one (HeyGen without credit…),
         else the failure code's translation."""
@@ -801,6 +877,38 @@ class CreativeState(rx.State):
         if self.gen_draft.failure_detail:
             return self.gen_draft.failure_detail
         return self.gen_draft.failure.label if self.gen_draft.failure is not None else ""
+
+    def _choices(self, kind: str | None) -> list[dict[str, str]]:
+        elements = set(self.brand_element_keys)
+        return [
+            {
+                **item,
+                # "1" when the piece uses it: as its logo / an element / the character
+                "chosen": (
+                    "1"
+                    if item.get("key") == self.brand_logo_key or item.get("key") in elements
+                    else ""
+                ),
+                "avatar": "1" if item.get("key") == self.avatar_image_key else "",
+            }
+            for item in self.brand_media_items
+            if kind is None or item.get("kind") == kind
+        ]
+
+    @rx.var
+    def brand_logo_choices(self) -> list[dict[str, str]]:
+        """«Recursos de tu marca» → the logos (one can be chosen)."""
+        return self._choices("logo")
+
+    @rx.var
+    def brand_element_choices(self) -> list[dict[str, str]]:
+        """«Recursos de tu marca» → the other elements, each with its usage note."""
+        return self._choices("element")
+
+    @rx.var
+    def brand_media_choices(self) -> list[dict[str, str]]:
+        """Every Brand Kit image, for the animated character's «O elige del Brand Kit»."""
+        return self._choices(None)
 
     @rx.var
     def product_items(self) -> list[dict[str, str]]:
@@ -1394,11 +1502,35 @@ class CreativeState(rx.State):
                 self.create_loading = False
                 self.create_error = _DB_ERROR
             return
+        voice_missing = await self._kit_voice_missing(tenant_id, brand_id)
+        try:
+            assets = list(await asyncio.to_thread(brand_media, tenant_id, brand_id))
+        except Exception as exc:  # the uploads still work: never a reason to block
+            logger.warning("brand media unreadable: %s", type(exc).__name__)
+            assets = []
         async with self:
             self.readiness = verdict
             self.route_options = list(options)
             self._select_default_route()
+            self.kit_voice_missing = voice_missing
+            self.brand_media_items = assets
             self.create_loading = False
+
+    @staticmethod
+    async def _kit_voice_missing(tenant_id: UUID, brand_id: UUID) -> bool:
+        from .brand_finish import kit_voice_configured
+
+        try:
+            return not await asyncio.to_thread(kit_voice_configured, tenant_id, brand_id)
+        except Exception as exc:  # a flag, never a reason to block the generator
+            logger.warning("brand voice check failed: %s", type(exc).__name__)
+            return False
+
+    @rx.event
+    def configure_voice(self) -> rx.event.EventSpec:
+        """The flag's "Configurar voz": the Brand Kit editor opens on Tu voz y tono while
+        it is still to configure (`brand_kit_editor.needs_voice`)."""
+        return rx.redirect("/brand/kit")
 
     def _select_default_route(self) -> None:
         """Preset the accordion on the content type's default route (§6.4: the first
@@ -1446,10 +1578,50 @@ class CreativeState(rx.State):
 
     # -- the content kind and its inputs ------------------------------------------
 
+    @rx.var
+    def video_type(self) -> str:
+        """Within Video, which type is chosen ("" outside Video)."""
+        if self.gen_category != "video":
+            return ""
+        return "ad_video" if self.brief_kind == "template" else self.brief_kind
+
+    @rx.var
+    def gen_kind_label(self) -> str:
+        """What the piece is called on «¿Todo listo?»: the video type within Video."""
+        if self.gen_category == "video":
+            return VIDEO_TYPE_LABELS.get(self.video_type, "")
+        return KIND_LABELS.get(self.brief_kind, "")
+
+    @rx.event
+    def choose_category(self, category: str) -> rx.event.EventSpec | None:
+        """Guion · Video · Con plantilla. Video opens on its first type unless one of its
+        types is already chosen."""
+        if category not in GEN_CATEGORIES:
+            return None
+        if category == self.gen_category and (
+            category != "video" or self.video_type in VIDEO_TYPES
+        ):
+            return None
+        self.gen_category = category
+        return self._set_kind(_CATEGORY_KIND[category])
+
+    @rx.event
+    def choose_video_type(self, video_type: str) -> rx.event.EventSpec | None:
+        """Avatar humano · Avatar animado · Video publicitario (the template's Reel)."""
+        if video_type not in VIDEO_TYPES:
+            return None
+        self.gen_category = "video"
+        return self._set_kind("template" if video_type == "ad_video" else video_type)
+
     @rx.event
     def choose_kind(self, key: str) -> rx.event.EventSpec | None:
-        """One of the five kinds; `template` is shown but not selectable yet. An avatar
-        kind loads HeyGen's looks and voices the first time it is chosen."""
+        """One of the kinds, directly (the picker goes through `choose_category` /
+        `choose_video_type`)."""
+        return self._set_kind(key)
+
+    def _set_kind(self, key: str) -> rx.event.EventSpec | None:
+        """An avatar kind loads HeyGen's looks and voices the first time it is chosen;
+        the template kind, the catalog."""
         if key not in _ENABLED_KINDS:
             return None
         self.brief_kind = key
@@ -1457,13 +1629,15 @@ class CreativeState(rx.State):
         self.create_error = ""
         if key != "static_flyer":
             self.media_carousel = False
-        if key in ("avatar_video", "animated_avatar_video") and not self.heygen_voices:
-            return CreativeState.load_heygen_catalog
+        if key in ("avatar_video", "animated_avatar_video"):
+            self.video_engine = configured_video_engine()
+            if self.video_engine == "heygen" and not self.heygen_voices:
+                return CreativeState.load_heygen_catalog
         if key == "template" and not self.catalog_items:
             return CreativeState.load_catalog_products
         return None
 
-    # -- the template kind: catalog product + recipe --------------------------------------
+    # -- the template kind: the catalog product ---------------------------------------------
 
     @rx.event(background=True)
     async def load_catalog_products(self) -> None:
@@ -1511,7 +1685,6 @@ class CreativeState(rx.State):
         if not self.brief_topic.strip():
             self.brief_topic = item.get("name", "")
         self.create_error = ""
-        self._reset_recipe()
 
     @rx.event
     def clear_product(self) -> None:
@@ -1519,100 +1692,6 @@ class CreativeState(rx.State):
         self.selected_product_photo_key = ""
         self._selected_product_photo_keys = []
         self.brief_product_ref = ""
-        self._reset_recipe()
-
-    def _reset_recipe(self) -> None:
-        self.recipe_items = []
-        self.selected_recipe = ""
-        self.media_template_id = ""
-        self.media_template_version = 0
-        self.recipe_notice = ""
-        self.recipe_error = ""
-
-    @rx.event(background=True)
-    async def load_recipe_options(self) -> None:
-        """«¿Cómo la hacemos?»: the router's three options for what this Post has. The
-        suggested one is preselected when it can be chosen; else the first that can."""
-        async with self:
-            self.recipe_loading = True
-            self.recipe_error = ""
-            self.recipe_notice = ""
-            form = (
-                self.brief_content_type,
-                self.brief_product_ref,
-                list(self.media_product_keys),
-                self.staged_media_key,
-            )
-        ids = await self._session_ids()
-        if ids is None:
-            async with self:
-                self.recipe_loading = False
-                self.recipe_error = _NO_SESSION
-            return
-        tenant_id, brand_id, _ = ids
-        content_type, product_ref, product_keys, source_key = form
-        try:
-            options = await asyncio.to_thread(
-                lambda: recipe_options(
-                    tenant_id,
-                    brand_id,
-                    content_type=content_type,
-                    product_ref=product_ref,
-                    product_keys=product_keys,
-                    source_media_key=source_key,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 — a quote failing must say so, not crash
-            logger.error("recipe options failed: %s", type(exc).__name__)
-            async with self:
-                self.recipe_loading = False
-                self.recipe_error = _RECIPE_ERROR
-            return
-        async with self:
-            self.recipe_items = list(options)
-            self.recipe_loading = False
-            if not any(o.key == self.selected_recipe and o.selectable for o in options):
-                preferred = next((o for o in options if o.suggested and o.selectable), None)
-                preferred = preferred or next((o for o in options if o.selectable), None)
-                self._apply_recipe(preferred)
-
-    def _apply_recipe(self, option: RecipeOptionVM | None) -> None:
-        if option is None:
-            self.selected_recipe = ""
-            self.media_template_id = ""
-            self.media_template_version = 0
-            return
-        self.selected_recipe = option.key
-        self.media_template_id = option.template_id if option.key == "remotion" else ""
-        self.media_template_version = option.template_version if option.key == "remotion" else 0
-
-    @rx.event
-    def choose_recipe(self, key: str) -> rx.event.EventSpec | None:
-        """Pick one of the three cards. Remotion pins the template (id + version) on
-        the brief; HeyGen turns the piece into an avatar video (its own steps take
-        over, with a notice); UGC only quotes and cannot be chosen."""
-        option = next((o for o in self.recipe_items if o.key == key), None)
-        if option is None:
-            return None
-        if option.key == "ugc":
-            self.recipe_notice = _RECIPE_UGC
-            return None
-        if not option.available:
-            self.recipe_notice = _RECIPE_UNAVAILABLE + option.reason
-            return None
-        self.recipe_notice = ""
-        if option.key == "heygen":
-            self.brief_kind = "avatar_video"
-            self.brief_format = ""
-            self.media_carousel = False
-            self._reset_recipe()
-            self.gen_step = "presenter"
-            self.recipe_notice = _RECIPE_HEYGEN
-            if not self.heygen_voices:
-                return CreativeState.load_heygen_catalog
-            return None
-        self._apply_recipe(option)
-        return None
 
     @rx.event(background=True)
     async def load_heygen_catalog(self) -> None:
@@ -1753,13 +1832,29 @@ class CreativeState(rx.State):
             self.gen_variant = 0
 
     @rx.event
-    def new_generation(self) -> None:
-        """Back to the form's first step, the inputs kept — to try a variation."""
+    def review_in_drafts(self) -> rx.event.EventSpec | None:
+        """«Revisar y aprobar en Borradores»: the piece moves on to Borradores, and the
+        generator starts over — coming back to «Crear pieza» shows its first screen, not
+        the piece already sent (§ request 2026-10-08)."""
+        draft_id = self.gen_draft_id
+        self._back_to_form()
+        self.brief_topic = ""
+        self._reset_media_inputs()
+        return rx.redirect(f"/drafts/{draft_id}") if draft_id else None
+
+    @rx.event
+    def new_generation(self) -> rx.event.EventSpec:
+        """«Crear otro»: the result goes away and the form, inputs kept, is back on top —
+        to try a variation."""
+        self._back_to_form()
+        return rx.call_script("window.scrollTo({top: 0, behavior: 'smooth'})")
+
+    def _back_to_form(self) -> None:
         self.generator_view = "form"
-        self.gen_step = "kind"
         self.gen_draft = None
         self.gen_draft_id = ""
         self.gen_variant = 0
+        self.gen_slide = 0
         self.gen_timed_out = False
         self.create_error = ""
 
@@ -1842,8 +1937,49 @@ class CreativeState(rx.State):
         if saved:
             self.avatar_image_key, self.avatar_image_name = saved[0]
 
+    def _brand_asset(self, key: str) -> dict[str, str] | None:
+        """The Brand Kit image behind `key` — None for anything else, so the picker can
+        never place a key the session's own Brand Kit did not list."""
+        return next((item for item in self.brand_media_items if item.get("key") == key), None)
+
+    @rx.event
+    def toggle_brand_logo(self, key: str) -> None:
+        """«Recursos de tu marca»: the ONE logo of the piece — it takes the brand mark's
+        place (the template's and flyer's logo slot, a corner of the avatar's scene). The
+        same one again takes it off; another one replaces it."""
+        asset = self._brand_asset(key)
+        if asset is None or asset.get("kind") != "logo":
+            return
+        self.brand_logo_key = "" if self.brand_logo_key == key else key
+
+    @rx.event
+    def toggle_brand_element(self, key: str) -> None:
+        """«Recursos de tu marca»: an element (a mascot, a pattern, the bag…) the piece
+        uses as its usage note says — in, or out again."""
+        asset = self._brand_asset(key)
+        if asset is None or asset.get("kind") != "element":
+            return
+        if key in self.brand_element_keys:
+            self.brand_element_keys = [k for k in self.brand_element_keys if k != key]
+        elif len(self.brand_element_keys) < MAX_BRAND_ELEMENTS:
+            self.brand_element_keys = [*self.brand_element_keys, key]
+
+    @rx.event
+    def use_brand_avatar_image(self, key: str) -> None:
+        """«Del Brand Kit» as the animated character (a mascot, the isotipo…)."""
+        asset = self._brand_asset(key)
+        if asset is None:
+            return
+        if self.avatar_image_key == key:
+            self.avatar_image_key, self.avatar_image_name = "", ""
+            return
+        self.avatar_image_key, self.avatar_image_name = key, asset.get("label", "")
+
     @rx.event
     def remove_product(self, key: str) -> None:
+        self._drop_product(key)
+
+    def _drop_product(self, key: str) -> None:
         pairs = [
             (k, n)
             for k, n in zip(self.media_product_keys, self.media_product_names, strict=False)
@@ -1869,11 +2005,12 @@ class CreativeState(rx.State):
     def _presenter_problem(self) -> str:
         """The wizard's «¿Quién lo presenta?» step: the avatar or character, and the
         voice. Only the two avatar kinds have a presenter."""
+        seedance = self.video_engine == "seedance"
         if self.brief_kind == "avatar_video":
             if self.human_avatar_mode == "custom":
                 if not self.human_avatar_prompt.strip():
                     return "Describe cómo es la persona que va a presentar el video."
-            elif not self.avatar_look_id:
+            elif not self.avatar_look_id and not seedance:
                 return "Elige el avatar que va a presentar el video."
         if self.brief_kind == "animated_avatar_video":
             if self.avatar_source == "ai" and not self.avatar_prompt.strip():
@@ -1883,9 +2020,20 @@ class CreativeState(rx.State):
                     return "Sube la imagen del personaje que quieres animar."
                 if not self.avatar_rights_confirmed:
                     return "Confirma que tienes derecho a animar esa imagen."
-        if self.brief_kind in ("avatar_video", "animated_avatar_video") and not self.voice_id:
+        if (
+            self.brief_kind in ("avatar_video", "animated_avatar_video")
+            and not seedance
+            and not self.voice_id
+        ):
             return "Elige la voz que va a leer el guion."
         return ""
+
+    def _effective_topic(self) -> str:
+        """What the piece is about: the ad image's scene is its whole brief (§ request
+        2026-10-08), every other kind says it in «¿Qué quieres…?»."""
+        if self.brief_kind == "static_flyer":
+            return self.ad_scene_prompt.strip()
+        return self.brief_topic.strip()
 
     def _details_problem(self) -> str:
         """The wizard's kind step: the ad's photos, or the operator's own script."""
@@ -1894,61 +2042,24 @@ class CreativeState(rx.State):
                 return "Sube la foto de tu producto."
             if self.ad_mode != "product" and not self.media_background_key:
                 return "Sube la foto del fondo (por ejemplo, tu local)."
+            if not self.ad_scene_prompt.strip():
+                return _SCENE_REQUIRED
         if self.kind_is_video and self.own_script_on and not self.own_script.strip():
             return "Escribe tu guion o apaga «Escribir mi propio guion»."
-        if self.brief_kind == "template" and self.template_photo_count == 0:
+        if self.brief_kind == "template" and self.template_photo_count < _TEMPLATE_MIN_PHOTOS:
             return _TEMPLATE_PHOTO_REQUIRED
         return ""
 
-    def _gen_step_problem(self, step: str) -> str:
-        """What keeps the wizard from leaving `step` ("" when it may move on)."""
-        if step == "topic" and not self.brief_topic.strip():
-            return _TOPIC_REQUIRED
-        if step == "presenter":
-            return self._presenter_problem()
-        if step == "details":
-            return self._details_problem()
-        if step == "recipe":
-            return self._recipe_problem()
-        return ""
-
-    def _recipe_problem(self) -> str:
-        """The template kind's «¿Cómo la hacemos?»: one selectable recipe picked."""
-        if self.brief_kind != "template":
-            return ""
-        option = self.selected_recipe_vm
-        if option is None:
-            return _RECIPE_REQUIRED
-        if not option.selectable:
-            return _RECIPE_UNAVAILABLE + option.reason
-        return ""
+    def _form_problem(self) -> str:
+        """The first thing the form still lacks, in the order of its sections — what
+        Generar says above its button ("" when it may generate)."""
+        if not self._effective_topic():
+            return _SCENE_REQUIRED if self.brief_kind == "static_flyer" else _TOPIC_REQUIRED
+        return self._kind_problem()
 
     @rx.event
-    def gen_next(self) -> rx.event.EventSpec | None:
-        """Continuar: validate the step on screen, then move to the next one that
-        applies to the chosen kind. The reason it cannot move shows above the card.
-        Landing on «¿Cómo la hacemos?» quotes the recipes for what the Post has NOW."""
-        problem = self._gen_step_problem(self.gen_step)
-        if problem:
-            self.create_error = problem
-            return None
-        self.create_error = ""
-        self.recipe_notice = ""
-        steps = generator_steps(self.brief_kind)
-        index = steps.index(self.gen_step) if self.gen_step in steps else -1
-        self.gen_step = steps[min(index + 1, len(steps) - 1)]
-        if self.gen_step == "recipe":
-            return CreativeState.load_recipe_options
-        return None
-
-    @rx.event
-    def gen_back(self) -> None:
-        """Atrás: the previous step that applies to the chosen kind (never validates)."""
-        self.create_error = ""
-        self.recipe_notice = ""
-        steps = generator_steps(self.brief_kind)
-        index = steps.index(self.gen_step) if self.gen_step in steps else 0
-        self.gen_step = steps[max(index - 1, 0)]
+    def toggle_rules(self) -> None:
+        self.rules_open = not self.rules_open
 
     def _media_inputs(self) -> dict[str, object]:
         kind = self.brief_kind
@@ -1973,17 +2084,38 @@ class CreativeState(rx.State):
             "background_key": self.media_background_key or None if takes_background else None,
             "product_keys": product_keys,
             "carousel": self.media_carousel and self.carousel_allowed and takes_products,
+            # «Recursos de tu marca» (§ 2026-10-06): apart from the background/products;
+            # never for a real creator's script, which does not offer them (2026-10-08)
+            "brand_logo_key": (self.brand_logo_key or None) if takes_images else None,
+            "brand_element_keys": list(self.brand_element_keys) if takes_images else [],
         }
-        if is_template and self.selected_recipe == "remotion" and self.media_template_id:
-            media["template_id"] = self.media_template_id
-            media["template_version"] = self.media_template_version or None
         if is_ad:
             media["ad_mode"] = self.ad_mode
             media["scene_prompt"] = self.ad_scene_prompt.strip()
         if kind in ("avatar_video", "animated_avatar_video"):
             media["engine"] = self.avatar_engine
+            media["video_engine"] = self.video_engine
             if self.own_script_on:
                 media["own_script"] = self.own_script.strip()
+        if kind in ("avatar_video", "animated_avatar_video") and self.video_engine == "seedance":
+            # no library and no voice: the presenter is described (§ 2026-10-07)
+            if kind == "avatar_video":
+                described = (
+                    self.human_avatar_prompt.strip()
+                    if self.human_avatar_mode == "custom"
+                    else _SEEDANCE_PRESENTERS.get(self.human_avatar_mode, "")
+                )
+                media.update(avatar_source="ai", avatar_prompt=described)
+                return media
+            media["avatar_source"] = self.avatar_source
+            if self.avatar_source == "ai":
+                media["avatar_prompt"] = self.avatar_prompt.strip()
+            else:
+                media.update(
+                    avatar_image_key=self.avatar_image_key,
+                    avatar_rights_confirmed=self.avatar_rights_confirmed,
+                )
+            return media
         if kind == "avatar_video":
             media["voice_id"] = self.voice_id
             if self.human_avatar_mode == "custom":
@@ -2003,6 +2135,8 @@ class CreativeState(rx.State):
 
     def _reset_media_inputs(self) -> None:
         self.clear_product()
+        self.brand_logo_key = ""
+        self.brand_element_keys = []
         self.media_background_key = ""
         self.media_background_name = ""
         self.media_product_keys = []
@@ -2089,42 +2223,100 @@ class CreativeState(rx.State):
         and its inputs; the image route is derived from them
         (`creative_provider.submit_brief`)."""
         async with self:
-            if self.is_submitting:
+            if self.is_submitting or self.gen_generating:
                 return
-            if not self.brief_topic.strip():
-                self.create_error = _TOPIC_REQUIRED
-                return
-            problem = self._kind_problem()
+            problem = self._form_problem()
             if problem:
                 self.create_error = problem
                 return
             self.is_submitting = True
             self.create_error = ""
-            form = {
-                "objective": self.brief_objective,
-                "content_type": self.brief_content_type,
-                "topic": self.brief_topic,
-                "product_ref": self.brief_product_ref,
-                "intent": self.brief_intent,
-                "image_route": "",
-                "source_media_key": "",
-                "must_mention": self.brief_must_mention,
-                "must_avoid": self.brief_must_avoid,
-                "kind": self.brief_kind,
-                "media": self._media_inputs(),
-                "content_format": self.effective_format,
-            }
+            form = self._generator_form()
+            template_form = self._template_form() if self.brief_kind == "template" else None
+        # A template the router cannot make from what the piece has is said here, before
+        # anything is created (it used to be checked on «¿Todo listo?»).
+        if template_form is not None:
+            blocker = await self._template_blocker(template_form)
+            if blocker:
+                async with self:
+                    self.is_submitting = False
+                    self.create_error = _TEMPLATE_BLOCKED + blocker
+                return
+        yield CreativeState.preview_prompt  # the prompt it sends, in the console
         draft_id = await self._create_draft(form)
         if draft_id is None:
             return
-        # The generator's second view: the piece, as it lands (§ request 2026-09-25).
+        # The piece shows below the form, on the same page (§ request 2026-10-08).
         async with self:
             self.generator_view = "result"
             self.gen_draft_id = str(draft_id)
             self.gen_draft = None
             self.gen_variant = 0
+            self.gen_slide = 0
             self.gen_timed_out = False
         yield CreativeState.poll_generator
+        yield rx.call_script(
+            "setTimeout(() => document.getElementById('gen-result')"
+            "?.scrollIntoView({behavior: 'smooth', block: 'start'}), 150)"
+        )
+
+    def _generator_form(self) -> dict[str, object]:
+        """The generator's brief as `creative_provider.build_brief` takes it — what
+        Generar submits and what «¿Todo listo?» previews (caller holds the lock)."""
+        return {
+            "objective": self.brief_objective,
+            "content_type": self.brief_content_type,
+            "topic": self._effective_topic(),
+            "product_ref": self.brief_product_ref,
+            "intent": self.brief_intent,
+            "image_route": "",
+            "source_media_key": "",
+            "must_mention": self.brief_must_mention,
+            "must_avoid": self.brief_must_avoid,
+            "kind": self.brief_kind,
+            "media": self._media_inputs(),
+            "content_format": self.effective_format,
+            "variants_requested": _SCRIPT_OPTIONS if self.brief_kind == "creator_script" else 1,
+        }
+
+    @rx.event(background=True)
+    async def preview_prompt(self) -> None:
+        """On Generar: the copy prompt it sends, printed to the console
+        (`trace.copy_prompt`, § request 2026-10-06) — nothing is created or spent. Only a
+        debugging aid: any failure is logged and the screen is left alone."""
+        ids = await self._session_ids()
+        if ids is None:
+            return
+        tenant_id, brand_id, _ = ids
+        async with self:
+            form = self._generator_form()
+        try:
+            await asyncio.to_thread(lambda: preview_brief_prompt(tenant_id, brand_id, **form))
+        except Exception as exc:  # a preview must never break the generator
+            logger.warning("prompt preview failed: %s: %s", type(exc).__name__, exc)
+
+    def _template_form(self) -> dict[str, object]:
+        """What `template_blocker` needs to judge the template (caller holds the lock)."""
+        return {
+            "content_type": self.brief_content_type,
+            "product_ref": self.brief_product_ref,
+            "product_keys": list(self._media_inputs()["product_keys"]),  # type: ignore[arg-type]
+            "source_media_key": self.staged_media_key,
+            "content_format": self.effective_format,
+        }
+
+    async def _template_blocker(self, form: dict[str, object]) -> str:
+        """Whether the router's template can be made from what the piece has — what
+        «¿Cómo la hacemos?» used to say. A check that cannot run blocks nothing: the
+        draft then says what failed. Called outside the state lock."""
+        ids = await self._session_ids()
+        if ids is None:
+            return ""
+        try:
+            return await asyncio.to_thread(lambda: template_blocker(ids[0], ids[1], **form))
+        except Exception as exc:  # noqa: BLE001 — the render either works or says why
+            logger.warning("template check failed: %s", type(exc).__name__)
+            return ""
 
     async def _create_draft(self, form: dict[str, object]) -> UUID | None:
         """Create the draft from a form — shared by both forms. Must be called outside
@@ -2204,6 +2396,8 @@ class CreativeState(rx.State):
             return None
 
     def _apply_detail(self, vm: DraftVM) -> None:
+        if self.draft is None or self.draft.draft_id != vm.draft_id:
+            self.draft_slide = 0  # another draft opens on its first slide
         self.draft = vm
         current = {v.variant_id for v in vm.variants}
         if self.selected_variant_id not in current:

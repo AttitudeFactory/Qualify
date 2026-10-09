@@ -78,10 +78,11 @@ _TOO_SHORT = (
     "Se entendieron muy pocas palabras. Sube una grabación de al menos 30 segundos hablando."
 )
 _ANALYSIS_FAILED = "No pudimos analizar la grabación. Inténtalo de nuevo en un momento."
-_HEYGEN_OFF = "La clonación no está disponible: falta configurar HeyGen."
-_CLONE_FAILED = "HeyGen no pudo clonar la voz. Prueba con una grabación más limpia."
-_CLONE_DOWN = "No pudimos pedir la clonación a HeyGen. Inténtalo de nuevo en un momento."
-_CLONE_LIMIT = "La cuenta de HeyGen llegó a su límite de voces clonadas."
+# § request 2026-10-08: no vendor names in what the operator reads
+_HEYGEN_OFF = "La clonación de voz no está disponible ahora mismo."
+_CLONE_FAILED = "No pudimos clonar la voz. Prueba con una grabación más limpia."
+_CLONE_DOWN = "No pudimos pedir la clonación. Inténtalo de nuevo en un momento."
+_CLONE_LIMIT = "Se alcanzó el límite de voces clonadas."
 _CLONE_PLAN = "Clonar voces requiere un plan de pago de HeyGen."
 _DB_ERROR = "No se pudo leer la base de datos."
 #: The microphone recorder, shipped INSIDE the `rx.call_script` that starts it: the
