@@ -22,12 +22,6 @@ from .ui import card, signal_pill, tag
 from .ui import tokens as T
 
 _TONES = ("ok", "warn", "error", "info", "neutral", "accent")
-_CLAMP_2 = {
-    "display": "-webkit-box",
-    "-webkit-line-clamp": "2",
-    "-webkit-box-orient": "vertical",
-    "overflow": "hidden",
-}
 
 
 class DragBox(rx.el.Div):
@@ -61,12 +55,8 @@ def tone_edge(tone: rx.Var[str]) -> rx.Var:
     """The card's left edge in the tone's colour — the line of «colour + line + word»."""
     return rx.match(
         tone,
-        ("ok", f"3px solid {rx.color('green', 9)}"),
-        ("warn", f"3px solid {rx.color('amber', 9)}"),
-        ("error", f"3px solid {rx.color('tomato', 9)}"),
-        ("info", f"3px solid {rx.color('blue', 9)}"),
-        ("accent", f"3px solid {rx.color('accent', 9)}"),
-        f"3px solid {rx.color('gray', 8)}",
+        *[(t, f"3px solid {T.tone_color(t, 9)}") for t in _TONES if t != "neutral"],
+        f"3px solid {T.TEXT_FAINT}",
     )
 
 
@@ -86,18 +76,14 @@ def thumbnail(url: rx.Var[str], size: str) -> rx.Component:
             width=size,
             height=size,
             min_width=size,
-            object_fit="cover",
-            border_radius=T.RADIUS_CONTROL,
-            border=T.BORDER,
+            class_name="q-post-media",
         ),
         rx.center(
-            rx.icon("image", size=T.ICON_SM, color=T.TEXT_FAINT),
+            rx.icon("image", size=T.ICON_SM),
             width=size,
             height=size,
             min_width=size,
-            background=T.SURFACE_BG_RAISED,
-            border_radius=T.RADIUS_CONTROL,
-            border=T.BORDER,
+            class_name="q-post-media q-post-media--empty",
         ),
     )
 
@@ -116,14 +102,8 @@ def card_media(thumbnail_url: rx.Var[str], video_url: rx.Var[str], size: str) ->
             aria_hidden="true",
             width=size,
             height=size,
-            style={
-                "min_width": size,
-                "object_fit": "cover",
-                "border_radius": T.RADIUS_CONTROL,
-                "border": T.BORDER,
-                "background": "black",
-                "pointer_events": "none",
-            },
+            min_width=size,
+            class_name="q-post-media q-post-media--video",
         ),
         thumbnail(thumbnail_url, size),
     )
@@ -134,8 +114,8 @@ def readiness_note(note: rx.Var[str]) -> rx.Component:
     return rx.cond(
         note != "",
         rx.hstack(
-            rx.icon("triangle-alert", size=12, color=rx.color("amber", 10), flex_shrink="0"),
-            rx.text(note, size="1", color=rx.color("amber", 11)),
+            rx.icon("triangle-alert", size=12, color=T.tone_color("warn", 10), flex_shrink="0"),
+            rx.text(note, size="1", color=T.tone_color("warn", 11)),
             align="start",
             spacing="1",
         ),
@@ -332,7 +312,7 @@ def history_badges(post: rx.Var) -> rx.Component:
                 rx.icon("calendar-check", size=11),
                 "En calendario",
                 variant="outline",
-                color_scheme="gray",
+                color_scheme=T.tone_scale("neutral"),
                 size="1",
                 radius="full",
                 title="Tiene una publicación programada o en curso",
@@ -356,7 +336,7 @@ def post_card(
     body = rx.hstack(
         card_media(post.thumbnail_url, post.video_url, size),
         rx.vstack(
-            rx.text(post.title, size="2", weight="medium", style=_CLAMP_2),
+            rx.text(post.title, size="2", weight="medium", class_name="q-clamp-2"),
             rx.flex(
                 pill(post.gallery_label, post.gallery_tone),
                 # The gallery prints «Video · Reel 9:16» — medium and format in one tag,

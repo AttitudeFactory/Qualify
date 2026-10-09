@@ -292,7 +292,9 @@ def test_the_ranking_makes_room_while_a_card_is_held() -> None:
     assert "function makeRoom" in script and "q-shifting" in script
     assert "function clearWhenReordered" in script
     assert "FLIP_MS" not in script  # no slide AFTER the round trip any more
-    css = (Path(__file__).parent.parent / "assets" / "qualify.css").read_text(encoding="utf-8")
+    # the ranking rules live in the Brand Kit sheet since the Liquid Glass split (D10)
+    sheet = Path(__file__).parent.parent / "assets" / "qualify-brand.css"
+    css = sheet.read_text(encoding="utf-8")
     assert ".q-rank-card.q-shifting" in css
 
 

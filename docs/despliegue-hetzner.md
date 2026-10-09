@@ -178,7 +178,7 @@ Montaje (una vez):
    ```bash
    ssh deploy@<IP> 'install -D -m 755 /opt/qualify/current/deploy/server-deploy.sh /opt/qualify/bin/server-deploy.sh'
    ```
-   Vive fuera de `releases/` a propósito: un deploy no puede reemplazar el comando que la llave tiene permitido. Si el script cambia en el repo, se reinstala con el mismo comando.
+   Vive fuera de `releases/` a propósito: un deploy no puede reemplazar el comando que la llave tiene permitido. **Si el script cambia en el repo, hay que reinstalarlo con el mismo comando** (el CD toma el compose y los scripts de cada release del bundle, pero ejecuta siempre esta copia fija). Detalle que el script ya contempla (2026-10-09): un `just deploy` desde la Mac entra como root y deja su release en `releases/` propiedad de root; la poda de releases viejas del CD, que corre como `deploy`, la hace entonces a través de un shell root de la imagen `qualify-web`, y va después del health check para que una limpieza nunca ponga en rojo un deploy que ya sirve.
 3. **Restringir la llave** en `~deploy/.ssh/authorized_keys` del servidor, en **una** línea:
    ```
    command="/opt/qualify/bin/server-deploy.sh",restrict ssh-ed25519 AAAA…(contenido de qualify_ci_deploy.pub)… qualify-ci-deploy

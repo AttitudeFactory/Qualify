@@ -136,8 +136,11 @@ def tone_color(tone: str, step: int = 9) -> rx.Var:
 
 # ---------------------------------------------------------------------------------------
 # Navigation zones. The sidebar groups modules by what the operator is doing, and the
-# tint is a *surface*, never a state: it stays at step 2 so it can never be mistaken
-# for a status colour (docs/design-system.md §4.2).
+# tint is a *surface*, never a state: it stays at the faint end of the scale so it can
+# never be mistaken for a status colour (docs/design-system.md §4.2). Since the menu is
+# liquid glass (assets/qualify.css, "Liquid glass menu") the tint is an alpha wash UNDER
+# the glass material rather than an opaque fill — an opaque step would hide the ground
+# the glass is meant to refract.
 # ---------------------------------------------------------------------------------------
 
 ZONE_SCALE: dict[str, str] = {
@@ -148,12 +151,13 @@ ZONE_SCALE: dict[str, str] = {
 
 
 def zone_tint(zone: str) -> rx.Var:
-    """Island fill for a zone (step 2 — a surface, not a signal)."""
-    return rx.color(ZONE_SCALE.get(zone, "gray"), 2)
+    """Island wash for a zone (alpha step 3 — a surface, not a signal)."""
+    return rx.color(ZONE_SCALE.get(zone, "gray"), 3, alpha=True)
 
 
-def zone_line(zone: str) -> str:
-    return f"1px solid {rx.color(ZONE_SCALE.get(zone, 'gray'), 5)}"
+def zone_line(zone: str) -> rx.Var:
+    """The zone's hairline colour (alpha step 6), drawn by the island's own border."""
+    return rx.color(ZONE_SCALE.get(zone, "gray"), 6, alpha=True)
 
 
 def zone_ink(zone: str) -> rx.Var:
