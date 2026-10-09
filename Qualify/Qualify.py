@@ -108,6 +108,15 @@ app = rx.App(
     # The Brand Kit deck's pointer drag (`assets/deck-drag.js`) and the influence
     # ranking's (`assets/rank-drag.js`): plain DOM, delegated at the document, so they
     # are loaded once here rather than per page.
+    #
+    # `rx.script` wraps the tag in react-helmet. On Reflex < 0.9.9 Helmet flushed the
+    # head in a requestAnimationFrame that could be lost around hydration, so these
+    # scripts (and every inline `rx.script` in a component) sometimes never reached
+    # `document.head` — measured on 2026-10-01 and 2026-10-08 with a venv at 0.9.7.
+    # Reflex 0.9.9 passes `defer=False` to Helmet (the upstream fix); `uv.lock` pins
+    # 0.9.12 and the production image (built `--frozen`) was verified on 2026-10-08
+    # to inject all of them. If they are missing in dev, sync the venv to the lock
+    # before changing the mechanism.
     head_components=[rx.script(src="/deck-drag.js"), rx.script(src="/rank-drag.js")],
 )
 
