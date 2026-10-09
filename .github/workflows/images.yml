@@ -1,0 +1,92 @@
+# Production-image check (was ci.yml `docker-deploy`): build deploy/Dockerfile's `web` and
+# `app` targets and boot-test them, so a broken Dockerfile or a page that breaks the static
+# export is caught on the PR. ~4 billed minutes per run, so it starts ONLY when a PR touches
+# an input of those images (`paths:` below) — no runner boots otherwise.
+#
+# Not on push to main: deploy.yml builds and pushes the real (arm64) images from main, so a
+# second amd64 build of the same commit only spent minutes. `just merge` requires this
+# check only when it reported (a PR that does not touch the images has none).
+name: images
+
+on:
+  pull_request:
+    branches: ["main"]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/images.yml'
+      - 'deploy/**'
+      - '.dockerignore'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'rxconfig.py'
+      - 'reflex.lock/**'
+      - 'assets/**'
+      - 'Qualify/**'
+      - 'packages/*/pyproject.toml'
+  workflow_dispatch:
+
+concurrency:
+  group: images-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Build the production images of deploy/Dockerfile (`web` = Caddy + `reflex export`,
+  # `app` = the Python runtime) and boot-test them, so a broken Dockerfile or a page that
+  # breaks the static export is caught before merge. Never pushed; layers cached in GHA.
+  docker-deploy:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build web (Caddy + static frontend)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: web
+          push: false
+          load: true
+          tags: qualify-web:ci
+          cache-from: type=gha,scope=deploy
+      - name: Build app (Python runtime)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: app
+          push: false
+          load: true
+          tags: qualify-app:ci
+          cache-from: type=gha,scope=deploy
+          # One cache write per run, from the build that walks every stage `web` also uses
+          # (deps, frontend-build); the Caddy stage itself is two COPYs.
+          cache-to: type=gha,scope=deploy,mode=max
+      - name: Smoke — the Reflex backend boots and answers /ping
+        run: |
+          docker run -d --name reflex -e QUALIFY_CALENDAR_WORKER=off \
+            -e REFLEX_API_URL=http://localhost:8000 -e GRANIAN_WORKERS=1 \
+            qualify-app:ci reflex run --env prod --backend-only --backend-port 8000
+          for _ in $(seq 1 60); do
+            if docker exec reflex python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ping', timeout=2)" 2>/dev/null; then
+              echo "reflex backend: /ping 200"; exit 0
+            fi
+            sleep 2
+          done
+          docker logs reflex; exit 1
+      - name: Smoke — Caddy serves the exported frontend
+        run: |
+          docker run -d --name web -p 18080:80 -e QUALIFY_DOMAIN=http://localhost \
+            -e QUALIFY_ACME_EMAIL=ci@example.com qualify-web:ci
+          for path in / /login /drafts/abc; do
+            code=""
+            for _ in $(seq 1 15); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: localhost' "http://127.0.0.1:18080$path" || true)
+              [ "$code" = 200 ] && break; sleep 1
+            done
+            echo "$path -> $code"; [ "$code" = 200 ] || { docker logs web; exit 1; }
+          done

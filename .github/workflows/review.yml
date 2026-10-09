@@ -1,9 +1,11 @@
-# Automatic code review for pull requests — three independent jobs:
+# Automatic code review for pull requests — two independent jobs:
 #
-#   ruff            ruff findings annotated on the PR diff via reviewdog. Uses only
-#                   GITHUB_TOKEN; no extra secret. Never fails the PR (ci.yml does).
-#   claude-review   automatic review by Claude on every non-draft PR to main.
+#   claude-review   automatic review by Claude when a non-draft PR to main is opened (or
+#                   reopened / marked ready). NOT on every push: ask again with `@claude`.
 #   claude-mention  on-demand `@claude ...` in issue / PR comments.
+#
+# ruff findings are annotated on the diff by ci.yml's `ruff check --output-format=github`
+# (the reviewdog job that used to live here was a second runner for the same check).
 #
 # SECRETS (one of the two is enough; without either, the Claude jobs end green with
 # a notice — nothing in CI breaks):
@@ -22,7 +24,7 @@ name: review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review]
     branches: [main]
   issue_comment:
     types: [created]
@@ -30,54 +32,6 @@ on:
     types: [created]
 
 jobs:
-  ruff:
-    name: ruff annotations (reviewdog)
-    if: >-
-      github.event_name == 'pull_request'
-      && github.event.pull_request.draft == false
-      && github.actor != 'dependabot[bot]'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      pull-requests: write
-    concurrency:
-      group: review-ruff-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
-    steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
-        with:
-          python-version: "3.12.13"
-      # Only the `dev` group (ruff, pytest, pre-commit) — the lockfile's exact ruff
-      # version, without pulling the backend/CRM trees.
-      - run: uv sync --only-group dev
-      - uses: reviewdog/action-setup@v1
-        with:
-          reviewdog_version: latest
-      # ruff ships a native rdjson (Reviewdog Diagnostic Format) writer; `--exit-zero`
-      # because findings are reported by reviewdog, not by this step's exit code.
-      - name: ruff check → rdjson
-        run: uv run --no-sync ruff check . --output-format=rdjson --exit-zero > ruff.rdjson
-      - name: Annotate ruff findings on the diff
-        env:
-          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >-
-          reviewdog -f=rdjson -name=ruff
-          -reporter=github-pr-review -filter-mode=added
-          -level=warning -fail-level=none
-          < ruff.rdjson
-      # `ruff format --diff` is a unified diff → reviewdog turns it into one-click
-      # suggestions on the changed lines. Exit code 1 means "would reformat"; ignore it.
-      - name: ruff format → suggestions
-        env:
-          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          uv run --no-sync ruff format --diff . > ruff-format.diff 2>/dev/null || true
-          reviewdog -f=diff -f.diff.strip=0 -name="ruff format" \
-            -reporter=github-pr-review -filter-mode=added \
-            -level=info -fail-level=none < ruff-format.diff
-
   claude-review:
     name: Claude auto-review
     if: >-

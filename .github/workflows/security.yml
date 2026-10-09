@@ -4,16 +4,31 @@
 #
 # Everything here is free and open source, needs no account/token, and uploads no SARIF
 # (code-scanning upload needs GitHub Advanced Security, unavailable on a private Free repo).
-# Runs on PRs to main, weekly, and by hand. Reproduce the dependency half locally with
+# Runs daily on main, by hand, and on the PRs that change what these scanners look at:
+# dependencies, workflows, deploy/infra. Plain code PRs skip it — Actions minutes (see
+# ci.yml); their secrets are still scanned per PR by the gitleaks step in ci.yml, and the
+# whole tree is re-scanned here every day. Reproduce the dependency half locally with
 # `just audit`.
 name: security
 
 on:
   pull_request:
     branches: ["main"]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/workflows/**'
+      - 'deploy/**'
+      - 'infra/**'
+      - '.gitleaks.toml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'packages/*/pyproject.toml'
+      - 'packages/render/package.json'
+      - 'packages/render/package-lock.json'
+      - '**/Dockerfile'
   schedule:
-    # Mondays 06:17 UTC (01:17 America/Bogota) — off the hour to dodge the GitHub rush.
-    - cron: "17 6 * * 1"
+    # Daily 06:17 UTC (01:17 America/Bogota) — off the hour to dodge the GitHub rush.
+    - cron: "17 6 * * *"
   workflow_dispatch:
 
 concurrency:

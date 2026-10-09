@@ -5,8 +5,8 @@
 # on pull requests. Configuration lives in sonar-project.properties at the repo root;
 # the server itself is infra/sonarqube/.
 #
-# SECRETS (both required; when either is missing the analysis is skipped and the
-# workflow still ends green with a notice):
+# SECRETS (both required) + the repo VARIABLE SONAR_ENABLED=true. Without the variable the
+# job is skipped before any runner starts (zero minutes):
 #   SONAR_HOST_URL  e.g. https://sonar.attitudefactory.co  (behind TLS — never plain
 #                   http on the internet; the token travels in every request)
 #   SONAR_TOKEN     a "Project analysis token" for project key `qualify`, generated in
@@ -29,34 +29,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  preflight:
-    name: secrets present?
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    outputs:
-      configured: ${{ steps.check.outputs.configured }}
-    steps:
-      - id: check
-        env:
-          # `secrets` is not usable in `if:`; evaluate presence here and export it.
-          HAS_TOKEN: ${{ secrets.SONAR_TOKEN != '' }}
-          HAS_HOST: ${{ secrets.SONAR_HOST_URL != '' }}
-        run: |
-          if [ "$HAS_TOKEN" = "true" ] && [ "$HAS_HOST" = "true" ]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            msg="SonarQube analysis skipped: SONAR_TOKEN and/or SONAR_HOST_URL not set. See infra/sonarqube/README.md"
-            echo "::notice::$msg"
-            echo "> $msg" >> "$GITHUB_STEP_SUMMARY"
-          fi
-
   analyze:
     name: scan main
-    needs: preflight
+    # Opt-in with the repo variable SONAR_ENABLED=true, set together with the SONAR_TOKEN and
+    # SONAR_HOST_URL secrets. A variable can gate the job itself; a secret cannot, and the
+    # old secret-probing `preflight` job cost a billed minute on every push to main.
     # Second guard: Community Build has a single analyzed branch, so a dispatch from
     # another ref would overwrite main's analysis with that branch's code.
-    if: needs.preflight.outputs.configured == 'true' && github.ref == 'refs/heads/main'
+    if: vars.SONAR_ENABLED == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
