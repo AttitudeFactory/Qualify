@@ -40,6 +40,17 @@ KEEP_RELEASES=5
 
 die() { echo "server-deploy: $*" >&2; exit 1; }
 
+# A root shell over the releases dir, from the web image (Caddy on Alpine: busybox `sh`,
+# `rm`) that every deploy pulls anyway. Needed to prune releases that `just deploy` from
+# a Mac created: that path logs in as root (the `qualify-prod` alias) and `git archive`
+# lands owned by root, which this user cannot remove. First seen 2026-10-09 (deploy
+# 3890922): `rm: Permission denied` × every file of two such releases, exit 123, the run
+# marked failed with the app already live. No sudo on the host, no extra image.
+as_root() {
+  docker run --rm --entrypoint /bin/sh -v "$ROOT/releases:/releases" \
+    "${IMAGE_PREFIX}qualify-web:$sha" -c "$1"
+}
+
 # Under a forced command the requested command arrives in SSH_ORIGINAL_COMMAND; run by hand,
 # it arrives as arguments.
 read -r -a request <<<"${SSH_ORIGINAL_COMMAND:-$*}"
@@ -104,10 +115,22 @@ dc up -d --no-build --remove-orphans
 ln -sfn "$release" "$ROOT/current"
 echo "==> $ROOT/current -> $sha"
 
+# The verdict of the deploy is the health of what is now serving — so it comes BEFORE
+# the housekeeping below, which must never turn a live, healthy release into a red run.
+"$release/deploy/healthcheck.sh" "$ENV_FILE"
+
 # Prune by mtime, keeping the newest KEEP_RELEASES — and never the live one: a rollback
 # reuses an old release dir, so its mtime is refreshed first and it is skipped explicitly.
+# Through `as_root`: the releases a Mac-side `just deploy` made are owned by root.
+# Best effort — a release that will not go is reported, not fatal.
+echo "==> Pruning old releases (keeping $KEEP_RELEASES)"
 touch "$release"
-(cd "$ROOT/releases" && ls -1t | { grep -vxF "$sha" || true; } | tail -n +"$KEEP_RELEASES" | xargs -r rm -rf)
+(cd "$ROOT/releases" && ls -1t | { grep -vxF "$sha" || true; } | tail -n +"$KEEP_RELEASES") \
+  | while read -r old; do
+    [[ -n $old && $old != .* ]] || continue
+    as_root "rm -rf /releases/$old" && echo "    pruned $old" \
+      || echo "server-deploy: WARN could not prune release $old" >&2
+  done
 # Tagged images are not "dangling", so `image prune` alone would keep every sha ever
 # deployed (the app image's /app layer is ~0.5 GB per commit). Drop the tags of releases
 # pruned above; rolling back to one of them pulls it from GHCR again.
@@ -117,6 +140,4 @@ for image in qualify-app qualify-web qualify-deploy; do
     docker image rm "$IMAGE_PREFIX$image:$tag" >/dev/null || true
   done
 done
-docker image prune -f >/dev/null
-
-"$release/deploy/healthcheck.sh" "$ENV_FILE"
+docker image prune -f >/dev/null || true
