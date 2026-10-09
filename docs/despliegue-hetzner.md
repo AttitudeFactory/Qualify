@@ -197,7 +197,8 @@ Montaje (una vez):
    | `QUALIFY_DEPLOY_SSH_KNOWN_HOSTS` | salida de `ssh-keyscan -t ed25519 <IP>`, después de comparar su huella con `ssh deploy@<IP> ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` |
 
 6. **Primer deploy manual:** *Actions → deploy → Run workflow* (ref `main`). Debe terminar con los tres chequeos `ok` en el servidor y el smoke externo en verde.
-7. **Opcional, deploy automático:** variable de repositorio `QUALIFY_AUTO_DEPLOY=true`. Con ella, cada run de `ci` en verde sobre `main` (después de un merge) despliega solo.
+7. **Aviso en `#devops` (Zoho Cliq):** el job `notify` publica en `#devops` el resultado de cada deploy intentado (✅/❌, en qué etapa falló, commit y link a la corrida). Para activarlo, en Cliq: *perfil → Bots & Tools → Webhook Tokens → Generate New Token*. En GitHub, secreto `CLIQ_DEVOPS_WEBHOOK_URL` = `https://cliq.zoho.eu/api/v2/channelsbyname/devops/message?zapikey=<token>`. Sin el secreto el job sólo deja un aviso, y un fallo de Cliq nunca falla el deploy.
+8. **Opcional, deploy automático:** variable de repositorio `QUALIFY_AUTO_DEPLOY=true`. Con ella, cada run de `ci` en verde sobre `main` (después de un merge) despliega solo.
 
 Operación:
 
