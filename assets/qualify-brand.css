@@ -105,7 +105,13 @@
    user needs SOME way to see which panel has focus), not decoration. Which panel
    is under the card is instead said by the arrow + label POPPING — see below. */
 .q-deck-zone {
+  appearance: none;
+  border: 0;
+  border-radius: var(--q-radius-card);
   background: transparent;
+  color: var(--gray-10);
+  font: inherit;
+  cursor: pointer;
   transition: color var(--q-dur) var(--q-ease);
 }
 /* only on a real pointer: on a phone `:hover` sticks after a tap */
@@ -244,6 +250,11 @@ body[data-deck-dragging] .q-deck-zone {
    Only `transform`, `scale`, `opacity`, `outline-color` — nothing that reflows. */
 .q-rank-card {
   position: relative;
+  padding: 0.75rem;
+  border: 1px solid var(--q-card-edge);
+  border-radius: var(--q-radius-card);
+  background: var(--q-card-fill);
+  box-shadow: inset 0 1px 0 var(--q-card-hi), var(--q-elev-island);
   cursor: pointer;
   will-change: transform, scale;
   --q-rank-scale-dur: 180ms;
@@ -258,7 +269,11 @@ body[data-deck-dragging] .q-deck-zone {
   user-select: none;
 }
 @media (hover: hover) {
-  .q-rank-card:hover { outline-color: var(--gray-7); }
+  .q-rank-card:hover { outline-color: var(--q-card-edge-hover); }
+}
+/* The accounts added by hand (pinned first): an accent wash under the same glass. */
+.q-rank-card--pinned {
+  background: linear-gradient(var(--accent-a2), var(--accent-a2)), var(--q-card-fill);
 }
 .q-rank-card.q-armed  { scale: 1.05; }
 .q-rank-card.q-moving { scale: 1.1; }
@@ -300,6 +315,179 @@ body[data-rank-dragging] { cursor: grabbing; }
   .q-rank-card[data-over] { scale: 1; }
 }
 
+
+
+/* ── Brand Kit surfaces (lote E1, Liquid Glass) ───────────────────────────────
+   The recipes `creative_wizard_pages.py`, `brand_kit_editor.py` and `voice_lab.py`
+   used to write inline, on the system's material tokens (plan D5): a block is the
+   card material (`--q-card-*`, translucent relief, no blur), a control, chip or
+   swatch the control material (`--q-control-*`), a well the field fill. Colours come
+   only from the tokens and the Radix scales; the palette a brand picks stays data
+   (inline `background=` from state) and only its ring lives here. */
+
+/* A choice card (`_choice_card`): a real button that reads as a card. Selected = a
+   2px accent ring (plus the check mark the button itself renders, §8); hovered = a
+   softer ring and the kit's lift. `.q-choice.q-choice--on` outranks `:hover` so the
+   selection never dims under the pointer. */
+.q-choice {
+  appearance: none;
+  border: 0;
+  width: 100%;
+  padding: 1rem 1.25rem;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-radius: var(--q-radius-card);
+  background: var(--q-card-fill);
+  box-shadow: inset 0 0 0 1px var(--q-card-edge), inset 0 1px 0 var(--q-card-hi), var(--q-elev-island);
+  transition:
+    box-shadow var(--q-dur) var(--q-ease),
+    transform var(--q-dur) var(--q-spring);
+}
+@media (hover: hover) {
+  .q-choice:hover {
+    box-shadow: inset 0 0 0 2px var(--accent-7), inset 0 1px 0 var(--q-card-hi), var(--q-elev-lift);
+    transform: translateY(-2px);
+  }
+}
+.q-choice.q-choice--on {
+  box-shadow: inset 0 0 0 2px var(--accent-9), inset 0 1px 0 var(--q-card-hi), 0 0 0 4px var(--accent-a3), var(--q-elev-island);
+}
+.q-choice:active { transform: translateY(0) scale(0.99); }
+/* The check in the selected card's corner: solid accent, its contrast colour on top. */
+.q-choice-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, var(--accent-9), var(--accent-8));
+  color: var(--accent-contrast);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32), 0 4px 10px var(--accent-a5);
+}
+
+/* A dropzone (`rx.upload` reset to `border="none"`, this box inside it): a dashed
+   edge on the field fill, the accent when the pointer is over it. */
+.q-dropzone {
+  border: 1px dashed var(--q-control-edge-hover);
+  border-radius: var(--q-radius-control);
+  background: var(--q-field-fill);
+  transition:
+    border-color var(--q-dur-fast) var(--q-ease),
+    background var(--q-dur-fast) var(--q-ease);
+}
+@media (hover: hover) {
+  .q-dropzone:hover {
+    border-color: var(--accent-a8);
+    background: var(--q-field-fill-focus);
+  }
+}
+
+/* A tile's preview well (an uploaded element, a type face): a sunken field, not a
+   card inside a card. */
+.q-tile-preview {
+  border-radius: var(--q-radius-control);
+  background: var(--q-field-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge);
+}
+
+/* The accent glyph that anchors a step, a choice or an editor section: a tinted
+   circle with the control relief; the icon takes its colour from here. */
+.q-brand-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  color: var(--accent-10);
+  background: var(--accent-a3);
+  box-shadow: inset 0 0 0 1px var(--accent-a4), inset 0 1px 0 var(--q-control-hi);
+}
+.q-brand-glyph--square { border-radius: var(--q-radius-control); }
+
+/* An account's round picture with its placeholder icon under it (`_avatar`,
+   `_profile_avatar`, the from-scratch kit's logo slot): the control material. */
+.q-brand-avatar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: 9999px;
+  color: var(--gray-8);
+  background: var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge), inset 0 1px 0 var(--q-control-hi);
+}
+
+/* A palette swatch: the brand's own colour is DATA (`background=` from state); this is
+   only the ring that keeps a white or a near-panel colour visible in both themes.
+   `--edit` is the swatch that opens its own picker (`_swatch`): it grows under the
+   pointer — a size change, so `T.SPRING` (P8). `.q-swatch-remove` is its ✕. */
+.q-brand-swatch {
+  flex-shrink: 0;
+  border-radius: 9999px;
+  box-shadow: inset 0 0 0 1px var(--q-control-edge-hover);
+}
+.q-brand-swatch--edit {
+  cursor: pointer;
+  transition: transform var(--q-dur) var(--q-spring);
+}
+/* the pencil over the swatch's dark scrim (`.q-swatch-edit`, qualify.css): white in
+   both themes, because the scrim under it is the same in both */
+.q-brand-swatch .q-swatch-edit { color: white; }
+@media (hover: hover) {
+  .q-brand-swatch--edit:hover { transform: scale(1.15); }
+}
+.q-swatch-remove {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 9999px;
+  color: var(--tomato-contrast, white);
+  background: var(--tomato-9);
+  box-shadow: 0 0 0 2px var(--color-panel-solid);
+}
+
+/* The colour wheel (`_colour_wheel`): the hue circle is the affordance, the native
+   picker sits transparent on top. The spectrum is drawn here, in hue, not in the page. */
+.q-colour-wheel {
+  position: relative;
+  width: 11rem;
+  height: 11rem;
+  border-radius: 9999px;
+  background: conic-gradient(
+    hsl(0 100% 50%),
+    hsl(60 100% 50%),
+    hsl(120 100% 50%),
+    hsl(180 100% 50%),
+    hsl(240 100% 50%),
+    hsl(300 100% 50%),
+    hsl(360 100% 50%)
+  );
+  box-shadow: inset 0 0 0 1px var(--q-control-edge-hover), var(--q-elev-island);
+}
+
+/* One metric of the read account (`_metric_tile`): a control-material tile. */
+.q-metric-tile {
+  padding: 0.75rem 0.85rem;
+  border-radius: var(--q-radius-control);
+  background: var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge), inset 0 1px 0 var(--q-control-hi);
+}
+
+/* The Brand Kit editor: the section open for editing (and Tu voz y tono while it is
+   the first thing asked) wears an accent edge over the card material. */
+.q-card.q-kit-section--open {
+  border-color: var(--accent-8);
+  box-shadow: inset 0 1px 0 var(--q-card-hi), 0 0 0 3px var(--accent-a3), var(--q-elev-island);
+}
 
 /* ── Draft review («Revisión del borrador», QUA-118 v2 polish) ────────────────── */
 .q-rv-stage {

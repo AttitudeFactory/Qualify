@@ -72,13 +72,10 @@ _PENDING: set[str] = {
     "planner_drawer.py",
     # lote D — contenido / inbox: already clean of these rules (it is the batch's job to
     # keep it so while moving its chips onto the material)
-    # lote E — Brand Kit y creativo
-    "brand_documents.py",
-    "brand_kit_editor.py",
+    # lote E — Brand Kit y creativo (E1 — brand_documents, brand_kit_editor,
+    # creative_wizard_pages, voice_lab — migrated 2026-10-08; E2 still pending)
     "content_generator.py",
     "creative_pages.py",
-    "creative_wizard_pages.py",
-    "voice_lab.py",
 }
 
 
