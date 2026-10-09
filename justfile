@@ -30,6 +30,12 @@ migrate-down:
 seed:
     uv run python -m qualify_api.seed
 
+# Invite someone to register their own business: stores a single-use, 7-day invite and
+# emails the link via Resend (QUALIFY_RESEND_API_KEY / QUALIFY_MAIL_FROM). The link is
+# printed too, so it can be shared by hand. Example: just invite cliente@negocio.com
+invite email:
+    uv run python -m qualify_api.auth.provision invite --email "{{email}}"
+
 # QUA-66: register a new business (assigns a tenant_id automatically) — same service
 # the /signup page uses. Prompts for the password. Example:
 #   just register-business "Polet Bubble Tea" hlrd1993+polet@gmail.com VE America/Caracas USD

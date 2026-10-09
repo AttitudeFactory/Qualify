@@ -79,7 +79,8 @@ NAV_BUSINESS: list[Item] = [
     # The product catalog (plan-mvp-plantillas-remotion.md §2.1 #1): the real photos
     # the templates compose. Next to the Brand Kit — both are what the brand IS.
     ("Catálogo", "package", "/catalog", True),
-    ("Configuración", "settings", "#", False),
+    # The account itself (2026-10-06): who is in, and changing the password.
+    ("Configuración", "settings", "/settings", True),
 ]
 
 # Flat view of the whole menu, in visual order. Kept because it is the cheapest thing to

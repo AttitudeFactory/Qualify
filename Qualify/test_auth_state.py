@@ -396,3 +396,270 @@ def test_login_form_uses_literal_email() -> None:
     source = pathlib.Path(auth_state_module.__file__).read_text(encoding="utf-8")
     assert ".lower()" not in source
     assert 'replace("+"' not in source
+
+
+# --------------------------------------------------------------------------------------
+# Login robustness (2026-10-06)
+# --------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fresh_throttles(monkeypatch):
+    from qualify_api.auth import AttemptThrottle
+
+    login = AttemptThrottle(max_attempts=2, window_seconds=600)
+    reset = AttemptThrottle(max_attempts=1, window_seconds=60)
+    monkeypatch.setattr(auth_state_module, "login_throttle", login)
+    monkeypatch.setattr(auth_state_module, "reset_request_throttle", reset)
+    return login, reset
+
+
+async def test_repeated_wrong_passwords_lock_the_email_with_the_real_wait(
+    monkeypatch, fresh_throttles
+) -> None:
+    calls: list[str] = []
+    provider = FakeAuthProvider()
+    _use_fake_provider(monkeypatch, provider)
+    original = provider.sign_in
+    monkeypatch.setattr(provider, "sign_in", lambda e, p: calls.append(e) or original(e, p))
+    state = _state()
+    for _ in range(3):
+        async for _ in AuthState.handle_login.fn(state, {"email": "a@b.co", "password": "x"}):
+            raise AssertionError("a failed login must not navigate")
+    assert len(calls) == 2  # the third attempt never reaches the provider
+    assert "min" in state.auth_error
+
+
+async def test_login_trims_only_surrounding_whitespace(monkeypatch, fresh_throttles) -> None:
+    seen: list[str] = []
+
+    def fake_login(email: str, password: str):
+        seen.append(email)
+        from qualify_api.auth import InvalidCredentials
+
+        raise InvalidCredentials()
+
+    monkeypatch.setattr(auth_state_module, "_login_blocking", fake_login)
+    state = _state()
+    async for _ in AuthState.handle_login.fn(
+        state, {"email": "  Hlrd1993+Polet@gmail.com ", "password": "x" * 8}
+    ):
+        pass
+    assert seen == ["Hlrd1993+Polet@gmail.com"]  # case and +alias untouched
+
+
+async def test_a_rate_limited_provider_is_not_reported_as_bad_credentials(
+    monkeypatch, fresh_throttles
+) -> None:
+    from qualify_api.auth import RateLimited
+
+    def fake_login(email: str, password: str):
+        raise RateLimited()
+
+    monkeypatch.setattr(auth_state_module, "_login_blocking", fake_login)
+    state = _state()
+    async for _ in AuthState.handle_login.fn(state, {"email": "a@b.co", "password": "x" * 8}):
+        pass
+    assert state.auth_error == auth_state_module._RATE_LIMITED
+
+
+def test_login_copy_is_not_the_old_rule_text() -> None:
+    source = (_QUALIFY_DIR / "auth_pages.py").read_text(encoding="utf-8")
+    assert "Un login = un negocio" not in source
+    assert 'href="/forgot"' in source
+    assert '"current-password"' in source and '"new-password"' in source
+
+
+# --------------------------------------------------------------------------------------
+# Forgotten password (2026-10-06)
+# --------------------------------------------------------------------------------------
+
+
+async def test_reset_request_answers_the_same_for_any_email(monkeypatch, fresh_throttles) -> None:
+    provider = FakeAuthProvider()  # nobody registered
+    _use_fake_provider(monkeypatch, provider)
+    state = _state()
+    await AuthState.request_reset.fn(state, {"email": " nobody@b.co "})
+    assert state.reset_sent_to == "nobody@b.co"
+    assert state.auth_error == ""
+
+
+async def test_reset_request_refuses_a_malformed_email(fresh_throttles) -> None:
+    state = _state()
+    await AuthState.request_reset.fn(state, {"email": "not-an-email"})
+    assert state.reset_sent_to == "" and state.auth_error != ""
+
+
+async def test_a_second_reset_request_within_a_minute_sends_nothing(
+    monkeypatch, fresh_throttles
+) -> None:
+    provider = FakeAuthProvider()
+    provider.seed_user("a@b.co", "password-123", tenant_id=None)
+    _use_fake_provider(monkeypatch, provider)
+    state = _state()
+    for _ in range(2):
+        await AuthState.request_reset.fn(state, {"email": "a@b.co"})
+    assert len(provider.sent_resets) == 1
+    assert state.reset_sent_to == "a@b.co"  # same screen, no hint it was throttled
+
+
+def test_recovery_link_fragment_is_read_and_kept_backend_only() -> None:
+    state = _state()
+    AuthState.receive_recovery_link.fn(state, "#access_token=rec-tok&type=recovery&x=1")
+    assert state.reset_link_state == "ready"
+    assert state._recovery_token == "rec-tok"
+    assert "_recovery_token" in AuthState.__annotations__
+    assert "recovery_token" not in AuthState.__annotations__
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    ["#error=access_denied&error_code=otp_expired", "", "#access_token=t&type=signup"],
+)
+def test_a_dead_or_missing_recovery_link_is_invalid(fragment: str) -> None:
+    state = _state()
+    AuthState.receive_recovery_link.fn(state, fragment)
+    assert state.reset_link_state == "invalid"
+    assert state.auth_error != ""
+
+
+async def test_reset_without_a_link_token_does_not_call_the_provider(monkeypatch) -> None:
+    monkeypatch.setattr(
+        auth_state_module,
+        "_complete_reset_blocking",
+        lambda *a: (_ for _ in ()).throw(AssertionError("must not be called")),
+    )
+    state = _state()
+    async for _ in AuthState.submit_new_password.fn(
+        state, {"password": "new-password", "confirm": "new-password"}
+    ):
+        raise AssertionError("no navigation without a token")
+    assert state.reset_link_state == "invalid"
+
+
+async def test_an_expired_link_on_submit_flips_to_invalid(monkeypatch) -> None:
+    from qualify_api.auth import SessionExpired
+
+    def expired(*args):
+        raise SessionExpired()
+
+    monkeypatch.setattr(auth_state_module, "_complete_reset_blocking", expired)
+    state = _state()
+    state._recovery_token = "rec-tok"
+    async for _ in AuthState.submit_new_password.fn(
+        state, {"password": "new-password", "confirm": "new-password"}
+    ):
+        raise AssertionError("no navigation on an expired link")
+    assert state.reset_link_state == "invalid" and state._recovery_token == ""
+
+
+# --------------------------------------------------------------------------------------
+# Change password (/settings)
+# --------------------------------------------------------------------------------------
+
+
+async def test_wrong_current_password_counts_against_the_login_throttle(
+    monkeypatch, fresh_throttles
+) -> None:
+    login_throttle, _ = fresh_throttles
+    provider = FakeAuthProvider()
+    provider.seed_user("a@b.co", "password-123", tenant_id=None)
+    _use_fake_provider(monkeypatch, provider)
+    state = _state()
+    state.user_email = "a@b.co"
+    form = {"current_password": "wrong-one", "password": "new-password", "confirm": "new-password"}
+    async for _ in AuthState.submit_password_change.fn(state, form):
+        pass
+    assert state.auth_error == "La contraseña actual no es correcta."
+    assert state.password_saved is False
+    login_throttle.note("a@b.co")  # one more failure reaches the limit of 2
+    assert login_throttle.retry_after("a@b.co") > 0
+
+
+async def test_password_change_success_swaps_the_session_token(
+    monkeypatch, fresh_throttles
+) -> None:
+    provider = FakeAuthProvider()
+    provider.seed_user("a@b.co", "password-123", tenant_id=None)
+    _use_fake_provider(monkeypatch, provider)
+    state = _state()
+    state.user_email = "a@b.co"
+    state._access_token = "old-token"
+    form = {
+        "current_password": "password-123",
+        "password": "new-password",
+        "confirm": "new-password",
+    }
+    events = [e async for e in AuthState.submit_password_change.fn(state, form)]
+    assert events  # clears the form + toast
+    assert state.password_saved is True and state.auth_error == ""
+    assert state._access_token != "old-token" and provider.token_is_live(state._access_token)
+
+
+def test_settings_need_a_login_but_not_a_finished_brand_kit() -> None:
+    state = _state()
+    state.guest_tenant_id = _DRAFT
+    assert AuthState.require_session.fn(state) is not None  # a draft is not a login
+    state.session_tenant_id = "a0000000-0000-4000-8000-000000000001"
+    state.brand_kit_complete = False
+    assert AuthState.require_session.fn(state) is None
+
+
+# --------------------------------------------------------------------------------------
+# Signup gate (2026-10-07): shared code + invite links
+# --------------------------------------------------------------------------------------
+
+
+async def test_signup_page_asks_for_the_code_only_when_configured(monkeypatch) -> None:
+    state = _state()
+    monkeypatch.delenv("QUALIFY_SIGNUP_CODE", raising=False)
+    await AuthState.enter_signup.fn(state)
+    assert state.signup_code_required is False
+    monkeypatch.setenv("QUALIFY_SIGNUP_CODE", "polet-2026")
+    await AuthState.enter_signup.fn(state)
+    assert state.signup_code_required is True and state.invite_state == ""
+
+
+async def test_a_wrong_signup_code_is_refused_and_counted(monkeypatch) -> None:
+    from qualify_api.auth import AttemptThrottle
+
+    throttle = AttemptThrottle(max_attempts=2, window_seconds=600)
+    monkeypatch.setattr(auth_state_module, "signup_code_throttle", throttle)
+    monkeypatch.setenv("QUALIFY_SIGNUP_CODE", "polet-2026")
+    monkeypatch.setattr(
+        auth_state_module,
+        "register_business",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("gate must stop it first")),
+    )
+    state = _state()
+    form = {
+        "business_name": "Polet",
+        "email": "a@b.co",
+        "password": "x" * 8,
+        "signup_code": "guess",
+    }
+    for _ in range(3):
+        async for _ in AuthState.handle_signup.fn(state, form):
+            raise AssertionError("a refused signup must not navigate")
+    assert "min" in state.auth_error  # the third try hit the throttle, not the gate
+
+
+async def test_an_invite_for_another_email_is_refused(monkeypatch) -> None:
+    from uuid import uuid4
+
+    from qualify_api.auth import InviteView
+    from qualify_api.auth import invites as invites_module
+
+    view = InviteView(id=uuid4(), email="cliente@negocio.com", expires_at=None)  # type: ignore[arg-type]
+    monkeypatch.setattr(invites_module, "lookup_invite", lambda token: view)
+    state = _state()
+    state._invite_token = "tok"
+    form = {"business_name": "X", "email": "otro@negocio.com", "password": "x" * 8}
+    async for _ in AuthState.handle_signup.fn(state, form):
+        raise AssertionError("a refused signup must not navigate")
+    assert "cliente@negocio.com" in state.auth_error
+
+
+def test_invite_token_is_backend_only() -> None:
+    assert "_invite_token" in AuthState.__annotations__
+    assert "invite_token" not in AuthState.__annotations__

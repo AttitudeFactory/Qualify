@@ -113,6 +113,27 @@ class BrandKitDraft(Base):
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SignupInvite(Base):
+    """A single-use, emailed invitation to register a business (migration 0046). Only
+    the token's SHA-256 is stored; `qualify_api.auth.invites` owns every read/write.
+    Global (no tenant, no RLS) and `qualify_admin`-only."""
+
+    __tablename__ = "signup_invites"
+    __table_args__ = (UniqueConstraint("token_hash", name="uq_signup_invites_token_hash"),)
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    email: Mapped[str] = mapped_column(String, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String, nullable=False)
+    invited_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Brand(Base):
     __tablename__ = "brands"
     __table_args__ = (Index("ix_brands_tenant", "tenant_id"),)

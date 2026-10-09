@@ -30,6 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from qualify_api.auth.drafts import claim_draft, find_open_draft
+from qualify_api.auth.invites import consume_invite
 from qualify_api.auth.provider import (
     AuthProvider,
     AuthSession,
@@ -193,16 +194,22 @@ def register_business(
     timezone: str,
     currency: str,
     display_name: str | None = None,
+    invite_id: UUID | None = None,
 ) -> RegisteredBusiness:
     """Signup: assigns a fresh `tenant_id` automatically and builds both halves — unless
     a Brand Kit was started before login with this email (§ request 2026-10-02): then
-    the signup adopts that draft's tenant, so the account opens with its Brand Kit."""
+    the signup adopts that draft's tenant, so the account opens with its Brand Kit.
+
+    `invite_id` (from `invites.authorize_signup`) is consumed in the same transaction
+    as the local half: the invite is spent only if the business really exists."""
     _validate_signup(business_name, email, password)
     draft_tenant_id = _open_draft_tenant_id(email)
     auth_user_id, tenant_id = _resolve_identity_for_signup(
         provider, email, password, draft_tenant_id or uuid4()
     )
     with admin_session() as session:
+        if invite_id is not None:
+            consume_invite(session, invite_id, email)
         draft = find_open_draft(session, email) if draft_tenant_id is not None else None
         # On the retry path the identity may already be stamped to another tenant: the
         # draft is only adopted by the tenant it was provisioned as.

@@ -1,9 +1,11 @@
-"""Login and signup screens (QUA-66).
+"""Login, signup and password-recovery screens (QUA-66; recovery 2026-10-06).
 
 Deliberately plain forms: native `rx.form` + named, typed inputs (`type=email` /
-`type=password`) so the browser's password manager autofills and offers to save — saved
-credentials per business alias ARE the founder's business switcher (signed ruling §6.1).
-Nothing here may interfere with autocomplete."""
+`type=password`) with explicit `autocomplete` tokens (`username`, `current-password`,
+`new-password`) so the browser's password manager autofills, offers to save, and
+suggests strong passwords — saved credentials per business alias ARE the founder's
+business switcher (signed ruling §6.1). Nothing here may interfere with autocomplete:
+the eye toggle only flips the input's `type`, it never swaps the element."""
 
 from __future__ import annotations
 
@@ -36,12 +38,61 @@ def _error_banner() -> rx.Component:
     return rx.cond(AuthState.auth_error != "", callout(AuthState.auth_error, "error"))
 
 
+def email_field(placeholder: str = "Email", **props) -> rx.Component:
+    return rx.input(
+        placeholder=placeholder,
+        name="email",
+        type="email",
+        # Radix types `auto_complete` as a bool; the token goes through as a raw attr.
+        custom_attrs={"autoComplete": "username", "autoCapitalize": "none", "spellCheck": "false"},
+        required=True,
+        width="100%",
+        **props,
+    )
+
+
+def password_field(
+    placeholder: str = "Contraseña",
+    *,
+    name: str = "password",
+    new: bool = False,
+) -> rx.Component:
+    """A password input with an eye toggle. `new=True` asks the password manager for a
+    suggestion (`new-password`); otherwise it offers the saved one (`current-password`)."""
+    return rx.input(
+        rx.input.slot(
+            rx.icon_button(
+                rx.icon(rx.cond(AuthState.show_password, "eye-off", "eye"), size=T.ICON_SM),
+                type="button",
+                variant="ghost",
+                color_scheme="gray",
+                size="1",
+                on_click=AuthState.toggle_show_password,
+                aria_label=rx.cond(
+                    AuthState.show_password, "Ocultar contraseña", "Mostrar contraseña"
+                ),
+                tab_index=-1,
+            ),
+            side="right",
+        ),
+        placeholder=placeholder,
+        name=name,
+        type=rx.cond(AuthState.show_password, "text", "password"),
+        custom_attrs={"autoComplete": "new-password" if new else "current-password"},
+        required=True,
+        width="100%",
+    )
+
+
+def _footer_link(prompt: str, label: str, href: str) -> rx.Component:
+    return rx.text(prompt, " ", rx.link(label, href=href), size="2", color=T.TEXT_MUTED)
+
+
 def login_index() -> rx.Component:
     return _auth_card(
-        rx.heading("Entrar a tu negocio", size="4"),
+        rx.heading("Inicia sesión", size="4"),
         rx.text(
-            "Un login = un negocio. Para cambiar de negocio, cierra sesión y entra "
-            "con las credenciales de ese negocio.",
+            "Entra con el correo y la contraseña de tu negocio.",
             size="2",
             color=T.TEXT_MUTED,
         ),
@@ -53,20 +104,13 @@ def login_index() -> rx.Component:
         _error_banner(),
         rx.form(
             rx.vstack(
-                rx.input(
-                    placeholder="Email",
-                    name="email",
-                    type="email",
-                    default_value=AuthState.login_email_hint,
-                    required=True,
-                    width="100%",
-                ),
-                rx.input(
-                    placeholder="Contraseña",
-                    name="password",
-                    type="password",
-                    required=True,
-                    width="100%",
+                email_field(default_value=AuthState.login_email_hint, auto_focus=True),
+                password_field(),
+                rx.link(
+                    "¿Olvidaste tu contraseña?",
+                    href="/forgot",
+                    size="2",
+                    align_self="end",
                 ),
                 rx.button(
                     "Entrar",
@@ -92,10 +136,135 @@ def login_index() -> rx.Component:
             href="/brand/start",
             width="100%",
         ),
+        _footer_link("¿Negocio nuevo?", "Regístralo aquí", "/signup"),
+        # §6.1 (1 login = 1 negocio) said once, as a tip, not as a rule to obey.
         rx.text(
-            "¿Negocio nuevo? ",
-            rx.link("Regístralo aquí", href="/signup"),
-            size="2",
+            "¿Llevas varios negocios? Cada uno entra con su propio correo, y tu navegador "
+            "puede recordarlos todos.",
+            size="1",
+            color=T.TEXT_MUTED,
+        ),
+    )
+
+
+def forgot_index() -> rx.Component:
+    """Ask for the email the recovery link goes to. The answer is the same whether or
+    not the email has an account."""
+    return _auth_card(
+        rx.heading("Recupera tu contraseña", size="4"),
+        rx.cond(
+            AuthState.reset_sent_to != "",
+            rx.vstack(
+                callout(
+                    rx.fragment(
+                        "Si ",
+                        rx.text.strong(AuthState.reset_sent_to),
+                        " tiene una cuenta, te llegará un enlace para crear una contraseña "
+                        "nueva. Revisa también spam o promociones.",
+                    ),
+                    "ok",
+                    icon="mail-check",
+                ),
+                rx.text(
+                    "El enlace vence en una hora y sirve una sola vez.",
+                    size="2",
+                    color=T.TEXT_MUTED,
+                ),
+                rx.link(
+                    rx.button("Volver a iniciar sesión", variant="soft", width="100%"),
+                    href="/login",
+                    width="100%",
+                ),
+                spacing="3",
+                width="100%",
+            ),
+            rx.vstack(
+                rx.text(
+                    "Escribe el correo con el que entras y te enviamos un enlace para crear "
+                    "una contraseña nueva.",
+                    size="2",
+                    color=T.TEXT_MUTED,
+                ),
+                _error_banner(),
+                rx.form(
+                    rx.vstack(
+                        email_field("tu@negocio.com", auto_focus=True),
+                        rx.button(
+                            "Enviarme el enlace",
+                            type="submit",
+                            width="100%",
+                            loading=AuthState.is_authenticating,
+                        ),
+                        spacing="3",
+                        width="100%",
+                    ),
+                    on_submit=AuthState.request_reset,
+                    width="100%",
+                ),
+                _footer_link("¿La recordaste?", "Inicia sesión", "/login"),
+                spacing="4",
+                width="100%",
+            ),
+        ),
+    )
+
+
+def reset_index() -> rx.Component:
+    """Where the recovery email's link lands: the new password, twice."""
+    return _auth_card(
+        rx.heading("Crea tu nueva contraseña", size="4"),
+        rx.match(
+            AuthState.reset_link_state,
+            (
+                "ready",
+                rx.vstack(
+                    rx.text(
+                        "Al guardarla cerramos las demás sesiones abiertas de tu cuenta y "
+                        "entras con la nueva.",
+                        size="2",
+                        color=T.TEXT_MUTED,
+                    ),
+                    _error_banner(),
+                    rx.form(
+                        rx.vstack(
+                            password_field("Nueva contraseña (mínimo 8)", new=True),
+                            password_field("Repite la contraseña", name="confirm", new=True),
+                            rx.button(
+                                "Guardar y entrar",
+                                type="submit",
+                                width="100%",
+                                loading=AuthState.is_authenticating,
+                            ),
+                            spacing="3",
+                            width="100%",
+                        ),
+                        on_submit=AuthState.submit_new_password,
+                        width="100%",
+                    ),
+                    spacing="4",
+                    width="100%",
+                ),
+            ),
+            (
+                "invalid",
+                rx.vstack(
+                    _error_banner(),
+                    rx.link(
+                        rx.button("Pedir un enlace nuevo", width="100%"),
+                        href="/forgot",
+                        width="100%",
+                    ),
+                    _footer_link("¿Ya la tienes?", "Inicia sesión", "/login"),
+                    spacing="4",
+                    width="100%",
+                ),
+            ),
+            rx.hstack(
+                rx.spinner(size="2"),
+                rx.text("Revisando el enlace…", size="2", color=T.TEXT_MUTED),
+                spacing="2",
+                align="center",
+            ),
         ),
     )
 
@@ -141,11 +310,7 @@ def brand_start_index() -> rx.Component:
             on_submit=AuthState.start_brand_kit,
             width="100%",
         ),
-        rx.text(
-            "¿Ya tienes cuenta? ",
-            rx.link("Inicia sesión", href="/login"),
-            size="2",
-        ),
+        _footer_link("¿Ya tienes cuenta?", "Inicia sesión", "/login"),
     )
 
 
@@ -171,6 +336,31 @@ def signup_index() -> rx.Component:
                 "info",
             ),
         ),
+        # The signup gate (2026-10-07): an invite link fixes the email; without one, a
+        # deployment with QUALIFY_SIGNUP_CODE asks for the shared code.
+        rx.match(
+            AuthState.invite_state,
+            (
+                "ok",
+                callout(
+                    rx.fragment(
+                        "Te invitaron a crear tu cuenta con ",
+                        rx.text.strong(AuthState.invite_email),
+                        ".",
+                    ),
+                    "ok",
+                    icon="mail-check",
+                ),
+            ),
+            (
+                "invalid",
+                callout(
+                    "Esta invitación venció o ya se usó. Pide una nueva a quien te invitó.",
+                    "warn",
+                ),
+            ),
+            rx.fragment(),
+        ),
         _error_banner(),
         rx.form(
             rx.vstack(
@@ -180,20 +370,29 @@ def signup_index() -> rx.Component:
                     required=True,
                     width="100%",
                 ),
-                rx.input(
-                    placeholder="Email (un alias por negocio)",
-                    name="email",
-                    type="email",
-                    default_value=AuthState.guest_email,
-                    required=True,
-                    width="100%",
+                email_field(
+                    "Email del negocio (uno por negocio)",
+                    default_value=rx.cond(
+                        AuthState.invite_state == "ok",
+                        AuthState.invite_email,
+                        AuthState.guest_email,
+                    ),
+                    read_only=AuthState.invite_state == "ok",
+                    # Remount when the invite resolves: `default_value` only applies on mount,
+                    # and the invite is read in on_load, after the form is already on screen.
+                    key=AuthState.invite_email,
                 ),
-                rx.input(
-                    placeholder="Contraseña (mínimo 8 caracteres)",
-                    name="password",
-                    type="password",
-                    required=True,
-                    width="100%",
+                password_field("Contraseña (mínimo 8 caracteres)", new=True),
+                rx.cond(
+                    AuthState.signup_code_required & (AuthState.invite_state != "ok"),
+                    rx.input(
+                        rx.input.slot(rx.icon("key-round", size=T.ICON_SM)),
+                        placeholder="Código de invitación",
+                        name="signup_code",
+                        custom_attrs={"autoComplete": "off", "autoCapitalize": "none"},
+                        required=True,
+                        width="100%",
+                    ),
                 ),
                 rx.hstack(
                     rx.input(placeholder="País", name="country", default_value="VE", width="100%"),
@@ -221,9 +420,5 @@ def signup_index() -> rx.Component:
             on_submit=AuthState.handle_signup,
             width="100%",
         ),
-        rx.text(
-            "¿Ya registrado? ",
-            rx.link("Inicia sesión", href="/login"),
-            size="2",
-        ),
+        _footer_link("¿Ya tienes cuenta?", "Inicia sesión", "/login"),
     )
