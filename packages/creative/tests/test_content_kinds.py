@@ -19,7 +19,10 @@ from qualify_creative.compose import (
     _printable,
     compose_scene,
     cta_lines,
+    render_carousel_slide,
+    render_closing_slide,
     render_flyer,
+    text_layer,
 )
 from qualify_creative.enums import (
     AdImageMode,
@@ -29,8 +32,18 @@ from qualify_creative.enums import (
     ContentKind,
     GenerationTask,
     ImageRoute,
+    PostCategory,
+    SlideSource,
+    SlideText,
+    default_category,
 )
-from qualify_creative.schemas import ContentBrief, CopyPayload, MediaInputs, ScriptShot
+from qualify_creative.schemas import (
+    CarouselSlide,
+    ContentBrief,
+    CopyPayload,
+    MediaInputs,
+    ScriptShot,
+)
 
 from .test_render_prompt import make_kit, make_voice
 
@@ -375,3 +388,120 @@ def test_an_own_script_is_for_videos_and_is_copied_verbatim_by_the_prompt() -> N
     ).volatile_suffix
     assert "EXACTLY the operator's script below, word for word" in suffix
     assert "Operator's script: «Hola, soy Doña Rosa.»" in suffix
+
+
+# --------------------------------------------------------------------------------------
+# the carousel (§ request 2026-10-09)
+
+
+def _slide(source: str, **fields: object) -> CarouselSlide:
+    return CarouselSlide(source=SlideSource(source), **fields)  # type: ignore[arg-type]
+
+
+def test_a_carousel_is_a_feed_galeria_with_its_slides() -> None:
+    brief = _brief(
+        ContentKind.CAROUSEL,
+        product_keys=("uploads/t/a.jpg",),
+        slides=(
+            _slide("generated", product_index=0, text=SlideText.HOOK),
+            _slide("animated", seconds=10),
+            _slide("existing", object_key="t/x/generated/d/r1/slide-1.jpg"),
+        ),
+        closing_slide=True,
+    )
+    assert brief.format is ContentFormat.FEED_4_5
+    assert ContentKind.CAROUSEL.formats == (ContentFormat.FEED_4_5, ContentFormat.FEED_1_1)
+    assert default_category(ContentKind.CAROUSEL, brief.format) is PostCategory.GALERIA
+    assert not ContentKind.CAROUSEL.is_video and not ContentKind.CAROUSEL.has_script
+    assert brief.requires_ai_disclosure  # generated / animated slides are AI imagery
+
+
+def test_a_carousel_of_reused_pieces_only_needs_no_ai_label_of_its_own() -> None:
+    brief = _brief(
+        ContentKind.CAROUSEL,
+        slides=(
+            _slide("existing", object_key="t/x/a.jpg"),
+            _slide("existing", object_key="t/x/b.mp4"),
+        ),
+    )
+    assert not brief.requires_ai_disclosure
+
+
+@pytest.mark.parametrize(
+    ("media", "message"),
+    [
+        ({"slides": ()}, "2 to 10 slides, not 0"),
+        ({"slides": (_slide("generated"),)}, "2 to 10 slides, not 1"),
+        (
+            {"slides": tuple(_slide("generated") for _ in range(10)), "closing_slide": True},
+            "not 11",
+        ),
+        (
+            {"slides": (_slide("generated", product_index=1), _slide("generated"))},
+            "product photo the brief does not have",
+        ),
+    ],
+)
+def test_a_carousel_without_its_slides_is_refused(media: dict[str, object], message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        _brief(ContentKind.CAROUSEL, **media)
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"source": "existing"}, "needs the piece's file"),
+        ({"source": "existing", "object_key": "k", "text": "hook"}, "reused as it is"),
+        ({"source": "generated", "object_key": "k"}, "only an existing slide"),
+        ({"source": "animated", "seconds": 7}, "5, 10"),
+    ],
+)
+def test_a_slide_without_its_inputs_is_refused(fields: dict[str, object], message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        CarouselSlide(**fields)  # type: ignore[arg-type]
+
+
+def test_slides_belong_to_the_carousel_only() -> None:
+    with pytest.raises(ValidationError, match="slides are for the carousel"):
+        _brief(ContentKind.STATIC_FLYER, slides=(_slide("generated"), _slide("generated")))
+
+
+def test_a_carousel_slide_prints_only_the_words_chosen_for_it() -> None:
+    scene = _png((1728, 2160), (40, 90, 160, 255))
+    bare = Image.open(io.BytesIO(render_carousel_slide(scene=scene)))
+    with_hook = Image.open(io.BytesIO(render_carousel_slide(scene=scene, hook="La smash doble")))
+    assert bare.size == with_hook.size == (1080, 1350)
+    assert bare.tobytes() != with_hook.tobytes()
+    closing = Image.open(io.BytesIO(render_closing_slide(line="Pide ya por DM")))
+    assert closing.size == (1080, 1350)
+
+
+def test_the_text_layer_is_transparent_where_no_word_goes() -> None:
+    layer = Image.open(io.BytesIO(text_layer(size=(1080, 1350), hook="La smash", cta="Pide ya")))
+    assert layer.mode == "RGBA" and layer.size == (1080, 1350)
+    assert layer.getpixel((540, 675))[3] == 0  # the middle of the frame: untouched
+    assert layer.getpixel((540, 1201))[3] == 255  # the CTA pill
+    empty = Image.open(io.BytesIO(text_layer(size=(1080, 1350))))
+    assert empty.getextrema()[3] == (0, 0)  # nothing chosen, nothing drawn
+
+
+def test_the_headline_starts_under_the_logo_instead_of_across_it() -> None:
+    """2026-10-09 ("el logo tapa el texto"): both share the top band — the logo is drawn
+    smaller and the headline's box begins under it; alone, the logo keeps its size."""
+    from qualify_creative.compose import _LOGO_SHARE, _LOGO_SHARE_WITH_HEADLINE, _headline_box
+
+    size = (1080, 1350)
+    assert _headline_box(size, under=0)[1] == round(1350 * 0.07)  # no logo: the band's top
+    logo_bottom = 54 + round(1080 * _LOGO_SHARE_WITH_HEADLINE)
+    box = _headline_box(size, under=logo_bottom)
+    assert box[1] > logo_bottom and box[3] == round(1350 * 0.3)  # under it, inside the scrim
+    assert _LOGO_SHARE_WITH_HEADLINE < _LOGO_SHARE
+    # the closing slide centres its line: the logo never meets it
+    assert _headline_box(size, under=logo_bottom, closing=True)[1] == round(1350 * 0.3)
+    logo = _png((400, 400), (210, 30, 30, 255))
+    scene = _png((1728, 2160), (40, 90, 160, 255))
+    with_logo = Image.open(io.BytesIO(render_carousel_slide(scene=scene, hook="Hola", logo=logo)))
+    without = Image.open(io.BytesIO(render_carousel_slide(scene=scene, hook="Hola")))
+    assert with_logo.size == without.size == (1080, 1350)
+    # the logo's corner is drawn (red), and the text row under it is not
+    assert with_logo.getpixel((80, 80))[:3] == (210, 30, 30)

@@ -77,3 +77,17 @@ El flyer o el video se producen con la primera variante de copy que pasa las reg
   - **Seedance 2.x** habla el guion, pero necesita más saldo para activarse y rechaza caras reales como referencia.
   - **HeyGen** sigue disponible con `QUALIFY_VIDEO_ENGINE=heygen`.
 - Las claves de los proveedores las paga la plataforma (decisión D4); no hay «trae tu propia clave».
+
+---
+
+## 5. «Regenerar» en Borradores — aviso `[HECHO 2026-10-09]`, reinicio del proceso `[PENDIENTE]`
+
+Anotado el 2026-10-09 tras verificarlo (sin cambios de código todavía).
+
+- **Qué hace hoy.** «Regenerar» (`CreativeState.reject_current(regenerate=True)`) devuelve el borrador a «generando» y lo despacha al mismo hilo en segundo plano que usa `/create`; la pantalla de Borradores sondea el estado (`poll_draft`, hasta 5 min). Es asíncrono: la petición vuelve enseguida.
+- **Qué falta.**
+  1. ~~**No avisa al terminar.**~~ Hecho el 2026-10-09: `poll_draft` reutiliza `_generation_done_events(outcome, source="draft")` — toast («Tu borrador ya está regenerado…» / «No se pudo regenerar…») y notificación del navegador si la pestaña está detrás; «Regenerar» pide el permiso una vez.
+  2. ~~**El sondeo se detiene al salir del borrador.**~~ Hecho el 2026-10-09: el sondeo sigue aunque abras otro borrador u otra página; solo deja de refrescar el detalle que no está en pantalla, y avisa al terminar.
+  3. **Un reinicio del proceso mata la generación en curso.** El despachador «inline» (`InlineDispatcher`, diseño §7.4) corre la generación en un hilo *del propio proceso*: una recarga automática por cambio de código en desarrollo, un despliegue o un corte la pierden; el borrador queda en «generando» hasta que el barrendero lo marca como fallido por tiempo (`reaper`). Observado el 2026-10-09: dos «Regenerar» de una imagen publicitaria fallaron con `provider_error` sin detalle y sin gasto mientras el backend se reiniciaba por copias de archivos, y un borrador creado justo antes de apagar el servidor quedó en «generando». La solución de fondo es la migración a Celery (§7.4), no un parche en la UI.
+- **Además, el fallo real de los «Regenerar» del 2026-10-09 — `[RESUELTO 2026-10-09]`.** El rastro de la consola lo dejó claro: `UniqueViolation uq_copy_variant_ordinal`. `finish_generation` guardaba las variantes nuevas con los mismos `ordinal` que las de la revisión anterior, y la restricción única (0009) las rechazaba — después de pagar al proveedor. Ahora el repositorio reemplaza las variantes del borrador (y limpia `selected_variant_id`, que apuntaba a una de la revisión vieja), igual que ya reemplazaba los medios; y la migración **0047** concede al rol de la app el `DELETE` sobre `copy_variants` e `image_assets`, que 0009 nunca dio (el reemplazo de medios habría fallado igual). Prueba: `packages/api/tests/test_creative_regenerate_db.py`.
+- **Qué tocar cuando se retome.** Solo queda el punto 3, que es del despachador (migración a Celery), no del generador ni de la UI.

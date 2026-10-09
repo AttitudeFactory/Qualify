@@ -18,6 +18,8 @@ from qualify_creative.enums import (
     EmojiPolicy,
     GenerationTask,
     ImageRoute,
+    SlideSource,
+    SlideText,
     VoiceProfileStatus,
     VoiceSourceKind,
 )
@@ -26,6 +28,7 @@ from qualify_creative.schemas import (
     BrandKit,
     BrandVoiceProfile,
     BriefConstraints,
+    CarouselSlide,
     ContentBrief,
     HashtagPolicy,
     ImagePolicy,
@@ -305,6 +308,14 @@ _KIND_MEDIA: dict[ContentKind, dict[str, object]] = {
         "avatar_prompt": "Un tucán",
     },
     ContentKind.TEMPLATE: {"product_keys": ("uploads/t/a.jpg",)},
+    ContentKind.CAROUSEL: {
+        "slides": (
+            CarouselSlide(source=SlideSource.GENERATED, text=SlideText.HOOK),
+            CarouselSlide(source=SlideSource.ANIMATED, scene_prompt="la smash de cerca"),
+            CarouselSlide(source=SlideSource.EXISTING, object_key="t/x/generated/d/r1/v.mp4"),
+        ),
+        "closing_slide": True,
+    },
 }
 
 
@@ -379,7 +390,19 @@ def test_the_examples_and_ctas_are_voice_not_lines_to_copy() -> None:
     assert "mixing the brand's own with ones specific to the piece's topic" in prefix
 
 
-@pytest.mark.parametrize("kind", [ContentKind.STATIC_FLYER, ContentKind.TEMPLATE])
+def test_a_carousel_tells_the_copy_what_each_slide_shows() -> None:
+    """§ request 2026-10-09: the hook and the CTA are printed on the slides chosen."""
+    media = MediaInputs(**_KIND_MEDIA[ContentKind.CAROUSEL])  # type: ignore[arg-type]
+    suffix = render(brief=make_brief(kind=ContentKind.CAROUSEL, media=media)).volatile_suffix
+    assert "slide 1/4: a generated image, the hook printed on it" in suffix
+    assert "slide 2/4: a short silent video of «la smash de cerca»" in suffix
+    assert "slide 3/4: an image or video the brand already made" in suffix
+    assert "slide 4/4: the CTA, large, on the brand's colours" in suffix
+
+
+@pytest.mark.parametrize(
+    "kind", [ContentKind.STATIC_FLYER, ContentKind.TEMPLATE, ContentKind.CAROUSEL]
+)
 def test_a_printed_hook_and_cta_get_a_length_and_no_emoji(kind: ContentKind) -> None:
     """§ request 2026-10-08: without a number the CTAs came back at 46-57 characters,
     over the template's 40, and with emoji the printing font cannot draw."""

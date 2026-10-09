@@ -337,6 +337,11 @@ class ContentKind(StrEnum):
       real product photos (and optionally a short video) composed by a Remotion
       template of their niche into a Reel 9:16 plus feed and story stills, in one run.
       The template is chosen by the recipe router, not by the operator.
+    - `CAROUSEL` — a feed carousel of 2-10 slides the operator lays out one by one
+      (§ request 2026-10-09), each a `SlideSource`: a scene Seedream generates (with the
+      hook or the CTA printed on it, or not), that scene animated by Seedance into a
+      short silent video (its text optional), or an image or video of a piece the brand
+      already made. Instagram takes any mix of images and videos in one carousel.
     """
 
     CREATOR_SCRIPT = "creator_script"
@@ -344,6 +349,7 @@ class ContentKind(StrEnum):
     ANIMATED_AVATAR_VIDEO = "animated_avatar_video"
     STATIC_FLYER = "static_flyer"
     TEMPLATE = "template"
+    CAROUSEL = "carousel"
 
     @property
     def enabled(self) -> bool:
@@ -377,10 +383,9 @@ class ContentKind(StrEnum):
 
     @property
     def default_format(self) -> ContentFormat:
-        """Videos and a creator's script are vertical (Reels); the flyer is feed 4:5."""
-        return (
-            ContentFormat.FEED_4_5 if self is ContentKind.STATIC_FLYER else ContentFormat.REELS_9_16
-        )
+        """Videos and a creator's script are vertical (Reels); the flyer and the carousel
+        are feed 4:5."""
+        return _KIND_FORMATS[self][0]
 
     @property
     def outputs_are_declared_by_template(self) -> bool:
@@ -391,6 +396,30 @@ class ContentKind(StrEnum):
     def formats(self) -> tuple[ContentFormat, ...]:
         """The formats the generator offers this kind, the default first."""
         return _KIND_FORMATS[self]
+
+
+class SlideSource(StrEnum):
+    """Where one slide of a `ContentKind.CAROUSEL` comes from (§ request 2026-10-09)."""
+
+    #: A scene Seedream generates from the slide's description and photos.
+    GENERATED = "generated"
+    #: That generated scene, animated by Seedance into a short silent video.
+    ANIMATED = "animated"
+    #: An image or a video of a piece the brand already made, reused as it is.
+    EXISTING = "existing"
+
+    @property
+    def is_generated(self) -> bool:
+        return self is not SlideSource.EXISTING
+
+
+class SlideText(StrEnum):
+    """The words printed on a generated or animated carousel slide — the operator's
+    choice per slide (on a video, the text is optional: § request 2026-10-09)."""
+
+    NONE = "none"
+    HOOK = "hook"
+    CTA = "cta"
 
 
 class AvatarSource(StrEnum):
@@ -465,6 +494,11 @@ _KIND_FORMATS: dict[ContentKind, tuple[ContentFormat, ...]] = {
         ContentFormat.FEED_4_5,
         ContentFormat.STORY_9_16,
     ),
+    # Instagram takes a carousel only in the feed (`ContentFormat.is_feed`).
+    ContentKind.CAROUSEL: (
+        ContentFormat.FEED_4_5,
+        ContentFormat.FEED_1_1,
+    ),
 }
 
 
@@ -498,7 +532,7 @@ def default_category(kind: ContentKind, fmt: ContentFormat | None = None) -> Pos
     renders the one output of its format (2026-10-06). The operator can change it."""
     if fmt is ContentFormat.STORY_9_16:
         return PostCategory.STORY
-    if kind is ContentKind.STATIC_FLYER or (
+    if kind in (ContentKind.STATIC_FLYER, ContentKind.CAROUSEL) or (
         kind is ContentKind.TEMPLATE and fmt is not None and fmt.is_feed
     ):
         return PostCategory.GALERIA

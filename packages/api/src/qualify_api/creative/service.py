@@ -585,6 +585,19 @@ class PostgresContentRepository:
         cost provenance over facts is the point of ``creative_usage_events``."""
         with tenant_session(tenant_id) as session:
             draft = session.get(orm.ContentDraft, draft_id)
+            if variants:
+                # A regeneration replaces the draft's copy too (2026-10-09): the new
+                # variants carry the same ordinals as the old ones, and
+                # `uq_copy_variant_ordinal` refused them — after the money was spent.
+                # The old rows go, and so does a selection that pointed at one of them
+                # (the approval it backed was of the previous revision).
+                for old in session.scalars(
+                    select(orm.CopyVariant).where(orm.CopyVariant.draft_id == draft_id)
+                ):
+                    session.delete(old)
+                if draft is not None:
+                    draft.selected_variant_id = None
+                session.flush()
             for write in variants:
                 session.add(
                     orm.CopyVariant(

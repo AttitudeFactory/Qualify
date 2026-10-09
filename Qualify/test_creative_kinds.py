@@ -4,6 +4,7 @@ the image route from them, and how a draft's media and script are shown."""
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 from uuid import UUID
 
@@ -19,7 +20,7 @@ _BRAND_ID = UUID("b0000000-0000-4000-8000-000000000001")
 _USER_ID = UUID("c0000000-0000-4000-8000-000000000001")
 
 
-def test_the_picker_offers_the_five_kinds_in_order() -> None:
+def test_the_picker_offers_the_six_kinds_in_order() -> None:
     assert (
         [key for key, *_ in KIND_OPTIONS]
         == [kind.value for kind in ContentKind if kind]
@@ -29,6 +30,7 @@ def test_the_picker_offers_the_five_kinds_in_order() -> None:
             "animated_avatar_video",
             "static_flyer",
             "template",
+            "carousel",
         ]
     )
 
@@ -312,7 +314,8 @@ def test_the_inputs_sent_are_only_the_kinds_own() -> None:
 
     state.brief_kind = "static_flyer"
     flyer = state._media_inputs()
-    assert flyer["product_keys"] == ["uploads/t/p1.png"] and flyer["carousel"] is True
+    # § 2026-10-09: the ad image is one image — the carousel is its own kind
+    assert flyer["product_keys"] == ["uploads/t/p1.png"] and flyer["carousel"] is False
     assert "avatar_prompt" not in flyer
 
     state.brief_kind = "animated_avatar_video"
@@ -461,16 +464,17 @@ def test_a_format_the_kind_does_not_offer_is_ignored_and_a_new_kind_resets_it() 
     assert state.brief_format == "" and state.effective_format == "feed_4_5"
 
 
-def test_the_carousel_is_only_offered_for_a_flyer_in_a_feed_format() -> None:
+def test_the_ad_image_is_never_a_carousel_any_more() -> None:
+    """§ request 2026-10-09: «quitar la opción de carrusel en imágenes publicitarias»."""
     state = CreativeState()
     state.choose_kind("static_flyer")
     state.set_media_carousel(True)
-    assert state.carousel_allowed and state.media_carousel
-    state.set_brief_format("story_9_16")
     assert not state.carousel_allowed and state.media_carousel is False
-    state.set_media_carousel(True)
-    assert state.media_carousel is False
+    state.media_carousel = True  # a stale flag never reaches the brief
     assert state._media_inputs()["carousel"] is False
+    from .content_generator import _products_upload
+
+    assert "Hacerlo carrusel" not in str(_products_upload("Foto del producto"))
 
 
 def test_back_to_the_form_keeps_the_inputs() -> None:
@@ -794,4 +798,252 @@ def test_both_screens_show_a_carousel_with_arrows_dots_and_a_counter() -> None:
         assert f"{prefix}_is_carousel" in rendered
         assert f"{prefix}_slide_step" in rendered and f"{prefix}_slide_pick" in rendered
         assert "Diapositiva anterior" in rendered and "Diapositiva siguiente" in rendered
-        assert f"{prefix}_slide_auto" in rendered and "4000" in rendered  # the autoplay
+        assert f"{prefix}_slide_auto" in rendered and "10000" in rendered  # the autoplay
+
+
+def test_the_viewer_arrows_are_centred_without_a_transform() -> None:
+    """2026-10-09: the kit lifts a solid button on hover with `transform`, which replaced
+    the centring `translateY(-50%)` and made the arrow jump away from the pointer."""
+    from .media_carousel import AUTOPLAY_MS, _arrow
+
+    assert AUTOPLAY_MS == 10000
+    rendered = str(
+        _arrow("chevron-right", "Diapositiva siguiente", "right", CreativeState.gen_slide_step(1))
+    )
+    assert "translateY" not in rendered and "marginTop" in rendered
+
+
+def test_a_carousel_video_slide_keeps_its_feed_shape_in_both_previews() -> None:
+    """2026-10-09: framed 9:16 like a Reel, a 4:5 video slide lost its sides — and the
+    words printed on them."""
+    from .content_generator import _media_preview
+    from .creative_pages import _media_item
+
+    for rendered in (
+        str(_media_preview(CreativeState.gen_draft.media[0])),
+        str(_media_item(CreativeState.draft.media[0])),
+    ):
+        assert "q-rv-media--slide" in rendered and "q-rv-media--video" in rendered
+        assert "is_slide" in rendered
+
+
+def test_the_form_is_off_while_a_piece_generates() -> None:
+    from .content_generator import generator_page
+
+    rendered = str(generator_page())
+    assert "q-cr-form--busy" in rendered and "gen_generating" in rendered
+    assert "El formulario se reactiva cuando termine" in rendered
+
+
+def test_the_app_says_when_the_piece_lands() -> None:
+    from .creative_state import _generation_done_events, _notify_js
+
+    ready = [str(event) for event in _generation_done_events("ready")]
+    failed = [str(event) for event in _generation_done_events("failed")]
+    assert any("Tu pieza est" in event for event in ready)
+    assert any("No se pudo generar" in event for event in failed)
+    # a draft regenerated in Borradores says where to look (pendientes §5)
+    draft_ready = [str(event) for event in _generation_done_events("ready", source="draft")]
+    draft_failed = [str(event) for event in _generation_done_events("failed", source="draft")]
+    assert any("regenerado. Rev" in event and "Borradores" in event for event in draft_ready)
+    assert any("No se pudo regenerar" in event for event in draft_failed)
+    # the browser's own notice only when the tab is in the background, and only if allowed
+    script = _notify_js("Qualify", "lista")
+    assert "document.hidden" in script and "Notification.permission === 'granted'" in script
+
+
+# -- the carousel kind (§ request 2026-10-09) -------------------------------------------
+
+
+def _carousel_state() -> CreativeState:
+    state = CreativeState()
+    state.choose_category("carousel")
+    state.brief_topic = "Promo de la smash doble"
+    return state
+
+
+def test_the_carousel_opens_on_a_cover_an_animated_slide_and_the_closing() -> None:
+    state = _carousel_state()
+    assert (state.gen_category, state.brief_kind) == ("carousel", "carousel")
+    assert generator_sections("carousel") == ["topic", "channel", "details"]
+    assert [slide["source"] for slide in state.carousel_slides] == ["generated", "animated"]
+    assert state.carousel_slides[0]["text"] == "hook"
+    assert state.carousel_closing and state.carousel_slide_count == 3
+    assert state._form_problem() == ""
+    assert [value for value, _ in state.format_options] == ["feed_4_5", "feed_1_1"]
+
+
+def test_the_strip_adds_selects_moves_and_removes_slides() -> None:
+    """§ 2026-10-09, option A: a new slide opens in the editor, and the editor follows
+    the slide it was on when it moves."""
+    state = _carousel_state()
+    assert state.carousel_selected == 0 and state.carousel_current["n"] == "1"
+    state.toggle_carousel_adding()
+    assert state.carousel_adding
+    state.add_carousel_slide("generated")
+    assert not state.carousel_adding
+    assert state.carousel_selected == 2 and state.carousel_current["source"] == "generated"
+    assert [row["selected"] for row in state.carousel_slide_rows] == ["", "", "1"]
+    state.move_carousel_slide(2, -1)
+    assert state.carousel_selected == 1 and state.carousel_current["source"] == "generated"
+    assert [slide["source"] for slide in state.carousel_slides] == [
+        "generated",
+        "generated",
+        "animated",
+    ]
+    state.select_carousel_slide(2)
+    state.remove_carousel_slide(2)
+    assert state.carousel_selected == 1 and len(state.carousel_slides) == 2
+    state.select_carousel_slide(9)  # not a slide: ignored
+    assert state.carousel_selected == 1
+
+
+def test_a_slides_fields_keep_to_what_a_slide_takes() -> None:
+    state = _carousel_state()
+    state.set_slide_field(1, "text", "cta")
+    state.set_slide_field(1, "seconds", "10")
+    state.set_slide_field(1, "text", "bold")  # not a value: ignored
+    state.set_slide_field(1, "seconds", "7")  # not a length Seedance makes: ignored
+    state.set_slide_field(1, "photo_key", "uploads/other/forged.jpg")  # not editable
+    slide = state.carousel_slides[1]
+    assert (slide["text"], slide["seconds"], slide["photo_key"]) == ("cta", "10", "")
+    assert state.carousel_slide_rows[1]["text_label"] == "Botón"
+
+
+def test_the_strip_stops_at_ten_with_the_closing_slide() -> None:
+    state = _carousel_state()
+    for _ in range(12):
+        state.add_carousel_slide("generated")
+    assert state.carousel_slide_count == 10 and state.carousel_full  # 9 + the closing
+    state.toggle_carousel_adding()
+    assert not state.carousel_adding  # «+» has nothing to add
+    state.set_carousel_closing(False)
+    state.add_carousel_slide("generated")
+    assert state.carousel_slide_count == 10
+    state.set_carousel_closing(True)  # no room for it any more
+    assert not state.carousel_closing
+
+
+def test_too_few_slides_block_generar() -> None:
+    state = _carousel_state()
+    state.remove_carousel_slide(1)
+    state.set_carousel_closing(False)
+    assert "al menos 2 diapositivas" in state._form_problem()
+
+
+def test_a_piece_is_picked_only_from_the_brands_list() -> None:
+    state = _carousel_state()
+    state.piece_items = [
+        {"key": "t/x/generated/d/r1/video.mp4", "media_type": "video", "label": "Reel", "view": ""}
+    ]
+    state.pick_piece("t/other/forged.jpg")
+    assert len(state.carousel_slides) == 2
+    state.carousel_adding = state.piece_picker_open = True
+    state.pick_piece("t/x/generated/d/r1/video.mp4")
+    reused = state.carousel_slides[-1]
+    assert (reused["source"], reused["key"], reused["media_type"]) == (
+        "existing",
+        "t/x/generated/d/r1/video.mp4",
+        "video",
+    )
+    assert state.carousel_selected == 2 and not state.carousel_adding
+    assert not state.piece_picker_open
+    state.set_slide_field(2, "text", "hook")  # a reused piece goes as it is
+    assert state.carousel_slides[2]["text"] == "none"
+
+
+def test_each_slide_brings_its_own_photo_to_the_brief() -> None:
+    """§ 2026-10-09: the product photo is uploaded in the slide; the brief carries
+    the photos once each and every slide points at its own."""
+    state = _carousel_state()
+    state.media_product_keys = ["uploads/t/left-over.jpg"]  # not the carousel's
+    state.media_background_key = "uploads/t/bar.jpg"
+    state.carousel_slides = [
+        {**state.carousel_slides[0], "photo_key": "uploads/t/burger.jpg"},
+        {**state.carousel_slides[1], "photo_key": "uploads/t/burger.jpg", "background": ""},
+    ]
+    state.add_carousel_slide("generated")  # no photo: a scene from the words only
+    state.piece_items = [{"key": "t/x/a.jpg", "media_type": "image", "label": "A", "view": ""}]
+    state.pick_piece("t/x/a.jpg")
+    media = state._media_inputs()
+    assert media["product_keys"] == ["uploads/t/burger.jpg"]
+    assert media["background_key"] == "uploads/t/bar.jpg"
+    assert media["closing_slide"] is True and media["carousel"] is False
+    first, second, third, fourth = media["slides"]
+    assert first == {
+        "source": "generated",
+        "scene_prompt": "",
+        "product_index": 0,
+        "use_background": True,
+        "text": "hook",
+        "seconds": 5,
+    }
+    assert (second["source"], second["product_index"], second["use_background"]) == (
+        "animated",
+        0,
+        False,
+    )
+    assert third["product_index"] is None
+    assert fourth == {"source": "existing", "object_key": "t/x/a.jpg"}
+    from qualify_creative.schemas import MediaInputs
+
+    MediaInputs.model_validate(media)  # what build_brief will validate
+
+
+def test_a_slide_photo_is_uploaded_into_the_open_slide(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    state = _carousel_state()
+    state.select_carousel_slide(1)
+
+    async def saved(self: CreativeState, files: list) -> list[tuple[str, str]]:
+        return [("uploads/t/papas.jpg", "papas.jpg")]
+
+    monkeypatch.setattr(CreativeState, "_save_uploads", saved)
+    asyncio.run(state.handle_slide_photo_upload([object()]))  # type: ignore[list-item]
+    assert state.carousel_slides[1]["photo_key"] == "uploads/t/papas.jpg"
+    assert state.carousel_slides[0]["photo_key"] == ""
+    state.clear_slide_photo()
+    assert state.carousel_slides[1]["photo_key"] == ""
+
+
+def test_a_mixed_carousel_is_shown_as_one_and_holds_on_a_video() -> None:
+    from .creative_vm import build_media_vms
+
+    media = build_media_vms(
+        [
+            ("k/1.jpg", "image", 0, {"slide": 1}),
+            ("k/2.mp4", "video", 1, {"slide": 2, "thumbnail_key": "k/2.jpg"}),
+        ]
+    )
+    assert [item.label for item in media] == ["Slide 1 de 2", "Slide 2 de 2"]
+    assert media[1].poster_key == "k/2.jpg" and all(item.is_slide for item in media)
+    state = CreativeState()
+    state.gen_draft = dataclasses.replace(_draft_with_media("d1", "image"), media=media)
+    assert state.gen_is_carousel
+    state.gen_slide_auto()
+    assert state.gen_slide == 1
+    state.gen_slide_auto()
+    assert state.gen_slide == 1  # a video slide holds until the arrows move on
+
+
+def test_the_carousel_explains_its_options_and_says_titulo_and_boton() -> None:
+    """§ request 2026-10-09: a «?» on each kind of slide, the photo, the background, the
+    text and the closing slide; «Gancho» / «Llamado (CTA)» renamed for the operator."""
+    import json
+
+    from .content_generator import _carousel_adder, _carousel_section
+
+    def rendered(text: str) -> str:  # the compiled JSX escapes every accent
+        return json.dumps(text)[1:-1]
+
+    section = str(_carousel_section())
+    adder = str(_carousel_adder())
+    assert rendered("Título") in section and rendered("Botón de acción") in section
+    assert "Gancho" not in section and "Llamado (CTA)" not in section
+    for help_title in ("Foto del producto", "Fondo común (opcional)", "Diapositiva de cierre"):
+        assert rendered(f"Qué es «{help_title}»") in section
+    for kind in ("Imagen generada", "Video animado", "De una pieza"):
+        assert rendered(f"Qué es «{kind}»") in adder
+    state = _carousel_state()
+    assert [row["text_label"] for row in state.carousel_slide_rows] == ["Título", ""]

@@ -35,6 +35,7 @@ from qualify_creative.adapters.byteplus_ark import (
     DEFAULT_SEEDREAM_MODEL,
     SeedanceVideoAdapter,
     SeedreamImageAdapter,
+    seedance_family,
 )
 from qualify_creative.adapters.heygen_video import HeyGenAvatarVideoAdapter
 from qualify_creative.enums import PaidBy
@@ -45,6 +46,7 @@ from qualify_creative.render.client import RemotionRenderClient
 from qualify_creative.render.registry import TemplateRegistry
 from qualify_creative.router import CreativeRouter
 from qualify_creative.schemas import BrandKit, BrandVoiceProfile
+from qualify_creative.video import PyAvVideoFitter
 
 from qualify_api.catalog.read import DbProductCatalog
 from qualify_api.creative.brand_context import DbBrandContextReader
@@ -52,6 +54,7 @@ from qualify_api.creative.brand_names import DbBrandNames
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.dispatch import InlineDispatcher
 from qualify_api.creative.media import LocalMediaStore, MediaProducer, R2ReadingMediaStore
+from qualify_api.creative.pieces import DbPieceFiles
 from qualify_api.creative.service import ContentService
 from qualify_api.creative.voice_access import BrandVoiceGuard
 from qualify_api.creative.voice_service import VoiceProfileService
@@ -149,6 +152,18 @@ class DbVoiceProfileReader:
         return self._service.active_profile(tenant_id=tenant_id, brand_id=brand_id)
 
 
+def _check_seedance(model: str, resolution: str) -> None:
+    """Refuse a Seedance model / resolution pair the family cannot render HERE, at wiring
+    (PR #100 review): left to the pre-flight, a typo in the env var or `-fast` + `1080p`
+    would fail every video while the service came up fine."""
+    family = seedance_family(model)  # raises on an unknown family
+    if resolution not in family.resolutions:
+        raise ValueError(
+            f"{SEEDANCE_RESOLUTION_ENV}={resolution!r} is not one {model} renders: "
+            f"{sorted(family.resolutions)}"
+        )
+
+
 @cache
 def production_content_service() -> ContentService:
     """Wire the real router (Anthropic copy adapter, v1 pricing, platform key), the
@@ -166,10 +181,10 @@ def production_content_service() -> ContentService:
         model=os.environ.get(SEEDREAM_MODEL_ENV) or DEFAULT_SEEDREAM_MODEL,
         base_url=ark_base_url,
     )
-    seedance = SeedanceVideoAdapter(
-        model=os.environ.get(SEEDANCE_MODEL_ENV) or DEFAULT_SEEDANCE_MODEL,
-        base_url=ark_base_url,
-    )
+    seedance_model = os.environ.get(SEEDANCE_MODEL_ENV) or DEFAULT_SEEDANCE_MODEL
+    seedance_resolution = os.environ.get(SEEDANCE_RESOLUTION_ENV) or DEFAULT_SEEDANCE_RESOLUTION
+    _check_seedance(seedance_model, seedance_resolution)
+    seedance = SeedanceVideoAdapter(model=seedance_model, base_url=ark_base_url)
     # the brand's logo may live in R2 (Brand Kit, 2026-10-01): read it there
     store = R2ReadingMediaStore(LocalMediaStore(media_root()))
     remotion = RemotionTemplateAdapter(
@@ -214,9 +229,11 @@ def production_content_service() -> ContentService:
             # § 2026-10-07: the advertising image's scene by Seedream, the avatar videos
             # (VideoEngine.SEEDANCE) by Seedream + Seedance
             generated_ad_images=True,
-            seedance_resolution=(
-                os.environ.get(SEEDANCE_RESOLUTION_ENV) or DEFAULT_SEEDANCE_RESOLUTION
-            ),
+            seedance_resolution=seedance_resolution,
+            # § 2026-10-09: a carousel reuses only THIS brand's pieces, and fits its
+            # video slides to the feed with PyAV (no ffmpeg binary in the image)
+            pieces=DbPieceFiles(),
+            fitter=PyAvVideoFitter(),
         ),
     )
     service.dispatcher = InlineDispatcher(service.run_generation)

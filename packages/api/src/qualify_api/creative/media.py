@@ -27,6 +27,12 @@ brief's `ContentKind` asks for (§ request 2026-09-25).
   3. the render, reading the copy's `script` with the chosen voice;
   4. the video DOWNLOADED into our store at once: HeyGen's `video_url` is a pre-signed
      link with an undocumented expiry, and a draft must never depend on it.
+- `CAROUSEL` (§ request 2026-10-09): the operator's slides in order — a Seedream scene
+  with the words chosen for it (`compose.render_carousel_slide`), that scene animated by
+  Seedance and fitted to the feed with its words laid over every frame
+  (`video.PyAvVideoFitter`), or a file of one of the BRAND's own pieces (checked against
+  `pieces.PieceFiles` before it is read) fitted the same way; then, optionally, a
+  closing slide with the CTA. Instagram publishes any mix of the two (QUA-103).
 
 Every vendor call that costs money is written as a usage row with its provenance, also
 when a later step fails. The store is a seam (`MediaStore`). Every generated file lives
@@ -57,7 +63,10 @@ from qualify_creative.compose import (
     FlyerText,
     compose_scene,
     render_ad_slides,
+    render_carousel_slide,
+    render_closing_slide,
     render_flyer,
+    text_layer,
 )
 from qualify_creative.enums import (
     AdImageMode,
@@ -66,6 +75,8 @@ from qualify_creative.enums import (
     ContentKind,
     FailureReason,
     GenerationTask,
+    SlideSource,
+    SlideText,
     VideoEngine,
 )
 from qualify_creative.photo.normalize import to_meta_jpeg, to_reference_jpeg
@@ -91,8 +102,10 @@ from qualify_creative.render.recipes import Engine
 from qualify_creative.render.registry import TemplateNotFound
 from qualify_creative.router import BudgetContext, CreativeRouter, HopAction
 from qualify_creative.schemas import BrandKit, ContentBrief, CopyPayload
+from qualify_creative.video import VideoFitter
 
 from . import trace
+from .pieces import PieceFiles
 from .voice_access import VoiceGuard
 
 logger = logging.getLogger(__name__)
@@ -261,6 +274,7 @@ class LocalMediaStore:
 #: before 2026-10-06). Each is followed by the tenant id.
 _TENANT_ROOTS = ("t", "uploads", "generated")
 _FOREIGN_FILE = "Uno de los archivos de la pieza no es de tu marca."
+_MISSING_PIECE = "La pieza de la diapositiva {n} ya no está disponible. Elige otra."
 
 
 def owned_by(tenant_id: UUID, key: str) -> bool:
@@ -283,6 +297,7 @@ def _foreign_keys(tenant_id: UUID, brief: ContentBrief, kit: BrandKit) -> list[s
         media.brand_logo_key,
         *media.brand_element_keys,
         kit.logo_asset_key,
+        *(slide.object_key for slide in media.slides),
     ]
     return [key for key in keys if key and not owned_by(tenant_id, key)]
 
@@ -526,13 +541,41 @@ class HeyGenTools(Protocol):
 Downloader = Callable[[str], bytes]
 
 
+#: The largest vendor file we take (PR #100 review): a 30 s 1080p clip is ~20-40 MB.
+MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024
+MAX_DOWNLOAD_REDIRECTS = 3
+
+
+class DownloadRefused(ValueError):
+    """A vendor result URL that is not https, or a file over `MAX_DOWNLOAD_BYTES`."""
+
+
 def _http_download(url: str) -> bytes:
+    """The vendor's result file, fetched with guard rails (PR #100 review): the URL — and
+    every redirect it takes — must be https, the redirects are few, and the body is read
+    in chunks up to `MAX_DOWNLOAD_BYTES` instead of trusting its `Content-Length`."""
     import httpx  # lazy: only the video kinds need it
 
-    with httpx.Client(timeout=120.0, follow_redirects=True) as client:
-        response = client.get(url)
-        response.raise_for_status()
-        return response.content
+    def https_only(request: httpx.Request) -> None:
+        if request.url.scheme != "https":
+            raise DownloadRefused(f"vendor media URL is not https: {request.url.scheme}")
+
+    if httpx.URL(url).scheme != "https":
+        raise DownloadRefused("vendor media URL is not https")
+    with httpx.Client(
+        timeout=120.0,
+        follow_redirects=True,
+        max_redirects=MAX_DOWNLOAD_REDIRECTS,
+        event_hooks={"request": [https_only]},
+    ) as client:
+        with client.stream("GET", url) as response:
+            response.raise_for_status()
+            buffer = bytearray()
+            for chunk in response.iter_bytes():
+                buffer.extend(chunk)
+                if len(buffer) > MAX_DOWNLOAD_BYTES:
+                    raise DownloadRefused(f"vendor media is over {MAX_DOWNLOAD_BYTES} bytes")
+            return bytes(buffer)
 
 
 class _MediaFailed(Exception):
@@ -583,6 +626,8 @@ class MediaProducer:
         catalog: ProductCatalog | None = None,
         generated_ad_images: bool = False,
         seedance_resolution: str = "720p",
+        pieces: PieceFiles | None = None,
+        fitter: VideoFitter | None = None,
     ) -> None:
         self._store = store
         self._router = router
@@ -603,6 +648,11 @@ class MediaProducer:
         self._generated_ad_images = generated_ad_images
         #: Seedance's output resolution (`QUALIFY_SEEDANCE_RESOLUTION`).
         self._seedance_resolution = seedance_resolution
+        #: The carousel (§ 2026-10-09): which files are this brand's pieces, and the
+        #: fitting of a video slide to the feed. None = a carousel takes neither an
+        #: existing piece nor a video slide.
+        self._pieces = pieces
+        self._fitter = fitter
 
     def produce(
         self,
@@ -645,6 +695,8 @@ class MediaProducer:
                 media = self._video(tenant_id, draft_id, brief, kit, copy, budget, usage, save)
             elif brief.kind is ContentKind.TEMPLATE:
                 return self._template(tenant_id, draft_id, brief, kit, copy, budget, usage, save)
+            elif brief.kind is ContentKind.CAROUSEL:
+                media = self._carousel(tenant_id, draft_id, brief, kit, copy, budget, usage, save)
             else:
                 media = ()
         except _MediaFailed as exc:
@@ -660,8 +712,10 @@ class MediaProducer:
         except Exception as exc:  # a vendor error, a missing upload, a bad image file
             logger.warning("creative media for draft %s failed: %s", draft_id, exc)
             raw = f"{type(exc).__name__}: {exc}"
-            on_ark = (brief.kind is ContentKind.STATIC_FLYER and self._generated_ad_images) or (
-                brief.kind.is_video and brief.media.video_engine is VideoEngine.SEEDANCE
+            on_ark = (
+                (brief.kind is ContentKind.STATIC_FLYER and self._generated_ad_images)
+                or (brief.kind.is_video and brief.media.video_engine is VideoEngine.SEEDANCE)
+                or brief.kind is ContentKind.CAROUSEL
             )
             return MediaOutcome(
                 usage=tuple(usage),
@@ -1049,6 +1103,307 @@ class MediaProducer:
                 },
             )
         ]
+
+    # -- carousel (§ request 2026-10-09) -------------------------------------------------
+
+    def _carousel(
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brief: ContentBrief,
+        kit: BrandKit,
+        copy: CopyPayload,
+        budget: BudgetContext,
+        usage: list[MediaUsage],
+        save: _Saver,
+    ) -> list[MediaWrite]:
+        """The operator's slides in order, then the closing slide when asked for. Every
+        slide is fitted to the format's exact size: Instagram crops a carousel to its
+        first item, and a reused Reel or a Seedance 3:4 would otherwise be cut there."""
+        media = brief.media
+        size = brief.format.dimensions
+        total = len(media.slides) + int(media.closing_slide)
+        products = self._products(brief)
+        background = self._read(media.background_key)
+        logo = self._logo(kit, media.brand_logo_key)
+        brand = self._brand_name(tenant_id, brief.brand_id)
+        out: list[MediaWrite] = []
+        for position, slide in enumerate(media.slides):
+            number = position + 1
+            if slide.source is SlideSource.EXISTING:
+                out.append(self._existing_slide(tenant_id, brief, slide.object_key, position, save))
+                continue
+            hook = copy.hook if slide.text is SlideText.HOOK else ""
+            cta = copy.cta if slide.text is SlideText.CTA else ""
+            product = products[slide.product_index] if slide.product_index is not None else None
+            place = background if slide.use_background else None
+            animated = slide.source is SlideSource.ANIMATED
+            # a video's first frame is drawn at the ratio Seedance renders (it has no 4:5)
+            ratio = SEEDANCE_RATIOS[brief.format] if animated else brief.format.aspect_ratio
+            scene = self._scene_image(
+                tenant_id=tenant_id,
+                draft_id=draft_id,
+                brand_id=brief.brand_id,
+                prompt=carousel_scene_prompt(
+                    brief=brief,
+                    kit=kit,
+                    brand=brand,
+                    scene=slide.scene_prompt,
+                    ratio=ratio,
+                    has_product=product is not None,
+                    has_background=place is not None,
+                    has_text=bool(hook or cta),
+                ),
+                references=[image for image in (product, place) if image is not None],
+                ratio=ratio,
+                budget=budget,
+                usage=usage,
+                what=f"escena de la diapositiva {number}/{total}",
+            )
+            still = render_carousel_slide(
+                scene=scene, hook=hook, cta=cta, palette=kit.palette_rgb, logo=logo, size=size
+            )
+            params: dict[str, Any] = {
+                "slide": number,
+                "slides": total,
+                "source": slide.source.value,
+                "text": slide.text.value,
+                "scene_prompt": slide.scene_prompt,
+            }
+            if not animated:
+                key = save(f"slide-{number}.jpg", to_meta_jpeg(still), JPEG)
+                out.append(
+                    MediaWrite(
+                        position=position,
+                        media_type="image",
+                        media_url=key,
+                        object_key=key,
+                        width=size[0],
+                        height=size[1],
+                        aspect_ratio=brief.format.aspect_ratio,
+                        model_id=usage[-1].model_id,
+                        provider=SEEDREAM,
+                        content_type=JPEG,
+                        params=params,
+                    )
+                )
+                continue
+            overlay = (
+                text_layer(size=size, hook=hook, cta=cta, palette=kit.palette_rgb, logo=logo)
+                if hook or cta
+                else None
+            )
+            out.append(
+                self._animated_slide(
+                    tenant_id=tenant_id,
+                    draft_id=draft_id,
+                    brief=brief,
+                    scene=scene,
+                    still=still,
+                    overlay=overlay,
+                    seconds=slide.seconds,
+                    position=position,
+                    total=total,
+                    params=params,
+                    budget=budget,
+                    usage=usage,
+                    save=save,
+                )
+            )
+        if media.closing_slide:
+            closing = render_closing_slide(
+                line=copy.cta or copy.hook, palette=kit.palette_rgb, logo=logo, size=size
+            )
+            key = save(f"slide-{total}.jpg", to_meta_jpeg(closing), JPEG)
+            out.append(
+                MediaWrite(
+                    position=total - 1,
+                    media_type="image",
+                    media_url=key,
+                    object_key=key,
+                    width=size[0],
+                    height=size[1],
+                    aspect_ratio=brief.format.aspect_ratio,
+                    model_id=COMPOSE_MODEL,
+                    provider="qualify",
+                    content_type=JPEG,
+                    params={"slide": total, "slides": total, "source": "closing"},
+                )
+            )
+        return out
+
+    def _require_fitter(self) -> VideoFitter:
+        if self._fitter is None:
+            raise _MediaFailed(
+                FailureReason.PROVIDER_ERROR.value,
+                UNAVAILABLE_TEXT,
+                raw="carousel video slide without a VideoFitter wired",
+            )
+        return self._fitter
+
+    def _animated_slide(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brief: ContentBrief,
+        scene: bytes,
+        still: bytes,
+        overlay: bytes | None,
+        seconds: int,
+        position: int,
+        total: int,
+        params: dict[str, Any],
+        budget: BudgetContext,
+        usage: list[MediaUsage],
+        save: _Saver,
+    ) -> MediaWrite:
+        """Seedance animates the slide's scene (silent, nobody talking), then the clip is
+        fitted to the feed with the slide's words over every frame."""
+        fitter = self._require_fitter()
+        number = position + 1
+        ratio = SEEDANCE_RATIOS[brief.format]
+        motion = carousel_motion_prompt()
+        request = GenerationRequest(
+            task=GenerationTask.SCENE_VIDEO,
+            rendered_prompt=RenderedPrompt("", "", ""),
+            params={
+                "prompt": motion,
+                "first_frame": _data_url(scene),
+                "ratio": ratio,
+                "resolution": self._seedance_resolution,
+                "duration_seconds": seconds,
+                "generate_audio": False,
+            },
+        )
+        trace.media_request(
+            draft_id=draft_id,
+            provider="Seedance",
+            what=f"video de la diapositiva {number}/{total}",
+            fields={
+                "prompt de movimiento": motion,
+                "formato": f"{ratio} · {self._seedance_resolution}",
+                "duración pedida": f"{seconds} s",
+                "texto encima": "sí" if overlay else "no",
+            },
+        )
+        result = self._run(
+            tenant_id=tenant_id,
+            brand_id=brief.brand_id,
+            link=SEEDANCE,
+            request=request,
+            budget=budget,
+            usage=usage,
+        )
+        payload = dict(result.payload) if isinstance(result.payload, dict) else {}
+        resolution = str(payload.get("resolution") or self._seedance_resolution)
+        tokens = int(result.usage.output_tokens)
+        usage.append(
+            MediaUsage(
+                provider=result.provider,
+                model_id=result.model_id,
+                unit="second",
+                quantity=math.ceil(result.usage.media_seconds),
+                cost_usd=video_cost_usd(self._pricing, result.model_id, resolution, tokens),
+            )
+        )
+        fitted = fitter.fit(
+            self._download(str(result.media_url)), size=brief.format.dimensions, overlay=overlay
+        )
+        video_key = save(f"slide-{number}.mp4", fitted.data, MP4)
+        poster_key = save(f"slide-{number}-poster.jpg", to_meta_jpeg(fitted.poster or still), JPEG)
+        return MediaWrite(
+            position=position,
+            media_type="video",
+            media_url=video_key,
+            object_key=video_key,
+            width=fitted.width,
+            height=fitted.height,
+            aspect_ratio=brief.format.aspect_ratio,
+            model_id=result.model_id,
+            provider=result.provider,
+            content_type=MP4,
+            params={
+                **params,
+                "task_id": payload.get("task_id"),
+                "duration_seconds": round(fitted.duration_sec, 2),
+                "resolution": resolution,
+                "tokens": tokens,
+                "thumbnail_key": poster_key,
+                "model_revision": result.model_revision,
+            },
+        )
+
+    def _existing_slide(
+        self,
+        tenant_id: UUID,
+        brief: ContentBrief,
+        object_key: str | None,
+        position: int,
+        save: _Saver,
+    ) -> MediaWrite:
+        """A file of one of the brand's own pieces, copied into this draft (its own R2
+        object: regenerating the source never breaks the carousel) and fitted to the
+        format. Refused unless it IS one of this brand's pieces."""
+        number = position + 1
+        piece = (
+            self._pieces.file(tenant_id=tenant_id, brand_id=brief.brand_id, object_key=object_key)
+            if self._pieces is not None and object_key
+            else None
+        )
+        if piece is None:
+            logger.warning(
+                "carousel slide %s refused: %s is not a piece of brand %s",
+                number,
+                object_key,
+                brief.brand_id,
+            )
+            raise _MediaFailed(
+                FailureReason.ROUTE_BLOCKED_BY_POLICY.value, _MISSING_PIECE.format(n=number)
+            )
+        size = brief.format.dimensions
+        data = self._store.read(piece.object_key)
+        params: dict[str, Any] = {
+            "slide": number,
+            "source": SlideSource.EXISTING.value,
+            "from_draft": str(piece.draft_id),
+            "from_key": piece.object_key,
+        }
+        if piece.media_type == "video":
+            fitted = self._require_fitter().fit(data, size=size)
+            key = save(f"slide-{number}.mp4", fitted.data, MP4)
+            if fitted.poster:
+                params["thumbnail_key"] = save(
+                    f"slide-{number}-poster.jpg", to_meta_jpeg(fitted.poster), JPEG
+                )
+            params["duration_seconds"] = round(fitted.duration_sec, 2)
+            return MediaWrite(
+                position=position,
+                media_type="video",
+                media_url=key,
+                object_key=key,
+                width=fitted.width,
+                height=fitted.height,
+                aspect_ratio=brief.format.aspect_ratio,
+                model_id=COMPOSE_MODEL,
+                provider="qualify",
+                content_type=MP4,
+                params=params,
+            )
+        key = save(f"slide-{number}.jpg", to_meta_jpeg(_cover_png(data, size)), JPEG)
+        return MediaWrite(
+            position=position,
+            media_type="image",
+            media_url=key,
+            object_key=key,
+            width=size[0],
+            height=size[1],
+            aspect_ratio=brief.format.aspect_ratio,
+            model_id=COMPOSE_MODEL,
+            provider="qualify",
+            content_type=JPEG,
+            params=params,
+        )
 
     # -- template (Remotion) -------------------------------------------------------------
 
@@ -1651,6 +2006,73 @@ def ad_scene_prompt(
     lines.append(_palette_line(kit))
     lines.append(_NO_TEXT)
     return " ".join(line for line in lines if line)
+
+
+def carousel_scene_prompt(
+    *,
+    brief: ContentBrief,
+    kit: BrandKit,
+    brand: str,
+    scene: str,
+    ratio: str,
+    has_product: bool,
+    has_background: bool,
+    has_text: bool,
+) -> str:
+    """One carousel slide's photograph (§ 2026-10-09). References in this order: the
+    product photo first, the background (the operator's place) last."""
+    lines = [
+        f"Professional advertising photograph for a social media carousel"
+        f"{f' of the brand {brand}' if brand else ''}, {_ORIENTATION.get(ratio, ratio)} "
+        "composition, photorealistic, appetizing and premium, natural light, sharp focus.",
+    ]
+    if has_product and has_background:
+        lines.append(
+            "Place the client's real product (image 1, keep it exactly as it is: shape, "
+            "colors, label) naturally inside the client's real place (image 2, keep it "
+            "recognisable), as if photographed there."
+        )
+    elif has_product:
+        lines.append(
+            "The product in image 1 is the client's real product: keep it exactly as it is "
+            "(shape, colors, label and packaging) and make it the hero of the scene."
+        )
+    elif has_background:
+        lines.append(
+            "The reference image is the client's real place: keep it recognisable as the setting."
+        )
+    if scene.strip():
+        lines.append(f'This slide shows (in Spanish): "{_quoted(scene)}".')
+    lines.append(f'The carousel is about (in Spanish): "{_quoted(brief.topic)}".')
+    if has_text:
+        lines.append(
+            "Keep the top quarter and the bottom fifth of the frame calm and uncluttered: "
+            "a headline or a button is laid over them afterwards."
+        )
+    lines.append(_palette_line(kit))
+    lines.append(_NO_TEXT)
+    return " ".join(line for line in lines if line)
+
+
+def carousel_motion_prompt() -> str:
+    """What Seedance does with a carousel slide's scene: a short, silent, product-led
+    shot — nobody talks, nothing is written."""
+    return (
+        "Bring this photograph to life as a short cinematic product shot: a slow, smooth "
+        "camera move (gentle push-in or slight orbit), subtle natural motion in the scene "
+        "(steam, light, a hand, the background), the product keeps its exact look and "
+        "label. Nobody talks to the camera. No text on screen."
+    )
+
+
+def _cover_png(data: bytes, size: tuple[int, int]) -> bytes:
+    """An image cover-cropped to `size`, centred — a reused piece fitted to the slide."""
+    from PIL import Image, ImageOps  # noqa: PLC0415
+
+    image = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
+    out = io.BytesIO()
+    ImageOps.fit(image, size, Image.LANCZOS).save(out, format="PNG")
+    return out.getvalue()
 
 
 def _presenter(brief: ContentBrief, *, has_character_image: bool) -> str:

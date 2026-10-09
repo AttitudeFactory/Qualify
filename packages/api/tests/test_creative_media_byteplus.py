@@ -24,12 +24,22 @@ from qualify_creative.enums import (
     GenerationTask,
     ImageRoute,
     PaidBy,
+    SlideSource,
+    SlideText,
     VideoEngine,
 )
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.providers import GenerationRequest, GenerationResult, ResolvedKey, Usage
 from qualify_creative.router import BudgetContext, CreativeRouter
-from qualify_creative.schemas import BrandKit, ContentBrief, CopyPayload, MediaInputs, ToneAxes
+from qualify_creative.schemas import (
+    BrandKit,
+    CarouselSlide,
+    ContentBrief,
+    CopyPayload,
+    MediaInputs,
+    ToneAxes,
+)
+from qualify_creative.video import FittedVideo
 
 from qualify_api.creative.media import (
     MediaProducer,
@@ -419,3 +429,248 @@ def test_modelarks_failures_read_in_the_operators_words(raw: str, expected: str)
     assert raw not in text
     for word in ("BytePlus", "ModelArk", "Seedream", "Seedance", "QUALIFY_", "USD"):
         assert word not in text
+
+
+# -- the vendor download's guard rails (PR #100 review) ----------------------------------
+
+
+def _offline_downloads(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
+    """`_http_download` builds its own client: give it a MockTransport."""
+    import httpx
+
+    real = httpx.Client
+
+    def client(**kwargs: Any) -> httpx.Client:
+        return real(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(httpx, "Client", client)
+
+
+def test_a_vendor_url_that_is_not_https_is_never_fetched(monkeypatch: pytest.MonkeyPatch) -> None:
+    from qualify_api.creative.media import DownloadRefused, _http_download
+
+    calls: list[Any] = []
+    _offline_downloads(monkeypatch, lambda request: calls.append(request))
+    for url in ("http://cdn.test/v.mp4", "file:///etc/passwd"):
+        with pytest.raises(DownloadRefused):
+            _http_download(url)
+    assert calls == []
+
+
+def test_a_redirect_off_https_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    from qualify_api.creative.media import DownloadRefused, _http_download
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": "http://169.254.169.254/latest"})
+
+    _offline_downloads(monkeypatch, handler)
+    with pytest.raises(DownloadRefused):
+        _http_download("https://cdn.test/v.mp4")
+
+
+def test_a_vendor_file_over_the_cap_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    from qualify_api.creative import media
+
+    monkeypatch.setattr(media, "MAX_DOWNLOAD_BYTES", 10)
+    _offline_downloads(monkeypatch, lambda request: httpx.Response(200, content=b"x" * 11))
+    with pytest.raises(media.DownloadRefused):
+        media._http_download("https://cdn.test/v.mp4")
+
+
+def test_a_vendor_file_within_the_cap_comes_back_whole(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    from qualify_api.creative.media import _http_download
+
+    _offline_downloads(monkeypatch, lambda request: httpx.Response(200, content=b"mp4-bytes"))
+    assert _http_download("https://cdn.test/v.mp4") == b"mp4-bytes"
+
+
+# -- the carousel (§ request 2026-10-09) -------------------------------------------------
+
+OTHER_DRAFT = UUID("7e7e0000-0000-4000-8000-0000000000d1")
+PIECE_IMAGE = f"t/{TENANT_ID}/generated/{OTHER_DRAFT}/r1/slide-1.jpg"
+PIECE_VIDEO = f"t/{TENANT_ID}/generated/{OTHER_DRAFT}/r1/video.mp4"
+
+
+class FakePieces:
+    """The brand's pieces: only the two files above are this brand's."""
+
+    def __init__(self) -> None:
+        self.asked: list[tuple[UUID, str]] = []
+
+    def file(self, *, tenant_id: UUID, brand_id: UUID, object_key: str) -> Any:
+        from qualify_api.creative.pieces import PieceFile
+
+        self.asked.append((brand_id, object_key))
+        kinds = {PIECE_IMAGE: "image", PIECE_VIDEO: "video"}
+        if brand_id != BRAND_ID or object_key not in kinds:
+            return None
+        return PieceFile(
+            draft_id=OTHER_DRAFT,
+            object_key=object_key,
+            media_type=kinds[object_key],
+            content_type=None,
+            width=None,
+            height=None,
+            position=0,
+            poster_key=None,
+            topic="Promo anterior",
+        )
+
+    def files(self, **_: Any) -> list[Any]:
+        return []
+
+
+class FakeFitter:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def fit(
+        self,
+        data: bytes,
+        *,
+        size: tuple[int, int],
+        overlay: bytes | None = None,
+        max_seconds: float = 60.0,
+    ) -> FittedVideo:
+        self.calls.append({"data": data, "size": size, "overlay": overlay})
+        return FittedVideo(
+            data=b"fitted-" + data,
+            width=size[0],
+            height=size[1],
+            duration_sec=5.0,
+            poster=_image((1, 2, 3), size),
+        )
+
+
+def _carousel_producer(
+    store: MemoryStore, seedream: FakeSeedream, seedance: FakeSeedance, fitter: FakeFitter
+) -> MediaProducer:
+    producer = _producer(store, seedream=seedream, seedance=seedance)
+    producer._pieces = FakePieces()
+    producer._fitter = fitter
+    return producer
+
+
+def _carousel_store() -> MemoryStore:
+    store = _store()
+    store.files[PIECE_IMAGE] = _image((0, 90, 90), (1080, 1920))
+    store.files[PIECE_VIDEO] = b"reel-bytes"
+    return store
+
+
+def test_a_mixed_carousel_lays_out_every_slide_in_order() -> None:
+    store, seedream, seedance, fitter = (
+        _carousel_store(),
+        FakeSeedream(),
+        FakeSeedance(),
+        FakeFitter(),
+    )
+    draft_id = uuid4()
+    brief = _brief(
+        ContentKind.CAROUSEL,
+        product_keys=(f"uploads/{TENANT_ID}/p1.jpg",),
+        background_key=f"uploads/{TENANT_ID}/bg.jpg",
+        slides=(
+            CarouselSlide(source=SlideSource.GENERATED, product_index=0, text=SlideText.HOOK),
+            CarouselSlide(
+                source=SlideSource.ANIMATED, scene_prompt="la smash girando", text=SlideText.CTA
+            ),
+            CarouselSlide(source=SlideSource.EXISTING, object_key=PIECE_IMAGE),
+            CarouselSlide(source=SlideSource.EXISTING, object_key=PIECE_VIDEO),
+        ),
+        closing_slide=True,
+    )
+    outcome = _produce(_carousel_producer(store, seedream, seedance, fitter), brief, draft_id)
+
+    assert outcome.failure is None
+    assert [(m.position, m.media_type) for m in outcome.media] == [
+        (0, "image"),  # generated, the hook on it
+        (1, "video"),  # animated, the CTA laid over
+        (2, "image"),  # a reused image
+        (3, "video"),  # a reused Reel
+        (4, "image"),  # the closing slide
+    ]
+    # two scenes: the generated slide at the feed's 4:5, the animated one at Seedance's 3:4
+    first, second = seedream.requests
+    assert first.params["size"] == "1728x2160" and len(first.params["images"]) == 2
+    assert second.params["size"] == "1728x2304" and len(second.params["images"]) == 1
+    assert "la smash girando" in str(second.params["prompt"])
+    # one silent, presenter-less Seedance clip of the slide's length
+    (clip,) = seedance.requests
+    assert clip.params["generate_audio"] is False and clip.params["duration_seconds"] == 5
+    assert "dialogue" not in clip.params and "Nobody talks" in str(clip.params["prompt"])
+    # the animated slide gets its CTA laid over; the reused Reel is only fitted
+    animated, reused = fitter.calls
+    assert animated["data"] == b"mp4-bytes" and animated["overlay"] is not None
+    assert reused["data"] == b"reel-bytes" and reused["overlay"] is None
+    assert {call["size"] for call in fitter.calls} == {(1080, 1350)}
+    # every slide is fitted to the feed and stored in this draft, videos with a poster
+    for media in outcome.media:
+        assert (media.width, media.height) == (1080, 1350)
+        assert media.object_key and str(draft_id) in media.object_key
+        if media.media_type == "video":
+            assert media.content_type == "video/mp4" and media.params["thumbnail_key"]
+        else:
+            assert media.content_type == "image/jpeg"
+    reused_image = Image.open(io.BytesIO(store.files[outcome.media[2].object_key]))
+    assert reused_image.size == (1080, 1350)
+    assert outcome.media[2].params["from_draft"] == str(OTHER_DRAFT)
+    assert outcome.media[4].params["source"] == "closing"
+    # paid: two Seedream pieces and one Seedance clip
+    assert [u.unit for u in outcome.usage] == ["piece", "piece", "second"]
+
+
+def test_an_animated_slide_without_text_is_only_fitted() -> None:
+    fitter = FakeFitter()
+    brief = _brief(
+        ContentKind.CAROUSEL,
+        slides=(
+            CarouselSlide(source=SlideSource.ANIMATED),
+            CarouselSlide(source=SlideSource.GENERATED),
+        ),
+    )
+    outcome = _produce(
+        _carousel_producer(_store(), FakeSeedream(), FakeSeedance(), fitter), brief, uuid4()
+    )
+    assert outcome.failure is None
+    (call,) = fitter.calls
+    assert call["overlay"] is None
+
+
+def test_a_piece_of_another_brand_is_never_read_into_the_carousel() -> None:
+    other = f"t/{TENANT_ID}/generated/{uuid4()}/r1/slide-1.jpg"
+    store, seedream = _carousel_store(), FakeSeedream()
+    store.files[other] = _image()
+    brief = _brief(
+        ContentKind.CAROUSEL,
+        slides=(
+            CarouselSlide(source=SlideSource.EXISTING, object_key=other),
+            CarouselSlide(source=SlideSource.GENERATED),
+        ),
+    )
+    outcome = _produce(
+        _carousel_producer(store, seedream, FakeSeedance(), FakeFitter()), brief, uuid4()
+    )
+    assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
+    assert "diapositiva 1" in (outcome.detail or "")
+    assert seedream.requests == []  # refused before anything was paid for
+
+
+def test_a_carousel_key_outside_the_tenant_is_refused_before_any_read() -> None:
+    brief = _brief(
+        ContentKind.CAROUSEL,
+        slides=(
+            CarouselSlide(source=SlideSource.EXISTING, object_key=f"t/{uuid4()}/x/slide.jpg"),
+            CarouselSlide(source=SlideSource.GENERATED),
+        ),
+    )
+    outcome = _produce(
+        _carousel_producer(_store(), FakeSeedream(), FakeSeedance(), FakeFitter()), brief, uuid4()
+    )
+    assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value

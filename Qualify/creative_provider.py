@@ -518,6 +518,37 @@ def brand_media(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], ...]:
     return tuple(rows)
 
 
+def brand_pieces(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], ...]:
+    """The images and videos of the brand's own pieces, the most recent first — what a
+    carousel's «De una pieza» slide picks from (§ request 2026-10-09). `view` is a
+    short-lived `/r2media` path of the thumbnail (a video's poster frame), "" when the
+    file is not in R2 or has no poster; `label` says which piece it came from."""
+    from qualify_api.creative.pieces import DbPieceFiles
+
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for piece in DbPieceFiles().files(tenant_id=tenant_id, brand_id=brand_id):
+        if piece.object_key in seen:
+            continue
+        seen.add(piece.object_key)
+        thumb = piece.object_key if piece.media_type == "image" else piece.poster_key
+        try:
+            view = issue_view_path(tenant_id, thumb, "image") if thumb else ""
+        except Exception as exc:  # noqa: BLE001 — a thumbnail is not worth failing the list
+            logger.warning("piece view not issued: %s", type(exc).__name__)
+            view = ""
+        topic = " ".join(piece.topic.split())
+        rows.append(
+            {
+                "key": piece.object_key,
+                "media_type": piece.media_type,
+                "label": (topic[:40] + "…" if len(topic) > 40 else topic) or "Pieza",
+                "view": view,
+            }
+        )
+    return tuple(rows)
+
+
 def template_blocker(
     tenant_id: UUID,
     brand_id: UUID,

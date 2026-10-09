@@ -1262,7 +1262,10 @@ def _media_item(item: rx.Var[MediaVM]) -> rx.Component:
                 controls=True,
                 width="100%",
                 height="auto",
-                class_name="q-rv-media q-rv-media--video",
+                # a carousel's video slide keeps its feed shape (see content_generator)
+                class_name=rx.cond(
+                    item.is_slide, "q-rv-media q-rv-media--slide", "q-rv-media q-rv-media--video"
+                ),
             ),
             rx.image(src=src, alt="", class_name="q-rv-media q-rv-media--image"),
         ),

@@ -35,6 +35,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
+from urllib.parse import quote
 
 from qualify_creative.enums import GenerationTask
 from qualify_creative.providers import (
@@ -474,8 +475,10 @@ class SeedanceVideoAdapter(_ArkClient):
 
     def get_task(self, task_id: str, *, api_key: str) -> Mapping[str, Any]:
         """One task's current state — the recovery path after an `ArkTaskTimeout`."""
+        # quoted whole: a pasted id with `/` or `..` must not move the keyed call elsewhere
+        path = f"/contents/generations/tasks/{quote(task_id, safe='')}"
         with self._client(api_key) as client:
-            return _body_or_raise(client.get(f"/contents/generations/tasks/{task_id}"))
+            return _body_or_raise(client.get(path))
 
     # -- internals ----------------------------------------------------------------------
 

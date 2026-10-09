@@ -54,6 +54,7 @@ from .creative_provider import (
     approve_voice,
     brand_clone_voice,
     brand_media,
+    brand_pieces,
     brand_readiness,
     catalog_products,
     configured_video_engine,
@@ -128,18 +129,27 @@ _ENABLED_KINDS = (
     "animated_avatar_video",
     "static_flyer",
     "template",
+    "carousel",
 )
 #: «¿Qué quieres crear?» since 2026-10-06: three categories, and Video has its types.
 #: `ad_video` is the template kind rendering its Reel; «Con plantilla» is the same
 #: kind rendering one still (feed or story).
-GEN_CATEGORIES = ("script", "video", "image", "template")
+GEN_CATEGORIES = ("script", "video", "image", "template", "carousel")
 VIDEO_TYPES = ("avatar_video", "animated_avatar_video", "ad_video")
 _CATEGORY_KIND = {
     "script": "creator_script",
     "video": "avatar_video",
     "image": "static_flyer",
     "template": "template",
+    "carousel": "carousel",
 }
+#: The carousel's slides (§ request 2026-10-09): where each comes from, what it prints,
+#: how long a video lasts — the editor's values, `CarouselSlide`'s fields.
+_SLIDE_SOURCES = ("generated", "animated")
+_SLIDE_TEXTS = ("none", "hook", "cta")
+_SLIDE_SECONDS = ("5", "10")
+_CAROUSEL_MIN = 2
+_CAROUSEL_MAX = 10
 #: A Seedance presenter has no library: «Mujer» / «Hombre» are a described synthetic
 #: person like «Personalizado», with this description (§ request 2026-10-07).
 _SEEDANCE_PRESENTERS = {
@@ -164,6 +174,42 @@ _GENDERS = ("female", "male")
 _AD_MODES = ("product", "background", "both")
 _OBJECTIVES = frozenset(o.value for o in BriefObjective)
 _INTENTS = frozenset(i.value for i in BriefIntent)
+#: When a piece lands (§ request 2026-10-09): what the toast says, and what the
+#: browser's own notification says when the tab is in the background.
+_GEN_READY_TOAST = "Tu pieza está lista. Revísala en Crear pieza o en Borradores."
+_GEN_FAILED_TOAST = "No se pudo generar la pieza. El detalle está en Crear pieza."
+_DRAFT_READY_TOAST = "Tu borrador ya está regenerado. Revísalo en Borradores."
+_DRAFT_FAILED_TOAST = "No se pudo regenerar el borrador. El detalle está en Borradores."
+_ASK_NOTIFICATIONS_JS = (
+    "if (window.Notification && Notification.permission === 'default') "
+    "{ Notification.requestPermission(); }"
+)
+
+
+def _notify_js(title: str, body: str) -> str:
+    """The browser's notification — only when the tab is NOT in front (the toast covers
+    the rest), and only if the operator allowed it."""
+    return (
+        "if (document.hidden && window.Notification && Notification.permission === 'granted') "
+        f"{{ new Notification({title!r}, {{body: {body!r}}}); }}"
+    )
+
+
+def _generation_done_events(outcome: str, source: str = "generator") -> list[rx.event.EventSpec]:
+    """What the app says when a piece lands: `outcome` is "ready" or "failed"; `source`
+    is "generator" (a piece from /create) or "draft" (a draft regenerated in Borradores,
+    § pendientes-generador-contenido.md §5)."""
+    texts = {
+        ("generator", "ready"): _GEN_READY_TOAST,
+        ("generator", "failed"): _GEN_FAILED_TOAST,
+        ("draft", "ready"): _DRAFT_READY_TOAST,
+        ("draft", "failed"): _DRAFT_FAILED_TOAST,
+    }
+    text = texts[(source, outcome)]
+    toast = rx.toast.success if outcome == "ready" else rx.toast.error
+    return [toast(text, duration=8000), rx.call_script(_notify_js("Qualify", text))]
+
+
 #: The generator's numbered sections, in order, under «¿Qué creamos?» (§ request
 #: 2026-10-08: one view with sections replaced the step-by-step wizard). `presenter`
 #: only applies to the two avatar kinds; «Reglas» is a folded, unnumbered extra.
@@ -171,16 +217,47 @@ GENERATOR_SECTIONS = ("topic", "channel", "presenter", "details")
 
 
 def _is_carousel(draft: DraftVM | None) -> bool:
-    """A piece whose media is more than one image (a carousel's slides)."""
+    """A piece whose media is more than one image (an ad image's slides), or a carousel
+    kind's slides — images and videos alike (§ 2026-10-09)."""
     if draft is None:
         return False
-    return sum(1 for item in draft.media if item.media_type == "image") > 1
+    images = sum(1 for item in draft.media if item.media_type == "image")
+    return images > 1 or sum(1 for item in draft.media if item.is_slide) > 1
 
 
 def _next_slide(draft: DraftVM | None, index: int) -> int:
-    """The slide after `index`, wrapping to the first."""
+    """The slide after `index`, wrapping to the first. A video slide holds the carousel
+    still (§ 2026-10-09): the tick would cut it every 4 s — the arrows move on."""
     total = len(draft.media) if draft is not None else 0
-    return (index + 1) % total if total else 0
+    if not total:
+        return 0
+    if 0 <= index < total and draft.media[index].media_type == "video":  # type: ignore[union-attr]
+        return index
+    return (index + 1) % total
+
+
+def _new_slide(source: str, *, text: str = "none") -> dict[str, str]:
+    """One editor row of a generated or animated slide. Its product photo is its own
+    (§ 2026-10-09: uploaded in the slide, not in a list for the whole carousel)."""
+    return {
+        "source": source,
+        "scene": "",
+        "photo_key": "",
+        "photo_name": "",
+        "background": "1",
+        "text": text,
+        "seconds": "5",
+        "key": "",
+        "label": "",
+        "view": "",
+        "media_type": "image" if source == "generated" else "video",
+    }
+
+
+def _default_slides() -> list[dict[str, str]]:
+    """What a new carousel opens on: a generated cover with the hook, then an animated
+    slide — with the closing CTA slide, three slides ready to generate."""
+    return [_new_slide("generated", text="hook"), _new_slide("animated")]
 
 
 def _slide(draft: DraftVM | None, index: int) -> int:
@@ -193,6 +270,7 @@ def generator_sections(kind: str) -> list[str]:
     """The sections `kind` shows, in order. The ad image asks no «¿Qué quieres en la
     imagen?» (§ request 2026-10-08): its scene, in its details, is it."""
     has_presenter = kind in ("avatar_video", "animated_avatar_video")
+    # the carousel says what it is about in «topic»; its slides are its details
     return [
         section
         for section in GENERATOR_SECTIONS
@@ -233,6 +311,7 @@ _GEN_WAITING = {
     "animated_avatar_video": "Generando tu video. Puede tardar unos minutos…",
     "static_flyer": "Generando tu imagen, ya casi está…",
     "template": "Generando tu pieza, ya casi está…",
+    "carousel": "Armando tu carrusel. Si lleva videos, puede tardar unos minutos…",
 }
 _TEMPLATE_PHOTO_REQUIRED = (
     "Una plantilla trabaja sobre fotos reales: necesita al menos 2 (las del producto del "
@@ -381,6 +460,21 @@ class CreativeState(rx.State):
     brand_logo_key: str = ""
     brand_element_keys: list[str] = []
     media_carousel: bool = False
+    #: The carousel kind (§ request 2026-10-09): its slides in order, as editor rows —
+    #: `{source, scene, photo_key, photo_name, background, text, seconds, key, label,
+    #: view, media_type}` (`_new_slide`) — and whether a closing CTA slide ends it.
+    carousel_slides: list[dict[str, str]] = _default_slides()
+    carousel_closing: bool = True
+    #: The strip of thumbnails (§ 2026-10-09, option A): the slide being edited below
+    #: it, and whether «+» is showing the three kinds of slide to add.
+    carousel_selected: int = 0
+    carousel_adding: bool = False
+    #: The brand's pieces' files (`creative_provider.brand_pieces`), read when «De una
+    #: pieza» is first opened: `{key, media_type, label, view}`. Only a key in this list
+    #: is accepted, and the producer checks it again against the brand's drafts.
+    piece_items: list[dict[str, str]] = []
+    piece_picker_open: bool = False
+    pieces_loading: bool = False
     media_duration: str = "30"
     #: The advertising image: built from the product, the background or both
     #: (`AdImageMode`), and the scene the image model will be asked for.
@@ -727,7 +821,227 @@ class CreativeState(rx.State):
     @rx.var
     def kind_takes_images(self) -> bool:
         """Background and product images: every kind but the creator's script."""
-        return self.brief_kind in ("avatar_video", "animated_avatar_video", "static_flyer")
+        return self.brief_kind in (
+            "avatar_video",
+            "animated_avatar_video",
+            "static_flyer",
+            "carousel",
+        )
+
+    # -- the carousel's slides (§ request 2026-10-09) -----------------------------------
+    #
+    # A strip of thumbnails, Instagram's order (option A, chosen 2026-10-09): «+» offers
+    # the three kinds of slide, a thumbnail opens its slide in the editor below.
+
+    @rx.var
+    def carousel_slide_count(self) -> int:
+        """Slides the carousel will have, the closing one included."""
+        return len(self.carousel_slides) + int(self.carousel_closing)
+
+    @rx.var
+    def carousel_full(self) -> bool:
+        return self.carousel_slide_count >= _CAROUSEL_MAX
+
+    @rx.var
+    def carousel_slide_rows(self) -> list[dict[str, str]]:
+        """The strip's thumbnails: each row with its 1-based number, whether it is the one
+        being edited and what its text label says."""
+        selected = self._carousel_index()
+        rows: list[dict[str, str]] = []
+        for index, slide in enumerate(self.carousel_slides):
+            row = dict(slide)
+            row["n"] = str(index + 1)
+            row["selected"] = "1" if index == selected else ""
+            row["text_label"] = {"hook": "Título", "cta": "Botón"}.get(slide.get("text", ""), "")
+            rows.append(row)
+        return rows
+
+    @rx.var
+    def carousel_current(self) -> dict[str, str]:
+        """The slide open in the editor below the strip ({} with no slides)."""
+        index = self._carousel_index()
+        if index < 0:
+            return {}
+        row = dict(self.carousel_slides[index])
+        row["n"] = str(index + 1)
+        row["first"] = "1" if index == 0 else ""
+        row["last"] = "1" if index == len(self.carousel_slides) - 1 else ""
+        return row
+
+    def _carousel_index(self) -> int:
+        if not self.carousel_slides:
+            return -1
+        return max(0, min(self.carousel_selected, len(self.carousel_slides) - 1))
+
+    def _replace_slide(self, index: int, **fields: str) -> None:
+        slides = [dict(slide) for slide in self.carousel_slides]
+        slides[index].update(fields)
+        self.carousel_slides = slides
+
+    @rx.event
+    def select_carousel_slide(self, index: int) -> None:
+        if 0 <= int(index) < len(self.carousel_slides):
+            self.carousel_selected = int(index)
+            self.carousel_adding = False
+            self.piece_picker_open = False
+
+    @rx.event
+    def toggle_carousel_adding(self) -> None:
+        self.carousel_adding = not self.carousel_adding and not self.carousel_full
+        self.piece_picker_open = False
+
+    @rx.event
+    def add_carousel_slide(self, source: str) -> None:
+        """A new slide at the end of the strip, open in the editor."""
+        if source not in _SLIDE_SOURCES or self.carousel_full:
+            return
+        self.carousel_slides = [*self.carousel_slides, _new_slide(source)]
+        self.carousel_selected = len(self.carousel_slides) - 1
+        self.carousel_adding = False
+
+    @rx.event
+    def remove_carousel_slide(self, index: int) -> None:
+        slides = list(self.carousel_slides)
+        index = int(index)
+        if 0 <= index < len(slides):
+            slides.pop(index)
+            self.carousel_slides = slides
+            self.carousel_selected = max(0, min(self.carousel_selected, len(slides) - 1))
+
+    @rx.event
+    def move_carousel_slide(self, index: int, delta: int) -> None:
+        """Swap a slide with its neighbour; the editor follows it."""
+        slides = list(self.carousel_slides)
+        index, target = int(index), int(index) + int(delta)
+        if 0 <= index < len(slides) and 0 <= target < len(slides):
+            slides[index], slides[target] = slides[target], slides[index]
+            self.carousel_slides = slides
+            self.carousel_selected = target
+
+    @rx.event
+    def set_slide_field(self, index: int, field: str, value: str) -> None:
+        """One field of one slide, kept to the values `CarouselSlide` takes."""
+        allowed = {
+            "scene": None,
+            "background": ("1", ""),
+            "text": _SLIDE_TEXTS,
+            "seconds": _SLIDE_SECONDS,
+        }
+        index = int(index)
+        if field not in allowed or not 0 <= index < len(self.carousel_slides):
+            return
+        value = str(value)
+        if field == "scene":
+            value = value[:600]
+        elif value not in allowed[field]:  # type: ignore[operator]
+            return
+        if self.carousel_slides[index]["source"] == "existing":
+            return  # a reused piece goes as it is
+        self._replace_slide(index, **{field: value})
+
+    @rx.event
+    def toggle_slide_background(self, index: int) -> None:
+        index = int(index)
+        if 0 <= index < len(self.carousel_slides):
+            current = self.carousel_slides[index].get("background", "1")
+            self.set_slide_field(index, "background", "" if current else "1")
+
+    @rx.event
+    async def handle_slide_photo_upload(self, files: list[rx.UploadFile]) -> None:
+        """The product photo of the slide open in the editor (§ 2026-10-09: uploaded in
+        the slide itself). One photo per slide; a new one replaces it."""
+        index = self._carousel_index()
+        if index < 0 or self.carousel_slides[index]["source"] == "existing":
+            return
+        saved = await self._save_uploads(files[:1])
+        if saved:
+            key, name = saved[0]
+            self._replace_slide(index, photo_key=key, photo_name=name)
+
+    @rx.event
+    def clear_slide_photo(self) -> None:
+        index = self._carousel_index()
+        if index >= 0:
+            self._replace_slide(index, photo_key="", photo_name="")
+
+    @rx.event
+    def set_carousel_closing(self, value: bool) -> None:
+        if value and len(self.carousel_slides) >= _CAROUSEL_MAX:
+            return
+        self.carousel_closing = bool(value)
+
+    @rx.event
+    def toggle_piece_picker(self) -> rx.event.EventSpec | None:
+        self.piece_picker_open = not self.piece_picker_open
+        if self.piece_picker_open and not self.piece_items and not self.pieces_loading:
+            return CreativeState.load_brand_pieces
+        return None
+
+    @rx.event(background=True)
+    async def load_brand_pieces(self) -> None:
+        """«De una pieza»: the images and videos of the brand's own drafts. A list that
+        cannot be read leaves the picker empty, never the carousel blocked."""
+        async with self:
+            self.pieces_loading = True
+        ids = await self._session_ids()
+        if ids is None:
+            async with self:
+                self.pieces_loading = False
+            return
+        tenant_id, brand_id, _ = ids
+        try:
+            items = list(await asyncio.to_thread(brand_pieces, tenant_id, brand_id))
+        except Exception as exc:  # noqa: BLE001 — the other slides still work
+            logger.warning("brand pieces unreadable: %s", type(exc).__name__)
+            items = []
+        async with self:
+            self.piece_items = items
+            self.pieces_loading = False
+
+    @rx.event
+    def pick_piece(self, key: str) -> None:
+        """A file of one of the brand's pieces as the next slide, open in the editor."""
+        if self.carousel_full:
+            return
+        item = next((item for item in self.piece_items if item.get("key") == key), None)
+        if item is None:
+            return
+        slide = _new_slide("generated")
+        slide.update(
+            source="existing",
+            key=item["key"],
+            label=item.get("label", ""),
+            view=item.get("view", ""),
+            media_type=item.get("media_type", "image"),
+        )
+        self.carousel_slides = [*self.carousel_slides, slide]
+        self.carousel_selected = len(self.carousel_slides) - 1
+        self.piece_picker_open = False
+        self.carousel_adding = False
+
+    def _carousel_slides_payload(self, background: bool) -> tuple[list[str], list[dict]]:
+        """The editor rows as `CarouselSlide` fields, and the product photos they point
+        at (`MediaInputs.product_keys`, each slide's own, deduplicated in order)."""
+        photos: list[str] = []
+        out: list[dict] = []
+        for slide in self.carousel_slides:
+            if slide["source"] == "existing":
+                out.append({"source": "existing", "object_key": slide["key"]})
+                continue
+            photo = slide.get("photo_key", "")
+            if photo and photo not in photos:
+                photos.append(photo)
+            out.append(
+                {
+                    "source": slide["source"],
+                    "scene_prompt": slide.get("scene", "").strip(),
+                    "product_index": photos.index(photo) if photo else None,
+                    "use_background": background and bool(slide.get("background")),
+                    "text": slide.get("text", "none"),
+                    "seconds": int(slide.get("seconds", "5")),
+                }
+            )
+        return photos, out
 
     @rx.var
     def format_options(self) -> list[list[str]]:
@@ -783,8 +1097,10 @@ class CreativeState(rx.State):
 
     @rx.var
     def carousel_allowed(self) -> bool:
-        """A carousel is a flyer in a feed format (Instagram takes none in a story)."""
-        return self.brief_kind == "static_flyer" and self.effective_format.startswith("feed_")
+        """The advertising image is one image (§ request 2026-10-09: "quitar la opción de
+        carrusel en imágenes publicitarias") — a carousel is its own kind now. A flyer
+        brief stored with `carousel` still regenerates as it was asked."""
+        return False
 
     @rx.var
     def gen_is_drafting(self) -> bool:
@@ -1629,6 +1945,9 @@ class CreativeState(rx.State):
         self.create_error = ""
         if key != "static_flyer":
             self.media_carousel = False
+        if key == "carousel" and not self.carousel_slides:
+            self.carousel_slides = _default_slides()
+            self.carousel_closing = True
         if key in ("avatar_video", "animated_avatar_video"):
             self.video_engine = configured_video_engine()
             if self.video_engine == "heygen" and not self.heygen_voices:
@@ -1859,10 +2178,12 @@ class CreativeState(rx.State):
         self.create_error = ""
 
     @rx.event(background=True)
-    async def poll_generator(self) -> None:
+    async def poll_generator(self) -> AsyncIterator[rx.event.EventSpec]:
         """The result view waits here: the draft is read until it leaves `drafting`
         (an avatar video can take several minutes). Stops on its own when the operator
-        goes back to the form or starts another piece."""
+        goes back to the form or starts another piece. When the piece lands it says so
+        (§ request 2026-10-09): a toast in the app, and the browser's own notification
+        when the tab is not in front — generation goes on while the operator is away."""
         async with self:
             draft_id = self.gen_draft_id
         ids = await self._session_ids()
@@ -1876,16 +2197,24 @@ class CreativeState(rx.State):
             except SQLAlchemyError as exc:
                 logger.warning("generator poll failed: %s", type(exc).__name__)
                 vm = None
+            outcome = ""
             async with self:
                 if self.gen_draft_id != draft_id or self.generator_view != "result":
                     return
                 if vm is not None:
                     self.gen_draft = vm
                     if not vm.is_drafting:
-                        return
-                if time.monotonic() - started > _GEN_POLL_BUDGET_SECONDS:
+                        outcome = "failed" if vm.is_failed else "ready"
+                elif time.monotonic() - started > _GEN_POLL_BUDGET_SECONDS:
                     self.gen_timed_out = True
                     return
+                if not outcome and time.monotonic() - started > _GEN_POLL_BUDGET_SECONDS:
+                    self.gen_timed_out = True
+                    return
+            if outcome:
+                for event in _generation_done_events(outcome):
+                    yield event
+                return
             await asyncio.sleep(_GEN_POLL_SECONDS)
 
     @rx.event
@@ -2048,6 +2377,11 @@ class CreativeState(rx.State):
             return "Escribe tu guion o apaga «Escribir mi propio guion»."
         if self.brief_kind == "template" and self.template_photo_count < _TEMPLATE_MIN_PHOTOS:
             return _TEMPLATE_PHOTO_REQUIRED
+        if self.brief_kind == "carousel":
+            if self.carousel_slide_count < _CAROUSEL_MIN:
+                return "Un carrusel necesita al menos 2 diapositivas (el cierre cuenta)."
+            if self.carousel_slide_count > _CAROUSEL_MAX:
+                return "Un carrusel tiene como máximo 10 diapositivas (el cierre cuenta)."
         return ""
 
     def _form_problem(self) -> str:
@@ -2092,6 +2426,11 @@ class CreativeState(rx.State):
         if is_ad:
             media["ad_mode"] = self.ad_mode
             media["scene_prompt"] = self.ad_scene_prompt.strip()
+        if kind == "carousel":
+            # each slide's own photo is the product reference it is generated from
+            photos, slides = self._carousel_slides_payload(bool(media["background_key"]))
+            media.update(product_keys=photos, slides=slides, closing_slide=self.carousel_closing)
+            return media
         if kind in ("avatar_video", "animated_avatar_video"):
             media["engine"] = self.avatar_engine
             media["video_engine"] = self.video_engine
@@ -2142,6 +2481,11 @@ class CreativeState(rx.State):
         self.media_product_keys = []
         self.media_product_names = []
         self.media_carousel = False
+        self.carousel_slides = _default_slides()
+        self.carousel_closing = True
+        self.carousel_selected = 0
+        self.carousel_adding = False
+        self.piece_picker_open = False
         self.avatar_prompt = ""
         self.human_avatar_prompt = ""
         self.ad_scene_prompt = ""
@@ -2243,6 +2587,9 @@ class CreativeState(rx.State):
                     self.create_error = _TEMPLATE_BLOCKED + blocker
                 return
         yield CreativeState.preview_prompt  # the prompt it sends, in the console
+        # ask once for the browser's notifications, so the piece can say "listo" even
+        # when the operator went to another tab meanwhile (§ request 2026-10-09)
+        yield rx.call_script(_ASK_NOTIFICATIONS_JS)
         draft_id = await self._create_draft(form)
         if draft_id is None:
             return
@@ -2463,9 +2810,13 @@ class CreativeState(rx.State):
             yield CreativeState.poll_draft
 
     @rx.event(background=True)
-    async def poll_draft(self) -> None:
+    async def poll_draft(self) -> AsyncIterator[rx.event.EventSpec]:
         """Poll while DRAFTING. Backs off 1s → 2s → 4s, caps at 5s, gives up at 5 min
-        with a visible timeout state (§6.6)."""
+        with a visible timeout state (§6.6). Since 2026-10-09 (pendientes §5) the poll
+        outlives the screen: opening another draft or another page no longer stops it —
+        the generation is running anyway — it only stops refreshing a detail that is not
+        on screen, and when the draft lands it says so (toast; the browser's own
+        notification when the tab is behind)."""
         async with self:
             polling_id = self._polling_draft_id
         draft_id = tenant_uuid(polling_id)  # UUID-or-None parse, same shape as tenants
@@ -2491,23 +2842,27 @@ class CreativeState(rx.State):
                 delay = _POLL_DELAYS[attempt] if attempt < len(_POLL_DELAYS) else _POLL_CAP_SECONDS
                 attempt += 1
                 await asyncio.sleep(delay)
-                async with self:
-                    # The operator navigated to another draft or away: stop quietly.
-                    if self._polling_draft_id != polling_id:
-                        return
                 try:
                     vm = await asyncio.to_thread(draft_detail, tenant_id, draft_id)
                 except SQLAlchemyError as exc:
                     logger.error("draft poll failed: %s", type(exc).__name__)
                     continue  # transient; the budget above still bounds the loop
+                outcome = ""
                 async with self:
-                    if self._polling_draft_id != polling_id:
-                        return
-                    self.poll_elapsed_label = f"{int(time.monotonic() - started)} s"
+                    # still the draft on screen? then its detail is refreshed; otherwise
+                    # the poll only waits for the end to say so
+                    on_screen = self._polling_draft_id == polling_id
+                    if on_screen:
+                        self.poll_elapsed_label = f"{int(time.monotonic() - started)} s"
                     if vm is not None:
-                        self._apply_detail(vm)
+                        if on_screen:
+                            self._apply_detail(vm)
                         if not vm.is_drafting:
-                            return
+                            outcome = "failed" if vm.is_failed else "ready"
+                if outcome:
+                    for event in _generation_done_events(outcome, source="draft"):
+                        yield event
+                    return
         finally:
             async with self:
                 if self._polling_draft_id == polling_id:
@@ -2706,6 +3061,8 @@ class CreativeState(rx.State):
             if should_poll:
                 self._polling_draft_id = vm.draft_id
         if should_poll:
+            # the regeneration says "listo" even from another tab (pendientes §5)
+            yield rx.call_script(_ASK_NOTIFICATIONS_JS)
             yield CreativeState.poll_draft
 
 

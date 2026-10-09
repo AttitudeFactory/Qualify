@@ -407,6 +407,19 @@ def test_an_unknown_family_is_never_guessed() -> None:
         seedance_family("dreamina-seedance-9-9")
 
 
+def test_get_task_quotes_the_id_into_one_path_segment() -> None:
+    """PR #100 review: a pasted id with `/` or `..` must not move the keyed call."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"id": "x", "status": "running"})
+
+    adapter = SeedanceVideoAdapter(transport=httpx.MockTransport(handler))
+    adapter.get_task("cgt-1/../../models", api_key=API_KEY)
+    assert seen[0].url.raw_path.decode().endswith("/tasks/cgt-1%2F..%2F..%2Fmodels")
+
+
 @pytest.mark.parametrize("status", [502, 504])
 def test_a_gateway_error_is_not_sent_twice(status: int) -> None:
     """PR #100 review: a 502/504 may come after the vendor started — no second bill."""

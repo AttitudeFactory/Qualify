@@ -24,7 +24,14 @@ from __future__ import annotations
 
 import hashlib
 
-from qualify_creative.enums import AvatarSource, ContentKind, EmojiPolicy, GenerationTask
+from qualify_creative.enums import (
+    AvatarSource,
+    ContentKind,
+    EmojiPolicy,
+    GenerationTask,
+    SlideSource,
+    SlideText,
+)
 from qualify_creative.providers import RenderedPrompt
 from qualify_creative.schemas import (
     ADS_DESCRIPTION_MAX,
@@ -273,6 +280,12 @@ _KIND_ASSIGNMENT: dict[ContentKind, str] = {
         " Reel and its feed and story stills. The hook and the CTA are printed on them, so"
         " keep them short and punchy. Leave `script` empty and `shots` empty."
     ),
+    ContentKind.CAROUSEL: (
+        "This is a feed carousel: several slides — images and short silent videos — the"
+        " viewer swipes through. The hook and the CTA are printed on the slides the"
+        " operator chose, so keep them short and punchy; the caption carries the rest."
+        " Leave `script` empty and `shots` empty."
+    ),
 }
 
 
@@ -307,13 +320,36 @@ def _on_screen(brief: ContentBrief) -> tuple[str, ...]:
             )
     elif brief.kind is ContentKind.TEMPLATE and media.product_keys:
         seen.append(f"{len(media.product_keys)} real photo(s) of the product")
+    elif brief.kind is ContentKind.CAROUSEL:
+        seen.extend(_carousel_slides(brief))
     if not seen:
         return ()
     return ("On screen: " + "; ".join(seen) + ". Write so the words fit what is shown.",)
 
 
+def _carousel_slides(brief: ContentBrief) -> list[str]:
+    """One line per carousel slide, in order: what it shows and what is printed on it."""
+    lines: list[str] = []
+    slides = brief.media.slides
+    total = len(slides) + int(brief.media.closing_slide)
+    for number, slide in enumerate(slides, start=1):
+        what = {
+            SlideSource.GENERATED: "a generated image",
+            SlideSource.ANIMATED: "a short silent video",
+            SlideSource.EXISTING: "an image or video the brand already made",
+        }[slide.source]
+        scene = slide.scene_prompt.strip()
+        text = {SlideText.HOOK: ", the hook printed on it", SlideText.CTA: ", the CTA on it"}.get(
+            slide.text, ""
+        )
+        lines.append(f"slide {number}/{total}: {what}" + (f" of «{scene}»" if scene else "") + text)
+    if brief.media.closing_slide:
+        lines.append(f"slide {total}/{total}: the CTA, large, on the brand's colours")
+    return lines
+
+
 #: The kinds whose hook and CTA are printed on an image (§ request 2026-10-08).
-_PRINTED_KINDS = frozenset({ContentKind.STATIC_FLYER, ContentKind.TEMPLATE})
+_PRINTED_KINDS = frozenset({ContentKind.STATIC_FLYER, ContentKind.TEMPLATE, ContentKind.CAROUSEL})
 
 #: What the piece does with the logo it was given, per kind — the brand mark's place.
 _LOGO_PLACEMENT: dict[ContentKind, str] = {
@@ -321,6 +357,7 @@ _LOGO_PLACEMENT: dict[ContentKind, str] = {
     ContentKind.ANIMATED_AVATAR_VIDEO: "it is shown in a corner of the video, behind the character",
     ContentKind.STATIC_FLYER: "it is printed on the image",
     ContentKind.TEMPLATE: "the template places it where the brand mark goes",
+    ContentKind.CAROUSEL: "it is printed in a corner of the generated slides",
     ContentKind.CREATOR_SCRIPT: "show it on camera where it fits (packaging, the counter, a sign)",
 }
 

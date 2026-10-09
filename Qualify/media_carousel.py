@@ -17,9 +17,9 @@ import reflex as rx
 from .ui import tokens as T
 
 #: The carousel moves to the next slide by itself every this many ms (§ request
-#: 2026-10-08: "un pequeño delay para que cambien solas"), back to the first after the
-#: last; the arrows and dots still work.
-AUTOPLAY_MS = 4000
+#: 2026-10-08: "un pequeño delay para que cambien solas"; 10 s since 2026-10-09), back
+#: to the first after the last; the arrows and dots still work.
+AUTOPLAY_MS = 10000
 
 
 def _arrow(icon: str, label: str, side: str, on_click: rx.event.EventSpec) -> rx.Component:
@@ -33,11 +33,14 @@ def _arrow(icon: str, label: str, side: str, on_click: rx.event.EventSpec) -> rx
         radius="full",
         size="2",
         position="absolute",
+        # centred with a margin, NOT a transform: the kit lifts a solid button 2 px on
+        # hover with `transform`, which replaced the centring one and made the arrow
+        # jump away from the pointer, over and over (2026-10-09: "empieza a saltar")
         top="40%",
-        transform="translateY(-50%)",
+        margin_top="-1rem",
         z_index="2",
         opacity="0.85",
-        box_shadow="0 2px 8px rgba(0, 0, 0, 0.35)",
+        class_name="q-cr-arrow",  # the island elevation, from the system (§3.3)
         **{side: "0.6rem"},
     )
 
