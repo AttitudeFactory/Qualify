@@ -13,8 +13,15 @@ from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
 from qualify_shared.social.ig_shapes import IGComment
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
+from qualify_api.inbox.monitoring import (
+    MONITORING_WINDOW,
+    MediaMetadata,
+    MetadataFetchError,
+    MonitoringState,
+)
 from qualify_api.inbox.repository import PostgresInboxRepository
 from qualify_api.tenancy.models import Tenant, User
 
@@ -649,3 +656,264 @@ def test_reconcile_media_comments_never_crosses_tenants() -> None:
     assert newly_deleted == 1
     assert _message_deleted_at(tenant_a, connection_a, shared_comment_id) is not None
     assert _message_deleted_at(tenant_b, connection_b, shared_comment_id) is None
+
+
+# --------------------------------------------------------------------------------------
+# QUA-149 (0046) — metadata kept past the window, expired media never offered to the sync
+# --------------------------------------------------------------------------------------
+
+_NOW = datetime(2026, 10, 9, 12, 0, tzinfo=UTC)
+
+
+def _meta(posted_at: datetime, caption: str | None = "caption") -> MediaMetadata:
+    return MediaMetadata(
+        posted_at=posted_at,
+        caption=caption,
+        permalink="https://www.instagram.com/reel/x/",
+        media_product_type="REELS",
+    )
+
+
+def test_turning_on_with_metadata_persists_it(seeded_connection: tuple[UUID, UUID]) -> None:
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresInboxRepository()
+    media_id = f"media-{uuid4()}"
+
+    repo.set_media_monitored(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        monitored=True,
+        metadata=_meta(_NOW - timedelta(days=2)),
+        fetched_at=_NOW,
+    )
+
+    row = repo.get_monitored_media(
+        tenant_id=tenant_id, connection_id=connection_id, external_media_id=media_id
+    )
+    assert row is not None
+    assert row.is_monitored
+    assert row.media_posted_at == _NOW - timedelta(days=2)
+    assert row.caption == "caption"
+    assert row.permalink == "https://www.instagram.com/reel/x/"
+    assert row.media_product_type == "REELS"
+    assert row.metadata_fetched_at == _NOW
+    assert row.metadata_error is None
+    assert row.state(_NOW) is MonitoringState.ACTIVE
+
+
+def test_turning_off_keeps_metadata_in_the_same_row(seeded_connection: tuple[UUID, UUID]) -> None:
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresInboxRepository()
+    media_id = f"media-{uuid4()}"
+    repo.set_media_monitored(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        monitored=True,
+        metadata=_meta(_NOW - timedelta(days=2)),
+        fetched_at=_NOW,
+    )
+
+    repo.set_media_monitored(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        monitored=False,
+    )
+
+    row = repo.get_monitored_media(
+        tenant_id=tenant_id, connection_id=connection_id, external_media_id=media_id
+    )
+    assert row is not None
+    assert not row.is_monitored
+    assert row.caption == "caption"
+    assert row.state(_NOW) is MonitoringState.INACTIVE
+    assert _monitored_row_count(connection_id, media_id) == 1
+
+
+def test_list_media_to_sync_applies_the_window_in_sql(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    """Active, expired, exactly-on-the-boundary, legacy (unknown date) and turned-off rows
+    on one connection: only active, boundary and legacy are offered to the sync."""
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresInboxRepository()
+    suffix = uuid4().hex[:8]
+    ids = {n: f"{n}-{suffix}" for n in ("active", "boundary", "expired", "legacy", "off")}
+    for name, posted_at in (
+        ("active", _NOW - timedelta(days=3)),
+        ("boundary", _NOW - MONITORING_WINDOW),
+        ("expired", _NOW - MONITORING_WINDOW - timedelta(seconds=1)),
+    ):
+        repo.set_media_monitored(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            external_media_id=ids[name],
+            monitored=True,
+            metadata=_meta(posted_at),
+            fetched_at=_NOW,
+        )
+    repo.set_media_monitored(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=ids["legacy"],
+        monitored=True,
+    )
+    repo.set_media_monitored(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=ids["off"],
+        monitored=False,
+        metadata=_meta(_NOW - timedelta(days=1)),
+        fetched_at=_NOW,
+    )
+
+    to_sync = repo.list_media_to_sync(tenant_id=tenant_id, connection_id=connection_id, now=_NOW)
+    ours = {m.external_media_id: m for m in to_sync if m.external_media_id.endswith(suffix)}
+
+    assert set(ours) == {ids["active"], ids["boundary"], ids["legacy"]}
+    assert ours[ids["legacy"]].needs_metadata
+    assert not ours[ids["active"]].needs_metadata
+    assert [m.external_media_id for m in to_sync] == sorted(m.external_media_id for m in to_sync)
+    # The expired row is untouched and still readable.
+    expired = repo.get_monitored_media(
+        tenant_id=tenant_id, connection_id=connection_id, external_media_id=ids["expired"]
+    )
+    assert expired is not None and expired.is_monitored and expired.caption == "caption"
+    assert expired.state(_NOW) is MonitoringState.EXPIRED
+    # QUA-149 phase 2: exactly the monitored rows the query above left out by date (the
+    # legacy row's date is unknown, the turned-off row is not monitored).
+    assert repo.count_expired_media(tenant_id=tenant_id, connection_id=connection_id, now=_NOW) == 1
+
+
+def test_metadata_failure_then_backfill_on_a_legacy_row(
+    seeded_connection: tuple[UUID, UUID],
+) -> None:
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresInboxRepository()
+    media_id = f"legacy-{uuid4()}"
+    repo.set_media_monitored(
+        tenant_id=tenant_id, connection_id=connection_id, external_media_id=media_id, monitored=True
+    )
+
+    repo.record_media_metadata_failure(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        error=MetadataFetchError.PERMISSION,
+        attempted_at=_NOW,
+    )
+    failed = repo.get_monitored_media(
+        tenant_id=tenant_id, connection_id=connection_id, external_media_id=media_id
+    )
+    assert failed is not None
+    assert failed.is_monitored
+    assert failed.metadata_error is MetadataFetchError.PERMISSION
+    assert failed.metadata_attempted_at == _NOW
+    assert failed.metadata_fetched_at is None
+
+    repo.record_media_metadata(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        metadata=_meta(_NOW - timedelta(days=40), caption=None),
+        fetched_at=_NOW + timedelta(minutes=5),
+    )
+    done = repo.get_monitored_media(
+        tenant_id=tenant_id, connection_id=connection_id, external_media_id=media_id
+    )
+    assert done is not None
+    assert done.is_monitored
+    assert done.caption is None
+    assert done.metadata_fetched_at == _NOW + timedelta(minutes=5)
+    assert done.metadata_error is None
+    assert done.state(_NOW) is MonitoringState.EXPIRED
+    to_sync = repo.list_media_to_sync(tenant_id=tenant_id, connection_id=connection_id, now=_NOW)
+    assert media_id not in {m.external_media_id for m in to_sync}
+
+
+def test_a_failure_never_erases_stored_metadata(seeded_connection: tuple[UUID, UUID]) -> None:
+    tenant_id, connection_id = seeded_connection
+    repo = PostgresInboxRepository()
+    media_id = f"media-{uuid4()}"
+    repo.set_media_monitored(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        monitored=True,
+        metadata=_meta(_NOW - timedelta(days=2)),
+        fetched_at=_NOW,
+    )
+
+    repo.record_media_metadata_failure(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=media_id,
+        error=MetadataFetchError.TRANSIENT,
+        attempted_at=_NOW + timedelta(hours=1),
+    )
+
+    row = repo.get_monitored_media(
+        tenant_id=tenant_id, connection_id=connection_id, external_media_id=media_id
+    )
+    assert row is not None
+    assert row.caption == "caption"
+    assert row.media_posted_at == _NOW - timedelta(days=2)
+    assert row.metadata_fetched_at == _NOW
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "UPDATE monitored_media SET metadata_error = 'deleted' WHERE external_media_id = :mid",
+        "UPDATE monitored_media SET metadata_fetched_at = now(), media_posted_at = NULL "
+        "WHERE external_media_id = :mid",
+    ],
+)
+def test_check_constraints_reject_inconsistent_metadata(
+    seeded_connection: tuple[UUID, UUID], statement: str
+) -> None:
+    tenant_id, connection_id = seeded_connection
+    media_id = f"media-{uuid4()}"
+    PostgresInboxRepository().set_media_monitored(
+        tenant_id=tenant_id, connection_id=connection_id, external_media_id=media_id, monitored=True
+    )
+    with pytest.raises(IntegrityError):
+        with tenant_session(tenant_id) as session:
+            session.execute(text(statement), {"mid": media_id})
+            session.flush()
+
+
+def test_monitored_media_metadata_never_crosses_tenants() -> None:
+    tenant_a, connection_a = _seed_connection_for_new_tenant()
+    tenant_b, _ = _seed_connection_for_new_tenant()
+    repo = PostgresInboxRepository()
+    media_id = f"media-{uuid4()}"
+    repo.set_media_monitored(
+        tenant_id=tenant_a,
+        connection_id=connection_a,
+        external_media_id=media_id,
+        monitored=True,
+        metadata=_meta(_NOW - timedelta(days=1)),
+        fetched_at=_NOW,
+    )
+
+    assert (
+        repo.get_monitored_media(
+            tenant_id=tenant_b, connection_id=connection_a, external_media_id=media_id
+        )
+        is None
+    )
+    assert repo.list_media_to_sync(tenant_id=tenant_b, connection_id=connection_a, now=_NOW) == ()
+    repo.record_media_metadata_failure(
+        tenant_id=tenant_b,
+        connection_id=connection_a,
+        external_media_id=media_id,
+        error=MetadataFetchError.UNKNOWN,
+        attempted_at=_NOW,
+    )
+    row = repo.get_monitored_media(
+        tenant_id=tenant_a, connection_id=connection_a, external_media_id=media_id
+    )
+    assert row is not None and row.metadata_error is None

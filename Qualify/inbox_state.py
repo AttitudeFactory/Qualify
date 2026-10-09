@@ -813,13 +813,18 @@ class InboxState(rx.State):
         else:
             logger.info(
                 "inbox.sync.done run=%s trigger=%s media=%d new=%d deleted=%d "
-                "missing_media=%d truncated=%s ms=%d",
+                "missing_media=%d expired=%d meta_ok=%d meta_failed=%d meta_deferred=%d "
+                "truncated=%s ms=%d",
                 run_id,
                 trigger,
                 result.media_checked,
                 result.new_comments,
                 result.deleted_comments,
                 len(result.skipped_missing_media),
+                result.expired_skipped,
+                result.metadata_backfilled,
+                result.metadata_failed,
+                result.metadata_deferred,
                 result.truncated,
                 (time.monotonic() - started) * 1000,
             )

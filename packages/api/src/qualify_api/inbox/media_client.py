@@ -23,15 +23,20 @@ Unix timestamps (`ig-user/media.md:384-386`). So the "only the last 2 weeks" rul
 enforced by asking Meta for exactly that window, not by fetching everything and filtering
 client-side.
 
-## `get_media` exists for one reason: toggle-time validation without a stored timestamp
+## `get_media`: toggle-time validation against Meta, and the QUA-149 metadata read
 
 The product decision requires that activating monitoring on an old media is rejected — not
-just hidden from the UI. Trusting a client-supplied timestamp, or caching one in
-`monitored_media`, would mean the rule holds only as long as nobody calls the toggle
-directly. `get_media` asks Meta fresh, every time, addressed directly by id
-(`GET /{media-id}?fields=...` — `instagram-media.md:125` — no `ig_user_id` needed in the
-path). `timestamp` is documented `Public` on this node (`instagram-media.md:98`) — no
-`instagram_manage_comments` gate, unlike a comment's `username`/`from`.
+just hidden from the UI. Trusting a client-supplied timestamp, or a stored one, would mean
+the rule holds only as long as nobody calls the toggle directly. `get_media` asks Meta
+fresh at activation, addressed directly by id (`GET /{media-id}?fields=...` —
+`instagram-media.md:125` — no `ig_user_id` needed in the path). `timestamp` is documented
+`Public` on this node (`instagram-media.md:98`) — no `instagram_manage_comments` gate,
+unlike a comment's `username`/`from`.
+
+QUA-149: what `get_media` returns at activation is then persisted in `monitored_media`, so
+the media stays readable — and can be judged expired — after it leaves Meta's 14-day
+listing; the stored date is never what activation decides on. The same call reads that
+metadata once for rows monitored before migration 0046.
 
 ## Fields added for the Reflex picker (2026-08-14, B2 UI slice)
 
@@ -97,10 +102,15 @@ class MediaReadError(Exception):
         self,
         message: str,
         *,
+        http_status: int | None = None,
         platform_code: int | None = None,
         platform_subcode: int | None = None,
     ) -> None:
         super().__init__(message)
+        # QUA-149: the status is what separates a confirmed deletion (HTTP 400 + code
+        # 100/subcode 33, same signature `inbox.client.CommentsReadError` carries) from a
+        # rate limit or a server error. `None` for a malformed 200 response.
+        self.http_status = http_status
         self.platform_code = platform_code
         self.platform_subcode = platform_subcode
 
@@ -185,6 +195,7 @@ class HttpMediaClient:
             code, subcode = _error_codes(response)
             raise MediaReadError(
                 f"GET {path} failed with HTTP {response.status_code}",
+                http_status=response.status_code,
                 platform_code=code,
                 platform_subcode=subcode,
             )
