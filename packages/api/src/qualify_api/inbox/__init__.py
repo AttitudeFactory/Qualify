@@ -41,8 +41,10 @@ from qualify_api.inbox.composition import (
     InboxConnectionInactive,
     UnknownInboxConnection,
     list_candidate_media,
+    seconds_since_last_sync,
     set_media_monitored,
     sync_comments,
+    sync_in_progress,
 )
 from qualify_api.inbox.media_client import (
     MEDIA_FIELDS,
@@ -67,6 +69,7 @@ from qualify_api.inbox.service import (
     SyncBudgetExhausted,
     SyncSummary,
 )
+from qualify_api.inbox.sync_guard import SyncAlreadyRunning
 
 __all__ = [
     "COMMENT_FIELDS",
@@ -89,10 +92,13 @@ __all__ = [
     "MediaSummary",
     "MemoryInboxRepository",
     "PostgresInboxRepository",
+    "SyncAlreadyRunning",
     "SyncBudgetExhausted",
     "SyncSummary",
     "UnknownInboxConnection",
     "list_candidate_media",
+    "seconds_since_last_sync",
     "set_media_monitored",
     "sync_comments",
+    "sync_in_progress",
 ]

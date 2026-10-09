@@ -355,7 +355,7 @@ def test_sync_now_forwards_the_session_tenant_unchanged() -> None:
     fake = _recording_sync(SyncSummary(media_checked=0, new_comments=0), calls)
     with _patched(sync_comments=fake):
         _run_coro(inbox_provider.sync_now(tenant_id=_OTHER_TENANT, connection_id=_CONNECTION))
-    assert calls == [{"tenant_id": _OTHER_TENANT, "connection_id": _CONNECTION}]
+    assert calls == [{"tenant_id": _OTHER_TENANT, "connection_id": _CONNECTION, "run_token": None}]
 
 
 def test_sync_now_projects_summary_fields() -> None:
