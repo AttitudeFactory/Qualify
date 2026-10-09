@@ -57,16 +57,9 @@ _FORBIDDEN_KWARGS: dict[str, str] = {
 _HEX = re.compile(r"#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b")
 
 # Page modules the migration batches have not reached yet (lote → files). Shrinks only.
-_PENDING: set[str] = {
-    # lote A — shell, auth, escucha: migrated (2026-10-08), the guard now protects it
-    # lote B — publicar y catálogo: migrated (2026-10-08), the guard now protects it
-    # lote C — planificador
-    "planner_page.py",
-    "planner_drawer.py",
-    # lote D — contenido / inbox: already clean of these rules (it is the batch's job to
-    # keep it so while moving its chips onto the material)
-    # lote E — Brand Kit y creativo (E1 + E2): migrated (2026-10-08), the guard now protects it
-}
+# Every lote (A–E, 2026-10-08) has migrated: the guard now protects the whole app. The
+# set stays so a future page can be parked here while it is being built.
+_PENDING: set[str] = set()
 
 
 def _page_modules() -> list[Path]:
