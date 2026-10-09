@@ -62,7 +62,14 @@ from __future__ import annotations
 import reflex as rx
 
 from .inbox_state import FILTER_ALL, InboxState
-from .inbox_vm import CandidateMediaVM, CommentVM, ReelSummaryVM
+from .inbox_vm import (
+    MONITORING_ACTIVE,
+    MONITORING_EXPIRED,
+    MONITORING_PENDING,
+    CandidateMediaVM,
+    CommentVM,
+    ReelSummaryVM,
+)
 from .publishing_vm import ConnectionOptionVM
 from .replies_provider import DraftVM
 from .replies_state import RepliesState
@@ -439,16 +446,30 @@ def _reel_thumbnail(reel: ReelSummaryVM) -> rx.Component:
 
 
 def _reel_monitoring_badge(reel: ReelSummaryVM) -> rx.Component:
-    """QUA-94: distinguishes a Reel actively monitored today from one whose comment
-    history is purely historical (`monitored_media.is_monitored=False` — either
-    explicitly turned off, or never monitored at all). Same `tone_badge` primitive
-    `_reel_sentiment_chips` below already uses, so it reads as one family of badges on
-    the card, not a bespoke control. Decoration only — never hides the card, never
-    changes what's inside it; see `inbox_vm.ReelSummaryVM.is_monitored`'s docstring."""
-    return rx.cond(
-        reel.is_monitored,
-        tone_badge("Monitoreado", "ok", icon="eye"),
-        tone_badge("No monitoreado · histórico", "neutral", icon="eye-off"),
+    """QUA-94 + QUA-149: the Reel's EFFECTIVE monitoring state, as the backend applies it
+    (`ReelSummaryVM.monitoring_state`, computed from the shared 14-day rule — never from
+    `is_monitored` alone):
+
+    - "Monitoreado" — synced, inside its 14-day window;
+    - "Monitoreado · fecha por verificar" — synced, but its publication date was not
+      read yet (a Reel monitored before QUA-149), so expiry cannot be judged yet;
+    - "No monitoreado · vencido" — its window ended: no longer synced, history kept;
+    - "No monitoreado" — turned off (by the user, or because it was deleted on Instagram).
+
+    Same `tone_badge` family as `_reel_sentiment_chips`. Decoration only — never hides the
+    card or anything inside it."""
+    return rx.match(
+        reel.monitoring_state,
+        (MONITORING_ACTIVE, tone_badge("Monitoreado", "ok", icon="eye")),
+        (
+            MONITORING_PENDING,
+            tone_badge("Monitoreado · fecha por verificar", "info", icon="clock"),
+        ),
+        (
+            MONITORING_EXPIRED,
+            tone_badge("No monitoreado · vencido", "warn", icon="calendar-x"),
+        ),
+        tone_badge("No monitoreado", "neutral", icon="eye-off"),
     )
 
 
@@ -591,7 +612,12 @@ def _reel_detail_header() -> rx.Component:
                         size="3",
                         weight="medium",
                     ),
-                    mono(reel.external_thread_id, size="1"),
+                    rx.hstack(
+                        _reel_monitoring_badge(reel),
+                        mono(reel.external_thread_id, size="1"),
+                        spacing="2",
+                        align="center",
+                    ),
                     _reel_sentiment_chips(reel),
                     spacing="1",
                     align_items="start",
@@ -760,8 +786,9 @@ def _comments_section() -> rx.Component:
         rx.cond(InboxState.is_showing_reel_detail, _reel_detail_view(), _reel_summaries_list()),
         description=(
             "Comentarios sincronizados, agrupados por Reel, con el sentimiento ya "
-            "analizado cuando existe. Incluye Reels que ya no están monitoreados — "
-            'su historial se conserva, marcado como "No monitoreado · histórico".'
+            "analizado cuando existe. Cada Reel se monitorea 14 días desde su "
+            "publicación; al vencer deja de sincronizarse, pero su caption y sus "
+            'comentarios se conservan, marcado como "No monitoreado · vencido".'
         ),
         actions=[_analyze_now_button()],
     )
