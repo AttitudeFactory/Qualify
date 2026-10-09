@@ -668,6 +668,58 @@ body {
 .q-settle > *:nth-child(4) { animation-delay: 120ms; }
 .q-settle > *:nth-child(n + 5) { animation-delay: 160ms; }
 
+/* ── Reduced motion (global) ─────────────────────────────────────────────────
+   Motion here is decorative, never informational, so it can be turned off whole. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .q-lift:hover { transform: none; }
+}
+
+/* ── Shared controls ──────────────────────────────────────────────────────────
+   The dropzone (an `rx.upload.root` wearing the class): a dashed well on the field
+   fill, the accent when hovered or focused. Used by publish, stories, catalog and the
+   Brand Kit; `.q-cr-dropzone` in qualify-creative.css is the generator's variant. */
+.q-dropzone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 2.5rem 1.5rem;
+  border: 1.5px dashed var(--q-control-edge-hover);
+  border-radius: var(--q-radius-card);
+  background: var(--q-field-fill);
+  box-shadow: inset 0 1px 0 var(--q-control-hi);
+  text-align: center;
+  cursor: pointer;
+  transition:
+    border-color var(--q-dur-fast) var(--q-ease),
+    background var(--q-dur-fast) var(--q-ease),
+    box-shadow var(--q-dur-fast) var(--q-ease);
+}
+.q-dropzone:hover,
+.q-dropzone:focus-within {
+  border-color: var(--accent-8);
+  background: var(--accent-a3);
+  box-shadow: inset 0 1px 0 var(--q-control-hi), 0 0 0 4px var(--accent-a3);
+}
+.q-dropzone--tile {
+  width: var(--q-pub-tile-size, 6.5rem);
+  height: var(--q-pub-tile-size, 6.5rem);
+  padding: 0;
+}
+.q-dropzone--compact {
+  padding: 1rem;
+  border-width: 1px;
+  border-radius: var(--q-radius-control);
+}
+
 /* ── Waiting: skeleton and spinner ────────────────────────────────────────────
    Rule (founder, 2026-10-08, docs/design-system.md §5.4): a SKELETON is content
    loading — the shape of what is about to appear; a SPINNER is work in progress —
@@ -1038,9 +1090,9 @@ body {
 }
 .q-kind-chip--glass {
   color: white;
-  background: rgba(10, 10, 14, 0.55);
+  background: rgba(10, 10, 14, 0.72);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
-  backdrop-filter: blur(6px);
+  /* no backdrop-filter: this chip sits in grids (plan D5) — a darker scrim instead */
 }
 .q-kind-chip--glass svg { color: var(--kind); filter: brightness(1.35); }
 

@@ -216,18 +216,6 @@ body[data-deck-dragging] .q-deck-zone {
   }
 }
 
-/* Motion here is decorative, never informational, so it can be turned off whole. */
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
-  .q-lift:hover { transform: none; }
-}
 
 /* Resultados e insights (2026-10-05): a referente card's bio, cut to two lines so the
    cards of the grid keep one height; the whole bio is on the profile the card opens. */
@@ -369,20 +357,7 @@ body[data-rank-dragging] { cursor: grabbing; }
 
 /* A dropzone (`rx.upload` reset to `border="none"`, this box inside it): a dashed
    edge on the field fill, the accent when the pointer is over it. */
-.q-dropzone {
-  border: 1px dashed var(--q-control-edge-hover);
-  border-radius: var(--q-radius-control);
-  background: var(--q-field-fill);
-  transition:
-    border-color var(--q-dur-fast) var(--q-ease),
-    background var(--q-dur-fast) var(--q-ease);
-}
-@media (hover: hover) {
-  .q-dropzone:hover {
-    border-color: var(--accent-a8);
-    background: var(--q-field-fill-focus);
-  }
-}
+/* `.q-dropzone` is shared — defined once in qualify.css (lote 6). */
 
 /* A tile's preview well (an uploaded element, a type face): a sunken field, not a
    card inside a card. */

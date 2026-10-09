@@ -1039,15 +1039,16 @@ def _state_chip(value: str, label: str) -> rx.Component:
             class_name="q-nums",
         )
 
-    # The selected chip is solid in the accent (no `color_scheme`: omitting it IS the
-    # accent, `T.tone_scheme`), the others soft gray — two buttons under a `cond`.
+    # The selected chip is soft in the accent (no `color_scheme`: omitting it IS the
+    # accent, `T.tone_scheme`), the others soft gray — two buttons under a `cond`. Soft,
+    # not solid: a selected filter is a state; the page's one solid is «Crear POST» (P3).
     return rx.cond(
         selected,
         rx.button(
             label,
             count(),
             size="1",
-            variant="solid",
+            variant="soft",
             radius="full",
             on_click=GalleryState.set_state_filter(value),
             aria_pressed="true",

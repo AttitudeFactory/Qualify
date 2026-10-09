@@ -40,40 +40,7 @@
  * the card — that lights up with the accent when the pointer (or a dragged file) is
  * over it. `--tile` is the same widget shrunk to a `+` tile inside the gallery grid
  * (`--q-pub-tile-size`, below); `--compact` is the catalogue's smaller one. */
-.q-dropzone {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  padding: 2.5rem 1.5rem;
-  border: 1.5px dashed var(--q-control-edge-hover);
-  border-radius: var(--q-radius-card);
-  background: var(--q-field-fill);
-  box-shadow: inset 0 1px 0 var(--q-control-hi);
-  text-align: center;
-  cursor: pointer;
-  transition:
-    border-color var(--q-dur-fast) var(--q-ease),
-    background var(--q-dur-fast) var(--q-ease),
-    box-shadow var(--q-dur-fast) var(--q-ease);
-}
-.q-dropzone:hover,
-.q-dropzone:focus-within {
-  border-color: var(--accent-8);
-  background: var(--accent-a3);
-  box-shadow: inset 0 1px 0 var(--q-control-hi), 0 0 0 4px var(--accent-a3);
-}
-.q-dropzone--tile {
-  width: var(--q-pub-tile-size, 6.5rem);
-  height: var(--q-pub-tile-size, 6.5rem);
-  padding: 0;
-}
-.q-dropzone--compact {
-  padding: 1rem;
-  border-width: 1px;
-  border-radius: var(--q-radius-control);
-}
-
+/* `.q-dropzone` (+ --tile, --compact) is shared — defined once in qualify.css (lote 6). */
 /* ── Gallery tile (an already-selected file) ──────────────────────────────────
  * A square frame in the ok tone — the file is in, the thumbnail is real — on the card
  * material, no blur (D5: it lives in a grid). `--q-pub-tile-size` is set by the flow
