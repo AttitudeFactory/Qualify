@@ -67,9 +67,7 @@ _PENDING: set[str] = {
     "stories_page.py",
     "trending_panel.py",
     "post_card.py",
-    # lote C — planificador
-    "planner_page.py",
-    "planner_drawer.py",
+    # lote C — planificador: migrated (planner_page.py, planner_drawer.py)
     # lote D — contenido / inbox: already clean of these rules (it is the batch's job to
     # keep it so while moving its chips onto the material)
     # lote E — Brand Kit y creativo
