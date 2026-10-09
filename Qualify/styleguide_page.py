@@ -640,11 +640,19 @@ def _states() -> rx.Component:
     return rx.grid(
         card(
             rx.vstack(
-                rx.text("Cargando", size="2", weight="medium"),
+                rx.text("Cargando contenido = skeleton", size="2", weight="medium"),
+                rx.text(
+                    "Algo se está leyendo y va a aparecer aquí: la forma de lo que viene. "
+                    "Siempre skeleton, nunca spinner.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
                 skeleton_card(),
                 skeleton_rows(2),
+                rx.text("Trabajo en curso = spinner", size="2", weight="medium"),
                 rx.text(
-                    "Espera de página completa — no la forma del contenido",
+                    "Algo se está haciendo: scraping, generando, sincronizando, publicando. "
+                    "Siempre junto a la frase que dice qué pasa.",
                     size="1",
                     color=T.TEXT_MUTED,
                 ),

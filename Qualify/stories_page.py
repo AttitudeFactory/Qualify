@@ -18,7 +18,7 @@ import reflex as rx
 
 from .publish_tips import tip_row, tips_card
 from .stories_state import _UPLOAD_ID, StoriesState
-from .ui import callout, card, section
+from .ui import callout, card, loading_spinner, section
 from .ui import tokens as T
 from .ui.image_preview import gallery_image_preview_capture_anchor
 from .ui.video_preview import (
@@ -275,7 +275,7 @@ def _status_block() -> rx.Component:
             "staging_and_starting",
             rx.callout(
                 rx.hstack(
-                    rx.spinner(size="2"),
+                    loading_spinner("sm"),
                     rx.text("Subiendo el video y arrancando la publicación...", size="2"),
                     spacing="2",
                     align="center",
@@ -289,7 +289,7 @@ def _status_block() -> rx.Component:
             rx.callout(
                 rx.vstack(
                     rx.hstack(
-                        rx.spinner(size="2"),
+                        loading_spinner("sm"),
                         rx.text(
                             "Publicando, esperando confirmación de Meta...",
                             size="2",

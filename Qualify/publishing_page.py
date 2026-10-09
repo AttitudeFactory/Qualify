@@ -68,7 +68,7 @@ from .publishing_vm import ConnectionOptionVM, PendingItemVM
 from .stories_page import stories_flow, stories_tips_card
 from .stories_state import StoriesState
 from .trending_panel import trending_card
-from .ui import app_shell, callout, card, page_body, page_header, section
+from .ui import app_shell, callout, card, loading_spinner, page_body, page_header, section
 from .ui import tokens as T
 from .ui.image_preview import gallery_image_preview_capture_anchor
 from .ui.video_preview import gallery_preview_capture_anchor, video_frame_preview_src
@@ -407,7 +407,7 @@ def _status_block() -> rx.Component:
             "staging_and_starting",
             rx.callout(
                 rx.hstack(
-                    rx.spinner(size="2"),
+                    loading_spinner("sm"),
                     rx.cond(
                         is_carousel,
                         rx.text(
@@ -428,7 +428,7 @@ def _status_block() -> rx.Component:
             rx.callout(
                 rx.vstack(
                     rx.hstack(
-                        rx.spinner(size="2"),
+                        loading_spinner("sm"),
                         # QUA-99 UX follow-up: `carousel_stage_label` is only non-empty
                         # for a carousel attempt that has already taken its first poll
                         # tick — everything else (a single video, or the first tick

@@ -41,7 +41,7 @@ from .post_card import (
     readiness_note,
     temperature_badge,
 )
-from .ui import app_shell, callout, page_body, page_header, platform_badge, tag
+from .ui import app_shell, callout, page_body, page_header, platform_badge, skeleton_rows, tag
 from .ui import tokens as T
 
 _TONES = ("ok", "warn", "error", "info", "neutral", "accent")
@@ -1129,8 +1129,8 @@ def _views() -> rx.Component:
 
 def _loading() -> rx.Component:
     return rx.vstack(
-        rx.skeleton(rx.box(height="2.5rem"), width="100%"),
-        rx.skeleton(rx.box(height="24rem"), width="100%"),
+        skeleton_rows(1, height="2.5rem"),
+        skeleton_rows(1, height="24rem", radius=T.RADIUS_CARD),
         spacing="2",
         width="100%",
     )

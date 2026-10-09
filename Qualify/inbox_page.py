@@ -62,11 +62,13 @@ from .ui import (
     callout,
     card,
     empty_state,
+    loading_spinner,
     mono,
     page_body,
     page_header,
     section,
     sentiment_badge,
+    skeleton_rows,
     stat_card,
     tone_badge,
 )
@@ -204,10 +206,10 @@ def _candidate_card(candidate: CandidateMediaVM) -> rx.Component:
 def _card_skeleton() -> rx.Component:
     return rx.box(
         rx.hstack(
-            rx.skeleton(rx.box(width="72px", height="72px", border_radius=T.RADIUS_CONTROL)),
+            skeleton_rows(1, height="72px", width="72px"),
             rx.vstack(
-                rx.skeleton(rx.box(height="1.25rem", width="220px")),
-                rx.skeleton(rx.box(height="1rem", width="140px")),
+                skeleton_rows(1, height="1.25rem", width="220px"),
+                skeleton_rows(1, height="1rem", width="140px"),
                 spacing="2",
                 align_items="start",
             ),
@@ -373,10 +375,7 @@ def _global_summary_stats() -> rx.Component:
 
 def _global_summary_skeleton() -> rx.Component:
     return rx.grid(
-        *[
-            rx.skeleton(rx.box(height="5.5rem", width="100%", border_radius=T.RADIUS_CARD))
-            for _ in range(5)
-        ],
+        *[skeleton_rows(1, height="5.5rem", radius=T.RADIUS_CARD) for _ in range(5)],
         columns=rx.breakpoints(initial="2", md="5"),
         spacing="3",
         width="100%",
@@ -541,7 +540,7 @@ def _load_more_reels_button() -> rx.Component:
             rx.button(
                 rx.cond(
                     InboxState.is_loading_more_reels,
-                    rx.spinner(size="2"),
+                    loading_spinner("sm"),
                     rx.text("Cargar más Reels"),
                 ),
                 on_click=InboxState.load_more_reels,
@@ -677,7 +676,7 @@ def _load_more_thread_comments_button() -> rx.Component:
             rx.button(
                 rx.cond(
                     InboxState.is_loading_more_thread_comments,
-                    rx.spinner(size="2"),
+                    loading_spinner("sm"),
                     rx.text("Cargar más comentarios"),
                 ),
                 on_click=InboxState.load_more_thread_comments,
@@ -738,7 +737,7 @@ def _analyze_now_button() -> rx.Component:
     return rx.button(
         rx.cond(
             InboxState.is_analyzing,
-            rx.spinner(size="2"),
+            loading_spinner("sm"),
             rx.icon("sparkles", size=16),
         ),
         rx.cond(InboxState.is_analyzing, "Analizando...", "Analizar sentimiento"),
@@ -783,7 +782,7 @@ def _sync_now_button() -> rx.Component:
     return rx.button(
         rx.cond(
             InboxState.is_syncing,
-            rx.spinner(size="2"),
+            loading_spinner("sm"),
             rx.icon("refresh-cw", size=16),
         ),
         rx.cond(InboxState.is_syncing, "Sincronizando...", "Sincronizar comentarios"),
@@ -881,7 +880,7 @@ def _generate_drafts_button() -> rx.Component:
     return rx.button(
         rx.cond(
             RepliesState.is_generating,
-            rx.spinner(size="2"),
+            loading_spinner("sm"),
             rx.icon("sparkles", size=16),
         ),
         rx.cond(RepliesState.is_generating, "Generando...", "Generar borradores"),
@@ -897,7 +896,7 @@ def _refresh_drafts_button() -> rx.Component:
     return rx.button(
         rx.cond(
             RepliesState.is_loading,
-            rx.spinner(size="2"),
+            loading_spinner("sm"),
             rx.icon("refresh-cw", size=16),
         ),
         "Actualizar",
@@ -950,7 +949,7 @@ def _draft_view_mode(draft: DraftVM) -> rx.Component:
         rx.text(draft.generated_text, size="2"),
         rx.hstack(
             rx.button(
-                rx.cond(is_busy, rx.spinner(size="1"), rx.icon("check", size=14)),
+                rx.cond(is_busy, loading_spinner("sm"), rx.icon("check", size=14)),
                 "Aceptar y enviar",
                 on_click=RepliesState.accept_and_send(draft.id),
                 disabled=is_busy,
@@ -993,7 +992,7 @@ def _draft_edit_mode(draft: DraftVM) -> rx.Component:
         ),
         rx.hstack(
             rx.button(
-                rx.cond(is_busy, rx.spinner(size="1"), rx.icon("send", size=14)),
+                rx.cond(is_busy, loading_spinner("sm"), rx.icon("send", size=14)),
                 "Guardar y enviar",
                 on_click=RepliesState.save_and_send(draft.id),
                 disabled=is_busy,

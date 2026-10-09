@@ -146,7 +146,10 @@ def _nav_row(
         gap="0.6rem",
         padding="0.5rem 0.6rem",
         border_radius=T.RADIUS_CONTROL,
-        background=rx.cond(active, rx.color("accent", 5), "transparent"),
+        # No fill of its own: the active/hover surface is the glass capsule that
+        # `assets/glass-nav.js` moves between rows (one per island). The flat fallback
+        # for a document without the script lives in `assets/qualify.css`, keyed on the
+        # wrapper's `aria-current="page"`.
         color=rx.cond(active, rx.color("accent", 11), rx.color("gray", 11)),
         font_weight=rx.cond(active, "600", "400"),
         opacity="0.55" if disabled else "1",
@@ -190,14 +193,20 @@ def _nav_item(label: str, icon: str, route: str, enabled: bool) -> rx.Component:
 
 
 def _island(*children: rx.Component, tint: str | None = None, **props) -> rx.Component:
-    """A floating block of the sidebar. `tint` names a zone; without one it is neutral."""
-    style = {
-        "background": T.zone_tint(tint) if tint else T.SURFACE_BG,
-        "border": T.zone_line(tint) if tint else T.BORDER,
+    """A floating block of the sidebar. `tint` names a zone; without one it is neutral.
+
+    The material (translucent fill, backdrop blur, inset highlight, hairline) is CSS —
+    `.q-island` in `assets/qualify.css`, "Liquid glass menu" — so light and dark are
+    two sets of variables rather than two trees. A zone only hands the stylesheet its
+    wash and its line colour through custom properties; the glass sits on top of them.
+    """
+    style: dict = {
         "padding": "0.4rem 0.35rem 0.5rem",
         "width": "100%",
         "class_name": "q-island",
     }
+    if tint:
+        style["style"] = {"--q-zone-tint": T.zone_tint(tint), "--q-zone-line": T.zone_line(tint)}
     style.update(props)
     return rx.vstack(*children, spacing="1", align_items="stretch", **style)
 
@@ -341,6 +350,13 @@ def _guest_islands() -> rx.Component:
 def sidebar() -> rx.Component:
     return rx.el.nav(
         rx.script(_ZEN_SHORTCUT),
+        # The liquid glass capsule and zen label (assets/qualify.css, "Liquid glass
+        # menu"). A plain `<script async src>` rendered here rather than an
+        # `rx.App(head_components=…)` entry: React 19 hoists an async script to the
+        # head and loads it once per document whatever page mounts the rail, while
+        # `head_components` go through react-helmet, which injected nothing in the
+        # dev build measured on 2026-10-08. The file guards its own double-run.
+        rx.el.script(src="/glass-nav.js", async_=True),
         tenant_block(),
         rx.cond(
             AuthState.is_guest,
@@ -429,12 +445,16 @@ def page_header(
         title_block,
         rx.spacer(),
         *actions,
-        rx.color_mode.button(),
+        # Ghost: the toggle is a page control, never the page's one solid action (P3).
+        rx.color_mode.button(variant="ghost", color_scheme="gray"),
         width="100%",
         padding=T.PAD_HEADER,
         align="center",
         spacing="3",
         wrap="wrap",
+        # A sheet of glass pinned to the top of the panel (`.q-page-header`,
+        # assets/qualify.css): the panel is the scroll container, so `sticky` works.
+        class_name="q-page-header",
     )
 
 
@@ -494,6 +514,37 @@ def _mobile_nav_backdrop() -> rx.Component:
     )
 
 
+# The Glass Lab's two dials that CSS cannot hold: refraction (feDisplacementMap scale)
+# and surface frequency (feTurbulence baseFrequency = dial / 1000). Mirrored as the
+# `--q-lab-refraction` / `--q-lab-frequency` records in assets/qualify.css, which is
+# where the other dials live — change both when the Lab changes.
+LAB_REFRACTION = 21
+LAB_FREQUENCY = 9
+
+_REFRACTION_SVG = f"""<svg width="0" height="0" aria-hidden="true" focusable="false">
+  <filter id="q-refraction" x="-40%" y="-40%" width="180%" height="180%">
+    <feTurbulence type="fractalNoise" baseFrequency="{LAB_FREQUENCY / 1000:.3f}"
+      numOctaves="2" seed="12" result="noise"/>
+    <feDisplacementMap in="SourceGraphic" in2="noise" scale="{LAB_REFRACTION}"/>
+  </filter>
+</svg>"""
+
+
+def _refraction_filter() -> rx.Component:
+    """The SVG filter every glass surface's depth layer refracts through
+    (`.q-island::before { filter: url(#q-refraction) }`). Rendered once per shell;
+    sized to nothing and kept in the flow (a `display: none` SVG would not resolve
+    as a filter target in every browser)."""
+    return rx.html(
+        _REFRACTION_SVG,
+        position="absolute",
+        width="0",
+        height="0",
+        overflow="hidden",
+        aria_hidden="true",
+    )
+
+
 def app_shell(*children: rx.Component, spacing: str = "0", rail: bool = True) -> rx.Component:
     """Sidebar + page panel, floating on the app ground. Pass ``page_header`` first,
     then the body blocks. ``rail=False`` drops the sidebar (and its phone toggle): the
@@ -526,6 +577,7 @@ def app_shell(*children: rx.Component, spacing: str = "0", rail: bool = True) ->
         else []
     )
     return rx.hstack(
+        _refraction_filter(),
         *chrome,
         rx.el.main(
             rx.vstack(
@@ -554,7 +606,9 @@ def app_shell(*children: rx.Component, spacing: str = "0", rail: bool = True) ->
         width="100%",
         spacing="0",
         align_items="start",
-        background=T.GROUND,
+        # The ground is `T.GROUND` plus a soft mesh of the two zone colours (`.q-ground`,
+        # assets/qualify.css): the glass islands need something behind them to refract.
+        class_name="q-ground",
         height="100vh",
         overflow="hidden",
     )

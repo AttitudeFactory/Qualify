@@ -27,7 +27,16 @@ from .gallery_state import GalleryState
 from .planner_vm import GALLERY_FILTER_ALL, GALLERY_STATE_FILTERS
 from .post_card import campaign_badge, color_swatches, kind_chip, media_fill
 from .r2_media import BACKEND_BASE
-from .ui import app_shell, callout, card, empty_state, page_body, page_header
+from .ui import (
+    app_shell,
+    callout,
+    card,
+    empty_state,
+    loading_spinner,
+    page_body,
+    page_header,
+    skeleton_rows,
+)
 from .ui import tokens as T
 
 # ---------------------------------------------------------------------------
@@ -67,7 +76,7 @@ def status_badge(status: rx.Var[str], label: rx.Var[str], tone: rx.Var[str]) -> 
     """Status pill: pre-computed label + tone from the VM, icon per status family."""
     icon = rx.match(
         status,
-        ("drafting", rx.spinner(size="1")),
+        ("drafting", loading_spinner("sm")),
         ("generated", rx.icon("eye", size=14)),
         ("approved", rx.icon("circle-check", size=14)),
         ("published", rx.icon("circle-check", size=14)),
@@ -331,7 +340,7 @@ def brand_index() -> rx.Component:
             readiness_panel(),
             rx.cond(
                 CreativeState.kit_loading,
-                rx.skeleton(rx.box(height="16rem", width="100%")),
+                skeleton_rows(1, height="16rem", radius=T.RADIUS_CARD),
                 rx.vstack(
                     _kit_accordion(),
                     rx.hstack(
@@ -553,7 +562,7 @@ def _voice_body() -> rx.Component:
         ),
         rx.cond(
             CreativeState.voice_loading,
-            rx.skeleton(rx.box(height="14rem", width="100%")),
+            skeleton_rows(1, height="14rem", radius=T.RADIUS_CARD),
             rx.cond(
                 CreativeState.voice_proposal,
                 _voice_profile_card(),
@@ -1090,7 +1099,7 @@ def drafts_index() -> rx.Component:
             rx.cond(
                 GalleryState.loading,
                 rx.box(
-                    *[rx.skeleton(rx.box(height="7rem", width="100%")) for _ in range(6)],
+                    *[skeleton_rows(1, height="7rem", radius=T.RADIUS_CARD) for _ in range(6)],
                     class_name="q-gallery",
                 ),
                 rx.cond(
@@ -1156,7 +1165,7 @@ def _drafting_panel() -> rx.Component:
     """Real staged progress (§6.4), not a blind spinner; the poll gives up at 5 min."""
     return _card(
         rx.hstack(
-            rx.spinner(size="3"),
+            loading_spinner("md"),
             rx.heading("Generando tu pieza…", size="4", as_="h2"),
             rx.spacer(),
             rx.text(CreativeState.poll_elapsed_label, size="1", color=T.TEXT_MUTED),
@@ -2253,7 +2262,7 @@ def draft_detail_index() -> rx.Component:
             rx.cond(CreativeState.action_error != "", _error_callout(CreativeState.action_error)),
             rx.cond(
                 CreativeState.detail_loading,
-                rx.skeleton(rx.box(height="18rem", width="100%")),
+                skeleton_rows(1, height="18rem", radius=T.RADIUS_CARD),
                 rx.cond(
                     CreativeState.draft,
                     rx.vstack(

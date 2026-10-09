@@ -93,7 +93,16 @@ _FONTS = (
     "&display=swap"
 )
 app = rx.App(
-    stylesheets=[_FONTS, "/qualify.css"],
+    # The design system (tokens, Liquid Glass bridge + Radix skin, shell, primitives)
+    # first; then one sheet per domain, each owned by its migration batch (plan D10).
+    stylesheets=[
+        _FONTS,
+        "/qualify.css",
+        "/qualify-planner.css",
+        "/qualify-brand.css",
+        "/qualify-publish.css",
+        "/qualify-inbox.css",
+    ],
     html_lang="es",
     # Bug reported 2026-08-25, revised same day: bottom-right (Sonner's own default)
     # is the preferred position after all — the actual complaint was that it was easy
@@ -107,7 +116,9 @@ app = rx.App(
     api_transformer=avatar_api,
     # The Brand Kit deck's pointer drag (`assets/deck-drag.js`) and the influence
     # ranking's (`assets/rank-drag.js`): plain DOM, delegated at the document, so they
-    # are loaded once here rather than per page.
+    # are loaded once here rather than per page. (The sidebar's `assets/glass-nav.js`
+    # is NOT here: `head_components` go through react-helmet, which was observed
+    # injecting nothing in the dev build of 2026-10-08 — see `ui.layout.sidebar`.)
     head_components=[rx.script(src="/deck-drag.js"), rx.script(src="/rank-drag.js")],
 )
 

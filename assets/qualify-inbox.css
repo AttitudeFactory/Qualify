@@ -1,0 +1,8 @@
+/*
+ * Qualify — Contenido / inbox (lote D): empty until the batch adds its rules here — the shared chips it uses today (q-kind-*, q-filter…) live in qualify.css / qualify-planner.css.
+ *
+ * Loaded after qualify.css (rx.App(stylesheets=…) in Qualify/Qualify.py); the tokens
+ * (--q-*, --lq-*) and the Radix skin come from there. Reference: docs/design-system.md
+ * and docs/plan-migracion-liquid-glass.md §3 D10.
+ */
+

@@ -1797,7 +1797,7 @@ def _detect_fonts_button() -> rx.Component:
         rx.button(
             rx.cond(
                 BrandWizardState.detecting_fonts,
-                rx.spinner(size="1"),
+                loading_spinner("sm"),
                 rx.icon("sparkles", size=T.ICON_SM),
             ),
             "Detectar desde tu logo",

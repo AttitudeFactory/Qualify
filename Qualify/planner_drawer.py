@@ -56,7 +56,7 @@ from .post_card import (
     temperature_badge,
 )
 from .r2_media import BACKEND_BASE
-from .ui import callout, drawer, stepper
+from .ui import callout, drawer, skeleton_card, stepper
 from .ui import tokens as T
 
 _ONE_LINE = {"overflow": "hidden", "text_overflow": "ellipsis", "white_space": "nowrap"}
@@ -1802,7 +1802,8 @@ def event_panel() -> rx.Component:
     return drawer(
         rx.cond(
             PlannerState.detail_loading,
-            rx.center(rx.spinner(), padding="3rem"),
+            # content loading (the POST, its media, dates): a skeleton, never a spinner
+            rx.box(skeleton_card(5), padding="0.5rem 0", width="100%"),
             rx.cond(
                 PlannerState.detail_error != "",
                 callout(PlannerState.detail_error, "error"),

@@ -1,0 +1,31 @@
+/*
+ * Qualify — Publicar and catálogo (lote B): the flow selector today; the batch adds its own rules here.
+ *
+ * Loaded after qualify.css (rx.App(stylesheets=…) in Qualify/Qualify.py); the tokens
+ * (--q-*, --lq-*) and the Radix skin come from there. Reference: docs/design-system.md
+ * and docs/plan-migracion-liquid-glass.md §3 D10.
+ */
+
+/* ── Publish flow selector (QUA-113) ─────────────────────────────────────────
+ * `Publicaciones | Stories` on /publish. Radix's own segmented control marks the
+ * active item with a near-surface pill that is easy to miss; here the active flow gets
+ * the accent fill with contrast text, and the inactive one a hover tint. Colour only:
+ * Radix already renders both label weights stacked, so nothing resizes or shifts. */
+.q-flow-switch {
+  --segmented-control-indicator-background-color: var(--accent-9);
+}
+.q-flow-switch .rt-SegmentedControlItemLabel {
+  transition:
+    color var(--q-dur-fast) var(--q-ease),
+    background-color var(--q-dur-fast) var(--q-ease);
+}
+.q-flow-switch .rt-SegmentedControlItem[data-state='on'] .rt-SegmentedControlItemLabel {
+  color: var(--accent-contrast);
+}
+.q-flow-switch .rt-SegmentedControlItem[data-state='off']:hover .rt-SegmentedControlItemLabel {
+  background-color: var(--accent-a3);
+  color: var(--accent-11);
+}
+@media (prefers-reduced-motion: reduce) {
+  .q-flow-switch .rt-SegmentedControlItemLabel { transition: none; }
+}

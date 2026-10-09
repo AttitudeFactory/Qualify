@@ -31,12 +31,12 @@ from .ui import (
     app_shell,
     callout,
     card,
-    loading_spinner,
     page_body,
     page_header,
     progress_panel,
     removable_pill,
     signal_pill,
+    skeleton_rows,
     tag,
     tone_badge,
 )
@@ -511,12 +511,8 @@ def _avatar_section() -> rx.Component:
         callout(CreativeState.heygen_error, "warn"),
         rx.cond(
             CreativeState.heygen_loading,
-            rx.hstack(
-                loading_spinner("sm"),
-                rx.text("Cargando avatares y voces…", size="2", color=T.TEXT_MUTED),
-                spacing="2",
-                align="center",
-            ),
+            # content loading: the avatar/voice pickers that are about to appear
+            skeleton_rows(2, height="2.25rem"),
             rx.vstack(
                 rx.cond(CreativeState.brief_kind == "avatar_video", human, animated),
                 _voice_select(),
@@ -695,12 +691,8 @@ def _product_picker() -> rx.Component:
         ),
         rx.cond(
             CreativeState.catalog_loading,
-            rx.hstack(
-                loading_spinner("sm"),
-                rx.text("Leyendo el catálogo…", size="2", color=T.TEXT_MUTED),
-                spacing="2",
-                align="center",
-            ),
+            # content loading: the grid of product tiles that is about to appear
+            skeleton_rows(1, height="6rem", radius=T.RADIUS_CARD),
             rx.cond(
                 CreativeState.catalog_items.length() > 0,
                 rx.grid(
