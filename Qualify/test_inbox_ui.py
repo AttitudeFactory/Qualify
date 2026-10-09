@@ -21,21 +21,19 @@ Pins:
 5. The provider's VM projection coerces the service's nullable fields (`caption`,
    `permalink`, `thumbnail_url`) to `""`, never lets a raw `None` reach a `str` field.
 6. Candidates come back newest-first.
-7. `sync_now` (2026-08-15, TEMPORARY manual-sync affordance; wired to HTTP 2026-08-16)
-   reaches `POST /api/inbox/sync` — NOT `composition.sync_comments` in-process, unlike
-   `candidate_media`/`toggle_monitoring` — projects the route's JSON response into
-   `SyncSummaryVM` field-for-field, and raises `UnknownInboxConnection` both for a 404
-   from the route and for a tenant the temporary dev bridge cannot authenticate as.
-8. `sync_now` (2026-08-18, QUA-88) raises `CommentsPermissionMissing` on a 403 and
-   `SyncBudgetExhausted` on a 429 — both reconstructed from the status code alone, same
-   posture as the 404 case, and both distinct from the 502/`httpx.HTTPStatusError` a
-   failed Meta call raises.
-9. `analyze_sentiment_now` (QUA-92, "Analizar sentimiento" button) reaches
-   `POST /api/sentiment/analyze` — QUA-21's existing, already-wired route — and never
-   calls `analyze_pending_comments`/`composition.analyze_pending_comments` directly (no
-   second analysis engine). Projects `comments_checked`/`new_results`/`skipped_empty`
-   field-for-field, including the all-zero "nothing pending" case, and raises
-   `UnknownSentimentConnection` for both the dev-bridge tenant mismatch and a 404.
+7. `sync_now` (B8, 2026-10-08) calls `qualify_api.inbox.sync_comments` in process and
+   forwards the session's tenant unchanged — no dev bridge, no hardcoded tenant, no
+   bearer — projects `SyncSummary` into `SyncSummaryVM` field-for-field, and propagates
+   every typed refusal (`UnknownInboxConnection`, `InboxConnectionInactive`,
+   `CommentsPermissionMissing`, `SyncBudgetExhausted`, `CommentsAuthExpired`,
+   `CommentsReadError`) unchanged.
+8. Tenant isolation itself is RLS's job, below this module: `packages/api/tests/
+   test_inbox_composition_db.py` pins that another tenant's connection is
+   `UnknownInboxConnection` there, before any credential or Meta call.
+9. `analyze_sentiment_now` (QUA-92) runs the same `analyze_pending_comments` seam
+   `POST /api/sentiment/analyze` wraps (no second analysis engine), forwards the tenant,
+   projects `comments_checked`/`new_results`/`skipped_empty` (all-zero included) and
+   propagates `UnknownSentimentConnection` and `SentimentModelUnavailable`.
 10. `reel_summaries_page`/`global_summary_vm`/`thread_comments_page` (QUA-93) call the
     real read seams (`qualify_api.sentiment.list_reel_summaries`/
     `global_sentiment_summary`/`list_comments_for_thread`), none `async def` (ordinary
@@ -58,14 +56,21 @@ from collections.abc import Callable, Coroutine, Iterator
 from datetime import UTC, datetime
 from uuid import UUID
 
-import httpx
 from qualify_api.inbox import (
+    CommentsAuthExpired,
     CommentsPermissionMissing,
+    CommentsReadError,
+    InboxConnectionInactive,
     SyncBudgetExhausted,
+    SyncSummary,
     UnknownInboxConnection,
 )
 from qualify_api.inbox.service import CandidateMedia, MediaNotEligible
-from qualify_api.sentiment import UnknownSentimentConnection
+from qualify_api.sentiment import (
+    AnalysisSummary,
+    SentimentModelUnavailable,
+    UnknownSentimentConnection,
+)
 from qualify_api.sentiment.repository import (
     DEFAULT_REEL_PAGE_SIZE,
     AnalyzedComment,
@@ -218,15 +223,14 @@ def test_provider_calls_the_real_inbox_seam() -> None:
     assert "set_media_monitored(" in source
 
 
-def test_sync_now_goes_through_the_http_route_not_composition_directly() -> None:
-    """B2's acceptance criterion is `POST /api/inbox/sync` — `sync_now` must reach it,
-    not call `composition.sync_comments` in-process the way the other two provider
-    functions deliberately still do (see the module docstring for why sync is the one
-    exception)."""
-    source = inspect.getsource(inbox_provider.sync_now)
-    assert '"/api/inbox/sync"' in source
-    assert "composition.sync_comments(" not in source
-    assert "await sync_comments(" not in source  # the old in-process call shape
+def test_sync_and_analysis_have_no_dev_bridge_left() -> None:
+    """B8: no hardcoded tenant, no dev bearer, no HTTP hop. Sync and analysis call their
+    seams in process with whatever tenant the session hands in — RLS is the boundary."""
+    source = inspect.getsource(inbox_provider)
+    for fragment in ("_DEV_SYNC", "Bearer", "ASGITransport", "dev-inbox-sync"):
+        assert fragment not in source, fragment
+    assert "await sync_comments(" in inspect.getsource(inbox_provider.sync_now)
+    assert "analyze_pending_comments" in inspect.getsource(inbox_provider.analyze_sentiment_now)
 
 
 def test_instagram_connections_requires_active_instagram_and_read_comments() -> None:
@@ -326,295 +330,137 @@ def test_toggle_monitoring_propagates_media_not_eligible() -> None:
             raise AssertionError("toggle_monitoring must not swallow MediaNotEligible")
 
 
-def _mock_asgi_client(
-    status_code: int, json_body: dict, *, expected_path: str = "/api/inbox/sync"
-) -> httpx.AsyncClient:
-    """A fake in-process ASGI client for `sync_now`/`analyze_sentiment_now` — no FastAPI
-    app involved, just the HTTP contract each function actually depends on (status code +
-    JSON body). Lighter than building a real `create_app()`, and keeps this file's "never
-    a database, never the API package's internals" posture (see the module docstring)
-    even though `inbox_provider.py` itself now imports `qualify_api.http.app` lazily.
-    `expected_path` defaults to sync's route; QUA-92's analyze tests pass
-    `"/api/sentiment/analyze"`."""
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == expected_path
-        assert request.headers["authorization"] == f"Bearer {inbox_provider._DEV_SYNC_BEARER_TOKEN}"
-        return httpx.Response(status_code, json=json_body)
-
-    return httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test")
+# A tenant that is NOT the old dev bridge's PuntoServis UUID — the bridge refused every
+# tenant but that one; the provider must now forward whichever the session holds.
+_OTHER_TENANT = UUID("00000000-0000-4000-8000-000000000099")
 
 
-def test_sync_now_rejects_a_tenant_the_dev_bridge_is_not_wired_for() -> None:
-    """The guard that runs BEFORE any HTTP call — a mismatched dev tenant must never
-    silently sync against the one tenant the bridge actually authenticates as."""
-    other_tenant = UUID("00000000-0000-4000-8000-000000000099")
-    assert other_tenant != inbox_provider._DEV_SYNC_TENANT_ID  # sanity on the fixture itself
+def _recording_sync(summary: SyncSummary, calls: list[dict]) -> Callable[..., object]:
+    async def _fake(**kwargs: object) -> SyncSummary:
+        calls.append(kwargs)
+        return summary
 
-    try:
-        _run_coro(inbox_provider.sync_now(tenant_id=other_tenant, connection_id=_CONNECTION))
-    except UnknownInboxConnection:
-        pass
-    else:
-        raise AssertionError("sync_now must refuse a tenant the dev bridge cannot authenticate as")
+    return _fake
+
+
+def _raising(exc: Exception) -> Callable[..., object]:
+    async def _fake(**kwargs: object) -> object:
+        raise exc
+
+    return _fake
+
+
+def test_sync_now_forwards_the_session_tenant_unchanged() -> None:
+    calls: list[dict] = []
+    fake = _recording_sync(SyncSummary(media_checked=0, new_comments=0), calls)
+    with _patched(sync_comments=fake):
+        _run_coro(inbox_provider.sync_now(tenant_id=_OTHER_TENANT, connection_id=_CONNECTION))
+    assert calls == [{"tenant_id": _OTHER_TENANT, "connection_id": _CONNECTION}]
 
 
 def test_sync_now_projects_summary_fields() -> None:
-    client = _mock_asgi_client(200, {"media_checked": 3, "new_comments": 7, "truncated": False})
-
-    with _patched(_inbox_sync_asgi_client=lambda: client):
-        vm = _run_coro(
-            inbox_provider.sync_now(
-                tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
-            )
-        )
-    assert vm.media_checked == 3
-    assert vm.new_comments == 7
-    assert vm.truncated is False
-    # A response shape from BEFORE this bug-fix field existed (no key at all) must not
-    # raise a KeyError — `.get(..., [])` backward-compat, see `sync_now`'s own comment.
-    assert vm.skipped_missing_media == ()
-    # Same backward-compat posture for QUA-101's later field, `.get(..., 0)`.
-    assert vm.deleted_comments == 0
-
-
-def test_sync_now_projects_a_truncated_summary() -> None:
-    """QUA-88: a budget that ran out mid-sync is still a 200 with the flag set — must
-    reach the VM, not be lost in translation."""
-    client = _mock_asgi_client(200, {"media_checked": 1, "new_comments": 1, "truncated": True})
-
-    with _patched(_inbox_sync_asgi_client=lambda: client):
-        vm = _run_coro(
-            inbox_provider.sync_now(
-                tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
-            )
-        )
-    assert vm.truncated is True
-
-
-def test_sync_now_projects_skipped_missing_media_without_raising() -> None:
-    """Bug fix (2026-09-01): a deleted Reel skipped server-side is still a 200 — `sync_
-    now` must return a normal `SyncSummaryVM` (never raise), with the skipped id(s)
-    reaching the VM. This is the exact shape `InboxState.sync_comments` depends on to
-    NEVER set `sync_error` for this case — see that handler's own comment for why."""
-    client = _mock_asgi_client(
-        200,
-        {
-            "media_checked": 2,
-            "new_comments": 0,
-            "truncated": False,
-            "skipped_missing_media": ["18034792133641940"],
-        },
+    summary = SyncSummary(
+        media_checked=2,
+        new_comments=7,
+        truncated=True,
+        skipped_missing_media=("18034792133641940",),
+        deleted_comments=1,
     )
-
-    with _patched(_inbox_sync_asgi_client=lambda: client):
-        vm = _run_coro(
-            inbox_provider.sync_now(
-                tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
-            )
-        )
-    assert vm.skipped_missing_media == ("18034792133641940",)
+    with _patched(sync_comments=_recording_sync(summary, [])):
+        vm = _run_coro(inbox_provider.sync_now(tenant_id=_TENANT, connection_id=_CONNECTION))
     assert vm.media_checked == 2
-
-
-def test_sync_now_projects_deleted_comments_without_raising() -> None:
-    """QUA-101: a comment soft-deleted server-side is still a 200 — `sync_now` must
-    return a normal `SyncSummaryVM` (never raise), with the count reaching the VM. Same
-    shape as `test_sync_now_projects_skipped_missing_media_without_raising` above, one
-    level down (a comment, not the whole Reel)."""
-    client = _mock_asgi_client(
-        200,
-        {
-            "media_checked": 1,
-            "new_comments": 0,
-            "truncated": False,
-            "skipped_missing_media": [],
-            "deleted_comments": 1,
-        },
-    )
-
-    with _patched(_inbox_sync_asgi_client=lambda: client):
-        vm = _run_coro(
-            inbox_provider.sync_now(
-                tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
-            )
-        )
+    assert vm.new_comments == 7
+    assert vm.truncated is True
+    assert vm.skipped_missing_media == ("18034792133641940",)
     assert vm.deleted_comments == 1
 
 
-def test_sync_now_propagates_unknown_connection_on_a_404() -> None:
-    client = _mock_asgi_client(404, {"detail": "unknown connection"})
-
-    with _patched(_inbox_sync_asgi_client=lambda: client):
-        try:
-            _run_coro(
-                inbox_provider.sync_now(
-                    tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
-                )
-            )
-        except UnknownInboxConnection:
-            pass
-        else:
-            raise AssertionError("sync_now must not swallow a 404 as success")
+def test_sync_now_projects_the_defaults_of_a_plain_summary() -> None:
+    summary = SyncSummary(media_checked=3, new_comments=0)
+    with _patched(sync_comments=_recording_sync(summary, [])):
+        vm = _run_coro(inbox_provider.sync_now(tenant_id=_TENANT, connection_id=_CONNECTION))
+    assert vm.truncated is False
+    assert vm.skipped_missing_media == ()
+    assert vm.deleted_comments == 0
 
 
-def test_sync_now_raises_permission_missing_on_a_403() -> None:
-    """`cannot_observe` (QUA-88) — distinct from a 404 (unknown connection) and from a
-    502 (a call that was attempted and failed)."""
-    client = _mock_asgi_client(403, {"detail": "missing scope"})
-
-    with _patched(_inbox_sync_asgi_client=lambda: client):
-        try:
-            _run_coro(
-                inbox_provider.sync_now(
-                    tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
-                )
-            )
-        except CommentsPermissionMissing:
-            pass
-        else:
-            raise AssertionError("sync_now must not swallow a 403 as success")
-
-
-def test_sync_now_raises_budget_exhausted_on_a_429() -> None:
-    client = _mock_asgi_client(429, {"detail": "sync needs at least 5 Meta call(s)"})
-
-    with _patched(_inbox_sync_asgi_client=lambda: client):
-        try:
-            _run_coro(
-                inbox_provider.sync_now(
-                    tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
-                )
-            )
-        except SyncBudgetExhausted:
-            pass
-        else:
-            raise AssertionError("sync_now must not swallow a 429 as success")
-
-
-def test_sync_now_raises_for_a_failed_meta_call() -> None:
-    """A 502 (the route's mapping for `CommentsReadError`) is deliberately NOT collapsed
-    into `UnknownInboxConnection` — it is a different failure the caller should be able
-    to tell apart, same as `httpx.HTTPStatusError` already lets `InboxState.sync_comments`
-    tell apart via its blanket `except Exception` branch."""
-    client = _mock_asgi_client(502, {"detail": "GET /m/comments failed with HTTP 500"})
-
-    with _patched(_inbox_sync_asgi_client=lambda: client):
-        try:
-            _run_coro(
-                inbox_provider.sync_now(
-                    tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
-                )
-            )
-        except httpx.HTTPStatusError:
-            pass
-        else:
-            raise AssertionError("sync_now must not swallow a failed Meta call as success")
+def test_sync_now_propagates_every_typed_refusal_unchanged() -> None:
+    """`InboxState.sync_comments` picks one message per exception TYPE, so the provider
+    must hand each one through as itself — never collapsed into another."""
+    refusals: list[Exception] = [
+        UnknownInboxConnection(str(_CONNECTION)),
+        InboxConnectionInactive("revoked"),
+        CommentsPermissionMissing(connection_id=_CONNECTION),
+        SyncBudgetExhausted(needed=5, remaining=0),
+        CommentsAuthExpired(connection_id=_CONNECTION),
+        CommentsReadError("GET /m/comments failed with HTTP 500", http_status=500),
+    ]
+    for exc in refusals:
+        with _patched(sync_comments=_raising(exc)):
+            try:
+                _run_coro(inbox_provider.sync_now(tenant_id=_TENANT, connection_id=_CONNECTION))
+            except type(exc) as raised:
+                assert raised is exc
+            else:
+                raise AssertionError(f"sync_now swallowed {type(exc).__name__}")
 
 
 # --------------------------------------------------------------------------------------
-# analyze_sentiment_now (QUA-92) — the "Analizar sentimiento" button's transport.
-# Reuses QUA-21's existing route rather than a second analysis engine: pinned below by
-# asserting the real path AND that `analyze_pending_comments` never appears in this
-# module's source (no in-process shortcut around the route).
+# analyze_sentiment_now (QUA-92) — the "Analizar sentimiento" button's transport: the
+# same `analyze_pending_comments` seam `POST /api/sentiment/analyze` wraps, in process.
 # --------------------------------------------------------------------------------------
 
 
-def test_analyze_sentiment_now_calls_the_real_route_not_a_second_engine() -> None:
-    source = inspect.getsource(inbox_provider.analyze_sentiment_now)
-    assert '"/api/sentiment/analyze"' in source
-    assert "analyze_pending_comments(" not in source  # no in-process shortcut around it
+def test_analyze_sentiment_now_forwards_the_session_tenant_and_projects() -> None:
+    calls: list[dict] = []
 
+    def _fake(**kwargs: object) -> AnalysisSummary:
+        calls.append(kwargs)
+        return AnalysisSummary(comments_checked=3, new_results=2, skipped_empty=1)
 
-def test_analyze_sentiment_now_rejects_a_tenant_the_dev_bridge_is_not_wired_for() -> None:
-    other_tenant = UUID("00000000-0000-4000-8000-000000000099")
-    assert other_tenant != inbox_provider._DEV_SYNC_TENANT_ID
-
-    try:
-        _run_coro(
-            inbox_provider.analyze_sentiment_now(tenant_id=other_tenant, connection_id=_CONNECTION)
-        )
-    except UnknownSentimentConnection:
-        pass
-    else:
-        raise AssertionError(
-            "analyze_sentiment_now must refuse a tenant the dev bridge cannot authenticate as"
-        )
-
-
-def test_analyze_sentiment_now_projects_summary_fields() -> None:
-    client = _mock_asgi_client(
-        200,
-        {"comments_checked": 3, "new_results": 2, "skipped_empty": 1},
-        expected_path="/api/sentiment/analyze",
-    )
-
-    with _patched(_inbox_sync_asgi_client=lambda: client):
+    with _patched(analyze_pending_comments=_fake):
         vm = _run_coro(
-            inbox_provider.analyze_sentiment_now(
-                tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
-            )
+            inbox_provider.analyze_sentiment_now(tenant_id=_OTHER_TENANT, connection_id=_CONNECTION)
         )
-    assert vm.comments_checked == 3
-    assert vm.new_results == 2
-    assert vm.skipped_empty == 1
+    assert calls == [{"tenant_id": _OTHER_TENANT, "connection_id": _CONNECTION}]
+    assert (vm.comments_checked, vm.new_results, vm.skipped_empty) == (3, 2, 1)
 
 
 def test_analyze_sentiment_now_projects_nothing_pending() -> None:
-    """QUA-92's requirement: nothing pending is a normal, all-zero success — the caller
-    (`InboxState.analyze_sentiment`) is what turns `comments_checked == 0` into "No hay
-    comentarios pendientes de análisis" (as a toast message), not this function."""
-    client = _mock_asgi_client(
-        200,
-        {"comments_checked": 0, "new_results": 0, "skipped_empty": 0},
-        expected_path="/api/sentiment/analyze",
-    )
+    """Nothing pending is a normal, all-zero success — `InboxState.analyze_sentiment` is
+    what turns it into "No hay comentarios pendientes de análisis", not this function."""
 
-    with _patched(_inbox_sync_asgi_client=lambda: client):
+    def _fake(**kwargs: object) -> AnalysisSummary:
+        return AnalysisSummary(comments_checked=0, new_results=0, skipped_empty=0)
+
+    with _patched(analyze_pending_comments=_fake):
         vm = _run_coro(
-            inbox_provider.analyze_sentiment_now(
-                tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
-            )
+            inbox_provider.analyze_sentiment_now(tenant_id=_TENANT, connection_id=_CONNECTION)
         )
-    assert vm.comments_checked == 0
-    assert vm.new_results == 0
-    assert vm.skipped_empty == 0
+    assert (vm.comments_checked, vm.new_results, vm.skipped_empty) == (0, 0, 0)
 
 
-def test_analyze_sentiment_now_propagates_unknown_connection_on_a_404() -> None:
-    client = _mock_asgi_client(
-        404, {"detail": "unknown connection"}, expected_path="/api/sentiment/analyze"
-    )
+def test_analyze_sentiment_now_propagates_its_typed_refusals() -> None:
+    refusals: list[Exception] = [
+        UnknownSentimentConnection(str(_CONNECTION)),
+        SentimentModelUnavailable("the `ml` dependency group is not installed"),
+    ]
+    for exc in refusals:
 
-    with _patched(_inbox_sync_asgi_client=lambda: client):
-        try:
-            _run_coro(
-                inbox_provider.analyze_sentiment_now(
-                    tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
+        def _fake(_exc: Exception = exc, **kwargs: object) -> AnalysisSummary:
+            raise _exc
+
+        with _patched(analyze_pending_comments=_fake):
+            try:
+                _run_coro(
+                    inbox_provider.analyze_sentiment_now(
+                        tenant_id=_TENANT, connection_id=_CONNECTION
+                    )
                 )
-            )
-        except UnknownSentimentConnection:
-            pass
-        else:
-            raise AssertionError("analyze_sentiment_now must not swallow a 404 as success")
-
-
-def test_analyze_sentiment_now_raises_for_a_failed_call() -> None:
-    client = _mock_asgi_client(
-        500, {"detail": "unexpected"}, expected_path="/api/sentiment/analyze"
-    )
-
-    with _patched(_inbox_sync_asgi_client=lambda: client):
-        try:
-            _run_coro(
-                inbox_provider.analyze_sentiment_now(
-                    tenant_id=inbox_provider._DEV_SYNC_TENANT_ID, connection_id=_CONNECTION
-                )
-            )
-        except httpx.HTTPStatusError:
-            pass
-        else:
-            raise AssertionError("analyze_sentiment_now must not swallow a failed call as success")
+            except type(exc) as raised:
+                assert raised is exc
+            else:
+                raise AssertionError(f"analyze_sentiment_now swallowed {type(exc).__name__}")
 
 
 def _reel_summary(**overrides: object) -> ReelSummary:

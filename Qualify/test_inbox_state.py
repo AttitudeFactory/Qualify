@@ -22,7 +22,9 @@ page` are the exception — none of them calls `get_state`, so they run end to e
 
 from __future__ import annotations
 
+import ast
 import inspect
+import textwrap
 from uuid import UUID
 
 import pytest
@@ -780,3 +782,62 @@ async def test_load_more_thread_comments_ignores_a_call_with_nothing_more_to_loa
 
     assert state.is_loading_more_thread_comments is False
     assert state.thread_comments == []
+
+
+# --------------------------------------------------------------------------------------
+# B8 — one message per failure. The handlers cannot run end to end here (module
+# docstring), so the mapping is read from their AST: which `*_error` constant each
+# `except <Type>:` branch assigns.
+# --------------------------------------------------------------------------------------
+
+
+def _error_constant_by_exception(handler: object, error_attr: str) -> dict[str, str]:
+    tree = ast.parse(textwrap.dedent(inspect.getsource(handler)))
+    mapping: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ExceptHandler) or node.type is None:
+            continue
+        caught = ast.unparse(node.type)
+        for inner in ast.walk(node):
+            if (
+                isinstance(inner, ast.Assign)
+                and isinstance(inner.targets[0], ast.Attribute)
+                and inner.targets[0].attr == error_attr
+                and isinstance(inner.value, ast.Name)
+            ):
+                mapping[caught] = inner.value.id
+    return mapping
+
+
+def test_sync_comments_maps_each_failure_to_its_own_message() -> None:
+    mapping = _error_constant_by_exception(InboxState.sync_comments.fn, "sync_error")
+    assert mapping == {
+        "UnknownInboxConnection": "_UNKNOWN_CONNECTION",
+        "InboxConnectionInactive": "_CONNECTION_INACTIVE",
+        "CommentsAuthExpired": "_CONNECTION_AUTH_EXPIRED",
+        "CommentsPermissionMissing": "_COMMENTS_PERMISSION_MISSING",
+        "SyncBudgetExhausted": "_SYNC_BUDGET_EXHAUSTED",
+        "CommentsReadError": "_SYNC_META_FAILED",
+        "Exception": "_SYNC_FAILED",
+    }
+    # Every message is distinct — "no está disponible" means exactly one thing.
+    messages = [getattr(inbox_state, name) for name in mapping.values()]
+    assert len(set(messages)) == len(messages)
+
+
+def test_analyze_sentiment_maps_each_failure_to_its_own_message() -> None:
+    mapping = _error_constant_by_exception(InboxState.analyze_sentiment.fn, "analyze_error")
+    assert mapping == {
+        "UnknownSentimentConnection": "_UNKNOWN_CONNECTION",
+        "SentimentModelUnavailable": "_ANALYZE_UNAVAILABLE",
+        "Exception": "_ANALYZE_FAILED",
+    }
+
+
+def test_a_missing_session_reads_as_expired_not_as_a_missing_account() -> None:
+    """No tenant in the session = no login (`AuthState.session_tenant_id` is set only by
+    one), which is a different fix for the user than "pick an account"."""
+    for handler in (InboxState.sync_comments.fn, InboxState.analyze_sentiment.fn):
+        source = inspect.getsource(handler)
+        assert "_SESSION_EXPIRED if tenant_id is None else _NO_CONNECTION_SELECTED" in source
+    assert inbox_state._SESSION_EXPIRED != inbox_state._NO_CONNECTION_SELECTED

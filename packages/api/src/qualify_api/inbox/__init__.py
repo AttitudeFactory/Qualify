@@ -38,6 +38,7 @@ from qualify_api.inbox.client import (
     HttpCommentsClient,
 )
 from qualify_api.inbox.composition import (
+    InboxConnectionInactive,
     UnknownInboxConnection,
     list_candidate_media,
     set_media_monitored,
@@ -79,6 +80,7 @@ __all__ = [
     "CommentsReadError",
     "HttpCommentsClient",
     "HttpMediaClient",
+    "InboxConnectionInactive",
     "InboxRepository",
     "InboxService",
     "MediaClient",
