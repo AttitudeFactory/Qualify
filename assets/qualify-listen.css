@@ -17,26 +17,4 @@
   animation: q-settle var(--q-dur-slow) var(--q-ease) both;
 }
 
-/* ── Vitrina: selectable local (`_local_card`) ───────────────────────────────
- * A card that IS a button: a native <button> wearing the card material, so the
- * selection is a click or a key press and `aria-pressed` names the chosen one.
- * The accent ring on the pressed card is a control state, drawn with the tone's
- * own steps — never a hex. */
-.q-pick-card {
-  display: block;
-  width: 100%;
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-  appearance: none;
-  -webkit-appearance: none;
-}
-.q-pick-card[aria-pressed="true"] {
-  border-color: var(--accent-8);
-  background: linear-gradient(var(--accent-a3), var(--accent-a3)), var(--q-card-fill);
-  box-shadow: inset 0 1px 0 var(--q-card-hi), 0 0 0 1px var(--accent-8), var(--q-elev-island);
-}
-.q-pick-card[aria-pressed="true"].q-lift:hover {
-  box-shadow: inset 0 1px 0 var(--q-card-hi), 0 0 0 1px var(--accent-8), var(--q-elev-lift);
-}
+/* The selectable local card is `ui.choice_card` now (qualify.css, "Shared primitives"). */

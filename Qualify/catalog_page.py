@@ -25,7 +25,9 @@ from .ui import (
     app_shell,
     callout,
     card,
+    dropzone,
     empty_state,
+    media_thumb,
     page_body,
     page_header,
     progress_panel,
@@ -223,9 +225,15 @@ def _media_tile(item: rx.Var[ProductMediaVM]) -> rx.Component:
                 item.media_type == "video",
                 rx.box(
                     rx.video(src=src, controls=True, muted=True, width="100%", height="100%"),
-                    class_name="q-catalog-thumb",
+                    class_name="q-catalog-video",
                 ),
-                rx.image(src=src, alt=item.filename, class_name="q-catalog-thumb"),
+                media_thumb(
+                    src,
+                    size=None,
+                    width="100%",
+                    height="var(--q-catalog-thumb-h, 9.5rem)",
+                    alt=item.filename,
+                ),
             ),
             rx.cond(
                 item.is_primary,
@@ -279,9 +287,7 @@ def _media_tile(item: rx.Var[ProductMediaVM]) -> rx.Component:
 
 
 def _upload_zone() -> rx.Component:
-    # `rx.upload.root`: the same widget as `rx.upload` minus the style defaults the
-    # `.q-dropzone` material sets itself.
-    return rx.upload.root(
+    return dropzone(
         rx.vstack(
             rx.icon("image-up", size=T.ICON_MD, color=T.TEXT_FAINT),
             rx.text(
@@ -299,12 +305,12 @@ def _upload_zone() -> rx.Component:
             align="center",
             spacing="1",
         ),
-        id="catalog_media",
+        upload_id="catalog_media",
         accept=MEDIA_ACCEPT,
         multiple=True,
         max_files=12,
         on_drop=CatalogState.handle_media_upload(rx.upload_files(upload_id="catalog_media")),
-        class_name="q-dropzone q-dropzone--compact",
+        variant="compact",
     )
 
 
@@ -432,14 +438,15 @@ def _editor() -> rx.Component:
 
 
 def _thumb(product: rx.Var[ProductVM]) -> rx.Component:
-    return rx.cond(
-        product.primary_photo_key != "",
-        rx.image(
-            src=rx.get_upload_url(product.primary_photo_key),
-            alt=product.name,
-            class_name="q-catalog-thumb",
-        ),
-        rx.center(rx.icon("image-off", size=T.ICON_LG), class_name="q-catalog-thumb"),
+    return media_thumb(
+        rx.get_upload_url(product.primary_photo_key),
+        has=product.primary_photo_key != "",
+        size=None,
+        width="100%",
+        height="var(--q-catalog-thumb-h, 9.5rem)",
+        alt=product.name,
+        icon="image-off",
+        icon_size=T.ICON_LG,
     )
 
 

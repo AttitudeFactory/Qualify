@@ -403,6 +403,19 @@ Todo lo que flota sobre la página es material **island** (§3.4) y lleva el ski
 
 Reglas del flujo (Planificador, referencia): un paso solo se abandona cuando es válido y el motivo se lee junto a «Siguiente»; el paso de confirmación es donde aterriza la respuesta del servicio (`callout("error")` encima del botón); un rechazo no deja nada a medias. Demo en vivo: `/design` → «Flujo por pasos».
 
+### 5.9 Elegir, subir, mostrar, conversar (2026-10-09)
+
+Cuatro recetas que los lotes de la migración Liquid Glass repetían en dos o más pantallas y que el kit también trae — las dos condiciones del plan (§0) para admitir una primitiva. El fundador las aprobó el 2026-10-09; desde entonces son la única puerta a su material (`assets/qualify.css`, «Shared primitives») y las hojas de dominio ya no llevan sus propias versiones (`q-cr-option`, `q-choice` de tarjeta, `q-pick-card`, `q-inbox-thumb`, `q-catalog-thumb`, `q-trend-thumb`, `q-brand-avatar`, `q-cr-dropzone`, `q-inbox-reply`).
+
+| Primitiva | Cuándo | Anatomía y reglas |
+|---|---|---|
+| `choice_card(*children, selected=, on_select=, role="radio"\|"checkbox", disabled=False, padding=…)` | una opción que se elige entre varias (tipo de pieza, producto del catálogo, look del avatar, receta, local de la vitrina, plan del Brand Kit) | **un `<button>` real** con la tarjeta como cuerpo (§8: nunca `rx.box` + `on_click`); material card; elegida = anillo de 2 px del acento + lavado + halo (`.q-choice-card--on`, gana al hover); `disabled` = punteada y quieta, con el motivo en los hijos; el estado también va en `aria-checked`. `choice_card_check()` pone el check sólido del kit en la esquina de la elegida cuando el anillo solo sería poco (P1). Los chips-píldora del Planificador (`.q-choice`, `qualify-planner.css`) son otra cosa y siguen allí |
+| `dropzone(*children, upload_id=, on_drop=, accept=, max_files=, multiple=, variant="zone"\|"compact"\|"tile"\|"bare", tile_size=…)` | **toda** subida de archivos | `rx.upload.root` vestido con el campo hundido y punteado del kit (`.q-dropzone`), acento al pasar un archivo o llegar con teclado. `zone` = el prompt grande del estado vacío; `compact` = pozo pequeño en un formulario; `tile` = cuadrado en una grilla de medios (`tile_size`); `bare` = sin material, los hijos son el look (un botón, una loseta entera). **El guard prohíbe `rx.upload`/`rx.upload.root` en las páginas**: el `rx.upload` estilizado pinta un borde punteado inline que ninguna clase puede sobreescribir — esa es la trampa que esconde |
+| `media_thumb(src, size="72px", width=, height=, round=False, icon="image", icon_size=, alt="", fit="cover", has=…)` | la foto de un Reel, un producto, un video trending, un referente; el avatar de una cuenta | la imagen en el marco del sistema (`.q-thumb`: material control, hairline, radio control) o, si no hay, el mismo marco con `icon` — una lista nunca muestra un hueco ni el glifo de imagen rota. `round=True` es el avatar (`lq-avatar`). `size` cuadra; `width`/`height` lo sobreescriben (`height` solo + `width="100%"` = la foto arriba de una tarjeta). `has` sustituye la prueba `src != ""` cuando el VM ya lo sabe. `alt=""` por defecto (decorativa junto a su propio título) |
+| `chat_bubble(*children, direction="out"\|"in", meta=None)` | un mensaje de una conversación: el borrador de respuesta del inbox hoy; los DMs de 4-B mañana | la burbuja del kit: `out` = lo que decimos (lavado del acento, cola abajo a la izquierda), `in` = lo que dijeron (material control, cola abajo a la derecha); `meta` (hora, estado) va dentro, debajo del texto |
+
+Demo en vivo: `/design` → «Elegir, subir, mostrar, conversar».
+
 ---
 
 ## 6. Patrones de pantalla

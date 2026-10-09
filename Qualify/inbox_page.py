@@ -70,8 +70,10 @@ from .ui import (
     app_shell,
     callout,
     card,
+    chat_bubble,
     empty_state,
     loading_spinner,
+    media_thumb,
     mono,
     page_body,
     page_header,
@@ -102,17 +104,9 @@ def _connection_selector() -> rx.Component:
 
 def _thumbnail(candidate: CandidateMediaVM) -> rx.Component:
     """The Reel's 72px picture, or — when the API returned none — the same frame filled
-    with the control material (`.q-inbox-thumb`, assets/qualify-inbox.css). Decorative:
+    with the control material (`ui.media_thumb`). Decorative:
     the caption next to it is the Reel's name, so the image carries no alt text."""
-    return rx.cond(
-        candidate.thumbnail_url != "",
-        rx.image(src=candidate.thumbnail_url, alt="", class_name="q-inbox-thumb"),
-        rx.box(
-            rx.icon("film", size=26, color=T.TEXT_FAINT),
-            class_name="q-inbox-thumb q-inbox-thumb--empty",
-            aria_hidden="true",
-        ),
-    )
+    return media_thumb(candidate.thumbnail_url, size="72px", icon="film")
 
 
 def _monitoring_switch(candidate: CandidateMediaVM) -> rx.Component:
@@ -427,15 +421,7 @@ def _global_summary_widget() -> rx.Component:
 def _reel_thumbnail(reel: ReelSummaryVM) -> rx.Component:
     """Same shape as `_thumbnail(candidate)` above, over `ReelSummaryVM`'s own
     thumbnail_url — opción A enrichment, `""` for a Reel outside the 2-week window."""
-    return rx.cond(
-        reel.thumbnail_url != "",
-        rx.image(src=reel.thumbnail_url, alt="", class_name="q-inbox-thumb"),
-        rx.box(
-            rx.icon("film", size=26, color=T.TEXT_FAINT),
-            class_name="q-inbox-thumb q-inbox-thumb--empty",
-            aria_hidden="true",
-        ),
-    )
+    return media_thumb(reel.thumbnail_url, size="72px", icon="film")
 
 
 def _reel_monitoring_badge(reel: ReelSummaryVM) -> rx.Component:
@@ -929,7 +915,7 @@ def _draft_view_mode(draft: DraftVM) -> rx.Component:
     folded together in this v1."""
     is_busy = RepliesState.busy_draft_id == draft.id
     return rx.vstack(
-        rx.box(rx.text(draft.generated_text, size="2"), class_name="q-inbox-reply"),
+        chat_bubble(rx.text(draft.generated_text, size="2"), direction="out"),
         rx.hstack(
             rx.button(
                 rx.cond(is_busy, loading_spinner("sm"), rx.icon("check", size=14)),

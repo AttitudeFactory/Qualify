@@ -39,16 +39,16 @@
  * media block): a dashed well on the field material — the kit's `.lq-field` sunk into
  * the card — that lights up with the accent when the pointer (or a dragged file) is
  * over it. `--tile` is the same widget shrunk to a `+` tile inside the gallery grid
- * (`--q-pub-tile-size`, below); `--compact` is the catalogue's smaller one. */
+ * (`--q-dropzone-tile`, below); `--compact` is the catalogue's smaller one. */
 /* `.q-dropzone` (+ --tile, --compact) is shared — defined once in qualify.css (lote 6). */
 /* ── Gallery tile (an already-selected file) ──────────────────────────────────
  * A square frame in the ok tone — the file is in, the thumbnail is real — on the card
- * material, no blur (D5: it lives in a grid). `--q-pub-tile-size` is set by the flow
+ * material, no blur (D5: it lives in a grid). `--q-dropzone-tile` is set by the flow
  * (6.5rem in Publicaciones, 8rem for the single Story piece). */
 .q-pub-tile {
   position: relative;
-  width: var(--q-pub-tile-size, 6.5rem);
-  height: var(--q-pub-tile-size, 6.5rem);
+  width: var(--q-dropzone-tile, 6.5rem);
+  height: var(--q-dropzone-tile, 6.5rem);
   overflow: hidden; /* keeps the thumbnail's object-fit:cover inside the rounded tile */
   border: 1.5px solid var(--grass-a7);
   border-radius: var(--q-radius-card);
@@ -135,16 +135,7 @@
 }
 /* A trending video's 56px thumbnail (or its film placeholder) and the song-detail
    panel that unfolds under a TikTok card: control material, no blur. */
-.q-trend-thumb {
-  width: 56px;
-  height: 56px;
-  flex-shrink: 0;
-  overflow: hidden;
-  border-radius: var(--q-radius-control);
-  background: var(--q-control-fill);
-  box-shadow: inset 0 0 0 1px var(--q-control-edge);
-  object-fit: cover;
-}
+/* The 56px thumbnail is `ui.media_thumb(size="56px")` now. */
 .q-trend-detail {
   width: 100%;
   padding: 0.6rem 0.75rem;
@@ -185,7 +176,9 @@
   background: linear-gradient(var(--accent-a3), var(--accent-a3)), var(--q-card-fill);
   box-shadow: inset 0 1px 0 var(--q-card-hi), 0 0 0 3px var(--accent-a4), var(--q-elev-island);
 }
-.q-catalog-thumb {
+/* The product picture is `ui.media_thumb` now; `.q-catalog-video` below keeps the
+   frame for the one case that is a <video>. */
+.q-catalog-video {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -195,8 +188,6 @@
   border-radius: var(--q-radius-control);
   background: var(--q-control-fill);
   box-shadow: inset 0 0 0 1px var(--q-control-edge);
-  color: var(--gray-8);
-  object-fit: cover;
 }
 
 @media (prefers-reduced-motion: reduce) {

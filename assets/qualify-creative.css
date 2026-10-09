@@ -15,59 +15,9 @@
  * scrolling copy.
  */
 
-/* ── Selectable tiles and drop zones (/create wizard and the legacy brief) ───────
-   One recipe for every "pick one of these" box the generator draws — the content kind,
-   a catalog product, an avatar look, a recipe, the legacy image route. Control material;
-   the chosen one takes the accent ring. `--off` is the legacy route that cannot be
-   chosen (dashed, dimmed). The tile stays a `role="radio"` box with its `aria-checked`,
-   the class only draws it. */
-.q-cr-option {
-  border-radius: var(--q-radius-control);
-  background: var(--q-control-fill);
-  box-shadow: inset 0 0 0 1px var(--q-control-edge), inset 0 1px 0 var(--q-control-hi);
-  transition:
-    box-shadow var(--q-dur-fast) var(--q-ease),
-    background var(--q-dur-fast) var(--q-ease),
-    transform var(--q-dur) var(--q-spring);
-}
-.q-cr-option:where(:hover):not([aria-disabled="true"]) {
-  background: var(--q-control-fill-hover);
-  box-shadow: inset 0 0 0 1px var(--q-control-edge-hover), inset 0 1px 0 var(--q-control-hi), var(--q-control-shadow);
-}
-.q-cr-option--selected,
-.q-cr-option--selected:where(:hover) {
-  background: var(--accent-a3);
-  box-shadow: inset 0 0 0 2px var(--accent-8), inset 0 1px 0 var(--q-control-hi), 0 0 0 4px var(--accent-a3);
-}
-.q-cr-option--off {
-  background: transparent;
-  box-shadow: none;
-  border: 1px dashed var(--q-control-edge);
-}
-.q-cr-option:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
-
-/* The drop zone: a sunken field with a dashed edge, the accent when a file hovers it.
-   On `rx.upload.root` (the unstyled one: the styled upload injects its own inline dashed
-   border, which no class could override). */
-.q-cr-dropzone {
-  padding: 1rem;
-  border-radius: var(--q-radius-control);
-  border: 1px dashed var(--q-control-edge-hover);
-  background: var(--q-field-fill);
-  cursor: pointer;
-  transition: border-color var(--q-dur-fast) var(--q-ease), background var(--q-dur-fast) var(--q-ease);
-}
-.q-cr-dropzone:where(:hover, .rx-Upload--drag-active) {
-  border-color: var(--accent-8);
-  background: var(--q-field-fill-focus);
-}
-
-/* A thumbnail slot with nothing in it yet (a catalog product without a photo). */
-.q-cr-thumb-empty {
-  background: var(--q-field-fill);
-  box-shadow: inset 0 0 0 1px var(--q-control-edge);
-  border-radius: 0.4rem;
-}
+/* The option tiles, the drop zone and the empty thumb this sheet used to draw are
+   `ui.choice_card`, `ui.dropzone` and `ui.media_thumb` now (qualify.css, "Shared
+   primitives"). */
 
 /* An output of the generator (an image, a still of a template run): framed by the card
    edge, never a hard border. */

@@ -14,7 +14,7 @@ import reflex as rx
 
 from .stories_vm import TrendAudioOptionVM, TrendingVideoVM
 from .trending_state import TrendingState
-from .ui import card, removable_pill, section
+from .ui import card, media_thumb, removable_pill, section
 from .ui import tokens as T
 
 # ---------------------------------------------------------------------------
@@ -189,10 +189,8 @@ def _trend_audio_section() -> rx.Component:
 
 
 def _trending_thumbnail(candidate: TrendingVideoVM) -> rx.Component:
-    return rx.cond(
-        candidate.has_thumbnail,
-        rx.image(src=candidate.thumbnail_url, alt="", class_name="q-trend-thumb"),
-        rx.center(rx.icon("film", size=20, color=T.TEXT_FAINT), class_name="q-trend-thumb"),
+    return media_thumb(
+        candidate.thumbnail_url, has=candidate.has_thumbnail, size="56px", icon="film", icon_size=20
     )
 
 
