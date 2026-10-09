@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from qualify_api.http import deps, inbox_routes
 from qualify_api.http.app import create_app
 from qualify_api.inbox.client import CommentsReadError
-from qualify_api.inbox.composition import UnknownInboxConnection
+from qualify_api.inbox.composition import InboxConnectionInactive, UnknownInboxConnection
 from qualify_api.inbox.service import CommentsPermissionMissing, SyncBudgetExhausted, SyncSummary
 
 TENANT = UUID("44444444-4444-4444-8444-444444444444")
@@ -297,3 +297,20 @@ def test_a_random_connection_id_still_requires_a_wired_backend(
     harness.http.post("/api/inbox/sync", json={"connection_id": str(uuid4())}, headers=AUTH)
 
     assert len(calls) == 1  # the route still calls through; refusal is the service's job
+
+
+def test_an_inactive_connection_is_409_not_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B8: the connection is the caller's but disconnected — a different answer from
+    "not visible" (404), so a client can tell "reconnect it" from "it is not yours"."""
+
+    async def fn(*, tenant_id: UUID, connection_id: UUID) -> SyncSummary:
+        raise InboxConnectionInactive("revoked")
+
+    harness = Harness(monkeypatch, fn)
+
+    response = harness.http.post(
+        "/api/inbox/sync", json={"connection_id": str(CONNECTION)}, headers=AUTH
+    )
+
+    assert response.status_code == 409
+    assert "revoked" in response.json()["detail"]
