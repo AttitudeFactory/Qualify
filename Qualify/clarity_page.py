@@ -7,6 +7,10 @@ metrics) → one traffic-light card per friction signal → raw per-metric table
 project configuration folded into accordions at the end. The config card surfaces at
 the top only while the tenant has nothing configured. Reads come from the cached
 snapshot; only the explicit button spends a live API request.
+
+Every surface is `ui.card` (the card material, plan D5), every state a `signal_pill`
+or `tone_badge` by tone, every persistent message a `ui.callout` — design-system
+debt 9.3-4 (the page's own `rx.card`s) retired with the Liquid Glass migration.
 """
 
 from __future__ import annotations
@@ -15,7 +19,20 @@ import reflex as rx
 
 from .clarity_provider import ActionItemVM, FrictionCardVM, MetricTableVM
 from .clarity_state import DAYS_CHOICES, DIMENSION_CHOICES, ClarityState
-from .ui import app_shell, callout, empty_state, page_body, page_header, skeleton_rows
+from .ui import (
+    app_shell,
+    callout,
+    card,
+    empty_state,
+    page_body,
+    page_header,
+    section,
+    signal_pill,
+    skeleton_rows,
+    stat_card,
+    tag,
+    tone_badge,
+)
 from .ui import tokens as T
 
 
@@ -27,15 +44,15 @@ def _topbar() -> rx.Component:
 
 
 def _config_card() -> rx.Component:
-    return rx.card(
+    return card(
         rx.vstack(
             rx.hstack(
                 rx.icon("settings-2", size=16),
                 rx.heading("Proyecto de Clarity", size="3", as_="h2"),
                 rx.cond(
                     ClarityState.config.configured,
-                    rx.badge("conectado", color_scheme="grass", variant="soft", size="1"),
-                    rx.badge("sin configurar", color_scheme="amber", variant="soft", size="1"),
+                    signal_pill("conectado", "ok"),
+                    signal_pill("sin configurar", "warn"),
                 ),
                 spacing="2",
                 align="center",
@@ -61,10 +78,13 @@ def _config_card() -> rx.Component:
                     type="password",
                     width="22rem",
                 ),
+                # Saving the project is the one step the whole screen waits on while
+                # nothing is configured; `soft` once the screen's solid is the refresh.
                 rx.button(
                     "Guardar",
                     on_click=ClarityState.save_settings,
                     loading=ClarityState.is_saving,
+                    variant="soft",
                     size="2",
                 ),
                 spacing="2",
@@ -75,7 +95,6 @@ def _config_card() -> rx.Component:
             align_items="start",
             width="100%",
         ),
-        width="100%",
     )
 
 
@@ -97,6 +116,7 @@ def _refresh_controls() -> rx.Component:
             size="2",
             width="9rem",
         ),
+        # The page's one solid action (P3): spend a live request.
         rx.button(
             rx.icon("refresh-cw", size=14),
             "Actualizar desde Clarity",
@@ -105,11 +125,10 @@ def _refresh_controls() -> rx.Component:
             disabled=~ClarityState.config.configured,
             size="2",
         ),
-        rx.badge(
+        tone_badge(
             ClarityState.config.remaining_budget.to_string() + " actualizaciones restantes hoy",
-            variant="soft",
-            color_scheme="blue",
-            size="1",
+            "info",
+            icon="gauge",
         ),
         spacing="2",
         align="center",
@@ -119,67 +138,63 @@ def _refresh_controls() -> rx.Component:
 
 
 def _stat_card(stat: list[str]) -> rx.Component:
-    return rx.card(
-        rx.vstack(
-            rx.text(stat[0], size="1", color=T.TEXT_MUTED),
-            rx.text(stat[1], size="6", weight="bold", class_name="q-nums"),
-            spacing="1",
-            align_items="start",
-        ),
-        min_width="10rem",
-    )
+    # `stat_card` casts a Var value with `to_string()`, which JSON-encodes a string
+    # Var (quotes included); the figure is already text, so it goes in as an element.
+    return rx.box(stat_card(stat[0], rx.el.span(stat[1]), "accent"), min_width="10rem")
 
 
-def _friction_badge(card: FrictionCardVM) -> rx.Component:
+def _friction_badge(card_vm: FrictionCardVM) -> rx.Component:
+    """The verdict of one friction signal: a state, so colour + icon + word."""
     return rx.cond(
-        card.status == "ok",
-        rx.badge("sin señales", color_scheme="grass", variant="soft", size="1"),
+        card_vm.status == "ok",
+        tone_badge("sin señales", "ok", icon="check"),
         rx.cond(
-            card.status == "warn",
-            rx.badge("a vigilar", color_scheme="amber", variant="soft", size="1"),
-            rx.badge("atender", color_scheme="tomato", variant="solid", size="1"),
+            card_vm.status == "warn",
+            tone_badge("a vigilar", "warn", icon="eye"),
+            tone_badge("atender", "error", icon="triangle-alert"),
         ),
     )
 
 
-def _friction_card(card: FrictionCardVM) -> rx.Component:
-    return rx.card(
+def _friction_card(card_vm: FrictionCardVM) -> rx.Component:
+    return card(
         rx.vstack(
             rx.hstack(
-                rx.text(card.label, size="2", weight="medium"),
+                rx.text(card_vm.label, size="2", weight="medium"),
                 rx.spacer(),
-                _friction_badge(card),
+                _friction_badge(card_vm),
                 width="100%",
                 align="center",
                 spacing="2",
             ),
             rx.hstack(
-                rx.text(card.total, size="6", weight="bold", class_name="q-nums"),
+                rx.text(card_vm.total, size="6", weight="bold", class_name="q-nums"),
                 rx.cond(
-                    card.affected != "",
-                    rx.text(card.affected, size="1", color=T.TEXT_MUTED),
+                    card_vm.affected != "",
+                    rx.text(card_vm.affected, size="1", color=T.TEXT_MUTED),
                     rx.fragment(),
                 ),
                 spacing="2",
                 align="baseline",
             ),
-            rx.text(card.hint, size="1", color=T.TEXT_FAINT),
+            rx.text(card_vm.hint, size="1", color=T.TEXT_MUTED),
             spacing="1",
             align_items="start",
             width="100%",
         ),
         min_width="13rem",
         flex="1",
+        width="auto",
     )
 
 
 def _action_item(item: ActionItemVM) -> rx.Component:
-    return rx.card(
+    return card(
         rx.hstack(
             rx.cond(
                 item.severity == "alta",
-                rx.badge("alta", color_scheme="tomato", variant="solid", size="1"),
-                rx.badge("media", color_scheme="amber", variant="soft", size="1"),
+                tone_badge("alta", "error", icon="triangle-alert"),
+                tone_badge("media", "warn"),
             ),
             rx.vstack(
                 rx.text(item.title, size="2", weight="medium"),
@@ -191,16 +206,26 @@ def _action_item(item: ActionItemVM) -> rx.Component:
             align="start",
             width="100%",
         ),
-        width="100%",
     )
 
 
 def _actions_section() -> rx.Component:
-    return rx.vstack(
-        rx.hstack(
-            rx.icon("list-checks", size=16),
-            rx.heading("Qué atender ahora", size="4", as_="h2"),
-            rx.spacer(),
+    return section(
+        "Qué atender ahora",
+        rx.cond(
+            ClarityState.has_actions,
+            rx.vstack(
+                rx.foreach(ClarityState.snapshot.actions, _action_item),
+                spacing="2",
+                width="100%",
+            ),
+            callout(
+                "Sin fricción detectada en esta ventana: nadie sufrió clics rotos, "
+                "errores ni rebotes. Nada urgente que atender.",
+                "ok",
+            ),
+        ),
+        actions=[
             rx.cond(
                 ClarityState.clarity_dashboard_url != "",
                 rx.link(
@@ -214,40 +239,14 @@ def _actions_section() -> rx.Component:
                     is_external=True,
                 ),
                 rx.fragment(),
-            ),
-            width="100%",
-            align="center",
-            spacing="2",
-        ),
-        rx.cond(
-            ClarityState.has_actions,
-            rx.vstack(
-                rx.foreach(ClarityState.snapshot.actions, _action_item),
-                spacing="2",
-                width="100%",
-            ),
-            rx.callout(
-                "Sin fricción detectada en esta ventana: nadie sufrió clics rotos, "
-                "errores ni rebotes. Nada urgente que atender.",
-                icon="check",
-                color_scheme="grass",
-                width="100%",
-            ),
-        ),
-        spacing="3",
-        align_items="start",
-        width="100%",
+            )
+        ],
     )
 
 
 def _health_section() -> rx.Component:
-    return rx.vstack(
-        rx.hstack(
-            rx.icon("heart-pulse", size=16),
-            rx.heading("Salud del sitio", size="4", as_="h2"),
-            spacing="2",
-            align="center",
-        ),
+    return section(
+        "Salud del sitio",
         rx.hstack(
             rx.foreach(ClarityState.snapshot.stats, _stat_card),
             spacing="3",
@@ -256,12 +255,7 @@ def _health_section() -> rx.Component:
         ),
         rx.cond(
             ClarityState.snapshot.traffic_note != "",
-            rx.callout(
-                ClarityState.snapshot.traffic_note,
-                icon="info",
-                color_scheme="blue",
-                width="100%",
-            ),
+            callout(ClarityState.snapshot.traffic_note, "info"),
             rx.fragment(),
         ),
         rx.hstack(
@@ -270,9 +264,6 @@ def _health_section() -> rx.Component:
             wrap="wrap",
             width="100%",
         ),
-        spacing="3",
-        align_items="start",
-        width="100%",
     )
 
 
@@ -289,7 +280,7 @@ def _snapshot_caption() -> rx.Component:
         ),
         rx.cond(
             ClarityState.snapshot.dimensions != "",
-            rx.badge(ClarityState.snapshot.dimensions, variant="soft", size="1"),
+            tag(ClarityState.snapshot.dimensions),
             rx.fragment(),
         ),
         spacing="2",
@@ -310,7 +301,7 @@ def _metric_row(row: list[str]) -> rx.Component:
 
 
 def _metric_table(table: MetricTableVM) -> rx.Component:
-    return rx.card(
+    return card(
         rx.vstack(
             rx.heading(table.name, size="3", as_="h3"),
             rx.box(
@@ -328,7 +319,6 @@ def _metric_table(table: MetricTableVM) -> rx.Component:
             align_items="start",
             width="100%",
         ),
-        width="100%",
     )
 
 
@@ -346,19 +336,12 @@ def _messages() -> rx.Component:
     return rx.vstack(
         rx.cond(
             ClarityState.action_error != "",
-            rx.callout(
-                ClarityState.action_error,
-                icon="triangle-alert",
-                color_scheme="tomato",
-                width="100%",
-            ),
+            callout(ClarityState.action_error, "error"),
             rx.fragment(),
         ),
         rx.cond(
             ClarityState.action_notice != "",
-            rx.callout(
-                ClarityState.action_notice, icon="check", color_scheme="grass", width="100%"
-            ),
+            callout(ClarityState.action_notice, "ok"),
             rx.fragment(),
         ),
         spacing="2",
