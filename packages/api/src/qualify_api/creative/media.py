@@ -97,15 +97,15 @@ from qualify_creative.render.adapter import MODEL_ID as REMOTION_MODEL
 from qualify_creative.render.adapter import RemotionTemplateAdapter
 from qualify_creative.render.client import RenderServiceError
 from qualify_creative.render.manifest import TemplateManifest
-from qualify_creative.render.props import ProductFacts, PropsProblem
+from qualify_creative.render.props import ProductFacts, PropsProblem, fit_text
 from qualify_creative.render.recipes import Engine
 from qualify_creative.render.registry import TemplateNotFound
 from qualify_creative.router import BudgetContext, CreativeRouter, HopAction
-from qualify_creative.schemas import BrandKit, ContentBrief, CopyPayload
+from qualify_creative.schemas import SCRIPT_MAX, BrandKit, ContentBrief, CopyPayload
 from qualify_creative.video import VideoFitter
 
 from . import trace
-from .pieces import PieceFiles
+from .pieces import PieceFile, PieceFiles
 from .voice_access import VoiceGuard
 
 logger = logging.getLogger(__name__)
@@ -1001,6 +1001,11 @@ class MediaProducer:
         script = (
             media.own_script.strip() or copy.script or f"{copy.hook} {copy.caption} {copy.cta}"
         ).strip()
+        if len(script) > SCRIPT_MAX:
+            # a generated script has no stored cap (founder, 2026-10-06); the line Seedance
+            # speaks is bounded like `own_script`, so motion prompt + line stay well under
+            # the vendor's `MAX_PROMPT_CHARS` (PR #100 review)
+            script = fit_text(script, SCRIPT_MAX)
         ratio = SEEDANCE_RATIOS[brief.format]
         products = self._products(brief)
         background = self._read(media.background_key)
@@ -1127,11 +1132,14 @@ class MediaProducer:
         background = self._read(media.background_key)
         logo = self._logo(kit, media.brand_logo_key)
         brand = self._brand_name(tenant_id, brief.brand_id)
+        # every reused piece is resolved BEFORE the first paid call (PR #100 review): a
+        # piece gone from slide 4 must not cost slides 1-3 first
+        pieces = self._existing_pieces(tenant_id, brief)
         out: list[MediaWrite] = []
         for position, slide in enumerate(media.slides):
             number = position + 1
             if slide.source is SlideSource.EXISTING:
-                out.append(self._existing_slide(tenant_id, brief, slide.object_key, position, save))
+                out.append(self._existing_slide(brief, pieces[position], position, save))
                 continue
             hook = copy.hook if slide.text is SlideText.HOOK else ""
             cta = copy.cta if slide.text is SlideText.CTA else ""
@@ -1334,33 +1342,43 @@ class MediaProducer:
             },
         )
 
+    def _existing_pieces(self, tenant_id: UUID, brief: ContentBrief) -> dict[int, PieceFile]:
+        """The piece behind every `EXISTING` slide, by slide position — all of them
+        resolved up front, so a missing or foreign one fails the carousel before any
+        provider is paid. Refused unless it IS one of this brand's pieces (a regenerated
+        source draft, 0047, no longer has its old files)."""
+        found: dict[int, PieceFile] = {}
+        for position, slide in enumerate(brief.media.slides):
+            if slide.source is not SlideSource.EXISTING:
+                continue
+            number = position + 1
+            piece = (
+                self._pieces.file(
+                    tenant_id=tenant_id, brand_id=brief.brand_id, object_key=slide.object_key
+                )
+                if self._pieces is not None and slide.object_key
+                else None
+            )
+            if piece is None:
+                logger.warning(
+                    "carousel slide %s refused: %s is not a piece of brand %s",
+                    number,
+                    slide.object_key,
+                    brief.brand_id,
+                )
+                raise _MediaFailed(
+                    FailureReason.ROUTE_BLOCKED_BY_POLICY.value, _MISSING_PIECE.format(n=number)
+                )
+            found[position] = piece
+        return found
+
     def _existing_slide(
-        self,
-        tenant_id: UUID,
-        brief: ContentBrief,
-        object_key: str | None,
-        position: int,
-        save: _Saver,
+        self, brief: ContentBrief, piece: PieceFile, position: int, save: _Saver
     ) -> MediaWrite:
         """A file of one of the brand's own pieces, copied into this draft (its own R2
         object: regenerating the source never breaks the carousel) and fitted to the
-        format. Refused unless it IS one of this brand's pieces."""
+        format."""
         number = position + 1
-        piece = (
-            self._pieces.file(tenant_id=tenant_id, brand_id=brief.brand_id, object_key=object_key)
-            if self._pieces is not None and object_key
-            else None
-        )
-        if piece is None:
-            logger.warning(
-                "carousel slide %s refused: %s is not a piece of brand %s",
-                number,
-                object_key,
-                brief.brand_id,
-            )
-            raise _MediaFailed(
-                FailureReason.ROUTE_BLOCKED_BY_POLICY.value, _MISSING_PIECE.format(n=number)
-            )
         size = brief.format.dimensions
         data = self._store.read(piece.object_key)
         params: dict[str, Any] = {
@@ -1956,8 +1974,17 @@ def _palette_line(kit: BrandKit) -> str:
     return f"Use the brand colors as accents where natural: {colors}." if colors else ""
 
 
-def _quoted(text: str) -> str:
-    return text.strip().replace('"', "'")
+#: How much of the operator's topic (no stored cap: `content_briefs.topic` is TEXT) goes
+#: into an image prompt — the gist is enough, and with the scene at its own cap of 600
+#: the prompt stays near 2,100 of the vendor's 3,000 characters.
+_PROMPT_TOPIC_MAX = 600
+
+
+def _quoted(text: str, limit: int | None = None) -> str:
+    text = text.strip()
+    if limit is not None and len(text) > limit:
+        text = fit_text(text, limit)
+    return text.replace('"', "'")
 
 
 def ad_scene_prompt(
@@ -1998,7 +2025,7 @@ def ad_scene_prompt(
     if brief.media.scene_prompt.strip():
         scene = _quoted(brief.media.scene_prompt)
         lines.append(f'Scene the client asked for (in Spanish): "{scene}".')
-    lines.append(f'The post is about (in Spanish): "{_quoted(brief.topic)}".')
+    lines.append(f'The post is about (in Spanish): "{_quoted(brief.topic, _PROMPT_TOPIC_MAX)}".')
     lines.append(
         "Keep the top quarter and the bottom fifth of the frame calm and uncluttered: the "
         "headline and a button are laid over them afterwards."
@@ -2043,7 +2070,8 @@ def carousel_scene_prompt(
         )
     if scene.strip():
         lines.append(f'This slide shows (in Spanish): "{_quoted(scene)}".')
-    lines.append(f'The carousel is about (in Spanish): "{_quoted(brief.topic)}".')
+    topic = _quoted(brief.topic, _PROMPT_TOPIC_MAX)
+    lines.append(f'The carousel is about (in Spanish): "{topic}".')
     if has_text:
         lines.append(
             "Keep the top quarter and the bottom fifth of the frame calm and uncluttered: "
@@ -2119,7 +2147,7 @@ def first_frame_prompt(
         )
     if has_background:
         lines.append("The scene takes place in the client's real place (the last image).")
-    lines.append(f'The video is about (in Spanish): "{_quoted(brief.topic)}".')
+    lines.append(f'The video is about (in Spanish): "{_quoted(brief.topic, _PROMPT_TOPIC_MAX)}".')
     lines.append(_palette_line(kit))
     lines.append(_NO_TEXT)
     return " ".join(line for line in lines if line)

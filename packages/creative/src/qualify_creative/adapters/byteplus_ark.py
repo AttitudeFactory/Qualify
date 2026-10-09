@@ -297,7 +297,12 @@ def _prompt(params: Mapping[str, object]) -> str:
     prompt = params.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("a ModelArk generation needs a non-empty 'prompt'")
-    prompt = prompt.strip()
+    return _capped(prompt.strip())
+
+
+def _capped(prompt: str) -> str:
+    """The vendor's hard cap, checked on what is actually sent — after the dialogue line
+    a video prompt gains (PR #100 review), not only on the operator's part."""
     if len(prompt) > MAX_PROMPT_CHARS:
         raise ValueError(f"prompt is {len(prompt)} characters; the cap is {MAX_PROMPT_CHARS}")
     return prompt
@@ -332,7 +337,7 @@ class _VideoSpec:
         if isinstance(dialogue, str) and dialogue.strip() and family.audio:
             # 2.x speaks what is in double quotes (ModelArk's generate_audio guidance)
             line = dialogue.strip().replace('"', "'")
-            prompt = f'{prompt}\nDice a cámara: "{line}"'
+            prompt = _capped(f'{prompt}\nDice a cámara: "{line}"')
         first_frame = params.get("first_frame")
         if first_frame is not None and (not isinstance(first_frame, str) or not first_frame):
             raise ValueError("'first_frame' must be an image URL or a data URL")

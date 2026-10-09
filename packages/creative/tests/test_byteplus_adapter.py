@@ -19,6 +19,7 @@ from qualify_creative.adapters import (  # noqa: E402
     SeedreamImageAdapter,
 )
 from qualify_creative.adapters.byteplus_ark import (  # noqa: E402
+    MAX_PROMPT_CHARS,
     estimate_video_tokens,
     output_dimensions,
     seedance_family,
@@ -405,6 +406,15 @@ def test_a_family_resolves_with_or_without_its_date(model_id: str, family: str) 
 def test_an_unknown_family_is_never_guessed() -> None:
     with pytest.raises(ValueError, match="unknown Seedance model"):
         seedance_family("dreamina-seedance-9-9")
+
+
+def test_the_prompt_cap_counts_the_dialogue_line() -> None:
+    """PR #100 review: the cap is on what is sent — prompt plus the spoken line."""
+    adapter = SeedanceVideoAdapter(model="dreamina-seedance-2-0")
+    room = "x" * (MAX_PROMPT_CHARS - 10)
+    adapter.spec({"prompt": room})  # alone it fits
+    with pytest.raises(ValueError, match="the cap is"):
+        adapter.spec({"prompt": room, "dialogue": "Una frase que ya no cabe."})
 
 
 def test_get_task_quotes_the_id_into_one_path_segment() -> None:

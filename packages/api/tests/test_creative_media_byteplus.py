@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 import pytest
 from PIL import Image
 from pydantic import ValidationError
+from qualify_creative.adapters.byteplus_ark import MAX_PROMPT_CHARS
 from qualify_creative.enums import (
     AdImageMode,
     AvatarSource,
@@ -32,6 +33,9 @@ from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.providers import GenerationRequest, GenerationResult, ResolvedKey, Usage
 from qualify_creative.router import BudgetContext, CreativeRouter
 from qualify_creative.schemas import (
+    AVATAR_PROMPT_MAX,
+    SCENE_PROMPT_MAX,
+    SCRIPT_MAX,
     BrandKit,
     CarouselSlide,
     ContentBrief,
@@ -350,6 +354,83 @@ def test_a_seedance_video_starts_on_a_seedream_frame_and_records_both_costs() ->
     assert (video_cost.unit, video_cost.cost_usd) == ("second", Decimal("0.257400"))
 
 
+def test_a_generated_script_over_the_cap_is_shortened_before_seedance_speaks_it() -> None:
+    """PR #100 review: a generated script has no stored cap, and motion prompt + spoken
+    line must stay under the vendor's 3,000 characters. A 60-s script five times the
+    cap is cut at a sentence, like `own_script` would have been refused."""
+    store, seedream, seedance = _store(), FakeSeedream(), FakeSeedance()
+    long_copy = CopyPayload(
+        hook=COPY.hook,
+        caption=COPY.caption,
+        cta=COPY.cta,
+        script=" ".join(f"Frase número {i} del guion largo." for i in range(400)),
+    )
+    assert len(long_copy.script) > 5 * SCRIPT_MAX
+    outcome = _producer(store, seedream=seedream, seedance=seedance).produce(
+        tenant_id=TENANT_ID,
+        draft_id=uuid4(),
+        brief=_seedance_brief(),
+        kit=_kit(),
+        copy=long_copy,
+        budget=BUDGET,
+    )
+    assert outcome.failure is None
+    (video_request,) = seedance.requests
+    spoken = str(video_request.params["dialogue"])
+    assert len(spoken) <= SCRIPT_MAX and spoken.endswith("largo.")
+    # the adapter's own pre-flight: motion + spoken line under the vendor's cap
+    motion = str(video_request.params["prompt"])
+    assert len(motion) + len(spoken) + len('\nDice a cámara: ""') < MAX_PROMPT_CHARS
+
+
+def test_the_image_prompts_stay_under_the_vendor_cap_with_a_very_long_topic() -> None:
+    """PR #100 review: the topic has no stored cap (TEXT), so the prompt takes its gist."""
+    from qualify_api.creative.media import (
+        ad_scene_prompt,
+        carousel_scene_prompt,
+        first_frame_prompt,
+    )
+
+    topic = " ".join(f"Detalle {i} que el operador quiso contar," for i in range(300))
+    scene = "x" * SCENE_PROMPT_MAX
+    ad_brief = _brief(
+        ContentKind.STATIC_FLYER,
+        ad_mode=AdImageMode.PRODUCT,
+        product_keys=(f"uploads/{TENANT_ID}/p1.jpg",),
+        scene_prompt=scene,
+    ).model_copy(update={"topic": topic})
+    brief = _seedance_brief(avatar_prompt="y" * AVATAR_PROMPT_MAX).model_copy(
+        update={"topic": topic}
+    )
+    prompts = [
+        ad_scene_prompt(
+            brief=ad_brief,
+            kit=_kit(),
+            brand="Marca " * 10,
+            mode=AdImageMode.PRODUCT,
+            products=10,
+            has_background=True,
+        ),
+        carousel_scene_prompt(
+            brief=ad_brief,
+            kit=_kit(),
+            brand="Marca " * 10,
+            scene=scene,
+            ratio="4:5",
+            has_product=True,
+            has_background=True,
+            has_text=True,
+        ),
+        first_frame_prompt(
+            brief=brief, kit=_kit(), has_character_image=True, products=10, has_background=True
+        ),
+    ]
+    assert all(len(prompt) <= MAX_PROMPT_CHARS - 500 for prompt in prompts), [
+        len(p) for p in prompts
+    ]
+    assert all("Detalle 0 que" in prompt and "Detalle 299" not in prompt for prompt in prompts)
+
+
 def test_a_feed_video_is_rendered_3_4_because_seedance_has_no_4_5() -> None:
     seedream, seedance = FakeSeedream(), FakeSeedance()
     _produce(
@@ -660,6 +741,25 @@ def test_a_piece_of_another_brand_is_never_read_into_the_carousel() -> None:
     assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
     assert "diapositiva 1" in (outcome.detail or "")
     assert seedream.requests == []  # refused before anything was paid for
+
+
+def test_a_missing_piece_on_a_later_slide_fails_before_any_slide_is_paid_for() -> None:
+    """PR #100 review: the source draft was regenerated (0047 dropped its files) — the
+    carousel must not pay Seedream for slides 1-2 and then fail on slide 3."""
+    gone = f"t/{TENANT_ID}/generated/{OTHER_DRAFT}/r1/slide-9.jpg"  # not a piece any more
+    store, seedream, seedance = _carousel_store(), FakeSeedream(), FakeSeedance()
+    brief = _brief(
+        ContentKind.CAROUSEL,
+        slides=(
+            CarouselSlide(source=SlideSource.GENERATED),
+            CarouselSlide(source=SlideSource.ANIMATED),
+            CarouselSlide(source=SlideSource.EXISTING, object_key=gone),
+        ),
+    )
+    outcome = _produce(_carousel_producer(store, seedream, seedance, FakeFitter()), brief, uuid4())
+    assert outcome.failure == FailureReason.ROUTE_BLOCKED_BY_POLICY.value
+    assert "diapositiva 3" in (outcome.detail or "")
+    assert seedream.requests == [] and seedance.requests == []
 
 
 def test_a_carousel_key_outside_the_tenant_is_refused_before_any_read() -> None:
