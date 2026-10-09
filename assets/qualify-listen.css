@@ -1,0 +1,42 @@
+/*
+ * Qualify — shell, auth and escucha (lote A): the rules the listening pages need
+ * that no primitive carries.
+ *
+ * Loaded after qualify.css (rx.App(stylesheets=…) in Qualify/Qualify.py); the tokens
+ * (--q-*, --lq-*) and the Radix skin come from there. Reference: docs/design-system.md
+ * and docs/plan-migracion-liquid-glass.md §3 D5/D10.
+ */
+
+/* ── Auth stage (/login, /signup, /brand/start) ──────────────────────────────
+ * The centred wrapper wears `.q-ground` (the Noir scene, like `app_shell`), so the
+ * auth card floats on the same ground as the app. The card itself is `ui.card`
+ * (card material, no blur — plan D5); what it needs on top is the overlay elevation
+ * of a surface that has no panel under it, and the system's entrance. */
+.q-auth-stage .q-card {
+  box-shadow: inset 0 1px 0 var(--q-card-hi), var(--q-elev-overlay);
+  animation: q-settle var(--q-dur-slow) var(--q-ease) both;
+}
+
+/* ── Vitrina: selectable local (`_local_card`) ───────────────────────────────
+ * A card that IS a button: a native <button> wearing the card material, so the
+ * selection is a click or a key press and `aria-pressed` names the chosen one.
+ * The accent ring on the pressed card is a control state, drawn with the tone's
+ * own steps — never a hex. */
+.q-pick-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.q-pick-card[aria-pressed="true"] {
+  border-color: var(--accent-8);
+  background: linear-gradient(var(--accent-a3), var(--accent-a3)), var(--q-card-fill);
+  box-shadow: inset 0 1px 0 var(--q-card-hi), 0 0 0 1px var(--accent-8), var(--q-elev-island);
+}
+.q-pick-card[aria-pressed="true"].q-lift:hover {
+  box-shadow: inset 0 1px 0 var(--q-card-hi), 0 0 0 1px var(--accent-8), var(--q-elev-lift);
+}
