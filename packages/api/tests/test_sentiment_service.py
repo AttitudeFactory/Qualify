@@ -8,6 +8,9 @@ import dataclasses
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
+
+from qualify_api.sentiment import service as service_module
 from qualify_api.sentiment.repository import (
     SENTIMENT_FILTER_PENDING,
     AnalysisVersion,
@@ -15,7 +18,7 @@ from qualify_api.sentiment.repository import (
     ReelListCursor,
     ReelSummary,
 )
-from qualify_api.sentiment.service import SentimentService
+from qualify_api.sentiment.service import SentimentModelUnavailable, SentimentService
 
 TENANT_ID = uuid4()
 CONNECTION_ID = uuid4()
@@ -549,3 +552,41 @@ def test_reel_summary_domain_object_has_only_scalar_roll_up_fields() -> None:
         "not_analyzed": "int",
         "is_monitored": "bool",
     }
+
+
+# --- B8: the default (local) model's runtime may be absent — production ships without it
+
+
+def test_default_provider_without_its_runtime_refuses_before_any_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No injected provider = the local robertuito model, which needs the `ml` group.
+    Without it the pass refuses up front — nothing is read, nothing half-written."""
+    monkeypatch.setattr(service_module, "local_model_available", lambda: False)
+    repo = MemorySentimentRepository()
+    repo.seed_message(
+        message_id=uuid4(), connection_id=CONNECTION_ID, source_id="c1", text="me encanta"
+    )
+    service = SentimentService(repository=repo, version=VERSION)
+
+    with pytest.raises(SentimentModelUnavailable):
+        service.analyze_pending_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    still_pending = repo.list_pending_for_analysis(
+        tenant_id=TENANT_ID, connection_id=CONNECTION_ID, version=VERSION
+    )
+    assert len(still_pending) == 1
+
+
+def test_an_injected_provider_does_not_need_the_local_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(service_module, "local_model_available", lambda: False)
+    service, repo = _service()
+    repo.seed_message(
+        message_id=uuid4(), connection_id=CONNECTION_ID, source_id="c1", text="me encanta"
+    )
+
+    summary = service.analyze_pending_comments(tenant_id=TENANT_ID, connection_id=CONNECTION_ID)
+
+    assert summary.new_results == 1

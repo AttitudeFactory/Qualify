@@ -95,6 +95,14 @@ deploy-logs target service="":
 deploy-backup target:
     deploy/deploy.sh backup {{target}}
 
+# Values never reach argv or the terminal; the output shows an 8-char sha256 fingerprint per
+# key, and a backup of .env.prod is kept. --dry-run compares without writing.
+#   just env-push qualify-prod SCRAPECREATORS_API_KEY [MORE_KEYS...]
+#   just env-push qualify-prod --dry-run SCRAPECREATORS_API_KEY
+# Copy KEYs from your local .env into .env.prod; recreate only the services they change.
+env-push target *keys:
+    deploy/deploy.sh env-push {{target}} {{keys}}
+
 # Default test pass: unit + db, never external network. Mirrors CI.
 # Tests use `qualify_test` + Redis db 15, NEVER the dev `qualify` (root conftest.py aborts
 # otherwise). Data a run leaves in `qualify_test` is kept for inspection — no auto reset.

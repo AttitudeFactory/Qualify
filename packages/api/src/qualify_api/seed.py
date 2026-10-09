@@ -24,8 +24,7 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from qualify_api.config import MetaOAuthSettings
-from qualify_api.connections.models import PlatformApp
+from qualify_api.connections.platform_app import ensure_platform_app
 from qualify_api.tenancy.models import Brand, Tenant, TenantMember, User
 
 PUNTOSERVIS_TENANT_ID = UUID("a0000000-0000-4000-8000-000000000001")
@@ -77,34 +76,6 @@ def _ensure_brand(session: Session, *, tenant_id: UUID, name: str) -> None:
     existing = session.scalar(select(Brand).where(Brand.tenant_id == tenant_id, Brand.name == name))
     if existing is None:
         session.add(Brand(tenant_id=tenant_id, name=name))
-        session.flush()
-
-
-def _ensure_platform_app(session: Session) -> None:
-    """The global `platform_apps` row (R1) the connect flow resolves by `app_id`.
-
-    Global, not tenant-scoped: this registers QUALIFY's own Meta app — the secret is ours,
-    and every tenant connects through the same row. It is seeded here because `qualify_app`
-    holds only SELECT on the table, so the request path cannot create it; a missing row
-    surfaces as `PlatformAppMissing` at connect time rather than a silent insert.
-
-    Only a REFERENCE to the secret is stored (`secret_ref`), never the secret itself.
-    """
-    settings = MetaOAuthSettings.from_env()
-    existing = session.scalar(select(PlatformApp).where(PlatformApp.app_id == settings.app_id))
-    if existing is None:
-        session.add(
-            PlatformApp(
-                app_id=settings.app_id,
-                secret_ref="env:QUALIFY_META_APP_SECRET",
-                api_version=settings.api_version,
-            )
-        )
-        session.flush()
-    elif existing.api_version != settings.api_version:
-        # Graph versions are deprecated on a calendar; keep the row current so the
-        # provenance recorded against new connections is not a stale string.
-        existing.api_version = settings.api_version
         session.flush()
 
 
@@ -161,7 +132,7 @@ def seed(agent_count: int | None = None) -> None:
     with admin_session() as session:
         _seed_puntoservis(session)
         _seed_inmobiliaria(session, agent_count=agent_count)
-        _ensure_platform_app(session)
+        ensure_platform_app(session)
     _smoke_check_isolation()
 
 

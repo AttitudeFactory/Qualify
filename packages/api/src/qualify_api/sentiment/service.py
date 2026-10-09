@@ -15,6 +15,7 @@ see `connections_routes.start_connect` for the precedent this mirrors.
 
 from __future__ import annotations
 
+import importlib.util
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -39,6 +40,24 @@ if TYPE_CHECKING:
     # None` annotation below is never evaluated at runtime, so no real import is
     # needed to run this module — only for mypy/pyright.
     from qualify_models.providers import SentimentProvider
+
+
+# The packages `LocalRobertuitoSentimentProvider` (the default provider) imports when it
+# first runs — the `ml` dependency group.
+_LOCAL_MODEL_RUNTIME_MODULES = ("transformers", "torch")
+
+
+class SentimentModelUnavailable(Exception):
+    """The local sentiment model cannot run here: its runtime (`transformers`/`torch`,
+    the `ml` dependency group) is not installed. The production image deliberately ships
+    without it (`deploy/Dockerfile`); without this check analysis would fail mid-pass, on
+    the first non-empty comment, with a bare `ModuleNotFoundError`."""
+
+
+def local_model_available() -> bool:
+    """Whether the default provider's runtime is installed — a `find_spec` probe, so
+    nothing heavy is imported to answer it."""
+    return all(importlib.util.find_spec(name) is not None for name in _LOCAL_MODEL_RUNTIME_MODULES)
 
 
 @dataclass(frozen=True)
@@ -68,6 +87,12 @@ class SentimentService:
         # (the `ml` group), deferred to the moment analysis actually runs rather than
         # to module import time.
         from qualify_models.social.ig_comments import analyze_text  # noqa: PLC0415
+
+        # Only the DEFAULT provider needs the local model; an injected one (a hosted
+        # model, a test stub) does not. Checked before any read, so a deployment without
+        # the `ml` group refuses cleanly instead of failing on the first comment.
+        if self._provider is None and not local_model_available():
+            raise SentimentModelUnavailable("the `ml` dependency group is not installed")
 
         pending = self._repository.list_pending_for_analysis(
             tenant_id=tenant_id, connection_id=connection_id, version=self._version

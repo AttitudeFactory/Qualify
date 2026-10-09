@@ -12,6 +12,7 @@ not `InboxService`'s internal logic again (`test_inbox_service.py` already cover
 
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -19,10 +20,11 @@ import pytest
 from qualify_shared.social.ig_shapes import COMMENTS_EDGE_PERMISSIONS, IGComment, IGCommentsPage
 
 from qualify_api.inbox import composition
-from qualify_api.inbox.composition import UnknownInboxConnection
+from qualify_api.inbox.composition import InboxConnectionInactive, UnknownInboxConnection
 from qualify_api.inbox.media_client import MediaReadError, MediaSummary
 from qualify_api.inbox.repository import MemoryInboxRepository
 from qualify_api.inbox.service import InboxService, MediaNotEligible, SyncSummary
+from qualify_api.inbox.sync_guard import SyncAlreadyRunning, SyncGuard
 
 # `sync_comments` fails closed without a granted scope (QUA-88) — this file's `_wire`
 # always grants it, same posture `test_inbox_service.py`'s `GRANTED` establishes; the
@@ -63,11 +65,25 @@ class FakeMediaClient:
         return media
 
 
+@pytest.fixture(autouse=True)
+def _in_memory_sync_guard(monkeypatch: pytest.MonkeyPatch, fake_async_redis) -> None:
+    """`sync_comments` takes a per-connection lease in Redis; offline, that Redis is the
+    in-memory one from `conftest.py` (CI's `test` job has none)."""
+
+    @contextlib.asynccontextmanager
+    async def _guard():
+        yield SyncGuard(fake_async_redis)
+
+    monkeypatch.setattr(composition, "_sync_guard", _guard)
+
+
 def _wire(
     monkeypatch: pytest.MonkeyPatch,
     *,
     media: dict[str, MediaSummary] | None = None,
     comments_by_media: dict[str, list[IGComment]] | None = None,
+    status: str = "active",
+    built: list[UUID] | None = None,
 ) -> tuple[InboxService, MemoryInboxRepository]:
     repository = MemoryInboxRepository()
     service = InboxService(
@@ -85,9 +101,17 @@ def _wire(
     async def service_for(*, tenant_id: UUID, connection_id: UUID) -> InboxService:
         if (tenant_id, connection_id) != (TENANT, CONNECTION):
             raise UnknownInboxConnection(f"connection {connection_id} not visible")
+        if built is not None:
+            built.append(connection_id)
         return service
 
+    def status_for(*, tenant_id: UUID, connection_id: UUID) -> str:
+        if (tenant_id, connection_id) != (TENANT, CONNECTION):
+            raise UnknownInboxConnection(f"connection {connection_id} not visible")
+        return status
+
     monkeypatch.setattr(composition, "production_ig_user_id_for", ig_user_id_for)
+    monkeypatch.setattr(composition, "production_connection_status_for", status_for)
     monkeypatch.setattr(composition, "production_inbox_service_for", service_for)
     return service, repository
 
@@ -229,3 +253,145 @@ async def test_sync_comments_propagates_unknown_connection(
 
     with pytest.raises(UnknownInboxConnection):
         await composition.sync_comments(tenant_id=TENANT, connection_id=UNKNOWN_CONNECTION)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["revoked", "degraded", "pending"])
+async def test_sync_comments_refuses_a_connection_that_is_not_active(
+    monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    """B8: a disconnected (or degraded) account is never read. The refusal comes BEFORE
+    the credential-resolved service is built, so no token is decrypted and no Meta call
+    is made — `revoke.py` keeps the stored credential, so without this guard a sync of a
+    revoked connection would still succeed."""
+    built: list[UUID] = []
+    _wire(monkeypatch, status=status, built=built)
+
+    with pytest.raises(InboxConnectionInactive) as excinfo:
+        await composition.sync_comments(tenant_id=TENANT, connection_id=CONNECTION)
+
+    assert excinfo.value.status == status
+    assert built == []
+
+
+@pytest.mark.asyncio
+async def test_sync_comments_of_another_tenant_never_reaches_the_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The seam takes the tenant from its caller (the session) and nothing else: a
+    connection id the tenant cannot see is `UnknownInboxConnection`, never a sync."""
+    built: list[UUID] = []
+    _wire(monkeypatch, built=built)
+    other_tenant = UUID("12121212-1212-4121-8121-121212121212")
+
+    with pytest.raises(UnknownInboxConnection):
+        await composition.sync_comments(tenant_id=other_tenant, connection_id=CONNECTION)
+
+    assert built == []
+
+
+# --- one pass per connection (sync_guard) -----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sync_holds_the_connection_lease_while_it_runs(
+    monkeypatch: pytest.MonkeyPatch, fake_async_redis
+) -> None:
+    seen_during_pass: list[bool] = []
+    service, repository = _wire(monkeypatch)
+    real_sync = service.sync_comments
+
+    async def observing_sync(**kwargs):
+        seen_during_pass.append(
+            await SyncGuard(fake_async_redis).is_running(
+                tenant_id=TENANT, connection_id=CONNECTION, token="run-1"
+            )
+        )
+        return await real_sync(**kwargs)
+
+    monkeypatch.setattr(service, "sync_comments", observing_sync)
+
+    await composition.sync_comments(tenant_id=TENANT, connection_id=CONNECTION, run_token="run-1")
+
+    assert seen_during_pass == [True]
+    guard = SyncGuard(fake_async_redis)
+    assert not await guard.is_running(tenant_id=TENANT, connection_id=CONNECTION, token="run-1")
+    assert (
+        await guard.seconds_since_last_finished(
+            tenant_id=TENANT, connection_id=CONNECTION, now=10**12
+        )
+        is not None
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_second_concurrent_sync_is_refused_before_meta(
+    monkeypatch: pytest.MonkeyPatch, fake_async_redis
+) -> None:
+    built: list[UUID] = []
+    _wire(monkeypatch, built=built)
+    held = await SyncGuard(fake_async_redis).acquire(
+        tenant_id=TENANT, connection_id=CONNECTION, token="someone-else"
+    )
+
+    with pytest.raises(SyncAlreadyRunning):
+        await composition.sync_comments(tenant_id=TENANT, connection_id=CONNECTION)
+
+    assert built == []  # no credential resolved, no Meta call
+    await held.release()
+
+
+@pytest.mark.asyncio
+async def test_the_lease_is_released_when_the_pass_fails(
+    monkeypatch: pytest.MonkeyPatch, fake_async_redis
+) -> None:
+    service, _ = _wire(monkeypatch)
+
+    async def failing_sync(**kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(service, "sync_comments", failing_sync)
+
+    with pytest.raises(RuntimeError):
+        await composition.sync_comments(
+            tenant_id=TENANT, connection_id=CONNECTION, run_token="run-1"
+        )
+
+    assert not await SyncGuard(fake_async_redis).is_running(
+        tenant_id=TENANT, connection_id=CONNECTION, token="run-1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_lock_store_does_not_block_reading_comments(
+    monkeypatch: pytest.MonkeyPatch, fake_async_redis
+) -> None:
+    """Idempotent pass + UNIQUE dedup: without Redis the pass still runs, unguarded."""
+    _, repository = _wire(
+        monkeypatch,
+        comments_by_media={"A": [IGComment.model_validate({"id": "c1", "text": "hi"})]},
+    )
+    repository.set_media_monitored(
+        tenant_id=TENANT, connection_id=CONNECTION, external_media_id="A", monitored=True
+    )
+    fake_async_redis.fail_with = ConnectionError("redis down")
+
+    summary = await composition.sync_comments(tenant_id=TENANT, connection_id=CONNECTION)
+
+    assert summary.new_comments == 1
+
+
+@pytest.mark.asyncio
+async def test_liveness_is_conservative_when_the_lock_store_is_unreachable(
+    fake_async_redis,
+) -> None:
+    """Unknown must never read as "dead": a pass that may still run is never reclaimed."""
+    fake_async_redis.fail_with = ConnectionError("redis down")
+
+    assert await composition.sync_in_progress(
+        tenant_id=TENANT, connection_id=CONNECTION, token="run-1"
+    )
+    assert (
+        await composition.seconds_since_last_sync(tenant_id=TENANT, connection_id=CONNECTION)
+        is None
+    )

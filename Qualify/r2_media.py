@@ -21,6 +21,7 @@ The fix reuses QUA-68's door instead of adding a second one (ADR 28e):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import threading
@@ -45,8 +46,8 @@ _R2_PREFIX = "t/"
 _DEFAULT_CONTENT_TYPE = {"video": "video/mp4", "image": "image/jpeg"}
 
 
-def is_r2_key(key: str) -> bool:
-    return key.startswith(_R2_PREFIX)
+def is_r2_key(key: str | None) -> bool:
+    return bool(key) and key.startswith(_R2_PREFIX)
 
 
 @cache
@@ -189,7 +190,7 @@ async def _serve(token: str, request: Request, download: int) -> Response:
     header = "" if download else request.headers.get("range", "")
     if header or request.method == "HEAD":
         try:
-            size = gate.object_size(target.tenant_id, target.object_key)
+            size = await asyncio.to_thread(gate.object_size, target.tenant_id, target.object_key)
         except (TenantPrefixViolation, ObjectNotFound):
             return _not_found()
         if request.method == "HEAD":
@@ -210,7 +211,9 @@ async def _serve(token: str, request: Request, download: int) -> Response:
                 )
             start, end = wanted
             try:
-                body = gate.open_range(target.tenant_id, target.object_key, start, end).read()
+                body = await asyncio.to_thread(
+                    lambda: gate.open_range(target.tenant_id, target.object_key, start, end).read()
+                )
             except (TenantPrefixViolation, ObjectNotFound):
                 return _not_found()
             return Response(

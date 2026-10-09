@@ -139,7 +139,12 @@ services:
     command:
       - sh
       - -c
-      - alembic upgrade head && python deploy/bootstrap_db_roles.py
+      # platform_app: registers QUALIFY_META_APP_ID in `platform_apps` (idempotent). Without
+      # that row every OAuth callback 500s with PlatformAppMissing; the seed that used to
+      # create it never runs in production. After bootstrap: it connects as qualify_admin.
+      - >-
+        alembic upgrade head && python deploy/bootstrap_db_roles.py
+        && python -m qualify_api.connections.platform_app
     depends_on:
       postgres:
         condition: service_healthy

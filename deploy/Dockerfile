@@ -17,10 +17,12 @@
 # the TLS terminator) serves them directly. The export toolchain (bun, node_modules) stays
 # in a throwaway build stage and never reaches a runtime image.
 #
-# Never installed: the `ml` group (torch/transformers) and `dev`. `qualify_models` is put
-# on PYTHONPATH instead (same mechanism the root pytest config uses in CI) because the CRM
-# imports its PURE `permission_capability` table at module load; anything in it that needs
-# torch fails at call time, not at boot.
+# Never installed: the full `ml` group (whisper, torchvision, accelerate, av) and `dev`.
+# `qualify_models` is put on PYTHONPATH instead (same mechanism the root pytest config uses
+# in CI) because the CRM imports its PURE `permission_capability` table at module load.
+# What IS installed from that world is the `sentiment` group — CPU-only torch +
+# transformers + huggingface_hub — because robertuito runs on this VPS (founder decision,
+# zero API cost), with its weights baked into the image at build time (see `deps`).
 
 ARG PYTHON_IMAGE=python:3.12-slim-bookworm
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11.29
@@ -55,12 +57,23 @@ COPY packages/models/pyproject.toml packages/models/README.md packages/models/
 COPY packages/scraper/pyproject.toml packages/scraper/README.md packages/scraper/
 COPY packages/shared/pyproject.toml packages/shared/README.md packages/shared/
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-workspace
+    uv sync --frozen --no-dev --no-install-workspace --group sentiment
+
+# robertuito's weights (~435 MB), fetched once at build so a container never downloads them
+# on its first analysis — plus one real classification, so a model or runtime that cannot
+# run in this image fails the BUILD, not a user's "Analizar sentimiento" click. Placed
+# BEFORE the sources so code changes never re-download it. Must equal
+# `qualify_models.sentiment.MODEL_ID` (asserted by packages/api/tests/test_deploy_image.py).
+ARG SENTIMENT_MODEL_ID=pysentimiento/robertuito-sentiment-analysis
+ENV HF_HOME=/app/.cache/huggingface
+RUN /app/.venv/bin/python -c "import sys; from transformers import pipeline; \
+print(pipeline(task='text-classification', model=sys.argv[1])('me encanta')[0])" \
+    "${SENTIMENT_MODEL_ID}"
 
 # Layer 2: the workspace sources, then install the members themselves.
 COPY packages ./packages
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+    uv sync --frozen --no-dev --group sentiment
 
 # The Reflex app itself (repo-root layout: rxconfig.py + Qualify/ + assets/ + reflex.lock/).
 COPY rxconfig.py alembic.ini ./
@@ -73,7 +86,8 @@ COPY deploy/bootstrap_db_roles.py ./deploy/bootstrap_db_roles.py
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONPATH="/app/packages/models/src" \
     PYTHONUNBUFFERED=1 \
-    REFLEX_TELEMETRY_ENABLED=false
+    REFLEX_TELEMETRY_ENABLED=false \
+    HF_HOME=/app/.cache/huggingface
 
 # --------------------------------------------------------------------------------------
 # frontend-build: `reflex export --frontend-only` → static files
@@ -137,6 +151,7 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONPATH="/app/packages/models/src" \
     PYTHONUNBUFFERED=1 \
     REFLEX_TELEMETRY_ENABLED=false \
+    HF_HOME=/app/.cache/huggingface \
     REFLEX_UPLOADED_FILES_DIR=/data/uploaded_files \
     QUALIFY_AVATAR_DIR=/data/avatars \
     QUALIFY_RENDER_TEMPLATES_DIR=/app/packages/render/templates

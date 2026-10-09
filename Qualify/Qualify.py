@@ -15,6 +15,7 @@ from .auth_pages import (
 from .auth_state import BRAND_START_ROUTE, RESET_ROUTE, AuthState
 from .avatar_proxy import avatar_api
 from .brand_kit_editor import BrandEditState, brand_edit_index
+from .campaign_state import CampaignState
 from .canva_pages import canva_callback_index, canva_return_index
 from .canva_state import CanvaState
 from .catalog_page import catalog_index
@@ -368,7 +369,7 @@ app.add_page(
 app.add_page(
     draft_detail_index,
     route="/drafts/[draft_id]",
-    on_load=[AuthState.require_login, CreativeState.load_draft],
+    on_load=[AuthState.require_login, CreativeState.load_draft, CampaignState.load],
     title="Qualify · Borrador",
 )
 # QUA-108 — Planificador: calendario editorial (vista semanal por horas + lista).

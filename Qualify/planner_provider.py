@@ -54,6 +54,7 @@ from qualify_api.planner.service import (
     week_start,
 )
 
+from .campaign_provider import CampaignOptionVM, brand_campaign_options
 from .connections_provider import acting_user_id, connections_for
 from .creative_provider import default_brand_id
 from .planner_vm import (
@@ -116,6 +117,8 @@ class WeekData:
     tenant_tz: str = ""  # the business's own zone — the picker's suggestion
     now_hhmm: str = ""  # the current wall-clock time in the view zone ("HH:MM")
     tags: list[TagVM] = field(default_factory=list)
+    # QUA-143: the brand's campaigns — the drawer's «Campaña» selector.
+    campaigns: list[CampaignOptionVM] = field(default_factory=list)
     # One of planner_vm.AUTO_PUBLISH_* — worker running here + an active account (QUA-111).
     auto_publish: str = AUTO_PUBLISH_UNAVAILABLE
 
@@ -263,6 +266,9 @@ def _post_option(
         image_size=post.image_size,
         preferred_destination=destination_for_product_type(post.media_product_type),
         lifecycle_status=post.lifecycle_status,
+        **_campaign_fields(post),
+        campaign_id=str(post.campaign.id) if post.campaign is not None else "",
+        event_count=post.event_count,
     )
 
 
@@ -334,6 +340,15 @@ def view_zone(tenant_id: UUID, tz_override: str) -> str:
     return CALENDAR_DEFAULT_TZ
 
 
+def _campaign_fields(post: PostSummary | None) -> dict[str, str]:
+    """QUA-143: the POST's campaign as the view-models carry it — every event of the POST
+    reads it here, from the POST; nothing about it lives on the event."""
+    campaign = post.campaign if post is not None else None
+    if campaign is None:
+        return {}
+    return {"campaign_name": campaign.name, "campaign_color": campaign.color}
+
+
 def _card_input(planned: PlannedEvent, video_urls: dict[str, str] | None = None) -> CardInput:
     event, post = planned.event, planned.post
     return CardInput(
@@ -358,6 +373,7 @@ def _card_input(planned: PlannedEvent, video_urls: dict[str, str] | None = None)
         output_port=event.output_port,
         destination=event_destination(event, post),
         times_published=post.times_published if post is not None else None,
+        **_campaign_fields(post),
     )
 
 
@@ -464,6 +480,7 @@ def load_week(
         tenant_tz=tenant_tz,
         now_hhmm=now_local.strftime("%H:%M"),
         tags=[_tag_vm(t) for t in service.list_tags(tenant_id=tenant_id)],
+        campaigns=brand_campaign_options(tenant_id, brand_id),
         auto_publish=auto_publish_state(
             worker_covers_tenant=calendar_worker().status().covers(tenant_id)
             or worker_covers(production_heartbeat_store(), tenant_id),
@@ -747,6 +764,7 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
         goals=goal_labels(event.goals),
         goal_keys=list(event.goals),
         **_detail_kind(post, event.output_port),
+        **_campaign_fields(post),
     )
 
 

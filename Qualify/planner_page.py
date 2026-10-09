@@ -31,6 +31,8 @@ from .planner_state import REFRESH_SECONDS, SCROLL_ID, PlannerState
 from .planner_vm import VIEW_CALENDAR, VIEW_LIST
 from .post_card import (
     DropBox,
+    campaign_badge,
+    campaign_mark,
     card_media,
     destination_badge,
     destination_icon,
@@ -179,6 +181,7 @@ def _chip_detail(event) -> rx.Component:
             wrap="wrap",
             gap="0.3rem",
         ),
+        campaign_badge(event.campaign_name, event.campaign_color),
         rx.cond(
             event.tags.length() > 0,
             rx.flex(rx.foreach(event.tags, tag_badge_plain), wrap="wrap", gap="0.25rem"),
@@ -221,6 +224,8 @@ def _calendar_chip(event) -> rx.Component:
                 ),
             ),
             rx.box(class_name="q-chip-gap"),
+            # QUA-143: the campaign's flag, before the channel — identity, not state.
+            campaign_mark(event.campaign_name, event.campaign_color),
             channel_mark(event.platform),
             rx.cond(
                 event.destination != "",
@@ -246,6 +251,7 @@ def _calendar_chip(event) -> rx.Component:
         + event.title
         + " · "
         + event.account_label
+        + rx.cond(event.campaign_name != "", " · Campaña " + event.campaign_name, "")
         + rx.cond(event.destination_label != "", " · " + event.destination_label, "")
         + rx.cond(event.temperature_label != "", " · " + event.temperature_label, "")
         + rx.cond(event.output_label != "", " · " + event.output_label, "")
@@ -299,6 +305,7 @@ def _hour_list_row(event) -> rx.Component:
             min_width="0",
         ),
         rx.hstack(
+            campaign_mark(event.campaign_name, event.campaign_color),
             channel_mark(event.platform),
             rx.cond(
                 event.destination != "",
@@ -548,6 +555,7 @@ def _list_item(event) -> rx.Component:
                         ),
                         tag(event.category_label),
                         rx.cond(event.output_label != "", tag(event.output_label)),
+                        campaign_badge(event.campaign_name, event.campaign_color),
                         rx.foreach(event.tags, tag_badge_plain),
                         align="center",
                         spacing="2",

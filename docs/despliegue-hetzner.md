@@ -19,7 +19,7 @@ Un solo servidor, un solo `docker compose`, un solo origen público. Caddy es lo
         todo lo demás  ───────────────────┘    /srv     export estático del frontend de Reflex
 
   red interna (sin puertos publicados):  postgres (pgvector/pgvector:pg16)  ·  redis 7
-  paso explícito antes del `up`:         migrate  (`run --rm`; alembic upgrade head + contraseñas de los roles)
+  paso explícito antes del `up`:         migrate  (`run --rm`; alembic upgrade head + contraseñas de los roles + registro de la app de Meta)
   opcionales (perfil, apagados):         calendar-worker (PUBLICA DE VERDAD) · render (Remotion)
 ```
 
@@ -116,7 +116,7 @@ Qué hace `deploy/deploy.sh deploy`:
 
 1. `git archive` del ref (sólo lo **commiteado** — nunca el árbol sucio ni el `.env`) → `/opt/qualify/releases/<sha>`. El servidor no necesita acceso a GitHub.
 2. `docker compose build` (la primera vez tarda ~10–15 min en un CX23: dependencias de Python + export del frontend; luego queda en caché). La imagen `qualify-app` la construye **sólo** el servicio `api`; los demás la nombran. Si varios servicios la construyeran, cada copia saldría con otra etiqueta de servicio y el ID cambiaría en cada deploy, lo que recrearía `api`/`reflex` aunque el código fuera el mismo.
-3. `docker compose run --rm migrate` (`alembic upgrade head` como `qualify_owner` + `ALTER ROLE` con las contraseñas de `.env.prod`; levanta `postgres` antes) y, **sólo si terminó bien**, `docker compose up -d`. `migrate` es un paso explícito con perfil propio, no una dependencia de `api`/`reflex`. Un deploy sin cambios de imagen no recrea ningún contenedor, así que no hay ventana de 502. Mientras `migrate` corre, el release anterior sigue atendiendo, igual que antes de este cambio. Por eso toda migración tiene que ser compatible con el código anterior (expandir → contraer en dos deploys, §7). Recién entonces `/opt/qualify/current` pasa a apuntar al release nuevo: si el build o la migración fallan, `current` (y con él `status`, `logs` y el cron de respaldo) se queda en el último release bueno.
+3. `docker compose run --rm migrate` (`alembic upgrade head` como `qualify_owner` + `ALTER ROLE` con las contraseñas de `.env.prod` + `python -m qualify_api.connections.platform_app`, que registra `QUALIFY_META_APP_ID` en `platform_apps` de forma idempotente; levanta `postgres` antes) y, **sólo si terminó bien**, `docker compose up -d`. `migrate` es un paso explícito con perfil propio, no una dependencia de `api`/`reflex`. Un deploy sin cambios de imagen no recrea ningún contenedor, así que no hay ventana de 502. Mientras `migrate` corre, el release anterior sigue atendiendo, igual que antes de este cambio. Por eso toda migración tiene que ser compatible con el código anterior (expandir → contraer en dos deploys, §7). Recién entonces `/opt/qualify/current` pasa a apuntar al release nuevo: si el build o la migración fallan, `current` (y con él `status`, `logs` y el cron de respaldo) se queda en el último release bueno.
 4. Chequeos de salud a través de Caddy: `/ping` = 200, `/api/connections/callback?code=x&state=x` = **303** hacia `/connections?connect=invalid_state` (estado inválido: prueba que llegó a FastAPI; un 502 sería falla), `/login` = 200.
 
 Después: abrir <https://qualify.attitudefactory.co/login>. Para crear el primer negocio usar `/signup`, o por consola:
@@ -153,7 +153,16 @@ dc exec postgres psql -U qualify_owner qualify
 
 Se conservan los últimos 5 releases en `/opt/qualify/releases`. Revertir código es re-desplegar un SHA anterior; **revertir un esquema no**: si un release trajo una migración, el anterior debe ser compatible con el esquema nuevo (expandir → contraer en dos deploys), o restaurar un respaldo (§8).
 
-Cambiar un secreto: editar `/opt/qualify/.env.prod` y `just deploy` (o `dc run --rm migrate && dc up -d` en el servidor; el `migrate` es lo que aplica una contraseña de base de datos cambiada a su rol). Cambiar `QUALIFY_PUBLIC_URL` exige reconstruir (`--build`): está horneada en el frontend estático.
+Cambiar un secreto (llaves de proveedores: Scrape Creators, Anthropic, HeyGen, BytePlus, Meta…): ponerlo en el `.env` local y empujarlo desde la Mac, sin desplegar código:
+
+```bash
+just env-push qualify-prod --dry-run SCRAPECREATORS_API_KEY   # compara huellas, no escribe
+just env-push qualify-prod SCRAPECREATORS_API_KEY             # escribe y recrea
+```
+
+Copia las claves nombradas (y sólo ésas) del `.env` local a `/opt/qualify/.env.prod`, deja un respaldo `.env.prod.bak-<UTC>` (se guardan los 10 más recientes) y corre `dc up -d --no-build`: Compose incluye el `env_file` en el hash de configuración de cada servicio, así que recrea exactamente los que leen `.env.prod` (`api`, `reflex`, `calendar-worker` si está activo) y no toca `postgres`, `redis` ni `caddy`. Los valores viajan por el stdin de ssh, nunca por argumentos ni por la terminal; la salida sólo muestra una huella sha256 de 8 caracteres por clave. Desde un worktree lee el `.env` del checkout principal (o el de `QUALIFY_ENV_SOURCE`).
+
+Se niega, a propósito, con: contraseñas de base de datos y `QUALIFY_PUBLIC_URL` (necesitan `migrate` o reconstruir: editar `.env.prod` y `just deploy`; el `migrate` es lo que aplica una contraseña cambiada a su rol, y `QUALIFY_PUBLIC_URL` está horneada en el frontend estático), `QUALIFY_DEV_FERNET_KEY` (rotarla deja indescifrables todas las credenciales OAuth guardadas) y `COMPOSE_*`/`QUALIFY_IMAGE_*` (cambian la forma del stack, no un secreto).
 
 ### 7.1 Deploy desde GitHub Actions (CD) — opcional, lo activa el fundador
 
@@ -188,7 +197,8 @@ Montaje (una vez):
    | `QUALIFY_DEPLOY_SSH_KNOWN_HOSTS` | salida de `ssh-keyscan -t ed25519 <IP>`, después de comparar su huella con `ssh deploy@<IP> ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` |
 
 6. **Primer deploy manual:** *Actions → deploy → Run workflow* (ref `main`). Debe terminar con los tres chequeos `ok` en el servidor y el smoke externo en verde.
-7. **Opcional, deploy automático:** variable de repositorio `QUALIFY_AUTO_DEPLOY=true`. Con ella, cada run de `ci` en verde sobre `main` (después de un merge) despliega solo.
+7. **Aviso en `#devops` (Zoho Cliq):** el job `notify` publica en `#devops` el resultado de cada deploy intentado (✅/❌, en qué etapa falló, commit y link a la corrida). Para activarlo, en Cliq: *perfil → Bots & Tools → Webhook Tokens → Generate New Token*. En GitHub, secreto `CLIQ_DEVOPS_WEBHOOK_URL` = `https://cliq.zoho.eu/api/v2/channelsbyname/devops/message?zapikey=<token>`. Sin el secreto el job sólo deja un aviso, y un fallo de Cliq nunca falla el deploy.
+8. **Opcional, deploy automático:** variable de repositorio `QUALIFY_AUTO_DEPLOY=true`. Con ella, cada run de `ci` en verde sobre `main` (después de un merge) despliega solo.
 
 Operación:
 

@@ -22,7 +22,9 @@ page` are the exception — none of them calls `get_state`, so they run end to e
 
 from __future__ import annotations
 
+import ast
 import inspect
+import textwrap
 from uuid import UUID
 
 import pytest
@@ -35,7 +37,6 @@ from .inbox_vm import (
     CommentVM,
     GlobalSentimentSummaryVM,
     ReelSummaryVM,
-    SyncSummaryVM,
 )
 
 _TENANT = UUID("a0000000-0000-4000-8000-000000000009")
@@ -107,23 +108,30 @@ def test_is_showing_reel_detail_is_true_once_a_reel_is_selected() -> None:
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_sync_comments_ignores_a_double_click_while_already_syncing() -> None:
+def test_claim_and_release_only_touch_their_own_run() -> None:
+    """`is_syncing` is this tab's UI claim, tagged with the run that set it. A run never
+    clears a claim another run took over (`_release_sync_claim` compares run ids)."""
     state = InboxState()
-    state.is_syncing = True
-    state.sync_error = "estado previo"
-    state.sync_result = SyncSummaryVM(media_checked=1, new_comments=1)
+    state._claim_sync("run-a")
+    assert (state.is_syncing, state.sync_run_id) == (True, "run-a")
+    assert state.sync_claimed_at > 0
 
-    # `sync_comments` is `@rx.event(background=True)` — Reflex refuses a direct call
-    # even under `is_testing_env()` ("use `yield`/`return` instead"), so the guard is
-    # exercised via the underlying coroutine function (`.fn`), same accessor
-    # `test_publishing_state.py`'s source-inspection tests already use.
-    await InboxState.sync_comments.fn(state)
+    state._claim_sync("run-b")  # e.g. run-a's claim was found stale and re-taken
+    state._release_sync_claim("run-a")
+    assert (state.is_syncing, state.sync_run_id) == (True, "run-b")
 
-    # The guard returns before touching anything else — untouched, not reset.
-    assert state.is_syncing is True
-    assert state.sync_error == "estado previo"
-    assert state.sync_result == SyncSummaryVM(media_checked=1, new_comments=1)
+    state._release_sync_claim("run-b")
+    assert (state.is_syncing, state.sync_run_id) == (False, "")
+
+
+def test_a_manual_click_on_a_running_pass_is_told_so() -> None:
+    """Never silent for a person: a manual click that finds a live pass gets a toast.
+    Automatic skips stay silent (they are routine) — both are logged."""
+    state = InboxState()
+    assert state._sync_skipped("manual", "in_flight") is not None
+    assert state._sync_skipped("manual", "in_flight_elsewhere") is not None
+    assert state._sync_skipped("poll", "in_flight") is None
+    assert state._sync_skipped("open", "cooldown") is None
 
 
 @pytest.mark.asyncio
@@ -150,20 +158,34 @@ async def test_analyze_sentiment_ignores_a_double_click_while_already_analyzing(
 def test_sync_comments_resolves_tenant_and_connection_before_calling_sync_now() -> None:
     source = inspect.getsource(InboxState.sync_comments.fn)
     assert "tenant_uuid(session_tenant_id)" in source
-    assert "sync_now(tenant_id=tenant_id, connection_id=resolved_connection)" in source
+    assert "connection_id=resolved_connection, run_token=run_id" in source
 
 
-def test_sync_comments_resets_is_syncing_in_a_finally_block() -> None:
-    """Pins the fix shape: `is_syncing` must come back down on every exit path (success,
-    `UnknownInboxConnection`, any other exception, and the missing tenant/connection
-    guard) — not only on the happy path. A future edit that moves the reset out of the
-    `finally` and into just the success branch would leave the button permanently
-    disabled after any failure."""
-    source = inspect.getsource(InboxState.sync_comments.fn)
-    assert source.count("self.is_syncing = False") == 2, (
-        "expected exactly 2 sites: the missing tenant/connection guard, and the "
-        "finally block covering every other exit path"
+def _finally_bodies(handler: object) -> list[str]:
+    tree = ast.parse(textwrap.dedent(inspect.getsource(handler)))
+    return [
+        ast.unparse(stmt)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Try)
+        for stmt in node.finalbody
+    ]
+
+
+def test_sync_comments_releases_its_claim_in_a_finally_block() -> None:
+    """Every exit after the pass started — success, any exception, the lease refused —
+    must clear this run's claim, or the button stays disabled. Pinned on the `finally`
+    of the try that wraps `sync_now`."""
+    assert any(
+        "_release_sync_claim(run_id)" in body
+        for body in _finally_bodies(InboxState.sync_comments.fn)
     )
+
+
+def test_every_early_exit_before_the_pass_releases_the_claim_too() -> None:
+    """The two exits that happen after claiming but before `sync_now` (no session/
+    connection, cooldown) release explicitly."""
+    source = inspect.getsource(InboxState.sync_comments.fn)
+    assert source.count("self._release_sync_claim(run_id)") == 3  # 2 early + finally
 
 
 def test_sync_comments_never_touches_the_candidate_list() -> None:
@@ -565,7 +587,7 @@ def test_sync_comments_refreshes_only_after_a_successful_sync() -> None:
     source = inspect.getsource(InboxState.sync_comments.fn)
     assert source.count("await self._refresh_after_write(tenant_id, connection_id)") == 1
     refresh_index = source.index("await self._refresh_after_write(tenant_id, connection_id)")
-    last_finally_reset_index = source.rindex("self.is_syncing = False")
+    last_finally_reset_index = source.rindex("self._release_sync_claim(run_id)")
     assert refresh_index > last_finally_reset_index, (
         "the refresh must sit AFTER the finally block, so every early `return` in an "
         "except branch skips it"
@@ -780,3 +802,135 @@ async def test_load_more_thread_comments_ignores_a_call_with_nothing_more_to_loa
 
     assert state.is_loading_more_thread_comments is False
     assert state.thread_comments == []
+
+
+# --------------------------------------------------------------------------------------
+# B8 — one message per failure. The handlers cannot run end to end here (module
+# docstring), so the mapping is read from their AST: which `*_error` constant each
+# `except <Type>:` branch assigns.
+# --------------------------------------------------------------------------------------
+
+
+def _error_constant_by_exception(handler: object, error_attr: str) -> dict[str, str]:
+    tree = ast.parse(textwrap.dedent(inspect.getsource(handler)))
+    mapping: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ExceptHandler) or node.type is None:
+            continue
+        caught = ast.unparse(node.type)
+        for inner in ast.walk(node):
+            if (
+                isinstance(inner, ast.Assign)
+                and isinstance(inner.targets[0], ast.Attribute)
+                and inner.targets[0].attr == error_attr
+                and isinstance(inner.value, ast.Name)
+            ):
+                mapping[caught] = inner.value.id
+    return mapping
+
+
+def test_sync_failures_map_each_to_its_own_message() -> None:
+    from uuid import UUID as _UUID
+
+    from qualify_api.inbox import (
+        CommentsAuthExpired,
+        CommentsPermissionMissing,
+        CommentsReadError,
+        InboxConnectionInactive,
+        SyncBudgetExhausted,
+        UnknownInboxConnection,
+    )
+
+    conn = _UUID("c0000000-0000-4000-8000-0000000000aa")
+    expected = {
+        UnknownInboxConnection("x"): inbox_state._UNKNOWN_CONNECTION,
+        InboxConnectionInactive("revoked"): inbox_state._CONNECTION_INACTIVE,
+        CommentsAuthExpired(connection_id=conn): inbox_state._CONNECTION_AUTH_EXPIRED,
+        CommentsPermissionMissing(connection_id=conn): inbox_state._COMMENTS_PERMISSION_MISSING,
+        SyncBudgetExhausted(needed=5, remaining=0): inbox_state._SYNC_BUDGET_EXHAUSTED,
+        CommentsReadError("GET failed"): inbox_state._SYNC_META_FAILED,
+        RuntimeError("anything else"): inbox_state._SYNC_FAILED,
+    }
+    for exc, message in expected.items():
+        assert inbox_state._sync_error_message(exc) == message, type(exc).__name__
+    # "no está disponible" means exactly one thing.
+    assert len(set(expected.values())) == len(expected)
+
+
+def test_analyze_sentiment_maps_each_failure_to_its_own_message() -> None:
+    mapping = _error_constant_by_exception(InboxState.analyze_sentiment.fn, "analyze_error")
+    assert mapping == {
+        "UnknownSentimentConnection": "_UNKNOWN_CONNECTION",
+        "SentimentModelUnavailable": "_ANALYZE_UNAVAILABLE",
+        "Exception": "_ANALYZE_FAILED",
+    }
+
+
+def test_a_missing_session_reads_as_expired_not_as_a_missing_account() -> None:
+    """No tenant in the session = no login (`AuthState.session_tenant_id` is set only by
+    one), which is a different fix for the user than "pick an account"."""
+    for handler in (InboxState.sync_comments.fn, InboxState.analyze_sentiment.fn):
+        source = inspect.getsource(handler)
+        assert "_SESSION_EXPIRED if tenant_id is None else _NO_CONNECTION_SELECTED" in source
+    assert inbox_state._SESSION_EXPIRED != inbox_state._NO_CONNECTION_SELECTED
+
+
+# --------------------------------------------------------------------------------------
+# Phase 1 — every sync names its origin, and the new triggers are wired.
+# --------------------------------------------------------------------------------------
+
+
+def test_each_trigger_names_itself() -> None:
+    from . import inbox_page
+
+    button = inspect.getsource(inbox_page._sync_now_button)
+    timer = inspect.getsource(inbox_page._polling_timer)
+    assert 'InboxState.sync_comments("manual")' in button
+    assert 'InboxState.sync_comments("poll")' in timer
+    assert 'InboxState.sync_comments("open")' in inspect.getsource(InboxState.load_screen.fn)
+    assert 'InboxState.sync_comments("open")' in inspect.getsource(InboxState.select_connection.fn)
+
+
+def test_only_turning_monitoring_on_triggers_a_pass() -> None:
+    source = inspect.getsource(InboxState.toggle_monitored.fn)
+    assert "if toggled and monitored:" in source
+    assert 'return InboxState.sync_comments("monitor")' in source
+
+
+def test_every_run_logs_its_start_and_outcome() -> None:
+    source = inspect.getsource(InboxState.sync_comments.fn)
+    for line in ("inbox.sync.start", "inbox.sync.done", "inbox.sync.failed"):
+        assert line in source, line
+    assert "inbox.sync.skipped" in inspect.getsource(InboxState._sync_skipped)
+    # Ids and counts only — never comment text or a token: every argument handed to a
+    # `logger` call in the handler is one of these names (or a count/duration built
+    # from them).
+    tree = ast.parse(textwrap.dedent(source))
+    logged = {
+        ast.unparse(arg)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and ast.unparse(node.func.value) == "logger"
+        for arg in node.args[1:]
+    }
+    allowed_fragments = (
+        "run_id",
+        "trigger",
+        "tenant_id",
+        "resolved_connection",
+        "prior_run_id",
+        "type(exc).__name__",
+        "time.monotonic() - started",
+        "result.",
+    )
+    for arg in logged:
+        assert any(fragment in arg for fragment in allowed_fragments), arg
+        assert ".text" not in arg and "token" not in arg.replace("run_token", ""), arg
+
+
+def test_the_staleness_check_receives_the_prior_run_id() -> None:
+    """D1: the handler must hand `claim_is_stale` the claim's own run id, so a legacy
+    claim with none is recognised as stale (see `inbox_sync_policy.claim_is_stale`)."""
+    source = inspect.getsource(InboxState.sync_comments.fn)
+    assert "run_id=prior_run_id," in source

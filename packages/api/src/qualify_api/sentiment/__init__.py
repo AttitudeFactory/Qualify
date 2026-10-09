@@ -44,7 +44,11 @@ from qualify_api.sentiment.repository import (
     ReelSummary,
     SentimentRepository,
 )
-from qualify_api.sentiment.service import AnalysisSummary, SentimentService
+from qualify_api.sentiment.service import (
+    AnalysisSummary,
+    SentimentModelUnavailable,
+    SentimentService,
+)
 
 __all__ = [
     "DEFAULT_COMMENT_PAGE_SIZE",
@@ -62,6 +66,7 @@ __all__ = [
     "ReelListCursor",
     "ReelSummary",
     "SentimentRepository",
+    "SentimentModelUnavailable",
     "SentimentService",
     "UnknownSentimentConnection",
     "analyze_pending_comments",

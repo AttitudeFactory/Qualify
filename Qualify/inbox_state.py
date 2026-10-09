@@ -25,13 +25,12 @@ single re-entrancy lock shared by both — a tick that lands while the button's 
 still in flight (or vice versa) is a no-op, not a second concurrent sync. There is no
 separate scheduler process anywhere: the "automatic" half is a client-side timer, not a
 server-side loop — see `inbox_page.py::_polling_timer`'s docstring for why that is what
-makes it safe to leave running with nothing to cancel. As of 2026-08-16 it reaches that
-service through the real `POST /api/inbox/sync` route (B2's acceptance criterion) rather
-than calling `composition.sync_comments` in-process — see `inbox_provider.sync_now`'s
-docstring for how and for the one consequence worth knowing here: the bridge only
-authenticates ONE dev tenant (PuntoServis), so `sync_now` raises `UnknownInboxConnection`
-for any other selected tenant, surfacing as this handler's ordinary `_UNKNOWN_CONNECTION`
-message — not a new failure mode this handler needs to special-case.
+makes it safe to leave running with nothing to cancel. It reaches that service in
+process with the session's tenant (`inbox_provider.sync_now`; B8, 2026-10-08 — it used to
+go through a dev-only HTTP bridge that refused every tenant but one). Each failure gets its
+own message — session expired, account disconnected, permission missing, Meta auth
+expired, budget spent, Instagram failing, anything else — so «Esa cuenta ya no está
+disponible» only ever means what it says: the connection is not visible to this tenant.
 
 **`analyze_sentiment` is QUA-21's manual trigger, made visible as a button (QUA-92).** It
 is the only place in this file that calls `qualify_api.sentiment` for a WRITE —
@@ -69,17 +68,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import reflex as rx
 from qualify_api.inbox import (
     CommentsAuthExpired,
     CommentsPermissionMissing,
+    CommentsReadError,
+    InboxConnectionInactive,
     MediaNotEligible,
+    SyncAlreadyRunning,
     SyncBudgetExhausted,
     UnknownInboxConnection,
 )
-from qualify_api.sentiment import UnknownSentimentConnection
+from qualify_api.sentiment import SentimentModelUnavailable, UnknownSentimentConnection
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
@@ -89,10 +91,13 @@ from .inbox_provider import (
     global_summary_vm,
     instagram_connections,
     reel_summaries_page,
+    seconds_since_last_sync,
     sync_now,
+    sync_still_running,
     thread_comments_page,
     toggle_monitoring,
 )
+from .inbox_sync_policy import claim_is_stale, normalize_trigger, skip_for_cooldown
 from .inbox_vm import (
     AnalysisSummaryVM,
     CandidateMediaVM,
@@ -118,6 +123,19 @@ _NOT_ELIGIBLE = (
 )
 _UNKNOWN_CONNECTION = "Esa cuenta ya no está disponible. Actualiza la lista e intenta de nuevo."
 _SYNC_FAILED = "No se pudo sincronizar los comentarios. Intenta de nuevo."
+# B8: the two halves `_NO_TENANT` used to cover for sync/analysis. No tenant in the
+# session means there is no login (`AuthState.session_tenant_id` is set only by one).
+_SESSION_EXPIRED = "Tu sesión expiró. Vuelve a iniciar sesión."
+_NO_CONNECTION_SELECTED = "Elige primero una cuenta de Instagram."
+# The connection is the tenant's but no longer `active` (disconnected or degraded) —
+# never synced, and never confused with "not visible" (`_UNKNOWN_CONNECTION`).
+_CONNECTION_INACTIVE = (
+    "Esta cuenta está desconectada. Reconéctala en Conexiones para sincronizar sus comentarios."
+)
+# A Graph call that was attempted and failed (`CommentsReadError`) — Instagram's side.
+_SYNC_META_FAILED = (
+    "Instagram no respondió al sincronizar los comentarios. Intenta de nuevo en unos minutos."
+)
 # cannot_observe (QUA-88): the connection cannot read the comments edge AT ALL — never
 # shown as if it were a normal zero-comments result.
 _COMMENTS_PERMISSION_MISSING = (
@@ -132,7 +150,11 @@ _SYNC_BUDGET_EXHAUSTED = (
 _CONNECTION_AUTH_EXPIRED = (
     "Tu conexión con Instagram dejó de funcionar. Reconéctala en Conexiones e intenta de nuevo."
 )
+_SYNC_ALREADY_RUNNING = "Ya hay una sincronización en curso. Los resultados aparecerán al terminar."
 _ANALYZE_FAILED = "No se pudo analizar el sentimiento. Intenta de nuevo."
+# The local model's runtime (`ml` group) is not installed in this deployment — not a
+# transient failure, so "intenta de nuevo" would be a lie.
+_ANALYZE_UNAVAILABLE = "El análisis de sentimiento todavía no está disponible en este entorno."
 # QUA-93 — each of the three new sections has its own load error, same "independent
 # §6.1 lifecycle per section" posture the design doc documents.
 _REEL_SUMMARIES_LOAD_FAILED = "No se pudieron cargar los Reels con comentarios. Intenta de nuevo."
@@ -190,6 +212,10 @@ class InboxState(rx.State):
     # Screen-wide, not per-row — unlike toggling_media_ids, a sync pass has no single Reel
     # it belongs to.
     is_syncing: bool = False
+    # The run this tab's claim belongs to, and when it was claimed (epoch seconds) — what
+    # `sync_comments` needs to tell a live pass from a leftover claim (see its docstring).
+    sync_run_id: str = ""
+    sync_claimed_at: float = 0.0
     sync_error: str = ""
     sync_result: SyncSummaryVM | None = None
 
@@ -536,6 +562,9 @@ class InboxState(rx.State):
             from .replies_state import RepliesState  # noqa: PLC0415
 
             yield RepliesState.load_pending_drafts
+            # Phase 1: one immediate pass instead of waiting for the first 5-minute tick.
+            # `open` is cooldown-gated, so re-opening right after a pass costs no calls.
+            yield InboxState.sync_comments("open")
 
     @rx.event(background=True)
     async def select_connection(self, connection_id: str):
@@ -574,9 +603,13 @@ class InboxState(rx.State):
         from .replies_state import RepliesState  # noqa: PLC0415
 
         yield RepliesState.load_pending_drafts
+        # Switching account is opening the screen for that account.
+        yield InboxState.sync_comments("open")
 
     @rx.event(background=True)
-    async def toggle_monitored(self, external_media_id: str, monitored: bool) -> None:
+    async def toggle_monitored(
+        self, external_media_id: str, monitored: bool
+    ) -> rx.event.EventSpec | None:
         """Flip one Reel's monitoring toggle through the real B2 service, then ALWAYS
         reload the whole candidate list from the backend — see the module docstring for
         why this is never an optimistic local update."""
@@ -599,6 +632,7 @@ class InboxState(rx.State):
                 self.action_error = _NO_TENANT
             return
 
+        toggled = False
         try:
             await toggle_monitoring(
                 tenant_id=tenant_id,
@@ -606,6 +640,7 @@ class InboxState(rx.State):
                 external_media_id=external_media_id,
                 monitored=monitored,
             )
+            toggled = True
         except MediaNotEligible as exc:
             async with self:
                 self.action_error = _TOO_OLD if exc.reason == "too_old" else _NOT_ELIGIBLE
@@ -643,30 +678,63 @@ class InboxState(rx.State):
         # page 1 of `reel_summaries` keeps a stale badge until the operator scrolls back.
         await self._refresh_after_write(tenant_id, connection_id)
 
+        # Phase 1: a media just turned ON has never been synced — fetch its comments now
+        # instead of at the next 5-minute tick. Turning monitoring OFF triggers nothing.
+        if toggled and monitored:
+            return InboxState.sync_comments("monitor")
+        return None
+
+    def _claim_sync(self, run_id: str) -> None:
+        """Mark this tab as running `run_id`. Call inside `async with self`."""
+        self.is_syncing = True
+        self.sync_run_id = run_id
+        self.sync_claimed_at = time.time()
+
+    def _release_sync_claim(self, run_id: str) -> None:
+        """Clear the claim only if it is still `run_id`'s. Call inside `async with self`."""
+        if self.sync_run_id == run_id:
+            self.is_syncing = False
+            self.sync_run_id = ""
+
+    def _sync_skipped(
+        self, trigger: str, reason: str, *, run_id: str = "-"
+    ) -> rx.event.EventSpec | None:
+        """Log a skip; only a manual click hears about a pass already running (an
+        automatic skip is routine and stays silent)."""
+        logger.info("inbox.sync.skipped run=%s trigger=%s reason=%s", run_id, trigger, reason)
+        if trigger == "manual" and reason in ("in_flight", "in_flight_elsewhere"):
+            return rx.toast.info(_SYNC_ALREADY_RUNNING, duration=_RESULT_TOAST_DURATION_MS)
+        return None
+
     @rx.event(background=True)
-    async def sync_comments(self) -> rx.event.EventSpec | None:
-        """The one trigger for `InboxService.sync_comments` (B2/QUA-89) — called by both
-        the manual button and the automatic 5-minute poll, see the module docstring for
-        why that is what keeps them sharing one guard/loading state instead of two. Never
-        touches `candidates`/`toggling_media_ids` ITSELF: a sync pass writes to `threads`/
-        `messages`, and — since the 2026-09-01 bug fix, ONLY for a media_id Meta confirms
-        no longer exists — an auto-unmonitor write to `monitored_media` the service makes
-        on its own (`InboxService.sync_comments`'s `_is_missing_media_error` branch); this
-        handler still never reloads the Reel list itself for that, same "known, accepted
-        gap until the operator revisits the toggle screen" posture already documented
-        elsewhere in this file. Unlike `toggle_monitored`, this handler's only externally
-        visible effect from HERE is `sync_result`/`sync_error` (plus, on success, a
-        transient `rx.toast.success` — see `_RESULT_TOAST_DURATION_MS`'s docstring) —
-        that toast now also names any Reel skipped as no-longer-available, still a
-        SUCCESS, never `sync_error` (see `SyncSummaryVM.skipped_missing_media`'s
-        docstring for why one dead monitored Reel must never fail the whole pass).
+    async def sync_comments(self, trigger: str = "manual") -> rx.event.EventSpec | None:
+        """The one trigger for `InboxService.sync_comments` (B2/QUA-89): the manual
+        button, the 5-minute poll, opening the screen / switching account, and turning
+        monitoring on all call it, each naming itself in `trigger` (`inbox_sync_policy`).
+        Never touches `candidates`/`toggling_media_ids` ITSELF: a sync pass writes to
+        `threads`/`messages` (and, for a media Meta confirms gone, an auto-unmonitor write
+        the service makes on its own). Its visible effects are `sync_result`/`sync_error`,
+        a refresh of the comments sections, and a toast.
+
+        **Every run leaves one log line per outcome** (`inbox.sync.start` then exactly one
+        of `done`/`failed`/`skipped`), keyed by a run id — ids and counts only, never
+        comment text or a token.
+
+        **Concurrency.** `is_syncing` is this tab's UI claim, persisted with the tab's state,
+        so it can outlive the pass it stood for (a server restart mid-pass). It is NOT the
+        lock: the backend's per-connection lease is (`qualify_api.inbox.sync_guard`). A
+        leftover claim is cleared only when the backend says that run no longer holds its
+        lease AND the claim is past a short grace window (`claim_is_stale`) — never by age
+        alone. A manual click that finds a live pass gets a toast instead of silence.
         """
+        trigger = normalize_trigger(trigger)
+        run_id = uuid4().hex[:12]
         async with self:
-            if self.is_syncing:
-                return  # a sync is already in flight; ignore a rapid double-click
-            self.is_syncing = True
-            self.sync_error = ""
-            self.sync_result = None
+            claimed_now = not self.is_syncing
+            prior_run_id = self.sync_run_id
+            prior_claimed_at = self.sync_claimed_at
+            if claimed_now:
+                self._claim_sync(run_id)
             connection_id = self.selected_connection_id
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
@@ -674,43 +742,92 @@ class InboxState(rx.State):
         tenant_id = tenant_uuid(session_tenant_id)
         resolved_connection = _try_uuid(connection_id)
 
+        if not claimed_now:
+            run_alive = True  # conservative: unknown counts as still running
+            if tenant_id is not None and resolved_connection is not None and prior_run_id:
+                run_alive = await sync_still_running(
+                    tenant_id=tenant_id, connection_id=resolved_connection, run_token=prior_run_id
+                )
+            if not claim_is_stale(
+                run_id=prior_run_id,
+                run_alive=run_alive,
+                claimed_at=prior_claimed_at,
+                now=time.time(),
+            ):
+                return self._sync_skipped(trigger, "in_flight")
+            async with self:
+                if self.sync_run_id != prior_run_id:
+                    # Another event of this tab re-claimed in the meantime — it owns it now.
+                    return self._sync_skipped(trigger, "in_flight")
+                self._claim_sync(run_id)
+            logger.info(
+                "inbox.sync.stale_claim_released trigger=%s previous_run=%s", trigger, prior_run_id
+            )
+
         if tenant_id is None or resolved_connection is None:
             async with self:
-                self.is_syncing = False
-                self.sync_error = _NO_TENANT
-            return
+                self._release_sync_claim(run_id)
+                self.sync_error = _SESSION_EXPIRED if tenant_id is None else _NO_CONNECTION_SELECTED
+            return self._sync_skipped(
+                trigger, "no_session" if tenant_id is None else "no_connection"
+            )
 
+        if trigger != "manual":
+            since_last = await seconds_since_last_sync(
+                tenant_id=tenant_id, connection_id=resolved_connection
+            )
+            if skip_for_cooldown(trigger, since_last):
+                async with self:
+                    self._release_sync_claim(run_id)
+                return self._sync_skipped(trigger, "cooldown")
+
+        async with self:
+            self.sync_error = ""
+            self.sync_result = None
+        logger.info(
+            "inbox.sync.start run=%s trigger=%s tenant=%s connection=%s",
+            run_id,
+            trigger,
+            tenant_id,
+            resolved_connection,
+        )
+        started = time.monotonic()
         try:
-            result = await sync_now(tenant_id=tenant_id, connection_id=resolved_connection)
-        except UnknownInboxConnection:
-            async with self:
-                self.sync_error = _UNKNOWN_CONNECTION
-            return
-        except CommentsAuthExpired:
-            async with self:
-                self.sync_error = _CONNECTION_AUTH_EXPIRED
-            return
-        except CommentsPermissionMissing:
-            async with self:
-                self.sync_error = _COMMENTS_PERMISSION_MISSING
-            return
-        except SyncBudgetExhausted:
-            async with self:
-                self.sync_error = _SYNC_BUDGET_EXHAUSTED
-            return
+            result = await sync_now(
+                tenant_id=tenant_id, connection_id=resolved_connection, run_token=run_id
+            )
+        except SyncAlreadyRunning:
+            # Another tab, user or process holds this connection's lease right now.
+            return self._sync_skipped(trigger, "in_flight_elsewhere", run_id=run_id)
         except Exception as exc:
-            # Only the exception TYPE is logged — same posture as every other handler in
-            # this file for infrastructure/Meta errors that may carry connection details.
-            logger.error("sync_now failed: %s", type(exc).__name__)
+            logger.info(
+                "inbox.sync.failed run=%s trigger=%s error=%s ms=%d",
+                run_id,
+                trigger,
+                type(exc).__name__,
+                (time.monotonic() - started) * 1000,
+            )
             async with self:
-                self.sync_error = _SYNC_FAILED
-            return
+                self.sync_error = _sync_error_message(exc)
+            return None
         else:
+            logger.info(
+                "inbox.sync.done run=%s trigger=%s media=%d new=%d deleted=%d "
+                "missing_media=%d truncated=%s ms=%d",
+                run_id,
+                trigger,
+                result.media_checked,
+                result.new_comments,
+                result.deleted_comments,
+                len(result.skipped_missing_media),
+                result.truncated,
+                (time.monotonic() - started) * 1000,
+            )
             async with self:
                 self.sync_result = result
         finally:
             async with self:
-                self.is_syncing = False
+                self._release_sync_claim(run_id)
 
         # QUA-93: refresh — reached ONLY on a successful sync. Every failure branch
         # above `return`s before this point (the `finally` still ran either way,
@@ -760,8 +877,8 @@ class InboxState(rx.State):
         in both directions: never called FROM `sync_comments` (QUA-21 stays manual-only,
         unchanged by QUA-89's polling) and never calls `sync_now` itself. Same
         double-click guard / `finally`-based reset shape as `sync_comments` above, over
-        `inbox_provider.analyze_sentiment_now` — see that function's docstring for why
-        it reuses `POST /api/sentiment/analyze` rather than a second analysis engine.
+        `inbox_provider.analyze_sentiment_now` — the same seam `POST /api/sentiment/
+        analyze` wraps, never a second analysis engine.
         """
         async with self:
             if self.is_analyzing:
@@ -779,7 +896,9 @@ class InboxState(rx.State):
         if tenant_id is None or resolved_connection is None:
             async with self:
                 self.is_analyzing = False
-                self.analyze_error = _NO_TENANT
+                self.analyze_error = (
+                    _SESSION_EXPIRED if tenant_id is None else _NO_CONNECTION_SELECTED
+                )
             return
 
         try:
@@ -789,6 +908,10 @@ class InboxState(rx.State):
         except UnknownSentimentConnection:
             async with self:
                 self.analyze_error = _UNKNOWN_CONNECTION
+            return
+        except SentimentModelUnavailable:
+            async with self:
+                self.analyze_error = _ANALYZE_UNAVAILABLE
             return
         except Exception as exc:
             # Only the exception TYPE is logged — same posture as every other handler in
@@ -987,3 +1110,21 @@ def _try_uuid(value: str) -> UUID | None:
         return UUID(value)
     except ValueError:
         return None
+
+
+def _sync_error_message(exc: Exception) -> str:
+    """One message per failure type — "Esa cuenta ya no está disponible" only ever means
+    the connection is not visible to this tenant (B8)."""
+    if isinstance(exc, UnknownInboxConnection):
+        return _UNKNOWN_CONNECTION
+    if isinstance(exc, InboxConnectionInactive):
+        return _CONNECTION_INACTIVE
+    if isinstance(exc, CommentsAuthExpired):
+        return _CONNECTION_AUTH_EXPIRED
+    if isinstance(exc, CommentsPermissionMissing):
+        return _COMMENTS_PERMISSION_MISSING
+    if isinstance(exc, SyncBudgetExhausted):
+        return _SYNC_BUDGET_EXHAUSTED
+    if isinstance(exc, CommentsReadError):
+        return _SYNC_META_FAILED
+    return _SYNC_FAILED

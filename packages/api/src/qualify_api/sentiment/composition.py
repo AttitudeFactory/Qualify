@@ -94,7 +94,8 @@ def production_sentiment_service() -> SentimentService:
 def analyze_pending_comments(*, tenant_id: UUID, connection_id: UUID) -> AnalysisSummary:
     """The published seam. Synchronous — see `service.py`'s module docstring for why.
     Raises `UnknownSentimentConnection` if the connection id is not visible to this
-    tenant."""
+    tenant, and `SentimentModelUnavailable` (from the service, before any work) when the
+    local model's runtime is not installed."""
     _require_connection_visible(tenant_id=tenant_id, connection_id=connection_id)
     return production_sentiment_service().analyze_pending_comments(
         tenant_id=tenant_id, connection_id=connection_id

@@ -15,6 +15,7 @@ from qualify_api.connections.composition import degrade_connection_on_auth_error
 from qualify_api.connections.credential_reader import DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor, Encryptor
 from qualify_api.connections.resolver import InjectingCredentialResolver
+from qualify_api.replies.claude_drafts import DRAFT_MODEL, ClaudeReplyDraftProvider
 from qualify_api.replies.client import CommentReplyClient, HttpCommentReplyClient
 from qualify_api.replies.repository import DraftRecord, PostgresReplyRepository
 from qualify_api.replies.service import DecisionResult, GenerationSummary, ReplyService
@@ -39,10 +40,9 @@ class ResolverReplyClientFactory:
 def current_reply_generator_version() -> str:
     """The generator version this deployment stamps on every draft — provenance, not a
     live pointer: bumping it changes what a NEW draft records, never a past one (no
-    UPDATE grant would let it, even if code tried)."""
-    from qualify_models.providers import DEFAULT_REPLY_DRAFT_MODEL_ID  # noqa: PLC0415
-
-    return f"qua22.1:{DEFAULT_REPLY_DRAFT_MODEL_ID}"
+    UPDATE grant would let it, even if code tried). `qua22.2` = drafts by Claude
+    (QUA-128); `qua22.1` drafts were written by the HF provider."""
+    return f"qua22.2:{DRAFT_MODEL.model_id}"
 
 
 @cache
@@ -54,6 +54,7 @@ def production_reply_service() -> ReplyService:
         repository=PostgresReplyRepository(),
         version=current_analysis_version(),
         generator_version=current_reply_generator_version(),
+        provider=ClaudeReplyDraftProvider(),
         client_factory=ResolverReplyClientFactory(settings, DevEncryptor()),
         connection_degrader=degrade_connection_on_auth_error,
     )

@@ -286,6 +286,36 @@ class SocialAccountClaim(Base):
     )
 
 
+class Campaign(Base):
+    """A brand's campaign: several POSTs grouped under one name and colour (0045,
+    QUA-143). The POST points at it (`ContentDraft.campaign_id`); calendar events never
+    do — they read it through their POST. Name unique per brand ignoring case."""
+
+    __tablename__ = "campaigns"
+    __table_args__ = (
+        UniqueConstraint("id", "tenant_id", "brand_id", name="uq_campaign_id_tenant_brand"),
+        CheckConstraint("char_length(btrim(name)) BETWEEN 1 AND 60", name="ck_campaign_name"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    color: Mapped[str] = mapped_column(Text, nullable=False)  # a `CAMPAIGN_COLORS` key
+    created_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
 class ContentBrief(Base):
     """The operator's order: what the piece is for, where it runs, what it must respect.
     Immutable input to a draft — regeneration re-reads the brief, never edits it."""
@@ -380,8 +410,10 @@ class ContentDraft(Base):
     preview_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     approved_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # The campaign this draft belongs to (0038). A bare uuid, NOT a declared FK: the
-    # `campaigns` table is a later revision; the FK is one ALTER once it exists.
+    # The campaign this POST belongs to (0038; FK since 0045, QUA-143). The FK is
+    # composite — `(campaign_id, tenant_id, brand_id)` → `campaigns` — with
+    # `ON DELETE SET NULL (campaign_id)`, which SQLAlchemy cannot spell: it lives in the
+    # migration only. Setting it is not a content edit (`creative/campaigns.py`).
     campaign_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
