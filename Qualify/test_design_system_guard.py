@@ -59,12 +59,7 @@ _HEX = re.compile(r"#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b")
 # Page modules the migration batches have not reached yet (lote → files). Shrinks only.
 _PENDING: set[str] = {
     # lote A — shell, auth, escucha: migrated (2026-10-08), the guard now protects it
-    # lote B — publicar y catálogo
-    "catalog_page.py",
-    "publishing_page.py",
-    "stories_page.py",
-    "trending_panel.py",
-    "post_card.py",
+    # lote B — publicar y catálogo: migrated (2026-10-08), the guard now protects it
     # lote C — planificador
     "planner_page.py",
     "planner_drawer.py",
