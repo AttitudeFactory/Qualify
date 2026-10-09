@@ -23,15 +23,20 @@ Unix timestamps (`ig-user/media.md:384-386`). So the "only the last 2 weeks" rul
 enforced by asking Meta for exactly that window, not by fetching everything and filtering
 client-side.
 
-## `get_media` exists for one reason: toggle-time validation without a stored timestamp
+## `get_media`: toggle-time validation against Meta, and the QUA-149 metadata read
 
 The product decision requires that activating monitoring on an old media is rejected — not
-just hidden from the UI. Trusting a client-supplied timestamp, or caching one in
-`monitored_media`, would mean the rule holds only as long as nobody calls the toggle
-directly. `get_media` asks Meta fresh, every time, addressed directly by id
-(`GET /{media-id}?fields=...` — `instagram-media.md:125` — no `ig_user_id` needed in the
-path). `timestamp` is documented `Public` on this node (`instagram-media.md:98`) — no
-`instagram_manage_comments` gate, unlike a comment's `username`/`from`.
+just hidden from the UI. Trusting a client-supplied timestamp, or a stored one, would mean
+the rule holds only as long as nobody calls the toggle directly. `get_media` asks Meta
+fresh at activation, addressed directly by id (`GET /{media-id}?fields=...` —
+`instagram-media.md:125` — no `ig_user_id` needed in the path). `timestamp` is documented
+`Public` on this node (`instagram-media.md:98`) — no `instagram_manage_comments` gate,
+unlike a comment's `username`/`from`.
+
+QUA-149: what `get_media` returns at activation is then persisted in `monitored_media`, so
+the media stays readable — and can be judged expired — after it leaves Meta's 14-day
+listing; the stored date is never what activation decides on. The same call reads that
+metadata once for rows monitored before migration 0046.
 
 ## Fields added for the Reflex picker (2026-08-14, B2 UI slice)
 

@@ -326,9 +326,10 @@ class InboxService:
         now: datetime | None = None,
     ) -> None:
         if monitored:
-            # Re-verify against Meta, live — never trust a client-supplied timestamp and
-            # never a cached one (there is none; this is the whole point of not adding
-            # `media_posted_at` to the table).
+            # Re-verify against Meta, live — never trust a client-supplied timestamp nor
+            # the stored one. `media_posted_at` is persisted below (QUA-149, 0046) only so
+            # the window can still be judged after the media leaves Meta's 14-day listing;
+            # activation always decides on the date Meta returns now.
             try:
                 media = await self._media_client.get_media(media_id=external_media_id)
             except MediaReadError as exc:
