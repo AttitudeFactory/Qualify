@@ -103,6 +103,7 @@ app = rx.App(
         "/qualify-publish.css",
         "/qualify-inbox.css",
         "/qualify-listen.css",
+        "/qualify-creative.css",
     ],
     html_lang="es",
     # Bug reported 2026-08-25, revised same day: bottom-right (Sonner's own default)

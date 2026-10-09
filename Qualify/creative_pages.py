@@ -4,7 +4,10 @@
 Views only — every fact they render arrives pre-computed in a `creative_vm` dataclass,
 and every action goes through `CreativeState`. Built on the `ui` shell (`app_shell` /
 `page_header` / `page_body`, docs/design-system.md §4); status colors follow the
-design-system tones (icon + label, never color alone).
+design-system tones (icon + label, never color alone). Material (Liquid Glass, lote E2):
+blocks are `ui.card` or the `.q-rv-*` / `.q-decide-*` / `.q-gcard` card-material
+classes, controls the `.q-cr-*` classes — all in `assets/qualify-creative.css`; no
+colour, shadow or blur is written in this module.
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ from .ui import (
     page_body,
     page_header,
     skeleton_rows,
+    tone_badge,
 )
 from .ui import tokens as T
 
@@ -94,7 +98,7 @@ def status_badge(status: rx.Var[str], label: rx.Var[str], tone: rx.Var[str]) -> 
 
 def _gap_row(gap: GapVM) -> rx.Component:
     return rx.hstack(
-        rx.icon("circle-alert", size=15, color=rx.color("amber", 9)),
+        rx.icon("circle-alert", size=15, color=T.tone_color("warn", 9)),
         rx.text(gap.label, size="2"),
         rx.spacer(),
         rx.link(gap.fix_label, href=gap.fix_route, size="2"),
@@ -137,7 +141,7 @@ def readiness_panel() -> rx.Component:
                     width="100%",
                 ),
                 rx.hstack(
-                    rx.icon("circle-check", size=15, color=rx.color("grass", 9)),
+                    rx.icon("circle-check", size=15, color=T.tone_color("ok", 9)),
                     rx.text("La marca está lista para generar.", size="2"),
                     align="center",
                 ),
@@ -302,11 +306,10 @@ def _kit_accordion() -> rx.Component:
                     CreativeState.kit_forbidden_claims,
                     CreativeState.set_kit_forbidden_claims,
                 ),
-                rx.callout(
+                callout(
                     "Esto se comprueba siempre, incluso si desactivas el resto.",
+                    "warn",
                     icon="shield-alert",
-                    color_scheme="amber",
-                    width="100%",
                 ),
                 spacing="3",
                 width="100%",
@@ -330,12 +333,7 @@ def brand_index() -> rx.Component:
             rx.cond(CreativeState.kit_error != "", _error_callout(CreativeState.kit_error)),
             rx.cond(
                 CreativeState.kit_notice != "",
-                rx.callout(
-                    CreativeState.kit_notice,
-                    icon="circle-check",
-                    color_scheme="grass",
-                    width="100%",
-                ),
+                callout(CreativeState.kit_notice, "ok", icon="circle-check"),
             ),
             readiness_panel(),
             rx.cond(
@@ -378,7 +376,7 @@ def _tone_row(row: ToneRowVM) -> rx.Component:
         rx.table.cell(
             rx.cond(
                 row.differs,
-                rx.badge("difiere", color_scheme="amber", variant="soft", size="1"),
+                tone_badge("difiere", "warn"),
                 rx.fragment(),
             )
         ),
@@ -408,7 +406,7 @@ def _voice_profile_card() -> rx.Component:
                 "Perfil de voz propuesto · v", proposal.version.to_string(), size="4", as_="h2"
             ),
             rx.spacer(),
-            rx.badge(proposal.status_label, color_scheme="amber", variant="soft", size="2"),
+            tone_badge(proposal.status_label, "warn", size="2"),
             width="100%",
             align="center",
         ),
@@ -549,15 +547,14 @@ def _voice_body() -> rx.Component:
         rx.cond(CreativeState.voice_error != "", _error_callout(CreativeState.voice_error)),
         rx.cond(
             CreativeState.voice_active,
-            rx.callout(
+            callout(
                 rx.text(
                     "Perfil activo: v",
                     CreativeState.voice_active.version.to_string(),
                     ". Aprobar una nueva propuesta lo reemplaza.",
                 ),
+                "ok",
                 icon="badge-check",
-                color_scheme="grass",
-                width="100%",
             ),
         ),
         rx.cond(
@@ -579,12 +576,26 @@ def _voice_body() -> rx.Component:
 
 
 def _objective_button(value: str, label: str) -> rx.Component:
-    return rx.button(
-        label,
-        variant=rx.cond(CreativeState.brief_objective == value, "solid", "soft"),
-        color_scheme=rx.cond(CreativeState.brief_objective == value, "grass", "gray"),
-        on_click=CreativeState.set_objective(value),
-        size="2",
+    """The chosen objective is solid in the `ok` tone, the others soft gray. Two buttons
+    under a `cond` rather than a conditional `color_scheme`: the tone's scale comes
+    from `T.tone_scheme`, which is a Python mapping, not a Var."""
+    selected = CreativeState.brief_objective == value
+    return rx.cond(
+        selected,
+        rx.button(
+            label,
+            variant="solid",
+            on_click=CreativeState.set_objective(value),
+            size="2",
+            **T.tone_scheme("ok"),
+        ),
+        rx.button(
+            label,
+            variant="soft",
+            color_scheme="gray",
+            on_click=CreativeState.set_objective(value),
+            size="2",
+        ),
     )
 
 
@@ -595,7 +606,7 @@ def _route_option(option: RouteOptionVM) -> rx.Component:
     header = rx.hstack(
         rx.cond(
             selected,
-            rx.icon("circle-dot", size=16, color=rx.color("accent", 9)),
+            rx.icon("circle-dot", size=16, color=T.tone_color("accent", 9)),
             rx.icon("circle", size=16, color=T.TEXT_FAINT),
         ),
         rx.text(option.title, size="2", weight="medium"),
@@ -609,15 +620,17 @@ def _route_option(option: RouteOptionVM) -> rx.Component:
         align="center",
     )
     expanded = rx.vstack(
-        rx.text(option.description, size="2", color=rx.color("gray", 11)),
+        rx.text(option.description, size="2", color=T.TEXT_MUTED),
         rx.cond(
             option.warning != "",
-            rx.callout(option.warning, icon="triangle-alert", color_scheme="tomato", width="100%"),
+            callout(option.warning, "error"),
         ),
         rx.cond(
             option.needs_upload,
             rx.vstack(
-                rx.upload(
+                # `rx.upload.root`, not `rx.upload`: the styled one injects an inline
+                # dashed border no class could override; the material is `.q-cr-dropzone`.
+                rx.upload.root(
                     rx.vstack(
                         rx.icon("image-up", size=22, color=T.TEXT_FAINT),
                         rx.text("Arrastra tu foto o haz clic para elegirla", size="2"),
@@ -630,22 +643,21 @@ def _route_option(option: RouteOptionVM) -> rx.Component:
                     on_drop=CreativeState.handle_photo_upload(
                         rx.upload_files(upload_id="creative_photo")
                     ),
-                    border=f"1px dashed {rx.color('gray', 7)}",
-                    border_radius="0.5rem",
+                    class_name="q-cr-dropzone",
                     padding="1.5rem",
                     width="100%",
                 ),
                 rx.cond(
                     CreativeState.staged_media_name != "",
                     rx.hstack(
-                        rx.icon("circle-check", size=14, color=rx.color("grass", 9)),
+                        rx.icon("circle-check", size=14, color=T.tone_color("ok", 9)),
                         rx.text("Foto lista: ", CreativeState.staged_media_name, size="2"),
                         align="center",
                     ),
                 ),
                 rx.cond(
                     CreativeState.upload_error != "",
-                    rx.text(CreativeState.upload_error, size="2", color=rx.color("tomato", 10)),
+                    rx.text(CreativeState.upload_error, size="2", color=T.tone_color("error", 11)),
                 ),
                 spacing="2",
                 width="100%",
@@ -665,21 +677,14 @@ def _route_option(option: RouteOptionVM) -> rx.Component:
             on_click=CreativeState.select_route(option.key),
             cursor="pointer",
             padding="1rem 1.25rem",
-            border=rx.cond(
-                selected,
-                f"1px solid {rx.color('accent', 8)}",
-                f"1px solid {rx.color('gray', 5)}",
-            ),
-            border_radius="0.75rem",
-            background=rx.color("gray", 2),
+            class_name=rx.cond(selected, "q-cr-option q-cr-option--selected", "q-cr-option"),
             width="100%",
         ),
         rx.box(
             header,
             rx.text(option.disabled_reason, size="1", color=T.TEXT_MUTED),
             padding="1rem 1.25rem",
-            border=f"1px dashed {rx.color('gray', 5)}",
-            border_radius="0.75rem",
+            class_name="q-cr-option q-cr-option--off",
             opacity="0.6",
             width="100%",
         ),
@@ -720,7 +725,7 @@ def _create_form() -> rx.Component:
             ),
             rx.text("Plataforma y formato", size="2", weight="medium"),
             rx.hstack(
-                rx.badge("Instagram · Post de feed 4:5", color_scheme="grass", variant="soft"),
+                tone_badge("Instagram · Post de feed 4:5", "ok"),
                 rx.tooltip(
                     rx.badge(
                         "Anuncio en Reels 9:16 — pronto",
@@ -885,10 +890,10 @@ def _gallery_card(post) -> rx.Component:
                 rx.icon("circle-x", size=15),
                 "Rechazar",
                 variant="outline",
-                color_scheme="red",
                 size="2",
                 width="100%",
                 disabled=busy,
+                **T.tone_scheme("error"),
                 on_click=GalleryState.ask_reject_post(post.post_id, post.title),
             ),
             rx.button(
@@ -1004,9 +1009,9 @@ def _gallery_reject_dialog() -> rx.Component:
                     rx.button(
                         rx.icon("circle-x", size=15),
                         "Sí, rechazar",
-                        color_scheme="red",
                         size="2",
                         on_click=GalleryState.confirm_reject_post,
+                        **T.tone_scheme("error"),
                     ),
                 ),
                 justify="end",
@@ -1023,22 +1028,40 @@ def _gallery_reject_dialog() -> rx.Component:
 def _state_chip(value: str, label: str) -> rx.Component:
     """A state filter: the word, its count, selected = solid. «Todos» first."""
     selected = GalleryState.state_filter == value
-    return rx.button(
-        label,
-        rx.badge(
+
+    def count() -> rx.Component:
+        return rx.badge(
             GalleryState.state_counts[value],
-            variant="solid" if False else "soft",
+            variant="soft",
             color_scheme="gray",
             radius="full",
             size="1",
             class_name="q-nums",
+        )
+
+    # The selected chip is solid in the accent (no `color_scheme`: omitting it IS the
+    # accent, `T.tone_scheme`), the others soft gray — two buttons under a `cond`.
+    return rx.cond(
+        selected,
+        rx.button(
+            label,
+            count(),
+            size="1",
+            variant="solid",
+            radius="full",
+            on_click=GalleryState.set_state_filter(value),
+            aria_pressed="true",
         ),
-        size="1",
-        variant=rx.cond(selected, "solid", "soft"),
-        color_scheme=rx.cond(selected, "teal", "gray"),
-        radius="full",
-        on_click=GalleryState.set_state_filter(value),
-        aria_pressed=selected,
+        rx.button(
+            label,
+            count(),
+            size="1",
+            variant="soft",
+            color_scheme="gray",
+            radius="full",
+            on_click=GalleryState.set_state_filter(value),
+            aria_pressed="false",
+        ),
     )
 
 
@@ -1147,7 +1170,7 @@ def _variant_selector(variant: CopyVariantVM) -> rx.Component:
         ),
         variant.label,
         variant=rx.cond(selected, "solid", "soft"),
-        color_scheme=rx.cond(variant.passed, "gray", "tomato"),
+        color_scheme=rx.cond(variant.passed, "gray", T.tone_scale("error")),
         on_click=CreativeState.select_variant(variant.variant_id),
         size="2",
     )
@@ -1155,8 +1178,8 @@ def _variant_selector(variant: CopyVariantVM) -> rx.Component:
 
 def _blocking_item(message: rx.Var[str]) -> rx.Component:
     return rx.hstack(
-        rx.icon("shield-x", size=14, color=rx.color("tomato", 9)),
-        rx.text(message, size="2", color=rx.color("tomato", 10)),
+        rx.icon("shield-x", size=14, color=T.tone_color("error", 9)),
+        rx.text(message, size="2", color=T.tone_color("error", 11)),
         align="center",
     )
 
@@ -1173,10 +1196,7 @@ def _drafting_panel() -> rx.Component:
             align="center",
         ),
         rx.hstack(
-            *[
-                rx.badge(stage, variant="soft", color_scheme="blue", size="2")
-                for stage in GENERATION_STAGES
-            ],
+            *[tone_badge(stage, "info", size="2") for stage in GENERATION_STAGES],
             spacing="2",
         ),
         rx.text(
@@ -1192,7 +1212,7 @@ def _failed_panel() -> rx.Component:
     failure = CreativeState.draft.failure
     return _card(
         rx.hstack(
-            rx.icon("triangle-alert", size=18, color=rx.color("tomato", 9)),
+            rx.icon("triangle-alert", size=18, color=T.tone_color("error", 9)),
             rx.heading("La generación falló", size="4", as_="h2"),
             width="100%",
             align="center",
@@ -1329,10 +1349,7 @@ def _media_column() -> rx.Component:
             width=_MEDIA_COLUMN_WIDTH,
             max_width=rx.breakpoints(initial="16rem", md="none"),
             margin_x=rx.breakpoints(initial="auto", md="0"),
-            height="275px",
-            border=f"1px dashed {rx.color('gray', 6)}",
-            border_radius="0.5rem",
-            flex_shrink="0",
+            class_name="q-rv-media-empty",
         ),
     )
 
@@ -1729,13 +1746,7 @@ def _variant_editor() -> rx.Component:
                 variant,
                 rx.cond(
                     variant.was_edited,
-                    rx.badge(
-                        rx.icon("pencil", size=11),
-                        "Editada por ti",
-                        color_scheme="iris",
-                        variant="soft",
-                        size="2",
-                    ),
+                    tone_badge("Editada por ti", "info", icon="pencil", size="2"),
                 ),
             ),
             align="center",
@@ -1984,16 +1995,16 @@ def _reject_dialog() -> rx.Component:
                         rx.button(
                             rx.icon("refresh-cw", size=15),
                             "Sí, pedir otra versión",
-                            color_scheme="amber",
                             size="2",
                             on_click=CreativeState.confirm_reject,
+                            **T.tone_scheme("warn"),
                         ),
                         rx.button(
                             rx.icon("circle-x", size=15),
                             "Sí, rechazar",
-                            color_scheme="red",
                             size="2",
                             on_click=CreativeState.confirm_reject,
+                            **T.tone_scheme("error"),
                         ),
                     ),
                 ),
@@ -2039,10 +2050,10 @@ def _decision_bar() -> rx.Component:
                         rx.icon("circle-x", size=15),
                         "Rechazar",
                         variant="outline",
-                        color_scheme="red",
                         size="2",
                         width="100%",
                         disabled=~draft.can_reject,
+                        **T.tone_scheme("error"),
                         on_click=CreativeState.ask_reject(False),
                     ),
                 ),
@@ -2056,10 +2067,10 @@ def _decision_bar() -> rx.Component:
                         rx.icon("refresh-cw", size=15),
                         "Regenerar",
                         variant="soft",
-                        color_scheme="amber",
                         size="2",
                         width="100%",
                         disabled=~draft.can_regenerate,
+                        **T.tone_scheme("warn"),
                         on_click=CreativeState.ask_reject(True),
                     ),
                 ),
