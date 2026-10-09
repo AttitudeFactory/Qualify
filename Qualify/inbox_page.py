@@ -4,6 +4,15 @@ with a switch to turn monitoring on/off per Reel.
 Built on the `ui` shell (`app_shell` / `page_header` / `page_body`); badges and callouts
 follow the design-system tones (docs/design-system.md). Adds the `/inbox` route only.
 
+Material (Liquid Glass migration, lote D — docs/plan-migracion-liquid-glass.md §4):
+every block — a Reel row, a comment, a reply draft, the sync strip — is `ui.card`, the
+card role of plan D5 (translucent relief, no backdrop blur); the three recipes no
+primitive covers (the 72px thumbnail, the row skeleton, the outgoing reply bubble) live
+in `assets/qualify-inbox.css` on the control tokens. Buttons follow §5.5: the connected
+screen has no solid button — the per-row switch is its primary action — so sync,
+analyse and generate are `soft`, and the draft's accept/discard carry their tone through
+`T.tone_scheme`, never a raw Radix hue.
+
 No rich media preview beyond a thumbnail + caption snippet on the Reels list — the goal
 there is to make the monitoring decision visible and actionable, not to redesign the
 screen.
@@ -92,22 +101,16 @@ def _connection_selector() -> rx.Component:
 
 
 def _thumbnail(candidate: CandidateMediaVM) -> rx.Component:
+    """The Reel's 72px picture, or — when the API returned none — the same frame filled
+    with the control material (`.q-inbox-thumb`, assets/qualify-inbox.css). Decorative:
+    the caption next to it is the Reel's name, so the image carries no alt text."""
     return rx.cond(
         candidate.thumbnail_url != "",
-        rx.image(
-            src=candidate.thumbnail_url,
-            width="72px",
-            height="72px",
-            object_fit="cover",
-            border_radius="0.5rem",
-        ),
-        rx.center(
+        rx.image(src=candidate.thumbnail_url, alt="", class_name="q-inbox-thumb"),
+        rx.box(
             rx.icon("film", size=26, color=T.TEXT_FAINT),
-            width="72px",
-            height="72px",
-            border_radius="0.5rem",
-            background=T.SURFACE_BG_RAISED,
-            flex_shrink="0",
+            class_name="q-inbox-thumb q-inbox-thumb--empty",
+            aria_hidden="true",
         ),
     )
 
@@ -125,10 +128,10 @@ def _monitoring_switch(candidate: CandidateMediaVM) -> rx.Component:
             ),
             size="2",
         ),
-        rx.text(
-            rx.cond(candidate.is_monitored, "Monitoreado", "No monitoreado"),
-            size="1",
-            color=rx.cond(candidate.is_monitored, T.tone_color("ok", 10), T.TEXT_FAINT),
+        rx.cond(
+            candidate.is_monitored,
+            tone_badge("Monitoreado", "ok", icon="eye"),
+            tone_badge("No monitoreado", "neutral", icon="eye-off"),
         ),
         spacing="1",
         align="center",
@@ -136,7 +139,9 @@ def _monitoring_switch(candidate: CandidateMediaVM) -> rx.Component:
 
 
 def _candidate_card_content(candidate: CandidateMediaVM) -> rx.Component:
-    return rx.box(
+    """One Reel row on the card material (`ui.card`): picture, caption and meta, the
+    monitoring switch on the right."""
+    return card(
         rx.hstack(
             _thumbnail(candidate),
             rx.vstack(
@@ -175,10 +180,6 @@ def _candidate_card_content(candidate: CandidateMediaVM) -> rx.Component:
             width="100%",
         ),
         padding="1rem 1.25rem",
-        border=T.BORDER,
-        border_radius=T.RADIUS_CARD,
-        background=T.CARD_BG,
-        width="100%",
     )
 
 
@@ -204,7 +205,9 @@ def _candidate_card(candidate: CandidateMediaVM) -> rx.Component:
 
 
 def _card_skeleton() -> rx.Component:
-    return rx.box(
+    """Content-loading placeholder shaped like a Reel row: the card's frame, empty
+    (`.q-inbox-skeleton`), with the picture and two lines shimmering inside."""
+    return card(
         rx.hstack(
             skeleton_rows(1, height="72px", width="72px"),
             rx.vstack(
@@ -217,9 +220,7 @@ def _card_skeleton() -> rx.Component:
             align="center",
         ),
         padding="1rem 1.25rem",
-        border=T.BORDER,
-        border_radius=T.RADIUS_CARD,
-        width="100%",
+        class_name="q-card q-inbox-skeleton",
         aria_busy="true",
     )
 
@@ -428,20 +429,11 @@ def _reel_thumbnail(reel: ReelSummaryVM) -> rx.Component:
     thumbnail_url — opción A enrichment, `""` for a Reel outside the 2-week window."""
     return rx.cond(
         reel.thumbnail_url != "",
-        rx.image(
-            src=reel.thumbnail_url,
-            width="72px",
-            height="72px",
-            object_fit="cover",
-            border_radius="0.5rem",
-        ),
-        rx.center(
+        rx.image(src=reel.thumbnail_url, alt="", class_name="q-inbox-thumb"),
+        rx.box(
             rx.icon("film", size=26, color=T.TEXT_FAINT),
-            width="72px",
-            height="72px",
-            border_radius="0.5rem",
-            background=T.SURFACE_BG_RAISED,
-            flex_shrink="0",
+            class_name="q-inbox-thumb q-inbox-thumb--empty",
+            aria_hidden="true",
         ),
     )
 
@@ -744,8 +736,7 @@ def _analyze_now_button() -> rx.Component:
         on_click=InboxState.analyze_sentiment,
         disabled=~InboxState.can_analyze,
         size="2",
-        variant="surface",
-        color_scheme="iris",
+        variant="soft",
     )
 
 
@@ -756,9 +747,7 @@ def _analyze_error_block() -> rx.Component:
     # persistent `callout`, per docs/design-system.md §5.4.
     return rx.cond(
         InboxState.analyze_error != "",
-        rx.callout(
-            InboxState.analyze_error, icon="triangle-alert", color_scheme="tomato", width="100%"
-        ),
+        callout(InboxState.analyze_error, "error"),
         rx.fragment(),
     )
 
@@ -789,8 +778,7 @@ def _sync_now_button() -> rx.Component:
         on_click=InboxState.sync_comments,
         disabled=~InboxState.can_sync,
         size="2",
-        variant="surface",
-        color_scheme="amber",
+        variant="soft",
     )
 
 
@@ -799,9 +787,7 @@ def _sync_error_block() -> rx.Component:
     # `_analyze_error_block` above — see that function's comment.
     return rx.cond(
         InboxState.sync_error != "",
-        rx.callout(
-            InboxState.sync_error, icon="triangle-alert", color_scheme="tomato", width="100%"
-        ),
+        callout(InboxState.sync_error, "error"),
         rx.fragment(),
     )
 
@@ -839,8 +825,9 @@ def _polling_timer() -> rx.Component:
 def _sync_section() -> rx.Component:
     """Comment-sync controls (QUA-89): automatic polling every 5 minutes while this
     screen is open, plus a manual trigger for an immediate pass — see `_polling_timer`'s
-    docstring for why both are safe to run side by side."""
-    return rx.box(
+    docstring for why both are safe to run side by side. A `ui.card` sitting in the
+    page gutter between the header and the body."""
+    return card(
         rx.vstack(
             rx.hstack(
                 rx.text(
@@ -861,9 +848,6 @@ def _sync_section() -> rx.Component:
             width="100%",
         ),
         padding="0.75rem 1rem",
-        border=T.BORDER,
-        border_radius=T.RADIUS_CARD,
-        background=T.SURFACE_BG,
         margin=f"0 {T.PAGE_X} 1.5rem {T.PAGE_X}",
         width=f"calc(100% - 2 * {T.PAGE_X})",
     )
@@ -887,8 +871,7 @@ def _generate_drafts_button() -> rx.Component:
         on_click=RepliesState.generate_drafts,
         disabled=RepliesState.is_generating,
         size="2",
-        variant="surface",
-        color_scheme="iris",
+        variant="soft",
     )
 
 
@@ -946,7 +929,7 @@ def _draft_view_mode(draft: DraftVM) -> rx.Component:
     folded together in this v1."""
     is_busy = RepliesState.busy_draft_id == draft.id
     return rx.vstack(
-        rx.text(draft.generated_text, size="2"),
+        rx.box(rx.text(draft.generated_text, size="2"), class_name="q-inbox-reply"),
         rx.hstack(
             rx.button(
                 rx.cond(is_busy, loading_spinner("sm"), rx.icon("check", size=14)),
@@ -954,7 +937,8 @@ def _draft_view_mode(draft: DraftVM) -> rx.Component:
                 on_click=RepliesState.accept_and_send(draft.id),
                 disabled=is_busy,
                 size="1",
-                color_scheme="grass",
+                variant="soft",
+                **T.tone_scheme("ok"),
             ),
             rx.button(
                 rx.icon("pencil", size=14),
@@ -971,7 +955,7 @@ def _draft_view_mode(draft: DraftVM) -> rx.Component:
                 disabled=is_busy,
                 size="1",
                 variant="ghost",
-                color_scheme="tomato",
+                **T.tone_scheme("error"),
             ),
             spacing="2",
         ),
@@ -997,7 +981,8 @@ def _draft_edit_mode(draft: DraftVM) -> rx.Component:
                 on_click=RepliesState.save_and_send(draft.id),
                 disabled=is_busy,
                 size="1",
-                color_scheme="grass",
+                variant="soft",
+                **T.tone_scheme("ok"),
             ),
             rx.button(
                 "Cancelar",
