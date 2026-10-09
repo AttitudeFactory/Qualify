@@ -144,3 +144,22 @@ def test_decide_and_send_decides_before_it_ever_calls_send() -> None:
     decide_index = source.index("decide_draft,\n")
     send_index = source.index("await send_draft(tenant_id=tenant_id")
     assert decide_index < send_index
+
+
+def test_generate_drafts_log_detail_is_type_plus_only_safe_detail() -> None:
+    from qualify_api.claude_tools import MissingAPIKey
+
+    detail = replies_state_module._safe_error_detail
+
+    # Our own Claude errors carry no connection data: their message is logged.
+    assert detail(MissingAPIKey("QUALIFY_ANTHROPIC_API_KEY is not set")) == (
+        "MissingAPIKey: QUALIFY_ANTHROPIC_API_KEY is not set"
+    )
+    # Anything else stays type-only (Meta errors may embed connection details) ...
+    assert detail(ValueError("https://graph.facebook.com/?access_token=secret")) == "ValueError"
+
+    # ... plus an HTTP status code when the exception exposes one.
+    class _ApiError(Exception):
+        status_code = 402
+
+    assert detail(_ApiError("body with details")) == "_ApiError (HTTP 402)"

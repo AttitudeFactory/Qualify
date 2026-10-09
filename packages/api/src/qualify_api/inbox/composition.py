@@ -26,12 +26,16 @@ codebase's established convention.
 
 from __future__ import annotations
 
-from uuid import UUID
+import contextlib
+import logging
+from collections.abc import AsyncIterator, Awaitable
+from uuid import UUID, uuid4
 
+import redis.asyncio as aioredis
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
-from qualify_api.config import MetaOAuthSettings
+from qualify_api.config import MetaOAuthSettings, redis_url
 from qualify_api.connections.composition import degrade_connection_on_auth_error
 from qualify_api.connections.credential_reader import DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor
@@ -43,6 +47,9 @@ from qualify_api.inbox.client import HttpCommentsClient
 from qualify_api.inbox.media_client import HttpMediaClient
 from qualify_api.inbox.repository import PostgresInboxRepository
 from qualify_api.inbox.service import CandidateMedia, InboxService, SyncSummary
+from qualify_api.inbox.sync_guard import Lease, SyncAlreadyRunning, SyncGuard, wall_clock
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class UnknownInboxConnection(Exception):
@@ -177,7 +184,9 @@ async def set_media_monitored(
     )
 
 
-async def sync_comments(*, tenant_id: UUID, connection_id: UUID) -> SyncSummary:
+async def sync_comments(
+    *, tenant_id: UUID, connection_id: UUID, run_token: str | None = None
+) -> SyncSummary:
     """The published seam for a sync pass — the third and last of this module's seam
     functions, completing the trio alongside `list_candidate_media`/`set_media_monitored`.
 
@@ -196,10 +205,98 @@ async def sync_comments(*, tenant_id: UUID, connection_id: UUID) -> SyncSummary:
 
     Raises `InboxConnectionInactive` when the connection is visible but not `active` —
     checked before credentials are resolved, so a disconnected account is never read.
+
+    Raises `SyncAlreadyRunning` when another pass holds the connection's lease
+    (`sync_guard.py`) — at most one pass per connection runs at a time, whoever started
+    it. `run_token` names this pass (the CRM passes its own run id so it can later ask
+    `sync_in_progress` about it); a fresh one is minted when omitted.
     """
     production_ig_user_id_for(tenant_id=tenant_id, connection_id=connection_id)
     status = production_connection_status_for(tenant_id=tenant_id, connection_id=connection_id)
     if status != ConnectionStatus.ACTIVE:
         raise InboxConnectionInactive(status)
-    service = await production_inbox_service_for(tenant_id=tenant_id, connection_id=connection_id)
-    return await service.sync_comments(tenant_id=tenant_id, connection_id=connection_id)
+    token = run_token or uuid4().hex
+    async with _sync_guard() as guard:
+        lease = await _acquire_or_unguarded(
+            guard, tenant_id=tenant_id, connection_id=connection_id, token=token
+        )
+        try:
+            service = await production_inbox_service_for(
+                tenant_id=tenant_id, connection_id=connection_id
+            )
+            summary = await service.sync_comments(tenant_id=tenant_id, connection_id=connection_id)
+        finally:
+            if lease is not None:
+                await _best_effort(lease.release(), "release")
+        await _best_effort(
+            guard.mark_finished(tenant_id=tenant_id, connection_id=connection_id, now=wall_clock()),
+            "mark_finished",
+        )
+    return summary
+
+
+# --- one pass per connection (`sync_guard.py`) ---------------------------------------
+
+
+@contextlib.asynccontextmanager
+async def _sync_guard() -> AsyncIterator[SyncGuard]:
+    """A `SyncGuard` over a fresh Redis client, closed on exit. Module-level so offline
+    tests can swap it for an in-memory one, same reason `production_ig_user_id_for` is."""
+    client = aioredis.Redis.from_url(redis_url(), decode_responses=True)
+    try:
+        yield SyncGuard(client)
+    finally:
+        await client.aclose()
+
+
+async def _acquire_or_unguarded(
+    guard: SyncGuard, *, tenant_id: UUID, connection_id: UUID, token: str
+) -> Lease | None:
+    """Take the lease; `SyncAlreadyRunning` propagates. If Redis itself is unreachable the
+    pass still runs, unguarded (`None`), and says so in the log: a sync is idempotent
+    (dedup is the `UNIQUE` on messages), so a missing lock can only cost duplicate Meta
+    calls — the budget check still applies — never duplicate data, and refusing to read
+    comments because the lock store is down would be the worse failure. Only the
+    ACQUIRE is guarded this way: a Redis error while the pass runs or on release never
+    re-runs anything."""
+    try:
+        return await guard.acquire(tenant_id=tenant_id, connection_id=connection_id, token=token)
+    except SyncAlreadyRunning:
+        raise
+    except (aioredis.RedisError, OSError) as exc:
+        _LOGGER.warning("inbox.sync.lease_unavailable error=%s", type(exc).__name__)
+        return None
+
+
+async def _best_effort(awaitable: Awaitable[object], what: str) -> None:
+    try:
+        await awaitable
+    except (aioredis.RedisError, OSError) as exc:
+        _LOGGER.warning("inbox.sync.%s_failed error=%s", what, type(exc).__name__)
+
+
+async def sync_in_progress(*, tenant_id: UUID, connection_id: UUID, token: str) -> bool:
+    """Whether the pass `token` names is still being executed by some process. A Redis
+    failure answers `True` — the conservative side: it never lets a caller treat a pass
+    that may still be running as dead."""
+    try:
+        async with _sync_guard() as guard:
+            return await guard.is_running(
+                tenant_id=tenant_id, connection_id=connection_id, token=token
+            )
+    except (aioredis.RedisError, OSError) as exc:
+        _LOGGER.warning("inbox.sync.liveness_unavailable error=%s", type(exc).__name__)
+        return True
+
+
+async def seconds_since_last_sync(*, tenant_id: UUID, connection_id: UUID) -> float | None:
+    """Age of the last finished pass on this connection; `None` if unknown (none within
+    the hour, or Redis unreachable — an automatic trigger then simply runs)."""
+    try:
+        async with _sync_guard() as guard:
+            return await guard.seconds_since_last_finished(
+                tenant_id=tenant_id, connection_id=connection_id, now=wall_clock()
+            )
+    except (aioredis.RedisError, OSError) as exc:
+        _LOGGER.warning("inbox.sync.cooldown_unavailable error=%s", type(exc).__name__)
+        return None

@@ -54,6 +54,7 @@ from collections.abc import AsyncGenerator
 from uuid import UUID
 
 import reflex as rx
+from qualify_api.claude_tools import ClaudeToolError
 from qualify_api.replies.service import UnknownDraft
 
 from .auth_state import AuthState
@@ -83,6 +84,20 @@ def _try_uuid(value: str) -> UUID | None:
         return UUID(value)
     except ValueError:
         return None
+
+
+def _safe_error_detail(exc: Exception) -> str:
+    """The exception TYPE, as every loader here logs — plus the detail only where it is
+    known to carry no connection data: our own Claude errors (model id, never comment
+    text or keys) and an HTTP status code. A bare type ("ValueError") once hid that
+    production had no model credential at all (QUA-128)."""
+    detail = type(exc).__name__
+    if isinstance(exc, ClaudeToolError):
+        detail += f": {exc}"
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        detail += f" (HTTP {status})"
+    return detail
 
 
 class RepliesState(rx.State):
@@ -177,7 +192,7 @@ class RepliesState(rx.State):
                 generate_drafts, tenant_id=tenant_id, connection_id=connection_id
             )
         except Exception as exc:
-            logger.error("generate_drafts failed: %s", type(exc).__name__)
+            logger.error("generate_drafts failed: %s", _safe_error_detail(exc))
             async with self:
                 self.generate_error = _GENERATE_FAILED
             return

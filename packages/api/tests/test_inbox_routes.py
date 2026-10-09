@@ -18,6 +18,7 @@ from qualify_api.http.app import create_app
 from qualify_api.inbox.client import CommentsReadError
 from qualify_api.inbox.composition import InboxConnectionInactive, UnknownInboxConnection
 from qualify_api.inbox.service import CommentsPermissionMissing, SyncBudgetExhausted, SyncSummary
+from qualify_api.inbox.sync_guard import SyncAlreadyRunning
 
 TENANT = UUID("44444444-4444-4444-8444-444444444444")
 USER = UUID("55555555-5555-4555-8555-555555555555")
@@ -314,3 +315,17 @@ def test_an_inactive_connection_is_409_not_404(monkeypatch: pytest.MonkeyPatch) 
 
     assert response.status_code == 409
     assert "revoked" in response.json()["detail"]
+
+
+def test_a_sync_already_running_is_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fn(*, tenant_id: UUID, connection_id: UUID) -> SyncSummary:
+        raise SyncAlreadyRunning(str(connection_id))
+
+    harness = Harness(monkeypatch, fn)
+
+    response = harness.http.post(
+        "/api/inbox/sync", json={"connection_id": str(CONNECTION)}, headers=AUTH
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "sync already running"}

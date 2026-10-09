@@ -185,7 +185,7 @@ DEFAULT_REPLY_DRAFT_MODEL_ID = "Qwen/Qwen3-VL-4B-Instruct"
 provenance without constructing an `HFInferenceReplyDraftProvider` (and its
 `InferenceClient`) just to read a default it never otherwise needs."""
 
-_REPLY_SYSTEM_PROMPT = (
+REPLY_SYSTEM_PROMPT = (
     "Eres quien responde comentarios públicos de Instagram en nombre de un negocio. "
     "Te llega un comentario con sentimiento POSITIVO. Escribe una respuesta breve (1-2 "
     "frases), cálida y natural en español, agradeciendo o reaccionando al comentario. "
@@ -213,7 +213,7 @@ class HFInferenceReplyDraftProvider:
 
     **Not yet exercised against a real Meta comment end-to-end** — same "corpus/design
     verified, live E2E pending" posture `replies/client.py` documents for the write
-    side. The prompt in `_REPLY_SYSTEM_PROMPT` is this class's whole grounding
+    side. The prompt in `REPLY_SYSTEM_PROMPT` is this class's whole grounding
     contract: no comment text ever reaches the model except via this one prompt, and
     no field except the model's own text response ever leaves it.
     """
@@ -231,7 +231,7 @@ class HFInferenceReplyDraftProvider:
         business_line = f" El negocio se llama {business_name}." if business_name else ""
         completion = self._client.chat_completion(
             messages=[
-                {"role": "system", "content": _REPLY_SYSTEM_PROMPT + business_line},
+                {"role": "system", "content": REPLY_SYSTEM_PROMPT + business_line},
                 {"role": "user", "content": comment_text},
             ],
             model=self.model_id,

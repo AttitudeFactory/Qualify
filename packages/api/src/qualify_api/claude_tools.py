@@ -31,8 +31,10 @@ API_KEY_ENV = "QUALIFY_ANTHROPIC_API_KEY"
 MAX_NON_STREAMING_TOKENS = 16000
 
 #: $ per million tokens (input, output), from the `claude-api` skill's model table
-#: (cached 2026-06-24). Used for reporting only — nothing is budgeted from it.
+#: (cached 2026-06-24; Haiku 5.5 added 2026-10-08). Used for reporting only — nothing is
+#: budgeted from it.
 PRICES: dict[str, tuple[float, float]] = {
+    "claude-haiku-5-5": (0.10, 0.50),
     "claude-haiku-4-5": (1.0, 5.0),
     "claude-sonnet-5": (2.0, 10.0),
     "claude-opus-5": (5.0, 25.0),
