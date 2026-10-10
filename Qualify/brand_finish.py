@@ -49,6 +49,7 @@ from .creative_provider import brand_readiness, default_brand_id, save_kit
 from .creative_vm import KitFormVM
 from .r2_media import is_r2_key, issue_view_path
 from .tenant import tenant_uuid
+from .upload_names import safe_upload_name
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,8 @@ _FILES_FAILED = (
     "Guardamos tu marca, pero no los archivos del brandboard (logo y elementos). "
     "Inténtalo de nuevo en un momento."
 )
+#: An R2 object key keeps ASCII only — on top of `safe_upload_name` (basename, no
+#: separators), which every upload handler shares (PR #100 review).
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -106,7 +109,7 @@ def _upload(gate: Any, tenant_id: UUID, prefix: str, file: StagedFile, upload_di
     if is_r2_key(file.key):
         return file.key
     data = (upload_dir / file.key).read_bytes()
-    name = _SAFE_NAME.sub("_", file.name or Path(file.key).name)[-80:] or "archivo"
+    name = _SAFE_NAME.sub("_", safe_upload_name(file.name or Path(file.key).name))[-80:]
     folder = file.kind if not file.slot else f"{file.kind}/{file.slot}"
     object_key = f"{prefix}{folder}/{uuid4().hex}_{name}"
     gate.put_media(tenant_id, object_key, io.BytesIO(data), content_type_of(name))

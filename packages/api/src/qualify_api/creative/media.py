@@ -51,6 +51,7 @@ import hashlib
 import io
 import logging
 import math
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -183,19 +184,12 @@ class MediaWrite:
     #: The MIME type the file was stored with (`image_assets.content_type`, 0029): what
     #: the Planificador checks before it lets a POST be published.
     content_type: str | None = None
-
-    @property
-    def ai_generated(self) -> bool:
-        """Whether this file is AI imagery — made by one of `AI_IMAGERY_PROVIDERS`. The
-        draft's `requires_ai_disclosure` is recomputed from this after every generation
-        (PR #100 review): a flyer stored before `ad_mode` existed is still rendered by
-        Seedream when it is wired, and the brief alone cannot know that."""
-        return self.provider.lower() in AI_IMAGERY_PROVIDERS
-
-
-#: The vendors whose output is AI imagery: a piece one of them made carries Meta's
-#: AI-disclosure label whatever the brief said a priori.
-AI_IMAGERY_PROVIDERS = frozenset({SEEDREAM, SEEDANCE, "heygen"})
+    #: Whether this file is AI imagery (a Seedream scene, a Seedance or HeyGen video),
+    #: said by the code that MADE it, at the write site — not looked up by vendor name
+    #: afterwards (PR #100 review). The draft's `requires_ai_disclosure` is recomputed
+    #: from this after every generation: a flyer stored before `ad_mode` existed is still
+    #: rendered by Seedream when it is wired, and the brief alone cannot know that.
+    ai_generated: bool = False
 
 
 def ai_generated_media(media: tuple[MediaWrite, ...]) -> bool:
@@ -273,16 +267,19 @@ class LocalMediaStore:
         self.root = root.resolve()
 
     def _path(self, key: str) -> Path:
-        # Keys are POSIX, `<root>/<tenant>/…`: a backslash is never part of one, and on
-        # Windows `Path` reads it as a separator — `uploads/<a>/..\<b>/x.jpg` used to pass
-        # a `/`-only `..` check and read tenant b's file (PR #100 review). The resolved
-        # path must stay inside the key's OWN tenant directory, not merely the store.
-        parts = key.split("/")
-        if "\\" in key or len(parts) < 3 or any(part in ("", ".", "..") for part in parts):
+        # The resolved path must stay inside the key's OWN tenant directory
+        # (`<root>/<tenant>/`), not merely inside the store (PR #100 review). One
+        # `resolve()`: the resolved path's first two components under the store root are
+        # compared with the key's own, which also defeats a drive-letter segment on Windows.
+        parts = parse_tenant_key(key)
+        if parts is None:
             raise ValueError(f"media key is not a tenant-rooted path: {key!r}")
         path = (self.root / key).resolve()
-        tenant_dir = (self.root / parts[0] / parts[1]).resolve()
-        if self.root not in path.parents or tenant_dir not in path.parents:
+        try:
+            inside = path.relative_to(self.root).parts
+        except ValueError:
+            inside = ()
+        if len(inside) < 3 or not _same_segments(inside[:2], parts[:2]):
             raise ValueError(f"media key escapes its tenant's directory: {key!r}")
         return path
 
@@ -295,27 +292,57 @@ class LocalMediaStore:
         path.write_bytes(data)
 
 
+#: Windows and macOS file systems are case-insensitive by default and `resolve()` returns
+#: the on-disk spelling, so a key that differs from its directory only in case names the
+#: same file there — the tenant-directory comparison folds case on those platforms.
+_FOLD_CASE = sys.platform in ("win32", "darwin")
+
+
+def _same_segments(found: tuple[str, ...], wanted: tuple[str, ...]) -> bool:
+    if found == wanted:
+        return True
+    return _FOLD_CASE and tuple(s.casefold() for s in found) == tuple(s.casefold() for s in wanted)
+
+
 #: Where a brand's files live: R2 (`t/` — the Brand Kit, generated pieces) and the local
 #: store (`uploads/` — what the operator uploads, the catalog; `generated/` — pieces made
 #: before 2026-10-06). Each is followed by the tenant id.
 _TENANT_ROOTS = ("t", "uploads", "generated")
 _FOREIGN_FILE = "Uno de los archivos de la pieza no es de tu marca."
+_BAD_KEY = "Uno de los archivos de la pieza tiene una ruta que no es válida. Vuelve a elegirlo."
 _MISSING_PIECE = "La pieza de la diapositiva {n} ya no está disponible. Elige otra."
+
+
+def parse_tenant_key(key: str) -> tuple[str, ...] | None:
+    """The segments of a tenant-rooted POSIX key, `<root>/<tenant>/<…>/<file>`, or None
+    when `key` is not one. The ONE grammar `owned_by` and `LocalMediaStore` share (PR
+    #100 review): at least three segments, none empty, `.` or `..`, and no backslash —
+    keys are POSIX, a backslash never belongs in one, and on Windows `Path` reads it as
+    a separator, so `uploads/<a>/..\\<b>/x.jpg` once slipped past a `/`-only `..` check
+    and read tenant b's file (reproduced 2026-10-10)."""
+    if not key or "\\" in key:
+        return None
+    parts = tuple(key.split("/"))
+    if len(parts) < 3 or any(part in ("", ".", "..") for part in parts):
+        return None
+    return parts
 
 
 def owned_by(tenant_id: UUID, key: str) -> bool:
     """Whether `key` is one of this tenant's files — the check a read must pass before
     it happens (PR #100 review): a key in a brief can come from the browser, and a key
     another brand's id is in must never be read into this brand's piece."""
-    # a backslash never belongs in a key, and on Windows it IS a separator: `..\` would
-    # slip past a `/`-only split (PR #100 review, reproduced 2026-10-10)
-    if not key or "\\" in key or ".." in key.split("/"):
-        return False
-    return any(key.startswith(f"{root}/{tenant_id}/") for root in _TENANT_ROOTS)
+    parts = parse_tenant_key(key)
+    return parts is not None and parts[0] in _TENANT_ROOTS and parts[1] == str(tenant_id)
 
 
-def _foreign_keys(tenant_id: UUID, brief: ContentBrief, kit: BrandKit) -> list[str]:
-    """Every file the piece would read that is not this tenant's."""
+def _key_problems(
+    tenant_id: UUID, brief: ContentBrief, kit: BrandKit
+) -> tuple[list[str], list[str]]:
+    """The files the piece would read that it must not: `(malformed, foreign)`. A key that
+    is not a tenant-rooted path at all is told apart from one that is another brand's —
+    the operator and the log must not read «not your brand's» for a bad path (PR #100
+    review)."""
     media = brief.media
     keys = [
         brief.source_media_key,
@@ -327,7 +354,10 @@ def _foreign_keys(tenant_id: UUID, brief: ContentBrief, kit: BrandKit) -> list[s
         kit.logo_asset_key,
         *(slide.object_key for slide in media.slides),
     ]
-    return [key for key in keys if key and not owned_by(tenant_id, key)]
+    present = [key for key in keys if key]
+    malformed = [key for key in present if parse_tenant_key(key) is None]
+    foreign = [key for key in present if key not in malformed and not owned_by(tenant_id, key)]
+    return malformed, foreign
 
 
 class R2ReadingMediaStore:
@@ -697,7 +727,13 @@ class MediaProducer:
         and the usage of whatever was already paid for. `revision` is the draft's — what
         keeps each generation's R2 copy apart."""
         usage: list[MediaUsage] = []
-        foreign = _foreign_keys(tenant_id, brief, kit)
+        malformed, foreign = _key_problems(tenant_id, brief, kit)
+        if malformed:
+            # before any read, spend or vendor call — a key that is not a path we serve
+            logger.warning(
+                "creative media for draft %s refused: malformed keys: %s", draft_id, malformed
+            )
+            return MediaOutcome(failure=FailureReason.INVALID_PARAMETERS.value, detail=_BAD_KEY)
         if foreign:
             # before any read, spend or vendor call — a key from another brand
             logger.warning(
@@ -998,6 +1034,7 @@ class MediaProducer:
                     model_id=model_id,
                     provider=SEEDREAM,
                     content_type=JPEG,
+                    ai_generated=True,
                     params={
                         "ad_mode": mode.value,
                         "scene_prompt": media.scene_prompt,
@@ -1124,6 +1161,7 @@ class MediaProducer:
                 model_id=result.model_id,
                 provider=result.provider,
                 content_type=MP4,
+                ai_generated=True,
                 params={
                     "task_id": payload.get("task_id"),
                     "duration_seconds": payload.get("duration_seconds"),
@@ -1220,6 +1258,7 @@ class MediaProducer:
                         model_id=usage[-1].model_id,
                         provider=SEEDREAM,
                         content_type=JPEG,
+                        ai_generated=True,
                         params=params,
                     )
                 )
@@ -1359,6 +1398,7 @@ class MediaProducer:
             model_id=result.model_id,
             provider=result.provider,
             content_type=MP4,
+            ai_generated=True,
             params={
                 **params,
                 "task_id": payload.get("task_id"),
@@ -1915,6 +1955,7 @@ class MediaProducer:
                 model_id=result.model_id,
                 provider=result.provider,
                 content_type=MP4,
+                ai_generated=True,
                 params={
                     "video_id": payload.get("video_id"),
                     "duration_seconds": payload.get("duration_seconds"),

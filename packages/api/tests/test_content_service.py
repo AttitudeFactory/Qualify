@@ -999,7 +999,9 @@ def test_a_flyer_draft_keeps_its_media_built_from_the_first_passing_variant() ->
     assert [m.media_url for m in detail.media] == ["generated/t/d/slide-1.png"]
 
 
-SEEDREAM_MEDIA = replace(FLYER_MEDIA, model_id="seedream-5-0-lite-260128", provider="seedream")
+SEEDREAM_MEDIA = replace(
+    FLYER_MEDIA, model_id="seedream-5-0-lite-260128", provider="seedream", ai_generated=True
+)
 
 
 def _old_flyer_brief() -> ContentBrief:

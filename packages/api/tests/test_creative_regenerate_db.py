@@ -17,6 +17,7 @@ import pytest
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from qualify_api.creative import models as creative
 from qualify_api.creative.fsm import DRAFTING, FAILED, GENERATED
@@ -150,7 +151,7 @@ def test_a_regeneration_replaces_the_copy_variants_and_clears_the_selection() ->
         assert draft.preview_key == assets[0].object_key
 
 
-def _assets(session, draft_id: UUID) -> list[creative.ImageAsset]:  # noqa: ANN001
+def _assets(session: Session, draft_id: UUID) -> list[creative.ImageAsset]:
     return list(
         session.scalars(
             select(creative.ImageAsset).where(creative.ImageAsset.draft_id == draft_id)
@@ -198,7 +199,7 @@ def test_a_failed_regeneration_leaves_no_stale_media_and_the_label_follows_the_m
         assert hooks == ["segunda"]
         draft.status, draft.revision = DRAFTING, 3
 
-    seedream = replace(_image(TENANT_R, draft_id, 3), provider="seedream")
+    seedream = replace(_image(TENANT_R, draft_id, 3), provider="seedream", ai_generated=True)
     repo.finish_generation(
         tenant_id=TENANT_R,
         draft_id=draft_id,

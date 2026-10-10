@@ -27,6 +27,7 @@ from qualify_creative.providers import GenerationRequest, GenerationResult, Reso
 from qualify_creative.router import BudgetContext, CreativeRouter
 from qualify_creative.schemas import BrandKit, ContentBrief, CopyPayload, MediaInputs, ToneAxes
 
+from qualify_api.creative import media as media_module
 from qualify_api.creative.media import (
     ANIMATED_STYLE,
     HUMAN_STYLE,
@@ -1127,3 +1128,41 @@ def test_another_brands_file_is_refused_before_any_read_or_spend(media: dict) ->
     assert outcome.detail == "Uno de los archivos de la pieza no es de tu marca."
     assert store.reads == [] and outcome.spent_usd == 0
     assert heygen.requests == [] and heygen.uploads == []
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        f"uploads/{TENANT_ID}//bg.jpg",  # an empty segment
+        f"uploads/{TENANT_ID}/./bg.jpg",
+        f"uploads/{TENANT_ID}\\bg.jpg",  # a Windows separator
+        f"uploads/{TENANT_ID}",  # the directory, not a file
+    ],
+)
+def test_a_malformed_own_key_is_refused_as_a_bad_path_not_as_another_brands(key: str) -> None:
+    """PR #100 review: a key that is the tenant's but not a path we serve must not be
+    reported — to the operator or in the log — as another brand's file."""
+    store = _CountingStore()
+    outcome = _produce(
+        _producer(store, FakeHeyGen()),
+        _brief(ContentKind.STATIC_FLYER, background_key=key),
+        uuid4(),
+    )
+    assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
+    assert outcome.detail == (
+        "Uno de los archivos de la pieza tiene una ruta que no es válida. Vuelve a elegirlo."
+    )
+    assert store.reads == [] and outcome.spent_usd == 0
+
+
+@pytest.mark.skipif(
+    not media_module._FOLD_CASE, reason="case-sensitive file system: a different path"
+)
+def test_the_local_store_reads_a_key_that_differs_from_its_directory_only_in_case(
+    tmp_path: Any,
+) -> None:
+    """PR #100 review: on Windows / macOS `resolve()` returns the on-disk spelling, which
+    must not make a legitimate key look as if it escaped its tenant's directory."""
+    store = LocalMediaStore(tmp_path)
+    store.write(f"uploads/{TENANT_ID}/a.jpg", b"a")
+    assert store.read(f"Uploads/{str(TENANT_ID).upper()}/a.jpg") == b"a"

@@ -34,6 +34,7 @@ from .creative_state import CreativeState
 from .tenant import tenant_uuid
 from .ui import card, progress_panel, tone_badge
 from .ui import tokens as T
+from .upload_names import safe_upload_name
 
 logger = logging.getLogger(__name__)
 
@@ -259,7 +260,7 @@ class BrandDocumentState(rx.State):
         except Exception:  # noqa: BLE001 — any read failure is the same message
             self._say(source, _UPLOAD_FAILED, "error")
             return None
-        name = PurePath(upload.name or source).name
+        name = safe_upload_name(upload.name or source)  # never a separator (PR #100 review)
         try:
             brief_ai.read_document(name, data)  # refuse early what the model cannot read
         except brief_ai.UnsupportedDocument as exc:

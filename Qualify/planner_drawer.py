@@ -57,6 +57,7 @@ from .post_card import (
     media_fill,
     pill,
     temperature_badge,
+    viewable_src,
 )
 from .r2_media import BACKEND_BASE
 from .ui import callout, drawer, skeleton_card, stepper
@@ -1489,15 +1490,7 @@ def _detail_body() -> rx.Component:
         rx.box(
             rx.cond(
                 d.thumbnail_url != "",
-                rx.image(
-                    src=rx.cond(
-                        d.thumbnail_url.startswith("http"),
-                        d.thumbnail_url,
-                        rx.get_upload_url(d.thumbnail_url),
-                    ),
-                    alt="",
-                    class_name="q-stage-blur",
-                ),
+                rx.image(src=viewable_src(d.thumbnail_url), alt="", class_name="q-stage-blur"),
             ),
             class_name="q-stage-bg",
         ),

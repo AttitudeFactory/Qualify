@@ -98,6 +98,7 @@ from .creative_vm import (
     seen_label,
 )
 from .tenant import tenant_uuid
+from .upload_names import safe_upload_name
 
 logger = logging.getLogger(__name__)
 
@@ -2238,7 +2239,9 @@ class CreativeState(rx.State):
             except Exception:
                 self.upload_error = _UPLOAD_FAILED
                 return []
-            name = upload.name or "imagen"
+            # the client's name, reduced to a safe basename (PR #100 review): a crafted
+            # `../x` or `..\x` must never write outside `uploads/<tenant>/`
+            name = safe_upload_name(upload.name or "imagen")
             key = f"uploads/{tenant_id}/{uuid4().hex}_{name}"
             target = rx.get_upload_dir() / key
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -2519,7 +2522,7 @@ class CreativeState(rx.State):
         except Exception:
             self.upload_error = _UPLOAD_FAILED
             return
-        name = upload.name or "photo"
+        name = safe_upload_name(upload.name or "photo")  # PR #100 review, as above
         key = f"uploads/{tenant_id}/{uuid4().hex}_{name}"
         target = rx.get_upload_dir() / key
         target.parent.mkdir(parents=True, exist_ok=True)

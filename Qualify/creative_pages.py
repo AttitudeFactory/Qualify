@@ -29,7 +29,7 @@ from .creative_vm import (
 from .gallery_state import GalleryState
 from .media_carousel import media_carousel
 from .planner_vm import GALLERY_FILTER_ALL, GALLERY_STATE_FILTERS
-from .post_card import campaign_badge, color_swatches, kind_chip, media_fill
+from .post_card import campaign_badge, color_swatches, kind_chip, media_fill, viewable_src
 from .r2_media import BACKEND_BASE
 from .ui import (
     app_shell,
@@ -1244,9 +1244,8 @@ def _failed_panel() -> rx.Component:
 
 def _media_item(item: rx.Var[MediaVM]) -> rx.Component:
     # R2-only media comes through the backend's `/r2media/<token>` (`r2_media.py`);
-    # everything else from the local upload store, as before.
-    # A provider/seed URL (`http…`) is shown as is — it is not an upload-store key.
-    local = rx.cond(item.key.startswith("http"), item.key, rx.get_upload_url(item.key))
+    # everything else is resolved the one way every POST picture is (`viewable_src`).
+    local = viewable_src(item.key)
     src = rx.cond(item.url != "", BACKEND_BASE + item.url, local)
     download_href = rx.cond(item.url != "", BACKEND_BASE + item.url + "?download=1", local)
     file_name = rx.cond(item.media_type == "video", "qualify-video.mp4", "qualify-imagen.jpg")

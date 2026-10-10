@@ -77,15 +77,6 @@ def test_the_calendar_loads_an_r2media_path_from_the_backend() -> None:
     assert "/r2media" in rendered
 
 
-def _img_src(rendered: str) -> str:
-    """The `src:` expression of the first `<img>` in a rendered component."""
-    import re
-
-    match = re.search(r'jsx\("img",\{.*?src:(.*?)\},\)', rendered, re.S)
-    assert match is not None, rendered[:300]
-    return match.group(1)
-
-
 @pytest.mark.parametrize(
     "url",
     ["/r2media/tok", f"generated/{_TENANT_ID}/d/a.jpg", "https://x/y.jpg"],
@@ -94,15 +85,28 @@ def test_the_gallery_fill_and_the_thumbnail_resolve_a_url_the_same_way(url: str)
     """PR #100 review: `media_fill` (the Creativo gallery and the Planificador cards)
     used to send a backend `/r2media/<token>` path through `rx.get_upload_url`, a URL
     under `/_upload/` that 404s, while `thumbnail` already served it from the backend.
-    Both now go through `viewable_src`: same URL in, same `src` out."""
-    from .post_card import media_fill, thumbnail
+    Both now render exactly the `viewable_src` expression for the same URL."""
+    from .post_card import media_fill, thumbnail, viewable_src
 
-    fill = _img_src(str(media_fill(_var(url), _var(""), _var("static_flyer"))))
-    thumb = _img_src(str(thumbnail(_var(url), "2rem")))
-    assert fill == thumb
-    if url.startswith("/r2media"):
-        assert "/_upload" in fill and '+"/r2media/tok"' in fill  # BACKEND_BASE + path
-        assert "getUploadUrl" not in fill.split("/r2media/tok")[0]
+    expected = str(viewable_src(_var(url)))
+    assert expected in str(media_fill(_var(url), _var(""), _var("static_flyer")))
+    assert expected in str(thumbnail(_var(url), "2rem"))
+
+
+def test_viewable_src_serves_r2media_from_the_backend_and_the_rest_as_before() -> None:
+    import reflex as rx
+
+    from .post_card import viewable_src
+    from .r2_media import BACKEND_BASE
+
+    # the `/r2media` branch is BACKEND_BASE + path — the backend, not the upload store
+    r2 = _var("/r2media/tok")
+    assert str(BACKEND_BASE + r2) in str(viewable_src(r2))
+    # a plain http URL is used as it is; a store key still goes through Reflex's own
+    # upload URL — compared with what Reflex renders, not with a copy of its JavaScript
+    assert '"https://x/y.jpg"' in str(viewable_src(_var("https://x/y.jpg")))
+    key = _var("uploads/t/a.jpg")
+    assert str(rx.get_upload_url(key)) in str(viewable_src(key))
 
 
 def _var(value: str):  # noqa: ANN202
