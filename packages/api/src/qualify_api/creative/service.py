@@ -72,7 +72,12 @@ from qualify_api.creative.fsm import (
     DraftTrigger,
     apply_transition,
 )
-from qualify_api.creative.media import MediaProducer, MediaWrite, TemplateRunWrite
+from qualify_api.creative.media import (
+    MediaProducer,
+    MediaWrite,
+    TemplateRunWrite,
+    ai_generated_media,
+)
 
 logger = logging.getLogger(__name__)
 #: Every vendor call of a generation and its cost, one line each plus a total per
@@ -336,6 +341,7 @@ class ContentRepository(Protocol):
         media: tuple[MediaWrite, ...] = (),
         failure_detail: str | None = None,
         template_run: TemplateRunWrite | None = None,
+        requires_ai_disclosure: bool | None = None,
     ) -> None: ...
 
     def update_status(
@@ -579,10 +585,14 @@ class PostgresContentRepository:
         media: tuple[MediaWrite, ...] = (),
         failure_detail: str | None = None,
         template_run: TemplateRunWrite | None = None,
+        requires_ai_disclosure: bool | None = None,
     ) -> None:
         """One transaction for the whole outcome. Usage rows and spend are written even
         if the draft lost a race with the reaper — the money was spent either way, and
-        cost provenance over facts is the point of ``creative_usage_events``."""
+        cost provenance over facts is the point of ``creative_usage_events``.
+
+        ``requires_ai_disclosure`` (PR #100 review): the label as recomputed from the media
+        this generation actually made; ``None`` leaves the draft's value as it is."""
         with tenant_session(tenant_id) as session:
             draft = session.get(orm.ContentDraft, draft_id)
             if variants:
@@ -632,9 +642,12 @@ class PostgresContentRepository:
                         occurred_at=datetime.now(UTC),
                     )
                 )
-            if media:
+            if media or variants:
                 # A regeneration replaces the draft's media: the old files stay on disk
-                # (provenance), the rows describe what the draft shows now.
+                # (provenance), the rows describe what the draft shows now. Also when the
+                # new media FAILED after new copy was written (PR #100 review): a draft
+                # with this revision's text and the previous revision's images would be
+                # lying — it shows no media until a generation makes some.
                 for old in session.scalars(
                     select(orm.ImageAsset).where(orm.ImageAsset.draft_id == draft_id)
                 ):
@@ -704,8 +717,10 @@ class PostgresContentRepository:
                 )
                 if config is not None:
                     config.budget_spent_usd = Decimal(config.budget_spent_usd) + spent_usd
-            if draft is not None and media:
+            if draft is not None and (media or variants):
                 draft.preview_key = preview_of(media)
+            if draft is not None and requires_ai_disclosure is not None:
+                draft.requires_ai_disclosure = requires_ai_disclosure
             if draft is not None and draft.status == DRAFTING:
                 draft.status = new_status
                 draft.failure_reason = failure_reason
@@ -1259,6 +1274,10 @@ class ContentService:
             media=media_writes,
             failure_detail=media_detail or None,
             template_run=template_run,
+            # The label follows what was MADE, not only what the brief said (PR #100
+            # review): a flyer without `ad_mode` is still Seedream's when it is wired,
+            # and a regeneration may change the vendor.
+            requires_ai_disclosure=brief.requires_ai_disclosure or ai_generated_media(media_writes),
         )
 
     @staticmethod

@@ -1050,12 +1050,49 @@ _OTHER_TENANT = UUID("0b0b0000-0000-4000-8000-0000000000ff")
         (f"t/{_OTHER_TENANT}/brand/logo.png", False),
         (f"uploads/{_OTHER_TENANT}/a.jpg", False),
         (f"uploads/{TENANT_ID}/../{_OTHER_TENANT}/a.jpg", False),
+        (f"uploads/{TENANT_ID}/..\\{_OTHER_TENANT}/a.jpg", False),  # Windows separator
+        (f"uploads/{TENANT_ID}\\a.jpg", False),
         (f"secrets/{TENANT_ID}/a.jpg", False),
         ("", False),
     ],
 )
 def test_a_file_is_the_brands_only_under_its_own_prefix(key: str, owned: bool) -> None:
     assert owned_by(TENANT_ID, key) is owned
+
+
+def test_a_backslash_traversal_cannot_read_another_tenants_file(tmp_path: Any) -> None:
+    """PR #100 review, reproduced on Windows 2026-10-10: `uploads/<a>/..\\<b>/x.jpg` passed
+    `owned_by` (a `/`-only split sees no `..` segment) and `Path` read the backslash as
+    a separator, so tenant a read tenant b's file. Refused before the filesystem is
+    touched — on every platform, not only where the backslash separates."""
+    store = LocalMediaStore(tmp_path)
+    store.write(f"uploads/{_OTHER_TENANT}/secret.jpg", b"tenant-b")
+    store.write(f"uploads/{TENANT_ID}/mine.jpg", b"tenant-a")
+    key = f"uploads/{TENANT_ID}/..\\{_OTHER_TENANT}/secret.jpg"
+
+    assert owned_by(TENANT_ID, key) is False
+    with pytest.raises(ValueError):
+        store.read(key)
+    assert store.read(f"uploads/{TENANT_ID}/mine.jpg") == b"tenant-a"  # its own, still
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "uploads/x.jpg",  # no tenant directory
+        f"uploads/{TENANT_ID}",  # the tenant directory itself
+        f"uploads/{TENANT_ID}//a.jpg",
+        f"uploads/{TENANT_ID}/./a.jpg",
+        f"uploads\\{TENANT_ID}\\a.jpg",
+    ],
+)
+def test_the_local_store_takes_only_tenant_rooted_posix_keys(key: str, tmp_path: Any) -> None:
+    store = LocalMediaStore(tmp_path)
+    with pytest.raises(ValueError):
+        store.read(key)
+    with pytest.raises(ValueError):
+        store.write(key, b"x")
+    assert list(tmp_path.iterdir()) == []  # nothing was created on the way
 
 
 class _CountingStore(MemoryStore):

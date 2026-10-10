@@ -271,11 +271,24 @@ class InMemoryRepository:
         media=(),
         failure_detail=None,
         template_run=None,
+        requires_ai_disclosure=None,
     ):  # noqa: ANN001, ANN201
         if template_run is not None:
             self.template_runs[template_run.id] = template_run
-        if media:
+        if media or variants:
+            # as Postgres: a generation that wrote copy replaces the media rows, also
+            # when it made none (a failed regeneration shows no stale images)
+            self.media.pop(draft_id, None)
             self.drafts[draft_id] = replace(self.drafts[draft_id], preview_key=preview_of(media))
+        if variants:
+            # as Postgres: the new copy replaces the old, and a selection of the old goes
+            self.variants = {k: v for k, v in self.variants.items() if v.draft_id != draft_id}
+            self.drafts[draft_id] = replace(self.drafts[draft_id], selected_variant_id=None)
+        if requires_ai_disclosure is not None:
+            self.drafts[draft_id] = replace(
+                self.drafts[draft_id], requires_ai_disclosure=requires_ai_disclosure
+            )
+        if media:
             self.media[draft_id] = [
                 ImageRecord(
                     id=uuid4(),
@@ -984,6 +997,78 @@ def test_a_flyer_draft_keeps_its_media_built_from_the_first_passing_variant() ->
     detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
     assert detail is not None and detail.kind == "static_flyer"
     assert [m.media_url for m in detail.media] == ["generated/t/d/slide-1.png"]
+
+
+SEEDREAM_MEDIA = replace(FLYER_MEDIA, model_id="seedream-5-0-lite-260128", provider="seedream")
+
+
+def _old_flyer_brief() -> ContentBrief:
+    """A flyer brief as stored before `ad_mode` existed: no mode, a product photo."""
+    return make_brief(
+        variants=1,
+        kind=ContentKind.STATIC_FLYER,
+        media=MediaInputs(product_keys=(f"uploads/{TENANT_ID}/p1.jpg",)),
+    )
+
+
+def test_an_old_flyer_made_by_seedream_is_labelled_ai_even_without_ad_mode() -> None:
+    """PR #100 review: the brief's a-priori label says no (no `ad_mode`), the producer
+    rendered it with Seedream anyway — the draft's label follows the media."""
+    router = FakeRouter([ok_outcome(copy_dict())])
+    media = FakeMedia(MediaOutcome(media=(SEEDREAM_MEDIA,)))
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    brief = _old_flyer_brief()
+    assert brief.media.ad_mode is None and brief.requires_ai_disclosure is False
+    draft_id = repo.seed_draft(brief)
+    assert repo.drafts[draft_id].requires_ai_disclosure is False  # as created
+
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    draft = repo.drafts[draft_id]
+    assert draft.status == GENERATED and draft.requires_ai_disclosure is True
+
+
+def test_a_regeneration_relabels_the_draft_from_the_media_it_made() -> None:
+    router = FakeRouter([ok_outcome(copy_dict()), ok_outcome(copy_dict("Otro hook"))])
+    media = FakeMedia(MediaOutcome(media=(FLYER_MEDIA,)))  # the local composition first
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    draft_id = repo.seed_draft(_old_flyer_brief())
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert repo.drafts[draft_id].requires_ai_disclosure is False
+
+    service.reject(
+        tenant_id=TENANT_ID, draft_id=draft_id, reason="otra", user_id=USER_ID, regenerate=True
+    )
+    media.outcome = MediaOutcome(media=(SEEDREAM_MEDIA,))  # Seedream wired since
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    draft = repo.drafts[draft_id]
+    assert draft.status == GENERATED and draft.revision == 2
+    assert draft.requires_ai_disclosure is True
+
+
+def test_a_failed_regeneration_does_not_keep_the_previous_revisions_media() -> None:
+    """PR #100 review (finding 3): new copy came out, the media did not — the draft is
+    FAILED with the new text and NO images, not the previous revision's."""
+    router = FakeRouter([ok_outcome(copy_dict()), ok_outcome(copy_dict("Otro hook"))])
+    media = FakeMedia(MediaOutcome(media=(FLYER_MEDIA,)))
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    draft_id = repo.seed_draft(_old_flyer_brief())
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert repo.drafts[draft_id].preview_key == FLYER_MEDIA.media_url
+
+    service.reject(
+        tenant_id=TENANT_ID, draft_id=draft_id, reason="otra", user_id=USER_ID, regenerate=True
+    )
+    media.outcome = MediaOutcome(failure="provider_error", detail="boom")
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    draft = repo.drafts[draft_id]
+    assert draft.status == FAILED and draft.failure_reason == "provider_error"
+    assert draft.preview_key is None
+    detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert detail is not None and list(detail.media) == []
+    assert [v.copy["hook"] for v in detail.variants] == ["Otro hook"]
 
 
 def test_a_failed_video_fails_the_draft_but_keeps_the_script_and_the_money_spent() -> None:

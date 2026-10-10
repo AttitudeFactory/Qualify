@@ -9,6 +9,7 @@ why this only shows against the real schema."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal
 from uuid import UUID
 
@@ -18,7 +19,7 @@ from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
 from qualify_api.creative import models as creative
-from qualify_api.creative.fsm import DRAFTING, GENERATED
+from qualify_api.creative.fsm import DRAFTING, FAILED, GENERATED
 from qualify_api.creative.media import MediaWrite
 from qualify_api.creative.service import PostgresContentRepository, VariantWrite
 from qualify_api.tenancy.models import Brand, Tenant
@@ -147,3 +148,72 @@ def test_a_regeneration_replaces_the_copy_variants_and_clears_the_selection() ->
         ).all()
         assert [a.object_key.rsplit("/", 2)[1] for a in assets] == ["r2"]
         assert draft.preview_key == assets[0].object_key
+
+
+def _assets(session, draft_id: UUID) -> list[creative.ImageAsset]:  # noqa: ANN001
+    return list(
+        session.scalars(
+            select(creative.ImageAsset).where(creative.ImageAsset.draft_id == draft_id)
+        ).all()
+    )
+
+
+def test_a_failed_regeneration_leaves_no_stale_media_and_the_label_follows_the_media() -> None:
+    """PR #100 review: (3) a regeneration whose copy came out but whose media failed used
+    to leave the previous revision's images under the new text; (1) the AI-disclosure
+    label is recomputed from the media each generation actually made."""
+    brand_id = _brand(TENANT_R)
+    draft_id = _drafting_draft(TENANT_R, brand_id)
+    repo = PostgresContentRepository()
+    _finish(TENANT_R, draft_id, brand_id, "primera", 1)
+    with tenant_session(TENANT_R) as session:
+        draft = session.get(creative.ContentDraft, draft_id)
+        assert draft is not None and draft.requires_ai_disclosure is False
+        draft.status, draft.revision = DRAFTING, 2  # «Regenerar»
+
+    repo.finish_generation(
+        tenant_id=TENANT_R,
+        draft_id=draft_id,
+        brand_id=brand_id,
+        new_status=FAILED,
+        failure_reason="provider_error",
+        variants=(_variant("segunda"),),
+        usage=(),
+        spent_usd=Decimal("0"),
+        media=(),  # the vendor failed after the copy was written
+        failure_detail="boom",
+        requires_ai_disclosure=False,
+    )
+    with tenant_session(TENANT_R) as session:
+        draft = session.get(creative.ContentDraft, draft_id)
+        assert draft is not None
+        assert draft.status == FAILED and draft.preview_key is None
+        assert _assets(session, draft_id) == []  # not revision 1's images
+        hooks = [
+            v.copy["hook"]
+            for v in session.scalars(
+                select(creative.CopyVariant).where(creative.CopyVariant.draft_id == draft_id)
+            )
+        ]
+        assert hooks == ["segunda"]
+        draft.status, draft.revision = DRAFTING, 3
+
+    seedream = replace(_image(TENANT_R, draft_id, 3), provider="seedream")
+    repo.finish_generation(
+        tenant_id=TENANT_R,
+        draft_id=draft_id,
+        brand_id=brand_id,
+        new_status=GENERATED,
+        failure_reason=None,
+        variants=(_variant("tercera"),),
+        usage=(),
+        spent_usd=Decimal("0"),
+        media=(seedream,),
+        requires_ai_disclosure=True,  # what the service derives from `seedream`
+    )
+    with tenant_session(TENANT_R) as session:
+        draft = session.get(creative.ContentDraft, draft_id)
+        assert draft is not None
+        assert draft.status == GENERATED and draft.requires_ai_disclosure is True
+        assert [a.object_key for a in _assets(session, draft_id)] == [seedream.object_key]
+        assert draft.preview_key == seedream.object_key

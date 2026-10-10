@@ -184,6 +184,24 @@ class MediaWrite:
     #: the Planificador checks before it lets a POST be published.
     content_type: str | None = None
 
+    @property
+    def ai_generated(self) -> bool:
+        """Whether this file is AI imagery — made by one of `AI_IMAGERY_PROVIDERS`. The
+        draft's `requires_ai_disclosure` is recomputed from this after every generation
+        (PR #100 review): a flyer stored before `ad_mode` existed is still rendered by
+        Seedream when it is wired, and the brief alone cannot know that."""
+        return self.provider.lower() in AI_IMAGERY_PROVIDERS
+
+
+#: The vendors whose output is AI imagery: a piece one of them made carries Meta's
+#: AI-disclosure label whatever the brief said a priori.
+AI_IMAGERY_PROVIDERS = frozenset({SEEDREAM, SEEDANCE, "heygen"})
+
+
+def ai_generated_media(media: tuple[MediaWrite, ...]) -> bool:
+    """Whether any file of a generation is AI imagery."""
+    return any(item.ai_generated for item in media)
+
 
 @dataclass(frozen=True)
 class TemplateRunWrite:
@@ -255,9 +273,17 @@ class LocalMediaStore:
         self.root = root.resolve()
 
     def _path(self, key: str) -> Path:
+        # Keys are POSIX, `<root>/<tenant>/…`: a backslash is never part of one, and on
+        # Windows `Path` reads it as a separator — `uploads/<a>/..\<b>/x.jpg` used to pass
+        # a `/`-only `..` check and read tenant b's file (PR #100 review). The resolved
+        # path must stay inside the key's OWN tenant directory, not merely the store.
+        parts = key.split("/")
+        if "\\" in key or len(parts) < 3 or any(part in ("", ".", "..") for part in parts):
+            raise ValueError(f"media key is not a tenant-rooted path: {key!r}")
         path = (self.root / key).resolve()
-        if self.root not in path.parents:
-            raise ValueError(f"media key escapes the store: {key!r}")
+        tenant_dir = (self.root / parts[0] / parts[1]).resolve()
+        if self.root not in path.parents or tenant_dir not in path.parents:
+            raise ValueError(f"media key escapes its tenant's directory: {key!r}")
         return path
 
     def read(self, key: str) -> bytes:
@@ -281,7 +307,9 @@ def owned_by(tenant_id: UUID, key: str) -> bool:
     """Whether `key` is one of this tenant's files — the check a read must pass before
     it happens (PR #100 review): a key in a brief can come from the browser, and a key
     another brand's id is in must never be read into this brand's piece."""
-    if not key or ".." in key.split("/"):
+    # a backslash never belongs in a key, and on Windows it IS a separator: `..\` would
+    # slip past a `/`-only split (PR #100 review, reproduced 2026-10-10)
+    if not key or "\\" in key or ".." in key.split("/"):
         return False
     return any(key.startswith(f"{root}/{tenant_id}/") for root in _TENANT_ROOTS)
 

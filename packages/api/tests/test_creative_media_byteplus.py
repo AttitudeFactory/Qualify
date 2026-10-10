@@ -47,6 +47,7 @@ from qualify_creative.video import FittedVideo
 
 from qualify_api.creative.media import (
     MediaProducer,
+    ai_generated_media,
     ark_failure_text,
     generated_key,
 )
@@ -256,6 +257,24 @@ def test_the_ad_image_scene_is_generated_with_the_operators_photos_as_references
     (cost,) = outcome.usage
     assert (cost.provider, cost.unit, cost.cost_usd) == ("seedream", "piece", Decimal("0.035"))
     assert brief.requires_ai_disclosure  # the photograph is AI imagery
+
+
+def test_an_old_flyer_without_ad_mode_is_still_seedream_imagery() -> None:
+    """A flyer stored before `ad_mode` existed (PR #100 review): the producer infers the
+    mode and Seedream renders it, yet the brief's a-priori label says no — so the draft's
+    label is recomputed from what was made (`MediaWrite.ai_generated`), never from the
+    brief alone."""
+    store, seedream, draft_id = _store(), FakeSeedream(), uuid4()
+    brief = _brief(ContentKind.STATIC_FLYER, product_keys=(f"uploads/{TENANT_ID}/p1.jpg",))
+    assert brief.media.ad_mode is None and not brief.requires_ai_disclosure
+
+    outcome = _produce(_producer(store, seedream=seedream), brief, draft_id)
+
+    assert outcome.failure is None and len(seedream.requests) == 1
+    (slide,) = outcome.media
+    assert slide.provider == "seedream" and slide.params["ad_mode"] == "product"
+    assert slide.ai_generated is True
+    assert ai_generated_media(outcome.media) is True
 
 
 def test_a_product_only_ad_does_not_send_the_background() -> None:
