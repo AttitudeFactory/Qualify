@@ -36,8 +36,14 @@ NOW = datetime(2026, 8, 14, 12, 0, 0, tzinfo=UTC)
 # QUA-149: a row monitored after 0046 carries its metadata — published a day ago by the
 # REAL clock (sync calls without `now=` use it), so it is inside the window whatever
 # `now` a test passes. Seeding without it would model a legacy row, which now costs one
-# metadata read; the tests that mean that seed it explicitly.
-FRESH = MediaMetadata(posted_at=datetime.now(UTC) - timedelta(days=1))
+# metadata read; the tests that mean that seed it explicitly. QUA-146: complete also
+# means "has its `media_type`" — a complete row without it costs one dedicated read
+# (`MediaToSync.needs_media_type`); the tests that mean that seed it explicitly.
+FRESH = MediaMetadata(
+    posted_at=datetime.now(UTC) - timedelta(days=1),
+    media_product_type="REELS",
+    media_type="VIDEO",
+)
 
 # `sync_comments` fails closed without this — every test below that calls it must opt in
 # explicitly, same discipline `FakeMediaClient({})` already uses to prove a code path
@@ -588,7 +594,9 @@ async def test_sync_comments_still_walks_to_completion_when_a_page_is_fully_know
 
 async def test_set_media_monitored_accepts_recent_media() -> None:
     repository = MemoryInboxRepository()
-    media_client = FakeMediaClient({"A": MediaSummary(id="A", timestamp=NOW - timedelta(days=1))})
+    media_client = FakeMediaClient(
+        {"A": MediaSummary(id="A", timestamp=NOW - timedelta(days=1), media_product_type="REELS")}
+    )
     service = InboxService(
         repository=repository, comments_client=FakeCommentsClient({}), media_client=media_client
     )
@@ -609,7 +617,9 @@ async def test_set_media_monitored_accepts_recent_media() -> None:
 async def test_set_media_monitored_rejects_media_older_than_the_window() -> None:
     repository = MemoryInboxRepository()
     old_timestamp = NOW - MONITORING_WINDOW - timedelta(days=1)
-    media_client = FakeMediaClient({"OLD": MediaSummary(id="OLD", timestamp=old_timestamp)})
+    media_client = FakeMediaClient(
+        {"OLD": MediaSummary(id="OLD", timestamp=old_timestamp, media_product_type="REELS")}
+    )
     service = InboxService(
         repository=repository, comments_client=FakeCommentsClient({}), media_client=media_client
     )
@@ -745,9 +755,9 @@ async def test_list_candidate_media_carries_display_fields_through() -> None:
     assert candidate.thumbnail_url == "https://cdn/A.jpg"
 
 
-async def test_list_candidate_media_excludes_non_reel_media() -> None:
-    """Feed photos/carousels are real Meta media but nothing downstream of this screen
-    (monitoring, publishing) operates on them — only REELS is offered."""
+async def test_list_candidate_media_offers_reels_and_feed_only() -> None:
+    """QUA-146: Reels and feed posts (any `media_type`) are offered; Stories, ads and a
+    media whose surface Meta did not report are not."""
     repository = MemoryInboxRepository()
     media_client = FakeMediaClient(
         {
@@ -756,6 +766,10 @@ async def test_list_candidate_media_excludes_non_reel_media() -> None:
             ),
             "B": MediaSummary(id="B", timestamp=NOW - timedelta(days=1), media_product_type="FEED"),
             "C": MediaSummary(id="C", timestamp=NOW - timedelta(days=1), media_product_type=None),
+            "D": MediaSummary(
+                id="D", timestamp=NOW - timedelta(days=1), media_product_type="STORY"
+            ),
+            "E": MediaSummary(id="E", timestamp=NOW - timedelta(days=1), media_product_type="AD"),
         }
     )
     service = InboxService(
@@ -766,7 +780,7 @@ async def test_list_candidate_media_excludes_non_reel_media() -> None:
         tenant_id=TENANT_ID, connection_id=CONNECTION_ID, ig_user_id=IG_USER_ID, now=NOW
     )
 
-    assert [c.external_media_id for c in candidates] == ["A"]
+    assert [c.external_media_id for c in candidates] == ["A", "B"]
 
 
 # --------------------------------------------------------------------------------------

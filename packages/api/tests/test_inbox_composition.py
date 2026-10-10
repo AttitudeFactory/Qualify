@@ -41,8 +41,14 @@ NOW = datetime(2026, 8, 14, 12, 0, 0, tzinfo=UTC)
 # QUA-149: a row monitored after 0046 carries its metadata — published a day ago by the
 # REAL clock (sync calls without `now=` use it), so it is inside the window whatever
 # `now` a test passes. Seeding without it would model a legacy row, which now costs one
-# metadata read; the tests that mean that seed it explicitly.
-FRESH = MediaMetadata(posted_at=datetime.now(UTC) - timedelta(days=1))
+# metadata read; the tests that mean that seed it explicitly. QUA-146: complete also
+# means "has its `media_type`" — a complete row without it costs one dedicated read
+# (`MediaToSync.needs_media_type`); the tests that mean that seed it explicitly.
+FRESH = MediaMetadata(
+    posted_at=datetime.now(UTC) - timedelta(days=1),
+    media_product_type="REELS",
+    media_type="VIDEO",
+)
 
 
 class FakeCommentsClient:
@@ -168,7 +174,13 @@ async def test_set_media_monitored_delegates_to_the_wired_service(
     # suite runs.
     _, repository = _wire(
         monkeypatch,
-        media={"A": MediaSummary(id="A", timestamp=datetime.now(UTC) - timedelta(days=1))},
+        media={
+            "A": MediaSummary(
+                id="A",
+                timestamp=datetime.now(UTC) - timedelta(days=1),
+                media_product_type="REELS",
+            )
+        },
     )
 
     await composition.set_media_monitored(

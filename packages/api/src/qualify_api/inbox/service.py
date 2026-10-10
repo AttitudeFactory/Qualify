@@ -8,18 +8,19 @@ again, there is nothing here that sleeps or polls on its own.
 
 - `list_candidate_media` — what the "pick what to monitor" UI would call. Reads Meta
   (last 2 weeks, via `MediaClient.list_recent_media`) and cross-references what is
-  already monitored, so the caller sees both in one shape. Also enforces "Reels only"
-  (2026-08-14, same session as the 2-week rule): the rest of the product only ever
-  operates on `media_product_type == "REELS"` (`publishing_provider.start_publish` fixes
-  the same value for the opposite direction), so a picker offering photos/carousels to
-  "monitor" would offer something nothing downstream is built for. Filtered HERE, not in
+  already monitored, so the caller sees both in one shape. Also enforces which surfaces
+  can be monitored: "Reels only" from 2026-08-14, widened by QUA-146 to `FEED` posts too
+  (images, feed videos, carousels — any `media_type`), still never Stories or ads
+  (`MONITORABLE_MEDIA_PRODUCT_TYPES`). A carousel is monitored as the album: its
+  comments are read on the album id, never per child. Filtered HERE, not in
   `media_client.py`, which stays a faithful mirror of whatever Meta returns — same
   separation of concerns `MONITORING_WINDOW` already establishes for the time rule.
 - `set_media_monitored` — the toggle. **Re-validates the 2-week window against Meta
   itself before allowing `monitored=True`** (product decision, 2026-08-14): a caller
   that bypasses the candidate-listing UI and calls this directly with an old media_id
-  must be rejected exactly as if the UI had never offered it. Turning monitoring OFF is
-  never gated by age — the rule only bounds what can be ADDED.
+  must be rejected exactly as if the UI had never offered it. The surface rule is
+  re-validated the same way (QUA-146): a Story or an ad id is refused here too. Turning
+  monitoring OFF is never gated by age — the rule only bounds what can be ADDED.
 - `sync_comments` — B2, extended by QUA-101. Reads ONLY `InboxRepository.
   list_monitored_media_ids`, never Meta's full media list. Walks EVERY comment page per
   monitored media to completion — to `paging.cursors.after` being absent, or the QUA-88
@@ -42,6 +43,7 @@ http.inbox_routes.sync_inbox` (`POST /api/inbox/sync`, B2's acceptance-criterion
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -53,6 +55,7 @@ from qualify_shared.social.ig_shapes import COMMENTS_EDGE_PERMISSIONS
 
 from qualify_api.inbox.client import CommentsClient, CommentsReadError
 from qualify_api.inbox.media_client import MediaClient, MediaReadError, MediaSummary
+from qualify_api.inbox.media_type import is_unrecognized_media_type
 from qualify_api.inbox.monitoring import (
     MONITORING_WINDOW,
     MediaMetadata,
@@ -68,9 +71,13 @@ from qualify_api.inbox.repository import InboxRepository
 # window itself lives in `monitoring.py` (QUA-149), the one place every caller reads it;
 # it is still importable from here for existing callers.
 
-# The only media type this product's monitoring (and publishing — see
-# `publishing_provider.start_publish`) ever operates on.
-_MONITORABLE_MEDIA_PRODUCT_TYPE = "REELS"
+_LOGGER = logging.getLogger(__name__)
+
+# The surfaces (`media_product_type`) a tenant may opt a media into monitoring on:
+# Reels since 2026-08-14, feed posts since QUA-146 — whatever their `media_type`
+# (image, video, carousel, or one Meta adds later). Never `STORY` or `AD`; a media whose
+# surface Meta did not report is not offered either (fail closed).
+MONITORABLE_MEDIA_PRODUCT_TYPES: Final = frozenset({"REELS", "FEED"})
 
 # `reference/meta-instagram-platform/ACCESS-MODEL.md:56` — "rate-limited to 200
 # calls/hour per page-app pair" in development mode. QUA-20's own cited floor; QUA-88
@@ -97,6 +104,14 @@ class CandidateMedia:
     caption: str | None = None
     permalink: str | None = None
     thumbnail_url: str | None = None
+    # QUA-146: where the media lives (`REELS`/`FEED`) and what it is (`IMAGE`/`VIDEO`/
+    # `CAROUSEL_ALBUM`, or a value this code does not know) — verbatim from Meta, for the
+    # picker to label each row. Display only: eligibility is decided above, not on these.
+    media_product_type: str | None = None
+    media_type: str | None = None
+    # QUA-146: Meta's `media_url` — the picture of a photo/carousel, which has no
+    # `thumbnail_url` (VIDEO-only). Display only, like the two fields above.
+    media_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -174,10 +189,11 @@ class SyncBudgetExhausted(Exception):
 
 
 class MediaNotEligible(Exception):
-    """`set_media_monitored(monitored=True)` refused this media. `reason` distinguishes
-    "too old" (the product rule) from "could not verify" (Meta 404/error) — both collapse
-    to "cannot monitor this" for the caller, but a future UI message should not conflate
-    them."""
+    """`set_media_monitored(monitored=True)` refused this media. `reason` is one of
+    `"too_old"` (the 14-day product rule), `"not_found_or_inaccessible"` (Meta 404/error,
+    could not verify) or `"unsupported_surface"` (QUA-146: a Story, an ad, or a surface
+    Meta did not report) — all collapse to "cannot monitor this" for the caller, but a
+    future UI message should not conflate them."""
 
     def __init__(self, external_media_id: str, *, reason: str) -> None:
         super().__init__(f"media {external_media_id!r} is not eligible for monitoring: {reason}")
@@ -311,9 +327,12 @@ class InboxService:
                 caption=media.caption,
                 permalink=media.permalink,
                 thumbnail_url=media.thumbnail_url,
+                media_product_type=media.media_product_type,
+                media_type=media.media_type,
+                media_url=media.media_url,
             )
             for media in recent
-            if media.media_product_type == _MONITORABLE_MEDIA_PRODUCT_TYPE
+            if media.media_product_type in MONITORABLE_MEDIA_PRODUCT_TYPES
         )
 
     async def set_media_monitored(
@@ -336,6 +355,9 @@ class InboxService:
                 raise MediaNotEligible(
                     external_media_id, reason="not_found_or_inaccessible"
                 ) from exc
+            if media.media_product_type not in MONITORABLE_MEDIA_PRODUCT_TYPES:
+                # QUA-146: same rule as the candidate list, re-enforced on a direct call.
+                raise MediaNotEligible(external_media_id, reason="unsupported_surface")
             reference_now = now if now is not None else datetime.now(UTC)
             if not is_within_window(media.timestamp, reference_now):
                 raise MediaNotEligible(external_media_id, reason="too_old")
@@ -630,6 +652,14 @@ class InboxService:
                 attempted_at=now,
             )
             return _Backfill.FAILED
+        if not media.needs_metadata:
+            return self._complete_media_type(
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                media_id=media_id,
+                summary=summary,
+                now=now,
+            )
         self._repository.record_media_metadata(
             tenant_id=tenant_id,
             connection_id=connection_id,
@@ -639,9 +669,47 @@ class InboxService:
         )
         return _Backfill.ACTIVE if is_within_window(summary.timestamp, now) else _Backfill.EXPIRED
 
+    def _complete_media_type(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        media_id: str,
+        summary: MediaSummary,
+        now: datetime,
+    ) -> _Backfill:
+        """QUA-146: the dedicated read of a row whose metadata was already complete but had
+        no `media_type`. Only that field is written — the stored caption, date and
+        `metadata_fetched_at` stay as they were. The row was handed over by
+        `list_media_to_sync`, so it is inside the window: `ACTIVE`, comments synced next.
+
+        A successful response WITHOUT `media_type` is recorded as an `UNKNOWN` failure,
+        so the row waits `METADATA_RETRY_AFTER[UNKNOWN]` instead of being re-read every
+        pass; once its window ends it is never handed over, so never read, again."""
+        if summary.media_type is None:
+            self._repository.record_media_metadata_failure(
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                external_media_id=media_id,
+                error=MetadataFetchError.UNKNOWN,
+                attempted_at=now,
+            )
+            return _Backfill.FAILED
+        _warn_if_unrecognized(summary)
+        self._repository.record_media_type(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            external_media_id=media_id,
+            media_type=summary.media_type,
+            fetched_at=now,
+        )
+        return _Backfill.ACTIVE
+
 
 class _Backfill(Enum):
-    """Outcome of one legacy metadata read (`InboxService._backfill_metadata`)."""
+    """Outcome of one metadata read made by the sync (`InboxService._backfill_metadata`):
+    a legacy row's full read (QUA-149) or a complete row's dedicated `media_type` read
+    (QUA-146, `_complete_media_type`)."""
 
     ACTIVE = "active"
     EXPIRED = "expired"
@@ -651,10 +719,25 @@ class _Backfill(Enum):
 
 
 def _metadata_from(media: MediaSummary) -> MediaMetadata:
-    """What `monitored_media` keeps from Meta's `GET /{media}` (QUA-149)."""
+    """What `monitored_media` keeps from Meta's `GET /{media}` (QUA-149; `media_type` since
+    QUA-146, verbatim, an unknown value included)."""
+    _warn_if_unrecognized(media)
     return MediaMetadata(
         posted_at=media.timestamp,
         caption=media.caption,
         permalink=media.permalink,
         media_product_type=media.media_product_type,
+        media_type=media.media_type,
     )
+
+
+def _warn_if_unrecognized(media: MediaSummary) -> None:
+    """QUA-146: a `media_type` this code does not know is stored as received and the write
+    goes on; this log line is how it gets noticed. Ids and the value only — never a token
+    or the caption."""
+    if media.media_type is not None and is_unrecognized_media_type(media.media_type):
+        _LOGGER.warning(
+            "inbox.media_type.unrecognized media_id=%s media_type=%r",
+            media.id,
+            media.media_type[:64],
+        )
