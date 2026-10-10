@@ -146,8 +146,8 @@ def _monitoring_switch(candidate: CandidateMediaVM) -> rx.Component:
 
 
 def _candidate_card_content(candidate: CandidateMediaVM) -> rx.Component:
-    """One Reel row on the card material (`ui.card`): picture, caption and meta, the
-    monitoring switch on the right."""
+    """One Reel or feed post row on the card material (`ui.card`): picture, caption, its
+    format label (QUA-146) and meta, the monitoring switch on the right."""
     return card(
         rx.hstack(
             _thumbnail(candidate),
@@ -162,6 +162,12 @@ def _candidate_card_content(candidate: CandidateMediaVM) -> rx.Component:
                     white_space="nowrap",
                 ),
                 rx.hstack(
+                    # QUA-146: Reel / Foto / Video / Carrusel / Publicación.
+                    rx.cond(
+                        candidate.format_label != "",
+                        tone_badge(candidate.format_label, "neutral"),
+                        rx.fragment(),
+                    ),
                     rx.icon("clock", size=13, color=T.TEXT_FAINT),
                     rx.text(candidate.posted_at, size="1", color=T.TEXT_MUTED),
                     rx.cond(
@@ -187,6 +193,9 @@ def _candidate_card_content(candidate: CandidateMediaVM) -> rx.Component:
             width="100%",
         ),
         padding="1rem 1.25rem",
+        # Full width of the body: every row's switch/actions line up on one right edge
+        # instead of each card hugging its own caption.
+        width="100%",
     )
 
 
@@ -227,6 +236,9 @@ def _card_skeleton() -> rx.Component:
             align="center",
         ),
         padding="1rem 1.25rem",
+        # Full width of the body: every row's switch/actions line up on one right edge
+        # instead of each card hugging its own caption.
+        width="100%",
         class_name="q-card q-inbox-skeleton",
         aria_busy="true",
     )
@@ -248,8 +260,8 @@ def _no_connections_state() -> rx.Component:
 def _empty_candidates_state() -> rx.Component:
     return empty_state(
         "film",
-        "Sin Reels en las últimas 2 semanas",
-        "Esta cuenta no publicó Reels en los últimos 14 días.",
+        "Sin Reels ni publicaciones en las últimas 2 semanas",
+        "Esta cuenta no publicó Reels ni publicaciones en el feed en los últimos 14 días.",
     )
 
 
@@ -285,6 +297,9 @@ def _candidates_body() -> rx.Component:
 
 def _body() -> rx.Component:
     return page_body(
+        # Inside the body (not between header and body): it shares the body's width cap
+        # and gutter, so it lines up with the cards below instead of running edge to edge.
+        rx.cond(InboxState.has_connections, _sync_section(), rx.fragment()),
         rx.cond(InboxState.action_error != "", _action_error(), rx.fragment()),
         rx.cond(
             InboxState.connections_error != "",
@@ -358,6 +373,9 @@ def _comment_card(comment: CommentVM) -> rx.Component:
             width="100%",
         ),
         padding="1rem 1.25rem",
+        # Full width of the body: every row's switch/actions line up on one right edge
+        # instead of each card hugging its own caption.
+        width="100%",
     )
 
 
@@ -530,6 +548,9 @@ def _reel_summary_card(reel: ReelSummaryVM) -> rx.Component:
             width="100%",
         ),
         padding="1rem 1.25rem",
+        # Full width of the body: every row's switch/actions line up on one right edge
+        # instead of each card hugging its own caption.
+        width="100%",
     )
 
 
@@ -852,8 +873,8 @@ def _polling_timer() -> rx.Component:
 def _sync_section() -> rx.Component:
     """Comment-sync controls (QUA-89): automatic polling every 5 minutes while this
     screen is open, plus a manual trigger for an immediate pass — see `_polling_timer`'s
-    docstring for why both are safe to run side by side. A `ui.card` sitting in the
-    page gutter between the header and the body."""
+    docstring for why both are safe to run side by side. A `ui.card`, first block of the
+    page body (QUA-146: it used to sit between header and body and ran edge to edge)."""
     return card(
         rx.vstack(
             rx.hstack(
@@ -875,8 +896,9 @@ def _sync_section() -> rx.Component:
             width="100%",
         ),
         padding="0.75rem 1rem",
-        margin=f"0 {T.PAGE_X} 1.5rem {T.PAGE_X}",
-        width=f"calc(100% - 2 * {T.PAGE_X})",
+        # Inside `page_body` now (QUA-146): the body already gives the gutter and the gap,
+        # so no own margin — full width puts it on the same edges as the cards below.
+        width="100%",
     )
 
 
@@ -903,17 +925,25 @@ def _generate_drafts_button() -> rx.Component:
 
 
 def _refresh_drafts_button() -> rx.Component:
-    return rx.button(
-        rx.cond(
-            RepliesState.is_loading,
-            loading_spinner("sm"),
-            rx.icon("refresh-cw", size=16),
+    """A secondary page control next to "Generar borradores": an icon button on the glass
+    control material (`soft`, gray — §5.5), same height as its neighbour, instead of a
+    bare `ghost` text link that read as a different kind of thing. Icon-only, so it
+    carries `aria_label` and a tooltip with the same words."""
+    return rx.tooltip(
+        rx.icon_button(
+            rx.cond(
+                RepliesState.is_loading,
+                loading_spinner("sm"),
+                rx.icon("refresh-cw", size=16),
+            ),
+            on_click=RepliesState.load_pending_drafts,
+            disabled=RepliesState.is_loading,
+            size="2",
+            variant="soft",
+            color_scheme="gray",
+            aria_label="Actualizar borradores",
         ),
-        "Actualizar",
-        on_click=RepliesState.load_pending_drafts,
-        disabled=RepliesState.is_loading,
-        size="2",
-        variant="ghost",
+        content="Actualizar borradores",
     )
 
 
@@ -1087,7 +1117,7 @@ def _replies_section() -> rx.Component:
 def inbox_topbar() -> rx.Component:
     return page_header(
         "Contenido de Instagram",
-        "Reels de las últimas 2 semanas — elige cuáles monitorear",
+        "Reels y publicaciones de las últimas 2 semanas — elige cuáles monitorear",
         rx.cond(InboxState.has_connections, _connection_selector(), rx.fragment()),
     )
 
@@ -1095,6 +1125,5 @@ def inbox_topbar() -> rx.Component:
 def inbox_index() -> rx.Component:
     return app_shell(
         inbox_topbar(),
-        rx.cond(InboxState.has_connections, _sync_section(), rx.fragment()),
         _body(),
     )

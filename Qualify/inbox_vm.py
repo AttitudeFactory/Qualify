@@ -1,5 +1,5 @@
-"""View-models for the inbox content screen — Instagram Reels from the last 2 weeks,
-with the monitoring toggle (Fase 1 Parte 4-B, B2 UI slice).
+"""View-models for the inbox content screen — Instagram Reels and feed posts (QUA-146)
+from the last 2 weeks, with the monitoring toggle (Fase 1 Parte 4-B, B2 UI slice).
 
 Same security boundary as `publishing_vm.py`/`connections_vm.py`: every Reflex var is
 serialized to the client. `InboxService`/`qualify_api.inbox.composition` never see or
@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Final
+
+from qualify_api.inbox.media_type import MediaType, known_media_type
 
 # QUA-149: the four values `ReelSummaryVM.monitoring_state` can take — one per visible
 # label. Computed server-side (`inbox_provider`) from the shared rule
@@ -40,6 +42,51 @@ class CandidateMediaVM:
     caption: str
     permalink: str
     thumbnail_url: str
+    # QUA-146: what the row is — `media_format_label` below, pre-formatted server-side.
+    # `""` shows no label (a candidate built without format data, e.g. older tests).
+    format_label: str = ""
+
+
+# QUA-146: the label each candidate row shows, by surface and Meta's `media_type`. A
+# Reel is always "Reel"; a feed post is labelled by its format, and a format this code
+# does not know yet (`inbox.media_type`) still reads as a feed post, never as an error.
+REEL_LABEL: Final = "Reel"
+FEED_POST_LABEL: Final = "Publicación"
+_FEED_FORMAT_LABELS: Final = {
+    MediaType.IMAGE: "Foto",
+    MediaType.VIDEO: "Video",
+    MediaType.CAROUSEL_ALBUM: "Carrusel",
+}
+
+
+# QUA-146: the formats whose Meta `media_url` IS a picture. For VIDEO it is the video
+# file, which an <img> cannot show — a video's picture is its `thumbnail_url`.
+_PICTURE_MEDIA_TYPES: Final = frozenset({MediaType.IMAGE, MediaType.CAROUSEL_ALBUM})
+
+
+def candidate_picture_url(
+    media_type: str | None, thumbnail_url: str | None, media_url: str | None
+) -> str:
+    """The candidate row's picture: Meta's `thumbnail_url` when there is one (videos and
+    Reels), else `media_url` for a photo or a carousel (Meta gives them no thumbnail), else
+    `""` — the page then shows its generic frame. An unknown format never uses
+    `media_url`: it might be a video file."""
+    if thumbnail_url:
+        return thumbnail_url
+    if media_url and known_media_type(media_type) in _PICTURE_MEDIA_TYPES:
+        return media_url
+    return ""
+
+
+def media_format_label(media_product_type: str | None, media_type: str | None) -> str:
+    """The candidate row's format label, or `""` for a surface the picker never offers
+    (the service filters to Reels and feed posts — `MONITORABLE_MEDIA_PRODUCT_TYPES`)."""
+    if media_product_type == "REELS":
+        return REEL_LABEL
+    if media_product_type == "FEED":
+        known = known_media_type(media_type)
+        return _FEED_FORMAT_LABELS[known] if known is not None else FEED_POST_LABEL
+    return ""
 
 
 @dataclass(frozen=True)
