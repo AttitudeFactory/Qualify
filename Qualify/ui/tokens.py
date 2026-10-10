@@ -34,8 +34,10 @@ CONTENT_MAX = "var(--q-content-max)"
 PAD_HEADER = f"1.5rem {PAGE_X} 1rem {PAGE_X}"
 """Page header block: title row + subtitle."""
 
-PAD_BODY = f"0 {PAGE_X} 2rem {PAGE_X}"
-"""Everything below the header shares this gutter and bottom breathing room."""
+PAD_BODY = f"1.25rem {PAGE_X} 2rem {PAGE_X}"
+"""Everything below the header shares this gutter and bottom breathing room. The top
+1.25rem (QUA-146, 2026-10-09; it was 0) keeps the first block off the header's hairline
+(`.q-page-header`'s bottom edge) — with 0 every page's first card touched that line."""
 
 PAD_EMPTY = f"4rem {PAGE_X}"
 """Empty states sit lower and centred; the extra top space is deliberate."""
