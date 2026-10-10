@@ -80,6 +80,10 @@ class MonitoredMedia(Base):
         DateTime(timezone=True), nullable=True
     )
     metadata_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # QUA-146 (0047): Meta's `media_type`, verbatim and without a CHECK — an unknown
+    # value is kept, and interpreted only by `qualify_api.inbox.media_type`. NULL = not
+    # read yet (0047 backfilled `VIDEO` on Reels only).
+    media_type: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Thread(Base):
