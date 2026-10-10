@@ -60,18 +60,26 @@ def tone_edge(tone: rx.Var[str]) -> rx.Var:
     )
 
 
+def viewable_src(url: rx.Var[str]) -> rx.Var[str]:
+    """The `src` a POST's picture loads from. `url` is an http(s) URL (as it is), a
+    backend `/r2media/<token>` path (a generated piece, in R2 only since 2026-10-06 —
+    served by the backend, NOT the upload store) or a local upload-store key, resolved
+    the way the creative screens do, with `rx.get_upload_url`. The one place this is
+    decided: `thumbnail` and `media_fill` both go through it (PR #100 review — the fill
+    used to send an `/r2media/` path through `rx.get_upload_url`, a URL that 404s)."""
+    return rx.cond(
+        url.startswith("http"),
+        url,
+        rx.cond(url.startswith("/r2media"), BACKEND_BASE + url, rx.get_upload_url(url)),
+    )
+
+
 def thumbnail(url: rx.Var[str], size: str) -> rx.Component:
-    """`url` is an http(s) URL, a backend `/r2media/<token>` path (a generated piece,
-    in R2 only since 2026-10-06) or a local upload-store key, resolved the way the creative
-    screens do, with `rx.get_upload_url`."""
+    """A POST's small square picture, or the placeholder glyph (see `viewable_src`)."""
     return rx.cond(
         url != "",
         rx.image(
-            src=rx.cond(
-                url.startswith("http"),
-                url,
-                rx.cond(url.startswith("/r2media"), BACKEND_BASE + url, rx.get_upload_url(url)),
-            ),
+            src=viewable_src(url),
             alt="",
             width=size,
             height=size,
@@ -189,15 +197,7 @@ def media_fill(thumbnail_url: rx.Var[str], video_url: rx.Var[str], kind: rx.Var[
         ),
         rx.cond(
             thumbnail_url != "",
-            rx.image(
-                src=rx.cond(
-                    thumbnail_url.startswith("http"),
-                    thumbnail_url,
-                    rx.get_upload_url(thumbnail_url),
-                ),
-                alt="",
-                class_name="q-media-fill",
-            ),
+            rx.image(src=viewable_src(thumbnail_url), alt="", class_name="q-media-fill"),
             rx.center(kind_icon(kind, 26), class_name="q-media-empty q-kind-" + kind),
         ),
     )

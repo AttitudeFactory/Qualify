@@ -77,6 +77,34 @@ def test_the_calendar_loads_an_r2media_path_from_the_backend() -> None:
     assert "/r2media" in rendered
 
 
+def _img_src(rendered: str) -> str:
+    """The `src:` expression of the first `<img>` in a rendered component."""
+    import re
+
+    match = re.search(r'jsx\("img",\{.*?src:(.*?)\},\)', rendered, re.S)
+    assert match is not None, rendered[:300]
+    return match.group(1)
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["/r2media/tok", f"generated/{_TENANT_ID}/d/a.jpg", "https://x/y.jpg"],
+)
+def test_the_gallery_fill_and_the_thumbnail_resolve_a_url_the_same_way(url: str) -> None:
+    """PR #100 review: `media_fill` (the Creativo gallery and the Planificador cards)
+    used to send a backend `/r2media/<token>` path through `rx.get_upload_url`, a URL
+    under `/_upload/` that 404s, while `thumbnail` already served it from the backend.
+    Both now go through `viewable_src`: same URL in, same `src` out."""
+    from .post_card import media_fill, thumbnail
+
+    fill = _img_src(str(media_fill(_var(url), _var(""), _var("static_flyer"))))
+    thumb = _img_src(str(thumbnail(_var(url), "2rem")))
+    assert fill == thumb
+    if url.startswith("/r2media"):
+        assert "/_upload" in fill and '+"/r2media/tok"' in fill  # BACKEND_BASE + path
+        assert "getUploadUrl" not in fill.split("/r2media/tok")[0]
+
+
 def _var(value: str):  # noqa: ANN202
     import reflex as rx
 
