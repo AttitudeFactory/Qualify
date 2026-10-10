@@ -68,6 +68,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from typing import Final
 from uuid import UUID, uuid4
 
 import reflex as rx
@@ -121,6 +122,26 @@ _TOO_OLD = "Este contenido ya no está dentro de las últimas 2 semanas y no se 
 _NOT_ELIGIBLE = (
     "No se pudo verificar este contenido contra Instagram. Actualiza la lista e intenta de nuevo."
 )
+# QUA-146: `MediaNotEligible(reason="unsupported_surface")` — a Story, an ad, or a media
+# whose surface Instagram did not report. The picker never offers these, so this is the
+# message for a stale list or a direct call, not for a normal click.
+_UNSUPPORTED_SURFACE = (
+    "Solo se pueden monitorear Reels y publicaciones del feed. "
+    "Las historias y los anuncios no se monitorean."
+)
+
+
+def is_inbox_path(path: str) -> bool:
+    """Whether the tab is on the inbox screen (`/inbox`, with or without the trailing
+    slash the production build adds). Used to keep a late sync toast off other pages."""
+    return path.rstrip("/") == "/inbox"
+
+
+# `MediaNotEligible.reason` -> message; any other reason keeps `_NOT_ELIGIBLE`.
+_NOT_ELIGIBLE_BY_REASON: Final = {
+    "too_old": _TOO_OLD,
+    "unsupported_surface": _UNSUPPORTED_SURFACE,
+}
 _UNKNOWN_CONNECTION = "Esa cuenta ya no está disponible. Actualiza la lista e intenta de nuevo."
 _SYNC_FAILED = "No se pudo sincronizar los comentarios. Intenta de nuevo."
 # B8: the two halves `_NO_TENANT` used to cover for sync/analysis. No tenant in the
@@ -643,7 +664,7 @@ class InboxState(rx.State):
             toggled = True
         except MediaNotEligible as exc:
             async with self:
-                self.action_error = _TOO_OLD if exc.reason == "too_old" else _NOT_ELIGIBLE
+                self.action_error = _NOT_ELIGIBLE_BY_REASON.get(exc.reason, _NOT_ELIGIBLE)
         except UnknownInboxConnection:
             async with self:
                 self.action_error = _UNKNOWN_CONNECTION
@@ -843,12 +864,21 @@ class InboxState(rx.State):
         # additive.
         await self._refresh_after_write(tenant_id, connection_id)
 
+        # The result toast belongs to this screen: a pass that finishes after the person
+        # already left /inbox (logged out, opened another page) stays silent instead of
+        # popping up there. The sync itself is unaffected — it already happened.
+        async with self:
+            still_on_inbox = is_inbox_path(self.router.url.path)
+        if not still_on_inbox:
+            return None
+
         # A plain `return` of an `EventSpec` from an async (non-generator) background
         # handler is dispatched exactly like an event chain — no `yield` needed, and this
         # function stays a plain coroutine (load-bearing: `sync_comments.fn` is called
         # directly and awaited in tests — see the double-click guard test above).
         message = (
-            f"Reels revisados: {result.media_checked} · Comentarios nuevos: {result.new_comments}"
+            f"Reels y publicaciones revisados: {result.media_checked} · "
+            f"Comentarios nuevos: {result.new_comments}"
         )
         if result.skipped_missing_media:
             # Bug fix (2026-09-01): a Reel deleted at the source is real, informative
@@ -857,8 +887,8 @@ class InboxState(rx.State):
             # returned normally), same "this whole `if` block only runs after a
             # successful sync" structure this handler already has.
             message += (
-                f" · {len(result.skipped_missing_media)} Reel(s) ya no disponible(s) en "
-                "Instagram: se dejaron de monitorear."
+                f" · {len(result.skipped_missing_media)} Reel(s) o publicación(es) ya no "
+                "disponible(s) en Instagram: se dejaron de monitorear."
             )
         if result.deleted_comments:
             # QUA-101: a comment borrado en Instagram — still a SUCCESS (`sync_error`

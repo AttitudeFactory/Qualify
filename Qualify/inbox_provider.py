@@ -116,6 +116,8 @@ from .inbox_vm import (
     ReelPageCursorVM,
     ReelSummaryVM,
     SyncSummaryVM,
+    candidate_picture_url,
+    media_format_label,
 )
 from .publishing_vm import ConnectionOptionVM
 
@@ -151,13 +153,15 @@ def _to_vm(media: CandidateMedia) -> CandidateMediaVM:
         is_monitored=media.is_monitored,
         caption=media.caption or "",
         permalink=media.permalink or "",
-        thumbnail_url=media.thumbnail_url or "",
+        thumbnail_url=candidate_picture_url(media.media_type, media.thumbnail_url, media.media_url),
+        format_label=media_format_label(media.media_product_type, media.media_type),
     )
 
 
 async def candidate_media(*, tenant_id: UUID, connection_id: UUID) -> list[CandidateMediaVM]:
-    """The last-2-weeks Reels for this connection, newest first, cross-referenced against
-    what is already monitored. Delegates entirely to `qualify_api.inbox`'s published seam.
+    """The last-2-weeks Reels and feed posts (QUA-146) for this connection, newest first,
+    cross-referenced against what is already monitored. Delegates entirely to
+    `qualify_api.inbox`'s published seam.
 
     Raises `UnknownInboxConnection` (propagates — same posture `publishing_provider.
     active_connections` has for whatever `connections_for` raises) and any exception the

@@ -437,5 +437,7 @@ class AuthState(rx.State):
                 substate = await self.get_state(state_cls)
                 substate.reset()
             self.reset()
+        # A toast still on screen (e.g. a sync result) must not follow the person out.
+        yield rx.toast.dismiss()
         # § 2026-10-02: the first view after a logout is the Brand Kit, as on arrival
         yield rx.redirect(BRAND_START_ROUTE)

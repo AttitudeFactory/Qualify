@@ -77,6 +77,9 @@ class MonitoredMediaRecord:
     metadata_fetched_at: datetime | None = None
     metadata_attempted_at: datetime | None = None
     metadata_error: MetadataFetchError | None = None
+    # QUA-146 (0049): Meta's value verbatim — read with `inbox.media_type`, never parsed
+    # here, so an unrecognized format reaches the caller exactly as stored.
+    media_type: str | None = None
 
     def state(self, now: datetime) -> MonitoringState:
         return effective_state(
@@ -153,6 +156,21 @@ class InboxRepository(Protocol):
         """QUA-149: records a FAILED metadata read (when and why) so it can be retried
         later. Never touches `is_monitored` nor any metadata already stored — a failure
         proves nothing about the media. A missing row is a no-op."""
+        ...
+
+    def record_media_type(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        media_type: str,
+        fetched_at: datetime,
+    ) -> None:
+        """QUA-146: stores Meta's `media_type` (verbatim, known or not) on a row whose
+        other metadata is already complete, and clears the last failed attempt. Touches
+        nothing else — not the caption, the date, `metadata_fetched_at` or `is_monitored`.
+        A missing row is a no-op."""
         ...
 
     def upsert_comment(
@@ -306,6 +324,22 @@ class MemoryInboxRepository:
         if row is not None:
             self._monitored[key] = replace(
                 row, metadata_attempted_at=attempted_at, metadata_error=error
+            )
+
+    def record_media_type(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        media_type: str,
+        fetched_at: datetime,
+    ) -> None:
+        key = (connection_id, external_media_id)
+        row = self._monitored.get(key)
+        if row is not None:
+            self._monitored[key] = replace(
+                row, media_type=media_type, metadata_attempted_at=fetched_at, metadata_error=None
             )
 
     def upsert_comment(
@@ -502,6 +536,30 @@ class PostgresInboxRepository:
             row.updated_at = datetime.now(UTC)
             session.flush()
 
+    def record_media_type(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        external_media_id: str,
+        media_type: str,
+        fetched_at: datetime,
+    ) -> None:
+        with tenant_session(tenant_id) as session:
+            row = session.scalar(
+                select(MonitoredMedia).where(
+                    MonitoredMedia.connection_id == connection_id,
+                    MonitoredMedia.external_media_id == external_media_id,
+                )
+            )
+            if row is None:
+                return
+            row.media_type = media_type
+            row.metadata_attempted_at = fetched_at
+            row.metadata_error = None
+            row.updated_at = datetime.now(UTC)
+            session.flush()
+
     def upsert_comment(
         self,
         *,
@@ -653,6 +711,8 @@ def _with_metadata(
         caption=metadata.caption,
         permalink=metadata.permalink,
         media_product_type=metadata.media_product_type,
+        # QUA-146: a response without `media_type` never erases one already stored.
+        media_type=metadata.media_type if metadata.media_type is not None else row.media_type,
         metadata_fetched_at=fetched_at,
         metadata_attempted_at=fetched_at,
         metadata_error=None,
@@ -665,6 +725,8 @@ def _apply_metadata(row: MonitoredMedia, metadata: MediaMetadata, fetched_at: da
     row.caption = metadata.caption
     row.permalink = metadata.permalink
     row.media_product_type = metadata.media_product_type
+    if metadata.media_type is not None:  # QUA-146: absence never erases a stored value
+        row.media_type = metadata.media_type
     row.metadata_fetched_at = fetched_at
     row.metadata_attempted_at = fetched_at
     row.metadata_error = None
@@ -681,6 +743,7 @@ def _record_from_row(row: MonitoredMedia) -> MonitoredMediaRecord:
         metadata_fetched_at=row.metadata_fetched_at,
         metadata_attempted_at=row.metadata_attempted_at,
         metadata_error=MetadataFetchError(row.metadata_error) if row.metadata_error else None,
+        media_type=row.media_type,
     )
 
 
@@ -690,4 +753,5 @@ def _to_sync(row: MonitoredMediaRecord) -> MediaToSync:
         needs_metadata=row.metadata_fetched_at is None,
         metadata_attempted_at=row.metadata_attempted_at,
         metadata_error=row.metadata_error,
+        needs_media_type=row.metadata_fetched_at is not None and row.media_type is None,
     )

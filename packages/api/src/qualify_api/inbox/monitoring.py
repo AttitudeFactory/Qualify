@@ -62,13 +62,16 @@ class MetadataFetchError(StrEnum):
 class MediaMetadata:
     """What is persisted about a media so it stays readable after the window ends — all
     straight from Meta's `GET /{media}` (`MediaSummary`). `caption`/`permalink`/
-    `media_product_type` may legitimately be `None` (no caption set, field not returned);
-    `posted_at` never is."""
+    `media_product_type`/`media_type` may legitimately be `None` (no caption set, field
+    not returned); `posted_at` never is. `media_type` (QUA-146) is Meta's value verbatim,
+    known or not (`inbox.media_type`); `None` means "not in this response" and never
+    erases a value already stored."""
 
     posted_at: datetime
     caption: str | None = None
     permalink: str | None = None
     media_product_type: str | None = None
+    media_type: str | None = None
 
     def __post_init__(self) -> None:
         # The one field the window is computed from: storing a row as "complete" without
@@ -84,12 +87,18 @@ class MediaToSync:
     read once, and until then it is synced like an active media (it may in fact already be
     expired; see `InboxService.sync_comments`, "Known limitation").
     `metadata_attempted_at`/`metadata_error` describe the last failed read, if any, so
-    the caller can space out retries."""
+    the caller can space out retries.
+    `needs_media_type` (QUA-146) is a row whose metadata IS complete but whose
+    `media_type` was never stored (monitored before the sync asked Meta for it): it gets
+    one dedicated read, under the same retry spacing. Only rows `list_media_to_sync`
+    returns are ever turned into a `MediaToSync`, and it never returns an expired one, so
+    completing the field never costs a call on an expired media."""
 
     external_media_id: str
     needs_metadata: bool
     metadata_attempted_at: datetime | None = None
     metadata_error: MetadataFetchError | None = None
+    needs_media_type: bool = False
 
 
 # How long a FAILED metadata read waits before it may be tried again (QUA-149). A legacy
@@ -107,9 +116,10 @@ METADATA_RETRY_AFTER: Final[Mapping[MetadataFetchError, timedelta]] = MappingPro
 
 def metadata_read_due(media: MediaToSync, now: datetime) -> bool:
     """True when the sync should read this media's metadata from Meta now: it is still
-    missing, and either it was never tried or its last failure's wait is over. Complete
-    rows are never due — once read, a media is never asked for again."""
-    if not media.needs_metadata:
+    missing (all of it, or only `media_type` — QUA-146), and either it was never tried or
+    its last failure's wait is over. A complete row that has its `media_type` is never
+    due — once read, a media is never asked for again."""
+    if not (media.needs_metadata or media.needs_media_type):
         return False
     if media.metadata_attempted_at is None or media.metadata_error is None:
         return True

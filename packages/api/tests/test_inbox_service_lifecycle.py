@@ -117,13 +117,19 @@ def _service(
 
 
 def _monitor(repo: MemoryInboxRepository, media_id: str, posted_at: datetime | None) -> None:
-    """`posted_at=None` seeds a LEGACY row (monitored before 0046, no metadata)."""
+    """`posted_at=None` seeds a LEGACY row (monitored before 0046, no metadata). A dated
+    row is complete, `media_type` included (QUA-146) — rows without it are covered in
+    `test_inbox_media_type_sync.py`."""
     repo.set_media_monitored(
         tenant_id=TENANT,
         connection_id=CONNECTION,
         external_media_id=media_id,
         monitored=True,
-        metadata=None if posted_at is None else MediaMetadata(posted_at=posted_at, caption="c"),
+        metadata=None
+        if posted_at is None
+        else MediaMetadata(
+            posted_at=posted_at, caption="c", media_product_type="REELS", media_type="VIDEO"
+        ),
         fetched_at=None if posted_at is None else NOW - timedelta(days=20),
     )
 
