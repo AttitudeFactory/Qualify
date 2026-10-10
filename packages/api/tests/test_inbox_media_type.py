@@ -1,6 +1,6 @@
 """QUA-146 phase 1: Meta's `media_type` on `monitored_media` — the known vocabulary
 (`qualify_api.inbox.media_type`), the explicit reading of an unknown value, and the shape
-of migration 0047. Offline; the Postgres half (backfill, verbatim storage) is in the
+of migration 0049. Offline; the Postgres half (backfill, verbatim storage) is in the
 `db`-marked tests of `test_inbox_repository.py`."""
 
 from __future__ import annotations
@@ -74,20 +74,20 @@ def test_the_model_column_is_nullable_text_without_a_check() -> None:
     assert all("media_type" not in str(c.sqltext) for c in checks)
 
 
-def test_migration_0047_chains_from_0046_and_is_the_only_0047() -> None:
-    assert _load("0046_monitored_media_metadata.py").revision == "0046"
-    migration = _load("0047_monitored_media_type.py")
-    assert (migration.revision, migration.down_revision) == ("0047", "0046")
+def test_migration_0049_chains_from_0048_and_is_the_only_0049() -> None:
+    assert _load("0048_regeneration_replaces_rows.py").revision == "0048"
+    migration = _load("0049_monitored_media_type.py")
+    assert (migration.revision, migration.down_revision) == ("0049", "0048")
     others = [
         p.name
         for p in _VERSIONS.glob("*.py")
-        if p.name != "0047_monitored_media_type.py" and _load(p.name).revision == "0047"
+        if p.name != "0049_monitored_media_type.py" and _load(p.name).revision == "0049"
     ]
     assert others == []
 
 
 def test_the_backfill_touches_only_reels_still_without_a_type() -> None:
-    sql = _load("0047_monitored_media_type.py").BACKFILL_REELS_SQL
+    sql = _load("0049_monitored_media_type.py").BACKFILL_REELS_SQL
     assert "SET media_type = 'VIDEO'" in sql
     assert "media_product_type = 'REELS'" in sql
     assert "media_type IS NULL" in sql

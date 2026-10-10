@@ -1,48 +1,41 @@
-"""The content generator (§ request 2026-09-25), the whole of /create since 2026-09-30
-(it was tested on /signals first), laid out as a wizard like the Brand Kit: one
-decision per screen, "Paso N de M", Atrás / Continuar, and Generar on the last step.
+"""The content generator (§ request 2026-09-25), the whole of /create since 2026-09-30.
 
-1. **The steps**: ¿Qué quieres crear? (the content kind, which decides the rest) →
-   ¿Qué anuncias? → ¿Dónde se publica? → ¿Quién lo presenta? (avatar kinds only) → the
-   kind's own inputs (the script's length, the ad's photos, or the video's script and
-   background) → Lo que debe decir y evitar → ¿Todo listo? (recap + Generar).
-2. **Tu pieza**: one view per kind, filled in as the draft lands (`poll_generator`):
-   the script alone for a real creator; the HeyGen video for both avatar kinds; the
-   image or the carousel's slides for a flyer (composed locally).
+Since 2026-10-08 it is ONE view with numbered sections (it was a step-by-step wizard):
+
+1. **¿Qué creamos?** on top — the content kind, which decides the rest.
+2. **Its sections**, numbered, only the ones the kind uses
+   (`creative_state.generator_sections`): ¿Qué quieres…? → ¿Dónde se publica? →
+   ¿Quién lo presenta? (avatar kinds only) → the kind's own inputs. «Reglas» is a folded,
+   optional extra, and Generar closes the form.
+3. **Tu pieza** appears below, on the same page, filled in as the draft lands
+   (`poll_generator`): the script for a real creator; the video for both avatar kinds;
+   the image or the carousel's slides; a template's outputs.
 
 Same `CreativeState` and the same service underneath: every piece is also a draft at
-/drafts/{id}, where it is edited and approved.
-
-Material (Liquid Glass, lote E2): every block is `ui.card`; every "pick one" tile (kind,
-product, look, recipe) and drop zone is a control on the `.q-cr-*` classes of
-`assets/qualify-creative.css`. No colour, shadow or blur is written in this module."""
+/drafts/{id}, where it is edited and approved."""
 
 from __future__ import annotations
 
 import reflex as rx
-from qualify_creative.enums import ContentKind
 
-from .canva_state import CanvaState
 from .creative_state import CreativeState
-from .creative_vm import KIND_OPTIONS
-from .creative_wizard_pages import (  # the Brand Kit's own step chrome, shared
+from .creative_vm import CATEGORY_OPTIONS, VIDEO_TYPE_OPTIONS
+from .creative_wizard_pages import (  # the Brand Kit's own chrome, shared
     _CONTROL_RADIUS,
     _loading_view,
-    _recap_row,
-    _step_body,
 )
+from .media_carousel import media_carousel
+from .r2_media import BACKEND_BASE
 from .ui import (
     app_shell,
     callout,
     card,
+    loading_spinner,
     page_body,
     page_header,
     progress_panel,
     removable_pill,
-    signal_pill,
-    skeleton_rows,
     tag,
-    tone_badge,
 )
 from .ui import tokens as T
 
@@ -76,7 +69,7 @@ def _card(
     )
 
 
-def _field_label(text: str, hint: str | None = None) -> rx.Component:
+def _field_label(text: str | rx.Var, hint: str | None = None) -> rx.Component:
     """§5.6: visible label above, help below in size 1 muted."""
     return rx.vstack(
         rx.text(text, size="2", weight="medium"),
@@ -89,12 +82,59 @@ def _field_label(text: str, hint: str | None = None) -> rx.Component:
 _IMAGE_ACCEPT = {"image/*": [".png", ".jpg", ".jpeg", ".webp"]}
 
 
-def _kind_card(key: str, title: str, blurb: str, icon: str) -> rx.Component:
-    """One content kind (§ request 2026-09-25). Every kind is selectable since the
-    template engine landed (plan-mvp-plantillas-remotion.md, 2026-10-05); `enabled`
-    stays as the one switch should a kind ever need to be shown but held back."""
-    selected = CreativeState.brief_kind == key
-    enabled = ContentKind(key).enabled
+def _help(title: str, text: str) -> rx.Component:
+    """A small «?» that explains an option (§ request 2026-10-09: "un pequeño icono de
+    ayuda"). A click or a tap opens it — a hover-only tooltip never opens on a phone —
+    and the click stops there, so the help inside a clickable card never picks it."""
+    return rx.popover.root(
+        rx.popover.trigger(
+            rx.icon_button(
+                rx.icon("circle-help", size=14),
+                variant="ghost",
+                color_scheme="gray",
+                size="1",
+                radius="full",
+                aria_label=f"Qué es «{title}»",
+                title=f"Qué es «{title}»",
+                on_click=rx.stop_propagation,
+                flex_shrink="0",
+            )
+        ),
+        rx.popover.content(
+            rx.vstack(
+                rx.text(title, size="2", weight="bold"),
+                rx.text(text, size="1", color=T.TEXT_MUTED),
+                spacing="1",
+                max_width="18rem",
+            ),
+            side="bottom",
+            align="start",
+        ),
+    )
+
+
+def _label_with_help(label: str, title: str, text: str, **props: object) -> rx.Component:
+    """A field's label and its «?»."""
+    return rx.hstack(
+        rx.text(label, **props),
+        _help(title, text),
+        spacing="1",
+        align="center",
+    )
+
+
+def _choice_card(
+    title: str,
+    blurb: str,
+    icon: str,
+    *,
+    selected: rx.Var[bool],
+    on_click: rx.event.EventSpec,
+    compact: bool = False,
+    help_text: str = "",
+) -> rx.Component:
+    """One radio tile of «¿Qué quieres crear?»: a category, or a type within Video —
+    or a kind of carousel slide, with its «?» (`help_text`)."""
     return rx.box(
         rx.hstack(
             rx.icon(
@@ -104,39 +144,82 @@ def _kind_card(key: str, title: str, blurb: str, icon: str) -> rx.Component:
                 flex_shrink="0",
             ),
             rx.vstack(
-                rx.hstack(
-                    rx.text(title, size="2", weight="medium"),
-                    tone_badge("Próximamente", "neutral") if not enabled else rx.fragment(),
-                    spacing="2",
-                    align="center",
-                ),
+                rx.text(title, size="2", weight="medium"),
                 rx.text(blurb, size="1", color=T.TEXT_MUTED),
                 spacing="1",
                 align_items="start",
+                flex="1",
             ),
+            _help(title, help_text) if help_text else rx.fragment(),
             spacing="3",
             align="start",
+            width="100%",
         ),
-        on_click=CreativeState.choose_kind(key) if enabled else None,
+        on_click=on_click,
         role="radio",
         aria_checked=rx.cond(selected, "true", "false"),
-        cursor="pointer" if enabled else "not-allowed",
-        opacity="1" if enabled else "0.55",
-        padding="0.85rem 1rem",
+        cursor="pointer",
+        padding="0.65rem 0.85rem" if compact else "0.95rem 1rem",
         class_name=rx.cond(selected, "q-cr-option q-cr-option--selected", "q-cr-option"),
         width="100%",
-        **({} if enabled else {"aria_disabled": "true"}),
+        height="100%",
     )
 
 
 def _kind_picker() -> rx.Component:
-    return rx.grid(
-        *(_kind_card(*option) for option in KIND_OPTIONS),
-        columns=rx.breakpoints(initial="1", sm="2"),
-        spacing="2",
+    """«¿Qué quieres crear?» (§ request 2026-10-06): Guion · Video · Imagen publicitaria
+    (back on 2026-10-07, generated by Seedream) · Con plantilla; choosing Video shows its
+    types right below — avatar humano, avatar animado, video publicitario."""
+    return rx.vstack(
+        rx.grid(
+            *(
+                _choice_card(
+                    title,
+                    blurb,
+                    icon,
+                    selected=CreativeState.gen_category == key,
+                    on_click=CreativeState.choose_category(key),
+                )
+                for key, title, blurb, icon in CATEGORY_OPTIONS
+            ),
+            # five since the carousel joined (§ 2026-10-09)
+            columns=rx.breakpoints(initial="1", sm="2", lg="3", xl="5"),
+            spacing="2",
+            width="100%",
+            role="radiogroup",
+            aria_label="Tipo de contenido",
+        ),
+        rx.cond(
+            CreativeState.gen_category == "video",
+            rx.vstack(
+                rx.text("¿Qué tipo de video?", size="2", weight="medium"),
+                rx.grid(
+                    *(
+                        _choice_card(
+                            title,
+                            blurb,
+                            icon,
+                            selected=CreativeState.video_type == key,
+                            on_click=CreativeState.choose_video_type(key),
+                            compact=True,
+                        )
+                        for key, title, blurb, icon in VIDEO_TYPE_OPTIONS
+                    ),
+                    columns=rx.breakpoints(initial="1", sm="3"),
+                    spacing="2",
+                    width="100%",
+                    role="radiogroup",
+                    aria_label="Tipo de video",
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+                class_name="q-settle",
+            ),
+        ),
+        spacing="4",
         width="100%",
-        role="radiogroup",
-        aria_label="Tipo de contenido",
+        align_items="start",
     )
 
 
@@ -167,6 +250,144 @@ def _file_chip(name: rx.Var[str], on_remove: object) -> rx.Component:
     )
 
 
+def _brand_media_tile(item: rx.Var, flag: str, handler: object) -> rx.Component:
+    """One Brand Kit image: its thumbnail (through `/r2media`) and name; a click puts it
+    in the piece or takes it out."""
+    selected = item[flag] != ""
+    return rx.vstack(
+        rx.box(
+            rx.cond(
+                item["view"] != "",
+                rx.image(
+                    src=BACKEND_BASE + item["view"],
+                    alt=item["label"],
+                    width="100%",
+                    height="100%",
+                    object_fit="contain",
+                ),
+                rx.icon("image", size=T.ICON_MD, color=T.TEXT_FAINT),
+            ),
+            rx.cond(
+                selected,
+                rx.box(
+                    rx.icon("check", size=12, color="white"),
+                    position="absolute",
+                    top="0.25rem",
+                    right="0.25rem",
+                    background=T.tone_color("accent", 9),
+                    border_radius="9999px",
+                    padding="0.15rem",
+                    display="flex",
+                ),
+            ),
+            position="relative",
+            width="4.5rem",
+            height="4.5rem",
+            padding="0.35rem",
+            display="flex",
+            align_items="center",
+            justify_content="center",
+            background=T.SURFACE_BG_RAISED,
+            border=rx.cond(selected, f"2px solid {T.tone_color('accent', 8)}", T.BORDER),
+            border_radius=T.RADIUS_CONTROL,
+            overflow="hidden",
+        ),
+        rx.text(
+            item["label"],
+            size="1",
+            color=T.TEXT_MUTED,
+            max_width="4.5rem",
+            white_space="nowrap",
+            overflow="hidden",
+            text_overflow="ellipsis",
+            text_align="center",
+        ),
+        spacing="1",
+        align="center",
+        on_click=handler(item["key"]),  # type: ignore[operator]
+        role="checkbox",
+        aria_checked=rx.cond(selected, "true", "false"),
+        aria_label=item["label"],
+        cursor="pointer",
+    )
+
+
+def _brand_media_picker(
+    items: rx.Var, flag: str, handler: object, title: str, hint: str = ""
+) -> rx.Component:
+    """A row of Brand Kit images to pick from (`items`, each with its `flag` "1" when in
+    use): the animated character's «O elige del Brand Kit», and both halves of
+    «Recursos de tu marca»."""
+    return rx.cond(
+        items.length() > 0,
+        rx.vstack(
+            rx.text(title, size="1", weight="medium", color=T.TEXT_MUTED),
+            rx.text(hint, size="1", color=T.TEXT_FAINT) if hint else rx.fragment(),
+            rx.flex(
+                rx.foreach(items, lambda item: _brand_media_tile(item, flag, handler)),
+                wrap="wrap",
+                spacing="2",
+                role="group",
+                aria_label=title,
+            ),
+            spacing="1",
+            width="100%",
+            align_items="start",
+        ),
+    )
+
+
+def _brand_element_notes() -> rx.Component:
+    """Each chosen element's usage note — what the generator will do with it."""
+    return rx.foreach(
+        CreativeState.brand_element_choices,
+        lambda item: rx.cond(
+            item["chosen"] != "",
+            rx.text(
+                rx.text.strong(item["label"]),
+                ": ",
+                rx.cond(item["usage"] != "", item["usage"], "sin nota de uso: donde encaje"),
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+        ),
+    )
+
+
+def _brand_resources() -> rx.Component:
+    """«Recursos de tu marca» (§ request 2026-10-06): the Brand Kit's files as a resource
+    of their own, apart from the background and the products. The logo takes the brand
+    mark's place in the piece; every other element is used as its usage note (written in
+    the Brand Kit) says — and the copy is told both."""
+    return rx.cond(
+        CreativeState.brand_media_items.length() > 0,
+        rx.vstack(
+            _field_label(
+                "Recursos de tu marca (opcional)",
+                "Lo que ya subiste al Brand Kit. El logo va donde va tu marca; cada "
+                "elemento se usa según su nota de uso.",
+            ),
+            _brand_media_picker(
+                CreativeState.brand_logo_choices,
+                "chosen",
+                CreativeState.toggle_brand_logo,
+                "Logo",
+                "Elige uno.",
+            ),
+            _brand_media_picker(
+                CreativeState.brand_element_choices,
+                "chosen",
+                CreativeState.toggle_brand_element,
+                "Elementos",
+            ),
+            _brand_element_notes(),
+            spacing="2",
+            width="100%",
+            align_items="start",
+        ),
+    )
+
+
 def _images_section() -> rx.Component:
     """Background and product images — optional for the avatar videos."""
     return rx.vstack(
@@ -179,9 +400,13 @@ def _images_section() -> rx.Component:
     )
 
 
-def _background_upload(label: str, hint: str) -> rx.Component:
+def _background_upload(label: str, hint: str, help_text: str = "") -> rx.Component:
     return rx.vstack(
-        rx.text(label, size="2", weight="medium"),
+        (
+            _label_with_help(label, label, help_text, size="2", weight="medium")
+            if help_text
+            else rx.text(label, size="2", weight="medium")
+        ),
         rx.cond(
             CreativeState.media_background_key != "",
             _file_chip(CreativeState.media_background_name, CreativeState.clear_background),
@@ -211,7 +436,7 @@ def _products_upload(label: str) -> rx.Component:
                     ),
                 ),
                 wrap="wrap",
-                gap="2",
+                spacing="2",
             ),
         ),
         _upload_zone(
@@ -221,18 +446,7 @@ def _products_upload(label: str) -> rx.Component:
             CreativeState.handle_product_uploads,
             multiple=True,
         ),
-        rx.cond(
-            CreativeState.carousel_allowed,
-            rx.hstack(
-                rx.switch(
-                    checked=CreativeState.media_carousel,
-                    on_change=CreativeState.set_media_carousel,
-                ),
-                rx.text("Hacerlo carrusel: una imagen por producto y un cierre", size="2"),
-                spacing="2",
-                align="center",
-            ),
-        ),
+        # § 2026-10-09: no «Hacerlo carrusel» here any more — the carousel is its own kind
         spacing="2",
         width="100%",
         align_items="start",
@@ -246,10 +460,602 @@ def _upload_error() -> rx.Component:
     )
 
 
+# -- the carousel (§ request 2026-10-09) ------------------------------------------------
+
+
+def _slide_source_label(source: rx.Var) -> rx.Var:
+    return rx.match(
+        source,
+        ("generated", "Imagen generada"),
+        ("animated", "Video animado"),
+        "De una pieza",
+    )
+
+
+def _slide_source_icon(source: rx.Var) -> rx.Component:
+    return rx.match(
+        source,
+        ("generated", rx.icon("image", size=T.ICON_SM)),
+        ("animated", rx.icon("clapperboard", size=T.ICON_SM)),
+        rx.icon("library", size=T.ICON_SM),
+    )
+
+
+def _slide_thumb(view: rx.Var, media_type: rx.Var, size: str = "3.5rem") -> rx.Component:
+    """A reused piece's thumbnail (a video shows its poster, or a film glyph)."""
+    return rx.box(
+        rx.cond(
+            view != "",
+            rx.image(
+                src=BACKEND_BASE + view, alt="", width="100%", height="100%", object_fit="cover"
+            ),
+            rx.cond(
+                media_type == "video",
+                rx.icon("film", size=T.ICON_MD, color=T.TEXT_FAINT),
+                rx.icon("image", size=T.ICON_MD, color=T.TEXT_FAINT),
+            ),
+        ),
+        rx.cond(
+            (view != "") & (media_type == "video"),
+            rx.box(
+                rx.icon("play", size=12),
+                class_name="q-cr-mark",
+                bottom="0.2rem",
+                right="0.2rem",
+                padding="0.15rem",
+            ),
+        ),
+        position="relative",
+        width=size,
+        height=size,
+        flex_shrink="0",
+        display="flex",
+        align_items="center",
+        justify_content="center",
+        background=T.SURFACE_BG_RAISED,
+        border=T.BORDER,
+        border_radius=T.RADIUS_CONTROL,
+        overflow="hidden",
+    )
+
+
+def _slide_icon_button(icon: str, label: str, on_click: object, **props: object) -> rx.Component:
+    return rx.icon_button(
+        rx.icon(icon, size=14),
+        on_click=on_click,
+        variant="ghost",
+        color_scheme="gray",
+        size="1",
+        aria_label=label,
+        title=label,
+        **props,
+    )
+
+
+#: The «?» of a slide's text options (§ request 2026-10-09: «Gancho» and «CTA»
+#: renamed «Título» and «Botón de acción»).
+_SLIDE_TEXT_HELP = (
+    "Título: la frase grande de arriba, la que hace que se detengan a mirar. Botón de "
+    "acción: lo que invitas a hacer, como «Pide ya por DM» o «Reserva tu mesa»; va en un "
+    "botón abajo. Los dos los escribe la IA con la voz de tu marca."
+)
+
+
+def _strip_badge(content: rx.Component, **position: str) -> rx.Component:
+    """A mark over a thumbnail's picture (`.q-cr-mark`: a dark pill, white on it)."""
+    return rx.box(
+        content,
+        class_name="q-cr-mark",
+        padding="0.05rem 0.4rem",
+        line_height="1.4",
+        **position,
+    )
+
+
+def _strip_picture(row: rx.Var) -> rx.Component:
+    """What a thumbnail shows: the slide's own product photo, a reused piece's image, or
+    the glyph of its kind while it has neither."""
+    cover = {"width": "100%", "height": "100%", "object_fit": "cover"}
+    return rx.cond(
+        row["photo_key"] != "",
+        rx.image(src=rx.get_upload_url(row["photo_key"]), alt="", **cover),
+        rx.cond(
+            row["view"] != "",
+            rx.image(src=BACKEND_BASE + row["view"], alt="", **cover),
+            rx.center(
+                _slide_source_icon(row["source"]),
+                width="100%",
+                height="100%",
+                color=T.TEXT_FAINT,
+            ),
+        ),
+    )
+
+
+def _strip_thumb(row: rx.Var, index: rx.Var[int]) -> rx.Component:
+    """One slide in the strip (§ 2026-10-09, option A): its picture at the post's
+    shape, its number, a play mark when it is a video and the words printed on it.
+    A click opens it in the editor below."""
+    selected = row["selected"] != ""
+    return rx.box(
+        _strip_picture(row),
+        _strip_badge(rx.text(row["n"], size="1", weight="bold"), top="0.3rem", left="0.3rem"),
+        rx.cond(
+            row["media_type"] == "video",
+            _strip_badge(rx.icon("play", size=11), top="0.3rem", right="0.3rem"),
+        ),
+        rx.cond(
+            row["text_label"] != "",
+            _strip_badge(rx.text(row["text_label"], size="1"), bottom="0.3rem", left="0.3rem"),
+        ),
+        on_click=CreativeState.select_carousel_slide(index),
+        role="button",
+        aria_label=f"Diapositiva {row['n']}",
+        aria_pressed=rx.cond(selected, "true", "false"),
+        position="relative",
+        width="5.5rem",
+        height="6.875rem",
+        flex_shrink="0",
+        class_name=rx.cond(selected, "q-cr-slide q-cr-slide--selected", "q-cr-slide"),
+        overflow="hidden",
+        cursor="pointer",
+    )
+
+
+def _strip_tile(*children: rx.Component, **props: object) -> rx.Component:
+    """A non-slide tile of the strip (the closing slide, «+»), the slides' size."""
+    return rx.center(
+        rx.vstack(*children, spacing="1", align="center"),
+        width="5.5rem",
+        height="6.875rem",
+        flex_shrink="0",
+        border_radius=T.RADIUS_CONTROL,
+        **props,
+    )
+
+
+def _carousel_strip() -> rx.Component:
+    """The carousel as Instagram will show it: the slides in order, the closing slide
+    when it is on, and «+» while there is room."""
+    return rx.flex(
+        rx.foreach(CreativeState.carousel_slide_rows, _strip_thumb),
+        rx.cond(
+            CreativeState.carousel_closing,
+            _strip_tile(
+                rx.icon("megaphone", size=T.ICON_MD, color=T.tone_color("accent", 11)),
+                rx.text("Cierre", size="1", weight="medium"),
+                rx.text(
+                    "botón de acción",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                    text_align="center",
+                    width="100%",
+                    padding_x="0.4rem",
+                    line_height="1.2",
+                ),
+                background=T.tone_color("accent", 3),
+                border=T.BORDER,
+                title="Diapositiva de cierre: el texto de tu botón de acción, en grande",
+            ),
+        ),
+        rx.cond(
+            ~CreativeState.carousel_full,
+            _strip_tile(
+                rx.icon("plus", size=T.ICON_MD),
+                rx.text("Añadir", size="1"),
+                on_click=CreativeState.toggle_carousel_adding,
+                role="button",
+                aria_label="Añadir diapositiva",
+                aria_expanded=rx.cond(CreativeState.carousel_adding, "true", "false"),
+                class_name="q-cr-add",
+            ),
+        ),
+        spacing="4",
+        overflow_x="auto",
+        width="100%",
+        padding_bottom="0.25rem",
+        role="list",
+        aria_label="Diapositivas del carrusel",
+    )
+
+
+def _carousel_adder() -> rx.Component:
+    """«+»: the three kinds of slide, and the brand's pieces when one is reused."""
+    return rx.vstack(
+        rx.grid(
+            _choice_card(
+                "Imagen generada",
+                "Una escena nueva con tu producto.",
+                "image",
+                selected=rx.Var.create(False),
+                on_click=CreativeState.add_carousel_slide("generated"),
+                compact=True,
+                help_text=(
+                    "Creamos una escena nueva con IA a partir de la foto de tu producto (y "
+                    "tu fondo, si lo usas). Encima va el texto que elijas y tu logo."
+                ),
+            ),
+            _choice_card(
+                "Video animado",
+                "La escena en movimiento, 5 o 10 s.",
+                "clapperboard",
+                selected=rx.Var.create(False),
+                on_click=CreativeState.add_carousel_slide("animated"),
+                compact=True,
+                help_text=(
+                    "Generamos la escena y la animamos en un video corto de 5 o 10 segundos, "
+                    "sin voz ni música. Puedes ponerle texto encima o dejarlo limpio. Tarda "
+                    "un par de minutos más que una imagen."
+                ),
+            ),
+            _choice_card(
+                "De una pieza",
+                "Una imagen o video que ya hiciste.",
+                "library",
+                selected=CreativeState.piece_picker_open,
+                on_click=CreativeState.toggle_piece_picker,
+                compact=True,
+                help_text=(
+                    "Reutiliza una imagen o un video de un borrador que ya hiciste con esta "
+                    "marca. Se usa tal cual, recortado al formato del post, sin texto nuevo."
+                ),
+            ),
+            columns=rx.breakpoints(initial="1", sm="3"),
+            spacing="2",
+            width="100%",
+        ),
+        rx.cond(CreativeState.piece_picker_open, _piece_picker()),
+        spacing="2",
+        width="100%",
+        class_name="q-settle",
+    )
+
+
+def _slide_photo() -> rx.Component:
+    """The open slide's product photo: uploaded right here (§ 2026-10-09), one per
+    slide, the reference its scene is generated from."""
+    current = CreativeState.carousel_current
+    return rx.vstack(
+        _label_with_help(
+            "Foto del producto",
+            "Foto del producto",
+            "La foto real de tu producto. La IA la usa de referencia para que salga igual "
+            "(forma, colores, etiqueta). Mejor con fondo limpio o transparente. Si no subes "
+            "ninguna, la escena se crea solo con tu descripción.",
+            size="1",
+            color=T.TEXT_MUTED,
+        ),
+        rx.cond(
+            current["photo_key"] != "",
+            rx.box(
+                rx.image(
+                    src=rx.get_upload_url(current["photo_key"]),
+                    alt=current["photo_name"],
+                    width="100%",
+                    height="100%",
+                    object_fit="contain",
+                ),
+                rx.icon_button(
+                    rx.icon("x", size=12),
+                    on_click=CreativeState.clear_slide_photo,
+                    size="1",
+                    variant="solid",
+                    color_scheme="gray",
+                    radius="full",
+                    aria_label="Quitar foto",
+                    position="absolute",
+                    top="0.3rem",
+                    right="0.3rem",
+                ),
+                position="relative",
+                width="8rem",
+                height="8rem",
+                padding="0.35rem",
+                background=T.SURFACE_BG_RAISED,
+                border=T.BORDER,
+                border_radius=T.RADIUS_CONTROL,
+            ),
+            rx.box(
+                _upload_zone(
+                    "creative_slide_photo",
+                    "Opcional: arrastra la foto o haz clic",
+                    CreativeState.handle_slide_photo_upload,
+                    multiple=False,
+                ),
+                width="8rem",
+            ),
+        ),
+        spacing="2",
+        align_items="start",
+        flex_shrink="0",
+        padding="0.75rem 0.9rem",
+        class_name="q-cr-tray",
+    )
+
+
+def _slide_panel(label: rx.Component, control: rx.Component, **props: object) -> rx.Component:
+    """One block of the slide editor, visibly apart from its neighbours (§ request
+    2026-10-09: "quiero separaciones"): its own raised panel with a border and padding —
+    a hairline separator was invisible on the dark theme."""
+    return rx.box(
+        rx.vstack(label, control, spacing="2", align_items="start", width="100%"),
+        padding="0.75rem 0.9rem",
+        class_name="q-cr-tray",
+        **props,
+    )
+
+
+def _slide_generated_fields() -> rx.Component:
+    """The open generated or animated slide: its photo, what it shows, whether it uses
+    the common background, its words and — a video — its length. One panel each."""
+    current = CreativeState.carousel_current
+    index = CreativeState.carousel_selected
+    animated = current["source"] == "animated"
+    muted = {"size": "1", "color": T.TEXT_MUTED}
+    what_it_shows = _slide_panel(
+        rx.text("¿Qué muestra?", **muted),
+        rx.vstack(
+            rx.input(
+                value=current["scene"],
+                on_change=lambda value: CreativeState.set_slide_field(index, "scene", value),
+                placeholder="La hamburguesa de cerca, con el queso derritiéndose",
+                max_length=600,
+                width="100%",
+            ),
+            rx.cond(
+                CreativeState.media_background_key != "",
+                rx.hstack(
+                    rx.switch(
+                        checked=current["background"] != "",
+                        on_change=lambda _: CreativeState.toggle_slide_background(index),
+                        size="1",
+                    ),
+                    rx.text("Usar el fondo común", size="1"),
+                    spacing="2",
+                    align="center",
+                ),
+            ),
+            spacing="2",
+            width="100%",
+        ),
+        width="100%",
+    )
+    text = _slide_panel(
+        rx.hstack(
+            rx.text(rx.cond(animated, "Texto encima (opcional)", "Texto"), **muted),
+            _help("Título y botón de acción", _SLIDE_TEXT_HELP),
+            spacing="1",
+            align="center",
+        ),
+        rx.segmented_control.root(
+            rx.segmented_control.item("Sin texto", value="none"),
+            rx.segmented_control.item("Título", value="hook"),
+            rx.segmented_control.item("Botón de acción", value="cta"),
+            value=current["text"],
+            on_change=lambda value: CreativeState.set_slide_field(index, "text", value),
+            size="1",
+        ),
+        flex_shrink="0",
+    )
+    length = _slide_panel(
+        rx.text("Duración", **muted),
+        rx.segmented_control.root(
+            rx.segmented_control.item("5 s", value="5"),
+            rx.segmented_control.item("10 s", value="10"),
+            value=current["seconds"],
+            on_change=lambda value: CreativeState.set_slide_field(index, "seconds", value),
+            size="1",
+        ),
+    )
+    return rx.flex(
+        _slide_photo(),
+        rx.vstack(
+            what_it_shows,
+            # the text and the length side by side, each its own width (§ request
+            # 2026-10-09: "la duración al lado del texto", "que solo ocupe su espacio");
+            # only a phone stacks them
+            rx.flex(
+                text,
+                rx.cond(animated, length),
+                spacing="4",
+                flex_wrap=rx.breakpoints(initial="wrap", sm="nowrap"),
+                width="100%",
+            ),
+            spacing="4",
+            flex="1",
+            min_width="14rem",
+            align_items="start",
+            width="100%",
+        ),
+        spacing="5",
+        wrap="wrap",
+        width="100%",
+    )
+
+
+def _slide_editor() -> rx.Component:
+    """The slide open in the strip: its number and kind, moving it left or right,
+    removing it, and its own inputs — a reused piece shows what it reuses."""
+    current = CreativeState.carousel_current
+    index = CreativeState.carousel_selected
+    return rx.box(
+        rx.vstack(
+            rx.hstack(
+                rx.text("Diapositiva ", current["n"], size="2", weight="bold"),
+                rx.text("·", size="2", color=T.TEXT_FAINT),
+                _slide_source_icon(current["source"]),
+                rx.text(_slide_source_label(current["source"]), size="2"),
+                rx.spacer(),
+                _slide_icon_button(
+                    "chevron-left",
+                    "Mover a la izquierda",
+                    CreativeState.move_carousel_slide(index, -1),
+                    disabled=current["first"] != "",
+                ),
+                _slide_icon_button(
+                    "chevron-right",
+                    "Mover a la derecha",
+                    CreativeState.move_carousel_slide(index, 1),
+                    disabled=current["last"] != "",
+                ),
+                _slide_icon_button(
+                    "trash-2", "Quitar diapositiva", CreativeState.remove_carousel_slide(index)
+                ),
+                spacing="2",
+                align="center",
+                width="100%",
+            ),
+            rx.box(class_name="q-cr-rule"),
+            rx.cond(
+                current["source"] == "existing",
+                rx.hstack(
+                    _slide_thumb(current["view"], current["media_type"], size="5rem"),
+                    rx.vstack(
+                        rx.text(current["label"], size="2"),
+                        rx.text(
+                            rx.cond(current["media_type"] == "video", "Video", "Imagen"),
+                            " · se usa tal cual, ajustada al formato",
+                            size="1",
+                            color=T.TEXT_MUTED,
+                        ),
+                        spacing="0",
+                        align_items="start",
+                    ),
+                    spacing="3",
+                    align="center",
+                ),
+                _slide_generated_fields(),
+            ),
+            spacing="4",
+            width="100%",
+            align_items="start",
+        ),
+        padding="1rem 1.15rem",
+        class_name="q-cr-editor",
+        width="100%",
+    )
+
+
+def _piece_tile(item: rx.Var) -> rx.Component:
+    return rx.vstack(
+        _slide_thumb(item["view"], item["media_type"], size="5rem"),
+        rx.text(
+            item["label"],
+            size="1",
+            color=T.TEXT_MUTED,
+            max_width="5rem",
+            white_space="nowrap",
+            overflow="hidden",
+            text_overflow="ellipsis",
+        ),
+        spacing="1",
+        align="center",
+        on_click=CreativeState.pick_piece(item["key"]),
+        role="button",
+        aria_label=item["label"],
+        cursor="pointer",
+    )
+
+
+def _piece_picker() -> rx.Component:
+    """«De una pieza»: the images and videos the brand already made, the newest first."""
+    return rx.vstack(
+        rx.text("Elige una imagen o un video de tus piezas", size="1", weight="medium"),
+        rx.cond(
+            CreativeState.pieces_loading,
+            rx.text("Cargando tus piezas…", size="1", color=T.TEXT_MUTED),
+            rx.cond(
+                CreativeState.piece_items.length() > 0,
+                rx.flex(
+                    rx.foreach(CreativeState.piece_items, _piece_tile),
+                    wrap="wrap",
+                    spacing="2",
+                    max_height="16rem",
+                    overflow_y="auto",
+                    width="100%",
+                ),
+                rx.text(
+                    "Aún no tienes piezas con imágenes o videos.", size="1", color=T.TEXT_MUTED
+                ),
+            ),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+        padding="0.75rem",
+        class_name="q-cr-tray q-cr-tray--dashed",
+    )
+
+
+def _carousel_section() -> rx.Component:
+    """The carousel kind (§ 2026-10-09, option A): one common background, then the
+    strip of slides — «+» to add one, a click to open one in the editor below — and
+    the closing CTA slide."""
+    return rx.vstack(
+        _background_upload(
+            "Fondo común (opcional)",
+            "Arrastra la foto de tu local o del fondo; cada diapositiva elige si lo usa",
+            help_text=(
+                "Una foto de tu local o del lugar donde quieres ver tu producto. Sirve para "
+                "todo el carrusel: en cada diapositiva decides si se usa."
+            ),
+        ),
+        _upload_error(),
+        rx.divider(),
+        rx.hstack(
+            _field_label(
+                "Diapositivas",
+                "Tócalas para editarlas. Hasta 10, mezclando imágenes y videos.",
+            ),
+            rx.spacer(),
+            rx.text(
+                CreativeState.carousel_slide_count,
+                " de 10",
+                size="1",
+                color=T.TEXT_MUTED,
+                white_space="nowrap",
+            ),
+            width="100%",
+            align="end",
+        ),
+        _carousel_strip(),
+        rx.cond(CreativeState.carousel_adding, _carousel_adder()),
+        rx.cond(CreativeState.carousel_slides.length() > 0, _slide_editor()),
+        rx.hstack(
+            rx.switch(
+                checked=CreativeState.carousel_closing,
+                on_change=CreativeState.set_carousel_closing,
+            ),
+            rx.text("Terminar con una diapositiva de cierre", size="2"),
+            _help(
+                "Diapositiva de cierre",
+                "La última del carrusel: el texto de tu botón de acción en grande, sobre los "
+                "colores de tu marca y con tu logo. Cuenta como una de las 10.",
+            ),
+            spacing="2",
+            align="center",
+        ),
+        callout(
+            "Las escenas se generan con IA a partir de tus fotos y llevan tu texto y tu logo; "
+            "cada video animado tarda un par de minutos más. La pieza lleva la etiqueta de "
+            "contenido generado con IA.",
+            "info",
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _carousel_result() -> rx.Component:
+    """The carousel: its slides as Instagram shows them, then the post's text."""
+    return _media_result(_post_text(), title="Carrusel", icon="gallery-horizontal-end")
+
+
 def _ad_image_section() -> rx.Component:
     """The advertising image: the operator's product, their background (their venue)
-    or both, and the scene around them. The multi-reference image model that renders
-    the scene is chosen but not wired yet, so the piece is still composed locally."""
+    or both, and the scene around them — generated by Seedream with those photos as
+    references (§ 2026-10-07); the words and the logo are set on top."""
     return rx.vstack(
         rx.text("¿Con qué armamos el anuncio?", size="2", weight="medium"),
         rx.segmented_control.root(
@@ -280,7 +1086,11 @@ def _ad_image_section() -> rx.Component:
             _background_upload("Foto del fondo", "Arrastra la foto de tu local o del fondo"),
         ),
         _upload_error(),
-        rx.text("Describe la escena (opcional)", size="2", weight="medium"),
+        # § request 2026-10-08: no «¿Qué quieres en la imagen?» step — the scene is it
+        _field_label(
+            "Describe la escena",
+            "Qué se ve, dónde y cómo se siente. Es lo único obligatorio.",
+        ),
         rx.text_area(
             value=CreativeState.ad_scene_prompt,
             on_change=CreativeState.set_ad_scene_prompt,
@@ -293,8 +1103,8 @@ def _ad_image_section() -> rx.Component:
             max_length=600,
         ),
         callout(
-            "La generación con IA de la escena aún no está conectada: por ahora componemos "
-            "tus fotos sin retocarlas. Tu descripción queda guardada con el encargo.",
+            "Generamos la escena con IA usando tus fotos; luego le ponemos tu texto y tu "
+            "logo. La pieza lleva la etiqueta de contenido generado con IA.",
             "info",
         ),
         spacing="2",
@@ -423,8 +1233,12 @@ def _avatar_section() -> rx.Component:
             max_length=600,
         ),
         rx.text(
-            "HeyGen genera una persona sintética (no es nadie real) antes del video: tarda "
-            "unos minutos más y se cobra aparte.",
+            rx.cond(
+                CreativeState.video_on_seedance,
+                "Creamos una persona sintética (no es nadie real) para el video.",
+                "Creamos una persona sintética (no es nadie real) antes del video: tarda "
+                "unos minutos más.",
+            ),
             size="1",
             color=T.TEXT_MUTED,
         ),
@@ -487,6 +1301,12 @@ def _avatar_section() -> rx.Component:
                         multiple=False,
                     ),
                 ),
+                _brand_media_picker(
+                    CreativeState.brand_media_choices,
+                    "avatar",
+                    CreativeState.use_brand_avatar_image,
+                    "O elige del Brand Kit",
+                ),
                 rx.checkbox(
                     "Tengo derecho a animar esta imagen (no es la foto de una persona real "
                     "sin su permiso).",
@@ -503,13 +1323,62 @@ def _avatar_section() -> rx.Component:
         width="100%",
         align_items="start",
     )
+    seedance_human = rx.vstack(
+        rx.text("Presentador", size="2", weight="medium"),
+        rx.segmented_control.root(
+            rx.segmented_control.item("Mujer", value="female"),
+            rx.segmented_control.item("Hombre", value="male"),
+            rx.segmented_control.item("Personalizado", value="custom"),
+            value=CreativeState.human_avatar_mode,
+            on_change=CreativeState.set_human_avatar_mode,
+            size="2",
+        ),
+        rx.cond(
+            CreativeState.human_avatar_mode == "custom",
+            custom,
+            rx.text(
+                "Una persona sintética (no es nadie real) generada con IA para tu video. Si "
+                "quieres elegir cómo se ve, usa «Personalizado».",
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+    seedance = rx.vstack(
+        rx.cond(CreativeState.brief_kind == "avatar_video", seedance_human, animated),
+        callout(
+            "El video se arma con tu presentador, tus productos y tu fondo. Por ahora sale "
+            "sin voz y dura como máximo 12 s: el guion queda en el texto del post.",
+            "info",
+        ),
+        spacing="4",
+        width="100%",
+        align_items="start",
+    )
+    return rx.cond(
+        CreativeState.video_on_seedance,
+        seedance,
+        _heygen_presenter(human, animated),
+    )
+
+
+def _heygen_presenter(human: rx.Component, animated: rx.Component) -> rx.Component:
+    """The HeyGen presenter: a library look or a prompt avatar, with its voice and its
+    engine (`QUALIFY_VIDEO_ENGINE=heygen`)."""
     return rx.cond(
         CreativeState.heygen_error != "",
         callout(CreativeState.heygen_error, "warn"),
         rx.cond(
             CreativeState.heygen_loading,
-            # content loading: the avatar/voice pickers that are about to appear
-            skeleton_rows(2, height="2.25rem"),
+            rx.hstack(
+                loading_spinner("sm"),
+                rx.text("Cargando avatares y voces…", size="2", color=T.TEXT_MUTED),
+                spacing="2",
+                align="center",
+            ),
             rx.vstack(
                 rx.cond(CreativeState.brief_kind == "avatar_video", human, animated),
                 _voice_select(),
@@ -529,10 +1398,10 @@ def _avatar_section() -> rx.Component:
 
 def _engine_select() -> rx.Component:
     return rx.vstack(
-        rx.text("Motor de HeyGen", size="2", weight="medium"),
+        rx.text("Calidad del avatar", size="2", weight="medium"),
         rx.segmented_control.root(
-            rx.segmented_control.item("Avatar IV · más natural", value="avatar_iv"),
-            rx.segmented_control.item("Avatar III · más barato", value="avatar_iii"),
+            rx.segmented_control.item("Más natural", value="avatar_iv"),
+            rx.segmented_control.item("Estándar", value="avatar_iii"),
             value=CreativeState.avatar_engine,
             on_change=CreativeState.set_avatar_engine,
             size="2",
@@ -596,14 +1465,54 @@ def _field(label: str, control: rx.Component, hint: str | None = None) -> rx.Com
     )
 
 
-# -- the wizard's steps (§ request 2026-09-30: one decision per screen, like the Brand
-# Kit). Each step is a `_step_body` — the Brand Kit's own centred column + anchor icon —
-# so both flows read as one. Which steps apply depends on the kind
-# (`creative_state.generator_steps`).
+# -- the sections (§ request 2026-10-08: one view with numbered sections replaced the
+# step-by-step wizard). Which sections a kind shows: `creative_state.generator_sections`.
 
 
-def _step_kind() -> rx.Component:
-    return _step_body(_kind_picker(), icon="layout-grid")
+def _section_number(key: str) -> rx.Component:
+    return rx.center(
+        rx.text(CreativeState.gen_section_numbers[key], size="2", weight="bold"),
+        width="1.75rem",
+        height="1.75rem",
+        flex_shrink="0",
+        border_radius="999px",
+        background=T.tone_color("accent", 3),
+        color=T.tone_color("accent", 11),
+    )
+
+
+def _section(
+    key: str,
+    title: str | rx.Var,
+    subtitle: str | rx.Var,
+    *body: rx.Component,
+) -> rx.Component:
+    """One numbered section: its number, title and help, then its fields. Shown only
+    when the chosen kind uses it; the numbers follow the kind."""
+    return rx.cond(
+        CreativeState.gen_sections.contains(key),
+        card(
+            rx.vstack(
+                rx.hstack(
+                    _section_number(key),
+                    rx.vstack(
+                        rx.heading(title, size="4", as_="h3"),
+                        rx.text(subtitle, size="1", color=T.TEXT_MUTED),
+                        spacing="0",
+                        align_items="start",
+                    ),
+                    spacing="3",
+                    align="center",
+                ),
+                *body,
+                spacing="4",
+                width="100%",
+                align_items="start",
+            ),
+            padding="1.25rem 1.5rem",
+            width="100%",
+        ),
+    )
 
 
 def _product_tile(item: rx.Var[dict[str, str]]) -> rx.Component:
@@ -624,7 +1533,8 @@ def _product_tile(item: rx.Var[dict[str, str]]) -> rx.Component:
                 rx.icon("image-off", size=22, color=T.TEXT_FAINT),
                 height="5.25rem",
                 width="100%",
-                class_name="q-cr-thumb-empty",
+                background=T.SURFACE_BG_RAISED,
+                border_radius="0.4rem",
             ),
         ),
         rx.text(
@@ -684,8 +1594,12 @@ def _product_picker() -> rx.Component:
         ),
         rx.cond(
             CreativeState.catalog_loading,
-            # content loading: the grid of product tiles that is about to appear
-            skeleton_rows(1, height="6rem", radius=T.RADIUS_CARD),
+            rx.hstack(
+                loading_spinner("sm"),
+                rx.text("Leyendo el catálogo…", size="2", color=T.TEXT_MUTED),
+                spacing="2",
+                align="center",
+            ),
             rx.cond(
                 CreativeState.catalog_items.length() > 0,
                 rx.grid(
@@ -749,28 +1663,44 @@ def _product_picker() -> rx.Component:
     )
 
 
-def _step_topic() -> rx.Component:
-    return _step_body(
-        rx.cond(CreativeState.brief_kind == "template", _product_picker()),
-        _field(
-            "Tema o producto",
-            rx.text_area(
-                value=CreativeState.brief_topic,
-                on_change=CreativeState.set_brief_topic,
-                placeholder="Ej.: nuestra hamburguesa doble con papas, solo este fin de semana",
-                width="100%",
-                rows="3",
-            ),
-            "Qué anuncia esta pieza. Es lo único obligatorio.",
+def _section_topic() -> rx.Component:
+    # § request 2026-10-06: not a topic or a product name — the general context of what
+    # the operator wants, in their own words. Objetivo was asked here until 2026-10-05;
+    # the brief keeps `brief_objective` at its default.
+    return _section(
+        "topic",
+        rx.match(
+            CreativeState.gen_category,
+            ("script", "¿Qué quieres en el guion?"),
+            ("image", "¿Qué quieres en la imagen?"),
+            ("template", "¿Qué quieres en la pieza?"),
+            ("carousel", "¿De qué trata el carrusel?"),
+            "¿Qué quieres en el video?",
         ),
-        # Objetivo was asked here until 2026-10-05 (§ request: "quitar objetivo y destino
-        # en todas las opciones"); the brief keeps `brief_objective` at its default.
-        icon="megaphone",
+        "Un contexto general: de qué trata, qué debe transmitir, a quién le habla y "
+        "cualquier detalle que importe. Es lo único obligatorio.",
+        rx.cond(CreativeState.brief_kind == "template", _product_picker()),
+        rx.text_area(
+            value=CreativeState.brief_topic,
+            on_change=CreativeState.set_brief_topic,
+            placeholder=(
+                "Ej.: quiero mostrar nuestra hamburguesa doble con papas, en promo solo "
+                "este fin de semana. Que se sienta antojable y cercano, para gente joven "
+                "que pide a domicilio, y que cierre invitando a pedir por WhatsApp."
+            ),
+            width="100%",
+            rows="5",
+        ),
     )
 
 
-def _step_channel() -> rx.Component:
-    return _step_body(
+def _section_channel() -> rx.Component:
+    # Destino was asked here until 2026-10-05; the brief keeps `brief_intent` at its
+    # default.
+    return _section(
+        "channel",
+        "¿Dónde se publica?",
+        "De qué trata y en qué formato.",
         _field(
             "De qué trata",
             rx.select.root(
@@ -785,8 +1715,6 @@ def _step_channel() -> rx.Component:
                 on_change=CreativeState.set_content_type,
             ),
         ),
-        # Destino was asked here until 2026-10-05 (same request as Objetivo); the brief
-        # keeps `brief_intent` at its default.
         _field(
             "Formato",
             rx.segmented_control.root(
@@ -799,18 +1727,27 @@ def _step_channel() -> rx.Component:
                 size="2",
             ),
         ),
-        icon="send",
     )
 
 
-def _step_presenter() -> rx.Component:
-    """The two avatar kinds only: who presents the video and with which voice."""
-    return _step_body(_avatar_section(), icon="user-round")
+def _section_presenter() -> rx.Component:
+    """The two avatar kinds only: who presents the video (and, with a library avatar,
+    with which voice)."""
+    return _section(
+        "presenter",
+        "¿Quién lo presenta?",
+        rx.cond(
+            CreativeState.video_on_seedance,
+            "Cómo es la persona o el personaje que aparece en el video.",
+            "El avatar y la voz que van a leer el guion.",
+        ),
+        _avatar_section(),
+    )
 
 
 def _template_details() -> rx.Component:
     """The template kind: the catalog product's photos already count; the operator may
-    add more for THIS piece (the template takes 2 to 4 — the router says which)."""
+    add more for THIS piece (the template takes 2 to 4)."""
     return rx.vstack(
         rx.cond(
             CreativeState.selected_product_id != "",
@@ -842,125 +1779,46 @@ def _template_details() -> rx.Component:
     )
 
 
-def _recipe_card(option: rx.Var) -> rx.Component:
-    """One of the three recipes: label, engine, cost, ETA, outputs; the suggested one
-    carries its badge; an unavailable one is dimmed and says why."""
-    selected = CreativeState.selected_recipe == option.key
-    return rx.box(
-        rx.vstack(
-            rx.hstack(
-                rx.match(
-                    option.engine_tone,
-                    ("accent", tone_badge(option.engine_label, "accent")),
-                    ("info", tone_badge(option.engine_label, "info")),
-                    tone_badge(option.engine_label, "neutral"),
-                ),
-                rx.spacer(),
-                rx.cond(option.suggested, tone_badge("Sugerida", "ok", icon="sparkles")),
-                width="100%",
-                align="center",
-            ),
-            rx.text(option.label, size="3", weight="medium"),
-            rx.hstack(
-                rx.text(option.cost_label, size="2", weight="bold", class_name="q-nums"),
-                rx.cond(
-                    option.eta_label != "",
-                    rx.text(option.eta_label, size="2", color=T.TEXT_MUTED, class_name="q-nums"),
-                ),
-                spacing="3",
-                align="baseline",
-            ),
-            rx.cond(
-                option.outputs_label != "",
-                rx.text(option.outputs_label, size="1", color=T.TEXT_MUTED),
-            ),
-            rx.cond(
-                option.reason != "",
-                rx.text(option.reason, size="1", color=T.tone_color("warn", 11)),
-            ),
-            spacing="2",
-            width="100%",
-            align_items="start",
-        ),
-        key=option.key,
-        on_click=CreativeState.choose_recipe(option.key),
-        role="radio",
-        aria_checked=rx.cond(selected, "true", "false"),
-        aria_disabled=rx.cond(option.selectable, "false", "true"),
-        cursor=rx.cond(option.selectable, "pointer", "not-allowed"),
-        opacity=rx.cond(option.selectable, "1", "0.6"),
-        padding="0.85rem 1rem",
-        class_name=rx.cond(selected, "q-cr-option q-cr-option--selected", "q-cr-option"),
-        width="100%",
-        height="100%",
+#: Title + help of the kind's own section.
+_DETAILS_HEADINGS: dict[str, tuple[str, str]] = {
+    "creator_script": (
+        "El guion",
+        "Generamos lo que dice la persona, toma por toma, y el texto del post.",
+    ),
+    "static_flyer": ("El anuncio", "Con qué fotos y qué escena armamos la imagen."),
+    "template": ("Tus fotos", "Necesita al menos 2 fotos; las del catálogo ya cuentan."),
+    "carousel": (
+        "Las diapositivas",
+        "Imágenes generadas, videos animados o piezas que ya hiciste, en el orden del post.",
+    ),
+    "video": ("Guion y fondo", "Quién escribe el guion y qué se ve detrás del avatar."),
+}
+
+
+def _details_heading(index: int) -> rx.Var[str]:
+    return rx.match(
+        CreativeState.brief_kind,
+        ("creator_script", _DETAILS_HEADINGS["creator_script"][index]),
+        ("static_flyer", _DETAILS_HEADINGS["static_flyer"][index]),
+        ("template", _DETAILS_HEADINGS["template"][index]),
+        ("carousel", _DETAILS_HEADINGS["carousel"][index]),
+        _DETAILS_HEADINGS["video"][index],
     )
 
 
-def _step_recipe() -> rx.Component:
-    """«¿Cómo la hacemos?» (plan §2.1 #4): the router's three options with their cost,
-    the suggested one marked and preselected; the operator can change it."""
-    return _step_body(
-        rx.cond(
-            CreativeState.recipe_loading,
-            rx.box(
-                progress_panel("Cotizando las tres recetas", creep_seconds=8),
-                width="100%",
-            ),
-            rx.vstack(
-                rx.cond(
-                    CreativeState.recipe_error != "",
-                    callout(
-                        CreativeState.recipe_error,
-                        "error",
-                    ),
-                ),
-                rx.cond(
-                    CreativeState.recipe_items.length() > 0,
-                    rx.grid(
-                        rx.foreach(CreativeState.recipe_items, _recipe_card),
-                        columns=rx.breakpoints(initial="1", sm="3"),
-                        spacing="3",
-                        width="100%",
-                        role="radiogroup",
-                        aria_label="Receta",
-                    ),
-                ),
-                rx.cond(
-                    CreativeState.recipe_notice != "",
-                    callout(CreativeState.recipe_notice, "info"),
-                ),
-                rx.cond(
-                    CreativeState.recipe_error != "",
-                    rx.button(
-                        rx.icon("refresh-cw", size=T.ICON_SM),
-                        "Cotizar de nuevo",
-                        variant="soft",
-                        size="1",
-                        on_click=CreativeState.load_recipe_options,
-                    ),
-                ),
-                rx.text(
-                    "El costo es el estimado por salida; el real queda en el borrador.",
-                    size="1",
-                    color=T.TEXT_FAINT,
-                ),
-                spacing="3",
-                width="100%",
-                align_items="start",
-            ),
-        ),
-        icon="route",
-    )
-
-
-def _step_details() -> rx.Component:
-    """What the chosen kind takes beyond the brief (the presenter has its own step)."""
-    return _step_body(
+def _section_details() -> rx.Component:
+    """What the chosen kind takes beyond the brief (the presenter has its own section),
+    and the brand's own resources for any kind."""
+    return _section(
+        "details",
+        _details_heading(0),
+        _details_heading(1),
         rx.match(
             CreativeState.brief_kind,
             ("creator_script", _duration_select()),
             ("static_flyer", _ad_image_section()),
             ("template", _template_details()),
+            ("carousel", _carousel_section()),
             rx.vstack(
                 _script_source(),
                 rx.divider(),
@@ -974,190 +1832,171 @@ def _step_details() -> rx.Component:
                 width="100%",
             ),
         ),
-        icon=rx.match(
-            CreativeState.brief_kind,
-            ("creator_script", "clapperboard"),
-            ("static_flyer", "image"),
-            ("template", "images"),
-            "film",
+        # a real creator's script takes no brand resources (§ request 2026-10-08): they
+        # record with whatever they have
+        rx.cond(
+            CreativeState.brief_kind != "creator_script",
+            rx.fragment(
+                rx.cond(CreativeState.brand_media_items.length() > 0, rx.divider()),
+                _brand_resources(),
+            ),
         ),
     )
 
 
-def _step_rules() -> rx.Component:
-    return _step_body(
-        _field(
-            "Debe mencionar",
-            rx.input(
-                value=CreativeState.brief_must_mention,
-                on_change=CreativeState.set_brief_must_mention,
-                placeholder="Ej.: envío gratis, reserva por WhatsApp",
+def _section_rules() -> rx.Component:
+    """«Reglas (opcional)»: folded until opened — most pieces need none."""
+    return card(
+        rx.vstack(
+            rx.hstack(
+                rx.icon(
+                    rx.cond(CreativeState.rules_open, "chevron-down", "chevron-right"),
+                    size=T.ICON_SM,
+                    color=T.TEXT_MUTED,
+                ),
+                rx.vstack(
+                    rx.text("Reglas (opcional)", size="3", weight="medium"),
+                    rx.text(
+                        "Lo que la pieza debe decir o evitar, solo esta vez.",
+                        size="1",
+                        color=T.TEXT_MUTED,
+                    ),
+                    spacing="0",
+                    align_items="start",
+                ),
+                spacing="3",
+                align="center",
                 width="100%",
+                cursor="pointer",
+                on_click=CreativeState.toggle_rules,
+                role="button",
+                aria_expanded=rx.cond(CreativeState.rules_open, "true", "false"),
             ),
-            "Separado por comas.",
-        ),
-        _field(
-            "Debe evitar",
-            rx.input(
-                value=CreativeState.brief_must_avoid,
-                on_change=CreativeState.set_brief_must_avoid,
-                placeholder="Ej.: descuento, barato",
-                width="100%",
+            rx.cond(
+                CreativeState.rules_open,
+                rx.vstack(
+                    _field(
+                        "Debe mencionar",
+                        rx.input(
+                            value=CreativeState.brief_must_mention,
+                            on_change=CreativeState.set_brief_must_mention,
+                            placeholder="Ej.: envío gratis, reserva por WhatsApp",
+                            width="100%",
+                        ),
+                        "Separado por comas.",
+                    ),
+                    _field(
+                        "Debe evitar",
+                        rx.input(
+                            value=CreativeState.brief_must_avoid,
+                            on_change=CreativeState.set_brief_must_avoid,
+                            placeholder="Ej.: descuento, barato",
+                            width="100%",
+                        ),
+                        "Separado por comas.",
+                    ),
+                    spacing="3",
+                    width="100%",
+                ),
             ),
-            "Separado por comas.",
-        ),
-        icon="shield-check",
-    )
-
-
-def _step_review() -> rx.Component:
-    return _step_body(
-        card(
-            rx.vstack(
-                rx.foreach(CreativeState.gen_recap, lambda row: _recap_row(row[0], row[1])),
-                spacing="2",
-                width="100%",
-                align_items="start",
-            ),
-            padding="1.25rem 1.5rem",
+            spacing="3",
             width="100%",
+            align_items="start",
         ),
-        rx.text(
-            "Cada pieza queda también como borrador, para revisarla y aprobarla.",
-            size="1",
-            color=T.TEXT_MUTED,
+        padding="1rem 1.5rem",
+        width="100%",
+    )
+
+
+def _kind_section() -> rx.Component:
+    """«¿Qué creamos?», on top: the kind decides which sections follow."""
+    return card(
+        rx.vstack(
+            rx.heading("¿Qué creamos?", size="4", as_="h3"),
+            _kind_picker(),
+            spacing="3",
+            width="100%",
+            align_items="start",
         ),
-        icon="clipboard-check",
+        padding="1.25rem 1.5rem",
+        width="100%",
     )
 
 
-def _window() -> rx.Component:
-    """One step at a time; an unknown cursor falls back to the first step."""
-    return rx.match(
-        CreativeState.gen_step,
-        ("kind", _step_kind()),
-        ("topic", _step_topic()),
-        ("channel", _step_channel()),
-        ("presenter", _step_presenter()),
-        ("details", _step_details()),
-        ("rules", _step_rules()),
-        ("recipe", _step_recipe()),
-        ("review", _step_review()),
-        _step_kind(),
-    )
-
-
-#: Title + subtitle per step. `details` is not here: its heading depends on the kind.
-_HEADINGS: dict[str, tuple[str, str]] = {
-    "kind": ("¿Qué quieres crear?", "Elige el tipo de pieza: de eso depende lo que sigue."),
-    "topic": ("¿Qué anuncias?", "El tema o producto, y lo que buscas con la pieza."),
-    "channel": ("¿Dónde se publica?", "De qué trata, a dónde va y en qué formato."),
-    "presenter": ("¿Quién lo presenta?", "El avatar y la voz que van a leer el guion."),
-    "rules": ("Lo que debe decir y evitar", "Opcional: reglas solo para esta pieza."),
-    "recipe": ("¿Cómo la hacemos?", "Tres recetas con su costo; la sugerida ya está marcada."),
-    "review": ("¿Todo listo?", "Revisa el encargo antes de generar."),
-}
-_DETAILS_HEADINGS: dict[str, tuple[str, str]] = {
-    "creator_script": (
-        "El guion",
-        "Generamos lo que dice la persona, toma por toma, y el texto del post.",
-    ),
-    "static_flyer": ("El anuncio", "Con qué fotos armamos la imagen."),
-    "template": ("Tus fotos", "Las del catálogo ya cuentan; añade más si quieres."),
-    "video": ("Guion y fondo", "Quién escribe el guion y qué se ve detrás del avatar."),
-}
-_RESULT_HEADING = ("Tu pieza", "Así quedó. También está en Borradores para revisarla.")
-
-
-def _heading(index: int) -> rx.Var[str]:
-    details = rx.match(
-        CreativeState.brief_kind,
-        ("creator_script", _DETAILS_HEADINGS["creator_script"][index]),
-        ("static_flyer", _DETAILS_HEADINGS["static_flyer"][index]),
-        ("template", _DETAILS_HEADINGS["template"][index]),
-        _DETAILS_HEADINGS["video"][index],
-    )
-    return rx.cond(
-        CreativeState.generator_view == "result",
-        _RESULT_HEADING[index],
-        rx.match(
-            CreativeState.gen_step,
-            ("details", details),
-            *((key, text[index]) for key, text in _HEADINGS.items()),
-            _HEADINGS["kind"][index],
-        ),
-    )
-
-
-def _counter() -> rx.Component:
-    """PASO 3 DE 7 above the title: the Brand Kit's `_step_counter` treatment, with a
-    total that follows the kind (the avatar kinds add ¿Quién lo presenta?)."""
-    return rx.text(
-        "Paso ",
-        CreativeState.gen_step_number,
-        " de ",
-        CreativeState.gen_step_total,
-        size="1",
-        weight="bold",
-        color=T.TEXT_MUTED,
-        letter_spacing="0.08em",
-        text_transform="uppercase",
-    )
-
-
-def _controls() -> rx.Component:
-    """Atrás bottom-left, Continuar bottom-right; Generar on the last step, the flow's
-    one solid action (§5.5). Continuar validates the step (`gen_next`) and says why it
-    cannot move; on ¿Qué anuncias? it is simply off until there is a topic."""
-    return rx.hstack(
+def _generate_bar() -> rx.Component:
+    """The form's one solid action (§5.5), and — right above it, where it is seen — what
+    still keeps it from generating."""
+    return rx.vstack(
         rx.cond(
-            CreativeState.gen_step != "kind",
-            rx.button(
-                rx.icon("chevron-left", size=T.ICON_SM),
-                "Atrás",
-                variant="ghost",
-                size="2",
-                radius=_CONTROL_RADIUS,
-                on_click=CreativeState.gen_back,
+            CreativeState.create_error != "",
+            callout(CreativeState.create_error, "error"),
+        ),
+        rx.hstack(
+            rx.text(
+                "Cada pieza queda también como borrador, para revisarla y aprobarla.",
+                size="1",
+                color=T.TEXT_MUTED,
             ),
-        ),
-        rx.spacer(),
-        rx.cond(
-            CreativeState.gen_step == "review",
+            rx.spacer(),
             rx.button(
                 rx.icon("sparkles", size=T.ICON_SM),
-                "Generar",
-                size="2",
+                rx.cond(CreativeState.gen_generating, "Generando…", "Generar"),
+                size="3",
                 radius=_CONTROL_RADIUS,
                 on_click=CreativeState.submit_generator_form,
                 loading=CreativeState.is_submitting,
+                disabled=CreativeState.gen_generating,
             ),
-            rx.button(
-                "Continuar",
-                rx.icon("chevron-right", size=T.ICON_SM),
-                size="2",
-                radius=_CONTROL_RADIUS,
-                on_click=CreativeState.gen_next,
-                disabled=(CreativeState.gen_step == "topic") & (CreativeState.brief_topic == ""),
-            ),
+            width="100%",
+            align="center",
+            spacing="3",
+            flex_wrap="wrap",
         ),
-        width="100%",
-        align="center",
         spacing="3",
+        width="100%",
     )
+
+
+_RESULT_HEADING = ("Tu pieza", "Así quedó. También está en Borradores para revisarla.")
 
 
 # -- the result view -------------------------------------------------------------------
 
 
 def _media_src(key: rx.Var[str]) -> rx.Var[str]:
+    """A file in the local upload store."""
     return rx.get_upload_url(key)
+
+
+def _item_src(item: rx.Var) -> rx.Var[str]:
+    """A generated piece: through `/r2media` — its only copy is in R2 since 2026-10-06 —
+    or, for one generated before, from the local upload store."""
+    return rx.cond(item.url != "", BACKEND_BASE + item.url, rx.get_upload_url(item.key))
+
+
+def _item_poster(item: rx.Var) -> rx.Var[str]:
+    return rx.cond(
+        item.poster_url != "",
+        BACKEND_BASE + item.poster_url,
+        rx.cond(item.poster_key != "", rx.get_upload_url(item.poster_key), ""),
+    )
 
 
 def _download(key: rx.Var[str], label: str = "Descargar") -> rx.Component:
     return rx.link(
         rx.hstack(rx.icon("download", size=14), rx.text(label, size="2"), spacing="1"),
         href=_media_src(key),
+        is_external=True,
+        download=True,
+    )
+
+
+def _item_download(item: rx.Var, label: str = "Descargar") -> rx.Component:
+    return rx.link(
+        rx.hstack(rx.icon("download", size=14), rx.text(label, size="2"), spacing="1"),
+        href=rx.cond(
+            item.url != "", BACKEND_BASE + item.url + "?download=1", rx.get_upload_url(item.key)
+        ),
         is_external=True,
         download=True,
     )
@@ -1179,25 +2018,25 @@ def _variant_switch() -> rx.Component:
 
 
 def _shot_row(line: rx.Var[str]) -> rx.Component:
-    # The review's own read-only field (`.q-rv-read`): a sunken well with the accent rule
-    # on its left — a shot reads the same here and in /drafts/[id].
-    return rx.box(rx.text(line, size="2"), class_name="q-rv-read", width="100%")
+    return rx.box(
+        rx.text(line, size="2"),
+        padding="0.6rem 0.8rem",
+        border_left=f"3px solid {T.tone_color('accent', 7)}",
+        background=T.SURFACE_BG_RAISED,
+        border_radius=T.RADIUS_CONTROL,
+        width="100%",
+    )
 
 
 def _script_result() -> rx.Component:
-    """Creator's script: only the script — what is said, and the shots to record."""
+    """Creator's script: only the script — what is said, and the shots to record. "Copiar"
+    takes both, the shots under the script (§ request 2026-10-06)."""
     variant = CreativeState.gen_variant_vm
+    has_shots = variant.shots.length() > 0
     return _card(
         rx.text(variant.script, size="3", white_space="pre-wrap", line_height="1.6"),
-        rx.button(
-            rx.icon("copy", size=14),
-            "Copiar guion",
-            variant="soft",
-            size="1",
-            on_click=rx.set_clipboard(variant.script),
-        ),
         rx.cond(
-            variant.shots.length() > 0,
+            has_shots,
             rx.vstack(
                 rx.text("Tomas", size="2", weight="medium", color=T.TEXT_MUTED),
                 rx.foreach(variant.shots, _shot_row),
@@ -1205,9 +2044,44 @@ def _script_result() -> rx.Component:
                 width="100%",
             ),
         ),
+        rx.button(
+            rx.icon("copy", size=14),
+            rx.cond(has_shots, "Copiar guion y tomas", "Copiar guion"),
+            variant="soft",
+            size="1",
+            on_click=[
+                rx.set_clipboard(variant.script_clipboard),
+                rx.toast.success("Guion copiado"),
+            ],
+        ),
+        rx.divider(),
+        _copy_block("Descripción del post", variant.description, "Descripción copiada"),
+        rx.cond(
+            variant.hashtags_text != "",
+            _copy_block("Hashtags", variant.hashtags_text, "Hashtags copiados"),
+        ),
         title="Guion",
         icon="clapperboard",
         actions=(_variant_switch(),),
+    )
+
+
+def _copy_block(label: str, text: rx.Var[str], copied: str) -> rx.Component:
+    """A labelled piece of the post under a creator's script (§ request 2026-10-08) —
+    the description or the hashtags — with its own Copiar."""
+    return rx.vstack(
+        rx.text(label, size="2", weight="medium", color=T.TEXT_MUTED),
+        rx.text(text, size="2", white_space="pre-wrap"),
+        rx.button(
+            rx.icon("copy", size=14),
+            "Copiar",
+            variant="soft",
+            size="1",
+            on_click=[rx.set_clipboard(text), rx.toast.success(copied)],
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
     )
 
 
@@ -1230,122 +2104,151 @@ def _post_text() -> rx.Component:
     )
 
 
-def _video_item(item: rx.Var) -> rx.Component:
+def _media_preview(item: rx.Var) -> rx.Component:
+    """One generated file as Borradores shows it (`creative_pages._media_item`): a rounded
+    frame with its ring and shadow, the file's bar under it. A video keeps the 9:16 frame;
+    an image keeps its own shape — a story or a square is never cropped to 4:5."""
+    is_video = item.media_type == "video"
     return rx.vstack(
-        rx.video(src=_media_src(item.key), controls=True, width="100%", max_width="22rem"),
-        _download(item.key, "Descargar video"),
-        spacing="2",
+        rx.cond(
+            is_video,
+            rx.video(
+                src=_item_src(item),
+                poster=_item_poster(item),
+                controls=True,
+                width="100%",
+                height="auto",
+                # a carousel's video is a feed slide (4:5 or 1:1): framed at its own
+                # shape — in the 9:16 frame of a Reel its sides, and the words on
+                # them, were cut off (2026-10-09: "las letras se cortan")
+                class_name=rx.cond(
+                    item.is_slide, "q-rv-media q-rv-media--slide", "q-rv-media q-rv-media--video"
+                ),
+            ),
+            rx.image(src=_item_src(item), alt="", height="auto", class_name="q-rv-media"),
+        ),
+        rx.hstack(
+            rx.center(
+                rx.cond(is_video, rx.icon("film", size=15), rx.icon("image", size=15)),
+                class_name="q-rv-glyph",
+            ),
+            rx.vstack(
+                rx.text(item.label, size="2", weight="bold"),
+                rx.text(rx.cond(is_video, "Video", "Imagen"), size="1", color=T.TEXT_MUTED),
+                spacing="0",
+                min_width="0",
+            ),
+            rx.spacer(),
+            _item_download(item),
+            align="center",
+            spacing="2",
+            width="100%",
+            class_name="q-rv-mediabar",
+        ),
+        spacing="3",
         align="center",
+        width="100%",
+    )
+
+
+def _media_result(
+    *sections: rx.Component,
+    title: str,
+    icon: str,
+    empty: str = "",
+) -> rx.Component:
+    """Every piece with media is shown the same way (§ request 2026-10-08), laid out as
+    Borradores lays a draft out (`creative_pages._review_panel`): a grid, the media on its
+    own stage in a fixed track, a real gutter, the text in its sections beside it."""
+    media = rx.cond(
+        # § request 2026-10-08: a carousel's slides as a real carousel, not stacked
+        CreativeState.gen_is_carousel,
+        media_carousel(
+            CreativeState.gen_draft.media,
+            CreativeState.gen_slide,
+            on_prev=CreativeState.gen_slide_step(-1),
+            on_next=CreativeState.gen_slide_step(1),
+            on_pick=CreativeState.gen_slide_pick,
+            on_tick=CreativeState.gen_slide_auto,
+            render_item=_media_preview,
+        ),
+        rx.vstack(
+            rx.foreach(CreativeState.gen_draft.media, _media_preview),
+            spacing="3",
+            width="100%",
+        ),
+    )
+    if empty:
+        # a template's outputs land one by one; until the first, say so
+        media = rx.cond(
+            CreativeState.gen_draft.media.length() > 0,
+            media,
+            rx.text(empty, size="2", color=T.TEXT_MUTED),
+        )
+    return _card(
+        rx.box(
+            rx.box(
+                media,
+                class_name="q-rv-stage",
+                width="100%",
+                max_width=rx.breakpoints(initial="22rem", md="none"),
+                margin_x=rx.breakpoints(initial="auto", md="0"),
+            ),
+            rx.vstack(
+                *(rx.box(section, class_name="q-rv-section") for section in sections),
+                spacing="3",
+                min_width="0",
+                width="100%",
+            ),
+            display="grid",
+            grid_template_columns=rx.breakpoints(
+                initial="minmax(0, 1fr)",
+                md="18rem minmax(0, 1fr)",
+                xl="20rem minmax(0, 1fr)",
+            ),
+            column_gap=rx.breakpoints(initial="0", md="2rem", xl="2.5rem"),
+            row_gap="1.5rem",
+            align_items="start",
+            width="100%",
+        ),
+        title=title,
+        icon=icon,
+        actions=(_variant_switch(),),
     )
 
 
 def _video_result() -> rx.Component:
-    """Avatar video (human or animated): the HeyGen video, the script it read, the post."""
-    variant = CreativeState.gen_variant_vm
-    return _card(
-        rx.flex(
-            rx.box(
-                rx.foreach(CreativeState.gen_draft.media, _video_item),
-                flex_shrink="0",
+    """Avatar video (human or animated): the video, its script, the post. A Seedance 1.0
+    video is silent, so its script is not "read" — it stays as the post's script."""
+    return _media_result(
+        rx.fragment(
+            rx.text(
+                rx.cond(CreativeState.video_on_seedance, "Guion", "Guion leído"),
+                class_name="q-rv-title",
             ),
-            rx.vstack(
-                rx.text("Guion leído", size="2", weight="medium", color=T.TEXT_MUTED),
-                rx.text(variant.script, size="2", white_space="pre-wrap"),
-                rx.divider(),
-                _post_text(),
-                spacing="3",
-                width="100%",
-                align_items="start",
-            ),
-            direction=rx.breakpoints(initial="column", md="row"),
-            gap="5",
-            width="100%",
+            rx.text(CreativeState.gen_variant_vm.script, class_name="q-rv-read q-rv-read--multi"),
         ),
+        _post_text(),
         title="Video",
         icon="video",
-        actions=(_variant_switch(),),
-    )
-
-
-def _image_item(item: rx.Var) -> rx.Component:
-    return rx.vstack(
-        rx.image(src=_media_src(item.key), width="100%", class_name="q-cr-output"),
-        rx.hstack(
-            rx.text(item.label, size="1", color=T.TEXT_MUTED),
-            rx.spacer(),
-            _download(item.key),
-            width="100%",
-        ),
-        spacing="1",
-        width="100%",
     )
 
 
 def _image_result() -> rx.Component:
-    """Ad image: the image, or the carousel's slides in order (composed locally)."""
-    return _card(
-        rx.grid(
-            rx.foreach(CreativeState.gen_draft.media, _image_item),
-            columns=rx.breakpoints(initial="1", sm="2", md="3"),
-            spacing="3",
-            width="100%",
-        ),
-        rx.divider(),
-        _post_text(),
-        title="Imagen",
-        icon="image",
-        actions=(_variant_switch(),),
-    )
-
-
-def _template_item(item: rx.Var) -> rx.Component:
-    """One output of a template run — a Reel (video) or a still — named by its port."""
-    return rx.vstack(
-        rx.cond(
-            item.media_type == "video",
-            rx.video(src=_media_src(item.key), controls=True, width="100%", height="auto"),
-            rx.image(src=_media_src(item.key), width="100%", class_name="q-cr-output"),
-        ),
-        rx.hstack(
-            rx.text(item.label, size="1", color=T.TEXT_MUTED),
-            rx.spacer(),
-            _download(item.key),
-            width="100%",
-        ),
-        spacing="1",
-        width="100%",
-    )
+    """Ad image: the image, or the carousel's slides in order (the scene generated by
+    Seedream, the words and the logo set on top)."""
+    return _media_result(_post_text(), title="Imagen", icon="image")
 
 
 def _template_result() -> rx.Component:
     """Template run: every output as it lands (Reel, feed, story), then the post's text.
     An output still rendering is simply not in the list yet (plan §2.2: a still never
     waits for the video)."""
-    return _card(
-        rx.cond(
-            CreativeState.gen_draft.media.length() > 0,
-            rx.grid(
-                rx.foreach(CreativeState.gen_draft.media, _template_item),
-                columns=rx.breakpoints(initial="1", sm="3"),
-                spacing="3",
-                width="100%",
-            ),
-            rx.text("Las salidas aparecen aquí según van saliendo.", size="2", color=T.TEXT_MUTED),
-        ),
-        rx.cond(
-            CreativeState.selected_recipe_label != "",
-            rx.text(
-                "Receta: ",
-                CreativeState.selected_recipe_label,
-                size="1",
-                color=T.TEXT_FAINT,
-            ),
-        ),
-        rx.divider(),
+    return _media_result(
         _post_text(),
         title="Tu paquete",
         icon="layout-template",
-        actions=(_variant_switch(),),
+        empty="Las salidas aparecen aquí según van saliendo.",
     )
 
 
@@ -1379,164 +2282,11 @@ def _failed() -> rx.Component:
     )
 
 
-def _canva_link_item(item: rx.Var) -> rx.Component:
-    """One piece sent to Canva: its state, reopen, bring back, and the edited file. A
-    block of its own, so `ui.card`."""
-    body = rx.vstack(
-        rx.hstack(
-            rx.match(
-                item["status"],
-                ("exported", signal_pill(item["status_label"], "ok")),
-                ("failed", signal_pill(item["status_label"], "error")),
-                signal_pill(item["status_label"], "info"),
-            ),
-            rx.cond(
-                item["exported_at"] != "",
-                rx.text(item["exported_at"], size="1", color=T.TEXT_MUTED),
-            ),
-            rx.spacer(),
-            rx.cond(
-                item["open_url"] != "",
-                rx.link(
-                    rx.button(rx.icon("external-link", size=14), "Abrir", variant="soft", size="1"),
-                    href=item["open_url"],
-                ),
-            ),
-            rx.button(
-                rx.icon("download", size=14),
-                "Traer de Canva",
-                variant="soft",
-                size="1",
-                loading=CanvaState.busy,
-                on_click=CanvaState.pull(item["id"]),
-            ),
-            width="100%",
-            align="center",
-            spacing="2",
-        ),
-        rx.cond(
-            item["error"] != "",
-            rx.text(item["error"], size="1", color=T.tone_color("error", 11)),
-        ),
-        rx.cond(
-            item["exported_key"] != "",
-            rx.hstack(
-                rx.cond(
-                    item["media_type"] == "video",
-                    rx.video(
-                        src=_media_src(item["exported_key"]),
-                        controls=True,
-                        width="12rem",
-                        height="auto",
-                    ),
-                    rx.image(
-                        src=_media_src(item["exported_key"]),
-                        width="12rem",
-                        border_radius="0.4rem",
-                    ),
-                ),
-                _download(item["exported_key"]),
-                spacing="3",
-                align="end",
-            ),
-        ),
-        spacing="2",
-        width="100%",
-    )
-    return card(body, padding="0.6rem 0.75rem")
-
-
-def _canva_card() -> rx.Component:
-    """Edit the piece in the operator's own Canva and bring the result back. The whole
-    trip stays in this tab (the session lives here); see `canva_state.py`."""
-    return _card(
-        rx.cond(
-            ~CanvaState.configured,
-            rx.hstack(
-                tone_badge("Sin configurar", "neutral", icon="plug-zap"),
-                rx.text(
-                    "Faltan las credenciales de la integración con Canva en este servidor.",
-                    size="2",
-                    color=T.TEXT_MUTED,
-                ),
-                spacing="2",
-                align="center",
-                wrap="wrap",
-            ),
-            rx.vstack(
-                rx.text(
-                    "Mandamos la pieza a tu Canva, la editas allí y, al pulsar «Volver» en "
-                    "Canva, la traemos de vuelta aquí.",
-                    size="2",
-                    color=T.TEXT_MUTED,
-                ),
-                rx.cond(
-                    CreativeState.gen_kind != "static_flyer",
-                    rx.text(
-                        "Los videos llegan a «Subidos» en Canva: arrástralo al diseño (Canva no "
-                        "deja colocarlo automáticamente).",
-                        size="1",
-                        color=T.TEXT_MUTED,
-                    ),
-                ),
-                # soft: the result screen's one solid action is "Revisar y aprobar"
-                rx.cond(
-                    CanvaState.connected,
-                    rx.button(
-                        rx.icon("external-link", size=16),
-                        "Editar en Canva",
-                        size="2",
-                        variant="soft",
-                        loading=CanvaState.busy,
-                        on_click=CanvaState.send,
-                    ),
-                    rx.button(
-                        rx.icon("link", size=16),
-                        "Conectar Canva",
-                        size="2",
-                        variant="soft",
-                        on_click=CanvaState.connect,
-                    ),
-                ),
-                rx.cond(CanvaState.notice != "", callout(CanvaState.notice, "ok")),
-                rx.cond(CanvaState.error != "", callout(CanvaState.error, "error")),
-                rx.cond(
-                    CanvaState.has_links,
-                    rx.vstack(
-                        rx.foreach(CanvaState.links, _canva_link_item),
-                        spacing="2",
-                        width="100%",
-                    ),
-                ),
-                spacing="3",
-                width="100%",
-                align_items="start",
-            ),
-        ),
-        title="Editar en Canva",
-        icon="palette",
-        actions=(
-            rx.cond(
-                CanvaState.connected,
-                rx.button(
-                    "Desconectar",
-                    variant="ghost",
-                    color_scheme="gray",
-                    size="1",
-                    on_click=CanvaState.disconnect,
-                ),
-            ),
-        ),
-        # (re)read the connection and the links whenever the result's draft is shown
-        on_mount=CanvaState.load(CreativeState.gen_draft_id),
-    )
-
-
 def _result_view() -> rx.Component:
     return rx.vstack(
         # what the piece is — metadata, so `tag`s (§5.3), not state badges
         rx.hstack(
-            rx.cond(CreativeState.gen_draft, tag(CreativeState.gen_draft.kind_label, size="2")),
+            rx.cond(CreativeState.gen_draft, tag(CreativeState.gen_kind_label, size="2")),
             tag(CreativeState.effective_format_label, size="2"),
             spacing="2",
         ),
@@ -1547,13 +2297,10 @@ def _result_view() -> rx.Component:
                 ("creator_script", _script_result()),
                 ("static_flyer", _image_result()),
                 ("template", _template_result()),
+                ("carousel", _carousel_result()),
                 _video_result(),
             ),
             rx.cond(CreativeState.gen_is_failed, _failed(), _waiting()),
-        ),
-        rx.cond(
-            CreativeState.gen_is_ready & (CreativeState.gen_kind != "creator_script"),
-            _canva_card(),
         ),
         rx.hstack(
             rx.button(
@@ -1567,14 +2314,28 @@ def _result_view() -> rx.Component:
             rx.spacer(),
             rx.cond(
                 CreativeState.gen_draft_id != "",
-                # the result screen's one solid action (§5.5): where the piece goes next
-                rx.link(
+                # the result screen's one solid action (§5.5): where the piece goes next —
+                # held back, with no link at all, until the piece finished generating
+                # (§ request 2026-10-06)
+                rx.cond(
+                    CreativeState.gen_is_done,
+                    # § request 2026-10-08: going to review starts the generator over, so
+                    # «Crear pieza» opens on its first screen, not on this piece
                     rx.button(
                         "Revisar y aprobar en Borradores",
                         rx.icon("arrow-right", size=16),
                         size="2",
+                        on_click=CreativeState.review_in_drafts,
                     ),
-                    href="/drafts/" + CreativeState.gen_draft_id,
+                    rx.tooltip(
+                        rx.button(
+                            "Revisar y aprobar en Borradores",
+                            rx.icon("arrow-right", size=16),
+                            size="2",
+                            disabled=True,
+                        ),
+                        content="Disponible cuando termine de generarse la pieza.",
+                    ),
                 ),
             ),
             width="100%",
@@ -1586,27 +2347,65 @@ def _result_view() -> rx.Component:
     )
 
 
+def _voice_flag() -> rx.Component:
+    """The Brand Kit's Tu voz y tono is still to configure (§ request 2026-10-06): a small
+    warning above the step, with the one button that goes to configure it. It never
+    blocks Generar — the piece just comes out with the default tone."""
+    return rx.hstack(
+        rx.icon("mic-off", size=T.ICON_SM, color=T.tone_color("warn", 11), flex_shrink="0"),
+        rx.text(
+            "Tu marca aún no tiene configurada su voz y tono: lo que generes sonará genérico.",
+            size="2",
+            color=T.tone_color("warn", 11),
+            flex="1",
+        ),
+        rx.button(
+            "Configurar voz",
+            rx.icon("arrow-right", size=14),
+            size="1",
+            variant="soft",
+            **T.tone_scheme("warn"),
+            on_click=CreativeState.configure_voice,
+            flex_shrink="0",
+        ),
+        spacing="3",
+        align="center",
+        width="100%",
+        padding="0.6rem 0.85rem",
+        background=T.tone_color("warn", 2),
+        border=f"1px solid {T.tone_color('warn', 6)}",
+        border_radius=T.RADIUS_CONTROL,
+        role="status",
+        flex_wrap="wrap",
+    )
+
+
 def generator_page() -> rx.Component:
-    """/create: the generator as a wizard, laid out exactly like the Brand Kit's
-    (`creative_wizard_pages.brand_manual_index`): `page_header` with the step counter,
-    one card that fills the panel, the step centred in it and the controls pinned to
-    its bottom. After Generar the same frame shows the piece (`_result_view`)."""
+    """/create: one view (§ request 2026-10-08) — «¿Qué creamos?», the kind's numbered
+    sections, «Reglas», Generar, and the piece below once generated (`_result_view`)."""
     readiness = CreativeState.readiness
-    on_form = CreativeState.generator_view == "form"
     return app_shell(
         page_header(
-            _heading(0),
-            _heading(1),
-            kicker=rx.cond(on_form, _counter(), rx.fragment()),
+            "Crear pieza",
+            "Elige qué quieres crear y completa solo lo que pide.",
             title_size="8",
         ),
         page_body(
-            rx.vstack(
+            rx.cond(
+                CreativeState.create_loading,
+                card(
+                    _loading_view("Cargando el generador"),
+                    padding="1.75rem",
+                    width="100%",
+                    display="flex",
+                    align_items="center",
+                    justify_content="center",
+                ),
                 rx.vstack(
                     # The BrandReadiness gate is lifted for now (§ request 2026-09-30):
                     # the warning stays, but it never blocks Generar.
                     rx.cond(
-                        on_form & readiness,
+                        readiness,
                         rx.cond(
                             ~readiness.can_generate,
                             callout(
@@ -1616,84 +2415,63 @@ def generator_page() -> rx.Component:
                             ),
                         ),
                     ),
-                    # §5.6: why the step cannot move on, above the card where it is seen
+                    rx.cond(CreativeState.kit_voice_missing, _voice_flag()),
+                    # § request 2026-10-09: while a piece generates the form is off — it
+                    # comes back on its own when the piece is ready (or failed)
                     rx.cond(
-                        on_form & (CreativeState.create_error != ""),
-                        callout(CreativeState.create_error, "error"),
+                        CreativeState.gen_generating,
+                        callout(
+                            "Generando tu pieza. El formulario se reactiva cuando termine; "
+                            "te avisamos aquí.",
+                            "info",
+                            icon="loader-circle",
+                        ),
                     ),
-                    # a recipe that changed the piece (HeyGen → avatar video) says so
-                    rx.cond(
-                        on_form
-                        & (CreativeState.recipe_notice != "")
-                        & (CreativeState.gen_step != "recipe"),
-                        callout(CreativeState.recipe_notice, "info"),
-                    ),
-                    spacing="3",
-                    width="100%",
-                    max_width="36rem",
-                    align_self="center",
-                ),
-                rx.cond(
-                    CreativeState.create_loading,
-                    card(
-                        _loading_view("Cargando el generador"),
-                        padding="1.75rem",
+                    rx.box(
+                        rx.vstack(
+                            _kind_section(),
+                            _section_topic(),
+                            _section_channel(),
+                            _section_presenter(),
+                            _section_details(),
+                            _section_rules(),
+                            spacing="4",
+                            width="100%",
+                        ),
+                        class_name=rx.cond(
+                            CreativeState.gen_generating, "q-cr-form q-cr-form--busy", "q-cr-form"
+                        ),
+                        aria_disabled=rx.cond(CreativeState.gen_generating, "true", "false"),
                         width="100%",
-                        flex="1",
-                        display="flex",
-                        align_items="center",
-                        justify_content="center",
                     ),
+                    _generate_bar(),
                     rx.cond(
-                        on_form,
+                        CreativeState.generator_view == "result",
                         card(
                             rx.vstack(
-                                _window(),
-                                width="100%",
-                                # the presenter's look grid and the three recipe cards
-                                # want more room than a field
-                                max_width=rx.cond(
-                                    (CreativeState.gen_step == "presenter")
-                                    | (CreativeState.gen_step == "recipe"),
-                                    "46rem",
-                                    "36rem",
+                                rx.vstack(
+                                    rx.heading(_RESULT_HEADING[0], size="5", as_="h2"),
+                                    rx.text(_RESULT_HEADING[1], size="2", color=T.TEXT_MUTED),
+                                    spacing="1",
+                                    align_items="start",
                                 ),
-                                align_self="center",
-                                align_items="center",
-                                flex="1",
-                                justify_content="center",
-                            ),
-                            _controls(),
-                            padding="1.75rem",
-                            width="100%",
-                            flex="1",
-                            display="flex",
-                            flex_direction="column",
-                            justify_content="space-between",
-                            # remount per step so the frame settles in too (see the
-                            # Brand Kit's own note on this `key`)
-                            key=CreativeState.gen_step,
-                            gap="1.5rem",
-                        ),
-                        card(
-                            rx.vstack(
                                 _result_view(),
+                                spacing="4",
                                 width="100%",
-                                max_width="48rem",
-                                align_self="center",
+                                align_items="start",
                             ),
                             padding="1.75rem",
                             width="100%",
-                            flex="1",
-                            display="flex",
-                            flex_direction="column",
+                            id="gen-result",
+                            scroll_margin_top="1rem",
                         ),
                     ),
+                    spacing="4",
+                    width="100%",
+                    max_width="48rem",
+                    align_self="center",
+                    padding_bottom="2rem",
                 ),
-                spacing="4",
-                width="100%",
-                flex="1",
-                min_height="0",
             ),
         ),
     )

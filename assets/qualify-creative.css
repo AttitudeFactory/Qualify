@@ -331,3 +331,75 @@
 .q-gcard--draft.q-chip-temp--hot,
 .q-gcard--discarded.q-chip-temp--hot,
 .q-gcard--discarded.q-chip-temp--cold { border-style: dashed; }
+
+
+/* ── Carrusel (§ 2026-10-09): la tira de miniaturas y el editor de la diapositiva ──
+   Todo sobre el material control del kit (§3.4): la miniatura y el «+» son opciones,
+   el editor es una card, sus bloques son bandejas; ningún color escrito en la página. */
+.q-cr-slide {
+  border-radius: var(--q-radius-control);
+  background: var(--q-field-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge), inset 0 1px 0 var(--q-control-hi);
+  transition:
+    box-shadow var(--q-dur-fast) var(--q-ease),
+    transform var(--q-dur) var(--q-spring);
+}
+.q-cr-slide:where(:hover) {
+  box-shadow: inset 0 0 0 1px var(--q-control-edge-hover), inset 0 1px 0 var(--q-control-hi), var(--q-control-shadow);
+}
+.q-cr-slide--selected,
+.q-cr-slide--selected:where(:hover) {
+  box-shadow: inset 0 0 0 2px var(--accent-8), inset 0 1px 0 var(--q-control-hi), 0 0 0 4px var(--accent-a3);
+}
+.q-cr-slide:focus-visible,
+.q-cr-add:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+/* The «+» tile: a dashed, sunken slot — the same language as the drop zone. */
+.q-cr-add {
+  border: 1px dashed var(--q-control-edge-hover);
+  border-radius: var(--q-radius-control);
+  background: var(--q-field-fill);
+  color: var(--gray-11);
+  cursor: pointer;
+  transition: border-color var(--q-dur-fast) var(--q-ease), background var(--q-dur-fast) var(--q-ease), color var(--q-dur-fast) var(--q-ease);
+}
+.q-cr-add:where(:hover) { border-color: var(--accent-8); background: var(--q-field-fill-focus); color: var(--accent-11); }
+/* A mark over a picture (a slide's number, its words, the play of a video): a dark
+   pill, white on it, in both themes — it sits on a photo, not on the panel. */
+.q-cr-mark {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--black-a9);
+  color: white;
+}
+/* The slide editor (card material) and its blocks (control trays). */
+.q-cr-editor {
+  border-radius: var(--q-radius-card);
+  border: 1px solid var(--q-card-edge);
+  background: var(--q-card-fill);
+  box-shadow: inset 0 1px 0 var(--q-card-hi);
+}
+.q-cr-tray {
+  border-radius: var(--q-radius-control);
+  background: var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge), inset 0 1px 0 var(--q-control-hi);
+}
+.q-cr-tray--dashed {
+  background: var(--q-field-fill);
+  box-shadow: none;
+  border: 1px dashed var(--q-control-edge-hover);
+}
+.q-cr-rule { height: 1px; width: 100%; background: var(--q-control-edge-hover); }
+/* The viewer's arrows over a slide: lifted like an island, never a hand-written shadow. */
+.q-cr-arrow { box-shadow: var(--q-elev-island); }
+
+/* A carousel's video slide: its own feed shape (4:5 or 1:1), never the Reel's 9:16 frame
+   that cut its sides off (2026-10-09). */
+.q-rv-media--slide { aspect-ratio: auto; object-fit: contain; height: auto; }
+
+/* The generator's form while a piece generates (2026-10-09): dimmed and inert — it comes
+   back on its own when the piece lands. */
+.q-cr-form { transition: opacity var(--q-dur) var(--q-ease), filter var(--q-dur) var(--q-ease); }
+.q-cr-form--busy { pointer-events: none; opacity: 0.55; filter: saturate(0.7); user-select: none; }
+

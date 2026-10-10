@@ -22,7 +22,8 @@ def test_connect_without_credentials_explains_instead_of_redirecting(
     monkeypatch.delenv("QUALIFY_CANVA_CLIENT_SECRET", raising=False)
     state = CanvaState()
     assert state.connect() is None
-    assert "no está configurado" in state.error
+    assert "no está configurada" in state.error
+    assert "QUALIFY_" not in state.error  # no env var name reaches the operator
 
 
 def test_connect_keeps_the_pkce_verifier_and_state_server_side(

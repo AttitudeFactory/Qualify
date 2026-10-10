@@ -2,11 +2,11 @@
 unknown one means.
 
 `monitored_media.media_type` stores Meta's value VERBATIM, with no CHECK constraint
-(migration 0047): Meta may add a format this code does not know yet, and that value must
+(migration 0049): Meta may add a format this code does not know yet, and that value must
 be kept, not discarded or rewritten. This module is the one place that interprets it.
 A stored value has exactly three possible readings:
 
-- `None` — the format was never read (a row monitored before 0047 that is not a Reel,
+- `None` — the format was never read (a row monitored before 0049 that is not a Reel,
   until the sync reads it once).
 - a `MediaType` — one of the three formats Qualify knows.
 - unrecognized — Meta sent something else. It stays in the column as received;

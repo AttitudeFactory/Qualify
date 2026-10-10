@@ -90,7 +90,7 @@ from .planner_vm import (
     time_label_12h,
     week_label,
 )
-from .r2_media import issue_view_path
+from .r2_media import is_r2_key, issue_view_path
 
 logger = logging.getLogger(__name__)
 
@@ -215,12 +215,27 @@ def _connection_index(
     return index, active
 
 
+def _thumbnail_url(tenant_id: UUID, url: str | None) -> str | None:
+    """A POST's thumbnail as the page can load it: a generated piece lives in R2 only
+    since 2026-10-06, so its key becomes a short-lived `/r2media/<token>` path; an
+    `http(s)` URL or a local upload key is kept as it is. A token that cannot be minted
+    costs only the thumbnail (the card shows its placeholder)."""
+    if not url or not is_r2_key(url):
+        return url
+    try:
+        return issue_view_path(tenant_id, url, "image") or None
+    except Exception as exc:  # noqa: BLE001 — a thumbnail is not worth failing the week
+        logger.warning("planner thumbnail token not issued: %s", type(exc).__name__)
+        return None
+
+
 def _post_option(
     post: PostSummary,
     occupied: dict[str | None, EventRecord] | None = None,
     *,
     zone: ZoneInfo | None = None,
     connections: dict[str, tuple[str, str]] | None = None,
+    thumbnails: dict[str, str | None] | None = None,
     video_url: str = "",
 ) -> PostOptionVM:
     """`occupied` is the POST's live event per output (`PlannerService.occupied_outputs`),
@@ -251,7 +266,7 @@ def _post_option(
         post_id=str(post.post_id),
         title=post.title,
         caption_excerpt=post.caption_excerpt,
-        thumbnail_url=post.thumbnail_url,
+        thumbnail_url=(thumbnails or {}).get(str(post.post_id), post.thumbnail_url),
         category=post.category,
         approval=post.approval.value,
         detail_href=post.detail_href,
@@ -313,6 +328,7 @@ def load_gallery(tenant_id: UUID) -> GalleryData:
             occupied.get(p.post_id),
             zone=zone,
             connections=index,
+            thumbnails={str(p.post_id): _thumbnail_url(tenant_id, p.thumbnail_url)},
             video_url=videos.get(str(p.post_id), ""),
         )
         for p in posts
@@ -349,7 +365,11 @@ def _campaign_fields(post: PostSummary | None) -> dict[str, str]:
     return {"campaign_name": campaign.name, "campaign_color": campaign.color}
 
 
-def _card_input(planned: PlannedEvent, video_urls: dict[str, str] | None = None) -> CardInput:
+def _card_input(
+    planned: PlannedEvent,
+    video_urls: dict[str, str] | None = None,
+    thumbnails: dict[str, str | None] | None = None,
+) -> CardInput:
     event, post = planned.event, planned.post
     return CardInput(
         event_id=str(event.id),
@@ -361,7 +381,11 @@ def _card_input(planned: PlannedEvent, video_urls: dict[str, str] | None = None)
         connection_id=str(event.connection_id),
         post_title=post.title if post is not None else None,
         caption_excerpt=post.caption_excerpt if post is not None else "",
-        thumbnail_url=post.thumbnail_url if post is not None else None,
+        thumbnail_url=(
+            (thumbnails or {}).get(str(post.post_id), post.thumbnail_url)
+            if post is not None
+            else None
+        ),
         category=post.category if post is not None else None,
         content_type=post.content_type if post is not None else None,
         approval=post.approval.value if post is not None else None,
@@ -433,6 +457,16 @@ def load_week(
     unscheduled = service.list_unscheduled(tenant_id=tenant_id, brand_id=brand_id)
     occupied = service.occupied_outputs(tenant_id=tenant_id, brand_id=brand_id)
     video_urls = _week_video_urls(tenant_id, planned)
+    # one viewable thumbnail per POST on the page (R2 keys → `/r2media`, § 2026-10-06)
+    posts = {
+        str(p.post_id): p
+        for p in (
+            *(item.post for item in planned if item.post is not None),
+            *schedulable,
+            *unscheduled,
+        )
+    }
+    thumbnails = {pid: _thumbnail_url(tenant_id, p.thumbnail_url) for pid, p in posts.items()}
     # The drawer previews the chosen POST: one short-lived URL per schedulable R2 video.
     option_videos = {
         str(p.post_id): url
@@ -443,7 +477,7 @@ def load_week(
         monday=monday,
         today=today,
         zone=zone,
-        items=[_card_input(p, video_urls) for p in planned],
+        items=[_card_input(p, video_urls, thumbnails) for p in planned],
         connections=index,
     )
     return WeekData(
@@ -461,6 +495,7 @@ def load_week(
                 occupied.get(p.post_id),
                 zone=zone,
                 connections=index,
+                thumbnails=thumbnails,
                 video_url=option_videos.get(str(p.post_id), ""),
             )
             for p in unscheduled
@@ -471,6 +506,7 @@ def load_week(
                 occupied.get(p.post_id),
                 zone=zone,
                 connections=index,
+                thumbnails=thumbnails,
                 video_url=option_videos.get(str(p.post_id), ""),
             )
             for p in schedulable
@@ -734,7 +770,9 @@ def event_detail(tenant_id: UUID, event_id: str, tz_override: str = "") -> Event
         post_id=str(event.post_id),
         title=post.title if post is not None else "POST no disponible",
         caption_excerpt=post.caption_excerpt if post is not None else "",
-        thumbnail_url=(post.thumbnail_url or "") if post is not None else "",
+        thumbnail_url=(
+            (_thumbnail_url(tenant_id, post.thumbnail_url) or "") if post is not None else ""
+        ),
         category_label=category_label(post.category if post is not None else None),
         content_type_label=content_type_label(post.content_type if post is not None else None),
         approval_label=ready.label,

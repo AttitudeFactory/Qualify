@@ -403,6 +403,18 @@ def test_without_a_port_assets_with_ports_are_evaluated_as_before() -> None:
     assert verdict.output_port is None
 
 
+def test_a_generated_pieces_r2_copy_is_publishable() -> None:
+    """pendientes-generador-contenido.md §1's closing criterion (§ 2026-10-06): the key the
+    generator now writes for a piece's durable copy passes without `media_not_in_r2`."""
+    from qualify_api.creative.media import generated_object_key
+
+    draft = uuid4()
+    image = _image(object_key=generated_object_key(TENANT, draft, 1, "slide-1.jpg"))
+    assert isinstance(evaluate(_post(image)), PublishablePost)
+    reel = _video(object_key=generated_object_key(TENANT, draft, 2, "video.mp4"))
+    assert isinstance(evaluate(_post(reel, category="reel")), PublishablePost)
+
+
 # --- QUA-118 v2: the event's destination ------------------------------------------------
 #
 # Rules verified against Meta's IG User Media reference (2026-10-06): a feed image only

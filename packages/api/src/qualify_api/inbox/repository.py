@@ -77,7 +77,7 @@ class MonitoredMediaRecord:
     metadata_fetched_at: datetime | None = None
     metadata_attempted_at: datetime | None = None
     metadata_error: MetadataFetchError | None = None
-    # QUA-146 (0047): Meta's value verbatim — read with `inbox.media_type`, never parsed
+    # QUA-146 (0049): Meta's value verbatim — read with `inbox.media_type`, never parsed
     # here, so an unrecognized format reaches the caller exactly as stored.
     media_type: str | None = None
 

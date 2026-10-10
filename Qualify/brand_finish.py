@@ -49,6 +49,7 @@ from .creative_provider import brand_readiness, default_brand_id, save_kit
 from .creative_vm import KitFormVM
 from .r2_media import is_r2_key, issue_view_path
 from .tenant import tenant_uuid
+from .upload_names import safe_upload_name
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,8 @@ _FILES_FAILED = (
     "Guardamos tu marca, pero no los archivos del brandboard (logo y elementos). "
     "Inténtalo de nuevo en un momento."
 )
+#: An R2 object key keeps ASCII only — on top of `safe_upload_name` (basename, no
+#: separators), which every upload handler shares (PR #100 review).
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -106,7 +109,7 @@ def _upload(gate: Any, tenant_id: UUID, prefix: str, file: StagedFile, upload_di
     if is_r2_key(file.key):
         return file.key
     data = (upload_dir / file.key).read_bytes()
-    name = _SAFE_NAME.sub("_", file.name or Path(file.key).name)[-80:] or "archivo"
+    name = _SAFE_NAME.sub("_", safe_upload_name(file.name or Path(file.key).name))[-80:]
     folder = file.kind if not file.slot else f"{file.kind}/{file.slot}"
     object_key = f"{prefix}{folder}/{uuid4().hex}_{name}"
     gate.put_media(tenant_id, object_key, io.BytesIO(data), content_type_of(name))
@@ -344,6 +347,33 @@ def kit_status(tenant_id: UUID, brand_id: UUID) -> KitStatus:
     progress = raw if isinstance(raw, dict) else None
     unfinished = progress is not None and progress.get("completed") is False
     return KitStatus(completed=form is not None and not unfinished, progress=progress)
+
+
+def kit_voice_configured(tenant_id: UUID, brand_id: UUID) -> bool:
+    """Tu voz y tono counts as configured by the same test the Brand Kit editor uses to
+    open on it (`brand_kit_editor.needs_voice`): saved there, or the tone moved off its
+    defaults, or a cloned voice — any one is enough (§ request 2026-10-06, the
+    generator's flag)."""
+    from qualify_api.creative.voice_clone import VoiceCloneService
+
+    from .creative_provider import load_kit_form
+    from .creative_state import TONE_DEFAULT
+
+    details = BrandKitStore().load_details(tenant_id=tenant_id, brand_id=brand_id)
+    if (details.connect or {}).get("voice_configured"):
+        return True
+    form = load_kit_form(tenant_id, brand_id)
+    if form is not None and any(
+        value != TONE_DEFAULT
+        for value in (
+            form.tone_formal_casual,
+            form.tone_sober_enthusiastic,
+            form.tone_technical_plain,
+            form.tone_brief_elaborate,
+        )
+    ):
+        return True
+    return VoiceCloneService().current(tenant_id=tenant_id, brand_id=brand_id) is not None
 
 
 def tenant_kit_status(tenant_id: UUID) -> KitStatus:

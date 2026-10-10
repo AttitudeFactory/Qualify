@@ -1,7 +1,7 @@
 """monitored_media: store Meta's `media_type` of each monitored media (QUA-146 phase 1)
 
-Revision ID: 0047
-Revises: 0046
+Revision ID: 0049
+Revises: 0048
 Create Date: 2026-10-09
 
 QUA-146 extends monitoring beyond Reels to images and carousels. `media_product_type`
@@ -31,12 +31,11 @@ FORCE RLS — the same as 0041/0044.
 No new grants: 0005 granted SELECT/INSERT/UPDATE on the whole table, which covers new
 columns. RLS is unchanged (row-level, column-agnostic).
 
-Numbering (checked against `main` on 2026-10-09, head `0046_monitored_media_metadata`):
-two open PRs already carry colliding revision ids and must be renumbered before they
-merge, whatever happens here — PR #100 (`0046_carousel_kind`, `0047_regeneration_
-replaces_rows`) and PR #106 (`0046_signup_invites`), all three chained from `0045`. With
-this revision on `main` they become `0048`+ in whatever order they merge, each with
-`down_revision` pointing at the head of `main` at that moment.
+Numbering: first written as `0047` on top of `0046_monitored_media_metadata`; renumbered
+to `0049` on top of `0048_regeneration_replaces_rows` once PR #100 (`0047_carousel_kind`,
+`0048_regeneration_replaces_rows`) merged first (2026-10-10). PR #106
+(`0046_signup_invites`) still has to be renumbered by its author onto whatever is the head
+of `main` when it merges.
 """
 
 from __future__ import annotations
@@ -44,8 +43,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0047"
-down_revision = "0046"
+revision = "0049"
+down_revision = "0048"
 branch_labels = None
 depends_on = None
 

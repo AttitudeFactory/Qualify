@@ -24,13 +24,23 @@ from __future__ import annotations
 
 import hashlib
 
-from qualify_creative.enums import ContentKind, EmojiPolicy, GenerationTask
+from qualify_creative.enums import (
+    AvatarSource,
+    ContentKind,
+    EmojiPolicy,
+    GenerationTask,
+    SlideSource,
+    SlideText,
+)
 from qualify_creative.providers import RenderedPrompt
 from qualify_creative.schemas import (
     ADS_DESCRIPTION_MAX,
     ADS_HEADLINE_MAX,
     HOOK_MAX,
+    PRINTED_CTA_MAX,
+    PRINTED_HOOK_MAX,
     SCRIPT_MAX,
+    BrandAccount,
     BrandContext,
     BrandKit,
     BrandVoiceProfile,
@@ -43,6 +53,18 @@ _NONE = "(none)"
 #: Conversational Spanish is ~2.5 words per second; a script is sized to its target
 #: length at a slightly slower pace so a presenter never has to rush it.
 _SPOKEN_WORDS_PER_SECOND = 2.3
+
+#: One angle per variant (§ request 2026-10-08). Every variant used to get the same
+#: prompt and "take a distinct angle", blind to which variant it was — and the three
+#: converged on one opening. `claude-opus-5` takes no `temperature`, so the variety has to
+#: be asked for; each draft starts the rotation at its own offset.
+VARIANT_ANGLES: tuple[str, ...] = (
+    "lead with one concrete, sensory detail of the product",
+    "a small everyday scene or a touch of humour the audience recognises",
+    "open with a direct question to the audience",
+    "urgency or the offer: why today, why now",
+    "a first reaction, as if someone had just tried it",
+)
 
 _EMOJI_GUIDANCE: dict[EmojiPolicy, str] = {
     EmojiPolicy.NONE: "none — do not use any emoji",
@@ -91,7 +113,8 @@ def _context_section(context: BrandContext | None) -> tuple[str, ...]:
         )
     if context.hashtags:
         lines.append(
-            "The brand's hashtags (pick the ones that fit, within the hashtag limits): "
+            "The brand's hashtags (pick the ones that fit and add ones specific to this"
+            " piece's topic, within the hashtag limits): "
             + " ".join(f"#{tag}" for tag in context.hashtags)
         )
     if context.elements:
@@ -102,17 +125,43 @@ def _context_section(context: BrandContext | None) -> tuple[str, ...]:
         lines.extend(
             f"- {e.name}: {e.context}" if e.context else f"- {e.name}" for e in context.elements
         )
-    if context.referentes:
-        lines.append(
-            "Accounts the brand looks up to, most influential first (a reference for tone and"
-            " format; never copy them, never name them): " + ", ".join(context.referentes)
-        )
-    if context.competitors:
-        lines.append(
-            "Competitors (never mention them, never compare against them by name): "
-            + ", ".join(context.competitors)
-        )
+    # § 2026-10-06: each sorted account with what the discovery learned about it, and
+    # what to do with it — learn from it, stand apart from it, or stay away from it
+    for accounts, heading in (
+        (
+            context.referentes,
+            "Accounts the brand looks up to, most influential first. Learn from their tone,"
+            " hooks and formats; never copy their lines, never name them:",
+        ),
+        (
+            context.competitors,
+            "Competitors. Stand apart from them — do not echo their offers, claims or"
+            " slogans; never mention them, never compare against them by name:",
+        ),
+        (
+            context.detractors,
+            "Accounts the brand does NOT want to resemble. Avoid their tone, style and"
+            " formats; never mention them:",
+        ),
+    ):
+        if accounts:
+            lines.append(heading)
+            lines.extend(_account_line(account) for account in accounts)
     return ("\n".join(lines),)
+
+
+def _account_line(account: BrandAccount) -> str:
+    """`- @handle (network, kind): why. Operator's note: …. Their own words: «…»` — only
+    the parts the discovery has, in a fixed order (the prefix is cached)."""
+    head = f"- {account.handle} ({account.network}" + (
+        f", {account.kind})" if account.kind else ")"
+    )
+    parts = [head + (f": {account.why}" if account.why else "")]
+    if account.note:
+        parts.append(f"Operator's note: {account.note}")
+    if account.sample:
+        parts.append(f"Their own words: «{account.sample}»")
+    return " ".join(part if part.endswith((".", "»", "…", ")")) else part + "." for part in parts)
 
 
 def _stable_prefix(
@@ -157,22 +206,28 @@ def _stable_prefix(
         f"Signature moves: {_listing(voice.signature_moves)}\n"
         "Evidence the profile was distilled from:\n" + sources,
         "== Writing examples ==\n"
+        "They show the voice; never reuse their sentences or their openings word for word.\n"
         "On-brand, write like this:\n" + _bullets(kit.do_examples) + "\n"
         "Off-brand, never write like this:\n" + _bullets(kit.dont_examples),
         "== Hard rules ==\n"
         f"Banned words, never use them: {_listing(kit.banned_words)}\n"
         f"Forbidden claims, never state or imply them: {_listing(kit.forbidden_claims)}\n"
         f"Emoji policy: {_EMOJI_GUIDANCE[kit.emoji_policy]}\n"
-        f"Hashtags: use between {hashtag.minimum} and {hashtag.maximum} hashtags."
+        f"Hashtags: use between {hashtag.minimum} and {hashtag.maximum} hashtags, mixing the"
+        " brand's own with ones specific to the piece's topic."
         f" Always include: {_listing(hashtag.always)}. Never use: {_listing(hashtag.never)}\n"
         f"Caption length: between {lengths.caption_min_chars} and"
         f" {lengths.caption_max_chars} characters.",
-        f"== Calls to action ==\nPreferred CTA patterns: {_listing(kit.cta_patterns)}",
+        "== Calls to action ==\n"
+        "Preferred CTA patterns — keep their intent, but word each CTA freshly; never copy a"
+        f" pattern verbatim: {_listing(kit.cta_patterns)}",
         "== Visual identity ==\n"
         f"Palette (RGB): {_listing(kit.palette_rgb)}\n"
-        f"Logo asset: {kit.logo_asset_key or _NONE}\n"
-        f"Template asset: {kit.template_asset_key or _NONE}\n"
-        f"Reference images: {_listing(kit.reference_image_keys)}\n"
+        # § 2026-10-06: whether the files exist, not their storage keys — the model
+        # cannot open a key, it only cost tokens
+        f"Logo: {'on file' if kit.logo_asset_key else _NONE}\n"
+        f"Brand template: {'on file' if kit.template_asset_key else _NONE}\n"
+        f"Reference images: {len(kit.reference_image_keys) or _NONE}\n"
         f"Allowed image routes: {allowed_routes or _NONE}\n"
         f"Blocked image routes: {blocked_routes}",
         *_context_section(context),
@@ -220,10 +275,163 @@ _KIND_ASSIGNMENT: dict[ContentKind, str] = {
         "This is a still image. The hook and the CTA are printed on it, so keep them"
         " short and punchy. Leave `script` empty and `shots` empty."
     ),
+    ContentKind.TEMPLATE: (
+        "A brand template composes the operator's real product photos into a vertical"
+        " Reel and its feed and story stills. The hook and the CTA are printed on them, so"
+        " keep them short and punchy. Leave `script` empty and `shots` empty."
+    ),
+    ContentKind.CAROUSEL: (
+        "This is a feed carousel: several slides — images and short silent videos — the"
+        " viewer swipes through. The hook and the CTA are printed on the slides the"
+        " operator chose, so keep them short and punchy; the caption carries the rest."
+        " Leave `script` empty and `shots` empty."
+    ),
 }
 
 
-def _volatile_suffix(brief: ContentBrief, task: GenerationTask) -> str:
+def _on_screen(brief: ContentBrief) -> tuple[str, ...]:
+    """What the viewer will SEE while the words play (§ 2026-10-06: a video got less to
+    go on than a creator's script) — the presenter and the images the operator gave, so
+    the script can refer to them instead of being written blind. Nothing for a kind
+    whose visuals the copy does not share the screen with."""
+    media = brief.media
+    seen: list[str] = []
+    if brief.kind is ContentKind.AVATAR_VIDEO:
+        seen.append(
+            "a generated photoreal presenter described as «" + media.avatar_prompt.strip() + "»"
+            if media.avatar_source is AvatarSource.AI and media.avatar_prompt.strip()
+            else "a photoreal presenter from the video library"
+        )
+    elif brief.kind is ContentKind.ANIMATED_AVATAR_VIDEO:
+        if media.avatar_source is AvatarSource.IMAGE:
+            seen.append("an animated character made from the operator's own image")
+        else:
+            seen.append(
+                "an animated character described as «" + media.avatar_prompt.strip() + "»"
+                if media.avatar_prompt.strip()
+                else "an animated character"
+            )
+    if brief.kind.is_video:
+        if media.background_key:
+            seen.append("behind it, the operator's own background image (e.g. their venue)")
+        if media.product_keys:
+            seen.append(
+                f"{len(media.product_keys)} photo(s) of the product composed into the scene"
+            )
+    elif brief.kind is ContentKind.TEMPLATE and media.product_keys:
+        seen.append(f"{len(media.product_keys)} real photo(s) of the product")
+    elif brief.kind is ContentKind.CAROUSEL:
+        seen.extend(_carousel_slides(brief))
+    if not seen:
+        return ()
+    return ("On screen: " + "; ".join(seen) + ". Write so the words fit what is shown.",)
+
+
+def _carousel_slides(brief: ContentBrief) -> list[str]:
+    """One line per carousel slide, in order: what it shows and what is printed on it."""
+    lines: list[str] = []
+    slides = brief.media.slides
+    total = len(slides) + int(brief.media.closing_slide)
+    for number, slide in enumerate(slides, start=1):
+        what = {
+            SlideSource.GENERATED: "a generated image",
+            SlideSource.ANIMATED: "a short silent video",
+            SlideSource.EXISTING: "an image or video the brand already made",
+        }[slide.source]
+        scene = slide.scene_prompt.strip()
+        text = {SlideText.HOOK: ", the hook printed on it", SlideText.CTA: ", the CTA on it"}.get(
+            slide.text, ""
+        )
+        lines.append(f"slide {number}/{total}: {what}" + (f" of «{scene}»" if scene else "") + text)
+    if brief.media.closing_slide:
+        lines.append(f"slide {total}/{total}: the CTA, large, on the brand's colours")
+    return lines
+
+
+#: The kinds whose hook and CTA are printed on an image (§ request 2026-10-08).
+_PRINTED_KINDS = frozenset({ContentKind.STATIC_FLYER, ContentKind.TEMPLATE, ContentKind.CAROUSEL})
+
+#: What the piece does with the logo it was given, per kind — the brand mark's place.
+_LOGO_PLACEMENT: dict[ContentKind, str] = {
+    ContentKind.AVATAR_VIDEO: "it is shown in a corner of the video, behind the presenter",
+    ContentKind.ANIMATED_AVATAR_VIDEO: "it is shown in a corner of the video, behind the character",
+    ContentKind.STATIC_FLYER: "it is printed on the image",
+    ContentKind.TEMPLATE: "the template places it where the brand mark goes",
+    ContentKind.CAROUSEL: "it is printed in a corner of the generated slides",
+    ContentKind.CREATOR_SCRIPT: "show it on camera where it fits (packaging, the counter, a sign)",
+}
+
+
+def _chosen_resources(brief: ContentBrief, context: BrandContext | None) -> tuple[str, ...]:
+    """The Brand Kit resources the operator chose for THIS piece (§ request 2026-10-06),
+    with each one's usage note: the logo in the brand mark's place, every other element
+    used as its note says. A key the context does not know (deleted since) is skipped."""
+    media = brief.media
+    if not (media.brand_logo_key or media.brand_element_keys) or context is None:
+        return ()
+    by_key = {element.key: element for element in context.elements if element.key}
+    lines: list[str] = []
+    logo = by_key.get(media.brand_logo_key or "")
+    if logo is not None:
+        note = f" Usage note: {logo.context}." if logo.context else ""
+        lines.append(f"- Logo «{logo.name}»: {_LOGO_PLACEMENT[brief.kind]}.{note}")
+    for key in media.brand_element_keys:
+        element = by_key.get(key)
+        if element is None:
+            continue
+        note = element.context or "no usage note: use it where it naturally fits"
+        lines.append(f"- «{element.name}» — {note}")
+    if not lines:
+        return ()
+    return (
+        "Brand resources chosen for this piece — use each one as its note says; refer to"
+        " them in the script and visual directions where they fit:",
+        *lines,
+    )
+
+
+def variant_angle(variant: int, offset: int = 0) -> str:
+    """The angle of `variant` (0-based) for a draft whose rotation starts at `offset`."""
+    return VARIANT_ANGLES[(offset + variant) % len(VARIANT_ANGLES)]
+
+
+def _variant_lines(brief: ContentBrief, variant: int | None, angle_offset: int) -> tuple[str, ...]:
+    """One option asks for no angle (§ 2026-10-06, videos). Several, with a known
+    variant, get that variant's own angle; without one (the preview of the brief as a
+    whole) only the count."""
+    count = brief.variants_requested
+    if count <= 1:
+        return ()
+    if variant is None:
+        return (f"This is one of {count} variants: take a distinct angle on the assignment.",)
+    return (
+        f"This is variant {variant + 1} of {count}. Its angle:"
+        f" {variant_angle(variant, angle_offset)}. The other variants take other angles, so"
+        " commit to this one: its own opening, its own wording, its own CTA.",
+    )
+
+
+def _recent_lines(recent: tuple[str, ...]) -> tuple[str, ...]:
+    """What the brand already published or drafted lately (§ request 2026-10-08): every
+    draft used to open with the same line, copied from the writing examples."""
+    if not recent:
+        return ()
+    return (
+        "Openings and CTAs this brand used recently. Do not start or close this piece the"
+        " same way, and do not reuse their wording:",
+        *(f"- {line}" for line in recent),
+    )
+
+
+def _volatile_suffix(
+    brief: ContentBrief,
+    task: GenerationTask,
+    context: BrandContext | None = None,
+    *,
+    variant: int | None = None,
+    angle_offset: int = 0,
+    recent: tuple[str, ...] = (),
+) -> str:
     constraints = brief.constraints
     width, height = brief.format.dimensions
     max_chars = (
@@ -232,6 +440,14 @@ def _volatile_suffix(brief: ContentBrief, task: GenerationTask) -> str:
         else "(brand default)"
     )
     field_lines = list(_COPY_FIELD_LINES)
+    if brief.kind in _PRINTED_KINDS:
+        # the hook and the CTA are printed on the image: a number to aim at, no emoji
+        field_lines[0] = (
+            f"- hook: string, at most {PRINTED_HOOK_MAX} characters, printed on the image, no emoji"
+        )
+        field_lines[3] = (
+            f"- cta: string, at most {PRINTED_CTA_MAX} characters, printed on the image, no emoji"
+        )
     own_script = brief.media.own_script.strip()
     if own_script:
         field_lines.append("- script: string, EXACTLY the operator's script below, word for word")
@@ -260,13 +476,17 @@ def _volatile_suffix(brief: ContentBrief, task: GenerationTask) -> str:
         f"Task: {task.value}",
         f"Objective: {brief.objective.value}",
         f"Content type: {brief.content_type.value}",
-        f"Topic: {brief.topic}",
+        # § 2026-10-06: the operator describes the whole piece in their own words, not
+        # just a topic or a product name
+        f"What the operator wants (their own words, the piece's general context): {brief.topic}",
         f"Product reference: {brief.product_ref or _NONE}",
         f"Platform: {brief.platform.value}",
         f"Format: {brief.format.value} ({width}x{height})",
         f"Intent: {brief.intent.value}",
         f"Image route: {brief.image_route.value}",
         f"Piece kind: {brief.kind.value}. {_KIND_ASSIGNMENT[brief.kind]}",
+        *_on_screen(brief),
+        *_chosen_resources(brief, context),
         *(
             (
                 "The operator wrote the script themselves. Do not rewrite it: copy it"
@@ -276,10 +496,10 @@ def _volatile_suffix(brief: ContentBrief, task: GenerationTask) -> str:
             if own_script
             else ()
         ),
+        *_recent_lines(recent),
         f"Must mention: {_listing(constraints.must_mention)}",
         f"Must avoid: {_listing(constraints.must_avoid)}",
         f"Maximum caption characters for this piece: {max_chars}",
-        f"Variants requested: {brief.variants_requested}",
         "",
         "== Output ==",
         # One call per variant (`ContentService._generate`): each answer is ONE object.
@@ -287,8 +507,7 @@ def _volatile_suffix(brief: ContentBrief, task: GenerationTask) -> str:
         " these fields:",
         *field_lines,
         ads_note,
-        f"This is one of {brief.variants_requested} variants: take a distinct angle on"
-        " the assignment.",
+        *_variant_lines(brief, variant, angle_offset),
     )
     return "\n".join(lines) + "\n"
 
@@ -300,8 +519,15 @@ def render_prompt(
     brief: ContentBrief,
     task: GenerationTask,
     context: BrandContext | None = None,
+    variant: int | None = None,
+    angle_offset: int = 0,
+    recent: tuple[str, ...] = (),
 ) -> RenderedPrompt:
     """Deterministic: the same (kit, voice, brief, task) renders the same bytes, always.
+
+    `variant` (0-based) gives that variant its own angle, rotated from `angle_offset`;
+    `recent` lists the brand's recent openings and CTAs not to repeat. Both ride the
+    suffix only, so every variant still shares the cached prefix.
 
     The stable prefix depends only on (kit, voice); briefs of the same pair share it
     byte for byte, which is what lets it take the prompt-cache breakpoint. The suffix
@@ -309,7 +535,9 @@ def render_prompt(
     the prefix, so a cache miss can be traced to the exact field that moved.
     """
     prefix = _stable_prefix(kit, voice, context)
-    suffix = _volatile_suffix(brief, task)
+    suffix = _volatile_suffix(
+        brief, task, context, variant=variant, angle_offset=angle_offset, recent=recent
+    )
     fingerprint = hashlib.sha256(prefix.encode("utf-8")).hexdigest()
     return RenderedPrompt(
         stable_prefix=prefix,

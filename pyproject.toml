@@ -44,7 +44,8 @@ explicit = true
 [dependency-groups]
 # `qualify-creative[llm]` = the anthropic SDK: the CRM calls Claude for the hashtag
 # catalog (`qualify_api.hashtags.ai`) and for copy, so the app's venv needs it installed.
-backend = ["qualify-api", "qualify-shared", "qualify-scraper", "qualify-creative[llm]"]
+# `[media]` = PyAV, which fits a carousel's video slides to the feed (§ 2026-10-09).
+backend = ["qualify-api", "qualify-shared", "qualify-scraper", "qualify-creative[llm,media]"]
 crm = ["reflex>=0.9.12", "sqlmodel>=0.0.47", "python-dotenv>=1.2.3"]
 # Heavy ML tree (torch/transformers via qualify-models) — kept out of default-groups.
 ml = ["qualify-models"]

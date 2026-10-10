@@ -923,7 +923,7 @@ def test_monitored_media_metadata_never_crosses_tenants() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# QUA-146 (0047) — `media_type`: historical backfill, verbatim storage of unknown values
+# QUA-146 (0049) — `media_type`: historical backfill, verbatim storage of unknown values
 # --------------------------------------------------------------------------------------
 
 
@@ -933,9 +933,9 @@ def _backfill_reels_sql() -> str:
         / "migrations"
         / "postgres"
         / "versions"
-        / "0047_monitored_media_type.py"
+        / "0049_monitored_media_type.py"
     )
-    spec = importlib.util.spec_from_file_location("migration_0047", path)
+    spec = importlib.util.spec_from_file_location("migration_0049", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -953,7 +953,7 @@ def _force_columns(tenant_id: UUID, media_id: str, **columns: str | None) -> Non
         )
 
 
-def test_the_0047_backfill_marks_only_historical_reels_as_video() -> None:
+def test_the_0049_backfill_marks_only_historical_reels_as_video() -> None:
     """The migration's exact statement, run through `tenant_session` so RLS confines it to
     this test's own fresh tenant: Reels without a type become VIDEO; FEED, STORY, an
     unknown product type and an already-typed Reel are left alone."""

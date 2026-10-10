@@ -216,14 +216,14 @@ class _AssetView(Protocol):
 def thumbnail_source(
     *, preview_key: str | None, assets: Sequence[_AssetView], now: datetime
 ) -> str | None:
-    """What the calendar card can show in an `<img>`: an `http(s)` URL, or a key of the
-    local upload store (the UI turns it into a URL with `rx.get_upload_url`, as the
-    creative screens do). The POST's own `preview_key` (0027) comes first — a video's
-    poster or the first image — then the first asset.
+    """What the calendar card can show in an `<img>`: an `http(s)` URL, a key of the
+    local upload store, or an R2 key (`t/{tenant}/…` — where a generated piece lives
+    since 2026-10-06; the app turns it into a short-lived `/r2media/<token>` path,
+    `planner_provider._thumbnail_url`). The POST's own `preview_key` (0027) comes first —
+    a video's poster or the first image — then the first asset.
 
     Never a video file (an `<img>` cannot show one; a video without a poster gets the
-    placeholder), never an R2 key (`t/{tenant}/…`: nothing serves the object store to a
-    browser), never a provider URL that already expired. `None` → the card's placeholder.
+    placeholder), never a provider URL that already expired. `None` → the placeholder.
     """
     ordered = sorted(assets, key=lambda asset: asset.position)
     video_files = {
@@ -247,12 +247,7 @@ def thumbnail_source(
         else:
             candidates.append(first.media_url)
     for candidate in candidates:
-        if (
-            candidate
-            and candidate not in video_files
-            and candidate not in expired
-            and not candidate.startswith(_OBJECT_STORE_PREFIX)
-        ):
+        if candidate and candidate not in video_files and candidate not in expired:
             return candidate
     return None
 
