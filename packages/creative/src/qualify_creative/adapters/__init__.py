@@ -6,6 +6,14 @@ lazily inside the method that needs it.
 """
 
 from qualify_creative.adapters.anthropic_copy import AnthropicCopyAdapter, CopyRefused
+from qualify_creative.adapters.byteplus_ark import (
+    ArkAPIError,
+    ArkError,
+    ArkTaskFailed,
+    ArkTaskTimeout,
+    SeedanceVideoAdapter,
+    SeedreamImageAdapter,
+)
 from qualify_creative.adapters.heygen_video import (
     HeyGenAPIError,
     HeyGenAvatarVideoAdapter,
@@ -16,10 +24,16 @@ from qualify_creative.adapters.heygen_video import (
 
 __all__ = [
     "AnthropicCopyAdapter",
+    "ArkAPIError",
+    "ArkError",
+    "ArkTaskFailed",
+    "ArkTaskTimeout",
     "CopyRefused",
     "HeyGenAPIError",
     "HeyGenAvatarVideoAdapter",
     "HeyGenError",
     "HeyGenRenderFailed",
     "HeyGenRenderTimeout",
+    "SeedanceVideoAdapter",
+    "SeedreamImageAdapter",
 ]

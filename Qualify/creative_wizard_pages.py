@@ -46,10 +46,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import replace
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -97,6 +96,7 @@ from .ui import (
     tone_badge,
 )
 from .ui import tokens as T
+from .upload_names import safe_upload_name as _safe_upload_name
 from .voice_lab import voice_analysis_result, voice_lab_panel
 
 logger = logging.getLogger(__name__)
@@ -113,21 +113,6 @@ def _finish_background_task(task: asyncio.Task) -> None:
 
 
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
-#: What an uploaded file's name may keep in its staged key: letters (any script),
-#: digits, spaces, dots, dashes and underscores.
-_UNSAFE_NAME_CHARS = re.compile(r"[^\w .-]+")
-
-
-def _safe_upload_name(raw: str | None) -> str:
-    """The name a dropped file is staged under: its last path component only, without
-    separators, control characters or leading dots, so a crafted name can never write
-    outside the tenant's folder (PR #86 review). Reflex already reduces it to a
-    basename; this does not rely on that."""
-    name = PurePath((raw or "").replace("\\", "/")).name
-    name = _UNSAFE_NAME_CHARS.sub("_", name).lstrip(". ")[-120:]
-    return name or "archivo"
-
-
 _UPLOAD_FAILED = "No se pudo leer el archivo. Inténtalo de nuevo."
 _FONT_TOO_LARGE = (
     f"El archivo de fuente pesa más de {brand_fonts.MAX_FONT_BYTES // (1024 * 1024)} MB."

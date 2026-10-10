@@ -32,6 +32,7 @@ from uuid import UUID
 from qualify_creative.adapters.anthropic_copy import CopyRefused
 from qualify_creative.brand import check_hard_rules, check_route_allowed, render_prompt
 from qualify_creative.brand.fidelity import RULE_CAPTION_LENGTH
+from qualify_creative.brand.render import VARIANT_ANGLES
 from qualify_creative.enums import (
     ContentKind,
     FailureReason,
@@ -46,6 +47,7 @@ from qualify_creative.providers import (
     GenerationRequest,
     GenerationResult,
     PricingTable,
+    RenderedPrompt,
     Usage,
 )
 from qualify_creative.router import BudgetContext, CreativeRouter, Hop, HopAction
@@ -70,7 +72,12 @@ from qualify_api.creative.fsm import (
     DraftTrigger,
     apply_transition,
 )
-from qualify_api.creative.media import MediaProducer, MediaWrite, TemplateRunWrite
+from qualify_api.creative.media import (
+    MediaProducer,
+    MediaWrite,
+    TemplateRunWrite,
+    ai_generated_media,
+)
 
 logger = logging.getLogger(__name__)
 #: Every vendor call of a generation and its cost, one line each plus a total per
@@ -276,6 +283,24 @@ class VoiceService(Protocol):
     def active(self, *, tenant_id: UUID, brand_id: UUID) -> BrandVoiceProfile | None: ...
 
 
+#: How many of the brand's latest variants the prompt is told not to echo
+#: (§ request 2026-10-08) — about 250 input tokens, ~USD 0.001 a call.
+RECENT_OPENINGS = 8
+
+
+def _openings(copies: object) -> tuple[str, ...]:
+    """Each copy's hook and CTA, in order, blanks and repeats dropped."""
+    seen: dict[str, None] = {}
+    for copy in copies:  # type: ignore[attr-defined]
+        if not isinstance(copy, Mapping):
+            continue
+        for field in ("hook", "cta"):
+            line = str(copy.get(field) or "").strip()
+            if line:
+                seen.setdefault(line, None)
+    return tuple(seen)
+
+
 class ContentRepository(Protocol):
     """Persistence seam, same pattern as ``PublishAttemptRepository``: the service holds
     the FSM and the money math; the repository holds the transactions. Pure tests
@@ -298,6 +323,10 @@ class ContentRepository(Protocol):
 
     def budget_state(self, *, tenant_id: UUID, brand_id: UUID) -> BudgetState | None: ...
 
+    def recent_openings(
+        self, *, tenant_id: UUID, brand_id: UUID, limit: int = RECENT_OPENINGS
+    ) -> tuple[str, ...]: ...
+
     def finish_generation(
         self,
         *,
@@ -312,6 +341,7 @@ class ContentRepository(Protocol):
         media: tuple[MediaWrite, ...] = (),
         failure_detail: str | None = None,
         template_run: TemplateRunWrite | None = None,
+        requires_ai_disclosure: bool | None = None,
     ) -> None: ...
 
     def update_status(
@@ -526,6 +556,21 @@ class PostgresContentRepository:
                 hard_stop=row.hard_stop_on_cap,
             )
 
+    def recent_openings(
+        self, *, tenant_id: UUID, brand_id: UUID, limit: int = RECENT_OPENINGS
+    ) -> tuple[str, ...]:
+        """The hooks and CTAs of the brand's `limit` latest variants (the operator's edit
+        over the model's when there is one), newest first, without repeats."""
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(
+                select(orm.CopyVariant.copy, orm.CopyVariant.edited_copy)
+                .join(orm.ContentDraft, orm.ContentDraft.id == orm.CopyVariant.draft_id)
+                .where(orm.ContentDraft.brand_id == brand_id)
+                .order_by(orm.CopyVariant.created_at.desc())
+                .limit(limit)
+            ).all()
+        return _openings(edited or copy for copy, edited in rows)
+
     def finish_generation(
         self,
         *,
@@ -540,12 +585,29 @@ class PostgresContentRepository:
         media: tuple[MediaWrite, ...] = (),
         failure_detail: str | None = None,
         template_run: TemplateRunWrite | None = None,
+        requires_ai_disclosure: bool | None = None,
     ) -> None:
         """One transaction for the whole outcome. Usage rows and spend are written even
         if the draft lost a race with the reaper — the money was spent either way, and
-        cost provenance over facts is the point of ``creative_usage_events``."""
+        cost provenance over facts is the point of ``creative_usage_events``.
+
+        ``requires_ai_disclosure`` (PR #100 review): the label as recomputed from the media
+        this generation actually made; ``None`` leaves the draft's value as it is."""
         with tenant_session(tenant_id) as session:
             draft = session.get(orm.ContentDraft, draft_id)
+            if variants:
+                # A regeneration replaces the draft's copy too (2026-10-09): the new
+                # variants carry the same ordinals as the old ones, and
+                # `uq_copy_variant_ordinal` refused them — after the money was spent.
+                # The old rows go, and so does a selection that pointed at one of them
+                # (the approval it backed was of the previous revision).
+                for old in session.scalars(
+                    select(orm.CopyVariant).where(orm.CopyVariant.draft_id == draft_id)
+                ):
+                    session.delete(old)
+                if draft is not None:
+                    draft.selected_variant_id = None
+                session.flush()
             for write in variants:
                 session.add(
                     orm.CopyVariant(
@@ -580,9 +642,12 @@ class PostgresContentRepository:
                         occurred_at=datetime.now(UTC),
                     )
                 )
-            if media:
+            if media or variants:
                 # A regeneration replaces the draft's media: the old files stay on disk
-                # (provenance), the rows describe what the draft shows now.
+                # (provenance), the rows describe what the draft shows now. Also when the
+                # new media FAILED after new copy was written (PR #100 review): a draft
+                # with this revision's text and the previous revision's images would be
+                # lying — it shows no media until a generation makes some.
                 for old in session.scalars(
                     select(orm.ImageAsset).where(orm.ImageAsset.draft_id == draft_id)
                 ):
@@ -652,8 +717,10 @@ class PostgresContentRepository:
                 )
                 if config is not None:
                     config.budget_spent_usd = Decimal(config.budget_spent_usd) + spent_usd
-            if draft is not None and media:
+            if draft is not None and (media or variants):
                 draft.preview_key = preview_of(media)
+            if draft is not None and requires_ai_disclosure is not None:
+                draft.requires_ai_disclosure = requires_ai_disclosure
             if draft is not None and draft.status == DRAFTING:
                 draft.status = new_status
                 draft.failure_reason = failure_reason
@@ -797,12 +864,13 @@ TITLE_MAX = 120
 
 def preview_of(media: tuple[MediaWrite, ...]) -> str | None:
     """What lists and Calendar show for a POST: a video's thumbnail, else the first
-    media item in order."""
+    media item in order — the copy the app SERVES (`media_url`), not the R2 one the
+    publisher reads (`object_key`, § 2026-10-06)."""
     if not media:
         return None
     first = min(media, key=lambda item: item.position)
     thumbnail = first.params.get("thumbnail_key") if first.media_type == "video" else None
-    return str(thumbnail) if thumbnail else first.object_key or first.media_url
+    return str(thumbnail) if thumbnail else first.media_url or first.object_key
 
 
 def _failure_from_hops(hops: tuple[Hop, ...]) -> str:
@@ -889,6 +957,75 @@ class ContentService:
             self.dispatcher.dispatch_generation(tenant_id=tenant_id, draft_id=draft_id)
         return draft_id
 
+    def preview_prompt(self, *, tenant_id: UUID, brand_id: UUID, brief: ContentBrief) -> bool:
+        """Print the copy prompt this brief would send (`trace.copy_prompt`), before any
+        row exists or any vendor is called (§ request 2026-10-06). Rendered exactly as
+        `_generate` renders it, so the preview cannot drift from the real call. False
+        when the brand lacks a kit or an active voice — what Generar would refuse on."""
+        kit = self._brand.kit(tenant_id=tenant_id, brand_id=brand_id)
+        voice = self._voice.active(tenant_id=tenant_id, brand_id=brand_id)
+        if kit is None or voice is None:
+            trace.prompt_unavailable(
+                kind=brief.kind.value,
+                missing=tuple(
+                    name
+                    for name, present in (
+                        ("brand_kit", kit is not None),
+                        ("voice_profile", voice is not None),
+                    )
+                    if not present
+                ),
+            )
+            return False
+        prompts = self._variant_prompts(
+            tenant_id=tenant_id, brand_id=brand_id, kit=kit, voice=voice, brief=brief
+        )
+        trace.copy_prompt(
+            draft_id=None,
+            kind=brief.kind.value,
+            chain=self._chain,
+            variants=brief.variants_requested,
+            system=prompts[0].stable_prefix,
+            user=tuple(prompt.volatile_suffix for prompt in prompts),
+        )
+        return True
+
+    def _variant_prompts(
+        self,
+        *,
+        tenant_id: UUID,
+        brand_id: UUID,
+        kit: BrandKit,
+        voice: BrandVoiceProfile,
+        brief: ContentBrief,
+        angle_offset: int = 0,
+    ) -> tuple[RenderedPrompt, ...]:
+        """One prompt per variant (§ request 2026-10-08): the same cached prefix, each
+        suffix with its own angle and the brand's recent openings not to repeat."""
+        context = self._brand_context(tenant_id, brand_id)
+        recent = self._recent_openings(tenant_id, brand_id)
+        return tuple(
+            render_prompt(
+                kit=kit,
+                voice=voice,
+                brief=brief,
+                task=GenerationTask.COPY,
+                context=context,
+                variant=index,
+                angle_offset=angle_offset,
+                recent=recent,
+            )
+            for index in range(brief.variants_requested)
+        )
+
+    def _recent_openings(self, tenant_id: UUID, brand_id: UUID) -> tuple[str, ...]:
+        """The brand's recent hooks and CTAs; never a reason to fail generation."""
+        try:
+            return self._repo.recent_openings(tenant_id=tenant_id, brand_id=brand_id)
+        except Exception as exc:
+            logger.warning("recent openings unreadable for %s: %s", brand_id, type(exc).__name__)
+            return ()
+
     # -- generation ---------------------------------------------------------
 
     def run_generation(self, *, tenant_id: UUID, draft_id: UUID) -> None:
@@ -949,26 +1086,30 @@ class ContentService:
                 )
             )
 
-        rendered = render_prompt(
+        prompts = self._variant_prompts(
+            tenant_id=tenant_id,
+            brand_id=draft.brand_id,
             kit=kit,
             voice=voice,
             brief=brief,
-            task=GenerationTask.COPY,
-            context=self._brand_context(tenant_id, draft.brand_id),
+            # each draft starts the angle rotation somewhere else
+            angle_offset=draft.id.int % len(VARIANT_ANGLES),
         )
-        request = GenerationRequest(
-            task=GenerationTask.COPY,
-            rendered_prompt=rendered,
-            output_schema=CopyPayload.model_json_schema(),
+        schema = CopyPayload.model_json_schema()
+        requests = tuple(
+            GenerationRequest(
+                task=GenerationTask.COPY, rendered_prompt=prompt, output_schema=schema
+            )
+            for prompt in prompts
         )
-        # § 2026-10-05: the exact prompt the copy adapter sends, readable in the console
+        # § 2026-10-05: the exact prompts the copy adapter sends, readable in the console
         trace.copy_prompt(
             draft_id=draft.id,
             kind=brief.kind.value,
             chain=self._chain,
             variants=brief.variants_requested,
-            system=rendered.stable_prefix,
-            user=rendered.volatile_suffix,
+            system=prompts[0].stable_prefix,
+            user=tuple(prompt.volatile_suffix for prompt in prompts),
         )
         budget = (
             self._repo.budget_state(tenant_id=tenant_id, brand_id=draft.brand_id)
@@ -981,7 +1122,7 @@ class ContentService:
         usage_writes: list[UsageWrite] = []
         results: list[GenerationResult] = []
         failure: str | None = None
-        for _ in range(brief.variants_requested):
+        for request in requests:
             outcome = self._router.run(
                 tenant_id=tenant_id,
                 brand_id=draft.brand_id,
@@ -1075,6 +1216,8 @@ class ContentService:
                 budget=BudgetContext(
                     remaining_usd=budget.remaining_usd - spent, hard_stop=budget.hard_stop
                 ),
+                # each generation keeps its own R2 copy (a regeneration bumps it first)
+                revision=draft.revision,
             )
             spent += outcome.spent_usd
             usage_writes.extend(
@@ -1131,6 +1274,10 @@ class ContentService:
             media=media_writes,
             failure_detail=media_detail or None,
             template_run=template_run,
+            # The label follows what was MADE, not only what the brief said (PR #100
+            # review): a flyer without `ad_mode` is still Seedream's when it is wired,
+            # and a regeneration may change the vendor.
+            requires_ai_disclosure=brief.requires_ai_disclosure or ai_generated_media(media_writes),
         )
 
     @staticmethod
