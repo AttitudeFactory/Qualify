@@ -36,6 +36,9 @@ x-app-env: &app-env
   QUALIFY_APP_DSN: postgresql+psycopg://qualify_app:${QUALIFY_DB_APP_PASSWORD:?set in .env.prod}@postgres:5432/qualify
   QUALIFY_ADMIN_DSN: postgresql+psycopg://qualify_admin:${QUALIFY_DB_ADMIN_PASSWORD:?set in .env.prod}@postgres:5432/qualify
   QUALIFY_CREDENTIAL_DSN: postgresql+psycopg://qualify_credential:${QUALIFY_DB_CREDENTIAL_PASSWORD:?set in .env.prod}@postgres:5432/qualify
+  # Meta webhook intake (QUA-147, migration 0050): INSERT-only receiver + intake processor.
+  QUALIFY_WEBHOOK_DSN: postgresql+psycopg://qualify_webhook:${QUALIFY_DB_WEBHOOK_PASSWORD:?set in .env.prod}@postgres:5432/qualify
+  QUALIFY_WEBHOOK_WORKER_DSN: postgresql+psycopg://qualify_webhook_worker:${QUALIFY_DB_WEBHOOK_WORKER_PASSWORD:?set in .env.prod}@postgres:5432/qualify
   QUALIFY_REDIS_URL: redis://redis:6379/0
   # One public origin for everything (Caddy routes by path).
   QUALIFY_PUBLIC_MEDIA_BASE_URL: ${QUALIFY_PUBLIC_URL:?set in .env.prod}
@@ -63,6 +66,8 @@ x-app-env: &app-env
   QUALIFY_DB_APP_PASSWORD: ""
   QUALIFY_DB_ADMIN_PASSWORD: ""
   QUALIFY_DB_CREDENTIAL_PASSWORD: ""
+  QUALIFY_DB_WEBHOOK_PASSWORD: ""
+  QUALIFY_DB_WEBHOOK_WORKER_PASSWORD: ""
 
 x-app-env-file: &app-env-file
   env_file:
@@ -128,10 +133,13 @@ services:
     environment:
       <<: *app-env
       QUALIFY_MIGRATION_DSN: postgresql+psycopg://qualify_owner:${QUALIFY_DB_OWNER_PASSWORD}@postgres:5432/qualify
-      # bootstrap_db_roles.py sets these on the three roles (blanked in every other service).
+      # bootstrap_db_roles.py sets these on the application roles (blanked in every other
+      # service).
       QUALIFY_DB_APP_PASSWORD: ${QUALIFY_DB_APP_PASSWORD}
       QUALIFY_DB_ADMIN_PASSWORD: ${QUALIFY_DB_ADMIN_PASSWORD}
       QUALIFY_DB_CREDENTIAL_PASSWORD: ${QUALIFY_DB_CREDENTIAL_PASSWORD}
+      QUALIFY_DB_WEBHOOK_PASSWORD: ${QUALIFY_DB_WEBHOOK_PASSWORD}
+      QUALIFY_DB_WEBHOOK_WORKER_PASSWORD: ${QUALIFY_DB_WEBHOOK_WORKER_PASSWORD}
     command:
       - sh
       - -c
