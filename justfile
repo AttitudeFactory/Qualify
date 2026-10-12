@@ -97,6 +97,13 @@ deploy-backup target:
 env-push target *keys:
     deploy/deploy.sh env-push {{target}} {{keys}}
 
+# Claude Code on the server as `deploy`, for Remote Control (docs/despliegue-hetzner.md §13).
+# `target` must log in as ROOT (the `qualify-prod` alias). Login is by hand afterwards.
+#   just claude-bootstrap qualify-prod
+claude-bootstrap target:
+    ssh {{target}} 'bash -s' < deploy/bootstrap-claude.sh
+    ssh {{target}} 'cat > /opt/qualify/CLAUDE.md && chmod 644 /opt/qualify/CLAUDE.md' < deploy/claude-server.md
+
 # Default test pass: unit + db, never external network. Mirrors CI.
 # Tests use `qualify_test` + Redis db 15, NEVER the dev `qualify` (root conftest.py aborts
 # otherwise). Data a run leaves in `qualify_test` is kept for inspection — no auto reset.
