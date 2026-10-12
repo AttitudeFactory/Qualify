@@ -12,7 +12,7 @@ from __future__ import annotations
 import reflex as rx
 
 from .auth_state import AuthState
-from .ui import brand_mark, callout, card
+from .ui import brand_mark, callout, card, loading_spinner
 from .ui import tokens as T
 
 
@@ -267,7 +267,7 @@ def reset_index() -> rx.Component:
                 ),
             ),
             rx.hstack(
-                rx.spinner(size="2"),
+                loading_spinner("sm"),
                 rx.text("Revisando el enlace…", size="2", color=T.TEXT_MUTED),
                 spacing="2",
                 align="center",
