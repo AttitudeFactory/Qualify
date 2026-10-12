@@ -9,6 +9,9 @@
 # Only Caddy publishes ports (80/443). Postgres and Redis are reachable on the internal
 # compose network only — never published, never reachable from the internet.
 #
+# Always on: caddy, api, reflex, postgres, redis, webhook-worker (QUA-147: settles recorded
+# Meta webhooks; read-only toward Meta, never publishes). `migrate` is a one-shot (below).
+#
 # Optional services, OFF unless their profile is enabled (COMPOSE_PROFILES in .env.prod):
 #   calendar-worker  QUA-111 executor — PUBLISHES FOR REAL to connected accounts.
 #   render           Remotion render service (Node + headless Chrome, ~1 GB RAM under load).
@@ -243,6 +246,28 @@ services:
       reflex:
         condition: service_started
     <<: *logging
+
+  # QUA-147 Meta webhook intake processor. Settles what `POST /api/mentions/webhook`
+  # recorded: mentions -> tenant resolution + ingest (one read-only Graph call each);
+  # every other field, comments included, is kept as `unsupported`. Deliberately NOT
+  # behind a profile: it never publishes, replies or writes to Meta, and without it every
+  # mention the receiver records stays `pending` forever. Also runs the 29-day retention
+  # purge once at start and every 24 h. Several instances at once are safe
+  # (FOR UPDATE SKIP LOCKED), but one is enough.
+  webhook-worker:
+    <<: [*app-image, *app-env-file, *logging]
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+    command:
+      - python
+      - -m
+      - qualify_api.webhooks.worker
+      - --interval
+      - ${QUALIFY_WEBHOOK_WORKER_INTERVAL:-30}
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   # --- optional -------------------------------------------------------------------------
 

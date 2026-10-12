@@ -132,3 +132,70 @@ def test_an_envelope_error_carries_no_payload_text() -> None:
     with pytest.raises(EnvelopeError) as excinfo:
         parse_delivery(b'{"object": "instagram", "entry": [{"id": "secret-id", "changes": 1}]}')
     assert "secret-id" not in str(excinfo.value)
+
+
+# --- text that cannot be stored (lone UTF-16 surrogate, NUL) --------------------------------
+
+
+def _comment_body(text_json: str, *, entry_id_json: str = '"A"') -> bytes:
+    """A delivery whose comment text is spliced in as RAW JSON, so escapes like `\\ud83d`
+    reach `json.loads` exactly as Meta would send them."""
+    return (
+        '{"object":"instagram","entry":[{"id":' + entry_id_json + ',"changes":['
+        '{"field":"comments","value":{"text":' + text_json + "}}]}]}"
+    ).encode()
+
+
+def test_a_lone_surrogate_is_replaced_not_fatal() -> None:
+    parsed = parse_delivery(_comment_body('"hola \\ud83d"'))
+    assert parsed.changes[0].value == {"text": "hola �"}
+
+
+def test_a_valid_surrogate_pair_is_kept_as_the_real_emoji() -> None:
+    parsed = parse_delivery(_comment_body('"hola \\ud83d\\ude00"'))
+    assert parsed.changes[0].value == {"text": "hola \U0001f600"}
+
+
+def test_nul_is_replaced() -> None:
+    parsed = parse_delivery(_comment_body('"a\\u0000b"'))
+    assert parsed.changes[0].value == {"text": "a�b"}
+
+
+def test_replacement_reaches_nested_values_lists_and_keys() -> None:
+    body = (
+        b'{"object":"instagram","entry":[{"id":"A","changes":[{"field":"comments",'
+        b'"value":{"from":{"username":"x\udc00"},"tags":["ok","y\u0000"],'
+        b'"k\ud800":1,"n":5,"b":true,"z":null}}]}]}'
+    )
+    value = parse_delivery(body).changes[0].value
+    assert value == {
+        "from": {"username": "x�"},
+        "tags": ["ok", "y�"],
+        "k�": 1,
+        "n": 5,
+        "b": True,
+        "z": None,
+    }
+
+
+def test_a_lone_surrogate_in_the_entry_id_is_replaced_too() -> None:
+    parsed = parse_delivery(_comment_body('"t"', entry_id_json='"A\\ud83d"'))
+    assert parsed.entry_ids == ("A�",)
+    assert parsed.changes[0].entry_id == "A�"
+
+
+def test_dedup_key_is_computable_and_stable_after_replacement() -> None:
+    first = parse_delivery(_comment_body('"hola \\ud83d"')).changes[0].dedup_key
+    again = parse_delivery(_comment_body('"hola \\ud83d"')).changes[0].dedup_key
+    assert first == again and len(first) == 64
+    # The replaced text and a literal U+FFFD are the same stored value, hence the same key.
+    literal = parse_delivery(_comment_body('"hola \ufffd"')).changes[0].dedup_key
+    assert literal == first
+
+
+def test_every_parsed_string_is_utf8_encodable() -> None:
+    """The property the receiver relies on: nothing it hands to Postgres can fail to
+    encode."""
+    parsed = parse_delivery(_comment_body('"\\ud800\\udbff\\udc00x\\u0000"'))
+    json.dumps(parsed.changes[0].value, ensure_ascii=False).encode("utf-8")
+    assert "\x00" not in parsed.changes[0].value["text"]

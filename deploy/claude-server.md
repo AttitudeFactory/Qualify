@@ -36,8 +36,9 @@ data lives here. Act like an on-call engineer, not like a developer on a laptop.
 ```
 
 Services (`qdc config --services`): `caddy` (only thing on 80/443), `api` (FastAPI), `reflex`
-(Reflex backend + websocket), `postgres` (pgvector/pg16), `redis`, `migrate` (one-shot), and the
-optional profiles `calendar-worker` and `render`.
+(Reflex backend + websocket), `postgres` (pgvector/pg16), `redis`, `webhook-worker` (QUA-147:
+settles recorded Meta webhooks, read-only toward Meta, never publishes), `migrate` (one-shot), and
+the optional profiles `calendar-worker` and `render`.
 
 ## Commands
 

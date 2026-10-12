@@ -53,9 +53,16 @@ just webhook-purge                # purga por antigüedad, en seco (añadir --ex
 just webhook-purge-account <id>   # todo lo de una cuenta (gancho de QUA-127), en seco
 ```
 
-**El procesador no está desplegado en ningún entorno.** Sin él, los eventos quedan en
-`pending`. Los cambios `comments` se guardan y quedan `unsupported` (el polling de
-comentarios no cambia).
+**En producción** el procesador corre como el servicio `webhook-worker` de
+`deploy/docker-compose.prod.yml`. Arranca siempre, sin perfil, porque nunca publica ni
+escribe en Meta. Su cadencia es `QUALIFY_WEBHOOK_WORKER_INTERVAL`, 30 s por defecto, y sus
+logs se ven con `just deploy-logs qualify-prod webhook-worker`. **En local** no arranca solo:
+se usa `just webhook-tick` o `just webhook-worker`. Sin procesador, los eventos quedan en
+`pending`. Los cambios `comments` se guardan y quedan `unsupported`; el polling de
+comentarios no cambia.
+
+Un texto con un surrogate UTF-16 aislado o con un carácter NUL ya no hace fallar la
+entrega: se guarda con U+FFFD en su lugar, y `raw_body` conserva los bytes originales.
 
 Estados de `meta_webhook_events.status`: `pending` → `processing` → `processed` |
 `orphan` | `ambiguous` | `unsupported` | `failed` (reintenta: 1 min, 5 min, 30 min, 2 h,
@@ -132,7 +139,7 @@ reales hacen falta:
 - **Suscribir la Página** a la app (`POST /{page-id}/subscribed_apps`). La documentación
   de Meta lo exige (`webhooks-for-instagram.md:18`) y no existe código que lo haga
   (QUA-129).
-- **Ejecutar el procesador** en el servidor. Hoy no está desplegado.
+- **Desplegar el procesador** (servicio `webhook-worker` del compose de producción).
 - **Definir en `.env.prod`** `QUALIFY_DB_WEBHOOK_PASSWORD`,
   `QUALIFY_DB_WEBHOOK_WORKER_PASSWORD` y un `QUALIFY_META_WEBHOOK_VERIFY_TOKEN` propio.
 

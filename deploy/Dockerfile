@@ -125,7 +125,7 @@ COPY deploy/Caddyfile /etc/caddy/Caddyfile
 COPY --from=frontend-build /srv /srv
 
 # --------------------------------------------------------------------------------------
-# app: runtime for api / reflex backend / migrate / calendar-worker (command per service)
+# app: runtime for api / reflex backend / migrate / webhook-worker / calendar-worker (command per service)
 # --------------------------------------------------------------------------------------
 FROM ${PYTHON_IMAGE} AS app
 # No apt packages: a `--backend-only` prod backend never touches the JS toolchain (bun,
