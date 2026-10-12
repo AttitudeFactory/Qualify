@@ -1,6 +1,7 @@
-"""Set the production passwords of the three application roles (run after migrations).
+"""Set the production passwords of the application roles (run after migrations).
 
-Migrations 0001/0002 create `qualify_app`, `qualify_admin` and `qualify_credential` with
+Migrations 0001/0002 create `qualify_app`, `qualify_admin` and `qualify_credential`, and
+0050 creates the Meta-webhook pair `qualify_webhook` / `qualify_webhook_worker`, with
 the committed DEV passwords (`app_dev`, ...) so local compose and CI DSNs line up — and
 document that any real environment rotates them out-of-band with `ALTER ROLE ... PASSWORD`.
 This script is that out-of-band step, made repeatable: the `migrate` service runs it right
@@ -16,6 +17,8 @@ Environment:
   QUALIFY_DB_APP_PASSWORD          -> qualify_app
   QUALIFY_DB_ADMIN_PASSWORD        -> qualify_admin
   QUALIFY_DB_CREDENTIAL_PASSWORD   -> qualify_credential
+  QUALIFY_DB_WEBHOOK_PASSWORD      -> qualify_webhook
+  QUALIFY_DB_WEBHOOK_WORKER_PASSWORD -> qualify_webhook_worker
 """
 
 from __future__ import annotations
@@ -30,8 +33,12 @@ ROLE_PASSWORD_ENVS: dict[str, str] = {
     "qualify_app": "QUALIFY_DB_APP_PASSWORD",
     "qualify_admin": "QUALIFY_DB_ADMIN_PASSWORD",
     "qualify_credential": "QUALIFY_DB_CREDENTIAL_PASSWORD",
+    "qualify_webhook": "QUALIFY_DB_WEBHOOK_PASSWORD",
+    "qualify_webhook_worker": "QUALIFY_DB_WEBHOOK_WORKER_PASSWORD",
 }
-DEV_PASSWORDS = frozenset({"app_dev", "admin_dev", "credential_dev", "dev_only"})
+DEV_PASSWORDS = frozenset(
+    {"app_dev", "admin_dev", "credential_dev", "webhook_dev", "webhook_worker_dev", "dev_only"}
+)
 MIN_PASSWORD_LENGTH = 16
 
 

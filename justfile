@@ -69,6 +69,26 @@ calendar-tick *args:
 calendar-worker *args:
     uv run --no-sync python -m qualify_api.planner.worker {{args}}
 
+# QUA-147: the Meta webhook intake processor. Settles recorded changes (mentions ->
+# resolution + ingestion; every other field, comments included -> `unsupported`).
+#   just webhook-tick                 # one batch, then exit
+#   just webhook-worker [--interval 30]   # a batch every N s until Ctrl+C; also runs the
+#                                         # 29-day retention purge at start and every 24 h
+webhook-tick *args:
+    uv run --no-sync python -m qualify_api.webhooks.worker --once {{args}}
+
+webhook-worker *args:
+    uv run --no-sync python -m qualify_api.webhooks.worker {{args}}
+
+# QUA-147: retention purges. DRY RUN unless --execute (they print what they would delete).
+#   just webhook-purge [--execute]                        # > 29 days, never pending/processing
+#   just webhook-purge-account <ig_account_id> [--execute]  # one account, any state (QUA-127)
+webhook-purge *args:
+    uv run --no-sync python -m qualify_api.webhooks.worker --purge {{args}}
+
+webhook-purge-account account *args:
+    uv run --no-sync python -m qualify_api.webhooks.worker --purge-account {{account}} {{args}}
+
 # --- Production (Hetzner VPS, docs/despliegue-hetzner.md) ---------------------------------
 # `target` = the server's ssh target, e.g. deploy@203.0.113.10.
 #   just deploy deploy@<ip>               # origin/main

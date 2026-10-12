@@ -1,4 +1,4 @@
-"""HTTP routes for the Instagram `mentions` webhook receiver + read API (QUA-49).
+"""HTTP routes for the Instagram `mentions` webhook receiver + read API (QUA-49, QUA-147).
 
 The webhook GET/POST pair mirrors `connections_routes.py`'s shape for the OAuth
 callback: Meta calls both directly, so this is the one HTTP surface in the
@@ -7,12 +7,15 @@ scheme (`http/deps.py`) — the caller is Meta, not a Qualify user. Trust here c
 from Meta's own mechanisms instead: `hub.verify_token` for the GET challenge,
 `X-Hub-Signature-256` for the POST body.
 
-A `RESOLVED` event is now enriched (`mentioned_media`/`mentioned_comment`) and
-persisted — see `qualify_api.mentions.composition.ingest_mention` for the
-orchestration. `ORPHAN`/`AMBIGUOUS` are still never persisted: a mention this
-receiver could not confidently attribute to exactly one tenant must never become
-a row associated with any tenant, correct or not (`resolve.py`'s own "no fuzzy
-matching" discipline, now load-bearing for a WRITE, not just a log line).
+**The POST only RECORDS (QUA-147).** A signature-valid delivery is written — raw body
+and one row per change — to the intake log (`qualify_api.webhooks.receiver`, the
+INSERT-only `qualify_webhook` role) and only then answered with 200. Everything that
+used to happen inline — resolving `entry[].id` to a tenant, the `mentioned_media`/
+`mentioned_comment` Graph calls, persisting the mention — now runs in
+`qualify_api.webhooks.processor`, outside the request, with retries. The route no longer
+touches `admin_session`, any BYPASSRLS role, or Meta. The callback URL is unchanged: one
+Meta callback receives every subscribed field, so `comments` changes land in the same
+log (recorded, processed as `unsupported` until their handler exists).
 
 `GET /api/mentions` and `POST /api/mentions/analyze-sentiment` are the read/analysis
 routes the Dashboard de Menciones and its sentiment counters consume — `Principal`-based
@@ -22,41 +25,31 @@ their own reads/triggers.
 Dependencies are injected through FastAPI's `dependency_overrides` seam, same
 posture `connections_routes.py`/`inbox_routes.py` already establish: tests
 substitute fakes and run the whole contract with no network and no database.
-`get_tenant_resolver`'s default IS the real `resolve_external_account` — unlike
-`get_mention_ingestor`/`get_list_mentions`/`get_analyze_mention_sentiment`, this one is a
-plain, side-effect-free function (a single `SELECT`), not a stateful/Meta-calling
-service, so there is nothing to build lazily and nothing wrong with wiring the real
-thing as the default and letting tests override it with a fake instead.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, ValidationError
-from qualify_shared.social.ig_shapes import MentionEvent, parse_mentions_notification
+from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from qualify_api.http.deps import Principal, current_principal
 from qualify_api.mentions.config import MentionsWebhookSettings
 from qualify_api.mentions.repository import MentionRecord
-from qualify_api.mentions.resolve import (
-    PLATFORM_INSTAGRAM,
-    ResolutionOutcome,
-    TenantResolution,
-)
 from qualify_api.mentions.sentiment import MentionAnalysisSummary
 from qualify_api.mentions.signature import verify_signature
+from qualify_api.webhooks.envelope import MAX_BODY_BYTES
+from qualify_api.webhooks.receiver import RecordedDelivery
 
 router = APIRouter(prefix="/api/mentions", tags=["mentions"])
 
 _LOGGER = logging.getLogger(__name__)
 
-TenantResolver = Callable[..., TenantResolution]
-MentionIngestor = Callable[..., Awaitable[UUID | None]]
+DeliveryRecorder = Callable[..., RecordedDelivery]
 ListMentions = Callable[..., tuple[MentionRecord, ...]]
 AnalyzeMentionSentiment = Callable[..., MentionAnalysisSummary]
 
@@ -69,23 +62,11 @@ def get_webhook_settings() -> MentionsWebhookSettings:
     raise NotImplementedError("mentions webhook settings dependency is not configured")
 
 
-def get_tenant_resolver() -> TenantResolver:
-    """Overridden at app startup (to the real `resolve_external_account`) and in
-    tests (to a fake, so the HTTP/HMAC contract tests never touch Postgres).
-    Raising here, like every other dependency in this module, rather than
-    defaulting to the real one directly — same reasoning
-    `connections_routes.get_connect_service` gives: an unconfigured app should
-    fail loudly, not silently pick a default. `test_mentions_resolve.py` covers
-    `resolve_external_account` itself directly, against real Postgres."""
-    raise NotImplementedError("mentions tenant resolver dependency is not configured")
-
-
-def get_mention_ingestor() -> MentionIngestor:
-    """Overridden at app startup (to `composition.ingest_mention`) and in tests (to a
-    fake, so the webhook contract tests never touch Meta or Postgres). Raising here
-    keeps an unconfigured deployment from silently discarding — or half-persisting — a
-    real mention."""
-    raise NotImplementedError("mention ingestor dependency is not configured")
+def get_delivery_recorder() -> DeliveryRecorder:
+    """Overridden at app startup (to `webhooks.receiver.record_delivery`) and in tests (to
+    a fake, so the HTTP/HMAC contract tests never touch Postgres). Raising here keeps an
+    unconfigured deployment from answering 200 to a delivery it never recorded."""
+    raise NotImplementedError("webhook delivery recorder dependency is not configured")
 
 
 def get_list_mentions() -> ListMentions:
@@ -125,102 +106,53 @@ def verify_webhook(
 async def receive_webhook(
     request: Request,
     settings: MentionsWebhookSettings = Depends(get_webhook_settings),
-    resolve: TenantResolver = Depends(get_tenant_resolver),
-    ingest: MentionIngestor = Depends(get_mention_ingestor),
+    record: DeliveryRecorder = Depends(get_delivery_recorder),
 ) -> Response:
-    """Validate signature, parse, resolve tenant, enrich + persist — and stop.
+    """Size check, signature, durable record — and stop (QUA-147).
 
-    Responds `200` for every case past signature validation, including a
-    malformed body and an unresolved/ambiguous tenant
-    (`webhooks-for-instagram.md:191-193`: "Your endpoint should respond to all
-    Event Notifications with 200 OK"; Meta retries for up to 36h otherwise, and
-    none of those failure modes are the kind a retry fixes). Signature failure is
-    the one case that stays a 403: an unsigned/mis-signed body is not a confirmed
-    Meta event, so treating it as untrusted and rejecting it costs nothing.
+    - `413` for a body over `MAX_BODY_BYTES`; `403` for a missing/invalid
+      `X-Hub-Signature-256`. Neither writes anything.
+    - `200` only AFTER the delivery and its changes are committed — including a
+      malformed body (recorded as `unparseable`: a retry would not fix it) and a
+      byte-identical redelivery (already recorded).
+    - `500` if the record fails, so Meta retries (it does for up to 36h,
+      `webhooks-for-instagram.md:191-193`) instead of the event being lost behind a 200.
+
+    No tenant resolution, no Graph call, no mention persistence here: those run in
+    `qualify_api.webhooks.processor`.
     """
     body = await request.body()
+    if len(body) > MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="payload too large")
+    signature_header = request.headers.get("x-hub-signature-256")
     if not verify_signature(
         body=body,
-        signature_header=request.headers.get("x-hub-signature-256"),
+        signature_header=signature_header,
         app_secret=settings.app_secret,
     ):
         raise HTTPException(status_code=403, detail="invalid signature")
 
     try:
-        events = parse_mentions_notification(json.loads(body))
-    except (ValueError, ValidationError) as exc:
-        # Never log `body`: it is Meta's payload, already signature-verified as
-        # genuine, but still not ours to put in a log line wholesale (same
-        # discipline `CommentsReadError` establishes for a failed Graph response).
-        _LOGGER.warning(
-            "mentions webhook payload failed contract validation: %s", type(exc).__name__
+        # The record is synchronous DB work; keep it off the event loop.
+        recorded = await run_in_threadpool(
+            record, body=body, signature_header=signature_header or ""
         )
-        return Response(status_code=200)
-
-    for event in events:
-        await _resolve_and_ingest(event, resolve, ingest)
-    return Response(status_code=200)
-
-
-async def _resolve_and_ingest(
-    event: MentionEvent, resolve: TenantResolver, ingest: MentionIngestor
-) -> None:
-    """One event's worth of resolution, then either ingestion (RESOLVED) or a log-only
-    refusal (ORPHAN/AMBIGUOUS). A free function (not inlined in the route) so
-    `test_mentions_webhook.py` can also exercise it directly against fakes without going
-    through HTTP.
-
-    **ORPHAN/AMBIGUOUS never reach `ingest`.** This is the one invariant this function
-    exists to hold: a mention this receiver could not confidently attribute to exactly
-    one tenant must never become a persisted row associated with any tenant, correct or
-    not — the same "no fuzzy matching" discipline `resolve.py` already documents for its
-    own return value, now enforced here as a write-path guard, not merely a read-path
-    guarantee.
-    """
-    resolution = resolve(platform=PLATFORM_INSTAGRAM, external_account_id=event.ig_user_id)
-    # Numeric ids only, never `event.ig_user_id`'s surrounding context or any text field
-    # (mentions events carry none, but the discipline matches `CommentsReadError`'s).
-    if resolution.outcome is ResolutionOutcome.RESOLVED:
-        mention_id = await ingest(
-            media_id=event.media_id, comment_id=event.comment_id, resolution=resolution
-        )
-        if mention_id is None:
-            # A tenant/connection WAS resolved but the mention was never persisted — the
-            # defensive `None` branch `composition._content_client_for` documents ("should
-            # not happen in practice"). Distinct from the happy path so this never reads
-            # as a success in the logs: nothing was written for this event, and that is
-            # the one thing worth an operator's attention here.
-            _LOGGER.warning(
-                "mentions webhook: tenant=%s connection=%s media_id=%s comment_id=%s "
-                "resolved but NOT persisted — connection has no readable "
-                "external_account_id (see composition._content_client_for)",
-                resolution.tenant_id,
-                resolution.connection_id,
-                event.media_id,
-                event.comment_id,
-            )
-        else:
-            _LOGGER.info(
-                "mentions webhook: resolved tenant=%s connection=%s media_id=%s comment_id=%s "
-                "mention_id=%s",
-                resolution.tenant_id,
-                resolution.connection_id,
-                event.media_id,
-                event.comment_id,
-                mention_id,
-            )
-    elif resolution.outcome is ResolutionOutcome.ORPHAN:
-        _LOGGER.warning(
-            "mentions webhook: orphan event, no connection for external_account_id=%s — "
-            "not persisted",
-            event.ig_user_id,
-        )
-    else:
+    except Exception as exc:  # noqa: BLE001 — any failure must become a retryable 500
+        # Never log `body` (Meta's payload, not ours to log wholesale) — the type only.
         _LOGGER.error(
-            "mentions webhook: AMBIGUOUS external_account_id=%s matches more than one "
-            "tenant — event dropped, not associated with any of them, not persisted",
-            event.ig_user_id,
+            "meta webhook: delivery NOT recorded (%s) — answering 500", type(exc).__name__
         )
+        return Response(status_code=500)
+
+    _LOGGER.info(
+        "meta webhook: delivery=%s duplicate=%s parse=%s changes=%d new=%d",
+        recorded.delivery_id,
+        recorded.duplicate_delivery,
+        recorded.parse_status,
+        recorded.changes_total,
+        recorded.changes_new,
+    )
+    return Response(status_code=200)
 
 
 # --------------------------------------------------------------------------
