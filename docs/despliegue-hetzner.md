@@ -81,7 +81,7 @@ Cada variable está comentada en el ejemplo. Lo esencial:
 |---|---|
 | `QUALIFY_PUBLIC_URL` / `QUALIFY_DOMAIN` | `https://qualify.attitudefactory.co` / `qualify.attitudefactory.co` |
 | `QUALIFY_ACME_EMAIL` | Correo para avisos de Let's Encrypt |
-| `QUALIFY_DB_OWNER_PASSWORD`, `QUALIFY_DB_APP_PASSWORD`, `QUALIFY_DB_ADMIN_PASSWORD`, `QUALIFY_DB_CREDENTIAL_PASSWORD` | `openssl rand -hex 24` cada una (hex: van dentro de una URL) |
+| `QUALIFY_DB_OWNER_PASSWORD`, `QUALIFY_DB_APP_PASSWORD`, `QUALIFY_DB_ADMIN_PASSWORD`, `QUALIFY_DB_CREDENTIAL_PASSWORD`, `QUALIFY_DB_WEBHOOK_PASSWORD`, `QUALIFY_DB_WEBHOOK_WORKER_PASSWORD` | `openssl rand -hex 24` cada una (hex: van dentro de una URL) |
 | `QUALIFY_DEV_FERNET_KEY` | `python3 -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`. **Guardarla también en el gestor de contraseñas:** si se pierde, todos los tokens OAuth guardados quedan ilegibles |
 | `QUALIFY_OAUTH_STATE_SECRET` | `openssl rand -hex 32` |
 | `QUALIFY_META_*`, `QUALIFY_SUPABASE_*`, `QUALIFY_R2_*`, `QUALIFY_ANTHROPIC_API_KEY`, … | Los mismos valores que el `.env` local (no copiar `QUALIFY_*_DSN` ni `QUALIFY_REDIS_URL`: el compose los arma) |
