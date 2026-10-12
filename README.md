@@ -135,19 +135,19 @@ En el VPS corre una sesión de Claude Code, **`qualify-prod`**, para operar prod
 
 ### Desplegar sin GitHub Actions
 
-Para no gastar minutos de Actions: se compila en el servidor desde la Mac.
+Para no gastar minutos de Actions: se compila en el servidor desde la Mac. En los ejemplos, `78821b7` es el commit que estaba en producción el 2026-10-12 y `113` un número de PR.
 
 ```bash
 just deploy qualify-prod          # main
-just deploy qualify-prod <sha>    # un commit concreto, o revertir a uno anterior
+just deploy qualify-prod 78821b7  # un commit concreto, o revertir a uno anterior
 ```
 
 Sube el código por ssh, compila en el servidor, corre `migrate`, levanta el stack y chequea la salud. Si falla la compilación o la migración, producción sigue en el release anterior. Tarda más que por Actions (2 vCPU que siguen atendiendo tráfico).
 
-- **Desde la sesión remota** no se puede: el servidor no tiene el código ni acceso a GitHub, a propósito. Lo que sí hace sin gastar minutos es revertir a un sha que ya tenga imágenes en GHCR: pedirle «revierte a `<sha>`» (corre `/opt/qualify/bin/server-deploy.sh rollback <sha>`, que salta `migrate` y por eso sirve también a través de una migración, donde `just deploy <sha>` falla).
+- **Desde la sesión remota** no se puede: el servidor no tiene el código ni acceso a GitHub, a propósito. Lo que sí hace sin gastar minutos es revertir a un sha que ya tenga imágenes en GHCR: pedirle, por ejemplo, «revierte a `78821b7d0260ac2c1823ff74a92ee34a2a3623d8`» (corre `/opt/qualify/bin/server-deploy.sh rollback 78821b7d0260ac2c1823ff74a92ee34a2a3623d8`, que salta `migrate` y por eso sirve también a través de una migración, donde `just deploy 78821b7` falla). El sha va completo, de 40 caracteres; en `ls /opt/qualify/releases`, los que desplegó Actions (y por eso tienen imágenes en GHCR) son los de nombre de 40 caracteres; los de `just deploy` tienen 12.
 - **Sin CI** (sin minutos, `just merge` se niega): correr lo mismo en la Mac y forzar a propósito, solo el fundador:
   ```bash
-  just ci-lint && just ci-test && just up && just test-db && just merge <PR> --admin
+  just ci-lint && just ci-test && just up && just test-db && just merge 113 --admin
   ```
 
 ### Cambiar un secreto (`just env-push`)
