@@ -121,6 +121,59 @@ Producción es un VPS de Hetzner (`qualify-prod` en `~/.ssh/config`) con el stac
 | Respaldo de la base ahora | `just deploy-backup qualify-prod` |
 | Cambiar un secreto, sin desplegar código | `just env-push qualify-prod KEY` |
 
+### Llevar un PR a producción
+
+Producción solo corre commits de `main` que pasaron el CI. Hay tres caminos.
+
+**1. El equipo, con GitHub Actions**
+
+1. **Merge con CI en verde.** Esperar los checks obligatorios (`changes`, `lint`, `test`, `test-db`, `node-render`, `docker-deploy`) y mergear siempre con `just merge <PR>`, que se niega si falta alguno. Nunca `gh pr merge` ni el botón de GitHub; `--admin` salta el gate y es solo del fundador.
+2. **Disparar el deploy.** *Actions → deploy → Run workflow* con `ref` = `main`, o:
+   ```bash
+   gh api -X POST repos/AttitudeFactory/Qualify/actions/workflows/deploy.yml/dispatches -f ref=main -f 'inputs[ref]=main'
+   ```
+   Compila las imágenes, las publica en GHCR, migra y levanta el stack. Despliega la punta de `main`, así que también salen los PR que estaban pendientes. Avisar antes en `#devops` (Zoho Cliq), sobre todo si el PR trae migración: corre un deploy a la vez. Si `.env.prod` activa el perfil `render`, el workflow se niega y el deploy lo hace el fundador con `just deploy`.
+3. **Verificar.** El resultado llega a `#devops` (✅/❌, etapa que falló, enlace a la corrida); `gh run list --workflow deploy.yml --limit 3`. Después, probar en la app la pantalla que tocó el PR.
+4. **Revertir.** El mismo workflow con el sha anterior de `main` (sus imágenes siguen en GHCR); si entre medio entró una migración, `skip_migrate`:
+   ```bash
+   gh api -X POST repos/AttitudeFactory/Qualify/actions/workflows/deploy.yml/dispatches -f ref=main -f 'inputs[ref]=<sha-anterior>' -F 'inputs[skip_migrate]=true'
+   ```
+
+No se negocia: desplegar una rama sin merge (el workflow solo acepta commits de `main`), editar una migración ya aplicada en producción (toda migración nueva es aditiva: expandir, y contraer en otro deploy), activar el perfil `calendar-worker` sin pedirlo (publica de verdad en las cuentas de los clientes) y tocar secretos a mano (`just env-push`, abajo).
+
+**La sesión de Claude del servidor.** En el VPS corre una sesión de Claude Code (`qualify-prod`, vía Remote Control) para estado, logs, reinicios, respaldos y rollbacks; montaje y riesgos en [`docs/despliegue-hetzner.md`](docs/despliegue-hetzner.md) §13. Está iniciada con la cuenta personal del fundador y solo aparece en esa cuenta: no se comparten credenciales. Para que alguien revise el servidor, pedírselo al fundador por Cliq, por ejemplo: *«Desplegué `<sha>` (PR #`<n>`). Revisa `qdc ps`, los últimos 200 logs de `api` y `reflex`, y `/ping`. Cambió: `<pantalla o endpoint>`. Si algo está rojo, no reinicies nada sin avisarme.»*
+
+**2. El fundador, desde la Mac con Claude Code**
+
+Abrir Claude Code en el checkout principal del repo: la Mac ya tiene el alias `qualify-prod` (entra como root), `gh` autenticado y el `justfile`. Basta pedirlo en lenguaje normal; esto es lo que debería correr:
+
+| Pedido | Comando |
+|---|---|
+| «Mergea el PR 123» | `just merge 123` |
+| «Despliega `main` por Actions» | el `gh api … /dispatches` del paso 2 de arriba |
+| «Despliega `main` sin Actions» | `just deploy qualify-prod` |
+| «¿Cómo está producción?» | `just deploy-status qualify-prod` |
+| «Últimos logs de `api`» | `ssh qualify-prod 'qdc logs --tail=200 api'` |
+| «Respalda la base ahora» | `just deploy-backup qualify-prod` |
+| «Cambia la llave X en producción» | `just env-push qualify-prod --dry-run X`, después sin `--dry-run` |
+
+`just deploy-logs` sigue los logs en vivo y nunca termina: es para una terminal propia, no para Claude.
+
+**3. Sin GitHub Actions** — cuando se acaben los minutos (GitHub Free trae 2.000 al mes; los gastan el CI de cada PR y el workflow `deploy`, que compila tres imágenes), o para ahorrarlos. Este camino compila en el servidor.
+
+- **Mergear sin CI (solo el fundador).** Sin minutos el CI no corre y `just merge` se niega. Correr en la Mac lo mismo que el CI y forzar a propósito; queda un comentario en el PR:
+  ```bash
+  just ci-lint && just ci-test && just up && just test-db && just merge <PR> --admin
+  ```
+  El smoke de imágenes de `docker-deploy` no se repite en local: lo cubre el propio deploy, que falla antes de cambiar `current` si la compilación o la migración fallan.
+- **Desde la Mac:** `just deploy qualify-prod` (o `just deploy qualify-prod <sha>`). Sube `main` por ssh, compila en el servidor, migra, levanta y chequea; si falla la compilación o la migración, producción sigue en el release anterior. Tarda más que por Actions (2 vCPU que siguen atendiendo tráfico). Revertir a través de una migración no funciona por aquí — la imagen vieja falla en `migrate` y producción queda como estaba —: para eso, el rollback desde la sesión remota.
+- **Desde la sesión remota del servidor** (`qualify-prod`): sin código ni acceso a GitHub, a propósito. Sin gastar un minuto puede ver estado y logs, reiniciar, respaldar y revertir a cualquier sha que ya tenga imágenes en GHCR (`/opt/qualify/bin/server-deploy.sh rollback <sha-de-40-caracteres>`, que salta `migrate`). **No puede desplegar código nuevo**: eso necesita compilar desde el repo.
+- **Código nuevo desde el móvil, sin Actions:** abrir la sesión remota *en la Mac* en vez de en el servidor, y pedirle «despliega `main` sin Actions» desde claude.ai/code o la app (la Mac tiene que quedar encendida y sin suspenderse):
+  ```bash
+  cd ~/Desktop/Qualify && claude remote-control --name qualify-mac
+  ```
+  Que la sesión del servidor compile por su cuenta, sin depender de la Mac, exigiría darle acceso de solo lectura al repo (una llave de deploy de GitHub) y un script que compile allí. No está montado: es una decisión aparte.
+
 ### Cambiar un secreto (`just env-push`)
 
 Los secretos de producción viven en **un solo archivo**: `/opt/qualify/.env.prod` en el servidor (dueño `deploy`, permisos 600). Ningún despliegue lo sobrescribe, ni `just deploy` ni el de GitHub Actions: lo que se cambia ahí queda. Se edita desde la Mac, nunca a mano en el servidor:
