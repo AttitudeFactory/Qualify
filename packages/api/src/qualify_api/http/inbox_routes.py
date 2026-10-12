@@ -71,6 +71,12 @@ class SyncResponse(BaseModel):
     # `skipped_missing_media` above, at the comment level instead of the whole Reel.
     # Also always a 200, same reasoning.
     deleted_comments: int = 0
+    # QUA-149: see `SyncSummary` — expired media skipped without a Meta call, and this
+    # pass's legacy-metadata reads. Counts only.
+    expired_skipped: int = 0
+    metadata_backfilled: int = 0
+    metadata_failed: int = 0
+    metadata_deferred: int = 0
 
 
 @router.post("/inbox/sync", response_model=SyncResponse)
@@ -132,4 +138,8 @@ async def sync_inbox(
         truncated=summary.truncated,
         skipped_missing_media=list(summary.skipped_missing_media),
         deleted_comments=summary.deleted_comments,
+        expired_skipped=summary.expired_skipped,
+        metadata_backfilled=summary.metadata_backfilled,
+        metadata_failed=summary.metadata_failed,
+        metadata_deferred=summary.metadata_deferred,
     )

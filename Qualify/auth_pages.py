@@ -17,6 +17,12 @@ from .ui import tokens as T
 
 
 def _auth_card(*children: rx.Component) -> rx.Component:
+    """The one surface of an auth screen: `ui.card` (card material, plan D5) centred on
+    the app ground — `.q-ground`, the same Noir scene `app_shell` lays under the rail
+    and the panel, so the login does not open on a bare page. `.q-auth-stage`
+    (assets/qualify-listen.css) gives the card the overlay elevation a surface with no
+    panel under it needs. Nothing here touches the inputs: placeholders stay the
+    labels and the browser's autocomplete is left alone (signed ruling §6.1)."""
     return rx.center(
         card(
             rx.vstack(
@@ -31,6 +37,7 @@ def _auth_card(*children: rx.Component) -> rx.Component:
         min_height="100vh",
         width="100%",
         padding="2rem 0",
+        class_name="q-ground q-auth-stage",
     )
 
 

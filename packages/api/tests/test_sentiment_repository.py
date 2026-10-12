@@ -16,6 +16,8 @@ from sqlalchemy import insert, select, text
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.inbox.models import Message, MonitoredMedia, Thread
+from qualify_api.inbox.monitoring import MediaMetadata, MonitoringState, effective_state
+from qualify_api.inbox.repository import PostgresInboxRepository
 from qualify_api.sentiment.models import CommentSentimentResult
 from qualify_api.sentiment.repository import (
     NULL_POSTED_AT_SENTINEL,
@@ -1405,3 +1407,67 @@ def test_list_pending_for_analysis_has_no_tenant_only_index_to_fall_back_on() ->
     )
 
     assert {c.message_id for c in result} == set(pending)
+
+
+# --- QUA-149: persisted metadata reaches the Reel summary, past the window and when off --
+
+
+def test_reel_summary_carries_the_persisted_metadata_written_by_the_inbox(
+    seeded_message: tuple[UUID, UUID, UUID, str],
+) -> None:
+    """Written through the REAL inbox write path (`PostgresInboxRepository`), read back
+    through `list_reel_summaries`: caption/permalink/date survive the window (posted 40
+    days ago here) and turning monitoring off."""
+    tenant_id, connection_id, message_id, _source_id = seeded_message
+    thread_id = _thread_id_for(tenant_id, message_id)
+    external_media_id = _external_thread_id_for(tenant_id, thread_id)
+    now = datetime.now(UTC)
+    posted_at = now - timedelta(days=40)
+    inbox = PostgresInboxRepository()
+    inbox.set_media_monitored(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=external_media_id,
+        monitored=True,
+        metadata=MediaMetadata(
+            posted_at=posted_at, caption="Caption guardado", permalink="https://ig/p/1"
+        ),
+        fetched_at=now - timedelta(days=39),
+    )
+    repo = PostgresSentimentRepository()
+
+    (summary,) = repo.list_reel_summaries(
+        tenant_id=tenant_id, connection_id=connection_id, version=VERSION, cursor=None
+    )
+    assert summary.caption == "Caption guardado"
+    assert summary.permalink == "https://ig/p/1"
+    assert summary.media_posted_at == posted_at
+    assert summary.is_monitored is True
+    assert (
+        effective_state(is_monitored=True, posted_at=summary.media_posted_at, now=now)
+        is MonitoringState.EXPIRED
+    )
+
+    inbox.set_media_monitored(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_media_id=external_media_id,
+        monitored=False,
+    )
+    (after_off,) = repo.list_reel_summaries(
+        tenant_id=tenant_id, connection_id=connection_id, version=VERSION, cursor=None
+    )
+    assert after_off.is_monitored is False
+    assert after_off.caption == "Caption guardado"
+    assert after_off.total == summary.total  # history untouched
+
+
+def test_reel_summary_without_a_monitored_media_row_has_no_metadata(
+    seeded_message: tuple[UUID, UUID, UUID, str],
+) -> None:
+    tenant_id, connection_id, _message_id, _source_id = seeded_message
+    (summary,) = PostgresSentimentRepository().list_reel_summaries(
+        tenant_id=tenant_id, connection_id=connection_id, version=VERSION, cursor=None
+    )
+    assert summary.media_posted_at is None
+    assert summary.caption is None and summary.permalink is None

@@ -176,6 +176,14 @@ class ReelSummary:
     negative: int
     not_analyzed: int
     is_monitored: bool
+    # QUA-149 (0046): the media's PERSISTED metadata, read from the same `monitored_media`
+    # row (`None` when there is no row, or for a legacy row whose metadata was never read).
+    # `media_posted_at` is what the effective state is computed from
+    # (`qualify_api.inbox.monitoring.effective_state`) — never `is_monitored` alone, since
+    # a monitored media past its window is no longer synced. Decoration, never a filter.
+    media_posted_at: datetime | None = None
+    caption: str | None = None
+    permalink: str | None = None
 
 
 @dataclass(frozen=True)
@@ -323,14 +331,32 @@ class MemorySentimentRepository:
         # same `False` default `list_reel_summaries`'s Postgres LEFT JOIN produces via
         # `COALESCE(mm.is_monitored, false)`.
         self._monitored: dict[tuple[UUID, str], bool] = {}
+        # Same key -> (media_posted_at, caption, permalink), QUA-149 — the persisted
+        # metadata columns of that `monitored_media` row.
+        self._media_metadata: dict[
+            tuple[UUID, str], tuple[datetime | None, str | None, str | None]
+        ] = {}
 
     def seed_monitored_media(
-        self, *, connection_id: UUID, external_media_id: str, is_monitored: bool
+        self,
+        *,
+        connection_id: UUID,
+        external_media_id: str,
+        is_monitored: bool,
+        media_posted_at: datetime | None = None,
+        caption: str | None = None,
+        permalink: str | None = None,
     ) -> None:
         """Test-only helper mirroring `InboxRepository.set_media_monitored` — a toggle,
         not an event log: calling this twice for the same `(connection_id,
-        external_media_id)` overwrites, it never accumulates history."""
+        external_media_id)` overwrites, it never accumulates history. The metadata
+        arguments (QUA-149) mirror the row's persisted metadata columns."""
         self._monitored[(connection_id, external_media_id)] = is_monitored
+        self._media_metadata[(connection_id, external_media_id)] = (
+            media_posted_at,
+            caption,
+            permalink,
+        )
 
     def seed_message(
         self,
@@ -480,6 +506,10 @@ class MemorySentimentRepository:
                     negative += 1
                 else:
                     not_analyzed += 1
+            media_key = (connection_id, thread_external_id[thread_id])
+            posted_at_meta, caption, permalink = self._media_metadata.get(
+                media_key, (None, None, None)
+            )
             summaries.append(
                 ReelSummary(
                     thread_id=thread_id,
@@ -490,9 +520,10 @@ class MemorySentimentRepository:
                     neutral=neutral,
                     negative=negative,
                     not_analyzed=not_analyzed,
-                    is_monitored=self._monitored.get(
-                        (connection_id, thread_external_id[thread_id]), False
-                    ),
+                    is_monitored=self._monitored.get(media_key, False),
+                    media_posted_at=posted_at_meta,
+                    caption=caption,
+                    permalink=permalink,
                 )
             )
         summaries.sort(key=lambda s: (s.last_message_at, s.thread_id), reverse=True)
@@ -712,7 +743,8 @@ class PostgresSentimentRepository:
             # QUA-93 used — see this method's benchmark test for the measured plan.
             thread_sql = """
                 SELECT t.id, t.external_thread_id, t.last_message_at,
-                  COALESCE(mm.is_monitored, false) AS is_monitored
+                  COALESCE(mm.is_monitored, false) AS is_monitored,
+                  mm.media_posted_at, mm.caption, mm.permalink
                 FROM threads t
                 LEFT JOIN monitored_media mm
                   ON mm.connection_id = t.connection_id
@@ -808,6 +840,9 @@ class PostgresSentimentRepository:
                         negative=counts.negative if counts else 0,
                         not_analyzed=counts.not_analyzed if counts else 0,
                         is_monitored=bool(row.is_monitored),
+                        media_posted_at=row.media_posted_at,
+                        caption=row.caption,
+                        permalink=row.permalink,
                     )
                 )
             return tuple(summaries)

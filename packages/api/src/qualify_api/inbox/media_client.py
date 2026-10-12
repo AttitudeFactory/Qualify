@@ -23,15 +23,20 @@ Unix timestamps (`ig-user/media.md:384-386`). So the "only the last 2 weeks" rul
 enforced by asking Meta for exactly that window, not by fetching everything and filtering
 client-side.
 
-## `get_media` exists for one reason: toggle-time validation without a stored timestamp
+## `get_media`: toggle-time validation against Meta, and the QUA-149 metadata read
 
 The product decision requires that activating monitoring on an old media is rejected — not
-just hidden from the UI. Trusting a client-supplied timestamp, or caching one in
-`monitored_media`, would mean the rule holds only as long as nobody calls the toggle
-directly. `get_media` asks Meta fresh, every time, addressed directly by id
-(`GET /{media-id}?fields=...` — `instagram-media.md:125` — no `ig_user_id` needed in the
-path). `timestamp` is documented `Public` on this node (`instagram-media.md:98`) — no
-`instagram_manage_comments` gate, unlike a comment's `username`/`from`.
+just hidden from the UI. Trusting a client-supplied timestamp, or a stored one, would mean
+the rule holds only as long as nobody calls the toggle directly. `get_media` asks Meta
+fresh at activation, addressed directly by id (`GET /{media-id}?fields=...` —
+`instagram-media.md:125` — no `ig_user_id` needed in the path). `timestamp` is documented
+`Public` on this node (`instagram-media.md:98`) — no `instagram_manage_comments` gate,
+unlike a comment's `username`/`from`.
+
+QUA-149: what `get_media` returns at activation is then persisted in `monitored_media`, so
+the media stays readable — and can be judged expired — after it leaves Meta's 14-day
+listing; the stored date is never what activation decides on. The same call reads that
+metadata once for rows monitored before migration 0046.
 
 ## Fields added for the Reflex picker (2026-08-14, B2 UI slice)
 
@@ -43,11 +48,25 @@ under the signed login fork (ADR 25), no new scope required. Deliberately still 
 `media_url`, `like_count`, `comments_count`, `view_count` — none of them help identify
 *which* piece of content a switch controls, which is the only job this field list has.
 
-`media_product_type` also carries the "Reels only" product rule (same
-"AD"/"FEED"/"STORY"/"REELS" vocabulary `instagram-media.md:91` documents) — filtering to
-`REELS` happens in `service.py`, next to the 2-week window rule it sits beside, not here:
-this module stays a faithful mirror of what Meta returns, same separation of concerns the
-module docstring above already draws between this file and the window/eligibility rules.
+QUA-146 adds `media_type` (`instagram-media.md:92`, `Public`, same node, no new scope):
+what the media IS (`IMAGE`/`VIDEO`/`CAROUSEL_ALBUM`), where `media_product_type` only says
+where it lives. It rides on the same `GET` every read already makes — no extra call.
+`children` is deliberately NOT requested: a carousel is monitored, and its comments
+read, as the album itself (`GET /{album-id}/comments`), never per child.
+
+QUA-146 also adds `media_url` (`instagram-media.md:93`, `Public`, same `GET`), reversing
+the 2026-08-14 "not here" above for one reason: `thumbnail_url` exists ONLY on `VIDEO`
+media (`instagram-media.md:97`), so without `media_url` a photo or a carousel — now
+monitorable — has no picture to identify it by. It is used as a picture only for
+`IMAGE`/`CAROUSEL_ALBUM` (for a `VIDEO` it is the video file); Meta omits it for media
+flagged for copyright, which then falls back to the generic frame.
+
+`media_product_type` also carries the monitorable-surface rule (same
+"AD"/"FEED"/"STORY"/"REELS" vocabulary `instagram-media.md:91` documents; `REELS` and
+`FEED` since QUA-146) — that filtering happens in `service.py`, next to the 2-week
+window rule it sits beside, not here: this module stays a faithful mirror of what Meta
+returns, same separation of concerns the module docstring above already draws between
+this file and the window/eligibility rules.
 
 ## Token discipline
 
@@ -68,8 +87,11 @@ from qualify_api.connections.resolver import AuthenticatedClient
 
 # `id,timestamp` decide the toggle/sync flow; the rest identify the content for a human
 # picking what to monitor (see the module docstring's "Fields added for the Reflex
-# picker" section for why exactly these four and no more).
-MEDIA_FIELDS: Final = "id,timestamp,media_product_type,caption,permalink,thumbnail_url"
+# picker" section for why exactly these four and no more). `media_type` (QUA-146) is
+# what the media IS — see "QUA-146 adds `media_type`" in the module docstring.
+MEDIA_FIELDS: Final = (
+    "id,timestamp,media_product_type,media_type,caption,permalink,thumbnail_url,media_url"
+)
 
 
 @dataclass(frozen=True)
@@ -87,6 +109,12 @@ class MediaSummary:
     caption: str | None = None
     permalink: str | None = None
     thumbnail_url: str | None = None
+    # QUA-146: `IMAGE`/`VIDEO`/`CAROUSEL_ALBUM` per `instagram-media.md:92` — carried
+    # verbatim, an unknown value included (interpreted only by `inbox.media_type`).
+    media_type: str | None = None
+    # QUA-146: the image itself for IMAGE/CAROUSEL_ALBUM (the video file for VIDEO) —
+    # see "QUA-146 also adds `media_url`" in the module docstring.
+    media_url: str | None = None
 
 
 class MediaReadError(Exception):
@@ -97,10 +125,15 @@ class MediaReadError(Exception):
         self,
         message: str,
         *,
+        http_status: int | None = None,
         platform_code: int | None = None,
         platform_subcode: int | None = None,
     ) -> None:
         super().__init__(message)
+        # QUA-149: the status is what separates a confirmed deletion (HTTP 400 + code
+        # 100/subcode 33, same signature `inbox.client.CommentsReadError` carries) from a
+        # rate limit or a server error. `None` for a malformed 200 response.
+        self.http_status = http_status
         self.platform_code = platform_code
         self.platform_subcode = platform_subcode
 
@@ -160,6 +193,8 @@ def _parse_media_summary(payload: dict[str, Any]) -> MediaSummary:
         caption=_optional_str(payload, "caption"),
         permalink=_optional_str(payload, "permalink"),
         thumbnail_url=_optional_str(payload, "thumbnail_url"),
+        media_type=_optional_str(payload, "media_type"),
+        media_url=_optional_str(payload, "media_url"),
     )
 
 
@@ -185,10 +220,20 @@ class HttpMediaClient:
             code, subcode = _error_codes(response)
             raise MediaReadError(
                 f"GET {path} failed with HTTP {response.status_code}",
+                http_status=response.status_code,
                 platform_code=code,
                 platform_subcode=subcode,
             )
-        return dict(response.json())
+        # QUA-146: a 200 whose body is not a JSON object is a malformed response, raised
+        # as `MediaReadError` (status `None`, see its docstring) — never a bare
+        # `ValueError` that would abort a whole sync pass after its call was budgeted.
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise MediaReadError(f"GET {path} returned a body that is not JSON") from exc
+        if not isinstance(payload, dict):
+            raise MediaReadError(f"GET {path} returned JSON that is not an object")
+        return payload
 
     async def list_recent_media(
         self, *, ig_user_id: str, since: datetime

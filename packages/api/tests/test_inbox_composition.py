@@ -22,6 +22,7 @@ from qualify_shared.social.ig_shapes import COMMENTS_EDGE_PERMISSIONS, IGComment
 from qualify_api.inbox import composition
 from qualify_api.inbox.composition import InboxConnectionInactive, UnknownInboxConnection
 from qualify_api.inbox.media_client import MediaReadError, MediaSummary
+from qualify_api.inbox.monitoring import MediaMetadata
 from qualify_api.inbox.repository import MemoryInboxRepository
 from qualify_api.inbox.service import InboxService, MediaNotEligible, SyncSummary
 from qualify_api.inbox.sync_guard import SyncAlreadyRunning, SyncGuard
@@ -36,6 +37,18 @@ CONNECTION = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 UNKNOWN_CONNECTION = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 IG_USER = "17840000000000009"
 NOW = datetime(2026, 8, 14, 12, 0, 0, tzinfo=UTC)
+
+# QUA-149: a row monitored after 0046 carries its metadata — published a day ago by the
+# REAL clock (sync calls without `now=` use it), so it is inside the window whatever
+# `now` a test passes. Seeding without it would model a legacy row, which now costs one
+# metadata read; the tests that mean that seed it explicitly. QUA-146: complete also
+# means "has its `media_type`" — a complete row without it costs one dedicated read
+# (`MediaToSync.needs_media_type`); the tests that mean that seed it explicitly.
+FRESH = MediaMetadata(
+    posted_at=datetime.now(UTC) - timedelta(days=1),
+    media_product_type="REELS",
+    media_type="VIDEO",
+)
 
 
 class FakeCommentsClient:
@@ -161,7 +174,13 @@ async def test_set_media_monitored_delegates_to_the_wired_service(
     # suite runs.
     _, repository = _wire(
         monkeypatch,
-        media={"A": MediaSummary(id="A", timestamp=datetime.now(UTC) - timedelta(days=1))},
+        media={
+            "A": MediaSummary(
+                id="A",
+                timestamp=datetime.now(UTC) - timedelta(days=1),
+                media_product_type="REELS",
+            )
+        },
     )
 
     await composition.set_media_monitored(
@@ -213,7 +232,11 @@ async def test_sync_comments_delegates_to_the_wired_service(
         comments_by_media={"A": [IGComment.model_validate({"id": "c1", "text": "hi"})]},
     )
     repository.set_media_monitored(
-        tenant_id=TENANT, connection_id=CONNECTION, external_media_id="A", monitored=True
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
 
     summary = await composition.sync_comments(tenant_id=TENANT, connection_id=CONNECTION)
@@ -232,7 +255,11 @@ async def test_sync_comments_is_idempotent_through_the_seam(
         comments_by_media={"A": [IGComment.model_validate({"id": "c1", "text": "hi"})]},
     )
     repository.set_media_monitored(
-        tenant_id=TENANT, connection_id=CONNECTION, external_media_id="A", monitored=True
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
 
     first = await composition.sync_comments(tenant_id=TENANT, connection_id=CONNECTION)
@@ -372,7 +399,11 @@ async def test_an_unreachable_lock_store_does_not_block_reading_comments(
         comments_by_media={"A": [IGComment.model_validate({"id": "c1", "text": "hi"})]},
     )
     repository.set_media_monitored(
-        tenant_id=TENANT, connection_id=CONNECTION, external_media_id="A", monitored=True
+        tenant_id=TENANT,
+        connection_id=CONNECTION,
+        external_media_id="A",
+        monitored=True,
+        metadata=FRESH,
     )
     fake_async_redis.fail_with = ConnectionError("redis down")
 

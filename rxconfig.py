@@ -24,6 +24,10 @@ config = rx.Config(
         # colours), slate gray (cool neutral that keeps green unambiguous), medium radius.
         rx.plugins.RadixThemesPlugin(
             theme=rx.theme(
+                # Dark by default (founder, 2026-10-08, Liquid Glass migration D3): the
+                # material is defined in the kit's dark-first Glass Lab. Light stays one
+                # toggle away and keeps its own material (assets/qualify.css).
+                appearance="dark",
                 accent_color="teal",
                 gray_color="slate",
                 radius="medium",
