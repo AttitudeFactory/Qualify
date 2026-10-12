@@ -2,7 +2,7 @@
 
 **Estado:** `[LISTO PARA EJECUTAR 2026-10-05]` — el repo ya es desplegable; lo que falta lo hace el fundador (crear el servidor, el registro DNS, el `.env.prod` y los ajustes de Meta). Cierra la bifurcación de host de [`prioridad-despliegue-subdominio.md`](prioridad-despliegue-subdominio.md) §4: **Hetzner**.
 **Para qué:** que Meta App Review tenga una URL pública estable donde iniciar sesión, y que el callback OAuth de Meta tenga un redirect URI fijo (`https://qualify.attitudefactory.co/api/connections/callback`) en vez del túnel `cloudflared` efímero.
-**Piezas en el repo:** `deploy/Dockerfile`, `deploy/docker-compose.prod.yml`, `deploy/Caddyfile`, `deploy/.env.prod.example`, `deploy/deploy.sh`, `deploy/bootstrap-server.sh`, `deploy/backup-db.sh`, `deploy/bootstrap_db_roles.py`, y las recetas `just deploy*`.
+**Piezas en el repo:** `deploy/Dockerfile`, `deploy/docker-compose.prod.yml`, `deploy/Caddyfile`, `deploy/.env.prod.example`, `deploy/deploy.sh`, `deploy/bootstrap-server.sh`, `deploy/backup-db.sh`, `deploy/bootstrap_db_roles.py`, `deploy/bootstrap-claude.sh` + `deploy/claude-server.md` (§13), y las recetas `just deploy*`.
 
 ---
 
@@ -314,3 +314,50 @@ QUALIFY_ENV_FILE=/ruta/.env.smoke docker compose -p qualify-smoke \
 | `deploy.sh status` / `deploy.sh backup` (mismo `ssh` de prueba) | `ok` en los tres chequeos y salida 0; si un chequeo no da el código esperado, `FAIL` y salida ≠ 0 (camino ejercitado en la primera corrida, que además destapó un fallo con arreglos vacíos en bash 3.2, ya corregido) |
 
 No verificado localmente: la emisión real del certificado (requiere DNS apuntando al servidor), el build en x86 del servidor (aquí fue arm64), el perfil `render` (su imagen no se construyó en esta sesión) y `deploy.sh` a través de un ssh real (se probó con un `ssh` de prueba que ejecuta los mismos comandos en local).
+
+## 13. Claude Code en el servidor (Remote Control)
+
+**Decisión del fundador, 2026-10-12:** una sesión de Claude Code corre **en el servidor**, como el usuario `deploy`, y se maneja desde claude.ai/code o la app móvil de Claude con *Remote Control*, para operar producción (estado, logs, diagnóstico, reinicios, rollbacks, respaldos) sin abrir el Mac. Se evaluaron tres modelos — usuario restringido a un script fijo, sin Claude en el VPS, y Claude como `deploy` — y se eligió el último a sabiendas de lo que implica:
+
+- `deploy` está en el grupo `docker`, que **equivale a root**: Claude puede leer `.env.prod`, la base de datos con datos de clientes y cualquier volumen. Lo que lee viaja a Anthropic como parte de la conversación.
+- La sesión entra con la cuenta **Pro/Max personal** del fundador: quien acceda a esa cuenta de claude.ai maneja producción. Conviene tener 2FA activo en ella.
+- Las reglas de `/etc/claude-code/managed-settings.json` (instaladas por el script) son **cinturón contra accidentes, no frontera de seguridad**: la documentación de Claude Code aclara que las reglas de Bash comparan texto, no el programa que corre. Bloquean lo obvio — `down -v`, `docker volume rm/prune`, `system prune`, `DROP DATABASE`, leer o editar `.env.prod` — y desactivan el modo `bypassPermissions`, así que cada comando que cambia algo pide aprobación (desde el móvil, un toque).
+- Si un día hace falta que el modelo sea frontera de verdad, el camino es el modelo descartado: usuario `claude` sin `docker`, con `sudo -u deploy` sólo sobre un script fijo, igual que la llave del CI (§7.1).
+
+**Qué se instala** (`deploy/bootstrap-claude.sh`, idempotente): `tmux`; Claude Code para `deploy` con el instalador nativo oficial (`~deploy/.local/bin/claude`, se actualiza solo); `qdc`, el alias `dc` de §7 convertido en comando (los alias no existen en el shell no interactivo de Claude); `qualify-claude`, que arranca o re-engancha la sesión en `tmux`; los *managed settings*; y `/opt/qualify/CLAUDE.md` (fuente: `deploy/claude-server.md`), con las reglas de operación que Claude lee al arrancar.
+
+**Montaje (una vez):**
+
+1. Desde el Mac, con el alias que entra como **root**:
+   ```bash
+   just claude-bootstrap qualify-prod
+   ```
+2. Iniciar sesión — es interactivo y no se puede automatizar (Remote Control no acepta API key ni el token de `claude setup-token`):
+   ```bash
+   ssh deploy@<IP>
+   claude          # dentro: /login → tecla c copia la URL → abrirla en el navegador del Mac → pegar el código
+   ```
+   Salir con `/exit`.
+3. Arrancar la sesión remota, en el mismo ssh:
+   ```bash
+   qualify-claude
+   ```
+   La primera vez pregunta si habilitar Remote Control (`y`) y si confiar en `/opt/qualify` (`y`). Muestra una URL y un QR. Desengancharse con **Ctrl-b d**: la sesión sigue viva en `tmux` al cerrar el ssh.
+4. En claude.ai/code o en la app móvil aparece la sesión **`qualify-prod`**.
+
+**Operación:**
+
+| Situación | Qué hacer |
+|---|---|
+| Volver a la terminal de la sesión | `ssh deploy@<IP>` → `qualify-claude` (re-engancha) |
+| La red se cayó más de ~10 min y la sesión desapareció | `qualify-claude --continue` (retoma la conversación; funciona durante ~4 h) |
+| Reinicio del servidor | La sesión **no** vuelve sola: `qualify-claude` de nuevo |
+| Aviso de que el login vence (llega con 3 días) | En la sesión, `/login` otra vez; si vence, Remote Control se detiene hasta re-loguear |
+| Cambiar las reglas de Claude | Editar `deploy/bootstrap-claude.sh` / `deploy/claude-server.md` en el repo y repetir `just claude-bootstrap qualify-prod` |
+| Quitarlo | `ssh deploy@<IP> 'tmux kill-session -t claude; ~/.local/bin/claude logout'` |
+
+**Límites:**
+- Desde el servidor Claude sólo puede desplegar shas cuyas imágenes **ya están en GHCR** (`/opt/qualify/bin/server-deploy.sh deploy|rollback <sha>`): un commit nuevo de `main` lo despliega el workflow `deploy` (§7.1). No hay checkout del repo ni credenciales de GitHub en el servidor, a propósito.
+- Requisitos que la documentación de Remote Control impone y conviene no romper: no exportar `ANTHROPIC_API_KEY` en el entorno de `deploy` (bloquea Remote Control), ni `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. Sólo usa HTTPS saliente: no hay que abrir puertos ni tocar `ufw`.
+- Memoria: el proceso de Claude Code ocupa unos cientos de MB; en un CX23 con el stack completo hay margen, con el perfil `render` activo, vigilar `free -h`.
+- **Sin verificar todavía contra un servidor real** (se escribió el 2026-10-12 desde el Mac): que `remote-control` aplique los *managed settings* a sus sesiones (es lo esperado, son procesos locales) y que la app de escritorio de Claude pueda engancharse a la sesión (la documentación sólo nombra claude.ai/code y la app móvil).
