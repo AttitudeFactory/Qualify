@@ -107,10 +107,55 @@ if (!window.__qZenKey) {
 """
 
 
+# The Lucide `radar` icon (ISC), rotated 90° so its needle is the tail of a Q, and split
+# in two layers: the Q (inner ring, centre dot, needle) and the waves (outer ring, the
+# stray dot). Same 24-unit paths as the icon — nothing redrawn.
+_MARK_Q: tuple[str, ...] = (
+    "M16.24 7.76A6 6 0 1 0 8.23 16.67",
+    "M17.99 11.66A6 6 0 0 1 15.77 16.67",
+    "M12 18h.01",
+    "m13.41 10.59 5.66-5.66",
+)
+_MARK_WAVES: tuple[str, ...] = (
+    "M19.07 4.93A10 10 0 0 0 6.99 3.34",
+    "M2.29 9.62A10 10 0 1 0 21.31 8.35",
+    "M4 6h.01",
+)
+
+
+def qualify_mark(size: int = 22) -> rx.Component:
+    """The isotype (decided 2026-10-12): a Q that is also a radar. One hue, two
+    luminosities — the Q in accent 11, the waves in accent 9 at 45 % — so the near
+    signal stands out over the far ones. Radix variables, so it follows light/dark on
+    its own. Static copies for outside the app: ``assets/qualify-mark*.svg``."""
+    svg = rx.el.svg
+    return svg(
+        svg.g(
+            svg.g(
+                *(svg.path(d=d) for d in _MARK_WAVES),
+                stroke="var(--accent-9)",
+                stroke_opacity="0.45",
+            ),
+            svg.g(*(svg.path(d=d) for d in _MARK_Q), stroke="var(--accent-11)"),
+            svg.circle(cx=12, cy=12, r=2, fill="var(--accent-11)", stroke="var(--accent-11)"),
+            fill="none",
+            stroke_width="2",
+            stroke_linecap="round",
+            stroke_linejoin="round",
+            transform="rotate(90 12 12)",
+        ),
+        view_box="0 0 24 24",
+        width=f"{size}px",
+        height=f"{size}px",
+        flex_shrink="0",
+        aria_hidden="true",
+    )
+
+
 def brand_mark(size: int = 22, heading_size: str = "5") -> rx.Component:
-    """The wordmark: radar icon in accent + "Qualify". Same everywhere it appears."""
+    """The wordmark: the Q-radar mark + "Qualify". Same everywhere it appears."""
     return rx.hstack(
-        rx.icon("radar", size=size, color=rx.color("accent", 9)),
+        qualify_mark(size),
         # A text, not a heading: the wordmark must not enter the page outline as an h1.
         rx.text("Qualify", size=heading_size, weight="bold", letter_spacing="-0.02em"),
         align="center",
@@ -259,7 +304,7 @@ def tenant_block() -> rx.Component:
         rx.link(
             rx.hstack(
                 rx.text("Supported by", size="1", color=T.TEXT_MUTED),
-                rx.icon("radar", size=T.ICON_SM, color=rx.color("accent", 9)),
+                qualify_mark(T.ICON_SM),
                 rx.text("Qualify", size="1", weight="medium", color=rx.color("accent", 11)),
                 align="center",
                 spacing="1",
