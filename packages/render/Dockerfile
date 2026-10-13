@@ -1,7 +1,7 @@
 # Qualify render service (CONTRACT.md §5).
 # Base + shared libs exactly as Remotion documents for Docker
 # (https://www.remotion.dev/docs/docker). No FFmpeg: Remotion 4 bundles its own.
-FROM node:22-bookworm-slim
+FROM node:25-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 \
