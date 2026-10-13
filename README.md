@@ -169,7 +169,7 @@ Qué hace:
 
 - Copia **sólo las claves nombradas**. Las demás de `.env.prod` no se tocan.
 - Antes de escribir deja un respaldo `/opt/qualify/.env.prod.bak-<UTC>` y conserva los 10 más recientes.
-- Corre `docker compose up -d --no-build`. Compose recrea exactamente los servicios que leen `.env.prod` (`api`, `reflex` y `calendar-worker` si está activo) y no reinicia `postgres`, `redis` ni `caddy`. No construye imágenes ni corre `migrate`. Son unos 10 s, y al final imprime la salud del sitio.
+- Corre `docker compose up -d --no-build`. Compose recrea exactamente los servicios que leen `.env.prod` (`api`, `reflex`, `webhook-worker` y `calendar-worker` si está activo) y no reinicia `postgres`, `redis` ni `caddy`. No construye imágenes ni corre `migrate`. Son unos 10 s, y al final imprime la salud del sitio.
 - Los valores viajan por el stdin de ssh, nunca por argumentos ni por la terminal.
 - Desde un worktree lee el `.env` del checkout principal. Otro archivo: `QUALIFY_ENV_SOURCE=/ruta/.env just env-push …`.
 - Una clave nueva llega a los contenedores sin tocar el compose, porque el compose les pasa `.env.prod` completo.

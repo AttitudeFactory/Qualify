@@ -204,3 +204,26 @@ def test_a_change_pointing_at_a_missing_delivery_is_refused() -> None:
             ),
             {"id": uuid4(), "d": UUID(int=1), "k": f"k-{uuid4()}"},
         )
+
+
+def test_unstorable_text_never_loses_the_batch(owner) -> None:
+    """A signed delivery whose comment text carries a lone UTF-16 surrogate and a NUL,
+    batched with a valid mention. Before the fix the whole record raised (500, retried by
+    Meta, then dropped with the mention inside). Now both changes land, the bad text with
+    U+FFFD, and the raw body keeps the exact original bytes."""
+    entry = f"acct-{uuid4()}"
+    body = (
+        '{"object":"instagram","entry":[{"id":"' + entry + '","changes":['
+        '{"field":"comments","value":{"id":"c-' + entry + '","text":"hola \\ud83d y\\u0000z"}},'
+        '{"field":"mentions","value":{"media_id":"m-' + entry + '"}}]}]}'
+    ).encode()
+
+    result = record_delivery(body=body, signature_header="s")
+
+    assert (result.parse_status, result.changes_total, result.changes_new) == ("parsed", 2, 2)
+    delivery = _delivery_row(owner, body)
+    assert bytes(delivery.raw_body) == body  # the original escapes, untouched
+    by_field = {e.field: e for e in _events_for_entry(owner, entry)}
+    assert by_field["comments"].value["text"] == "hola � y�z"
+    assert by_field["mentions"].value == {"media_id": f"m-{entry}"}
+    assert {e.status for e in by_field.values()} == {"pending"}
