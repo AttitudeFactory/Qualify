@@ -90,6 +90,7 @@ from .ui import (
     page_body,
     page_header,
     progress_panel,
+    qualify_mark,
     removable_pill,
     skeleton_card,
     tag,
@@ -1389,7 +1390,7 @@ _TILE_FRAME = {
 
 
 def _mark_icon(size: int) -> rx.Component:
-    return rx.icon("radar", size=size, color=T.tone_color("accent", 9))
+    return qualify_mark(size)
 
 
 def _mark_text(size: str) -> rx.Component:
