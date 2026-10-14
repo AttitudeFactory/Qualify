@@ -282,8 +282,17 @@ def test_graph_error_shows_the_meta_code_only() -> None:
 
 
 def test_tabs_and_default() -> None:
-    assert [key for key, _ in TABS] == ["chats", "conexion", "perfil", "qr", "menu"]
-    assert [label for _, label in TABS] == ["Chats", "Conexión", "Perfil", "QR", "Menú"]
+    assert [key for key, _ in TABS] == [
+        "chats",
+        "conexion",
+        "perfil",
+        "qr",
+        "menu",
+        "plantillas",
+        "contactos",
+        "campanas",
+    ]
+    assert [label for _, label in TABS][5:] == ["Plantillas", "Contactos", "Campañas"]
     assert DEFAULT_TAB == TAB_CHATS
     assert resolve_tab("qr") == TAB_QR
     assert resolve_tab("<script>") == DEFAULT_TAB
