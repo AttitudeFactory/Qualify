@@ -171,15 +171,17 @@ class AudienceFilter:
     sources: tuple[str, ...] = ()
     captured_after: datetime | None = None
     captured_before: datetime | None = None
-    phone_prefixes: tuple[str, ...] = ()  # E.164 prefixes, e.g. ("+57",)
+    phone_prefixes: tuple[str, ...] = ()  # leading parts of E.164 numbers, e.g. ("+57",)
 
     def __post_init__(self) -> None:
         unknown = set(self.sources) - set(OPT_IN_SOURCES)
         if unknown:
             raise ValueError(f"unknown opt-in sources {sorted(unknown)}")
         for prefix in self.phone_prefixes:
-            if not re.fullmatch(r"\+[1-9]\d{0,6}", prefix):
-                raise ValueError("phone_prefixes must look like '+57'")
+            if not re.fullmatch(r"\+[1-9]\d{0,13}", prefix):
+                raise ValueError(
+                    "phone_prefixes must look like '+57' (a leading part of an E.164 number)"
+                )
 
     def matches(self, record: OptInRecord) -> bool:
         if not record.is_active:

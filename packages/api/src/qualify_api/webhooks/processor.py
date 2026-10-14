@@ -255,6 +255,7 @@ def production_processor(*, worker_id: str) -> Processor:
     )
     from qualify_api.mentions.resolve import resolve_external_account  # noqa: PLC0415
     from qualify_api.webhooks.repository import WebhookQueue  # noqa: PLC0415
+    from qualify_api.whatsapp.campaigns import PostgresCampaignReceiptRepository  # noqa: PLC0415
     from qualify_api.whatsapp.catalog import load_catalog_for_phone  # noqa: PLC0415
     from qualify_api.whatsapp.handler import (  # noqa: PLC0415
         WHATSAPP_MESSAGES_HANDLER_KEY,
@@ -288,6 +289,8 @@ def production_processor(*, worker_id: str) -> Processor:
                 catalog_loader=load_catalog_for_phone,
                 # WA-19: an inbound STOP/BAJA/CANCELAR revokes the sender's opt-in.
                 opt_outs=PostgresOptOutRepository(),
+                # WA-20: delivery receipts of campaign sends, by wamid.
+                campaign_receipts=PostgresCampaignReceiptRepository(),
             ),
             TEMPLATE_STATUS_HANDLER_KEY: template_handler,
             TEMPLATE_QUALITY_HANDLER_KEY: template_handler,

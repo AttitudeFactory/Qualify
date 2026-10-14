@@ -24,6 +24,11 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.leads.models import Lead, LeadFormSettings
 from qualify_api.tenancy.models import Tenant, User
+from qualify_api.whatsapp.campaigns import (
+    CampaignService,
+    PostgresCampaignReceiptRepository,
+    PostgresCampaignRepository,
+)
 from qualify_api.whatsapp.client import TemplateInfo
 from qualify_api.whatsapp.models import (
     WhatsAppCampaign,
@@ -34,11 +39,13 @@ from qualify_api.whatsapp.models import (
     WhatsAppTemplate,
 )
 from qualify_api.whatsapp.optins import (
+    AudienceFilter,
     OptInService,
     PostgresOptInRepository,
     PostgresOptOutRepository,
     RecordOutcome,
 )
+from qualify_api.whatsapp.outbox import PostgresOutboxRepository
 from qualify_api.whatsapp.resolve import PhoneResolutionOutcome, resolve_waba
 from qualify_api.whatsapp.templates import (
     PostgresTemplateRepository,
@@ -663,3 +670,122 @@ def test_opt_in_repository_import_and_worker_revoke(seeded) -> None:
     )
     assert again.outcome is RecordOutcome.RECONSENTED and again.record.id == revoked.id
     assert service.is_opted_in(tenant_id=TENANT, phone=manual)
+
+
+# --- campaigns: launch → real outbox sender settle → trigger → worker receipt (WA-20) --
+
+
+def test_campaign_end_to_end_through_the_real_outbox_and_worker(seeded) -> None:
+    optins = OptInService(PostgresOptInRepository())
+    prefix = f"+5799{uuid4().int % 10**4:04d}"  # a prefix only this run's phones share
+    phones = [f"{prefix}{i:05d}" for i in range(3)]
+    for phone in phones:
+        optins.record(tenant_id=TENANT, phone=phone, source="manual", consent_text="Sí, acepto")
+
+    service = CampaignService(
+        PostgresCampaignRepository(), PostgresTemplateRepository(), PostgresOptInRepository()
+    )
+    campaign = service.create(
+        tenant_id=TENANT,
+        connection_id=seeded["connection"],
+        template_id=seeded["template"],
+        name="Promo e2e",
+        created_by_user_id=seeded["user"],
+        audience=AudienceFilter(phone_prefixes=(prefix,)),
+        max_per_minute=60,
+    )
+    report = service.launch(tenant_id=TENANT, campaign_id=campaign.id, user_id=seeded["user"])
+    assert (report.audience, report.inserted, report.enqueued) == (3, 3, 3)
+    assert service.launch(
+        tenant_id=TENANT, campaign_id=campaign.id, user_id=seeded["user"]
+    ).enqueued == (0)
+
+    sends = service.sends(tenant_id=TENANT, campaign_id=campaign.id)
+    assert {s.status for s in sends} == {"queued"}
+    with tenant_session(TENANT) as session:
+        items = session.scalars(
+            select(WhatsAppOutboxItem).where(
+                WhatsAppOutboxItem.id.in_([s.outbox_id for s in sends])
+            )
+        ).all()
+        assert {i.kind for i in items} == {"campaign_send"}
+        dues = sorted(i.next_attempt_at for i in items)
+        assert dues[1] - dues[0] == timedelta(seconds=1)  # 60/min
+        assert all(i.thread_id is None for i in items)
+
+    # The real WA-08 sender settles the rows; the 0060 trigger mirrors them.
+    outbox = PostgresOutboxRepository()
+    far = datetime.now(UTC) + timedelta(days=1)
+    claimed = {
+        i.id for i in outbox.claim(tenant_id=TENANT, worker_id="wa18-test", now=far, limit=500)
+    }
+    mine = [s for s in sends if s.outbox_id in claimed]
+    assert len(mine) == 3
+    a, b, c = mine
+    outbox.mark_sent(tenant_id=TENANT, item_id=a.outbox_id, wamid=f"wamid.{uuid4()}", now=far)
+    outbox.mark_sent(tenant_id=TENANT, item_id=b.outbox_id, wamid=f"wamid.{uuid4()}", now=far)
+    outbox.mark_failed(tenant_id=TENANT, item_id=c.outbox_id, error_code="131026")
+    by_id = {s.id: s for s in service.sends(tenant_id=TENANT, campaign_id=campaign.id)}
+    assert by_id[a.id].status == "sent" and by_id[a.id].wamid is not None
+    assert (by_id[c.id].status, by_id[c.id].error_code) == ("failed", "131026")
+
+    # Receipts through the worker door.
+    receipts = PostgresCampaignReceiptRepository()
+    wamid_a, wamid_b = by_id[a.id].wamid, by_id[b.id].wamid
+    assert receipts.apply_receipt(
+        tenant_id=TENANT, wamid=wamid_a, status="read", error_code=None, price_category=None
+    )
+    assert receipts.apply_receipt(
+        tenant_id=TENANT,
+        wamid=wamid_a,
+        status="delivered",
+        error_code=None,
+        price_category="marketing",
+    )
+    assert receipts.apply_receipt(
+        tenant_id=TENANT, wamid=wamid_b, status="failed", error_code="131049", price_category=None
+    )
+    assert not receipts.apply_receipt(
+        tenant_id=OTHER_TENANT, wamid=wamid_a, status="read", error_code=None, price_category=None
+    )
+    by_id = {s.id: s for s in service.sends(tenant_id=TENANT, campaign_id=campaign.id)}
+    assert (by_id[a.id].status, by_id[a.id].price_category) == ("read", "marketing")
+    assert (by_id[b.id].status, by_id[b.id].error_code) == ("skipped", "131049")
+
+    summary = service.summary(tenant_id=TENANT, campaign_id=campaign.id)
+    assert summary.retry_after_24h == 1 and summary.counts["read"] == 1
+    assert service.finalize_if_complete(tenant_id=TENANT, campaign_id=campaign.id)
+
+
+def test_campaign_cancel_withdraws_pending_outbox_rows(seeded) -> None:
+    optins = OptInService(PostgresOptInRepository())
+    prefix = f"+5798{uuid4().int % 10**4:04d}"
+    for i in range(2):
+        optins.record(
+            tenant_id=TENANT, phone=f"{prefix}{i:05d}", source="manual", consent_text="Sí"
+        )
+    service = CampaignService(
+        PostgresCampaignRepository(), PostgresTemplateRepository(), PostgresOptInRepository()
+    )
+    campaign = service.create(
+        tenant_id=TENANT,
+        connection_id=seeded["connection"],
+        template_id=seeded["template"],
+        name="Promo cancel",
+        created_by_user_id=seeded["user"],
+        audience=AudienceFilter(phone_prefixes=(prefix,)),
+    )
+    service.launch(tenant_id=TENANT, campaign_id=campaign.id, user_id=None)
+    assert service.cancel(tenant_id=TENANT, campaign_id=campaign.id) == 2
+    sends = service.sends(tenant_id=TENANT, campaign_id=campaign.id)
+    assert {(s.status, s.error_code) for s in sends} == {("skipped", "campaign_cancelled")}
+    with tenant_session(TENANT) as session:
+        statuses = set(
+            session.scalars(
+                select(WhatsAppOutboxItem.status).where(
+                    WhatsAppOutboxItem.id.in_([s.outbox_id for s in sends])
+                )
+            )
+        )
+    assert statuses == {"failed"}
+    assert service.get(tenant_id=TENANT, campaign_id=campaign.id).status == "cancelled"
