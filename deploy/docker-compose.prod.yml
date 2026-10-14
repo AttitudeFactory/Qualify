@@ -6,8 +6,13 @@
 #   dc() { docker compose --env-file /opt/qualify/.env.prod -f deploy/docker-compose.prod.yml "$@"; }
 #   dc build && dc run --rm -T migrate && dc up -d
 #
-# Only Caddy publishes ports (80/443). Postgres and Redis are reachable on the internal
-# compose network only — never published, never reachable from the internet.
+# NOTHING in this stack publishes a port in production. The VPS edge proxy (deploy/edge/, its
+# own compose in /opt/edge) owns 80/443, terminates TLS and reaches Qualify's `caddy` over the
+# external network `qualify-edge` (alias `qualify-web`), so deploying Qualify never restarts the
+# entry of the other products on this box. For a standalone run (local smoke) add
+# deploy/docker-compose.standalone.yml, which publishes Caddy's :80. Postgres and Redis are
+# reachable on the internal compose network only — never published, never reachable from the
+# internet.
 #
 # Always on: caddy, api, reflex, postgres, redis, webhook-worker (QUA-147: settles recorded
 # Meta webhooks; read-only toward Meta, never publishes) and whatsapp-worker (WA-08: sends
@@ -232,22 +237,19 @@ services:
       args:
         QUALIFY_PUBLIC_URL: ${QUALIFY_PUBLIC_URL}
     restart: unless-stopped
-    environment:
-      QUALIFY_DOMAIN: ${QUALIFY_DOMAIN:?set in .env.prod}
-      QUALIFY_ACME_EMAIL: ${QUALIFY_ACME_EMAIL:?set in .env.prod}
-    ports:
-      - "${QUALIFY_HTTP_PORT:-80}:80"
-      - "${QUALIFY_HTTPS_PORT:-443}:443"
-      - "${QUALIFY_HTTPS_PORT:-443}:443/udp"
+    # No `ports:` — the edge proxy (deploy/edge/) is the only listener on 80/443. Caddy here
+    # serves plain HTTP on :80 inside the networks below; `caddy_data` is kept (unused since
+    # TLS moved to the edge) only so its certificates can seed the edge's volume.
     volumes:
       - caddy_data:/data
       - caddy_config:/config
-    # `pedidos`: red externa del compose de Pedidos (Bianki·Polette), que vive en este mismo
-    # VPS y se publica desde este Caddy (bloque `pedidos.attitudefactory.co` del Caddyfile).
-    # Debe existir antes de `up`: `docker network create pedidos`.
+    # `edge` = the external network `qualify-edge`, created by deploy/edge/install.sh. The alias
+    # is the upstream name in deploy/edge/Caddyfile.
     networks:
-      - default
-      - pedidos
+      default: {}
+      edge:
+        aliases:
+          - qualify-web
     depends_on:
       api:
         condition: service_started
@@ -356,5 +358,6 @@ volumes:
   caddy_config:
 
 networks:
-  pedidos:
+  edge:
     external: true
+    name: qualify-edge
