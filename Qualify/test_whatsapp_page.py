@@ -352,3 +352,31 @@ def test_missing_verified_name_has_copy() -> None:
     vm = _number(verified_name=None)
     assert vm.verified_name == "Sin nombre verificado"
     assert vm.label == "+57 300 1234567"  # the title stays the bare number
+
+
+def test_an_auth_error_in_any_tab_refreshes_the_numbers() -> None:
+    """Browser finding (2026-10-14): Perfil/QR got Meta's auth error, the provider
+    degraded the connection, but the Conexión card kept saying «Activa» until a reload.
+    Every Graph-backed handler now re-reads the numbers after an auth error."""
+    from qualify_api.whatsapp.client import WhatsAppApiError
+
+    from . import whatsapp_state
+
+    assert whatsapp_state._is_auth(WhatsAppApiError("x", status=401))
+    assert whatsapp_state._is_auth(WhatsAppApiError("x", status=400, code=190))
+    assert not whatsapp_state._is_auth(WhatsAppApiError("x", status=400, code=100))
+    assert not whatsapp_state._is_auth(ValueError("x"))
+    source = (_HERE / "whatsapp_state.py").read_text()
+    for handler in (
+        "ensure_profile_loaded",
+        "reload_profile",
+        "save_profile_form",
+        "upload_pending_photo",
+        "ensure_qr_loaded",
+        "reload_qr",
+        "create_qr",
+        "delete_qr",
+    ):
+        start = source.index(f"async def {handler}(")
+        end = source.find("\n    @rx.event", start)
+        assert "WhatsAppState.load_numbers" in source[start:end], handler

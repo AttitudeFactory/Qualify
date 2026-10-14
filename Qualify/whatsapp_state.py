@@ -93,6 +93,12 @@ _PROFILE_FIELDS = frozenset(
 _INFRA_ERRORS = (CredentialNotFound, TokenHealthError, httpx.HTTPError, SQLAlchemyError)
 
 
+def _is_auth(exc: BaseException) -> bool:
+    """Meta rejected the token: the provider already degraded the connection, so the
+    numbers on screen (status, banner) are stale and must be re-read."""
+    return isinstance(exc, WhatsAppApiError) and exc.is_auth_error
+
+
 def _graph_banner(exc: Exception) -> tuple[str, str]:
     """Any failure of a Graph-backed action → (message, tone). Never Meta's text."""
     if isinstance(exc, WhatsAppApiError):
@@ -358,20 +364,23 @@ class WhatsAppState(rx.State):
         self.profile_banner = ""
 
     @rx.event(background=True)
-    async def ensure_profile_loaded(self) -> None:
-        await self._load_profile(force=False)
+    async def ensure_profile_loaded(self) -> AsyncIterator[rx.event.EventSpec]:
+        if await self._load_profile(force=False):
+            yield WhatsAppState.load_numbers
 
     @rx.event(background=True)
-    async def reload_profile(self) -> None:
-        await self._load_profile(force=True)
+    async def reload_profile(self) -> AsyncIterator[rx.event.EventSpec]:
+        if await self._load_profile(force=True):
+            yield WhatsAppState.load_numbers
 
-    async def _load_profile(self, *, force: bool) -> None:
+    async def _load_profile(self, *, force: bool) -> bool:
+        """Returns True when Meta rejected the token (the number got degraded)."""
         async with self:
             connection_id = self.selected_connection_id
             if not connection_id or self.profile_loading_for == connection_id:
-                return
+                return False
             if not force and self.profile_loaded_for == connection_id:
-                return
+                return False
             self.profile_loading_for = connection_id
             if not force:
                 self.profile_banner = ""
@@ -380,7 +389,7 @@ class WhatsAppState(rx.State):
             async with self:
                 self.profile_loading_for = ""
                 self.profile_banner, self.profile_banner_tone = _NO_SESSION, "error"
-            return
+            return False
         try:
             profile = await load_profile(tenant_id, UUID(connection_id))
         except (WhatsAppApiError, UnknownWhatsAppNumber, *_INFRA_ERRORS) as exc:
@@ -391,17 +400,18 @@ class WhatsAppState(rx.State):
                 if self.selected_connection_id == connection_id:
                     self.profile_loading_for = ""
                     self.profile_banner, self.profile_banner_tone = message, tone
-            return
+            return _is_auth(exc)
         async with self:
             if self.selected_connection_id != connection_id:
-                return  # the operator switched numbers while Meta answered
+                return False  # the operator switched numbers while Meta answered
             self.profile = profile
             self._fill_form(profile)
             self.profile_loaded_for = connection_id
             self.profile_loading_for = ""
+        return False
 
     @rx.event(background=True)
-    async def save_profile_form(self) -> None:
+    async def save_profile_form(self) -> AsyncIterator[rx.event.EventSpec]:
         async with self:
             if self.profile_saving or not self.selected_connection_id:
                 return
@@ -446,11 +456,14 @@ class WhatsAppState(rx.State):
             async with self:
                 self.profile_saving = False
                 self.profile_banner, self.profile_banner_tone = message, tone
+            if _is_auth(exc):
+                yield WhatsAppState.load_numbers
             return
         async with self:
             self.profile_saving = False
             self.profile_banner, self.profile_banner_tone = _PROFILE_SAVED, "ok"
-        await self._load_profile(force=True)
+        if await self._load_profile(force=True):
+            yield WhatsAppState.load_numbers
 
     @rx.event
     async def handle_photo_upload(self, files: list[rx.UploadFile]) -> rx.event.EventSpec | None:
@@ -475,7 +488,7 @@ class WhatsAppState(rx.State):
         return WhatsAppState.upload_pending_photo
 
     @rx.event(background=True)
-    async def upload_pending_photo(self) -> None:
+    async def upload_pending_photo(self) -> AsyncIterator[rx.event.EventSpec]:
         async with self:
             pending = self._pending_photo
             self._pending_photo = None
@@ -505,11 +518,14 @@ class WhatsAppState(rx.State):
             async with self:
                 self.photo_uploading = False
                 self.profile_banner, self.profile_banner_tone = message, tone
+            if _is_auth(exc):
+                yield WhatsAppState.load_numbers
             return
         async with self:
             self.photo_uploading = False
             self.profile_banner, self.profile_banner_tone = _PHOTO_SAVED, "ok"
-        await self._load_profile(force=True)
+        if await self._load_profile(force=True):
+            yield WhatsAppState.load_numbers
 
     # ==================================================================================
     # QR
@@ -543,27 +559,30 @@ class WhatsAppState(rx.State):
         return merged
 
     @rx.event(background=True)
-    async def ensure_qr_loaded(self) -> None:
-        await self._load_qr(force=False)
+    async def ensure_qr_loaded(self) -> AsyncIterator[rx.event.EventSpec]:
+        if await self._load_qr(force=False):
+            yield WhatsAppState.load_numbers
 
     @rx.event(background=True)
-    async def reload_qr(self) -> None:
-        await self._load_qr(force=True)
+    async def reload_qr(self) -> AsyncIterator[rx.event.EventSpec]:
+        if await self._load_qr(force=True):
+            yield WhatsAppState.load_numbers
 
-    async def _load_qr(self, *, force: bool) -> None:
+    async def _load_qr(self, *, force: bool) -> bool:
+        """Returns True when Meta rejected the token (the number got degraded)."""
         async with self:
             connection_id = self.selected_connection_id
             if not connection_id or self.qr_loading_for == connection_id:
-                return
+                return False
             if not force and self.qr_loaded_for == connection_id:
-                return
+                return False
             self.qr_loading_for = connection_id
             _session, tenant_id = await self._session_tenant()
         if tenant_id is None:
             async with self:
                 self.qr_loading_for = ""
                 self.qr_banner, self.qr_banner_tone = _NO_SESSION, "error"
-            return
+            return False
         try:
             codes = await list_qr_codes(tenant_id, UUID(connection_id))
         except (WhatsAppApiError, UnknownWhatsAppNumber, *_INFRA_ERRORS) as exc:
@@ -574,16 +593,17 @@ class WhatsAppState(rx.State):
                 if self.selected_connection_id == connection_id:
                     self.qr_loading_for = ""
                     self.qr_banner, self.qr_banner_tone = message, tone
-            return
+            return _is_auth(exc)
         async with self:
             if self.selected_connection_id != connection_id:
-                return
+                return False
             self.qr_codes = self._with_images(codes)
             self.qr_loaded_for = connection_id
             self.qr_loading_for = ""
+        return False
 
     @rx.event(background=True)
-    async def create_qr(self) -> None:
+    async def create_qr(self) -> AsyncIterator[rx.event.EventSpec]:
         async with self:
             if self.qr_creating or not self.selected_connection_id:
                 return
@@ -615,6 +635,8 @@ class WhatsAppState(rx.State):
             async with self:
                 self.qr_creating = False
                 self.qr_banner, self.qr_banner_tone = notice
+            if _is_auth(exc):
+                yield WhatsAppState.load_numbers
             return
         async with self:
             self.qr_creating = False
@@ -626,7 +648,7 @@ class WhatsAppState(rx.State):
             self.qr_banner, self.qr_banner_tone = _QR_CREATED, "ok"
 
     @rx.event(background=True)
-    async def delete_qr(self, code: str) -> None:
+    async def delete_qr(self, code: str) -> AsyncIterator[rx.event.EventSpec]:
         async with self:
             if self.qr_deleting_code or not self.selected_connection_id:
                 return
@@ -650,6 +672,8 @@ class WhatsAppState(rx.State):
             async with self:
                 self.qr_deleting_code = ""
                 self.qr_banner, self.qr_banner_tone = message, tone
+            if _is_auth(exc):
+                yield WhatsAppState.load_numbers
             return
         async with self:
             self.qr_deleting_code = ""
