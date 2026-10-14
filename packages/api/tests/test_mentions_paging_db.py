@@ -480,18 +480,20 @@ def test_scope_plan_covers_every_page_honours_freshness_and_isolates_tenants() -
     assert not {t.mention_id for t in capped.targets} & set(ids[:12])
 
 
-def test_scope_plan_takes_never_attempted_before_recently_failed() -> None:
+def test_scope_plan_takes_never_attempted_first_then_least_recently_attempted() -> None:
+    """Outside the freshness window (0 s here), a mention that keeps failing waits behind
+    the never-attempted ones and behind those attempted after it."""
     repo = PostgresMentionsRepository()
     tenant_id, connection_id = _fresh_tenant_with_connection()
-    failed, fresh_one, never = (_add(repo, tenant_id, connection_id) for _ in range(3))
+    failed, refreshed_later, never = (_add(repo, tenant_id, connection_id) for _ in range(3))
     repo.mark_refresh_attempt(tenant_id=tenant_id, mention_id=failed)
-    repo.refresh_content(tenant_id=tenant_id, mention_id=fresh_one, content=_content())
+    repo.refresh_content(tenant_id=tenant_id, mention_id=refreshed_later, content=_content())
 
     plan = repo.plan_scope_refresh(
-        tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=60, limit=10
+        tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=0, limit=10
     )
 
-    assert [t.mention_id for t in plan.targets] == [never, failed]
+    assert [t.mention_id for t in plan.targets] == [never, failed, refreshed_later]
 
 
 def test_the_app_role_may_stamp_refreshes_but_not_rewrite_identity() -> None:
@@ -519,3 +521,18 @@ def test_the_app_role_may_stamp_refreshes_but_not_rewrite_identity() -> None:
         "media_id": False,
         "received_at": False,
     }
+
+
+def test_scope_plan_reports_a_moments_ago_failure_without_requesting_it_again() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    failed = _add(repo, tenant_id, connection_id)
+    other = _add(repo, tenant_id, connection_id)
+    repo.mark_refresh_attempt(tenant_id=tenant_id, mention_id=failed)
+
+    plan = repo.plan_scope_refresh(
+        tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=60, limit=10
+    )
+
+    assert [t.mention_id for t in plan.targets] == [other]
+    assert (plan.in_scope, plan.fresh, plan.recently_failed) == (2, 0, 1)

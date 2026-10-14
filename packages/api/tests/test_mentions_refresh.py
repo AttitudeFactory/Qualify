@@ -534,3 +534,68 @@ async def test_the_visible_page_refresh_never_touches_another_tenant(
     report = await composition.refresh_mentions_content(tenant_id=TENANT, mention_ids=(foreign,))
 
     assert (report.in_scope, report.refreshed, client.calls) == (0, 0, [])
+
+
+# ------------------------------------------------------------------ review follow-ups
+
+
+async def test_a_mention_that_failed_in_the_visible_pass_is_not_requested_again(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    gone_id = _store(repo, "gone")
+    _store(repo, "ok")
+    gone = MentionedContentReadError("deleted", http_status=400, platform_code=100)
+    client = ScriptedClient({"gone": [gone]})
+    _use(monkeypatch, client)
+    await composition.refresh_mentions_content(tenant_id=TENANT, mention_ids=(gone_id,))
+    client.calls.clear()
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert client.calls == ["ok"]  # same click: the failed one is not re-read
+    assert (report.refreshed, report.failed, report.complete) == (1, 1, False)
+
+
+async def test_a_body_that_does_not_match_the_contract_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    _store(repo, "m1")
+    client = ScriptedClient({"m1": [MentionedContentReadError("no mentioned_media object")]})
+    _use(monkeypatch, client)
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (client.calls, report.failed) == (["m1"], 1)
+
+
+async def test_a_network_error_is_retried_but_an_unexpected_one_is_not(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    import httpx
+
+    _store(repo, "net")
+    _store(repo, "bug")
+    client = ScriptedClient(
+        {
+            "net": [httpx.ConnectError("down"), _media("net", like_count=2)],
+            "bug": [ValueError("unexpected")],
+        }
+    )
+    _use(monkeypatch, client)
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert sorted(client.calls) == ["bug", "net", "net"]
+    assert (report.refreshed, report.failed) == (1, 1)
+
+
+def test_repository_calls_never_run_on_the_event_loop() -> None:
+    """The refresh runs inside the Reflex backend's single event loop: every blocking
+    repository call goes through `asyncio.to_thread` (review finding, QUA-152)."""
+    import inspect
+
+    source = inspect.getsource(composition._refresh_targets)
+    assert "repo.refresh_content(" not in source
+    assert source.count("asyncio.to_thread(") >= 2
+    for function in (composition.refresh_mentions_content, composition.refresh_mentions_in_scope):
+        assert "asyncio.to_thread(" in inspect.getsource(function)

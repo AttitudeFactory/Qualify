@@ -82,11 +82,12 @@ def is_rate_limited(exc: MentionedContentReadError) -> bool:
 
 def is_transient(exc: MentionedContentReadError) -> bool:
     """A failure a later attempt may not repeat (server side). A 4xx about the content
-    itself — deleted, comments disabled, no permission — is not."""
+    itself — deleted, comments disabled, no permission — is not, and neither is a 200 whose
+    body did not match the contract (`http_status=None`): asking again returns the same."""
     if is_rate_limited(exc):
         return False
     status = exc.http_status
-    return status is None or status >= 500 or exc.platform_code in _TRANSIENT_CODES
+    return (status is not None and status >= 500) or exc.platform_code in _TRANSIENT_CODES
 
 
 def usage_percent(headers: httpx.Headers) -> int:

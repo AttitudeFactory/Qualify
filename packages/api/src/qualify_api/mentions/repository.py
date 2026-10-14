@@ -171,6 +171,9 @@ class RefreshPlan:
     targets: tuple[RefreshTarget, ...]
     in_scope: int  # every mention of the scope
     fresh: int  # re-read successfully within the freshness window — not requested again
+    # Attempted within the window and failed (e.g. by the visible pass of the same click):
+    # not requested again, reported as failed.
+    recently_failed: int = 0
 
 
 @dataclass(frozen=True)
@@ -387,10 +390,12 @@ class MentionsRepository(Protocol):
         version: AnalysisVersion,
         mention_id: UUID | None = None,
         max_attempts: int = MAX_SENTIMENT_ATTEMPTS,
+        limit: int | None = None,
     ) -> tuple[PendingMentionSentiment, ...]:
         """Mentions with text and no current-version result whose failed attempts are
         below `max_attempts` — an exhausted mention is never offered again (QUA-152).
-        `mention_id` narrows to that one mention (the after-ingest analysis)."""
+        `mention_id` narrows to that one mention (the after-ingest analysis); `limit` bounds
+        one pass, oldest first."""
         ...
 
     def record_sentiment_result(
@@ -435,7 +440,8 @@ class MentionsRepository(Protocol):
     ) -> RefreshPlan:
         """The next bounded run over the SCOPE of `query` — its account and period only
         (`connection_id`, `since`); origin, sentiment and search never narrow a refresh.
-        Skips mentions re-read successfully in the last `fresh_seconds`; of the rest, takes
+        Skips mentions re-read successfully in the last `fresh_seconds`, and those whose
+        last attempt in that window failed (`recently_failed`); of the rest, takes
         the `limit` least recently ATTEMPTED (never-attempted first), so mentions the
         network keeps refusing cannot starve the others (migration 0054)."""
         ...
@@ -786,16 +792,23 @@ class MemoryMentionsRepository:
         version: AnalysisVersion,
         mention_id: UUID | None = None,
         max_attempts: int = MAX_SENTIMENT_ATTEMPTS,
+        limit: int | None = None,
     ) -> tuple[PendingMentionSentiment, ...]:
         pending = []
-        for candidate_id, m in self._mentions.items():
+        ordered = sorted(self._mentions.items(), key=lambda item: (item[1].received_at, item[0]))
+        for candidate_id, m in ordered:
+            if limit is not None and len(pending) >= limit:
+                break
             if m.tenant_id != tenant_id:
                 continue
             if mention_id is not None and candidate_id != mention_id:
                 continue
             if self._failed_attempts(candidate_id, version) >= max_attempts:
                 continue
-            text = m.text or m.caption
+            # Same choice as the fingerprint and `sentiment_state_for` (comment text when
+            # it exists, else caption) — never `or`, which would read the caption of a row
+            # whose text is "".
+            text = m.text if m.text is not None else m.caption
             # Only `is None` excludes here, deliberately NOT `.strip()` — a whitespace-
             # only mention must still be CHECKED and counted as skipped by the SERVICE
             # (`MentionSentimentService.analyze_pending_mentions`), same division of
@@ -859,7 +872,7 @@ class MemoryMentionsRepository:
     def plan_scope_refresh(
         self, *, tenant_id: UUID, query: MentionQuery, fresh_seconds: int, limit: int
     ) -> RefreshPlan:
-        fresh_after = datetime.now().astimezone() - timedelta(seconds=fresh_seconds)
+        window_start = datetime.now().astimezone() - timedelta(seconds=fresh_seconds)
         scope = [
             m
             for m in self._mentions.values()
@@ -870,9 +883,16 @@ class MemoryMentionsRepository:
         fresh = [
             m
             for m in scope
-            if m.content_refreshed_at is not None and m.content_refreshed_at >= fresh_after
+            if m.content_refreshed_at is not None and m.content_refreshed_at >= window_start
         ]
-        stale = [m for m in scope if m not in fresh]
+        recently_failed = [
+            m
+            for m in scope
+            if m not in fresh
+            and m.content_refresh_attempted_at is not None
+            and m.content_refresh_attempted_at >= window_start
+        ]
+        stale = [m for m in scope if m not in fresh and m not in recently_failed]
         # Never-attempted first, then the least recently attempted; id breaks ties.
         stale.sort(
             key=lambda m: (
@@ -885,6 +905,7 @@ class MemoryMentionsRepository:
             targets=tuple(_target(m) for m in stale[:limit]),
             in_scope=len(scope),
             fresh=len(fresh),
+            recently_failed=len(recently_failed),
         )
 
     def refresh_content(
@@ -1145,6 +1166,7 @@ class PostgresMentionsRepository:
         version: AnalysisVersion,
         mention_id: UUID | None = None,
         max_attempts: int = MAX_SENTIMENT_ATTEMPTS,
+        limit: int | None = None,
     ) -> tuple[PendingMentionSentiment, ...]:
         failed = (
             select(func.count())
@@ -1170,10 +1192,18 @@ class PostgresMentionsRepository:
             )
             if mention_id is not None:
                 stmt = stmt.where(Mention.id == mention_id)
+            if limit is not None:
+                # NULL text AND caption never become pending rows below: keep them out of
+                # the limit too, so a batch is never spent on nothing.
+                stmt = (
+                    stmt.where(or_(Mention.text.is_not(None), Mention.caption.is_not(None)))
+                    .order_by(Mention.received_at.asc(), Mention.id.asc())
+                    .limit(limit)
+                )
             rows = session.execute(stmt).all()
             pending = []
             for row in rows:
-                text = row.text or row.caption
+                text = row.text if row.text is not None else row.caption
                 # Only `is None` excludes — see `MemoryMentionsRepository`'s identical
                 # comment for why a whitespace-only mention must still reach the service.
                 if text is not None:
@@ -1287,14 +1317,23 @@ class PostgresMentionsRepository:
                 func.coalesce(Mention.content_posted_at, Mention.received_at) >= query.since
             )
         # The database clock, the same one that stamps the refresh timestamps.
-        is_fresh = Mention.content_refreshed_at >= func.now() - timedelta(seconds=fresh_seconds)
+        window_start = func.now() - timedelta(seconds=fresh_seconds)
+        is_fresh = func.coalesce(Mention.content_refreshed_at >= window_start, False)
+        attempted_recently = func.coalesce(
+            Mention.content_refresh_attempted_at >= window_start, False
+        )
+        recently_failed = and_(~is_fresh, attempted_recently)
         with tenant_session(tenant_id) as session:
-            in_scope, fresh = session.execute(
-                select(func.count(), func.count().filter(is_fresh)).where(*conditions)
+            in_scope, fresh, failed = session.execute(
+                select(
+                    func.count(),
+                    func.count().filter(is_fresh),
+                    func.count().filter(recently_failed),
+                ).where(*conditions)
             ).one()
             targets = session.scalars(
                 select(Mention)
-                .where(*conditions, or_(Mention.content_refreshed_at.is_(None), ~is_fresh))
+                .where(*conditions, ~is_fresh, ~attempted_recently)
                 .order_by(
                     Mention.content_refresh_attempted_at.asc().nulls_first(),
                     Mention.received_at.asc(),
@@ -1303,7 +1342,10 @@ class PostgresMentionsRepository:
                 .limit(limit)
             ).all()
             return RefreshPlan(
-                targets=tuple(_target(m) for m in targets), in_scope=in_scope, fresh=fresh
+                targets=tuple(_target(m) for m in targets),
+                in_scope=in_scope,
+                fresh=fresh,
+                recently_failed=failed,
             )
 
     def refresh_content(

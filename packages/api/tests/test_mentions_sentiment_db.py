@@ -372,3 +372,13 @@ def test_an_edit_restarts_the_attempts_of_an_exhausted_mention() -> None:
 
     assert _state(repo, tenant_id, mention_id) == SENTIMENT_PENDING
     assert all(row.text_md5 is not None for row in _failure_rows(tenant_id, mention_id))
+
+
+def test_a_bounded_pass_takes_the_oldest_pending_first() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    ids = [_add(repo, tenant_id, connection_id, f"texto {i}") for i in range(4)]
+
+    pending = repo.list_pending_for_analysis(tenant_id=tenant_id, version=VERSION, limit=2)
+
+    assert [p.mention_id for p in pending] == ids[:2]

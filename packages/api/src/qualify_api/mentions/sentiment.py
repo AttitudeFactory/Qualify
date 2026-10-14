@@ -62,7 +62,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from qualify_api.mentions.repository import MentionsRepository
+from qualify_api.mentions.repository import MentionsRepository, PendingMentionSentiment
 from qualify_api.sentiment.repository import AnalysisVersion
 from qualify_api.sentiment.service import SentimentModelUnavailable, local_model_available
 
@@ -83,6 +83,9 @@ logger = logging.getLogger(__name__)
 # Raised by the model call when the model itself cannot run here (missing runtime or
 # weights): an environment failure, never charged to the mention being analyzed.
 _ENVIRONMENT_ERRORS = (ImportError, OSError)
+# ...except these OSError subclasses: a timeout or a dropped connection is about THIS call,
+# so it is recorded against the mention (bounded retries) instead of stopping the pass.
+_CALL_ERRORS = (ConnectionError, TimeoutError)
 
 
 @dataclass(frozen=True)
@@ -106,7 +109,7 @@ class MentionSentimentService:
         self._provider = provider
 
     def analyze_pending_mentions(
-        self, *, tenant_id: UUID, mention_id: UUID | None = None
+        self, *, tenant_id: UUID, mention_id: UUID | None = None, limit: int | None = None
     ) -> MentionAnalysisSummary:
         """One pass over the tenant's pending mentions (or just `mention_id`). Raises
         `SentimentModelUnavailable` — having recorded nothing — when the model cannot run
@@ -121,7 +124,7 @@ class MentionSentimentService:
             raise SentimentModelUnavailable("the sentiment model runtime is not installed")
 
         pending = self._repository.list_pending_for_analysis(
-            tenant_id=tenant_id, version=self._version, mention_id=mention_id
+            tenant_id=tenant_id, version=self._version, mention_id=mention_id, limit=limit
         )
 
         checked = 0
@@ -140,23 +143,15 @@ class MentionSentimentService:
                     pipeline_version=self._version.pipeline_version,
                     provider=self._provider,
                 )
+            except _CALL_ERRORS as exc:
+                failed += 1
+                self._record_failure(tenant_id, item, exc)
+                continue
             except _ENVIRONMENT_ERRORS as exc:
                 raise SentimentModelUnavailable(type(exc).__name__) from exc
             except Exception as exc:  # noqa: BLE001 — one mention's failure, recorded
                 failed += 1
-                # Class name only: a message could echo the analyzed (user) text.
-                self._repository.record_sentiment_failure(
-                    tenant_id=tenant_id,
-                    mention_id=item.mention_id,
-                    version=self._version,
-                    error_class=type(exc).__name__,
-                    text_md5=item.text_md5,
-                )
-                logger.warning(
-                    "mention sentiment failed: mention=%s error=%s",
-                    item.mention_id,
-                    type(exc).__name__,
-                )
+                self._record_failure(tenant_id, item, exc)
                 continue
             inserted = self._repository.record_sentiment_result(
                 tenant_id=tenant_id,
@@ -174,4 +169,19 @@ class MentionSentimentService:
             new_results=new_results,
             skipped_empty=skipped,
             failed=failed,
+        )
+
+    def _record_failure(
+        self, tenant_id: UUID, item: PendingMentionSentiment, exc: Exception
+    ) -> None:
+        # Class name only: a message could echo the analyzed (user) text.
+        self._repository.record_sentiment_failure(
+            tenant_id=tenant_id,
+            mention_id=item.mention_id,
+            version=self._version,
+            error_class=type(exc).__name__,
+            text_md5=item.text_md5,
+        )
+        logger.warning(
+            "mention sentiment failed: mention=%s error=%s", item.mention_id, type(exc).__name__
         )

@@ -405,3 +405,54 @@ def test_recording_the_same_text_twice_never_duplicates_its_result() -> None:
 
     assert (first, second) == (True, False)
     assert repo.list_pending_for_analysis(tenant_id=TENANT_ID, version=VERSION) == ()
+
+
+def test_a_timeout_on_one_mention_is_recorded_and_the_pass_continues() -> None:
+    repo = MemoryMentionsRepository()
+    service = MentionSentimentService(
+        repository=repo, version=VERSION, provider=FailingOnProvider(TimeoutError("slow"))
+    )
+    stuck, _ = repo.upsert_mention(_mention(text="poison"))
+    fine, _ = repo.upsert_mention(_mention(text="todo bien"))
+
+    summary = service.analyze_pending_mentions(tenant_id=TENANT_ID)
+
+    assert (summary.failed, summary.new_results) == (1, 1)  # not a model outage
+    assert _states(repo)[fine] == "NEU"
+    assert repo._failed_attempts(stuck, VERSION) == 1
+
+
+def test_a_pass_can_be_bounded() -> None:
+    service, repo = _service()
+    for i in range(5):
+        repo.upsert_mention(_mention(text=f"texto {i}"))
+
+    first = service.analyze_pending_mentions(tenant_id=TENANT_ID, limit=2)
+    rest = service.analyze_pending_mentions(tenant_id=TENANT_ID)
+
+    assert (first.new_results, rest.new_results) == (2, 3)
+
+
+def test_an_empty_comment_text_never_falls_back_to_the_caption() -> None:
+    _service_unused, repo = _service()
+    mention_id, _ = repo.upsert_mention(
+        NewMention(
+            tenant_id=TENANT_ID,
+            connection_id=CONNECTION_ID,
+            external_account_id="ig-user-1",
+            media_id="media-x",
+            comment_id="comment-x",
+            caption="caption de la publicación",
+            text="",
+            author_username=None,
+            media_type=None,
+            like_count=None,
+            content_posted_at=None,
+            enrichment_status=ENRICHMENT_OK,
+        )
+    )
+
+    (pending,) = repo.list_pending_for_analysis(tenant_id=TENANT_ID, version=VERSION)
+
+    assert (pending.mention_id, pending.text) == (mention_id, "")
+    assert _states(repo)[mention_id] == SENTIMENT_NO_TEXT

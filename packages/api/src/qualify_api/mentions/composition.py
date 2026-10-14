@@ -32,6 +32,7 @@ from functools import cache
 from typing import Literal
 from uuid import UUID
 
+import httpx
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
@@ -99,7 +100,10 @@ async def _content_client_for(
     queried against). Returns `None` if the connection is not visible to this tenant —
     should not happen in practice (`resolve_external_account` just produced this exact
     pair), but a defensive `None` here is cheaper than trusting that invariant blindly."""
-    ig_user_id = _ConnectionIgUserIdReader().read(tenant_id=tenant_id, connection_id=connection_id)
+    # Off the event loop: this also runs inside the Reflex backend (QUA-152 refresh).
+    ig_user_id = await asyncio.to_thread(
+        _ConnectionIgUserIdReader().read, tenant_id=tenant_id, connection_id=connection_id
+    )
     if ig_user_id is None:
         return None
     settings = MetaOAuthSettings.from_env()
@@ -276,7 +280,19 @@ async def refresh_mentions_content(
     """The VISIBLE page, right away (QUA-152): always re-read, whatever their freshness —
     it is what the person is looking at. Nothing raises out of here."""
     repo = production_mentions_repository()
-    targets = repo.list_refresh_targets(tenant_id=tenant_id, mention_ids=mention_ids)
+    try:
+        targets = await asyncio.to_thread(
+            repo.list_refresh_targets, tenant_id=tenant_id, mention_ids=mention_ids
+        )
+    except Exception as exc:  # noqa: BLE001 — reported, never raised into the UI
+        _LOGGER.warning("mentions visible refresh could not start (%s)", type(exc).__name__)
+        return ContentRefreshReport(
+            in_scope=len(mention_ids),
+            refreshed=0,
+            already_fresh=0,
+            failed=0,
+            not_attempted=len(mention_ids),
+        )
     return await _refresh_targets(
         repo, tenant_id=tenant_id, targets=targets, in_scope=len(targets), already_fresh=0
     )
@@ -290,7 +306,8 @@ async def refresh_mentions_in_scope(
     plan the run is reported as everything pending."""
     repo = production_mentions_repository()
     try:
-        plan = repo.plan_scope_refresh(
+        plan = await asyncio.to_thread(
+            repo.plan_scope_refresh,
             tenant_id=tenant_id,
             query=scope,
             fresh_seconds=REFRESH_FRESH_SECONDS,
@@ -307,6 +324,7 @@ async def refresh_mentions_in_scope(
         targets=plan.targets,
         in_scope=plan.in_scope,
         already_fresh=plan.fresh,
+        recently_failed=plan.recently_failed,
     )
 
 
@@ -317,7 +335,10 @@ async def _refresh_targets(
     targets: tuple[RefreshTarget, ...],
     in_scope: int,
     already_fresh: int,
+    recently_failed: int = 0,
 ) -> ContentRefreshReport:
+    """Every repository call runs in a worker thread (`asyncio.to_thread`): this coroutine
+    runs on the Reflex backend's event loop, which serves every other session too."""
     clients: dict[UUID, tuple[HttpMentionedContentClient, str] | None] = {}
     clients_lock = asyncio.Lock()
     slots = asyncio.Semaphore(REFRESH_CONCURRENCY)
@@ -351,14 +372,19 @@ async def _refresh_targets(
                     target.mention_id,
                     type(exc).__name__,
                 )
-                _mark_attempt(repo, tenant_id=tenant_id, mention_id=target.mention_id)
+                await asyncio.to_thread(
+                    _mark_attempt, repo, tenant_id=tenant_id, mention_id=target.mention_id
+                )
                 return "failed"
             if getattr(client, "usage_percent", 0) >= REFRESH_USAGE_STOP_PERCENT:
                 stop.set()
                 _LOGGER.warning("mentions refresh paused: Meta usage at or above the limit")
             try:
-                stored = repo.refresh_content(
-                    tenant_id=tenant_id, mention_id=target.mention_id, content=content
+                stored = await asyncio.to_thread(
+                    repo.refresh_content,
+                    tenant_id=tenant_id,
+                    mention_id=target.mention_id,
+                    content=content,
                 )
             except Exception as exc:  # noqa: BLE001 — a DB error on one row, not the run
                 _LOGGER.warning(
@@ -370,12 +396,14 @@ async def _refresh_targets(
             return "refreshed" if stored else "failed"
 
     outcomes = await asyncio.gather(*(refresh_one(target) for target in targets))
-    planned_but_left = in_scope - already_fresh - len(targets)
+    planned_but_left = in_scope - already_fresh - recently_failed - len(targets)
     return ContentRefreshReport(
         in_scope=in_scope,
         refreshed=outcomes.count("refreshed"),
         already_fresh=already_fresh,
-        failed=outcomes.count("failed"),
+        # A mention whose re-read failed moments ago (the visible pass of this same click)
+        # is reported as failed, not requested again.
+        failed=outcomes.count("failed") + recently_failed,
         not_attempted=outcomes.count("not_attempted") + max(0, planned_but_left),
         rate_limited=stop.is_set(),
     )
@@ -427,8 +455,10 @@ async def _read_content(
 
 
 async def _with_retries[T](call: Callable[[], Awaitable[T]]) -> T:
-    """One content read, retried on transient failures only. Meta throttling raises
-    `_RateLimited` at once; a content error (4xx) raises at once."""
+    """One content read, retried on transient failures only — a Meta 5xx / code 1-2, or
+    the network (`httpx.TransportError`, timeouts included). Meta throttling raises
+    `_RateLimited` at once; a content error (4xx), a body that does not match the contract
+    or any other exception raises at once."""
     for attempt in range(REFRESH_RETRIES + 1):
         try:
             return await call()
@@ -437,7 +467,7 @@ async def _with_retries[T](call: Callable[[], Awaitable[T]]) -> T:
                 raise _RateLimited from exc
             if not is_transient(exc) or attempt == REFRESH_RETRIES:
                 raise
-        except Exception:
+        except httpx.TransportError:
             if attempt == REFRESH_RETRIES:
                 raise
         await asyncio.sleep(REFRESH_BACKOFF_SECONDS[min(attempt, len(REFRESH_BACKOFF_SECONDS) - 1)])
@@ -550,6 +580,12 @@ def analyze_mention_after_ingest(*, tenant_id: UUID, mention_id: UUID) -> None:
         )
 
 
+# At most this many mentions per tenant per sweep. A model/pipeline version bump makes
+# every stored mention pending at once; a bounded pass keeps the webhook worker claiming
+# intake events between sweeps instead of analyzing everything in one go.
+SENTIMENT_SWEEP_BATCH = 50
+
+
 @dataclass(frozen=True)
 class SentimentSweepReport:
     tenants: int
@@ -572,7 +608,9 @@ def sweep_pending_mention_sentiment() -> SentimentSweepReport:
     new_results = failed = errored = 0
     for tenant_id in tenant_ids:
         try:
-            summary = service.analyze_pending_mentions(tenant_id=tenant_id)
+            summary = service.analyze_pending_mentions(
+                tenant_id=tenant_id, limit=SENTIMENT_SWEEP_BATCH
+            )
         except Exception as exc:  # noqa: BLE001 — next tenant
             errored += 1
             _LOGGER.warning(
