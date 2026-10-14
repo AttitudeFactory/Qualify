@@ -246,24 +246,33 @@ class Processor:
 
 
 def production_processor(*, worker_id: str) -> Processor:
-    """The real queue (`qualify_webhook_worker`), the real mentions pipeline and the real
-    WhatsApp inbound handler (WA-07). Imported lazily so building a processor for tests
-    never pulls the Meta/credential stack."""
+    """The real queue (`qualify_webhook_worker`), the real mentions pipeline, the real
+    WhatsApp inbound handler (WA-07) and the template webhooks (WA-18). Imported lazily
+    so building a processor for tests never pulls the Meta/credential stack."""
     from qualify_api.mentions.composition import (  # noqa: PLC0415
         analyze_mention_after_ingest,
         ingest_mention,
     )
     from qualify_api.mentions.resolve import resolve_external_account  # noqa: PLC0415
     from qualify_api.webhooks.repository import WebhookQueue  # noqa: PLC0415
+    from qualify_api.whatsapp.campaigns import PostgresCampaignReceiptRepository  # noqa: PLC0415
     from qualify_api.whatsapp.catalog import load_catalog_for_phone  # noqa: PLC0415
     from qualify_api.whatsapp.handler import (  # noqa: PLC0415
         WHATSAPP_MESSAGES_HANDLER_KEY,
         whatsapp_messages_handler,
     )
     from qualify_api.whatsapp.menus import load_published_menu_for_phone  # noqa: PLC0415
+    from qualify_api.whatsapp.optins import PostgresOptOutRepository  # noqa: PLC0415
     from qualify_api.whatsapp.repository import PostgresWhatsAppInboxRepository  # noqa: PLC0415
     from qualify_api.whatsapp.resolve import resolve_phone_number  # noqa: PLC0415
+    from qualify_api.whatsapp.templates import (  # noqa: PLC0415
+        TEMPLATE_QUALITY_HANDLER_KEY,
+        TEMPLATE_STATUS_HANDLER_KEY,
+        production_template_handler,
+    )
 
+    # WA-18: one handler for both template fields, keyed by the envelope's WABA id.
+    template_handler = production_template_handler()
     return Processor(
         queue=WebhookQueue(),
         handlers={
@@ -278,7 +287,13 @@ def production_processor(*, worker_id: str) -> Processor:
                 repo=PostgresWhatsAppInboxRepository(),
                 menu_loader=load_published_menu_for_phone,
                 catalog_loader=load_catalog_for_phone,
+                # WA-19: an inbound STOP/BAJA/CANCELAR revokes the sender's opt-in.
+                opt_outs=PostgresOptOutRepository(),
+                # WA-20: delivery receipts of campaign sends, by wamid.
+                campaign_receipts=PostgresCampaignReceiptRepository(),
             ),
+            TEMPLATE_STATUS_HANDLER_KEY: template_handler,
+            TEMPLATE_QUALITY_HANDLER_KEY: template_handler,
         },
         worker_id=worker_id,
     )

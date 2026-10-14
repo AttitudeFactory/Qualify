@@ -1,0 +1,6 @@
+{
+  "_fixture_note": "DOC-DERIVED, not recorded: shape read on 2026-10-14 from the Graph API reference whats-app-business-account/message_templates (POST returns {id, status, category}; sample values). Ids are placeholders.",
+  "id": "594425479261596",
+  "status": "PENDING",
+  "category": "MARKETING"
+}

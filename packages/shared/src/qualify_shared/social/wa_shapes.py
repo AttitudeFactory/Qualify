@@ -46,6 +46,12 @@ typed views when a consumer needs them and a live payload has been observed. A
 notification carrying an unknown field must still parse — rejecting it would make
 Meta retry for 7 days over nothing.
 
+WA-18 added the first two such views, `WATemplateStatusUpdate` and
+`WATemplateQualityUpdate` (`FIELD_TEMPLATE_STATUS` / `FIELD_TEMPLATE_QUALITY`). They
+are **doc-derived and provisional** (no live capture yet): the fixtures
+`whatsapp_template_status_*_doc.json` / `whatsapp_template_quality_doc.json` are the
+reference page's own examples. The consumer validates `WAChange.value` against them.
+
 NOT A TABLE SCHEMA. Nothing here names a column; migration `0046` (WA-04) decides
 what persists.
 """
@@ -55,7 +61,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 # Bumped when a field's name, type or nullability changes in a way that makes a
 # consumer's assumptions wrong. Consumers record it alongside what they parsed
@@ -64,6 +70,8 @@ SHAPE_VERSION: Final = "wa-webhook-shapes-0.1.0"
 
 OBJECT_WHATSAPP_BUSINESS_ACCOUNT: Final = "whatsapp_business_account"
 FIELD_MESSAGES: Final = "messages"
+FIELD_TEMPLATE_STATUS: Final = "message_template_status_update"
+FIELD_TEMPLATE_QUALITY: Final = "message_template_quality_update"
 
 # Which halves of this contract have been observed live. Data, not prose, so a test
 # can assert the ritual was followed when a half is promoted.
@@ -71,6 +79,10 @@ FIELD_POLICIES: Final[dict[str, dict[str, Any]]] = {
     "statuses": {"provisional": False, "observed": "2026-10-14 live test template, status=read"},
     "messages": {"provisional": True, "observed": None},
     "contacts": {"provisional": False, "observed": "2026-10-14 (wa_id only; profile per docs)"},
+    # WA-18: doc-derived from webhooks/reference/message_template_{status,quality}_update
+    # (read 2026-10-14); the fixtures are the doc's own examples, not a capture.
+    FIELD_TEMPLATE_STATUS: {"provisional": True, "observed": None},
+    FIELD_TEMPLATE_QUALITY: {"provisional": True, "observed": None},
 }
 
 
@@ -176,6 +188,67 @@ class WAMessagesValue(_Shape):
     messages: list[WAMessage] = Field(default_factory=list)
     statuses: list[WAStatus] = Field(default_factory=list)
     errors: list[WAError] = Field(default_factory=list)
+
+
+def _id_as_str(value: Any) -> Any:
+    """Meta sends `message_template_id` as a bare JSON integer in the webhook and as a
+    numeric STRING in the Graph API; both become the same `str` here, so a template is
+    matched by one spelling everywhere."""
+    if isinstance(value, bool):  # bool is an int subclass — never a template id
+        return value
+    return str(value) if isinstance(value, int) else value
+
+
+class WARejectionInfo(_Shape):
+    reason: str | None = None
+    recommendation: str | None = None
+
+
+class WATemplateOtherInfo(_Shape):
+    title: str | None = None
+    description: str | None = None
+
+
+class WATemplateStatusUpdate(_Shape):
+    """The `value` of a `message_template_status_update` change (WA-18). Provisional,
+    doc-derived (webhooks/reference/message_template_status_update, 2026-10-14).
+
+    `event` is the template's new status (`APPROVED`, `REJECTED`, `PAUSED`, `DISABLED`,
+    `PENDING_DELETION`, … — kept as a free string: Meta adds values). `reason` is the
+    rejection enum (`NONE` when there is none; `null` when the template is scheduled for
+    deletion). The template is keyed by `message_template_id` + the envelope's WABA id
+    (`entry.id`) — this value carries no phone number."""
+
+    event: str
+    message_template_id: str
+    message_template_name: str
+    message_template_language: str
+    reason: str | None = None
+    message_template_category: str | None = None
+    rejection_info: WARejectionInfo | None = None
+    other_info: WATemplateOtherInfo | None = None
+    disable_info: dict[str, Any] | None = None
+
+    @field_validator("message_template_id", mode="before")
+    @classmethod
+    def _template_id(cls, value: Any) -> Any:
+        return _id_as_str(value)
+
+
+class WATemplateQualityUpdate(_Shape):
+    """The `value` of a `message_template_quality_update` change (WA-18). Provisional,
+    doc-derived. Scores: `GREEN`, `YELLOW`, `RED`, `UNKNOWN`."""
+
+    previous_quality_score: str | None = None
+    new_quality_score: str
+    message_template_id: str
+    message_template_name: str
+    message_template_language: str
+
+    @field_validator("message_template_id", mode="before")
+    @classmethod
+    def _template_id(cls, value: Any) -> Any:
+        return _id_as_str(value)
 
 
 class WAChange(_Shape):
