@@ -329,6 +329,14 @@ class WhatsAppClient(Protocol):
         components: list[dict[str, Any]] | None = None,
     ) -> str: ...
 
+    async def send_payload(self, payload: dict[str, Any]) -> str:
+        """WA-08: post an ALREADY-BUILT `/messages` body verbatim (the `whatsapp_outbox.
+        payload` column, built by one of the `build_*_body` helpers when it was enqueued)
+        and return the `wamid`. No validation here — the limits were checked when the body
+        was built, and re-checking a stored body would let a later tightening of a limit
+        strand rows that Meta would still accept."""
+        ...
+
     async def mark_read(self, message_id: str, typing: bool = False) -> None: ...
 
     async def upload_media(self, content: bytes, content_type: str, filename: str) -> str: ...
@@ -942,6 +950,11 @@ class HttpWhatsAppClient:
         return _parse_send_response(await self._post_json(self._messages_url(), payload, what))
 
     # -- messages ------------------------------------------------------------------------
+
+    async def send_payload(self, payload: dict[str, Any]) -> str:
+        if not isinstance(payload, dict) or not payload:
+            raise ValueError("payload must be a non-empty /messages body")
+        return await self._send(payload, "send_payload")
 
     async def send_text(self, to: str, body: str, preview_url: bool = False) -> str:
         return await self._send(build_text_body(to, body, preview_url), "send_text")
