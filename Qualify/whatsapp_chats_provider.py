@@ -24,6 +24,17 @@ expose, all through `tenant_session` (`PostgresChatsStore`):
 - the tenant's **IANA zone**, so every time on screen is local (same rule as the
   Planificador's `tenant_timezone`).
 
+**Inbound media (0061)** goes through the very `MediaLocator` the HTTP route
+`GET /api/whatsapp/media/{message_id}` uses (`whatsapp.media.production_media_locator`:
+download from Meta on the first request, copy to R2, answer a 15-minute public-media
+URL), called in process: `media_url` returns that URL or raises the locator's own
+`MediaMessageNotFound` / `MediaNotCaptured` / `MediaExpired` / `MediaUnavailable`. The
+locator is built lazily, once; a build failure (R2 / Redis / public base URL / Meta env
+missing) surfaces as `MediaUnavailable` and is retried on the next request instead of
+being cached. Number scoping is the state's: it only asks for message ids of the
+conversation it loaded through `conversation` (which `_owned` already scoped to the
+number); RLS bounds the read to the tenant either way.
+
 **Number scoping.** The tab shows ONE number (`WhatsAppState.selected_connection_id`).
 Every thread-level call re-reads the thread and refuses (`ThreadNotFound`) one that
 belongs to another number of the same tenant, so a stale or forged thread id from the
@@ -36,6 +47,7 @@ All functions are blocking (SQLAlchemy is synchronous): the state runs them thro
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -47,6 +59,8 @@ from qualify_api.whatsapp.chats import (
     ButtonsSend,
     ChatService,
     ImageSend,
+    MediaLocator,
+    MediaUnavailable,
     MessageRecord,
     ReplyButton,
     TextSend,
@@ -67,6 +81,8 @@ from .whatsapp_chats_vm import (
     clean_titles,
     outbox_text,
 )
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEZONE = "America/Bogota"
 UNSENT_STATUSES = ("pending", "sending", "failed", "dead")
@@ -201,10 +217,12 @@ class ChatsGateway:
         service: ChatService | None = None,
         store: ChatsStore | None = None,
         clock: Callable[[], datetime] = _utcnow,
+        media_locator: MediaLocator | None = None,
     ) -> None:
         self._service = service
         self._store: ChatsStore = store or PostgresChatsStore()
         self._clock = clock
+        self._media_locator = media_locator
 
     @property
     def service(self) -> ChatService:
@@ -213,6 +231,23 @@ class ChatsGateway:
 
             self._service = production_chat_service()
         return self._service
+
+    def _locator(self) -> MediaLocator:
+        if self._media_locator is None:
+            from qualify_api.whatsapp.media import production_media_locator  # noqa: PLC0415
+
+            try:
+                self._media_locator = production_media_locator()
+            except Exception as exc:  # missing R2/Redis/public-URL/Meta env: retry next time
+                logger.error("whatsapp media locator unavailable: %s", type(exc).__name__)
+                raise MediaUnavailable("media locator is not configured") from exc
+        return self._media_locator
+
+    async def media_url(self, tenant_id: UUID, message_id: UUID) -> str:
+        """A short-lived URL for an inbound media message's bytes (module docstring,
+        "Inbound media"). Async: the locator is; it runs its own blocking steps off the
+        event loop."""
+        return await self._locator().locate(tenant_id=tenant_id, message_id=message_id)
 
     # --- context -----------------------------------------------------------------------
 

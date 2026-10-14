@@ -13,15 +13,23 @@ asserted by plain unit tests (`test_whatsapp_chats.py`). The 24 h window itself 
 re-derived here: the service already computed `window.open` / `window.closes_at` through
 `window.window_state`; this module only words it.
 
-**Media gap (documented in `chats.py`).** An inbound message with no text is a photo,
-audio, sticker or file whose bytes were never captured (no `media_id` column yet), so it
-renders as the neutral `MEDIA_NOT_CAPTURED` chip and nothing calls the media route.
+**Inbound media (0061, `chats.py` "Media").** A message whose record says `has_media`
+(Meta gave a `media_id`) renders a media CONTROL keyed by its WhatsApp type — image and
+sticker → «Ver imagen» (thumbnail + lightbox), audio → «Escuchar audio» (an `<audio>`
+player), video → «Ver video», document → «Descargar …» — and nothing is fetched until
+the person clicks it. The state then asks the in-process media locator for a URL and
+hands this module a `MediaResolution` per message: the URL while it is fresh
+(`MEDIA_URL_TTL`, under the public-media token's 15 minutes), or the outcome, which maps
+to a TONE (`media_expired` → `neutral`, `media_unavailable` → `warn` + retry,
+`media_not_captured` → the old neutral chip). A text-less inbound message WITHOUT
+`has_media` is either a non-file kind (location, contact…, worded by kind) or a file that
+arrived before capture existed (`MEDIA_NOT_CAPTURED`).
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, tzinfo
 from decimal import Decimal
@@ -44,7 +52,68 @@ MESSAGES_PAGE = 50
 #: The thread list: one number's conversations, newest activity first.
 THREADS_LIMIT = 200
 
-MEDIA_NOT_CAPTURED = "[foto/audio/archivo — se verá aquí cuando se active la captura de media]"
+MEDIA_NOT_CAPTURED = "[foto, audio o archivo — no se guardó una copia para verlo aquí]"
+
+# -- inbound media (0061) ----------------------------------------------------------------
+
+#: The UI controls a media message can render as ("" = no control).
+MEDIA_IMAGE = "image"
+MEDIA_AUDIO = "audio"
+MEDIA_VIDEO = "video"
+MEDIA_DOCUMENT = "document"
+#: WhatsApp message `type` → control. Anything else that still carries a `media_id` is
+#: offered as a download.
+_MEDIA_CONTROLS: dict[str, str] = {
+    "image": MEDIA_IMAGE,
+    "sticker": MEDIA_IMAGE,
+    "audio": MEDIA_AUDIO,
+    "voice": MEDIA_AUDIO,
+    "video": MEDIA_VIDEO,
+    "document": MEDIA_DOCUMENT,
+}
+_MEDIA_ACTIONS: dict[str, str] = {
+    MEDIA_IMAGE: "Ver imagen",
+    MEDIA_AUDIO: "Escuchar audio",
+    MEDIA_VIDEO: "Ver video",
+}
+#: Document MIME → the word after «Descargar». Meta's webhook carries a filename, but
+#: the chats read model (`MessageRecord`) does not expose it yet, so the type names it.
+_DOCUMENT_LABELS: dict[str, str] = {
+    "application/pdf": "PDF",
+    "application/msword": "Word",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "Word",
+    "application/vnd.ms-excel": "Excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "Excel",
+    "application/vnd.ms-powerpoint": "PowerPoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "PowerPoint",
+    "text/plain": "TXT",
+    "text/csv": "CSV",
+    "application/zip": "ZIP",
+}
+#: Text-less inbound messages that are not files: worded by kind (`chats.MEDIA_PREVIEWS`).
+_KIND_LABELS: dict[str, str] = {
+    "location": "[ubicación]",
+    "contacts": "[contacto]",
+    "button": "[botón]",
+    "interactive": "[respuesta]",
+    "order": "[pedido]",
+    "template": "[plantilla]",
+    "reaction": "[reacción]",
+}
+#: How long a resolved URL is reused. The public-media token lives 15 min
+#: (`publishing.media_token.TOKEN_TTL_SECONDS`); the margin keeps a player started near
+#: the end from hitting a dead link mid-stream.
+MEDIA_URL_TTL = timedelta(minutes=13)
+
+#: Outcomes of a media request (the route's codes, minus the 307).
+MEDIA_EXPIRED = "media_expired"
+MEDIA_UNAVAILABLE = "media_unavailable"
+MEDIA_NOT_CAPTURED_CODE = "media_not_captured"
+MEDIA_NOT_FOUND = "message_not_found"
+MEDIA_EXPIRED_NOTICE = "El archivo ya no está disponible en WhatsApp"
+MEDIA_UNAVAILABLE_NOTICE = "No se pudo traer el archivo; reintentar"
+MEDIA_GONE_NOTICE = "Este mensaje ya no está disponible"
+MEDIA_RETRY = "Reintentar"
 WINDOW_CLOSED_NOTICE = "La ventana de 24 h está cerrada: solo plantillas"
 NO_MESSAGES_YET = "Sin mensajes todavía"
 OUTBOUND_PREFIX = "Tú: "
@@ -129,6 +198,24 @@ class MessageLike(Protocol):
     delivery_status: str | None
     delivery_error_code: str | None
     media_kind: str | None
+    has_media: bool
+    media_mime: str | None
+
+
+@dataclass(frozen=True)
+class MediaResolution:
+    """What the state learned about one message's media — held BACKEND-side only (the
+    state's `_media`), turned into `MessageVM` fields by `build_message_vm`. Either a
+    URL with its local expiry, or one of the `MEDIA_*` outcome codes."""
+
+    url: str = ""
+    expires_at: datetime | None = None
+    error: str = ""
+
+    def fresh_url(self, now: datetime) -> str:
+        if self.url and self.expires_at is not None and now < self.expires_at:
+            return self.url
+        return ""
 
 
 @dataclass(frozen=True)
@@ -406,6 +493,53 @@ class MessageVM:
     tick: str
     tick_label: str
     error_label: str
+    # Inbound media (0061). `media_control` is "" (none) or one of `MEDIA_IMAGE/AUDIO/
+    # VIDEO/DOCUMENT`; `media_action` is the button's label; `media_src` is set only
+    # while a resolved URL is fresh; `media_notice` + `media_notice_tone` word a failed
+    # request; `media_can_request` says whether the button is shown (no URL yet, or a
+    # retryable failure).
+    media_control: str = ""
+    media_action: str = ""
+    media_src: str = ""
+    media_loading: bool = False
+    media_can_request: bool = False
+    media_notice: str = ""
+    media_notice_tone: str = "neutral"
+
+
+def media_control_for(kind: str | None) -> str:
+    """WhatsApp message `type` → the control that renders it (download by default)."""
+    return _MEDIA_CONTROLS.get((kind or "").lower(), MEDIA_DOCUMENT)
+
+
+def document_label(mime: str | None) -> str:
+    """«Descargar PDF» / «Descargar Word» / … / «Descargar archivo»."""
+    base = (mime or "").split(";", 1)[0].strip().lower()
+    word = _DOCUMENT_LABELS.get(base)
+    return f"Descargar {word}" if word else "Descargar archivo"
+
+
+def media_action_label(control: str, mime: str | None) -> str:
+    if control == MEDIA_DOCUMENT:
+        return document_label(mime)
+    return _MEDIA_ACTIONS.get(control, "Ver archivo")
+
+
+def media_notice(error: str) -> tuple[str, str]:
+    """(copy, tone) of a failed media request; ("", "neutral") when there is none or it
+    is `media_not_captured` (that one falls back to the chip, not a notice)."""
+    if error == MEDIA_EXPIRED:
+        return MEDIA_EXPIRED_NOTICE, "neutral"
+    if error == MEDIA_NOT_FOUND:
+        return MEDIA_GONE_NOTICE, "neutral"
+    if error == MEDIA_UNAVAILABLE:
+        return MEDIA_UNAVAILABLE_NOTICE, "warn"
+    return "", "neutral"
+
+
+def resolution_after(url: str, now: datetime) -> MediaResolution:
+    """A freshly resolved URL, valid for `MEDIA_URL_TTL` from `now`."""
+    return MediaResolution(url=url, expires_at=now + MEDIA_URL_TTL)
 
 
 def failure_label(code: str | None) -> str:
@@ -417,16 +551,59 @@ def failure_label(code: str | None) -> str:
     return f"No se entregó (código {code})"
 
 
-def build_message_vm(message: MessageLike, *, now: datetime, zone: tzinfo) -> MessageVM:
+def _media_fields(
+    message: MessageLike,
+    *,
+    now: datetime,
+    media: Mapping[str, MediaResolution],
+    loading: Collection[str],
+) -> dict[str, Any]:
+    """The `media_*` fields of an inbound message that `has_media` ({} when the request
+    came back `media_not_captured`: the caller falls back to the chip)."""
+    message_id = str(message.id)
+    resolution = media.get(message_id, MediaResolution())
+    if resolution.error == MEDIA_NOT_CAPTURED_CODE:
+        return {}
+    control = media_control_for(message.media_kind)
+    src = resolution.fresh_url(now)
+    notice, tone = media_notice(resolution.error) if not src else ("", "neutral")
+    retryable = resolution.error in ("", MEDIA_UNAVAILABLE)
+    return {
+        "media_control": control,
+        "media_action": (
+            MEDIA_RETRY
+            if resolution.error == MEDIA_UNAVAILABLE
+            else media_action_label(control, message.media_mime)
+        ),
+        "media_src": src,
+        "media_loading": message_id in loading,
+        "media_can_request": not src and retryable,
+        "media_notice": notice,
+        "media_notice_tone": tone,
+    }
+
+
+def build_message_vm(
+    message: MessageLike,
+    *,
+    now: datetime,
+    zone: tzinfo,
+    media: Mapping[str, MediaResolution] | None = None,
+    loading: Collection[str] = (),
+) -> MessageVM:
     outbound = message.direction == "outbound"
     text = (message.text or "").strip()
     placeholder = False
+    media_fields: dict[str, Any] = {}
+    if not outbound and getattr(message, "has_media", False):
+        media_fields = _media_fields(message, now=now, media=media or {}, loading=loading)
     if not text:
         if outbound:
             from_kind = {"image": "[imagen]", "audio": "[audio]", "document": "[documento]"}
             text = from_kind.get(message.media_kind or "", "[mensaje]")
-        else:
-            text, placeholder = MEDIA_NOT_CAPTURED, True
+        elif not media_fields:
+            kind_label = _KIND_LABELS.get((message.media_kind or "").lower())
+            text, placeholder = (kind_label or MEDIA_NOT_CAPTURED), True
     tick = ""
     if outbound:
         status = (message.delivery_status or "").lower()
@@ -440,6 +617,7 @@ def build_message_vm(message: MessageLike, *, now: datetime, zone: tzinfo) -> Me
         tick=tick,
         tick_label=_TICK_LABELS.get(tick, ""),
         error_label=failure_label(message.delivery_error_code) if tick == "failed" else "",
+        **media_fields,
     )
 
 
@@ -498,12 +676,16 @@ def build_conversation(
     *,
     now: datetime,
     zone: tzinfo,
+    media: Mapping[str, MediaResolution] | None = None,
+    loading: Collection[str] = (),
 ) -> list[MessageVM]:
-    """Messages and not-yet-sent outbox rows, chronological (oldest first)."""
+    """Messages and not-yet-sent outbox rows, chronological (oldest first). `media` /
+    `loading` decorate the inbound media messages (see `MediaResolution`)."""
     keyed: list[tuple[datetime, int, MessageVM]] = []
     for m in messages:
         instant = m.posted_at or now
-        keyed.append((instant, 0, build_message_vm(m, now=now, zone=zone)))
+        vm = build_message_vm(m, now=now, zone=zone, media=media, loading=loading)
+        keyed.append((instant, 0, vm))
     for item in unsent:
         keyed.append((item.created_at, 1, build_unsent_vm(item, now=now, zone=zone)))
     keyed.sort(key=lambda entry: (entry[0], entry[1]))
