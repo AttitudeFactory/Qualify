@@ -6495,9 +6495,11 @@ def _asset_script(name: str) -> str:
 
 
 #: The deck's and the ranking's pointer scripts, run when their screen mounts. They used
-#: to be `head_components` only, which go through react-helmet and were measured not to
-#: load at all (2026-10-01); both files guard against running twice, so the head copy
-#: (kept) and this one never stack listeners.
+#: to be `head_components` only, which go through react-helmet and on Reflex < 0.9.9
+#: could be dropped around hydration (measured 2026-10-01 on a 0.9.7 venv; fixed
+#: upstream in 0.9.9, see the note on `head_components` in Qualify.py). Both files
+#: guard against running twice, so the head copy (kept) and this one never stack
+#: listeners.
 _DECK_DRAG_JS = _asset_script("deck-drag.js")
 _RANK_DRAG_JS = _asset_script("rank-drag.js")
 
