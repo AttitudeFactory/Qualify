@@ -28,19 +28,47 @@ committed, including a malformed body (recorded `unparseable`, a retry would not
 Dependencies go through FastAPI's `dependency_overrides` seam, raising until wired —
 same posture as every other route module here, so an unconfigured deployment fails
 loudly instead of accepting an unverified webhook with a dev default.
+
+**WA-10 (QUA-209) adds the chats API** below the webhook pair, over
+`qualify_api.whatsapp.chats.ChatService`: list threads, read a thread, answer it
+(`kind='reply'` into `whatsapp_outbox`, 409 `window_closed` outside the 24 h window),
+assign / close / reopen / takeover / resume, and the media endpoint (501
+`media_not_captured` until inbound media ids are persisted — see `chats.py`). Unlike the
+webhook these are Qualify's own routes: identity is the `Principal` (C1) and the tenant
+is always the principal's, never a parameter. A thread of another tenant answers 404,
+exactly like an unknown id. Responses carry ids, statuses and message text — never a
+credential, a raw payload or an outbox body.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from datetime import datetime
+from typing import Literal
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from qualify_api.http.deps import Principal, current_principal
 from qualify_api.mentions.signature import verify_signature
 from qualify_api.webhooks.envelope import MAX_BODY_BYTES
 from qualify_api.webhooks.receiver import RecordedDelivery
+from qualify_api.whatsapp.chats import (
+    DEFAULT_LIMIT,
+    MAX_LIMIT,
+    ChatService,
+    MediaLocator,
+    MessageRecord,
+    SendBody,
+    ThreadNotFound,
+    ThreadSummary,
+    UnknownAgent,
+    WindowClosed,
+)
 from qualify_api.whatsapp.config import WhatsAppWebhookSettings
 
 router = APIRouter(prefix="/api/whatsapp", tags=["whatsapp"])
@@ -118,3 +146,289 @@ async def receive_webhook(
         recorded.changes_new,
     )
     return Response(status_code=200)
+
+
+# ======================================================================================
+# WA-10 — chats API
+# ======================================================================================
+
+
+def get_chat_service() -> ChatService:
+    """Overridden at app startup (to `chats.production_chat_service()`) and in tests (to a
+    service over the in-memory repositories)."""
+    raise NotImplementedError("whatsapp chat service dependency is not configured")
+
+
+def get_media_locator() -> MediaLocator:
+    """Overridden at app startup (to `chats.NotCapturedMediaLocator`) and in tests."""
+    raise NotImplementedError("whatsapp media locator dependency is not configured")
+
+
+class WindowOut(BaseModel):
+    open: bool
+    # Set only while open: the instant the window shuts (the UI's "abierta hasta HH:MM").
+    closes_at: datetime | None
+
+
+class ThreadOut(BaseModel):
+    id: UUID
+    connection_id: UUID
+    wa_id: str
+    contact_name: str | None
+    last_message_preview: str | None
+    last_message_direction: Literal["inbound", "outbound"] | None
+    last_message_at: datetime | None
+    last_inbound_at: datetime | None
+    unread_count: int
+    status: Literal["open", "closed"]
+    assigned_agent_id: UUID | None
+    automation_paused: bool
+    window: WindowOut
+
+    @classmethod
+    def of(cls, summary: ThreadSummary) -> ThreadOut:
+        return cls.model_validate(
+            {
+                "id": summary.id,
+                "connection_id": summary.connection_id,
+                "wa_id": summary.wa_id,
+                "contact_name": summary.contact_name,
+                "last_message_preview": summary.last_message_preview,
+                "last_message_direction": summary.last_message_direction,
+                "last_message_at": summary.last_message_at,
+                "last_inbound_at": summary.last_inbound_at,
+                "unread_count": summary.unread_count,
+                "status": summary.status,
+                "assigned_agent_id": summary.assigned_agent_id,
+                "automation_paused": summary.automation_paused,
+                "window": {"open": summary.window.open, "closes_at": summary.window.closes_at},
+            }
+        )
+
+
+class ThreadListOut(BaseModel):
+    threads: list[ThreadOut]
+    # Pass as `before` for the next (older) page; `None` = this was the last page.
+    next_before: datetime | None
+
+
+class MessageOut(BaseModel):
+    id: UUID
+    direction: Literal["inbound", "outbound"]
+    text: str | None
+    posted_at: datetime | None
+    delivery_status: Literal["sent", "delivered", "read", "failed"] | None
+    delivery_error_code: str | None
+    external_message_id: str
+    # Outbound only: the sent body's type (`text`, `image`, `interactive`, …); always
+    # `None` inbound (the inbound type is not persisted — `chats.py` docstring).
+    media_kind: str | None
+
+    @classmethod
+    def of(cls, record: MessageRecord) -> MessageOut:
+        return cls.model_validate(
+            {
+                "id": record.id,
+                "direction": record.direction,
+                "text": record.text,
+                "posted_at": record.posted_at,
+                "delivery_status": record.delivery_status,
+                "delivery_error_code": record.delivery_error_code,
+                "external_message_id": record.external_message_id,
+                "media_kind": record.media_kind,
+            }
+        )
+
+
+class MessageListOut(BaseModel):
+    # Chronological (oldest first) — the order a chat renders.
+    messages: list[MessageOut]
+    # Pass as `before` to load the previous (older) page; `None` = start of the thread.
+    next_before: datetime | None
+
+
+class SendOut(BaseModel):
+    outbox_id: UUID
+
+
+class AssignIn(BaseModel):
+    # `None` unassigns.
+    agent_user_id: UUID | None
+
+
+def _not_found() -> HTTPException:
+    return HTTPException(status_code=404, detail={"code": "thread_not_found"})
+
+
+def _thread_out(service: ChatService, tenant_id: UUID, thread_id: UUID) -> ThreadOut:
+    try:
+        return ThreadOut.of(service.get_thread_summary(tenant_id, thread_id))
+    except ThreadNotFound:
+        raise _not_found() from None
+
+
+def _cursor(page_size: int, limit: int, stamp: datetime | None) -> datetime | None:
+    """A full page may have more behind it; a short one is the end."""
+    return stamp if page_size >= limit else None
+
+
+@router.get("/threads", response_model=ThreadListOut)
+def list_threads(
+    connection_id: UUID | None = Query(default=None),
+    status: Literal["open", "closed"] | None = Query(default=None),
+    before: datetime | None = Query(default=None),
+    limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    principal: Principal = Depends(current_principal),
+    service: ChatService = Depends(get_chat_service),
+) -> ThreadListOut:
+    """The caller's WhatsApp conversations, most recent activity first."""
+    summaries = service.list_threads(
+        principal.tenant_id,
+        connection_id=connection_id,
+        status=status,
+        limit=limit,
+        before=before,
+    )
+    last: Sequence[ThreadSummary] = summaries[-1:]
+    return ThreadListOut(
+        threads=[ThreadOut.of(s) for s in summaries],
+        next_before=_cursor(len(summaries), limit, last[0].last_message_at if last else None),
+    )
+
+
+@router.get("/threads/{thread_id}/messages", response_model=MessageListOut)
+def list_messages(
+    thread_id: UUID,
+    before: datetime | None = Query(default=None),
+    limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    principal: Principal = Depends(current_principal),
+    service: ChatService = Depends(get_chat_service),
+) -> MessageListOut:
+    """One page of a thread, chronological. Older pages: pass `next_before` back."""
+    try:
+        records = service.list_messages(principal.tenant_id, thread_id, before=before, limit=limit)
+    except ThreadNotFound:
+        raise _not_found() from None
+    # The page is chronological, so the cursor to older messages is its FIRST instant.
+    first = records[0].posted_at if records else None
+    return MessageListOut(
+        messages=[MessageOut.of(r) for r in records],
+        next_before=_cursor(len(records), limit, first),
+    )
+
+
+@router.post("/threads/{thread_id}/messages", response_model=SendOut, status_code=201)
+def send_message(
+    thread_id: UUID,
+    body: SendBody = Body(...),
+    principal: Principal = Depends(current_principal),
+    service: ChatService = Depends(get_chat_service),
+) -> SendOut:
+    """Queue a person's reply (`text` | `image` | `buttons`) and pause the thread's menu
+    automation. 201 = queued, not yet delivered: the delivery state arrives on the
+    message row through the status webhook."""
+    try:
+        outbox_id = service.send(principal.tenant_id, thread_id, principal.user_id, body)
+    except ThreadNotFound:
+        raise _not_found() from None
+    except WindowClosed as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "window_closed",
+                "closes_at": exc.closes_at.isoformat() if exc.closes_at else None,
+            },
+        ) from None
+    except ValueError as exc:
+        # A Cloud API limit (button title length, body size…) from the client builders.
+        # Their messages name the limit, never echo the user's text.
+        raise HTTPException(
+            status_code=422, detail={"code": "invalid_message", "reason": str(exc)}
+        ) from None
+    return SendOut(outbox_id=outbox_id)
+
+
+@router.post("/threads/{thread_id}/assign", response_model=ThreadOut)
+def assign_thread(
+    thread_id: UUID,
+    body: AssignIn,
+    principal: Principal = Depends(current_principal),
+    service: ChatService = Depends(get_chat_service),
+) -> ThreadOut:
+    try:
+        service.assign(principal.tenant_id, thread_id, body.agent_user_id)
+    except ThreadNotFound:
+        raise _not_found() from None
+    except UnknownAgent:
+        raise HTTPException(status_code=422, detail={"code": "unknown_agent"}) from None
+    return _thread_out(service, principal.tenant_id, thread_id)
+
+
+@router.post("/threads/{thread_id}/close", response_model=ThreadOut)
+def close_thread(
+    thread_id: UUID,
+    principal: Principal = Depends(current_principal),
+    service: ChatService = Depends(get_chat_service),
+) -> ThreadOut:
+    try:
+        service.close(principal.tenant_id, thread_id)
+    except ThreadNotFound:
+        raise _not_found() from None
+    return _thread_out(service, principal.tenant_id, thread_id)
+
+
+@router.post("/threads/{thread_id}/reopen", response_model=ThreadOut)
+def reopen_thread(
+    thread_id: UUID,
+    principal: Principal = Depends(current_principal),
+    service: ChatService = Depends(get_chat_service),
+) -> ThreadOut:
+    try:
+        service.reopen(principal.tenant_id, thread_id)
+    except ThreadNotFound:
+        raise _not_found() from None
+    return _thread_out(service, principal.tenant_id, thread_id)
+
+
+@router.post("/threads/{thread_id}/takeover", response_model=ThreadOut)
+def takeover_thread(
+    thread_id: UUID,
+    principal: Principal = Depends(current_principal),
+    service: ChatService = Depends(get_chat_service),
+) -> ThreadOut:
+    """Pause the menu automation on this thread; the caller owns the pause."""
+    try:
+        service.takeover(principal.tenant_id, thread_id, principal.user_id)
+    except ThreadNotFound:
+        raise _not_found() from None
+    return _thread_out(service, principal.tenant_id, thread_id)
+
+
+@router.post("/threads/{thread_id}/resume", response_model=ThreadOut)
+def resume_thread(
+    thread_id: UUID,
+    principal: Principal = Depends(current_principal),
+    service: ChatService = Depends(get_chat_service),
+) -> ThreadOut:
+    """Hand the thread back to the menu: clear the pause and the node cursor, keep the
+    order in progress (`context`)."""
+    try:
+        service.resume(principal.tenant_id, thread_id)
+    except ThreadNotFound:
+        raise _not_found() from None
+    return _thread_out(service, principal.tenant_id, thread_id)
+
+
+@router.get("/media/{message_id}")
+def get_media(
+    message_id: UUID,
+    principal: Principal = Depends(current_principal),
+    locator: MediaLocator = Depends(get_media_locator),
+) -> Response:
+    """Redirect to the bytes of an inbound media message — or 501 `media_not_captured`,
+    which is every inbound media message today (no `media_id` is persisted; the gap is
+    documented in `chats.py`)."""
+    url = locator.locate(tenant_id=principal.tenant_id, message_id=message_id)
+    if url is None:
+        raise HTTPException(status_code=501, detail={"code": "media_not_captured"})
+    return RedirectResponse(url=url, status_code=307)

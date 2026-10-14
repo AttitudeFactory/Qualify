@@ -140,6 +140,22 @@ def build_production_whatsapp_settings() -> whatsapp_routes.WhatsAppWebhookSetti
     return whatsapp_routes.WhatsAppWebhookSettings.from_env()
 
 
+def build_production_whatsapp_chat_service() -> whatsapp_routes.ChatService:
+    """WA-10. Lazy like the publishing builders; the service holds no connection of its
+    own (each call opens `tenant_session`), so building it per request is cheap."""
+    from qualify_api.whatsapp.chats import production_chat_service  # noqa: PLC0415
+
+    return production_chat_service()
+
+
+def build_production_whatsapp_media_locator() -> whatsapp_routes.MediaLocator:
+    """WA-10: no inbound `media_id` is persisted yet, so every lookup is 501 — see the
+    gap documented in `qualify_api.whatsapp.chats`."""
+    from qualify_api.whatsapp.chats import NotCapturedMediaLocator  # noqa: PLC0415
+
+    return NotCapturedMediaLocator()
+
+
 def build_production_leads_service() -> LeadIntakeService:
     """Lazy import like the publishing builders: the leads module needs Redis only at
     the first intake, and an app booted without one should fail THAT request loudly."""
@@ -267,6 +283,12 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
         # (QUA-147): one recorder, one queue, one worker for every Meta product.
         app.dependency_overrides[whatsapp_routes.get_delivery_recorder] = (
             build_production_delivery_recorder
+        )
+        app.dependency_overrides[whatsapp_routes.get_chat_service] = (
+            build_production_whatsapp_chat_service
+        )
+        app.dependency_overrides[whatsapp_routes.get_media_locator] = (
+            build_production_whatsapp_media_locator
         )
         # C1: parsed at assembly so a malformed QUALIFY_DEV_PRINCIPALS fails the boot,
         # not the first request.
