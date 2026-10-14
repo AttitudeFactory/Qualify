@@ -174,17 +174,37 @@ class WhatsAppState(rx.State):
                 return number
         return EMPTY_NUMBER
 
-    # "Loading" = first read for this number (skeleton). A forced re-read of a number
-    # already on screen keeps the content visible instead of flashing a skeleton.
+    # Perfil/QR content renders ONLY once it was read for the number on screen. An
+    # empty form after a failed read would let «Guardar» wipe the real profile on Meta
+    # with blanks, and an empty QR list would claim "no codes" when the read failed.
+    # So each tab is tri-state: ready (content) / failed (banner + retry) / else
+    # skeleton (loading, or about to be — `on_mount` has not landed yet). A forced
+    # re-read of a number already on screen stays "ready": no skeleton flash.
     @rx.var
-    def profile_loading(self) -> bool:
-        return self.profile_loaded_for != self.selected_connection_id and (
-            self.profile_loading_for != ""
+    def profile_ready(self) -> bool:
+        return self.profile_loaded_for != "" and (
+            self.profile_loaded_for == self.selected_connection_id
         )
 
     @rx.var
-    def qr_loading(self) -> bool:
-        return self.qr_loaded_for != self.selected_connection_id and self.qr_loading_for != ""
+    def profile_failed(self) -> bool:
+        return (
+            self.profile_loaded_for != self.selected_connection_id
+            and self.profile_loading_for == ""
+            and self.profile_banner != ""
+        )
+
+    @rx.var
+    def qr_ready(self) -> bool:
+        return self.qr_loaded_for != "" and self.qr_loaded_for == self.selected_connection_id
+
+    @rx.var
+    def qr_failed(self) -> bool:
+        return (
+            self.qr_loaded_for != self.selected_connection_id
+            and self.qr_loading_for == ""
+            and self.qr_banner != ""
+        )
 
     @rx.var
     def qr_preview(self) -> str:

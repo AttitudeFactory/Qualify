@@ -63,6 +63,7 @@ def resolve_tab(requested: str) -> str:
 NEVER_CHECKED = "Sin verificar"
 NEVER_SYNCED = "Sin sincronizar"
 NO_INBOUND = "Aún no llega ningún mensaje"
+NO_VERIFIED_NAME = "Sin nombre verificado"
 _NO_BRAND_LABEL = "Sin marca"
 
 
@@ -236,7 +237,7 @@ def build_number_vm(
         connection_id=connection_id,
         label=whatsapp_label(display_phone_number, verified_name),
         display_phone_number=display_phone_number,
-        verified_name=(verified_name or "").strip(),
+        verified_name=(verified_name or "").strip() or NO_VERIFIED_NAME,
         brand=brand or _NO_BRAND_LABEL,
         status=status,
         status_label=status_label,

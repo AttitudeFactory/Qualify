@@ -91,6 +91,18 @@ def banner(message: rx.Var[str], tone: rx.Var[str]) -> rx.Component:
     )
 
 
+def retry_button(label: str, on_click: rx.event.EventHandler) -> rx.Component:
+    """Shown in place of a tab's content when its read failed (the banner says why)."""
+    return rx.button(
+        rx.icon("refresh-cw", size=T.ICON_SM),
+        label,
+        on_click=on_click,
+        variant="soft",
+        size="2",
+        **T.tone_scheme("neutral"),
+    )
+
+
 # ======================================================================================
 # Shell
 # ======================================================================================
@@ -455,7 +467,15 @@ def profile_form() -> rx.Component:
 def profile_tab() -> rx.Component:
     return rx.vstack(
         banner(WhatsAppState.profile_banner, WhatsAppState.profile_banner_tone),
-        rx.cond(WhatsAppState.profile_loading, skeleton_card(5), profile_form()),
+        rx.cond(
+            WhatsAppState.profile_ready,
+            profile_form(),
+            rx.cond(
+                WhatsAppState.profile_failed,
+                retry_button("Volver a leer el perfil", WhatsAppState.reload_profile),
+                skeleton_card(5),
+            ),
+        ),
         spacing="4",
         width="100%",
         align_items="start",
@@ -650,8 +670,7 @@ def _qr_card(qr: QrCodeVM) -> rx.Component:
 
 def _qr_list() -> rx.Component:
     return rx.cond(
-        WhatsAppState.qr_loading,
-        skeleton_rows(3, height="8rem", radius=T.RADIUS_CARD),
+        WhatsAppState.qr_ready,
         rx.cond(
             WhatsAppState.qr_codes.length() > 0,
             rx.vstack(rx.foreach(WhatsAppState.qr_codes, _qr_card), spacing="3", width="100%"),
@@ -661,6 +680,11 @@ def _qr_list() -> rx.Component:
                 "Crea uno por cada lugar donde te encuentran tus clientes: el mostrador, el "
                 "empaque, la bio de Instagram.",
             ),
+        ),
+        rx.cond(
+            WhatsAppState.qr_failed,
+            retry_button("Volver a leer los códigos", WhatsAppState.reload_qr),
+            skeleton_rows(3, height="8rem", radius=T.RADIUS_CARD),
         ),
     )
 

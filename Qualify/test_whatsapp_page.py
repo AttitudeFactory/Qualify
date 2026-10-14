@@ -336,3 +336,19 @@ def test_nav_item_sits_after_conexiones() -> None:
 
 def test_empty_vms_are_valid_defaults() -> None:
     assert EMPTY_NUMBER.connection_id == "" and EMPTY_PROFILE.about == ""
+
+
+def test_profile_form_and_qr_list_render_only_after_a_successful_read() -> None:
+    """Browser finding (2026-10-14): after a FAILED profile read the empty form was still
+    on screen, so «Guardar» would have wiped the real profile on Meta with blanks; a
+    failed QR read showed «Aún no tienes códigos». Both are gated on `*_ready` now."""
+    source = (_HERE / "whatsapp_page.py").read_text()
+    assert "WhatsAppState.profile_ready,\n            profile_form()," in source
+    assert "WhatsAppState.qr_ready," in source
+    assert "WhatsAppState.profile_failed" in source and "WhatsAppState.qr_failed" in source
+
+
+def test_missing_verified_name_has_copy() -> None:
+    vm = _number(verified_name=None)
+    assert vm.verified_name == "Sin nombre verificado"
+    assert vm.label == "+57 300 1234567"  # the title stays the bare number
