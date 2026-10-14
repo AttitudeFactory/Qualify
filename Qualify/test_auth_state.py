@@ -606,42 +606,37 @@ def test_settings_need_a_login_but_not_a_finished_brand_kit() -> None:
 
 
 # --------------------------------------------------------------------------------------
-# Signup gate (2026-10-07): shared code + invite links
+# Signup gate: invite-only (founder decision 2026-10-14)
 # --------------------------------------------------------------------------------------
 
 
-async def test_signup_page_asks_for_the_code_only_when_configured(monkeypatch) -> None:
+async def test_signup_page_is_closed_without_an_invite(monkeypatch) -> None:
     state = _state()
-    monkeypatch.delenv("QUALIFY_SIGNUP_CODE", raising=False)
+    monkeypatch.delenv("QUALIFY_SIGNUP_OPEN", raising=False)
     await AuthState.enter_signup.fn(state)
-    assert state.signup_code_required is False
-    monkeypatch.setenv("QUALIFY_SIGNUP_CODE", "polet-2026")
+    assert state.signup_open is False and state.invite_state == ""
+    monkeypatch.setenv("QUALIFY_SIGNUP_OPEN", "1")
     await AuthState.enter_signup.fn(state)
-    assert state.signup_code_required is True and state.invite_state == ""
+    assert state.signup_open is True
 
 
-async def test_a_wrong_signup_code_is_refused_and_counted(monkeypatch) -> None:
-    from qualify_api.auth import AttemptThrottle
-
-    throttle = AttemptThrottle(max_attempts=2, window_seconds=600)
-    monkeypatch.setattr(auth_state_module, "signup_code_throttle", throttle)
-    monkeypatch.setenv("QUALIFY_SIGNUP_CODE", "polet-2026")
+async def test_an_uninvited_signup_is_refused_before_the_provider(monkeypatch) -> None:
+    monkeypatch.delenv("QUALIFY_SIGNUP_OPEN", raising=False)
     monkeypatch.setattr(
         auth_state_module,
         "register_business",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("gate must stop it first")),
     )
     state = _state()
-    form = {
-        "business_name": "Polet",
-        "email": "a@b.co",
-        "password": "x" * 8,
-        "signup_code": "guess",
-    }
-    for _ in range(3):
-        async for _ in AuthState.handle_signup.fn(state, form):
-            raise AssertionError("a refused signup must not navigate")
-    assert "min" in state.auth_error  # the third try hit the throttle, not the gate
+    form = {"business_name": "Polet", "email": "a@b.co", "password": "x" * 8}
+    async for _ in AuthState.handle_signup.fn(state, form):
+        raise AssertionError("a refused signup must not navigate")
+    assert "invitación" in state.auth_error
+
+
+def test_the_signup_page_has_no_shared_code_field() -> None:
+    source = (_QUALIFY_DIR / "auth_pages.py").read_text(encoding="utf-8")
+    assert "signup_code" not in source and "Código de invitación" not in source
 
 
 async def test_an_invite_for_another_email_is_refused(monkeypatch) -> None:

@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-10-07 · **Estado:** `[PLAN — pendiente de las decisiones del fundador (§9)]`
 **Origen:** pedido del fundador (2026-10-07): *«desde mi superadmin que administra los tenants puedo disparar nuevos tenants y adelantar configuración y scraping para que su Brand Kit sea más eficiente, ya precargado con su nicho de mercado (mientras hablo)»*, y *«invitar con plantilla de correo a clientes específicos; ahí no se precisa tanta seguridad porque en el boca a boca yo me aseguro de que son los dueños del emprendimiento»*.
-**Construye sobre:** el login endurecido + código compartido + invitaciones por correo de la rama `claude/login-auth-improvements-6658d6` (migración `0056_signup_invites`, `qualify_api.auth.invites`, `qualify_api.mail` sobre Resend), el Brand Kit antes del login (migración `0037`, `qualify_api.auth.drafts`) y el worker embebido del Planificador (QUA-111).
+**Construye sobre:** el login endurecido + el registro **solo por invitación** (decisión del fundador 2026-10-14; el código compartido quedó en backlog) de la rama `claude/login-auth-improvements-6658d6` (migración `0056_signup_invites`, `qualify_api.auth.invites`, `qualify_api.mail` sobre Resend), el Brand Kit antes del login (migración `0037`, `qualify_api.auth.drafts`) y el worker embebido del Planificador (QUA-111).
 
 ---
 
@@ -187,7 +187,7 @@ Incluso preparando todo, un alta cuesta centavos. El riesgo no es el costo unita
 ## 7. Seguridad, privacidad y robustez
 
 1. **El superadmin es la llave de todos los negocios.** De ahí el segundo factor, la verificación por evento, la auditoría en la misma transacción y la puerta única de código (§4.1–4.2).
-2. **Las invitaciones del panel saltan las verificaciones extra.** Es tu regla: si tú invitas, ya validaste al dueño de palabra. Turnstile, el código de 6 dígitos y la conexión obligatoria por Meta aplican solo a quien llega sin invitación (con el código compartido, o si algún día se abre el registro); son trabajo aparte, pendiente antes de abrir `/signup` al público. El enlace, además, prueba que el correo es suyo.
+2. **Las invitaciones del panel saltan las verificaciones extra.** Es tu regla: si tú invitas, ya validaste al dueño de palabra. Turnstile, el código de 6 dígitos y la conexión obligatoria por Meta aplican solo a quien llegue sin invitación si algún día se abre el registro (hoy está cerrado: el MVP es solo por invitación); son trabajo aparte, pendiente antes de abrir `/signup` al público. El enlace, además, prueba que el correo es suyo.
 3. **No dejar cuentas de Instagram secuestradas.** La reserva de `social_account_claims` (`0044`) no se libera hoy en ningún caso salvo error. Un alta que vence o se anula **libera la reserva** (`account_claims.release`) en la misma transacción que cambia el estado. Si no, un prospecto que no entró dejaría su @ bloqueado para su propio dueño.
 4. **Limpieza de negocios en espera abandonados.** Un alta vencida hace más de **30 días** (decisión D7) se purga: tenant en espera, marca, kit precargado, assets en R2 y lecturas guardadas. Solo se borra lo que **nunca fue reclamado** (`brand_kit_drafts.claimed_at IS NULL`). Es lo que corresponde con datos de alguien que no aceptó: aunque el perfil sea público, no tenemos por qué guardarlo.
 5. **Idempotencia y reintentos** en todas las tareas (§4.5). Un reinicio del backend a mitad de una preparación no la corrompe ni la duplica.

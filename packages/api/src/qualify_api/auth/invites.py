@@ -1,14 +1,15 @@
-"""Who may register a business (2026-10-07): a shared code, or an emailed invitation.
+"""Who may register a business: an emailed invitation (founder decision, 2026-10-14).
 
-Two keys, either one opens `/signup`:
+The MVP is **invite-only**. `create_invite` stores the SHA-256 of a random token
+(migration 0056) together with who it is for — the person's name, the business and an
+optional personal note from whoever invites — and `send_invite_email` mails the link
+`/signup?invite=<token>` (template: `invite_email`). The invite opens signup only for ITS
+email, once, until it expires. Because the link reaches only that inbox, an invited
+signup also proves the email is the registrant's.
 
-- **Shared code** — `QUALIFY_SIGNUP_CODE`. Unset means signup is open (dev); production
-  sets it (see `deploy/.env.prod.example`). Compared in constant time.
-- **Invitation** — `create_invite` stores the SHA-256 of a random token (migration
-  0056) and `send_invite_email` mails the link `/signup?invite=<token>`. The invite opens
-  signup only for ITS email, once, until it expires. Because the link reaches only that
-  inbox, an invited signup also proves the email is the registrant's — something the
-  shared code does not.
+Without an invite, signup is closed. `QUALIFY_SIGNUP_OPEN=1` reopens it for local
+development and tests only; the production compose forces it empty. (A shared signup code
+existed briefly on this branch and went to the backlog with the same decision.)
 
 `authorize_signup` decides before the identity user is created; `consume_invite` marks
 the invite used inside `register_business`'s transaction, with a row lock, so two tabs
@@ -18,8 +19,6 @@ racing on one link make one account.
 from __future__ import annotations
 
 import hashlib
-import hmac
-import html
 import os
 import secrets
 from dataclasses import dataclass
@@ -30,11 +29,17 @@ from qualify_shared.db.admin import admin_session
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from qualify_api.mail import Mailer, OutgoingMail
+from qualify_api.auth.invite_email import invite_email
+from qualify_api.mail import Mailer
 from qualify_api.tenancy.models import SignupInvite
 
 DEFAULT_INVITE_DAYS = 7
 SIGNUP_ROUTE = "/signup"
+_NOTE_MAX = 600
+_NAME_MAX = 120
+
+_INVITE_DEAD = "La invitación venció o ya se usó. Pide una nueva a quien te invitó."
+_INVITE_ONLY = "Qualify es solo por invitación. Si recibiste una, abre el enlace desde el correo."
 
 
 class SignupNotAllowed(Exception):
@@ -50,6 +55,9 @@ class CreatedInvite:
     email: str
     token: str  # the raw token: only ever in the link, never stored
     expires_at: datetime
+    recipient_name: str = ""
+    business_name: str = ""
+    note: str = ""
 
     def link(self, base_url: str) -> str:
         return f"{base_url.rstrip('/')}{SIGNUP_ROUTE}?invite={self.token}"
@@ -62,6 +70,7 @@ class InviteView:
     id: UUID
     email: str
     expires_at: datetime
+    business_name: str = ""
 
 
 def _hash(token: str) -> str:
@@ -72,12 +81,9 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def signup_code() -> str:
-    return os.environ.get("QUALIFY_SIGNUP_CODE", "").strip()
-
-
-def signup_code_required() -> bool:
-    return bool(signup_code())
+def signup_open() -> bool:
+    """Dev/test escape hatch: signup without an invite. Never set in production."""
+    return os.environ.get("QUALIFY_SIGNUP_OPEN", "") == "1"
 
 
 def _valid_email(email: str) -> bool:
@@ -92,8 +98,22 @@ def _valid_email(email: str) -> bool:
     )
 
 
+def _clean(text: str | None, limit: int) -> str:
+    """Collapse surrounding whitespace; refuse rather than silently truncate."""
+    cleaned = (text or "").strip()
+    if len(cleaned) > limit:
+        raise SignupNotAllowed(f"El texto es demasiado largo (máximo {limit} caracteres).")
+    return cleaned
+
+
 def create_invite(
-    email: str, *, days: int = DEFAULT_INVITE_DAYS, invited_by: str | None = None
+    email: str,
+    *,
+    days: int = DEFAULT_INVITE_DAYS,
+    invited_by: str | None = None,
+    recipient_name: str | None = None,
+    business_name: str | None = None,
+    note: str | None = None,
 ) -> CreatedInvite:
     """Store a new invite for `email` (literal, like every login email — the `+alias`
     is the business). Earlier unused invites for the same email stay valid."""
@@ -102,6 +122,9 @@ def create_invite(
         raise SignupNotAllowed("El email no es válido.")
     if days < 1:
         raise SignupNotAllowed("La invitación debe durar al menos un día.")
+    recipient_name = _clean(recipient_name, _NAME_MAX)
+    business_name = _clean(business_name, _NAME_MAX)
+    note = _clean(note, _NOTE_MAX)
     token = secrets.token_urlsafe(32)
     expires_at = _now() + timedelta(days=days)
     with admin_session() as session:
@@ -110,10 +133,20 @@ def create_invite(
                 email=email,
                 token_hash=_hash(token),
                 invited_by=invited_by,
+                recipient_name=recipient_name or None,
+                business_name=business_name or None,
+                note=note or None,
                 expires_at=expires_at,
             )
         )
-    return CreatedInvite(email=email, token=token, expires_at=expires_at)
+    return CreatedInvite(
+        email=email,
+        token=token,
+        expires_at=expires_at,
+        recipient_name=recipient_name,
+        business_name=business_name,
+        note=note,
+    )
 
 
 def _usable(invite: SignupInvite | None) -> bool:
@@ -130,29 +163,30 @@ def lookup_invite(token: str) -> InviteView | None:
         if not _usable(invite):
             return None
         assert invite is not None
-        return InviteView(id=invite.id, email=invite.email, expires_at=invite.expires_at)
+        return InviteView(
+            id=invite.id,
+            email=invite.email,
+            expires_at=invite.expires_at,
+            business_name=invite.business_name or "",
+        )
 
 
-def authorize_signup(email: str, invite_token: str | None, code: str | None) -> UUID | None:
+def authorize_signup(email: str, invite_token: str | None) -> UUID | None:
     """Decide whether this signup may proceed. Returns the invite id to consume (None
-    when the shared code or an open signup let it through). Raises `SignupNotAllowed`."""
+    only when `QUALIFY_SIGNUP_OPEN=1` lets an uninvited signup through). Raises
+    `SignupNotAllowed`."""
     if invite_token:
         invite = lookup_invite(invite_token)
         if invite is None:
-            raise SignupNotAllowed(
-                "La invitación venció o ya se usó. Pide una nueva a quien te invitó."
-            )
+            raise SignupNotAllowed(_INVITE_DEAD)
         if invite.email != email:
             raise SignupNotAllowed(
                 f"Esta invitación es para {invite.email}. Regístrate con ese correo."
             )
         return invite.id
-    expected = signup_code()
-    if not expected:
-        return None  # open signup (no code configured)
-    if not code or not hmac.compare_digest(code.strip().encode(), expected.encode()):
-        raise SignupNotAllowed("El código de invitación no es correcto.")
-    return None
+    if signup_open():
+        return None
+    raise SignupNotAllowed(_INVITE_ONLY)
 
 
 def consume_invite(session: Session, invite_id: UUID, email: str) -> None:
@@ -162,99 +196,17 @@ def consume_invite(session: Session, invite_id: UUID, email: str) -> None:
         select(SignupInvite).where(SignupInvite.id == invite_id).with_for_update()
     )
     if not _usable(invite) or invite is None or invite.email != email:
-        raise SignupNotAllowed(
-            "La invitación venció o ya se usó. Pide una nueva a quien te invitó."
-        )
+        raise SignupNotAllowed(_INVITE_DEAD)
     invite.used_at = _now()
     session.flush()
 
 
-# --------------------------------------------------------------------------------------
-# The email
-# --------------------------------------------------------------------------------------
-
-_SUBJECT = "Te invitaron a Qualify"
-
-_TEXT = """Hola,
-
-Te invitaron a crear la cuenta de tu negocio en Qualify.
-
-Crea tu cuenta aquí (el enlace es solo para {email} y vence el {expires}):
-{link}
-
-Si no esperabas esta invitación, ignora este correo.
-
-— Qualify
-"""
-
-# Inline styles (mail clients ignore <style>), kept as constants so the markup reads.
-_FONT = "font-family:'IBM Plex Sans',Helvetica,Arial,sans-serif;"
-_STYLES = {
-    "body": f"margin:0;padding:0;background:#f4f5f6;{_FONT}color:#1c2024;",
-    "outer": "background:#f4f5f6;padding:32px 16px;",
-    "card": "max-width:480px;background:#ffffff;border:1px solid #e0e1e6;border-radius:12px;",
-    "brand": "font-size:20px;font-weight:700;color:#12a594;",
-    "h1": "margin:0 0 12px 0;font-size:20px;line-height:1.3;",
-    "lead": "margin:0 0 20px 0;font-size:15px;line-height:1.5;color:#60646c;",
-    "strong": "color:#1c2024;",
-    "button": (
-        "display:inline-block;background:#12a594;color:#ffffff;text-decoration:none;"
-        "font-weight:600;font-size:15px;padding:12px 22px;border-radius:8px;"
-    ),
-    "small": "margin:20px 0 0 0;font-size:13px;line-height:1.5;color:#60646c;",
-    "link": "color:#0d9b8a;word-break:break-all;",
-    "foot": "margin:0;font-size:12px;color:#8b8d98;",
-}
-_TABLE = 'role="presentation" width="100%" cellpadding="0" cellspacing="0"'
-
-_HTML = """<!doctype html>
-<html lang="es">
-<body style="{body}">
-  <table {table} style="{outer}">
-    <tr><td align="center">
-      <table {table} style="{card}">
-        <tr><td style="padding:32px 32px 8px 32px;"><div style="{brand}">Qualify</div></td></tr>
-        <tr><td style="padding:8px 32px 0 32px;">
-          <h1 style="{h1}">Te invitaron a crear tu cuenta</h1>
-          <p style="{lead}">
-            Crea la cuenta de tu negocio en Qualify con el correo
-            <strong style="{strong}">{email}</strong>.
-          </p>
-          <a href="{link}" style="{button}">Crear mi cuenta</a>
-          <p style="{small}">
-            La invitación sirve una sola vez y vence el {expires}.
-            Si el botón no abre, copia este enlace:<br>
-            <a href="{link}" style="{link_style}">{link}</a>
-          </p>
-        </td></tr>
-        <tr><td style="padding:24px 32px 32px 32px;">
-          <p style="{foot}">Si no esperabas esta invitación, ignora este correo.</p>
-        </td></tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>
-"""
-
-
-def invite_email(invite: CreatedInvite, base_url: str) -> OutgoingMail:
-    link = invite.link(base_url)
-    expires = invite.expires_at.strftime("%d/%m/%Y")
-    return OutgoingMail(
-        to=invite.email,
-        subject=_SUBJECT,
-        text=_TEXT.format(email=invite.email, expires=expires, link=link),
-        html=_HTML.format(
-            email=html.escape(invite.email),
-            expires=html.escape(expires),
-            link=html.escape(link, quote=True),
-            table=_TABLE,
-            link_style=_STYLES["link"],
-            **{k: v for k, v in _STYLES.items() if k != "link"},
-        ),
-    )
-
-
-def send_invite_email(mailer: Mailer, invite: CreatedInvite, base_url: str) -> None:
-    mailer.send(invite_email(invite, base_url))
+def send_invite_email(
+    mailer: Mailer,
+    invite: CreatedInvite,
+    base_url: str,
+    *,
+    signer: str = "",
+    can_reply: bool = False,
+) -> None:
+    mailer.send(invite_email(invite, base_url, signer=signer, can_reply=can_reply))

@@ -143,7 +143,15 @@ def login_index() -> rx.Component:
             href="/brand/start",
             width="100%",
         ),
-        _footer_link("¿Negocio nuevo?", "Regístralo aquí", "/signup"),
+        rx.cond(
+            AuthState.signup_open,
+            _footer_link("¿Negocio nuevo?", "Regístralo aquí", "/signup"),
+            rx.text(
+                "¿Aún no tienes cuenta? Qualify es solo por invitación.",
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
+        ),
         # §6.1 (1 login = 1 negocio) said once, as a tip, not as a rule to obey.
         rx.text(
             "¿Llevas varios negocios? Cada uno entra con su propio correo, y tu navegador "
@@ -321,19 +329,62 @@ def brand_start_index() -> rx.Component:
     )
 
 
-def signup_index() -> rx.Component:
-    return _auth_card(
-        rx.heading("Registrar un negocio", size="4"),
-        rx.text(
-            "Al registrar se crea el negocio con su propio espacio (tenant) y entras "
-            "directamente como él.",
-            size="2",
-            color=T.TEXT_MUTED,
+def _invite_only() -> rx.Component:
+    """/signup without a usable invite (MVP, founder decision 2026-10-14): no form."""
+    return rx.vstack(
+        rx.heading("Qualify es solo por invitación", size="4"),
+        rx.cond(
+            AuthState.invite_state == "invalid",
+            callout(
+                "Esta invitación venció o ya se usó. Pide una nueva a quien te invitó.",
+                "warn",
+            ),
+            rx.text(
+                "Para crear una cuenta necesitas una invitación. Si ya la recibiste, abre el "
+                "enlace desde el correo.",
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
+        ),
+        rx.link(
+            rx.button("Iniciar sesión", variant="soft", width="100%"),
+            href="/login",
+            width="100%",
+        ),
+        spacing="4",
+        width="100%",
+    )
+
+
+def _signup_form() -> rx.Component:
+    invited = AuthState.invite_state == "ok"
+    return rx.vstack(
+        rx.cond(
+            invited,
+            rx.heading("Crea tu cuenta", size="4"),
+            rx.heading("Registrar un negocio", size="4"),
+        ),
+        rx.cond(
+            invited,
+            callout(
+                rx.fragment(
+                    "Te invitaron a Qualify con ",
+                    rx.text.strong(AuthState.invite_email),
+                    ". Elige tu contraseña y entras directo.",
+                ),
+                "ok",
+                icon="mail-check",
+            ),
+            rx.text(
+                "Al registrar se crea el espacio de tu negocio y entras directamente.",
+                size="2",
+                color=T.TEXT_MUTED,
+            ),
         ),
         # A Brand Kit started before login (§ 2026-10-02) is adopted by the signup with
         # the same email — the field comes prefilled with it.
         rx.cond(
-            AuthState.guest_email != "",
+            (AuthState.guest_email != "") & ~invited,
             callout(
                 rx.fragment(
                     "Tu Brand Kit ya está guardado con ",
@@ -343,64 +394,31 @@ def signup_index() -> rx.Component:
                 "info",
             ),
         ),
-        # The signup gate (2026-10-07): an invite link fixes the email; without one, a
-        # deployment with QUALIFY_SIGNUP_CODE asks for the shared code.
-        rx.match(
-            AuthState.invite_state,
-            (
-                "ok",
-                callout(
-                    rx.fragment(
-                        "Te invitaron a crear tu cuenta con ",
-                        rx.text.strong(AuthState.invite_email),
-                        ".",
-                    ),
-                    "ok",
-                    icon="mail-check",
-                ),
-            ),
-            (
-                "invalid",
-                callout(
-                    "Esta invitación venció o ya se usó. Pide una nueva a quien te invitó.",
-                    "warn",
-                ),
-            ),
-            rx.fragment(),
-        ),
         _error_banner(),
         rx.form(
             rx.vstack(
                 rx.input(
                     placeholder="Nombre del negocio",
                     name="business_name",
+                    default_value=AuthState.invite_business,
                     required=True,
                     width="100%",
+                    # Remount when the invite resolves (see the email field below).
+                    key=AuthState.invite_business,
                 ),
                 email_field(
                     "Email del negocio (uno por negocio)",
                     default_value=rx.cond(
-                        AuthState.invite_state == "ok",
+                        invited,
                         AuthState.invite_email,
                         AuthState.guest_email,
                     ),
-                    read_only=AuthState.invite_state == "ok",
+                    read_only=invited,
                     # Remount when the invite resolves: `default_value` only applies on mount,
                     # and the invite is read in on_load, after the form is already on screen.
                     key=AuthState.invite_email,
                 ),
                 password_field("Contraseña (mínimo 8 caracteres)", new=True),
-                rx.cond(
-                    AuthState.signup_code_required & (AuthState.invite_state != "ok"),
-                    rx.input(
-                        rx.input.slot(rx.icon("key-round", size=T.ICON_SM)),
-                        placeholder="Código de invitación",
-                        name="signup_code",
-                        custom_attrs={"autoComplete": "off", "autoCapitalize": "none"},
-                        required=True,
-                        width="100%",
-                    ),
-                ),
                 rx.hstack(
                     rx.input(placeholder="País", name="country", default_value="VE", width="100%"),
                     rx.input(
@@ -416,7 +434,7 @@ def signup_index() -> rx.Component:
                     width="100%",
                 ),
                 rx.button(
-                    "Registrar y entrar",
+                    rx.cond(invited, "Crear mi cuenta", "Registrar y entrar"),
                     type="submit",
                     width="100%",
                     loading=AuthState.is_authenticating,
@@ -428,4 +446,18 @@ def signup_index() -> rx.Component:
             width="100%",
         ),
         _footer_link("¿Ya tienes cuenta?", "Inicia sesión", "/login"),
+        spacing="4",
+        width="100%",
+    )
+
+
+def signup_index() -> rx.Component:
+    """Invite-only for the MVP: the form shows for a valid invite link, or in dev when
+    `QUALIFY_SIGNUP_OPEN=1`; anyone else reads that Qualify is by invitation."""
+    return _auth_card(
+        rx.cond(
+            (AuthState.invite_state == "ok") | AuthState.signup_open,
+            _signup_form(),
+            _invite_only(),
+        ),
     )

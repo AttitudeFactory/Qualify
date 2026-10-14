@@ -40,22 +40,24 @@ def _register(provider: FakeAuthProvider, email: str, invite_id):
 
 
 def test_only_the_hash_is_stored() -> None:
-    created = create_invite(_email())
+    created = create_invite(_email(), business_name="Arepera La Nona", note="Hola")
     with admin_session() as session:
         rows = session.scalars(select(SignupInvite).where(SignupInvite.email == created.email))
         stored = [row.token_hash for row in rows]
     assert stored and created.token not in stored
-    assert lookup_invite(created.token).email == created.email  # type: ignore[union-attr]
+    view = lookup_invite(created.token)
+    assert view is not None and view.email == created.email
+    assert view.business_name == "Arepera La Nona"  # prefills the signup
     assert lookup_invite("not-a-token") is None
 
 
 def test_an_invite_makes_one_account() -> None:
     created = create_invite(_email())
-    invite_id = authorize_signup(created.email, created.token, None)
+    invite_id = authorize_signup(created.email, created.token)
     assert invite_id is not None
     _register(FakeAuthProvider(), created.email, invite_id)
     assert lookup_invite(created.token) is None  # spent
     with pytest.raises(SignupNotAllowed):
-        authorize_signup(created.email, created.token, None)
+        authorize_signup(created.email, created.token)
     with pytest.raises(SignupNotAllowed):  # a raced second signup fails at consume time
         _register(FakeAuthProvider(), _email().replace("invite", "race"), invite_id)

@@ -21,7 +21,7 @@ from qualify_api.auth.invites import (
     create_invite,
     lookup_invite,
     send_invite_email,
-    signup_code_required,
+    signup_open,
 )
 from qualify_api.auth.passwords import (
     MIN_PASSWORD_LENGTH,
@@ -54,7 +54,6 @@ from qualify_api.auth.throttle import (
     AttemptThrottle,
     login_throttle,
     reset_request_throttle,
-    signup_code_throttle,
 )
 
 __all__ = [
@@ -97,7 +96,6 @@ __all__ = [
     "reset_request_throttle",
     "resolve_login",
     "send_invite_email",
-    "signup_code_required",
-    "signup_code_throttle",
+    "signup_open",
     "start_brand_kit_draft",
 ]

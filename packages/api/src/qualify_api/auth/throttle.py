@@ -75,8 +75,3 @@ login_throttle = AttemptThrottle(max_attempts=5, window_seconds=15 * 60)
 #: Recovery emails per address: one a minute (GoTrue enforces the same per email; this
 #: answers before spending a provider call and gives the screen a precise wait).
 reset_request_throttle = AttemptThrottle(max_attempts=1, window_seconds=60)
-
-#: Wrong shared signup codes per client address: 10 in 15 minutes. Keyed by the
-#: websocket's client IP — behind the proxy that may be coarse, which only makes the
-#: ceiling stricter, never looser.
-signup_code_throttle = AttemptThrottle(max_attempts=10, window_seconds=15 * 60)

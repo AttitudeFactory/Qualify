@@ -55,8 +55,7 @@ from qualify_api.auth import (
     request_password_reset,
     reset_request_throttle,
     resolve_login,
-    signup_code_required,
-    signup_code_throttle,
+    signup_open,
     start_brand_kit_draft,
 )
 from reflex.config import get_config
@@ -105,11 +104,10 @@ def _signup_blocking(
     timezone: str,
     currency: str,
     invite_token: str = "",
-    signup_code: str = "",
 ):
     # The gate decides BEFORE the identity user exists; the invite is spent inside
     # register_business's transaction (`invites` module docstring).
-    invite_id = authorize_signup(email, invite_token or None, signup_code or None)
+    invite_id = authorize_signup(email, invite_token or None)
     return register_business(
         default_auth_provider(),
         business_name=business_name,
@@ -122,10 +120,11 @@ def _signup_blocking(
     )
 
 
-def _invite_email_blocking(token: str) -> str:
-    """The email a still-usable invite is for; "" when the link is unknown/used/old."""
+def _invite_blocking(token: str) -> tuple[str, str]:
+    """(email, business) of a still-usable invite; ("", "") when the link is
+    unknown, used or expired."""
     invite = lookup_invite(token)
-    return invite.email if invite is not None else ""
+    return (invite.email, invite.business_name) if invite is not None else ("", "")
 
 
 def _sign_out_blocking(access_token: str) -> None:
@@ -215,11 +214,13 @@ class AuthState(rx.State):
     #: Change-password card on /settings: a success line after saving.
     password_saved: bool = False
 
-    # Signup gate (2026-10-07): a shared code (`QUALIFY_SIGNUP_CODE`) or an invite link.
-    signup_code_required: bool = False
+    # Signup gate: invite-only for the MVP (founder decision 2026-10-14).
+    #: MVP: signup is invite-only. True only in dev (`QUALIFY_SIGNUP_OPEN=1`).
+    signup_open: bool = False
     #: "" (no invite in the URL), "ok" (valid: the email is fixed) or "invalid".
     invite_state: str = ""
     invite_email: str = ""
+    invite_business: str = ""
 
     # The Brand Kit before login (§ request 2026-10-02): the draft tenant provisioned for
     # the email typed on /brand/start. Set ONLY by `start_brand_kit` and read ONLY by the
@@ -299,32 +300,36 @@ class AuthState(rx.State):
         self.auth_error = ""
         self.show_password = False
         self.reset_sent_to = ""
+        self.signup_open = signup_open()
         if self.session_tenant_id:
             return rx.redirect("/")
         return None
 
     @rx.event
     async def enter_signup(self):
-        """`on_load` of /signup: bounce a session, read the invite link if any, and
-        say whether the shared code is needed. The token leaves the URL right away."""
+        """`on_load` of /signup: bounce a session and read the invite link. Without a
+        valid invite the page says Qualify is invite-only (unless dev opened signup).
+        The token leaves the URL right away."""
         if self.session_tenant_id:
             return rx.redirect("/")
         self.auth_error = ""
         self.show_password = False
-        self.signup_code_required = signup_code_required()
+        self.signup_open = signup_open()
         token = str(self.router.url.query_parameters.get("invite", "") or "")
         if not token:
             if not self._invite_token:  # a reload after the URL was cleaned keeps it
                 self.invite_state = ""
                 self.invite_email = ""
+                self.invite_business = ""
             return None
         try:
-            email = await asyncio.to_thread(_invite_email_blocking, token)
+            email, business = await asyncio.to_thread(_invite_blocking, token)
         except SQLAlchemyError as exc:
             logger.error("invite lookup failed: %s", type(exc).__name__)
-            email = ""
+            email, business = "", ""
         self._invite_token = token if email else ""
         self.invite_email = email
+        self.invite_business = business
         self.invite_state = "ok" if email else "invalid"
         return rx.call_script("history.replaceState(null, '', window.location.pathname)")
 
@@ -495,18 +500,10 @@ class AuthState(rx.State):
         country = str(form_data.get("country") or _SIGNUP_DEFAULTS["country"])
         timezone = str(form_data.get("timezone") or _SIGNUP_DEFAULTS["timezone"])
         currency = str(form_data.get("currency") or _SIGNUP_DEFAULTS["currency"])
-        signup_code = str(form_data.get("signup_code", ""))
         async with self:
             self.is_authenticating = True
             self.auth_error = ""
             invite_token = self._invite_token
-            client = self.router.session.client_ip or "unknown"
-        wait = 0 if invite_token else signup_code_throttle.retry_after(client)
-        if wait:
-            async with self:
-                self.is_authenticating = False
-                self.auth_error = _wait_message(wait)
-            return
         try:
             await asyncio.to_thread(
                 _signup_blocking,
@@ -517,11 +514,8 @@ class AuthState(rx.State):
                 timezone,
                 currency,
                 invite_token,
-                signup_code,
             )
         except SignupNotAllowed as exc:
-            if not invite_token:
-                signup_code_throttle.note(client)
             async with self:
                 self.is_authenticating = False
                 self.auth_error = exc.message
@@ -549,6 +543,7 @@ class AuthState(rx.State):
             self._invite_token = ""
             self.invite_state = ""
             self.invite_email = ""
+            self.invite_business = ""
             # Literal comparison (criterion 6): the field comes prefilled with it.
             adopted = bool(self.guest_email) and self.guest_email == email
         credentials = {

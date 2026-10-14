@@ -127,6 +127,9 @@ class SignupInvite(Base):
     email: Mapped[str] = mapped_column(String, nullable=False)
     token_hash: Mapped[str] = mapped_column(String, nullable=False)
     invited_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    recipient_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    business_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    note: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )

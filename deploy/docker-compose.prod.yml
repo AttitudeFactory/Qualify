@@ -58,13 +58,12 @@ x-app-env: &app-env
   QUALIFY_META_APP_SECRET: ${QUALIFY_META_APP_SECRET:?set in .env.prod}
   QUALIFY_SUPABASE_URL: ${QUALIFY_SUPABASE_URL:?set in .env.prod}
   QUALIFY_SUPABASE_PUBLISHABLE_KEY: ${QUALIFY_SUPABASE_PUBLISHABLE_KEY:?set in .env.prod}
-  # Unset = /signup open to anyone. Production must never run that way, so a missing
-  # code stops `docker compose` instead (2026-10-07; invites still work alongside it).
-  QUALIFY_SIGNUP_CODE: ${QUALIFY_SIGNUP_CODE:?set in .env.prod (shared signup code)}
   # Dev-only escape hatches, forced empty whatever the env file says.
   QUALIFY_AUTH_FAKE: ""
   QUALIFY_AUTH_FAKE_STATE_PATH: ""
   QUALIFY_MAIL_FAKE: ""
+  # Signup is invite-only (`just invite`); this dev hatch must never open it in production.
+  QUALIFY_SIGNUP_OPEN: ""
   # `env_file` hands the WHOLE .env.prod to every app container; blank the raw database
   # passwords there. Serving processes only need the per-role DSNs above — and the owner
   # password in particular is a superuser that bypasses RLS, which none of them may hold.

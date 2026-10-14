@@ -7,7 +7,8 @@ external APIs — a thin typed client over httpx, no SDK.
 Configuration, read from the environment:
 
     QUALIFY_RESEND_API_KEY   the Resend API key (secret)
-    QUALIFY_MAIL_FROM        sender, e.g. "Qualify <no-reply@send.attitudefactory.co>"
+    QUALIFY_MAIL_FROM        sender, e.g. "Herwin de Qualify <no-reply@send.attitudefactory.co>"
+    QUALIFY_MAIL_REPLY_TO    optional: where replies go (a mailbox a person reads)
     QUALIFY_MAIL_FAKE=1      dev/test: log the message instead of sending it
 
 An unconfigured environment raises `MailNotConfigured` at send time — loud, never a silent
@@ -50,22 +51,26 @@ class Mailer(Protocol):
 
 
 class ResendMailer:
-    def __init__(self, api_key: str, sender: str) -> None:
+    def __init__(self, api_key: str, sender: str, reply_to: str = "") -> None:
         self._api_key = api_key
         self._sender = sender
+        self._reply_to = reply_to
 
     def send(self, mail: OutgoingMail) -> None:
+        payload: dict = {
+            "from": self._sender,
+            "to": [mail.to],
+            "subject": mail.subject,
+            "html": mail.html,
+            "text": mail.text,
+        }
+        if self._reply_to:
+            payload["reply_to"] = self._reply_to
         try:
             response = httpx.post(
                 _RESEND_URL,
                 headers={"Authorization": f"Bearer {self._api_key}"},
-                json={
-                    "from": self._sender,
-                    "to": [mail.to],
-                    "subject": mail.subject,
-                    "html": mail.html,
-                    "text": mail.text,
-                },
+                json=payload,
                 timeout=_TIMEOUT_SECONDS,
             )
         except httpx.HTTPError as exc:
@@ -92,6 +97,12 @@ class FakeMailer:
 _mailer: Mailer | None = None
 
 
+def mail_reply_to() -> str:
+    """The Reply-To address, if any — templates only promise "reply to this email"
+    when a person actually reads where replies go."""
+    return os.environ.get("QUALIFY_MAIL_REPLY_TO", "").strip()
+
+
 def default_mailer() -> Mailer:
     global _mailer
     if _mailer is None:
@@ -102,7 +113,7 @@ def default_mailer() -> Mailer:
             sender = os.environ.get("QUALIFY_MAIL_FROM", "")
             if not api_key or not sender:
                 raise MailNotConfigured("QUALIFY_RESEND_API_KEY / QUALIFY_MAIL_FROM are not set")
-            _mailer = ResendMailer(api_key, sender)
+            _mailer = ResendMailer(api_key, sender, mail_reply_to())
     return _mailer
 
 
@@ -120,5 +131,6 @@ __all__ = [
     "OutgoingMail",
     "ResendMailer",
     "default_mailer",
+    "mail_reply_to",
     "reset_default_mailer",
 ]

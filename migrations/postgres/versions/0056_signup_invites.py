@@ -4,11 +4,12 @@ Revision ID: 0056
 Revises: 0055
 Create Date: 2026-10-07
 
-§ request 2026-10-07: "primero código compartido simple y la invitación también". The
-shared code is an env var (`QUALIFY_SIGNUP_CODE`, no table). This is the other half: the
-founder invites an email (`just invite …`), Qualify mails a link carrying a random token,
-and `/signup` opens only for that email while the invite is unused and unexpired
-(`qualify_api.auth.invites`).
+§ request 2026-10-07, narrowed 2026-10-14: the MVP is invite-only ("solo me interesa para
+el MVP Invitación (just invite) con una plantilla bien impecable"). The founder invites an
+email (`just invite …`), Qualify mails a link carrying a random token, and `/signup` opens
+only for that email while the invite is unused and unexpired (`qualify_api.auth.invites`).
+The invite also carries who it is for — name, business, a personal note — for the email
+and to prefill the signup.
 
 Only the SHA-256 of the token is stored — the link is the credential, so a database
 read never yields a usable invite. `used_at` is set in the same transaction that
@@ -43,6 +44,10 @@ def upgrade() -> None:
         sa.Column("email", sa.Text(), nullable=False),
         sa.Column("token_hash", sa.Text(), nullable=False),
         sa.Column("invited_by", sa.Text(), nullable=True),
+        # Who it is for, shown in the email and prefilled on /signup.
+        sa.Column("recipient_name", sa.Text(), nullable=True),
+        sa.Column("business_name", sa.Text(), nullable=True),
+        sa.Column("note", sa.Text(), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
