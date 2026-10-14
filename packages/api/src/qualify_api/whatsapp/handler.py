@@ -161,7 +161,8 @@ def no_menu(phone_row_id: UUID) -> tuple[MenuDefinition, UUID] | PublishedMenu |
 
 
 def no_catalog(phone_row_id: UUID) -> Sequence[CatalogItem]:
-    """The default until WA-15 wires `brand_products`: an empty catalog."""
+    """The offline default: an empty catalog (production passes
+    `whatsapp.catalog.load_catalog_for_phone`, WA-15)."""
     return ()
 
 
