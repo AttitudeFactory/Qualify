@@ -395,7 +395,11 @@ class AuthState(rx.State):
             from .stories_state import StoriesState
             from .trending_state import TrendingState
             from .voice_lab import VoiceLabState
+            from .whatsapp_campaigns_state import WhatsAppCampaignsState
+            from .whatsapp_contacts_state import WhatsAppContactsState
+            from .whatsapp_metrics_state import WhatsAppMetricsState
             from .whatsapp_state import WhatsAppState
+            from .whatsapp_templates_state import WhatsAppTemplatesState
 
             for state_cls in (
                 ConnectionsState,
@@ -436,6 +440,11 @@ class AuthState(rx.State):
                 CatalogState,
                 # WA-12: the tenant's WhatsApp numbers, business profile and QR codes
                 WhatsAppState,
+                # WA-18: templates, opt-ins, campaigns and the Conexión metrics block
+                WhatsAppTemplatesState,
+                WhatsAppContactsState,
+                WhatsAppCampaignsState,
+                WhatsAppMetricsState,
             ):
                 substate = await self.get_state(state_cls)
                 substate.reset()

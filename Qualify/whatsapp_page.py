@@ -37,9 +37,13 @@ from .ui import (
     tag,
 )
 from .ui import tokens as T
+from .whatsapp_metrics_block import metrics_block
 from .whatsapp_state import WhatsAppState
+from .whatsapp_tab_campaigns import campaigns_tab
 from .whatsapp_tab_chats import chats_tab
+from .whatsapp_tab_contacts import contacts_tab
 from .whatsapp_tab_menu import menu_tab
+from .whatsapp_tab_templates import templates_tab
 from .whatsapp_vm import (
     MAX_ABOUT_CHARS,
     MAX_ADDRESS_CHARS,
@@ -48,11 +52,14 @@ from .whatsapp_vm import (
     MAX_QR_MESSAGE_CHARS,
     MAX_WEBSITE_CHARS,
     QR_CHANNELS,
+    TAB_CAMPAIGNS,
     TAB_CHATS,
     TAB_CONNECTION,
+    TAB_CONTACTS,
     TAB_MENU,
     TAB_PROFILE,
     TAB_QR,
+    TAB_TEMPLATES,
     TABS,
     VERTICALS,
     QrCodeVM,
@@ -157,6 +164,9 @@ def tab_body() -> rx.Component:
             (TAB_PROFILE, profile_tab()),
             (TAB_QR, qr_tab()),
             (TAB_MENU, menu_tab()),
+            (TAB_TEMPLATES, templates_tab()),
+            (TAB_CONTACTS, contacts_tab()),
+            (TAB_CAMPAIGNS, campaigns_tab()),
             connection_tab(),
         ),
         key=WhatsAppState.selected_connection_id,
@@ -292,6 +302,7 @@ def connection_tab() -> rx.Component:
             size="1",
             color=T.TEXT_FAINT,
         ),
+        metrics_block(),
         spacing="4",
         width="100%",
         align_items="start",

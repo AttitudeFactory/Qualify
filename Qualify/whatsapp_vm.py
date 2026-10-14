@@ -35,6 +35,10 @@ TAB_CONNECTION = "conexion"
 TAB_PROFILE = "perfil"
 TAB_QR = "qr"
 TAB_MENU = "menu"
+# WA-18 (QUA-217/218/219): own files `whatsapp_tab_templates.py`, `_contacts.py`, `_campaigns.py`.
+TAB_TEMPLATES = "plantillas"
+TAB_CONTACTS = "contactos"
+TAB_CAMPAIGNS = "campanas"
 
 TABS: tuple[tuple[str, str], ...] = (
     (TAB_CHATS, "Chats"),
@@ -42,6 +46,9 @@ TABS: tuple[tuple[str, str], ...] = (
     (TAB_PROFILE, "Perfil"),
     (TAB_QR, "QR"),
     (TAB_MENU, "Menú"),
+    (TAB_TEMPLATES, "Plantillas"),
+    (TAB_CONTACTS, "Contactos"),
+    (TAB_CAMPAIGNS, "Campañas"),
 )
 TAB_KEYS: frozenset[str] = frozenset(key for key, _label in TABS)
 
