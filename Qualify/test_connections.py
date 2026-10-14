@@ -151,7 +151,7 @@ def test_ui_copy_covers_every_capability_and_scope() -> None:
 
 
 def test_using_the_real_assessment_not_a_stub() -> None:
-    assert ASSESSMENT_VERSION == "perm-capability-v2"
+    assert ASSESSMENT_VERSION == "perm-capability-v3"
 
 
 def test_matrix_pessimistic_read_analyze_require_manage_comments() -> None:
