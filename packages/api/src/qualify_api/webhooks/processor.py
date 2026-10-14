@@ -55,6 +55,7 @@ DEFAULT_BATCH = 50
 
 TenantResolver = Callable[..., TenantResolution]
 MentionIngestor = Callable[..., Awaitable[UUID | None]]
+MentionAnalyzer = Callable[..., None]
 
 
 @dataclass(frozen=True)
@@ -91,7 +92,15 @@ class ProcessReport:
     lost: int = 0  # settled by someone else meanwhile (this worker's lock went stale)
 
 
-def mentions_handler(*, resolve: TenantResolver, ingest: MentionIngestor) -> Handler:
+def mentions_handler(
+    *,
+    resolve: TenantResolver,
+    ingest: MentionIngestor,
+    analyze: MentionAnalyzer | None = None,
+) -> Handler:
+    """`analyze` (QUA-152) runs after the mention is persisted. Its result and any error
+    it raises are ignored: the outcome is decided before it runs and never changes."""
+
     async def handle(event: ClaimedEvent) -> Outcome:
         try:
             value = MentionsChangeValue.model_validate(event.value or {})
@@ -141,6 +150,18 @@ def mentions_handler(*, resolve: TenantResolver, ingest: MentionIngestor) -> Han
             value.comment_id,
             mention_id,
         )
+        if analyze is not None:
+            try:
+                # Sync model call — off the event loop.
+                await asyncio.to_thread(
+                    analyze, tenant_id=resolution.tenant_id, mention_id=mention_id
+                )
+            except Exception as exc:  # noqa: BLE001 — never changes the outcome below
+                logger.warning(
+                    "mentions webhook: mention_id=%s sentiment skipped (%s)",
+                    mention_id,
+                    type(exc).__name__,
+                )
         return Outcome(STATUS_PROCESSED)
 
     return handle
@@ -209,14 +230,21 @@ class Processor:
 def production_processor(*, worker_id: str) -> Processor:
     """The real queue (`qualify_webhook_worker`) and the real mentions pipeline. Imported
     lazily so building a processor for tests never pulls the Meta/credential stack."""
-    from qualify_api.mentions.composition import ingest_mention  # noqa: PLC0415
+    from qualify_api.mentions.composition import (  # noqa: PLC0415
+        analyze_mention_after_ingest,
+        ingest_mention,
+    )
     from qualify_api.mentions.resolve import resolve_external_account  # noqa: PLC0415
     from qualify_api.webhooks.repository import WebhookQueue  # noqa: PLC0415
 
     return Processor(
         queue=WebhookQueue(),
         handlers={
-            "mentions": mentions_handler(resolve=resolve_external_account, ingest=ingest_mention)
+            "mentions": mentions_handler(
+                resolve=resolve_external_account,
+                ingest=ingest_mention,
+                analyze=analyze_mention_after_ingest,
+            )
         },
         worker_id=worker_id,
     )

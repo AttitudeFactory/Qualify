@@ -466,7 +466,7 @@ def trending_card() -> rx.Component:
                 align="center",
             ),
             rx.divider(),
-            section("Audio en tendencia (Meta)", _trend_audio_section()),
+            section("Audio en tendencia", _trend_audio_section()),
             rx.divider(),
             section("Contenido en tendencia", _trending_discovery_section()),
             spacing="4",

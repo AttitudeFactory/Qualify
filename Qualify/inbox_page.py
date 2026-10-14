@@ -247,8 +247,8 @@ def _card_skeleton() -> rx.Component:
 def _no_connections_state() -> rx.Component:
     return empty_state(
         "link-2-off",
-        "No hay cuentas de Instagram listas para monitorear",
-        "Conecta una cuenta de Instagram con el permiso de comentarios en "
+        "No hay cuentas listas para monitorear",
+        "Conecta una cuenta con el permiso de comentarios en "
         "Conexiones para elegir qué contenido monitorear.",
         action=rx.link(
             rx.button(rx.icon("link", size=16), "Ir a Conexiones", size="3"),
@@ -1108,7 +1108,7 @@ def _replies_section() -> rx.Component:
         description=(
             "Respuestas ya redactadas para comentarios positivos en contenido propio. "
             "Nada se envía sin que lo apruebes o edites primero — el borrador nunca "
-            "llega a Instagram por su cuenta."
+            "se publica por su cuenta."
         ),
         actions=[_refresh_drafts_button(), _generate_drafts_button()],
     )
@@ -1116,7 +1116,7 @@ def _replies_section() -> rx.Component:
 
 def inbox_topbar() -> rx.Component:
     return page_header(
-        "Contenido de Instagram",
+        "Contenido",
         "Reels y publicaciones de las últimas 2 semanas — elige cuáles monitorear",
         rx.cond(InboxState.has_connections, _connection_selector(), rx.fragment()),
     )

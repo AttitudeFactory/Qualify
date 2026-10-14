@@ -11,6 +11,9 @@ NOT deployed: no compose service or profile starts this. It runs only when someo
 starts it, against whatever database `QUALIFY_WEBHOOK_WORKER_DSN` names (by default the
 local development `qualify`).
 
+Loop mode also sweeps mention sentiment still pending, once at start and then every
+`SENTIMENT_SWEEP_EVERY` (QUA-152; each mention is normally analyzed right after ingest).
+
 Loop mode also runs the age purge for real, once at start and then every `PURGE_EVERY` —
 that is what keeps "29 days + at most 24 h" ≤ 30 days (QUA-127). It deletes only
 settled/failed changes older than `RETENTION`, never `pending`/`processing`.
@@ -42,6 +45,9 @@ logger = logging.getLogger("qualify_api.webhooks.worker")
 DEFAULT_INTERVAL_SECONDS = 30
 MIN_INTERVAL_SECONDS = 5
 PURGE_EVERY = timedelta(hours=24)
+# QUA-152: how often the loop re-tries mention sentiment still pending. Each mention is
+# normally analyzed right after ingest; the sweep catches failures and model outages.
+SENTIMENT_SWEEP_EVERY = timedelta(minutes=10)
 
 
 def _load_dotenv() -> None:
@@ -95,16 +101,40 @@ def _auto_purge(queue: WebhookQueue) -> None:
         logger.exception("webhooks.purge failed")
 
 
+async def _sentiment_sweep() -> None:
+    """QUA-152: analyze mentions still pending (never analyzed, or failed below the
+    attempt limit). The sweep itself never raises; this guard is belt and braces."""
+    from qualify_api.mentions.composition import (  # noqa: PLC0415
+        sweep_pending_mention_sentiment,
+    )
+
+    try:
+        report = await asyncio.to_thread(sweep_pending_mention_sentiment)
+        logger.info(
+            "mentions.sentiment_sweep tenants=%d new=%d failed=%d tenants_errored=%d",
+            report.tenants,
+            report.new_results,
+            report.failed,
+            report.tenants_errored,
+        )
+    except Exception:  # noqa: BLE001 — a failed sweep must not stop processing
+        logger.exception("mentions.sentiment_sweep failed")
+
+
 async def _run_loop(*, interval: int, limit: int) -> None:
     processor = production_processor(worker_id=worker_id())
     queue = WebhookQueue()
     next_purge = time.monotonic()
+    next_sweep = time.monotonic()
     logger.info("webhooks.worker started interval=%ss limit=%d", interval, limit)
     while True:
         started = time.monotonic()
         if started >= next_purge:
             _auto_purge(queue)
             next_purge = started + PURGE_EVERY.total_seconds()
+        if started >= next_sweep:
+            await _sentiment_sweep()
+            next_sweep = started + SENTIMENT_SWEEP_EVERY.total_seconds()
         try:
             report = await processor.run_once(limit=limit)
             if report.claimed:

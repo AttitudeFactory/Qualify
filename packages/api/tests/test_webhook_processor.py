@@ -154,6 +154,67 @@ async def test_resolved_but_not_persisted_is_dead_and_never_reads_as_success(
     assert "mentions webhook: resolved tenant=" not in caplog.text
 
 
+class Analyzer:
+    """Fake after-ingest sentiment step (QUA-152)."""
+
+    def __init__(self, *, raises: Exception | None = None) -> None:
+        self.calls: list[tuple[UUID, UUID]] = []
+        self._raises = raises
+
+    def __call__(self, *, tenant_id: UUID, mention_id: UUID) -> None:
+        self.calls.append((tenant_id, mention_id))
+        if self._raises is not None:
+            raise self._raises
+
+
+def _processor_with(pipeline: Pipeline, analyzer: Analyzer, queue: FakeQueue) -> Processor:
+    handler = mentions_handler(resolve=pipeline.resolve, ingest=pipeline.ingest, analyze=analyzer)
+    return Processor(queue=queue, handlers={"mentions": handler}, worker_id="w1", clock=lambda: NOW)
+
+
+async def test_a_persisted_mention_is_analyzed_after_ingest() -> None:
+    pipeline = Pipeline()
+    pipeline.resolutions["111"] = RESOLVED
+    analyzer = Analyzer()
+    event = _event()
+    queue = FakeQueue([event])
+
+    await _processor_with(pipeline, analyzer, queue).run_once()
+
+    assert analyzer.calls == [(TENANT, MENTION)]
+    assert queue.settled[event.id] == ("processed", None)
+
+
+async def test_a_sentiment_failure_never_changes_the_outcome() -> None:
+    pipeline = Pipeline()
+    pipeline.resolutions["111"] = RESOLVED
+    analyzer = Analyzer(raises=RuntimeError("model exploded"))
+    event = _event()
+    queue = FakeQueue([event])
+
+    report = await _processor_with(pipeline, analyzer, queue).run_once()
+
+    assert analyzer.calls == [(TENANT, MENTION)]
+    assert queue.settled[event.id] == ("processed", None)
+    assert queue.failed == {}
+    assert report.outcomes == {"processed": 1}
+
+
+async def test_nothing_is_analyzed_when_nothing_was_persisted() -> None:
+    pipeline = Pipeline(ingest_returns=None)
+    pipeline.resolutions["111"] = RESOLVED
+    analyzer = Analyzer()
+    orphan = _event(entry="999")
+    unpersisted = _event()
+    queue = FakeQueue([orphan, unpersisted])
+
+    await _processor_with(pipeline, analyzer, queue).run_once()
+
+    assert analyzer.calls == []
+    assert queue.settled[orphan.id] == ("orphan", None)
+    assert queue.settled[unpersisted.id] == ("dead", "resolved_not_persisted")
+
+
 async def test_an_off_contract_mentions_value_is_dead_without_resolving() -> None:
     pipeline = Pipeline()
     event = _event(value={"no_media_id": True})

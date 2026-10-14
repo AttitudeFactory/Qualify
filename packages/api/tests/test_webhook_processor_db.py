@@ -98,6 +98,11 @@ class FakeContentClient:
             username="fan",
         )
 
+    async def get_mentioned_permalink(
+        self, *, ig_user_id: str, media_id: str, comment_id: str | None
+    ) -> str | None:
+        return None
+
 
 @pytest.fixture
 def fake_meta(monkeypatch: pytest.MonkeyPatch) -> FakeContentClient:
