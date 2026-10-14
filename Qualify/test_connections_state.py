@@ -112,3 +112,62 @@ def test_check_health_now_never_touches_the_connections_list_directly() -> None:
     source = inspect.getsource(ConnectionsState.check_health_now.fn)
     assert "self.connections" not in source
     assert "self.is_loading" not in source
+
+
+# --------------------------------------------------------------------------------------
+# QUA-202: guided connection — structural pins (same technique as above)
+# --------------------------------------------------------------------------------------
+
+
+def test_retry_connect_takes_rerequest_from_the_guidance_on_screen() -> None:
+    """«Volver a conectar» must reuse the exact flow of «Conectar cuenta» and differ ONLY
+    in `rerequest`, read from the guidance — a hardcoded True would re-prompt for every
+    permission on a plain `link_required` retry; a hardcoded False would leave the
+    `page_access_required` loop QUA-202 exists to close."""
+    retry = inspect.getsource(ConnectionsState.retry_connect.fn)
+    assert "rerequest = self.guidance_rerequest" in retry
+    assert "self._launch_connect(rerequest=rerequest)" in retry
+    first = inspect.getsource(ConnectionsState.start_connect_flow.fn)
+    assert "self._launch_connect(rerequest=False)" in first
+    launch = inspect.getsource(ConnectionsState._launch_connect)
+    assert "begin_connect, resolved_tenant, rerequest=rerequest" in launch
+
+
+def test_read_connect_result_replaces_the_notice_with_the_panel_for_dead_ends() -> None:
+    state = ConnectionsState()
+    state.apply_connect_result({"connect": "link_required", "pages": "2", "linked": "0"})
+    assert state.guidance_code == "link_required"
+    assert state.guidance_rerequest is False
+    assert (state.guidance_pages, state.guidance_linked) == (2, 0)
+    assert state.connect_notice == ""  # the panel replaces the one-line notice
+
+    state.apply_connect_result({"connect": "page_access_required", "pages": "x"})
+    assert state.guidance_rerequest is True
+    assert (state.guidance_pages, state.guidance_linked) == (-1, -1)
+
+    state.apply_connect_result({"connect": "active"})
+    assert state.guidance_code == "" and state.guidance_steps == []
+    assert state.connect_notice != "" and state.connect_notice_tone == "ok"
+
+
+@pytest.mark.asyncio
+async def test_submit_support_refuses_without_an_email_and_never_double_files() -> None:
+    state = ConnectionsState()
+    state.support_email = "sin-arroba"
+    await ConnectionsState.submit_support.fn(state)
+    assert state.support_error and state.support_sending is False
+
+    state.support_sending = True
+    state.support_error = ""
+    await ConnectionsState.submit_support.fn(state)
+    assert state.support_error == ""  # the guard returned before touching anything
+
+
+def test_submit_support_attaches_only_the_outcome_and_counts() -> None:
+    """The context that reaches the ticket is the outcome code and the two counts —
+    exactly what the callback put in the URL — never a connection id or a username."""
+    source = inspect.getsource(ConnectionsState.submit_support.fn)
+    assert 'context["outcome"] = self.guidance_code' in source
+    assert 'context["pages"] = self.guidance_pages' in source
+    assert 'context["linked"] = self.guidance_linked' in source
+    assert "external_username" not in source and "connection_id" not in source

@@ -32,6 +32,7 @@ from qualify_api.connections import (
     start_connect,
 )
 from qualify_api.connections.models import SocialConnection
+from qualify_api.support import SupportTicket, create_support_request
 from qualify_api.tenancy.models import Brand, TenantMember, User
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
@@ -185,12 +186,15 @@ def acting_user_id(tenant_id: UUID) -> UUID | None:
         return session.scalar(select(User.id).order_by(User.created_at))
 
 
-def begin_connect(tenant_id: UUID) -> str:
+def begin_connect(tenant_id: UUID, *, rerequest: bool = False) -> str:
     """Start the C-04 OAuth flow: returns the Meta authorization URL to redirect to.
 
     `brand_id=None` on purpose: Sprint 1's screen has no brand picker, and the
     repository treats a null brand on a grant as "leave what is there" — so a reconnect
     preserves the brand the connection already had instead of clearing it.
+
+    `rerequest` (QUA-202) is the retry after `page_access_required`: Meta shows the Page
+    picker again instead of silently skipping what the operator left unticked last time.
 
     Blocking (Redis, plus Postgres for the actor lookup) — call it off the event loop.
     Raises `NoActingUser` when the tenant has nobody to attribute the grant to.
@@ -198,7 +202,37 @@ def begin_connect(tenant_id: UUID) -> str:
     user_id = acting_user_id(tenant_id)
     if user_id is None:
         raise NoActingUser(f"tenant {tenant_id} has no user to attribute the grant to")
-    return start_connect(tenant_id=tenant_id, brand_id=None, user_id=user_id)
+    return start_connect(tenant_id=tenant_id, brand_id=None, user_id=user_id, rerequest=rerequest)
+
+
+def request_support(
+    tenant_id: UUID,
+    *,
+    contact_email: str,
+    contact_whatsapp: str,
+    message: str,
+    context: dict[str, str | int],
+) -> SupportTicket:
+    """QUA-202: "Pedir ayuda 1:1" from the connections screen — a ticket the tenant owns
+    plus a best-effort notification to the global support channel.
+
+    Thin adapter over `qualify_api.support.create_support_request`, same pattern as
+    `disconnect`/`begin_connect`. The topic is fixed here: this screen only ever asks for
+    help connecting accounts. `context` is what the screen knew about the last attempt
+    (the outcome code and the two counts) — the service refuses any other key, so no
+    identifier can be smuggled into a notification by a future caller.
+
+    Raises `InvalidSupportRequest` for input that cannot become a ticket (bad email).
+    Blocking (Postgres + one HTTP call) — callers on the event loop must run it off-thread.
+    """
+    return create_support_request(
+        tenant_id=tenant_id,
+        topic="connect_accounts",
+        contact_email=contact_email,
+        contact_whatsapp=contact_whatsapp,
+        message=message,
+        context=context,
+    )
 
 
 def check_health(tenant_id: UUID, connection_id: UUID) -> bool:

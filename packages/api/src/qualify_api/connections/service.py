@@ -157,12 +157,19 @@ class ConnectService:
         self._verifier = verifier
         self._publisher = publisher
 
-    def start_connect(self, *, tenant_id: UUID, brand_id: UUID | None, user_id: UUID) -> str:
-        """Register a one-shot `state` and return the authorization URL to redirect to."""
+    def start_connect(
+        self, *, tenant_id: UUID, brand_id: UUID | None, user_id: UUID, rerequest: bool = False
+    ) -> str:
+        """Register a one-shot `state` and return the authorization URL to redirect to.
+
+        `rerequest` is the retry after `page_access_required` (QUA-202): it only changes
+        the dialog URL (`auth_type=rerequest`, see `HttpMetaOAuthClient.authorization_url`);
+        the `state`, its jti and the callback are exactly the same flow.
+        """
         payload = new_payload(tenant_id, brand_id, user_id)
         self._jti.issue(payload.jti)
         state = sign_state(payload, self._settings.state_secret)
-        return self._oauth.authorization_url(state=state)
+        return self._oauth.authorization_url(state=state, rerequest=rerequest)
 
     async def complete_connect(self, *, code: str, state: str) -> ConnectResult:
         """Finish the flow. Raises `InvalidState` (→ `invalid_state`) for a bad/replayed `state`."""

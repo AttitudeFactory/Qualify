@@ -34,7 +34,8 @@
         "8320"
       ],
       "env": {
-        "PYTHONPATH": "packages/api/src:packages/shared/src:packages/scraper/src:packages/creative/src:packages/models/src"
+        "PYTHONPATH": "packages/api/src:packages/shared/src:packages/scraper/src:packages/creative/src:packages/models/src",
+        "UV_PROJECT_ENVIRONMENT": "/Users/herwin/Desktop/Qualify/.venv"
       },
       "port": 3320,
       "autoPort": false

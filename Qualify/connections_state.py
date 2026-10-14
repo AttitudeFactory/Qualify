@@ -23,6 +23,7 @@ import reflex as rx
 from qualify_api.connections import ConnectionNotFound
 from qualify_api.connections.credential_reader import CredentialNotFound
 from qualify_api.connections.token_health import TokenHealthError
+from qualify_api.support import InvalidSupportRequest
 from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -33,11 +34,29 @@ from .connections_provider import (
     check_health,
     connections_for,
     disconnect,
+    request_support,
 )
-from .connections_vm import ConnectionVM, connect_result_notice
+from .connections_vm import ConnectionVM, connect_result_guidance, connect_result_notice
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
+
+# QUA-202: "Pedir ayuda 1:1" copy. Two success notices, because the two outcomes are not
+# the same promise: a ticket the channel accepted gets a callback window; a ticket saved
+# while no channel was configured (or the channel was down) is only "registrada".
+_SUPPORT_SENT = (
+    "Recibimos tu solicitud #{reference}. Una persona del equipo te escribirá a {email} "
+    "en menos de un día hábil."
+)
+_SUPPORT_SAVED = (
+    "Tu solicitud #{reference} quedó registrada. Te escribiremos a {email} en cuanto una "
+    "persona del equipo la tome."
+)
+_SUPPORT_EMAIL_REQUIRED = "Escribe un correo válido para que podamos contactarte."
+_SUPPORT_FAILED = (
+    "No pudimos registrar tu solicitud. Vuelve a intentarlo en un momento o escríbenos a "
+    "contacto@attitudefactory.co."
+)
 
 _LOAD_FAILED = "No se pudieron cargar las conexiones. Revisa la conexión con la base de datos."
 _NO_TENANTS = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
@@ -71,6 +90,30 @@ class ConnectionsState(rx.State):
     # QUA-123: the result of the OAuth round trip, read from `?connect=` on arrival.
     connect_notice: str = ""
     connect_notice_tone: str = "info"
+    # QUA-202: the guided panel for a dead-end result (`link_required` /
+    # `page_access_required`). `guidance_code == ""` means "no panel". The raw counts
+    # are kept as ints (-1 = not in the URL) only to attach them to a support request.
+    guidance_code: str = ""
+    guidance_title: str = ""
+    guidance_summary: str = ""
+    guidance_steps: list[str] = []
+    guidance_rerequest: bool = False
+    guidance_pages: int = -1
+    guidance_linked: int = -1
+    # QUA-202: the pre-flight checklist. Which requirement has its steps open, and
+    # whether the operator unfolded the whole card on a screen that folds it (one that
+    # already has connections — §6.5: configuration folds once configured).
+    expanded_requirement: str = ""
+    checklist_open: bool = False
+    # QUA-202: "Pedir ayuda 1:1" drawer + its form. Nothing here is credential-adjacent:
+    # a contact the operator typed and a free-text message.
+    support_open: bool = False
+    support_email: str = ""
+    support_whatsapp: str = ""
+    support_message: str = ""
+    support_sending: bool = False
+    support_error: str = ""
+    support_notice: str = ""
 
     @rx.var
     def has_connections(self) -> bool:
@@ -81,12 +124,143 @@ class ConnectionsState(rx.State):
         # Only after loading finishes, and never on top of an error.
         return not self.is_loading and not self.load_error and len(self.connections) == 0
 
+    @rx.var
+    def has_guidance(self) -> bool:
+        return self.guidance_code != ""
+
+    @rx.var
+    def show_checklist(self) -> bool:
+        """The checklist is open for whoever still has to connect (no connections, or a
+        failed attempt on screen) and folded to one line for a tenant whose accounts
+        already work — unless they unfold it."""
+        if self.is_loading or self.load_error:
+            return False
+        return self.checklist_open or not self.connections or self.guidance_code != ""
+
     @rx.event
     def read_connect_result(self) -> None:
-        """Turn the callback's `?connect=<code>` into a notice above the list. Runs on
-        every load, so arriving without the parameter clears a stale notice."""
-        code = str(self.router.url.query_parameters.get("connect", "") or "")
-        self.connect_notice, self.connect_notice_tone = connect_result_notice(code)
+        """Turn the callback's `?connect=<code>` into a notice above the list — or, for
+        the two dead ends, into the guided panel (QUA-202) that replaces the notice.
+        Runs on every load, so arriving without the parameter clears stale state."""
+        self.apply_connect_result(dict(self.router.url.query_parameters))
+
+    def apply_connect_result(self, params: dict[str, object]) -> None:
+        """The part of `read_connect_result` that does not need a live router — split so
+        it can be exercised without an `EventContext` (see `test_connections_state.py`)."""
+        code = str(params.get("connect", "") or "")
+        pages = str(params.get("pages", "") or "")
+        linked = str(params.get("linked", "") or "")
+        guidance = connect_result_guidance(code, pages, linked)
+        self.guidance_code = guidance.code
+        self.guidance_title = guidance.title
+        self.guidance_summary = guidance.summary
+        self.guidance_steps = list(guidance.steps)
+        self.guidance_rerequest = guidance.rerequest
+        self.guidance_pages = int(pages) if pages.isdigit() and len(pages) <= 4 else -1
+        self.guidance_linked = int(linked) if linked.isdigit() and len(linked) <= 4 else -1
+        if guidance.code:
+            self.connect_notice, self.connect_notice_tone = "", "info"
+        else:
+            self.connect_notice, self.connect_notice_tone = connect_result_notice(code)
+        if code:
+            # Arriving back from Meta: whatever a support request said earlier in this
+            # session is stale next to a fresh result.
+            self.support_notice = ""
+
+    @rx.event
+    def toggle_requirement(self, key: str) -> None:
+        self.expanded_requirement = "" if self.expanded_requirement == key else key
+
+    @rx.event
+    def toggle_checklist(self) -> None:
+        self.checklist_open = not self.checklist_open
+
+    @rx.event
+    async def open_support(self) -> None:
+        """Open the "Pedir ayuda 1:1" drawer with the session's email already in place —
+        the operator should only have to press «Enviar»."""
+        auth = await self.get_state(AuthState)
+        if not self.support_email:
+            self.support_email = auth.user_email
+        self.support_error = ""
+        self.support_notice = ""
+        self.support_open = True
+
+    @rx.event
+    def set_support_open(self, open: bool) -> None:
+        self.support_open = open
+
+    @rx.event
+    def set_support_email(self, value: str) -> None:
+        self.support_email = value
+
+    @rx.event
+    def set_support_whatsapp(self, value: str) -> None:
+        self.support_whatsapp = value
+
+    @rx.event
+    def set_support_message(self, value: str) -> None:
+        self.support_message = value
+
+    @rx.event(background=True)
+    async def submit_support(self) -> None:
+        """Create the support ticket (QUA-202). The row is saved before the channel is
+        told, so the notice is honest about which of the two happened."""
+        async with self:
+            if self.support_sending:
+                return  # a double-click must not file two tickets
+            if "@" not in self.support_email:
+                self.support_error = _SUPPORT_EMAIL_REQUIRED
+                return
+            self.support_sending = True
+            self.support_error = ""
+            auth = await self.get_state(AuthState)
+            session_tenant_id = auth.session_tenant_id
+            email = self.support_email.strip()
+            whatsapp = self.support_whatsapp
+            message = self.support_message
+            context: dict[str, str | int] = {"screen": "connections"}
+            if self.guidance_code:
+                context["outcome"] = self.guidance_code
+            if self.guidance_pages >= 0:
+                context["pages"] = self.guidance_pages
+            if self.guidance_linked >= 0:
+                context["linked"] = self.guidance_linked
+
+        resolved_tenant = tenant_uuid(session_tenant_id)
+        if resolved_tenant is None:
+            async with self:
+                self.support_sending = False
+                self.support_error = _NO_TENANTS
+            return
+
+        try:
+            ticket = await asyncio.to_thread(
+                request_support,
+                resolved_tenant,
+                contact_email=email,
+                contact_whatsapp=whatsapp,
+                message=message,
+                context=context,
+            )
+        except InvalidSupportRequest:
+            async with self:
+                self.support_sending = False
+                self.support_error = _SUPPORT_EMAIL_REQUIRED
+            return
+        except SQLAlchemyError as exc:
+            logger.error("support request failed: %s", type(exc).__name__)
+            async with self:
+                self.support_sending = False
+                self.support_error = _SUPPORT_FAILED
+            return
+
+        template = _SUPPORT_SENT if ticket.notified else _SUPPORT_SAVED
+        async with self:
+            self.support_sending = False
+            self.support_open = False
+            self.support_message = ""
+            self.support_notice = template.format(reference=ticket.reference, email=email)
 
     @rx.event(background=True)
     async def load_connections(self) -> None:
@@ -131,11 +305,27 @@ class ConnectionsState(rx.State):
         call registers a one-shot `state` jti in Redis, so it is produced at the moment
         the operator actually clicks. Blocking (Redis + Postgres), hence off-thread.
         """
+        async for event in self._launch_connect(rerequest=False):
+            yield event
+
+    @rx.event(background=True)
+    async def retry_connect(self) -> AsyncIterator[rx.event.EventSpec]:
+        """«Volver a conectar» from the guided panel (QUA-202). Same flow as
+        `start_connect_flow`; the only difference is `rerequest`, taken from the
+        guidance on screen: after `page_access_required` Meta must show the Page picker
+        again (`auth_type=rerequest`), after `link_required` a plain retry is right."""
+        async with self:
+            rerequest = self.guidance_rerequest
+        async for event in self._launch_connect(rerequest=rerequest):
+            yield event
+
+    async def _launch_connect(self, *, rerequest: bool) -> AsyncIterator[rx.event.EventSpec]:
         async with self:
             auth = await self.get_state(AuthState)
             session_tenant_id = auth.session_tenant_id
             self.action_error = ""
             self.connect_notice = ""
+            self.support_notice = ""
 
         resolved_tenant = tenant_uuid(session_tenant_id)
         if resolved_tenant is None:
@@ -144,7 +334,9 @@ class ConnectionsState(rx.State):
             return
 
         try:
-            authorization_url = await asyncio.to_thread(begin_connect, resolved_tenant)
+            authorization_url = await asyncio.to_thread(
+                begin_connect, resolved_tenant, rerequest=rerequest
+            )
         except NoActingUser:
             async with self:
                 self.action_error = _NO_ACTING_USER
