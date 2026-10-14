@@ -63,6 +63,10 @@ CAPABILITY_LABELS: dict[Capability, str] = {
     Capability.REPLY_COMMENTS: "Responder comentarios",
     Capability.MANAGE_DMS: "Bandeja de mensajes directos",
     Capability.READ_INSIGHTS: "Métricas de la cuenta",
+    # WhatsApp (WA-05)
+    Capability.WA_SEND: "Enviar mensajes de WhatsApp",
+    Capability.WA_TEMPLATES: "Plantillas de mensajes",
+    Capability.WA_AUTOMATION: "Menú automático y bienvenida",
 }
 
 # Shown under a greyed-out capability. Each names the missing permission and what
@@ -90,6 +94,20 @@ CAPABILITY_DISABLED_REASONS: dict[Capability, str] = {
         "No concediste el permiso de métricas de la cuenta; las métricas no entran "
         "en el permiso básico."
     ),
+    # WhatsApp (WA-05): the "permission" here is on the system-user token the
+    # administrator generated in Meta Business Settings, not on a consent screen.
+    Capability.WA_SEND: (
+        "El acceso de WhatsApp no incluye los dos permisos necesarios para enviar "
+        "(mensajería y administración). Genera el acceso de nuevo con ambos."
+    ),
+    Capability.WA_TEMPLATES: (
+        "El acceso de WhatsApp no incluye el permiso de administración; sin él no se "
+        "pueden gestionar plantillas."
+    ),
+    Capability.WA_AUTOMATION: (
+        "El acceso de WhatsApp no incluye el permiso de administración; sin él no se "
+        "puede publicar el menú automático ni la bienvenida."
+    ),
 }
 
 # Chips rendered on a connection card for each granted scope family.
@@ -99,6 +117,9 @@ SCOPE_KEY_LABELS: dict[ScopeKey, str] = {
     ScopeKey.MANAGE_COMMENTS: "Comentarios",
     ScopeKey.MANAGE_MESSAGES: "Mensajes",
     ScopeKey.MANAGE_INSIGHTS: "Métricas",
+    # WhatsApp (WA-05)
+    ScopeKey.WA_MESSAGING: "WhatsApp: mensajería",
+    ScopeKey.WA_MANAGEMENT: "WhatsApp: administración",
 }
 
 # Scopes Meta grants as a side effect of completing the OAuth/Page-enumeration flow

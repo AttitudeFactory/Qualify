@@ -34,6 +34,7 @@ from qualify_api.connections import (
 from qualify_api.connections.models import SocialConnection
 from qualify_api.support import SupportTicket, create_support_request
 from qualify_api.tenancy.models import Brand, TenantMember, User
+from qualify_api.whatsapp.models import WhatsAppPhoneNumber
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
@@ -44,7 +45,7 @@ from .capabilities import (
     assess_capabilities,
     resolve_scope_keys,
 )
-from .connections_vm import ConnectionVM, build_connection_vm
+from .connections_vm import ConnectionVM, build_connection_vm, whatsapp_label
 
 _NO_BRAND_LABEL = "Sin marca"
 
@@ -117,20 +118,29 @@ def _scope_labels(granted_literals: list[str]) -> tuple[list[str], frozenset[Sco
     return labels, resolved
 
 
-def _to_vm(row: SocialConnection, brand_name: str | None) -> ConnectionVM:
+def _to_vm(
+    row: SocialConnection, brand_name: str | None, verified_name: str | None = None
+) -> ConnectionVM:
+    """`verified_name` is the WhatsApp number's Meta-verified business name from
+    `whatsapp_phone_numbers` (WA-05); None for every other platform. The capability list
+    is assessed for the row's OWN platform only — an Instagram card must not show the
+    WhatsApp capabilities as disabled, nor the reverse (platform is data on each rule)."""
     scope_labels, resolved = _scope_labels(row.granted_scopes)
     data_access_state, data_access_message = _data_access_warning(
         row.data_access_expires_at, now=datetime.now(UTC)
     )
+    label = row.external_username or row.external_account_id
+    if row.platform == "whatsapp":
+        label = whatsapp_label(label, verified_name)
     return build_connection_vm(
         connection_id=str(row.id),
         platform=row.platform,
         brand=brand_name or _NO_BRAND_LABEL,
-        external_username=row.external_username or row.external_account_id,
+        external_username=label,
         status=row.status,
         last_verified_at=_format_verified_at(row.last_verified_at),
         granted_scope_labels=scope_labels,
-        verdicts=assess_capabilities(resolved),
+        verdicts=assess_capabilities(resolved, platform=row.platform),
         last_health_checked_at=_format_health_checked_at(row.last_health_checked_at),
         data_access_state=data_access_state,
         data_access_message=data_access_message,
@@ -154,12 +164,21 @@ def connections_for(tenant_id: UUID) -> list[ConnectionVM]:
     """
     with tenant_session(tenant_id) as session:
         rows = session.execute(
-            select(SocialConnection, Brand.name)
+            select(SocialConnection, Brand.name, WhatsAppPhoneNumber.verified_name)
             .outerjoin(Brand, SocialConnection.brand_id == Brand.id)
+            # WA-05: the verified name lives on the phone row, one per connection at most
+            # (`phone_number_id` is UNIQUE and equals `external_account_id`). RLS on
+            # `whatsapp_phone_numbers` scopes this join exactly like the base table.
+            .outerjoin(
+                WhatsAppPhoneNumber, WhatsAppPhoneNumber.connection_id == SocialConnection.id
+            )
             .order_by(SocialConnection.connected_at.desc())
         ).all()
         # Built inside the session: the ORM rows are not usable once it closes.
-        return [_to_vm(connection, brand_name) for connection, brand_name in rows]
+        return [
+            _to_vm(connection, brand_name, verified_name)
+            for connection, brand_name, verified_name in rows
+        ]
 
 
 def acting_user_id(tenant_id: UUID) -> UUID | None:
