@@ -246,9 +246,9 @@ class Processor:
 
 
 def production_processor(*, worker_id: str) -> Processor:
-    """The real queue (`qualify_webhook_worker`), the real mentions pipeline and the real
-    WhatsApp inbound handler (WA-07). Imported lazily so building a processor for tests
-    never pulls the Meta/credential stack."""
+    """The real queue (`qualify_webhook_worker`), the real mentions pipeline, the real
+    WhatsApp inbound handler (WA-07) and the template webhooks (WA-18). Imported lazily
+    so building a processor for tests never pulls the Meta/credential stack."""
     from qualify_api.mentions.composition import (  # noqa: PLC0415
         analyze_mention_after_ingest,
         ingest_mention,
@@ -263,7 +263,14 @@ def production_processor(*, worker_id: str) -> Processor:
     from qualify_api.whatsapp.menus import load_published_menu_for_phone  # noqa: PLC0415
     from qualify_api.whatsapp.repository import PostgresWhatsAppInboxRepository  # noqa: PLC0415
     from qualify_api.whatsapp.resolve import resolve_phone_number  # noqa: PLC0415
+    from qualify_api.whatsapp.templates import (  # noqa: PLC0415
+        TEMPLATE_QUALITY_HANDLER_KEY,
+        TEMPLATE_STATUS_HANDLER_KEY,
+        production_template_handler,
+    )
 
+    # WA-18: one handler for both template fields, keyed by the envelope's WABA id.
+    template_handler = production_template_handler()
     return Processor(
         queue=WebhookQueue(),
         handlers={
@@ -279,6 +286,8 @@ def production_processor(*, worker_id: str) -> Processor:
                 menu_loader=load_published_menu_for_phone,
                 catalog_loader=load_catalog_for_phone,
             ),
+            TEMPLATE_STATUS_HANDLER_KEY: template_handler,
+            TEMPLATE_QUALITY_HANDLER_KEY: template_handler,
         },
         worker_id=worker_id,
     )

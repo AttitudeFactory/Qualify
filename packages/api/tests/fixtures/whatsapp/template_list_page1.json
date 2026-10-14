@@ -1,0 +1,36 @@
+{
+  "_fixture_note": "DOC-DERIVED, not recorded: shape read on 2026-10-14 from templates/template-management (GET /{WABA_ID}/message_templates: data[] + paging.cursors + paging.next). quality_score as {score} and rejected_reason are NOT in that page's examples — they are the node fields the parser accepts defensively. Ids are placeholders.",
+  "data": [
+    {
+      "name": "reservation_confirmation",
+      "parameter_format": "NAMED",
+      "components": [
+        {"type": "BODY", "text": "Hola {{first_name}}, tu reserva está confirmada."}
+      ],
+      "language": "es",
+      "status": "APPROVED",
+      "category": "UTILITY",
+      "id": "1387372356726668",
+      "quality_score": {"score": "GREEN", "date": 1728000000}
+    },
+    {
+      "name": "promo_viernes",
+      "components": [{"type": "BODY", "text": "2x1 este viernes"}],
+      "language": "es",
+      "status": "REJECTED",
+      "category": "MARKETING",
+      "id": "1304694804498707",
+      "rejected_reason": "PROMOTIONAL"
+    },
+    {
+      "name": "broken_row_without_status",
+      "language": "es",
+      "category": "MARKETING",
+      "id": "999"
+    }
+  ],
+  "paging": {
+    "cursors": {"before": "QVFIUbefore", "after": "QVFIUafter1"},
+    "next": "https://graph.facebook.com/v21.0/102290129340398/message_templates?after=QVFIUafter1"
+  }
+}

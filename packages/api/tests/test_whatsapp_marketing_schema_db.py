@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from dataclasses import replace
 from uuid import UUID, uuid4
 
 import pytest
@@ -21,6 +22,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.tenancy.models import Tenant, User
+from qualify_api.whatsapp.client import TemplateInfo
 from qualify_api.whatsapp.models import (
     WhatsAppCampaign,
     WhatsAppCampaignSend,
@@ -28,6 +30,13 @@ from qualify_api.whatsapp.models import (
     WhatsAppOutboxItem,
     WhatsAppPhoneNumber,
     WhatsAppTemplate,
+)
+from qualify_api.whatsapp.resolve import PhoneResolutionOutcome, resolve_waba
+from qualify_api.whatsapp.templates import (
+    PostgresTemplateRepository,
+    PostgresTemplateWebhookRepository,
+    TemplateAlreadyExists,
+    TemplateRecord,
 )
 
 pytestmark = pytest.mark.db
@@ -515,3 +524,67 @@ def test_rls_hides_another_tenants_rows(seeded) -> None:
             == []
         )
         assert session.get(WhatsAppTemplate, seeded["template"]) is None
+
+
+# --- templates: the Postgres repositories through the production doors (WA-18) --------
+
+
+def test_template_repository_round_trip_and_worker_webhook(seeded) -> None:
+    repo = PostgresTemplateRepository()
+    waba = str(seeded["waba"])
+    ref = repo.waba_for_connection(tenant_id=TENANT, connection_id=seeded["connection"])
+    assert ref is not None and (ref.waba_id, ref.phone_number_row_id) == (waba, seeded["phone"])
+
+    record = repo.insert(
+        TemplateRecord(
+            id=uuid4(),
+            tenant_id=TENANT,
+            waba_id=waba,
+            name="hola_es",
+            language="es",
+            category="utility",
+            status="PENDING",
+            meta_template_id="555",
+            components=[{"type": "BODY", "text": "Hola"}],
+        )
+    )
+    with pytest.raises(TemplateAlreadyExists):
+        repo.insert(replace(record, id=uuid4()))
+
+    # Sync: one refresh of the existing row, one new row.
+    assert not repo.upsert_from_meta(
+        tenant_id=TENANT,
+        waba_id=waba,
+        info=TemplateInfo(
+            id="555", name="hola_es", language="es", status="APPROVED", category="utility"
+        ),
+        phone_number_row_id=None,
+    )
+    assert repo.upsert_from_meta(
+        tenant_id=TENANT,
+        waba_id=waba,
+        info=TemplateInfo(
+            id="556", name="otra", language="es", status="PENDING", category="marketing"
+        ),
+        phone_number_row_id=None,
+    )
+    refreshed = repo.get(tenant_id=TENANT, template_id=record.id)
+    assert refreshed is not None and refreshed.status == "APPROVED"
+
+    # The worker: resolves the WABA, then updates only its granted columns.
+    resolution = resolve_waba(waba)
+    assert (resolution.outcome, resolution.tenant_id) == (PhoneResolutionOutcome.RESOLVED, TENANT)
+    assert resolve_waba(f"nope-{uuid4()}").outcome is PhoneResolutionOutcome.ORPHAN
+    worker = PostgresTemplateWebhookRepository()
+    keys = dict(tenant_id=TENANT, waba_id=waba, meta_template_id="555", name="x", language="x")
+    assert worker.apply_status(**keys, status="PAUSED", rejected_reason=None)
+    assert worker.apply_quality(**keys, quality="RED")
+    assert not worker.apply_status(
+        **{**keys, "tenant_id": OTHER_TENANT}, status="DISABLED", rejected_reason=None
+    )
+    after = repo.get(tenant_id=TENANT, template_id=record.id)
+    assert after is not None and (after.status, after.quality) == ("PAUSED", "RED")
+
+    assert repo.set_status_by_name(tenant_id=TENANT, waba_id=waba, name="otra", status="DELETED")
+    listed = {t.name: t.status for t in repo.list(tenant_id=TENANT, waba_id=waba)}
+    assert listed["otra"] == "DELETED"
