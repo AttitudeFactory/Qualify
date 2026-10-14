@@ -24,7 +24,17 @@ copy keeps its voseo on purpose (docs/design-system.md §7.1).
 import reflex as rx
 
 from . import vitrina_data as D
-from .ui import app_shell, card, demo_notice, page_body, page_header, stat_card, tag, tone_badge
+from .ui import (
+    app_shell,
+    card,
+    choice_card,
+    demo_notice,
+    page_body,
+    page_header,
+    stat_card,
+    tag,
+    tone_badge,
+)
 from .ui import tokens as T
 from .vitrina_state import (
     HuecoRow,
@@ -77,10 +87,9 @@ def _apto_badge(apto: rx.Var[str], label: rx.Var[str]) -> rx.Component:
 
 
 def _local_card(card_vm: LocalCard) -> rx.Component:
-    """A card that is a button (docs/design-system.md §8: nothing clickable is a bare
-    box): the card material plus the lift of an interactive card, `aria-pressed` on
-    the chosen one (`.q-pick-card`, assets/qualify-listen.css)."""
-    return rx.el.button(
+    """A card that is a choice (`ui.choice_card`, docs/design-system.md §8: nothing
+    clickable is a bare box): the card material, the accent ring on the chosen one."""
+    return choice_card(
         rx.vstack(
             rx.hstack(
                 rx.heading(card_vm.nombre, size="4", as_="h3"),
@@ -103,11 +112,8 @@ def _local_card(card_vm: LocalCard) -> rx.Component:
             align_items="start",
             width="100%",
         ),
-        type="button",
-        on_click=VitrinaState.seleccionar(card_vm.id),
-        aria_pressed=card_vm.seleccionado,
-        class_name="q-card q-lift q-pick-card",
-        padding="1rem 1.25rem",
+        selected=card_vm.seleccionado,
+        on_select=VitrinaState.seleccionar(card_vm.id),
     )
 
 

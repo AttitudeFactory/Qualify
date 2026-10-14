@@ -85,7 +85,11 @@ from .ui import (
     app_shell,
     callout,
     card,
+    choice_card,
+    choice_card_check,
+    dropzone,
     loading_spinner,
+    media_thumb,
     mono,
     page_body,
     page_header,
@@ -1048,10 +1052,10 @@ def _choice_card(
     icon in the same tinted-circle treatment `_step_icon` gives a whole step's own
     anchor icon, just smaller and inline.
 
-    Liquid Glass (lote E1): the button wears `.q-choice` — the card material, a 2px
-    accent ring when selected, a softer ring and the kit's lift under the pointer — so
-    no colour or shadow is written here."""
-    return rx.el.button(
+    Liquid Glass: it is `ui.choice_card` — the card material, a 2px accent ring when
+    selected, a softer ring and the kit's lift under the pointer — so no colour or
+    shadow is written here."""
+    return choice_card(
         rx.hstack(
             *(
                 [
@@ -1080,23 +1084,14 @@ def _choice_card(
             rx.spacer(),
             rx.cond(
                 selected,
-                rx.box(
-                    rx.icon("check", size=12),
-                    class_name="q-choice-check",
-                    width="1.15rem",
-                    height="1.15rem",
-                    min_width="1.15rem",
-                ),
+                choice_card_check(),
             ),
             width="100%",
             align="start",
             spacing="3",
         ),
-        on_click=on_click,
-        type="button",
-        # The material, the rings (selected / hovered) and the lift are `.q-choice`
-        # (`assets/qualify-brand.css`): the card material of the system on a button.
-        class_name=rx.cond(selected, "q-choice q-choice--on", "q-choice"),
+        selected=selected,
+        on_select=on_click,
     )
 
 
@@ -1146,12 +1141,7 @@ def _section_label(text: str) -> rx.Component:
 def _competitor_card(handle: str, role: str, blurb: str) -> rx.Component:
     return card(
         rx.hstack(
-            rx.box(
-                rx.icon("user-round", size=18),
-                class_name="q-brand-avatar",
-                width="2.5rem",
-                height="2.5rem",
-            ),
+            media_thumb("", size="2.5rem", round=True, icon="user-round", icon_size=18),
             rx.vstack(
                 rx.hstack(
                     mono(handle, size="2"),
@@ -1474,7 +1464,7 @@ def _logo_version_card(key: str, name: str, blurb: str) -> rx.Component:
     upload_id = f"brand_logo_{key}"
     staged = BrandWizardState.logo_versions.contains(key)
     return rx.vstack(
-        rx.upload(
+        dropzone(
             rx.vstack(
                 rx.cond(
                     staged,
@@ -1495,21 +1485,16 @@ def _logo_version_card(key: str, name: str, blurb: str) -> rx.Component:
                 spacing="1",
                 align="center",
                 width="100%",
-                class_name="q-dropzone",
-                padding="0.5rem",
             ),
-            id=upload_id,
+            upload_id=upload_id,
             accept=_LOGO_VERSION_ACCEPT,
             max_files=1,
             on_drop=BrandWizardState.handle_logo_version_upload(
                 rx.upload_files(upload_id=upload_id), key
             ),
-            # `rx.upload` paints its own dashed border unless told not to: the box
-            # above is the dropzone's look (`.q-dropzone`), the upload only its hit area
-            border="none",
-            padding="0",
+            variant="compact",
+            padding="0.5rem",
             width="100%",
-            cursor="pointer",
         ),
         rx.hstack(
             rx.text(name, size="2", weight="medium"),
@@ -1599,7 +1584,7 @@ def _add_extra_button() -> rx.Component:
     the dropzone on top — a skeleton of an element, since there is no example to show
     — and its name and description below. Drop or pick one or more images; each
     becomes its own tile before this one."""
-    return rx.upload(
+    return dropzone(
         rx.vstack(
             rx.vstack(
                 _add_extra_skeleton(),
@@ -1607,7 +1592,8 @@ def _add_extra_button() -> rx.Component:
                 spacing="1",
                 align="center",
                 width="100%",
-                class_name="q-dropzone",
+                # the look only: the whole tile (the `bare` dropzone) is the hit area
+                class_name="q-dropzone q-dropzone--compact",
                 padding="0.5rem",
             ),
             rx.text("Añadir más", size="2", weight="medium"),
@@ -1618,15 +1604,13 @@ def _add_extra_button() -> rx.Component:
             ),
             **_TILE_FRAME,
         ),
-        id=_EXTRA_UPLOAD_ID,
+        upload_id=_EXTRA_UPLOAD_ID,
         accept=_LOGO_VERSION_ACCEPT,
         max_files=_MAX_EXTRAS_PER_DROP,
         multiple=True,
         on_drop=BrandWizardState.handle_extra_upload(rx.upload_files(upload_id=_EXTRA_UPLOAD_ID)),
-        border="none",
-        padding="0",
+        variant="bare",
         width="100%",
-        cursor="pointer",
     )
 
 
@@ -1713,7 +1697,7 @@ def _font_card(key: str, name: str, blurb: str) -> rx.Component:
             radius=_CONTROL_RADIUS,
             aria_label="Nombre de la fuente",
         ),
-        rx.upload(
+        dropzone(
             rx.hstack(
                 rx.icon("upload", size=T.ICON_SM, color=T.TEXT_FAINT),
                 rx.text(
@@ -1732,18 +1716,15 @@ def _font_card(key: str, name: str, blurb: str) -> rx.Component:
                 spacing="2",
                 align="center",
                 width="100%",
-                class_name="q-dropzone",
-                padding="0.5rem",
             ),
-            id=upload_id,
+            upload_id=upload_id,
             accept=_FONT_ACCEPT,
             max_files=1,
             max_size=brand_fonts.MAX_FONT_BYTES,  # the server re-checks (`_stage_logo_file`)
             on_drop=BrandWizardState.handle_font_upload(rx.upload_files(upload_id=upload_id), key),
-            border="none",  # the hstack above is the dropzone's look (`.q-dropzone`)
-            padding="0",
+            variant="compact",
+            padding="0.5rem",
             width="100%",
-            cursor="pointer",
         ),
         **_TILE_FRAME,
     )
@@ -2565,12 +2546,7 @@ def _step_insights() -> rx.Component:
                 max_width="100%",
                 object_fit="contain",
             ),
-            rx.box(
-                rx.icon("image", size=28),
-                class_name="q-brand-avatar",
-                width="6rem",
-                height="6rem",
-            ),
+            media_thumb("", size="6rem", round=True, icon="image", icon_size=28),
         ),
         _competitors_section(),
     )
@@ -6703,57 +6679,33 @@ def _avatar(item: rx.Var[dict[str, str]], size: str, icon_size: int) -> rx.Compo
     `pointer-events: none` keep the browser from starting a native IMAGE drag when the
     operator grabs a deck card by its picture (that would swallow the card's own
     drag)."""
-    return rx.box(
-        rx.icon("user-round", size=icon_size),
-        rx.cond(
-            item["avatar_src"] != "",
-            rx.el.img(
-                src=_AVATAR_BASE + item["avatar_src"],
-                alt="",
-                position="absolute",
-                inset="0",
-                width="100%",
-                height="100%",
-                object_fit="cover",
-                border_radius="9999px",
-                pointer_events="none",
-                custom_attrs={
-                    "loading": "lazy",
-                    "referrerpolicy": "no-referrer",
-                    "draggable": "false",
-                },
-            ),
-        ),
-        class_name="q-brand-avatar",
-        width=size,
-        height=size,
-        min_width=size,
+    return media_thumb(
+        _AVATAR_BASE + item["avatar_src"],
+        has=item["avatar_src"] != "",
+        size=size,
+        round=True,
+        icon="user-round",
+        icon_size=icon_size,
+        pointer_events="none",
+        custom_attrs={
+            "loading": "lazy",
+            "referrerpolicy": "no-referrer",
+            "draggable": "false",
+        },
     )
 
 
 def _profile_avatar(size: str, icon_size: int) -> rx.Component:
     """The read account's own picture, through the same proxy and with the same
     icon-under-the-picture fallback as `_avatar` (`BrandConnectState.profile_avatar_src`)."""
-    return rx.box(
-        rx.icon("user", size=icon_size),
-        rx.cond(
-            BrandConnectState.profile_avatar_src != "",
-            rx.el.img(
-                src=_AVATAR_BASE + BrandConnectState.profile_avatar_src,
-                alt="",
-                position="absolute",
-                inset="0",
-                width="100%",
-                height="100%",
-                object_fit="cover",
-                border_radius="9999px",
-                custom_attrs={"referrerpolicy": "no-referrer", "draggable": "false"},
-            ),
-        ),
-        class_name="q-brand-avatar",
-        width=size,
-        height=size,
-        min_width=size,
+    return media_thumb(
+        _AVATAR_BASE + BrandConnectState.profile_avatar_src,
+        has=BrandConnectState.profile_avatar_src != "",
+        size=size,
+        round=True,
+        icon="user",
+        icon_size=icon_size,
+        custom_attrs={"referrerpolicy": "no-referrer", "draggable": "false"},
     )
 
 

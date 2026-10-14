@@ -15,11 +15,16 @@ from .ui import (
     app_shell,
     callout,
     card,
+    chat_bubble,
+    choice_card,
+    choice_card_check,
     demo_notice,
     drawer,
+    dropzone,
     empty_state,
     kv,
     loading_spinner,
+    media_thumb,
     mono,
     page_body,
     page_header,
@@ -865,6 +870,147 @@ def _pills() -> rx.Component:
 _DEMO_STEPS = ["Post", "Fecha y hora", "Cuentas", "Confirmar"]
 
 
+def _four() -> rx.Component:
+    """The four recipes promoted to primitives on 2026-10-09 (plan §0: repeated on ≥ 2
+    screens and present in the kit): choosing, uploading, showing, conversing."""
+    return rx.grid(
+        card(
+            rx.vstack(
+                rx.text("Elegir — choice_card", size="2", weight="medium"),
+                rx.text(
+                    "Un botón real con la tarjeta como cuerpo; anillo + check cuando está "
+                    "elegido, punteado cuando no se puede.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                choice_card(
+                    rx.hstack(
+                        rx.vstack(
+                            rx.text("Guion para creador real", size="2", weight="bold"),
+                            rx.text(
+                                "Una persona de tu marca lo graba.", size="1", color=T.TEXT_MUTED
+                            ),
+                            spacing="1",
+                            align_items="start",
+                        ),
+                        rx.spacer(),
+                        choice_card_check(),
+                        width="100%",
+                        align="start",
+                    ),
+                    selected=True,
+                ),
+                choice_card(
+                    rx.text("Imagen publicitaria", size="2", weight="bold"),
+                    rx.text("Un anuncio con tu producto.", size="1", color=T.TEXT_MUTED),
+                    selected=False,
+                ),
+                choice_card(
+                    rx.text("Con plantilla", size="2", weight="bold"),
+                    rx.text(
+                        "Próximamente: necesita fotos en el catálogo.", size="1", color=T.TEXT_MUTED
+                    ),
+                    selected=False,
+                    disabled=True,
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            )
+        ),
+        card(
+            rx.vstack(
+                rx.text("Subir — dropzone", size="2", weight="medium"),
+                rx.text(
+                    "zone (vacío), compact (en un formulario), tile (en una grilla), bare "
+                    "(un botón que abre el selector).",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                dropzone(
+                    rx.vstack(
+                        rx.icon("image-up", size=T.ICON_MD, color=T.TEXT_FAINT),
+                        rx.text("Arrastra tu foto o haz clic", size="1", color=T.TEXT_MUTED),
+                        align="center",
+                        spacing="1",
+                    ),
+                    upload_id="design_dz_compact",
+                    on_drop=None,
+                    variant="compact",
+                    width="100%",
+                ),
+                rx.hstack(
+                    dropzone(
+                        rx.icon("plus", size=T.ICON_MD, color=T.TEXT_FAINT),
+                        upload_id="design_dz_tile",
+                        on_drop=None,
+                        variant="tile",
+                        tile_size="5rem",
+                    ),
+                    dropzone(
+                        rx.button(rx.icon("upload", size=T.ICON_SM), "Subir brief", variant="soft"),
+                        upload_id="design_dz_bare",
+                        on_drop=None,
+                        variant="bare",
+                    ),
+                    spacing="3",
+                    align="center",
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            )
+        ),
+        card(
+            rx.vstack(
+                rx.text("Mostrar — media_thumb", size="2", weight="medium"),
+                rx.text(
+                    "La foto en el marco del sistema, o el marco con un icono cuando no hay; "
+                    "round=True es el avatar.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                rx.hstack(
+                    media_thumb("", size="72px", icon="film"),
+                    media_thumb("", size="56px", icon="image-off", icon_size=20),
+                    media_thumb("", size="2.5rem", round=True, icon="user-round", icon_size=18),
+                    media_thumb("/favicon.ico", size="2.5rem", round=True, alt="Qualify"),
+                    spacing="3",
+                    align="center",
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            )
+        ),
+        card(
+            rx.vstack(
+                rx.text("Conversar — chat_bubble", size="2", weight="medium"),
+                rx.text(
+                    "out = lo que decimos (acento); in = lo que dijeron.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                chat_bubble(
+                    rx.text("Hola, ¿tienen mesa para cuatro el viernes?", size="2"),
+                    direction="in",
+                    meta=rx.text("@laura · 19:02", size="1", color=T.TEXT_MUTED),
+                ),
+                chat_bubble(
+                    rx.text("¡Claro! Te reservamos a las 20:00. ¿A nombre de quién?", size="2"),
+                    direction="out",
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            )
+        ),
+        columns=rx.breakpoints(initial="1", lg="2"),
+        spacing="3",
+        width="100%",
+    )
+
+
 def _flow() -> rx.Component:
     """`stepper` + `drawer` (QUA-118): a flow with steps lives in a right-edge panel, not
     a centred dialog. Completed steps are clickable (back to fix), unreached ones are
@@ -934,6 +1080,13 @@ def _components_section() -> rx.Component:
         _buttons(),
         _forms(),
         card(_feedback()),
+        rx.text(
+            "Elegir, subir, mostrar, conversar (choice_card · dropzone · media_thumb · "
+            "chat_bubble — 2026-10-09)",
+            size="2",
+            weight="medium",
+        ),
+        _four(),
         rx.text("Flujo por pasos (stepper + drawer — QUA-118)", size="2", weight="medium"),
         _flow(),
         rx.text(

@@ -53,6 +53,7 @@ from .tenant import tenant_uuid
 from .ui import (
     callout,
     card,
+    dropzone,
     loading_spinner,
     progress_panel,
     removable_pill,
@@ -813,7 +814,7 @@ def _voice_lab_card() -> rx.Component:
                     _recorder(),
                     # Always mounted while there is no recording yet: a finished
                     # recording is handed to THIS dropzone (`assets/voice-recorder.js`).
-                    rx.upload(
+                    dropzone(
                         rx.vstack(
                             rx.icon("upload", size=T.ICON_MD, color=T.TEXT_FAINT),
                             rx.text(
@@ -824,23 +825,17 @@ def _voice_lab_card() -> rx.Component:
                             ),
                             spacing="1",
                             align="center",
-                            class_name="q-dropzone",
-                            padding="1rem",
                             width="100%",
                         ),
-                        id=VOICE_UPLOAD_ID,
+                        upload_id=VOICE_UPLOAD_ID,
                         accept=_AUDIO_ACCEPT,
                         max_files=1,
                         on_drop=VoiceLabState.handle_sample_upload(
                             rx.upload_files(upload_id=VOICE_UPLOAD_ID)
                         ),
-                        # `rx.upload` paints its own dashed border unless told not to:
-                        # the vstack above is the dropzone's look (`.q-dropzone`)
-                        border="none",
-                        padding="0",
+                        variant="compact",
                         width="100%",
-                        cursor="pointer",
-                        display=rx.cond(VoiceLabState.recording, "none", "block"),
+                        display=rx.cond(VoiceLabState.recording, "none", "flex"),
                     ),
                     spacing="2",
                     width="100%",

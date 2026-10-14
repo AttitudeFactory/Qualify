@@ -18,7 +18,7 @@ import reflex as rx
 
 from .publish_tips import tip_row, tips_card
 from .stories_state import _UPLOAD_ID, StoriesState
-from .ui import callout, card, loading_spinner, section
+from .ui import callout, card, dropzone, loading_spinner, section
 from .ui import tokens as T
 from .ui.image_preview import gallery_image_preview_capture_anchor
 from .ui.video_preview import (
@@ -163,7 +163,7 @@ def _pending_tile() -> rx.Component:
             class_name="q-pub-tile-x",
         ),
         class_name="q-pub-tile",
-        style={"--q-pub-tile-size": _TILE_SIZE},
+        style={"--q-dropzone-tile": _TILE_SIZE},
     )
 
 
@@ -186,11 +186,9 @@ def _empty_state_content() -> rx.Component:
 
 
 def _upload_widget(children: rx.Component, *, compact: bool) -> rx.Component:
-    # `rx.upload.root` is `rx.upload` minus three style defaults the `.q-dropzone`
-    # material sets itself (border, padding, text-align).
-    return rx.upload.root(
+    return dropzone(
         children,
-        id=_UPLOAD_ID,
+        upload_id=_UPLOAD_ID,
         accept={
             "video/mp4": [".mp4"],
             "video/quicktime": [".mov"],
@@ -203,8 +201,8 @@ def _upload_widget(children: rx.Component, *, compact: bool) -> rx.Component:
         on_drop_rejected=rx.toast.error(
             "Formato no permitido", description="Solo se aceptan archivos MP4, MOV o JPEG."
         ),
-        class_name="q-dropzone q-dropzone--tile" if compact else "q-dropzone",
-        style={"--q-pub-tile-size": _TILE_SIZE},
+        variant="tile" if compact else "zone",
+        tile_size=_TILE_SIZE,
     )
 
 

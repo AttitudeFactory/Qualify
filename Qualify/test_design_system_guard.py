@@ -16,6 +16,8 @@ Rules (founder, 2026-10-08; docs/plan-migracion-liquid-glass.md §3 D9):
   that are *data* (a palette read from a logo, a campaign's colour) are not style.
 * **Elevation and material.** `box_shadow=`, `backdrop_filter=` and `text_shadow=` are
   the system's to set (`ui.card`, `.q-*` classes, the Radix skin), never a page's.
+* **Uploads.** `rx.upload(...)` / `rx.upload.root(...)` only through `ui.dropzone` (the
+  styled widget paints an inline dashed border no class can override).
 
 Enforcement is per module: every page module is checked, except the ones still listed
 in `_PENDING` — the files the Liquid Glass batches (lotes A–E) have not migrated yet. A
@@ -44,6 +46,7 @@ _FORBIDDEN_RX_CALLS: dict[str, str] = {
     "skeleton": "ui.skeleton_card / ui.skeleton_rows (content loading)",
     "spinner": "ui.loading_spinner (work in progress)",
     "color": "ui.tokens (T.TEXT_MUTED, T.tone_color, T.platform_scale, ...)",
+    "upload": "ui.dropzone (the styled rx.upload paints an inline border no class overrides)",
 }
 
 # Keyword arguments a page may never pass to a component.
@@ -74,8 +77,10 @@ def _page_modules() -> list[Path]:
 
 
 def _rx_call_name(node: ast.Call) -> str | None:
-    """`rx.spinner(...)` -> "spinner"; anything else -> None."""
+    """`rx.spinner(...)` -> "spinner", `rx.upload.root(...)` -> "upload"; else None."""
     func = node.func
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Attribute):
+        func = func.value  # `rx.upload.root(...)`: the namespace is what matters
     if (
         isinstance(func, ast.Attribute)
         and isinstance(func.value, ast.Name)
