@@ -12,6 +12,7 @@ import reflex as rx
 from .connections_state import ConnectionsState
 from .connections_vm import (
     CONNECT_REQUIREMENTS,
+    WHATSAPP_RECONNECT_HINT,
     CapabilityVM,
     ConnectionVM,
     ConnectRequirementVM,
@@ -126,13 +127,29 @@ def _disabled_capability(cap: CapabilityVM) -> rx.Component:
     )
 
 
-def degraded_banner() -> rx.Component:
+def _whatsapp_reconnect_hint(tone: str) -> rx.Component:
+    """WA-05: the banner body for a WhatsApp card. No button — the Instagram
+    «Reconectar» starts the OAuth flow, which is the wrong door for a number connected
+    by an administrator with a system-user token (QUA-203 is the self-service story)."""
+    return callout(rx.text(WHATSAPP_RECONNECT_HINT, size="2"), tone)
+
+
+def degraded_banner(conn: ConnectionVM) -> rx.Component:
     """Actionable degraded state — a Reconnect BUTTON, not a decorative icon.
 
-    Takes no connection: reconnecting re-runs the C-04 authorization flow for the
-    tenant, and the grant that comes back is matched to the existing row by account,
-    not by an id the button carries.
+    The button carries no connection id: reconnecting re-runs the C-04 authorization
+    flow for the tenant, and the grant that comes back is matched to the existing row
+    by account. `conn` is read only for its platform (WA-05): a WhatsApp card gets the
+    administrative hint instead of the button.
     """
+    return rx.cond(
+        conn.platform == "whatsapp",
+        _whatsapp_reconnect_hint("warn"),
+        _instagram_degraded_banner(),
+    )
+
+
+def _instagram_degraded_banner() -> rx.Component:
     # The system's callout in the `warn` tone (card material in the tone's hairline).
     # The button is `soft` in the same tone: a card's own action, never the page's one
     # solid (P3) — several degraded cards would otherwise each claim it.
@@ -161,7 +178,15 @@ def degraded_banner() -> rx.Component:
     )
 
 
-def revoked_banner() -> rx.Component:
+def revoked_banner(conn: ConnectionVM) -> rx.Component:
+    return rx.cond(
+        conn.platform == "whatsapp",
+        _whatsapp_reconnect_hint("error"),
+        _instagram_revoked_banner(),
+    )
+
+
+def _instagram_revoked_banner() -> rx.Component:
     return callout(
         rx.hstack(
             rx.text(
@@ -275,8 +300,8 @@ def connection_card(conn: ConnectionVM) -> rx.Component:
             # same time as claiming the connection is `degraded`.
             _data_access_badge(conn.data_access_state, conn.data_access_message),
             # Actionable banners per state.
-            rx.cond(conn.status == "degraded", degraded_banner(), rx.fragment()),
-            rx.cond(conn.status == "revoked", revoked_banner(), rx.fragment()),
+            rx.cond(conn.status == "degraded", degraded_banner(conn), rx.fragment()),
+            rx.cond(conn.status == "revoked", revoked_banner(conn), rx.fragment()),
             # Granted scopes.
             rx.cond(
                 conn.granted_scopes.length() > 0,

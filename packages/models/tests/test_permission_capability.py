@@ -12,6 +12,8 @@ from __future__ import annotations
 from qualify_models.permission_capability import (
     ASSESSMENT_VERSION,
     CAPABILITY_RULES,
+    PLATFORM_INSTAGRAM,
+    PLATFORM_WHATSAPP,
     SCOPE_LITERALS,
     Capability,
     ScopeKey,
@@ -19,6 +21,21 @@ from qualify_models.permission_capability import (
     assessment_is_provisional,
     enabled_capabilities,
     resolve_scope_keys,
+)
+
+_IG_CAPABILITIES = frozenset(
+    {
+        Capability.CONNECT_ACCOUNT,
+        Capability.PUBLISH_CONTENT,
+        Capability.READ_COMMENTS,
+        Capability.ANALYZE_COMMENTS,
+        Capability.REPLY_COMMENTS,
+        Capability.MANAGE_DMS,
+        Capability.READ_INSIGHTS,
+    }
+)
+_WA_CAPABILITIES = frozenset(
+    {Capability.WA_SEND, Capability.WA_TEMPLATES, Capability.WA_AUTOMATION}
 )
 
 
@@ -30,10 +47,12 @@ def _verdict(granted: frozenset[ScopeKey]) -> dict[Capability, bool]:
 # --- structural totality -----------------------------------------------------
 
 
-def test_five_scope_keys() -> None:
-    """Finding A lives here: MANAGE_INSIGHTS is a first-class key, so five total."""
-    assert len(ScopeKey) == 5
+def test_seven_scope_keys() -> None:
+    """Finding A lives here: MANAGE_INSIGHTS is a first-class key (five Instagram
+    keys); WA-05 adds the two WhatsApp families, so seven total."""
+    assert len(ScopeKey) == 7
     assert ScopeKey.MANAGE_INSIGHTS in set(ScopeKey)
+    assert {ScopeKey.WA_MESSAGING, ScopeKey.WA_MANAGEMENT} <= set(ScopeKey)
     assert set(SCOPE_LITERALS) == set(ScopeKey), "every key must seed literals"
 
 
@@ -198,3 +217,88 @@ def test_full_grant_enables_everything() -> None:
     enabled = _verdict(frozenset(ScopeKey))
     assert enabled == {cap: True for cap in Capability}
     assert enabled_capabilities(assess_capabilities(frozenset(ScopeKey))) == frozenset(Capability)
+
+
+# --- WhatsApp rows (WA-05) ----------------------------------------------------
+
+
+def test_whatsapp_literals_resolve_to_their_keys() -> None:
+    """The two names observed on the live /debug_token (2026-10-14) map 1:1."""
+    resolved, unrecognized = resolve_scope_keys(
+        frozenset({"whatsapp_business_messaging", "whatsapp_business_management"})
+    )
+    assert resolved == frozenset({ScopeKey.WA_MESSAGING, ScopeKey.WA_MANAGEMENT})
+    assert unrecognized == frozenset()
+
+
+def test_every_rule_names_a_known_platform() -> None:
+    """Platform is data on the rule; the UI filters by it, so no rule may be unplaced."""
+    by_platform: dict[str, set[Capability]] = {}
+    for rule in CAPABILITY_RULES:
+        assert rule.platform in {PLATFORM_INSTAGRAM, PLATFORM_WHATSAPP}, rule.capability
+        by_platform.setdefault(rule.platform, set()).add(rule.capability)
+    assert by_platform[PLATFORM_INSTAGRAM] == _IG_CAPABILITIES
+    assert by_platform[PLATFORM_WHATSAPP] == _WA_CAPABILITIES
+
+
+def test_instagram_rows_are_byte_for_byte_unchanged_by_wa05() -> None:
+    """`also_requires` is empty on every Instagram row and `requires` is still single:
+    a persisted v2 verdict reads back with the same gate under v3."""
+    for rule in CAPABILITY_RULES:
+        if rule.platform == PLATFORM_INSTAGRAM:
+            assert rule.also_requires == (), rule.capability
+            assert rule.required_keys == (
+                frozenset({rule.requires}) if rule.requires is not None else frozenset()
+            )
+
+
+def test_platform_filter_returns_only_that_platforms_rules() -> None:
+    ig = assess_capabilities(frozenset(), platform=PLATFORM_INSTAGRAM)
+    wa = assess_capabilities(frozenset(), platform=PLATFORM_WHATSAPP)
+    assert {v.capability for v in ig} == _IG_CAPABILITIES
+    assert {v.capability for v in wa} == _WA_CAPABILITIES
+    assert all(v.platform == PLATFORM_WHATSAPP for v in wa)
+    # No filter is still total — the pre-WA-05 contract.
+    assert {v.capability for v in assess_capabilities(frozenset())} == set(Capability)
+
+
+def test_wa_send_requires_both_whatsapp_scopes() -> None:
+    """WA_SEND is the one row with a secondary gate: messaging alone is not a send path
+    (the number cannot be resolved), management alone cannot send."""
+    only_messaging = _verdict(frozenset({ScopeKey.WA_MESSAGING}))
+    only_management = _verdict(frozenset({ScopeKey.WA_MANAGEMENT}))
+    both = _verdict(frozenset({ScopeKey.WA_MESSAGING, ScopeKey.WA_MANAGEMENT}))
+    assert only_messaging[Capability.WA_SEND] is False
+    assert only_management[Capability.WA_SEND] is False
+    assert both[Capability.WA_SEND] is True
+    verdict = {v.capability: v for v in assess_capabilities(frozenset())}
+    assert verdict[Capability.WA_SEND].requires is ScopeKey.WA_MESSAGING
+    assert verdict[Capability.WA_SEND].also_requires == (ScopeKey.WA_MANAGEMENT,)
+
+
+def test_wa_templates_and_automation_need_management_only() -> None:
+    only_management = _verdict(frozenset({ScopeKey.WA_MANAGEMENT}))
+    only_messaging = _verdict(frozenset({ScopeKey.WA_MESSAGING}))
+    assert only_management[Capability.WA_TEMPLATES] is True
+    assert only_management[Capability.WA_AUTOMATION] is True
+    assert only_messaging[Capability.WA_TEMPLATES] is False
+    assert only_messaging[Capability.WA_AUTOMATION] is False
+
+
+def test_whatsapp_scopes_do_not_leak_into_instagram_rows() -> None:
+    """A WhatsApp-only grant enables nothing on the Instagram side, and vice versa."""
+    wa_only = _verdict(frozenset({ScopeKey.WA_MESSAGING, ScopeKey.WA_MANAGEMENT}))
+    assert all(wa_only[cap] is False for cap in _IG_CAPABILITIES)
+    ig_only = _verdict(
+        frozenset(
+            {
+                ScopeKey.BASIC,
+                ScopeKey.CONTENT_PUBLISH,
+                ScopeKey.MANAGE_COMMENTS,
+                ScopeKey.MANAGE_MESSAGES,
+                ScopeKey.MANAGE_INSIGHTS,
+            }
+        )
+    )
+    assert all(ig_only[cap] is False for cap in _WA_CAPABILITIES)
+    assert all(ig_only[cap] is True for cap in _IG_CAPABILITIES)

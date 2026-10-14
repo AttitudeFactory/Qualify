@@ -76,6 +76,30 @@ The scope literals below are seeded from the harvested Meta corpus
 `LOGIN-FORK-AND-MENTIONS.md`), and every one carries a `[V]`: strong evidence,
 but the corpus itself warns that a wrong `scope` string fails the OAuth call, so
 the live authorization endpoint -- not documentation -- is the authority.
+
+## WhatsApp rows (WA-05, 2026-10-14)
+
+The WhatsApp Business Platform joins the matrix with two scope keys and three
+capabilities. Two things differ from the Instagram rows and are encoded as data:
+
+- **Each rule names its `platform`.** A WhatsApp number never holds an Instagram
+  scope and vice versa, so a card that assessed every rule would show the other
+  platform's capabilities as permanently disabled. `assess_capabilities` keeps its
+  total behaviour by default (every rule, as before) and takes an optional
+  `platform` filter the UI passes per connection. Platform is data on the rule,
+  not a special case in the caller.
+- **`WA_SEND` needs BOTH WhatsApp scopes.** `requires` stays single-valued for
+  every existing row (the founder's pinned onboarding table), so the second gate
+  rides in `also_requires`, empty everywhere else. Sending rides
+  `whatsapp_business_messaging`, but Qualify's send path also resolves the number
+  (`GET /{phone_number_id}`), which is a management read — one without the other
+  is a half-working connection that the operator should see as disabled.
+
+The two literals are NOT seeded from the corpus: they were read off the live
+`/debug_token` response for the system-user token in the Meta panel on
+2026-10-14, which showed exactly `whatsapp_business_messaging` and
+`whatsapp_business_management`. They still carry `[V]` because one observation
+on one token is evidence, not a contract.
 """
 
 from __future__ import annotations
@@ -84,7 +108,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
-ASSESSMENT_VERSION = "perm-capability-v2"
+ASSESSMENT_VERSION = "perm-capability-v3"
 
 
 class ScopeKey(StrEnum):
@@ -101,6 +125,9 @@ class ScopeKey(StrEnum):
     MANAGE_COMMENTS = "manage_comments"
     MANAGE_MESSAGES = "manage_messages"
     MANAGE_INSIGHTS = "manage_insights"
+    # WhatsApp Business Platform (WA-05). Two families, both on the system-user token.
+    WA_MESSAGING = "wa_messaging"
+    WA_MANAGEMENT = "wa_management"
 
 
 class Capability(StrEnum):
@@ -113,6 +140,17 @@ class Capability(StrEnum):
     REPLY_COMMENTS = "reply_comments"
     MANAGE_DMS = "manage_dms"
     READ_INSIGHTS = "read_insights"
+    # WhatsApp (WA-05): send inside the 24 h window, manage message templates, publish
+    # the conversational automation (ice breakers / commands / welcome message).
+    WA_SEND = "wa_send"
+    WA_TEMPLATES = "wa_templates"
+    WA_AUTOMATION = "wa_automation"
+
+
+# The platform a rule belongs to. A connection row carries `social_connections.platform`
+# with these exact values, so the UI can filter the matrix by data it already has.
+PLATFORM_INSTAGRAM = "instagram"
+PLATFORM_WHATSAPP = "whatsapp"
 
 
 # --- literal table: the only place Meta's real scope strings appear ----------
@@ -157,6 +195,10 @@ SCOPE_LITERALS: dict[ScopeKey, tuple[str, ...]] = {
         "instagram_business_manage_insights",  # [V] Instagram Login (current)
         "instagram_manage_insights",  # [V] Facebook Login fork
     ),
+    # [V] WhatsApp: observed verbatim on the live /debug_token of the system-user token
+    # in the Meta panel, 2026-10-14 (WA-05). One spelling each; no deprecated aliases known.
+    ScopeKey.WA_MESSAGING: ("whatsapp_business_messaging",),
+    ScopeKey.WA_MANAGEMENT: ("whatsapp_business_management",),
 }
 
 
@@ -200,15 +242,34 @@ class CapabilityVerdict(BaseModel):
     reason: str
     provisional: bool
     assessment_version: str
+    # WA-05: the extra keys a capability needs ON TOP of `requires`. Empty for every
+    # Instagram row, so a persisted v2 verdict reads back unchanged under v3.
+    also_requires: tuple[ScopeKey, ...] = ()
+    platform: str = PLATFORM_INSTAGRAM
 
 
 class _CapabilityRule(BaseModel):
-    """Static spec of one capability's gate. Pure data, no grant applied yet."""
+    """Static spec of one capability's gate. Pure data, no grant applied yet.
+
+    `requires` is the single primary gate (the pinned onboarding table keeps it
+    single-valued); `also_requires` carries any further keys, and is empty for every
+    row but `WA_SEND`. `platform` says which connection kind the rule belongs to.
+    """
 
     capability: Capability
     requires: ScopeKey | None
     provisional: bool
     disabled_reason: str
+    also_requires: tuple[ScopeKey, ...] = ()
+    platform: str = PLATFORM_INSTAGRAM
+
+    @property
+    def required_keys(self) -> frozenset[ScopeKey]:
+        """Every key the rule gates on, primary and secondary alike."""
+        keys = set(self.also_requires)
+        if self.requires is not None:
+            keys.add(self.requires)
+        return frozenset(keys)
 
 
 # The matrix, as data. `requires=None` means the capability has no scope gate in
@@ -283,6 +344,41 @@ CAPABILITY_RULES: tuple[_CapabilityRule, ...] = (
             "granted. Finding A: insights do NOT fall under the basic permission."
         ),
     ),
+    # --- WhatsApp (WA-05) ---------------------------------------------------------
+    _CapabilityRule(
+        capability=Capability.WA_SEND,
+        requires=ScopeKey.WA_MESSAGING,
+        also_requires=(ScopeKey.WA_MANAGEMENT,),
+        platform=PLATFORM_WHATSAPP,
+        provisional=False,
+        disabled_reason=(
+            "Sending WhatsApp messages is off because the system-user token lacks "
+            "whatsapp_business_messaging and/or whatsapp_business_management. Sending "
+            "needs the first; resolving and checking the number needs the second, so a "
+            "token with only one of them is not a working send path."
+        ),
+    ),
+    _CapabilityRule(
+        capability=Capability.WA_TEMPLATES,
+        requires=ScopeKey.WA_MANAGEMENT,
+        platform=PLATFORM_WHATSAPP,
+        provisional=False,
+        disabled_reason=(
+            "Managing message templates is off because the system-user token lacks "
+            "whatsapp_business_management; templates live on the WABA, not the number."
+        ),
+    ),
+    _CapabilityRule(
+        capability=Capability.WA_AUTOMATION,
+        requires=ScopeKey.WA_MANAGEMENT,
+        platform=PLATFORM_WHATSAPP,
+        provisional=False,
+        disabled_reason=(
+            "Publishing the conversational automation (ice breakers, commands, welcome "
+            "message) is off because the system-user token lacks "
+            "whatsapp_business_management."
+        ),
+    ),
 )
 
 
@@ -307,20 +403,27 @@ def resolve_scope_keys(
     return frozenset(resolved), frozenset(unrecognized)
 
 
-def assess_capabilities(granted: frozenset[ScopeKey]) -> tuple[CapabilityVerdict, ...]:
+def assess_capabilities(
+    granted: frozenset[ScopeKey], *, platform: str | None = None
+) -> tuple[CapabilityVerdict, ...]:
     """Resolved scope keys -> one verdict per capability, with a reason for each.
 
-    Pure and total: emits exactly one `CapabilityVerdict` per `Capability`, in
-    `CAPABILITY_RULES` order, each stamped with `ASSESSMENT_VERSION`. A capability
-    is enabled iff its single `requires` key is in `granted` (or `requires is None`).
-    The connection precondition is modeled as its own capability
-    (`CONNECT_ACCOUNT`), not folded silently into every downstream gate -- the UI
-    consumes CONNECT_ACCOUNT separately, and keeping `requires` single-valued is
-    what makes each row match the founder's pinned onboarding table.
+    Pure and total: with `platform=None` it emits exactly one `CapabilityVerdict`
+    per `Capability`, in `CAPABILITY_RULES` order, each stamped with
+    `ASSESSMENT_VERSION`. With a `platform` it emits the verdicts of that
+    platform's rules only -- what a connection card renders (WA-05). A capability
+    is enabled iff every key in `required_keys` is in `granted` (an empty set,
+    i.e. `requires is None`, is always enabled). The connection precondition is
+    modeled as its own capability (`CONNECT_ACCOUNT`), not folded silently into
+    every downstream gate -- the UI consumes CONNECT_ACCOUNT separately, and
+    keeping `requires` single-valued is what makes each row match the founder's
+    pinned onboarding table.
     """
     verdicts: list[CapabilityVerdict] = []
     for rule in CAPABILITY_RULES:
-        enabled = rule.requires is None or rule.requires in granted
+        if platform is not None and rule.platform != platform:
+            continue
+        enabled = rule.required_keys <= granted
         verdicts.append(
             CapabilityVerdict(
                 capability=rule.capability,
@@ -329,6 +432,8 @@ def assess_capabilities(granted: frozenset[ScopeKey]) -> tuple[CapabilityVerdict
                 reason=rule.disabled_reason,
                 provisional=rule.provisional,
                 assessment_version=ASSESSMENT_VERSION,
+                also_requires=rule.also_requires,
+                platform=rule.platform,
             )
         )
     return tuple(verdicts)
