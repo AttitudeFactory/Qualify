@@ -52,21 +52,18 @@ already follows), converted to/from the repository's typed `ReelListCursor`/
 module is the ONLY place that conversion happens — `InboxState` never sees the
 repository's cursor types, only the VM ones.
 
-`reel_summaries_page`'s thumbnail/caption/permalink enrichment (opción A's one widening,
-founder-approved 2026-08-25) cross-references `CandidateMediaVM` the caller already
-loaded for the Reels-monitoring list — this module makes no new query and no new Meta
-call for it. A Reel outside that list's 2-week window simply gets `""` for all three;
-see `qualify_api.sentiment.repository`'s module docstring for why enriching those too
-is explicit fast-follow work, not silently attempted here.
+`reel_summaries_page`'s caption/permalink (QUA-149) come from the PERSISTED
+`monitored_media` metadata first, so a Reel keeps them after its 14-day window; the
+`CandidateMediaVM` list the caller already loaded (opción A, founder-approved 2026-08-25 —
+no new query, no new Meta call) is the fallback, and the only source of `thumbnail_url`
+(Meta's CDN URLs expire, so they are not stored; outside the list the page shows its
+generic icon).
 
-`ReelSummaryVM.is_monitored` (QUA-94) is a straight pass-through of `ReelSummary.
-is_monitored` — no lookup against `candidates_by_media_id` needed (unlike the
-thumbnail/caption/permalink trio above), because `_list_reel_summaries` already
-decorates each row with its current `monitored_media` state via a LEFT JOIN. A Reel
-outside the 2-week candidate window can still be `is_monitored=True` (it was turned on
-before it aged out — see the `list_candidate_media` vs `monitored_media` distinction in
-`qualify_api.inbox.service`'s module docstring); the two flags are independent and both
-already correct at the repository layer, so this function only ever forwards the value.
+`ReelSummaryVM.monitoring_state` (QUA-149) is what the badge shows. It is computed here
+by `_monitoring_state` from the SHARED rule (`qualify_api.inbox.monitoring.
+effective_state`) over the raw flag AND the persisted publication date — never from
+`is_monitored` alone, because a Reel still flagged monitored but past its window is no
+longer synced (`expired`). `is_monitored` (QUA-94) is still forwarded as the raw flag.
 
 `analyze_sentiment_now` (QUA-92) is the manual "Analizar sentimiento" button's transport.
 It adds no analysis logic of its own and is never called from `sync_now`/`InboxState.
@@ -76,10 +73,19 @@ sync_comments` in either direction — QUA-21 stays exactly as manual as it alre
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
-from qualify_api.inbox import list_candidate_media, set_media_monitored, sync_comments
+from qualify_api.inbox import (
+    list_candidate_media,
+    set_media_monitored,
+    sync_comments,
+    sync_in_progress,
+)
+from qualify_api.inbox import (
+    seconds_since_last_sync as _seconds_since_last_sync,
+)
+from qualify_api.inbox.monitoring import MonitoringState, effective_state
 from qualify_api.inbox.service import CandidateMedia
 from qualify_api.sentiment import analyze_pending_comments
 from qualify_api.sentiment import global_sentiment_summary as _global_sentiment_summary
@@ -98,6 +104,10 @@ from qualify_api.sentiment.repository import (
 from .capabilities import Capability
 from .connections_provider import connections_for
 from .inbox_vm import (
+    MONITORING_ACTIVE,
+    MONITORING_EXPIRED,
+    MONITORING_INACTIVE,
+    MONITORING_PENDING,
     AnalysisSummaryVM,
     CandidateMediaVM,
     CommentPageCursorVM,
@@ -106,6 +116,8 @@ from .inbox_vm import (
     ReelPageCursorVM,
     ReelSummaryVM,
     SyncSummaryVM,
+    candidate_picture_url,
+    media_format_label,
 )
 from .publishing_vm import ConnectionOptionVM
 
@@ -141,13 +153,15 @@ def _to_vm(media: CandidateMedia) -> CandidateMediaVM:
         is_monitored=media.is_monitored,
         caption=media.caption or "",
         permalink=media.permalink or "",
-        thumbnail_url=media.thumbnail_url or "",
+        thumbnail_url=candidate_picture_url(media.media_type, media.thumbnail_url, media.media_url),
+        format_label=media_format_label(media.media_product_type, media.media_type),
     )
 
 
 async def candidate_media(*, tenant_id: UUID, connection_id: UUID) -> list[CandidateMediaVM]:
-    """The last-2-weeks Reels for this connection, newest first, cross-referenced against
-    what is already monitored. Delegates entirely to `qualify_api.inbox`'s published seam.
+    """The last-2-weeks Reels and feed posts (QUA-146) for this connection, newest first,
+    cross-referenced against what is already monitored. Delegates entirely to
+    `qualify_api.inbox`'s published seam.
 
     Raises `UnknownInboxConnection` (propagates — same posture `publishing_provider.
     active_connections` has for whatever `connections_for` raises) and any exception the
@@ -208,8 +222,23 @@ def _comment_cursor_from_vm(cursor: CommentPageCursorVM | None) -> CommentListCu
     )
 
 
+def _monitoring_state(summary: ReelSummary, now: datetime) -> str:
+    """QUA-149: the badge's state, from the SHARED rule — this module never compares
+    dates itself. `effective_state` already treats an unknown date as active (the sync
+    still processes that media); `pending` only splits that case out so the badge can
+    say the date is still to be verified."""
+    state = effective_state(
+        is_monitored=summary.is_monitored, posted_at=summary.media_posted_at, now=now
+    )
+    if state is MonitoringState.ACTIVE:
+        return MONITORING_PENDING if summary.media_posted_at is None else MONITORING_ACTIVE
+    if state is MonitoringState.EXPIRED:
+        return MONITORING_EXPIRED
+    return MONITORING_INACTIVE
+
+
 def _to_reel_summary_vm(
-    summary: ReelSummary, candidates_by_media_id: dict[str, CandidateMediaVM]
+    summary: ReelSummary, candidates_by_media_id: dict[str, CandidateMediaVM], now: datetime
 ) -> ReelSummaryVM:
     enrichment = candidates_by_media_id.get(summary.external_thread_id)
     return ReelSummaryVM(
@@ -222,9 +251,11 @@ def _to_reel_summary_vm(
         negative=summary.negative,
         not_analyzed=summary.not_analyzed,
         thumbnail_url=enrichment.thumbnail_url if enrichment else "",
-        caption=enrichment.caption if enrichment else "",
-        permalink=enrichment.permalink if enrichment else "",
+        # QUA-149: persisted first (survives the window), live candidate list as fallback.
+        caption=summary.caption or (enrichment.caption if enrichment else ""),
+        permalink=summary.permalink or (enrichment.permalink if enrichment else ""),
         is_monitored=summary.is_monitored,
+        monitoring_state=_monitoring_state(summary, now),
     )
 
 
@@ -234,6 +265,7 @@ def reel_summaries_page(
     connection_id: UUID,
     cursor: ReelPageCursorVM | None,
     candidates: list[CandidateMediaVM],
+    now: datetime | None = None,
 ) -> tuple[list[ReelSummaryVM], ReelPageCursorVM | None, bool]:
     """QUA-93: one page of Reel summary cards — never the full comment list of any Reel,
     let alone the connection (see `qualify_api.sentiment.repository`'s module docstring
@@ -255,7 +287,8 @@ def reel_summaries_page(
         cursor=_reel_cursor_from_vm(cursor),
         limit=DEFAULT_REEL_PAGE_SIZE,
     )
-    items = [_to_reel_summary_vm(s, candidates_by_media_id) for s in page]
+    reference_now = now if now is not None else datetime.now(UTC)
+    items = [_to_reel_summary_vm(s, candidates_by_media_id, reference_now) for s in page]
     next_cursor = None
     if page:
         last = page[-1]
@@ -319,7 +352,9 @@ def thread_comments_page(
     return items, next_cursor, len(page) == DEFAULT_COMMENT_PAGE_SIZE
 
 
-async def sync_now(*, tenant_id: UUID, connection_id: UUID) -> SyncSummaryVM:
+async def sync_now(
+    *, tenant_id: UUID, connection_id: UUID, run_token: str | None = None
+) -> SyncSummaryVM:
     """One `InboxService.sync_comments` pass, in process, for the session's tenant — the
     transport both the manual button and the automatic poll share (QUA-89).
 
@@ -331,16 +366,36 @@ async def sync_now(*, tenant_id: UUID, connection_id: UUID) -> SyncSummaryVM:
     Every typed refusal of the seam propagates unchanged for `InboxState` to map to its
     own message: `UnknownInboxConnection`, `InboxConnectionInactive`,
     `CommentsPermissionMissing`, `SyncBudgetExhausted`, `CommentsAuthExpired` and
-    `CommentsReadError`.
+    `CommentsReadError` — plus `SyncAlreadyRunning` when another pass holds the
+    connection's lease. `run_token` names the pass so `sync_still_running` can ask about
+    it later.
     """
-    summary = await sync_comments(tenant_id=tenant_id, connection_id=connection_id)
+    summary = await sync_comments(
+        tenant_id=tenant_id, connection_id=connection_id, run_token=run_token
+    )
     return SyncSummaryVM(
         media_checked=summary.media_checked,
         new_comments=summary.new_comments,
         truncated=summary.truncated,
         skipped_missing_media=tuple(summary.skipped_missing_media),
         deleted_comments=summary.deleted_comments,
+        expired_skipped=summary.expired_skipped,
+        metadata_backfilled=summary.metadata_backfilled,
+        metadata_failed=summary.metadata_failed,
+        metadata_deferred=summary.metadata_deferred,
     )
+
+
+async def sync_still_running(*, tenant_id: UUID, connection_id: UUID, run_token: str) -> bool:
+    """Whether the pass `run_token` names still holds its lease (some process is executing
+    it). Unknown — Redis unreachable — answers True."""
+    return await sync_in_progress(tenant_id=tenant_id, connection_id=connection_id, token=run_token)
+
+
+async def seconds_since_last_sync(*, tenant_id: UUID, connection_id: UUID) -> float | None:
+    """Age of the last finished pass on this connection, shared across tabs and
+    processes; `None` when unknown. What the cooldown of the automatic triggers reads."""
+    return await _seconds_since_last_sync(tenant_id=tenant_id, connection_id=connection_id)
 
 
 async def analyze_sentiment_now(*, tenant_id: UUID, connection_id: UUID) -> AnalysisSummaryVM:

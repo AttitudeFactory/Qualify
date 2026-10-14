@@ -2,7 +2,7 @@
 
 **Estado:** `[LISTO PARA EJECUTAR 2026-10-05]` — el repo ya es desplegable; lo que falta lo hace el fundador (crear el servidor, el registro DNS, el `.env.prod` y los ajustes de Meta). Cierra la bifurcación de host de [`prioridad-despliegue-subdominio.md`](prioridad-despliegue-subdominio.md) §4: **Hetzner**.
 **Para qué:** que Meta App Review tenga una URL pública estable donde iniciar sesión, y que el callback OAuth de Meta tenga un redirect URI fijo (`https://qualify.attitudefactory.co/api/connections/callback`) en vez del túnel `cloudflared` efímero.
-**Piezas en el repo:** `deploy/Dockerfile`, `deploy/docker-compose.prod.yml`, `deploy/Caddyfile`, `deploy/.env.prod.example`, `deploy/deploy.sh`, `deploy/bootstrap-server.sh`, `deploy/backup-db.sh`, `deploy/bootstrap_db_roles.py`, y las recetas `just deploy*`.
+**Piezas en el repo:** `deploy/Dockerfile`, `deploy/docker-compose.prod.yml`, `deploy/Caddyfile`, `deploy/.env.prod.example`, `deploy/deploy.sh`, `deploy/bootstrap-server.sh`, `deploy/backup-db.sh`, `deploy/bootstrap_db_roles.py`, `deploy/bootstrap-claude.sh` + `deploy/claude-server.md` (§13), y las recetas `just deploy*`.
 
 ---
 
@@ -81,7 +81,7 @@ Cada variable está comentada en el ejemplo. Lo esencial:
 |---|---|
 | `QUALIFY_PUBLIC_URL` / `QUALIFY_DOMAIN` | `https://qualify.attitudefactory.co` / `qualify.attitudefactory.co` |
 | `QUALIFY_ACME_EMAIL` | Correo para avisos de Let's Encrypt |
-| `QUALIFY_DB_OWNER_PASSWORD`, `QUALIFY_DB_APP_PASSWORD`, `QUALIFY_DB_ADMIN_PASSWORD`, `QUALIFY_DB_CREDENTIAL_PASSWORD` | `openssl rand -hex 24` cada una (hex: van dentro de una URL) |
+| `QUALIFY_DB_OWNER_PASSWORD`, `QUALIFY_DB_APP_PASSWORD`, `QUALIFY_DB_ADMIN_PASSWORD`, `QUALIFY_DB_CREDENTIAL_PASSWORD`, `QUALIFY_DB_WEBHOOK_PASSWORD`, `QUALIFY_DB_WEBHOOK_WORKER_PASSWORD` | `openssl rand -hex 24` cada una (hex: van dentro de una URL) |
 | `QUALIFY_DEV_FERNET_KEY` | `python3 -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`. **Guardarla también en el gestor de contraseñas:** si se pierde, todos los tokens OAuth guardados quedan ilegibles |
 | `QUALIFY_OAUTH_STATE_SECRET` | `openssl rand -hex 32` |
 | `QUALIFY_META_*`, `QUALIFY_SUPABASE_*`, `QUALIFY_R2_*`, `QUALIFY_ANTHROPIC_API_KEY`, … | Los mismos valores que el `.env` local (no copiar `QUALIFY_*_DSN` ni `QUALIFY_REDIS_URL`: el compose los arma) |
@@ -178,7 +178,7 @@ Montaje (una vez):
    ```bash
    ssh deploy@<IP> 'install -D -m 755 /opt/qualify/current/deploy/server-deploy.sh /opt/qualify/bin/server-deploy.sh'
    ```
-   Vive fuera de `releases/` a propósito: un deploy no puede reemplazar el comando que la llave tiene permitido. Si el script cambia en el repo, se reinstala con el mismo comando.
+   Vive fuera de `releases/` a propósito: un deploy no puede reemplazar el comando que la llave tiene permitido. **Si el script cambia en el repo, hay que reinstalarlo con el mismo comando** (el CD toma el compose y los scripts de cada release del bundle, pero ejecuta siempre esta copia fija). Detalle que el script ya contempla (2026-10-09): un `just deploy` desde la Mac entra como root y deja su release en `releases/` propiedad de root; la poda de releases viejas del CD, que corre como `deploy`, la hace entonces a través de un shell root de la imagen `qualify-web`, y va después del health check para que una limpieza nunca ponga en rojo un deploy que ya sirve.
 3. **Restringir la llave** en `~deploy/.ssh/authorized_keys` del servidor, en **una** línea:
    ```
    command="/opt/qualify/bin/server-deploy.sh",restrict ssh-ed25519 AAAA…(contenido de qualify_ci_deploy.pub)… qualify-ci-deploy
@@ -197,7 +197,8 @@ Montaje (una vez):
    | `QUALIFY_DEPLOY_SSH_KNOWN_HOSTS` | salida de `ssh-keyscan -t ed25519 <IP>`, después de comparar su huella con `ssh deploy@<IP> ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` |
 
 6. **Primer deploy manual:** *Actions → deploy → Run workflow* (ref `main`). Debe terminar con los tres chequeos `ok` en el servidor y el smoke externo en verde.
-7. **Opcional, deploy automático:** variable de repositorio `QUALIFY_AUTO_DEPLOY=true`. Con ella, cada run de `ci` en verde sobre `main` (después de un merge) despliega solo.
+7. **Aviso en `#devops` (Zoho Cliq):** el job `notify` publica en `#devops` el resultado de cada deploy intentado (✅/❌, en qué etapa falló, commit y link a la corrida). Para activarlo, en Cliq: *perfil → Bots & Tools → Webhook Tokens → Generate New Token*. En GitHub, secreto `CLIQ_DEVOPS_WEBHOOK_URL` = `https://cliq.zoho.eu/api/v2/channelsbyname/devops/message?zapikey=<token>`. Sin el secreto el job sólo deja un aviso, y un fallo de Cliq nunca falla el deploy.
+8. **Opcional, deploy automático:** variable de repositorio `QUALIFY_AUTO_DEPLOY=true`. Con ella, cada run de `ci` en verde sobre `main` (después de un merge) despliega solo.
 
 Operación:
 
@@ -313,3 +314,50 @@ QUALIFY_ENV_FILE=/ruta/.env.smoke docker compose -p qualify-smoke \
 | `deploy.sh status` / `deploy.sh backup` (mismo `ssh` de prueba) | `ok` en los tres chequeos y salida 0; si un chequeo no da el código esperado, `FAIL` y salida ≠ 0 (camino ejercitado en la primera corrida, que además destapó un fallo con arreglos vacíos en bash 3.2, ya corregido) |
 
 No verificado localmente: la emisión real del certificado (requiere DNS apuntando al servidor), el build en x86 del servidor (aquí fue arm64), el perfil `render` (su imagen no se construyó en esta sesión) y `deploy.sh` a través de un ssh real (se probó con un `ssh` de prueba que ejecuta los mismos comandos en local).
+
+## 13. Claude Code en el servidor (Remote Control)
+
+**Decisión del fundador, 2026-10-12:** una sesión de Claude Code corre **en el servidor**, como el usuario `deploy`, y se maneja desde claude.ai/code o la app móvil de Claude con *Remote Control*, para operar producción (estado, logs, diagnóstico, reinicios, rollbacks, respaldos) sin abrir el Mac. Se evaluaron tres modelos — usuario restringido a un script fijo, sin Claude en el VPS, y Claude como `deploy` — y se eligió el último a sabiendas de lo que implica:
+
+- `deploy` está en el grupo `docker`, que **equivale a root**: Claude puede leer `.env.prod`, la base de datos con datos de clientes y cualquier volumen. Lo que lee viaja a Anthropic como parte de la conversación.
+- La sesión entra con la cuenta **Pro/Max personal** del fundador: quien acceda a esa cuenta de claude.ai maneja producción. Conviene tener 2FA activo en ella.
+- Las reglas de `/etc/claude-code/managed-settings.json` (instaladas por el script) son **cinturón contra accidentes, no frontera de seguridad**: la documentación de Claude Code aclara que las reglas de Bash comparan texto, no el programa que corre. Bloquean lo obvio — `down -v`, `docker volume rm/prune`, `system prune`, `DROP DATABASE`, leer o editar `.env.prod` — y desactivan el modo `bypassPermissions`, así que cada comando que cambia algo pide aprobación (desde el móvil, un toque).
+- Si un día hace falta que el modelo sea frontera de verdad, el camino es el modelo descartado: usuario `claude` sin `docker`, con `sudo -u deploy` sólo sobre un script fijo, igual que la llave del CI (§7.1).
+
+**Qué se instala** (`deploy/bootstrap-claude.sh`, idempotente): `tmux`; Claude Code para `deploy` con el instalador nativo oficial (`~deploy/.local/bin/claude`, se actualiza solo); `qdc`, el alias `dc` de §7 convertido en comando (los alias no existen en el shell no interactivo de Claude); `qualify-claude`, que arranca o re-engancha la sesión en `tmux`; los *managed settings*; y `/opt/qualify/CLAUDE.md` (fuente: `deploy/claude-server.md`), con las reglas de operación que Claude lee al arrancar.
+
+**Montaje (una vez):**
+
+1. Desde el Mac, con el alias que entra como **root**:
+   ```bash
+   just claude-bootstrap qualify-prod
+   ```
+2. Iniciar sesión — es interactivo y no se puede automatizar (Remote Control no acepta API key ni el token de `claude setup-token`):
+   ```bash
+   ssh deploy@<IP>
+   claude          # dentro: /login → tecla c copia la URL → abrirla en el navegador del Mac → pegar el código
+   ```
+   Salir con `/exit`.
+3. Arrancar la sesión remota, en el mismo ssh:
+   ```bash
+   qualify-claude
+   ```
+   La primera vez pregunta si habilitar Remote Control (`y`) y si confiar en `/opt/qualify` (`y`). Muestra una URL y un QR. Desengancharse con **Ctrl-b d**: la sesión sigue viva en `tmux` al cerrar el ssh.
+4. En claude.ai/code o en la app móvil aparece la sesión **`qualify-prod`**.
+
+**Operación:**
+
+| Situación | Qué hacer |
+|---|---|
+| Volver a la terminal de la sesión | `ssh deploy@<IP>` → `qualify-claude` (re-engancha) |
+| La red se cayó más de ~10 min y la sesión desapareció | `qualify-claude --continue` (retoma la conversación; funciona durante ~4 h) |
+| Reinicio del servidor | La sesión **no** vuelve sola: `qualify-claude` de nuevo |
+| Aviso de que el login vence (llega con 3 días) | En la sesión, `/login` otra vez; si vence, Remote Control se detiene hasta re-loguear |
+| Cambiar las reglas de Claude | Editar `deploy/bootstrap-claude.sh` / `deploy/claude-server.md` en el repo y repetir `just claude-bootstrap qualify-prod` |
+| Quitarlo | `ssh deploy@<IP> 'tmux kill-session -t claude; ~/.local/bin/claude logout'` |
+
+**Límites:**
+- Desde el servidor Claude sólo puede desplegar shas cuyas imágenes **ya están en GHCR** (`/opt/qualify/bin/server-deploy.sh deploy|rollback <sha>`): un commit nuevo de `main` lo despliega el workflow `deploy` (§7.1). No hay checkout del repo ni credenciales de GitHub en el servidor, a propósito.
+- Requisitos que la documentación de Remote Control impone y conviene no romper: no exportar `ANTHROPIC_API_KEY` en el entorno de `deploy` (bloquea Remote Control), ni `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. Sólo usa HTTPS saliente: no hay que abrir puertos ni tocar `ufw`.
+- Memoria: el proceso de Claude Code ocupa unos cientos de MB; en un CX23 con el stack completo hay margen, con el perfil `render` activo, vigilar `free -h`.
+- **Sin verificar todavía contra un servidor real** (se escribió el 2026-10-12 desde el Mac): que `remote-control` aplique los *managed settings* a sus sesiones (es lo esperado, son procesos locales) y que la app de escritorio de Claude pueda engancharse a la sesión (la documentación sólo nombra claude.ai/code y la app móvil).

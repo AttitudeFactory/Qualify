@@ -41,3 +41,7 @@ video = ["httpx>=0.28.1"]
 # The Remotion render service (packages/render) is spoken to over HTTP by
 # `qualify_creative.render.client`, imported lazily for the same reason.
 render = ["httpx>=0.28.1"]
+# A carousel's video slides are cropped to the feed and get their words laid over with
+# PyAV (`qualify_creative.video.fit`), imported lazily: its wheels bundle FFmpeg, so no
+# `ffmpeg` binary is needed in the image. Install with: `qualify-creative[media]`.
+media = ["av>=14"]

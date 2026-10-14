@@ -319,10 +319,8 @@ def route_options_for(
     return build_route_options(policy=policy, content_type=ContentType(content_type))
 
 
-def submit_brief(
-    tenant_id: UUID,
+def build_brief(
     brand_id: UUID,
-    user_id: UUID,
     *,
     objective: str,
     content_type: str,
@@ -337,18 +335,15 @@ def submit_brief(
     kind: str = "static_flyer",
     media: Mapping[str, object] | None = None,
     content_format: str = "",
-) -> UUID:
-    """Build the frozen `ContentBrief` and create the draft through the composed
-    service. Returns the new draft id; generation runs out of band (§7.4).
-
-    Raises `ValidationError` (an inexecutable brief, e.g. an upload route without a
-    photo, or a kind missing its inputs), `BrandNotReady` and `RouteBlockedByPolicy` —
-    the state translates each.
+) -> ContentBrief:
+    """The frozen `ContentBrief` of a form — shared by `submit_brief` and
+    `preview_brief_prompt`, so the preview is the brief Generar sends.
 
     `kind` / `media` are the generator's content kind and its inputs (`ContentKind`,
     `MediaInputs`, § request 2026-09-25). The image route is derived from them rather
     than asked: the operator's own images are placed untouched (`FROM_UPLOAD`, keyed on
-    the first of them) and a piece with none is `TEMPLATE_ONLY`.
+    the first of them) and a piece with none is `TEMPLATE_ONLY`. Raises
+    `ValidationError` for an inexecutable brief.
     """
     content_kind = ContentKind(kind)
     inputs = MediaInputs.model_validate(dict(media or {}))
@@ -356,7 +351,7 @@ def submit_brief(
     if content_kind is not ContentKind.STATIC_FLYER or image_route == "":
         image_route = ImageRoute.FROM_UPLOAD.value if own_images else ImageRoute.TEMPLATE_ONLY.value
         source_media_key = own_images[0] if own_images else ""
-    brief = ContentBrief(
+    return ContentBrief(
         brand_id=brand_id,
         objective=BriefObjective(objective),
         content_type=ContentType(content_type),
@@ -375,8 +370,28 @@ def submit_brief(
         # the format the operator picked, else the kind's default
         format=ContentFormat(content_format) if content_format else content_kind.default_format,
     )
+
+
+def submit_brief(tenant_id: UUID, brand_id: UUID, user_id: UUID, **form: Any) -> UUID:
+    """Build the brief (`build_brief`) and create the draft through the composed
+    service. Returns the new draft id; generation runs out of band (§7.4).
+
+    Raises `ValidationError` (an inexecutable brief, e.g. an upload route without a
+    photo, or a kind missing its inputs), `BrandNotReady` and `RouteBlockedByPolicy` —
+    the state translates each.
+    """
+    brief = build_brief(brand_id, **form)
     return production_content_service().create_draft(
         tenant_id=tenant_id, brand_id=brand_id, brief=brief, user_id=user_id
+    )
+
+
+def preview_brief_prompt(tenant_id: UUID, brand_id: UUID, **form: Any) -> bool:
+    """Print to the console the copy prompt this form would send (§ request 2026-10-06),
+    without creating a draft or calling a vendor. False when it could not render."""
+    brief = build_brief(brand_id, **form)
+    return production_content_service().preview_prompt(
+        tenant_id=tenant_id, brand_id=brand_id, brief=brief
     )
 
 
@@ -445,6 +460,129 @@ def recipe_options(
         niche=None,
     )
     return build_recipe_options(suggest_recipes(facts, registry))
+
+
+#: The Brand Kit's files the generator can place in a piece: raster images only (a
+#: Pillow composition and HeyGen take nothing else) — never the fonts.
+_BRAND_MEDIA_TYPES = {
+    "image/png": (".png",),
+    "image/jpeg": (".jpg", ".jpeg"),
+    "image/webp": (".webp",),
+}
+
+
+def _brand_media_type(content_type: str, key: str) -> str:
+    """The image's MIME type, from the row or, for a row saved without one, the key."""
+    if content_type in _BRAND_MEDIA_TYPES:
+        return content_type
+    lower = key.lower()
+    return next((mime for mime, exts in _BRAND_MEDIA_TYPES.items() if lower.endswith(exts)), "")
+
+
+def brand_media(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], ...]:
+    """The images already saved in the Brand Kit — the logo, its versions and the
+    brandboard's elements (§ request 2026-10-06: "usar los assets ya cargados en el
+    brandkit como media") — as `{key, label, view}` rows for the generator's picker.
+    `key` is the R2 key the media pipeline reads (`R2ReadingMediaStore`); `view` a
+    short-lived `/r2media` path for the thumbnail ("" when none could be issued)."""
+    from qualify_api.creative.brand_kit_store import EXTRA, FONT, LOGO, BrandKitStore
+
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for asset in BrandKitStore().list_assets(tenant_id=tenant_id, brand_id=brand_id):
+        content_type = _brand_media_type(asset.content_type, asset.object_key)
+        if asset.kind == FONT or not content_type or asset.object_key in seen:
+            continue
+        seen.add(asset.object_key)
+        if asset.kind == LOGO:
+            label = "Logo"
+        elif asset.kind == EXTRA:
+            label = asset.label.strip() or "Elemento"
+        else:  # a logo version: its slot is the version's name
+            label = (asset.label.strip() or asset.slot.replace("_", " ")).capitalize()
+        try:
+            view = issue_view_path(tenant_id, asset.object_key, "image", content_type)
+        except Exception as exc:  # noqa: BLE001 — a thumbnail is not worth failing the step
+            logger.warning("brand media view not issued: %s", type(exc).__name__)
+            view = ""
+        rows.append(
+            {
+                "key": asset.object_key,
+                "label": label,
+                "view": view,
+                # a logo takes the brand mark's place; an element is used as its note says
+                "kind": "element" if asset.kind == EXTRA else "logo",
+                "usage": " ".join(asset.context.split()),
+            }
+        )
+    return tuple(rows)
+
+
+def brand_pieces(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], ...]:
+    """The images and videos of the brand's own pieces, the most recent first — what a
+    carousel's «De una pieza» slide picks from (§ request 2026-10-09). `view` is a
+    short-lived `/r2media` path of the thumbnail (a video's poster frame), "" when the
+    file is not in R2 or has no poster; `label` says which piece it came from."""
+    from qualify_api.creative.pieces import DbPieceFiles
+
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for piece in DbPieceFiles().files(tenant_id=tenant_id, brand_id=brand_id):
+        if piece.object_key in seen:
+            continue
+        seen.add(piece.object_key)
+        thumb = piece.object_key if piece.media_type == "image" else piece.poster_key
+        try:
+            view = issue_view_path(tenant_id, thumb, "image") if thumb else ""
+        except Exception as exc:  # noqa: BLE001 — a thumbnail is not worth failing the list
+            logger.warning("piece view not issued: %s", type(exc).__name__)
+            view = ""
+        topic = " ".join(piece.topic.split())
+        rows.append(
+            {
+                "key": piece.object_key,
+                "media_type": piece.media_type,
+                "label": (topic[:40] + "…" if len(topic) > 40 else topic) or "Pieza",
+                "view": view,
+            }
+        )
+    return tuple(rows)
+
+
+def template_blocker(
+    tenant_id: UUID,
+    brand_id: UUID,
+    *,
+    content_type: str,
+    product_ref: str,
+    product_keys: Sequence[str],
+    source_media_key: str,
+    content_format: str,
+) -> str:
+    """Why the template this Post would get cannot be made ("" when it can) — checked
+    on «¿Todo listo?» since «¿Cómo la hacemos?», which used to say it, left the wizard
+    (§ 2026-10-06): too few photos for the router's template, or no output of the
+    chosen format. The same router `MediaProducer` runs, so Generar cannot disagree."""
+    from qualify_api.creative.media import template_port
+    from qualify_creative.render import TemplateRegistry
+
+    options = recipe_options(
+        tenant_id,
+        brand_id,
+        content_type=content_type,
+        product_ref=product_ref,
+        product_keys=product_keys,
+        source_media_key=source_media_key,
+    )
+    remotion = next((o for o in options if o.key == "remotion"), None)
+    if remotion is None or not remotion.template_id:
+        return "ninguna plantilla publicada sirve a esta pieza"
+    if not remotion.available:
+        return remotion.reason
+    manifest = TemplateRegistry.from_dir().get(remotion.template_id, remotion.template_version)
+    if template_port(manifest, ContentFormat(content_format)) is None:
+        return f"la plantilla «{manifest.name}» no tiene ese formato"
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -545,16 +683,24 @@ def _with_r2_urls(tenant_id: UUID, media: tuple[MediaVM, ...]) -> tuple[MediaVM,
     """Media that lives only in R2 gets a short-lived backend URL (`r2_media`); the rest
     keeps resolving through the local upload store. A token that cannot be minted (e.g.
     Redis down) only costs the preview — the draft itself still loads."""
-    out: list[MediaVM] = []
-    for item in media:
-        url = ""
-        if is_r2_key(item.key):
-            try:
-                url = issue_view_path(tenant_id, item.key, item.media_type)
-            except Exception as exc:  # noqa: BLE001 — a preview is not worth failing the page
-                logger.warning("r2 media token not issued: %s", type(exc).__name__)
-        out.append(dataclasses.replace(item, url=url) if url else item)
-    return tuple(out)
+
+    def view(key: str, media_type: str) -> str:
+        if not is_r2_key(key):
+            return ""
+        try:
+            return issue_view_path(tenant_id, key, media_type)
+        except Exception as exc:  # noqa: BLE001 — a preview is not worth failing the page
+            logger.warning("r2 media token not issued: %s", type(exc).__name__)
+            return ""
+
+    return tuple(
+        dataclasses.replace(
+            item,
+            url=view(item.key, item.media_type),
+            poster_url=view(item.poster_key, "image") if item.poster_key else "",
+        )
+        for item in media
+    )
 
 
 def draft_detail(tenant_id: UUID, draft_id: UUID) -> DraftVM | None:
@@ -653,6 +799,22 @@ def reject_draft(
         regenerate=regenerate,
     )
     return _detail_to_vm(tenant_id, detail)
+
+
+# ---------------------------------------------------------------------------
+# The avatar kinds' video engine (/create, § request 2026-10-07)
+
+#: Which vendor renders the two avatar kinds: Seedance (BytePlus ModelArk) unless the
+#: deployment says `heygen`. Read per call, like the keys: an env change, nothing else.
+VIDEO_ENGINE_ENV = "QUALIFY_VIDEO_ENGINE"
+VIDEO_ENGINES = ("seedance", "heygen")
+
+
+def configured_video_engine() -> str:
+    import os
+
+    value = (os.environ.get(VIDEO_ENGINE_ENV) or "").strip().lower()
+    return value if value in VIDEO_ENGINES else "seedance"
 
 
 # ---------------------------------------------------------------------------

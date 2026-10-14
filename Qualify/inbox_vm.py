@@ -1,5 +1,5 @@
-"""View-models for the inbox content screen — Instagram Reels from the last 2 weeks,
-with the monitoring toggle (Fase 1 Parte 4-B, B2 UI slice).
+"""View-models for the inbox content screen — Instagram Reels and feed posts (QUA-146)
+from the last 2 weeks, with the monitoring toggle (Fase 1 Parte 4-B, B2 UI slice).
 
 Same security boundary as `publishing_vm.py`/`connections_vm.py`: every Reflex var is
 serialized to the client. `InboxService`/`qualify_api.inbox.composition` never see or
@@ -14,6 +14,17 @@ test, same convention as `publishing_vm.py`/`connections_vm.py`.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Final
+
+from qualify_api.inbox.media_type import MediaType, known_media_type
+
+# QUA-149: the four values `ReelSummaryVM.monitoring_state` can take — one per visible
+# label. Computed server-side (`inbox_provider`) from the shared rule
+# (`qualify_api.inbox.monitoring.effective_state`); the page only matches on them.
+MONITORING_ACTIVE: Final = "active"  # "Monitoreado"
+MONITORING_PENDING: Final = "pending"  # "Monitoreado · fecha por verificar"
+MONITORING_EXPIRED: Final = "expired"  # "No monitoreado · vencido"
+MONITORING_INACTIVE: Final = "inactive"  # "No monitoreado"
 
 
 @dataclass(frozen=True)
@@ -31,6 +42,51 @@ class CandidateMediaVM:
     caption: str
     permalink: str
     thumbnail_url: str
+    # QUA-146: what the row is — `media_format_label` below, pre-formatted server-side.
+    # `""` shows no label (a candidate built without format data, e.g. older tests).
+    format_label: str = ""
+
+
+# QUA-146: the label each candidate row shows, by surface and Meta's `media_type`. A
+# Reel is always "Reel"; a feed post is labelled by its format, and a format this code
+# does not know yet (`inbox.media_type`) still reads as a feed post, never as an error.
+REEL_LABEL: Final = "Reel"
+FEED_POST_LABEL: Final = "Publicación"
+_FEED_FORMAT_LABELS: Final = {
+    MediaType.IMAGE: "Foto",
+    MediaType.VIDEO: "Video",
+    MediaType.CAROUSEL_ALBUM: "Carrusel",
+}
+
+
+# QUA-146: the formats whose Meta `media_url` IS a picture. For VIDEO it is the video
+# file, which an <img> cannot show — a video's picture is its `thumbnail_url`.
+_PICTURE_MEDIA_TYPES: Final = frozenset({MediaType.IMAGE, MediaType.CAROUSEL_ALBUM})
+
+
+def candidate_picture_url(
+    media_type: str | None, thumbnail_url: str | None, media_url: str | None
+) -> str:
+    """The candidate row's picture: Meta's `thumbnail_url` when there is one (videos and
+    Reels), else `media_url` for a photo or a carousel (Meta gives them no thumbnail), else
+    `""` — the page then shows its generic frame. An unknown format never uses
+    `media_url`: it might be a video file."""
+    if thumbnail_url:
+        return thumbnail_url
+    if media_url and known_media_type(media_type) in _PICTURE_MEDIA_TYPES:
+        return media_url
+    return ""
+
+
+def media_format_label(media_product_type: str | None, media_type: str | None) -> str:
+    """The candidate row's format label, or `""` for a surface the picker never offers
+    (the service filters to Reels and feed posts — `MONITORABLE_MEDIA_PRODUCT_TYPES`)."""
+    if media_product_type == "REELS":
+        return REEL_LABEL
+    if media_product_type == "FEED":
+        known = known_media_type(media_type)
+        return _FEED_FORMAT_LABELS[known] if known is not None else FEED_POST_LABEL
+    return ""
 
 
 @dataclass(frozen=True)
@@ -79,6 +135,10 @@ class SyncSummaryVM:
     COMPLETE walk of their (still-existing) media no longer returned them — the sibling
     case to `skipped_missing_media` above, one level down (a comment, not the whole
     Reel). Also always SUCCESS, folded into the same toast.
+
+    `expired_skipped`/`metadata_*` (QUA-149): media past their 14-day window (never
+    synced, no Meta call) and the legacy-metadata reads of this pass. Counts only, for the
+    `inbox.sync.done` log; not rendered.
     """
 
     media_checked: int
@@ -86,6 +146,10 @@ class SyncSummaryVM:
     truncated: bool = False
     skipped_missing_media: tuple[str, ...] = ()
     deleted_comments: int = 0
+    expired_skipped: int = 0
+    metadata_backfilled: int = 0
+    metadata_failed: int = 0
+    metadata_deferred: int = 0
 
 
 @dataclass(frozen=True)
@@ -95,17 +159,22 @@ class ReelSummaryVM:
     QUA-92's flat `CommentVM` list at the top level of `/inbox`; `CommentVM` itself is
     unchanged and now lives one level down, in the Reel detail view.
 
-    `thumbnail_url`/`caption`/`permalink` are opción A's one deliberate widening: cross-
-    referenced from `CandidateMediaVM` (already loaded for the Reels-monitoring list, ZERO
-    extra Meta calls) when this Reel is still inside that list's 2-week window — `""` for
-    a Reel monitored longer ago, same "no raw nullable reaching a `str` field" convention
-    every VM in this module follows.
+    `caption`/`permalink` (QUA-149) come first from the PERSISTED `monitored_media`
+    metadata, so they survive the 14-day window; the live `CandidateMediaVM` (opción A,
+    ZERO extra Meta calls) is only a fallback, e.g. for a legacy row not read yet.
+    `thumbnail_url` comes only from that live list (Meta's CDN URLs expire, so it is not
+    stored) — `""` once the Reel leaves it, and the page shows its generic icon. Same "no
+    raw nullable reaching a `str` field" convention every VM in this module follows.
 
-    `is_monitored` (QUA-94) mirrors `qualify_api.sentiment.repository.ReelSummary.
-    is_monitored` verbatim — a DECORATION, never a filter: this Reel is still listed and
-    its historical comments/sentiment are still fully visible when `False`, only the
-    badge in `inbox_page.py` changes. `False` means "not currently monitored", which
-    covers both "explicitly turned off" and "no `monitored_media` row at all".
+    `monitoring_state` (QUA-149) is what the badge shows — one of the `MONITORING_*`
+    constants above, computed from `is_monitored` AND the persisted publication date by
+    the shared rule, never from `is_monitored` alone: a monitored Reel past its window is
+    `expired` (no longer synced). `pending` is a monitored legacy Reel whose date is not
+    read yet — it IS still synced, so it reads as monitored, with a hint.
+
+    `is_monitored` (QUA-94) still mirrors the raw `monitored_media.is_monitored` flag —
+    a DECORATION, never a filter: this Reel is still listed and its historical
+    comments/sentiment stay fully visible whatever its state.
     """
 
     thread_id: str
@@ -120,6 +189,7 @@ class ReelSummaryVM:
     caption: str
     permalink: str
     is_monitored: bool
+    monitoring_state: str = MONITORING_INACTIVE
 
 
 @dataclass(frozen=True)

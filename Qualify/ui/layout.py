@@ -107,10 +107,55 @@ if (!window.__qZenKey) {
 """
 
 
+# The Lucide `radar` icon (ISC), rotated 90° so its needle is the tail of a Q, and split
+# in two layers: the Q (inner ring, centre dot, needle) and the waves (outer ring, the
+# stray dot). Same 24-unit paths as the icon — nothing redrawn.
+_MARK_Q: tuple[str, ...] = (
+    "M16.24 7.76A6 6 0 1 0 8.23 16.67",
+    "M17.99 11.66A6 6 0 0 1 15.77 16.67",
+    "M12 18h.01",
+    "m13.41 10.59 5.66-5.66",
+)
+_MARK_WAVES: tuple[str, ...] = (
+    "M19.07 4.93A10 10 0 0 0 6.99 3.34",
+    "M2.29 9.62A10 10 0 1 0 21.31 8.35",
+    "M4 6h.01",
+)
+
+
+def qualify_mark(size: int = 22) -> rx.Component:
+    """The isotype (decided 2026-10-12): a Q that is also a radar. One hue, two
+    luminosities — the Q in accent 11, the waves in accent 9 at 45 % — so the near
+    signal stands out over the far ones. Radix variables, so it follows light/dark on
+    its own. Static copies for outside the app: ``assets/qualify-mark*.svg``."""
+    svg = rx.el.svg
+    return svg(
+        svg.g(
+            svg.g(
+                *(svg.path(d=d) for d in _MARK_WAVES),
+                stroke="var(--accent-9)",
+                stroke_opacity="0.45",
+            ),
+            svg.g(*(svg.path(d=d) for d in _MARK_Q), stroke="var(--accent-11)"),
+            svg.circle(cx=12, cy=12, r=2, fill="var(--accent-11)", stroke="var(--accent-11)"),
+            fill="none",
+            stroke_width="2",
+            stroke_linecap="round",
+            stroke_linejoin="round",
+            transform="rotate(90 12 12)",
+        ),
+        view_box="0 0 24 24",
+        width=f"{size}px",
+        height=f"{size}px",
+        flex_shrink="0",
+        aria_hidden="true",
+    )
+
+
 def brand_mark(size: int = 22, heading_size: str = "5") -> rx.Component:
-    """The wordmark: radar icon in accent + "Qualify". Same everywhere it appears."""
+    """The wordmark: the Q-radar mark + "Qualify". Same everywhere it appears."""
     return rx.hstack(
-        rx.icon("radar", size=size, color=rx.color("accent", 9)),
+        qualify_mark(size),
         # A text, not a heading: the wordmark must not enter the page outline as an h1.
         rx.text("Qualify", size=heading_size, weight="bold", letter_spacing="-0.02em"),
         align="center",
@@ -146,7 +191,10 @@ def _nav_row(
         gap="0.6rem",
         padding="0.5rem 0.6rem",
         border_radius=T.RADIUS_CONTROL,
-        background=rx.cond(active, rx.color("accent", 5), "transparent"),
+        # No fill of its own: the active/hover surface is the glass capsule that
+        # `assets/glass-nav.js` moves between rows (one per island). The flat fallback
+        # for a document without the script lives in `assets/qualify.css`, keyed on the
+        # wrapper's `aria-current="page"`.
         color=rx.cond(active, rx.color("accent", 11), rx.color("gray", 11)),
         font_weight=rx.cond(active, "600", "400"),
         opacity="0.55" if disabled else "1",
@@ -190,14 +238,20 @@ def _nav_item(label: str, icon: str, route: str, enabled: bool) -> rx.Component:
 
 
 def _island(*children: rx.Component, tint: str | None = None, **props) -> rx.Component:
-    """A floating block of the sidebar. `tint` names a zone; without one it is neutral."""
-    style = {
-        "background": T.zone_tint(tint) if tint else T.SURFACE_BG,
-        "border": T.zone_line(tint) if tint else T.BORDER,
+    """A floating block of the sidebar. `tint` names a zone; without one it is neutral.
+
+    The material (translucent fill, backdrop blur, inset highlight, hairline) is CSS —
+    `.q-island` in `assets/qualify.css`, "Liquid glass menu" — so light and dark are
+    two sets of variables rather than two trees. A zone only hands the stylesheet its
+    wash and its line colour through custom properties; the glass sits on top of them.
+    """
+    style: dict = {
         "padding": "0.4rem 0.35rem 0.5rem",
         "width": "100%",
         "class_name": "q-island",
     }
+    if tint:
+        style["style"] = {"--q-zone-tint": T.zone_tint(tint), "--q-zone-line": T.zone_line(tint)}
     style.update(props)
     return rx.vstack(*children, spacing="1", align_items="stretch", **style)
 
@@ -250,7 +304,7 @@ def tenant_block() -> rx.Component:
         rx.link(
             rx.hstack(
                 rx.text("Supported by", size="1", color=T.TEXT_MUTED),
-                rx.icon("radar", size=T.ICON_SM, color=rx.color("accent", 9)),
+                qualify_mark(T.ICON_SM),
                 rx.text("Qualify", size="1", weight="medium", color=rx.color("accent", 11)),
                 align="center",
                 spacing="1",
@@ -341,6 +395,14 @@ def _guest_islands() -> rx.Component:
 def sidebar() -> rx.Component:
     return rx.el.nav(
         rx.script(_ZEN_SHORTCUT),
+        # The liquid glass capsule and zen label (assets/qualify.css, "Liquid glass
+        # menu"). A plain `<script async src>` rendered here rather than an
+        # `rx.App(head_components=…)` entry: React 19 hoists an async script to the
+        # head and loads it once per document whatever page mounts the rail, and it
+        # does not depend on react-helmet (which `head_components` use, and which only
+        # injects on Reflex >= 0.9.9 — the shared venv was at 0.9.7 on 2026-10-08).
+        # The file guards its own double-run.
+        rx.el.script(src="/glass-nav.js", async_=True),
         tenant_block(),
         rx.cond(
             AuthState.is_guest,
@@ -429,12 +491,16 @@ def page_header(
         title_block,
         rx.spacer(),
         *actions,
-        rx.color_mode.button(),
+        # Ghost: the toggle is a page control, never the page's one solid action (P3).
+        rx.color_mode.button(variant="ghost", color_scheme="gray"),
         width="100%",
         padding=T.PAD_HEADER,
         align="center",
         spacing="3",
         wrap="wrap",
+        # A sheet of glass pinned to the top of the panel (`.q-page-header`,
+        # assets/qualify.css): the panel is the scroll container, so `sticky` works.
+        class_name="q-page-header",
     )
 
 
@@ -494,6 +560,37 @@ def _mobile_nav_backdrop() -> rx.Component:
     )
 
 
+# The Glass Lab's two dials that CSS cannot hold: refraction (feDisplacementMap scale)
+# and surface frequency (feTurbulence baseFrequency = dial / 1000). Mirrored as the
+# `--q-lab-refraction` / `--q-lab-frequency` records in assets/qualify.css, which is
+# where the other dials live — change both when the Lab changes.
+LAB_REFRACTION = 21
+LAB_FREQUENCY = 9
+
+_REFRACTION_SVG = f"""<svg width="0" height="0" aria-hidden="true" focusable="false">
+  <filter id="q-refraction" x="-40%" y="-40%" width="180%" height="180%">
+    <feTurbulence type="fractalNoise" baseFrequency="{LAB_FREQUENCY / 1000:.3f}"
+      numOctaves="2" seed="12" result="noise"/>
+    <feDisplacementMap in="SourceGraphic" in2="noise" scale="{LAB_REFRACTION}"/>
+  </filter>
+</svg>"""
+
+
+def _refraction_filter() -> rx.Component:
+    """The SVG filter every glass surface's depth layer refracts through
+    (`.q-island::before { filter: url(#q-refraction) }`). Rendered once per shell;
+    sized to nothing and kept in the flow (a `display: none` SVG would not resolve
+    as a filter target in every browser)."""
+    return rx.html(
+        _REFRACTION_SVG,
+        position="absolute",
+        width="0",
+        height="0",
+        overflow="hidden",
+        aria_hidden="true",
+    )
+
+
 def app_shell(*children: rx.Component, spacing: str = "0", rail: bool = True) -> rx.Component:
     """Sidebar + page panel, floating on the app ground. Pass ``page_header`` first,
     then the body blocks. ``rail=False`` drops the sidebar (and its phone toggle): the
@@ -526,6 +623,7 @@ def app_shell(*children: rx.Component, spacing: str = "0", rail: bool = True) ->
         else []
     )
     return rx.hstack(
+        _refraction_filter(),
         *chrome,
         rx.el.main(
             rx.vstack(
@@ -554,7 +652,9 @@ def app_shell(*children: rx.Component, spacing: str = "0", rail: bool = True) ->
         width="100%",
         spacing="0",
         align_items="start",
-        background=T.GROUND,
+        # The ground is `T.GROUND` plus a soft mesh of the two zone colours (`.q-ground`,
+        # assets/qualify.css): the glass islands need something behind them to refract.
+        class_name="q-ground",
         height="100vh",
         overflow="hidden",
     )

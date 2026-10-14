@@ -34,6 +34,7 @@ from .creative_state import CreativeState
 from .tenant import tenant_uuid
 from .ui import card, progress_panel, tone_badge
 from .ui import tokens as T
+from .upload_names import safe_upload_name
 
 logger = logging.getLogger(__name__)
 
@@ -259,7 +260,7 @@ class BrandDocumentState(rx.State):
         except Exception:  # noqa: BLE001 — any read failure is the same message
             self._say(source, _UPLOAD_FAILED, "error")
             return None
-        name = PurePath(upload.name or source).name
+        name = safe_upload_name(upload.name or source)  # never a separator (PR #100 review)
         try:
             brief_ai.read_document(name, data)  # refuse early what the model cannot read
         except brief_ai.UnsupportedDocument as exc:
@@ -466,7 +467,7 @@ def _proposal_row(row: rx.Var[dict[str, str]]) -> rx.Component:
         align="start",
         width="100%",
         padding_y="0.5rem",
-        border_bottom=f"1px solid {rx.color('gray', 4)}",
+        border_bottom=T.BORDER,
     )
 
 
@@ -497,6 +498,7 @@ def proposals_panel(source: str) -> rx.Component:
                         rx.icon("check", size=T.ICON_SM),
                         "Aplicar seleccionados",
                         on_click=BrandDocumentState.apply_proposals(source),
+                        variant="soft",
                         size="2",
                     ),
                     rx.button(

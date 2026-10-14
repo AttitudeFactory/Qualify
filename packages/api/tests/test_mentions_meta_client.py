@@ -13,6 +13,7 @@ from qualify_api.connections.resolver import _InjectedAuthClient
 from qualify_api.mentions.meta_client import (
     HttpMentionedContentClient,
     MentionedContentReadError,
+    safe_permalink,
 )
 
 SETTINGS = MetaOAuthSettings(
@@ -151,3 +152,75 @@ async def test_get_mentioned_comment_malformed_inner_object_never_echoes_the_bod
         raise AssertionError("expected MentionedContentReadError")
     except MentionedContentReadError as exc:
         assert "a very private complaint" not in str(exc)
+
+
+# --------------------------------------------------------------------------------------
+# get_mentioned_permalink (QUA-152) — its own call, instagram.com https links only
+# --------------------------------------------------------------------------------------
+
+
+async def test_permalink_for_a_caption_mention_asks_only_for_the_permalink() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["fields"] = request.url.params["fields"]
+        return _json(
+            {"mentioned_media": {"id": "m1", "permalink": "https://www.instagram.com/p/X1/"}}
+        )
+
+    link = await _client(handler).get_mentioned_permalink(
+        ig_user_id=IG_USER, media_id="m1", comment_id=None
+    )
+
+    assert seen["fields"] == "mentioned_media.media_id(m1){permalink}"
+    assert link == "https://www.instagram.com/p/X1/"
+
+
+async def test_permalink_for_a_comment_mention_expands_its_media() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["fields"] = request.url.params["fields"]
+        return _json(
+            {
+                "mentioned_comment": {
+                    "id": "c1",
+                    "media": {"id": "m1", "permalink": "https://www.instagram.com/reel/Y2/"},
+                }
+            }
+        )
+
+    link = await _client(handler).get_mentioned_permalink(
+        ig_user_id=IG_USER, media_id="m1", comment_id="c1"
+    )
+
+    assert seen["fields"] == "mentioned_comment.comment_id(c1){media{permalink}}"
+    assert link == "https://www.instagram.com/reel/Y2/"
+
+
+async def test_an_omitted_permalink_is_none() -> None:
+    link = await _client(
+        lambda request: _json({"mentioned_media": {"id": "m1"}})
+    ).get_mentioned_permalink(ig_user_id=IG_USER, media_id="m1", comment_id=None)
+
+    assert link is None
+
+
+async def test_a_refused_permalink_call_raises_the_read_error() -> None:
+    client = _client(lambda request: _json({"error": {"code": 100}}, status=400))
+
+    try:
+        await client.get_mentioned_permalink(ig_user_id=IG_USER, media_id="m1", comment_id=None)
+    except MentionedContentReadError as exc:
+        assert exc.platform_code == 100
+    else:
+        raise AssertionError("expected MentionedContentReadError")
+
+
+def test_only_https_instagram_links_are_accepted() -> None:
+    assert safe_permalink("https://www.instagram.com/p/A/") == "https://www.instagram.com/p/A/"
+    assert safe_permalink("https://instagram.com/p/A/") == "https://instagram.com/p/A/"
+    assert safe_permalink("http://www.instagram.com/p/A/") is None
+    assert safe_permalink("https://evil.example/p/A/") is None
+    assert safe_permalink("javascript:alert(1)") is None
+    assert safe_permalink(None) is None

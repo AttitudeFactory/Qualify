@@ -13,7 +13,10 @@ publishing — `/publish` publishes now, QUA-111 will execute planned events.
 
 Built only from the design system (`ui/`): `app_shell` + `page_header` + `page_body`,
 states by tone through `signal_pill`, identity through `platform_badge`, colours through
-`T.*`, so light and dark mode need no rules of their own.
+`T.*`, so light and dark mode need no rules of their own. The calendar's skin — the week
+as one card, hairlines, today, the chips and their state edge — is the `q-cal-*` family in
+`assets/qualify-planner.css` (plan D13: the weekly hour grid is kept, only its material
+moved to the Liquid Glass card).
 """
 
 from __future__ import annotations
@@ -41,7 +44,16 @@ from .post_card import (
     readiness_note,
     temperature_badge,
 )
-from .ui import app_shell, callout, page_body, page_header, platform_badge, tag
+from .ui import (
+    app_shell,
+    callout,
+    card,
+    page_body,
+    page_header,
+    platform_badge,
+    skeleton_rows,
+    tag,
+)
 from .ui import tokens as T
 
 _TONES = ("ok", "warn", "error", "info", "neutral", "accent")
@@ -56,14 +68,6 @@ _CLAMP_2 = {
     "overflow": "hidden",
 }
 _ONE_LINE = {"overflow": "hidden", "text_overflow": "ellipsis", "white_space": "nowrap"}
-
-
-def _accent_edge(event) -> rx.Var:
-    return rx.cond(
-        event.overdue,
-        f"3px solid {rx.color('amber', 9)}",
-        f"3px solid {rx.color('accent', 8)}",
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -111,25 +115,27 @@ def _card_menu(event) -> rx.Component:
 
 
 def _chip_edge(event) -> rx.Var:
-    """The chip's left edge carries the state at a glance: green published, tomato
+    """The chip's left edge carries the state at a glance: grass published, tomato
     failed; for what is still planned, accent approved, amber pending or overdue,
-    tomato rejected, gray cancelled/unknown."""
+    tomato rejected, gray cancelled/unknown. Computed from the state alone, as one
+    `.q-cal-chip--*` class per state (`assets/qualify-planner.css`), so the colour is
+    the sheet's, not the page's."""
     return rx.match(
         event.status_label,
-        ("Publicado", rx.color("green", 9)),
-        ("Fallido", rx.color("tomato", 9)),
+        ("Publicado", "q-cal-chip--published"),
+        ("Fallido", "q-cal-chip--failed"),
         rx.cond(
             event.muted,
-            rx.color("gray", 8),
+            "q-cal-chip--idle",
             rx.cond(
                 event.overdue,
-                rx.color("amber", 9),
+                "q-cal-chip--overdue",
                 rx.match(
                     event.approval_tone,
-                    ("ok", rx.color("accent", 9)),
-                    ("warn", rx.color("amber", 9)),
-                    ("error", rx.color("tomato", 9)),
-                    rx.color("gray", 8),
+                    ("ok", "q-cal-chip--approved"),
+                    ("warn", "q-cal-chip--pending"),
+                    ("error", "q-cal-chip--rejected"),
+                    "q-cal-chip--idle",
                 ),
             ),
         ),
@@ -210,16 +216,16 @@ def _calendar_chip(event) -> rx.Component:
                 event.status_label,
                 (
                     "Publicado",
-                    rx.icon("circle-check", size=12, color=rx.color("green", 10), flex_shrink="0"),
+                    rx.icon("circle-check", size=12, color=T.tone_color("ok", 10), flex_shrink="0"),
                 ),
                 (
                     "Fallido",
-                    rx.icon("circle-x", size=12, color=rx.color("tomato", 10), flex_shrink="0"),
+                    rx.icon("circle-x", size=12, color=T.tone_color("error", 10), flex_shrink="0"),
                 ),
                 rx.cond(
                     event.overdue | (event.readiness_note != ""),
                     rx.icon(
-                        "triangle-alert", size=11, color=rx.color("amber", 10), flex_shrink="0"
+                        "triangle-alert", size=11, color=T.tone_color("warn", 10), flex_shrink="0"
                     ),
                 ),
             ),
@@ -258,17 +264,13 @@ def _calendar_chip(event) -> rx.Component:
         + " · "
         + event.status_label
         + rx.cond(event.approval_label != event.status_label, " · " + event.approval_label, ""),
-        padding="0.2rem 0.35rem",
-        border=T.BORDER,
-        border_left="3px solid",
-        border_left_color=_chip_edge(event),
-        border_radius=T.RADIUS_CONTROL,
-        background=T.SURFACE_BG,
-        background_color=rx.cond(event.muted, rx.color("gray", 2), T.SURFACE_BG),
-        color=rx.cond(event.muted, T.TEXT_MUTED, "inherit"),
-        text_decoration=rx.cond(event.muted, "line-through", "none"),
-        width="100%",
-        class_name="q-lift q-chip-temp q-chip-temp--" + event.temperature,
+        # The chip is a control on the calendar card (`.q-cal-chip`): its material, its
+        # state edge and its muted look all come from the sheet.
+        class_name="q-cal-chip "
+        + _chip_edge(event).to(str)
+        + rx.cond(event.muted, " q-cal-chip--muted", "")
+        + " q-lift q-chip-temp q-chip-temp--"
+        + event.temperature,
     )
     return rx.hover_card.root(
         rx.hover_card.trigger(rx.box(chip, class_name="q-chip-trigger")),
@@ -282,8 +284,8 @@ def _status_glyph(event) -> rx.Component:
     """The event's state as a small icon: ✓ published, ✕ failed, ⏱ otherwise."""
     return rx.match(
         event.status_label,
-        ("Publicado", rx.icon("circle-check", size=13, color=rx.color("green", 10))),
-        ("Fallido", rx.icon("circle-x", size=13, color=rx.color("tomato", 10))),
+        ("Publicado", rx.icon("circle-check", size=13, color=T.tone_color("ok", 10))),
+        ("Fallido", rx.icon("circle-x", size=13, color=T.tone_color("error", 10))),
         rx.icon("clock", size=13, color=T.TEXT_MUTED),
     )
 
@@ -353,7 +355,7 @@ def _more_pill(cell) -> rx.Component:
                             "+" + cell.more_count.to_string() + " más",
                             size="2",
                             weight="bold",
-                            color=rx.color("accent", 11),
+                            color=T.tone_color("accent", 11),
                         ),
                         rx.spacer(),
                         rx.text(cell.heading, size="1", color=T.TEXT_MUTED),
@@ -382,46 +384,33 @@ def _more_pill(cell) -> rx.Component:
 
 
 def _day_header(day) -> rx.Component:
+    """A day's head, sticky over its column: name and number, today in the accent with
+    its underline, a past day muted (`.q-cal-day*`, `assets/qualify-planner.css`)."""
     return rx.center(
         rx.hstack(
             rx.text(
                 day.weekday,
                 size="2",
-                color=rx.cond(day.is_today, rx.color("accent", 11), T.TEXT_MUTED),
                 weight=rx.cond(day.is_today, "bold", "regular"),
+                class_name="q-cal-day-name",
             ),
-            rx.text(
-                day.day_number,
-                size="2",
-                weight="bold",
-                class_name="q-nums",
-                color=rx.cond(
-                    day.is_today,
-                    rx.color("accent", 11),
-                    rx.cond(day.is_past, T.TEXT_MUTED, T.TEXT_STRONG),
-                ),
-            ),
+            rx.text(day.day_number, size="2", weight="bold", class_name="q-nums q-cal-day-num"),
             spacing="2",
             align="center",
         ),
-        padding="0.6rem 0.25rem",
-        border_left=T.BORDER,
-        border_bottom=rx.cond(day.is_today, f"2px solid {rx.color('accent', 9)}", T.BORDER),
-        background=T.SURFACE_BG,
-        position="sticky",
-        top="0",
-        z_index="2",
+        class_name=rx.cond(
+            day.is_today,
+            "q-cal-head q-cal-day q-cal-day--today",
+            rx.cond(day.is_past, "q-cal-head q-cal-day q-cal-day--past", "q-cal-head q-cal-day"),
+        ),
     )
-
-
-_HAIRLINE = f"1px solid {rx.color('gray', 4)}"
 
 
 def _hour_cell(cell) -> rx.Component:
     """A clickable slot: a click on its empty area opens "Nueva publicación" for this
     day and hour. A not-past slot shows a "+" on hover (`q-planner-slot*` in
-    `assets/qualify.css`) so it reads as "you can add here": in the corner when the slot
-    is empty, under the chips when it has posts. Past days get neither."""
+    `assets/qualify-planner.css`) so it reads as "you can add here": in the corner when
+    the slot is empty, under the chips when it has posts. Past days get neither."""
     slot = rx.vstack(
         rx.cond(
             ~cell.is_past & (cell.cards.length() == 0),
@@ -440,7 +429,11 @@ def _hour_cell(cell) -> rx.Component:
         on_click=PlannerState.open_assign_for_slot(cell.day_iso, cell.hour),
         title=rx.cond(cell.is_past, "", "Nueva publicación a esta hora"),
         cursor=rx.cond(cell.is_past, "default", "pointer"),
-        class_name="q-planner-slot",
+        class_name=rx.cond(
+            cell.is_today,
+            "q-planner-slot q-cal-cell q-cal-cell--today",
+            "q-planner-slot q-cal-cell",
+        ),
         position="relative",
         spacing="1",
         padding="0.25rem",
@@ -449,9 +442,6 @@ def _hour_cell(cell) -> rx.Component:
         # fullest cell (grid rows stretch), so the seven days stay aligned.
         min_height="4.25rem",
         height="100%",  # fills its row when a neighbour cell made it taller
-        border_top=_HAIRLINE,
-        border_left=_HAIRLINE,
-        background=rx.cond(cell.is_today, rx.color("accent", 2), "transparent"),
         width="100%",
         min_width="0",
     )
@@ -479,23 +469,19 @@ def _hour_row(row) -> rx.Component:
             id="q-hour-" + row.key.to_string(),
             padding="0.25rem 0.5rem 0 0",
             text_align="right",
-            border_top=_HAIRLINE,
             white_space="nowrap",
+            class_name="q-cal-hour",
         ),
         rx.foreach(row.cells, _hour_cell),
     )
 
 
 def _calendar() -> rx.Component:
+    """The week as one card (`.q-cal`): the sticky day row on top, the hour axis on the
+    left, seven columns of slots. Material and hairlines are the sheet's."""
     return rx.box(
         rx.grid(
-            rx.box(
-                border_bottom=T.BORDER,
-                background=T.SURFACE_BG,
-                position="sticky",
-                top="0",
-                z_index="2",
-            ),
+            rx.box(class_name="q-cal-head"),
             rx.foreach(PlannerState.days, _day_header),
             rx.foreach(PlannerState.rows, _hour_row),
             # Radix's own `columns` prop, not a css `grid_template_columns`: Radix's base
@@ -504,9 +490,7 @@ def _calendar() -> rx.Component:
             columns=_GRID_COLUMNS,
             width="100%",
         ),
-        border=T.BORDER,
-        border_radius=T.RADIUS_CARD,
-        background=T.SURFACE_BG,
+        class_name="q-cal",
         # The grid scrolls inside its own box (the sticky day headers stick to it), so
         # the whole week fits the screen the way a calendar does, not a tall page.
         id=SCROLL_ID,
@@ -585,18 +569,15 @@ def _list_item(event) -> rx.Component:
                 class_name="q-plist-body",
             ),
             _card_menu(event),
-            padding="0.75rem 0.9rem",
-            border=T.BORDER,
-            border_left=_accent_edge(event),
-            border_radius=T.RADIUS_CARD,
-            background=T.SURFACE_BG,
-            box_shadow=T.ELEV_ISLAND,
             opacity=rx.cond(event.muted, "0.55", "1"),
             align="center",
             spacing="2",
             flex="1",
             min_width="0",
-            class_name="q-lift",
+            # The card material with the state on its left edge (amber when overdue).
+            class_name=rx.cond(
+                event.overdue, "q-plist-card q-plist-card--overdue q-lift", "q-plist-card q-lift"
+            ),
         ),
         align="start",
         spacing="3",
@@ -614,7 +595,7 @@ def _list_day(day) -> rx.Component:
                     day.title,
                     size="4",
                     as_="h2",
-                    color=rx.cond(day.is_today, rx.color("accent", 11), T.TEXT_STRONG),
+                    color=rx.cond(day.is_today, T.tone_color("accent", 11), T.TEXT_STRONG),
                 ),
                 rx.spacer(),
                 rx.cond(
@@ -696,7 +677,9 @@ def _post_option(post) -> rx.Component:
 
 
 def _unscheduled_panel() -> rx.Component:
-    return rx.vstack(
+    """The POSTs waiting to be planned, as a `card` beside the week (sticky on a wide
+    screen, stacked under it on a narrow one)."""
+    body = rx.vstack(
         rx.hstack(
             rx.heading("Sin programar", size="3", as_="h2"),
             rx.badge(
@@ -739,13 +722,14 @@ def _unscheduled_panel() -> rx.Component:
             ),
         ),
         spacing="2",
+        width="100%",
+        align_items="start",
+    )
+    return card(
+        body,
+        padding="0.9rem",
         width=rx.breakpoints(initial="100%", lg="20rem"),
         min_width=rx.breakpoints(initial="0", lg="20rem"),
-        padding="0.9rem",
-        border=T.BORDER,
-        border_radius=T.RADIUS_CARD,
-        background=T.CARD_BG,
-        align_items="start",
         position=rx.breakpoints(initial="static", lg="sticky"),
         top="0",
     )
@@ -907,7 +891,7 @@ def _tag_filter_row(tag) -> rx.Component:
         width="100%",
         padding="0.35rem 0.5rem",
         border_radius=T.RADIUS_CONTROL,
-        _hover={"background": rx.color("gray", 3)},
+        _hover={"background": T.SURFACE_BG_RAISED},
     )
     confirm = rx.vstack(
         rx.text(
@@ -931,7 +915,7 @@ def _tag_filter_row(tag) -> rx.Component:
         width="100%",
         padding="0.5rem",
         border_radius=T.RADIUS_CONTROL,
-        background=rx.color("red", 3),
+        background=T.tone_color("error", 3),
     )
     return rx.cond(PlannerState.delete_tag_id == tag.id, confirm, row)
 
@@ -939,11 +923,11 @@ def _tag_filter_row(tag) -> rx.Component:
 def _tags_filter() -> rx.Component:
     empty = rx.vstack(
         rx.center(
-            rx.icon("tag", size=T.ICON_MD, color=rx.color("accent", 11)),
+            rx.icon("tag", size=T.ICON_MD, color=T.tone_color("accent", 11)),
             width="2.75rem",
             height="2.75rem",
             border_radius="999px",
-            background=rx.color("accent", 3),
+            background=T.tone_color("accent", 3),
         ),
         rx.text("Sin etiquetas", size="2", weight="bold"),
         rx.text(
@@ -1053,8 +1037,8 @@ def _tz_row(option) -> rx.Component:
             width="100%",
             padding="0.35rem 0.5rem",
             border_radius=T.RADIUS_CONTROL,
-            background=rx.cond(selected, rx.color("gray", 3), "transparent"),
-            _hover={"background": rx.color("gray", 3)},
+            background=rx.cond(selected, T.SURFACE_BG_RAISED, "transparent"),
+            _hover={"background": T.SURFACE_BG_RAISED},
         ),
     )
 
@@ -1111,7 +1095,8 @@ def _timezone_picker() -> rx.Component:
 def _views() -> rx.Component:
     """Calendario on desktop when chosen; Lista when chosen, and always on a phone. The
     responsive switch lives on plain divs (`q-planner-desktop` / `q-planner-mobile` in
-    `assets/qualify.css`), not on Radix boxes, whose base `display` can outrank it."""
+    `assets/qualify-planner.css`), not on Radix boxes, whose base `display` can outrank
+    it."""
     return rx.box(
         rx.cond(
             PlannerState.is_list_view,
@@ -1129,8 +1114,8 @@ def _views() -> rx.Component:
 
 def _loading() -> rx.Component:
     return rx.vstack(
-        rx.skeleton(rx.box(height="2.5rem"), width="100%"),
-        rx.skeleton(rx.box(height="24rem"), width="100%"),
+        skeleton_rows(1, height="2.5rem"),
+        skeleton_rows(1, height="24rem", radius=T.RADIUS_CARD),
         spacing="2",
         width="100%",
     )

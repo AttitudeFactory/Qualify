@@ -214,6 +214,8 @@ def test_reel_summary_vm_has_only_scalar_summary_fields() -> None:
         "caption": "str",
         "permalink": "str",
         "is_monitored": "bool",
+        # QUA-149: one of the four `MONITORING_*` constants — a scalar label.
+        "monitoring_state": "str",
     }
 
 
@@ -355,7 +357,7 @@ def test_sync_now_forwards_the_session_tenant_unchanged() -> None:
     fake = _recording_sync(SyncSummary(media_checked=0, new_comments=0), calls)
     with _patched(sync_comments=fake):
         _run_coro(inbox_provider.sync_now(tenant_id=_OTHER_TENANT, connection_id=_CONNECTION))
-    assert calls == [{"tenant_id": _OTHER_TENANT, "connection_id": _CONNECTION}]
+    assert calls == [{"tenant_id": _OTHER_TENANT, "connection_id": _CONNECTION, "run_token": None}]
 
 
 def test_sync_now_projects_summary_fields() -> None:
@@ -365,6 +367,10 @@ def test_sync_now_projects_summary_fields() -> None:
         truncated=True,
         skipped_missing_media=("18034792133641940",),
         deleted_comments=1,
+        expired_skipped=4,
+        metadata_backfilled=3,
+        metadata_failed=2,
+        metadata_deferred=1,
     )
     with _patched(sync_comments=_recording_sync(summary, [])):
         vm = _run_coro(inbox_provider.sync_now(tenant_id=_TENANT, connection_id=_CONNECTION))
@@ -373,6 +379,9 @@ def test_sync_now_projects_summary_fields() -> None:
     assert vm.truncated is True
     assert vm.skipped_missing_media == ("18034792133641940",)
     assert vm.deleted_comments == 1
+    # QUA-149: lifecycle counters reach the VM (and from there the inbox.sync.done log).
+    assert (vm.expired_skipped, vm.metadata_backfilled) == (4, 3)
+    assert (vm.metadata_failed, vm.metadata_deferred) == (2, 1)
 
 
 def test_sync_now_projects_the_defaults_of_a_plain_summary() -> None:

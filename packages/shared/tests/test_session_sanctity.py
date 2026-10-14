@@ -12,13 +12,16 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# The only files allowed to build Sessions/Engines: the sanctioned doors. Three roles,
-# three doors — `qualify_app` (request path), `qualify_admin` (provisioning, BYPASSRLS),
-# `qualify_credential` (decrypt-only, RLS-subject, the sole holder of the ciphertext grant).
+# The only files allowed to build Sessions/Engines: the sanctioned doors —
+# `qualify_app` (request path), `qualify_admin` (provisioning, BYPASSRLS),
+# `qualify_credential` (decrypt-only, RLS-subject, the sole holder of the ciphertext grant),
+# and the two Meta-webhook roles of `webhook.py` (QUA-147: INSERT-only receiver, and the
+# intake processor).
 _SANCTIONED = {
     _REPO_ROOT / "packages/shared/src/qualify_shared/db/session.py",
     _REPO_ROOT / "packages/shared/src/qualify_shared/db/admin.py",
     _REPO_ROOT / "packages/shared/src/qualify_shared/db/credential.py",
+    _REPO_ROOT / "packages/shared/src/qualify_shared/db/webhook.py",
 }
 
 _FORBIDDEN = {

@@ -13,6 +13,7 @@
 #   secrets   QUALIFY_DEPLOY_SSH_KEY          private half of the restricted deploy key
 #             QUALIFY_DEPLOY_SSH_TARGET       e.g. deploy@203.0.113.10
 #             QUALIFY_DEPLOY_SSH_KNOWN_HOSTS  `ssh-keyscan -t ed25519 <ip>` output, verified
+#             CLIQ_DEVOPS_WEBHOOK_URL         optional: #devops notice per deploy (job `notify`)
 #   variable  QUALIFY_AUTO_DEPLOY = true      also deploy every green `ci` run on main
 #                                             (without it: manual runs only)
 #   server    /opt/qualify/bin/server-deploy.sh + authorized_keys line + `docker login ghcr.io`
@@ -186,3 +187,48 @@ jobs:
             case "|$want|" in *"|$got|"*) ;; *) exit 1 ;; esac
           done
           echo "Deployed $SHA" >> "$GITHUB_STEP_SUMMARY"
+
+  # Tell #devops (Zoho Cliq) how every deploy that was attempted ended — success or failure,
+  # and at which stage. Skipped when auto-deploy is off and nothing was attempted. A missing
+  # webhook or an unreachable Cliq never fails the deploy: it is a notice, not a gate.
+  #   secret  CLIQ_DEVOPS_WEBHOOK_URL   https://cliq.zoho.eu/api/v2/channelsbyname/devops/message?zapikey=<token>
+  notify:
+    needs: [resolve, images, deploy]
+    if: >-
+      always() &&
+      (needs.resolve.result == 'failure' || needs.resolve.outputs.go == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Post the result to #devops
+        env:
+          WEBHOOK: ${{ secrets.CLIQ_DEVOPS_WEBHOOK_URL }}
+          RESOLVE: ${{ needs.resolve.result }}
+          IMAGES: ${{ needs.images.result }}
+          DEPLOY: ${{ needs.deploy.result }}
+          SHA: ${{ needs.resolve.outputs.sha || github.event.workflow_run.head_sha || inputs.ref }}
+          TRIGGER: ${{ github.event_name == 'workflow_dispatch' && format('manual, by {0}', github.actor) || 'auto, green ci on main' }}
+          ACTION: ${{ inputs.skip_migrate && 'rollback (no migrate)' || 'deploy' }}
+          PUBLIC_URL: ${{ vars.QUALIFY_PUBLIC_URL || 'https://qualify.attitudefactory.co' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "::notice::CLIQ_DEVOPS_WEBHOOK_URL is not set; no #devops notice."
+            exit 0
+          fi
+          if [ "$DEPLOY" = success ]; then
+            head="✅ Producción actualizada"
+          elif [ "$RESOLVE" = failure ]; then
+            head="❌ Deploy rechazado (el commit no está en main)"
+          elif [ "$IMAGES" != success ]; then
+            head="❌ Deploy falló construyendo las imágenes — producción sin cambios"
+          else
+            head="❌ Deploy falló en el servidor o en el smoke test — revisar"
+          fi
+          text=$(printf '%s\n%s %s · %s\nCommit: %s%s\nRun: %s\n%s' \
+            "$head" "$ACTION" "${SHA:0:7}" "$TRIGGER" "$COMMIT_URL" "$SHA" "$RUN_URL" "$PUBLIC_URL")
+          jq -n --arg text "$text" '{text: $text}' |
+            curl -sS --fail --max-time 15 -H 'Content-Type: application/json' \
+              --data @- "$WEBHOOK" >/dev/null ||
+            echo "::warning::Could not post to #devops (Cliq); the deploy result stands."

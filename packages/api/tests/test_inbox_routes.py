@@ -18,6 +18,7 @@ from qualify_api.http.app import create_app
 from qualify_api.inbox.client import CommentsReadError
 from qualify_api.inbox.composition import InboxConnectionInactive, UnknownInboxConnection
 from qualify_api.inbox.service import CommentsPermissionMissing, SyncBudgetExhausted, SyncSummary
+from qualify_api.inbox.sync_guard import SyncAlreadyRunning
 
 TENANT = UUID("44444444-4444-4444-8444-444444444444")
 USER = UUID("55555555-5555-4555-8555-555555555555")
@@ -61,6 +62,10 @@ def test_sync_returns_the_summary(monkeypatch: pytest.MonkeyPatch) -> None:
         "truncated": False,
         "skipped_missing_media": [],
         "deleted_comments": 0,
+        "expired_skipped": 0,
+        "metadata_backfilled": 0,
+        "metadata_failed": 0,
+        "metadata_deferred": 0,
     }
 
 
@@ -165,6 +170,10 @@ def test_skipped_missing_media_is_still_a_200_never_a_502(monkeypatch: pytest.Mo
         "truncated": False,
         "skipped_missing_media": ["18034792133641940"],
         "deleted_comments": 0,
+        "expired_skipped": 0,
+        "metadata_backfilled": 0,
+        "metadata_failed": 0,
+        "metadata_deferred": 0,
     }
 
 
@@ -191,6 +200,10 @@ def test_deleted_comments_is_passed_through_as_a_normal_200(
         "truncated": False,
         "skipped_missing_media": [],
         "deleted_comments": 1,
+        "expired_skipped": 0,
+        "metadata_backfilled": 0,
+        "metadata_failed": 0,
+        "metadata_deferred": 0,
     }
 
 
@@ -214,6 +227,10 @@ def test_truncated_sync_is_still_a_200_with_the_flag_set(monkeypatch: pytest.Mon
         "truncated": True,
         "skipped_missing_media": [],
         "deleted_comments": 0,
+        "expired_skipped": 0,
+        "metadata_backfilled": 0,
+        "metadata_failed": 0,
+        "metadata_deferred": 0,
     }
 
 
@@ -266,6 +283,10 @@ def test_the_seam_does_not_depend_on_the_transport(monkeypatch: pytest.MonkeyPat
         "truncated": False,
         "skipped_missing_media": [],
         "deleted_comments": 0,
+        "expired_skipped": 0,
+        "metadata_backfilled": 0,
+        "metadata_failed": 0,
+        "metadata_deferred": 0,
     }
     assert busy_response.json() == {
         "media_checked": 5,
@@ -273,6 +294,10 @@ def test_the_seam_does_not_depend_on_the_transport(monkeypatch: pytest.MonkeyPat
         "truncated": False,
         "skipped_missing_media": [],
         "deleted_comments": 0,
+        "expired_skipped": 0,
+        "metadata_backfilled": 0,
+        "metadata_failed": 0,
+        "metadata_deferred": 0,
     }
 
 
@@ -314,3 +339,45 @@ def test_an_inactive_connection_is_409_not_404(monkeypatch: pytest.MonkeyPatch) 
 
     assert response.status_code == 409
     assert "revoked" in response.json()["detail"]
+
+
+def test_a_sync_already_running_is_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fn(*, tenant_id: UUID, connection_id: UUID) -> SyncSummary:
+        raise SyncAlreadyRunning(str(connection_id))
+
+    harness = Harness(monkeypatch, fn)
+
+    response = harness.http.post(
+        "/api/inbox/sync", json={"connection_id": str(CONNECTION)}, headers=AUTH
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "sync already running"}
+
+
+def test_lifecycle_counters_are_passed_through_as_a_normal_200(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """QUA-149: expired media skipped and legacy-metadata reads are counts on a
+    successful pass, never an error."""
+
+    async def fn(*, tenant_id: UUID, connection_id: UUID) -> SyncSummary:
+        return SyncSummary(
+            media_checked=1,
+            new_comments=0,
+            expired_skipped=4,
+            metadata_backfilled=3,
+            metadata_failed=2,
+            metadata_deferred=1,
+        )
+
+    harness = Harness(monkeypatch, fn)
+
+    response = harness.http.post(
+        "/api/inbox/sync", json={"connection_id": str(CONNECTION)}, headers=AUTH
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["expired_skipped"], body["metadata_backfilled"]) == (4, 3)
+    assert (body["metadata_failed"], body["metadata_deferred"]) == (2, 1)

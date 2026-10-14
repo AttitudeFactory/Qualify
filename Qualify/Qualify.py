@@ -93,7 +93,18 @@ _FONTS = (
     "&display=swap"
 )
 app = rx.App(
-    stylesheets=[_FONTS, "/qualify.css"],
+    # The design system (tokens, Liquid Glass bridge + Radix skin, shell, primitives)
+    # first; then one sheet per domain, each owned by its migration batch (plan D10).
+    stylesheets=[
+        _FONTS,
+        "/qualify.css",
+        "/qualify-planner.css",
+        "/qualify-brand.css",
+        "/qualify-publish.css",
+        "/qualify-inbox.css",
+        "/qualify-listen.css",
+        "/qualify-creative.css",
+    ],
     html_lang="es",
     # Bug reported 2026-08-25, revised same day: bottom-right (Sonner's own default)
     # is the preferred position after all — the actual complaint was that it was easy
@@ -107,16 +118,12 @@ app = rx.App(
     api_transformer=avatar_api,
     # The Brand Kit deck's pointer drag (`assets/deck-drag.js`) and the influence
     # ranking's (`assets/rank-drag.js`): plain DOM, delegated at the document, so they
-    # are loaded once here rather than per page.
-    #
-    # `rx.script` wraps the tag in react-helmet. On Reflex < 0.9.9 Helmet flushed the
-    # head in a requestAnimationFrame that could be lost around hydration, so these
-    # scripts (and every inline `rx.script` in a component) sometimes never reached
-    # `document.head` — measured on 2026-10-01 and 2026-10-08 with a venv at 0.9.7.
-    # Reflex 0.9.9 passes `defer=False` to Helmet (the upstream fix); `uv.lock` pins
-    # 0.9.12 and the production image (built `--frozen`) was verified on 2026-10-08
-    # to inject all of them. If they are missing in dev, sync the venv to the lock
-    # before changing the mechanism.
+    # are loaded once here rather than per page. These go through react-helmet, which
+    # only injects them on Reflex >= 0.9.9 (`defer=False`); a venv left at 0.9.7 shows
+    # them missing in dev while production (lock: 0.9.12) is fine — measured
+    # 2026-10-08, PR #101. The sidebar's `assets/glass-nav.js` is loaded by the rail
+    # itself (`ui.layout.sidebar`, an async `<script>` React hoists), independent of
+    # the Reflex version.
     head_components=[rx.script(src="/deck-drag.js"), rx.script(src="/rank-drag.js")],
 )
 

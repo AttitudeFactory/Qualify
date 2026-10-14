@@ -230,12 +230,10 @@ def _palette_summary() -> rx.Component:
                 CreativeState.palette_colors,
                 lambda colour: rx.box(
                     title=colour,
+                    class_name="q-brand-swatch",  # the ring; the colour is the brand's data
                     width="1.1rem",
                     height="1.1rem",
-                    border_radius="9999px",
                     background=colour,
-                    box_shadow=f"inset 0 0 0 1px {rx.color('gray', 7)}",
-                    flex_shrink="0",
                 ),
             ),
             spacing="2",
@@ -317,12 +315,10 @@ def _busy() -> rx.Var[bool]:
 
 def _section_icon(icon: str) -> rx.Component:
     return rx.center(
-        rx.icon(icon, size=18, color=T.tone_color("accent", 10)),
+        rx.icon(icon, size=18),
+        class_name="q-brand-glyph",
         width="2.25rem",
         height="2.25rem",
-        border_radius="9999px",
-        background=T.tone_color("accent", 3),
-        flex_shrink="0",
     )
 
 
@@ -394,7 +390,8 @@ def _section(key: str, title: str, icon: str, blurb: str) -> rx.Component:
             align_items="stretch",
         ),
         id=f"seccion-{key}",
-        border=rx.cond(is_open, f"1px solid {T.tone_color('accent', 8)}", T.BORDER),
+        # the open section wears the accent edge (`.q-kit-section--open`) over the card
+        class_name=rx.cond(is_open, "q-card q-kit-section--open", "q-card"),
         scroll_margin_top="1rem",
     )
 
@@ -468,7 +465,7 @@ def _voice_first_view() -> rx.Component:
                 width="100%",
                 align_items="stretch",
             ),
-            border=f"1px solid {T.tone_color('accent', 8)}",
+            class_name="q-card q-kit-section--open",
         ),
         spacing="4",
         width="100%",
@@ -526,6 +523,9 @@ def _header_action() -> rx.Component:
         rx.button(
             rx.icon("pencil", size=T.ICON_SM),
             "Editar Brand Kit",
+            # P3, one solid per screen: while Tu voz y tono is what the page shows, its
+            # "Guardar voz" is the primary action and this one steps back to soft
+            variant=rx.cond(needs_voice(), "soft", "solid"),
             size="2",
             on_click=BrandEditState.start_editing,
         ),

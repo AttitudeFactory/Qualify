@@ -69,7 +69,7 @@ def verify_now_button(conn: ConnectionVM) -> rx.Component:
         on_click=ConnectionsState.check_health_now(conn.id),
         loading=ConnectionsState.checking_connection_ids.contains(conn.id),
         variant="soft",
-        color_scheme="gray",
+        **T.tone_scheme("neutral"),
         size="1",
     )
 
@@ -81,13 +81,7 @@ def _scope_chip(label: rx.Var[str]) -> rx.Component:
 def _provisional_mark() -> rx.Component:
     """Honest 'por verificar' marker for capabilities resting on the Meta doc bug."""
     return rx.tooltip(
-        rx.badge(
-            rx.icon("circle-help", size=12),
-            "por verificar",
-            color_scheme="amber",
-            variant="soft",
-            size="1",
-        ),
+        tone_badge("por verificar", "warn", icon="circle-help"),
         content=(
             "Esta capacidad depende de una fila de la documentación de Meta que "
             "aún no está verificada por una segunda fuente."
@@ -111,7 +105,7 @@ def _disabled_capability(cap: CapabilityVM) -> rx.Component:
         rx.icon("circle-x", size=15, color=T.TEXT_FAINT),
         rx.vstack(
             rx.hstack(
-                rx.text(cap.label, size="2", color=rx.color("gray", 11)),
+                rx.text(cap.label, size="2", color=T.TEXT_MUTED),
                 rx.cond(cap.provisional, _provisional_mark(), rx.fragment()),
                 spacing="2",
                 align="center",
@@ -133,36 +127,36 @@ def degraded_banner() -> rx.Component:
     tenant, and the grant that comes back is matched to the existing row by account,
     not by an id the button carries.
     """
-    return rx.callout(
+    # The system's callout in the `warn` tone (card material in the tone's hairline).
+    # The button is `soft` in the same tone: a card's own action, never the page's one
+    # solid (P3) — several degraded cards would otherwise each claim it.
+    return callout(
         rx.hstack(
-            rx.vstack(
-                rx.text(
-                    "La conexión dejó de responder. Reconéctala para restaurar el "
-                    "acceso a esta cuenta.",
-                    size="2",
-                ),
-                spacing="0",
-                align_items="start",
+            rx.text(
+                "La conexión dejó de responder. Reconéctala para restaurar el "
+                "acceso a esta cuenta.",
+                size="2",
             ),
             rx.spacer(),
             rx.button(
                 rx.icon("refresh-cw", size=15),
                 "Reconectar",
                 on_click=ConnectionsState.start_connect_flow,
-                color_scheme="amber",
+                variant="soft",
                 size="2",
+                **T.tone_scheme("warn"),
             ),
             width="100%",
             align="center",
+            wrap="wrap",
+            spacing="3",
         ),
-        icon="triangle-alert",
-        color_scheme="amber",
-        width="100%",
+        "warn",
     )
 
 
 def revoked_banner() -> rx.Component:
-    return rx.callout(
+    return callout(
         rx.hstack(
             rx.text(
                 "El acceso fue revocado. Vuelve a conectar la cuenta para reactivarla.",
@@ -173,15 +167,17 @@ def revoked_banner() -> rx.Component:
                 rx.icon("plug", size=15),
                 "Volver a conectar",
                 on_click=ConnectionsState.start_connect_flow,
-                color_scheme="tomato",
+                variant="soft",
                 size="2",
+                **T.tone_scheme("error"),
             ),
             width="100%",
             align="center",
+            wrap="wrap",
+            spacing="3",
         ),
+        "error",
         icon="circle-x",
-        color_scheme="tomato",
-        width="100%",
     )
 
 
@@ -193,7 +189,7 @@ def disconnect_action(conn: ConnectionVM) -> rx.Component:
                 rx.icon("unplug", size=15),
                 "Desconectar",
                 variant="soft",
-                color_scheme="gray",
+                **T.tone_scheme("neutral"),
                 size="2",
             ),
         ),
@@ -208,13 +204,15 @@ def disconnect_action(conn: ConnectionVM) -> rx.Component:
             ),
             rx.flex(
                 rx.alert_dialog.cancel(
-                    rx.button("Cancelar", variant="soft", color_scheme="gray"),
+                    rx.button("Cancelar", variant="soft", **T.tone_scheme("neutral")),
                 ),
                 rx.alert_dialog.action(
+                    # The confirmation of a destructive action: solid in the error
+                    # tone (docs/design-system.md §5.5) — the dialog's own one solid.
                     rx.button(
                         "Desconectar",
-                        color_scheme="tomato",
                         on_click=ConnectionsState.disconnect_connection(conn.id),
+                        **T.tone_scheme("error"),
                     ),
                 ),
                 spacing="3",
@@ -335,8 +333,7 @@ def _empty_state() -> rx.Component:
     return empty_state(
         "link-2-off",
         "Aún no conectas ninguna cuenta",
-        "Conecta tu primera cuenta de Instagram o Facebook para empezar a "
-        "escuchar y responder desde Qualify.",
+        "Conecta tu primera red social para empezar a escuchar y responder desde Qualify.",
         action=rx.button(
             rx.icon("plus", size=16),
             "Conectar cuenta",
@@ -350,7 +347,7 @@ def _empty_state() -> rx.Component:
 def connections_topbar() -> rx.Component:
     return page_header(
         "Cuentas conectadas",
-        "Estado de salud y permisos de tus cuentas de Instagram y Facebook",
+        "Revisa que tus redes sociales estén conectadas y con los permisos que Qualify necesita.",
     )
 
 

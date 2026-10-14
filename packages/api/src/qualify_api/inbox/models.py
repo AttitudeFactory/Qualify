@@ -16,6 +16,7 @@ from uuid import UUID
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    DateTime,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -44,6 +45,15 @@ class MonitoredMedia(Base):
         ),
         Index("ix_monitored_media_tenant", "tenant_id"),
         Index("ix_monitored_media_active", "connection_id", "is_monitored"),
+        CheckConstraint(
+            "metadata_error IS NULL OR metadata_error IN "
+            "('transient', 'permission', 'rate_limited', 'unknown')",
+            name="ck_monitored_media_metadata_error",
+        ),
+        CheckConstraint(
+            "metadata_fetched_at IS NULL OR media_posted_at IS NOT NULL",
+            name="ck_monitored_media_fetched_has_posted_at",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -57,6 +67,23 @@ class MonitoredMedia(Base):
     is_monitored: Mapped[bool] = mapped_column(Boolean, nullable=False)
     created_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
+    # QUA-149 (0046): the media's own metadata, kept so it stays readable after the
+    # 14-day window ends. NULL on rows monitored before 0046 until the sync reads them once.
+    media_posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    caption: Mapped[str | None] = mapped_column(Text, nullable=True)
+    permalink: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_product_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_fetched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    metadata_attempted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    metadata_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # QUA-146 (0049): Meta's `media_type`, verbatim and without a CHECK — an unknown
+    # value is kept, and interpreted only by `qualify_api.inbox.media_type`. NULL = not
+    # read yet (0049 backfilled `VIDEO` on Reels only).
+    media_type: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Thread(Base):

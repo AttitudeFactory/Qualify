@@ -46,10 +46,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import replace
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -91,12 +90,14 @@ from .ui import (
     page_body,
     page_header,
     progress_panel,
+    qualify_mark,
     removable_pill,
     skeleton_card,
     tag,
     tone_badge,
 )
 from .ui import tokens as T
+from .upload_names import safe_upload_name as _safe_upload_name
 from .voice_lab import voice_analysis_result, voice_lab_panel
 
 logger = logging.getLogger(__name__)
@@ -113,21 +114,6 @@ def _finish_background_task(task: asyncio.Task) -> None:
 
 
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
-#: What an uploaded file's name may keep in its staged key: letters (any script),
-#: digits, spaces, dots, dashes and underscores.
-_UNSAFE_NAME_CHARS = re.compile(r"[^\w .-]+")
-
-
-def _safe_upload_name(raw: str | None) -> str:
-    """The name a dropped file is staged under: its last path component only, without
-    separators, control characters or leading dots, so a crafted name can never write
-    outside the tenant's folder (PR #86 review). Reflex already reduces it to a
-    basename; this does not rely on that."""
-    name = PurePath((raw or "").replace("\\", "/")).name
-    name = _UNSAFE_NAME_CHARS.sub("_", name).lstrip(". ")[-120:]
-    return name or "archivo"
-
-
 _UPLOAD_FAILED = "No se pudo leer el archivo. Inténtalo de nuevo."
 _FONT_TOO_LARGE = (
     f"El archivo de fuente pesa más de {brand_fonts.MAX_FONT_BYTES // (1024 * 1024)} MB."
@@ -986,15 +972,11 @@ def _step_icon(name: str | rx.Var[str]) -> rx.Component:
     `name` accepts a plain string OR an `rx.Var[str]` — `rx.icon` is fine either
     way."""
     return rx.box(
-        rx.icon(name, size=22, color=T.tone_color("accent", 10)),
+        rx.icon(name, size=22),
+        class_name="q-brand-glyph",
         width="3rem",
         height="3rem",
         min_height="3rem",
-        border_radius="9999px",
-        background=T.tone_color("accent", 3),
-        display="flex",
-        align_items="center",
-        justify_content="center",
     )
 
 
@@ -1064,21 +1046,21 @@ def _choice_card(
 
     ``icon`` is optional and additive (§ request 2026-09-09): a per-option leading
     icon in the same tinted-circle treatment `_step_icon` gives a whole step's own
-    anchor icon, just smaller and inline."""
+    anchor icon, just smaller and inline.
+
+    Liquid Glass (lote E1): the button wears `.q-choice` — the card material, a 2px
+    accent ring when selected, a softer ring and the kit's lift under the pointer — so
+    no colour or shadow is written here."""
     return rx.el.button(
         rx.hstack(
             *(
                 [
                     rx.box(
-                        rx.icon(icon, size=18, color=T.tone_color("accent", 10)),
+                        rx.icon(icon, size=18),
+                        class_name="q-brand-glyph",
                         width="2.25rem",
                         height="2.25rem",
                         min_width="2.25rem",
-                        border_radius="9999px",
-                        background=T.tone_color("accent", 3),
-                        display="flex",
-                        align_items="center",
-                        justify_content="center",
                     )
                 ]
                 if icon is not None
@@ -1099,15 +1081,11 @@ def _choice_card(
             rx.cond(
                 selected,
                 rx.box(
-                    rx.icon("check", size=12, color="white"),
+                    rx.icon("check", size=12),
+                    class_name="q-choice-check",
                     width="1.15rem",
                     height="1.15rem",
                     min_width="1.15rem",
-                    border_radius="9999px",
-                    background=T.tone_color("accent", 9),
-                    display="flex",
-                    align_items="center",
-                    justify_content="center",
                 ),
             ),
             width="100%",
@@ -1116,21 +1094,9 @@ def _choice_card(
         ),
         on_click=on_click,
         type="button",
-        cursor="pointer",
-        width="100%",
-        padding="1rem 1.25rem",
-        border="none",
-        font="inherit",
-        text_align="left",
-        border_radius=T.RADIUS_CARD,
-        background=T.CARD_BG,
-        box_shadow=rx.cond(
-            selected,
-            f"inset 0 0 0 2px {T.tone_color('accent', 9)}",
-            f"inset 0 0 0 1px {rx.color('gray', 7)}",
-        ),
-        transition=f"box-shadow {T.DUR} {T.EASE}",
-        _hover={"box_shadow": f"inset 0 0 0 2px {T.tone_color('accent', 7)}"},
+        # The material, the rings (selected / hovered) and the lift are `.q-choice`
+        # (`assets/qualify-brand.css`): the card material of the system on a button.
+        class_name=rx.cond(selected, "q-choice q-choice--on", "q-choice"),
     )
 
 
@@ -1181,15 +1147,10 @@ def _competitor_card(handle: str, role: str, blurb: str) -> rx.Component:
     return card(
         rx.hstack(
             rx.box(
-                rx.icon("user-round", size=18, color=T.TEXT_FAINT),
+                rx.icon("user-round", size=18),
+                class_name="q-brand-avatar",
                 width="2.5rem",
                 height="2.5rem",
-                border_radius="9999px",
-                background=T.SURFACE_BG_RAISED,
-                display="flex",
-                align_items="center",
-                justify_content="center",
-                flex_shrink="0",
             ),
             rx.vstack(
                 rx.hstack(
@@ -1422,15 +1383,14 @@ _TILE_FRAME = {
     "spacing": "2",
     "align_items": "start",
     "width": "100%",
-    "border": T.BORDER,
-    "border_radius": T.RADIUS_CARD,
-    "background": T.CARD_BG,
+    # the card material (`ui.card`'s own class, `.q-card`): a tile is a block
+    "class_name": "q-card",
     "padding": "0.75rem",
 }
 
 
 def _mark_icon(size: int) -> rx.Component:
-    return rx.icon("radar", size=size, color=rx.color("accent", 9))
+    return qualify_mark(size)
 
 
 def _mark_text(size: str) -> rx.Component:
@@ -1463,8 +1423,8 @@ def _logo_version_reference(key: str) -> rx.Component:
             width="3.75rem",
             height="3.75rem",
             border_radius="9999px",
-            border=f"2px solid {rx.color('accent', 9)}",
-            background=rx.color("accent", 3),
+            border=f"2px solid {T.tone_color('accent', 9)}",
+            background=T.tone_color("accent", 3),
         )
     return rx.center(mark, height=_REFERENCE_HEIGHT, width="100%", opacity="0.85")
 
@@ -1535,6 +1495,8 @@ def _logo_version_card(key: str, name: str, blurb: str) -> rx.Component:
                 spacing="1",
                 align="center",
                 width="100%",
+                class_name="q-dropzone",
+                padding="0.5rem",
             ),
             id=upload_id,
             accept=_LOGO_VERSION_ACCEPT,
@@ -1542,9 +1504,10 @@ def _logo_version_card(key: str, name: str, blurb: str) -> rx.Component:
             on_drop=BrandWizardState.handle_logo_version_upload(
                 rx.upload_files(upload_id=upload_id), key
             ),
-            border=f"1px dashed {rx.color('gray', 7)}",
-            border_radius=T.RADIUS_CONTROL,
-            padding="0.5rem",
+            # `rx.upload` paints its own dashed border unless told not to: the box
+            # above is the dropzone's look (`.q-dropzone`), the upload only its hit area
+            border="none",
+            padding="0",
             width="100%",
             cursor="pointer",
         ),
@@ -1579,8 +1542,7 @@ def _extra_card(extra: rx.Var[dict[str, str]]) -> rx.Component:
                 width="100%",
                 object_fit="contain",
             ),
-            border=f"1px solid {rx.color('gray', 5)}",
-            border_radius=T.RADIUS_CONTROL,
+            class_name="q-tile-preview",
             padding="0.5rem",
             width="100%",
         ),
@@ -1622,11 +1584,10 @@ def _add_extra_skeleton() -> rx.Component:
     Qualify's example (§ request 2026-09-30: no text skeleton beside it)."""
     return rx.center(
         rx.center(
-            rx.icon("plus", size=22, color=T.tone_color("accent", 10)),
+            rx.icon("plus", size=22),
+            class_name="q-brand-glyph q-brand-glyph--square",
             width="3.25rem",
             height="3.25rem",
-            border_radius=T.RADIUS_CONTROL,
-            background=T.tone_color("accent", 3),
         ),
         height=_REFERENCE_HEIGHT,
         width="100%",
@@ -1646,8 +1607,7 @@ def _add_extra_button() -> rx.Component:
                 spacing="1",
                 align="center",
                 width="100%",
-                border=f"1px dashed {rx.color('gray', 7)}",
-                border_radius=T.RADIUS_CONTROL,
+                class_name="q-dropzone",
                 padding="0.5rem",
             ),
             rx.text("Añadir más", size="2", weight="medium"),
@@ -1728,8 +1688,7 @@ def _font_card(key: str, name: str, blurb: str) -> rx.Component:
             ),
             height=_REFERENCE_HEIGHT,
             width="100%",
-            border=f"1px solid {rx.color('gray', 5)}",
-            border_radius=T.RADIUS_CONTROL,
+            class_name="q-tile-preview",
             padding="0.5rem",
         ),
         rx.hstack(
@@ -1773,15 +1732,16 @@ def _font_card(key: str, name: str, blurb: str) -> rx.Component:
                 spacing="2",
                 align="center",
                 width="100%",
+                class_name="q-dropzone",
+                padding="0.5rem",
             ),
             id=upload_id,
             accept=_FONT_ACCEPT,
             max_files=1,
             max_size=brand_fonts.MAX_FONT_BYTES,  # the server re-checks (`_stage_logo_file`)
             on_drop=BrandWizardState.handle_font_upload(rx.upload_files(upload_id=upload_id), key),
-            border=f"1px dashed {rx.color('gray', 7)}",
-            border_radius=T.RADIUS_CONTROL,
-            padding="0.5rem",
+            border="none",  # the hstack above is the dropzone's look (`.q-dropzone`)
+            padding="0",
             width="100%",
             cursor="pointer",
         ),
@@ -1797,7 +1757,7 @@ def _detect_fonts_button() -> rx.Component:
         rx.button(
             rx.cond(
                 BrandWizardState.detecting_fonts,
-                rx.spinner(size="1"),
+                loading_spinner("sm"),
                 rx.icon("sparkles", size=T.ICON_SM),
             ),
             "Detectar desde tu logo",
@@ -1996,7 +1956,7 @@ def _swatch(colour: rx.Var[str], index: rx.Var[int]) -> rx.Component:
                 cursor="pointer",
             ),
             rx.box(
-                rx.icon("pencil", size=11, color="white"),
+                rx.icon("pencil", size=11),  # ink: `.q-brand-swatch .q-swatch-edit`
                 class_name="q-swatch-edit",
                 position="absolute",
                 inset="0",
@@ -2007,40 +1967,27 @@ def _swatch(colour: rx.Var[str], index: rx.Var[int]) -> rx.Component:
                 pointer_events="none",
             ),
             title=colour,
-            class_name="q-swatch",
+            # `.q-swatch` is what the pencil's hover rule keys on (`assets/qualify.css`);
+            # `.q-brand-swatch--edit` (`assets/qualify-brand.css`) is the ring and the
+            # grow under the pointer (P8: a size change, so the spring). The colour
+            # itself is the brand's data, so it stays inline.
+            class_name="q-swatch q-brand-swatch q-brand-swatch--edit",
             position="relative",
-            cursor="pointer",
             width="2.25rem",
             height="2.25rem",
-            border_radius="9999px",
             background=colour,
-            box_shadow=f"inset 0 0 0 1px {rx.color('gray', 7)}",
-            # P8: a transform/scale change is a size change, not a color/opacity one —
-            # `T.SPRING`, not `T.EASE` (same split `.q-lift`'s own transform/box-shadow
-            # pair makes in `assets/qualify.css`).
-            transition=f"transform {T.DUR} {T.SPRING}",
-            _hover={"transform": "scale(1.15)"},
         ),
         rx.el.button(
-            rx.icon("x", size=10, color="white"),
+            rx.icon("x", size=10),
             on_click=BrandWizardState.remove_colour(index).stop_propagation,
             aria_label="Quitar este color",
             type="button",
-            border="none",
-            padding="0",
-            font="inherit",
+            class_name="q-swatch-remove",
             position="absolute",
             top="-0.25rem",
             right="-0.25rem",
             width="1rem",
             height="1rem",
-            border_radius="9999px",
-            background=T.tone_color("error", 9),
-            display="flex",
-            align_items="center",
-            justify_content="center",
-            cursor="pointer",
-            box_shadow=f"0 0 0 2px {rx.color('gray', 1)}",
         ),
         position="relative",
         width="2.25rem",
@@ -2072,14 +2019,8 @@ def _colour_wheel() -> rx.Component:
             border="none",
             cursor="pointer",
         ),
-        position="relative",
-        width="11rem",
-        height="11rem",
-        border_radius="9999px",
-        background=(
-            "conic-gradient(#ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)"
-        ),
-        box_shadow=f"inset 0 0 0 1px {rx.color('gray', 7)}",
+        # the hue circle and its ring are `.q-colour-wheel` (`assets/qualify-brand.css`)
+        class_name="q-colour-wheel",
     )
 
 
@@ -2098,15 +2039,14 @@ def _colour_readout() -> rx.Component:
     default `min-width` is `auto`, which lets its content (a long colour name) force
     the column wider than the card's `max_width` and spill past the border — this is
     the standard fix, paired with `overflow`/`text_overflow` on the two text lines."""
-    return rx.box(
+    return card(
         rx.hstack(
             rx.box(
+                class_name="q-brand-swatch",
                 width="2.5rem",
                 height="2.5rem",
                 border_radius=T.RADIUS_CARD,
                 background=BrandWizardState.picker_color,
-                box_shadow=f"inset 0 0 0 1px {rx.color('gray', 7)}",
-                flex_shrink="0",
             ),
             rx.vstack(
                 rx.text(
@@ -2129,13 +2069,9 @@ def _colour_readout() -> rx.Component:
             width="100%",
             min_width="0",
         ),
-        # No `cursor: pointer` and no `q-lift` any more: this card does nothing when
+        # Not `interactive=True` (no cursor, no lift): this card does nothing when
         # clicked, so it must not advertise that it does.
         padding="0.65rem 0.9rem",
-        border=f"1px solid {rx.color('gray', 7)}",
-        border_radius=T.RADIUS_CARD,
-        background=T.CARD_BG,
-        width="100%",
         max_width="16rem",
     )
 
@@ -2476,12 +2412,10 @@ def _palette_recap_row() -> rx.Component:
                     CreativeState.palette_colors,
                     lambda colour: rx.box(
                         title=colour,
+                        class_name="q-brand-swatch",
                         width="1.25rem",
                         height="1.25rem",
-                        border_radius="9999px",
                         background=colour,
-                        box_shadow=f"inset 0 0 0 1px {rx.color('gray', 7)}",
-                        flex_shrink="0",
                     ),
                 ),
                 spacing="2",
@@ -2632,14 +2566,10 @@ def _step_insights() -> rx.Component:
                 object_fit="contain",
             ),
             rx.box(
-                rx.icon("image", size=28, color=T.TEXT_FAINT),
+                rx.icon("image", size=28),
+                class_name="q-brand-avatar",
                 width="6rem",
                 height="6rem",
-                border_radius="9999px",
-                background=T.SURFACE_BG_RAISED,
-                display="flex",
-                align_items="center",
-                justify_content="center",
             ),
         ),
         _competitors_section(),
@@ -3026,7 +2956,7 @@ def brand_choice_index() -> rx.Component:
                         _fork_option(
                             "user-plus",
                             "No, todavía no",
-                            "Te ayudamos a crear tu cuenta en Instagram o TikTok antes de empezar.",
+                            "Te ayudamos a crear tu cuenta en una red social antes de empezar.",
                             "/brand/connect/setup",
                         ),
                         spacing="4",
@@ -3127,7 +3057,7 @@ def brand_connect_setup_index() -> rx.Component:
     return _wizard_shell(
         page_header(
             "Crea tu cuenta",
-            "Necesitas un perfil en Instagram o TikTok antes de leer tu contenido.",
+            "Necesitas un perfil en una red social antes de leer tu contenido.",
             title_size="8",
         ),
         page_body(
@@ -6160,9 +6090,7 @@ def _metric_tile(item: rx.Var[dict[str, str]]) -> rx.Component:
         rx.text(item["hint"], size="1", color=T.TEXT_FAINT, line_height="1.3"),
         spacing="1",
         align_items="start",
-        padding="0.75rem 0.85rem",
-        border_radius=T.RADIUS_CONTROL,
-        background=T.SURFACE_BG_RAISED,
+        class_name="q-metric-tile",
         width="100%",
         min_width="0",
     )
@@ -6496,7 +6424,7 @@ def _rank_card(item: rx.Var[dict[str, str]], bucket: str) -> rx.Component:
                 rx.badge(
                     "#",
                     item["rank"],
-                    variant=rx.cond(pinned, "solid", "soft"),
+                    variant="soft",
                     radius="full",
                     size="1",
                 ),
@@ -6544,7 +6472,9 @@ def _rank_card(item: rx.Var[dict[str, str]], bucket: str) -> rx.Component:
             align="center",
             width="100%",
         ),
-        class_name="q-rank-card",
+        # `.q-rank-card` (`assets/qualify-brand.css`) is the card material under the
+        # motion `rank-drag.js` drives; `--pinned` the accent wash of the hand-added ones
+        class_name=rx.cond(pinned, "q-rank-card q-rank-card--pinned", "q-rank-card"),
         custom_attrs={
             "data-rank-group": f"{bucket}:" + item["group"].to(str),
             "data-rank-key": item["key"],
@@ -6555,10 +6485,6 @@ def _rank_card(item: rx.Var[dict[str, str]], bucket: str) -> rx.Component:
         },
         on_drag_start=BrandConnectState.rank_pick(item["key"]),
         on_drop=BrandConnectState.rank_drop(item["key"]),
-        border=T.BORDER,
-        border_radius=T.RADIUS_CARD,
-        background=rx.cond(pinned, T.tone_color("accent", 2), T.CARD_BG),
-        padding="0.75rem",
         width="100%",
         min_width="0",
     )
@@ -6778,7 +6704,7 @@ def _avatar(item: rx.Var[dict[str, str]], size: str, icon_size: int) -> rx.Compo
     operator grabs a deck card by its picture (that would swallow the card's own
     drag)."""
     return rx.box(
-        rx.icon("user-round", size=icon_size, color=T.TEXT_FAINT),
+        rx.icon("user-round", size=icon_size),
         rx.cond(
             item["avatar_src"] != "",
             rx.el.img(
@@ -6798,17 +6724,10 @@ def _avatar(item: rx.Var[dict[str, str]], size: str, icon_size: int) -> rx.Compo
                 },
             ),
         ),
-        position="relative",
+        class_name="q-brand-avatar",
         width=size,
         height=size,
         min_width=size,
-        border_radius="9999px",
-        background=T.SURFACE_BG_RAISED,
-        display="flex",
-        align_items="center",
-        justify_content="center",
-        overflow="hidden",
-        flex_shrink="0",
     )
 
 
@@ -6816,7 +6735,7 @@ def _profile_avatar(size: str, icon_size: int) -> rx.Component:
     """The read account's own picture, through the same proxy and with the same
     icon-under-the-picture fallback as `_avatar` (`BrandConnectState.profile_avatar_src`)."""
     return rx.box(
-        rx.icon("user", size=icon_size, color=T.TEXT_FAINT),
+        rx.icon("user", size=icon_size),
         rx.cond(
             BrandConnectState.profile_avatar_src != "",
             rx.el.img(
@@ -6831,17 +6750,10 @@ def _profile_avatar(size: str, icon_size: int) -> rx.Component:
                 custom_attrs={"referrerpolicy": "no-referrer", "draggable": "false"},
             ),
         ),
-        position="relative",
+        class_name="q-brand-avatar",
         width=size,
         height=size,
         min_width=size,
-        border_radius="9999px",
-        background=T.SURFACE_BG_RAISED,
-        display="flex",
-        align_items="center",
-        justify_content="center",
-        overflow="hidden",
-        flex_shrink="0",
     )
 
 
@@ -7040,11 +6952,6 @@ def _deck_zone(bucket: str, title: str, blurb: str, arrow: str, area: str) -> rx
         display="flex",
         align_items="center",
         justify_content="center",
-        font="inherit",
-        color=T.TEXT_MUTED,
-        border="none",
-        border_radius=T.RADIUS_CARD,
-        cursor="pointer",
     )
 
 
@@ -7392,6 +7299,7 @@ def _manual_form() -> rx.Component:
                     ),
                     rx.cond(BrandConnectState.adding_manual, "Revisando…", "Agregar"),
                     type="submit",
+                    variant="soft",
                     size="2",
                     radius=_CONTROL_RADIUS,
                     disabled=BrandConnectState.adding_manual,

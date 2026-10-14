@@ -42,10 +42,7 @@ from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
 
-_NOT_CONFIGURED = (
-    "Canva todavía no está configurado: faltan las credenciales de la integración "
-    "(QUALIFY_CANVA_CLIENT_ID / QUALIFY_CANVA_CLIENT_SECRET)."
-)
+_NOT_CONFIGURED = "La conexión con Canva no está configurada. Avisa al equipo."
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
 _NOT_CONNECTED = "Tu conexión con Canva caducó. Conéctala de nuevo."
 _CANVA_DOWN = "Canva no respondió. Inténtalo de nuevo en un momento."

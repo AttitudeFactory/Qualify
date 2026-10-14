@@ -38,6 +38,19 @@
       },
       "port": 3320,
       "autoPort": false
+    },
+    {
+      "name": "liquid-glass-kit",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "3330",
+        "--directory",
+        "reference/liquid-glass/LiquidOS-Studio-v3.0"
+      ],
+      "port": 3330,
+      "autoPort": false
     }
   ]
 }

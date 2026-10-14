@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#080b14">
+  <meta name="description" content="LiquidOS Studio — a dependency-free liquid glass design system, visual builder, component library, and interactive demo suite.">
+  <title>LiquidOS Studio 3.0</title>
+  <link rel="stylesheet" href="assets/css/liquidos.css">
+  <link rel="stylesheet" href="assets/css/studio.css">
+</head>
+<body class="studio-body">
+  <canvas id="ambient-canvas" aria-hidden="true"></canvas>
+  <div class="studio-aurora studio-aurora--one" aria-hidden="true"></div>
+  <div class="studio-aurora studio-aurora--two" aria-hidden="true"></div>
+
+  <div class="studio-shell">
+    <header class="studio-topbar lq-glass lq-glass--clear" id="studio-topbar">
+      <a class="studio-brand" href="#overview" data-route-link="overview" aria-label="LiquidOS Studio home">
+        <span class="studio-brand__mark" aria-hidden="true"></span>
+        <span class="studio-brand__copy">
+          <strong>LiquidOS Studio</strong>
+          <small>Design system · v3.0</small>
+        </span>
+      </a>
+
+      <nav class="studio-topbar__center" aria-label="Primary navigation">
+        <a class="studio-topbar__link" href="#overview" data-route-link="overview">Overview</a>
+        <a class="studio-topbar__link" href="#builder" data-route-link="builder">Glass Lab</a>
+        <a class="studio-topbar__link" href="#components" data-route-link="components">Components</a>
+        <a class="studio-topbar__link" href="#demos" data-route-link="demos">Demos</a>
+      </nav>
+
+      <div class="studio-topbar__actions">
+        <button class="lq-button lq-icon-button lq-button--ghost lq-tooltip" id="theme-toggle" type="button" data-tooltip="Change appearance" aria-label="Change appearance">
+          <span data-icon="moon"></span>
+        </button>
+        <a class="lq-button lq-button--primary lq-button--pill" href="#builder" data-route-link="builder">
+          <span data-icon="flask"></span>
+          Open Glass Lab
+        </a>
+        <button class="menu-trigger" id="menu-trigger" type="button" aria-controls="liquid-menu" aria-expanded="false" aria-label="Open navigation">
+          <span class="menu-trigger__lines" aria-hidden="true"><span></span><span></span><span></span></span>
+        </button>
+      </div>
+    </header>
+
+    <aside class="liquid-menu" id="liquid-menu" aria-hidden="true" inert>
+      <div class="liquid-menu__inner">
+        <nav class="liquid-menu__nav" aria-label="LiquidOS sections">
+          <a class="liquid-menu__link" href="#overview" data-route-link="overview">
+            <span class="liquid-menu__index">01</span>
+            <span class="liquid-menu__label">Overview</span>
+            <span class="liquid-menu__arrow" data-icon="arrow"></span>
+          </a>
+          <a class="liquid-menu__link" href="#builder" data-route-link="builder">
+            <span class="liquid-menu__index">02</span>
+            <span class="liquid-menu__label">Glass Lab</span>
+            <span class="liquid-menu__arrow" data-icon="arrow"></span>
+          </a>
+          <a class="liquid-menu__link" href="#components" data-route-link="components">
+            <span class="liquid-menu__index">03</span>
+            <span class="liquid-menu__label">Components</span>
+            <span class="liquid-menu__arrow" data-icon="arrow"></span>
+          </a>
+          <a class="liquid-menu__link" href="#demos" data-route-link="demos">
+            <span class="liquid-menu__index">04</span>
+            <span class="liquid-menu__label">Demos</span>
+            <span class="liquid-menu__arrow" data-icon="arrow"></span>
+          </a>
+          <a class="liquid-menu__link" href="#docs" data-route-link="docs">
+            <span class="liquid-menu__index">05</span>
+            <span class="liquid-menu__label">Documentation</span>
+            <span class="liquid-menu__arrow" data-icon="arrow"></span>
+          </a>
+        </nav>
+
+        <div class="liquid-menu__aside">
+          <div class="liquid-menu__card lq-glass lq-glass--liquid">
+            <small>Inside this build</small>
+            <strong>One coherent LiquidOS</strong>
+            <p>Builder, components, interactions, and 17 redesigned application demos share the same tokens and runtime.</p>
+          </div>
+          <div class="liquid-menu__card lq-glass">
+            <small>Runtime</small>
+            <strong>Zero dependencies</strong>
+            <p>Plain HTML, CSS, and JavaScript. No Tailwind CDN, icon CDN, chart library, or placeholder service.</p>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="studio-main" id="studio-main">
+      <section class="studio-view" id="view-overview" data-view="overview">
+        <div class="hero-grid">
+          <div class="hero-copy">
+            <span class="studio-eyebrow">Liquid interaction system</span>
+            <h1>Design beyond <span>the flat screen.</span></h1>
+            <p>A rebuilt visual system for expressive interfaces: optically layered glass, responsive motion, production-ready controls, a live CSS builder, and a complete suite of interactive demos.</p>
+            <div class="hero-actions">
+              <a class="lq-button lq-button--primary lq-button--pill" href="#builder" data-route-link="builder">
+                <span data-icon="flask"></span>
+                Build an effect
+              </a>
+              <a class="lq-button lq-button--pill" href="#demos" data-route-link="demos">
+                <span data-icon="play"></span>
+                Explore demos
+              </a>
+            </div>
+            <div class="hero-meta">
+              <span>Dependency-free</span>
+              <span>Responsive</span>
+              <span>Reduced-motion aware</span>
+            </div>
+          </div>
+
+          <div class="hero-art" role="img" aria-label="Interactive LiquidOS interface preview">
+            <div class="hero-orbit" aria-hidden="true"></div>
+            <div class="hero-device lq-glass lq-glass--liquid">
+              <div class="hero-device__bar"><strong>LiquidOS</strong><span id="hero-clock">09:41</span></div>
+              <div class="hero-island">
+                <span class="hero-island__cover"></span>
+                <span class="hero-island__text"><strong>Prismatic Flow</strong><small>LiquidOS Studio</small></span>
+                <span class="hero-wave" aria-hidden="true">
+                  <i style="--wave:4"></i><i style="--wave:10"></i><i style="--wave:16"></i><i style="--wave:8"></i><i style="--wave:13"></i><i style="--wave:5"></i>
+                </span>
+              </div>
+              <div class="hero-device__grid">
+                <div class="hero-mini-card lq-glass lq-glass--clear">
+                  <div class="hero-mini-card__top"><span>Glass depth</span><span data-icon="layers"></span></div>
+                  <div class="hero-mini-card__value">24<small>px</small></div>
+                </div>
+                <div class="hero-mini-card lq-glass lq-glass--tint">
+                  <div class="hero-mini-card__top"><span>Motion</span><span data-icon="activity"></span></div>
+                  <div class="hero-mini-card__value">60<small>fps</small></div>
+                </div>
+                <div class="hero-mini-card hero-mini-card--wide lq-glass lq-glass--frosted">
+                  <div class="hero-mini-card__top"><span>System output</span><span>+31%</span></div>
+                  <svg class="mini-chart" viewBox="0 0 260 70" preserveAspectRatio="none" aria-hidden="true">
+                    <path d="M0 50H260M0 25H260"/>
+                    <path d="M0 55C22 45 30 48 49 39S85 46 104 29s35 5 55-5 27-22 46-12 35-9 55-8"/>
+                  </svg>
+                </div>
+              </div>
+            </div>
+            <div class="hero-float-chip hero-float-chip--one lq-glass lq-glass--clear"><span data-icon="sparkles"></span><span><strong>Optical sheen</strong><br>follows your pointer</span></div>
+            <div class="hero-float-chip hero-float-chip--two lq-glass lq-glass--clear"><span data-icon="shield"></span><span><strong>Accessible</strong><br>motion-safe controls</span></div>
+          </div>
+        </div>
+
+        <section class="studio-section lq-reveal">
+          <div class="metric-grid">
+            <article class="metric-card lq-glass"><small>Rebuilt demos</small><strong>17</strong><p>Every original concept, redesigned.</p></article>
+            <article class="metric-card lq-glass"><small>Component patterns</small><strong>60+</strong><p>Controls, data, media, and navigation.</p></article>
+            <article class="metric-card lq-glass"><small>Runtime packages</small><strong>0</strong><p>No CDN required to make the kit work.</p></article>
+            <article class="metric-card lq-glass"><small>Responsive range</small><strong>320+</strong><p>Phone through ultrawide layouts.</p></article>
+          </div>
+        </section>
+
+        <section class="studio-section lq-reveal">
+          <div class="section-heading">
+            <span class="studio-eyebrow">A complete system</span>
+            <h2>One visual language. Every layer.</h2>
+            <p>The new architecture keeps foundational glass styling separate from the Studio shell and demo experiences, making it easier to use pieces without dragging the entire project into an app.</p>
+          </div>
+          <div class="feature-grid">
+            <article class="feature-card lq-glass lq-glass--liquid">
+              <span class="feature-card__icon" data-icon="flask"></span>
+              <h3>Live Glass Lab</h3>
+              <p>Tune depth, blur, opacity, saturation, radius, tint, refraction, and scene. Export CSS, HTML, or tokens instantly.</p>
+              <div class="feature-card__foot"><span>Persistent presets</span><span data-icon="arrow"></span></div>
+            </article>
+            <article class="feature-card lq-glass lq-glass--frosted">
+              <span class="feature-card__icon" data-icon="components"></span>
+              <h3>Component Workbench</h3>
+              <p>Buttons, inputs, islands, navigation, tables, dialogs, loaders, charts, cards, status, and motion patterns.</p>
+              <div class="feature-card__foot"><span>Keyboard accessible</span><span data-icon="arrow"></span></div>
+            </article>
+            <article class="feature-card lq-glass lq-glass--tint">
+              <span class="feature-card__icon" data-icon="grid"></span>
+              <h3>Application Demos</h3>
+              <p>Dashboards, finance, smart home, gaming, studio, vault, drone terminal, login, calculators, and more.</p>
+              <div class="feature-card__foot"><span>Real interactions</span><span data-icon="arrow"></span></div>
+            </article>
+          </div>
+        </section>
+      </section>
+
+      <section class="studio-view" id="view-builder" data-view="builder" hidden>
+        <div class="section-heading section-heading--row">
+          <div>
+            <span class="studio-eyebrow">Visual effect builder</span>
+            <h1>Glass Lab</h1>
+            <p>Shape the material, test it against four scenes, and export clean production code without depending on a framework.</p>
+          </div>
+          <div class="hero-actions">
+            <button class="lq-button" id="builder-randomize" type="button"><span data-icon="sparkles"></span>Randomize</button>
+            <button class="lq-button lq-button--primary" id="builder-download" type="button"><span data-icon="download"></span>Download CSS</button>
+          </div>
+        </div>
+
+        <div class="builder-layout">
+          <div class="builder-controls lq-glass" id="builder-controls">
+            <div class="builder-controls__header">
+              <h3>Material controls</h3>
+              <button class="lq-button lq-icon-button lq-button--ghost lq-tooltip" id="builder-reset" type="button" data-tooltip="Reset builder" aria-label="Reset builder"><span data-icon="refresh"></span></button>
+            </div>
+
+            <div class="builder-control-group">
+              <span class="lq-label">Material</span>
+              <div class="lq-segmented" id="builder-mode" role="group" aria-label="Glass material">
+                <button class="is-active" type="button" data-builder-mode="liquid">Liquid</button>
+                <button type="button" data-builder-mode="frosted">Frosted</button>
+                <button type="button" data-builder-mode="clear">Clear</button>
+              </div>
+              <label class="lq-label">Backdrop scene
+                <select class="lq-select" id="builder-scene-select">
+                  <option value="spectrum">Spectrum</option>
+                  <option value="ocean">Ocean</option>
+                  <option value="orchid">Orchid</option>
+                  <option value="noir">Noir</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="builder-control-group">
+              <div class="builder-control-row">
+                <div class="builder-control-label"><label for="builder-blur">Backdrop blur</label><output id="builder-blur-value">20px</output></div>
+                <input class="lq-range" id="builder-blur" type="range" min="0" max="48" step="1" value="20">
+              </div>
+              <div class="builder-control-row">
+                <div class="builder-control-label"><label for="builder-opacity">Surface opacity</label><output id="builder-opacity-value">10%</output></div>
+                <input class="lq-range" id="builder-opacity" type="range" min="2" max="28" step="1" value="10">
+              </div>
+              <div class="builder-control-row">
+                <div class="builder-control-label"><label for="builder-saturation">Saturation</label><output id="builder-saturation-value">155%</output></div>
+                <input class="lq-range" id="builder-saturation" type="range" min="80" max="220" step="5" value="155">
+              </div>
+              <div class="builder-control-row">
+                <div class="builder-control-label"><label for="builder-radius">Corner radius</label><output id="builder-radius-value">30px</output></div>
+                <input class="lq-range" id="builder-radius" type="range" min="0" max="64" step="1" value="30">
+              </div>
+              <div class="builder-control-row">
+                <div class="builder-control-label"><label for="builder-border">Edge highlight</label><output id="builder-border-value">30%</output></div>
+                <input class="lq-range" id="builder-border" type="range" min="5" max="70" step="1" value="30">
+              </div>
+            </div>
+
+            <div class="builder-control-group">
+              <div class="builder-control-row">
+                <div class="builder-control-label"><label for="builder-refraction">Refraction</label><output id="builder-refraction-value">18</output></div>
+                <input class="lq-range" id="builder-refraction" type="range" min="0" max="48" step="1" value="18">
+              </div>
+              <div class="builder-control-row">
+                <div class="builder-control-label"><label for="builder-frequency">Surface frequency</label><output id="builder-frequency-value">24</output></div>
+                <input class="lq-range" id="builder-frequency" type="range" min="4" max="60" step="1" value="24">
+              </div>
+              <div class="builder-control-row">
+                <div class="builder-control-label"><label for="builder-depth">Optical depth</label><output id="builder-depth-value">72%</output></div>
+                <input class="lq-range" id="builder-depth" type="range" min="0" max="100" step="1" value="72">
+              </div>
+              <label class="lq-label">Material tint
+                <input class="lq-field" id="builder-tint" type="color" value="#8b7cff">
+              </label>
+            </div>
+          </div>
+
+          <div class="builder-workspace">
+            <section class="builder-preview lq-glass">
+              <div class="builder-preview__header">
+                <h3>Interactive preview</h3>
+                <span class="lq-badge lq-badge--success"><span data-icon="activity"></span>Live</span>
+              </div>
+              <div class="builder-scene" id="builder-scene" data-scene="spectrum">
+                <article class="builder-preview-card" id="builder-preview-card" data-mode="liquid">
+                  <span class="builder-preview-card__kicker">LiquidOS material</span>
+                  <h3>Optical depth.</h3>
+                  <p>Move your pointer across the panel to bend the highlight and reveal the layered surface response.</p>
+                  <div class="builder-preview-card__chips">
+                    <span class="lq-badge">Refraction</span><span class="lq-badge">Sheen</span><span class="lq-badge">Blur</span>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <section class="code-panel lq-glass">
+              <div class="code-panel__header">
+                <div class="code-tabs" role="tablist" aria-label="Generated code">
+                  <button class="code-tab is-active" type="button" role="tab" aria-selected="true" data-code-tab="css">CSS</button>
+                  <button class="code-tab" type="button" role="tab" aria-selected="false" data-code-tab="html">HTML</button>
+                  <button class="code-tab" type="button" role="tab" aria-selected="false" data-code-tab="tokens">Tokens</button>
+                </div>
+                <button class="lq-button lq-button--ghost" id="builder-copy" type="button"><span data-icon="copy"></span>Copy</button>
+              </div>
+              <pre class="code-output"><code id="builder-code-output"></code></pre>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section class="studio-view" id="view-components" data-view="components" hidden>
+        <div class="section-heading">
+          <span class="studio-eyebrow">Interactive library</span>
+          <h1>Components</h1>
+          <p>A consolidated workbench for the core, advanced, and iOS-inspired patterns from the original releases—rebuilt with a single token system and real states.</p>
+        </div>
+
+        <div class="component-layout">
+          <nav class="component-index lq-glass" aria-label="Component groups">
+            <button class="is-active" type="button" data-component-jump="component-surfaces"><span data-icon="layers"></span>Surfaces</button>
+            <button type="button" data-component-jump="component-actions"><span data-icon="cursor"></span>Actions</button>
+            <button type="button" data-component-jump="component-inputs"><span data-icon="sliders"></span>Inputs</button>
+            <button type="button" data-component-jump="component-data"><span data-icon="chart"></span>Data</button>
+            <button type="button" data-component-jump="component-feedback"><span data-icon="bell"></span>Feedback</button>
+            <button type="button" data-component-jump="component-motion"><span data-icon="activity"></span>Motion</button>
+            <button type="button" data-component-jump="component-navigation"><span data-icon="compass"></span>Navigation</button>
+            <a class="lq-button lq-button--primary" href="demos/ios_components.html" target="_blank" rel="noopener"><span data-icon="external"></span>Full catalog</a>
+          </nav>
+
+          <div class="component-sections">
+            <section class="component-section lq-glass" id="component-surfaces">
+              <header><div><h3>Glass surfaces</h3><p>Clear, frosted, liquid, and tinted material recipes.</p></div><span class="lq-badge">4 variants</span></header>
+              <div class="component-grid component-grid--two">
+                <article class="component-sample lq-glass lq-glass--clear"><span class="component-sample__label">Clear</span><strong>Clear lens</strong><small>Low blur · bright edge</small></article>
+                <article class="component-sample lq-glass lq-glass--frosted"><span class="component-sample__label">Frosted</span><strong>Diffused panel</strong><small>High blur · soft body</small></article>
+                <article class="component-sample lq-glass lq-glass--liquid"><span class="component-sample__label">Liquid</span><strong>Responsive sheen</strong><small>Pointer-reactive optics</small></article>
+                <article class="component-sample lq-glass lq-glass--tint"><span class="component-sample__label">Tinted</span><strong>Spectral tint</strong><small>Layered color depth</small></article>
+              </div>
+            </section>
+
+            <section class="component-section lq-glass" id="component-actions">
+              <header><div><h3>Actions and states</h3><p>Buttons, icon controls, segmented actions, and loading behavior.</p></div><button class="lq-button lq-button--ghost" type="button" data-demo-toast><span data-icon="bell"></span>Test toast</button></header>
+              <div class="component-grid">
+                <article class="component-sample"><span class="component-sample__label">Buttons</span><button class="lq-button lq-button--primary" type="button"><span data-icon="sparkles"></span>Primary</button><button class="lq-button" type="button">Secondary</button></article>
+                <article class="component-sample"><span class="component-sample__label">Icon actions</span><div class="hero-actions"><button class="lq-button lq-icon-button lq-tooltip" type="button" data-tooltip="Notifications"><span data-icon="bell"></span></button><button class="lq-button lq-icon-button lq-tooltip" type="button" data-tooltip="Settings"><span data-icon="settings"></span></button><button class="lq-button lq-icon-button lq-tooltip" type="button" data-tooltip="Share"><span data-icon="send"></span></button></div></article>
+                <article class="component-sample"><span class="component-sample__label">Segmented</span><div class="lq-segmented" data-segmented><button class="is-active" type="button">Day</button><button type="button">Week</button><button type="button">Month</button></div></article>
+              </div>
+            </section>
+
+            <section class="component-section lq-glass" id="component-inputs">
+              <header><div><h3>Inputs and selection</h3><p>Fields, toggles, checks, ranges, and one-time passcode flow.</p></div><span class="lq-badge">Form ready</span></header>
+              <div class="component-grid component-grid--two">
+                <article class="component-sample component-sample--left"><span class="component-sample__label">Search field</span><div class="lq-field-wrap"><span data-icon="search"></span><input class="lq-field" type="search" placeholder="Search components"></div><label class="lq-label">Email<input class="lq-field" type="email" placeholder="hello@liquidos.dev"></label></article>
+                <article class="component-sample component-sample--left"><span class="component-sample__label">Selection</span><label class="lq-check"><input type="checkbox" checked>Enable optical highlights</label><label class="lq-radio"><input type="radio" name="density" checked>Comfortable density</label><label class="lq-radio"><input type="radio" name="density">Compact density</label></article>
+                <article class="component-sample component-sample--left"><span class="component-sample__label">Toggle</span><div class="builder-controls__header"><span>Ambient motion</span><label class="lq-switch"><input type="checkbox" checked><span></span></label></div><div class="builder-controls__header"><span>Sound effects</span><label class="lq-switch"><input type="checkbox"><span></span></label></div></article>
+                <article class="component-sample component-sample--left"><span class="component-sample__label">Range</span><div class="builder-control-row"><div class="builder-control-label"><label for="sample-range">Intensity</label><output id="sample-range-output">64%</output></div><input class="lq-range" id="sample-range" type="range" value="64"></div></article>
+              </div>
+            </section>
+
+            <section class="component-section lq-glass" id="component-data">
+              <header><div><h3>Data and utility</h3><p>Progress, status, compact visualization, and responsive tables.</p></div><span class="lq-badge lq-badge--success"><span data-icon="activity"></span>Live data</span></header>
+              <div class="component-grid component-grid--two">
+                <article class="component-sample component-sample--left"><span class="component-sample__label">Progress</span><div class="builder-controls__header"><strong>Storage</strong><small>72%</small></div><div class="lq-progress"><span style="--lq-progress:72%"></span></div><div class="builder-controls__header"><span class="lq-badge lq-badge--success">Synced</span><span class="lq-badge lq-badge--warning">Review</span><span class="lq-badge lq-badge--danger">Blocked</span></div></article>
+                <article class="component-sample component-sample--left"><span class="component-sample__label">Mini chart</span><strong>$48,320</strong><small style="color:var(--lq-success)">+12.4% this month</small><svg class="mini-chart" viewBox="0 0 260 70" preserveAspectRatio="none" aria-hidden="true"><path d="M0 50H260M0 25H260"/><path d="M0 57C26 48 37 55 62 38s44 6 65-9 37 4 58-8 33-20 75-10"/></svg></article>
+              </div>
+              <div class="lq-table-wrap" style="margin-top:12px">
+                <table class="lq-table"><thead><tr><th>Component</th><th>State</th><th>Updated</th><th>Coverage</th></tr></thead><tbody><tr><td>Glass surface</td><td><span class="lq-badge lq-badge--success">Ready</span></td><td>Just now</td><td>100%</td></tr><tr><td>Motion runtime</td><td><span class="lq-badge lq-badge--success">Ready</span></td><td>2 min ago</td><td>96%</td></tr><tr><td>Legacy adapter</td><td><span class="lq-badge lq-badge--warning">Optional</span></td><td>Today</td><td>84%</td></tr></tbody></table>
+              </div>
+            </section>
+
+            <section class="component-section lq-glass" id="component-feedback">
+              <header><div><h3>Feedback and overlays</h3><p>Toast, modal, tags, loading, and contextual feedback.</p></div><button class="lq-button" type="button" data-dialog-open="component-dialog"><span data-icon="external"></span>Open dialog</button></header>
+              <div class="component-grid">
+                <article class="component-sample"><span class="component-sample__label">Loading</span><span class="lq-spinner"></span><small>Preparing experience</small></article>
+                <article class="component-sample component-sample--left"><span class="component-sample__label">Skeleton</span><span class="lq-skeleton" style="width:45%;height:18px"></span><span class="lq-skeleton" style="width:100%"></span><span class="lq-skeleton" style="width:82%"></span></article>
+                <article class="component-sample"><span class="component-sample__label">Tags</span><div class="hero-actions"><span class="lq-tag">Glass</span><span class="lq-tag">Motion</span><span class="lq-tag">Vanilla JS</span></div></article>
+              </div>
+            </section>
+
+            <section class="component-section lq-glass" id="component-motion">
+              <header><div><h3>Motion and physical controls</h3><p>Flip surfaces, live clock, rotary value, and keyboard response.</p></div><span class="lq-badge">Reduced-motion safe</span></header>
+              <div class="component-grid">
+                <article class="component-sample"><span class="component-sample__label">Flip card</span><button class="flip-card" type="button" id="sample-flip-card" aria-label="Flip sample card"><span class="flip-card__inner"><span class="flip-card__face"><strong>Front</strong><small>Tap to inspect</small></span><span class="flip-card__face flip-card__face--back"><strong>Back</strong><small>Depth retained</small></span></span></button></article>
+                <article class="component-sample"><span class="component-sample__label">Analog clock</span><div class="analog-clock" id="sample-clock"><span class="clock-hand" data-clock-hand="hour" style="--hand-height:25px"></span><span class="clock-hand" data-clock-hand="minute" style="--hand-height:36px"></span><span class="clock-hand" data-clock-hand="second" style="--hand-height:41px;--hand-color:#ff6f91"></span></div></article>
+                <article class="component-sample"><span class="component-sample__label">Rotary knob</span><div class="knob" id="sample-knob" role="slider" tabindex="0" aria-label="Intensity" aria-valuemin="0" aria-valuemax="100" aria-valuenow="48"><span>48%</span></div></article>
+              </div>
+              <div class="component-sample component-sample--left" style="margin-top:12px"><span class="component-sample__label">Responsive keyboard</span><div class="keyboard-mini" id="sample-keyboard"><button type="button">Q</button><button type="button">W</button><button type="button">E</button><button type="button">R</button><button type="button">T</button><button type="button">Y</button><button type="button">A</button><button type="button">S</button><button type="button">D</button><button type="button">F</button><button type="button">G</button><button type="button">H</button><button class="is-wide" type="button">Space</button><button class="is-wide" type="button">Return</button></div></div>
+            </section>
+
+            <section class="component-section lq-glass" id="component-navigation">
+              <header><div><h3>Navigation and context</h3><p>Tabs, breadcrumb, pagination, and native context patterns.</p></div><span class="lq-badge">ARIA wired</span></header>
+              <div class="component-grid component-grid--two">
+                <article class="component-sample component-sample--left"><span class="component-sample__label">Tabs</span><div data-tabs><div class="lq-segmented" role="tablist"><button class="is-active" type="button" role="tab" aria-selected="true" aria-controls="sample-tab-one">Preview</button><button type="button" role="tab" aria-selected="false" aria-controls="sample-tab-two">Code</button><button type="button" role="tab" aria-selected="false" aria-controls="sample-tab-three">Notes</button></div><div id="sample-tab-one" role="tabpanel" style="padding-top:18px">The preview is active.</div><div id="sample-tab-two" role="tabpanel" hidden style="padding-top:18px">Generated code is ready.</div><div id="sample-tab-three" role="tabpanel" hidden style="padding-top:18px">No compatibility warnings.</div></div></article>
+                <article class="component-sample component-sample--left"><span class="component-sample__label">Context menu</span><div class="context-zone" id="sample-context-zone">Right-click or long-press this area</div></article>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section class="studio-view" id="view-demos" data-view="demos" hidden>
+        <div class="section-heading section-heading--row">
+          <div>
+            <span class="studio-eyebrow">Full application concepts</span>
+            <h1>Demos</h1>
+            <p>Every demo from both attached releases is represented here, with the duplicate commented files consolidated into a source/documentation mode.</p>
+          </div>
+          <span class="lq-badge lq-badge--success"><span data-icon="check"></span>17 interactive experiences</span>
+        </div>
+
+        <div class="demo-toolbar">
+          <div class="lq-field-wrap demo-search"><span data-icon="search"></span><input class="lq-field" id="demo-search" type="search" placeholder="Search demos or features"></div>
+          <div class="demo-filters" id="demo-filters" role="group" aria-label="Filter demos">
+            <button class="demo-filter is-active" type="button" data-demo-filter="all">All</button>
+            <button class="demo-filter" type="button" data-demo-filter="productivity">Productivity</button>
+            <button class="demo-filter" type="button" data-demo-filter="dashboard">Dashboards</button>
+            <button class="demo-filter" type="button" data-demo-filter="utility">Utilities</button>
+            <button class="demo-filter" type="button" data-demo-filter="experimental">Experimental</button>
+          </div>
+        </div>
+        <div class="demo-grid" id="demo-grid"></div>
+      </section>
+
+      <section class="studio-view" id="view-docs" data-view="docs" hidden>
+        <div class="section-heading">
+          <span class="studio-eyebrow">Use only what you need</span>
+          <h1>Documentation</h1>
+          <p>LiquidOS is now structured as a small core design system, a Studio app, and independent demos. The core can be dropped into an existing site without bringing the showcase with it.</p>
+        </div>
+
+        <div class="docs-layout">
+          <article class="docs-card lq-glass">
+            <h3>Quick start</h3>
+            <p>Load the foundation stylesheet, add the material classes, and optionally include the interaction runtime for ripples, sheen, dialogs, and utilities.</p>
+            <pre><code>&lt;link rel="stylesheet" href="assets/css/liquidos.css"&gt;
+
+&lt;article class="lq-glass lq-glass--liquid lq-panel"&gt;
+  Your content
+&lt;/article&gt;
+
+&lt;script src="assets/js/liquidos.js"&gt;&lt;/script&gt;</code></pre>
+            <div class="hero-actions" style="margin-top:16px"><button class="lq-button" type="button" data-copy="#quick-start-source"><span data-icon="copy"></span>Copy snippet</button></div>
+            <span id="quick-start-source" class="lq-sr-only">&lt;link rel="stylesheet" href="assets/css/liquidos.css"&gt;
+&lt;article class="lq-glass lq-glass--liquid lq-panel"&gt;Your content&lt;/article&gt;
+&lt;script src="assets/js/liquidos.js"&gt;&lt;/script&gt;</span>
+          </article>
+
+          <article class="docs-card lq-glass">
+            <h3>Core guarantees</h3>
+            <p>The rebuild removes the fragile runtime assumptions found in the older packages.</p>
+            <ul class="docs-list"><li>No CDN dependency for layout, icons, fonts, charts, or interactions.</li><li>Every control includes visible focus treatment and semantic HTML.</li><li>Animations respond to reduced-motion preferences.</li><li>Shared tokens keep demos and components visually consistent.</li><li>Mobile layouts start at 320px without horizontal overflow.</li></ul>
+          </article>
+
+          <article class="docs-card lq-glass">
+            <h3>Design tokens</h3>
+            <p>Override these variables at <code>:root</code>, on a page wrapper, or on one component.</p>
+            <div class="token-grid">
+              <div class="token-item"><span class="token-swatch" style="--token-color:#8b7cff"></span><code>--lq-accent</code></div>
+              <div class="token-item"><span class="token-swatch" style="--token-color:#51d7ff"></span><code>--lq-accent-2</code></div>
+              <div class="token-item"><span class="token-swatch" style="--token-color:rgba(255,255,255,.11)"></span><code>--lq-glass-alpha</code></div>
+              <div class="token-item"><span class="token-swatch" style="--token-color:linear-gradient(135deg,#11182b,#070a12)"></span><code>--lq-bg</code></div>
+            </div>
+            <pre><code>:root {
+  --lq-accent: #8b7cff;
+  --lq-accent-2: #51d7ff;
+  --lq-blur: 24px;
+  --lq-radius: 20px;
+  --lq-glass-alpha: 0.075;
+}</code></pre>
+          </article>
+
+          <article class="docs-card lq-glass">
+            <h3>Project map</h3>
+            <p>The rebuilt package is intentionally simple to inspect and ship.</p>
+            <pre><code>LiquidOS-Studio-v3.0/
+├── index.html
+├── assets/
+│   ├── css/liquidos.css
+│   ├── css/studio.css
+│   ├── js/liquidos.js
+│   └── js/app.js
+├── demos/
+│   ├── demo.css
+│   ├── demo.js
+│   └── 17 HTML entry points
+├── adapters/
+│   └── tailwind-liquid-glass.cjs
+└── docs/
+    └── FEATURE-MAP.md</code></pre>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="studio-footer">
+      <span>LiquidOS Studio 3.0 · rebuilt from the complete attached feature set</span>
+      <span class="studio-footer__links"><a href="#builder" data-route-link="builder">Glass Lab</a><a href="#demos" data-route-link="demos">Demos</a><a href="#docs" data-route-link="docs">Docs</a></span>
+    </footer>
+  </div>
+
+  <dialog class="lq-dialog" id="component-dialog">
+    <div class="lq-dialog__header"><div><strong>Liquid dialog</strong><div style="color:var(--lq-text-faint);font-size:.72rem;margin-top:3px">Native modal behavior with animated material</div></div><button class="lq-button lq-icon-button lq-button--ghost" type="button" data-dialog-close aria-label="Close dialog"><span data-icon="close"></span></button></div>
+    <div class="lq-dialog__body"><div class="feature-grid" style="grid-template-columns:repeat(2,1fr)"><div class="component-sample lq-glass lq-glass--clear"><span class="component-sample__label">Status</span><span class="lq-badge lq-badge--success">Everything connected</span></div><div class="component-sample lq-glass lq-glass--tint"><span class="component-sample__label">Next</span><strong>Ship the experience</strong></div></div></div>
+    <div class="lq-dialog__footer"><button class="lq-button" type="button" data-dialog-close>Cancel</button><button class="lq-button lq-button--primary" type="button" data-dialog-close data-confirm-dialog><span data-icon="check"></span>Confirm</button></div>
+  </dialog>
+
+  <dialog class="lq-dialog demo-preview-dialog" id="demo-preview-dialog">
+    <div class="lq-dialog__header"><div><strong id="demo-preview-title">Demo preview</strong><div id="demo-preview-subtitle" style="color:var(--lq-text-faint);font-size:.72rem;margin-top:3px"></div></div><div class="hero-actions"><a class="lq-button lq-button--ghost" id="demo-open-new" href="demos/index.html" target="_blank" rel="noopener"><span data-icon="external"></span>Open page</a><button class="lq-button lq-icon-button lq-button--ghost" type="button" data-dialog-close aria-label="Close preview"><span data-icon="close"></span></button></div></div>
+    <div class="lq-dialog__body"><iframe id="demo-preview-frame" title="Interactive demo preview" loading="lazy"></iframe></div>
+  </dialog>
+
+  <div class="context-menu" id="sample-context-menu" role="menu" aria-hidden="true" inert>
+    <button type="button" role="menuitem"><span data-icon="copy"></span>Copy component</button>
+    <button type="button" role="menuitem"><span data-icon="edit"></span>Edit properties</button>
+    <button type="button" role="menuitem"><span data-icon="download"></span>Export snippet</button>
+  </div>
+
+  <script src="assets/js/liquidos.js"></script>
+  <script src="assets/js/app.js"></script>
+</body>
+</html>

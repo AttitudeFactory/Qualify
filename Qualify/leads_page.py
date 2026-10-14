@@ -19,11 +19,13 @@ def _topbar() -> rx.Component:
     return page_header(
         "Leads",
         "Personas captadas por tu funnel, con su consentimiento registrado",
+        # The count badge of docs/design-system.md §5.3: soft, neutral — a figure
+        # about the page, never a state.
         badge=rx.badge(
             LeadsState.lead_count.to_string() + " leads",
             variant="soft",
-            color_scheme="gray",
             size="2",
+            **T.tone_scheme("neutral"),
         ),
     )
 

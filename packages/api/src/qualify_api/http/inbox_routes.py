@@ -35,6 +35,7 @@ from qualify_api.inbox.service import (
     SyncBudgetExhausted,
     SyncSummary,
 )
+from qualify_api.inbox.sync_guard import SyncAlreadyRunning
 
 router = APIRouter(prefix="/api", tags=["inbox"])
 
@@ -70,6 +71,12 @@ class SyncResponse(BaseModel):
     # `skipped_missing_media` above, at the comment level instead of the whole Reel.
     # Also always a 200, same reasoning.
     deleted_comments: int = 0
+    # QUA-149: see `SyncSummary` — expired media skipped without a Meta call, and this
+    # pass's legacy-metadata reads. Counts only.
+    expired_skipped: int = 0
+    metadata_backfilled: int = 0
+    metadata_failed: int = 0
+    metadata_deferred: int = 0
 
 
 @router.post("/inbox/sync", response_model=SyncResponse)
@@ -112,6 +119,9 @@ async def sync_inbox(
         # 409, not 404: the connection exists and is the caller's — it is just not
         # `active`, so reading it is refused until it is reconnected.
         raise HTTPException(status_code=409, detail=str(exc)) from None
+    except SyncAlreadyRunning:
+        # Also 409: another pass on this connection is running right now — retry later.
+        raise HTTPException(status_code=409, detail="sync already running") from None
     except CommentsPermissionMissing as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from None
     except SyncBudgetExhausted as exc:
@@ -128,4 +138,8 @@ async def sync_inbox(
         truncated=summary.truncated,
         skipped_missing_media=list(summary.skipped_missing_media),
         deleted_comments=summary.deleted_comments,
+        expired_skipped=summary.expired_skipped,
+        metadata_backfilled=summary.metadata_backfilled,
+        metadata_failed=summary.metadata_failed,
+        metadata_deferred=summary.metadata_deferred,
     )

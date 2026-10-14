@@ -231,6 +231,9 @@ class GenerationTask(StrEnum):
     # A spokesperson video: an existing vendor avatar lip-syncing a script. It is always
     # AI-generated footage, so it always carries Meta's disclosure label (F5-MA-10).
     AVATAR_VIDEO = "avatar_video"
+    # A generated scene video (Seedance, § request 2026-10-07): a prompt and the first
+    # frame it starts on. AI-generated footage, so it carries the disclosure label too.
+    SCENE_VIDEO = "scene_video"
     # A brand template rendered by the Remotion service (plan-mvp-plantillas-remotion.md
     # §2): the operator's real photos/video composed into a Reel + stills. Deterministic,
     # no model touches a pixel, so no AI disclosure — but it IS a provider call (a
@@ -326,14 +329,19 @@ class ContentKind(StrEnum):
     - `STATIC_FLYER` — an advertising image (or a carousel of them) built from the
       operator's product photo, their background (e.g. their venue) or both, as
       `AdImageMode` says, plus the generated copy. The value keeps its historical name
-      (it is stored on every draft); the product calls it "imagen publicitaria". Today
-      it is composed locally; the multi-reference image model that will render the
-      scene (`MediaInputs.scene_prompt`) is chosen but not wired — see
-      `docs/comparativa-apis-creativo-motor-angulos.md` §7.
+      (it is stored on every draft); the product calls it "imagen publicitaria". Since
+      2026-10-07 Seedream renders the scene (`MediaInputs.scene_prompt`) with those
+      photos as references, and the hook, the CTA and the real logo are set on top
+      locally — a model is never trusted to spell the brand.
     - `TEMPLATE` — a brand template (plan-mvp-plantillas-remotion.md): the operator's
       real product photos (and optionally a short video) composed by a Remotion
       template of their niche into a Reel 9:16 plus feed and story stills, in one run.
       The template is chosen by the recipe router, not by the operator.
+    - `CAROUSEL` — a feed carousel of 2-10 slides the operator lays out one by one
+      (§ request 2026-10-09), each a `SlideSource`: a scene Seedream generates (with the
+      hook or the CTA printed on it, or not), that scene animated by Seedance into a
+      short silent video (its text optional), or an image or video of a piece the brand
+      already made. Instagram takes any mix of images and videos in one carousel.
     """
 
     CREATOR_SCRIPT = "creator_script"
@@ -341,6 +349,7 @@ class ContentKind(StrEnum):
     ANIMATED_AVATAR_VIDEO = "animated_avatar_video"
     STATIC_FLYER = "static_flyer"
     TEMPLATE = "template"
+    CAROUSEL = "carousel"
 
     @property
     def enabled(self) -> bool:
@@ -374,10 +383,9 @@ class ContentKind(StrEnum):
 
     @property
     def default_format(self) -> ContentFormat:
-        """Videos and a creator's script are vertical (Reels); the flyer is feed 4:5."""
-        return (
-            ContentFormat.FEED_4_5 if self is ContentKind.STATIC_FLYER else ContentFormat.REELS_9_16
-        )
+        """Videos and a creator's script are vertical (Reels); the flyer and the carousel
+        are feed 4:5."""
+        return _KIND_FORMATS[self][0]
 
     @property
     def outputs_are_declared_by_template(self) -> bool:
@@ -390,6 +398,30 @@ class ContentKind(StrEnum):
         return _KIND_FORMATS[self]
 
 
+class SlideSource(StrEnum):
+    """Where one slide of a `ContentKind.CAROUSEL` comes from (§ request 2026-10-09)."""
+
+    #: A scene Seedream generates from the slide's description and photos.
+    GENERATED = "generated"
+    #: That generated scene, animated by Seedance into a short silent video.
+    ANIMATED = "animated"
+    #: An image or a video of a piece the brand already made, reused as it is.
+    EXISTING = "existing"
+
+    @property
+    def is_generated(self) -> bool:
+        return self is not SlideSource.EXISTING
+
+
+class SlideText(StrEnum):
+    """The words printed on a generated or animated carousel slide — the operator's
+    choice per slide (on a video, the text is optional: § request 2026-10-09)."""
+
+    NONE = "none"
+    HOOK = "hook"
+    CTA = "cta"
+
+
 class AvatarSource(StrEnum):
     """Where an animated avatar comes from (`ContentKind.ANIMATED_AVATAR_VIDEO`)."""
 
@@ -397,6 +429,17 @@ class AvatarSource(StrEnum):
     AI = "ai"
     #: Animated from an image the operator uploads (a mascot, an illustration).
     IMAGE = "image"
+
+
+class VideoEngine(StrEnum):
+    """Which vendor renders the two avatar kinds (§ request 2026-10-07). Stored on the
+    brief, so a draft regenerates on the engine it was asked for."""
+
+    #: A talking presenter over HeyGen API v3: the exact script, read by the chosen voice.
+    HEYGEN = "heygen"
+    #: A generated scene: Seedream composes the first frame from the operator's photos,
+    #: Seedance animates it. Seedance 1.0 is silent; the 2.x models speak the script.
+    SEEDANCE = "seedance"
 
 
 class AdImageMode(StrEnum):
@@ -443,12 +486,18 @@ _KIND_FORMATS: dict[ContentKind, tuple[ContentFormat, ...]] = {
         ContentFormat.FEED_1_1,
         ContentFormat.STORY_9_16,
     ),
-    # The manifest decides the outputs (Reel + feed + story); the brief's format is the
-    # one the operator previews first.
+    # Since 2026-10-06 a template renders ONE output, the one of the brief's format
+    # (`media.template_port`): the Reel is the generator's «Video publicitario», a feed or
+    # story still is «Con plantilla».
     ContentKind.TEMPLATE: (
         ContentFormat.REELS_9_16,
         ContentFormat.FEED_4_5,
         ContentFormat.STORY_9_16,
+    ),
+    # Instagram takes a carousel only in the feed (`ContentFormat.is_feed`).
+    ContentKind.CAROUSEL: (
+        ContentFormat.FEED_4_5,
+        ContentFormat.FEED_1_1,
     ),
 }
 
@@ -479,7 +528,12 @@ class ReuseType(StrEnum):
 def default_category(kind: ContentKind, fmt: ContentFormat | None = None) -> PostCategory:
     """The category a new POST starts with: a story format is a story; otherwise anything
     recorded or rendered as a video (the avatar kinds, a real creator's script) is a reel
-    and a flyer or carousel a galería. The operator can change it."""
+    and a flyer or carousel a galería — so is a template's feed still, since a template
+    renders the one output of its format (2026-10-06). The operator can change it."""
     if fmt is ContentFormat.STORY_9_16:
         return PostCategory.STORY
-    return PostCategory.GALERIA if kind is ContentKind.STATIC_FLYER else PostCategory.REEL
+    if kind in (ContentKind.STATIC_FLYER, ContentKind.CAROUSEL) or (
+        kind is ContentKind.TEMPLATE and fmt is not None and fmt.is_feed
+    ):
+        return PostCategory.GALERIA
+    return PostCategory.REEL

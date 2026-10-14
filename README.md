@@ -108,6 +108,95 @@ Qualify/
 └── scripts/
 ```
 
+## Operación en producción (runbook)
+
+Producción es un VPS de Hetzner (`qualify-prod` en `~/.ssh/config`) con el stack de `deploy/docker-compose.prod.yml`: `caddy`, `api`, `reflex`, `postgres` y `redis`. El runbook completo, desde el primer despliegue hasta los respaldos, está en [`docs/despliegue-hetzner.md`](docs/despliegue-hetzner.md). Todo se corre desde la Mac, dentro del repo:
+
+| Qué | Comando |
+|---|---|
+| Desplegar `main` (construye en el servidor, migra, reinicia) | `just deploy qualify-prod` |
+| Desplegar otro ref (rollback = un sha anterior) | `just deploy qualify-prod <sha\|rama>` |
+| Contenedores + salud a través de Caddy | `just deploy-status qualify-prod` |
+| Logs (todos, o un servicio) | `just deploy-logs qualify-prod [api\|reflex\|caddy\|postgres\|redis]` |
+| Respaldo de la base ahora | `just deploy-backup qualify-prod` |
+| Cambiar un secreto, sin desplegar código | `just env-push qualify-prod KEY` |
+
+### Sesión remota de Claude en el servidor
+
+En el VPS corre una sesión de Claude Code, **`qualify-prod`**, para operar producción desde claude.ai/code o la app móvil de Claude (estado, logs, reinicios, respaldos, rollbacks). Montaje y riesgos: [`docs/despliegue-hetzner.md`](docs/despliegue-hetzner.md) §13.
+
+- **Conectarse:** abrir [claude.ai/code](https://claude.ai/code) o la pestaña *Code* de la app y elegir la sesión `qualify-prod`. Está iniciada con la cuenta del fundador y solo aparece ahí.
+- **Si no aparece** (reinicio del servidor, o la red se cayó más de ~10 min):
+  ```bash
+  ssh -t -i ~/.ssh/qualify_hetzner deploy@2.28.112.133 'bash -lc "qualify-claude --continue"'
+  ```
+  Desengancharse con **Ctrl-b d**; nunca Ctrl-C, que la apaga.
+- **Login vencido** (avisa con 3 días): `/login` dentro de la sesión.
+
+### Desplegar sin GitHub Actions
+
+Para no gastar minutos de Actions: se compila en el servidor desde la Mac. En los ejemplos, `78821b7` es el commit que estaba en producción el 2026-10-12 y `113` un número de PR.
+
+```bash
+just deploy qualify-prod          # main
+just deploy qualify-prod 78821b7  # un commit concreto, o revertir a uno anterior
+```
+
+Sube el código por ssh, compila en el servidor, corre `migrate`, levanta el stack y chequea la salud. Si falla la compilación o la migración, producción sigue en el release anterior. Tarda más que por Actions (2 vCPU que siguen atendiendo tráfico).
+
+- **Desde la sesión remota** no se puede: el servidor no tiene el código ni acceso a GitHub, a propósito. Lo que sí hace sin gastar minutos es revertir a un sha que ya tenga imágenes en GHCR: pedirle, por ejemplo, «revierte a `78821b7d0260ac2c1823ff74a92ee34a2a3623d8`» (corre `/opt/qualify/bin/server-deploy.sh rollback 78821b7d0260ac2c1823ff74a92ee34a2a3623d8`, que salta `migrate` y por eso sirve también a través de una migración, donde `just deploy 78821b7` falla). El sha va completo, de 40 caracteres; en `ls /opt/qualify/releases`, los que desplegó Actions (y por eso tienen imágenes en GHCR) son los de nombre de 40 caracteres; los de `just deploy` tienen 12.
+- **Sin CI** (sin minutos, `just merge` se niega): correr lo mismo en la Mac y forzar a propósito, solo el fundador:
+  ```bash
+  just ci-lint && just ci-test && just up && just test-db && just merge 113 --admin
+  ```
+
+### Cambiar un secreto (`just env-push`)
+
+Los secretos de producción viven en **un solo archivo**: `/opt/qualify/.env.prod` en el servidor (dueño `deploy`, permisos 600). Ningún despliegue lo sobrescribe, ni `just deploy` ni el de GitHub Actions: lo que se cambia ahí queda. Se edita desde la Mac, nunca a mano en el servidor:
+
+1. Poner el valor nuevo en el `.env` local, en la raíz del repo.
+2. Ver qué va a cambiar, sin escribir nada:
+   ```bash
+   just env-push qualify-prod --dry-run SCRAPECREATORS_API_KEY
+   ```
+   Por cada clave sale `same`, `change <huella vieja> -> <huella nueva>` o `add`. La huella son los 8 primeros caracteres del sha256 del valor: sirve para comparar sin mostrar el secreto.
+3. Aplicar (acepta varias claves a la vez):
+   ```bash
+   just env-push qualify-prod SCRAPECREATORS_API_KEY QUALIFY_ANTHROPIC_API_KEY
+   ```
+
+Qué hace:
+
+- Copia **sólo las claves nombradas**. Las demás de `.env.prod` no se tocan.
+- Antes de escribir deja un respaldo `/opt/qualify/.env.prod.bak-<UTC>` y conserva los 10 más recientes.
+- Corre `docker compose up -d --no-build`. Compose recrea exactamente los servicios que leen `.env.prod` (`api`, `reflex`, `webhook-worker` y `calendar-worker` si está activo) y no reinicia `postgres`, `redis` ni `caddy`. No construye imágenes ni corre `migrate`. Son unos 10 s, y al final imprime la salud del sitio.
+- Los valores viajan por el stdin de ssh, nunca por argumentos ni por la terminal.
+- Desde un worktree lee el `.env` del checkout principal. Otro archivo: `QUALIFY_ENV_SOURCE=/ruta/.env just env-push …`.
+- Una clave nueva llega a los contenedores sin tocar el compose, porque el compose les pasa `.env.prod` completo.
+
+Se niega a propósito con estas claves, y dice qué hacer en su lugar:
+
+| Clave | Por qué | En su lugar |
+|---|---|---|
+| `QUALIFY_DB_*_PASSWORD` | la contraseña se aplica al rol con `migrate` (`ALTER ROLE`) | editar `.env.prod` y `just deploy` |
+| `QUALIFY_PUBLIC_URL` | está horneada en el frontend estático | editar `.env.prod` y `just deploy` (reconstruye) |
+| `QUALIFY_DEV_FERNET_KEY` | rotarla deja indescifrables todas las credenciales OAuth guardadas | no se rota así |
+| `COMPOSE_*`, `QUALIFY_IMAGE_*` | cambian la forma del stack, no son un secreto | editar `.env.prod` y `just deploy` |
+
+**Deshacer un cambio:** volver a empujar el valor anterior desde el `.env` local, o restaurar el respaldo en el servidor:
+
+```bash
+ssh qualify-prod 'cd /opt/qualify/current && cp -p /opt/qualify/.env.prod.bak-<UTC> /opt/qualify/.env.prod && docker compose --env-file /opt/qualify/.env.prod $(test -f deploy/release.env && echo --env-file deploy/release.env) -f deploy/docker-compose.prod.yml up -d --no-build'
+```
+
+**Antes de empujar una llave de proveedor, verificar que sirve.** El 2026-10-07 se subió una llave de Scrape Creators con 0 créditos. Para Scrape Creators:
+
+```bash
+curl -s -H "x-api-key: $(grep '^SCRAPECREATORS_API_KEY=' .env | tail -n 1 | cut -d= -f2-)" https://api.scrapecreators.com/v1/credit-balance
+```
+
+**Por qué no Redis ni un gestor de secretos.** El Redis de producción no tiene contraseña y solo persiste por snapshots: no es un lugar para secretos. Recargar en caliente, sin los ~10 s de reinicio, no justifica hoy una pieza nueva. Si llega a hacer falta para las llaves de proveedores, el camino es una tabla en Postgres cifrada con la llave Fernet existente, que la app lea al usarla. Los secretos de arranque (contraseñas de base de datos, llave Fernet, Meta, Supabase) se quedan en `.env.prod` de todas formas.
+
 ## Stack
 
 Python 3.11+ · FastAPI · Celery + Redis 7 · PostgreSQL (ambos planos) · pgvector · Cloudflare R2 · Zyte API · SigLIP2 · Qwen3-VL · faster-whisper · robertuito · sentence-transformers · LangGraph · RunPod/Modal (GPU serverless) · Hetzner VPS
