@@ -1,0 +1,7 @@
+{
+  "_fixture_note": "DOC-DERIVED, not recorded: shape read on 2026-10-14 from business-management-api/qr-codes (POST). Phone numbers and ids are placeholders. The smoke CLI (qualify_api.whatsapp.smoke) against the test number is what replaces this with a recorded payload.",
+  "code": "ABCDEFGH",
+  "prefilled_message": "Hola, quiero pedir",
+  "deep_link_url": "https://wa.me/message/ABCDEFGH",
+  "qr_image_url": "https://scontent.whatsapp.net/v/t61.29466-34/EXAMPLE.png"
+}

@@ -89,6 +89,13 @@ webhook-purge *args:
 webhook-purge-account account *args:
     uv run --no-sync python -m qualify_api.webhooks.worker --purge-account {{account}} {{args}}
 
+# WA-06: manual smoke of the WhatsApp Cloud API client against the test number. DEV ONLY —
+# reads QUALIFY_WA_SYSTEM_USER_TOKEN and QUALIFY_WA_PHONE_NUMBER_ID from the environment,
+# sends for real, prints only the wamid(s).
+#   just whatsapp-smoke --to +57300... --text "hola" [--buttons] [--phone-number]
+whatsapp-smoke *args:
+    uv run --no-sync python -m qualify_api.whatsapp.smoke {{args}}
+
 # --- Production (Hetzner VPS, docs/despliegue-hetzner.md) ---------------------------------
 # `target` = the server's ssh target, e.g. deploy@203.0.113.10.
 #   just deploy deploy@<ip>               # origin/main
