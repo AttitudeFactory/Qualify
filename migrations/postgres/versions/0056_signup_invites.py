@@ -1,7 +1,7 @@
 """signup_invites: single-use, emailed invitations to register a business
 
-Revision ID: 0050
-Revises: 0049
+Revision ID: 0056
+Revises: 0055
 Create Date: 2026-10-07
 
 § request 2026-10-07: "primero código compartido simple y la invitación también". The
@@ -25,8 +25,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0050"
-down_revision = "0049"
+revision = "0056"
+down_revision = "0055"
 branch_labels = None
 depends_on = None
 

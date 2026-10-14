@@ -5,7 +5,7 @@ Two keys, either one opens `/signup`:
 - **Shared code** — `QUALIFY_SIGNUP_CODE`. Unset means signup is open (dev); production
   sets it (see `deploy/.env.prod.example`). Compared in constant time.
 - **Invitation** — `create_invite` stores the SHA-256 of a random token (migration
-  0050) and `send_invite_email` mails the link `/signup?invite=<token>`. The invite opens
+  0056) and `send_invite_email` mails the link `/signup?invite=<token>`. The invite opens
   signup only for ITS email, once, until it expires. Because the link reaches only that
   inbox, an invited signup also proves the email is the registrant's — something the
   shared code does not.

@@ -114,7 +114,7 @@ class BrandKitDraft(Base):
 
 
 class SignupInvite(Base):
-    """A single-use, emailed invitation to register a business (migration 0050). Only
+    """A single-use, emailed invitation to register a business (migration 0056). Only
     the token's SHA-256 is stored; `qualify_api.auth.invites` owns every read/write.
     Global (no tenant, no RLS) and `qualify_admin`-only."""
 

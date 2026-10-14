@@ -1,4 +1,4 @@
-"""`db`-marked: invitations against live Postgres (migration 0050) — stored as a hash,
+"""`db`-marked: invitations against live Postgres (migration 0056) — stored as a hash,
 looked up by the raw token, spent exactly once by the signup that creates the business."""
 
 from __future__ import annotations
