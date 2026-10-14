@@ -19,12 +19,13 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
-from qualify_api.mentions.models import MentionSentimentFailure
+from qualify_api.mentions.models import MentionSentimentFailure, MentionSentimentResult
 from qualify_api.mentions.repository import (
     ENRICHMENT_OK,
     MAX_SENTIMENT_ATTEMPTS,
     SENTIMENT_ERROR,
     SENTIMENT_PENDING,
+    MentionContent,
     MentionQuery,
     NewMention,
     PostgresMentionsRepository,
@@ -254,3 +255,120 @@ def test_the_error_class_check_rejects_empty_and_oversized_values() -> None:
         tenant_id=tenant_id, mention_id=mention_id, version=VERSION, error_class="E" * 500
     )
     assert len(_failure_rows(tenant_id, mention_id)[0].error_class) == 200
+
+
+# --------------------------------------------------------------------------------------
+# QUA-152 D3 — results and attempts are bound to the text they analyzed (migration 0055)
+# --------------------------------------------------------------------------------------
+
+
+class MoodProvider:
+    model_id = "stub/mood"
+
+    def classify(self, text: str) -> tuple[str, float]:
+        return ("NEG", 0.8) if "mal" in text else ("POS", 0.9)
+
+
+def _state(repo: PostgresMentionsRepository, tenant_id: UUID, mention_id: UUID) -> str:
+    page = repo.list_mentions_page(
+        tenant_id=tenant_id, version=VERSION, query=MentionQuery(), page=1
+    )
+    return next(r.sentiment_state for r in page.rows if r.id == mention_id)
+
+
+def _edit_caption(
+    repo: PostgresMentionsRepository, tenant_id: UUID, mention_id: UUID, caption: str
+) -> None:
+    assert repo.refresh_content(
+        tenant_id=tenant_id,
+        mention_id=mention_id,
+        content=MentionContent(
+            caption=caption,
+            text=None,
+            author_username=None,
+            media_type=None,
+            like_count=None,
+            content_posted_at=None,
+            permalink=None,
+        ),
+    )
+
+
+def test_an_edited_text_is_reanalyzed_and_the_old_result_stops_counting() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    mention_id = _add(repo, tenant_id, connection_id, "me encanta")
+    service = MentionSentimentService(repository=repo, version=VERSION, provider=MoodProvider())
+    service.analyze_pending_mentions(tenant_id=tenant_id)
+    assert _state(repo, tenant_id, mention_id) == "POS"
+
+    _edit_caption(repo, tenant_id, mention_id, "ahora me parece mal")
+
+    assert _state(repo, tenant_id, mention_id) == SENTIMENT_PENDING
+    assert service.analyze_pending_mentions(tenant_id=tenant_id).new_results == 1
+    assert _state(repo, tenant_id, mention_id) == "NEG"
+    # Append-only: both analyses are kept; only the one on the current text counts.
+    with tenant_session(tenant_id) as session:
+        rows = session.scalar(
+            select(func.count())
+            .select_from(MentionSentimentResult)
+            .where(MentionSentimentResult.mention_id == mention_id)
+        )
+    assert rows == 2
+
+
+def test_a_stale_result_is_rejected_at_write_time() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    mention_id = _add(repo, tenant_id, connection_id, "me encanta")
+    (pending,) = repo.list_pending_for_analysis(tenant_id=tenant_id, version=VERSION)
+    assert pending.text_md5 is not None
+
+    _edit_caption(repo, tenant_id, mention_id, "ahora me parece mal")
+    landed = repo.record_sentiment_result(
+        tenant_id=tenant_id,
+        mention_id=mention_id,
+        version=VERSION,
+        label="POS",
+        score=0.9,
+        text_md5=pending.text_md5,
+    )
+
+    assert landed is False
+    assert _state(repo, tenant_id, mention_id) == SENTIMENT_PENDING
+
+
+def test_the_same_text_is_recorded_once() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    mention_id = _add(repo, tenant_id, connection_id, "me encanta")
+    (pending,) = repo.list_pending_for_analysis(tenant_id=tenant_id, version=VERSION)
+
+    outcomes = [
+        repo.record_sentiment_result(
+            tenant_id=tenant_id,
+            mention_id=mention_id,
+            version=VERSION,
+            label="POS",
+            score=0.9,
+            text_md5=pending.text_md5,
+        )
+        for _ in range(2)
+    ]
+
+    assert outcomes == [True, False]
+
+
+def test_an_edit_restarts_the_attempts_of_an_exhausted_mention() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    mention_id = _add(repo, tenant_id, connection_id, "poison")
+    failing = MentionSentimentService(repository=repo, version=VERSION, provider=PoisonProvider())
+    for _ in range(MAX_SENTIMENT_ATTEMPTS):
+        failing.analyze_pending_mentions(tenant_id=tenant_id)
+    assert _state(repo, tenant_id, mention_id) == SENTIMENT_ERROR
+
+    _edit_caption(repo, tenant_id, mention_id, "texto corregido")
+
+    assert _state(repo, tenant_id, mention_id) == SENTIMENT_PENDING
+    assert all(row.text_md5 is not None for row in _failure_rows(tenant_id, mention_id))

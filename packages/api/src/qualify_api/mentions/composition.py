@@ -13,20 +13,23 @@ whether Meta's content API cooperated at that moment. Same "persist the fact, de
 content" posture already established across this codebase (`InboxService.sync_comments`
 persists what it got before a mid-pagination truncation, rather than discarding it).
 
-No enrichment retry path exists for an already-persisted mention (module docstring of
-`repository.py`) — a redelivered webhook for the same event is a silent no-op via the
-natural-key idempotency, it does not re-attempt a previously-failed enrichment. This is a
-disclosed, deliberate gap (same class as QUA-88's "only `sync_comments`'s calls are
-logged" scoping note), not an oversight: closing it is a scheduled-retry feature, out of
-this slice's scope.
+A redelivered webhook for the same event is a silent no-op via the natural-key
+idempotency; it does not re-attempt a previously-failed enrichment. Since QUA-152 the
+re-read path is "Actualizar menciones" (`refresh_mentions_content` /
+`refresh_mentions_in_scope` below): it re-reads stored mentions from the network in
+bounded runs, so a mention whose enrichment failed at ingestion is filled in (and marked
+ENRICHED) the next time its scope is refreshed and the network answers.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cache
+from typing import Literal
 from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
@@ -40,6 +43,8 @@ from qualify_api.connections.resolver import InjectingCredentialResolver
 from qualify_api.mentions.meta_client import (
     HttpMentionedContentClient,
     MentionedContentReadError,
+    is_rate_limited,
+    is_transient,
 )
 from qualify_api.mentions.repository import (
     DEFAULT_MENTION_PAGE_SIZE,
@@ -53,6 +58,7 @@ from qualify_api.mentions.repository import (
     MentionsRepository,
     NewMention,
     PostgresMentionsRepository,
+    RefreshTarget,
 )
 from qualify_api.mentions.resolve import TenantResolution, instagram_tenant_ids
 from qualify_api.mentions.sentiment import (
@@ -177,19 +183,9 @@ async def ingest_mention(
     if enrichment_status == ENRICHMENT_OK:
         # QUA-152: best-effort, AFTER the content read and in its own call — a refusal
         # leaves the mention exactly as it would be without a link, never ENRICHMENT_FAILED.
-        try:
-            permalink = await client.get_mentioned_permalink(
-                ig_user_id=ig_user_id, media_id=media_id, comment_id=comment_id
-            )
-        except MentionedContentReadError as exc:
-            _LOGGER.info(
-                "mentions permalink unavailable: media_id=%s comment_id=%s platform_code=%s "
-                "http_status=%s",
-                media_id,
-                comment_id,
-                exc.platform_code,
-                exc.http_status,
-            )
+        permalink = await _read_permalink(
+            client, ig_user_id=ig_user_id, media_id=media_id, comment_id=comment_id
+        )
 
     mention = NewMention(
         tenant_id=resolution.tenant_id,
@@ -224,73 +220,201 @@ def list_mentions_for_tenant(
     )
 
 
+# --- "Actualizar menciones" (QUA-152) --------------------------------------------------
+#
+# The button re-reads every mention of the dashboard's scope (account + period) from its
+# network and stores what changed. Limits, per run:
+#   - at most REFRESH_MAX_PER_RUN mentions (the rest is reported as pending and taken
+#     first by the next run — least recently attempted first);
+#   - REFRESH_CONCURRENCY reads in flight;
+#   - a transient failure (5xx, network, Meta codes 1/2) is retried REFRESH_RETRIES times
+#     with backoff; a content error (4xx: deleted, comments disabled) is not;
+#   - a throttling answer from Meta, or a reported usage at/above REFRESH_USAGE_STOP_PERCENT,
+#     stops the run: nothing more is requested, what is left is reported as pending;
+#   - a mention re-read successfully in the last REFRESH_FRESH_SECONDS is current and is
+#     not requested again (two tabs, a double click).
+# One read per mention; the link only while it is not stored yet (it does not change).
+
+REFRESH_MAX_PER_RUN = 200
+REFRESH_CONCURRENCY = 4
+REFRESH_RETRIES = 2
+REFRESH_BACKOFF_SECONDS = (1.0, 3.0)
+REFRESH_USAGE_STOP_PERCENT = 75
+REFRESH_FRESH_SECONDS = 60
+
+_Outcome = Literal["refreshed", "failed", "not_attempted"]
+
+
+class _RateLimited(Exception):
+    """Meta throttled a read: the run stops dispatching."""
+
+
 @dataclass(frozen=True)
 class ContentRefreshReport:
-    refreshed: int
-    failed: int  # kept as they were: the network refused or the read failed
+    """How one refresh run left its scope. It is COMPLETE only when every mention of the
+    scope is current; anything else is pending and must be reported as such."""
+
+    in_scope: int  # mentions in the scope (the visible page, or account + period)
+    refreshed: int  # re-read and stored in this run
+    already_fresh: int  # re-read successfully moments ago — not requested again
+    failed: int  # the network refused or failed after retries; stored data kept
+    not_attempted: int  # left for a later run: the per-run cap or Meta's throttling
+    rate_limited: bool = False
+
+    @property
+    def pending(self) -> int:
+        return self.failed + self.not_attempted
+
+    @property
+    def complete(self) -> bool:
+        return self.pending == 0
 
 
 async def refresh_mentions_content(
     *, tenant_id: UUID, mention_ids: tuple[UUID, ...]
 ) -> ContentRefreshReport:
-    """ "Actualizar" (QUA-152): re-read each mention from its network and write back what
-    changed — likes, text, author, link. One read per mention plus the best-effort link,
-    for at most the visible page (12). A mention whose read fails keeps its stored data;
-    nothing raises out of here."""
+    """The VISIBLE page, right away (QUA-152): always re-read, whatever their freshness —
+    it is what the person is looking at. Nothing raises out of here."""
     repo = production_mentions_repository()
     targets = repo.list_refresh_targets(tenant_id=tenant_id, mention_ids=mention_ids)
+    return await _refresh_targets(
+        repo, tenant_id=tenant_id, targets=targets, in_scope=len(targets), already_fresh=0
+    )
+
+
+async def refresh_mentions_in_scope(
+    *, tenant_id: UUID, scope: MentionQuery, max_mentions: int = REFRESH_MAX_PER_RUN
+) -> ContentRefreshReport:
+    """One bounded run over the SCOPE — the account and period of `scope` (origin,
+    sentiment and search never narrow it). Nothing raises out of here; a failure to even
+    plan the run is reported as everything pending."""
+    repo = production_mentions_repository()
+    try:
+        plan = repo.plan_scope_refresh(
+            tenant_id=tenant_id,
+            query=scope,
+            fresh_seconds=REFRESH_FRESH_SECONDS,
+            limit=max_mentions,
+        )
+    except Exception as exc:  # noqa: BLE001 — reported, never raised into the UI
+        _LOGGER.warning("mentions scope refresh could not be planned (%s)", type(exc).__name__)
+        return ContentRefreshReport(
+            in_scope=0, refreshed=0, already_fresh=0, failed=0, not_attempted=1
+        )
+    return await _refresh_targets(
+        repo,
+        tenant_id=tenant_id,
+        targets=plan.targets,
+        in_scope=plan.in_scope,
+        already_fresh=plan.fresh,
+    )
+
+
+async def _refresh_targets(
+    repo: MentionsRepository,
+    *,
+    tenant_id: UUID,
+    targets: tuple[RefreshTarget, ...],
+    in_scope: int,
+    already_fresh: int,
+) -> ContentRefreshReport:
     clients: dict[UUID, tuple[HttpMentionedContentClient, str] | None] = {}
-    refreshed = failed = 0
-    for target in targets:
-        try:
-            if target.connection_id not in clients:
-                clients[target.connection_id] = await _content_client_for(
-                    tenant_id=tenant_id, connection_id=target.connection_id
+    clients_lock = asyncio.Lock()
+    slots = asyncio.Semaphore(REFRESH_CONCURRENCY)
+    stop = asyncio.Event()
+
+    async def client_for(connection_id: UUID) -> tuple[HttpMentionedContentClient, str] | None:
+        async with clients_lock:  # one credential resolution per connection and run
+            if connection_id not in clients:
+                clients[connection_id] = await _content_client_for(
+                    tenant_id=tenant_id, connection_id=connection_id
                 )
-            client_and_user = clients[target.connection_id]
-            if client_and_user is None:
-                failed += 1
-                continue
-            client, ig_user_id = client_and_user
-            content = await _read_content(
-                client,
-                ig_user_id=ig_user_id,
-                media_id=target.media_id,
-                comment_id=target.comment_id,
-            )
-            if repo.refresh_content(
-                tenant_id=tenant_id, mention_id=target.mention_id, content=content
-            ):
-                refreshed += 1
-        except Exception as exc:  # noqa: BLE001 — keep the stored data, log the type only
-            failed += 1
-            _LOGGER.info(
-                "mentions refresh kept stored content: mention=%s (%s)",
-                target.mention_id,
-                type(exc).__name__,
-            )
-    return ContentRefreshReport(refreshed=refreshed, failed=failed)
+            return clients[connection_id]
+
+    async def refresh_one(target: RefreshTarget) -> _Outcome:
+        async with slots:
+            if stop.is_set():
+                return "not_attempted"
+            try:
+                client_and_user = await client_for(target.connection_id)
+                if client_and_user is None:
+                    raise LookupError("connection not readable for this tenant")
+                client, ig_user_id = client_and_user
+                content = await _read_content(client, ig_user_id=ig_user_id, target=target)
+            except _RateLimited:
+                stop.set()
+                _LOGGER.warning("mentions refresh stopped: Meta is throttling this account")
+                return "not_attempted"
+            except Exception as exc:  # noqa: BLE001 — keep the stored data, log the type only
+                _LOGGER.info(
+                    "mentions refresh kept stored content: mention=%s (%s)",
+                    target.mention_id,
+                    type(exc).__name__,
+                )
+                _mark_attempt(repo, tenant_id=tenant_id, mention_id=target.mention_id)
+                return "failed"
+            if getattr(client, "usage_percent", 0) >= REFRESH_USAGE_STOP_PERCENT:
+                stop.set()
+                _LOGGER.warning("mentions refresh paused: Meta usage at or above the limit")
+            try:
+                stored = repo.refresh_content(
+                    tenant_id=tenant_id, mention_id=target.mention_id, content=content
+                )
+            except Exception as exc:  # noqa: BLE001 — a DB error on one row, not the run
+                _LOGGER.warning(
+                    "mentions refresh could not store: mention=%s (%s)",
+                    target.mention_id,
+                    type(exc).__name__,
+                )
+                return "failed"
+            return "refreshed" if stored else "failed"
+
+    outcomes = await asyncio.gather(*(refresh_one(target) for target in targets))
+    planned_but_left = in_scope - already_fresh - len(targets)
+    return ContentRefreshReport(
+        in_scope=in_scope,
+        refreshed=outcomes.count("refreshed"),
+        already_fresh=already_fresh,
+        failed=outcomes.count("failed"),
+        not_attempted=outcomes.count("not_attempted") + max(0, planned_but_left),
+        rate_limited=stop.is_set(),
+    )
+
+
+def _mark_attempt(repo: MentionsRepository, *, tenant_id: UUID, mention_id: UUID) -> None:
+    try:
+        repo.mark_refresh_attempt(tenant_id=tenant_id, mention_id=mention_id)
+    except Exception as exc:  # noqa: BLE001 — bookkeeping only
+        _LOGGER.info("mentions refresh attempt not stamped (%s)", type(exc).__name__)
 
 
 async def _read_content(
-    client: HttpMentionedContentClient, *, ig_user_id: str, media_id: str, comment_id: str | None
+    client: HttpMentionedContentClient, *, ig_user_id: str, target: RefreshTarget
 ) -> MentionContent:
-    """The mention's content as the network gives it NOW. Raises on a refused content read
-    (the caller keeps what it had); the link stays best-effort."""
-    if comment_id is not None:
-        comment = await client.get_mentioned_comment(ig_user_id=ig_user_id, comment_id=comment_id)
+    """The mention's content as the network gives it NOW. Raises when the content read
+    fails (the caller keeps what it had) and `_RateLimited` when Meta throttles. The link
+    is independent: its failure never affects the other fields."""
+    if target.comment_id is not None:
+        comment = await _with_retries(
+            lambda: client.get_mentioned_comment(
+                ig_user_id=ig_user_id, comment_id=target.comment_id
+            )
+        )
         caption, text, author, media_type = None, comment.text, None, None
         like_count, posted_at = comment.like_count, comment.timestamp
     else:
-        media = await client.get_mentioned_media(ig_user_id=ig_user_id, media_id=media_id)
+        media = await _with_retries(
+            lambda: client.get_mentioned_media(ig_user_id=ig_user_id, media_id=target.media_id)
+        )
         caption, text, author, media_type = media.caption, None, media.username, media.media_type
         like_count, posted_at = media.like_count, media.timestamp
-    try:
-        permalink = await client.get_mentioned_permalink(
-            ig_user_id=ig_user_id, media_id=media_id, comment_id=comment_id
+    permalink = (
+        None
+        if target.has_permalink
+        else await _read_permalink(
+            client, ig_user_id=ig_user_id, media_id=target.media_id, comment_id=target.comment_id
         )
-    except MentionedContentReadError:
-        permalink = None
+    )
     return MentionContent(
         caption=caption,
         text=text,
@@ -300,6 +424,43 @@ async def _read_content(
         content_posted_at=posted_at,
         permalink=permalink,
     )
+
+
+async def _with_retries[T](call: Callable[[], Awaitable[T]]) -> T:
+    """One content read, retried on transient failures only. Meta throttling raises
+    `_RateLimited` at once; a content error (4xx) raises at once."""
+    for attempt in range(REFRESH_RETRIES + 1):
+        try:
+            return await call()
+        except MentionedContentReadError as exc:
+            if is_rate_limited(exc):
+                raise _RateLimited from exc
+            if not is_transient(exc) or attempt == REFRESH_RETRIES:
+                raise
+        except Exception:
+            if attempt == REFRESH_RETRIES:
+                raise
+        await asyncio.sleep(REFRESH_BACKOFF_SECONDS[min(attempt, len(REFRESH_BACKOFF_SECONDS) - 1)])
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+async def _read_permalink(
+    client: HttpMentionedContentClient, *, ig_user_id: str, media_id: str, comment_id: str | None
+) -> str | None:
+    """The "Ver" link, best-effort and independent (QUA-152): ANY failure — a refusal, the
+    network — leaves it unset and never touches the content read or its persistence."""
+    try:
+        return await client.get_mentioned_permalink(
+            ig_user_id=ig_user_id, media_id=media_id, comment_id=comment_id
+        )
+    except Exception as exc:  # noqa: BLE001 — the link never fails anything else
+        _LOGGER.info(
+            "mentions permalink unavailable: media_id=%s comment_id=%s (%s)",
+            media_id,
+            comment_id,
+            type(exc).__name__,
+        )
+        return None
 
 
 def list_mentions_page_for_tenant(

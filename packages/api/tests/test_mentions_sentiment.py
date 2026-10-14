@@ -301,3 +301,107 @@ def test_no_text_is_never_sent_to_the_model() -> None:
 
     assert provider.calls == []
     assert _states(repo) == {blank: SENTIMENT_NO_TEXT}
+
+
+# --------------------------------------------------------------------------------------
+# QUA-152 D3 — a result belongs to the exact text it analyzed
+# --------------------------------------------------------------------------------------
+
+
+def _edit_text(repo: MemoryMentionsRepository, mention_id: UUID, text: str) -> None:
+    from qualify_api.mentions.repository import MentionContent
+
+    assert repo.refresh_content(
+        tenant_id=TENANT_ID,
+        mention_id=mention_id,
+        content=MentionContent(
+            caption=None,
+            text=text,
+            author_username=None,
+            media_type=None,
+            like_count=None,
+            content_posted_at=None,
+            permalink=None,
+        ),
+    )
+
+
+def test_an_edited_text_is_analyzed_again_and_the_old_result_stops_counting() -> None:
+    service, repo = _service()
+    mention_id, _ = repo.upsert_mention(_mention(text="me encanta"))
+    service.analyze_pending_mentions(tenant_id=TENANT_ID)
+    assert _states(repo)[mention_id] == "POS"
+
+    _edit_text(repo, mention_id, "ahora me parece mal")
+
+    assert _states(repo)[mention_id] == SENTIMENT_PENDING  # the old POS no longer counts
+    summary = service.analyze_pending_mentions(tenant_id=TENANT_ID)
+    assert summary.new_results == 1
+    assert _states(repo)[mention_id] == "NEG"
+
+
+def test_a_result_computed_on_the_old_text_never_lands_on_the_new_one() -> None:
+    _service_unused, repo = _service()
+    mention_id, _ = repo.upsert_mention(_mention(text="me encanta"))
+    (pending,) = repo.list_pending_for_analysis(tenant_id=TENANT_ID, version=VERSION)
+
+    _edit_text(repo, mention_id, "ahora me parece mal")  # edited while "analyzing"
+    landed = repo.record_sentiment_result(
+        tenant_id=TENANT_ID,
+        mention_id=mention_id,
+        version=VERSION,
+        label="POS",
+        score=0.9,
+        text_md5=pending.text_md5,
+    )
+
+    assert landed is False
+    assert _states(repo)[mention_id] == SENTIMENT_PENDING
+
+
+def test_an_unchanged_text_keeps_its_result_after_a_refresh() -> None:
+    service, repo = _service()
+    mention_id, _ = repo.upsert_mention(_mention(text="me encanta"))
+    service.analyze_pending_mentions(tenant_id=TENANT_ID)
+
+    _edit_text(repo, mention_id, "me encanta")  # a refresh that changed nothing
+
+    assert _states(repo)[mention_id] == "POS"
+    assert service.analyze_pending_mentions(tenant_id=TENANT_ID).mentions_checked == 0
+
+
+def test_an_edited_text_starts_its_attempts_from_zero() -> None:
+    repo = MemoryMentionsRepository()
+    service = MentionSentimentService(
+        repository=repo, version=VERSION, provider=FailingOnProvider()
+    )
+    mention_id, _ = repo.upsert_mention(_mention(text="poison"))
+    for _ in range(MAX_SENTIMENT_ATTEMPTS):
+        service.analyze_pending_mentions(tenant_id=TENANT_ID)
+    assert _states(repo)[mention_id] == SENTIMENT_ERROR
+
+    _edit_text(repo, mention_id, "texto corregido")
+
+    assert _states(repo)[mention_id] == SENTIMENT_PENDING
+    assert service.analyze_pending_mentions(tenant_id=TENANT_ID).new_results == 1
+
+
+def test_recording_the_same_text_twice_never_duplicates_its_result() -> None:
+    _service_unused, repo = _service()
+    mention_id, _ = repo.upsert_mention(_mention(text="me encanta"))
+    (pending,) = repo.list_pending_for_analysis(tenant_id=TENANT_ID, version=VERSION)
+
+    first, second = (
+        repo.record_sentiment_result(
+            tenant_id=TENANT_ID,
+            mention_id=mention_id,
+            version=VERSION,
+            label="POS",
+            score=0.9,
+            text_md5=pending.text_md5,
+        )
+        for _ in range(2)
+    )
+
+    assert (first, second) == (True, False)
+    assert repo.list_pending_for_analysis(tenant_id=TENANT_ID, version=VERSION) == ()

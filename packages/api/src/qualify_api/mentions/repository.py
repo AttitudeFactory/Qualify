@@ -20,6 +20,7 @@ here is reuse, not a comment-shaped model deforming what a mention is.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -33,6 +34,7 @@ from sqlalchemy import (
     and_,
     case,
     func,
+    insert,
     literal,
     or_,
     select,
@@ -89,6 +91,16 @@ SENTIMENT_STATES = (
 # records each failed attempt). After that it is `ERROR` and no longer retried, until a
 # new model/pipeline version starts its attempts from zero.
 MAX_SENTIMENT_ATTEMPTS = 3
+
+
+def analysis_text_md5(text: str | None, caption: str | None) -> str | None:
+    """Python twin of the generated column `mentions.analysis_text_md5` (migration 0055):
+    MD5 of what the analyzer reads (comment text, else caption), or None without either.
+    A change detector, not a security primitive."""
+    content = text if text is not None else caption
+    if content is None:
+        return None
+    return hashlib.md5(content.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -148,14 +160,27 @@ class RefreshTarget:
     connection_id: UUID
     media_id: str
     comment_id: str | None
+    has_permalink: bool = False  # a stored link is never re-requested (it does not change)
+
+
+@dataclass(frozen=True)
+class RefreshPlan:
+    """One bounded refresh run over a scope (QUA-152): what to re-read now, and how the
+    scope stands. `in_scope - fresh - len(targets)` mentions are left for a later run."""
+
+    targets: tuple[RefreshTarget, ...]
+    in_scope: int  # every mention of the scope
+    fresh: int  # re-read successfully within the freshness window — not requested again
 
 
 @dataclass(frozen=True)
 class MentionContent:
-    """A fresh read of a mention's content — what "Actualizar" writes back. Every field is
-    the network's CURRENT answer: `like_count=None` means it no longer gives one (the
-    owner hid it), so the row shows that, not a stale number. Built only from a SUCCESSFUL
-    read; a failed read never reaches the repository, so stored data is never erased."""
+    """A fresh, SUCCESSFUL read of a mention's content — what "Actualizar" writes back.
+
+    `None` means "the network did not give this field in this read", and the stored value
+    is KEPT: an omitted field is not evidence that the value is gone. An explicit value is
+    always written, `like_count=0` included. A failed read never reaches the repository, so
+    it can never erase anything either."""
 
     caption: str | None
     text: str | None
@@ -284,6 +309,9 @@ class PendingMentionSentiment:
 
     mention_id: UUID
     text: str
+    # `analysis_text_md5` of `text` (migration 0055): the result is recorded against it, so
+    # a result computed on a text that has since changed never passes for the new one.
+    text_md5: str | None = None
 
 
 class MentionsRepository(Protocol):
@@ -373,14 +401,24 @@ class MentionsRepository(Protocol):
         version: AnalysisVersion,
         label: str,
         score: float,
+        text_md5: str | None = None,
     ) -> bool:
         """Returns `True` if a new row was inserted, `False` if this exact
-        (mention, version) tuple was already recorded — never raises on a duplicate,
-        same contract `sentiment.repository`'s own `record_sentiment_result` has."""
+        (mention, version, text) tuple was already recorded — never raises on a duplicate,
+        same contract `sentiment.repository`'s own `record_sentiment_result` has.
+
+        With `text_md5` (QUA-152, migration 0055) nothing is written when the mention's text
+        has changed since it was read for analysis: a stale result never lands."""
         ...
 
     def record_sentiment_failure(
-        self, *, tenant_id: UUID, mention_id: UUID, version: AnalysisVersion, error_class: str
+        self,
+        *,
+        tenant_id: UUID,
+        mention_id: UUID,
+        version: AnalysisVersion,
+        error_class: str,
+        text_md5: str | None = None,
     ) -> None:
         """Append one failed attempt (migration 0051). `error_class` is an exception class
         name, never a message (a message could echo the analyzed text)."""
@@ -392,13 +430,28 @@ class MentionsRepository(Protocol):
         """The ids "Actualizar" needs to re-read these mentions — tenant-scoped."""
         ...
 
+    def plan_scope_refresh(
+        self, *, tenant_id: UUID, query: MentionQuery, fresh_seconds: int, limit: int
+    ) -> RefreshPlan:
+        """The next bounded run over the SCOPE of `query` — its account and period only
+        (`connection_id`, `since`); origin, sentiment and search never narrow a refresh.
+        Skips mentions re-read successfully in the last `fresh_seconds`; of the rest, takes
+        the `limit` least recently ATTEMPTED (never-attempted first), so mentions the
+        network keeps refusing cannot starve the others (migration 0054)."""
+        ...
+
     def refresh_content(
         self, *, tenant_id: UUID, mention_id: UUID, content: MentionContent
     ) -> bool:
-        """Overwrite the content columns with a fresh read (QUA-152, migration 0053) and mark
-        the row ENRICHED. A `permalink=None` keeps the stored link (a link does not expire;
-        a missing one in a later read is not evidence it is gone). Returns False when the
-        mention is not this tenant's."""
+        """Write a fresh read (QUA-152, migrations 0053/0054): every field the read GAVE is
+        stored — `like_count=0` included — and every field it omitted (`None`) keeps its
+        stored value. Marks the row ENRICHED and stamps both refresh timestamps. Returns
+        False when the mention is not this tenant's."""
+        ...
+
+    def mark_refresh_attempt(self, *, tenant_id: UUID, mention_id: UUID) -> None:
+        """A re-read was attempted and failed: stamp the attempt only (fair ordering of
+        the next run). Content and `content_refreshed_at` are untouched."""
         ...
 
 
@@ -408,13 +461,30 @@ def _error_class(name: str) -> str:
 
 
 def _failure_version_filter(version: AnalysisVersion) -> list[ColumnElement[bool]]:
+    """Failures of `version` on the mention's CURRENT text (migration 0055)."""
     return [
+        MentionSentimentFailure.text_md5.is_not_distinct_from(Mention.analysis_text_md5),
         MentionSentimentFailure.detector_version == version.detector_version,
         MentionSentimentFailure.pipeline_version == version.pipeline_version,
         MentionSentimentFailure.model_id == version.model_id,
         MentionSentimentFailure.model_revision.is_(None)
         if version.model_revision is None
         else MentionSentimentFailure.model_revision == version.model_revision,
+    ]
+
+
+def _result_version_filter(version: AnalysisVersion) -> list[ColumnElement[bool]]:
+    """The result of `version` computed on the mention's CURRENT text (migration 0055):
+    a result on an older text no longer counts, so the mention is pending again."""
+    return [
+        MentionSentimentResult.mention_id == Mention.id,
+        MentionSentimentResult.text_md5.is_not_distinct_from(Mention.analysis_text_md5),
+        MentionSentimentResult.detector_version == version.detector_version,
+        MentionSentimentResult.pipeline_version == version.pipeline_version,
+        MentionSentimentResult.model_id == version.model_id,
+        MentionSentimentResult.model_revision.is_(None)
+        if version.model_revision is None
+        else MentionSentimentResult.model_revision == version.model_revision,
     ]
 
 
@@ -465,6 +535,31 @@ def _counts_of(states: list[str]) -> MentionCounts:
     )
 
 
+def _target(m: Mention) -> RefreshTarget:
+    return RefreshTarget(
+        mention_id=m.id,
+        connection_id=m.connection_id,
+        media_id=m.media_id,
+        comment_id=m.comment_id,
+        has_permalink=m.permalink is not None,
+    )
+
+
+def _given_content(content: MentionContent) -> dict[str, object]:
+    """The columns a fresh read actually GAVE. An omitted field (`None`) is left out, so
+    the stored value is kept; an explicit value — `like_count=0` included — is written."""
+    values = {
+        "caption": content.caption,
+        "text": content.text,
+        "author_username": content.author_username,
+        "media_type": content.media_type,
+        "like_count": content.like_count,
+        "content_posted_at": content.content_posted_at,
+        "permalink": content.permalink,
+    }
+    return {column: value for column, value in values.items() if value is not None}
+
+
 class MemoryMentionsRepository:
     """Mirrors the invariants above without a database. Lives in production code for the
     same reason `MemoryInboxRepository`/`MemorySentimentRepository` do."""
@@ -474,15 +569,21 @@ class MemoryMentionsRepository:
         # (connection_id, media_id, comment_id-or-"") -> mention_id, mirroring the
         # COALESCE natural key Postgres enforces via `uq_mention_natural_key`.
         self._natural_keys: dict[tuple[UUID, str, str], UUID] = {}
-        # (mention_id, detector_version, pipeline_version, model_id, model_revision or "")
-        self._sentiment: dict[tuple[UUID, str, str, str, str], tuple[str, float]] = {}
-        # (mention_id, *version key) -> failed attempts (rows in 0051's table)
-        self._failures: dict[tuple[UUID, str, str, str, str], int] = {}
+        # (mention_id, *version key, text md5 or "") -> (label, score): one row per text,
+        # mirroring 0055's unique index.
+        self._sentiment: dict[tuple[UUID, str, str, str, str, str], tuple[str, float]] = {}
+        # (mention_id, *version key, text md5 or "") -> failed attempts (0051 rows, per text)
+        self._failures: dict[tuple[UUID, str, str, str, str, str], int] = {}
         self._next_id = 1
         self._last_stamp: datetime | None = None
 
+    def _text_md5(self, mention_id: UUID) -> str | None:
+        m = self._mentions[mention_id]
+        return analysis_text_md5(m.text, m.caption)
+
     def _failed_attempts(self, mention_id: UUID, version: AnalysisVersion) -> int:
-        return self._failures.get((mention_id, *_version_key(version)), 0)
+        key = (mention_id, *_version_key(version), self._text_md5(mention_id) or "")
+        return self._failures.get(key, 0)
 
     def _stamp(self) -> datetime:
         """A strictly increasing clock for `received_at` and snapshots. Postgres stamps
@@ -533,13 +634,8 @@ class MemoryMentionsRepository:
         return mention_id, True
 
     def _label_for(self, mention_id: UUID, version: AnalysisVersion) -> str | None:
-        key = (
-            mention_id,
-            version.detector_version,
-            version.pipeline_version,
-            version.model_id,
-            version.model_revision or "",
-        )
+        """The result on the mention's CURRENT text only (migration 0055)."""
+        key = (mention_id, *_version_key(version), self._text_md5(mention_id) or "")
         result = self._sentiment.get(key)
         return result[0] if result is not None else None
 
@@ -709,7 +805,11 @@ class MemoryMentionsRepository:
                 continue
             if self._label_for(candidate_id, version) is not None:
                 continue
-            pending.append(PendingMentionSentiment(mention_id=candidate_id, text=text))
+            pending.append(
+                PendingMentionSentiment(
+                    mention_id=candidate_id, text=text, text_md5=self._text_md5(candidate_id)
+                )
+            )
         return tuple(pending)
 
     def record_sentiment_result(
@@ -720,37 +820,71 @@ class MemoryMentionsRepository:
         version: AnalysisVersion,
         label: str,
         score: float,
+        text_md5: str | None = None,
     ) -> bool:
-        key = (
-            mention_id,
-            version.detector_version,
-            version.pipeline_version,
-            version.model_id,
-            version.model_revision or "",
-        )
+        m = self._mentions.get(mention_id)
+        if m is None or m.tenant_id != tenant_id:
+            return False
+        current = self._text_md5(mention_id)
+        if text_md5 is not None and text_md5 != current:
+            return False  # the text changed since it was read: a stale result never lands
+        key = (mention_id, *_version_key(version), current or "")
         if key in self._sentiment:
             return False
         self._sentiment[key] = (label, score)
         return True
 
     def record_sentiment_failure(
-        self, *, tenant_id: UUID, mention_id: UUID, version: AnalysisVersion, error_class: str
+        self,
+        *,
+        tenant_id: UUID,
+        mention_id: UUID,
+        version: AnalysisVersion,
+        error_class: str,
+        text_md5: str | None = None,
     ) -> None:
-        key = (mention_id, *_version_key(version))
+        md5 = text_md5 if text_md5 is not None else self._text_md5(mention_id)
+        key = (mention_id, *_version_key(version), md5 or "")
         self._failures[key] = self._failures.get(key, 0) + 1
 
     def list_refresh_targets(
         self, *, tenant_id: UUID, mention_ids: tuple[UUID, ...]
     ) -> tuple[RefreshTarget, ...]:
         return tuple(
-            RefreshTarget(
-                mention_id=m.id,
-                connection_id=m.connection_id,
-                media_id=m.media_id,
-                comment_id=m.comment_id,
-            )
+            _target(m)
             for mention_id in mention_ids
             if (m := self._mentions.get(mention_id)) is not None and m.tenant_id == tenant_id
+        )
+
+    def plan_scope_refresh(
+        self, *, tenant_id: UUID, query: MentionQuery, fresh_seconds: int, limit: int
+    ) -> RefreshPlan:
+        fresh_after = datetime.now().astimezone() - timedelta(seconds=fresh_seconds)
+        scope = [
+            m
+            for m in self._mentions.values()
+            if m.tenant_id == tenant_id
+            and (query.connection_id is None or m.connection_id == query.connection_id)
+            and (query.since is None or (m.content_posted_at or m.received_at) >= query.since)
+        ]
+        fresh = [
+            m
+            for m in scope
+            if m.content_refreshed_at is not None and m.content_refreshed_at >= fresh_after
+        ]
+        stale = [m for m in scope if m not in fresh]
+        # Never-attempted first, then the least recently attempted; id breaks ties.
+        stale.sort(
+            key=lambda m: (
+                m.content_refresh_attempted_at is not None,
+                m.content_refresh_attempted_at or m.received_at,
+                m.id,
+            )
+        )
+        return RefreshPlan(
+            targets=tuple(_target(m) for m in stale[:limit]),
+            in_scope=len(scope),
+            fresh=len(fresh),
         )
 
     def refresh_content(
@@ -759,16 +893,16 @@ class MemoryMentionsRepository:
         m = self._mentions.get(mention_id)
         if m is None or m.tenant_id != tenant_id:
             return False
-        m.caption = content.caption
-        m.text = content.text
-        m.author_username = content.author_username
-        m.media_type = content.media_type
-        m.like_count = content.like_count
-        m.content_posted_at = content.content_posted_at
-        if content.permalink is not None:
-            m.permalink = content.permalink
+        for column, value in _given_content(content).items():
+            setattr(m, column, value)
         m.enrichment_status = ENRICHMENT_OK
+        m.content_refreshed_at = m.content_refresh_attempted_at = self._stamp()
         return True
+
+    def mark_refresh_attempt(self, *, tenant_id: UUID, mention_id: UUID) -> None:
+        m = self._mentions.get(mention_id)
+        if m is not None and m.tenant_id == tenant_id:
+            m.content_refresh_attempted_at = self._stamp()
 
 
 class PostgresMentionsRepository:
@@ -823,17 +957,7 @@ class PostgresMentionsRepository:
     ) -> tuple[MentionRecord, ...]:
         with tenant_session(tenant_id) as session:
             sentiment_subq = select(MentionSentimentResult.label).where(
-                MentionSentimentResult.mention_id == Mention.id,
-                MentionSentimentResult.detector_version == version.detector_version,
-                MentionSentimentResult.pipeline_version == version.pipeline_version,
-                MentionSentimentResult.model_id == version.model_id,
-            )
-            sentiment_subq = (
-                sentiment_subq.where(MentionSentimentResult.model_revision.is_(None))
-                if version.model_revision is None
-                else sentiment_subq.where(
-                    MentionSentimentResult.model_revision == version.model_revision
-                )
+                *_result_version_filter(version)
             )
             stmt = (
                 select(Mention, sentiment_subq.limit(1).scalar_subquery().label("sentiment_label"))
@@ -874,18 +998,12 @@ class PostgresMentionsRepository:
         label, derived sentiment state, sort key and reception time. Every dashboard read
         (page, counts, new-mention count) is a SELECT over this, so they cannot disagree
         about which rows match."""
-        label = select(MentionSentimentResult.label).where(
-            MentionSentimentResult.mention_id == Mention.id,
-            MentionSentimentResult.detector_version == version.detector_version,
-            MentionSentimentResult.pipeline_version == version.pipeline_version,
-            MentionSentimentResult.model_id == version.model_id,
-        )
         label = (
-            label.where(MentionSentimentResult.model_revision.is_(None))
-            if version.model_revision is None
-            else label.where(MentionSentimentResult.model_revision == version.model_revision)
+            select(MentionSentimentResult.label)
+            .where(*_result_version_filter(version))
+            .limit(1)
+            .scalar_subquery()
         )
-        label = label.limit(1).scalar_subquery()
         failed = (
             select(func.count())
             .select_from(MentionSentimentFailure)
@@ -1040,22 +1158,12 @@ class PostgresMentionsRepository:
         with tenant_session(tenant_id) as session:
             already_analyzed = (
                 select(MentionSentimentResult.mention_id)
-                .where(
-                    MentionSentimentResult.mention_id == Mention.id,
-                    MentionSentimentResult.detector_version == version.detector_version,
-                    MentionSentimentResult.pipeline_version == version.pipeline_version,
-                    MentionSentimentResult.model_id == version.model_id,
-                )
+                .where(*_result_version_filter(version))
                 .exists()
             )
-            already_analyzed = (
-                already_analyzed.where(MentionSentimentResult.model_revision.is_(None))
-                if version.model_revision is None
-                else already_analyzed.where(
-                    MentionSentimentResult.model_revision == version.model_revision
-                )
-            )
-            stmt = select(Mention.id, Mention.text, Mention.caption).where(
+            stmt = select(
+                Mention.id, Mention.text, Mention.caption, Mention.analysis_text_md5
+            ).where(
                 Mention.tenant_id == tenant_id,
                 ~already_analyzed,
                 failed < max_attempts,
@@ -1069,7 +1177,11 @@ class PostgresMentionsRepository:
                 # Only `is None` excludes — see `MemoryMentionsRepository`'s identical
                 # comment for why a whitespace-only mention must still reach the service.
                 if text is not None:
-                    pending.append(PendingMentionSentiment(mention_id=row.id, text=text))
+                    pending.append(
+                        PendingMentionSentiment(
+                            mention_id=row.id, text=text, text_md5=row.analysis_text_md5
+                        )
+                    )
             return tuple(pending)
 
     def record_sentiment_result(
@@ -1080,30 +1192,66 @@ class PostgresMentionsRepository:
         version: AnalysisVersion,
         label: str,
         score: float,
+        text_md5: str | None = None,
     ) -> bool:
+        # INSERT ... SELECT from the mention itself: the row is stamped with the mention's
+        # CURRENT fingerprint, and with `text_md5` given nothing is inserted at all when
+        # the text changed after it was read — one statement, no read-then-write race.
+        source = select(
+            literal(tenant_id),
+            Mention.id,
+            literal(version.detector_version),
+            literal(version.pipeline_version),
+            literal(version.model_id),
+            literal(version.model_revision, type_=MentionSentimentResult.model_revision.type),
+            literal(label),
+            literal(score),
+            Mention.analysis_text_md5,
+        ).where(Mention.id == mention_id, Mention.tenant_id == tenant_id)
+        if text_md5 is not None:
+            source = source.where(Mention.analysis_text_md5 == text_md5)
         try:
             with tenant_session(tenant_id) as session:
-                session.add(
-                    MentionSentimentResult(
-                        tenant_id=tenant_id,
-                        mention_id=mention_id,
-                        detector_version=version.detector_version,
-                        pipeline_version=version.pipeline_version,
-                        model_id=version.model_id,
-                        model_revision=version.model_revision,
-                        label=label,
-                        score=score,
+                inserted = session.execute(
+                    insert(MentionSentimentResult)
+                    .from_select(
+                        [
+                            "tenant_id",
+                            "mention_id",
+                            "detector_version",
+                            "pipeline_version",
+                            "model_id",
+                            "model_revision",
+                            "label",
+                            "score",
+                            "text_md5",
+                        ],
+                        source,
                     )
-                )
-                session.flush()  # trips uq_mention_sentiment_analysis on a duplicate
-                return True
-        except IntegrityError:
+                    .returning(MentionSentimentResult.id)
+                ).first()
+                # RETURNING, not rowcount: an ORM-enabled INSERT reports rowcount -1.
+                return inserted is not None
+        except IntegrityError:  # uq_mention_sentiment_analysis: this text already has one
             return False
 
     def record_sentiment_failure(
-        self, *, tenant_id: UUID, mention_id: UUID, version: AnalysisVersion, error_class: str
+        self,
+        *,
+        tenant_id: UUID,
+        mention_id: UUID,
+        version: AnalysisVersion,
+        error_class: str,
+        text_md5: str | None = None,
     ) -> None:
         with tenant_session(tenant_id) as session:
+            md5 = (
+                text_md5
+                if text_md5 is not None
+                else session.scalar(
+                    select(Mention.analysis_text_md5).where(Mention.id == mention_id)
+                )
+            )
             session.add(
                 MentionSentimentFailure(
                     tenant_id=tenant_id,
@@ -1113,6 +1261,7 @@ class PostgresMentionsRepository:
                     model_id=version.model_id,
                     model_revision=version.model_revision,
                     error_class=_error_class(error_class),
+                    text_md5=md5,
                 )
             )
 
@@ -1122,39 +1271,61 @@ class PostgresMentionsRepository:
         if not mention_ids:
             return ()
         with tenant_session(tenant_id) as session:
-            rows = session.execute(
-                select(
-                    Mention.id, Mention.connection_id, Mention.media_id, Mention.comment_id
-                ).where(Mention.tenant_id == tenant_id, Mention.id.in_(mention_ids))
+            rows = session.scalars(
+                select(Mention).where(Mention.tenant_id == tenant_id, Mention.id.in_(mention_ids))
             ).all()
-            return tuple(
-                RefreshTarget(
-                    mention_id=row.id,
-                    connection_id=row.connection_id,
-                    media_id=row.media_id,
-                    comment_id=row.comment_id,
+            return tuple(_target(m) for m in rows)
+
+    def plan_scope_refresh(
+        self, *, tenant_id: UUID, query: MentionQuery, fresh_seconds: int, limit: int
+    ) -> RefreshPlan:
+        conditions = [Mention.tenant_id == tenant_id]
+        if query.connection_id is not None:
+            conditions.append(Mention.connection_id == query.connection_id)
+        if query.since is not None:
+            conditions.append(
+                func.coalesce(Mention.content_posted_at, Mention.received_at) >= query.since
+            )
+        # The database clock, the same one that stamps the refresh timestamps.
+        is_fresh = Mention.content_refreshed_at >= func.now() - timedelta(seconds=fresh_seconds)
+        with tenant_session(tenant_id) as session:
+            in_scope, fresh = session.execute(
+                select(func.count(), func.count().filter(is_fresh)).where(*conditions)
+            ).one()
+            targets = session.scalars(
+                select(Mention)
+                .where(*conditions, or_(Mention.content_refreshed_at.is_(None), ~is_fresh))
+                .order_by(
+                    Mention.content_refresh_attempted_at.asc().nulls_first(),
+                    Mention.received_at.asc(),
+                    Mention.id.asc(),
                 )
-                for row in rows
+                .limit(limit)
+            ).all()
+            return RefreshPlan(
+                targets=tuple(_target(m) for m in targets), in_scope=in_scope, fresh=fresh
             )
 
     def refresh_content(
         self, *, tenant_id: UUID, mention_id: UUID, content: MentionContent
     ) -> bool:
-        values: dict = {
-            "caption": content.caption,
-            "text": content.text,
-            "author_username": content.author_username,
-            "media_type": content.media_type,
-            "like_count": content.like_count,
-            "content_posted_at": content.content_posted_at,
-            "enrichment_status": ENRICHMENT_OK,
-        }
-        if content.permalink is not None:
-            values["permalink"] = content.permalink
         with tenant_session(tenant_id) as session:
             updated = session.execute(
                 update(Mention)
                 .where(Mention.id == mention_id, Mention.tenant_id == tenant_id)
-                .values(**values)
+                .values(
+                    **_given_content(content),
+                    enrichment_status=ENRICHMENT_OK,
+                    content_refreshed_at=func.now(),
+                    content_refresh_attempted_at=func.now(),
+                )
             ).rowcount
             return updated == 1
+
+    def mark_refresh_attempt(self, *, tenant_id: UUID, mention_id: UUID) -> None:
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                update(Mention)
+                .where(Mention.id == mention_id, Mention.tenant_id == tenant_id)
+                .values(content_refresh_attempted_at=func.now())
+            )

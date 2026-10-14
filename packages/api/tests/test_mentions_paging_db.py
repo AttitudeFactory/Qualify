@@ -31,6 +31,7 @@ from qualify_api.mentions.repository import (
     SENTIMENT_NO_TEXT,
     SENTIMENT_PENDING,
     SENTIMENT_POS,
+    MentionContent,
     MentionCounts,
     MentionPage,
     MentionQuery,
@@ -366,8 +367,6 @@ def test_refresh_content_updates_content_only_and_identity_stays_locked() -> Non
     from sqlalchemy import text as sql
     from sqlalchemy.exc import DBAPIError
 
-    from qualify_api.mentions.repository import MentionContent
-
     repo = PostgresMentionsRepository()
     tenant_id, connection_id = _fresh_tenant_with_connection()
     mention_id = _add(repo, tenant_id, connection_id)
@@ -400,3 +399,123 @@ def test_refresh_content_updates_content_only_and_identity_stays_locked() -> Non
         session.execute(
             sql("UPDATE mentions SET media_id = 'x' WHERE id = :id"), {"id": mention_id}
         )
+
+
+# --------------------------------------------------------------------------------------
+# QUA-152 D1/D2 — the refresh write rules and run planning, in SQL
+# --------------------------------------------------------------------------------------
+
+
+def _content(**given: object) -> MentionContent:
+    values: dict = dict.fromkeys(
+        (
+            "caption",
+            "text",
+            "author_username",
+            "media_type",
+            "like_count",
+            "content_posted_at",
+            "permalink",
+        )
+    )
+    values.update(given)
+    return MentionContent(**values)
+
+
+def test_refresh_stores_an_explicit_zero_and_keeps_omitted_fields() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    mention_id = _add(repo, tenant_id, connection_id, caption="original")
+
+    assert repo.refresh_content(
+        tenant_id=tenant_id, mention_id=mention_id, content=_content(like_count=0)
+    )
+
+    row = _page(repo, tenant_id).rows[0]
+    assert row.like_count == 0  # explicit value written
+    assert (row.caption, row.author_username, row.media_type, row.content_posted_at) == (
+        "original",
+        "autora",
+        "IMAGE",
+        SAME_DAY,
+    )  # omitted fields kept
+
+
+def test_refresh_stamps_success_and_a_failed_attempt_stamps_only_the_attempt() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    ok_id = _add(repo, tenant_id, connection_id)
+    failed_id = _add(repo, tenant_id, connection_id)
+
+    repo.refresh_content(tenant_id=tenant_id, mention_id=ok_id, content=_content(like_count=4))
+    repo.mark_refresh_attempt(tenant_id=tenant_id, mention_id=failed_id)
+
+    with tenant_session(tenant_id) as session:
+        stamps = {
+            m.id: (m.content_refreshed_at, m.content_refresh_attempted_at, m.like_count)
+            for m in session.scalars(select(Mention).where(Mention.tenant_id == tenant_id))
+        }
+    assert stamps[ok_id][0] is not None and stamps[ok_id][1] is not None
+    assert stamps[failed_id][0] is None and stamps[failed_id][1] is not None
+    assert stamps[failed_id][2] == 1  # content untouched
+
+
+def test_scope_plan_covers_every_page_honours_freshness_and_isolates_tenants() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    other_tenant, other_connection = _fresh_tenant_with_connection()
+    ids = [_add(repo, tenant_id, connection_id) for _ in range(30)]
+    _add(repo, other_tenant, other_connection)
+    _add(repo, tenant_id, connection_id, posted_at=datetime(2020, 1, 1, tzinfo=UTC))
+    scope = MentionQuery(since=datetime(2026, 7, 1, tzinfo=UTC))
+
+    plan = repo.plan_scope_refresh(tenant_id=tenant_id, query=scope, fresh_seconds=60, limit=500)
+    assert (plan.in_scope, plan.fresh) == (30, 0)
+    assert sorted(t.mention_id for t in plan.targets) == sorted(ids)
+
+    for mention_id in ids[:12]:
+        repo.refresh_content(tenant_id=tenant_id, mention_id=mention_id, content=_content())
+    capped = repo.plan_scope_refresh(tenant_id=tenant_id, query=scope, fresh_seconds=60, limit=10)
+    assert (capped.in_scope, capped.fresh, len(capped.targets)) == (30, 12, 10)
+    assert not {t.mention_id for t in capped.targets} & set(ids[:12])
+
+
+def test_scope_plan_takes_never_attempted_before_recently_failed() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    failed, fresh_one, never = (_add(repo, tenant_id, connection_id) for _ in range(3))
+    repo.mark_refresh_attempt(tenant_id=tenant_id, mention_id=failed)
+    repo.refresh_content(tenant_id=tenant_id, mention_id=fresh_one, content=_content())
+
+    plan = repo.plan_scope_refresh(
+        tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=60, limit=10
+    )
+
+    assert [t.mention_id for t in plan.targets] == [never, failed]
+
+
+def test_the_app_role_may_stamp_refreshes_but_not_rewrite_identity() -> None:
+    from qualify_shared.db.admin import admin_session as owner_view
+
+    with owner_view() as session:
+        grants = {
+            column: session.scalar(
+                select(func.has_column_privilege("qualify_app", "mentions", column, "UPDATE"))
+            )
+            for column in (
+                "content_refreshed_at",
+                "content_refresh_attempted_at",
+                "like_count",
+                "tenant_id",
+                "media_id",
+                "received_at",
+            )
+        }
+    assert grants == {
+        "content_refreshed_at": True,
+        "content_refresh_attempted_at": True,
+        "like_count": True,
+        "tenant_id": False,
+        "media_id": False,
+        "received_at": False,
+    }

@@ -44,6 +44,11 @@ analyze_mention_after_ingest` / `sweep_pending_mention_sentiment`). The manual r
   `MAX_SENTIMENT_ATTEMPTS` failures under the current version the mention is `ERROR` and
   is no longer offered. Idempotent: a result is unique per (mention, version), and an
   exhausted mention is never re-read.
+- **Bound to the text it analyzed.** Each result and failed attempt carries the
+  fingerprint of the text it was computed on (migration 0055). When "Actualizar menciones"
+  stores an edited text, the old result stops counting, the mention is pending again and
+  its attempts start from zero; an analysis still running on the old text is discarded
+  at write time instead of passing for the new one.
 - **An environment failure is not a mention failure.** When the model cannot run at all
   (`transformers`/`torch` missing, weights not loadable) the pass stops with
   `SentimentModelUnavailable` and records nothing — otherwise one bad deployment would
@@ -145,6 +150,7 @@ class MentionSentimentService:
                     mention_id=item.mention_id,
                     version=self._version,
                     error_class=type(exc).__name__,
+                    text_md5=item.text_md5,
                 )
                 logger.warning(
                     "mention sentiment failed: mention=%s error=%s",
@@ -158,6 +164,7 @@ class MentionSentimentService:
                 version=self._version,
                 label=result.label,
                 score=result.score,
+                text_md5=item.text_md5,
             )
             if inserted:
                 new_results += 1
