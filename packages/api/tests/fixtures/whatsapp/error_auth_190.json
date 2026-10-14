@@ -1,0 +1,10 @@
+{
+  "_fixture_note": "DOC-DERIVED, not recorded: shape read on 2026-10-14 from Graph API error envelope; code 190 = invalid/expired access token. Phone numbers and ids are placeholders. The smoke CLI (qualify_api.whatsapp.smoke) against the test number is what replaces this with a recorded payload.",
+  "error": {
+    "message": "Error validating access token: Session has expired",
+    "type": "OAuthException",
+    "code": 190,
+    "error_subcode": 463,
+    "fbtrace_id": "AbCdEfGhIjKlMnOpQrStUv"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "_fixture_note": "DOC-DERIVED, not recorded: shape read on 2026-10-14 from business-phone-numbers/phone-numbers (fields combined from the page's separate examples; messaging_limit_tier value from the messaging-limits page). Phone numbers and ids are placeholders. The smoke CLI (qualify_api.whatsapp.smoke) against the test number is what replaces this with a recorded payload.",
+  "verified_name": "Qualify Test",
+  "display_phone_number": "+1 555-000-1234",
+  "quality_rating": "GREEN",
+  "messaging_limit_tier": "TIER_250",
+  "name_status": "AVAILABLE_WITHOUT_REVIEW",
+  "status": "CONNECTED",
+  "code_verification_status": "VERIFIED",
+  "id": "1393787420477981"
+}
