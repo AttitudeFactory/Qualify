@@ -240,6 +240,12 @@ services:
     volumes:
       - caddy_data:/data
       - caddy_config:/config
+    # `pedidos`: red externa del compose de Pedidos (Bianki·Polette), que vive en este mismo
+    # VPS y se publica desde este Caddy (bloque `pedidos.attitudefactory.co` del Caddyfile).
+    # Debe existir antes de `up`: `docker network create pedidos`.
+    networks:
+      - default
+      - pedidos
     depends_on:
       api:
         condition: service_started
@@ -323,3 +329,7 @@ volumes:
   renders:
   caddy_data:
   caddy_config:
+
+networks:
+  pedidos:
+    external: true
