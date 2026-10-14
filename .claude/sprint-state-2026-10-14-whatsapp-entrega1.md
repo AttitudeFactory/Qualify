@@ -72,3 +72,11 @@ each agent records what changes someone else's assumptions here, by the durable-
   `whatsapp_thread_state.menu_version_id` (now FK-checked, composite with `tenant_id`) and the engine's `attempts` in the new
   `whatsapp_thread_state.attempts` column (worker already has table-level UPDATE on thread_state).
 - **PR:** https://github.com/AttitudeFactory/Qualify/pull/132 (`feat/wa-14-menus-migration` → `main`, carries 0057 until PR WA-04 merges). Offline 3819 / db 591 green; alembic 0057↔0058 round trip clean.
+
+### [wa-backend-gaps / pipeline-engineer] 2026-10-14 — migration 0061 + the four backend gaps (branch `feat/wa-backend-gaps`, based on `origin/feat/wa-18-templates-optins-campaigns`)
+
+- **0061 `messages.media_type|media_id|media_mime|media_object_key`** (CHECK `ck_message_media_type`, `other` absorbs unknown types). **No new GRANT**: both `qualify_webhook_worker` (0057) and `qualify_app` (0004) hold TABLE-level S/I/U on `messages`, which covers added columns; `test_webhook_schema_db.py` pins `messages` at table level, so the pin is unchanged. Verified on `qualify_test`: `0061 → 0060 → 0061` round trip, zero residue.
+- **Chats media API (for the Chats UI):** `GET /api/whatsapp/media/{message_id}` → 307 to a 15-min `/public/media/{token}` URL (first request downloads from Meta into R2 `t/{tenant}/fp/whatsapp/{conn}/media/{media_id}`; later ones skip Meta) · 404 `message_not_found` · 501 `media_not_captured` (text/location/outbound/pre-0061) · 410 `media_expired` · 502 `media_unavailable`. `MessageOut` gains `has_media` + `media_mime`; inbound `media_kind` is now the WhatsApp type. `MediaLocator.locate` is now **async** and raises instead of returning `None`.
+- **Opt-out at send time:** `OutboxSender(..., opt_ins=...)` is now a REQUIRED kwarg; `campaign_send` rows whose phone has no active opt-in settle `failed`/`opted_out`.
+- **Profile picture:** `HttpWhatsAppClient(..., app_id=..., upload_client=<client_for(conn, scheme=settings.rupload_auth_scheme)>)` + `upload_profile_picture(content, content_type) -> handle`. **UI follow-up (not done here):** `Qualify/whatsapp_provider.set_profile_picture` must call it instead of `upload_media`, and `open_whatsapp_client` must pass `app_id`/`upload_client`.
+- **QR list:** `fields=code,prefilled_message,deep_link_url,qr_image_url.format(PNG)`.
