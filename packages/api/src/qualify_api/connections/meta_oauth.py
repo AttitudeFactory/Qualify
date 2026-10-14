@@ -84,7 +84,7 @@ class LinkedPage:
 
 
 class MetaOAuthClient(Protocol):
-    def authorization_url(self, *, state: str) -> str: ...
+    def authorization_url(self, *, state: str, rerequest: bool = False) -> str: ...
 
     async def exchange_code(self, code: str) -> TokenGrant: ...
 
@@ -172,13 +172,25 @@ class HttpMetaOAuthClient:
         self._settings = settings
         self._transport = transport
 
-    def authorization_url(self, *, state: str) -> str:
+    def authorization_url(self, *, state: str, rerequest: bool = False) -> str:
+        """The Meta dialog URL for one `state`.
+
+        `rerequest` (QUA-202) adds `auth_type=rerequest`. Facebook remembers what a user
+        declined — a permission, or a Page left unticked in the asset picker — and
+        silently skips those screens on the next visit, so a retry after
+        `page_access_required` would land on the same dead end without ever showing the
+        picker again. `rerequest` is Meta's documented switch to show them once more. It
+        is a retry-only parameter: a first visit never needs it, and sending it always
+        would re-prompt for everything on every reconnect.
+        """
         params = {
             "client_id": self._settings.app_id,
             "redirect_uri": self._settings.redirect_uri,
             "state": state,
             "response_type": "code",
         }
+        if rerequest:
+            params["auth_type"] = "rerequest"
         # Omit `scope` entirely when unset rather than sending an empty string — the two
         # are not equivalent to an authorization endpoint.
         if self._settings.requested_scopes:

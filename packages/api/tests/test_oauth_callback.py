@@ -88,9 +88,10 @@ class FakeMetaOAuthClient:
         self.exchanged_codes: list[str] = []
         self.issued_states: list[str] = []
 
-    def authorization_url(self, *, state: str) -> str:
+    def authorization_url(self, *, state: str, rerequest: bool = False) -> str:
         self.issued_states.append(state)
-        return f"https://platform.example/dialog?state={state}"
+        suffix = "&auth_type=rerequest" if rerequest else ""
+        return f"https://platform.example/dialog?state={state}{suffix}"
 
     async def exchange_code(self, code: str) -> TokenGrant:
         self.exchanged_codes.append(code)
@@ -629,6 +630,30 @@ def test_authorization_url_omits_config_id_entirely_when_unset() -> None:
     assert params["scope"] == "scope_alpha,scope_beta"
 
 
+def test_authorization_url_rerequest_is_a_retry_only_parameter() -> None:
+    """QUA-202: a first visit never carries `auth_type`; the retry after
+    `page_access_required` carries `auth_type=rerequest` so Meta shows the Page picker
+    again instead of skipping what was left unticked."""
+    client = HttpMetaOAuthClient(
+        MetaOAuthSettings(app_id="a", app_secret="s", redirect_uri="https://cb", state_secret="k")
+    )
+    first = dict(parse_qsl(urlsplit(client.authorization_url(state="st")).query))
+    retry = dict(parse_qsl(urlsplit(client.authorization_url(state="st", rerequest=True)).query))
+    assert "auth_type" not in first
+    assert retry["auth_type"] == "rerequest"
+    assert {k: v for k, v in retry.items() if k != "auth_type"} == first
+
+
+def test_start_connect_passes_rerequest_through_to_the_dialog() -> None:
+    harness = build_harness()
+    plain = harness.service.start_connect(tenant_id=TENANT, brand_id=None, user_id=USER)
+    retry = harness.service.start_connect(
+        tenant_id=TENANT, brand_id=None, user_id=USER, rerequest=True
+    )
+    assert "auth_type=rerequest" not in plain
+    assert "auth_type=rerequest" in retry
+
+
 # --------------------------------------------------------------------------------------
 # HTTP surface
 # --------------------------------------------------------------------------------------
@@ -676,8 +701,8 @@ def test_callback_route_redirects_to_connections_with_outcome(
 def test_callback_redirect_carries_no_identifier(
     client_and_harness: tuple[TestClient, Harness],
 ) -> None:
-    """Only the closed outcome code travels in the URL: no connection id, no username,
-    no counts. The page re-reads the list from Postgres; the counts are in the log."""
+    """Only the closed outcome code travels in the URL on success: no connection id, no
+    username, no counts. The page re-reads the list from Postgres."""
     client, harness = client_and_harness
     response = client.get(
         "/api/connections/callback",
@@ -689,6 +714,25 @@ def test_callback_redirect_carries_no_identifier(
     assert str(stored.connection_id) not in location
     assert "puntoservis" not in location.lower()
     assert set(_landing(response)[1]) == {"connect"}
+
+
+def test_dead_end_redirects_carry_counts_and_nothing_else() -> None:
+    """QUA-202: the two outcomes the operator must act on carry the R9(e.1) counts —
+    integers only — so the page can say "Meta nos mostró 2 Páginas, ninguna con tu
+    Instagram". The Page's id and name from `/me/accounts` never reach the URL."""
+    harness = build_harness(pages=(PAGE_WITHOUT_IG, PAGE_WITHOUT_IG))
+    response = _client_for(harness).get(
+        "/api/connections/callback",
+        params={"code": "c", "state": start_and_extract_state(harness)},
+    )
+
+    page_url, query = _landing(response)
+    assert page_url == PAGE_URL
+    assert query == {"connect": "link_required", "pages": "2", "linked": "0"}
+    location = response.headers["location"].lower()
+    assert PAGE_WITHOUT_IG.page_id not in location
+    assert PAGE_WITHOUT_IG.page_name.lower() not in location
+    assert TOKEN not in location
 
 
 def test_callback_route_bad_state_redirects_as_invalid_state(
@@ -754,7 +798,10 @@ def test_callback_route_zero_pages_redirects_as_page_access_required() -> None:
         "/api/connections/callback",
         params={"code": "c", "state": start_and_extract_state(harness)},
     )
-    assert _landing(response) == (PAGE_URL, {"connect": "page_access_required"})
+    assert _landing(response) == (
+        PAGE_URL,
+        {"connect": "page_access_required", "pages": "0", "linked": "0"},
+    )
     assert harness.repo.connections == {}
 
 
@@ -764,7 +811,10 @@ def test_callback_route_unlinked_page_redirects_as_link_required() -> None:
         "/api/connections/callback",
         params={"code": "c", "state": start_and_extract_state(harness)},
     )
-    assert _landing(response) == (PAGE_URL, {"connect": "link_required"})
+    assert _landing(response) == (
+        PAGE_URL,
+        {"connect": "link_required", "pages": "1", "linked": "0"},
+    )
     assert harness.repo.connections == {}
 
 
