@@ -82,6 +82,7 @@ One pair at most per thread, built from a START instant and a RESPONSE instant:
 
 from __future__ import annotations
 
+import logging
 import math
 import statistics
 from collections import Counter, defaultdict
@@ -98,6 +99,8 @@ from sqlalchemy import text
 from qualify_api.whatsapp.menus.schema import EntryConfig, MenuDefinition, normalize_keyword
 from qualify_api.whatsapp.orders import read_order
 from qualify_api.whatsapp.window import WINDOW
+
+_LOGGER = logging.getLogger("qualify_api.whatsapp.metrics")
 
 DEFAULT_RANGE: Final = timedelta(days=7)
 MAX_RANGE: Final = timedelta(days=366)
@@ -612,12 +615,56 @@ class MemoryMetricsRepository:
 # ======================================================================================
 
 
-QrPrefixSource = Callable[[UUID, UUID], Mapping[str, str]]
-"""`(tenant_id, connection_id) -> {label: prefilled_message}`."""
+class QrPrefixSource(Protocol):
+    """`{label: prefilled_message}` of the number's QR codes, or `None` when they could
+    not be listed (the metrics are still computed; QR entries then read as whatever
+    else matches, usually `keyword` or `directo`)."""
+
+    async def __call__(
+        self, *, tenant_id: UUID, connection_id: UUID
+    ) -> Mapping[str, str] | None: ...
 
 
-def no_qr_prefixes(tenant_id: UUID, connection_id: UUID) -> Mapping[str, str]:
+class _QrLister(Protocol):
+    async def list_qr_codes(self) -> Sequence[Any]: ...
+
+
+class QrClientFactory(Protocol):
+    async def __call__(self, *, tenant_id: UUID, connection_id: UUID) -> _QrLister: ...
+
+
+async def no_qr_prefixes(*, tenant_id: UUID, connection_id: UUID) -> Mapping[str, str] | None:
     return {}
+
+
+class ClientQrPrefixSource:
+    """Lists the number's QR codes through the Cloud API (`client.list_qr_codes`, one
+    Graph GET per metrics request). The label is the QR `code` — Meta stores no channel
+    name; a human label («mostrador», «empaque») arrives with WA-12's QR registry, and
+    this mapping is the one place to switch to it.
+
+    Never fails the metrics: any error (Graph, transport, no credential) is logged by
+    type only and answered with `None`."""
+
+    def __init__(self, client_factory: QrClientFactory) -> None:
+        self._clients = client_factory
+
+    async def __call__(self, *, tenant_id: UUID, connection_id: UUID) -> Mapping[str, str] | None:
+        try:
+            client = await self._clients(tenant_id=tenant_id, connection_id=connection_id)
+            codes = await client.list_qr_codes()
+        except Exception as exc:  # noqa: BLE001 — metrics degrade, they do not fail
+            _LOGGER.warning(
+                "whatsapp metrics: QR codes not listed for connection=%s (%s)",
+                connection_id,
+                type(exc).__name__,
+            )
+            return None
+        return {
+            str(c.code): str(c.prefilled_message)
+            for c in codes
+            if getattr(c, "code", None) and getattr(c, "prefilled_message", None)
+        }
 
 
 class ConversationMetricsService:
@@ -629,6 +676,12 @@ class ConversationMetricsService:
         self._repo = repo
         self._clock = clock
 
+    def ensure_connection(self, tenant_id: UUID, connection_id: UUID) -> None:
+        """Raise `ConnectionNotFound` before anything costs a Graph call (the route asks
+        Meta for QR codes only for a connection the caller can see)."""
+        if not self._repo.connection_exists(tenant_id=tenant_id, connection_id=connection_id):
+            raise ConnectionNotFound(str(connection_id))
+
     def compute(
         self,
         tenant_id: UUID,
@@ -639,8 +692,7 @@ class ConversationMetricsService:
     ) -> ConversationMetrics:
         """Raises `InvalidRange` (422) or `ConnectionNotFound` (404)."""
         since_, until_ = resolve_range(since, until, self._clock())
-        if not self._repo.connection_exists(tenant_id=tenant_id, connection_id=connection_id):
-            raise ConnectionNotFound(str(connection_id))
+        self.ensure_connection(tenant_id, connection_id)
         rows = self._repo.load(
             tenant_id=tenant_id, connection_id=connection_id, since=since_, until=until_
         )
@@ -653,7 +705,19 @@ def production_metrics_service() -> ConversationMetricsService:
     return ConversationMetricsService(PostgresMetricsRepository())
 
 
+def production_qr_prefix_source() -> ClientQrPrefixSource:
+    """QR codes listed through WA-08's resolver-built client. Imports resolved here so
+    importing this module needs no Meta settings."""
+    from qualify_api.config import MetaOAuthSettings  # noqa: PLC0415
+    from qualify_api.connections.crypto import DevEncryptor  # noqa: PLC0415
+    from qualify_api.whatsapp.outbox import ResolverClientFactory  # noqa: PLC0415
+
+    return ClientQrPrefixSource(ResolverClientFactory(MetaOAuthSettings.from_env(), DevEncryptor()))
+
+
 __all__ = [
+    "ClientQrPrefixSource",
+    "production_qr_prefix_source",
     "DEFAULT_RANGE",
     "MAX_RANGE",
     "NO_CURRENCY",

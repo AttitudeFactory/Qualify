@@ -26,10 +26,12 @@ concurrently over one resolver-built client; the token never reaches this module
 
 ## Errors
 
-`WhatsAppApiError` propagates unchanged; the route maps `is_auth_error` (401 / code 190)
-to 409 `reconnect_required` and anything else to 502 with Meta's numeric code only. No
-connection degrade here: this is a read, and the outbox sender / the health check are
-the paths that own QUA-90's degrade.
+Two failures mean "a person must reconnect the number" and become `ReconnectRequired`
+(the route's 409 `reconnect_required`): the connection has no readable credential
+(`CredentialNotFound` from the resolver) and Meta refused the token (`WhatsAppApiError.
+is_auth_error`, 401 / code 190). Every other `WhatsAppApiError` propagates unchanged (the
+route's 502, Meta's numeric code only). No connection degrade here: this is a read, and
+the outbox sender / the health check are the paths that own QUA-90's degrade.
 
 ## Campaign reconciliation
 
@@ -52,10 +54,12 @@ from uuid import UUID
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
+from qualify_api.connections.credential_reader import CredentialNotFound
 from qualify_api.whatsapp.client import (
     AnalyticsGranularity,
     PricingAnalytics,
     WabaAnalytics,
+    WhatsAppApiError,
 )
 from qualify_api.whatsapp.metrics import ConnectionNotFound, resolve_range
 from qualify_api.whatsapp.models import WhatsAppPhoneNumber
@@ -66,6 +70,11 @@ UNKNOWN_CATEGORY: Final = "UNKNOWN"
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+class ReconnectRequired(Exception):
+    """The number's credential is missing or Meta rejected it: only reconnecting the
+    WhatsApp connection fixes it (module docstring, "Errors")."""
 
 
 # ======================================================================================
@@ -241,20 +250,28 @@ class WabaAnalyticsService:
         until: datetime | None = None,
         granularity: AnalyticsGranularity = "DAY",
     ) -> AnalyticsSummary:
-        """Raises `InvalidRange` (422), `ConnectionNotFound` (404), or the client's
-        `WhatsAppApiError` (409 when `is_auth_error`, else 502)."""
+        """Raises `InvalidRange` (422), `ConnectionNotFound` (404), `ReconnectRequired`
+        (409) or the client's non-auth `WhatsAppApiError` (502)."""
         since_, until_ = resolve_range(since, until, self._clock())
         phone = await asyncio.to_thread(
             self._phones.for_connection, tenant_id=tenant_id, connection_id=connection_id
         )
         if phone is None:
             raise ConnectionNotFound(str(connection_id))
-        client = await self._clients(tenant_id=tenant_id, connection_id=connection_id)
+        try:
+            client = await self._clients(tenant_id=tenant_id, connection_id=connection_id)
+        except CredentialNotFound:
+            raise ReconnectRequired(str(connection_id)) from None
         numbers = [phone.display_phone_number]
-        messaging, pricing = await asyncio.gather(
-            client.get_waba_analytics(phone.waba_id, since_, until_, granularity, numbers),
-            client.get_pricing_analytics(phone.waba_id, since_, until_, granularity, numbers),
-        )
+        try:
+            messaging, pricing = await asyncio.gather(
+                client.get_waba_analytics(phone.waba_id, since_, until_, granularity, numbers),
+                client.get_pricing_analytics(phone.waba_id, since_, until_, granularity, numbers),
+            )
+        except WhatsAppApiError as exc:
+            if exc.is_auth_error:
+                raise ReconnectRequired(str(connection_id)) from exc
+            raise
         buckets = tuple(
             MessagesBucket(start=p.start, end=p.end, sent=p.sent, delivered=p.delivered)
             for p in messaging.data_points
@@ -318,6 +335,7 @@ __all__ = [
     "MemoryAnalyticsPhoneRepository",
     "MessagesBucket",
     "PostgresAnalyticsPhoneRepository",
+    "ReconnectRequired",
     "WabaAnalyticsReader",
     "WabaAnalyticsService",
     "production_analytics_service",

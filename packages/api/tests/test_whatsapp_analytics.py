@@ -19,10 +19,12 @@ from uuid import UUID
 import httpx
 import pytest
 
+from qualify_api.connections.credential_reader import CredentialNotFound
 from qualify_api.connections.resolver import _InjectedAuthClient
 from qualify_api.whatsapp.analytics import (
     AnalyticsPhone,
     MemoryAnalyticsPhoneRepository,
+    ReconnectRequired,
     WabaAnalyticsService,
     summarize_pricing,
 )
@@ -368,12 +370,40 @@ async def test_summary_unknown_connection_never_builds_a_client() -> None:
     assert built == []
 
 
-async def test_summary_propagates_graph_errors() -> None:
-    reader = FakeReader(error=WhatsAppApiError("x", status=401, code=190))
-    service, _ = _service(reader)
+@pytest.mark.parametrize(
+    "error",
+    [
+        WhatsAppApiError("x", status=401, code=None),
+        WhatsAppApiError("x", status=400, code=190),
+    ],
+)
+async def test_graph_auth_errors_become_reconnect_required(error: WhatsAppApiError) -> None:
+    service, _ = _service(FakeReader(error=error))
+    with pytest.raises(ReconnectRequired):
+        await service.summary(TENANT, CONN)
+
+
+async def test_other_graph_errors_propagate() -> None:
+    service, _ = _service(FakeReader(error=WhatsAppApiError("x", status=400, code=100)))
     with pytest.raises(WhatsAppApiError) as info:
         await service.summary(TENANT, CONN)
-    assert info.value.is_auth_error
+    assert info.value.code == 100
+
+
+async def test_missing_credential_becomes_reconnect_required() -> None:
+    phones = MemoryAnalyticsPhoneRepository()
+    phones.put(
+        tenant_id=TENANT,
+        connection_id=CONN,
+        phone=AnalyticsPhone(waba_id=WABA, phone_number_id="pn-1", display_phone_number="1"),
+    )
+
+    async def factory(*, tenant_id: UUID, connection_id: UUID) -> FakeReader:
+        raise CredentialNotFound("none")
+
+    service = WabaAnalyticsService(factory, phones, clock=lambda: NOW)
+    with pytest.raises(ReconnectRequired):
+        await service.summary(TENANT, CONN)
 
 
 def test_reconcile_with_campaigns_is_a_placeholder() -> None:

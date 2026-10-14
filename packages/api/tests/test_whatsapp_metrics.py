@@ -16,10 +16,12 @@ from uuid import UUID, uuid4
 import pytest
 
 from qualify_api.whatsapp import handler
+from qualify_api.whatsapp.client import QrCode, WhatsAppApiError
 from qualify_api.whatsapp.menus.schema import Command, EntryConfig, IceBreaker
 from qualify_api.whatsapp.metrics import (
     CTX_HANDOFF,
     NO_CURRENCY,
+    ClientQrPrefixSource,
     ConnectionNotFound,
     ConversationMetricsService,
     EntryCount,
@@ -31,6 +33,7 @@ from qualify_api.whatsapp.metrics import (
     ThreadFact,
     aggregate,
     classify_entry,
+    no_qr_prefixes,
     p90_nearest_rank,
     resolve_range,
 )
@@ -425,3 +428,57 @@ def test_service_scopes_by_tenant_and_filters_rows_to_the_window() -> None:
         service.compute(OTHER, CONN, since=SINCE, until=UNTIL)
     with pytest.raises(InvalidRange):
         service.compute(TENANT, CONN, since=UNTIL, until=SINCE)
+
+
+def test_ensure_connection() -> None:
+    repo = MemoryMetricsRepository()
+    repo.put(tenant_id=TENANT, connection_id=CONN, rows=rows())
+    service = ConversationMetricsService(repo, clock=lambda: NOW)
+    service.ensure_connection(TENANT, CONN)
+    with pytest.raises(ConnectionNotFound):
+        service.ensure_connection(OTHER, CONN)
+
+
+# ======================================================================================
+# QR prefix source
+# ======================================================================================
+
+
+class _Lister:
+    def __init__(self, codes: list[QrCode] | None = None, error: Exception | None = None):
+        self.codes = codes or []
+        self.error = error
+
+    async def list_qr_codes(self) -> list[QrCode]:
+        if self.error is not None:
+            raise self.error
+        return self.codes
+
+
+def _factory(lister: _Lister) -> Any:
+    async def factory(*, tenant_id: UUID, connection_id: UUID) -> _Lister:
+        return lister
+
+    return factory
+
+
+async def test_client_qr_source_maps_code_to_prefilled_message() -> None:
+    source = ClientQrPrefixSource(
+        _factory(
+            _Lister(
+                [
+                    QrCode("ABC", "Hola, vengo del mostrador", "https://wa.me/message/ABC"),
+                    QrCode("DEF", "", "https://wa.me/message/DEF"),
+                ]
+            )
+        )
+    )
+    assert await source(tenant_id=TENANT, connection_id=CONN) == {
+        "ABC": "Hola, vengo del mostrador"
+    }
+
+
+async def test_client_qr_source_degrades_to_none() -> None:
+    failing = ClientQrPrefixSource(_factory(_Lister(error=WhatsAppApiError("x", status=500))))
+    assert await failing(tenant_id=TENANT, connection_id=CONN) is None
+    assert await no_qr_prefixes(tenant_id=TENANT, connection_id=CONN) == {}
