@@ -525,7 +525,8 @@ def _media_view(m: MessageVM) -> rx.Component:
                 controls=True,
                 preload="metadata",
                 aria_label="Audio recibido por WhatsApp",
-                style={"width": "min(17rem, 60vw)", "display": "block"},
+                # The bubble caps its own width; the player must shrink inside it.
+                style={"width": "17rem", "max_width": "100%", "display": "block"},
             ),
         ),
         (MEDIA_VIDEO, _media_link(m, "Abrir video", "external-link")),
