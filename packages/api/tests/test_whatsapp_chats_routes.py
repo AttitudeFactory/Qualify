@@ -18,6 +18,10 @@ from qualify_api.http import deps, whatsapp_routes
 from qualify_api.http.app import create_app
 from qualify_api.whatsapp.chats import (
     ChatService,
+    MediaExpired,
+    MediaMessageNotFound,
+    MediaNotCaptured,
+    MediaUnavailable,
     MemoryChatRepository,
     MemoryThreadState,
     NotCapturedMediaLocator,
@@ -40,12 +44,17 @@ AUTH_B = {"Authorization": "Bearer token-b"}
 
 
 class FixedLocator:
-    def __init__(self, url: str | None) -> None:
+    """Answers every lookup with `url`, or raises `error` when given one."""
+
+    def __init__(self, url: str = "", error: Exception | None = None) -> None:
         self.url = url
+        self.error = error
         self.calls: list[tuple[UUID, UUID]] = []
 
-    def locate(self, *, tenant_id: UUID, message_id: UUID) -> str | None:
+    async def locate(self, *, tenant_id: UUID, message_id: UUID) -> str:
         self.calls.append((tenant_id, message_id))
+        if self.error is not None:
+            raise self.error
         return self.url
 
 
@@ -249,7 +258,31 @@ def test_list_messages_chronological_with_delivery_fields(h: Harness) -> None:
         "delivery_error_code",
         "external_message_id",
         "media_kind",
+        "has_media",
+        "media_mime",
     }
+    assert (second["has_media"], second["media_mime"]) == (False, None)
+
+
+def test_inbound_media_message_exposes_kind_mime_and_has_media(h: Harness) -> None:
+    thread_id = h.thread()
+    h.repo.add_message(
+        thread_id=thread_id,
+        direction="inbound",
+        text_value="mira esta foto",
+        posted_at=NOW - timedelta(minutes=5),
+        media_kind="image",
+        media_id="1122334455",
+        media_mime="image/jpeg",
+    )
+    body = h.http.get(f"/api/whatsapp/threads/{thread_id}/messages", headers=AUTH_A).json()
+    photo = body["messages"][-1]
+    assert (photo["text"], photo["media_kind"], photo["has_media"], photo["media_mime"]) == (
+        "mira esta foto",
+        "image",
+        True,
+        "image/jpeg",
+    )
 
 
 def test_list_messages_pages_backwards(h: Harness) -> None:
@@ -486,10 +519,28 @@ def test_assign_on_foreign_thread_is_404(h: Harness) -> None:
 # --- media ------------------------------------------------------------------------------
 
 
-def test_media_is_501_until_media_ids_are_captured(h: Harness) -> None:
+def test_media_without_a_media_plane_is_501(h: Harness) -> None:
     response = h.http.get(f"/api/whatsapp/media/{uuid4()}", headers=AUTH_A)
     assert response.status_code == 501
     assert response.json()["detail"] == {"code": "media_not_captured"}
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "code"),
+    [
+        (MediaMessageNotFound("x"), 404, "message_not_found"),
+        (MediaNotCaptured("x"), 501, "media_not_captured"),
+        (MediaExpired("x"), 410, "media_expired"),
+        (MediaUnavailable("x"), 502, "media_unavailable"),
+    ],
+)
+def test_media_failures_map_to_status_codes(
+    h: Harness, error: Exception, status: int, code: str
+) -> None:
+    h.locator = FixedLocator(error=error)
+    response = h.http.get(f"/api/whatsapp/media/{uuid4()}", headers=AUTH_A, follow_redirects=False)
+    assert response.status_code == status
+    assert response.json()["detail"] == {"code": code}
 
 
 def test_media_redirects_when_a_locator_finds_it(h: Harness) -> None:
@@ -508,5 +559,7 @@ def test_production_app_wires_the_chat_dependencies(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("QUALIFY_DEV_PRINCIPALS", "")
     app = create_app(configure_production=True)
     assert whatsapp_routes.get_chat_service in app.dependency_overrides
-    locator = app.dependency_overrides[whatsapp_routes.get_media_locator]()
-    assert isinstance(locator, NotCapturedMediaLocator)
+    # The production locator is built lazily per request (it needs R2/Redis/Meta env);
+    # what is wired is the builder that makes the capturing one.
+    builder = app.dependency_overrides[whatsapp_routes.get_media_locator]
+    assert builder.__name__ == "build_production_whatsapp_media_locator"

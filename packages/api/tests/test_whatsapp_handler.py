@@ -214,6 +214,16 @@ async def test_three_inbound_messages_become_one_thread_and_three_rows() -> None
     assert rows["wamid.SYNTHETIC_TEXT_0001"]["text"] == "Hola, quiero hacer un pedido"
     assert rows["wamid.SYNTHETIC_LIST_0002"]["text"] == "Hacer un pedido"  # the reply title
     assert rows["wamid.SYNTHETIC_IMAGE_0003"]["text"] is None
+    # 0061: the type of every non-text message, and the media id/mime of the image.
+    media = {
+        wamid: (row["media_type"], row["media_id"], row["media_mime"])
+        for wamid, row in rows.items()
+    }
+    assert media == {
+        "wamid.SYNTHETIC_TEXT_0001": (None, None, None),
+        "wamid.SYNTHETIC_LIST_0002": ("interactive", None, None),
+        "wamid.SYNTHETIC_IMAGE_0003": ("image", "1234567890", "image/jpeg"),
+    }
     for row in rows.values():
         assert row["tenant_id"] == TENANT
         assert row["thread_id"] == thread["id"]

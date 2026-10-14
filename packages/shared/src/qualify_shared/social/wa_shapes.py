@@ -66,7 +66,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 # Bumped when a field's name, type or nullability changes in a way that makes a
 # consumer's assumptions wrong. Consumers record it alongside what they parsed
 # (`messages.shape_version` already does this for the Instagram contract).
-SHAPE_VERSION: Final = "wa-webhook-shapes-0.1.0"
+# 0.2.0: inbound media objects (`WAMedia` on image/audio/video/document/sticker) —
+# additive, but the handler now persists what they carry, so rows record the version.
+SHAPE_VERSION: Final = "wa-webhook-shapes-0.2.0"
 
 OBJECT_WHATSAPP_BUSINESS_ACCOUNT: Final = "whatsapp_business_account"
 FIELD_MESSAGES: Final = "messages"
@@ -131,11 +133,31 @@ class WAInteractive(_Shape):
         return self.button_reply or self.list_reply
 
 
+class WAMedia(_Shape):
+    """The media object of an inbound `image` / `audio` / `video` / `document` /
+    `sticker` message (webhooks reference, `messages` object; doc-derived, provisional
+    like the rest of the inbound half). `id` is the Meta media id — valid ~30 days,
+    exchanged for a 5-minute download URL by `GET /{MEDIA_ID}`. `caption` exists on
+    image/video/document, `filename` on document; both optional everywhere so a type
+    that gains one later still parses."""
+
+    id: str
+    mime_type: str | None = None
+    sha256: str | None = None
+    caption: str | None = None
+    filename: str | None = None
+
+
+# The inbound types whose payload carries a downloadable `WAMedia` under the key of the
+# same name.
+MEDIA_MESSAGE_TYPES: Final = ("image", "audio", "video", "document", "sticker")
+
+
 class WAMessage(_Shape):
     """One inbound message. Provisional (see module docstring) — only `id`, `from`,
     `timestamp`, `type` are asserted required; everything type-specific is optional
-    so an unmodelled type (`image`, `location`, `order`, `nfm_reply`…) still parses
-    and reaches the sink with its `type` intact."""
+    so an unmodelled type (`location`, `order`, `nfm_reply`…) still parses and reaches
+    the sink with its `type` intact. The five media types are modelled (`WAMedia`)."""
 
     id: str
     from_: str = Field(alias="from")
@@ -143,6 +165,20 @@ class WAMessage(_Shape):
     type: str
     text: WAText | None = None
     interactive: WAInteractive | None = None
+    image: WAMedia | None = None
+    audio: WAMedia | None = None
+    video: WAMedia | None = None
+    document: WAMedia | None = None
+    sticker: WAMedia | None = None
+
+    @property
+    def media(self) -> WAMedia | None:
+        """The media object matching `type` (`None` for a non-media type, or a media
+        type whose object Meta left out)."""
+        if self.type not in MEDIA_MESSAGE_TYPES:
+            return None
+        media = getattr(self, self.type)
+        return media if isinstance(media, WAMedia) else None
 
 
 class WAConversationOrigin(_Shape):

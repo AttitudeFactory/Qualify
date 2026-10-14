@@ -149,11 +149,13 @@ def build_production_whatsapp_chat_service() -> whatsapp_routes.ChatService:
 
 
 def build_production_whatsapp_media_locator() -> whatsapp_routes.MediaLocator:
-    """WA-10: no inbound `media_id` is persisted yet, so every lookup is 501 — see the
-    gap documented in `qualify_api.whatsapp.chats`."""
-    from qualify_api.whatsapp.chats import NotCapturedMediaLocator  # noqa: PLC0415
+    """0061: download-on-first-request into R2, served through the public-media token.
+    Lazy like `build_production_public_media_gate`: it needs the R2, Redis, public base URL
+    and Meta env, and an app booted without them should fail the media request loudly,
+    not the whole boot."""
+    from qualify_api.whatsapp.media import production_media_locator  # noqa: PLC0415
 
-    return NotCapturedMediaLocator()
+    return production_media_locator()
 
 
 def build_production_whatsapp_metrics_service() -> whatsapp_routes.ConversationMetricsService:

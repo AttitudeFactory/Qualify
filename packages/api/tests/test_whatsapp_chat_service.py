@@ -185,7 +185,14 @@ def test_payloads_address_the_threads_wa_id() -> None:
         (None, "image", "[imagen]"),
         (None, "audio", "[audio]"),
         (None, "document", "[documento]"),
-        (None, "video", "[mensaje]"),
+        (None, "video", "[video]"),
+        (None, "sticker", "[sticker]"),
+        (None, "location", "[ubicación]"),
+        (None, "contacts", "[contacto]"),
+        (None, "order", "[pedido]"),
+        (None, "template", "[plantilla]"),
+        (None, "other", "[mensaje]"),
+        (None, "reaction", "[mensaje]"),
         (None, None, "[mensaje]"),
         ("", None, "[mensaje]"),
     ],
@@ -212,6 +219,48 @@ def test_outbound_media_previews_by_its_sent_type(
     assert summary.last_message_preview == "[imagen]"
     assert summary.last_message_direction == "outbound"
     assert summary.unread_count == 0
+
+
+def test_inbound_media_previews_by_its_media_type(
+    repo: MemoryChatRepository, service: ChatService
+) -> None:
+    """0061: the inbound type is persisted, so a photo a customer sends no longer
+    previews as «[mensaje]»."""
+    thread_id = _thread(repo, inbound_at=NOW - timedelta(hours=2))
+    repo.add_message(
+        thread_id=thread_id,
+        direction="inbound",
+        text_value=None,
+        posted_at=NOW - timedelta(minutes=5),
+        media_kind="audio",
+        media_id="1234567890",
+        media_mime="audio/ogg; codecs=opus",
+    )
+    [summary] = service.list_threads(TENANT)
+    assert summary.last_message_preview == "[audio]"
+    message = service.list_messages(TENANT, thread_id)[-1]
+    assert (message.media_kind, message.has_media, message.media_mime) == (
+        "audio",
+        True,
+        "audio/ogg; codecs=opus",
+    )
+
+
+def test_inbound_location_names_its_kind_but_has_no_media(
+    repo: MemoryChatRepository, service: ChatService
+) -> None:
+    thread_id = _thread(repo, inbound_at=NOW - timedelta(hours=2))
+    repo.add_message(
+        thread_id=thread_id,
+        direction="inbound",
+        text_value=None,
+        posted_at=NOW - timedelta(minutes=5),
+        media_kind="location",
+    )
+    [summary] = service.list_threads(TENANT)
+    assert summary.last_message_preview == "[ubicación]"
+    message = service.list_messages(TENANT, thread_id)[-1]
+    assert message.has_media is False
 
 
 def test_thread_without_messages_has_no_preview(
