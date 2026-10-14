@@ -14,7 +14,11 @@ from pydantic import ValidationError
 
 from qualify_shared.social.wa_shapes import (
     FIELD_POLICIES,
+    FIELD_TEMPLATE_QUALITY,
+    FIELD_TEMPLATE_STATUS,
     SHAPE_VERSION,
+    WATemplateQualityUpdate,
+    WATemplateStatusUpdate,
     parse_whatsapp_notification,
     summarize_notification,
 )
@@ -22,6 +26,9 @@ from qualify_shared.social.wa_shapes import (
 FIXTURES = Path(__file__).parent / "fixtures"
 LIVE_STATUS_READ = FIXTURES / "whatsapp_status_read_live_2026-10-14.json"
 SYNTHETIC_INBOUND = FIXTURES / "whatsapp_inbound_synthetic.json"
+TEMPLATE_APPROVED = FIXTURES / "whatsapp_template_status_approved_doc.json"
+TEMPLATE_REJECTED = FIXTURES / "whatsapp_template_status_rejected_doc.json"
+TEMPLATE_QUALITY = FIXTURES / "whatsapp_template_quality_doc.json"
 
 
 def _load(path: Path) -> dict:
@@ -155,3 +162,71 @@ def test_contract_bookkeeping() -> None:
     # assertion exists to make deliberate.
     assert FIELD_POLICIES["messages"]["provisional"] is True
     assert FIELD_POLICIES["statuses"]["provisional"] is False
+    # WA-18: the template halves are doc-derived until a live capture replaces them.
+    assert FIELD_POLICIES[FIELD_TEMPLATE_STATUS]["provisional"] is True
+    assert FIELD_POLICIES[FIELD_TEMPLATE_QUALITY]["provisional"] is True
+
+
+# --- template webhooks (WA-18, doc-derived) -------------------------------------------
+
+
+def _only_change(path: Path):
+    notification = parse_whatsapp_notification(_load(path))
+    (entry,) = notification.entry
+    (change,) = entry.changes
+    return entry, change
+
+
+def test_template_status_approved_doc_example_parses() -> None:
+    entry, change = _only_change(TEMPLATE_APPROVED)
+    assert entry.id == "102290129340398"  # the WABA id: the tenant is resolved from it
+    assert change.field == FIELD_TEMPLATE_STATUS
+    assert change.messages_value() is None
+    value = WATemplateStatusUpdate.model_validate(change.value)
+    assert value.event == "APPROVED"
+    # A JSON integer in the webhook becomes the same string the Graph API returns.
+    assert value.message_template_id == "1689556908129832"
+    assert (value.message_template_name, value.message_template_language) == (
+        "order_confirmation",
+        "en-US",
+    )
+    assert (value.reason, value.message_template_category) == ("NONE", "UTILITY")
+    assert value.rejection_info is None
+
+
+def test_template_status_rejected_doc_example_carries_the_rejection_info() -> None:
+    _, change = _only_change(TEMPLATE_REJECTED)
+    value = WATemplateStatusUpdate.model_validate(change.value)
+    assert (value.event, value.reason) == ("REJECTED", "INVALID_FORMAT")
+    assert value.rejection_info is not None
+    assert value.rejection_info.reason is not None
+    assert value.rejection_info.recommendation is not None
+
+
+def test_template_quality_doc_example_parses() -> None:
+    _, change = _only_change(TEMPLATE_QUALITY)
+    assert change.field == FIELD_TEMPLATE_QUALITY
+    value = WATemplateQualityUpdate.model_validate(change.value)
+    assert (value.previous_quality_score, value.new_quality_score) == ("GREEN", "YELLOW")
+    assert value.message_template_id == "806312974732579"
+
+
+def test_template_status_without_its_keys_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        WATemplateStatusUpdate.model_validate({"event": "APPROVED"})
+    with pytest.raises(ValidationError):
+        WATemplateStatusUpdate.model_validate(
+            {
+                "event": "APPROVED",
+                "message_template_id": True,
+                "message_template_name": "x",
+                "message_template_language": "es",
+            }
+        )
+
+
+def test_template_changes_summarize_with_empty_tuples() -> None:
+    (summary,) = summarize_notification(parse_whatsapp_notification(_load(TEMPLATE_APPROVED)))
+    assert summary.field == FIELD_TEMPLATE_STATUS
+    assert summary.phone_number_id is None
+    assert summary.message_ids == ()
