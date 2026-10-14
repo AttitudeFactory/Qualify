@@ -7,11 +7,23 @@ no model weights. Mirrors `test_sentiment_service.py`'s fake-provider style exac
 
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from qualify_api.mentions.repository import ENRICHMENT_OK, MemoryMentionsRepository, NewMention
+import pytest
+
+from qualify_api.mentions.repository import (
+    ENRICHMENT_OK,
+    MAX_SENTIMENT_ATTEMPTS,
+    SENTIMENT_ERROR,
+    SENTIMENT_NO_TEXT,
+    SENTIMENT_PENDING,
+    MemoryMentionsRepository,
+    MentionQuery,
+    NewMention,
+)
 from qualify_api.mentions.sentiment import MentionSentimentService
 from qualify_api.sentiment.repository import AnalysisVersion
+from qualify_api.sentiment.service import SentimentModelUnavailable
 
 TENANT_ID = uuid4()
 CONNECTION_ID = uuid4()
@@ -150,3 +162,142 @@ def test_only_analyzes_the_requested_tenants_mentions() -> None:
     summary = service.analyze_pending_mentions(tenant_id=TENANT_ID)
 
     assert summary.mentions_checked == 1
+
+
+# --------------------------------------------------------------------------------------
+# QUA-152 — automatic analysis: bounded retries, environment vs mention failures
+# --------------------------------------------------------------------------------------
+
+
+class ModelBlewUp(RuntimeError):
+    pass
+
+
+class FailingOnProvider:
+    """Raises on any text containing `poison`; classifies everything else."""
+
+    model_id = "stub/failing"
+
+    def __init__(self, exc: Exception | None = None) -> None:
+        self.calls: list[str] = []
+        self._exc = exc or ModelBlewUp("secret user text must never be stored")
+
+    def classify(self, text: str) -> tuple[str, float]:
+        self.calls.append(text)
+        if "poison" in text:
+            raise self._exc
+        return ("NEU", 0.7)
+
+
+def _states(repo: MemoryMentionsRepository) -> dict[UUID, str]:
+    page = repo.list_mentions_page(
+        tenant_id=TENANT_ID, version=VERSION, query=MentionQuery(), page=1
+    )
+    return {r.id: r.sentiment_state for r in page.rows}
+
+
+def test_one_failing_mention_is_recorded_and_the_pass_continues() -> None:
+    repo = MemoryMentionsRepository()
+    provider = FailingOnProvider()
+    service = MentionSentimentService(repository=repo, version=VERSION, provider=provider)
+    bad, _ = repo.upsert_mention(_mention(text="poison"))
+    good, _ = repo.upsert_mention(_mention(text="todo bien"))
+
+    summary = service.analyze_pending_mentions(tenant_id=TENANT_ID)
+
+    assert (summary.mentions_checked, summary.new_results, summary.failed) == (2, 1, 1)
+    assert _states(repo) == {bad: SENTIMENT_PENDING, good: "NEU"}
+
+
+def test_retries_are_bounded_and_an_exhausted_mention_is_error() -> None:
+    repo = MemoryMentionsRepository()
+    provider = FailingOnProvider()
+    service = MentionSentimentService(repository=repo, version=VERSION, provider=provider)
+    bad, _ = repo.upsert_mention(_mention(text="poison"))
+
+    for _ in range(MAX_SENTIMENT_ATTEMPTS + 2):
+        service.analyze_pending_mentions(tenant_id=TENANT_ID)
+
+    assert provider.calls.count("poison") == MAX_SENTIMENT_ATTEMPTS
+    assert _states(repo) == {bad: SENTIMENT_ERROR}
+    assert repo.list_pending_for_analysis(tenant_id=TENANT_ID, version=VERSION) == ()
+    counts = repo.list_mentions_page(
+        tenant_id=TENANT_ID, version=VERSION, query=MentionQuery(), page=1
+    ).counts
+    assert (counts.error, counts.positive, counts.neutral, counts.negative) == (1, 0, 0, 0)
+
+
+def test_a_new_analysis_version_starts_attempts_from_zero() -> None:
+    repo = MemoryMentionsRepository()
+    provider = FailingOnProvider()
+    repo.upsert_mention(_mention(text="poison"))
+    old = MentionSentimentService(repository=repo, version=VERSION, provider=provider)
+    for _ in range(MAX_SENTIMENT_ATTEMPTS):
+        old.analyze_pending_mentions(tenant_id=TENANT_ID)
+
+    new_version = AnalysisVersion(
+        detector_version="d2",
+        pipeline_version="mentions-text-1.0.0",
+        model_id="m1",
+        model_revision=None,
+    )
+
+    assert len(repo.list_pending_for_analysis(tenant_id=TENANT_ID, version=new_version)) == 1
+
+
+def test_an_environment_failure_records_nothing_and_stops_the_pass() -> None:
+    repo = MemoryMentionsRepository()
+    provider = FailingOnProvider(OSError("weights not found"))
+    service = MentionSentimentService(repository=repo, version=VERSION, provider=provider)
+    repo.upsert_mention(_mention(text="poison"))
+
+    with pytest.raises(SentimentModelUnavailable):
+        service.analyze_pending_mentions(tenant_id=TENANT_ID)
+
+    # No attempt charged to the mention: it stays pending with all its retries.
+    assert len(repo.list_pending_for_analysis(tenant_id=TENANT_ID, version=VERSION)) == 1
+
+
+def test_the_default_model_missing_refuses_before_reading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = MemoryMentionsRepository()
+    repo.upsert_mention(_mention(text="hola"))
+    monkeypatch.setattr("qualify_api.mentions.sentiment.local_model_available", lambda: False)
+    service = MentionSentimentService(repository=repo, version=VERSION)  # default provider
+
+    with pytest.raises(SentimentModelUnavailable):
+        service.analyze_pending_mentions(tenant_id=TENANT_ID)
+
+
+def test_analysis_can_target_one_mention() -> None:
+    service, repo = _service()
+    target, _ = repo.upsert_mention(_mention(text="me encanta"))
+    other, _ = repo.upsert_mention(_mention(text="también"))
+
+    summary = service.analyze_pending_mentions(tenant_id=TENANT_ID, mention_id=target)
+
+    assert summary.new_results == 1
+    assert _states(repo) == {target: "POS", other: SENTIMENT_PENDING}
+
+
+def test_reanalysis_is_idempotent() -> None:
+    service, repo = _service()
+    mention_id, _ = repo.upsert_mention(_mention(text="me encanta"))
+
+    first = service.analyze_pending_mentions(tenant_id=TENANT_ID, mention_id=mention_id)
+    second = service.analyze_pending_mentions(tenant_id=TENANT_ID, mention_id=mention_id)
+
+    assert (first.new_results, second.new_results, second.mentions_checked) == (1, 0, 0)
+
+
+def test_no_text_is_never_sent_to_the_model() -> None:
+    repo = MemoryMentionsRepository()
+    provider = FailingOnProvider()
+    service = MentionSentimentService(repository=repo, version=VERSION, provider=provider)
+    blank, _ = repo.upsert_mention(_mention(caption="   "))
+
+    service.analyze_pending_mentions(tenant_id=TENANT_ID)
+
+    assert provider.calls == []
+    assert _states(repo) == {blank: SENTIMENT_NO_TEXT}

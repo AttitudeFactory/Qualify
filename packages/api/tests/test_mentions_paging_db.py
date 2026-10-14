@@ -1,0 +1,402 @@
+"""`PostgresMentionsRepository.list_mentions_page` / `count_received_after` (QUA-152)
+against real Postgres.
+
+What the in-memory twin cannot prove: that the SQL total order really yields every row
+exactly once across OFFSET pages, that the `COUNT(*) FILTER` aggregates agree with a
+direct count, that the SQL sentiment-state derivation matches `sentiment_state_for`, that
+the ILIKE search escapes `%`/`_`, and that RLS keeps one tenant's pages and counts away
+from another's.
+
+Every test uses a FRESH tenant: `qualify_test` is never emptied between runs, so a fixed
+tenant would accumulate rows and break the exact counts asserted here.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
+
+import pytest
+from qualify_shared.db.admin import admin_session
+from qualify_shared.db.session import tenant_session
+from sqlalchemy import func, select
+
+from qualify_api.connections.models import PlatformApp, SocialConnection
+from qualify_api.mentions.models import Mention
+from qualify_api.mentions.repository import (
+    ENRICHMENT_OK,
+    ORIGIN_COMMENT,
+    ORIGIN_POST,
+    SENTIMENT_NEG,
+    SENTIMENT_NO_TEXT,
+    SENTIMENT_PENDING,
+    SENTIMENT_POS,
+    MentionCounts,
+    MentionPage,
+    MentionQuery,
+    NewMention,
+    PostgresMentionsRepository,
+)
+from qualify_api.sentiment.repository import AnalysisVersion
+from qualify_api.tenancy.models import Tenant, User
+
+pytestmark = pytest.mark.db
+
+VERSION = AnalysisVersion(
+    detector_version="v1",
+    pipeline_version="mentions-text-1.0.0",
+    model_id="m1",
+    model_revision=None,
+)
+
+SAME_DAY = datetime(2026, 8, 1, tzinfo=UTC)
+
+
+def _fresh_tenant_with_connection() -> tuple[UUID, UUID]:
+    tenant_id = uuid4()
+    with admin_session() as session:
+        session.add(
+            Tenant(
+                id=tenant_id,
+                name=f"mentions-paging-{tenant_id}",
+                country="CO",
+                timezone="America/Bogota",
+                currency="COP",
+            )
+        )
+        session.flush()
+        app = PlatformApp(app_id=f"app-{uuid4()}", secret_ref="ref", api_version="v21.0")
+        session.add(app)
+        session.flush()
+        user = User(tenant_id=tenant_id, email=f"u-{uuid4()}@t.co", display_name="U")
+        session.add(user)
+        session.flush()
+        app_id, user_id = app.id, user.id
+
+    with tenant_session(tenant_id) as session:
+        conn = SocialConnection(
+            tenant_id=tenant_id,
+            platform_app_id=app_id,
+            platform="instagram",
+            account_type="business",
+            external_account_id=f"ig-{uuid4()}",
+            linked_page_id="page-1",
+            granted_scopes=["basic"],
+            status="active",
+            access_posture="development",
+            current_credential_version=0,
+            connected_by_user_id=user_id,
+        )
+        session.add(conn)
+        session.flush()
+        return tenant_id, conn.id
+
+
+def _add(
+    repo: PostgresMentionsRepository,
+    tenant_id: UUID,
+    connection_id: UUID,
+    *,
+    comment: bool = False,
+    caption: str | None = "una mención",
+    text: str = "un comentario",
+    author: str | None = "autora",
+    posted_at: datetime | None = SAME_DAY,
+) -> UUID:
+    mention_id, created = repo.upsert_mention(
+        NewMention(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            external_account_id="ig-user-1",
+            media_id=f"media-{uuid4()}",
+            comment_id=f"comment-{uuid4()}" if comment else None,
+            caption=None if comment else caption,
+            text=text if comment else None,
+            author_username=None if comment else author,
+            media_type="IMAGE",
+            like_count=1,
+            content_posted_at=posted_at,
+            enrichment_status=ENRICHMENT_OK,
+        )
+    )
+    assert created
+    return mention_id
+
+
+def _page(
+    repo: PostgresMentionsRepository,
+    tenant_id: UUID,
+    query: MentionQuery | None = None,
+    *,
+    page: int = 1,
+    as_of: datetime | None = None,
+) -> MentionPage:
+    return repo.list_mentions_page(
+        tenant_id=tenant_id,
+        version=VERSION,
+        query=query or MentionQuery(),
+        page=page,
+        as_of=as_of,
+    )
+
+
+def test_57_tied_mentions_are_walked_exactly_once_across_offset_pages() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    created = {_add(repo, tenant_id, connection_id) for _ in range(57)}  # all SAME_DAY
+
+    first = _page(repo, tenant_id)
+    seen = [r.id for r in first.rows]
+    for page in range(2, first.total_pages + 1):
+        seen.extend(r.id for r in _page(repo, tenant_id, page=page, as_of=first.as_of).rows)
+
+    assert (first.counts.total, first.total_pages, len(first.rows)) == (57, 5, 12)
+    assert len(seen) == 57
+    assert set(seen) == created
+
+
+def test_order_is_publication_date_then_reception_date_newest_first() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    old = _add(repo, tenant_id, connection_id, posted_at=datetime(2026, 1, 1, tzinfo=UTC))
+    unknown = _add(repo, tenant_id, connection_id, posted_at=None)  # sorts by received_at
+    mid = _add(repo, tenant_id, connection_id, posted_at=datetime(2026, 6, 1, tzinfo=UTC))
+
+    assert [r.id for r in _page(repo, tenant_id).rows] == [unknown, mid, old]
+
+
+def test_counts_match_direct_counts_over_the_whole_set() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    ids = [_add(repo, tenant_id, connection_id) for _ in range(30)]
+    for mention_id in ids[:4]:
+        repo.record_sentiment_result(
+            tenant_id=tenant_id, mention_id=mention_id, version=VERSION, label="POS", score=0.9
+        )
+    repo.record_sentiment_result(
+        tenant_id=tenant_id, mention_id=ids[4], version=VERSION, label="NEG", score=0.9
+    )
+    _add(repo, tenant_id, connection_id, caption=" \n\t ")  # blank caption
+    _add(repo, tenant_id, connection_id, caption=None)  # no caption at all
+
+    page = _page(repo, tenant_id, page=3)
+    with tenant_session(tenant_id) as session:
+        direct_total = session.scalar(
+            select(func.count()).select_from(Mention).where(Mention.tenant_id == tenant_id)
+        )
+
+    assert page.counts.total == direct_total == 32
+    assert page.counts == MentionCounts(
+        total=32, positive=4, neutral=0, negative=1, pending=25, no_text=2
+    )
+    assert len(page.rows) == 8
+
+
+def test_sql_sentiment_state_matches_the_python_definition() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    analyzed = _add(repo, tenant_id, connection_id)
+    repo.record_sentiment_result(
+        tenant_id=tenant_id, mention_id=analyzed, version=VERSION, label="NEG", score=0.9
+    )
+    pending = _add(repo, tenant_id, connection_id)
+    blank = _add(repo, tenant_id, connection_id, caption="   ")
+
+    states = {r.id: r.sentiment_state for r in _page(repo, tenant_id).rows}
+
+    assert states == {analyzed: SENTIMENT_NEG, pending: SENTIMENT_PENDING, blank: SENTIMENT_NO_TEXT}
+
+
+def test_filters_narrow_rows_and_counts_together() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    post = _add(repo, tenant_id, connection_id, caption="me encanta qualifymkt.co")
+    comment = _add(repo, tenant_id, connection_id, comment=True, text="@qualifymkt.co mira")
+    plain = _add(repo, tenant_id, connection_id, caption="otra cosa", author="alguien")
+    repo.record_sentiment_result(
+        tenant_id=tenant_id, mention_id=post, version=VERSION, label="POS", score=0.9
+    )
+
+    def ids(query: MentionQuery) -> set[UUID]:
+        page = _page(repo, tenant_id, query)
+        assert page.counts.total == len(page.rows)
+        return {r.id for r in page.rows}
+
+    assert ids(MentionQuery(origin=ORIGIN_POST)) == {post, plain}
+    assert ids(MentionQuery(origin=ORIGIN_COMMENT)) == {comment}
+    assert ids(MentionQuery(connection_id=connection_id)) == {post, comment, plain}
+    assert ids(MentionQuery(connection_id=uuid4())) == set()
+    assert ids(MentionQuery(sentiment_state=SENTIMENT_POS)) == {post}
+    assert ids(MentionQuery(search="@QualifyMkt.co")) == {post, comment}
+    assert ids(MentionQuery(search="alguien")) == {plain}
+
+
+def test_search_treats_like_wildcards_literally() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    percent = _add(repo, tenant_id, connection_id, caption="50% de descuento")
+    _add(repo, tenant_id, connection_id, caption="500 de descuento")
+    underscore = _add(repo, tenant_id, connection_id, caption="usa a_b")
+    _add(repo, tenant_id, connection_id, caption="usa axb")
+
+    assert {r.id for r in _page(repo, tenant_id, MentionQuery(search="50%")).rows} == {percent}
+    assert {r.id for r in _page(repo, tenant_id, MentionQuery(search="a_b")).rows} == {underscore}
+
+
+def test_snapshot_is_stable_and_new_mentions_are_only_counted_for_the_notice() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    for _ in range(13):
+        _add(repo, tenant_id, connection_id)
+    first = _page(repo, tenant_id)
+    second_page = _page(repo, tenant_id, page=2, as_of=first.as_of)
+
+    # Arrives after the snapshot, with a publication date that would sort it FIRST.
+    late = _add(repo, tenant_id, connection_id, posted_at=datetime(2030, 1, 1, tzinfo=UTC))
+
+    again_first = _page(repo, tenant_id, as_of=first.as_of)
+    again_second = _page(repo, tenant_id, page=2, as_of=first.as_of)
+    new_count = repo.count_received_after(
+        tenant_id=tenant_id, version=VERSION, query=MentionQuery(), after=first.as_of
+    )
+    refreshed = _page(repo, tenant_id)
+
+    assert [r.id for r in again_first.rows] == [r.id for r in first.rows]
+    assert [r.id for r in again_second.rows] == [r.id for r in second_page.rows]
+    assert again_first.counts.total == 13
+    assert new_count == 1
+    assert refreshed.rows[0].id == late
+    assert refreshed.counts.total == 14
+
+
+def test_new_mention_count_respects_filters_and_cap() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    snapshot = _page(repo, tenant_id).as_of
+    for _ in range(3):
+        _add(repo, tenant_id, connection_id, comment=True)
+    _add(repo, tenant_id, connection_id)
+
+    def count(query: MentionQuery, cap: int = 50) -> int:
+        return repo.count_received_after(
+            tenant_id=tenant_id, version=VERSION, query=query, after=snapshot, cap=cap
+        )
+
+    assert count(MentionQuery()) == 4
+    assert count(MentionQuery(origin=ORIGIN_COMMENT)) == 3
+    assert count(MentionQuery(), cap=2) == 2
+
+
+def test_another_tenant_sees_no_rows_counts_or_new_mentions() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_a, connection_a = _fresh_tenant_with_connection()
+    tenant_b, _connection_b = _fresh_tenant_with_connection()
+    for _ in range(5):
+        _add(repo, tenant_a, connection_a)
+
+    page_b = _page(repo, tenant_b)
+    new_b = repo.count_received_after(
+        tenant_id=tenant_b,
+        version=VERSION,
+        query=MentionQuery(),
+        after=datetime(2000, 1, 1, tzinfo=UTC),
+    )
+
+    assert page_b.counts == MentionCounts()
+    assert page_b.rows == ()
+    assert new_b == 0
+    assert _page(repo, tenant_a).counts.total == 5
+
+
+def test_since_window_and_permalink_round_trip() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    old = _add(repo, tenant_id, connection_id, posted_at=datetime(2026, 1, 1, tzinfo=UTC))
+    new = _add(repo, tenant_id, connection_id, posted_at=datetime(2026, 10, 10, tzinfo=UTC))
+    linked, _ = repo.upsert_mention(
+        NewMention(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            external_account_id="ig-user-1",
+            media_id=f"media-{uuid4()}",
+            comment_id=None,
+            caption="con enlace",
+            text=None,
+            author_username="autora",
+            media_type="IMAGE",
+            like_count=1,
+            content_posted_at=datetime(2026, 10, 11, tzinfo=UTC),
+            enrichment_status=ENRICHMENT_OK,
+            permalink="https://www.instagram.com/p/ABC/",
+        )
+    )
+
+    window = _page(repo, tenant_id, MentionQuery(since=datetime(2026, 10, 1, tzinfo=UTC)))
+    links = {r.id: r.permalink for r in window.rows}
+
+    assert set(links) == {new, linked}
+    assert old not in links
+    assert window.counts.total == 2
+    assert links[linked] == "https://www.instagram.com/p/ABC/"
+    assert links[new] is None
+    assert _page(repo, tenant_id).counts.total == 3
+
+
+def test_summarize_counts_the_scope_under_the_snapshot() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    first = _add(repo, tenant_id, connection_id)
+    repo.record_sentiment_result(
+        tenant_id=tenant_id, mention_id=first, version=VERSION, label="NEG", score=0.9
+    )
+    _add(repo, tenant_id, connection_id, comment=True)
+    as_of = _page(repo, tenant_id).as_of
+    _add(repo, tenant_id, connection_id)  # after the snapshot
+
+    counts = repo.summarize(tenant_id=tenant_id, version=VERSION, query=MentionQuery(), as_of=as_of)
+    comments = repo.summarize(
+        tenant_id=tenant_id, version=VERSION, query=MentionQuery(origin=ORIGIN_COMMENT), as_of=as_of
+    )
+
+    assert (counts.total, counts.negative, counts.pending) == (2, 1, 1)
+    assert comments.total == 1
+
+
+def test_refresh_content_updates_content_only_and_identity_stays_locked() -> None:
+    from sqlalchemy import text as sql
+    from sqlalchemy.exc import DBAPIError
+
+    from qualify_api.mentions.repository import MentionContent
+
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    mention_id = _add(repo, tenant_id, connection_id)
+    other_tenant, _ = _fresh_tenant_with_connection()
+
+    targets = repo.list_refresh_targets(tenant_id=tenant_id, mention_ids=(mention_id,))
+    fresh = MentionContent(
+        caption="editado",
+        text=None,
+        author_username="autora",
+        media_type="VIDEO",
+        like_count=42,
+        content_posted_at=SAME_DAY,
+        permalink="https://www.instagram.com/p/NEW/",
+    )
+    assert (
+        repo.refresh_content(tenant_id=other_tenant, mention_id=mention_id, content=fresh) is False
+    )
+    assert repo.refresh_content(tenant_id=tenant_id, mention_id=mention_id, content=fresh) is True
+
+    row = _page(repo, tenant_id).rows[0]
+    assert [t.mention_id for t in targets] == [mention_id]
+    assert (row.like_count, row.caption, row.permalink) == (
+        42,
+        "editado",
+        "https://www.instagram.com/p/NEW/",
+    )
+    # The grant is column-level: identity columns stay read-only for the app role.
+    with pytest.raises(DBAPIError), tenant_session(tenant_id) as session:
+        session.execute(
+            sql("UPDATE mentions SET media_id = 'x' WHERE id = :id"), {"id": mention_id}
+        )

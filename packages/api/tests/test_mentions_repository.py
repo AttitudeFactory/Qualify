@@ -10,11 +10,24 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+import pytest
+
 from qualify_api.mentions.repository import (
     ENRICHMENT_FAILED,
     ENRICHMENT_OK,
+    MENTIONS_PAGE_SIZE,
+    ORIGIN_COMMENT,
+    ORIGIN_POST,
+    SENTIMENT_NEU,
+    SENTIMENT_NO_TEXT,
+    SENTIMENT_PENDING,
+    SENTIMENT_POS,
     MemoryMentionsRepository,
+    MentionCounts,
+    MentionPage,
+    MentionQuery,
     NewMention,
+    sentiment_state_for,
 )
 from qualify_api.sentiment.repository import AnalysisVersion
 
@@ -188,3 +201,255 @@ def test_list_mentions_sentiment_is_none_when_not_analyzed() -> None:
     records = repo.list_mentions(tenant_id=TENANT, connection_id=None, version=VERSION)
 
     assert records[0].sentiment_label is None
+
+
+# --------------------------------------------------------------------------------------
+# QUA-152 — paginated read over ALL stored mentions, counts over the whole filtered set
+# --------------------------------------------------------------------------------------
+
+
+def _paged_mention(
+    index: int,
+    *,
+    tenant_id: UUID = TENANT,
+    connection_id: UUID = CONNECTION,
+    comment: bool = False,
+    caption: str | None = "una mención",
+    text: str | None = None,
+    author: str | None = "autora",
+    posted_at: datetime | None = datetime(2026, 8, 1, tzinfo=UTC),
+) -> NewMention:
+    return NewMention(
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        external_account_id="ig-user-1",
+        media_id=f"media-{index}",
+        comment_id=f"comment-{index}" if comment else None,
+        caption=None if comment else caption,
+        text=(text if text is not None else "un comentario") if comment else None,
+        author_username=None if comment else author,
+        media_type="IMAGE",
+        like_count=index,
+        content_posted_at=posted_at,
+        enrichment_status=ENRICHMENT_OK,
+    )
+
+
+def _page(
+    repo: MemoryMentionsRepository,
+    query: MentionQuery | None = None,
+    *,
+    tenant_id: UUID = TENANT,
+    page: int = 1,
+    as_of: datetime | None = None,
+) -> MentionPage:
+    return repo.list_mentions_page(
+        tenant_id=tenant_id,
+        version=VERSION,
+        query=query or MentionQuery(),
+        page=page,
+        as_of=as_of,
+    )
+
+
+def test_paging_walks_every_mention_beyond_the_old_50_cap_exactly_once() -> None:
+    """57 mentions with the SAME publication date (a tie on the sort key): every page is
+    12 except the last, and walking them yields all 57, none repeated, none skipped."""
+    repo = MemoryMentionsRepository()
+    created = {repo.upsert_mention(_paged_mention(i))[0] for i in range(57)}
+
+    first = _page(repo)
+    seen = [r.id for r in first.rows]
+    for page in range(2, first.total_pages + 1):
+        seen.extend(r.id for r in _page(repo, page=page, as_of=first.as_of).rows)
+
+    assert first.counts.total == 57
+    assert first.total_pages == 5
+    assert len(first.rows) == MENTIONS_PAGE_SIZE == 12
+    assert len(seen) == 57
+    assert set(seen) == created
+
+
+def test_paging_orders_by_publication_date_falling_back_to_reception() -> None:
+    repo = MemoryMentionsRepository()
+    old, _ = repo.upsert_mention(_paged_mention(1, posted_at=datetime(2026, 1, 1, tzinfo=UTC)))
+    unknown, _ = repo.upsert_mention(_paged_mention(2, posted_at=None))  # received "now"
+    mid, _ = repo.upsert_mention(_paged_mention(3, posted_at=datetime(2026, 6, 1, tzinfo=UTC)))
+
+    assert [r.id for r in _page(repo).rows] == [unknown, mid, old]
+
+
+def test_counts_cover_the_whole_filtered_set_not_the_page() -> None:
+    repo = MemoryMentionsRepository()
+    ids = [repo.upsert_mention(_paged_mention(i))[0] for i in range(30)]
+    for mention_id in ids[:5]:
+        repo.record_sentiment_result(
+            tenant_id=TENANT, mention_id=mention_id, version=VERSION, label="POS", score=0.9
+        )
+    for mention_id in ids[5:8]:
+        repo.record_sentiment_result(
+            tenant_id=TENANT, mention_id=mention_id, version=VERSION, label="NEG", score=0.9
+        )
+    repo.upsert_mention(_paged_mention(99, caption="   "))  # blank: nothing to analyze
+
+    page = _page(repo, page=3)
+
+    assert len(page.rows) == 7  # 31 rows, page 3 of 3
+    assert page.counts == MentionCounts(
+        total=31, positive=5, neutral=0, negative=3, pending=22, no_text=1
+    )
+
+
+def test_pending_and_no_text_are_never_counted_as_a_polarity() -> None:
+    repo = MemoryMentionsRepository()
+    repo.upsert_mention(_paged_mention(1))
+    repo.upsert_mention(_paged_mention(2, caption=None))
+
+    counts = _page(repo).counts
+
+    assert (counts.positive, counts.neutral, counts.negative) == (0, 0, 0)
+    assert (counts.pending, counts.no_text) == (1, 1)
+
+
+def test_filters_by_origin_connection_sentiment_and_search() -> None:
+    repo = MemoryMentionsRepository()
+    post, _ = repo.upsert_mention(_paged_mention(1, caption="me encanta qualifymkt.co"))
+    comment, _ = repo.upsert_mention(_paged_mention(2, comment=True, text="@qualifymkt.co mira"))
+    other_conn, _ = repo.upsert_mention(_paged_mention(3, connection_id=OTHER_CONNECTION))
+    repo.record_sentiment_result(
+        tenant_id=TENANT, mention_id=post, version=VERSION, label="POS", score=0.9
+    )
+
+    def ids(query: MentionQuery) -> set[UUID]:
+        page = _page(repo, query)
+        assert page.counts.total == len(page.rows)
+        return {r.id for r in page.rows}
+
+    assert ids(MentionQuery(origin=ORIGIN_POST)) == {post, other_conn}
+    assert ids(MentionQuery(origin=ORIGIN_COMMENT)) == {comment}
+    assert ids(MentionQuery(connection_id=OTHER_CONNECTION)) == {other_conn}
+    assert ids(MentionQuery(sentiment_state=SENTIMENT_POS)) == {post}
+    assert ids(MentionQuery(sentiment_state=SENTIMENT_PENDING)) == {comment, other_conn}
+    # Meta strips the "@" from third-party captions: both spellings find both rows.
+    assert ids(MentionQuery(search="@qualifymkt.co")) == {post, comment}
+    assert ids(MentionQuery(search="QUALIFYMKT")) == {post, comment}
+    assert ids(MentionQuery(search="autora")) == {post, other_conn}
+
+
+def test_snapshot_excludes_later_mentions_and_the_notice_counts_them() -> None:
+    repo = MemoryMentionsRepository()
+    for i in range(13):
+        repo.upsert_mention(_paged_mention(i))
+    first = _page(repo)
+
+    late, _ = repo.upsert_mention(_paged_mention(100, posted_at=datetime(2030, 1, 1, tzinfo=UTC)))
+
+    again = _page(repo, as_of=first.as_of)
+    assert again.counts.total == 13
+    assert late not in {r.id for r in again.rows}
+    assert [r.id for r in again.rows] == [r.id for r in first.rows]
+    assert (
+        repo.count_received_after(
+            tenant_id=TENANT, version=VERSION, query=MentionQuery(), after=first.as_of
+        )
+        == 1
+    )
+
+
+def test_new_mention_count_is_capped_for_the_notice_only() -> None:
+    repo = MemoryMentionsRepository()
+    for i in range(55):
+        repo.upsert_mention(_paged_mention(i))
+
+    capped = repo.count_received_after(
+        tenant_id=TENANT,
+        version=VERSION,
+        query=MentionQuery(),
+        after=datetime(2000, 1, 1, tzinfo=UTC),
+        cap=50,
+    )
+
+    assert capped == 50
+    assert _page(repo).counts.total == 55
+
+
+def test_a_page_past_the_end_lands_on_the_last_page() -> None:
+    repo = MemoryMentionsRepository()
+    for i in range(14):
+        repo.upsert_mention(_paged_mention(i))
+
+    page = _page(repo, page=9)
+
+    assert page.page == 2
+    assert len(page.rows) == 2
+
+
+def test_empty_listing_is_page_one_of_one() -> None:
+    page = _page(MemoryMentionsRepository())
+
+    assert (page.page, page.total_pages, page.rows, page.counts.total) == (1, 1, (), 0)
+
+
+def test_paging_never_crosses_tenants() -> None:
+    repo = MemoryMentionsRepository()
+    repo.upsert_mention(_paged_mention(1))
+    repo.upsert_mention(_paged_mention(2, tenant_id=OTHER_TENANT, connection_id=OTHER_CONNECTION))
+
+    page = _page(repo, tenant_id=OTHER_TENANT)
+
+    assert page.counts.total == 1
+    assert {r.connection_id for r in page.rows} == {OTHER_CONNECTION}
+
+
+def test_page_rows_carry_media_type_and_sentiment_state() -> None:
+    repo = MemoryMentionsRepository()
+    repo.upsert_mention(_paged_mention(1))
+
+    row = _page(repo).rows[0]
+
+    assert row.media_type == "IMAGE"
+    assert row.sentiment_state == SENTIMENT_PENDING
+
+
+def test_sentiment_state_for() -> None:
+    assert sentiment_state_for(label="NEU", text=None, caption=None) == SENTIMENT_NEU
+    assert sentiment_state_for(label=None, text="hola", caption=None) == SENTIMENT_PENDING
+    assert sentiment_state_for(label=None, text=None, caption="hola") == SENTIMENT_PENDING
+    assert sentiment_state_for(label=None, text=None, caption=None) == SENTIMENT_NO_TEXT
+    assert sentiment_state_for(label=None, text=" \n\t", caption="hola") == SENTIMENT_NO_TEXT
+
+
+def test_mention_query_rejects_unknown_values() -> None:
+    with pytest.raises(ValueError):
+        MentionQuery(origin="story")
+    with pytest.raises(ValueError):
+        MentionQuery(sentiment_state="positive")
+
+
+def test_since_window_filters_by_mention_date_and_counts_follow() -> None:
+    repo = MemoryMentionsRepository()
+    recent, _ = repo.upsert_mention(_paged_mention(1, posted_at=datetime(2026, 10, 10, tzinfo=UTC)))
+    repo.upsert_mention(_paged_mention(2, posted_at=datetime(2026, 9, 1, tzinfo=UTC)))
+    undated, _ = repo.upsert_mention(_paged_mention(3, posted_at=None))  # received "now"
+
+    page = _page(repo, MentionQuery(since=datetime(2026, 9, 29, tzinfo=UTC)))
+
+    assert {r.id for r in page.rows} == {recent, undated}
+    assert page.counts.total == 2
+    assert _page(repo).counts.total == 3  # nothing deleted: the window is a view
+
+
+def test_summarize_ignores_what_the_scope_query_leaves_out() -> None:
+    repo = MemoryMentionsRepository()
+    post, _ = repo.upsert_mention(_paged_mention(1, caption="me encanta"))
+    repo.upsert_mention(_paged_mention(2, comment=True))
+    repo.record_sentiment_result(
+        tenant_id=TENANT, mention_id=post, version=VERSION, label="POS", score=0.9
+    )
+    as_of = _page(repo).as_of
+
+    scope = repo.summarize(tenant_id=TENANT, version=VERSION, query=MentionQuery(), as_of=as_of)
+    searched = _page(repo, MentionQuery(search="nada coincide"), as_of=as_of)
+
+    assert (scope.total, scope.positive, scope.pending) == (2, 1, 1)
+    assert searched.counts.total == 0  # the page narrows; the summary does not

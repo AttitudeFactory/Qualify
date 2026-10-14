@@ -24,6 +24,8 @@ this slice's scope.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from datetime import datetime
 from functools import cache
 from uuid import UUID
 
@@ -43,12 +45,16 @@ from qualify_api.mentions.repository import (
     DEFAULT_MENTION_PAGE_SIZE,
     ENRICHMENT_FAILED,
     ENRICHMENT_OK,
+    MentionContent,
+    MentionCounts,
+    MentionPage,
+    MentionQuery,
     MentionRecord,
     MentionsRepository,
     NewMention,
     PostgresMentionsRepository,
 )
-from qualify_api.mentions.resolve import TenantResolution
+from qualify_api.mentions.resolve import TenantResolution, instagram_tenant_ids
 from qualify_api.mentions.sentiment import (
     MENTIONS_PIPELINE_VERSION,
     MentionAnalysisSummary,
@@ -167,6 +173,24 @@ async def ingest_mention(
             type(exc).__name__,
         )
 
+    permalink: str | None = None
+    if enrichment_status == ENRICHMENT_OK:
+        # QUA-152: best-effort, AFTER the content read and in its own call — a refusal
+        # leaves the mention exactly as it would be without a link, never ENRICHMENT_FAILED.
+        try:
+            permalink = await client.get_mentioned_permalink(
+                ig_user_id=ig_user_id, media_id=media_id, comment_id=comment_id
+            )
+        except MentionedContentReadError as exc:
+            _LOGGER.info(
+                "mentions permalink unavailable: media_id=%s comment_id=%s platform_code=%s "
+                "http_status=%s",
+                media_id,
+                comment_id,
+                exc.platform_code,
+                exc.http_status,
+            )
+
     mention = NewMention(
         tenant_id=resolution.tenant_id,
         connection_id=resolution.connection_id,
@@ -180,6 +204,7 @@ async def ingest_mention(
         like_count=like_count,
         content_posted_at=content_posted_at,
         enrichment_status=enrichment_status,
+        permalink=permalink,
     )
     mention_id, _created = production_mentions_repository().upsert_mention(mention)
     return mention_id
@@ -196,6 +221,126 @@ def list_mentions_for_tenant(
         connection_id=connection_id,
         version=current_mention_analysis_version(),
         limit=limit,
+    )
+
+
+@dataclass(frozen=True)
+class ContentRefreshReport:
+    refreshed: int
+    failed: int  # kept as they were: the network refused or the read failed
+
+
+async def refresh_mentions_content(
+    *, tenant_id: UUID, mention_ids: tuple[UUID, ...]
+) -> ContentRefreshReport:
+    """ "Actualizar" (QUA-152): re-read each mention from its network and write back what
+    changed — likes, text, author, link. One read per mention plus the best-effort link,
+    for at most the visible page (12). A mention whose read fails keeps its stored data;
+    nothing raises out of here."""
+    repo = production_mentions_repository()
+    targets = repo.list_refresh_targets(tenant_id=tenant_id, mention_ids=mention_ids)
+    clients: dict[UUID, tuple[HttpMentionedContentClient, str] | None] = {}
+    refreshed = failed = 0
+    for target in targets:
+        try:
+            if target.connection_id not in clients:
+                clients[target.connection_id] = await _content_client_for(
+                    tenant_id=tenant_id, connection_id=target.connection_id
+                )
+            client_and_user = clients[target.connection_id]
+            if client_and_user is None:
+                failed += 1
+                continue
+            client, ig_user_id = client_and_user
+            content = await _read_content(
+                client,
+                ig_user_id=ig_user_id,
+                media_id=target.media_id,
+                comment_id=target.comment_id,
+            )
+            if repo.refresh_content(
+                tenant_id=tenant_id, mention_id=target.mention_id, content=content
+            ):
+                refreshed += 1
+        except Exception as exc:  # noqa: BLE001 — keep the stored data, log the type only
+            failed += 1
+            _LOGGER.info(
+                "mentions refresh kept stored content: mention=%s (%s)",
+                target.mention_id,
+                type(exc).__name__,
+            )
+    return ContentRefreshReport(refreshed=refreshed, failed=failed)
+
+
+async def _read_content(
+    client: HttpMentionedContentClient, *, ig_user_id: str, media_id: str, comment_id: str | None
+) -> MentionContent:
+    """The mention's content as the network gives it NOW. Raises on a refused content read
+    (the caller keeps what it had); the link stays best-effort."""
+    if comment_id is not None:
+        comment = await client.get_mentioned_comment(ig_user_id=ig_user_id, comment_id=comment_id)
+        caption, text, author, media_type = None, comment.text, None, None
+        like_count, posted_at = comment.like_count, comment.timestamp
+    else:
+        media = await client.get_mentioned_media(ig_user_id=ig_user_id, media_id=media_id)
+        caption, text, author, media_type = media.caption, None, media.username, media.media_type
+        like_count, posted_at = media.like_count, media.timestamp
+    try:
+        permalink = await client.get_mentioned_permalink(
+            ig_user_id=ig_user_id, media_id=media_id, comment_id=comment_id
+        )
+    except MentionedContentReadError:
+        permalink = None
+    return MentionContent(
+        caption=caption,
+        text=text,
+        author_username=author,
+        media_type=media_type,
+        like_count=like_count,
+        content_posted_at=posted_at,
+        permalink=permalink,
+    )
+
+
+def list_mentions_page_for_tenant(
+    *,
+    tenant_id: UUID,
+    query: MentionQuery,
+    page: int,
+    as_of: datetime | None = None,
+) -> MentionPage:
+    """The Dashboard de Menciones' read seam (QUA-152): one page of 12 over ALL stored
+    mentions, with counts over the whole filtered set, under the snapshot `as_of`."""
+    return production_mentions_repository().list_mentions_page(
+        tenant_id=tenant_id,
+        version=current_mention_analysis_version(),
+        query=query,
+        page=page,
+        as_of=as_of,
+    )
+
+
+def summarize_mentions_for_tenant(
+    *, tenant_id: UUID, query: MentionQuery, as_of: datetime
+) -> MentionCounts:
+    """The dashboard's summary cards (QUA-152): counts for the SCOPE query (account +
+    period), under the same snapshot as the page — a search never moves them."""
+    return production_mentions_repository().summarize(
+        tenant_id=tenant_id,
+        version=current_mention_analysis_version(),
+        query=query,
+        as_of=as_of,
+    )
+
+
+def count_new_mentions_for_tenant(*, tenant_id: UUID, query: MentionQuery, after: datetime) -> int:
+    """Mentions matching `query` that arrived after the dashboard's snapshot, up to
+    `NEW_MENTIONS_CAP` — what the new-mention notice shows (QUA-152)."""
+    return production_mentions_repository().count_received_after(
+        tenant_id=tenant_id,
+        version=current_mention_analysis_version(),
+        query=query,
+        after=after,
     )
 
 
@@ -225,3 +370,56 @@ def analyze_pending_mentions(*, tenant_id: UUID) -> MentionAnalysisSummary:
     """The published seam for the manual sentiment trigger — mirrors
     `sentiment.composition.analyze_pending_comments`'s role for its own module."""
     return _production_mention_sentiment_service().analyze_pending_mentions(tenant_id=tenant_id)
+
+
+def analyze_mention_after_ingest(*, tenant_id: UUID, mention_id: UUID) -> None:
+    """Analyze the mention the intake processor just stored (QUA-152). NEVER raises: the
+    mention is already committed and its intake event must settle exactly as it would
+    without this call, so any failure — including the model being unavailable — is
+    logged (class name only) and left to the worker's sweep."""
+    try:
+        _production_mention_sentiment_service().analyze_pending_mentions(
+            tenant_id=tenant_id, mention_id=mention_id
+        )
+    except Exception as exc:  # noqa: BLE001 — sentiment must never fail an ingestion
+        _LOGGER.warning(
+            "mention sentiment after ingest skipped: mention=%s (%s)",
+            mention_id,
+            type(exc).__name__,
+        )
+
+
+@dataclass(frozen=True)
+class SentimentSweepReport:
+    tenants: int
+    new_results: int
+    failed: int
+    tenants_errored: int  # the pass raised for that tenant (model unavailable, DB error)
+
+
+def sweep_pending_mention_sentiment() -> SentimentSweepReport:
+    """One pass over every tenant with an Instagram connection (QUA-152): analyzes what is
+    still pending (never-analyzed, or failed below the attempt limit). One tenant's error
+    never stops the others; nothing here raises."""
+    try:
+        tenant_ids = instagram_tenant_ids()
+    except Exception as exc:  # noqa: BLE001 — a sweep must never crash its worker
+        _LOGGER.warning("mention sentiment sweep: tenant listing failed (%s)", type(exc).__name__)
+        return SentimentSweepReport(tenants=0, new_results=0, failed=0, tenants_errored=1)
+
+    service = _production_mention_sentiment_service()
+    new_results = failed = errored = 0
+    for tenant_id in tenant_ids:
+        try:
+            summary = service.analyze_pending_mentions(tenant_id=tenant_id)
+        except Exception as exc:  # noqa: BLE001 — next tenant
+            errored += 1
+            _LOGGER.warning(
+                "mention sentiment sweep: tenant=%s skipped (%s)", tenant_id, type(exc).__name__
+            )
+            continue
+        new_results += summary.new_results
+        failed += summary.failed
+    return SentimentSweepReport(
+        tenants=len(tenant_ids), new_results=new_results, failed=failed, tenants_errored=errored
+    )

@@ -116,6 +116,9 @@ class Mention(Base):
     # distinct from `received_at` (when OUR webhook delivered the event) — a mention can
     # be delivered well after the underlying comment/caption was posted.
     content_posted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # QUA-152 (migration 0052): the media's link on Instagram, read by a best-effort call
+    # after the content; NULL when Meta did not return it. Never built from an id.
+    permalink: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     enrichment_status: Mapped[str] = mapped_column(Text, nullable=False, server_default="PENDING")
     received_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
@@ -156,3 +159,36 @@ class MentionSentimentResult(Base):
     label: Mapped[str] = mapped_column(Text, nullable=False)
     score: Mapped[float] = mapped_column(Float, nullable=False)
     analyzed_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
+
+
+class MentionSentimentFailure(Base):
+    """One FAILED sentiment attempt on a mention under one analysis version (QUA-152,
+    migration 0051). Append-only: the attempt count is the number of rows for (mention,
+    version), so retries are bounded without any UPDATE. `error_class` is the exception's
+    class name only — never a message, which could echo the analyzed (user) text."""
+
+    __tablename__ = "mention_sentiment_failures"
+    __table_args__ = (
+        CheckConstraint(
+            "char_length(error_class) BETWEEN 1 AND 200",
+            name="ck_mention_sentiment_failure_error_class",
+        ),
+        ForeignKeyConstraint(
+            ["mention_id", "tenant_id"],
+            ["mentions.id", "mentions.tenant_id"],
+            name="fk_mention_sentiment_failure_mention_tenant",
+        ),
+        Index("ix_mention_sentiment_failure_mention", "mention_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sql_now("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    mention_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    detector_version: Mapped[str] = mapped_column(Text, nullable=False)
+    pipeline_version: Mapped[str] = mapped_column(Text, nullable=False)
+    model_id: Mapped[str] = mapped_column(Text, nullable=False)
+    model_revision: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_class: Mapped[str] = mapped_column(Text, nullable=False)
+    failed_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)

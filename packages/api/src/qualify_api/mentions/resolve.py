@@ -107,3 +107,18 @@ def resolve_external_account(*, platform: str, external_account_id: str) -> Tena
     return TenantResolution(
         outcome=ResolutionOutcome.RESOLVED, tenant_id=tenant_id, connection_id=connection_id
     )
+
+
+def instagram_tenant_ids() -> tuple[UUID, ...]:
+    """READ-ONLY: the tenants that have at least one Instagram connection — the set the
+    intake worker's mention-sentiment sweep visits (QUA-152). Same narrow door and the
+    same two granted columns (`tenant_id`, `platform`) as `resolve_external_account`;
+    every per-tenant read after this goes back through `tenant_session`."""
+    with webhook_worker_session() as session:
+        return tuple(
+            session.scalars(
+                select(SocialConnection.tenant_id)
+                .where(SocialConnection.platform == PLATFORM_INSTAGRAM)
+                .distinct()
+            ).all()
+        )

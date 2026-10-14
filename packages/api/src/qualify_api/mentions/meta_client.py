@@ -72,6 +72,33 @@ class MentionedContentClient(Protocol):
         self, *, ig_user_id: str, comment_id: str
     ) -> MentionedComment: ...
 
+    async def get_mentioned_permalink(
+        self, *, ig_user_id: str, media_id: str, comment_id: str | None
+    ) -> str | None: ...
+
+
+# QUA-152: the "Ver" link. `permalink` is a Public IG Media field but is NOT in the
+# `mentioned_media`/`mentioned_comment` field tables, so it is read by its OWN call — a
+# refusal here can never break the content read above — and is [UNVERIFIED LIVE] until a
+# real response confirms it. Only an https link on instagram.com is accepted: it is opened
+# in the user's browser.
+_PERMALINK_HOSTS = ("https://www.instagram.com/", "https://instagram.com/")
+
+
+def safe_permalink(value: object) -> str | None:
+    if isinstance(value, str) and value.startswith(_PERMALINK_HOSTS):
+        return value
+    return None
+
+
+def _parse_permalink_response(payload: dict[str, Any], *, comment: bool) -> str | None:
+    if comment:
+        inner = payload.get("mentioned_comment")
+        media = inner.get("media") if isinstance(inner, dict) else None
+        return safe_permalink(media.get("permalink")) if isinstance(media, dict) else None
+    inner = payload.get("mentioned_media")
+    return safe_permalink(inner.get("permalink")) if isinstance(inner, dict) else None
+
 
 # --- response parsing. One function per endpoint; the only place reality lands. ---
 
@@ -157,3 +184,15 @@ class HttpMentionedContentClient:
     async def get_mentioned_comment(self, *, ig_user_id: str, comment_id: str) -> MentionedComment:
         fields_expr = f"mentioned_comment.comment_id({comment_id}){{{MENTIONED_COMMENT_FIELDS}}}"
         return _parse_mentioned_comment_response(await self._get(ig_user_id, fields_expr))
+
+    async def get_mentioned_permalink(
+        self, *, ig_user_id: str, media_id: str, comment_id: str | None
+    ) -> str | None:
+        """The media's permalink (for a comment mention: the media the comment is on), or
+        None when Meta omits it. Raises `MentionedContentReadError` on a refused call."""
+        if comment_id is not None:
+            fields_expr = f"mentioned_comment.comment_id({comment_id}){{media{{permalink}}}}"
+        else:
+            fields_expr = f"mentioned_media.media_id({media_id}){{permalink}}"
+        payload = await self._get(ig_user_id, fields_expr)
+        return _parse_permalink_response(payload, comment=comment_id is not None)
