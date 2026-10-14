@@ -8,10 +8,14 @@
 
 ## 1. Qué corre en el servidor
 
-Un solo servidor, un solo `docker compose`, un solo origen público. Caddy es lo único expuesto a internet (80/443) y reparte por ruta:
+Un solo servidor con **dos composes independientes**: el de Qualify y el **proxy de entrada** del VPS (`/opt/edge`, ver §1.1). Desde el 2026-10-14 el proxy de entrada es lo único expuesto a internet (80/443): termina el TLS de todos los productos del servidor y le pasa a Qualify su dominio por la red Docker `qualify-edge`. El Caddy de Qualify ya no publica puertos; reparte por ruta en HTTP plano:
 
 ```
-                 internet ──► :80/:443  caddy  (TLS automático Let's Encrypt + frontend estático)
+                 internet ──► :80/:443  edge   (/opt/edge — TLS de todos los dominios del VPS)
+                                          │  qualify.attitudefactory.co ─► red qualify-edge
+                                          │  pedidos.attitudefactory.co ─► red pedidos (otro producto, otro compose)
+                                          ▼
+                                 :80  caddy  (router interno de Qualify + frontend estático; sin puertos publicados)
                                           │
         /api/*, /public/media/*  ─────────┼──► api      FastAPI  (uvicorn, qualify_api.http.app:create_app)
         /_event, /_upload, /ping,         │
@@ -39,6 +43,31 @@ No hay colisiones: las rutas que monta el `api_transformer` de Reflex (`/avatar`
 **Por qué dos imágenes y no tres.** `qualify-app` (Python) sirve a la vez `api`, `reflex`, `migrate` y `calendar-worker`, cambiando sólo el comando: el proceso de Reflex ya importa `qualify_api` en proceso (servicios de conexiones y publicación, e `inbox_provider.py` llama a `create_app()` por `httpx.ASGITransport`), así que una imagen "sólo API" tendría exactamente las mismas dependencias. `qualify-web` es Caddy con el frontend ya exportado adentro: en producción el frontend no necesita ni Node ni Python.
 
 **Lo que la imagen NO trae:** el grupo `ml` (torch/transformers) ni `dev`. `qualify_models` va en `PYTHONPATH` (igual que en CI) porque el CRM importa su tabla pura `permission_capability` al arrancar. Consecuencia: lo que necesita torch localmente — análisis de sentimiento de comentarios, borradores de respuesta y transcripción local con whisper del Brand Kit — **falla al usarse** en este servidor (no al arrancar). Ver §11.
+
+### 1.1 Proxy de entrada (`deploy/edge/`, vive en `/opt/edge`)
+
+**Regla del fundador (2026-10-14):** Qualify y Pedidos son dos productos que comparten VPS y no deben afectarse entre sí. Por eso la puerta del servidor no pertenece a ninguno:
+
+| Pieza | Dónde | Quién la cambia |
+|---|---|---|
+| Proxy de entrada (Caddy estándar, `caddy:2.10-alpine`) | `/opt/edge` (`docker-compose.yml`, `Caddyfile`, `.env`) | `just edge-install <target>`; nunca un despliegue de producto |
+| Red `qualify-edge` | Docker, externa | La crea `install.sh`; el Caddy de Qualify se une con el alias `qualify-web` |
+| Red `pedidos` | Docker, externa | La crea `install.sh`; el backend de Pedidos se une como `pedidos-backend:8420` |
+| Certificados TLS | volumen `edge_edge_data` | Caddy del proxy (Let's Encrypt, `EDGE_ACME_EMAIL`) |
+
+Qué garantiza: desplegar Qualify recrea su Caddy interno pero **no toca el proxy**, así que Pedidos no se corta; si Qualify o Pedidos están caídos, solo su dominio responde 502; las rutas de Pedidos ya no viven en este repo de producto sino en `deploy/edge/Caddyfile`. Lo fija `packages/api/tests/test_deploy_edge.py` (ningún servicio de Qualify publica puertos ni menciona Pedidos).
+
+**Cambiar una ruta del proxy:** editar `deploy/edge/Caddyfile` y `just edge-install <target>` (copia y aplica; Caddy recarga sin cortar conexiones si solo cambió el Caddyfile: `cd /opt/edge && docker compose exec edge caddy reload --config /etc/caddy/Caddyfile`).
+
+**Corte único desde el esquema anterior** (Caddy de Qualify en 80/443), en este orden:
+
+1. Una vez, como root en el servidor: `install -d -o deploy -g deploy /opt/edge`.
+2. Desde el Mac: `just edge-install <target>`. La primera vez crea `/opt/edge/.env` desde la plantilla y se detiene: poner `EDGE_ACME_EMAIL` (y revisar los dos dominios).
+3. Desde el Mac: `just edge-install <target> --wait-for-ports`. Crea las redes, copia los certificados actuales al volumen del proxy (no hace falta emitir nuevos), deja el contenedor creado y **se queda esperando** a que 80/443 queden libres.
+4. Con eso esperando, desplegar Qualify (workflow `deploy` o `just deploy`). Al recrearse, el Caddy de Qualify suelta 80/443 y el proxy arranca en ese mismo segundo. El healthcheck del despliegue ya pasa por el proxy.
+5. Comprobar: `install.sh` imprime `/ping` de Qualify (200) y el código de Pedidos (cualquier código HTTP; 502 = backend de Pedidos apagado).
+
+Corte esperado: unos segundos para los dos dominios, una sola vez. Vuelta atrás: `cd /opt/edge && docker compose down` y desplegar el commit anterior de Qualify (que vuelve a publicar 80/443).
 
 ## 2. Crear el servidor (consola de Hetzner)
 
@@ -281,6 +310,8 @@ Se activan con `COMPOSE_PROFILES` en `/opt/qualify/.env.prod` y un `just deploy`
 6. **Monitoreo externo** (un ping HTTP cada 5 min desde un servicio gratuito) — no configurado.
 
 ## 12. Cómo se verificó (2026-10-05, en el Mac, sin servidor)
+
+*(Desde 2026-10-14 el compose de producción no publica puertos: para repetir este smoke añadir `-f deploy/docker-compose.standalone.yml`, que publica el Caddy de Qualify en `QUALIFY_HTTP_PORT`, y crear una vez `docker network create qualify-edge`.)*
 
 El mismo `deploy/docker-compose.prod.yml`, con un proyecto Compose aparte (`-p qualify-smoke`, sin chocar con el stack de desarrollo), un `.env` desechable y Caddy en `http://localhost:18480` sin TLS (`QUALIFY_DOMAIN=http://localhost`, `QUALIFY_PUBLIC_URL=http://localhost:18480`, `QUALIFY_HTTP_PORT=18480`, `QUALIFY_HTTPS_PORT=18443`):
 

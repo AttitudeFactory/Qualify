@@ -1,9 +1,11 @@
-# Qualify edge: automatic TLS (Let's Encrypt) + one origin for everything.
+# Qualify's internal router: one origin for everything, plain HTTP on :80.
 #
-# {$QUALIFY_DOMAIN} is the site address. In production it is the bare hostname
-# (`qualify.attitudefactory.co`), which makes Caddy obtain and renew the certificate on its
-# own (ports 80 + 443 must reach this box). For a local smoke test set it to
-# `http://localhost` — the `http://` prefix turns automatic HTTPS off.
+# TLS is NOT here. Since 2026-10-14 the VPS edge proxy (deploy/edge/, /opt/edge) is the only
+# process on 80/443: it terminates TLS for every product on the box and forwards Qualify's host
+# to this container over the Docker network `qualify-edge` (alias `qualify-web`). So this
+# container publishes no port in production, deploying Qualify never touches the other
+# products' entry, and nothing here knows about them. For a standalone run (CI smoke, local
+# smoke) publish :80 and use plain HTTP — the site address `:80` accepts any Host.
 #
 # Routing table (first match wins inside `handle` blocks; every path not listed falls
 # through to the static frontend):
@@ -21,10 +23,16 @@
 {
 	# Admin API is not needed (config is reloaded by restarting the container).
 	admin off
-	email {$QUALIFY_ACME_EMAIL}
+	# Plain HTTP only: certificates live on the edge proxy.
+	auto_https off
+	servers {
+		# The edge proxy (and, in a standalone run, nothing) sits on a private Docker network:
+		# trust its X-Forwarded-For/-Proto so logs and upstreams see the real client.
+		trusted_proxies static private_ranges
+	}
 }
 
-{$QUALIFY_DOMAIN} {
+:80 {
 	encode zstd gzip
 
 	@fastapi path /api/* /public/media/*
@@ -49,32 +57,13 @@
 		}
 	}
 
+	# HSTS is set by the edge proxy, which is where HTTPS lives.
 	header {
-		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
 	}
 
-	log {
-		output stdout
-		format console
-	}
-}
-
-# Pedidos de Bianki·Polette (repo AttitudeFactory/pedidos) comparte este VPS. Caddy es lo
-# único que escucha en 80/443, así que su sitio se publica desde acá: el backend corre en
-# otro compose (/opt/pedidos) y se alcanza por la red Docker externa `pedidos`, a la que
-# este contenedor también se une (ver docker-compose.prod.yml). Si ese contenedor no está,
-# Caddy responde 502 solo en este host; Qualify no se entera.
-pedidos.attitudefactory.co {
-	encode zstd gzip
-	reverse_proxy pedidos-backend:8420
-	header {
-		Strict-Transport-Security "max-age=31536000"
-		X-Content-Type-Options "nosniff"
-		-Server
-	}
 	log {
 		output stdout
 		format console

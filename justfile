@@ -140,6 +140,17 @@ deploy-logs target service="":
 deploy-backup target:
     deploy/deploy.sh backup {{target}}
 
+# The VPS edge proxy (deploy/edge/): the only listener on 80/443, TLS for every product on the
+# box, owned by none of them. Copies deploy/edge/ to the server and runs install.sh there
+# (idempotent). One-time cutover from the old setup (Qualify's Caddy on 80/443):
+#   just edge-install <target> --wait-for-ports   # leave it waiting, THEN deploy Qualify
+# Later route changes: edit deploy/edge/Caddyfile, run `just edge-install <target>` again.
+# Runbook: docs/despliegue-hetzner.md, "Proxy de entrada".
+edge-install target *args:
+    ssh {{target}} 'rm -rf /tmp/qualify-edge && mkdir -p /tmp/qualify-edge'
+    scp -q deploy/edge/Caddyfile deploy/edge/docker-compose.yml deploy/edge/.env.example deploy/edge/install.sh {{target}}:/tmp/qualify-edge/
+    ssh -t {{target}} 'bash /tmp/qualify-edge/install.sh {{args}}'
+
 # Values never reach argv or the terminal; the output shows an 8-char sha256 fingerprint per
 # key, and a backup of .env.prod is kept. --dry-run compares without writing.
 #   just env-push qualify-prod SCRAPECREATORS_API_KEY [MORE_KEYS...]

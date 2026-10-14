@@ -1,0 +1,41 @@
+# Edge proxy stack of the VPS (Caddy, TLS for every hosted product). Lives in /opt/edge on the
+# server, installed and updated with deploy/edge/install.sh — never by a product's deploy.
+#
+#   cd /opt/edge && docker compose up -d                                   # start / apply
+#   docker compose exec edge caddy reload --config /etc/caddy/Caddyfile    # route change, no restart
+#
+# The two networks are external and created by install.sh, so this stack starts whether or not
+# Qualify or Pedidos are running. Runbook: docs/despliegue-hetzner.md, "Proxy de entrada".
+name: edge
+
+services:
+  edge:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      QUALIFY_DOMAIN: ${QUALIFY_DOMAIN:?set in /opt/edge/.env}
+      PEDIDOS_DOMAIN: ${PEDIDOS_DOMAIN:?set in /opt/edge/.env}
+      EDGE_ACME_EMAIL: ${EDGE_ACME_EMAIL:?set in /opt/edge/.env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - edge_data:/data
+      - edge_config:/config
+    networks:
+      - qualify
+      - pedidos
+
+volumes:
+  edge_data:
+  edge_config:
+
+networks:
+  qualify:
+    external: true
+    name: qualify-edge
+  pedidos:
+    external: true
+    name: pedidos

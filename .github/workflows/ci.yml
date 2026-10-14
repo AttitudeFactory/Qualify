@@ -295,6 +295,13 @@ jobs:
             sleep 2
           done
           docker logs reflex; exit 1
+      - name: Validate both Caddyfiles (Qualify's internal router + the VPS edge proxy)
+        run: |
+          docker run --rm -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" qualify-web:ci \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          docker run --rm -e QUALIFY_DOMAIN=qualify.example.com -e PEDIDOS_DOMAIN=pedidos.example.com \
+            -e EDGE_ACME_EMAIL=ci@example.com -v "$PWD/deploy/edge/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            qualify-web:ci caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
       - name: Smoke — Caddy serves the exported frontend
         run: |
           docker run -d --name web -p 18080:80 -e QUALIFY_DOMAIN=http://localhost \

@@ -1,0 +1,11 @@
+# Standalone overlay for deploy/docker-compose.prod.yml: publishes Qualify's Caddy on the host
+# for runs WITHOUT the VPS edge proxy (the local smoke of docs/despliegue-hetzner.md §12).
+# Plain HTTP only — production TLS lives on the edge (deploy/edge/). The base file still joins
+# the external network `qualify-edge`, so create it once locally: `docker network create qualify-edge`.
+#
+#   docker compose -p qualify-smoke --env-file /path/.env.smoke \
+#     -f deploy/docker-compose.prod.yml -f deploy/docker-compose.standalone.yml up -d --build
+services:
+  caddy:
+    ports:
+      - "${QUALIFY_HTTP_PORT:-8080}:80"
