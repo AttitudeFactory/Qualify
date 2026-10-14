@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -21,6 +22,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
+from qualify_api.leads.models import Lead, LeadFormSettings
 from qualify_api.tenancy.models import Tenant, User
 from qualify_api.whatsapp.client import TemplateInfo
 from qualify_api.whatsapp.models import (
@@ -30,6 +32,12 @@ from qualify_api.whatsapp.models import (
     WhatsAppOutboxItem,
     WhatsAppPhoneNumber,
     WhatsAppTemplate,
+)
+from qualify_api.whatsapp.optins import (
+    OptInService,
+    PostgresOptInRepository,
+    PostgresOptOutRepository,
+    RecordOutcome,
 )
 from qualify_api.whatsapp.resolve import PhoneResolutionOutcome, resolve_waba
 from qualify_api.whatsapp.templates import (
@@ -588,3 +596,70 @@ def test_template_repository_round_trip_and_worker_webhook(seeded) -> None:
     assert repo.set_status_by_name(tenant_id=TENANT, waba_id=waba, name="otra", status="DELETED")
     listed = {t.name: t.status for t in repo.list(tenant_id=TENANT, waba_id=waba)}
     assert listed["otra"] == "DELETED"
+
+
+# --- opt-ins: app repository, lead import and the worker's STOP revocation (WA-19) -----
+
+
+def _random_phone() -> str:
+    return f"+57310{uuid4().int % 10**7:07d}"
+
+
+def test_opt_in_repository_import_and_worker_revoke(seeded) -> None:
+    with tenant_session(TENANT) as session:
+        if session.scalars(select(LeadFormSettings)).first() is None:
+            session.add(
+                LeadFormSettings(
+                    tenant_id=TENANT,
+                    business_name="Bianki",
+                    whatsapp_phone="+573000000000",
+                    consent_text="Acepto recibir mensajes de Bianki por WhatsApp.",
+                    consent_policy_version="v1",
+                )
+            )
+        lead_phone = _random_phone()
+        session.add(
+            Lead(
+                tenant_id=TENANT,
+                full_name="Ana",
+                whatsapp_phone=lead_phone,
+                consent_at=datetime(2026, 10, 1, tzinfo=UTC),
+                consent_policy_version="v1",
+            )
+        )
+
+    service = OptInService(PostgresOptInRepository())
+    report = service.import_from_leads(tenant_id=TENANT)
+    assert report.created >= 1
+    row = service.get(tenant_id=TENANT, phone=lead_phone)
+    assert row is not None and row.source == "lead_form" and row.is_active
+    assert row.proof is not None and row.proof["consent_at"].startswith("2026-10-01")
+    assert service.import_from_leads(tenant_id=TENANT).created == 0  # idempotent
+
+    manual = _random_phone()
+    service.record(tenant_id=TENANT, phone=manual, source="manual", consent_text="Sí, acepto")
+    actives = {r.phone_e164 for r in service.list_active(tenant_id=TENANT)}
+    assert {lead_phone, manual} <= actives
+
+    # The worker door: revokes by (tenant, phone), once; another tenant's id never matches.
+    worker = PostgresOptOutRepository()
+    at = datetime(2026, 10, 14, tzinfo=UTC)
+    assert not worker.revoke(tenant_id=OTHER_TENANT, phone_e164=manual, at=at, reason="stop")
+    assert worker.revoke(tenant_id=TENANT, phone_e164=manual, at=at, reason="stop_keyword")
+    assert not worker.revoke(tenant_id=TENANT, phone_e164=manual, at=at, reason="stop_keyword")
+    revoked = service.get(tenant_id=TENANT, phone=manual)
+    assert revoked is not None and (revoked.revoked_at, revoked.revoke_reason) == (
+        at,
+        "stop_keyword",
+    )
+
+    # A consent captured after the STOP re-opts the phone in (same row, reconsented).
+    again = service.record(
+        tenant_id=TENANT,
+        phone=manual,
+        source="menu",
+        consent_text="Sí, acepto",
+        captured_at=at + timedelta(days=1),
+    )
+    assert again.outcome is RecordOutcome.RECONSENTED and again.record.id == revoked.id
+    assert service.is_opted_in(tenant_id=TENANT, phone=manual)

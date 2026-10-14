@@ -261,6 +261,7 @@ def production_processor(*, worker_id: str) -> Processor:
         whatsapp_messages_handler,
     )
     from qualify_api.whatsapp.menus import load_published_menu_for_phone  # noqa: PLC0415
+    from qualify_api.whatsapp.optins import PostgresOptOutRepository  # noqa: PLC0415
     from qualify_api.whatsapp.repository import PostgresWhatsAppInboxRepository  # noqa: PLC0415
     from qualify_api.whatsapp.resolve import resolve_phone_number  # noqa: PLC0415
     from qualify_api.whatsapp.templates import (  # noqa: PLC0415
@@ -285,6 +286,8 @@ def production_processor(*, worker_id: str) -> Processor:
                 repo=PostgresWhatsAppInboxRepository(),
                 menu_loader=load_published_menu_for_phone,
                 catalog_loader=load_catalog_for_phone,
+                # WA-19: an inbound STOP/BAJA/CANCELAR revokes the sender's opt-in.
+                opt_outs=PostgresOptOutRepository(),
             ),
             TEMPLATE_STATUS_HANDLER_KEY: template_handler,
             TEMPLATE_QUALITY_HANDLER_KEY: template_handler,
