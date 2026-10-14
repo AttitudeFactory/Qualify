@@ -4,7 +4,9 @@
 (Bianki, plan §1): greeting, the four shortcuts WhatsApp shows as ice breakers
 ("Ver menú / Hacer pedido / Horario / Ubicación"), the catalog list, the order summary
 with address collection, and "hablar con una persona". It passes validation and the
-engine tests walk it end to end; WA-16 can also seed a new number with it.
+engine tests walk it end to end; WA-16 can also seed a new number with it. Its
+`productos` node is `source: 'catalog'`: in production the rows come from the number's
+brand catalog (`whatsapp.catalog.load_catalog_for_phone`, WA-15).
 
 Texts are product copy (Spanish) on purpose — they are what a customer reads.
 """
@@ -81,6 +83,7 @@ BIANKI_DEMO_MENU: MenuDefinition = MenuDefinition.model_validate(
             },
             "productos": {
                 "kind": "products",
+                "source": "catalog",
                 "body": "Elige un producto para agregarlo a tu pedido.",
                 "button_label": "Ver productos",
                 "more_label": "Ver más",

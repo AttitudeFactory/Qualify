@@ -253,8 +253,23 @@ def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
         ("qualify_webhook_worker", "social_connections", c, "SELECT")
         for c in ("id", "tenant_id", "platform", "external_account_id", "status")
     } | {
+        # 0059 (WA-15) adds `brand_id`: the catalog loader finds the number's brand.
         ("qualify_webhook_worker", "whatsapp_phone_numbers", c, "SELECT")
-        for c in ("id", "tenant_id", "connection_id", "phone_number_id")
+        for c in ("id", "tenant_id", "connection_id", "phone_number_id", "brand_id")
+    } | {
+        # 0059 (WA-15): the menu's `products` node reads the brand's active catalog.
+        ("qualify_webhook_worker", "brand_products", c, "SELECT")
+        for c in (
+            "id",
+            "tenant_id",
+            "brand_id",
+            "name",
+            "price_amount",
+            "price_currency",
+            "category",
+            "is_active",
+            "position",
+        )
     } | {
         # 0058 (WA-14): the handler loads the live menu of a number and its definition.
         ("qualify_webhook_worker", "whatsapp_menus", c, "SELECT")

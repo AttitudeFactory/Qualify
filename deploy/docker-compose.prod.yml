@@ -10,7 +10,9 @@
 # compose network only — never published, never reachable from the internet.
 #
 # Always on: caddy, api, reflex, postgres, redis, webhook-worker (QUA-147: settles recorded
-# Meta webhooks; read-only toward Meta, never publishes). `migrate` is a one-shot (below).
+# Meta webhooks; read-only toward Meta, never publishes) and whatsapp-worker (WA-08: sends
+# what was explicitly enqueued in `whatsapp_outbox`, nothing else). `migrate` is a one-shot
+# (below).
 #
 # Optional services, OFF unless their profile is enabled (COMPOSE_PROFILES in .env.prod):
 #   calendar-worker  QUA-111 executor — PUBLISHES FOR REAL to connected accounts.
@@ -271,6 +273,29 @@ services:
       - qualify_api.webhooks.worker
       - --interval
       - ${QUALIFY_WEBHOOK_WORKER_INTERVAL:-30}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # WA-08 WhatsApp outbox sender. Drains `whatsapp_outbox` (the replies people write in
+  # /whatsapp, what the menu engine answers, later campaigns): claim -> 24 h window ->
+  # pacing -> send -> settle, as qualify_app under tenant_session. Always on, like
+  # webhook-worker: without it nothing a person or the bot says ever leaves Qualify. It
+  # sends only what was explicitly enqueued — never on its own initiative — so a deploy
+  # that starts it is not a deploy that starts talking. Several instances at once are safe
+  # (FOR UPDATE SKIP LOCKED), but one is enough.
+  whatsapp-worker:
+    <<: [*app-image, *app-env-file, *logging]
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+    command:
+      - python
+      - -m
+      - qualify_api.whatsapp.worker
+      - --all-tenants
+      - --interval
+      - ${QUALIFY_WHATSAPP_WORKER_INTERVAL:-5}
     depends_on:
       postgres:
         condition: service_healthy

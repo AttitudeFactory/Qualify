@@ -253,7 +253,14 @@ def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
         ("qualify_app", "whatsapp_outbox", "UPDATE"),
         ("qualify_webhook_worker", "whatsapp_outbox", "INSERT"),
     }
-    assert worker_phone_columns == {"id", "tenant_id", "connection_id", "phone_number_id"}
+    # `brand_id` since 0059 (WA-15): the catalog loader resolves the number's brand.
+    assert worker_phone_columns == {
+        "id",
+        "tenant_id",
+        "connection_id",
+        "phone_number_id",
+        "brand_id",
+    }
 
 
 def test_new_tables_have_rls_enabled_forced_and_one_policy(engines) -> None:

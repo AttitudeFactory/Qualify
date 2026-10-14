@@ -255,6 +255,7 @@ def production_processor(*, worker_id: str) -> Processor:
     )
     from qualify_api.mentions.resolve import resolve_external_account  # noqa: PLC0415
     from qualify_api.webhooks.repository import WebhookQueue  # noqa: PLC0415
+    from qualify_api.whatsapp.catalog import load_catalog_for_phone  # noqa: PLC0415
     from qualify_api.whatsapp.handler import (  # noqa: PLC0415
         WHATSAPP_MESSAGES_HANDLER_KEY,
         whatsapp_messages_handler,
@@ -271,11 +272,12 @@ def production_processor(*, worker_id: str) -> Processor:
                 ingest=ingest_mention,
                 analyze=analyze_mention_after_ingest,
             ),
-            # The catalog stays empty until WA-15 wires `brand_products`.
+            # WA-15: `products` nodes render the number's brand catalog (`brand_products`).
             WHATSAPP_MESSAGES_HANDLER_KEY: whatsapp_messages_handler(
                 resolve=resolve_phone_number,
                 repo=PostgresWhatsAppInboxRepository(),
                 menu_loader=load_published_menu_for_phone,
+                catalog_loader=load_catalog_for_phone,
             ),
         },
         worker_id=worker_id,
