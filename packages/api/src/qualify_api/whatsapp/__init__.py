@@ -6,7 +6,8 @@ Plan: `docs/plan-modulo-whatsapp-cloud-api.md` §6. What exists after WA-03 is t
 Meta webhook intake (`qualify_api.webhooks`, QUA-147) — no WhatsApp-specific table,
 queue or worker is needed for that. No Graph client (WA-06) and no handler in
 `webhooks.processor` (WA-07) yet; the typed view that handler will consume is
-`qualify_shared.social.wa_shapes`.
+`qualify_shared.social.wa_shapes`. WA-04 added the schema that handler writes to:
+migration 0057 and its ORM mirrors in `whatsapp/models.py`.
 
 Token discipline is inherited whole: the module never sees a WhatsApp access token
 (there is none to see until WA-02/WA-05 store the system-user token through
@@ -14,5 +15,15 @@ Token discipline is inherited whole: the module never sees a WhatsApp access tok
 """
 
 from qualify_api.whatsapp.config import WhatsAppWebhookSettings
+from qualify_api.whatsapp.models import (
+    WhatsAppOutboxItem,
+    WhatsAppPhoneNumber,
+    WhatsAppThreadState,
+)
 
-__all__ = ["WhatsAppWebhookSettings"]
+__all__ = [
+    "WhatsAppOutboxItem",
+    "WhatsAppPhoneNumber",
+    "WhatsAppThreadState",
+    "WhatsAppWebhookSettings",
+]

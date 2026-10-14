@@ -16,6 +16,7 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import (
+    CheckConstraint,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -54,6 +55,10 @@ class SocialConnection(Base):
         # Anti-drift target for the composite FKs from child tables (R2).
         UniqueConstraint("id", "tenant_id", name="uq_conn_id_tenant"),
         Index("ix_conn_tenant", "tenant_id"),
+        CheckConstraint(
+            "(platform = 'whatsapp') OR (linked_page_id IS NOT NULL)",
+            name="ck_conn_linked_page_by_platform",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -72,9 +77,10 @@ class SocialConnection(Base):
     account_type: Mapped[str] = mapped_column(Text, nullable=False)
     external_account_id: Mapped[str] = mapped_column(Text, nullable=False)
     external_username: Mapped[str | None] = mapped_column(Text, nullable=True)
-    linked_page_id: Mapped[str] = mapped_column(
-        Text, nullable=False
-    )  # ADR 25 (row only exists post-link)
+    # ADR 25: an Instagram row only exists post-link, so its Page id is never NULL. Since
+    # 0057 (WA-04) the column is nullable ONLY for `platform = 'whatsapp'` (a WABA number
+    # has no Facebook Page): `ck_conn_linked_page_by_platform` keeps ADR 25 intact.
+    linked_page_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     granted_scopes: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     access_posture: Mapped[str] = mapped_column(Text, nullable=False)  # ADR 22a: data

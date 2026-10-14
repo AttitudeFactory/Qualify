@@ -15,8 +15,9 @@ network and no database. That is what makes "cero red en CI" true rather than as
    before the URL is issued — it happens here, after consent. If no Page with a linked
    Instagram account comes back, the result is `link_required`: the token is dropped in
    memory, and **no `social_connections` row and no `oauth_credentials` row are written**.
-   `linked_page_id` is NOT NULL precisely so this state is unrepresentable rather than
-   merely avoided.
+   `linked_page_id` is NOT NULL for Instagram precisely so this state is unrepresentable
+   rather than merely avoided (since 0057 the NOT NULL is the CHECK
+   `ck_conn_linked_page_by_platform`, which exempts only `platform = 'whatsapp'`).
 3. **Record what was GRANTED, never what was requested (C-04.3).** Meta allows partial
    consent. The literals are stored verbatim; nothing here interprets them.
 4. **Encrypt before persisting, verify through the resolver after.** The plaintext token

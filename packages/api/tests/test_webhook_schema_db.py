@@ -138,7 +138,9 @@ def test_worker_has_exactly_what_it_needs(engines, sql: str) -> None:
         "SELECT 1 FROM tenants LIMIT 1",
         "SELECT 1 FROM oauth_credentials LIMIT 1",
         "SELECT 1 FROM mentions LIMIT 1",
-        "SELECT 1 FROM messages LIMIT 1",
+        # 0057 (WA-04) gave it SELECT/INSERT/UPDATE on the conversation — never DELETE.
+        "DELETE FROM messages WHERE false",
+        "DELETE FROM threads WHERE false",
     ],
 )
 def test_worker_is_denied_everything_else(engines, sql: str) -> None:
@@ -193,9 +195,20 @@ def test_role_attributes(engines) -> None:
         assert (role.rolcreatedb, role.rolcreaterole) == (False, False)
 
 
+# Tables where 0057 (WA-04) gave the worker TABLE-level grants. `column_privileges` lists
+# a table-level grant once per column, so they are excluded from the column-level pin and
+# asserted at table level instead.
+_WORKER_TABLE_GRANTED = ("threads", "messages", "whatsapp_thread_state", "whatsapp_outbox")
+
+
+def _table_granted_sql() -> str:
+    return ", ".join(f"'{t}'" for t in _WORKER_TABLE_GRANTED)
+
+
 def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
     """Table- and column-level privileges of the two roles, as the catalog reports them.
-    An extra grant anywhere (another table, another column) fails this."""
+    An extra grant anywhere (another table, another column) fails this. The WhatsApp
+    rows come from 0057 (WA-04): the worker writes the inbound conversation."""
     with engines["owner"].connect() as conn:
         table_level = {
             (r.grantee, r.table_name, r.privilege_type)
@@ -215,6 +228,7 @@ def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
                     "FROM information_schema.column_privileges "
                     "WHERE grantee IN ('qualify_webhook', 'qualify_webhook_worker') "
                     "AND table_name NOT LIKE 'meta_webhook_%' "
+                    f"AND table_name NOT IN ({_table_granted_sql()})"
                 )
             )
         }
@@ -224,10 +238,23 @@ def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
         ("qualify_webhook_worker", "meta_webhook_deliveries", "DELETE"),
         ("qualify_webhook_worker", "meta_webhook_events", "SELECT"),
         ("qualify_webhook_worker", "meta_webhook_events", "DELETE"),
+        ("qualify_webhook_worker", "threads", "SELECT"),
+        ("qualify_webhook_worker", "threads", "INSERT"),
+        ("qualify_webhook_worker", "threads", "UPDATE"),
+        ("qualify_webhook_worker", "messages", "SELECT"),
+        ("qualify_webhook_worker", "messages", "INSERT"),
+        ("qualify_webhook_worker", "messages", "UPDATE"),
+        ("qualify_webhook_worker", "whatsapp_thread_state", "SELECT"),
+        ("qualify_webhook_worker", "whatsapp_thread_state", "INSERT"),
+        ("qualify_webhook_worker", "whatsapp_thread_state", "UPDATE"),
+        ("qualify_webhook_worker", "whatsapp_outbox", "INSERT"),
     }
     assert column_level == {
         ("qualify_webhook_worker", "social_connections", c, "SELECT")
         for c in ("id", "tenant_id", "platform", "external_account_id", "status")
+    } | {
+        ("qualify_webhook_worker", "whatsapp_phone_numbers", c, "SELECT")
+        for c in ("id", "tenant_id", "connection_id", "phone_number_id")
     }
 
 
