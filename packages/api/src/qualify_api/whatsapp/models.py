@@ -42,6 +42,24 @@ from qualify_api.tenancy.models import Base
 OUTBOX_KINDS: tuple[str, ...] = ("reply", "automation", "campaign_send")
 OUTBOX_STATUSES: tuple[str, ...] = ("pending", "sending", "sent", "failed", "dead")
 DELIVERY_STATUSES: tuple[str, ...] = ("sent", "delivered", "read", "failed")
+# 0061: `messages.media_type` (CHECK `ck_message_media_type`; the ORM copy lives on
+# `inbox.models.Message`). `other` absorbs every inbound type not listed.
+MEDIA_TYPE_OTHER = "other"
+MEDIA_TYPES: tuple[str, ...] = (
+    "image",
+    "audio",
+    "video",
+    "document",
+    "sticker",
+    "location",
+    "contacts",
+    "interactive",
+    "button",
+    "order",
+    MEDIA_TYPE_OTHER,
+)
+# The subset whose bytes can be downloaded from Meta (`WAMedia` carries an id).
+DOWNLOADABLE_MEDIA_TYPES: tuple[str, ...] = ("image", "audio", "video", "document", "sticker")
 # 0060 (WA-18/19/20).
 TEMPLATE_CATEGORIES: tuple[str, ...] = ("marketing", "utility", "authentication")
 OPT_IN_SOURCES: tuple[str, ...] = ("lead_form", "menu", "import", "manual")

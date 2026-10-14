@@ -52,9 +52,9 @@ TABS: tuple[tuple[str, str], ...] = (
 )
 TAB_KEYS: frozenset[str] = frozenset(key for key, _label in TABS)
 
-# The tab a visit lands on when `?tab=` is absent or junk. Conexión while Chats is a
-# placeholder; WA-11 flips this to `TAB_CHATS` when the conversations land.
-DEFAULT_TAB = TAB_CONNECTION
+# The tab a visit lands on when `?tab=` is absent or junk: the conversations (WA-11) —
+# attending chats is what a person opens this screen for.
+DEFAULT_TAB = TAB_CHATS
 
 
 def resolve_tab(requested: str) -> str:

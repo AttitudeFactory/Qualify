@@ -130,10 +130,12 @@ def format_count(value: int) -> str:
 
 
 def format_money(amount: Decimal, currency: str) -> str:
-    """«USD 1,50» / «USD 0,0125» (es-CO separators; 4 decimals under one unit)."""
+    """«USD 1,50» / «USD 0,0125» (es-CO separators; up to 4 decimals under one unit —
+    per-message rates need them — and never fewer than 2)."""
     places = Decimal("0.0001") if abs(amount) < 1 else Decimal("0.01")
     rounded = amount.quantize(places, rounding=ROUND_HALF_UP)
     whole, _, frac = f"{rounded:f}".partition(".")
+    frac = frac.rstrip("0").ljust(2, "0")  # «0,0300» → «0,03»; «0,0125» stays
     sign = "-" if whole.startswith("-") else ""
     whole = f"{int(whole.lstrip('-') or 0):,}".replace(",", ".")
     return f"{currency} {sign}{whole}" + (f",{frac}" if frac else "")

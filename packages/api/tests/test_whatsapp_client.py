@@ -30,6 +30,7 @@ from qualify_api.whatsapp.client import (
     HttpWhatsAppClient,
     ListRow,
     ListSection,
+    ProfilePictureUploadNotConfigured,
     WhatsAppApiError,
     _parse_conversational_automation,
     _parse_send_response,
@@ -400,13 +401,140 @@ async def test_create_qr_code_body_and_parse() -> None:
     assert qr.qr_image_url is not None and qr.qr_image_url.endswith(".png")
 
 
-async def test_list_qr_codes() -> None:
-    rec = _Recorder("qr_list_response.json")
+async def test_list_qr_codes_requests_the_png_image_and_parses_it() -> None:
+    rec = _Recorder("qr_list_with_images_response.json")
     codes = await _client(rec).list_qr_codes()
     assert rec.request.method == "GET"
     assert rec.request.url.path == f"/v21.0/{PHONE_NUMBER_ID}/message_qrdls"
+    # The image is not returned by default; it must be asked for WITH its format, and
+    # naming one field drops the defaults, so the other three are named too.
+    assert rec.request.url.params["fields"] == (
+        "code,prefilled_message,deep_link_url,qr_image_url.format(PNG)"
+    )
+    assert [c.code for c in codes] == ["ABCDEFGH", "IJKLMNOP"]
+    assert [c.qr_image_url for c in codes] == [
+        "https://scontent.xx.fbcdn.net/m1/v/t6/qr-ABCDEFGH.png",
+        "https://scontent.xx.fbcdn.net/m1/v/t6/qr-IJKLMNOP.png",
+    ]
+
+
+async def test_list_qr_codes_tolerates_a_code_without_image() -> None:
+    rec = _Recorder("qr_list_response.json")
+    codes = await _client(rec).list_qr_codes()
     assert [c.code for c in codes] == ["ABCDEFGH", "IJKLMNOP"]
     assert all(c.qr_image_url is None for c in codes)
+
+
+# --------------------------------------------------------------------------------------
+# profile picture — Resumable Upload API
+# --------------------------------------------------------------------------------------
+
+APP_ID = "1234567890123456"
+SESSION = "upload:MTphdHRhY2htZW50OjEyMzQ=?sig=ARZ"
+HANDLE = "4::aW1hZ2UvcG5n:ARb-handle"
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+
+
+def _upload_client(
+    session_payload: dict[str, Any], handle_payload: dict[str, Any]
+) -> tuple[HttpWhatsAppClient, list[httpx.Request], list[httpx.Request]]:
+    graph_requests: list[httpx.Request] = []
+    upload_requests: list[httpx.Request] = []
+
+    def graph(request: httpx.Request) -> httpx.Response:
+        graph_requests.append(request)
+        return httpx.Response(200, json=session_payload)
+
+    def upload(request: httpx.Request) -> httpx.Response:
+        upload_requests.append(request)
+        return httpx.Response(200, json=handle_payload)
+
+    client = HttpWhatsAppClient(
+        graph_client=_InjectedAuthClient(
+            TOKEN, scheme="Bearer", transport=httpx.MockTransport(graph)
+        ),
+        graph_url=GRAPH,
+        phone_number_id=PHONE_NUMBER_ID,
+        app_id=APP_ID,
+        upload_client=_InjectedAuthClient(
+            TOKEN, scheme="OAuth", transport=httpx.MockTransport(upload)
+        ),
+    )
+    return client, graph_requests, upload_requests
+
+
+async def test_upload_profile_picture_runs_the_two_step_resumable_upload() -> None:
+    client, graph_requests, upload_requests = _upload_client({"id": SESSION}, {"h": HANDLE})
+    handle = await client.upload_profile_picture(PNG_BYTES, "image/png")
+    assert handle == HANDLE
+
+    (session_request,) = graph_requests
+    assert session_request.method == "POST"
+    assert session_request.url.path == f"/v21.0/{APP_ID}/uploads"
+    params = session_request.url.params
+    assert params["file_length"] == str(len(PNG_BYTES))
+    assert params["file_type"] == "image/png"
+    assert params["file_name"].endswith(".png")
+    assert session_request.content == b""  # query string only, no body
+
+    (bytes_request,) = upload_requests
+    assert bytes_request.method == "POST"
+    # The session id, prefix included, IS the path of step 2.
+    assert str(bytes_request.url).startswith(f"{GRAPH}/upload:")
+    assert bytes_request.headers["Authorization"] == f"OAuth {TOKEN}"
+    assert bytes_request.headers["file_offset"] == "0"
+    assert bytes_request.content == PNG_BYTES
+
+
+async def test_upload_profile_picture_requires_the_upload_wiring() -> None:
+    with pytest.raises(ProfilePictureUploadNotConfigured):
+        await _strict().upload_profile_picture(PNG_BYTES, "image/png")
+
+
+async def test_upload_profile_picture_validates_before_any_request() -> None:
+    client, graph_requests, upload_requests = _upload_client({"id": SESSION}, {"h": HANDLE})
+    with pytest.raises(ValueError, match="must not be empty"):
+        await client.upload_profile_picture(b"", "image/png")
+    with pytest.raises(ValueError, match="content_type"):
+        await client.upload_profile_picture(PNG_BYTES, "image/gif")
+    assert graph_requests == [] and upload_requests == []
+
+
+async def test_upload_profile_picture_bad_session_response_is_an_api_error() -> None:
+    client, _, upload_requests = _upload_client({"id": "12345"}, {"h": HANDLE})
+    with pytest.raises(WhatsAppApiError, match="upload session"):
+        await client.upload_profile_picture(PNG_BYTES, "image/jpeg")
+    assert upload_requests == []
+
+
+async def test_upload_profile_picture_missing_handle_is_an_api_error() -> None:
+    client, _, _ = _upload_client({"id": SESSION}, {"success": True})
+    with pytest.raises(WhatsAppApiError, match="file handle"):
+        await client.upload_profile_picture(PNG_BYTES, "image/jpeg")
+
+
+async def test_upload_profile_picture_maps_an_auth_failure() -> None:
+    def graph(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": SESSION})
+
+    def upload(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json=_fixture("error_auth_190.json"))
+
+    client = HttpWhatsAppClient(
+        graph_client=_InjectedAuthClient(
+            TOKEN, scheme="Bearer", transport=httpx.MockTransport(graph)
+        ),
+        graph_url=GRAPH,
+        phone_number_id=PHONE_NUMBER_ID,
+        app_id=APP_ID,
+        upload_client=_InjectedAuthClient(
+            TOKEN, scheme="OAuth", transport=httpx.MockTransport(upload)
+        ),
+    )
+    with pytest.raises(WhatsAppApiError) as info:
+        await client.upload_profile_picture(PNG_BYTES, "image/png")
+    assert info.value.is_auth_error
+    assert TOKEN not in str(info.value)
 
 
 async def test_delete_qr_code_uses_http_delete() -> None:

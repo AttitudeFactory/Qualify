@@ -21,8 +21,10 @@ from qualify_api.whatsapp.client import (
     build_template_body,
     build_text_body,
 )
+from qualify_api.whatsapp.optins import MemoryOptInRepository, OptInService
 from qualify_api.whatsapp.outbox import (
     ERROR_AUTH,
+    ERROR_OPTED_OUT,
     ERROR_STALE_EXHAUSTED,
     ERROR_TRANSPORT,
     ERROR_WINDOW_CLOSED,
@@ -78,8 +80,18 @@ class Rig:
         self.client = client or FakeClient(WAMID)
         self.factory_calls: list[UUID] = []
         self.degraded: list[tuple[UUID, UUID]] = []
+        # TO holds an active opt-in, so campaign sends to it go out unless a test revokes.
+        self.opt_ins = OptInService(MemoryOptInRepository(), clock=self.clock)
+        self.opt_ins.record(
+            tenant_id=TENANT, phone=TO, source="manual", consent_text="Acepto mensajes"
+        )
         self.sender = OutboxSender(
-            self.repo, self._factory, self._degrade, worker_id="test:1", clock=self.clock
+            self.repo,
+            self._factory,
+            self._degrade,
+            worker_id="test:1",
+            opt_ins=self.opt_ins,
+            clock=self.clock,
         )
         # The window is OPEN by default: the user wrote one hour ago.
         self.repo.threads[THREAD] = T0 - timedelta(hours=1)
@@ -183,6 +195,77 @@ async def test_a_campaign_send_goes_out_with_no_thread_and_no_window() -> None:
     assert report.sent == 1 and rig.repo.rows[item_id].status == "sent"
     assert rig.client.payloads == [template]
     assert rig.repo.messages == []  # no thread yet: nothing to attach the message to
+
+
+async def test_a_stop_after_the_campaign_queued_the_row_stops_the_send() -> None:
+    """The gap WA-18 left open: the campaign checked the opt-in when it ENQUEUED the row;
+    the person said STOP while it waited. The sender re-reads it and never sends."""
+    rig = Rig()
+    template = build_template_body(TO, "promo_octubre", "es", None)
+    item_id = rig.enqueue("campaign_send", template, thread_id=None)
+    rig.opt_ins.revoke(tenant_id=TENANT, phone=TO, reason="stop_keyword")
+
+    report = await rig.tick()
+
+    assert (report.failed, report.sent) == (1, 0)
+    row = rig.repo.rows[item_id]
+    assert (row.status, row.error_code) == ("failed", ERROR_OPTED_OUT)
+    assert rig.client.payloads == []
+    assert rig.factory_calls == []  # not even a client was built for it
+
+
+async def test_a_campaign_send_to_a_phone_with_no_opt_in_is_not_sent() -> None:
+    rig = Rig()
+    stranger = "+573009999999"
+    item_id = rig.enqueue(
+        "campaign_send", build_template_body(stranger, "promo", "es", None), thread_id=None
+    )
+    await rig.tick()
+    assert rig.repo.rows[item_id].error_code == ERROR_OPTED_OUT
+    assert rig.client.payloads == []
+
+
+async def test_a_digits_only_campaign_recipient_is_matched_as_e164() -> None:
+    rig = Rig()
+    digits = TO.removeprefix("+")
+    item_id = rig.enqueue(
+        "campaign_send", build_template_body(digits, "promo", "es", None), thread_id=None
+    )
+    await rig.tick()
+    assert rig.repo.rows[item_id].status == "sent"
+
+
+async def test_replies_do_not_need_an_opt_in() -> None:
+    """Free-form kinds answer inside the person's own window; the opt-in is a campaign
+    rule. A revoked opt-in must not silence a person's reply to a STOP-sender's question."""
+    rig = Rig()
+    rig.opt_ins.revoke(tenant_id=TENANT, phone=TO, reason="stop_keyword")
+    item_id = rig.enqueue()
+    await rig.tick()
+    assert rig.repo.rows[item_id].status == "sent"
+
+
+async def test_an_opt_in_read_failure_retries_and_never_sends_unchecked() -> None:
+    class BrokenOptIns:
+        def is_opted_in(self, *, tenant_id: UUID, phone: str) -> bool:
+            raise RuntimeError("db down")
+
+    rig = Rig()
+    rig.sender = OutboxSender(
+        rig.repo,
+        rig._factory,
+        rig._degrade,
+        worker_id="test:1",
+        opt_ins=BrokenOptIns(),
+        clock=rig.clock,
+    )
+    item_id = rig.enqueue(
+        "campaign_send", build_template_body(TO, "promo", "es", None), thread_id=None
+    )
+    report = await rig.tick()
+    assert report.retried == 1
+    assert rig.repo.rows[item_id].status == "pending"
+    assert rig.client.payloads == []
 
 
 async def test_a_meta_window_refusal_is_terminal_not_a_retry() -> None:

@@ -18,7 +18,9 @@ from .whatsapp_metrics_state import WhatsAppMetricsState as S
 from .whatsapp_metrics_vm import PERIODS, BarVM, CostLineVM, EntryVM
 
 _CHART_HEIGHT = "7.5rem"
-_SENT_COLOR = T.tone_color("neutral", 5)
+# Gray 7, not lower: the sent track must stay visible on the dark card (dataviz: the
+# de-emphasis gray is still a mark, not the background).
+_SENT_COLOR = T.tone_color("neutral", 7)
 _DELIVERED_COLOR = T.tone_color("accent", 9)
 
 
@@ -90,6 +92,7 @@ def _bar(b: BarVM) -> rx.Component:
         ),
         flex="1",
         min_width="4px",
+        max_width="2.5rem",
         height=_CHART_HEIGHT,
         justify="end",
         spacing="0",
@@ -107,6 +110,7 @@ def _axis_label(b: BarVM) -> rx.Component:
         ),
         flex="1",
         min_width="4px",
+        max_width="2.5rem",
         overflow="visible",
     )
 
@@ -149,10 +153,16 @@ def _analytics() -> rx.Component:
                     rx.foreach(a.bars, _bar),
                     spacing="1",
                     align="end",
+                    justify="between",
                     width="100%",
                     border_bottom=T.BORDER,
                 ),
-                rx.hstack(rx.foreach(a.bars, _axis_label), spacing="1", width="100%"),
+                rx.hstack(
+                    rx.foreach(a.bars, _axis_label),
+                    spacing="1",
+                    justify="between",
+                    width="100%",
+                ),
                 spacing="1",
                 width="100%",
             ),

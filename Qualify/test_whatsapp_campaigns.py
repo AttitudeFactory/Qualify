@@ -219,7 +219,7 @@ def test_draft_estimate_launch_detail_cancel() -> None:
     )
     est = estimate(TENANT, campaign_id, service=service)
     assert est.recipients == "2" and est.placeholder and est.rate_card_status
-    assert est.cost_label == "USD 0,0250"
+    assert est.cost_label == "USD 0,025"
 
     detail = campaign_detail(TENANT, campaign_id, service=service, templates=templates)
     assert detail.detail.can_launch and detail.estimate is not None

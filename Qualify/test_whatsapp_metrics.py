@@ -202,7 +202,7 @@ def _analytics(reader: FakeReader) -> WabaAnalyticsService:
 
 async def test_analytics_provider() -> None:
     vm = await waba_analytics(TENANT, CONNECTION, 7, service=_analytics(FakeReader()), now=NOW)
-    assert vm.sent_total == "10" and vm.cost_available and vm.cost_total == "USD 0,1100"
+    assert vm.sent_total == "10" and vm.cost_available and vm.cost_total == "USD 0,11"
 
 
 async def test_analytics_auth_error_asks_to_reconnect() -> None:

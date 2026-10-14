@@ -32,8 +32,8 @@ loudly instead of accepting an unverified webhook with a dev default.
 **WA-10 (QUA-209) adds the chats API** below the webhook pair, over
 `qualify_api.whatsapp.chats.ChatService`: list threads, read a thread, answer it
 (`kind='reply'` into `whatsapp_outbox`, 409 `window_closed` outside the 24 h window),
-assign / close / reopen / takeover / resume, and the media endpoint (501
-`media_not_captured` until inbound media ids are persisted — see `chats.py`). Unlike the
+assign / close / reopen / takeover / resume, and the media endpoint (0061: 307 to a
+public-media token URL, else 404/501/410/502 — see `get_media` and `whatsapp/media.py`). Unlike the
 webhook these are Qualify's own routes: identity is the `Principal` (C1) and the tenant
 is always the principal's, never a parameter. A thread of another tenant answers 404,
 exactly like an unknown id. Responses carry ids, statuses and message text — never a
@@ -75,7 +75,11 @@ from qualify_api.whatsapp.chats import (
     DEFAULT_LIMIT,
     MAX_LIMIT,
     ChatService,
+    MediaExpired,
     MediaLocator,
+    MediaMessageNotFound,
+    MediaNotCaptured,
+    MediaUnavailable,
     MessageRecord,
     SendBody,
     ThreadNotFound,
@@ -242,9 +246,15 @@ class MessageOut(BaseModel):
     delivery_status: Literal["sent", "delivered", "read", "failed"] | None
     delivery_error_code: str | None
     external_message_id: str
-    # Outbound only: the sent body's type (`text`, `image`, `interactive`, …); always
-    # `None` inbound (the inbound type is not persisted — `chats.py` docstring).
+    # Outbound: the sent body's type (`text`, `image`, `interactive`, `template`, …).
+    # Inbound (0061): the WhatsApp message type for a non-text message (`image`, `audio`,
+    # `video`, `document`, `sticker`, `location`, `contacts`, `button`, `order`, `other`…);
+    # `None` for a text.
     media_kind: str | None
+    # Inbound only: `GET /api/whatsapp/media/{id}` can serve bytes for this message.
+    has_media: bool = False
+    # Inbound only: Meta's declared MIME (`image/jpeg`, `audio/ogg; codecs=opus`, …).
+    media_mime: str | None = None
 
     @classmethod
     def of(cls, record: MessageRecord) -> MessageOut:
@@ -258,6 +268,8 @@ class MessageOut(BaseModel):
                 "delivery_error_code": record.delivery_error_code,
                 "external_message_id": record.external_message_id,
                 "media_kind": record.media_kind,
+                "has_media": record.has_media,
+                "media_mime": record.media_mime,
             }
         )
 
@@ -442,17 +454,31 @@ def resume_thread(
 
 
 @router.get("/media/{message_id}")
-def get_media(
+async def get_media(
     message_id: UUID,
     principal: Principal = Depends(current_principal),
     locator: MediaLocator = Depends(get_media_locator),
 ) -> Response:
-    """Redirect to the bytes of an inbound media message — or 501 `media_not_captured`,
-    which is every inbound media message today (no `media_id` is persisted; the gap is
-    documented in `chats.py`)."""
-    url = locator.locate(tenant_id=principal.tenant_id, message_id=message_id)
-    if url is None:
-        raise HTTPException(status_code=501, detail={"code": "media_not_captured"})
+    """The bytes of an inbound media message (0061, `whatsapp/media.py`):
+
+    - **307** → a 15-minute `/public/media/{token}` URL (the first request downloads the
+      media from Meta into R2; later ones skip Meta);
+    - **404** `message_not_found` — no such WhatsApp message for this tenant;
+    - **501** `media_not_captured` — the message carries no downloadable media (a text, a
+      location, an outbound message, a row stored before 0061);
+    - **410** `media_expired` — Meta no longer holds it (id older than ~30 days) and it was
+      never copied;
+    - **502** `media_unavailable` — Meta/R2/Redis failed; retrying later may work."""
+    try:
+        url = await locator.locate(tenant_id=principal.tenant_id, message_id=message_id)
+    except MediaMessageNotFound:
+        raise HTTPException(status_code=404, detail={"code": "message_not_found"}) from None
+    except MediaNotCaptured:
+        raise HTTPException(status_code=501, detail={"code": "media_not_captured"}) from None
+    except MediaExpired:
+        raise HTTPException(status_code=410, detail={"code": "media_expired"}) from None
+    except MediaUnavailable:
+        raise HTTPException(status_code=502, detail={"code": "media_unavailable"}) from None
     return RedirectResponse(url=url, status_code=307)
 
 

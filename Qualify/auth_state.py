@@ -396,7 +396,9 @@ class AuthState(rx.State):
             from .trending_state import TrendingState
             from .voice_lab import VoiceLabState
             from .whatsapp_campaigns_state import WhatsAppCampaignsState
+            from .whatsapp_chats_state import WhatsAppChatsState
             from .whatsapp_contacts_state import WhatsAppContactsState
+            from .whatsapp_menu_state import WhatsAppMenuState
             from .whatsapp_metrics_state import WhatsAppMetricsState
             from .whatsapp_state import WhatsAppState
             from .whatsapp_templates_state import WhatsAppTemplatesState
@@ -440,6 +442,11 @@ class AuthState(rx.State):
                 CatalogState,
                 # WA-12: the tenant's WhatsApp numbers, business profile and QR codes
                 WhatsAppState,
+                # WA-11: the number's conversations, the open thread, the composer draft
+                # and the acting user's id (a backend var — `reset` clears those too)
+                WhatsAppChatsState,
+                # WA-16: the number's menus, the open editor draft and the preview chat
+                WhatsAppMenuState,
                 # WA-18: templates, opt-ins, campaigns and the Conexión metrics block
                 WhatsAppTemplatesState,
                 WhatsAppContactsState,

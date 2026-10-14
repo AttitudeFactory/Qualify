@@ -141,6 +141,11 @@ class Message(Base):
             "delivery_status IS NULL OR delivery_status IN ('sent','delivered','read','failed')",
             name="ck_message_delivery_status",
         ),
+        CheckConstraint(
+            "media_type IS NULL OR media_type IN ('image','audio','video','document',"
+            "'sticker','location','contacts','interactive','button','order','other')",
+            name="ck_message_media_type",
+        ),
         Index("ix_message_tenant", "tenant_id"),
         Index("ix_message_thread", "thread_id", "posted_at"),
     )
@@ -175,6 +180,14 @@ class Message(Base):
     # every inbound message, and on an outbound one until the first receipt arrives.
     delivery_status: Mapped[str | None] = mapped_column(Text, nullable=True)
     delivery_error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 0061: inbound WhatsApp media. `media_type` is the WhatsApp message type for every
+    # non-text inbound message (CHECKed list, `other` for anything new); `media_id` and
+    # `media_mime` are Meta's for the downloadable types; `media_object_key` is the R2
+    # copy, filled lazily by `whatsapp.media.CapturingMediaLocator` on first request.
+    media_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_mime: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class InboxMetaCallLog(Base):

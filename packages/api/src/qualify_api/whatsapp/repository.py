@@ -7,7 +7,7 @@ the role, and this module uses exactly that set and nothing more:
 | table | used as |
 |---|---|
 | `threads` | SELECT/INSERT/UPDATE — `upsert_thread` |
-| `messages` | SELECT/INSERT/UPDATE — `insert_inbound_message`, `apply_status` |
+| `messages` | SELECT/INSERT/UPDATE — `insert_inbound_message` (+ 0061 media), `apply_status` |
 | `whatsapp_thread_state` | SELECT/INSERT/UPDATE — `get_thread_state`, `save_thread_state` |
 | `whatsapp_outbox` | INSERT only — `enqueue_outbox` (id minted in Python, no `RETURNING`) |
 
@@ -107,6 +107,9 @@ class WhatsAppInboxRepository(Protocol):
         text: str | None,
         posted_at: datetime | None,
         shape_version: str,
+        media_type: str | None = None,
+        media_id: str | None = None,
+        media_mime: str | None = None,
     ) -> bool: ...
 
     def apply_status(
@@ -166,9 +169,10 @@ _INSERT_MESSAGE = text(
     """
     INSERT INTO messages (id, tenant_id, thread_id, connection_id, external_message_id,
                           direction, author_external_id, author_username, text, posted_at,
-                          shape_version)
+                          shape_version, media_type, media_id, media_mime)
     VALUES (:id, :tenant_id, :thread_id, :connection_id, :external_message_id, :direction,
-            :author_external_id, :author_username, :text, :posted_at, :shape_version)
+            :author_external_id, :author_username, :text, :posted_at, :shape_version,
+            :media_type, :media_id, :media_mime)
     ON CONFLICT (connection_id, external_message_id) DO NOTHING
     """
 )
@@ -258,6 +262,9 @@ class PostgresWhatsAppInboxRepository:
         text: str | None,
         posted_at: datetime | None,
         shape_version: str,
+        media_type: str | None = None,
+        media_id: str | None = None,
+        media_mime: str | None = None,
     ) -> bool:
         with self._session() as session:
             inserted = session.execute(
@@ -274,6 +281,9 @@ class PostgresWhatsAppInboxRepository:
                     "text": text,
                     "posted_at": posted_at,
                     "shape_version": shape_version,
+                    "media_type": media_type,
+                    "media_id": media_id,
+                    "media_mime": media_mime,
                 },
             ).rowcount
         return inserted == 1
@@ -413,6 +423,9 @@ class MemoryWhatsAppInboxRepository:
         text: str | None,
         posted_at: datetime | None,
         shape_version: str,
+        media_type: str | None = None,
+        media_id: str | None = None,
+        media_mime: str | None = None,
     ) -> bool:
         key = (connection_id, external_message_id)
         if key in self.messages:
@@ -431,6 +444,9 @@ class MemoryWhatsAppInboxRepository:
             "shape_version": shape_version,
             "delivery_status": None,
             "delivery_error_code": None,
+            "media_type": media_type,
+            "media_id": media_id,
+            "media_mime": media_mime,
         }
         return True
 

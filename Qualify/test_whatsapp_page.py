@@ -32,7 +32,7 @@ from .whatsapp_vm import (
     NEVER_CHECKED,
     NO_INBOUND,
     QR_CHANNELS,
-    TAB_CONNECTION,
+    TAB_CHATS,
     TAB_QR,
     TABS,
     VERTICAL_KEYS,
@@ -282,19 +282,30 @@ def test_graph_error_shows_the_meta_code_only() -> None:
 
 
 def test_tabs_and_default() -> None:
-    assert [key for key, _ in TABS][:5] == ["chats", "conexion", "perfil", "qr", "menu"]
-    assert [label for _, label in TABS][:5] == ["Chats", "Conexión", "Perfil", "QR", "Menú"]
-    assert DEFAULT_TAB == TAB_CONNECTION
+    assert [key for key, _ in TABS] == [
+        "chats",
+        "conexion",
+        "perfil",
+        "qr",
+        "menu",
+        "plantillas",
+        "contactos",
+        "campanas",
+    ]
+    assert [label for _, label in TABS][5:] == ["Plantillas", "Contactos", "Campañas"]
+    assert DEFAULT_TAB == TAB_CHATS
     assert resolve_tab("qr") == TAB_QR
     assert resolve_tab("<script>") == DEFAULT_TAB
     assert resolve_tab("") == DEFAULT_TAB
 
 
-def test_placeholders_exist_behind_the_agreed_hooks() -> None:
+def test_tabs_exist_behind_the_agreed_hooks() -> None:
     for component in (whatsapp_tab_chats.chats_tab(), whatsapp_tab_menu.menu_tab()):
         assert isinstance(component, rx.Component)
     rendered = str(whatsapp_tab_chats.chats_tab().render())
-    assert "Los chats llegan con la siguiente entrega" in rendered
+    # WA-11 replaced the Chats placeholder; its root loads on mount.
+    assert "Los chats llegan con la siguiente entrega" not in rendered
+    assert "Elige una conversaci" in rendered
 
 
 def test_the_page_renders_every_tab() -> None:

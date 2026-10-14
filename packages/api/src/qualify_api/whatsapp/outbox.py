@@ -25,7 +25,13 @@ policy). Schema: migration 0057 / `whatsapp/models.py`.
 - **deferred** — another message went to the same recipient < 6 s ago: back to
   `pending`, `next_attempt_at = last + 6 s`, **no attempt counted**.
 - **failed** (terminal; a person decides, WA-11 shows it) — window closed for a
-  free-form kind (`window_closed`), Meta's window codes `131047`/`131026`, any other 4xx.
+  free-form kind (`window_closed`), Meta's window codes `131047`/`131026`, any other 4xx,
+  or a `campaign_send` whose recipient's opt-in is no longer active (`opted_out`): a STOP
+  that arrives AFTER the campaign queued the row must still stop it. The opt-in is read
+  at send time, through `opt_ins` (`OptInService` in production — `qualify_app` reads
+  `whatsapp_opt_ins` under RLS), and migration 0060's `wa_outbox_campaign_mirror` trigger
+  copies the `failed`/`opted_out` onto the campaign send in the same transaction. A
+  failure to READ the opt-in is not a "no": the row is retried, never sent unchecked.
 - **retry** — transport failure (ambiguous: the message MAY have gone out), HTTP
   429/5xx, Meta's throttling codes: `pending`, `attempts+1`,
   `next_attempt_at = now + 4**attempts s`.
@@ -92,6 +98,10 @@ ERROR_AUTH: Final = "auth"
 ERROR_TRANSPORT: Final = "transport"
 ERROR_NO_RECIPIENT: Final = "no_recipient"
 ERROR_STALE_EXHAUSTED: Final = "stale_lock_attempts_exhausted"
+ERROR_OPTED_OUT: Final = "opted_out"
+# The outbox kinds whose recipient must hold an ACTIVE opt-in at send time (WA-19/20).
+# Replies and automation answer a person inside their own 24 h window — no opt-in.
+OPT_IN_REQUIRED_KINDS: Final = frozenset({"campaign_send"})
 
 # Meta error codes that ride an HTTP 400 but mean "try later", from the Cloud API
 # error-codes reference (support/error-codes, read 2026-10-14; not yet seen live):
@@ -643,6 +653,19 @@ class ClientFactory(Protocol):
     async def __call__(self, *, tenant_id: UUID, connection_id: UUID) -> WhatsAppClient: ...
 
 
+class OptInChecker(Protocol):
+    """`optins.OptInService.is_opted_in`'s shape. `phone` is E.164; a value that does not
+    normalize answers `False` (fail closed)."""
+
+    def is_opted_in(self, *, tenant_id: UUID, phone: str) -> bool: ...
+
+
+def recipient_e164(to: str) -> str:
+    """The opt-in key of an outbox `to`: campaigns store E.164 (`+57…`), but Meta also
+    accepts bare digits, so a digits-only `to` is read as `+<digits>`."""
+    return to if to.startswith("+") else f"+{recipient_digits(to)}"
+
+
 class ConnectionDegrader(Protocol):
     """`connections.composition.degrade_connection_on_auth_error`'s shape (QUA-90)."""
 
@@ -685,7 +708,9 @@ class OutboxSender:
     """Drains one tenant's due outbox rows: claim → window → pacing → send → settle.
 
     `clock` is injected so the window boundary, the pacing and the backoff are testable
-    to the second; `worker_id` names the lock holder (`hostname:pid` in production)."""
+    to the second; `worker_id` names the lock holder (`hostname:pid` in production).
+    `opt_ins` is required, not defaulted: a sender that could be built without it could
+    send a campaign to someone who already said STOP."""
 
     def __init__(
         self,
@@ -694,12 +719,14 @@ class OutboxSender:
         degrade: ConnectionDegrader,
         *,
         worker_id: str,
+        opt_ins: OptInChecker,
         clock: Callable[[], datetime] = _utcnow,
     ) -> None:
         self._repo = repository
         self._clients = client_factory
         self._degrade = degrade
         self._worker_id = worker_id
+        self._opt_ins = opt_ins
         self._clock = clock
 
     async def run_once(self, tenant_id: UUID, *, limit: int = DEFAULT_BATCH) -> SendReport:
@@ -767,6 +794,15 @@ class OutboxSender:
             self._repo.mark_failed(
                 tenant_id=tenant_id, item_id=item.id, error_code=ERROR_NO_RECIPIENT
             )
+            report.failed += 1
+            return
+        if item.kind in OPT_IN_REQUIRED_KINDS and not self._opt_ins.is_opted_in(
+            tenant_id=tenant_id, phone=recipient_e164(recipient)
+        ):
+            logger.info(
+                "whatsapp.outbox.opted_out item_id=%s kind=%s — not sent", item.id, item.kind
+            )
+            self._repo.mark_failed(tenant_id=tenant_id, item_id=item.id, error_code=ERROR_OPTED_OUT)
             report.failed += 1
             return
         last_sent = self._repo.last_outbound_to_recipient(
@@ -922,10 +958,15 @@ def production_outbox_sender(*, worker_id: str) -> OutboxSender:
         degrade_connection_on_auth_error,
     )
     from qualify_api.connections.crypto import DevEncryptor  # noqa: PLC0415
+    from qualify_api.whatsapp.optins import (  # noqa: PLC0415
+        OptInService,
+        PostgresOptInRepository,
+    )
 
     return OutboxSender(
         PostgresOutboxRepository(),
         ResolverClientFactory(MetaOAuthSettings.from_env(), DevEncryptor()),
         degrade_connection_on_auth_error,
         worker_id=worker_id,
+        opt_ins=OptInService(PostgresOptInRepository()),
     )
