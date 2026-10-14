@@ -96,6 +96,19 @@ webhook-purge-account account *args:
 whatsapp-smoke *args:
     uv run --no-sync python -m qualify_api.whatsapp.smoke {{args}}
 
+# WA-08: the WhatsApp outbox sender (claim → 24 h window → pacing → send → settle). SENDS
+# FOR REAL from the connected numbers of the tenants in scope. Scope is mandatory:
+#   just whatsapp-tick --tenant <uuid>     # one pass, that tenant only (use this locally)
+#   just whatsapp-tick --all-tenants       # one pass, every tenant (production)
+whatsapp-tick *args:
+    uv run --no-sync python -m qualify_api.whatsapp.worker --once {{args}}
+
+# WA-08: the WhatsApp worker — a pass every --interval seconds (default 5) until Ctrl+C.
+#   just whatsapp-worker --tenant <uuid>
+#   just whatsapp-worker --all-tenants [--interval 5]
+whatsapp-worker *args:
+    uv run --no-sync python -m qualify_api.whatsapp.worker {{args}}
+
 # --- Production (Hetzner VPS, docs/despliegue-hetzner.md) ---------------------------------
 # `target` = the server's ssh target, e.g. deploy@203.0.113.10.
 #   just deploy deploy@<ip>               # origin/main
