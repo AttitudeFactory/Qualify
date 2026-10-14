@@ -33,9 +33,11 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from qualify_api.mentions.composition import (
+    ContentRefreshReport,
     count_new_mentions_for_tenant,
     list_mentions_page_for_tenant,
     refresh_mentions_content,
+    refresh_mentions_in_scope,
     summarize_mentions_for_tenant,
 )
 from qualify_api.mentions.repository import (
@@ -250,13 +252,18 @@ def count_new(tenant_id: UUID, *, query: MentionQuery, as_of: str) -> int:
     return count_new_mentions_for_tenant(tenant_id=tenant_id, query=query, after=_parse(as_of))
 
 
-async def refresh_content(tenant_id: UUID, mention_ids: list[str]) -> int:
-    """Re-read these mentions from their network and store what changed (QUA-152).
-    Returns how many were refreshed; a failed read keeps the stored data."""
-    report = await refresh_mentions_content(
+async def refresh_content(tenant_id: UUID, mention_ids: list[str]) -> ContentRefreshReport:
+    """Re-read these (visible) mentions from their network right away and store what
+    changed (QUA-152). A failed read keeps the stored data."""
+    return await refresh_mentions_content(
         tenant_id=tenant_id, mention_ids=tuple(UUID(m) for m in mention_ids)
     )
-    return report.refreshed
+
+
+async def refresh_scope(tenant_id: UUID, *, scope: MentionQuery) -> ContentRefreshReport:
+    """One bounded run over the scope (account + period of `scope`) — the rest of
+    "Actualizar menciones", after the visible page. Never raises."""
+    return await refresh_mentions_in_scope(tenant_id=tenant_id, scope=scope)
 
 
 def account_options(tenant_id: UUID) -> dict[str, str]:

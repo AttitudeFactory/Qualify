@@ -532,6 +532,14 @@ def notices() -> rx.Component:
             DashboardState.refresh_error != "",
             callout(DashboardState.refresh_error, "warn"),
         ),
+        rx.cond(
+            DashboardState.refresh_notice != "",
+            rx.cond(
+                DashboardState.refresh_tone == "warn",
+                callout(DashboardState.refresh_notice, "warn"),
+                callout(DashboardState.refresh_notice, "info", icon="refresh-cw"),
+            ),
+        ),
         spacing="2",
         width="100%",
     )

@@ -279,15 +279,39 @@ async def test_refresh_content_passes_the_visible_ids_as_uuids(
     from qualify_api.mentions.composition import ContentRefreshReport
 
     seen: dict = {}
+    report = ContentRefreshReport(
+        in_scope=2, refreshed=2, already_fresh=0, failed=0, not_attempted=0
+    )
 
     async def fake_refresh(*, tenant_id: UUID, mention_ids: tuple[UUID, ...]):
         seen.update(tenant_id=tenant_id, mention_ids=mention_ids)
-        return ContentRefreshReport(refreshed=len(mention_ids), failed=0)
+        return report
 
     monkeypatch.setattr(mentions_provider, "refresh_mentions_content", fake_refresh)
     tenant, first, second = uuid4(), uuid4(), uuid4()
 
-    refreshed = await mentions_provider.refresh_content(tenant, [str(first), str(second)])
+    result = await mentions_provider.refresh_content(tenant, [str(first), str(second)])
 
-    assert refreshed == 2
+    assert result is report
     assert seen == {"tenant_id": tenant, "mention_ids": (first, second)}
+
+
+async def test_refresh_scope_hands_the_scope_query_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.mentions.composition import ContentRefreshReport
+
+    seen: dict = {}
+    report = ContentRefreshReport(
+        in_scope=30, refreshed=30, already_fresh=0, failed=0, not_attempted=0
+    )
+
+    async def fake_scope(*, tenant_id: UUID, scope: MentionQuery):
+        seen.update(tenant_id=tenant_id, scope=scope)
+        return report
+
+    monkeypatch.setattr(mentions_provider, "refresh_mentions_in_scope", fake_scope)
+    tenant, scope = uuid4(), MentionQuery(connection_id=uuid4())
+
+    assert await mentions_provider.refresh_scope(tenant, scope=scope) is report
+    assert seen == {"tenant_id": tenant, "scope": scope}

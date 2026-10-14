@@ -11,6 +11,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import pytest
+
 from .mentions_paging import ALL_ACCOUNTS, ALL_HISTORY, ALL_ORIGINS, ALL_SENTIMENTS, DEFAULT_PERIOD
 from .mentions_provider import MentionVM
 from .state import DashboardState, MentionRow, _window_start
@@ -177,3 +179,109 @@ def test_the_account_filter_shows_only_with_several_accounts() -> None:
 
     state.accounts = {"@a": "1", "@b": "2"}
     assert state.show_account_filter is True
+
+
+# --- "Actualizar menciones" (QUA-152 D1) -----------------------------------------------
+
+
+def _row(mention_id: str) -> MentionVM:
+    return MentionVM(
+        id=mention_id,
+        is_new=False,
+        platform="instagram",
+        kind="post",
+        kind_label="Publicación",
+        author="@autora",
+        author_note="",
+        text="hola",
+        text_unavailable=False,
+        date="13 oct 2026, 10:00",
+        day="13 oct 2026",
+        time="10:00",
+        sentiment_state="POS",
+        likes="1",
+        likes_note="",
+        permalink="",
+    )
+
+
+def test_the_refresh_scope_is_account_and_period_never_origin_sentiment_or_search() -> None:
+    state = DashboardState()
+    state.accounts = {"@marca": CONNECTION}
+    state.account_filter = "@marca"
+    state.since = "2026-10-01T00:00:00+00:00"
+    state.origin_filter = "Comentario"
+    state.sentiment_filter = "Negativa"
+    state.search_query = "promo"
+
+    scope = state._scope_query()
+
+    assert scope.connection_id == UUID(CONNECTION)
+    assert scope.since == datetime(2026, 10, 1, tzinfo=UTC)
+    assert (scope.origin, scope.sentiment_state, scope.search) == (None, None, "")
+
+
+async def test_refresh_now_updates_the_visible_page_then_hands_the_scope_to_the_background(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from . import state as state_module
+    from .mentions_provider import MentionCountsVM, MentionPageVM
+
+    tenant = UUID("a0000000-0000-4000-8000-000000000001")
+    seen: dict = {}
+
+    async def fake_tenant(self: DashboardState) -> UUID:
+        return tenant
+
+    async def fake_refresh(tenant_id: UUID, mention_ids: list[str]) -> None:
+        seen["refreshed"] = (tenant_id, mention_ids)
+
+    def fake_load_page(tenant_id: UUID, **kwargs: object) -> MentionPageVM:
+        seen["reload"] = kwargs
+        return MentionPageVM(
+            rows=[_row("m1"), _row("m2")],
+            summary=MentionCountsVM(total=2, positive=2),
+            filtered_total=2,
+            page=1,
+            total_pages=1,
+            pages_label="Total de 1 página",
+            as_of="2026-10-14T00:00:00+00:00",
+        )
+
+    monkeypatch.setattr(DashboardState, "_tenant", fake_tenant)
+    monkeypatch.setattr(state_module, "refresh_content", fake_refresh)
+    monkeypatch.setattr(state_module, "load_page", fake_load_page)
+    state = DashboardState()
+    state.mentions = [_row("m1"), _row("m2")]
+    state.as_of = "2026-10-13T00:00:00+00:00"
+
+    emitted = [item async for item in DashboardState.refresh_now.fn(state)]
+
+    assert seen["refreshed"] == (tenant, ["m1", "m2"])  # the visible page, right away
+    assert seen["reload"]["as_of"] == ""  # then a new snapshot of the same page
+    assert state.is_refreshing is True  # still running: the scope is next
+    assert state.refresh_tone == "info"
+    assert emitted[-1] is not None
+    assert "refresh_scope" in str(emitted[-1])  # the rest of the scope, in the background
+
+
+async def test_refresh_now_ignores_a_click_while_a_run_is_in_progress() -> None:
+    state = DashboardState()
+    state.is_refreshing = True
+    state.refresh_notice = "en curso"
+
+    emitted = [item async for item in DashboardState.refresh_now.fn(state)]
+
+    assert emitted == []
+    assert state.refresh_notice == "en curso"
+
+
+def test_the_background_run_reports_through_the_pure_outcome_rule() -> None:
+    """`refresh_scope` needs a live StateProxy (`async with self`), so its wiring is pinned
+    structurally: it reports with `refresh_outcome` and never claims done while pending."""
+    import inspect
+
+    source = inspect.getsource(DashboardState.refresh_scope.fn)
+    assert "refresh_outcome(" in source
+    assert "self.is_refreshing = False" in source
+    assert 'pending = outcome.tone == "warn"' in source

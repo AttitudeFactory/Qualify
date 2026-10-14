@@ -106,3 +106,56 @@ def decide_tick(*, snapshot_total: int, reread_total: int, new_count: int) -> Ti
     if reread_total != snapshot_total:
         return TickDecision(action="announce_change", new_count=new_count)
     return TickDecision(action="update_rows", new_count=new_count)
+
+
+# --- "Actualizar menciones" outcome (QUA-152) ------------------------------------------
+
+REFRESHING_NOTICE: Final = "Actualizando las menciones del periodo…"
+
+
+@dataclass(frozen=True)
+class RefreshOutcome:
+    """What the dashboard says once a refresh run over the scope has finished."""
+
+    message: str
+    tone: Literal["ok", "warn", "info", ""]
+
+
+def refresh_outcome(
+    *,
+    in_scope: int,
+    refreshed: int,
+    already_fresh: int,
+    failed: int,
+    not_attempted: int,
+    rate_limited: bool,
+) -> RefreshOutcome:
+    """Never says "done" while anything of the scope is still pending: a mention the
+    network refused, or one left for a later run (per-run cap, throttling), keeps the
+    notice in warning tone with what to do next."""
+    if failed == 0 and not_attempted == 0:
+        if in_scope == 0:
+            return RefreshOutcome("No hay menciones en este periodo para actualizar.", "info")
+        noun = "la mención" if in_scope == 1 else f"las {in_scope} menciones"
+        return RefreshOutcome(f"Se actualizaron {noun} del periodo.", "ok")
+    current = refreshed + already_fresh
+    parts = [f"Se actualizaron {current} de {in_scope} menciones."]
+    if failed:
+        parts.append(
+            "1 no se pudo leer en la red social y conserva sus datos."
+            if failed == 1
+            else f"{failed} no se pudieron leer en la red social y conservan sus datos."
+        )
+    if not_attempted:
+        reason = (
+            "la red social limitó las consultas"
+            if rate_limited
+            else "se alcanzó el límite de esta actualización"
+        )
+        parts.append(
+            f"1 quedó pendiente porque {reason}."
+            if not_attempted == 1
+            else f"{not_attempted} quedaron pendientes porque {reason}."
+        )
+    parts.append("Vuelve a pulsar Actualizar para continuar.")
+    return RefreshOutcome(" ".join(parts), "warn")

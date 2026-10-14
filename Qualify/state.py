@@ -39,12 +39,20 @@ from .mentions_paging import (
     DEFAULT_PERIOD,
     ORIGIN_OPTIONS,
     PERIOD_OPTIONS,
+    REFRESHING_NOTICE,
     SENTIMENT_OPTIONS,
     decide_tick,
     new_mentions_label,
+    refresh_outcome,
 )
 from .mentions_paging import page_items as _page_items
-from .mentions_provider import MentionPageVM, count_new, load_page, refresh_content
+from .mentions_provider import (
+    MentionPageVM,
+    count_new,
+    load_page,
+    refresh_content,
+    refresh_scope,
+)
 from .mentions_provider import MentionVM as MentionRow
 from .mentions_provider import account_options as _account_options
 from .tenant import tenant_uuid
@@ -104,8 +112,12 @@ class DashboardState(rx.State):
     # Rows received after this instant are marked "Nueva" (set by "Actualizar lista").
     new_since: str = ""
     last_updated: str = ""
-    # True while "Actualizar" re-reads the visible mentions from their network.
+    # True for the whole "Actualizar menciones" run: the visible page first, then the
+    # rest of the scope (account + period) in the background.
     is_refreshing: bool = False
+    # What that run says: in progress, done, or what is still pending (never "done" then).
+    refresh_notice: str = ""
+    refresh_tone: str = ""
 
     account_filter: str = ALL_ACCOUNTS
     # The view window: opens on the last 14 days (nothing is deleted; "Todo el historial"
@@ -206,6 +218,18 @@ class DashboardState(rx.State):
             since=datetime.fromisoformat(self.since) if self.since else None,
         )
 
+    def _scope_query(self) -> MentionQuery:
+        """What "Actualizar menciones" re-reads: the account and period being viewed —
+        every page of them. Origin, sentiment and search never narrow a refresh."""
+        return MentionQuery(
+            connection_id=(
+                UUID(self.accounts[self.account_filter])
+                if self.account_filter in self.accounts
+                else None
+            ),
+            since=datetime.fromisoformat(self.since) if self.since else None,
+        )
+
     async def _tenant(self) -> UUID | None:
         auth = await self.get_state(AuthState)
         return tenant_uuid(auth.session_tenant_id)
@@ -260,6 +284,8 @@ class DashboardState(rx.State):
         """A new listing: page 1 under a new snapshot, no "Nueva" marks. Keeps the rows
         on screen while it reads (no skeleton) — a filter change must not flash."""
         self.new_since = ""
+        if not self.is_refreshing:
+            self.refresh_notice = ""  # it described another scope
         await self._read(page=1, new_snapshot=True)
 
     # ----------------------------------------------------------------- events
@@ -335,13 +361,16 @@ class DashboardState(rx.State):
         await self._read(page=1, new_snapshot=True)
 
     @rx.event
-    async def refresh_now(self) -> AsyncIterator[None]:
-        """The refresh button: re-read the VISIBLE mentions from their network (likes,
-        text, link may have changed since they arrived), then start a new listing. Only
-        this click calls the network — the 45 s tick reads Postgres alone."""
+    async def refresh_now(self) -> AsyncIterator[rx.event.EventSpec | None]:
+        """ "Actualizar menciones": re-read from the network every mention of the scope
+        (account + period, all pages) and store what changed. The VISIBLE page goes first,
+        so what the person is looking at updates right away; the rest of the scope follows
+        in the background (`refresh_scope`). Only this click calls the network — the 45 s
+        tick reads Postgres alone."""
         if self.is_refreshing:
             return
         self.is_refreshing = True
+        self.refresh_notice, self.refresh_tone = REFRESHING_NOTICE, "info"
         yield
         tenant_id = await self._tenant()
         if tenant_id is not None and self.mentions:
@@ -351,7 +380,45 @@ class DashboardState(rx.State):
                 logger.warning("mentions content refresh failed: %s", type(exc).__name__)
         self.new_since = self.as_of
         await self._read(page=self.page, new_snapshot=True)
-        self.is_refreshing = False
+        yield DashboardState.refresh_scope
+
+    @rx.event(background=True)
+    async def refresh_scope(self) -> AsyncIterator[rx.event.EventSpec]:
+        """The rest of "Actualizar menciones": one bounded run over the scope, then the
+        outcome — "done" only when nothing of the scope is pending. Done is a toast (a
+        transient confirmation); pending stays on screen as a warning with what to do."""
+        async with self:
+            tenant_id = await self._tenant()
+            scope = self._scope_query()
+        report = None
+        if tenant_id is not None:
+            try:
+                report = await refresh_scope(tenant_id, scope=scope)
+            except Exception as exc:  # noqa: BLE001 — reported below as pending
+                logger.warning("mentions scope refresh failed: %s", type(exc).__name__)
+        async with self:
+            self.is_refreshing = False
+            if report is None:
+                self.refresh_notice = "No se pudieron actualizar las menciones. Inténtalo de nuevo."
+                self.refresh_tone = "warn"
+                return
+            outcome = refresh_outcome(
+                in_scope=report.in_scope,
+                refreshed=report.refreshed,
+                already_fresh=report.already_fresh,
+                failed=report.failed,
+                not_attempted=report.not_attempted,
+                rate_limited=report.rate_limited,
+            )
+            pending = outcome.tone == "warn"
+            self.refresh_notice = outcome.message if pending else ""
+            self.refresh_tone = outcome.tone if pending else ""
+            # Same snapshot and page: the stored changes show, no row moves.
+            await self._read(page=self.page, new_snapshot=False)
+        if outcome.tone == "ok":
+            yield rx.toast.success(outcome.message)
+        elif outcome.tone == "info":
+            yield rx.toast.info(outcome.message)
 
     @rx.event
     async def refresh_tick(self) -> None:
