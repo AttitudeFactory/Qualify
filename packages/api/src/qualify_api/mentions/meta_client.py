@@ -220,6 +220,13 @@ class HttpMentionedContentClient:
         # stops dispatching new reads when it gets close to the limit.
         self.usage_percent = 0
 
+    async def aclose(self) -> None:
+        """Close the underlying HTTP client (its connection pool). Callers own the
+        lifecycle: an unclosed client keeps sockets open until garbage collection."""
+        close = getattr(self._graph, "aclose", None)
+        if close is not None:
+            await close()
+
     async def _get(self, ig_user_id: str, fields_expr: str) -> dict[str, Any]:
         response = await self._graph.get(
             f"{self._graph_url}/{ig_user_id}", params={"fields": fields_expr}

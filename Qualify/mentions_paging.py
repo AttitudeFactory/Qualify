@@ -111,6 +111,32 @@ def decide_tick(*, snapshot_total: int, reread_total: int, new_count: int) -> Ti
 # --- "Actualizar menciones" outcome (QUA-152) ------------------------------------------
 
 REFRESHING_NOTICE: Final = "Actualizando las menciones del periodo…"
+REFRESH_FAILED_NOTICE: Final = "No se pudieron actualizar las menciones. Inténtalo de nuevo."
+USAGE_PAUSED_NOTICE: Final = (
+    "Se pausó la actualización para no agotar el límite de consultas de la red social. "
+    "Los datos guardados se conservan. Vuelve a pulsar Actualizar en unos minutos."
+)
+# A run that started but has not reported for this long is considered dead: opening
+# the screen unlocks the button. Longer than any bounded run. (Today Reflex keeps state in
+# memory — no REFLEX_REDIS_URL in production — so a restart already clears the flag; this
+# bound is what keeps the button usable if shared state is ever enabled.)
+REFRESH_MAX_RUN_SECONDS: Final = 30 * 60
+
+
+def refresh_still_running(
+    *, is_refreshing: bool, alive_run: int, current_run: int, started_at: float, now: float
+) -> bool:
+    """Whether a refresh run is genuinely in flight when the screen is (re)opened: its
+    background step started for the CURRENT run and it is not older than the longest
+    possible run. Otherwise the button must be unlocked — the background step never
+    started (the tab closed after the click) or died (the process restarted)."""
+    return (
+        is_refreshing
+        and alive_run == current_run
+        and 0 <= now - started_at < REFRESH_MAX_RUN_SECONDS
+    )
+
+
 THROTTLED_NOTICE: Final = (
     "La red social limitó las consultas, así que no se actualizaron todas las menciones. "
     "Los datos guardados se conservan. Vuelve a pulsar Actualizar en unos minutos."
@@ -133,11 +159,16 @@ def refresh_outcome(
     failed: int,
     not_attempted: int,
     rate_limited: bool,
+    usage_paused: bool = False,
+    planning_failed: bool = False,
+    credential_failed: int = 0,
 ) -> RefreshOutcome:
     """Never says "done" while anything of the scope is still pending: a mention the
-    network refused, or one left for a later run (per-run cap, throttling), keeps the
-    notice in warning tone with what to do next."""
-    if failed == 0 and not_attempted == 0:
+    network refused, or one left for a later run (per-run cap, throttling, usage pause),
+    keeps the notice in warning tone with what to do next."""
+    if planning_failed:
+        return RefreshOutcome(REFRESH_FAILED_NOTICE, "warn")
+    if failed == 0 and not_attempted == 0 and credential_failed == 0:
         if in_scope == 0:
             return RefreshOutcome("No hay menciones en este periodo para actualizar.", "info")
         noun = "la mención" if in_scope == 1 else f"las {in_scope} menciones"
@@ -146,16 +177,25 @@ def refresh_outcome(
     parts = [f"Se actualizaron {current} de {in_scope} menciones."]
     if failed:
         parts.append(
-            "1 no se pudo leer en la red social y conserva sus datos."
+            "1 no se pudo leer en la red social (puede que ya no exista o que no haya "
+            "respondido) y conserva sus datos."
             if failed == 1
-            else f"{failed} no se pudieron leer en la red social y conservan sus datos."
+            else f"{failed} no se pudieron leer en la red social (puede que ya no existan o "
+            "que no hayan respondido) y conservan sus datos."
+        )
+    if credential_failed:
+        verb = "no se pudo" if credential_failed == 1 else "no se pudieron"
+        parts.append(
+            f"{credential_failed} {verb} leer porque no se pudo acceder a la cuenta "
+            "conectada; si se repite, revísala en Conexiones."
         )
     if not_attempted:
-        reason = (
-            "la red social limitó las consultas"
-            if rate_limited
-            else "se alcanzó el límite de esta actualización"
-        )
+        if rate_limited:
+            reason = "la red social limitó las consultas"
+        elif usage_paused:
+            reason = "se pausó para no agotar el límite de consultas de la red social"
+        else:
+            reason = "se alcanzó el límite de esta actualización"
         parts.append(
             f"1 quedó pendiente porque {reason}."
             if not_attempted == 1

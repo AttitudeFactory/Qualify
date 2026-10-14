@@ -13,6 +13,7 @@ from .mentions_paging import (
     page_items,
     pages_label,
     refresh_outcome,
+    refresh_still_running,
 )
 
 
@@ -97,8 +98,9 @@ def test_failures_keep_the_run_incomplete_and_say_data_is_kept() -> None:
 
     assert outcome.tone == "warn"
     assert outcome.message == (
-        "Se actualizaron 27 de 30 menciones. 3 no se pudieron leer en la red social y "
-        "conservan sus datos. Vuelve a pulsar Actualizar para continuar."
+        "Se actualizaron 27 de 30 menciones. 3 no se pudieron leer en la red social "
+        "(puede que ya no existan o que no hayan respondido) y conservan sus datos. "
+        "Vuelve a pulsar Actualizar para continuar."
     )
 
 
@@ -116,3 +118,46 @@ def test_throttling_is_named_as_the_reason() -> None:
 
     assert outcome.message.startswith("Se actualizaron 10 de 30 menciones.")
     assert "porque la red social limitó las consultas" in outcome.message
+
+
+def test_a_usage_pause_is_not_called_throttling() -> None:
+    outcome = _outcome(refreshed=10, not_attempted=20, usage_paused=True)
+
+    assert "para no agotar el límite de consultas" in outcome.message
+    assert "limitó" not in outcome.message
+
+
+def test_a_run_that_could_not_start_never_invents_numbers() -> None:
+    from .mentions_paging import REFRESH_FAILED_NOTICE
+
+    outcome = _outcome(in_scope=0, refreshed=0, planning_failed=True)
+
+    assert outcome == RefreshOutcome(REFRESH_FAILED_NOTICE, "warn")
+
+
+def test_an_account_problem_is_named_as_such_not_as_deleted_content() -> None:
+    outcome = _outcome(refreshed=25, credential_failed=5)
+
+    assert outcome.tone == "warn"
+    assert "5 no se pudieron leer porque no se pudo acceder a la cuenta conectada" in (
+        outcome.message
+    )
+    assert "ya no existan" not in outcome.message
+    assert "1 no se pudo leer porque" in _outcome(refreshed=29, credential_failed=1).message
+
+
+def test_a_live_run_keeps_the_button_when_the_screen_is_reopened() -> None:
+    assert refresh_still_running(
+        is_refreshing=True, alive_run=3, current_run=3, started_at=1000.0, now=1060.0
+    )
+
+
+def test_a_run_that_never_started_or_died_unlocks_the_button() -> None:
+    never_started = {"alive_run": 2, "current_run": 3, "started_at": 1000.0, "now": 1001.0}
+    too_old = {"alive_run": 3, "current_run": 3, "started_at": 0.0, "now": 31 * 60.0}
+
+    assert not refresh_still_running(is_refreshing=True, **never_started)
+    assert not refresh_still_running(is_refreshing=True, **too_old)
+    assert not refresh_still_running(
+        is_refreshing=False, alive_run=3, current_run=3, started_at=1000.0, now=1001.0
+    )

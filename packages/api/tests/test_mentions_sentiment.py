@@ -456,3 +456,15 @@ def test_an_empty_comment_text_never_falls_back_to_the_caption() -> None:
 
     assert (pending.mention_id, pending.text) == (mention_id, "")
     assert _states(repo)[mention_id] == SENTIMENT_NO_TEXT
+
+
+def test_a_bounded_pass_never_spends_its_slots_on_blank_texts() -> None:
+    service, repo = _service()
+    for _ in range(3):
+        repo.upsert_mention(_mention(text="   "))
+    real, _ = repo.upsert_mention(_mention(text="me encanta"))
+
+    summary = service.analyze_pending_mentions(tenant_id=TENANT_ID, limit=1)
+
+    assert (summary.mentions_checked, summary.new_results) == (1, 1)
+    assert _states(repo)[real] == "POS"

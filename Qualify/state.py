@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -39,12 +40,15 @@ from .mentions_paging import (
     DEFAULT_PERIOD,
     ORIGIN_OPTIONS,
     PERIOD_OPTIONS,
+    REFRESH_FAILED_NOTICE,
     REFRESHING_NOTICE,
     SENTIMENT_OPTIONS,
     THROTTLED_NOTICE,
+    USAGE_PAUSED_NOTICE,
     decide_tick,
     new_mentions_label,
     refresh_outcome,
+    refresh_still_running,
 )
 from .mentions_paging import page_items as _page_items
 from .mentions_provider import (
@@ -119,6 +123,13 @@ class DashboardState(rx.State):
     # What that run says: in progress, done, or what is still pending (never "done" then).
     refresh_notice: str = ""
     refresh_tone: str = ""
+    # Bumped by every new run and when opening the screen unlocks a dead one: a run whose
+    # token is no longer current stops and never writes, so it cannot overwrite a newer one.
+    refresh_run: int = 0
+    # The token whose background step has actually started, and when the run was clicked
+    # (epoch seconds) — what tells a live run from one that never started or died.
+    refresh_alive_run: int = 0
+    refresh_started_at: float = 0.0
 
     account_filter: str = ALL_ACCOUNTS
     # The view window: opens on the last 14 days (nothing is deleted; "Todo el historial"
@@ -297,10 +308,21 @@ class DashboardState(rx.State):
         self.is_loading_mentions = True
         self.mentions_error = ""
         yield
-        # A refresh run that never finished (tab closed, connection lost before its
-        # background step) must not leave the button locked for this session.
-        self.is_refreshing = False
-        self.refresh_notice, self.refresh_tone = "", ""
+        if refresh_still_running(
+            is_refreshing=self.is_refreshing,
+            alive_run=self.refresh_alive_run,
+            current_run=self.refresh_run,
+            started_at=self.refresh_started_at,
+            now=time.time(),
+        ):
+            # A live run keeps the button; it reports when it finishes.
+            self.refresh_notice, self.refresh_tone = REFRESHING_NOTICE, "info"
+        else:
+            # A run that never started (tab closed after the click) or died (restart) must
+            # not leave the button locked; bumping the token stops it if it ever resumes.
+            self.is_refreshing = False
+            self.refresh_run += 1
+            self.refresh_notice, self.refresh_tone = "", ""
         tenant_id = await self._tenant()
         if tenant_id is None:
             self.is_loading_mentions = False
@@ -366,53 +388,76 @@ class DashboardState(rx.State):
         await self._read(page=1, new_snapshot=True)
 
     @rx.event
-    async def refresh_now(self) -> AsyncIterator[rx.event.EventSpec | None]:
+    def refresh_now(self) -> rx.event.EventSpec | None:
         """ "Actualizar menciones": re-read from the network every mention of the scope
-        (account + period, all pages) and store what changed. The VISIBLE page goes first,
-        so what the person is looking at updates right away; the rest of the scope follows
-        in the background (`refresh_scope`). Only this click calls the network — the 45 s
-        tick reads Postgres alone."""
+        (account + period, all pages) and store what changed. This handler only marks the
+        run as started; the work happens in `refresh_scope`, in the background, so the
+        network reads never hold this session — filters, paging and the tick stay
+        responsive however slowly the network answers. Only this click calls the network —
+        the 45 s tick reads Postgres alone."""
         if self.is_refreshing:
-            return
+            return None
         self.is_refreshing = True
+        self.refresh_run += 1
+        self.refresh_started_at = time.time()
         self.refresh_notice, self.refresh_tone = REFRESHING_NOTICE, "info"
-        yield
-        tenant_id = await self._tenant()
-        visible = None
-        if tenant_id is not None and self.mentions:
-            try:
-                visible = await refresh_content(tenant_id, [row.id for row in self.mentions])
-            except Exception as exc:  # noqa: BLE001 — the reload below still runs
-                logger.warning("mentions content refresh failed: %s", type(exc).__name__)
-        self.new_since = self.as_of
-        await self._read(page=self.page, new_snapshot=True)
-        if visible is not None and visible.rate_limited:
-            # The network is throttling this account: asking for the rest of the scope now
-            # would only spend more of its budget. Say so and stop here.
-            self.is_refreshing = False
-            self.refresh_notice, self.refresh_tone = THROTTLED_NOTICE, "warn"
-            return
-        yield DashboardState.refresh_scope
+        return DashboardState.refresh_scope(self.refresh_run)
 
     @rx.event(background=True)
-    async def refresh_scope(self) -> AsyncIterator[rx.event.EventSpec]:
-        """The rest of "Actualizar menciones": one bounded run over the scope, then the
-        outcome — "done" only when nothing of the scope is pending. Done is a toast (a
-        transient confirmation); pending stays on screen as a warning with what to do."""
+    async def refresh_scope(self, run: int) -> AsyncIterator[rx.event.EventSpec]:
+        """The "Actualizar menciones" run. The VISIBLE page first, so what the person is
+        looking at updates right away; then one bounded run over the scope; then the
+        outcome — "done" only when nothing of the scope is pending (a toast), otherwise a
+        warning that stays with what to do. A run superseded by a newer one, or by
+        reopening the screen, never writes its outcome over theirs."""
         report = None
+        stopped_notice = ""
         try:
             async with self:
+                if self.refresh_run != run:
+                    return  # superseded before it even started
+                self.refresh_alive_run = run
                 tenant_id = await self._tenant()
+                visible_ids = [row.id for row in self.mentions]
                 scope = self._scope_query()
-            if tenant_id is not None:
-                report = await refresh_scope(tenant_id, scope=scope)
-        except Exception as exc:  # noqa: BLE001 — reported below as pending
-            logger.warning("mentions scope refresh failed: %s", type(exc).__name__)
+            if tenant_id is None:
+                logger.warning("mentions refresh: no tenant for this session")
+                stopped_notice = _NO_TENANT
+            else:
+                visible = None
+                if visible_ids:
+                    try:
+                        visible = await refresh_content(tenant_id, visible_ids)
+                    except Exception as exc:  # noqa: BLE001 — still reload and go on
+                        logger.warning("mentions visible refresh failed: %s", type(exc).__name__)
+                async with self:
+                    if self.refresh_run != run:
+                        return
+                    self.new_since = self.as_of
+                    await self._read(page=self.page, new_snapshot=True)
+                if visible is not None and visible.rate_limited:
+                    # Throttled already: asking for the rest of the scope now would only
+                    # spend more of the account's budget.
+                    stopped_notice = THROTTLED_NOTICE
+                elif visible is not None and visible.usage_paused:
+                    stopped_notice = USAGE_PAUSED_NOTICE
+                else:
+                    async with self:
+                        superseded = self.refresh_run != run
+                    if superseded:
+                        return  # never spend the scope's reads for a run nobody will see
+                    report = await refresh_scope(tenant_id, scope=scope)
+        except Exception as exc:  # noqa: BLE001 — reported below as not completed
+            logger.warning("mentions refresh failed: %s", type(exc).__name__)
         async with self:
+            if self.refresh_run != run:
+                return  # superseded: the newer run owns the button and the notice
             self.is_refreshing = False
+            if stopped_notice:
+                self.refresh_notice, self.refresh_tone = stopped_notice, "warn"
+                return
             if report is None:
-                self.refresh_notice = "No se pudieron actualizar las menciones. Inténtalo de nuevo."
-                self.refresh_tone = "warn"
+                self.refresh_notice, self.refresh_tone = REFRESH_FAILED_NOTICE, "warn"
                 return
             outcome = refresh_outcome(
                 in_scope=report.in_scope,
@@ -421,6 +466,9 @@ class DashboardState(rx.State):
                 failed=report.failed,
                 not_attempted=report.not_attempted,
                 rate_limited=report.rate_limited,
+                usage_paused=report.usage_paused,
+                planning_failed=report.planning_failed,
+                credential_failed=report.credential_failed,
             )
             pending = outcome.tone == "warn"
             self.refresh_notice = outcome.message if pending else ""

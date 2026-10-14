@@ -74,6 +74,10 @@ class ScriptedClient:
         self.usage_percent = usage_percent
         self.calls: list[str] = []
         self.permalink_calls: list[str] = []
+        self.closed = 0
+
+    async def aclose(self) -> None:
+        self.closed += 1
 
     def _next(self, key: str) -> Answer:
         self.calls.append(key)
@@ -503,7 +507,8 @@ async def test_high_reported_usage_pauses_the_run(
 
     report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
 
-    assert (report.refreshed, report.not_attempted, report.rate_limited) == (1, 4, True)
+    assert (report.refreshed, report.not_attempted) == (1, 4)
+    assert (report.usage_paused, report.rate_limited) == (True, False)  # not a throttle
 
 
 async def test_a_connection_without_a_client_fails_its_mentions_only(
@@ -520,7 +525,7 @@ async def test_a_connection_without_a_client_fails_its_mentions_only(
 
     report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
 
-    assert (report.refreshed, report.failed) == (1, 1)
+    assert (report.refreshed, report.credential_failed, report.failed) == (1, 1, 0)
     assert client.calls == ["readable"]
 
 
@@ -599,3 +604,173 @@ def test_repository_calls_never_run_on_the_event_loop() -> None:
     assert source.count("asyncio.to_thread(") >= 2
     for function in (composition.refresh_mentions_content, composition.refresh_mentions_in_scope):
         assert "asyncio.to_thread(" in inspect.getsource(function)
+
+
+# ------------------------------------------------------------------ audit round 2
+
+
+async def test_every_client_of_a_run_is_closed(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    for i in range(3):
+        _store(repo, f"m{i}")
+    client = ScriptedClient({"m1": [MentionedContentReadError("gone", http_status=400)]})
+    _use(monkeypatch, client)
+
+    await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert client.closed == 1  # one client per connection and run, closed at the end
+
+
+async def test_a_client_is_closed_even_when_storing_breaks(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    _store(repo, "m1")
+    client = ScriptedClient()
+    _use(monkeypatch, client)
+
+    def broken_store(**kwargs: object) -> bool:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(repo, "refresh_content", broken_store)
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.failed, client.closed) == (1, 1)
+
+
+async def test_ingestion_closes_its_client(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    client = ScriptedClient()
+    _use(monkeypatch, client)
+    resolution = TenantResolution(
+        outcome=ResolutionOutcome.RESOLVED, tenant_id=TENANT, connection_id=CONNECTION
+    )
+
+    await composition.ingest_mention(media_id="m1", comment_id=None, resolution=resolution)
+
+    assert client.closed == 1
+
+
+async def test_a_broken_credential_is_resolved_once_per_run(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    for i in range(5):
+        _store(repo, f"m{i}")
+    attempts: list[UUID] = []
+
+    async def failing_client_for(*, tenant_id: UUID, connection_id: UUID):
+        attempts.append(connection_id)
+        raise LookupError("credential revoked")
+
+    monkeypatch.setattr(composition, "_content_client_for", failing_client_for)
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert attempts == [CONNECTION]  # not once per mention
+    assert (report.credential_failed, report.failed, report.refreshed) == (5, 0, 0)
+    assert report.complete is False
+
+
+async def test_a_throttled_link_read_stops_the_run_but_keeps_the_content(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    for i in range(4):
+        _store(repo, f"m{i}", like_count=0)
+    monkeypatch.setattr(composition, "REFRESH_CONCURRENCY", 1)
+    client = ScriptedClient(
+        permalink_error=MentionedContentReadError("limit", http_status=400, platform_code=4)
+    )
+    _use(monkeypatch, client)
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert len(client.calls) == 1  # nothing more requested after the throttle
+    assert (report.refreshed, report.not_attempted, report.rate_limited) == (1, 3, True)
+
+
+async def test_a_run_that_cannot_be_planned_is_reported_as_such(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    def broken_plan(**kwargs: object) -> object:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(repo, "plan_scope_refresh", broken_plan)
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert report.planning_failed is True
+    assert (report.in_scope, report.not_attempted) == (0, 0)
+    assert report.complete is False  # a run that did nothing is never complete
+
+
+def test_the_credential_read_runs_in_a_worker_thread() -> None:
+    import inspect
+
+    source = inspect.getsource(composition._content_client_for)
+    assert "asyncio.to_thread(" in source
+    assert "_resolve_graph_client_blocking" in source
+    assert "resolver.client_for" not in source  # never awaited on the event loop
+
+
+def test_a_client_built_in_the_worker_thread_works_on_the_callers_loop() -> None:
+    """The pattern `_resolve_graph_client_blocking` relies on, with httpx's REAL transport
+    and connection pool (not a mock): a client created under a short-lived loop in another
+    thread is usable concurrently, reuses its pool, and closes on the caller's loop. Guards
+    an httpx/httpcore upgrade that would bind the pool to the loop at construction."""
+    import asyncio
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import httpx
+
+    class Ok(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:  # noqa: N802 — http.server's naming
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *args: object) -> None:
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Ok)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_port}/"
+
+    async def build() -> httpx.AsyncClient:
+        return httpx.AsyncClient()
+
+    async def main() -> tuple[set[int], bool]:
+        client = await asyncio.to_thread(lambda: asyncio.run(build()))
+        responses = await asyncio.gather(*(client.get(url) for _ in range(6)))
+        responses += [await client.get(url)]  # a pooled connection reused afterwards
+        await client.aclose()
+        return {r.status_code for r in responses}, client.is_closed
+
+    try:
+        assert asyncio.run(main()) == ({200}, True)
+    finally:
+        server.shutdown()
+
+
+async def test_an_account_problem_is_not_stamped_on_the_mentions(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    _store(repo, "m1")
+
+    async def no_client(*, tenant_id: UUID, connection_id: UUID) -> None:
+        return None
+
+    monkeypatch.setattr(composition, "_content_client_for", no_client)
+    first = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+    client = ScriptedClient()
+    _use(monkeypatch, client)  # the credential is fixed
+
+    second = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert first.credential_failed == 1
+    assert (second.refreshed, client.calls) == (1, ["m1"])  # retried at once, not "recent"

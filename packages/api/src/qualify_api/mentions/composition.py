@@ -40,7 +40,7 @@ from qualify_api.config import MetaOAuthSettings
 from qualify_api.connections.credential_reader import DbCredentialReader
 from qualify_api.connections.crypto import DevEncryptor
 from qualify_api.connections.models import SocialConnection
-from qualify_api.connections.resolver import InjectingCredentialResolver
+from qualify_api.connections.resolver import AuthenticatedClient, InjectingCredentialResolver
 from qualify_api.mentions.meta_client import (
     HttpMentionedContentClient,
     MentionedContentReadError,
@@ -92,6 +92,30 @@ def production_mentions_repository() -> MentionsRepository:
     return PostgresMentionsRepository()
 
 
+def _resolve_graph_client_blocking(
+    *, tenant_id: UUID, connection_id: UUID, scheme: str
+) -> AuthenticatedClient:
+    """The credential read + decrypt, in a WORKER THREAD (QUA-152 audit). The resolver's
+    `client_for` is `async` but does a blocking Postgres query (`credential_session`) with no
+    await inside; run on the Reflex backend's event loop it would stall every session. It
+    is driven here with its own short-lived loop; the client it builds is not bound to that
+    loop (httpx creates its pool lazily) and is used and closed on the caller's loop. The
+    shared resolver is deliberately not changed: publishing and the inbox use it too."""
+    resolver = InjectingCredentialResolver(DbCredentialReader(tenant_id), DevEncryptor())
+    return asyncio.run(resolver.client_for(connection_id, scheme=scheme))
+
+
+async def _close_client(client: object) -> None:
+    """Close a content client's HTTP pool; a failure to close is logged, never raised."""
+    close = getattr(client, "aclose", None)
+    if close is None:
+        return
+    try:
+        await close()
+    except Exception as exc:  # noqa: BLE001 — cleanup only
+        _LOGGER.info("mentions content client not closed cleanly (%s)", type(exc).__name__)
+
+
 async def _content_client_for(
     *, tenant_id: UUID, connection_id: UUID
 ) -> tuple[HttpMentionedContentClient, str] | None:
@@ -107,9 +131,12 @@ async def _content_client_for(
     if ig_user_id is None:
         return None
     settings = MetaOAuthSettings.from_env()
-    encryptor = DevEncryptor()
-    resolver = InjectingCredentialResolver(DbCredentialReader(tenant_id), encryptor)
-    graph_client = await resolver.client_for(connection_id, scheme=settings.graph_auth_scheme)
+    graph_client = await asyncio.to_thread(
+        _resolve_graph_client_blocking,
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        scheme=settings.graph_auth_scheme,
+    )
     return (
         HttpMentionedContentClient(graph_client=graph_client, graph_url=settings.graph_url),
         ig_user_id,
@@ -138,7 +165,27 @@ async def ingest_mention(
     if client_and_user is None:
         return None
     client, ig_user_id = client_and_user
+    try:
+        return await _enrich_and_store(
+            client,
+            ig_user_id=ig_user_id,
+            media_id=media_id,
+            comment_id=comment_id,
+            resolution=resolution,
+        )
+    finally:
+        await _close_client(client)
 
+
+async def _enrich_and_store(
+    client: HttpMentionedContentClient,
+    *,
+    ig_user_id: str,
+    media_id: str,
+    comment_id: str | None,
+    resolution: TenantResolution,
+) -> UUID:
+    assert resolution.tenant_id is not None and resolution.connection_id is not None
     caption: str | None = None
     text: str | None = None
     author_username: str | None = None
@@ -246,7 +293,7 @@ REFRESH_BACKOFF_SECONDS = (1.0, 3.0)
 REFRESH_USAGE_STOP_PERCENT = 75
 REFRESH_FRESH_SECONDS = 60
 
-_Outcome = Literal["refreshed", "failed", "not_attempted"]
+_Outcome = Literal["refreshed", "failed", "not_attempted", "credential_failed"]
 
 
 class _RateLimited(Exception):
@@ -263,15 +310,20 @@ class ContentRefreshReport:
     already_fresh: int  # re-read successfully moments ago — not requested again
     failed: int  # the network refused or failed after retries; stored data kept
     not_attempted: int  # left for a later run: the per-run cap or Meta's throttling
-    rate_limited: bool = False
+    rate_limited: bool = False  # Meta answered with a throttling error
+    usage_paused: bool = False  # Meta's reported usage reached REFRESH_USAGE_STOP_PERCENT
+    planning_failed: bool = False  # the run could not even list its scope
+    # Not readable because the CONNECTION has no usable credential (revoked, undecryptable):
+    # an account problem, not the mention's — never stamped as an attempt on the mention.
+    credential_failed: int = 0
 
     @property
     def pending(self) -> int:
-        return self.failed + self.not_attempted
+        return self.failed + self.not_attempted + self.credential_failed
 
     @property
     def complete(self) -> bool:
-        return self.pending == 0
+        return self.pending == 0 and not self.planning_failed
 
 
 async def refresh_mentions_content(
@@ -316,7 +368,12 @@ async def refresh_mentions_in_scope(
     except Exception as exc:  # noqa: BLE001 — reported, never raised into the UI
         _LOGGER.warning("mentions scope refresh could not be planned (%s)", type(exc).__name__)
         return ContentRefreshReport(
-            in_scope=0, refreshed=0, already_fresh=0, failed=0, not_attempted=1
+            in_scope=0,
+            refreshed=0,
+            already_fresh=0,
+            failed=0,
+            not_attempted=0,
+            planning_failed=True,
         )
     return await _refresh_targets(
         repo,
@@ -342,15 +399,29 @@ async def _refresh_targets(
     clients: dict[UUID, tuple[HttpMentionedContentClient, str] | None] = {}
     clients_lock = asyncio.Lock()
     slots = asyncio.Semaphore(REFRESH_CONCURRENCY)
-    stop = asyncio.Event()
+    stop = asyncio.Event()  # no new reads: throttled, or usage at the limit
+    throttled = asyncio.Event()
+    usage_paused = asyncio.Event()
 
     async def client_for(connection_id: UUID) -> tuple[HttpMentionedContentClient, str] | None:
-        async with clients_lock:  # one credential resolution per connection and run
+        async with clients_lock:  # ONE credential resolution per connection and run
             if connection_id not in clients:
-                clients[connection_id] = await _content_client_for(
-                    tenant_id=tenant_id, connection_id=connection_id
-                )
+                try:
+                    clients[connection_id] = await _content_client_for(
+                        tenant_id=tenant_id, connection_id=connection_id
+                    )
+                except Exception as exc:  # noqa: BLE001 — cached: never retried per mention
+                    _LOGGER.warning(
+                        "mentions refresh: connection=%s has no usable credential (%s)",
+                        connection_id,
+                        type(exc).__name__,
+                    )
+                    clients[connection_id] = None
             return clients[connection_id]
+
+    def on_throttle() -> None:
+        throttled.set()
+        stop.set()
 
     async def refresh_one(target: RefreshTarget) -> _Outcome:
         async with slots:
@@ -359,11 +430,13 @@ async def _refresh_targets(
             try:
                 client_and_user = await client_for(target.connection_id)
                 if client_and_user is None:
-                    raise LookupError("connection not readable for this tenant")
+                    return "credential_failed"
                 client, ig_user_id = client_and_user
-                content = await _read_content(client, ig_user_id=ig_user_id, target=target)
+                content = await _read_content(
+                    client, ig_user_id=ig_user_id, target=target, on_throttle=on_throttle
+                )
             except _RateLimited:
-                stop.set()
+                on_throttle()
                 _LOGGER.warning("mentions refresh stopped: Meta is throttling this account")
                 return "not_attempted"
             except Exception as exc:  # noqa: BLE001 — keep the stored data, log the type only
@@ -377,6 +450,7 @@ async def _refresh_targets(
                 )
                 return "failed"
             if getattr(client, "usage_percent", 0) >= REFRESH_USAGE_STOP_PERCENT:
+                usage_paused.set()
                 stop.set()
                 _LOGGER.warning("mentions refresh paused: Meta usage at or above the limit")
             try:
@@ -395,7 +469,12 @@ async def _refresh_targets(
                 return "failed"
             return "refreshed" if stored else "failed"
 
-    outcomes = await asyncio.gather(*(refresh_one(target) for target in targets))
+    try:
+        outcomes = await asyncio.gather(*(refresh_one(target) for target in targets))
+    finally:
+        for client_and_user in clients.values():
+            if client_and_user is not None:
+                await _close_client(client_and_user[0])
     planned_but_left = in_scope - already_fresh - recently_failed - len(targets)
     return ContentRefreshReport(
         in_scope=in_scope,
@@ -404,8 +483,10 @@ async def _refresh_targets(
         # A mention whose re-read failed moments ago (the visible pass of this same click)
         # is reported as failed, not requested again.
         failed=outcomes.count("failed") + recently_failed,
+        credential_failed=outcomes.count("credential_failed"),
         not_attempted=outcomes.count("not_attempted") + max(0, planned_but_left),
-        rate_limited=stop.is_set(),
+        rate_limited=throttled.is_set(),
+        usage_paused=usage_paused.is_set() and not throttled.is_set(),
     )
 
 
@@ -417,7 +498,11 @@ def _mark_attempt(repo: MentionsRepository, *, tenant_id: UUID, mention_id: UUID
 
 
 async def _read_content(
-    client: HttpMentionedContentClient, *, ig_user_id: str, target: RefreshTarget
+    client: HttpMentionedContentClient,
+    *,
+    ig_user_id: str,
+    target: RefreshTarget,
+    on_throttle: Callable[[], None] | None = None,
 ) -> MentionContent:
     """The mention's content as the network gives it NOW. Raises when the content read
     fails (the caller keeps what it had) and `_RateLimited` when Meta throttles. The link
@@ -440,7 +525,11 @@ async def _read_content(
         None
         if target.has_permalink
         else await _read_permalink(
-            client, ig_user_id=ig_user_id, media_id=target.media_id, comment_id=target.comment_id
+            client,
+            ig_user_id=ig_user_id,
+            media_id=target.media_id,
+            comment_id=target.comment_id,
+            on_throttle=on_throttle,
         )
     )
     return MentionContent(
@@ -475,14 +564,30 @@ async def _with_retries[T](call: Callable[[], Awaitable[T]]) -> T:
 
 
 async def _read_permalink(
-    client: HttpMentionedContentClient, *, ig_user_id: str, media_id: str, comment_id: str | None
+    client: HttpMentionedContentClient,
+    *,
+    ig_user_id: str,
+    media_id: str,
+    comment_id: str | None,
+    on_throttle: Callable[[], None] | None = None,
 ) -> str | None:
     """The "Ver" link, best-effort and independent (QUA-152): ANY failure — a refusal, the
-    network — leaves it unset and never touches the content read or its persistence."""
+    network — leaves it unset and never touches the content read or its persistence. A
+    throttling answer is still reported (`on_throttle`) so a refresh run stops asking."""
     try:
         return await client.get_mentioned_permalink(
             ig_user_id=ig_user_id, media_id=media_id, comment_id=comment_id
         )
+    except MentionedContentReadError as exc:
+        if on_throttle is not None and is_rate_limited(exc):
+            on_throttle()
+        _LOGGER.info(
+            "mentions permalink unavailable: media_id=%s comment_id=%s (%s)",
+            media_id,
+            comment_id,
+            type(exc).__name__,
+        )
+        return None
     except Exception as exc:  # noqa: BLE001 — the link never fails anything else
         _LOGGER.info(
             "mentions permalink unavailable: media_id=%s comment_id=%s (%s)",

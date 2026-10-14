@@ -453,3 +453,21 @@ def test_summarize_ignores_what_the_scope_query_leaves_out() -> None:
 
     assert (scope.total, scope.positive, scope.pending) == (2, 1, 1)
     assert searched.counts.total == 0  # the page narrows; the summary does not
+
+
+def test_the_sql_blank_class_is_exactly_pythons_whitespace() -> None:
+    """The bounded sentiment pass excludes blank texts in SQL; the service skips the ones
+    whose `strip()` is empty. Both must agree, or a text counted as blank by one and not by
+    the other sits at the head of every batch (QUA-152 review). Python's `re` reads the
+    same `\\uXXXX` class syntax Postgres does."""
+    import re
+
+    from qualify_api.mentions.repository import _BLANK_CHARS
+
+    blank = re.compile(_BLANK_CHARS)
+    mismatches = [
+        hex(code)
+        for code in range(0x3001)
+        if bool(blank.fullmatch(chr(code))) != chr(code).isspace()
+    ]
+    assert mismatches == []

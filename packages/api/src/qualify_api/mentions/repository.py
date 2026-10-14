@@ -93,6 +93,12 @@ SENTIMENT_STATES = (
 MAX_SENTIMENT_ATTEMPTS = 3
 
 
+# What a bounded sentiment pass treats as blank, in SQL: exactly the characters Python's
+# `str.isspace()` accepts — the service skips a text whose `strip()` is empty — listed
+# explicitly because Postgres' `\s` follows the locale and may miss the Unicode ones.
+_BLANK_CHARS = r"[\s\u001c-\u001f\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]"
+
+
 def analysis_text_md5(text: str | None, caption: str | None) -> str | None:
     """Python twin of the generated column `mentions.analysis_text_md5` (migration 0055):
     MD5 of what the analyzer reads (comment text, else caption), or None without either.
@@ -816,6 +822,8 @@ class MemoryMentionsRepository:
             # already establishes for comments (QUA-21 AC5, restriction 1).
             if text is None:
                 continue
+            if limit is not None and not text.strip():
+                continue  # mirrors the SQL: a bounded pass takes analyzable text only
             if self._label_for(candidate_id, version) is not None:
                 continue
             pending.append(
@@ -1193,10 +1201,14 @@ class PostgresMentionsRepository:
             if mention_id is not None:
                 stmt = stmt.where(Mention.id == mention_id)
             if limit is not None:
-                # NULL text AND caption never become pending rows below: keep them out of
-                # the limit too, so a batch is never spent on nothing.
+                # A bounded pass (the sweep) only takes mentions with analyzable text: a
+                # NULL or blank text is never sent to the model and never recorded, so it
+                # would sit at the head of every oldest-first batch forever.
+                analyzable = func.coalesce(Mention.text, Mention.caption)
                 stmt = (
-                    stmt.where(or_(Mention.text.is_not(None), Mention.caption.is_not(None)))
+                    stmt.where(
+                        func.length(func.regexp_replace(analyzable, _BLANK_CHARS, "", "g")) > 0
+                    )
                     .order_by(Mention.received_at.asc(), Mention.id.asc())
                     .limit(limit)
                 )

@@ -382,3 +382,15 @@ def test_a_bounded_pass_takes_the_oldest_pending_first() -> None:
     pending = repo.list_pending_for_analysis(tenant_id=tenant_id, version=VERSION, limit=2)
 
     assert [p.mention_id for p in pending] == ids[:2]
+
+
+def test_a_bounded_pass_skips_blank_texts_in_sql() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    for blank in (" \n ", "\u00a0\u00a0", "\u202f\u3000", "\u2009\u0085"):
+        _add(repo, tenant_id, connection_id, blank)
+    real = _add(repo, tenant_id, connection_id, "me encanta")
+
+    pending = repo.list_pending_for_analysis(tenant_id=tenant_id, version=VERSION, limit=1)
+
+    assert [p.mention_id for p in pending] == [real]
