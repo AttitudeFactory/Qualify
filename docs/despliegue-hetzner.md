@@ -50,7 +50,7 @@ No hay colisiones: las rutas que monta el `api_transformer` de Reflex (`/avatar`
 
 | Pieza | Dónde | Quién la cambia |
 |---|---|---|
-| Proxy de entrada (Caddy estándar, `caddy:2.10-alpine`) | `/opt/edge` (`docker-compose.yml`, `Caddyfile`, `.env`) | `just edge-install <target>`; nunca un despliegue de producto |
+| Proxy de entrada (Caddy estándar, `caddy:2.11-alpine`) | `/opt/edge` (`docker-compose.yml`, `Caddyfile`, `.env`) | `just edge-install <target>`; nunca un despliegue de producto |
 | Red `qualify-edge` | Docker, externa | La crea `install.sh`; el Caddy de Qualify se une con el alias `qualify-web` |
 | Red `pedidos` | Docker, externa | La crea `install.sh`; el backend de Pedidos se une como `pedidos-backend:8420` |
 | Certificados TLS | volumen `edge_edge_data` | Caddy del proxy (Let's Encrypt, `EDGE_ACME_EMAIL`) |

@@ -10,7 +10,7 @@ name: edge
 
 services:
   edge:
-    image: caddy:2.10-alpine
+    image: caddy:2.11-alpine
     restart: unless-stopped
     environment:
       QUALIFY_DOMAIN: ${QUALIFY_DOMAIN:?set in /opt/edge/.env}

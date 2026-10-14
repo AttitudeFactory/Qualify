@@ -22,7 +22,7 @@ set -euo pipefail
 
 EDGE_DIR=${EDGE_DIR:-/opt/edge}
 LEGACY_CERT_VOLUME=${LEGACY_CERT_VOLUME:-qualify-prod_caddy_data}
-CADDY_IMAGE=caddy:2.10-alpine
+CADDY_IMAGE=caddy:2.11-alpine
 SRC=$(cd "$(dirname "$0")" && pwd)
 
 wait_ports=0
@@ -60,7 +60,10 @@ dc() { (cd "$EDGE_DIR" && docker compose "$@"); }
 echo "==> 3. Container + certificate volume"
 dc create edge >/dev/null
 cert_volume=edge_edge_data
-if [[ -z $(docker run --rm -v "$cert_volume:/to" "$CADDY_IMAGE" ls -A /to) ]]; then
+# "Empty" means no certificates yet, not an empty directory: Docker seeds a new named volume
+# with the image's own /data (an empty caddy/ folder), so `ls -A` would never see it empty.
+if [[ -z $(docker run --rm -v "$cert_volume:/to" "$CADDY_IMAGE" \
+  sh -c 'ls -A /to/caddy/certificates 2>/dev/null') ]]; then
   if docker volume inspect "$LEGACY_CERT_VOLUME" >/dev/null 2>&1; then
     docker run --rm -v "$LEGACY_CERT_VOLUME:/from:ro" -v "$cert_volume:/to" "$CADDY_IMAGE" \
       sh -c 'cp -a /from/. /to/'
@@ -69,7 +72,7 @@ if [[ -z $(docker run --rm -v "$cert_volume:/to" "$CADDY_IMAGE" ls -A /to) ]]; t
     echo "    no previous certificates — Caddy will request them from Let's Encrypt on start"
   fi
 else
-  echo "    certificate volume already populated"
+  echo "    certificate volume already holds certificates"
 fi
 
 port_busy() {
