@@ -2956,7 +2956,7 @@ def brand_choice_index() -> rx.Component:
                         _fork_option(
                             "user-plus",
                             "No, todavía no",
-                            "Te ayudamos a crear tu cuenta en Instagram o TikTok antes de empezar.",
+                            "Te ayudamos a crear tu cuenta en una red social antes de empezar.",
                             "/brand/connect/setup",
                         ),
                         spacing="4",
@@ -3057,7 +3057,7 @@ def brand_connect_setup_index() -> rx.Component:
     return _wizard_shell(
         page_header(
             "Crea tu cuenta",
-            "Necesitas un perfil en Instagram o TikTok antes de leer tu contenido.",
+            "Necesitas un perfil en una red social antes de leer tu contenido.",
             title_size="8",
         ),
         page_body(
