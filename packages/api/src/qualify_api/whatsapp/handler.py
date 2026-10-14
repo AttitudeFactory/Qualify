@@ -375,7 +375,7 @@ def whatsapp_messages_handler(
         for status in statuses:
             if status.status not in DELIVERY_STATUSES:
                 logger.debug(
-                    "whatsapp webhook: tenant=%s wamid=%s status=%s not a delivery status — ignored",
+                    "whatsapp webhook: tenant=%s wamid=%s status=%s is not a delivery status",
                     ctx.tenant_id,
                     status.id,
                     status.status,

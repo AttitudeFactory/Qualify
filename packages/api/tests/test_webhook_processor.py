@@ -341,7 +341,10 @@ async def test_a_qualified_key_wins_over_the_bare_field_for_its_object() -> None
     queue = FakeQueue([wa, ig])
     processor = Processor(
         queue=queue,
-        handlers={handler_key("whatsapp_business_account", "messages"): qualified, "messages": bare},
+        handlers={
+            handler_key("whatsapp_business_account", "messages"): qualified,
+            "messages": bare,
+        },
         worker_id="w1",
         clock=lambda: NOW,
     )
