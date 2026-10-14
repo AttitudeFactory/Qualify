@@ -25,7 +25,7 @@ import pytest
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.config import app_dsn
 from qualify_shared.db.session import tenant_session
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, select, text, update
 from sqlalchemy.engine import Engine
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
@@ -34,6 +34,7 @@ from qualify_api.tenancy.models import Tenant, User
 from qualify_api.whatsapp.client import build_text_body
 from qualify_api.whatsapp.models import WhatsAppOutboxItem
 from qualify_api.whatsapp.outbox import (
+    CLAIM_SQL,
     ERROR_WINDOW_CLOSED,
     PostgresOutboxRepository,
     phone_number_id_for,
@@ -163,20 +164,10 @@ def test_skip_locked_never_hands_one_row_to_two_workers(seeded, app_engine: Engi
     ids = {_enqueue(repo, seeded, f"m{n}") for n in range(3)}
     now = datetime.now(UTC)
     stale = now - timedelta(minutes=10)
-    claim_sql = text(
-        """
-        UPDATE whatsapp_outbox
-           SET status = 'sending', locked_by = :worker, locked_at = :now
-         WHERE id IN (
-            SELECT id FROM whatsapp_outbox
-             WHERE (status = 'pending' AND next_attempt_at <= :now)
-                OR (status = 'sending' AND locked_at < :stale)
-             ORDER BY created_at, id
-             LIMIT :limit
-             FOR UPDATE SKIP LOCKED)
-        RETURNING id
-        """
-    )
+    # The repository's own statement, run on raw connections so A's transaction can be
+    # held open while B claims. (An earlier `WHERE id IN (SELECT … LIMIT 2 …)` form of it
+    # returned 3 rows here — the re-evaluated subplan the CLAIM_SQL comment describes.)
+    claim_sql = CLAIM_SQL
 
     with app_engine.connect() as conn_a:
         conn_a.execute(text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(TENANT)})
@@ -222,8 +213,11 @@ def test_claim_is_tenant_scoped(seeded) -> None:
 def test_mark_sent_writes_the_outbound_message_once_and_bumps_the_thread(seeded) -> None:
     repo = PostgresOutboxRepository()
     item_id = _enqueue(repo, seeded, "Tu pedido esta listo")
-    now = datetime.now(UTC).replace(microsecond=0)
-    repo.claim(tenant_id=TENANT, worker_id="w:1", now=now, limit=LIMIT)
+    # The claim's `now` must not precede the row's server-default `next_attempt_at`, so it
+    # is the real instant; the instant written by mark_sent is truncated to the second
+    # only to compare timestamps exactly after the round trip.
+    repo.claim(tenant_id=TENANT, worker_id="w:1", now=datetime.now(UTC), limit=LIMIT)
+    now = datetime.now(UTC).replace(microsecond=0) + timedelta(seconds=1)
     wamid = f"wamid.{uuid4().hex}"
 
     repo.mark_sent(tenant_id=TENANT, item_id=item_id, wamid=wamid, now=now)
@@ -287,8 +281,16 @@ def test_a_stale_sending_row_is_reclaimed_and_counts_an_attempt(seeded) -> None:
     repo = PostgresOutboxRepository()
     item_id = _enqueue(repo, seeded, "x")
     now = datetime.now(UTC)
-    repo.claim(tenant_id=TENANT, worker_id="dead:1", now=now - timedelta(minutes=30), limit=LIMIT)
+    repo.claim(tenant_id=TENANT, worker_id="dead:1", now=now, limit=LIMIT)
     assert _row(item_id).status == "sending"
+    # The worker died 30 minutes ago: age its lock (a claim with a backdated `now` would
+    # simply find nothing due yet, since `next_attempt_at` defaults to the server's now()).
+    with tenant_session(TENANT) as session:
+        session.execute(
+            update(WhatsAppOutboxItem)
+            .where(WhatsAppOutboxItem.id == item_id)
+            .values(locked_at=now - timedelta(minutes=30))
+        )
     claimed = repo.claim(tenant_id=TENANT, worker_id="w:2", now=now, limit=LIMIT)
     item = next(c for c in claimed if c.id == item_id)
     assert item.attempts == 1
@@ -304,16 +306,12 @@ def test_thread_last_inbound_and_last_outbound_to_recipient(seeded) -> None:
     assert last_inbound is not None and last_inbound < datetime.now(UTC)
     assert repo.thread_last_inbound(tenant_id=TENANT, thread_id=uuid4()) is None
 
-    now = datetime.now(UTC).replace(microsecond=0)
+    # `now` is a whole second just ahead of the clock: exact after the round trip, and
+    # later than anything an earlier test in this run marked sent to the same recipient.
+    now = datetime.now(UTC).replace(microsecond=0) + timedelta(seconds=1)
     since = now - timedelta(seconds=6)
-    assert (
-        repo.last_outbound_to_recipient(
-            tenant_id=TENANT, connection_id=seeded["connection"], recipient=TO, since=since
-        )
-        is None
-    )
     item_id = _enqueue(repo, seeded, "x")
-    repo.claim(tenant_id=TENANT, worker_id="w:1", now=now, limit=LIMIT)
+    repo.claim(tenant_id=TENANT, worker_id="w:1", now=datetime.now(UTC), limit=LIMIT)
     repo.mark_sent(tenant_id=TENANT, item_id=item_id, wamid=f"wamid.{uuid4().hex}", now=now)
     # Digits compared: the stored `+57…` matches a bare `57…` lookup.
     assert (

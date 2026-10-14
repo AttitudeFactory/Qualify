@@ -245,19 +245,29 @@ _CLAIM_DEAD_STALE = text(
 
 # A reclaimed stale row counts an attempt (see the module docstring); a fresh claim does
 # not — the sender counts attempts on the outcome, so pacing can defer for free.
-_CLAIM = text(
+#
+# The pick is a MATERIALIZED CTE, not `WHERE id IN (SELECT … LIMIT n FOR UPDATE SKIP
+# LOCKED)`. Measured on Postgres 16 (CI run 38548295477 and locally): in the `IN (…)`
+# form the planner may re-run the locking subplan per outer row, and once the statement's
+# own updates have turned the first picks into `sending`, the re-run picks the NEXT due
+# rows — a `LIMIT 2` claim returned 3. A materialized CTE is evaluated exactly once, so
+# the lock set and the update set are the same rows.
+CLAIM_SQL = text(
     """
-    UPDATE whatsapp_outbox
-       SET status = 'sending', locked_by = :worker, locked_at = :now,
-           attempts = CASE WHEN status = 'sending' THEN attempts + 1 ELSE attempts END
-     WHERE id IN (
+    WITH due AS MATERIALIZED (
         SELECT id FROM whatsapp_outbox
          WHERE (status = 'pending' AND next_attempt_at <= :now)
             OR (status = 'sending' AND locked_at < :stale)
          ORDER BY created_at, id
          LIMIT :limit
          FOR UPDATE SKIP LOCKED)
-    RETURNING id, tenant_id, connection_id, thread_id, kind, payload, attempts, created_at
+    UPDATE whatsapp_outbox AS o
+       SET status = 'sending', locked_by = :worker, locked_at = :now,
+           attempts = CASE WHEN o.status = 'sending' THEN o.attempts + 1 ELSE o.attempts END
+      FROM due
+     WHERE o.id = due.id
+    RETURNING o.id, o.tenant_id, o.connection_id, o.thread_id, o.kind, o.payload, o.attempts,
+              o.created_at
     """
 )
 
@@ -312,7 +322,7 @@ class PostgresOutboxRepository:
                 {"error": ERROR_STALE_EXHAUSTED, "stale": stale, "max": MAX_ATTEMPTS},
             )
             rows = session.execute(
-                _CLAIM, {"worker": worker_id, "now": now, "stale": stale, "limit": limit}
+                CLAIM_SQL, {"worker": worker_id, "now": now, "stale": stale, "limit": limit}
             ).all()
         rows = sorted(rows, key=lambda r: (r.created_at, str(r.id)))
         return [
