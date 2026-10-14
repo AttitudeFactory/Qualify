@@ -1,6 +1,6 @@
 # Plan — Módulo WhatsApp Business Platform (Cloud API) en Qualify
 
-**Fecha:** 2026-10-13 · **Estado:** `[PLAN — pendiente de 4 decisiones del fundador, §9 · panel de Meta revisado 2026-10-13, §10]`
+**Fecha:** 2026-10-13 · **Estado:** `[PLAN — en ejecución desde 2026-10-14 (backlog-modulo-whatsapp.md); D1 pendiente, bloquea solo WA-13 · panel de Meta revisado 2026-10-13, §10]`
 **Piloto:** **Bianki** (shawarma, Korner, San Cristóbal). Hoy atiende WhatsApp con un bot sobre **Baileys** (librería no oficial, sesión de WhatsApp Web). Este plan lo reemplaza por la **API oficial (Cloud API)** gestionada desde Qualify, con menús, plantillas, marketing y bandeja.
 **Qué desbloquea:** cierra la pregunta **B0-5 / A5-4** que mantenía el canal WhatsApp en el parking lot ([QUA-41](https://linear.app/qualify-market/issue/QUA-41/canal-whatsapp-cloud-api)): *"¿la Cloud API hereda la exención de Development Mode?"*. **Respuesta, con fuente primaria: para una WABA propia no hace falta App Review ni acceso avanzado** (§2.2), y la verificación del negocio ya está hecha (2026-10-05). El gate que bloqueaba el canal **ya no existe para Bianki**.
 **Docs hermanos:** [integracion-cuentas-conectadas-meta.md](integracion-cuentas-conectadas-meta.md) (§3.8 A5-4, §6.4 regla "canal = entidad"), [backlog-crm-workflows.md](backlog-crm-workflows.md) (§5.4 B0-5), [arquitectura.md](arquitectura.md) §6 (ADR 21, 24, 29; nota C1 sobre semántica por canal), épica Linear [P-QUA-8](https://linear.app/qualify-market/project/epica-meta-app-review-permisos-videos-y-tech-provider-0bfb29d15ee3) (App Review).
@@ -287,6 +287,8 @@ Ningún runtime nuevo (sin Node, sin Lambda), Redis **no** como cola (el intake 
 
 ## 7. Fases e historias (`WA-00…WA-21`)
 
+> **Plan de ejecución (2026-10-14):** el orden operativo, los contratos técnicos por historia y las dependencias viven en [backlog-modulo-whatsapp.md](backlog-modulo-whatsapp.md), ordenado por D5 en cuatro entregas. Las tablas de abajo se conservan como referencia del alcance original; ante diferencia, manda el backlog.
+
 Cada fase termina con algo que Bianki **usa**. Los gates son de producción, no de laboratorio.
 
 ### Fase 0 — Trámite y decisiones (1–2 días, sin código salvo env)
@@ -368,6 +370,7 @@ Fórmula para presupuestar una campaña: `destinatarios × tasa de entrega estim
 | **D2** | Menús automáticos deterministas = permitidos bajo ADR 21 (regla: *automático = declarado; generativo = asistido*) | **Sí**, y aplicar la misma regla a QUA-138 |
 | **D3** | WABA bajo el portafolio verificado Qualify.co / Attitude Factory, misma app `QualifyMkt Connector` | **Sí** a ambas |
 | **D4** | Alcance del primer corte: fases 0–2 (paridad + menús) antes de tocar marketing | **Sí**; marketing entra cuando exista opt-in real |
+| **D5** | Prioridad por valor para comida rápida (2026-10-14): **1** menú que toma el pedido, **2** chats para cerrarlo, **3** entradas (QR/enlaces), **4** volver a vender con plantillas y opt-in, **5** catálogo nativo, **6** perfil y estado | **Aplicada** en [backlog-modulo-whatsapp.md](backlog-modulo-whatsapp.md); el fundador pidió implementar el módulo entero el 2026-10-14. D2 se toma como «sí» por la misma petición, salvo objeción |
 
 ### 9.2 Verificaciones empíricas (antes de prometer nada a terceros)
 
