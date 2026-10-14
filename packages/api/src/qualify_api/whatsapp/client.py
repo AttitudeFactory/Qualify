@@ -20,6 +20,9 @@ never carries a token, a response body or a user's text.
 - `set_conversational_automation` → `POST /{PHONE_NUMBER_ID}/conversational_automation`
 - `create_qr_code`, `list_qr_codes`, `delete_qr_code` →
   `POST/GET/DELETE /{PHONE_NUMBER_ID}/message_qrdls[/{code}]`
+- `get_waba_analytics` → `GET /{WABA_ID}?fields=analytics.start().end().granularity()…`
+  and `get_pricing_analytics` → `GET /{WABA_ID}?fields=currency,pricing_analytics.…`
+  (WA-21; the only WABA-level calls here, so they take `waba_id` explicitly)
 
 ## Evidence status
 
@@ -56,9 +59,12 @@ the caller, not a platform error, so it is deliberately NOT a `WhatsAppApiError`
 
 from __future__ import annotations
 
+import json
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Literal, Protocol
 
 import httpx
@@ -108,6 +114,16 @@ MAX_QR_PREFILLED_MESSAGE_CHARS: Final = 140
 
 MediaKind = Literal["image", "video", "document", "audio"]
 QrImageFormat = Literal["PNG", "SVG"]
+
+# WABA analytics (whatsapp/analytics, read 2026-10-14). The page spells the SAME
+# granularity two ways: `analytics` takes `DAY`/`MONTH` (and `HALF_HOUR`), while
+# `pricing_analytics` (and `conversation_analytics`) take `DAILY`/`MONTHLY`. Callers say
+# `DAY`/`MONTH`; the pricing builder translates.
+AnalyticsGranularity = Literal["DAY", "MONTH"]
+PRICING_GRANULARITY: Final[dict[str, str]] = {"DAY": "DAILY", "MONTH": "MONTHLY"}
+# Breakdown asked of `pricing_analytics`: by category (marketing/utility/…) and by type
+# (REGULAR = billed, FREE_CUSTOMER_SERVICE / FREE_ENTRY_POINT = free).
+PRICING_DIMENSIONS: Final = ("PRICING_CATEGORY", "PRICING_TYPE")
 
 PHONE_NUMBER_FIELDS: Final = (
     "verified_name",
@@ -278,6 +294,52 @@ class QrCode:
     qr_image_url: str | None = None
 
 
+@dataclass(frozen=True)
+class MessagingDataPoint:
+    """One bucket of `analytics`: messages SENT and DELIVERED by the WABA's numbers in
+    `[start, end)`. Bucket edges are Meta's (aligned to its own day boundary, not UTC
+    midnight — the doc's examples start at 02:00/07:00 UTC) and are passed through."""
+
+    start: datetime
+    end: datetime
+    sent: int
+    delivered: int
+
+
+@dataclass(frozen=True)
+class WabaAnalytics:
+    granularity: str | None
+    phone_numbers: tuple[str, ...]
+    data_points: tuple[MessagingDataPoint, ...]
+
+
+@dataclass(frozen=True)
+class PricingDataPoint:
+    """One bucket of `pricing_analytics` for one combination of the requested
+    dimensions. `cost` is in the WABA's currency and approximate (Meta: "may differ from
+    what's shown on invoices"); `None` when Meta did not return it (WABAs billed through a
+    Solution Partner get no cost). Dimension fields are `None` when not requested."""
+
+    start: datetime
+    end: datetime
+    volume: int
+    cost: Decimal | None
+    pricing_category: str | None = None
+    pricing_type: str | None = None
+    country: str | None = None
+    phone_number: str | None = None
+    tier: str | None = None
+
+
+@dataclass(frozen=True)
+class PricingAnalytics:
+    """`currency` is the WABA node's own `currency` field, requested alongside — the
+    pricing data points carry none."""
+
+    currency: str | None
+    data_points: tuple[PricingDataPoint, ...]
+
+
 # ======================================================================================
 # Protocol
 # ======================================================================================
@@ -362,6 +424,30 @@ class WhatsAppClient(Protocol):
     async def list_qr_codes(self) -> list[QrCode]: ...
 
     async def delete_qr_code(self, code: str) -> None: ...
+
+    async def get_waba_analytics(
+        self,
+        waba_id: str,
+        start: datetime,
+        end: datetime,
+        granularity: AnalyticsGranularity,
+        phone_numbers: Sequence[str] | None = None,
+    ) -> WabaAnalytics:
+        """Messages sent/delivered per bucket (`fields=analytics…`). `phone_numbers` are
+        DISPLAY numbers, digits only (Meta filters by them, not by phone_number_id)."""
+        ...
+
+    async def get_pricing_analytics(
+        self,
+        waba_id: str,
+        start: datetime,
+        end: datetime,
+        granularity: AnalyticsGranularity,
+        phone_numbers: Sequence[str] | None = None,
+    ) -> PricingAnalytics:
+        """Delivered volume and approximate cost per pricing category and type
+        (`fields=currency,pricing_analytics…`). Same `phone_numbers` rule."""
+        ...
 
 
 # ======================================================================================
@@ -878,6 +964,179 @@ def _parse_qr_code(item: dict[str, Any]) -> QrCode:
     )
 
 
+def _epoch(value: datetime) -> int:
+    """UNIX seconds. A naive instant is taken as UTC (the module never guesses a zone)."""
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return int(aware.timestamp())
+
+
+def _validate_analytics_request(
+    waba_id: str, start: datetime, end: datetime, granularity: str
+) -> None:
+    if not waba_id:
+        raise ValueError("waba_id must not be empty")
+    if granularity not in PRICING_GRANULARITY:
+        raise ValueError(f"granularity must be one of {tuple(PRICING_GRANULARITY)}")
+    if _epoch(end) <= _epoch(start):
+        raise ValueError("end must be after start")
+
+
+def _phone_filter(phone_numbers: Sequence[str] | None) -> str:
+    """`.phone_numbers(["15550001234"])` — the array form of the doc's
+    conversation-analytics example (`.phone_numbers(["19195552584"])`); omitted means
+    every number of the WABA. Digits only: a display number like `+57 300 000 0017` is
+    reduced to `573000000017`. `[DOC]` for the conversation field; not yet exercised on
+    `analytics`/`pricing_analytics` (the smoke run promotes it)."""
+    if not phone_numbers:
+        return ""
+    digits = ["".join(ch for ch in n if ch.isdigit()) for n in phone_numbers]
+    digits = [d for d in digits if d]
+    if not digits:
+        return ""
+    return f".phone_numbers({json.dumps(digits, separators=(',', ':'))})"
+
+
+def build_analytics_fields(
+    start: datetime,
+    end: datetime,
+    granularity: AnalyticsGranularity,
+    phone_numbers: Sequence[str] | None = None,
+) -> str:
+    """[DOC] whatsapp/analytics, `analytics` example:
+    `fields=analytics.start(1543543200).end(1544148000).granularity(DAY)`."""
+    return (
+        f"analytics.start({_epoch(start)}).end({_epoch(end)}).granularity({granularity})"
+        f"{_phone_filter(phone_numbers)}"
+    )
+
+
+def build_pricing_analytics_fields(
+    start: datetime,
+    end: datetime,
+    granularity: AnalyticsGranularity,
+    phone_numbers: Sequence[str] | None = None,
+) -> str:
+    """[DOC] whatsapp/analytics, `pricing_analytics` example:
+    `fields=pricing_analytics.start(…).end(…).granularity(DAILY).dimensions(PRICING_CATEGORY,
+    PRICING_TYPE,TIER,COUNTRY)`. `currency` (a default field of the WABA node, Graph
+    reference whats-app-business-account) is requested in the same call because the
+    pricing data points do not name their currency."""
+    return (
+        f"currency,pricing_analytics.start({_epoch(start)}).end({_epoch(end)})"
+        f".granularity({PRICING_GRANULARITY[granularity]})"
+        f"{_phone_filter(phone_numbers)}"
+        f".dimensions({','.join(PRICING_DIMENSIONS)})"
+    )
+
+
+def _int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _instant(value: object) -> datetime | None:
+    seconds = _int(value)
+    return None if seconds is None else datetime.fromtimestamp(seconds, tz=UTC)
+
+
+def _money(value: object) -> Decimal | None:
+    """`cost` arrives as a JSON number (`15.58`, `0.0232`, `0`); `str()` first so a float
+    does not drag its binary noise into the Decimal."""
+    if value is None or isinstance(value, bool) or not isinstance(value, int | float | str):
+        return None
+    try:
+        return Decimal(str(value))
+    except InvalidOperation:
+        return None
+
+
+def _parse_waba_analytics(payload: dict[str, Any]) -> WabaAnalytics:
+    """[DOC] whatsapp/analytics (read 2026-10-14), `analytics` example response:
+    `{"analytics": {"phone_numbers": ["16505550111", …], "country_codes": [...],
+    "granularity": "DAY", "data_points": [{"start": 1543543200, "end": 1543629600,
+    "sent": 196093, "delivered": 179715}, …]}, "id": "<WABA_ID>"}`.
+
+    A response with no `analytics` key is read as "no data in range" (empty), not as an
+    error: Graph omits a field it has nothing for. A data point without a parseable
+    `start`/`end` is skipped; missing counters read as 0."""
+    block = payload.get("analytics")
+    if block is None:
+        return WabaAnalytics(granularity=None, phone_numbers=(), data_points=())
+    if not isinstance(block, dict):
+        raise WhatsAppApiError("analytics response carried a non-object analytics field")
+    points: list[MessagingDataPoint] = []
+    for item in block.get("data_points") or []:
+        if not isinstance(item, dict):
+            continue
+        start, end = _instant(item.get("start")), _instant(item.get("end"))
+        if start is None or end is None:
+            continue
+        points.append(
+            MessagingDataPoint(
+                start=start,
+                end=end,
+                sent=_int(item.get("sent")) or 0,
+                delivered=_int(item.get("delivered")) or 0,
+            )
+        )
+    phones = block.get("phone_numbers")
+    return WabaAnalytics(
+        granularity=_opt_str(block.get("granularity")),
+        phone_numbers=(
+            tuple(p for p in phones if isinstance(p, str)) if isinstance(phones, list) else ()
+        ),
+        data_points=tuple(sorted(points, key=lambda p: p.start)),
+    )
+
+
+def _parse_pricing_analytics(payload: dict[str, Any]) -> PricingAnalytics:
+    """[DOC] whatsapp/analytics (read 2026-10-14), `pricing_analytics` example response:
+    `{"pricing_analytics": {"data": [{"data_points": [{"start": 1748761200, "end":
+    1748847600, "country": "US", "tier": "0:2", "pricing_type": "REGULAR",
+    "pricing_category": "AUTHENTICATION", "volume": 1, "cost": 10}, …]}]}}` — `tier`
+    absent on free messages, `cost` a JSON number in the WABA's currency. `currency` is
+    the WABA node's field (requested alongside, see `build_pricing_analytics_fields`).
+
+    Same tolerance as `_parse_waba_analytics`: no `pricing_analytics` key = empty."""
+    currency = _opt_str(payload.get("currency"))
+    block = payload.get("pricing_analytics")
+    if block is None:
+        return PricingAnalytics(currency=currency, data_points=())
+    if not isinstance(block, dict):
+        raise WhatsAppApiError("pricing analytics response carried a non-object field")
+    points: list[PricingDataPoint] = []
+    for group in block.get("data") or []:
+        if not isinstance(group, dict):
+            continue
+        for item in group.get("data_points") or []:
+            if not isinstance(item, dict):
+                continue
+            start, end = _instant(item.get("start")), _instant(item.get("end"))
+            if start is None or end is None:
+                continue
+            points.append(
+                PricingDataPoint(
+                    start=start,
+                    end=end,
+                    volume=_int(item.get("volume")) or 0,
+                    cost=_money(item.get("cost")),
+                    pricing_category=_opt_str(item.get("pricing_category")),
+                    pricing_type=_opt_str(item.get("pricing_type")),
+                    country=_opt_str(item.get("country")),
+                    phone_number=_opt_str(item.get("phone_number")),
+                    tier=_opt_str(item.get("tier")),
+                )
+            )
+    return PricingAnalytics(
+        currency=currency, data_points=tuple(sorted(points, key=lambda p: p.start))
+    )
+
+
 def _parse_qr_list(payload: dict[str, Any]) -> list[QrCode]:
     """[DOC] `GET /{PHONE_NUMBER_ID}/message_qrdls`: `{"data": [ {code, …}, … ]}`."""
     data = payload.get("data")
@@ -1141,6 +1400,42 @@ class HttpWhatsAppClient:
             ) from exc
         _raise_for_status(response, "delete_qr_code")
         _parse_success(_json_object(response, "delete_qr_code"), "delete_qr_code")
+
+    # -- WABA analytics (WA-21) ----------------------------------------------------------
+
+    async def get_waba_analytics(
+        self,
+        waba_id: str,
+        start: datetime,
+        end: datetime,
+        granularity: AnalyticsGranularity,
+        phone_numbers: Sequence[str] | None = None,
+    ) -> WabaAnalytics:
+        _validate_analytics_request(waba_id, start, end, granularity)
+        payload = await self._get_json(
+            self._url(waba_id),
+            "get_waba_analytics",
+            params={"fields": build_analytics_fields(start, end, granularity, phone_numbers)},
+        )
+        return _parse_waba_analytics(payload)
+
+    async def get_pricing_analytics(
+        self,
+        waba_id: str,
+        start: datetime,
+        end: datetime,
+        granularity: AnalyticsGranularity,
+        phone_numbers: Sequence[str] | None = None,
+    ) -> PricingAnalytics:
+        _validate_analytics_request(waba_id, start, end, granularity)
+        payload = await self._get_json(
+            self._url(waba_id),
+            "get_pricing_analytics",
+            params={
+                "fields": build_pricing_analytics_fields(start, end, granularity, phone_numbers)
+            },
+        )
+        return _parse_pricing_analytics(payload)
 
 
 def _json_object(response: httpx.Response, what: str) -> dict[str, Any]:

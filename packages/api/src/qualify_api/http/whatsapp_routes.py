@@ -38,6 +38,14 @@ webhook these are Qualify's own routes: identity is the `Principal` (C1) and the
 is always the principal's, never a parameter. A thread of another tenant answers 404,
 exactly like an unknown id. Responses carry ids, statuses and message text — never a
 credential, a raw payload or an outbox body.
+
+**WA-17 / WA-21 (QUA-216 / QUA-220) add two read-only reports** at the end of this module:
+`GET /api/whatsapp/metrics` (conversation metrics from our own tables,
+`qualify_api.whatsapp.metrics`) and `GET /api/whatsapp/analytics` (messages and cost
+read from Meta, `qualify_api.whatsapp.analytics`). Both are Principal-scoped, take a
+`connection_id` the caller's tenant must own (404 `connection_not_found` otherwise) and
+a half-open `[since, until)` range defaulting to the last 7 days (422 `invalid_range`
+when inverted or longer than 366 days).
 """
 
 from __future__ import annotations
@@ -45,6 +53,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
@@ -57,6 +66,11 @@ from qualify_api.http.deps import Principal, current_principal
 from qualify_api.mentions.signature import verify_signature
 from qualify_api.webhooks.envelope import MAX_BODY_BYTES
 from qualify_api.webhooks.receiver import RecordedDelivery
+from qualify_api.whatsapp.analytics import (
+    AnalyticsSummary,
+    ReconnectRequired,
+    WabaAnalyticsService,
+)
 from qualify_api.whatsapp.chats import (
     DEFAULT_LIMIT,
     MAX_LIMIT,
@@ -69,7 +83,15 @@ from qualify_api.whatsapp.chats import (
     UnknownAgent,
     WindowClosed,
 )
+from qualify_api.whatsapp.client import WhatsAppApiError
 from qualify_api.whatsapp.config import WhatsAppWebhookSettings
+from qualify_api.whatsapp.metrics import (
+    ConnectionNotFound,
+    ConversationMetrics,
+    ConversationMetricsService,
+    InvalidRange,
+    QrPrefixSource,
+)
 
 router = APIRouter(prefix="/api/whatsapp", tags=["whatsapp"])
 
@@ -432,3 +454,232 @@ def get_media(
     if url is None:
         raise HTTPException(status_code=501, detail={"code": "media_not_captured"})
     return RedirectResponse(url=url, status_code=307)
+
+
+# ======================================================================================
+# WA-17 — conversation metrics · WA-21 — WABA analytics
+# ======================================================================================
+
+
+def get_metrics_service() -> ConversationMetricsService:
+    """Overridden at app startup (to `metrics.production_metrics_service()`) and in tests
+    (to a service over `MemoryMetricsRepository`)."""
+    raise NotImplementedError("whatsapp metrics service dependency is not configured")
+
+
+def get_qr_prefix_source() -> QrPrefixSource:
+    """Overridden at app startup (to `metrics.production_qr_prefix_source()`, which lists
+    the number's QR codes through the Cloud API) and in tests."""
+    raise NotImplementedError("whatsapp QR prefix source dependency is not configured")
+
+
+def get_analytics_service() -> WabaAnalyticsService:
+    """Overridden at app startup (to `analytics.production_analytics_service()`) and in
+    tests (to a service over a fake Graph reader)."""
+    raise NotImplementedError("whatsapp analytics service dependency is not configured")
+
+
+def _connection_not_found() -> HTTPException:
+    return HTTPException(status_code=404, detail={"code": "connection_not_found"})
+
+
+def _invalid_range(exc: InvalidRange) -> HTTPException:
+    return HTTPException(status_code=422, detail={"code": "invalid_range", "reason": str(exc)})
+
+
+class EntryCountOut(BaseModel):
+    # `command` | `ice_breaker` | `qr` | `keyword` | `directo`
+    kind: Literal["command", "ice_breaker", "qr", "keyword", "directo"]
+    # Command name, ice-breaker text, QR code, normalized keyword; `None` for `directo`.
+    key: str | None
+    threads: int
+
+
+class ConversationMetricsOut(BaseModel):
+    """`metrics.ConversationMetrics` — every definition is in that module's docstring.
+    Money is a decimal STRING per currency (`{"COP": "50000.50"}`)."""
+
+    connection_id: UUID
+    since: datetime
+    until: datetime
+    threads_opened: int
+    threads_opened_by_entry: list[EntryCountOut]
+    orders_confirmed: int
+    orders_total: dict[str, Decimal]
+    handoffs: int
+    handoffs_by_reason: dict[str, int]
+    first_human_responses: int
+    awaiting_human_response: int
+    median_first_human_response_seconds: float | None
+    p90_first_human_response_seconds: float | None
+    messages_in: int
+    messages_out_automation: int
+    messages_out_human: int
+    messages_out_campaign: int
+    messages_out_other: int
+    delivery_failed: int
+    send_failed: int
+    # False when the number's QR codes could not be listed from Meta: QR entries are then
+    # counted under whatever else matched (`keyword`/`directo`).
+    qr_codes_available: bool
+
+    @classmethod
+    def of(cls, m: ConversationMetrics, *, qr_codes_available: bool) -> ConversationMetricsOut:
+        return cls(
+            connection_id=m.connection_id,
+            since=m.since,
+            until=m.until,
+            threads_opened=m.threads_opened,
+            threads_opened_by_entry=[
+                EntryCountOut(kind=e.kind, key=e.key, threads=e.threads)
+                for e in m.threads_opened_by_entry
+            ],
+            orders_confirmed=m.orders_confirmed,
+            orders_total=dict(m.orders_total),
+            handoffs=m.handoffs,
+            handoffs_by_reason=dict(m.handoffs_by_reason),
+            first_human_responses=m.first_human_responses,
+            awaiting_human_response=m.awaiting_human_response,
+            median_first_human_response_seconds=m.median_first_human_response_seconds,
+            p90_first_human_response_seconds=m.p90_first_human_response_seconds,
+            messages_in=m.messages_in,
+            messages_out_automation=m.messages_out_automation,
+            messages_out_human=m.messages_out_human,
+            messages_out_campaign=m.messages_out_campaign,
+            messages_out_other=m.messages_out_other,
+            delivery_failed=m.delivery_failed,
+            send_failed=m.send_failed,
+            qr_codes_available=qr_codes_available,
+        )
+
+
+@router.get("/metrics", response_model=ConversationMetricsOut)
+async def get_metrics(
+    connection_id: UUID = Query(...),
+    since: datetime | None = Query(default=None),
+    until: datetime | None = Query(default=None),
+    principal: Principal = Depends(current_principal),
+    service: ConversationMetricsService = Depends(get_metrics_service),
+    qr_source: QrPrefixSource = Depends(get_qr_prefix_source),
+) -> ConversationMetricsOut:
+    """Conversation metrics of one connected number over `[since, until)`. The connection
+    is checked BEFORE Meta is asked for its QR codes, so an unknown id costs no Graph
+    call."""
+    try:
+        await run_in_threadpool(service.ensure_connection, principal.tenant_id, connection_id)
+    except ConnectionNotFound:
+        raise _connection_not_found() from None
+    prefixes = await qr_source(tenant_id=principal.tenant_id, connection_id=connection_id)
+    try:
+        metrics = await run_in_threadpool(
+            service.compute, principal.tenant_id, connection_id, since, until, prefixes or {}
+        )
+    except InvalidRange as exc:
+        raise _invalid_range(exc) from None
+    except ConnectionNotFound:
+        raise _connection_not_found() from None
+    return ConversationMetricsOut.of(metrics, qr_codes_available=prefixes is not None)
+
+
+class MessagesBucketOut(BaseModel):
+    start: datetime
+    end: datetime
+    sent: int
+    delivered: int
+
+
+class CategoryCostOut(BaseModel):
+    # Meta's pricing category: MARKETING, UTILITY, AUTHENTICATION, SERVICE, … ("UNKNOWN").
+    category: str
+    volume: int
+    billable_volume: int
+    # Decimal string in `currency`; `None` when Meta returned no cost for the category.
+    cost: Decimal | None
+
+
+class WabaAnalyticsOut(BaseModel):
+    """`analytics.AnalyticsSummary`. Costs are Meta's approximations in the WABA's
+    `currency` (decimal strings); `cost_available = False` (and `cost_total = None`) for a
+    WABA billed through a Solution Partner. `campaign_reconciliation` is always `null`
+    until WA-20 (QUA-219) lands."""
+
+    connection_id: UUID
+    waba_id: str
+    phone_number: str
+    since: datetime
+    until: datetime
+    granularity: Literal["DAY", "MONTH"]
+    currency: str | None
+    messages: list[MessagesBucketOut]
+    sent_total: int
+    delivered_total: int
+    cost_by_category: list[CategoryCostOut]
+    cost_total: Decimal | None
+    cost_available: bool
+    campaign_reconciliation: None = None
+
+    @classmethod
+    def of(cls, s: AnalyticsSummary) -> WabaAnalyticsOut:
+        return cls(
+            connection_id=s.connection_id,
+            waba_id=s.waba_id,
+            phone_number=s.phone_number,
+            since=s.since,
+            until=s.until,
+            granularity=s.granularity,
+            currency=s.currency,
+            messages=[
+                MessagesBucketOut(start=b.start, end=b.end, sent=b.sent, delivered=b.delivered)
+                for b in s.messages
+            ],
+            sent_total=s.sent_total,
+            delivered_total=s.delivered_total,
+            cost_by_category=[
+                CategoryCostOut(
+                    category=c.category,
+                    volume=c.volume,
+                    billable_volume=c.billable_volume,
+                    cost=c.cost,
+                )
+                for c in s.cost_by_category
+            ],
+            cost_total=s.cost_total,
+            cost_available=s.cost_available,
+            campaign_reconciliation=s.campaign_reconciliation,
+        )
+
+
+@router.get("/analytics", response_model=WabaAnalyticsOut)
+async def get_analytics(
+    connection_id: UUID = Query(...),
+    since: datetime | None = Query(default=None),
+    until: datetime | None = Query(default=None),
+    granularity: Literal["DAY", "MONTH"] = Query(default="DAY"),
+    principal: Principal = Depends(current_principal),
+    service: WabaAnalyticsService = Depends(get_analytics_service),
+) -> WabaAnalyticsOut:
+    """Messages sent/delivered per bucket and approximate cost per pricing category, read
+    from Meta for this connection's number. 409 `reconnect_required` when the credential
+    is missing or Meta rejects it; 502 `graph_error` with Meta's numeric code only (never
+    its message, which can echo request parameters) for any other Graph failure."""
+    try:
+        summary = await service.summary(
+            principal.tenant_id, connection_id, since, until, granularity
+        )
+    except InvalidRange as exc:
+        raise _invalid_range(exc) from None
+    except ConnectionNotFound:
+        raise _connection_not_found() from None
+    except ReconnectRequired:
+        raise HTTPException(status_code=409, detail={"code": "reconnect_required"}) from None
+    except WhatsAppApiError as exc:
+        _LOGGER.warning(
+            "whatsapp analytics: Graph error status=%s code=%s connection=%s",
+            exc.status,
+            exc.code,
+            connection_id,
+        )
+        raise HTTPException(
+            status_code=502, detail={"code": "graph_error", "meta_error_code": exc.code}
+        ) from None
+    return WabaAnalyticsOut.of(summary)
