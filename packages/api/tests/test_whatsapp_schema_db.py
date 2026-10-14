@@ -160,7 +160,7 @@ def test_admin_is_denied_the_rest(engines, sql: str) -> None:
     "sql",
     [
         "SELECT id, tenant_id, connection_id, phone_number_id FROM whatsapp_phone_numbers LIMIT 1",
-        # 0059 (WA-18): template webhooks resolve the tenant by WABA id.
+        # 0060 (WA-18): template webhooks resolve the tenant by WABA id.
         "SELECT tenant_id, waba_id FROM whatsapp_phone_numbers LIMIT 1",
         "SELECT * FROM whatsapp_thread_state LIMIT 1",
         _INSERT_STATE,
@@ -254,7 +254,7 @@ def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
         ("qualify_app", "whatsapp_outbox", "UPDATE"),
         ("qualify_webhook_worker", "whatsapp_outbox", "INSERT"),
     }
-    # `waba_id` since 0059 (WA-18): the template webhooks carry the WABA, not a number.
+    # `waba_id` since 0060 (WA-18): the template webhooks carry the WABA, not a number.
     assert worker_phone_columns == {
         "id",
         "tenant_id",

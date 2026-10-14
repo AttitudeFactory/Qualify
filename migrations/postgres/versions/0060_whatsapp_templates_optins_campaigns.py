@@ -1,11 +1,12 @@
 """whatsapp marketing: templates, opt-ins, campaigns and their sends (WA-18/19/20)
 
-Revision ID: 0059
-Revises: 0058
+Revision ID: 0060
+Revises: 0059
 Create Date: 2026-10-14
 
 Backlog: `docs/backlog-modulo-whatsapp.md` §5 WA-18, WA-19, WA-20 (it says "0058" for all
-three; 0058 is the menus migration, so this is the next free number). Plan:
+three; 0058 is the menus migration and 0059 is WA-15's catalog grants, so this is 0060).
+Plan:
 `docs/plan-modulo-whatsapp-cloud-api.md` §2.4-§2.5 (template limits, per-message pricing,
 per-user marketing limit `131049`) and §5.4. Services: `qualify_api.whatsapp.templates`,
 `.optins`, `.campaigns`, `.pricing`.
@@ -108,8 +109,8 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0059"
-down_revision = "0058"
+revision = "0060"
+down_revision = "0059"
 branch_labels = None
 depends_on = None
 

@@ -1,4 +1,4 @@
-"""Migration 0059 (WA-18/19/20), checked as the REAL roles — same method as
+"""Migration 0060 (WA-18/19/20), checked as the REAL roles — same method as
 `test_whatsapp_menus_schema_db.py`: one statement per check, always rolled back, writes with
 `WHERE false` so the grant is exercised without a row. Then the structural facts (RLS,
 uniques, the outbox → send mirror trigger) with real rows through the production doors.

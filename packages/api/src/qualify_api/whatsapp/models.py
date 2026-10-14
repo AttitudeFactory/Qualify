@@ -1,5 +1,5 @@
 """ORM models for the WhatsApp module (WA-04 + WA-14 + WA-18/19/20). DDL/RLS/grants are
-the job of migrations 0057 (numbers, thread state, outbox), 0058 (menus, versions) and 0059
+the job of migrations 0057 (numbers, thread state, outbox), 0058 (menus, versions) and 0060
 (templates, opt-ins, campaigns, campaign sends); these mirror them for typed access via the
 sanctioned sessions — same relationship `inbox/models.py` has to 0004.
 
@@ -42,7 +42,7 @@ from qualify_api.tenancy.models import Base
 OUTBOX_KINDS: tuple[str, ...] = ("reply", "automation", "campaign_send")
 OUTBOX_STATUSES: tuple[str, ...] = ("pending", "sending", "sent", "failed", "dead")
 DELIVERY_STATUSES: tuple[str, ...] = ("sent", "delivered", "read", "failed")
-# 0059 (WA-18/19/20).
+# 0060 (WA-18/19/20).
 TEMPLATE_CATEGORIES: tuple[str, ...] = ("marketing", "utility", "authentication")
 OPT_IN_SOURCES: tuple[str, ...] = ("lead_form", "menu", "import", "manual")
 CAMPAIGN_STATUSES: tuple[str, ...] = (
@@ -172,7 +172,7 @@ class WhatsAppOutboxItem(Base):
 
     __tablename__ = "whatsapp_outbox"
     __table_args__ = (
-        # Target of `whatsapp_campaign_sends`' composite FK (added by 0059).
+        # Target of `whatsapp_campaign_sends`' composite FK (added by 0060).
         UniqueConstraint("id", "tenant_id", name="uq_wa_outbox_id_tenant"),
         ForeignKeyConstraint(
             ["connection_id", "tenant_id"],
@@ -324,7 +324,7 @@ class WhatsAppMenuVersion(Base):
 
 
 class WhatsAppTemplate(Base):
-    """The mirror of one message template of a WABA (0059, WA-18).
+    """The mirror of one message template of a WABA (0060, WA-18).
 
     Natural key `(tenant_id, waba_id, name, language)`. `status`/`quality` are Meta's
     strings verbatim (no CHECK: Meta adds statuses without notice); `category` is one of
@@ -379,7 +379,7 @@ class WhatsAppTemplate(Base):
 
 
 class WhatsAppOptIn(Base):
-    """One consent to receive a tenant's WhatsApp messages (0059, WA-19).
+    """One consent to receive a tenant's WhatsApp messages (0060, WA-19).
 
     One row per `(tenant_id, phone_e164)`. A revocation sets `revoked_at` and keeps the
     row: it is the evidence the audience must exclude that phone. `consent_text` is the
@@ -419,7 +419,7 @@ class WhatsAppOptIn(Base):
 
 
 class WhatsAppCampaign(Base):
-    """One marketing send from one number with one template (0059, WA-20).
+    """One marketing send from one number with one template (0060, WA-20).
 
     `audience_filter` is evaluated against live opt-ins at launch; `send_components` is
     the `components` array of the template send body (its parameters), passed verbatim to
@@ -478,7 +478,7 @@ class WhatsAppCampaign(Base):
 
 
 class WhatsAppCampaignSend(Base):
-    """One recipient of one campaign (0059, WA-20). UNIQUE `(campaign_id, phone_e164)`:
+    """One recipient of one campaign (0060, WA-20). UNIQUE `(campaign_id, phone_e164)`:
     relaunching never sends twice. `wamid` and the `sent`/`failed`/`skipped` settle are
     mirrored from the outbox row by the trigger `wa_outbox_campaign_mirror`; receipts
     (`delivered`/`read`/`failed`, `price_category`) arrive by `wamid` from the webhook."""
