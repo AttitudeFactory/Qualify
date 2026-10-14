@@ -413,3 +413,51 @@ def test_closed_window_disables_the_composer() -> None:
     assert composer_enabled(True, True)
     assert not composer_enabled(False, True)
     assert not composer_enabled(True, False)
+
+
+# --- the tab -------------------------------------------------------------------------
+
+
+def test_the_tab_talks_to_the_state_only() -> None:
+    """The page imports neither the provider nor any backend module: it reaches Postgres
+    and the services only through `WhatsAppChatsState`."""
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse((Path(__file__).parent / "whatsapp_tab_chats.py").read_text())
+    imported = {
+        node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+    } | {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    assert not any("provider" in name or name.startswith("qualify_api") for name in imported)
+
+
+def test_the_tab_renders_list_conversation_and_composer() -> None:
+    import json
+
+    from .whatsapp_tab_chats import chats_tab
+
+    rendered = str(chats_tab().render())
+
+    def present(text: str) -> bool:
+        escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
+        return text in rendered or escaped in rendered
+
+    for text in (
+        "Elige una conversación",
+        "Tomar el control",
+        "Devolver al menú",
+        "Cerrar",
+        "Reabrir",
+        "Pedido listo",
+        "Cargar anteriores",
+        "Enviar",
+        "Botones",
+        "Imagen por enlace",
+        "Aún no hay conversaciones en este número",
+    ):
+        assert present(text), text
