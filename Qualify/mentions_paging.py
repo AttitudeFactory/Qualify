@@ -111,6 +111,10 @@ def decide_tick(*, snapshot_total: int, reread_total: int, new_count: int) -> Ti
 # --- "Actualizar menciones" outcome (QUA-152) ------------------------------------------
 
 REFRESHING_NOTICE: Final = "Actualizando las menciones del periodo…"
+THROTTLED_NOTICE: Final = (
+    "La red social limitó las consultas, así que no se actualizaron todas las menciones. "
+    "Los datos guardados se conservan. Vuelve a pulsar Actualizar en unos minutos."
+)
 
 
 @dataclass(frozen=True)

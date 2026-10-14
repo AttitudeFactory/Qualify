@@ -41,6 +41,7 @@ from .mentions_paging import (
     PERIOD_OPTIONS,
     REFRESHING_NOTICE,
     SENTIMENT_OPTIONS,
+    THROTTLED_NOTICE,
     decide_tick,
     new_mentions_label,
     refresh_outcome,
@@ -296,6 +297,10 @@ class DashboardState(rx.State):
         self.is_loading_mentions = True
         self.mentions_error = ""
         yield
+        # A refresh run that never finished (tab closed, connection lost before its
+        # background step) must not leave the button locked for this session.
+        self.is_refreshing = False
+        self.refresh_notice, self.refresh_tone = "", ""
         tenant_id = await self._tenant()
         if tenant_id is None:
             self.is_loading_mentions = False
@@ -373,13 +378,20 @@ class DashboardState(rx.State):
         self.refresh_notice, self.refresh_tone = REFRESHING_NOTICE, "info"
         yield
         tenant_id = await self._tenant()
+        visible = None
         if tenant_id is not None and self.mentions:
             try:
-                await refresh_content(tenant_id, [row.id for row in self.mentions])
+                visible = await refresh_content(tenant_id, [row.id for row in self.mentions])
             except Exception as exc:  # noqa: BLE001 — the reload below still runs
                 logger.warning("mentions content refresh failed: %s", type(exc).__name__)
         self.new_since = self.as_of
         await self._read(page=self.page, new_snapshot=True)
+        if visible is not None and visible.rate_limited:
+            # The network is throttling this account: asking for the rest of the scope now
+            # would only spend more of its budget. Say so and stop here.
+            self.is_refreshing = False
+            self.refresh_notice, self.refresh_tone = THROTTLED_NOTICE, "warn"
+            return
         yield DashboardState.refresh_scope
 
     @rx.event(background=True)
@@ -387,15 +399,15 @@ class DashboardState(rx.State):
         """The rest of "Actualizar menciones": one bounded run over the scope, then the
         outcome — "done" only when nothing of the scope is pending. Done is a toast (a
         transient confirmation); pending stays on screen as a warning with what to do."""
-        async with self:
-            tenant_id = await self._tenant()
-            scope = self._scope_query()
         report = None
-        if tenant_id is not None:
-            try:
+        try:
+            async with self:
+                tenant_id = await self._tenant()
+                scope = self._scope_query()
+            if tenant_id is not None:
                 report = await refresh_scope(tenant_id, scope=scope)
-            except Exception as exc:  # noqa: BLE001 — reported below as pending
-                logger.warning("mentions scope refresh failed: %s", type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001 — reported below as pending
+            logger.warning("mentions scope refresh failed: %s", type(exc).__name__)
         async with self:
             self.is_refreshing = False
             if report is None:
@@ -413,8 +425,10 @@ class DashboardState(rx.State):
             pending = outcome.tone == "warn"
             self.refresh_notice = outcome.message if pending else ""
             self.refresh_tone = outcome.tone if pending else ""
-            # Same snapshot and page: the stored changes show, no row moves.
-            await self._read(page=self.page, new_snapshot=False)
+            # Same page under a NEW snapshot: the stored changes (likes, text, a date that
+            # moves a row, a sentiment that changes its filter) are what the page now shows,
+            # and the snapshot's total is re-taken so the tick does not report a stale change.
+            await self._read(page=self.page, new_snapshot=True)
         if outcome.tone == "ok":
             yield rx.toast.success(outcome.message)
         elif outcome.tone == "info":

@@ -285,3 +285,53 @@ def test_the_background_run_reports_through_the_pure_outcome_rule() -> None:
     assert "refresh_outcome(" in source
     assert "self.is_refreshing = False" in source
     assert 'pending = outcome.tone == "warn"' in source
+
+
+async def test_a_throttled_visible_pass_stops_the_run_and_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qualify_api.mentions.composition import ContentRefreshReport
+
+    from . import state as state_module
+    from .mentions_paging import THROTTLED_NOTICE
+    from .mentions_provider import MentionCountsVM, MentionPageVM
+
+    async def fake_tenant(self: DashboardState) -> UUID:
+        return UUID("a0000000-0000-4000-8000-000000000001")
+
+    async def throttled(tenant_id: UUID, mention_ids: list[str]) -> ContentRefreshReport:
+        return ContentRefreshReport(
+            in_scope=2, refreshed=0, already_fresh=0, failed=0, not_attempted=2, rate_limited=True
+        )
+
+    def fake_load_page(tenant_id: UUID, **kwargs: object) -> MentionPageVM:
+        return MentionPageVM(
+            rows=[_row("m1"), _row("m2")],
+            summary=MentionCountsVM(total=2),
+            filtered_total=2,
+            page=1,
+            total_pages=1,
+            pages_label="",
+            as_of="2026-10-14T00:00:00+00:00",
+        )
+
+    monkeypatch.setattr(DashboardState, "_tenant", fake_tenant)
+    monkeypatch.setattr(state_module, "refresh_content", throttled)
+    monkeypatch.setattr(state_module, "load_page", fake_load_page)
+    state = DashboardState()
+    state.mentions = [_row("m1"), _row("m2")]
+
+    emitted = [item async for item in DashboardState.refresh_now.fn(state)]
+
+    assert not any("refresh_scope" in str(item) for item in emitted)  # no scope pass
+    assert state.is_refreshing is False
+    assert (state.refresh_notice, state.refresh_tone) == (THROTTLED_NOTICE, "warn")
+
+
+def test_opening_the_screen_unlocks_a_refresh_that_never_finished() -> None:
+    import inspect
+
+    source = inspect.getsource(DashboardState.load_mentions.fn)
+    assert "self.is_refreshing = False" in source
+    background = inspect.getsource(DashboardState.refresh_scope.fn)
+    assert "try:" in background and "self.is_refreshing = False" in background
