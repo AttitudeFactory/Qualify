@@ -365,6 +365,17 @@ def test_order_card_from_thread_context() -> None:
     assert card.confirmed_label == "Confirmado 11:30"
 
 
+def test_order_card_puts_the_address_first() -> None:
+    context = {
+        "_order": {
+            **_CONTEXT["_order"],
+            "collected": {"notas": "Sin cebolla", "zona": "Norte", "direccion": "Calle 1"},
+        }
+    }
+    card = build_order_card(read_order(context), now=NOW, zone=ZONE)
+    assert [f.label for f in card.collected] == ["Dirección", "Notas", "Zona"]
+
+
 def test_order_card_absent_without_an_order() -> None:
     assert not build_order_card(read_order({}), now=NOW, zone=ZONE).present
     assert not build_order_card(None, now=NOW, zone=ZONE).present

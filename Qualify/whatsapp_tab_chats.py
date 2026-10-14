@@ -113,6 +113,18 @@ def _thread_row(row: ThreadRowVM) -> rx.Component:
                     min_width="0",
                 ),
                 rx.text(row.time_label, size="1", color=T.TEXT_MUTED, white_space="nowrap"),
+                rx.cond(
+                    row.has_unread,
+                    rx.badge(
+                        row.unread_label,
+                        variant="soft",
+                        radius="full",
+                        size="1",
+                        class_name="q-nums",
+                        aria_label="Mensajes sin leer",
+                    ),
+                    rx.fragment(),
+                ),
                 width="100%",
                 align="center",
                 spacing="2",
@@ -130,18 +142,6 @@ def _thread_row(row: ThreadRowVM) -> rx.Component:
                 rx.cond(row.is_closed, tag("Cerrado"), rx.fragment()),
                 rx.spacer(),
                 _agent_chip(row.agent_initials, row.agent_name),
-                rx.cond(
-                    row.has_unread,
-                    rx.badge(
-                        row.unread_label,
-                        variant="soft",
-                        radius="full",
-                        size="1",
-                        class_name="q-nums",
-                        aria_label="Mensajes sin leer",
-                    ),
-                    rx.fragment(),
-                ),
                 width="100%",
                 align="center",
                 spacing="1",
@@ -290,23 +290,27 @@ def _conversation_header() -> rx.Component:
     return rx.vstack(
         rx.hstack(
             _back_button(),
+            # Name, then number + state pills on one wrapping line: at 375 px the pills
+            # drop below the name instead of overlapping it.
             rx.vstack(
-                rx.heading(thread.title, size="4", as_="h2", class_name="q-wa-ellipsis"),
-                rx.cond(thread.subtitle != "", mono(thread.subtitle, size="1"), rx.fragment()),
-                spacing="0",
+                rx.heading(
+                    thread.title, size="4", as_="h2", class_name="q-wa-ellipsis", width="100%"
+                ),
+                rx.hstack(
+                    rx.cond(thread.subtitle != "", mono(thread.subtitle, size="1"), rx.fragment()),
+                    _tone_pill(thread.window_label, thread.window_tone),
+                    _tone_pill(thread.mode_label, thread.mode_tone),
+                    rx.cond(thread.is_closed, tag("Cerrado"), rx.fragment()),
+                    spacing="2",
+                    flex_wrap="wrap",
+                    align="center",
+                ),
+                spacing="1",
                 min_width="0",
                 flex="1",
             ),
-            rx.hstack(
-                _tone_pill(thread.window_label, thread.window_tone),
-                _tone_pill(thread.mode_label, thread.mode_tone),
-                rx.cond(thread.is_closed, tag("Cerrado"), rx.fragment()),
-                spacing="1",
-                flex_wrap="wrap",
-                justify="end",
-            ),
             width="100%",
-            align="center",
+            align="start",
             spacing="3",
         ),
         rx.hstack(

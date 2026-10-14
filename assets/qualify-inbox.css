@@ -64,7 +64,7 @@
 .q-wa-scroll--messages {
   display: flex;
   flex-direction: column-reverse;
-  max-height: 55vh;
+  max-height: 45vh;
   min-height: 12rem;
   padding: 0.25rem;
 }

@@ -94,6 +94,7 @@ _COLLECTED_LABELS: dict[str, str] = {
     "pago": "Pago",
     "metodo_pago": "Método de pago",
 }
+_FIELD_ORDER = ("Dirección", "Barrio", "Ciudad", "Nombre", "Teléfono", "Pago", "Método de pago")
 
 
 # ======================================================================================
@@ -581,11 +582,17 @@ def build_order_card(order: Any | None, *, now: datetime, zone: tzinfo) -> Order
             )
         )
     count = order.item_count
-    collected = [
+    fields = [
         OrderFieldVM(label=collected_label(str(k)), value=str(v))
         for k, v in order.collected.items()
         if v not in (None, "") and not str(k).startswith("_")
     ]
+    # jsonb does not keep insertion order: the address (what the courier needs) first,
+    # then the known fields in `_FIELD_ORDER`, then anything else as it came.
+    collected = sorted(
+        fields,
+        key=lambda f: _FIELD_ORDER.index(f.label) if f.label in _FIELD_ORDER else len(_FIELD_ORDER),
+    )
     confirmed = ""
     if order.confirmed_at is not None:
         confirmed = f"Confirmado {message_time(order.confirmed_at, now, zone)}"
