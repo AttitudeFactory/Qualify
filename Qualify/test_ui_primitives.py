@@ -38,6 +38,8 @@ def test_choice_card_is_a_button_with_its_state_in_aria() -> None:
 
     off = _render(choice_card(rx.text("B"), selected=False, disabled=True))
     assert "q-choice-card q-choice-card--off" in off and '"aria-disabled":"true"' in off
+    assert "disabled:true" in off  # a real disabled button: no click, no Enter/Space
+    assert "disabled:true" not in on
 
     multi = _render(choice_card(rx.text("C"), selected=False, role="checkbox"))
     assert 'role:"checkbox"' in multi

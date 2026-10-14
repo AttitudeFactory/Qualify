@@ -611,8 +611,10 @@ def choice_card(
     on the card material, a 2px accent ring plus wash when ``selected``, the kit's lift
     under the pointer. ``role="radio"`` for one-of-many (the usual), ``"checkbox"`` for
     any-of-many; either way the state is also in ``aria-checked``, so a screen reader
-    hears it. ``disabled`` draws it dashed and quiet and keeps it out of the way; a
-    reason belongs in the children, next to the title. Put the check mark the kit draws
+    hears it. ``disabled`` draws it dashed and quiet and really disables the button
+    (native ``disabled``: no click, no Enter/Space, nothing for ``on_select`` to hear),
+    with ``aria-disabled`` alongside for readers; a reason belongs in the children,
+    next to the title. Put the check mark the kit draws
     in the corner with ``choice_card_check()`` when the ring alone would be too quiet."""
     is_disabled = disabled
     on = rx.cond(selected, "q-choice-card q-choice-card--on", "q-choice-card")
@@ -632,6 +634,7 @@ def choice_card(
         role=role,
         aria_checked=rx.cond(selected, "true", "false"),
         aria_disabled=aria_disabled,
+        disabled=is_disabled,
         on_click=on_select,
         class_name=class_name,
         padding=padding,
