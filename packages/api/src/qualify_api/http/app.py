@@ -140,14 +140,6 @@ def build_production_whatsapp_settings() -> whatsapp_routes.WhatsAppWebhookSetti
     return whatsapp_routes.WhatsAppWebhookSettings.from_env()
 
 
-def build_production_whatsapp_sink() -> whatsapp_routes.WhatsAppEventSink:
-    """WA-03: log identifier-only summaries. WA-07 swaps this for the persisting sink
-    behind the same callable type; the route does not change."""
-    from qualify_api.whatsapp.sink import log_only_sink  # noqa: PLC0415
-
-    return log_only_sink
-
-
 def build_production_leads_service() -> LeadIntakeService:
     """Lazy import like the publishing builders: the leads module needs Redis only at
     the first intake, and an app booted without one should fail THAT request loudly."""
@@ -271,7 +263,11 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
         app.dependency_overrides[whatsapp_routes.get_webhook_settings] = (
             build_production_whatsapp_settings
         )
-        app.dependency_overrides[whatsapp_routes.get_event_sink] = build_production_whatsapp_sink
+        # The WhatsApp webhook records into the SAME intake log as the mentions one
+        # (QUA-147): one recorder, one queue, one worker for every Meta product.
+        app.dependency_overrides[whatsapp_routes.get_delivery_recorder] = (
+            build_production_delivery_recorder
+        )
         # C1: parsed at assembly so a malformed QUALIFY_DEV_PRINCIPALS fails the boot,
         # not the first request.
         app.dependency_overrides[deps.current_principal] = deps.build_dev_principal_dependency()
