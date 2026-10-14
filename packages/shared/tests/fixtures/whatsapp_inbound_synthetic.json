@@ -1,0 +1,65 @@
+{
+  "_fixture_note": "SYNTHETIC, built from the official `messages` webhook reference (text message + interactive list reply). NOT observed live yet — the test number cannot receive a user message until a recipient writes to it. Replace with a live capture (phones redacted) the first time one arrives, and flip FIELD_POLICIES['messages'] in wa_shapes.py.",
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "2338576026889338",
+      "changes": [
+        {
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "15556336018",
+              "phone_number_id": "1393787420477981"
+            },
+            "contacts": [
+              {
+                "profile": { "name": "Cliente de prueba" },
+                "wa_id": "584240000000"
+              }
+            ],
+            "messages": [
+              {
+                "from": "584240000000",
+                "id": "wamid.SYNTHETIC_TEXT_0001",
+                "timestamp": "1791953700",
+                "type": "text",
+                "text": { "body": "Hola, quiero hacer un pedido" }
+              },
+              {
+                "from": "584240000000",
+                "id": "wamid.SYNTHETIC_LIST_0002",
+                "timestamp": "1791953760",
+                "type": "interactive",
+                "interactive": {
+                  "type": "list_reply",
+                  "list_reply": {
+                    "id": "menu.pedido",
+                    "title": "Hacer un pedido",
+                    "description": "Ver el menú y pedir"
+                  }
+                }
+              },
+              {
+                "from": "584240000000",
+                "id": "wamid.SYNTHETIC_IMAGE_0003",
+                "timestamp": "1791953790",
+                "type": "image",
+                "image": { "id": "1234567890", "mime_type": "image/jpeg", "sha256": "abc" }
+              }
+            ]
+          },
+          "field": "messages"
+        },
+        {
+          "field": "phone_number_quality_update",
+          "value": {
+            "display_phone_number": "15556336018",
+            "event": "ONBOARDING",
+            "current_limit": "TIER_250"
+          }
+        }
+      ]
+    }
+  ]
+}
