@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from qualify_api.mentions.resolve import ResolutionOutcome, TenantResolution
-from qualify_api.webhooks.processor import Outcome, Processor, mentions_handler
+from qualify_api.webhooks.processor import Outcome, Processor, handler_key, mentions_handler
 from qualify_api.webhooks.repository import (
     MAX_ATTEMPTS,
     ClaimedEvent,
@@ -49,11 +49,18 @@ class FakeQueue:
         return "dead" if attempts >= MAX_ATTEMPTS else "failed"
 
 
-def _event(field: str = "mentions", *, entry: str = "111", value=None, attempts: int = 1):
+def _event(
+    field: str = "mentions",
+    *,
+    entry: str = "111",
+    value=None,
+    attempts: int = 1,
+    object_: str = "instagram",
+):
     return ClaimedEvent(
         id=uuid4(),
         delivery_id=uuid4(),
-        object="instagram",
+        object=object_,
         entry_id=entry,
         field=field,
         value={"media_id": "aaa"} if value is None else value,
@@ -312,3 +319,76 @@ def test_backoff_schedule() -> None:
 
 def test_an_outcome_is_a_value_object() -> None:
     assert Outcome("processed") == Outcome("processed", None)
+
+
+# --- dispatch by (object, field), falling back to the bare field (WA-07) -----------------
+
+
+class Recorder:
+    def __init__(self, status: str = "processed") -> None:
+        self.events: list[ClaimedEvent] = []
+        self._status = status
+
+    async def __call__(self, event: ClaimedEvent) -> Outcome:
+        self.events.append(event)
+        return Outcome(self._status)
+
+
+async def test_a_qualified_key_wins_over_the_bare_field_for_its_object() -> None:
+    qualified, bare = Recorder(), Recorder()
+    wa = _event("messages", object_="whatsapp_business_account", value={})
+    ig = _event("messages", object_="instagram", value={})
+    queue = FakeQueue([wa, ig])
+    processor = Processor(
+        queue=queue,
+        handlers={
+            handler_key("whatsapp_business_account", "messages"): qualified,
+            "messages": bare,
+        },
+        worker_id="w1",
+        clock=lambda: NOW,
+    )
+
+    report = await processor.run_once()
+
+    assert [e.id for e in qualified.events] == [wa.id]
+    assert [e.id for e in bare.events] == [ig.id]
+    assert report.outcomes == {"processed": 2}
+
+
+async def test_a_qualified_key_never_catches_the_same_field_of_another_object() -> None:
+    qualified = Recorder()
+    ig = _event("messages", object_="instagram", value={})
+    queue = FakeQueue([ig])
+    processor = Processor(
+        queue=queue,
+        handlers={handler_key("whatsapp_business_account", "messages"): qualified},
+        worker_id="w1",
+        clock=lambda: NOW,
+    )
+
+    report = await processor.run_once()
+
+    assert qualified.events == []
+    assert queue.settled[ig.id] == ("unsupported", None)
+    assert report.outcomes == {"unsupported": 1}
+
+
+async def test_the_bare_field_key_still_serves_every_object() -> None:
+    bare = Recorder()
+    ig = _event("mentions", object_="instagram")
+    other = _event("mentions", object_="page")
+    queue = FakeQueue([ig, other])
+    processor = Processor(
+        queue=queue, handlers={"mentions": bare}, worker_id="w1", clock=lambda: NOW
+    )
+
+    await processor.run_once()
+
+    assert {e.id for e in bare.events} == {ig.id, other.id}
+
+
+def test_handler_key_is_object_colon_field() -> None:
+    assert handler_key("whatsapp_business_account", "messages") == (
+        "whatsapp_business_account:messages"
+    )
