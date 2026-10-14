@@ -50,6 +50,16 @@ from qualify_api.whatsapp.models import (
     WhatsAppPhoneNumber,
     WhatsAppThreadState,
 )
+
+# WA-08: the outbound side — the queue seam producers call (`OutboxRepository.enqueue`),
+# the sender `whatsapp/worker.py` runs, and the 24 h window policy everyone decides by.
+from qualify_api.whatsapp.outbox import (
+    MemoryOutboxRepository,
+    OutboxRepository,
+    OutboxSender,
+    PostgresOutboxRepository,
+    SendReport,
+)
 from qualify_api.whatsapp.phone_numbers import (
     PhoneNumberUpsert,
     PostgresWhatsAppPhoneNumberRepository,
@@ -67,8 +77,23 @@ from qualify_api.whatsapp.resolve import (
     PhoneResolutionOutcome,
     resolve_phone_number,
 )
+from qualify_api.whatsapp.window import (
+    WindowState,
+    WindowStatus,
+    is_free_form_allowed,
+    window_state,
+)
 
 __all__ = [
+    "MemoryOutboxRepository",
+    "OutboxRepository",
+    "OutboxSender",
+    "PostgresOutboxRepository",
+    "SendReport",
+    "WindowState",
+    "WindowStatus",
+    "is_free_form_allowed",
+    "window_state",
     "BusinessProfile",
     "BusinessProfileUpdate",
     "ButtonSpec",
