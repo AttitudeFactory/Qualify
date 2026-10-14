@@ -457,11 +457,13 @@ def body_variables(body: str) -> list[str]:
 
 
 def suggest_name(text: str) -> str:
-    """«Promo Octubre!» → «promo_octubre»: what the name field becomes as it is typed."""
+    """«Promo Octubre» → «promo_octubre»: what the name field becomes as it is typed. Only a
+    LEADING «_» is dropped: a trailing one is the space just typed, and stripping it would
+    glue the next word on («promo» + «n» → «promon»)."""
     folded = text.lower().replace("ñ", "n")
     for accented, plain in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u")):
         folded = folded.replace(accented, plain)
-    return re.sub(r"[^a-z0-9_]+", "_", folded).strip("_")[:MAX_NAME_CHARS]
+    return re.sub(r"[^a-z0-9_]+", "_", folded).lstrip("_")[:MAX_NAME_CHARS]
 
 
 def _quick_replies(form: TemplateForm) -> list[str]:

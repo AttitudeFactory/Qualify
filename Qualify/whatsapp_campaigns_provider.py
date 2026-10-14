@@ -37,7 +37,7 @@ from sqlalchemy import select
 from .whatsapp_campaigns_vm import (
     ERROR_PAYMENT,
     FINAL,
-    LAUNCHABLE,
+    NOT_LAUNCHED,
     CampaignDetailVM,
     CampaignRowVM,
     EstimateVM,
@@ -45,6 +45,7 @@ from .whatsapp_campaigns_vm import (
     build_campaign_row,
     build_estimate_vm,
     build_send_vm,
+    rate_label,
     retry_after_label,
 )
 from .whatsapp_templates_provider import template_vm
@@ -245,15 +246,16 @@ def campaign_detail(
         )
         for s in records[:MAX_SENDS_LISTED]
     ]
-    not_launched = record.status in {"draft", "scheduled"}
+    not_launched = record.status in NOT_LAUNCHED
     return CampaignDetail(
         detail=CampaignDetailVM(
             row=row,
-            can_launch=record.status in LAUNCHABLE,
+            # A running campaign resumes on its own; «Lanzar» is for one not launched yet.
+            can_launch=record.status in NOT_LAUNCHED,
             can_cancel=record.status not in FINAL,
             retry_after_24h=retry_after_label(summary.retry_after_24h),
             payment_failed=any(s.error_code == ERROR_PAYMENT for s in records),
-            max_per_minute=str(record.max_per_minute),
+            rate_label=rate_label(record.max_per_minute),
         ),
         sends=sends,
         estimate=estimate(tenant_id, campaign_id, service=svc) if not_launched else None,

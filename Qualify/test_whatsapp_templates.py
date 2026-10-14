@@ -212,7 +212,9 @@ def test_preview_and_examples() -> None:
     assert body_variables(form.body) == ["nombre", "pedido"]
     assert preview_body(form.body, form.examples) == "Hola Ana, tu pedido [pedido] ya salió."
     assert [f.placeholder for f in example_fields(form)] == ["{{nombre}}", "{{pedido}}"]
-    assert suggest_name("Promo Octubre!") == "promo_octubre"
+    assert suggest_name("Promo Octubre") == "promo_octubre"
+    assert suggest_name("_Promo ") == "promo_"  # the space just typed survives
+    assert suggest_name("Pastelería Ñ") == "pasteleria_n"
 
 
 # --- 4. reading components for a send -------------------------------------------------

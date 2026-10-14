@@ -452,7 +452,7 @@ def _step_review() -> rx.Component:
                 kv("Campaña", S.w_name),
                 kv("Plantilla", t.option_label),
                 kv("Destinatarios", S.audience_label),
-                kv("Ritmo", S.w_rate + " mensajes por minuto"),
+                kv("Ritmo", S.rate_text),
                 spacing="2",
                 width="100%",
             ),
@@ -574,7 +574,7 @@ def _send_row(s: SendVM) -> rx.Component:
                 align_items="start",
             )
         ),
-        rx.table.cell(rx.text(s.cost_label, size="1", **_NUM)),
+        rx.table.cell(rx.text(s.cost_label, size="1", white_space="nowrap", **_NUM)),
         align="center",
     )
 
@@ -608,7 +608,7 @@ def _detail_body() -> rx.Component:
             width="100%",
         ),
         kv("Costo estimado", row.cost_label),
-        kv("Ritmo", d.max_per_minute + " mensajes por minuto"),
+        kv("Ritmo", d.rate_label),
         rx.cond(
             S.detail_has_estimate,
             rx.vstack(
@@ -668,6 +668,7 @@ def _detail_footer() -> rx.Component:
                 description="Los envíos que aún no salieron se retiran; los que ya salieron "
                 "no se pueden deshacer. Una campaña cancelada no se puede reanudar.",
                 verb="Cancelar campaña",
+                dismiss="Volver",
                 on_confirm=S.cancel_campaign,
             ),
             rx.fragment(),
@@ -676,7 +677,7 @@ def _detail_footer() -> rx.Component:
             d.can_launch,
             rx.button(
                 rx.icon("send", size=16),
-                rx.cond(d.row.status == "running", "Reanudar envíos", "Lanzar"),
+                "Lanzar",
                 on_click=S.launch_campaign(S.detail_id),
                 loading=S.launching,
                 size="2",

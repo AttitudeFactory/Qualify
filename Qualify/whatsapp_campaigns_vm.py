@@ -46,7 +46,8 @@ PAYMENT_NOTICE = (
 )
 PAYMENT_FAILED = (
     "Meta rechazó envíos porque la cuenta de WhatsApp Business no tiene un método de pago "
-    "válido (código 131042). Agrégalo en WhatsApp Manager y vuelve a lanzar la campaña."
+    "válido (código 131042). Agrégalo en WhatsApp Manager; los envíos que fallaron no se "
+    "reintentan solos, así que crea una campaña nueva para esos contactos."
 )
 SENDER_NOTICE = (
     "Los envíos salen en segundo plano al ritmo elegido; actualiza para ver cómo avanzan."
@@ -65,6 +66,7 @@ _CAMPAIGN_STATUS: dict[str, tuple[str, str]] = {
     "cancelled": ("Cancelada", "neutral"),
 }
 LAUNCHABLE = frozenset({"draft", "scheduled", "running"})
+NOT_LAUNCHED = frozenset({"draft", "scheduled"})
 FINAL = frozenset({"done", "cancelled"})
 
 _SEND_STATUS: dict[str, tuple[str, str]] = {
@@ -291,7 +293,7 @@ class CampaignDetailVM:
     can_cancel: bool
     retry_after_24h: str  # «4 envíos omitidos por el límite de marketing… », "" when 0
     payment_failed: bool  # any send failed with 131042
-    max_per_minute: str
+    rate_label: str  # «30 mensajes por minuto»
 
 
 # --------------------------------------------------------------------------------------
@@ -399,6 +401,10 @@ def validate_pacing(raw: str) -> tuple[int, str]:
     return value, ""
 
 
+def rate_label(per_minute: int) -> str:
+    return f"{format_count(per_minute)} mensaje{'s' if per_minute != 1 else ''} por minuto"
+
+
 def pacing_hint(recipients: int, per_minute: int) -> str:
     if recipients <= 0 or per_minute <= 0:
         return ""
@@ -489,5 +495,5 @@ EMPTY_DETAIL = CampaignDetailVM(
     can_cancel=False,
     retry_after_24h="",
     payment_failed=False,
-    max_per_minute="",
+    rate_label="",
 )

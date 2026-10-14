@@ -73,6 +73,7 @@ from .whatsapp_campaigns_vm import (
     audience_filter_json,
     launch_message,
     pacing_hint,
+    rate_label,
     validate_basics,
     validate_pacing,
     validate_variables,
@@ -255,6 +256,11 @@ class WhatsAppCampaignsState(rx.State):
     @rx.var
     def audience_label(self) -> str:
         return audience_count_label(self.audience_count)
+
+    @rx.var
+    def rate_text(self) -> str:
+        rate, problem = validate_pacing(self.w_rate)
+        return "" if problem else rate_label(rate)
 
     @rx.var
     def pacing_label(self) -> str:

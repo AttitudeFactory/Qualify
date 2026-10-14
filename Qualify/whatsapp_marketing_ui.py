@@ -94,6 +94,7 @@ def confirm_action(
     verb: str,
     on_confirm: Any,
     tone: str = "error",
+    dismiss: str = "Cancelar",
 ) -> rx.Component:
     """Destructive or irreversible action: alert dialog with the same verb on the title,
     the button and the toast (docs/design-system.md §6.2)."""
@@ -104,7 +105,7 @@ def confirm_action(
             rx.alert_dialog.description(description, size="2"),
             rx.flex(
                 rx.alert_dialog.cancel(
-                    rx.button("Cancelar", variant="soft", **T.tone_scheme("neutral")),
+                    rx.button(dismiss, variant="soft", **T.tone_scheme("neutral")),
                 ),
                 rx.alert_dialog.action(
                     rx.button(verb, on_click=on_confirm, **T.tone_scheme(tone)),
