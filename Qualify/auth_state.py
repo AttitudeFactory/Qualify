@@ -396,6 +396,7 @@ class AuthState(rx.State):
             from .trending_state import TrendingState
             from .voice_lab import VoiceLabState
             from .whatsapp_chats_state import WhatsAppChatsState
+            from .whatsapp_menu_state import WhatsAppMenuState
             from .whatsapp_state import WhatsAppState
 
             for state_cls in (
@@ -440,6 +441,8 @@ class AuthState(rx.State):
                 # WA-11: the number's conversations, the open thread, the composer draft
                 # and the acting user's id (a backend var — `reset` clears those too)
                 WhatsAppChatsState,
+                # WA-16: the number's menus, the open editor draft and the preview chat
+                WhatsAppMenuState,
             ):
                 substate = await self.get_state(state_cls)
                 substate.reset()
