@@ -160,6 +160,8 @@ def test_admin_is_denied_the_rest(engines, sql: str) -> None:
     "sql",
     [
         "SELECT id, tenant_id, connection_id, phone_number_id FROM whatsapp_phone_numbers LIMIT 1",
+        # 0059 (WA-18): template webhooks resolve the tenant by WABA id.
+        "SELECT tenant_id, waba_id FROM whatsapp_phone_numbers LIMIT 1",
         "SELECT * FROM whatsapp_thread_state LIMIT 1",
         _INSERT_STATE,
         "UPDATE whatsapp_thread_state SET context = context, node_id = node_id, "
@@ -183,7 +185,6 @@ def test_worker_has_exactly_what_it_needs(engines, sql: str) -> None:
     "sql",
     [
         "SELECT * FROM whatsapp_phone_numbers LIMIT 1",
-        "SELECT waba_id FROM whatsapp_phone_numbers LIMIT 1",
         "SELECT automation FROM whatsapp_phone_numbers LIMIT 1",
         _INSERT_PHONE,
         "UPDATE whatsapp_phone_numbers SET last_synced_at = last_synced_at WHERE false",
@@ -253,7 +254,14 @@ def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
         ("qualify_app", "whatsapp_outbox", "UPDATE"),
         ("qualify_webhook_worker", "whatsapp_outbox", "INSERT"),
     }
-    assert worker_phone_columns == {"id", "tenant_id", "connection_id", "phone_number_id"}
+    # `waba_id` since 0059 (WA-18): the template webhooks carry the WABA, not a number.
+    assert worker_phone_columns == {
+        "id",
+        "tenant_id",
+        "connection_id",
+        "phone_number_id",
+        "waba_id",
+    }
 
 
 def test_new_tables_have_rls_enabled_forced_and_one_policy(engines) -> None:
