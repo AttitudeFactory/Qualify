@@ -14,6 +14,7 @@ from decimal import Decimal
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
+import pytest
 from qualify_api.whatsapp.chats import MessageRecord, ThreadSummary, WindowView
 from qualify_api.whatsapp.menus.engine import format_money as engine_format_money
 from qualify_api.whatsapp.orders import read_order
@@ -22,9 +23,18 @@ from .whatsapp_chats_vm import (
     FILTER_CLOSED,
     FILTER_OPEN,
     FILTER_UNREAD,
+    MEDIA_AUDIO,
+    MEDIA_DOCUMENT,
+    MEDIA_EXPIRED,
+    MEDIA_IMAGE,
     MEDIA_NOT_CAPTURED,
+    MEDIA_NOT_CAPTURED_CODE,
+    MEDIA_UNAVAILABLE,
+    MEDIA_URL_TTL,
+    MEDIA_VIDEO,
     NO_MESSAGES_YET,
     AgentVM,
+    MediaResolution,
     MessageVM,
     OrderCardVM,
     OrderFieldVM,
@@ -46,6 +56,7 @@ from .whatsapp_chats_vm import (
     message_time,
     outbox_text,
     relative_time,
+    resolution_after,
     validate_buttons,
     validate_compose,
     validate_image,
@@ -265,15 +276,137 @@ def test_failed_tick_carries_the_meta_code() -> None:
     assert "131026" in vm.error_label
 
 
-def test_inbound_has_no_tick_and_media_is_a_placeholder() -> None:
-    vm = build_message_vm(_message(text=None), now=NOW, zone=ZONE)
+def test_inbound_has_no_tick_and_uncaptured_media_is_a_placeholder() -> None:
+    """A text-less inbound message without `has_media` (stored before 0061) keeps the
+    neutral chip; outbound media is worded by the body's type."""
+    vm = build_message_vm(_message(text=None, media_kind="image"), now=NOW, zone=ZONE)
     assert vm.tick == ""
     assert vm.is_media_placeholder
     assert vm.text == MEDIA_NOT_CAPTURED
+    assert vm.media_control == ""
     out = build_message_vm(
         _message(direction="outbound", text=None, media_kind="image"), now=NOW, zone=ZONE
     )
-    assert (out.text, out.is_media_placeholder) == ("[imagen]", False)
+    assert (out.text, out.is_media_placeholder, out.media_control) == ("[imagen]", False, "")
+
+
+def test_non_file_kinds_are_worded_by_kind() -> None:
+    vm = build_message_vm(_message(text=None, media_kind="location"), now=NOW, zone=ZONE)
+    assert (vm.text, vm.is_media_placeholder) == ("[ubicación]", True)
+
+
+# --- inbound media (0061) -----------------------------------------------------------
+
+
+def _media(kind: str, mime: str | None = None, **overrides: object) -> MessageRecord:
+    values: dict[str, object] = {"text": None, "has_media": True, "media_mime": mime}
+    values.update(overrides)
+    return _message(media_kind=kind, **values)
+
+
+@pytest.mark.parametrize(
+    ("kind", "mime", "control", "action"),
+    [
+        ("image", "image/jpeg", MEDIA_IMAGE, "Ver imagen"),
+        ("sticker", "image/webp", MEDIA_IMAGE, "Ver imagen"),
+        ("audio", "audio/ogg; codecs=opus", MEDIA_AUDIO, "Escuchar audio"),
+        ("video", "video/mp4", MEDIA_VIDEO, "Ver video"),
+        ("document", "application/pdf", MEDIA_DOCUMENT, "Descargar PDF"),
+        (
+            "document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            MEDIA_DOCUMENT,
+            "Descargar Excel",
+        ),
+        ("document", "application/x-unknown", MEDIA_DOCUMENT, "Descargar archivo"),
+        ("document", None, MEDIA_DOCUMENT, "Descargar archivo"),
+    ],
+)
+def test_media_controls_by_kind_before_any_request(
+    kind: str, mime: str | None, control: str, action: str
+) -> None:
+    vm = build_message_vm(_media(kind, mime), now=NOW, zone=ZONE)
+    assert (vm.media_control, vm.media_action) == (control, action)
+    assert vm.media_can_request and not vm.media_loading
+    assert vm.media_src == "" and vm.media_notice == ""
+    assert not vm.is_media_placeholder and vm.text == ""
+
+
+def test_a_caption_stays_under_the_media_control() -> None:
+    vm = build_message_vm(_media("image", "image/jpeg", text="Mi pedido"), now=NOW, zone=ZONE)
+    assert (vm.media_control, vm.text, vm.is_media_placeholder) == (MEDIA_IMAGE, "Mi pedido", False)
+
+
+def test_loading_marks_only_that_message() -> None:
+    record = _media("image", "image/jpeg")
+    vm = build_message_vm(record, now=NOW, zone=ZONE, loading=[str(record.id)])
+    other = build_message_vm(_media("image"), now=NOW, zone=ZONE, loading=[str(record.id)])
+    assert vm.media_loading and not other.media_loading
+
+
+def test_a_fresh_url_is_shown_and_an_expired_one_is_asked_again() -> None:
+    record = _media("audio", "audio/ogg")
+    key = str(record.id)
+    fresh = {key: resolution_after("https://app.example/public/media/t1", NOW)}
+    vm = build_message_vm(record, now=NOW, zone=ZONE, media=fresh)
+    assert vm.media_src == "https://app.example/public/media/t1"
+    assert not vm.media_can_request
+    later = NOW + MEDIA_URL_TTL + timedelta(seconds=1)
+    stale = build_message_vm(record, now=later, zone=ZONE, media=fresh)
+    assert stale.media_src == "" and stale.media_can_request
+    # The token lives 15 min; the cache must give it up before that.
+    assert timedelta(minutes=15) > MEDIA_URL_TTL
+
+
+def test_media_expired_is_neutral_and_final() -> None:
+    record = _media("image", "image/jpeg")
+    outcome = {str(record.id): MediaResolution(error=MEDIA_EXPIRED)}
+    vm = build_message_vm(record, now=NOW, zone=ZONE, media=outcome)
+    assert (vm.media_notice, vm.media_notice_tone) == (
+        "El archivo ya no está disponible en WhatsApp",
+        "neutral",
+    )
+    assert not vm.media_can_request
+
+
+def test_media_unavailable_is_warn_with_a_retry() -> None:
+    record = _media("video", "video/mp4")
+    outcome = {str(record.id): MediaResolution(error=MEDIA_UNAVAILABLE)}
+    vm = build_message_vm(record, now=NOW, zone=ZONE, media=outcome)
+    assert (vm.media_notice, vm.media_notice_tone) == (
+        "No se pudo traer el archivo; reintentar",
+        "warn",
+    )
+    assert vm.media_can_request and vm.media_action == "Reintentar"
+
+
+def test_media_not_captured_falls_back_to_the_chip() -> None:
+    record = _media("image", "image/jpeg")
+    outcome = {str(record.id): MediaResolution(error=MEDIA_NOT_CAPTURED_CODE)}
+    vm = build_message_vm(record, now=NOW, zone=ZONE, media=outcome)
+    assert vm.media_control == "" and vm.is_media_placeholder
+    assert vm.text == MEDIA_NOT_CAPTURED
+
+
+def test_outbound_never_gets_a_media_control() -> None:
+    vm = build_message_vm(
+        _message(direction="outbound", text=None, media_kind="image", has_media=True),
+        now=NOW,
+        zone=ZONE,
+    )
+    assert vm.media_control == "" and vm.text == "[imagen]"
+
+
+def test_the_conversation_threads_media_state_through() -> None:
+    record = _media("image", "image/jpeg")
+    [vm] = build_conversation(
+        [record],
+        [],
+        now=NOW,
+        zone=ZONE,
+        media={str(record.id): MediaResolution(error=MEDIA_UNAVAILABLE)},
+    )
+    assert vm.media_notice_tone == "warn"
 
 
 def test_message_time_today_yesterday_and_older() -> None:
@@ -470,5 +603,19 @@ def test_the_tab_renders_list_conversation_and_composer() -> None:
         "Botones",
         "Imagen por enlace",
         "Aún no hay conversaciones en este número",
+        "Imagen recibida",
+        "Abrir original",
+        "Abrir video",
     ):
         assert present(text), text
+
+
+def test_the_tab_wires_media_through_the_state() -> None:
+    """The media button, the thumbnail and the lightbox all go through state events —
+    the lightbox URL is the state's, never one the browser passes in."""
+    from .whatsapp_tab_chats import chats_tab
+
+    rendered = str(chats_tab().render())
+    for handler in ("request_media", "open_lightbox", "set_lightbox_open", "lightbox_url"):
+        assert handler in rendered, handler
+    assert "<audio" in rendered or '"audio"' in rendered

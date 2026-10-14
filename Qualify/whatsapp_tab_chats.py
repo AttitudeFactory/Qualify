@@ -12,9 +12,11 @@ conversation right; under 768 px one pane at a time with a back button (`.q-wa-c
 (sending) is the button's own `loading`.
 
 Data: `WhatsAppChatsState` over `whatsapp_chats_provider.ChatsGateway` (in process,
-`tenant_session`), VMs from `whatsapp_chats_vm.py`. Inbound media is not captured yet
-(the backend media route answers 501), so it renders as a neutral chip and nothing here
-calls that route.
+`tenant_session`), VMs from `whatsapp_chats_vm.py`. Inbound media (0061) renders as a
+control inside the bubble and is fetched only on click (`request_media`): an image shows
+a thumbnail and opens in the lightbox, an audio gets a player, a video / document opens
+in a new tab. Failures read by tone (`neutral` gone, `warn` retry); a message whose
+bytes were never captured keeps the neutral chip.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from .ui import (
     card,
     chat_bubble,
     empty_state,
+    media_thumb,
     mono,
     signal_pill,
     skeleton_rows,
@@ -42,6 +45,9 @@ from .whatsapp_chats_vm import (
     FILTER_OPEN,
     FILTER_UNREAD,
     MAX_BUTTON_TITLE_CHARS,
+    MEDIA_AUDIO,
+    MEDIA_IMAGE,
+    MEDIA_VIDEO,
     AgentVM,
     MessageVM,
     OrderFieldVM,
@@ -461,8 +467,112 @@ def _bubble_meta(m: MessageVM) -> rx.Component:
     )
 
 
-def _bubble_body(m: MessageVM) -> rx.Component:
+def _media_icon(m: MessageVM) -> rx.Component:
     return rx.cond(
+        m.media_notice_tone == "warn",
+        rx.icon("refresh-cw", size=T.ICON_SM),
+        rx.match(
+            m.media_control,
+            (MEDIA_IMAGE, rx.icon("image", size=T.ICON_SM)),
+            (MEDIA_AUDIO, rx.icon("play", size=T.ICON_SM)),
+            (MEDIA_VIDEO, rx.icon("video", size=T.ICON_SM)),
+            rx.icon("download", size=T.ICON_SM),
+        ),
+    )
+
+
+def _media_link(m: MessageVM, label: rx.Var[str] | str, icon: str) -> rx.Component:
+    """A video / document already resolved: a plain link, so a second open needs no
+    round trip (and no popup blocker sits between the click and the tab)."""
+    return rx.link(
+        rx.hstack(
+            rx.icon(icon, size=T.ICON_SM),
+            rx.text(label, size="2"),
+            spacing="2",
+            align="center",
+        ),
+        href=m.media_src,
+        is_external=True,
+        rel="noopener noreferrer",
+    )
+
+
+def _media_view(m: MessageVM) -> rx.Component:
+    """What a fresh URL renders as, by control."""
+    return rx.match(
+        m.media_control,
+        (
+            MEDIA_IMAGE,
+            rx.box(
+                media_thumb(
+                    m.media_src,
+                    width="min(15rem, 60vw)",
+                    height="11rem",
+                    alt="Imagen recibida por WhatsApp",
+                    custom_attrs={"referrerpolicy": "no-referrer"},
+                ),
+                on_click=S.open_lightbox(m.message_id),
+                role="button",
+                tab_index=0,
+                aria_label="Ampliar imagen",
+                cursor="zoom-in",
+            ),
+        ),
+        (
+            MEDIA_AUDIO,
+            rx.el.audio(
+                src=m.media_src,
+                controls=True,
+                preload="metadata",
+                aria_label="Audio recibido por WhatsApp",
+                # The bubble caps its own width; the player must shrink inside it.
+                style={"width": "17rem", "max_width": "100%", "display": "block"},
+            ),
+        ),
+        (MEDIA_VIDEO, _media_link(m, "Abrir video", "external-link")),
+        _media_link(m, m.media_action, "download"),
+    )
+
+
+def _media_notice(m: MessageVM) -> rx.Component:
+    color = rx.cond(m.media_notice_tone == "warn", T.tone_color("warn", 11), T.TEXT_MUTED)
+    return rx.hstack(
+        rx.cond(
+            m.media_notice_tone == "warn",
+            rx.icon("triangle-alert", size=T.ICON_SM, color=T.tone_color("warn", 11)),
+            rx.icon("circle-slash", size=T.ICON_SM, color=T.TEXT_MUTED),
+        ),
+        rx.text(m.media_notice, size="1", color=color),
+        spacing="2",
+        align="center",
+    )
+
+
+def _media_block(m: MessageVM) -> rx.Component:
+    """Inbound media: the button until clicked, then the view (or the failure)."""
+    return rx.vstack(
+        rx.cond(m.media_src != "", _media_view(m), rx.fragment()),
+        rx.cond(m.media_notice != "", _media_notice(m), rx.fragment()),
+        rx.cond(
+            m.media_can_request,
+            rx.button(
+                _media_icon(m),
+                m.media_action,
+                on_click=S.request_media(m.message_id),
+                loading=m.media_loading,
+                variant="soft",
+                size="1",
+                **T.tone_scheme("neutral"),
+            ),
+            rx.fragment(),
+        ),
+        spacing="2",
+        align_items="start",
+    )
+
+
+def _bubble_body(m: MessageVM) -> rx.Component:
+    text = rx.cond(
         m.is_media_placeholder,
         rx.hstack(
             rx.icon("paperclip", size=T.ICON_SM, color=T.TEXT_MUTED),
@@ -470,7 +580,68 @@ def _bubble_body(m: MessageVM) -> rx.Component:
             spacing="2",
             align="center",
         ),
-        rx.text(m.text, size="2", white_space="pre-wrap", overflow_wrap="anywhere"),
+        rx.cond(
+            m.text != "",
+            rx.text(m.text, size="2", white_space="pre-wrap", overflow_wrap="anywhere"),
+            rx.fragment(),
+        ),
+    )
+    return rx.cond(
+        m.media_control != "",
+        rx.vstack(_media_block(m), text, spacing="2", align_items="start"),
+        text,
+    )
+
+
+def _lightbox() -> rx.Component:
+    """An inbound image at full size. The URL is the state's (looked up by message id),
+    and it is a short-lived public-media link — the same one the HTTP route redirects to."""
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.vstack(
+                rx.hstack(
+                    rx.dialog.title("Imagen recibida", size="3", margin="0"),
+                    rx.spacer(),
+                    rx.link(
+                        rx.hstack(
+                            rx.icon("external-link", size=T.ICON_SM),
+                            rx.text("Abrir original", size="2"),
+                            spacing="1",
+                            align="center",
+                        ),
+                        href=S.lightbox_url,
+                        is_external=True,
+                        rel="noopener noreferrer",
+                    ),
+                    rx.dialog.close(
+                        rx.icon_button(
+                            rx.icon("x", size=T.ICON_MD),
+                            variant="ghost",
+                            size="2",
+                            aria_label="Cerrar",
+                            **T.tone_scheme("neutral"),
+                        ),
+                    ),
+                    width="100%",
+                    align="center",
+                    spacing="3",
+                ),
+                rx.image(
+                    src=S.lightbox_url,
+                    alt="Imagen recibida por WhatsApp",
+                    width="100%",
+                    max_height="75vh",
+                    object_fit="contain",
+                    border_radius=T.RADIUS_CONTROL,
+                    custom_attrs={"referrerpolicy": "no-referrer"},
+                ),
+                spacing="3",
+                width="100%",
+            ),
+            max_width="min(56rem, 94vw)",
+        ),
+        open=S.lightbox_url != "",
+        on_open_change=S.set_lightbox_open,
     )
 
 
@@ -712,6 +883,7 @@ def _conversation_pane() -> rx.Component:
 def chats_tab() -> rx.Component:
     return rx.box(
         _heartbeat(),
+        _lightbox(),
         rx.box(
             _list_pane(),
             _conversation_pane(),

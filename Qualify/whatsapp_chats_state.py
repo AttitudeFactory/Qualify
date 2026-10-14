@@ -19,6 +19,13 @@ runs in a background event through `asyncio.to_thread`.
 
 **Sends** pause the menu automation server-side (WA-10); the header pill flips to
 «Persona» immediately (`_mark_paused`), before the refresh confirms it.
+
+**Inbound media (0061)** is fetched on click only (`request_media`): the id must be an
+inbound `has_media` message of the conversation already loaded (`_records`), so a forged
+id from the browser asks for nothing. The outcome — a URL with its expiry, or the
+locator's failure — lives in the backend-only `_media` and is rendered into the
+`MessageVM`s; an image opens in the lightbox (`lightbox_url`, looked up server-side by
+message id, never taken from the browser), a video or document opens in a new tab.
 """
 
 from __future__ import annotations
@@ -34,6 +41,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import reflex as rx
 from qualify_api.whatsapp.chats import (
+    MediaExpired,
+    MediaMessageNotFound,
+    MediaNotCaptured,
+    MediaUnavailable,
     MessageRecord,
     ThreadNotFound,
     UnknownAgent,
@@ -57,8 +68,16 @@ from .whatsapp_chats_vm import (
     FILTER_OPEN,
     FILTER_UNREAD,
     MAX_BUTTON_TITLE_CHARS,
+    MEDIA_DOCUMENT,
+    MEDIA_EXPIRED,
+    MEDIA_IMAGE,
+    MEDIA_NOT_CAPTURED_CODE,
+    MEDIA_NOT_FOUND,
+    MEDIA_UNAVAILABLE,
+    MEDIA_VIDEO,
     WINDOW_CLOSED_NOTICE,
     AgentVM,
+    MediaResolution,
     MessageVM,
     OrderCardVM,
     ThreadRowVM,
@@ -70,8 +89,10 @@ from .whatsapp_chats_vm import (
     filter_counts,
     filter_label,
     filter_threads,
+    media_control_for,
     merge_pages,
     mode_pill,
+    resolution_after,
     validate_compose,
 )
 from .whatsapp_state import WhatsAppState
@@ -149,6 +170,9 @@ class WhatsAppChatsState(rx.State):
     banner: str = ""
     banner_tone: str = "info"
 
+    # -- media lightbox (an image's fresh URL; "" = closed) -----------------------------
+    lightbox_url: str = ""
+
     # -- backend only -------------------------------------------------------------------
     _connection_id: str = ""
     _zone_name: str = ""
@@ -157,6 +181,9 @@ class WhatsAppChatsState(rx.State):
     _unsent: list[UnsentItem] = []
     _order_raw: Any = None
     _refreshing: bool = False
+    # message id → what the media locator answered (URL + expiry, or the failure code).
+    _media: dict[str, MediaResolution] = {}
+    _media_loading: list[str] = []
 
     # ==================================================================================
     # Computed vars
@@ -262,6 +289,9 @@ class WhatsAppChatsState(rx.State):
         self._records = []
         self._unsent = []
         self._order_raw = None
+        self._media = {}
+        self._media_loading = []
+        self.lightbox_url = ""
         self._reset_composer()
         self.banner = ""
 
@@ -273,7 +303,14 @@ class WhatsAppChatsState(rx.State):
     def _render_conversation(self) -> None:
         zone = _zone(self._zone_name)
         now = self._now()
-        self.messages = build_conversation(self._records, self._unsent, now=now, zone=zone)
+        self.messages = build_conversation(
+            self._records,
+            self._unsent,
+            now=now,
+            zone=zone,
+            media=self._media,
+            loading=self._media_loading,
+        )
         self.order = build_order_card(self._order_raw, now=now, zone=zone)
 
     def _mark_paused(self, thread_id: str, paused: bool) -> None:
@@ -472,6 +509,92 @@ class WhatsAppChatsState(rx.State):
             self._records = [m for m in page.messages if m.id not in seen] + self._records
             self.has_more = page.has_more
             self._render_conversation()
+
+    # ==================================================================================
+    # Inbound media (0061)
+    # ==================================================================================
+
+    def _media_record(self, message_id: str) -> MessageRecord | None:
+        """The loaded inbound `has_media` record with this id, else None."""
+        for record in self._records:
+            if str(record.id) == message_id:
+                if record.direction == "inbound" and record.has_media:
+                    return record
+                return None
+        return None
+
+    def _open_media(self, control: str, url: str) -> rx.event.EventSpec | None:
+        """Show a resolved URL: the lightbox for an image, a new tab for a video or a
+        document; an audio needs nothing (its player renders in the bubble)."""
+        if control == MEDIA_IMAGE:
+            self.lightbox_url = url
+        elif control in (MEDIA_VIDEO, MEDIA_DOCUMENT):
+            return rx.redirect(url, is_external=True)
+        return None
+
+    @rx.event(background=True)
+    async def request_media(self, message_id: str) -> AsyncIterator[rx.event.EventSpec]:
+        """«Ver imagen» / «Escuchar audio» / «Ver video» / «Descargar» / «Reintentar»."""
+        if not isinstance(message_id, str):
+            return
+        async with self:
+            record = self._media_record(message_id)
+            if record is None or message_id in self._media_loading:
+                return
+            control = media_control_for(record.media_kind)
+            cached = self._media.get(message_id, MediaResolution()).fresh_url(self._now())
+            cached_event = self._open_media(control, cached) if cached else None
+        if cached:
+            if cached_event is not None:
+                yield cached_event
+            return
+        async with self:
+            if message_id in self._media_loading:
+                return
+            self._media_loading = [*self._media_loading, message_id]
+            self._render_conversation()
+            thread_id = self.open_thread_id
+            tenant_id = await self._tenant()
+        message = _uuid(message_id)
+        outcome = MediaResolution(error=MEDIA_UNAVAILABLE)
+        if tenant_id is not None and message is not None:
+            try:
+                url = await gateway().media_url(tenant_id, message)
+                outcome = resolution_after(url, self._now())
+            except MediaExpired:
+                outcome = MediaResolution(error=MEDIA_EXPIRED)
+            except MediaNotCaptured:
+                outcome = MediaResolution(error=MEDIA_NOT_CAPTURED_CODE)
+            except MediaMessageNotFound:
+                outcome = MediaResolution(error=MEDIA_NOT_FOUND)
+            except MediaUnavailable:
+                pass
+            except Exception as exc:  # the locator maps its own; anything else is transient
+                logger.error("whatsapp chats media failed: %s", type(exc).__name__)
+        event = None
+        async with self:
+            self._media_loading = [m for m in self._media_loading if m != message_id]
+            if self.open_thread_id != thread_id:
+                return  # another conversation was opened meanwhile
+            self._media = {**self._media, message_id: outcome}
+            self._render_conversation()
+            if outcome.url:
+                event = self._open_media(control, outcome.url)
+        if event is not None:
+            yield event
+
+    @rx.event
+    def open_lightbox(self, message_id: str) -> None:
+        """Click on a thumbnail: the URL comes from the server-side cache, never from
+        the browser."""
+        if not isinstance(message_id, str):
+            return
+        self.lightbox_url = self._media.get(message_id, MediaResolution()).fresh_url(self._now())
+
+    @rx.event
+    def set_lightbox_open(self, is_open: bool) -> None:
+        if not is_open:
+            self.lightbox_url = ""
 
     # ==================================================================================
     # Refresh (15 s heartbeat + after every action)

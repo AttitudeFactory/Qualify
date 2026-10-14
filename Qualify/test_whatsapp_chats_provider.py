@@ -21,6 +21,9 @@ from uuid import UUID, uuid4
 import pytest
 from qualify_api.whatsapp.chats import (
     ChatService,
+    MediaExpired,
+    MediaNotCaptured,
+    MediaUnavailable,
     MemoryChatRepository,
     ThreadNotFound,
     UnknownAgent,
@@ -230,6 +233,54 @@ def test_acting_user_and_agents_come_from_the_store(world: World) -> None:
     assert world.gateway.acting_user(TENANT, "nadie@x.co") is None
     assert [a.name for a in world.gateway.agents(TENANT)] == ["Laura"]
     assert world.gateway.timezone(TENANT) == "America/Bogota"
+
+
+class FakeLocator:
+    def __init__(self, outcome: str | Exception) -> None:
+        self.outcome = outcome
+        self.calls: list[tuple[UUID, UUID]] = []
+
+    async def locate(self, *, tenant_id: UUID, message_id: UUID) -> str:
+        self.calls.append((tenant_id, message_id))
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
+async def test_media_url_goes_through_the_injected_locator() -> None:
+    message = uuid4()
+    locator = FakeLocator("https://app.qualify.la/public/media/abc")
+    gateway = ChatsGateway(store=FakeStore(), media_locator=locator)
+    assert await gateway.media_url(TENANT, message) == "https://app.qualify.la/public/media/abc"
+    assert locator.calls == [(TENANT, message)]
+
+
+@pytest.mark.parametrize("error", [MediaExpired("m"), MediaUnavailable("m"), MediaNotCaptured("m")])
+async def test_media_url_lets_the_locator_outcomes_through(error: Exception) -> None:
+    gateway = ChatsGateway(store=FakeStore(), media_locator=FakeLocator(error))
+    with pytest.raises(type(error)):
+        await gateway.media_url(TENANT, uuid4())
+
+
+async def test_an_unbuildable_locator_is_unavailable_and_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing R2/Redis/Meta env must not crash the tab: it reads as `media_unavailable`
+    (a retry), and the failed build is not cached."""
+    from qualify_api.whatsapp import media
+
+    builds: list[int] = []
+
+    def broken() -> object:
+        builds.append(1)
+        raise KeyError("QUALIFY_R2_BUCKET")
+
+    monkeypatch.setattr(media, "production_media_locator", broken)
+    gateway = ChatsGateway(store=FakeStore())
+    for _ in range(2):
+        with pytest.raises(MediaUnavailable):
+            await gateway.media_url(TENANT, uuid4())
+    assert len(builds) == 2
 
 
 def test_postgres_only_through_tenant_session() -> None:
