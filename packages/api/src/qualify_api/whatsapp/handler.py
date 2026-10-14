@@ -31,11 +31,15 @@ message type itself is not a column of `messages` (0004/0057) and nothing is inv
 carry it: the raw change is in `meta_webhook_deliveries`/`meta_webhook_events`
 (`raw_payload_r2_key` stays `None` for the same reason), and media download is WA-11's.
 
-**Reserved context key.** A `Handoff` leaves its reason and structured summary under
-`CTX_HANDOFF` in `context` (no new `messages` row is invented for it — the internal order
-message is WA-15's). The key starts with `_` so it never collides with the engine's own
-`order`/`collected`/…. The engine's unknown-input counter is NOT in `context`: it is the
-`whatsapp_thread_state.attempts` column 0058 added (`StoredThreadState.attempts`).
+**Reserved context keys.** A `Handoff` leaves its reason and structured summary under
+`CTX_HANDOFF` in `context` (no new `messages` row is invented for it). When that handoff
+carries a confirmed order (`summary["order_confirmed"] is True`), WA-15 also stores the
+order a person prepares under `orders.CTX_ORDER_RECORD` (`_order`, keyed on the inbound
+`wamid` that confirmed it) and clears the engine's working `order`/`order_confirmed`, so
+a conversation resumed later starts a new order. Both keys start with `_` so they never
+collide with the engine's own `order`/`collected`/…. The engine's unknown-input counter
+is NOT in `context`: it is the `whatsapp_thread_state.attempts` column 0058 added
+(`StoredThreadState.attempts`).
 `CTX_ATTEMPTS` survives only as a read-once shim for rows a pre-0058 build of this
 handler wrote; nothing writes it any more.
 
@@ -96,6 +100,8 @@ from qualify_api.whatsapp.client import (
     build_text_body,
 )
 from qualify_api.whatsapp.menus.engine import (
+    CTX_ORDER,
+    CTX_ORDER_CONFIRMED,
     CatalogItem,
     Handoff,
     OutboundAction,
@@ -109,6 +115,7 @@ from qualify_api.whatsapp.menus.engine import (
 )
 from qualify_api.whatsapp.menus.schema import MenuDefinition
 from qualify_api.whatsapp.models import DELIVERY_STATUSES
+from qualify_api.whatsapp.orders import record_confirmed_order
 from qualify_api.whatsapp.repository import (
     OUTBOX_KIND_AUTOMATION,
     StoredThreadState,
@@ -161,7 +168,8 @@ def no_menu(phone_row_id: UUID) -> tuple[MenuDefinition, UUID] | PublishedMenu |
 
 
 def no_catalog(phone_row_id: UUID) -> Sequence[CatalogItem]:
-    """The default until WA-15 wires `brand_products`: an empty catalog."""
+    """The offline default: an empty catalog (production passes
+    `whatsapp.catalog.load_catalog_for_phone`, WA-15)."""
     return ()
 
 
@@ -319,11 +327,20 @@ def whatsapp_messages_handler(
         payloads: list[dict[str, Any]] = []
         for action in result.actions:
             if isinstance(action, Handoff):
+                at = clock()
                 context[CTX_HANDOFF] = {
                     "reason": action.reason,
                     "summary": action.summary,
-                    "at": clock().isoformat(),
+                    "at": at.isoformat(),
                 }
+                if action.summary.get("order_confirmed") is True:
+                    # WA-15: the confirmed order becomes the record a person reads; the
+                    # engine's working order is closed so a resumed chat starts anew.
+                    record_confirmed_order(
+                        context, action.summary, confirmed_at=at, source_message_id=message.id
+                    )
+                    context.pop(CTX_ORDER, None)
+                    context.pop(CTX_ORDER_CONFIRMED, None)
                 continue
             if isinstance(action, SetContext):
                 continue

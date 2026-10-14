@@ -254,12 +254,14 @@ def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
         ("qualify_app", "whatsapp_outbox", "UPDATE"),
         ("qualify_webhook_worker", "whatsapp_outbox", "INSERT"),
     }
+    # `brand_id` since 0059 (WA-15): the catalog loader resolves the number's brand.
     # `waba_id` since 0060 (WA-18): the template webhooks carry the WABA, not a number.
     assert worker_phone_columns == {
         "id",
         "tenant_id",
         "connection_id",
         "phone_number_id",
+        "brand_id",
         "waba_id",
     }
 

@@ -132,6 +132,8 @@ just audit        # pip-audit over the lock + npm audit (packages/render) — in
 just down         # docker compose down -v — DROPS the pgdata volume
 just calendar-tick --tenant <uuid>     # QUA-111: one Planificador tick — PUBLISHES FOR REAL
 just calendar-worker --tenant <uuid>   # QUA-111: a tick every 60 s until Ctrl+C
+just whatsapp-tick --tenant <uuid>     # WA-08: one pass of the WhatsApp outbox sender — SENDS FOR REAL
+just whatsapp-worker --tenant <uuid>   # WA-08: a pass every 5 s until Ctrl+C (locally always --tenant)
 ```
 
 The calendar executor (QUA-111, `packages/api/src/qualify_api/planner/worker.py`) publishes due, approved `calendar_events` through `PublishService`. **Locally always pass `--tenant`:** `--all-tenants` is the production discovery, and this dev database holds dozens of test tenants it would act on. Decision, guarantees and UML: `docs/automatizacion-calendario-qua111.md`.

@@ -253,9 +253,24 @@ def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
         ("qualify_webhook_worker", "social_connections", c, "SELECT")
         for c in ("id", "tenant_id", "platform", "external_account_id", "status")
     } | {
-        # `waba_id` since 0060 (WA-18): template webhooks resolve the tenant by WABA.
+        # 0059 (WA-15) adds `brand_id`: the catalog loader finds the number's brand.
+        # 0060 (WA-18) adds `waba_id`: template webhooks resolve the tenant by WABA.
         ("qualify_webhook_worker", "whatsapp_phone_numbers", c, "SELECT")
-        for c in ("id", "tenant_id", "connection_id", "phone_number_id", "waba_id")
+        for c in ("id", "tenant_id", "connection_id", "phone_number_id", "brand_id", "waba_id")
+    } | {
+        # 0059 (WA-15): the menu's `products` node reads the brand's active catalog.
+        ("qualify_webhook_worker", "brand_products", c, "SELECT")
+        for c in (
+            "id",
+            "tenant_id",
+            "brand_id",
+            "name",
+            "price_amount",
+            "price_currency",
+            "category",
+            "is_active",
+            "position",
+        )
     } | {
         # 0060 (WA-18/19/20): template webhooks, the STOP revocation, campaign receipts.
         ("qualify_webhook_worker", "whatsapp_templates", c, "SELECT")
