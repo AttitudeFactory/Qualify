@@ -30,6 +30,7 @@ from qualify_api.http import (
     publishing_routes,
     replies_routes,
     sentiment_routes,
+    whatsapp_routes,
 )
 from qualify_api.http.inbox_routes import SyncComments
 from qualify_api.http.replies_routes import (
@@ -134,6 +135,19 @@ def build_production_analyze_mention_sentiment() -> mentions_routes.AnalyzeMenti
     return analyze_pending_mentions
 
 
+def build_production_whatsapp_settings() -> whatsapp_routes.WhatsAppWebhookSettings:
+    """Env read only, not lazy — same reasoning as `build_production_mentions_settings`."""
+    return whatsapp_routes.WhatsAppWebhookSettings.from_env()
+
+
+def build_production_whatsapp_sink() -> whatsapp_routes.WhatsAppEventSink:
+    """WA-03: log identifier-only summaries. WA-07 swaps this for the persisting sink
+    behind the same callable type; the route does not change."""
+    from qualify_api.whatsapp.sink import log_only_sink  # noqa: PLC0415
+
+    return log_only_sink
+
+
 def build_production_leads_service() -> LeadIntakeService:
     """Lazy import like the publishing builders: the leads module needs Redis only at
     the first intake, and an app booted without one should fail THAT request loudly."""
@@ -207,6 +221,7 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
     app.include_router(sentiment_routes.router)
     app.include_router(mentions_routes.router)
     app.include_router(replies_routes.router)
+    app.include_router(whatsapp_routes.router)
     if configure_production:
         app.dependency_overrides[connections_routes.get_connect_service] = build_production_service
         app.dependency_overrides[publishing_routes.get_publish_service] = (
@@ -253,6 +268,10 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
         app.dependency_overrides[creative_routes.get_approved_creative_reader] = (
             build_production_approved_creative_reader
         )
+        app.dependency_overrides[whatsapp_routes.get_webhook_settings] = (
+            build_production_whatsapp_settings
+        )
+        app.dependency_overrides[whatsapp_routes.get_event_sink] = build_production_whatsapp_sink
         # C1: parsed at assembly so a malformed QUALIFY_DEV_PRINCIPALS fails the boot,
         # not the first request.
         app.dependency_overrides[deps.current_principal] = deps.build_dev_principal_dependency()
