@@ -1,7 +1,7 @@
 """Settle recorded webhook changes, outside the HTTP request (QUA-147).
 
 One `run_once` = claim a batch from the intake queue, hand each change to the handler
-for its `field`, settle it. A handler returns the outcome; an exception is a RETRYABLE
+for its `(object, field)`, settle it. A handler returns the outcome; an exception is a RETRYABLE
 failure (backoff, then `dead` after `MAX_ATTEMPTS`) — so a database blip or a crash
 loses nothing, and a reclaimed change is safe to replay because the handler's write is
 itself idempotent (`uq_mention_natural_key` for mentions).
@@ -17,8 +17,15 @@ inline before QUA-147 (`mentions.resolve.resolve_external_account` +
   it must never read as a success.
 - A `mentions` value that is not the documented shape → `dead` (`contract_violation`).
 
-Every other field — `comments` included — is settled `unsupported` and kept: it stays in
-the log, replayable once its handler exists. The comment polling is untouched.
+Handlers are keyed by `"<object>:<field>"` first and by bare `field` second (WA-07).
+Meta reuses field names across products — `messages` is both an Instagram DM change
+(`object = "instagram"`) and a WhatsApp change (`object = "whatsapp_business_account"`)
+— so a handler that must see only one product registers under the qualified key;
+`mentions` keeps its bare key and keeps working untouched. `production_processor`
+registers `whatsapp_business_account:messages` → `qualify_api.whatsapp.handler`.
+
+Every other change — Instagram `comments` included — is settled `unsupported` and kept:
+it stays in the log, replayable once its handler exists. The comment polling is untouched.
 """
 
 from __future__ import annotations
@@ -167,7 +174,15 @@ def mentions_handler(
     return handle
 
 
+def handler_key(object_: str, field: str) -> str:
+    """The qualified key a product-specific handler registers under."""
+    return f"{object_}:{field}"
+
+
 class Processor:
+    """`handlers` may be keyed by `handler_key(object, field)` or by bare `field`; the
+    qualified key wins when both are present."""
+
     def __init__(
         self,
         *,
@@ -186,7 +201,9 @@ class Processor:
         events = self._queue.claim(worker_id=self._worker_id, now=self._clock(), limit=limit)
         report.claimed = len(events)
         for event in events:
-            handler = self._handlers.get(event.field)
+            handler = self._handlers.get(handler_key(event.object, event.field))
+            if handler is None:
+                handler = self._handlers.get(event.field)
             if handler is None:
                 status = self._settle(event, Outcome(STATUS_UNSUPPORTED))
             else:
@@ -201,8 +218,9 @@ class Processor:
                         error=type(exc).__name__,
                     )
                     logger.warning(
-                        "meta webhook: event=%s field=%s attempt=%d failed (%s) -> %s",
+                        "meta webhook: event=%s object=%s field=%s attempt=%d failed (%s) -> %s",
                         event.id,
+                        event.object,
                         event.field,
                         event.attempts,
                         type(exc).__name__,
@@ -228,14 +246,22 @@ class Processor:
 
 
 def production_processor(*, worker_id: str) -> Processor:
-    """The real queue (`qualify_webhook_worker`) and the real mentions pipeline. Imported
-    lazily so building a processor for tests never pulls the Meta/credential stack."""
+    """The real queue (`qualify_webhook_worker`), the real mentions pipeline and the real
+    WhatsApp inbound handler (WA-07). Imported lazily so building a processor for tests
+    never pulls the Meta/credential stack."""
     from qualify_api.mentions.composition import (  # noqa: PLC0415
         analyze_mention_after_ingest,
         ingest_mention,
     )
     from qualify_api.mentions.resolve import resolve_external_account  # noqa: PLC0415
     from qualify_api.webhooks.repository import WebhookQueue  # noqa: PLC0415
+    from qualify_api.whatsapp.handler import (  # noqa: PLC0415
+        WHATSAPP_MESSAGES_HANDLER_KEY,
+        whatsapp_messages_handler,
+    )
+    from qualify_api.whatsapp.menus import load_published_menu_for_phone  # noqa: PLC0415
+    from qualify_api.whatsapp.repository import PostgresWhatsAppInboxRepository  # noqa: PLC0415
+    from qualify_api.whatsapp.resolve import resolve_phone_number  # noqa: PLC0415
 
     return Processor(
         queue=WebhookQueue(),
@@ -244,7 +270,13 @@ def production_processor(*, worker_id: str) -> Processor:
                 resolve=resolve_external_account,
                 ingest=ingest_mention,
                 analyze=analyze_mention_after_ingest,
-            )
+            ),
+            # The catalog stays empty until WA-15 wires `brand_products`.
+            WHATSAPP_MESSAGES_HANDLER_KEY: whatsapp_messages_handler(
+                resolve=resolve_phone_number,
+                repo=PostgresWhatsAppInboxRepository(),
+                menu_loader=load_published_menu_for_phone,
+            ),
         },
         worker_id=worker_id,
     )
