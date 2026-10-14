@@ -346,8 +346,12 @@ class WhatsAppMenuState(rx.State):
             result.definition.model_dump(mode="json") if result.definition is not None else {}
         )
         self.preview_available = bool(self._valid_payload)
-        self.preview_stale = bool(self._preview_payload) and (
-            self._preview_payload != self._valid_payload
+        # Stale = a snapshot exists and differs from the editor. While the form is invalid
+        # and no conversation is open, «Corrige lo marcado» already says it all.
+        self.preview_stale = (
+            bool(self._preview_payload)
+            and self._preview_payload != self._valid_payload
+            and (bool(self._valid_payload) or bool(self.preview_messages))
         )
         if not 0 <= self.selected_node < len(self.nodes):
             self.selected_node = max(0, len(self.nodes) - 1)
@@ -422,9 +426,11 @@ class WhatsAppMenuState(rx.State):
             if not force and self.loaded_for == connection_id:
                 return
             if self.loaded_for != connection_id:
+                # A new number (or a retry after a failed read): drop the old number's
+                # data and its banner. A forced re-read of the number on screen keeps the
+                # banner — it may be the outcome of the action that asked for the re-read.
                 self._reset_number_scoped()
             self.loading_for = connection_id
-            self.banner = ""
             _tenant, tenant_id, _email = await self._session()
         if tenant_id is None:
             async with self:
@@ -828,7 +834,6 @@ class WhatsAppMenuState(rx.State):
             self.banner, self.banner_tone = outcome.notice, outcome.tone
         if outcome.auth_error:
             yield WhatsAppState.load_numbers
-        yield WhatsAppMenuState.reload
 
     @rx.event(background=True)
     async def toggle_pause(self, paused: bool) -> None:

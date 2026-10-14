@@ -525,6 +525,21 @@ def test_new_nodes_carry_their_kind_label(kind: str) -> None:
 # --- 6. the tab renders, and talks to its state only ------------------------------------
 
 
+def test_the_publish_notice_survives_the_refresh_after_publishing() -> None:
+    """Browser finding (2026-10-14): «Publicar» published (DB + Graph) but the banner
+    with Meta's code never appeared — the handler chained a forced re-read whose `_load`
+    blanked the banner first. A re-read of the number on screen now keeps it, and the
+    publish handler no longer chains one."""
+    import inspect
+
+    from .whatsapp_menu_state import WhatsAppMenuState
+
+    publish = inspect.getsource(WhatsAppMenuState.publish.fn)
+    assert "WhatsAppMenuState.reload" not in publish
+    load = inspect.getsource(WhatsAppMenuState._load)
+    assert 'self.banner = ""' not in load
+
+
 def test_the_menu_tab_renders_its_sections() -> None:
     import json
     from pathlib import Path
