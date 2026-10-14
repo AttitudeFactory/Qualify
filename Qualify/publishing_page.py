@@ -102,7 +102,7 @@ def _connection_section() -> rx.Component:
     return section(
         "Cuenta",
         _connection_selector(),
-        description="La cuenta de Instagram conectada donde se publicará este contenido.",
+        description="La cuenta conectada donde se publicará este contenido.",
     )
 
 
@@ -556,7 +556,7 @@ def _posts_flow() -> rx.Component:
 def publish_topbar() -> rx.Component:
     return page_header(
         "Publicar",
-        "Publica de inmediato en una de tus cuentas de Instagram conectadas: una "
+        "Publica de inmediato en una de tus cuentas conectadas: una "
         "publicación (imagen, reel o carrusel) o una Story",
     )
 

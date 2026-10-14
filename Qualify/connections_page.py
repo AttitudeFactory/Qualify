@@ -333,8 +333,7 @@ def _empty_state() -> rx.Component:
     return empty_state(
         "link-2-off",
         "Aún no conectas ninguna cuenta",
-        "Conecta tu primera cuenta de Instagram o Facebook para empezar a "
-        "escuchar y responder desde Qualify.",
+        "Conecta tu primera red social para empezar a escuchar y responder desde Qualify.",
         action=rx.button(
             rx.icon("plus", size=16),
             "Conectar cuenta",
@@ -348,7 +347,7 @@ def _empty_state() -> rx.Component:
 def connections_topbar() -> rx.Component:
     return page_header(
         "Cuentas conectadas",
-        "Estado de salud y permisos de tus cuentas de Instagram y Facebook",
+        "Revisa que tus redes sociales estén conectadas y con los permisos que Qualify necesita.",
     )
 
 

@@ -62,7 +62,14 @@ from __future__ import annotations
 import reflex as rx
 
 from .inbox_state import FILTER_ALL, InboxState
-from .inbox_vm import CandidateMediaVM, CommentVM, ReelSummaryVM
+from .inbox_vm import (
+    MONITORING_ACTIVE,
+    MONITORING_EXPIRED,
+    MONITORING_PENDING,
+    CandidateMediaVM,
+    CommentVM,
+    ReelSummaryVM,
+)
 from .publishing_vm import ConnectionOptionVM
 from .replies_provider import DraftVM
 from .replies_state import RepliesState
@@ -133,8 +140,8 @@ def _monitoring_switch(candidate: CandidateMediaVM) -> rx.Component:
 
 
 def _candidate_card_content(candidate: CandidateMediaVM) -> rx.Component:
-    """One Reel row on the card material (`ui.card`): picture, caption and meta, the
-    monitoring switch on the right."""
+    """One Reel or feed post row on the card material (`ui.card`): picture, caption, its
+    format label (QUA-146) and meta, the monitoring switch on the right."""
     return card(
         rx.hstack(
             _thumbnail(candidate),
@@ -149,6 +156,12 @@ def _candidate_card_content(candidate: CandidateMediaVM) -> rx.Component:
                     white_space="nowrap",
                 ),
                 rx.hstack(
+                    # QUA-146: Reel / Foto / Video / Carrusel / Publicación.
+                    rx.cond(
+                        candidate.format_label != "",
+                        tone_badge(candidate.format_label, "neutral"),
+                        rx.fragment(),
+                    ),
                     rx.icon("clock", size=13, color=T.TEXT_FAINT),
                     rx.text(candidate.posted_at, size="1", color=T.TEXT_MUTED),
                     rx.cond(
@@ -174,6 +187,9 @@ def _candidate_card_content(candidate: CandidateMediaVM) -> rx.Component:
             width="100%",
         ),
         padding="1rem 1.25rem",
+        # Full width of the body: every row's switch/actions line up on one right edge
+        # instead of each card hugging its own caption.
+        width="100%",
     )
 
 
@@ -214,6 +230,9 @@ def _card_skeleton() -> rx.Component:
             align="center",
         ),
         padding="1rem 1.25rem",
+        # Full width of the body: every row's switch/actions line up on one right edge
+        # instead of each card hugging its own caption.
+        width="100%",
         class_name="q-card q-inbox-skeleton",
         aria_busy="true",
     )
@@ -222,8 +241,8 @@ def _card_skeleton() -> rx.Component:
 def _no_connections_state() -> rx.Component:
     return empty_state(
         "link-2-off",
-        "No hay cuentas de Instagram listas para monitorear",
-        "Conecta una cuenta de Instagram con el permiso de comentarios en "
+        "No hay cuentas listas para monitorear",
+        "Conecta una cuenta con el permiso de comentarios en "
         "Conexiones para elegir qué contenido monitorear.",
         action=rx.link(
             rx.button(rx.icon("link", size=16), "Ir a Conexiones", size="3"),
@@ -235,8 +254,8 @@ def _no_connections_state() -> rx.Component:
 def _empty_candidates_state() -> rx.Component:
     return empty_state(
         "film",
-        "Sin Reels en las últimas 2 semanas",
-        "Esta cuenta no publicó Reels en los últimos 14 días.",
+        "Sin Reels ni publicaciones en las últimas 2 semanas",
+        "Esta cuenta no publicó Reels ni publicaciones en el feed en los últimos 14 días.",
     )
 
 
@@ -272,6 +291,9 @@ def _candidates_body() -> rx.Component:
 
 def _body() -> rx.Component:
     return page_body(
+        # Inside the body (not between header and body): it shares the body's width cap
+        # and gutter, so it lines up with the cards below instead of running edge to edge.
+        rx.cond(InboxState.has_connections, _sync_section(), rx.fragment()),
         rx.cond(InboxState.action_error != "", _action_error(), rx.fragment()),
         rx.cond(
             InboxState.connections_error != "",
@@ -345,6 +367,9 @@ def _comment_card(comment: CommentVM) -> rx.Component:
             width="100%",
         ),
         padding="1rem 1.25rem",
+        # Full width of the body: every row's switch/actions line up on one right edge
+        # instead of each card hugging its own caption.
+        width="100%",
     )
 
 
@@ -425,16 +450,30 @@ def _reel_thumbnail(reel: ReelSummaryVM) -> rx.Component:
 
 
 def _reel_monitoring_badge(reel: ReelSummaryVM) -> rx.Component:
-    """QUA-94: distinguishes a Reel actively monitored today from one whose comment
-    history is purely historical (`monitored_media.is_monitored=False` — either
-    explicitly turned off, or never monitored at all). Same `tone_badge` primitive
-    `_reel_sentiment_chips` below already uses, so it reads as one family of badges on
-    the card, not a bespoke control. Decoration only — never hides the card, never
-    changes what's inside it; see `inbox_vm.ReelSummaryVM.is_monitored`'s docstring."""
-    return rx.cond(
-        reel.is_monitored,
-        tone_badge("Monitoreado", "ok", icon="eye"),
-        tone_badge("No monitoreado · histórico", "neutral", icon="eye-off"),
+    """QUA-94 + QUA-149: the Reel's EFFECTIVE monitoring state, as the backend applies it
+    (`ReelSummaryVM.monitoring_state`, computed from the shared 14-day rule — never from
+    `is_monitored` alone):
+
+    - "Monitoreado" — synced, inside its 14-day window;
+    - "Monitoreado · fecha por verificar" — synced, but its publication date was not
+      read yet (a Reel monitored before QUA-149), so expiry cannot be judged yet;
+    - "No monitoreado · vencido" — its window ended: no longer synced, history kept;
+    - "No monitoreado" — turned off (by the user, or because it was deleted on Instagram).
+
+    Same `tone_badge` family as `_reel_sentiment_chips`. Decoration only — never hides the
+    card or anything inside it."""
+    return rx.match(
+        reel.monitoring_state,
+        (MONITORING_ACTIVE, tone_badge("Monitoreado", "ok", icon="eye")),
+        (
+            MONITORING_PENDING,
+            tone_badge("Monitoreado · fecha por verificar", "info", icon="clock"),
+        ),
+        (
+            MONITORING_EXPIRED,
+            tone_badge("No monitoreado · vencido", "warn", icon="calendar-x"),
+        ),
+        tone_badge("No monitoreado", "neutral", icon="eye-off"),
     )
 
 
@@ -495,6 +534,9 @@ def _reel_summary_card(reel: ReelSummaryVM) -> rx.Component:
             width="100%",
         ),
         padding="1rem 1.25rem",
+        # Full width of the body: every row's switch/actions line up on one right edge
+        # instead of each card hugging its own caption.
+        width="100%",
     )
 
 
@@ -577,7 +619,12 @@ def _reel_detail_header() -> rx.Component:
                         size="3",
                         weight="medium",
                     ),
-                    mono(reel.external_thread_id, size="1"),
+                    rx.hstack(
+                        _reel_monitoring_badge(reel),
+                        mono(reel.external_thread_id, size="1"),
+                        spacing="2",
+                        align="center",
+                    ),
                     _reel_sentiment_chips(reel),
                     spacing="1",
                     align_items="start",
@@ -746,8 +793,9 @@ def _comments_section() -> rx.Component:
         rx.cond(InboxState.is_showing_reel_detail, _reel_detail_view(), _reel_summaries_list()),
         description=(
             "Comentarios sincronizados, agrupados por Reel, con el sentimiento ya "
-            "analizado cuando existe. Incluye Reels que ya no están monitoreados — "
-            'su historial se conserva, marcado como "No monitoreado · histórico".'
+            "analizado cuando existe. Cada Reel se monitorea 14 días desde su "
+            "publicación; al vencer deja de sincronizarse, pero su caption y sus "
+            'comentarios se conservan, marcado como "No monitoreado · vencido".'
         ),
         actions=[_analyze_now_button()],
     )
@@ -811,8 +859,8 @@ def _polling_timer() -> rx.Component:
 def _sync_section() -> rx.Component:
     """Comment-sync controls (QUA-89): automatic polling every 5 minutes while this
     screen is open, plus a manual trigger for an immediate pass — see `_polling_timer`'s
-    docstring for why both are safe to run side by side. A `ui.card` sitting in the
-    page gutter between the header and the body."""
+    docstring for why both are safe to run side by side. A `ui.card`, first block of the
+    page body (QUA-146: it used to sit between header and body and ran edge to edge)."""
     return card(
         rx.vstack(
             rx.hstack(
@@ -834,8 +882,9 @@ def _sync_section() -> rx.Component:
             width="100%",
         ),
         padding="0.75rem 1rem",
-        margin=f"0 {T.PAGE_X} 1.5rem {T.PAGE_X}",
-        width=f"calc(100% - 2 * {T.PAGE_X})",
+        # Inside `page_body` now (QUA-146): the body already gives the gutter and the gap,
+        # so no own margin — full width puts it on the same edges as the cards below.
+        width="100%",
     )
 
 
@@ -862,17 +911,25 @@ def _generate_drafts_button() -> rx.Component:
 
 
 def _refresh_drafts_button() -> rx.Component:
-    return rx.button(
-        rx.cond(
-            RepliesState.is_loading,
-            loading_spinner("sm"),
-            rx.icon("refresh-cw", size=16),
+    """A secondary page control next to "Generar borradores": an icon button on the glass
+    control material (`soft`, gray — §5.5), same height as its neighbour, instead of a
+    bare `ghost` text link that read as a different kind of thing. Icon-only, so it
+    carries `aria_label` and a tooltip with the same words."""
+    return rx.tooltip(
+        rx.icon_button(
+            rx.cond(
+                RepliesState.is_loading,
+                loading_spinner("sm"),
+                rx.icon("refresh-cw", size=16),
+            ),
+            on_click=RepliesState.load_pending_drafts,
+            disabled=RepliesState.is_loading,
+            size="2",
+            variant="soft",
+            color_scheme="gray",
+            aria_label="Actualizar borradores",
         ),
-        "Actualizar",
-        on_click=RepliesState.load_pending_drafts,
-        disabled=RepliesState.is_loading,
-        size="2",
-        variant="ghost",
+        content="Actualizar borradores",
     )
 
 
@@ -1037,7 +1094,7 @@ def _replies_section() -> rx.Component:
         description=(
             "Respuestas ya redactadas para comentarios positivos en contenido propio. "
             "Nada se envía sin que lo apruebes o edites primero — el borrador nunca "
-            "llega a Instagram por su cuenta."
+            "se publica por su cuenta."
         ),
         actions=[_refresh_drafts_button(), _generate_drafts_button()],
     )
@@ -1045,8 +1102,8 @@ def _replies_section() -> rx.Component:
 
 def inbox_topbar() -> rx.Component:
     return page_header(
-        "Contenido de Instagram",
-        "Reels de las últimas 2 semanas — elige cuáles monitorear",
+        "Contenido",
+        "Reels y publicaciones de las últimas 2 semanas — elige cuáles monitorear",
         rx.cond(InboxState.has_connections, _connection_selector(), rx.fragment()),
     )
 
@@ -1054,6 +1111,5 @@ def inbox_topbar() -> rx.Component:
 def inbox_index() -> rx.Component:
     return app_shell(
         inbox_topbar(),
-        rx.cond(InboxState.has_connections, _sync_section(), rx.fragment()),
         _body(),
     )

@@ -11,11 +11,15 @@ import pytest
 
 from qualify_creative.brand import render_prompt
 from qualify_creative.enums import (
+    AvatarSource,
     BriefIntent,
     BriefObjective,
+    ContentKind,
     EmojiPolicy,
     GenerationTask,
     ImageRoute,
+    SlideSource,
+    SlideText,
     VoiceProfileStatus,
     VoiceSourceKind,
 )
@@ -24,10 +28,12 @@ from qualify_creative.schemas import (
     BrandKit,
     BrandVoiceProfile,
     BriefConstraints,
+    CarouselSlide,
     ContentBrief,
     HashtagPolicy,
     ImagePolicy,
     LengthTargets,
+    MediaInputs,
     ToneAxes,
     VoiceSource,
 )
@@ -225,7 +231,7 @@ def test_fingerprint_is_sha256_of_the_prefix() -> None:
 
 
 def test_the_business_context_joins_the_standing_identity() -> None:
-    from qualify_creative.schemas import BrandContext, BrandElement
+    from qualify_creative.schemas import BrandAccount, BrandContext, BrandElement
 
     context = BrandContext(
         sector="cafetería de especialidad",
@@ -233,8 +239,18 @@ def test_the_business_context_joins_the_standing_identity() -> None:
         hashtags=("cafedeespecialidad", "cucuta"),
         account_bio="Tostamos en casa",
         elements=(BrandElement(name="Mascota", context="El granito; en stories"),),
-        referentes=("@baristaco (instagram)",),
-        competitors=("@cafevecino (instagram)",),
+        referentes=(
+            BrandAccount(
+                handle="@baristaco",
+                network="instagram",
+                kind="creador",
+                why="Reseña cafés de especialidad",
+                note="me encanta su humor",
+                sample="Probé el mejor flat white",
+            ),
+        ),
+        competitors=(BrandAccount(handle="@cafevecino", network="instagram", why="Misma oferta"),),
+        detractors=(BrandAccount(handle="@gritón", network="tiktok", sample="OFERTA OFERTA"),),
     )
     rendered = render_prompt(
         kit=make_kit(),
@@ -250,9 +266,12 @@ def test_the_business_context_joins_the_standing_identity() -> None:
         "Cúcuta, CO",
         "#cafedeespecialidad #cucuta",
         "- Mascota: El granito; en stories",
-        "@baristaco (instagram)",
+        "- @baristaco (instagram, creador): Reseña cafés de especialidad. Operator's note:"
+        " me encanta su humor. Their own words: «Probé el mejor flat white»",
         "never mention them",
-        "@cafevecino (instagram)",
+        "- @cafevecino (instagram): Misma oferta.",
+        "does NOT want to resemble",
+        "- @gritón (tiktok) Their own words: «OFERTA OFERTA»",
     ):
         assert text in prefix, text
     # standing identity, not the assignment: it lives in the cached prefix
@@ -274,3 +293,155 @@ def test_no_context_renders_exactly_as_before() -> None:
     )
     assert plain == empty
     assert "Business context" not in plain.stable_prefix
+
+
+# § request 2026-10-06: every kind renders, a single option asks for no "angle", the
+# operator's words are the piece's general context, and a video says what is on screen.
+
+
+#: The least each kind's brief must carry to be valid.
+_KIND_MEDIA: dict[ContentKind, dict[str, object]] = {
+    ContentKind.AVATAR_VIDEO: {"avatar_look_id": "lk", "voice_id": "vo"},
+    ContentKind.ANIMATED_AVATAR_VIDEO: {
+        "voice_id": "vo",
+        "avatar_source": AvatarSource.AI,
+        "avatar_prompt": "Un tucán",
+    },
+    ContentKind.TEMPLATE: {"product_keys": ("uploads/t/a.jpg",)},
+    ContentKind.CAROUSEL: {
+        "slides": (
+            CarouselSlide(source=SlideSource.GENERATED, text=SlideText.HOOK),
+            CarouselSlide(source=SlideSource.ANIMATED, scene_prompt="la smash de cerca"),
+            CarouselSlide(source=SlideSource.EXISTING, object_key="t/x/generated/d/r1/v.mp4"),
+        ),
+        "closing_slide": True,
+    },
+}
+
+
+@pytest.mark.parametrize("kind", list(ContentKind))
+def test_every_kind_renders_its_assignment(kind: ContentKind) -> None:
+    """The template kind used to raise `KeyError` here — every template draft failed."""
+    media = MediaInputs(**_KIND_MEDIA.get(kind, {}))  # type: ignore[arg-type]
+    suffix = render(brief=make_brief(kind=kind, media=media)).volatile_suffix
+    assert f"Piece kind: {kind.value}." in suffix
+
+
+def test_one_option_asks_for_no_angle_and_several_do() -> None:
+    single = render(brief=make_brief(variants_requested=1)).volatile_suffix
+    several = render(brief=make_brief(variants_requested=3)).volatile_suffix
+    assert "distinct angle" not in single
+    assert "This is one of 3 variants: take a distinct angle" in several
+
+
+def test_each_variant_gets_its_own_angle_over_the_same_cached_prefix() -> None:
+    from qualify_creative.brand.render import VARIANT_ANGLES
+
+    brief = make_brief(variants_requested=3)
+    prompts = [
+        render_prompt(
+            kit=make_kit(),
+            voice=make_voice(),
+            brief=brief,
+            task=GenerationTask.COPY,
+            variant=index,
+            angle_offset=1,
+        )
+        for index in range(3)
+    ]
+    assert len({p.stable_prefix for p in prompts}) == 1
+    assert len({p.volatile_suffix for p in prompts}) == 3
+    for index, prompt in enumerate(prompts):
+        assert f"This is variant {index + 1} of 3. Its angle: {VARIANT_ANGLES[index + 1]}." in (
+            prompt.volatile_suffix
+        )
+
+
+def test_a_single_option_gets_no_angle_even_with_a_variant() -> None:
+    suffix = render_prompt(
+        kit=make_kit(),
+        voice=make_voice(),
+        brief=make_brief(variants_requested=1),
+        task=GenerationTask.COPY,
+        variant=0,
+    ).volatile_suffix
+    assert "angle" not in suffix.lower()
+
+
+def test_recent_openings_ride_the_suffix_only() -> None:
+    plain = render()
+    with_recent = render_prompt(
+        kit=make_kit(),
+        voice=make_voice(),
+        brief=make_brief(),
+        task=GenerationTask.COPY,
+        recent=("¡Pilla esta costra!", "Escribenos al DM"),
+    )
+    assert with_recent.stable_prefix == plain.stable_prefix
+    assert "Openings and CTAs this brand used recently" in with_recent.volatile_suffix
+    assert "- ¡Pilla esta costra!" in with_recent.volatile_suffix
+    assert "used recently" not in plain.volatile_suffix
+
+
+def test_the_examples_and_ctas_are_voice_not_lines_to_copy() -> None:
+    prefix = render().stable_prefix
+    assert "never reuse their sentences or their openings word for word" in prefix
+    assert "never copy a pattern verbatim: Escribenos al DM" in prefix
+    assert "mixing the brand's own with ones specific to the piece's topic" in prefix
+
+
+def test_a_carousel_tells_the_copy_what_each_slide_shows() -> None:
+    """§ request 2026-10-09: the hook and the CTA are printed on the slides chosen."""
+    media = MediaInputs(**_KIND_MEDIA[ContentKind.CAROUSEL])  # type: ignore[arg-type]
+    suffix = render(brief=make_brief(kind=ContentKind.CAROUSEL, media=media)).volatile_suffix
+    assert "slide 1/4: a generated image, the hook printed on it" in suffix
+    assert "slide 2/4: a short silent video of «la smash de cerca»" in suffix
+    assert "slide 3/4: an image or video the brand already made" in suffix
+    assert "slide 4/4: the CTA, large, on the brand's colours" in suffix
+
+
+@pytest.mark.parametrize(
+    "kind", [ContentKind.STATIC_FLYER, ContentKind.TEMPLATE, ContentKind.CAROUSEL]
+)
+def test_a_printed_hook_and_cta_get_a_length_and_no_emoji(kind: ContentKind) -> None:
+    """§ request 2026-10-08: without a number the CTAs came back at 46-57 characters,
+    over the template's 40, and with emoji the printing font cannot draw."""
+    media = MediaInputs(**_KIND_MEDIA.get(kind, {}))  # type: ignore[arg-type]
+    suffix = render(brief=make_brief(kind=kind, media=media)).volatile_suffix
+    assert "- hook: string, at most 50 characters, printed on the image, no emoji" in suffix
+    assert "- cta: string, at most 32 characters, printed on the image, no emoji" in suffix
+
+
+def test_a_spoken_or_posted_cta_gets_no_printed_limit() -> None:
+    suffix = render(brief=make_brief(kind=ContentKind.CREATOR_SCRIPT)).volatile_suffix
+    assert "printed on the image" not in suffix
+    assert "- hook: string, at most 60 characters" in suffix
+
+
+def test_the_operators_words_are_the_general_context() -> None:
+    suffix = render(brief=make_brief(topic="Quiero mostrar la torta, cercano")).volatile_suffix
+    assert (
+        "What the operator wants (their own words, the piece's general context): "
+        "Quiero mostrar la torta, cercano"
+    ) in suffix
+
+
+def test_a_video_says_what_is_on_screen() -> None:
+    media = MediaInputs(
+        background_key="uploads/t/local.jpg",
+        product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg"),
+        avatar_source=AvatarSource.AI,
+        avatar_prompt="Panadera sonriente con delantal",
+        voice_id="vo",
+    )
+    suffix = render(
+        brief=make_brief(kind=ContentKind.ANIMATED_AVATAR_VIDEO, media=media)
+    ).volatile_suffix
+    (line,) = [row for row in suffix.splitlines() if row.startswith("On screen:")]
+    assert "«Panadera sonriente con delantal»" in line
+    assert "background image" in line and "2 photo(s) of the product" in line
+
+
+def test_a_creators_script_has_no_on_screen_line() -> None:
+    suffix = render(brief=make_brief(kind=ContentKind.CREATOR_SCRIPT)).volatile_suffix
+    assert "On screen:" not in suffix

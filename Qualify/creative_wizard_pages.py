@@ -46,10 +46,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import replace
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -95,12 +94,14 @@ from .ui import (
     page_body,
     page_header,
     progress_panel,
+    qualify_mark,
     removable_pill,
     skeleton_card,
     tag,
     tone_badge,
 )
 from .ui import tokens as T
+from .upload_names import safe_upload_name as _safe_upload_name
 from .voice_lab import voice_analysis_result, voice_lab_panel
 
 logger = logging.getLogger(__name__)
@@ -117,21 +118,6 @@ def _finish_background_task(task: asyncio.Task) -> None:
 
 
 _NO_SESSION = "No hay ninguna sesión de negocio activa. Vuelve a iniciar sesión."
-#: What an uploaded file's name may keep in its staged key: letters (any script),
-#: digits, spaces, dots, dashes and underscores.
-_UNSAFE_NAME_CHARS = re.compile(r"[^\w .-]+")
-
-
-def _safe_upload_name(raw: str | None) -> str:
-    """The name a dropped file is staged under: its last path component only, without
-    separators, control characters or leading dots, so a crafted name can never write
-    outside the tenant's folder (PR #86 review). Reflex already reduces it to a
-    basename; this does not rely on that."""
-    name = PurePath((raw or "").replace("\\", "/")).name
-    name = _UNSAFE_NAME_CHARS.sub("_", name).lstrip(". ")[-120:]
-    return name or "archivo"
-
-
 _UPLOAD_FAILED = "No se pudo leer el archivo. Inténtalo de nuevo."
 _FONT_TOO_LARGE = (
     f"El archivo de fuente pesa más de {brand_fonts.MAX_FONT_BYTES // (1024 * 1024)} MB."
@@ -1394,7 +1380,7 @@ _TILE_FRAME = {
 
 
 def _mark_icon(size: int) -> rx.Component:
-    return rx.icon("radar", size=size, color=T.tone_color("accent", 9))
+    return qualify_mark(size)
 
 
 def _mark_text(size: str) -> rx.Component:
@@ -2946,7 +2932,7 @@ def brand_choice_index() -> rx.Component:
                         _fork_option(
                             "user-plus",
                             "No, todavía no",
-                            "Te ayudamos a crear tu cuenta en Instagram o TikTok antes de empezar.",
+                            "Te ayudamos a crear tu cuenta en una red social antes de empezar.",
                             "/brand/connect/setup",
                         ),
                         spacing="4",
@@ -3047,7 +3033,7 @@ def brand_connect_setup_index() -> rx.Component:
     return _wizard_shell(
         page_header(
             "Crea tu cuenta",
-            "Necesitas un perfil en Instagram o TikTok antes de leer tu contenido.",
+            "Necesitas un perfil en una red social antes de leer tu contenido.",
             title_size="8",
         ),
         page_body(
@@ -6485,9 +6471,11 @@ def _asset_script(name: str) -> str:
 
 
 #: The deck's and the ranking's pointer scripts, run when their screen mounts. They used
-#: to be `head_components` only, which go through react-helmet and were measured not to
-#: load at all (2026-10-01); both files guard against running twice, so the head copy
-#: (kept) and this one never stack listeners.
+#: to be `head_components` only, which go through react-helmet and on Reflex < 0.9.9
+#: could be dropped around hydration (measured 2026-10-01 on a 0.9.7 venv; fixed
+#: upstream in 0.9.9, see the note on `head_components` in Qualify.py). Both files
+#: guard against running twice, so the head copy (kept) and this one never stack
+#: listeners.
 _DECK_DRAG_JS = _asset_script("deck-drag.js")
 _RANK_DRAG_JS = _asset_script("rank-drag.js")
 

@@ -114,6 +114,56 @@ class ProductFacts:
 
 # -- build -----------------------------------------------------------------------------
 
+#: Where a shortened text may end on a natural pause.
+_PAUSES = ",.;:!?—"
+#: A clause starts at these words: cutting just before one keeps a whole phrase
+#: ("Escríbenos al DM | y te la armamos…").
+_CLAUSE_STARTS = frozenset("y e o u que pero porque mientras".split())
+#: The shortest phrase a cut may leave, so a long text does not shrink to two words.
+_MIN_PHRASE = 12
+#: Words a shortened Spanish text must not end on: "Escríbanos en el WhatsApp y se la".
+_DANGLING = frozenset(
+    "a al de del el la las lo los y e o u ni en con por para que se un una unos unas"
+    " tu tus su sus mi mis te le les nos antes después hasta desde sin sobre entre hacia"
+    " como cuando donde".split()
+)
+
+
+def _without_dangling(phrase: str) -> str:
+    """`phrase` without trailing articles, prepositions or punctuation."""
+    words = phrase.rstrip(" ,;:—-").split()
+    while words and words[-1].lower().strip(_PAUSES) in _DANGLING:
+        words.pop()
+    return " ".join(words).rstrip(" ,;:—-")
+
+
+def fit_text(text: str, limit: int | None) -> str:
+    """`text` within `limit` characters, shortened where a person would stop — at the
+    last pause (comma, colon, dash, end of sentence) or the last start of a clause («y»,
+    «que»…) that fits, else at the last whole word, never on a dangling article or
+    preposition. A render used to fail outright for a CTA 6 characters over its port
+    (§ request 2026-10-08). With no place to cut (one long word) the text is returned
+    as is, and `validate_props` still reports it."""
+    text = " ".join(text.split())
+    if limit is None or len(text) <= limit:
+        return text
+    cuts: list[str] = []
+    for i, ch in enumerate(text[: limit + 1]):
+        if ch in _PAUSES:
+            cuts.append(text[: i + 1] if ch in ".!?" else text[:i])
+        elif ch == " " and text[i + 1 :].split(" ", 1)[0].lower() in _CLAUSE_STARTS:
+            cuts.append(text[:i])
+    phrases = [_without_dangling(c) for c in cuts]
+    phrases = [p for p in phrases if _MIN_PHRASE <= len(p) <= limit]
+    if phrases:
+        return phrases[-1]
+    words: list[str] = []
+    for word in text.split():
+        if len(" ".join((*words, word))) > limit:
+            break
+        words.append(word)
+    return _without_dangling(" ".join(words)) or text
+
 
 def build_props(
     *,
@@ -153,6 +203,11 @@ def build_props(
     line = price_line if price_line is not None else _price_line(products)
     if line:
         texts["price_line"] = line
+    # each text within its port: shortened where a person would stop, not a failed render
+    for name, value in texts.items():
+        port = manifest.inputs.get(name)
+        if port is not None and port.type is PortType.STRING:
+            texts[name] = fit_text(value, port.max)
 
     product_props = tuple(
         ProductProps(

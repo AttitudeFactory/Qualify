@@ -171,9 +171,11 @@ class FakeRouter:
     def __init__(self, script: list[object] | None = None) -> None:
         self.script = list(script or [])
         self.budgets: list[BudgetContext] = []
+        self.requests: list[object] = []
 
     def run(self, *, tenant_id, brand_id, chain, request, budget):  # noqa: ANN001, ANN201
         self.budgets.append(budget)
+        self.requests.append(request)
         item = self.script.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -204,6 +206,7 @@ class InMemoryRepository:
         self.spend_added = Decimal("0")
         self.media: dict[UUID, list[ImageRecord]] = {}
         self.template_runs = {}
+        self.recent: tuple[str, ...] | Exception = ()
 
     def insert_brief_and_draft(
         self, *, tenant_id, user_id, brief, voice_profile_version, pipeline_version
@@ -249,6 +252,11 @@ class InMemoryRepository:
     def budget_state(self, *, tenant_id, brand_id):  # noqa: ANN001, ANN201
         return self.budget
 
+    def recent_openings(self, *, tenant_id, brand_id, limit=8):  # noqa: ANN001, ANN201
+        if isinstance(self.recent, Exception):
+            raise self.recent
+        return self.recent
+
     def finish_generation(
         self,
         *,
@@ -263,11 +271,24 @@ class InMemoryRepository:
         media=(),
         failure_detail=None,
         template_run=None,
+        requires_ai_disclosure=None,
     ):  # noqa: ANN001, ANN201
         if template_run is not None:
             self.template_runs[template_run.id] = template_run
-        if media:
+        if media or variants:
+            # as Postgres: a generation that wrote copy replaces the media rows, also
+            # when it made none (a failed regeneration shows no stale images)
+            self.media.pop(draft_id, None)
             self.drafts[draft_id] = replace(self.drafts[draft_id], preview_key=preview_of(media))
+        if variants:
+            # as Postgres: the new copy replaces the old, and a selection of the old goes
+            self.variants = {k: v for k, v in self.variants.items() if v.draft_id != draft_id}
+            self.drafts[draft_id] = replace(self.drafts[draft_id], selected_variant_id=None)
+        if requires_ai_disclosure is not None:
+            self.drafts[draft_id] = replace(
+                self.drafts[draft_id], requires_ai_disclosure=requires_ai_disclosure
+            )
+        if media:
             self.media[draft_id] = [
                 ImageRecord(
                     id=uuid4(),
@@ -390,6 +411,43 @@ def make_service(
 
 
 # ---------------------------------------------------------------------------
+# preview_prompt (§ request 2026-10-06: the prompt in the console before Generar)
+
+
+def test_preview_prompt_prints_the_real_prompt_and_creates_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from qualify_creative.brand import render_prompt
+    from qualify_creative.enums import GenerationTask
+
+    caplog.set_level(logging.INFO, logger="qualify_api.creative.trace")
+    kit, voice, brief = make_kit(), make_voice(), make_brief()
+    router = FakeRouter()
+    service, repo, dispatcher = make_service(router=router, kit=kit, voice=voice)
+    assert service.preview_prompt(tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=brief)
+    first, second = (
+        render_prompt(kit=kit, voice=voice, brief=brief, task=GenerationTask.COPY, variant=index)
+        for index in range(2)
+    )
+    assert "VISTA PREVIA DEL PROMPT" in caplog.text
+    assert first.stable_prefix in caplog.text
+    assert first.volatile_suffix in caplog.text and second.volatile_suffix in caplog.text
+    assert repo.drafts == {} and repo.briefs == {} and dispatcher.calls == []
+    assert router.budgets == []  # no vendor call
+
+
+def test_preview_prompt_says_what_is_missing(caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    caplog.set_level(logging.INFO, logger="qualify_api.creative.trace")
+    service, _, _ = make_service(kit=make_kit(), voice=None)
+    assert not service.preview_prompt(tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=make_brief())
+    assert "no se puede armar, falta: voice_profile" in caplog.text
+
+
+# ---------------------------------------------------------------------------
 # create_draft
 
 
@@ -467,6 +525,45 @@ def test_run_generation_happy_path_generates_and_records_spend() -> None:
     # No config row → unlimited, soft; the second call's remaining reflects real spend.
     assert router.budgets[0].hard_stop is False
     assert router.budgets[0].remaining_usd - router.budgets[1].remaining_usd == per_call
+
+
+def test_each_variant_is_asked_its_own_angle_and_told_the_recent_openings() -> None:
+    router = FakeRouter([ok_outcome(copy_dict("Hook uno")), ok_outcome(copy_dict("Hook dos"))])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    repo.recent = ("Mano, pilla esta arepa", "Pide ya")
+    draft_id = repo.seed_draft(make_brief(variants=2))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    assert repo.drafts[draft_id].status == GENERATED
+    first, second = (request.rendered_prompt for request in router.requests)
+    assert first.stable_prefix == second.stable_prefix  # the cache still hits
+    assert "This is variant 1 of 2" in first.volatile_suffix
+    assert "This is variant 2 of 2" in second.volatile_suffix
+    assert all("- Mano, pilla esta arepa" in p.volatile_suffix for p in (first, second))
+
+
+def test_unreadable_recent_openings_never_fail_the_generation() -> None:
+    router = FakeRouter([ok_outcome(copy_dict("Hook uno")), ok_outcome(copy_dict("Hook dos"))])
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+    repo.recent = RuntimeError("db down")
+    draft_id = repo.seed_draft(make_brief(variants=2))
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    assert repo.drafts[draft_id].status == GENERATED
+    assert all("used recently" not in r.rendered_prompt.volatile_suffix for r in router.requests)
+
+
+def test_recent_openings_are_hooks_and_ctas_newest_first_without_repeats() -> None:
+    from qualify_api.creative.service import _openings
+
+    assert _openings(
+        [
+            {"hook": "Pilla esta", "cta": "Pide ya"},
+            {"hook": "Pilla esta", "cta": ""},
+            None,
+            {"hook": " Otra ", "cta": "Pide ya"},
+        ]
+    ) == ("Pilla esta", "Pide ya", "Otra")
 
 
 def test_run_generation_passes_configured_budget_hard_stop() -> None:
@@ -868,7 +965,7 @@ class FakeMedia:
         self.outcome = outcome
         self.calls: list[tuple[ContentBrief, CopyPayload]] = []
 
-    def produce(self, *, tenant_id, draft_id, brief, kit, copy, budget):  # noqa: ANN001, ANN201
+    def produce(self, *, tenant_id, draft_id, brief, kit, copy, budget, revision=1):  # noqa: ANN001, ANN201, E501
         self.calls.append((brief, copy))
         return self.outcome
 
@@ -900,6 +997,80 @@ def test_a_flyer_draft_keeps_its_media_built_from_the_first_passing_variant() ->
     detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
     assert detail is not None and detail.kind == "static_flyer"
     assert [m.media_url for m in detail.media] == ["generated/t/d/slide-1.png"]
+
+
+SEEDREAM_MEDIA = replace(
+    FLYER_MEDIA, model_id="seedream-5-0-lite-260128", provider="seedream", ai_generated=True
+)
+
+
+def _old_flyer_brief() -> ContentBrief:
+    """A flyer brief as stored before `ad_mode` existed: no mode, a product photo."""
+    return make_brief(
+        variants=1,
+        kind=ContentKind.STATIC_FLYER,
+        media=MediaInputs(product_keys=(f"uploads/{TENANT_ID}/p1.jpg",)),
+    )
+
+
+def test_an_old_flyer_made_by_seedream_is_labelled_ai_even_without_ad_mode() -> None:
+    """PR #100 review: the brief's a-priori label says no (no `ad_mode`), the producer
+    rendered it with Seedream anyway — the draft's label follows the media."""
+    router = FakeRouter([ok_outcome(copy_dict())])
+    media = FakeMedia(MediaOutcome(media=(SEEDREAM_MEDIA,)))
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    brief = _old_flyer_brief()
+    assert brief.media.ad_mode is None and brief.requires_ai_disclosure is False
+    draft_id = repo.seed_draft(brief)
+    assert repo.drafts[draft_id].requires_ai_disclosure is False  # as created
+
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    draft = repo.drafts[draft_id]
+    assert draft.status == GENERATED and draft.requires_ai_disclosure is True
+
+
+def test_a_regeneration_relabels_the_draft_from_the_media_it_made() -> None:
+    router = FakeRouter([ok_outcome(copy_dict()), ok_outcome(copy_dict("Otro hook"))])
+    media = FakeMedia(MediaOutcome(media=(FLYER_MEDIA,)))  # the local composition first
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    draft_id = repo.seed_draft(_old_flyer_brief())
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert repo.drafts[draft_id].requires_ai_disclosure is False
+
+    service.reject(
+        tenant_id=TENANT_ID, draft_id=draft_id, reason="otra", user_id=USER_ID, regenerate=True
+    )
+    media.outcome = MediaOutcome(media=(SEEDREAM_MEDIA,))  # Seedream wired since
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    draft = repo.drafts[draft_id]
+    assert draft.status == GENERATED and draft.revision == 2
+    assert draft.requires_ai_disclosure is True
+
+
+def test_a_failed_regeneration_does_not_keep_the_previous_revisions_media() -> None:
+    """PR #100 review (finding 3): new copy came out, the media did not — the draft is
+    FAILED with the new text and NO images, not the previous revision's."""
+    router = FakeRouter([ok_outcome(copy_dict()), ok_outcome(copy_dict("Otro hook"))])
+    media = FakeMedia(MediaOutcome(media=(FLYER_MEDIA,)))
+    service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
+    draft_id = repo.seed_draft(_old_flyer_brief())
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert repo.drafts[draft_id].preview_key == FLYER_MEDIA.media_url
+
+    service.reject(
+        tenant_id=TENANT_ID, draft_id=draft_id, reason="otra", user_id=USER_ID, regenerate=True
+    )
+    media.outcome = MediaOutcome(failure="provider_error", detail="boom")
+    service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+
+    draft = repo.drafts[draft_id]
+    assert draft.status == FAILED and draft.failure_reason == "provider_error"
+    assert draft.preview_key is None
+    detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
+    assert detail is not None and list(detail.media) == []
+    assert [v.copy["hook"] for v in detail.variants] == ["Otro hook"]
 
 
 def test_a_failed_video_fails_the_draft_but_keeps_the_script_and_the_money_spent() -> None:
@@ -1102,7 +1273,10 @@ def test_a_story_format_makes_a_story_post() -> None:
 def test_a_media_failure_keeps_its_reason_in_words() -> None:
     router = FakeRouter([ok_outcome(copy_dict())])
     media = FakeMedia(
-        MediaOutcome(failure="provider_error", detail="HeyGen: la cuenta no tiene créditos de API.")
+        MediaOutcome(
+            failure="provider_error",
+            detail="La generación no está disponible ahora mismo. Avisa al equipo.",
+        )
     )
     service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice(), media=media)
     brief = make_brief(
@@ -1115,7 +1289,7 @@ def test_a_media_failure_keeps_its_reason_in_words() -> None:
     service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
     detail = service.get_draft(tenant_id=TENANT_ID, draft_id=draft_id)
     assert detail is not None and detail.failure_reason == "provider_error"
-    assert detail.failure_detail == "HeyGen: la cuenta no tiene créditos de API."
+    assert detail.failure_detail == "La generación no está disponible ahora mismo. Avisa al equipo."
 
 
 # -- the business context reaches the prompt (§ request 2026-10-01) ----------------------

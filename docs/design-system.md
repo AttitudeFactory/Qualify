@@ -129,7 +129,7 @@ Valores vigentes en `assets/qualify.css` (los de v2 que cambiaron se indican):
 |---|---|---|
 | `T.PAGE_X` = `--q-page-x` | 2rem (1rem < 900px) | gutter horizontal de toda página |
 | `T.PAD_HEADER` | `1.5rem PAGE_X 1rem PAGE_X` | bloque del título |
-| `T.PAD_BODY` | `0 PAGE_X 2rem PAGE_X` | todo lo demás |
+| `T.PAD_BODY` | `1.25rem PAGE_X 2rem PAGE_X` | todo lo demás; el `1.25rem` de arriba separa el primer bloque de la línea del header (antes `0`: quedaba pegado; QUA-146) |
 | `T.PAD_EMPTY` | `4rem PAGE_X` | empty states |
 | `T.SIDEBAR_W` / `T.SIDEBAR_ZEN_W` | 232px / 72px | sidebar expandida · rail zen |
 | `T.GAP` | 10px (6px < 900px) | aire entre islas, panel y borde de pantalla |

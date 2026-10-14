@@ -802,7 +802,7 @@ def _states() -> rx.Component:
                 empty_state(
                     "link-2-off",
                     "Aún no conectas ninguna cuenta",
-                    "Conecta tu primera cuenta de Instagram o Facebook para empezar a "
+                    "Conecta tu primera red social para empezar a "
                     "escuchar y responder desde Qualify.",
                     action=rx.button(rx.icon("plus", size=16), "Conectar cuenta", size="3"),
                 ),

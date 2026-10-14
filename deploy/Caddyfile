@@ -61,3 +61,22 @@
 		format console
 	}
 }
+
+# Pedidos de Bianki·Polette (repo AttitudeFactory/pedidos) comparte este VPS. Caddy es lo
+# único que escucha en 80/443, así que su sitio se publica desde acá: el backend corre en
+# otro compose (/opt/pedidos) y se alcanza por la red Docker externa `pedidos`, a la que
+# este contenedor también se une (ver docker-compose.prod.yml). Si ese contenedor no está,
+# Caddy responde 502 solo en este host; Qualify no se entera.
+pedidos.attitudefactory.co {
+	encode zstd gzip
+	reverse_proxy pedidos-backend:8420
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+	log {
+		output stdout
+		format console
+	}
+}

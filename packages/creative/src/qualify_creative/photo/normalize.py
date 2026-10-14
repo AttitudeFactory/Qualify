@@ -83,6 +83,21 @@ def export_for_instagram(image: Image.Image, *, width: int = 1080, quality: int 
     return buffer.getvalue()
 
 
+#: The long side a reference image is sent to an image/video model at: enough detail
+#: for the model to keep the product recognisable, small enough to travel as a data URL.
+REFERENCE_MAX_SIDE = 2048
+
+
+def to_reference_jpeg(data: bytes, *, max_side: int = REFERENCE_MAX_SIDE) -> bytes:
+    """An operator photo (or a generated frame) as the JPEG a model takes as reference:
+    upright and sRGB (`load_normalized`), at most `max_side` px on its long side, q90."""
+    image = load_normalized(data)
+    image.thumbnail((max_side, max_side), Image.LANCZOS)
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=90, optimize=True)
+    return buffer.getvalue()
+
+
 #: Meta's cap for a feed or story image (`ig-user/media.md`), the same 8 MB the
 #: publisher enforces (`qualify_api.publishing.client.IMAGE_MAX_BYTES`).
 META_IMAGE_MAX_BYTES = 8 * 1024 * 1024

@@ -18,6 +18,10 @@ DEV = {
     "QUALIFY_CREDENTIAL_DSN": (
         "postgresql+psycopg://qualify_credential:credential_dev@localhost:5432/qualify"
     ),
+    "QUALIFY_WEBHOOK_DSN": "postgresql+psycopg://qualify_webhook:webhook_dev@localhost:5432/qualify",
+    "QUALIFY_WEBHOOK_WORKER_DSN": (
+        "postgresql+psycopg://qualify_webhook_worker:webhook_worker_dev@localhost:5432/qualify"
+    ),
     "QUALIFY_MIGRATION_DSN": "postgresql+psycopg://qualify_owner:dev_only@localhost:5432/qualify",
     "QUALIFY_REDIS_URL": "redis://localhost:6379/0",
 }
@@ -41,7 +45,7 @@ def test_a_variable_already_set_is_kept_and_then_judged() -> None:
 
 def test_the_development_configuration_is_refused_entirely() -> None:
     problems = testdb.guard_problems(DEV)
-    assert len([p for p in problems if "DSN points at" in p]) == 4
+    assert len([p for p in problems if "DSN points at" in p]) == len(testdb.DSN_VARS) == 6
     assert any("Redis db 0" in p for p in problems)
     with pytest.raises(testdb.DbGuardError, match="Refusing"):
         testdb.require_safe(DEV)

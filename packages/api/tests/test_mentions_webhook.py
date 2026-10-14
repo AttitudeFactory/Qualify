@@ -1,8 +1,9 @@
-"""HTTP/HMAC contract for the `mentions` webhook receiver (QUA-49).
+"""HTTP/HMAC contract for the Meta webhook receiver (QUA-49, QUA-147).
 
-Fully offline: no network, no Postgres. The tenant resolver is a fake here —
-`test_mentions_resolve.py` covers `resolve_external_account` itself against
-real Postgres. Mirrors `test_inbox_routes.py`'s harness shape.
+Fully offline: no network, no Postgres. The delivery recorder is a fake here —
+`test_webhook_receiver_db.py` covers `record_delivery` itself against real Postgres, and
+`test_webhook_processor.py` covers what happens to a recorded change afterwards
+(resolution, ORPHAN/AMBIGUOUS, ingestion), which no longer runs in the request.
 """
 
 from __future__ import annotations
@@ -18,14 +19,12 @@ from fastapi.testclient import TestClient
 from qualify_api.http import mentions_routes
 from qualify_api.http.app import create_app
 from qualify_api.mentions.config import MentionsWebhookSettings
-from qualify_api.mentions.resolve import ResolutionOutcome, TenantResolution
+from qualify_api.webhooks.envelope import MAX_BODY_BYTES
+from qualify_api.webhooks.receiver import RecordedDelivery
 
 APP_SECRET = "test-app-secret"
 VERIFY_TOKEN = "test-verify-token"
-
-TENANT = UUID("77777777-7777-4777-8777-777777777777")
-CONNECTION = UUID("88888888-8888-4888-8888-888888888888")
-INGESTED_MENTION_ID = UUID("99999999-9999-4999-8999-999999999999")
+DELIVERY = UUID("99999999-9999-4999-8999-999999999999")
 
 
 def _sign(body: bytes, *, secret: str = APP_SECRET) -> str:
@@ -33,38 +32,40 @@ def _sign(body: bytes, *, secret: str = APP_SECRET) -> str:
 
 
 class Harness:
-    def __init__(
-        self,
-        resolver_calls: list[tuple[str, str]] | None = None,
-        ingestor_calls: list[tuple[str, str | None, TenantResolution]] | None = None,
-        ingestor_returns: UUID | None = INGESTED_MENTION_ID,
-    ) -> None:
-        self.resolutions: dict[str, TenantResolution] = {}
-        self._calls = resolver_calls
-        self._ingestor_calls = ingestor_calls
-        self._ingestor_returns = ingestor_returns
+    """The app with a fake recorder that remembers every call (and can be made to fail).
+    There is deliberately no resolver/ingestor to override any more: if the route ever
+    reached for one again, these tests would hit the raise-until-wired dependency."""
 
-        def fake_resolver(*, platform: str, external_account_id: str) -> TenantResolution:
-            if self._calls is not None:
-                self._calls.append((platform, external_account_id))
-            return self.resolutions.get(
-                external_account_id, TenantResolution(outcome=ResolutionOutcome.ORPHAN)
+    def __init__(self, *, fail_with: Exception | None = None) -> None:
+        self.calls: list[tuple[bytes, str]] = []
+        self._fail_with = fail_with
+
+        def fake_recorder(*, body: bytes, signature_header: str) -> RecordedDelivery:
+            self.calls.append((body, signature_header))
+            if self._fail_with is not None:
+                raise self._fail_with
+            return RecordedDelivery(
+                delivery_id=DELIVERY,
+                duplicate_delivery=False,
+                parse_status="parsed",
+                changes_total=1,
+                changes_new=1,
             )
-
-        async def fake_ingestor(
-            *, media_id: str, comment_id: str | None, resolution: TenantResolution
-        ) -> UUID | None:
-            if self._ingestor_calls is not None:
-                self._ingestor_calls.append((media_id, comment_id, resolution))
-            return self._ingestor_returns
 
         app = create_app(configure_production=False)
         app.dependency_overrides[mentions_routes.get_webhook_settings] = lambda: (
             MentionsWebhookSettings(app_secret=APP_SECRET, verify_token=VERIFY_TOKEN)
         )
-        app.dependency_overrides[mentions_routes.get_tenant_resolver] = lambda: fake_resolver
-        app.dependency_overrides[mentions_routes.get_mention_ingestor] = lambda: fake_ingestor
+        app.dependency_overrides[mentions_routes.get_delivery_recorder] = lambda: fake_recorder
         self.http = TestClient(app)
+
+    def post(self, body: bytes, *, signature: str | None = "auto") -> int:
+        headers = {"Content-Type": "application/json"}
+        if signature == "auto":
+            headers["X-Hub-Signature-256"] = _sign(body)
+        elif signature is not None:
+            headers["X-Hub-Signature-256"] = signature
+        return self.http.post("/api/mentions/webhook", content=body, headers=headers).status_code
 
 
 def _mentions_body(
@@ -87,7 +88,7 @@ def _mentions_body(
 
 
 # ---------------------------------------------------------------------------
-# GET challenge
+# GET challenge — unchanged by QUA-147
 # ---------------------------------------------------------------------------
 
 
@@ -132,242 +133,101 @@ def test_get_missing_verify_token_is_422_not_a_silent_pass() -> None:
 
 
 # ---------------------------------------------------------------------------
-# POST signature validation
+# POST signature validation — a refused body is never recorded
 # ---------------------------------------------------------------------------
 
 
-def test_post_with_valid_signature_and_payload_is_200() -> None:
+def test_post_with_valid_signature_is_recorded_then_200() -> None:
     harness = Harness()
     body = _mentions_body()
 
-    response = harness.http.post(
-        "/api/mentions/webhook",
-        content=body,
-        headers={"X-Hub-Signature-256": _sign(body), "Content-Type": "application/json"},
-    )
-
-    assert response.status_code == 200
+    assert harness.post(body) == 200
+    # Exactly the bytes Meta signed, and the header itself (kept for later re-verification).
+    assert harness.calls == [(body, _sign(body))]
 
 
-def test_post_with_missing_signature_is_403() -> None:
+def test_post_with_missing_signature_is_403_and_nothing_is_recorded() -> None:
+    harness = Harness()
+
+    assert harness.post(_mentions_body(), signature=None) == 403
+    assert harness.calls == []
+
+
+def test_post_with_invalid_signature_is_403_and_nothing_is_recorded() -> None:
+    harness = Harness()
+
+    assert harness.post(_mentions_body(), signature="sha256=" + "0" * 64) == 403
+    assert harness.calls == []
+
+
+def test_post_signed_with_the_wrong_secret_is_403_and_nothing_is_recorded() -> None:
     harness = Harness()
     body = _mentions_body()
 
-    response = harness.http.post(
-        "/api/mentions/webhook", content=body, headers={"Content-Type": "application/json"}
-    )
-
-    assert response.status_code == 403
+    assert harness.post(body, signature=_sign(body, secret="not-the-real-secret")) == 403
+    assert harness.calls == []
 
 
-def test_post_with_invalid_signature_is_403() -> None:
+def test_post_over_the_size_limit_is_413_and_nothing_is_recorded() -> None:
     harness = Harness()
-    body = _mentions_body()
+    body = b"{" + b" " * MAX_BODY_BYTES + b"}"
 
-    response = harness.http.post(
-        "/api/mentions/webhook",
-        content=body,
-        headers={
-            "X-Hub-Signature-256": "sha256=" + "0" * 64,
-            "Content-Type": "application/json",
-        },
-    )
-
-    assert response.status_code == 403
-
-
-def test_post_signed_with_the_wrong_secret_is_403() -> None:
-    harness = Harness()
-    body = _mentions_body()
-
-    response = harness.http.post(
-        "/api/mentions/webhook",
-        content=body,
-        headers={
-            "X-Hub-Signature-256": _sign(body, secret="not-the-real-secret"),
-            "Content-Type": "application/json",
-        },
-    )
-
-    assert response.status_code == 403
+    assert harness.post(body) == 413
+    assert harness.calls == []
 
 
 # ---------------------------------------------------------------------------
-# Tenant resolution outcomes — never picked arbitrarily, always 200 past HMAC
+# What the POST does past the signature: record, and only then 200
 # ---------------------------------------------------------------------------
 
 
-def test_orphan_external_account_id_is_200_and_not_resolved(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[str, str]] = []
-    ingestor_calls: list[tuple[str, str | None, TenantResolution]] = []
-    harness = Harness(resolver_calls=calls, ingestor_calls=ingestor_calls)
-    body = _mentions_body(ig_user_id="does-not-exist")
-
-    response = harness.http.post(
-        "/api/mentions/webhook",
-        content=body,
-        headers={"X-Hub-Signature-256": _sign(body), "Content-Type": "application/json"},
-    )
-
-    assert response.status_code == 200
-    assert calls == [("instagram", "does-not-exist")]
-    # The write-path guard `_resolve_and_ingest` documents: an ORPHAN event must never
-    # reach the ingestor, so it can never become a mention associated with any tenant.
-    assert ingestor_calls == []
-
-
-def test_ambiguous_external_account_id_is_200_and_never_associated() -> None:
-    ingestor_calls: list[tuple[str, str | None, TenantResolution]] = []
-    harness = Harness(ingestor_calls=ingestor_calls)
-    harness.resolutions["ambiguous-id"] = TenantResolution(outcome=ResolutionOutcome.AMBIGUOUS)
-    body = _mentions_body(ig_user_id="ambiguous-id")
-
-    response = harness.http.post(
-        "/api/mentions/webhook",
-        content=body,
-        headers={"X-Hub-Signature-256": _sign(body), "Content-Type": "application/json"},
-    )
-
-    # 200 (Meta must not retry), and the ingestor was never called — an AMBIGUOUS event
-    # must never be persisted against any tenant (same guard as ORPHAN's).
-    assert response.status_code == 200
-    assert ingestor_calls == []
-
-
-def test_resolved_external_account_id_is_200_and_ingested(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    ingestor_calls: list[tuple[str, str | None, TenantResolution]] = []
-    harness = Harness(ingestor_calls=ingestor_calls)
-    resolution = TenantResolution(
-        outcome=ResolutionOutcome.RESOLVED, tenant_id=TENANT, connection_id=CONNECTION
-    )
-    harness.resolutions["111"] = resolution
-    body = _mentions_body(ig_user_id="111", media_id="aaa")
+def test_a_failed_record_is_500_so_meta_retries(caplog: pytest.LogCaptureFixture) -> None:
+    """The one behavior QUA-147 changes on purpose: a delivery that could not be recorded
+    must never be acknowledged — a 200 here would lose the event for good."""
+    harness = Harness(fail_with=RuntimeError("db down"))
+    body = _mentions_body(ig_user_id="secret-looking-id")
 
     with caplog.at_level("INFO"):
-        response = harness.http.post(
-            "/api/mentions/webhook",
-            content=body,
-            headers={"X-Hub-Signature-256": _sign(body), "Content-Type": "application/json"},
-        )
+        assert harness.post(body) == 500
 
-    assert response.status_code == 200
-    assert str(TENANT) in caplog.text
-    assert str(CONNECTION) in caplog.text
-    assert str(INGESTED_MENTION_ID) in caplog.text
-    # RESOLVED is the one outcome that DOES reach the ingestor, with the exact ids the
-    # webhook event carried and the resolution that authorized it.
-    assert ingestor_calls == [("aaa", None, resolution)]
+    assert "NOT recorded" in caplog.text
+    # The payload never reaches the logs, only the exception type.
+    assert "secret-looking-id" not in caplog.text
+    assert "db down" not in caplog.text
 
 
-def test_resolved_but_not_ingested_is_200_and_logs_a_warning_not_a_silent_success(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """`ingest` returning `None` is the documented defensive branch
-    (`composition._content_client_for`'s "should not happen in practice"): a tenant WAS
-    resolved but nothing was persisted. This must never read like the happy-path INFO
-    line — an operator grepping logs for a lost mention needs this to stand out."""
-    harness = Harness(ingestor_returns=None)
-    resolution = TenantResolution(
-        outcome=ResolutionOutcome.RESOLVED, tenant_id=TENANT, connection_id=CONNECTION
-    )
-    harness.resolutions["111"] = resolution
-    body = _mentions_body(ig_user_id="111", media_id="aaa")
-
-    with caplog.at_level("INFO"):
-        response = harness.http.post(
-            "/api/mentions/webhook",
-            content=body,
-            headers={"X-Hub-Signature-256": _sign(body), "Content-Type": "application/json"},
-        )
-
-    # Still 200: Meta must not retry an event that was correctly attributed to a tenant —
-    # retrying would not fix a connection with no readable external_account_id.
-    assert response.status_code == 200
-    assert "resolved but NOT persisted" in caplog.text
-    assert str(TENANT) in caplog.text
-    assert str(CONNECTION) in caplog.text
-    # The happy-path phrasing must NOT also appear — this is a distinct log line, not the
-    # same one with mention_id=None interpolated into it.
-    assert "mentions webhook: resolved tenant=" not in caplog.text
-
-
-# ---------------------------------------------------------------------------
-# Payload shapes: caption mention, comment mention, batch
-# ---------------------------------------------------------------------------
-
-
-def test_caption_mention_has_no_comment_id(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str, str]] = []
-    harness = Harness(resolver_calls=calls)
-    body = _mentions_body(ig_user_id="cap-1", media_id="media-1", comment_id=None)
-
-    response = harness.http.post(
-        "/api/mentions/webhook",
-        content=body,
-        headers={"X-Hub-Signature-256": _sign(body), "Content-Type": "application/json"},
-    )
-
-    assert response.status_code == 200
-    assert calls == [("instagram", "cap-1")]
-
-
-def test_comment_mention_carries_both_ids() -> None:
+def test_malformed_payload_is_still_recorded_and_200() -> None:
+    """Signature-valid but not an envelope: recorded (as `unparseable`, by the recorder),
+    answered 200 — a retry would not fix the body."""
     harness = Harness()
-    body = _mentions_body(ig_user_id="com-1", media_id="media-1", comment_id="comment-1")
+    body = b'{"object": "instagram", "entry": [{"id": "111", "changes": "not-a-list"}]}'
 
-    response = harness.http.post(
-        "/api/mentions/webhook",
-        content=body,
-        headers={"X-Hub-Signature-256": _sign(body), "Content-Type": "application/json"},
-    )
-
-    assert response.status_code == 200
+    assert harness.post(body) == 200
+    assert harness.calls == [(body, _sign(body))]
 
 
-def test_batch_with_multiple_updates_resolves_each(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str, str]] = []
-    harness = Harness(resolver_calls=calls)
+def test_a_comments_change_is_recorded_like_any_other_field() -> None:
+    """The route does not filter by field: `comments` lands in the intake log too (the
+    processor settles it as `unsupported` until its handler exists)."""
+    harness = Harness()
     payload = {
         "object": "instagram",
         "entry": [
-            {"id": "111", "changes": [{"field": "mentions", "value": {"media_id": "aaa"}}]},
-            {
-                "id": "222",
-                "changes": [
-                    {"field": "mentions", "value": {"media_id": "bbb", "comment_id": "ccc"}}
-                ],
-            },
+            {"id": "111", "changes": [{"field": "comments", "value": {"id": "c1", "text": "x"}}]}
         ],
     }
     body = json.dumps(payload).encode("utf-8")
 
-    response = harness.http.post(
-        "/api/mentions/webhook",
-        content=body,
-        headers={"X-Hub-Signature-256": _sign(body), "Content-Type": "application/json"},
-    )
-
-    assert response.status_code == 200
-    assert set(calls) == {("instagram", "111"), ("instagram", "222")}
+    assert harness.post(body) == 200
+    assert len(harness.calls) == 1
 
 
-def test_malformed_payload_is_200_not_500() -> None:
-    """Signature-valid but contract-invalid — logged, never a 5xx that would make
-    Meta retry a body retrying cannot fix."""
-    harness = Harness()
-    body = b'{"object": "instagram", "entry": [{"id": "111", "changes": "not-a-list"}]}'
-
-    response = harness.http.post(
-        "/api/mentions/webhook",
-        content=body,
-        headers={"X-Hub-Signature-256": _sign(body), "Content-Type": "application/json"},
-    )
-
-    assert response.status_code == 200
+def test_the_request_never_resolves_a_tenant_or_ingests() -> None:
+    """Structural: the mentions route module no longer exposes the inline resolver/
+    ingestor seams it used before QUA-147."""
+    assert not hasattr(mentions_routes, "get_tenant_resolver")
+    assert not hasattr(mentions_routes, "get_mention_ingestor")
+    assert not hasattr(mentions_routes, "_resolve_and_ingest")
 
 
 def test_an_unconfigured_app_cannot_verify_webhooks() -> None:
@@ -380,4 +240,20 @@ def test_an_unconfigured_app_cannot_verify_webhooks() -> None:
         http.get(
             "/api/mentions/webhook",
             params={"hub.mode": "subscribe", "hub.challenge": "1", "hub.verify_token": "x"},
+        )
+
+
+def test_an_unwired_recorder_never_answers_200() -> None:
+    app = create_app(configure_production=False)
+    app.dependency_overrides[mentions_routes.get_webhook_settings] = lambda: (
+        MentionsWebhookSettings(app_secret=APP_SECRET, verify_token=VERIFY_TOKEN)
+    )
+    http = TestClient(app)
+    body = _mentions_body()
+
+    with pytest.raises(NotImplementedError, match="delivery recorder"):
+        http.post(
+            "/api/mentions/webhook",
+            content=body,
+            headers={"X-Hub-Signature-256": _sign(body)},
         )

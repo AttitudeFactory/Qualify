@@ -27,8 +27,9 @@ from .creative_vm import (
     ToneRowVM,
 )
 from .gallery_state import GalleryState
+from .media_carousel import media_carousel
 from .planner_vm import GALLERY_FILTER_ALL, GALLERY_STATE_FILTERS
-from .post_card import campaign_badge, color_swatches, kind_chip, media_fill
+from .post_card import campaign_badge, color_swatches, kind_chip, media_fill, viewable_src
 from .r2_media import BACKEND_BASE
 from .ui import (
     app_shell,
@@ -1240,9 +1241,8 @@ def _failed_panel() -> rx.Component:
 
 def _media_item(item: rx.Var[MediaVM]) -> rx.Component:
     # R2-only media comes through the backend's `/r2media/<token>` (`r2_media.py`);
-    # everything else from the local upload store, as before.
-    # A provider/seed URL (`http…`) is shown as is — it is not an upload-store key.
-    local = rx.cond(item.key.startswith("http"), item.key, rx.get_upload_url(item.key))
+    # everything else is resolved the one way every POST picture is (`viewable_src`).
+    local = viewable_src(item.key)
     src = rx.cond(item.url != "", BACKEND_BASE + item.url, local)
     download_href = rx.cond(item.url != "", BACKEND_BASE + item.url + "?download=1", local)
     file_name = rx.cond(item.media_type == "video", "qualify-video.mp4", "qualify-imagen.jpg")
@@ -1258,7 +1258,10 @@ def _media_item(item: rx.Var[MediaVM]) -> rx.Component:
                 controls=True,
                 width="100%",
                 height="auto",
-                class_name="q-rv-media q-rv-media--video",
+                # a carousel's video slide keeps its feed shape (see content_generator)
+                class_name=rx.cond(
+                    item.is_slide, "q-rv-media q-rv-media--slide", "q-rv-media q-rv-media--video"
+                ),
             ),
             rx.image(src=src, alt="", class_name="q-rv-media q-rv-media--image"),
         ),
@@ -1318,7 +1321,20 @@ def _media_column() -> rx.Component:
     return rx.cond(
         draft.media.length() > 0,
         rx.vstack(
-            rx.foreach(draft.media, _media_item),
+            rx.cond(
+                # § request 2026-10-08: a carousel's slides as a real carousel
+                CreativeState.draft_is_carousel,
+                media_carousel(
+                    draft.media,
+                    CreativeState.draft_slide,
+                    on_prev=CreativeState.draft_slide_step(-1),
+                    on_next=CreativeState.draft_slide_step(1),
+                    on_pick=CreativeState.draft_slide_pick,
+                    on_tick=CreativeState.draft_slide_auto,
+                    render_item=_media_item,
+                ),
+                rx.foreach(draft.media, _media_item),
+            ),
             spacing="3",
             width=_MEDIA_COLUMN_WIDTH,
             max_width=rx.breakpoints(initial="22rem", md="none"),

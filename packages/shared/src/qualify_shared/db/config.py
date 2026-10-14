@@ -22,6 +22,14 @@ DEFAULT_ADMIN_DSN = "postgresql+psycopg://qualify_admin:admin_dev@localhost:5432
 DEFAULT_CREDENTIAL_DSN = (
     "postgresql+psycopg://qualify_credential:credential_dev@localhost:5432/qualify"
 )
+# `qualify_webhook`: the Meta webhook RECEIVER (QUA-147) — INSERT on the two intake tables,
+# nothing else; NOBYPASSRLS. See migration 0050.
+DEFAULT_WEBHOOK_DSN = "postgresql+psycopg://qualify_webhook:webhook_dev@localhost:5432/qualify"
+# `qualify_webhook_worker`: the intake processor + purge (QUA-147) — the intake tables' queue
+# columns plus five columns of `social_connections` for the cross-tenant resolution.
+DEFAULT_WEBHOOK_WORKER_DSN = (
+    "postgresql+psycopg://qualify_webhook_worker:webhook_worker_dev@localhost:5432/qualify"
+)
 
 
 def app_dsn() -> str:
@@ -34,3 +42,11 @@ def admin_dsn() -> str:
 
 def credential_dsn() -> str:
     return os.environ.get("QUALIFY_CREDENTIAL_DSN", DEFAULT_CREDENTIAL_DSN)
+
+
+def webhook_dsn() -> str:
+    return os.environ.get("QUALIFY_WEBHOOK_DSN", DEFAULT_WEBHOOK_DSN)
+
+
+def webhook_worker_dsn() -> str:
+    return os.environ.get("QUALIFY_WEBHOOK_WORKER_DSN", DEFAULT_WEBHOOK_WORKER_DSN)

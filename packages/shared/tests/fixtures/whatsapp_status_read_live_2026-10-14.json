@@ -1,0 +1,58 @@
+{
+  "_fixture_note": "LIVE payload captured 2026-10-14 from Meta's 'Revisa los webhooks de prueba' panel after the founder sent the 'Confirmación del pedido' test template from the test number. Only the recipient phone numbers and user ids were redacted (584240000000 / VE.REDACTED); every other byte is Meta's. The `internal_1p_only_data` block is kept verbatim because the parser must tolerate it, not because anything may read it.",
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "2338576026889338",
+      "changes": [
+        {
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "15556336018",
+              "phone_number_id": "1393787420477981"
+            },
+            "contacts": [
+              {
+                "wa_id": "584240000000",
+                "user_id": "VE.REDACTED"
+              }
+            ],
+            "statuses": [
+              {
+                "id": "wamid.HBgMNTg0MjQ3MDAwMjkxFQIAERgSQzUwREJGQjc1M0Y1QzEwOTU3AA==",
+                "status": "read",
+                "timestamp": "1791953775",
+                "recipient_id": "584240000000",
+                "recipient_logical_id": "584240000000",
+                "recipient_user_id": "VE.REDACTED",
+                "conversation": {
+                  "id": "bdbc2da5a788a6883d3f97dfff2a2c03",
+                  "origin": {
+                    "type": "utility"
+                  }
+                },
+                "pricing": {
+                  "billable": true,
+                  "pricing_model": "PMP",
+                  "category": "utility",
+                  "type": "regular"
+                },
+                "internal_1p_only_data": {
+                  "webhook_extra_data": "FQAW6My+rd7t9wUW1pubyAU29LHnlYW7pwgYCWdyYXBoX2FwaUwWuqi4wY3p+QQW9LHnlYW7pwgW6My+rd7t9wUlAgAA",
+                  "account_context": {
+                    "cs_id": "1393787420477981",
+                    "pma_id": "2338576026889338",
+                    "app_id": "1670943920870196",
+                    "account_context_type": "paid_messaging"
+                  }
+                }
+              }
+            ]
+          },
+          "field": "messages"
+        }
+      ]
+    }
+  ]
+}

@@ -1363,7 +1363,13 @@ body {
   box-shadow: inset 0 0 0 1px var(--accent-a8), 0 0 0 4px var(--accent-a3);
 }
 
-/* `.lq-switch` → Switch: a gradient of the accent when on, a floating thumb. */
+/* `.lq-switch` → Switch: a gradient of the accent when on, a floating thumb.
+   The gradient is painted on the root, but Radix draws the pill on `::before` and
+   leaves the root's own radius unset (`--skeleton-radius`), so the root needs the
+   pill's radius too — otherwise the gradient shows as a square behind the thumb. */
+.radix-themes .rt-SwitchRoot {
+  border-radius: var(--switch-border-radius);
+}
 .radix-themes .rt-SwitchRoot:where([data-state="checked"]) {
   background-image: linear-gradient(90deg, var(--accent-9), var(--accent-8));
 }
@@ -1523,4 +1529,26 @@ body {
 .q-step-dot--done,
 .q-step-dot--icon.q-step-dot--current {
   background: linear-gradient(135deg, var(--accent-9), var(--accent-8));
+}
+
+/* QUA-152 — the mention peek: the hover card over a mention's text in the Dashboard de
+   Menciones. Same island glass as every overlay (lq-glass skin), plus an accent wash and
+   glow so the full mention reads as the focus of the row it belongs to. */
+.q-mention-peek {
+  border: 1px solid var(--accent-a6);
+  background-image: linear-gradient(160deg, var(--accent-a4), transparent 60%);
+  box-shadow:
+    0 0 0 1px var(--accent-a3),
+    0 22px 48px -18px var(--accent-a8),
+    var(--q-elev-lift);
+}
+
+/* QUA-152 — a mention's text in the phone/tablet card: at most three lines, the rest cut
+   with an ellipsis (touch has no hover card to read it in). */
+.q-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }

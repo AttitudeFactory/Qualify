@@ -101,7 +101,7 @@ def _connection_section() -> rx.Component:
     return section(
         "Cuenta",
         _connection_selector(),
-        description="La cuenta de Instagram conectada donde se publicará la Story.",
+        description="La cuenta conectada donde se publicará la Story.",
     )
 
 

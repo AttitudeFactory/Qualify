@@ -675,7 +675,8 @@ async def test_refresh_after_write_updates_reel_summaries_is_monitored_without_a
 
 def test_polling_timer_only_mounts_inside_the_gated_inbox_tree() -> None:
     """The timer must live inside `_sync_section()`, itself only rendered behind
-    `InboxState.has_connections` in `inbox_index()` — the same gate the manual button
+    `InboxState.has_connections` in `_body()` (QUA-146 moved it there from between header
+    and body, for layout only), which only `inbox_index()` renders — the same gate the manual button
     already sits behind, and the only place `/inbox`'s component tree exists at all. This
     is what makes "stops on leaving /inbox" unconditionally true: the timer is never part
     of any component tree outside this one route's `rx.cond`-gated subtree, so React
@@ -685,10 +686,11 @@ def test_polling_timer_only_mounts_inside_the_gated_inbox_tree() -> None:
     from . import inbox_page
 
     section_source = inspect.getsource(inbox_page._sync_section)
+    body_source = inspect.getsource(inbox_page._body)
     index_source = inspect.getsource(inbox_page.inbox_index)
     assert "_polling_timer()" in section_source
-    assert "_sync_section()" in index_source
-    assert "InboxState.has_connections" in index_source
+    assert "rx.cond(InboxState.has_connections, _sync_section(), rx.fragment())" in body_source
+    assert "_body()" in index_source
 
 
 # --------------------------------------------------------------------------------------
