@@ -16,10 +16,13 @@ never carries a token, a response body or a user's text.
 - `get_phone_number` → `GET /{PHONE_NUMBER_ID}?fields=…`
 - `get_business_profile`, `update_business_profile` →
   `GET/POST /{PHONE_NUMBER_ID}/whatsapp_business_profile`
+- `upload_profile_picture` → `POST /{APP_ID}/uploads` then `POST /upload:<SESSION>`
+  (Resumable Upload API, `Authorization: OAuth` on the second call) → the `h` handle
 - `get_conversational_automation` → `GET /{PHONE_NUMBER_ID}?fields=conversational_automation`
 - `set_conversational_automation` → `POST /{PHONE_NUMBER_ID}/conversational_automation`
 - `create_qr_code`, `list_qr_codes`, `delete_qr_code` →
-  `POST/GET/DELETE /{PHONE_NUMBER_ID}/message_qrdls[/{code}]`
+  `POST/GET/DELETE /{PHONE_NUMBER_ID}/message_qrdls[/{code}]` (list asks
+  `fields=…,qr_image_url.format(PNG)` so every listed code carries its image)
 - `list_templates`, `create_template`, `delete_template` (WA-18) →
   `GET/POST/DELETE /{WABA_ID}/message_templates` — the WABA-level calls. The client
   checks the `waba_id` argument against the one it was built with (when it was), so a
@@ -115,6 +118,16 @@ MAX_PROFILE_WEBSITES: Final = 2
 MAX_PROFILE_WEBSITE_CHARS: Final = 256
 # QR codes (business-management-api/qr-codes, 2026-10-14).
 MAX_QR_PREFILLED_MESSAGE_CHARS: Final = 140
+# `qr_image_url` is not returned by a plain list: the field must be requested WITH its
+# format (graph-api/reference/whats-app-business-message-qrdl, read 2026-10-14: "When
+# requested, must designate the image format you want returned", example
+# `?fields=qr_image_url.format(SVG)`). Naming one field drops the defaults, so the other
+# three are named too.
+QR_LIST_FIELDS: Final = "code,prefilled_message,deep_link_url,qr_image_url.format(PNG)"
+# Resumable Upload API (graph-api/guides/upload, read 2026-10-14): the file types it
+# accepts. A business profile picture is an image, so only the two image types are
+# admitted by `upload_profile_picture`.
+PROFILE_PICTURE_TYPES: Final = ("image/jpeg", "image/png")
 
 # Templates (templates/overview, read 2026-10-14): lowercase alphanumerics and
 # underscores, ≤512 characters; the same name may exist once per language.
@@ -214,6 +227,12 @@ class WhatsAppApiError(Exception):
         return self.status == 401 or self.code == 190
 
 
+class ProfilePictureUploadNotConfigured(RuntimeError):
+    """`upload_profile_picture` was called on a client built without `app_id` and the
+    `OAuth`-scheme `upload_client` (see `HttpWhatsAppClient`). A wiring error, not a
+    platform error — deliberately not a `WhatsAppApiError`."""
+
+
 # ======================================================================================
 # Shapes
 # ======================================================================================
@@ -281,8 +300,8 @@ class BusinessProfile:
 @dataclass(frozen=True)
 class BusinessProfileUpdate:
     """Only the fields set (non-`None`) are sent; Meta leaves the others untouched.
-    `profile_picture_handle` comes from the Resumable Upload API, not from
-    `upload_media` — out of scope here, accepted as an opaque string."""
+    `profile_picture_handle` is the `h` handle `upload_profile_picture` returns (the
+    Resumable Upload API) — NOT a `upload_media` id, which Meta does not accept here."""
 
     about: str | None = None
     address: str | None = None
@@ -310,7 +329,9 @@ class ConversationalAutomation:
 
 @dataclass(frozen=True)
 class QrCode:
-    """`qr_image_url` is returned by create only; list/get omit it (qr-codes page)."""
+    """`qr_image_url` comes back on create (`generate_qr_image`) and on list because
+    `list_qr_codes` asks for `qr_image_url.format(PNG)` (`QR_LIST_FIELDS`); `None` only
+    when Meta omits it."""
 
     code: str
     prefilled_message: str
@@ -464,6 +485,11 @@ class WhatsAppClient(Protocol):
     async def get_business_profile(self) -> BusinessProfile: ...
 
     async def update_business_profile(self, profile: BusinessProfileUpdate) -> None: ...
+
+    async def upload_profile_picture(self, content: bytes, content_type: str) -> str:
+        """Upload a profile picture through the Resumable Upload API and return its `h`
+        handle — the value `BusinessProfileUpdate.profile_picture_handle` takes."""
+        ...
 
     async def get_conversational_automation(self) -> ConversationalAutomation: ...
 
@@ -927,6 +953,23 @@ def _parse_media_upload(payload: dict[str, Any]) -> str:
     return media_id
 
 
+def _parse_upload_session(payload: dict[str, Any]) -> str:
+    """[DOC] graph-api/guides/upload step 1: `{"id": "upload:<UPLOAD_SESSION_ID>"}`. The
+    whole string (prefix included) is the path of step 2."""
+    session_id = payload.get("id")
+    if not isinstance(session_id, str) or not session_id.startswith("upload:"):
+        raise WhatsAppApiError("upload session response carried no upload:<id>")
+    return session_id
+
+
+def _parse_upload_handle(payload: dict[str, Any]) -> str:
+    """[DOC] graph-api/guides/upload step 2: `{"h": "<UPLOADED_FILE_HANDLE>"}`."""
+    handle = payload.get("h")
+    if not isinstance(handle, str) or not handle:
+        raise WhatsAppApiError("upload response carried no file handle")
+    return handle
+
+
 def _parse_media_info(payload: dict[str, Any]) -> MediaInfo:
     """[DOC] reference/media GET: `{messaging_product, url, mime_type, sha256,
     file_size, id}`; `url` expires after 5 minutes."""
@@ -1021,7 +1064,8 @@ def _parse_conversational_automation(payload: dict[str, Any]) -> ConversationalA
 
 def _parse_qr_code(item: dict[str, Any]) -> QrCode:
     """[DOC] business-management-api/qr-codes: `{code, prefilled_message, deep_link_url,
-    qr_image_url?}` — `qr_image_url` present on create only."""
+    qr_image_url?}` — `qr_image_url` present on create and on a list that requested it
+    (`QR_LIST_FIELDS`)."""
     code = item.get("code")
     if not isinstance(code, str) or not code:
         raise WhatsAppApiError("QR code response carried no code")
@@ -1228,7 +1272,16 @@ class HttpWhatsAppClient:
     about one business number, and a client that took it per call would let a caller
     send from a number another tenant owns by passing the wrong id. `waba_id` is
     accepted for the WABA-level calls later stories add (templates, WA-18) and unused
-    here."""
+    here.
+
+    `app_id` + `upload_client` exist only for `upload_profile_picture`: the Resumable
+    Upload API opens its session on the APP (`POST /{APP_ID}/uploads`), and its byte
+    upload (`POST /upload:<id>`) requires `Authorization: OAuth <token>` — the scheme
+    R12 already established for `rupload` hosts, documented for this endpoint too
+    (graph-api/guides/upload). The resolver mints that client
+    (`client_for(connection_id, scheme="OAuth")`); this class never sees a token, so it
+    cannot re-scheme the Bearer one itself. Both absent → `upload_profile_picture`
+    raises `ProfilePictureUploadNotConfigured`; every other method is unaffected."""
 
     def __init__(
         self,
@@ -1236,6 +1289,9 @@ class HttpWhatsAppClient:
         graph_url: str,
         phone_number_id: str,
         waba_id: str | None = None,
+        *,
+        app_id: str | None = None,
+        upload_client: AuthenticatedClient | None = None,
     ) -> None:
         if not phone_number_id:
             raise ValueError("phone_number_id must not be empty")
@@ -1243,6 +1299,8 @@ class HttpWhatsAppClient:
         self._graph_url = graph_url.rstrip("/")
         self._phone_number_id = phone_number_id
         self._waba_id = waba_id
+        self._app_id = app_id
+        self._upload_client = upload_client
 
     @property
     def phone_number_id(self) -> str:
@@ -1420,6 +1478,55 @@ class HttpWhatsAppClient:
         )
         _parse_success(payload, "update_business_profile")
 
+    async def upload_profile_picture(self, content: bytes, content_type: str) -> str:
+        """[DOC] graph-api/guides/upload (read 2026-10-14), two calls:
+
+        1. `POST /{APP_ID}/uploads?file_name&file_length&file_type` (query string, no
+           body) on the Graph client → `{"id": "upload:<SESSION>"}`.
+        2. `POST /upload:<SESSION>` with header `file_offset: 0` and the raw bytes as
+           the body, on the `OAuth`-scheme client → `{"h": "<HANDLE>"}`.
+
+        Returns the handle for `BusinessProfileUpdate.profile_picture_handle`. The
+        interrupted-upload resume (`GET /upload:<id>` → `file_offset`) is not
+        implemented: a profile picture is small enough that a failure re-runs both steps.
+        """
+        if not content:
+            raise ValueError("profile picture content must not be empty")
+        if content_type not in PROFILE_PICTURE_TYPES:
+            raise ValueError(f"content_type must be one of {PROFILE_PICTURE_TYPES}")
+        if not self._app_id or self._upload_client is None:
+            raise ProfilePictureUploadNotConfigured(
+                "upload_profile_picture needs app_id and an OAuth-scheme upload_client"
+            )
+        extension = "png" if content_type == "image/png" else "jpg"
+        try:
+            response = await self._graph.post(
+                self._url(f"{self._app_id}/uploads"),
+                params={
+                    "file_name": f"profile_picture.{extension}",
+                    "file_length": str(len(content)),
+                    "file_type": content_type,
+                },
+            )
+        except httpx.TransportError as exc:
+            raise WhatsAppApiError(
+                "transport failure during upload_profile_picture[session]", is_transport=True
+            ) from exc
+        _raise_for_status(response, "upload_profile_picture[session]")
+        session_id = _parse_upload_session(
+            _json_object(response, "upload_profile_picture[session]")
+        )
+        try:
+            response = await self._upload_client.post(
+                self._url(session_id), headers={"file_offset": "0"}, content=content
+            )
+        except httpx.TransportError as exc:
+            raise WhatsAppApiError(
+                "transport failure during upload_profile_picture[bytes]", is_transport=True
+            ) from exc
+        _raise_for_status(response, "upload_profile_picture[bytes]")
+        return _parse_upload_handle(_json_object(response, "upload_profile_picture[bytes]"))
+
     # -- conversational automation -------------------------------------------------------
 
     async def get_conversational_automation(self) -> ConversationalAutomation:
@@ -1452,7 +1559,9 @@ class HttpWhatsAppClient:
 
     async def list_qr_codes(self) -> list[QrCode]:
         payload = await self._get_json(
-            self._url(f"{self._phone_number_id}/message_qrdls"), "list_qr_codes"
+            self._url(f"{self._phone_number_id}/message_qrdls"),
+            "list_qr_codes",
+            params={"fields": QR_LIST_FIELDS},
         )
         return _parse_qr_list(payload)
 

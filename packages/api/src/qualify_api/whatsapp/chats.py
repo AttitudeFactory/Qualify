@@ -33,20 +33,26 @@ caller cannot probe which ids exist. `assign` checks the agent is a `users` row 
 under the same RLS scope (1 login = 1 tenant, migration 0008), so a thread cannot be
 assigned to another tenant's user.
 
+## Media (0061)
+
+- **Inbound**: WA-07 writes `messages.media_type` for every non-text message and
+  `media_id`/`media_mime` for image/audio/video/document/sticker. `media_kind` of an
+  inbound record is that `media_type`; `has_media` is "`media_id` is set" — the UI asks
+  `GET /api/whatsapp/media/{message_id}` only then.
+- **Outbound**: the sender's `messages` row carries the `wamid`, and the
+  `whatsapp_outbox` row that produced it holds the body, whose `type` is the
+  `media_kind`. An outbound row never `has_media` (we sent the link/id, we do not
+  re-serve it here).
+- **Previews** name the kind: «[imagen]», «[audio]», «[video]», «[documento]»,
+  «[sticker]», «[ubicación]», «[contacto]», «[pedido]»… (`MEDIA_PREVIEWS`); a caption is
+  stored as `text`, so a captioned photo previews as its caption.
+- **The bytes** go through a `MediaLocator`; production's is
+  `whatsapp.media.CapturingMediaLocator` (download from Meta on first request, copy to
+  R2, serve through the public-media token). Its outcomes are the exceptions below,
+  which the route maps to status codes.
+
 ## Known gaps (documented, not guessed)
 
-- **Inbound media is not retrievable.** WA-07 stores `text = NULL` for a media message
-  and persists neither its Meta `media_id` nor its type — there is no column for either
-  (0004/0057/0058), and adding one is a migration this story must not ship. So
-  `GET /api/whatsapp/media/{message_id}` goes through a `MediaLocator` whose production
-  implementation (`NotCapturedMediaLocator`) always answers "not captured" (the route's
-  501 `media_not_captured`). Closing the gap needs: a `messages.media_id`/`media_type`
-  column (architect call), WA-07 writing it, and a locator that downloads lazily through
-  `WhatsAppClient.get_media`/`download_media` into R2 keyed by `media_id`.
-- **Inbound previews cannot name the media type** for the same reason: an inbound row
-  with `text IS NULL` previews as «[mensaje]». Outbound rows CAN: the sender's
-  `messages` row carries the `wamid`, and the `whatsapp_outbox` row that produced it
-  holds the body, whose `type` gives «[imagen]» / «[audio]» / «[documento]».
 - **Message paging** uses `before` = a timestamp (`posted_at`, falling back to
   `ingested_at` when Meta's timestamp was unparseable). Two messages with the exact same
   instant on a page boundary could be skipped; acceptable at a person's chat pace, and
@@ -81,12 +87,20 @@ DEFAULT_LIMIT: Final = 50
 MAX_LIMIT: Final = 200
 OUTBOX_KIND_REPLY: Final = "reply"
 
-# Preview text for a message whose `text` is NULL, keyed by the body `type` of the
-# outbox row that produced it (outbound only — module docstring).
+# Preview text for a message whose `text` is NULL, keyed by its `media_kind`: the
+# inbound `messages.media_type` (0061) or the body `type` of the outbound outbox row.
 MEDIA_PREVIEWS: Final[dict[str, str]] = {
     "image": "[imagen]",
     "audio": "[audio]",
+    "video": "[video]",
     "document": "[documento]",
+    "sticker": "[sticker]",
+    "location": "[ubicación]",
+    "contacts": "[contacto]",
+    "button": "[botón]",
+    "interactive": "[respuesta]",
+    "order": "[pedido]",
+    "template": "[plantilla]",
 }
 GENERIC_PREVIEW: Final = "[mensaje]"
 
@@ -216,9 +230,12 @@ class MessageRecord:
     delivery_status: str | None
     delivery_error_code: str | None
     external_message_id: str
-    # Body `type` of the outbox row that produced an outbound message (`image`, `text`,
-    # `interactive`, …); always `None` for inbound (not persisted — module docstring).
+    # Outbound: body `type` of the outbox row that produced it (`image`, `text`,
+    # `interactive`, …). Inbound: `messages.media_type` (0061; `None` for a text).
     media_kind: str | None = None
+    # Inbound only: Meta gave a media id, so `GET /api/whatsapp/media/{id}` can serve it.
+    has_media: bool = False
+    media_mime: str | None = None
 
 
 @dataclass(frozen=True)
@@ -359,7 +376,9 @@ SELECT t.id, t.connection_id, t.external_thread_id AS wa_id, t.status, t.assigne
   FROM threads t
   LEFT JOIN whatsapp_thread_state s ON s.thread_id = t.id
   LEFT JOIN LATERAL (
-        SELECT m.text, m.direction, ob.payload->>'type' AS media_kind
+        SELECT m.text, m.direction,
+               CASE WHEN m.direction = 'outbound' THEN ob.payload->>'type'
+                    ELSE m.media_type END AS media_kind
           FROM messages m
           LEFT JOIN whatsapp_outbox ob
                  ON m.direction = 'outbound'
@@ -391,7 +410,10 @@ _LIST_MESSAGES = """
 SELECT * FROM (
     SELECT m.id, m.direction, m.text, {instant} AS posted_at, m.delivery_status,
            m.delivery_error_code, m.external_message_id,
-           CASE WHEN m.direction = 'outbound' THEN ob.payload->>'type' END AS media_kind
+           CASE WHEN m.direction = 'outbound' THEN ob.payload->>'type'
+                ELSE m.media_type END AS media_kind,
+           (m.direction = 'inbound' AND m.media_id IS NOT NULL) AS has_media,
+           CASE WHEN m.direction = 'inbound' THEN m.media_mime END AS media_mime
       FROM messages m
       LEFT JOIN whatsapp_outbox ob
              ON m.direction = 'outbound'
@@ -526,6 +548,8 @@ class PostgresChatRepository:
                 delivery_error_code=r.delivery_error_code,
                 external_message_id=r.external_message_id,
                 media_kind=r.media_kind,
+                has_media=bool(r.has_media),
+                media_mime=r.media_mime,
             )
             for r in rows
         ]
@@ -586,7 +610,12 @@ class MemoryMessage:
     author_username: str | None = None
     delivery_status: str | None = None
     delivery_error_code: str | None = None
+    # Outbound: the outbox body type. Inbound: `messages.media_type`.
     media_kind: str | None = None
+    connection_id: UUID | None = None
+    media_id: str | None = None
+    media_mime: str | None = None
+    media_object_key: str | None = None
     deleted: bool = False
 
 
@@ -648,6 +677,8 @@ class MemoryChatRepository:
         author_username: str | None = None,
         media_kind: str | None = None,
         delivery_status: str | None = None,
+        media_id: str | None = None,
+        media_mime: str | None = None,
     ) -> UUID:
         thread = self.threads[thread_id]
         message = MemoryMessage(
@@ -661,6 +692,9 @@ class MemoryChatRepository:
             author_username=author_username,
             media_kind=media_kind,
             delivery_status=delivery_status,
+            connection_id=thread.connection_id,
+            media_id=media_id,
+            media_mime=media_mime,
         )
         self.messages.append(message)
         if thread.last_message_at is None or posted_at > thread.last_message_at:
@@ -704,9 +738,7 @@ class MemoryChatRepository:
             last_inbound_at=thread.last_inbound_at,
             contact_name=names[-1] if names else None,
             last_message_text=last.text if last else None,
-            last_message_media_kind=(
-                last.media_kind if last and last.direction == "outbound" else None
-            ),
+            last_message_media_kind=last.media_kind if last else None,
             last_message_direction=last.direction if last else None,
             unread_count=unread,
             automation_paused_at=state.automation_paused_at if state else None,
@@ -768,10 +800,37 @@ class MemoryChatRepository:
                 delivery_status=m.delivery_status,
                 delivery_error_code=m.delivery_error_code,
                 external_message_id=m.external_message_id,
-                media_kind=m.media_kind if m.direction == "outbound" else None,
+                media_kind=m.media_kind,
+                has_media=m.direction == "inbound" and m.media_id is not None,
+                media_mime=m.media_mime if m.direction == "inbound" else None,
             )
             for m in rows[-limit:]
         ]
+
+    # --- the media-record seam (`whatsapp.media.MediaRecordRepository`) --------------
+
+    def get_media(self, *, tenant_id: UUID, message_id: UUID) -> MediaRecord | None:
+        for m in self.messages:
+            if m.id != message_id or m.tenant_id != tenant_id or m.deleted:
+                continue
+            thread = self.threads.get(m.thread_id)
+            if thread is None or thread.channel != CHANNEL_WHATSAPP:
+                return None
+            return MediaRecord(
+                message_id=m.id,
+                connection_id=thread.connection_id,
+                direction=m.direction,
+                media_type=m.media_kind if m.direction == "inbound" else None,
+                media_id=m.media_id,
+                media_mime=m.media_mime,
+                media_object_key=m.media_object_key,
+            )
+        return None
+
+    def set_media_object_key(self, *, tenant_id: UUID, message_id: UUID, object_key: str) -> None:
+        for m in self.messages:
+            if m.id == message_id and m.tenant_id == tenant_id and m.media_object_key is None:
+                m.media_object_key = object_key
 
     def user_in_tenant(self, *, tenant_id: UUID, user_id: UUID) -> bool:
         return (tenant_id, user_id) in self.users
@@ -944,22 +1003,57 @@ class ChatService:
 
 
 # ======================================================================================
-# Media (gap — module docstring)
+# Media (module docstring, "Media (0061)") — the seam; the implementation is media.py
 # ======================================================================================
 
 
-class MediaLocator(Protocol):
-    """Where the bytes of an inbound media message can be fetched from: a URL the route
-    redirects to, or `None` when the media was never captured."""
+@dataclass(frozen=True)
+class MediaRecord:
+    """What the media locator needs of one `messages` row (0061 columns)."""
 
-    def locate(self, *, tenant_id: UUID, message_id: UUID) -> str | None: ...
+    message_id: UUID
+    connection_id: UUID
+    direction: str
+    media_type: str | None
+    media_id: str | None
+    media_mime: str | None
+    media_object_key: str | None
+
+
+class MediaMessageNotFound(LookupError):
+    """No WhatsApp message with this id for this tenant (route: 404)."""
+
+
+class MediaNotCaptured(LookupError):
+    """The message exists but carries no downloadable media: a text, a location, an
+    outbound message, or an inbound row stored before 0061 (route: 501
+    `media_not_captured`)."""
+
+
+class MediaExpired(Exception):
+    """Meta no longer holds the media (its id lives ~30 days) and it was never copied to
+    R2 (route: 410 `media_expired`)."""
+
+
+class MediaUnavailable(Exception):
+    """Meta or R2 failed for a reason a retry may fix (transport, 5xx, throttling) or that
+    an operator must fix (an auth failure on the connection) (route: 502
+    `media_unavailable`). Carries no body, no token."""
+
+
+class MediaLocator(Protocol):
+    """Where the bytes of an inbound media message can be fetched from: the URL the route
+    redirects to (307). Raises one of the four exceptions above otherwise."""
+
+    async def locate(self, *, tenant_id: UUID, message_id: UUID) -> str: ...
 
 
 class NotCapturedMediaLocator:
-    """Production today: WA-07 persists no `media_id`, so nothing can be located."""
+    """A locator with no media plane (no R2, no Meta): everything is "not captured".
+    Kept for tests and for an app booted without the media dependencies."""
 
-    def locate(self, *, tenant_id: UUID, message_id: UUID) -> str | None:
-        return None
+    async def locate(self, *, tenant_id: UUID, message_id: UUID) -> str:
+        raise MediaNotCaptured(str(message_id))
 
 
 def production_chat_service() -> ChatService:
@@ -974,7 +1068,12 @@ __all__ = [
     "ChatRepository",
     "ChatService",
     "ImageSend",
+    "MediaExpired",
     "MediaLocator",
+    "MediaMessageNotFound",
+    "MediaNotCaptured",
+    "MediaRecord",
+    "MediaUnavailable",
     "MemoryChatRepository",
     "MessageRecord",
     "NotCapturedMediaLocator",

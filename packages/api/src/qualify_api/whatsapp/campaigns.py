@@ -47,10 +47,10 @@ outbox rows pushed out and re-paced on resume — follow-up).
   becomes `skipped` with the note «reintentar ≥24 h» (`retry_not_before`); this code never
   retries it by itself — retrying sooner extends the block (per-user-limits page).
 
-**Known gap:** a STOP received AFTER a send was enqueued does not pull that outbox row
-back (the worker role may not touch the outbox); the sender would need to consult the
-opt-in for `campaign_send` rows. Bounded by the pacing window; recorded for the WA-08
-owner.
+**A STOP received AFTER a send was enqueued** does not pull that outbox row back (the
+worker role may not touch the outbox); instead the WA-08 sender re-reads the opt-in for
+every `campaign_send` row right before sending it and settles a revoked one `failed` /
+`opted_out` (`outbox.OPT_IN_REQUIRED_KINDS`), which the mirror trigger copies here.
 """
 
 from __future__ import annotations

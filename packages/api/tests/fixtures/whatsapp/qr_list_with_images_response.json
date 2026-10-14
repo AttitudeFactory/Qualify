@@ -1,0 +1,17 @@
+{
+  "_fixture_note": "DOC-DERIVED, not recorded: GET /{PHONE_NUMBER_ID}/message_qrdls?fields=code,prefilled_message,deep_link_url,qr_image_url.format(PNG). The list example of business-management-api/qr-codes plus the qr_image_url field the whats-app-business-message-qrdl reference documents (read 2026-10-14). URLs and ids are placeholders.",
+  "data": [
+    {
+      "code": "ABCDEFGH",
+      "prefilled_message": "Hola, quiero pedir",
+      "deep_link_url": "https://wa.me/message/ABCDEFGH",
+      "qr_image_url": "https://scontent.xx.fbcdn.net/m1/v/t6/qr-ABCDEFGH.png"
+    },
+    {
+      "code": "IJKLMNOP",
+      "prefilled_message": "Hola, vengo del volante",
+      "deep_link_url": "https://wa.me/message/IJKLMNOP",
+      "qr_image_url": "https://scontent.xx.fbcdn.net/m1/v/t6/qr-IJKLMNOP.png"
+    }
+  ]
+}

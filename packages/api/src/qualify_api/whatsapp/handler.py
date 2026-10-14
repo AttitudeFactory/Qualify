@@ -32,10 +32,14 @@ skipped for it. In 4, every delivery status is also offered to `campaign_receipt
 `wamid` (with Meta's `pricing.category`): a campaign send has no `messages` row.
 
 **What is stored as `text`.** The body of a `text` message, the reply title of an
-`interactive` reply; `None` for every other type (image, audio, location, order…). The
-message type itself is not a column of `messages` (0004/0057) and nothing is invented to
-carry it: the raw change is in `meta_webhook_deliveries`/`meta_webhook_events`
-(`raw_payload_r2_key` stays `None` for the same reason), and media download is WA-11's.
+`interactive` reply, the caption of a media message that has one; `None` otherwise.
+**What is stored about media (0061).** `media_type` for every non-text message (the
+WhatsApp type, `other` for one outside 0061's CHECKed list), plus `media_id`/`media_mime`
+for image/audio/video/document/sticker (`message_media`). Only the id is kept here — the
+bytes are downloaded lazily, on the first request, by `whatsapp.media.
+CapturingMediaLocator` (Meta's id lives ~30 days; nothing downloads at webhook time, so
+the intake never waits on Meta's media host). `raw_payload_r2_key` stays `None`: the raw
+change is in `meta_webhook_deliveries`/`meta_webhook_events`.
 
 **Reserved context keys.** A `Handoff` leaves its reason and structured summary under
 `CTX_HANDOFF` in `context` (no new `messages` row is invented for it). When that handoff
@@ -120,7 +124,7 @@ from qualify_api.whatsapp.menus.engine import (
     step,
 )
 from qualify_api.whatsapp.menus.schema import MenuDefinition
-from qualify_api.whatsapp.models import DELIVERY_STATUSES
+from qualify_api.whatsapp.models import DELIVERY_STATUSES, MEDIA_TYPE_OTHER, MEDIA_TYPES
 from qualify_api.whatsapp.optins import (
     REVOKE_REASON_STOP,
     OptOutRepository,
@@ -237,14 +241,43 @@ def stored_context(state: ThreadMenuState) -> dict[str, Any]:
 
 def message_text(message: WAMessage) -> str | None:
     """What goes in `messages.text`: the body of a text, the title of an interactive reply,
-    `None` for everything else (the type is not persisted — module docstring)."""
+    the caption of a media message that has one; `None` for everything else (the type is
+    in `media_type` — `message_media`)."""
     if message.type == "text" and message.text is not None:
         return message.text.body
     if message.type == "interactive" and message.interactive is not None:
         reply = message.interactive.reply
         if reply is not None:
             return reply.title
+    media = message.media
+    if media is not None and media.caption:
+        return media.caption
     return None
+
+
+@dataclass(frozen=True)
+class InboundMedia:
+    """What 0061 persists about a message's type and media. All `None` for a text."""
+
+    media_type: str | None = None
+    media_id: str | None = None
+    media_mime: str | None = None
+
+
+def message_media(message: WAMessage) -> InboundMedia:
+    """`messages.media_type` / `media_id` / `media_mime` for one inbound message.
+
+    `media_type` is set for EVERY non-text message — a type outside 0061's CHECKed list
+    (`reaction`, `system`, `unsupported`, whatever Meta adds next) becomes `other`, never
+    an INSERT failure that Meta would retry for 7 days. `media_id`/`media_mime` only for
+    the five downloadable types, and only when Meta sent the object."""
+    if message.type == "text":
+        return InboundMedia()
+    media_type = message.type if message.type in MEDIA_TYPES else MEDIA_TYPE_OTHER
+    media = message.media
+    if media is None:
+        return InboundMedia(media_type=media_type)
+    return InboundMedia(media_type=media_type, media_id=media.id, media_mime=media.mime_type)
 
 
 def epoch_to_datetime(timestamp: str) -> datetime | None:
@@ -447,6 +480,7 @@ def whatsapp_messages_handler(
         }
         for message in value.messages:
             posted_at = epoch_to_datetime(message.timestamp)
+            media = message_media(message)
             upsert = repo.upsert_thread(
                 tenant_id=ctx.tenant_id,
                 connection_id=ctx.connection_id,
@@ -463,6 +497,9 @@ def whatsapp_messages_handler(
                 text=message_text(message),
                 posted_at=posted_at,
                 shape_version=SHAPE_VERSION,
+                media_type=media.media_type,
+                media_id=media.media_id,
+                media_mime=media.media_mime,
             )
             if not inserted:
                 logger.debug(
@@ -549,8 +586,10 @@ __all__ = [
     "MenuLoader",
     "PhoneResolver",
     "PublishedMenu",
+    "InboundMedia",
     "epoch_to_datetime",
     "menu_state_from_stored",
+    "message_media",
     "message_text",
     "no_catalog",
     "no_menu",
