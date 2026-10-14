@@ -60,7 +60,7 @@ def _record(
     comment: bool = False,
     caption: str | None = "me encanta qualifymkt.co",
     text: str | None = "@qualifymkt.co mira esto",
-    author: str | None = "yesii_roa",
+    author: str | None = "autora_demo",
     like_count: int | None = 5,
     posted_at: datetime | None = datetime(2026, 10, 13, 14, 0, tzinfo=UTC),
     received_at: datetime = datetime(2026, 10, 13, 14, 5, tzinfo=UTC),
@@ -101,7 +101,7 @@ def test_caption_mention_shows_its_author_type_and_full_text() -> None:
     vm = _vm(_record())
 
     assert (vm.kind, vm.kind_label) == ("post", "Publicación")
-    assert (vm.author, vm.author_note) == ("@yesii_roa", "")
+    assert (vm.author, vm.author_note) == ("@autora_demo", "")
     assert vm.text == "me encanta qualifymkt.co"
     assert vm.text_unavailable is False
 
