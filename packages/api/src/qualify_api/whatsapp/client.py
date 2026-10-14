@@ -20,6 +20,10 @@ never carries a token, a response body or a user's text.
 - `set_conversational_automation` → `POST /{PHONE_NUMBER_ID}/conversational_automation`
 - `create_qr_code`, `list_qr_codes`, `delete_qr_code` →
   `POST/GET/DELETE /{PHONE_NUMBER_ID}/message_qrdls[/{code}]`
+- `list_templates`, `create_template`, `delete_template` (WA-18) →
+  `GET/POST/DELETE /{WABA_ID}/message_templates` — the WABA-level calls. The client
+  checks the `waba_id` argument against the one it was built with (when it was), so a
+  caller cannot reach another WABA by passing the wrong id.
 - `get_waba_analytics` → `GET /{WABA_ID}?fields=analytics.start().end().granularity()…`
   and `get_pricing_analytics` → `GET /{WABA_ID}?fields=currency,pricing_analytics.…`
   (WA-21; the only WABA-level calls here, so they take `waba_id` explicitly)
@@ -111,6 +115,26 @@ MAX_PROFILE_WEBSITES: Final = 2
 MAX_PROFILE_WEBSITE_CHARS: Final = 256
 # QR codes (business-management-api/qr-codes, 2026-10-14).
 MAX_QR_PREFILLED_MESSAGE_CHARS: Final = 140
+
+# Templates (templates/overview, read 2026-10-14): lowercase alphanumerics and
+# underscores, ≤512 characters; the same name may exist once per language.
+MAX_TEMPLATE_NAME_CHARS: Final = 512
+TEMPLATE_CATEGORIES: Final = ("marketing", "utility", "authentication")
+# Fields requested on list. `quality_score`/`rejected_reason` are WhatsAppMessageTemplate
+# node fields not shown in the overview's examples — parsed defensively (see the parser).
+TEMPLATE_LIST_FIELDS: Final = (
+    "id",
+    "name",
+    "language",
+    "status",
+    "category",
+    "components",
+    "quality_score",
+    "rejected_reason",
+)
+TEMPLATE_LIST_PAGE_SIZE: Final = 100
+MAX_TEMPLATE_LIST_PAGES: Final = 70  # 6,000 templates (the verified-WABA cap) / 100 + slack
+_TEMPLATE_NAME_CHARS: Final = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_")
 
 MediaKind = Literal["image", "video", "document", "audio"]
 QrImageFormat = Literal["PNG", "SVG"]
@@ -295,6 +319,34 @@ class QrCode:
 
 
 @dataclass(frozen=True)
+class TemplateCreateResult:
+    """[DOC] `POST /{WABA_ID}/message_templates` → `{id, status, category}` (Graph API
+    reference, sample `{"id": "…", "status": "PENDING", "category": "MARKETING"}`).
+    `status` is Meta's string verbatim; `category` is lowercased (Meta may recategorize
+    a template at creation, so the returned one is the one to store)."""
+
+    id: str
+    status: str
+    category: str
+
+
+@dataclass(frozen=True)
+class TemplateInfo:
+    """One template as `GET /{WABA_ID}/message_templates` lists it. `category` is
+    lowercased; `quality` is the score string (`GREEN`/`YELLOW`/`RED`/`UNKNOWN`) or
+    `None`; `status` is verbatim."""
+
+    id: str
+    name: str
+    language: str
+    status: str
+    category: str
+    components: list[dict[str, Any]] = field(default_factory=list)
+    quality: str | None = None
+    rejected_reason: str | None = None
+
+
+@dataclass(frozen=True)
 class MessagingDataPoint:
     """One bucket of `analytics`: messages SENT and DELIVERED by the WABA's numbers in
     `[start, end)`. Bucket edges are Meta's (aligned to its own day boundary, not UTC
@@ -424,6 +476,23 @@ class WhatsAppClient(Protocol):
     async def list_qr_codes(self) -> list[QrCode]: ...
 
     async def delete_qr_code(self, code: str) -> None: ...
+
+    # -- WABA-level: message templates (WA-18) --
+
+    async def list_templates(self, waba_id: str) -> list[TemplateInfo]: ...
+
+    async def create_template(
+        self,
+        waba_id: str,
+        name: str,
+        language: str,
+        category: str,
+        components: list[dict[str, Any]],
+    ) -> TemplateCreateResult: ...
+
+    async def delete_template(self, waba_id: str, name: str) -> None: ...
+
+    # -- WABA analytics (WA-21) --
 
     async def get_waba_analytics(
         self,
@@ -1401,6 +1470,58 @@ class HttpWhatsAppClient:
         _raise_for_status(response, "delete_qr_code")
         _parse_success(_json_object(response, "delete_qr_code"), "delete_qr_code")
 
+    # -- message templates (WA-18) -------------------------------------------------------
+
+    def _templates_url(self, waba_id: str) -> str:
+        if not waba_id:
+            raise ValueError("waba_id must not be empty")
+        if self._waba_id is not None and waba_id != self._waba_id:
+            raise ValueError("waba_id does not match the WABA this client was built for")
+        return self._url(f"{waba_id}/message_templates")
+
+    async def list_templates(self, waba_id: str) -> list[TemplateInfo]:
+        url = self._templates_url(waba_id)
+        params: dict[str, str] = {
+            "fields": ",".join(TEMPLATE_LIST_FIELDS),
+            "limit": str(TEMPLATE_LIST_PAGE_SIZE),
+        }
+        templates: list[TemplateInfo] = []
+        for _ in range(MAX_TEMPLATE_LIST_PAGES):
+            page, after = _parse_template_list(
+                await self._get_json(url, "list_templates", params=params)
+            )
+            templates.extend(page)
+            if after is None:
+                return templates
+            params = {**params, "after": after}
+        raise WhatsAppApiError(
+            f"list_templates did not finish within {MAX_TEMPLATE_LIST_PAGES} pages"
+        )
+
+    async def create_template(
+        self,
+        waba_id: str,
+        name: str,
+        language: str,
+        category: str,
+        components: list[dict[str, Any]],
+    ) -> TemplateCreateResult:
+        body = build_template_create_body(name, language, category, components)
+        payload = await self._post_json(self._templates_url(waba_id), body, "create_template")
+        return _parse_template_create(payload)
+
+    async def delete_template(self, waba_id: str, name: str) -> None:
+        url = self._templates_url(waba_id)
+        _validate_template_name(name)
+        try:
+            response = await self._graph.delete(url, params={"name": name})
+        except httpx.TransportError as exc:
+            raise WhatsAppApiError(
+                "transport failure during delete_template", is_transport=True
+            ) from exc
+        _raise_for_status(response, "delete_template")
+        _parse_success(_json_object(response, "delete_template"), "delete_template")
+
     # -- WABA analytics (WA-21) ----------------------------------------------------------
 
     async def get_waba_analytics(
@@ -1436,6 +1557,105 @@ class HttpWhatsAppClient:
             },
         )
         return _parse_pricing_analytics(payload)
+
+
+# ======================================================================================
+# Templates (WA-18): builder + parsers
+# ======================================================================================
+
+
+def _validate_template_name(name: str) -> None:
+    _require_len(name, name="template name", max_chars=MAX_TEMPLATE_NAME_CHARS)
+    if not set(name) <= _TEMPLATE_NAME_CHARS:
+        raise ValueError("template name must be lowercase letters, digits and underscores")
+
+
+def build_template_create_body(
+    name: str, language: str, category: str, components: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """[DOC] templates/overview: `{name, category, language, components}` (+ optional
+    `parameter_format`, left to Meta's default `positional`). `category` is accepted in
+    any case and sent uppercase, the spelling of Meta's examples. `components` is passed
+    through verbatim — its shape is per-template and Meta's review validates it."""
+    _validate_template_name(name)
+    if not language:
+        raise ValueError("template language code must not be empty")
+    if category.lower() not in TEMPLATE_CATEGORIES:
+        raise ValueError(f"template category must be one of {TEMPLATE_CATEGORIES}")
+    if not isinstance(components, list) or not components:
+        raise ValueError("a template needs at least one component (its BODY)")
+    return {
+        "name": name,
+        "language": language,
+        "category": category.upper(),
+        "components": components,
+    }
+
+
+def _parse_template_create(payload: dict[str, Any]) -> TemplateCreateResult:
+    """[DOC] Graph API reference (whats-app-business-account/message_templates POST):
+    `{id: numeric string, status: enum, category: enum}`."""
+    template_id = _opt_str(payload.get("id"))
+    status = _opt_str(payload.get("status"))
+    category = _opt_str(payload.get("category"))
+    if template_id is None or status is None or category is None:
+        raise WhatsAppApiError("create_template response lacked id/status/category")
+    return TemplateCreateResult(id=template_id, status=status, category=category.lower())
+
+
+def _quality_of(value: object) -> str | None:
+    """`quality_score` is documented as a filter enum (`GREEN`/`YELLOW`/`RED`/`UNKNOWN`)
+    but its returned shape is not in the pages read: accept a bare string or an object
+    carrying `score` (the shape the node reference describes), nothing else."""
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, dict):
+        return _opt_str(value.get("score"))
+    return None
+
+
+def _parse_template_list(payload: dict[str, Any]) -> tuple[list[TemplateInfo], str | None]:
+    """[DOC] template-management: `{data: [{id, name, language, status, category,
+    components, …}], paging: {cursors: {before, after}, next?}}`. Returns the page and
+    the `after` cursor — `None` when there is no `paging.next` (the last page). A row
+    missing `id`/`name`/`language`/`status`/`category` is skipped, not fatal: one
+    malformed template must not hide the other 5,999."""
+    data = payload.get("data")
+    if not isinstance(data, list):
+        raise WhatsAppApiError("list_templates response carried no data[]")
+    out: list[TemplateInfo] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        template_id = _opt_str(item.get("id"))
+        name = _opt_str(item.get("name"))
+        language = _opt_str(item.get("language"))
+        status = _opt_str(item.get("status"))
+        category = _opt_str(item.get("category"))
+        if None in (template_id, name, language, status, category):
+            continue
+        components = item.get("components")
+        out.append(
+            TemplateInfo(
+                id=template_id or "",
+                name=name or "",
+                language=language or "",
+                status=status or "",
+                category=(category or "").lower(),
+                components=[c for c in components if isinstance(c, dict)]
+                if isinstance(components, list)
+                else [],
+                quality=_quality_of(item.get("quality_score")),
+                rejected_reason=_opt_str(item.get("rejected_reason")),
+            )
+        )
+    paging = payload.get("paging")
+    after: str | None = None
+    if isinstance(paging, dict) and paging.get("next"):
+        cursors = paging.get("cursors")
+        if isinstance(cursors, dict):
+            after = _opt_str(cursors.get("after"))
+    return out, after
 
 
 def _json_object(response: httpx.Response, what: str) -> dict[str, Any]:
