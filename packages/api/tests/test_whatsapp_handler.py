@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -22,6 +24,7 @@ from qualify_shared.social.wa_shapes import SHAPE_VERSION
 
 from qualify_api.webhooks.processor import Processor
 from qualify_api.webhooks.repository import ClaimedEvent
+from qualify_api.whatsapp.catalog import to_catalog_items
 from qualify_api.whatsapp.handler import (
     CTX_ATTEMPTS,
     CTX_HANDOFF,
@@ -34,6 +37,7 @@ from qualify_api.whatsapp.handler import (
 from qualify_api.whatsapp.menus.engine import CatalogItem, ThreadMenuState
 from qualify_api.whatsapp.menus.examples import BIANKI_DEMO_MENU
 from qualify_api.whatsapp.menus.schema import MenuDefinition
+from qualify_api.whatsapp.orders import CTX_ORDER_RECORD, order_ready_text, read_order
 from qualify_api.whatsapp.repository import (
     MemoryWhatsAppInboxRepository,
     StoredThreadState,
@@ -461,6 +465,197 @@ async def test_a_menu_version_change_resets_the_cursor_but_keeps_the_context() -
     assert state.menu_version_id == MENU_VERSION
     assert state.node_id == "inicio"  # idle re-entry at the start node, not `info`
     assert state.context["order"] == [{"product_id": "p1", "name": "X", "qty": 1}]
+
+
+# --- WA-15: a catalog order, end to end ------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _ProductRow:
+    """What `load_catalog_for_phone` selects from `brand_products`, for the mapper."""
+
+    id: str
+    name: str
+    price_amount: Decimal | None
+    price_currency: str
+    category: str
+    is_active: bool = True
+    position: int = 0
+
+
+def _twelve_item_catalog() -> tuple[CatalogItem, ...]:
+    """12 active products in two categories, plus an inactive one the mapper drops —
+    more than one list page (`page_size` 10 → 9 rows + «Ver más»)."""
+    rows = [
+        _ProductRow(f"p{i}", f"Hamburguesa {i}", Decimal(1000 * i), "COP", "Hamburguesas", True, i)
+        for i in range(1, 7)
+    ] + [
+        _ProductRow(f"p{i}", f"Bebida {i}", Decimal(1000 * i), "COP", "Bebidas", True, i)
+        for i in range(7, 13)
+    ]
+    rows.append(_ProductRow("p99", "Retirado", Decimal(1), "COP", "Bebidas", False, 0))
+    return to_catalog_items(rows)
+
+
+def _list_rows(payload: dict[str, Any]) -> list[str]:
+    assert payload["type"] == "interactive" and payload["interactive"]["type"] == "list"
+    return [r["id"] for s in payload["interactive"]["action"]["sections"] for r in s["rows"]]
+
+
+class _Clock:
+    def __init__(self, at: datetime) -> None:
+        self.at = at
+
+    def __call__(self) -> datetime:
+        return self.at
+
+
+async def _confirm_an_order(
+    handle: Any, repo: MemoryWhatsAppInboxRepository, catalog: Sequence[CatalogItem], tag: str
+) -> UUID:
+    """Drive BIANKI_DEMO_MENU from `/menu` to the confirmed handoff: one product from the
+    second page, the first product twice, address, confirm. Returns the thread id."""
+    page_one = [f"prod:{i.product_id}" for i in catalog[:9]]
+    second_page_item, first_item = catalog[10], catalog[0]
+
+    await handle(_event(_value(_text_message("/menu", f"wamid.{tag}.1"))))
+    assert _list_rows(repo.outbox[-1]["payload"]) == [*page_one, "more:1"]
+
+    await handle(
+        _event(_value(_reply_message("more:1", "Ver más", f"wamid.{tag}.2", kind="list_reply")))
+    )
+    assert _list_rows(repo.outbox[-1]["payload"]) == [f"prod:{i.product_id}" for i in catalog[9:]]
+
+    picks = [
+        (f"prod:{second_page_item.product_id}", "list_reply"),
+        ("agregar_mas", "button_reply"),
+        (f"prod:{first_item.product_id}", "list_reply"),
+        ("agregar_mas", "button_reply"),
+        (f"prod:{first_item.product_id}", "list_reply"),
+        ("ver_pedido", "button_reply"),
+        ("confirm", "button_reply"),
+    ]
+    for n, (reply_id, kind) in enumerate(picks, start=3):
+        await handle(_event(_value(_reply_message(reply_id, "x", f"wamid.{tag}.{n}", kind=kind))))
+    await handle(_event(_value(_text_message("Calle 10 # 5-20, Centro", f"wamid.{tag}.confirm"))))
+    return repo.threads[(CONNECTION, "whatsapp", WA_ID)]["id"]
+
+
+async def test_a_twelve_item_catalog_flows_through_a_full_order_to_a_confirmed_handoff() -> None:
+    repo = MemoryWhatsAppInboxRepository()
+    catalog = _twelve_item_catalog()
+    assert len(catalog) == 12 and "p99" not in {i.product_id for i in catalog}
+    handle = _handler(
+        repo,
+        menu_loader=MenuCounter(PublishedMenu(BIANKI_DEMO_MENU, MENU_VERSION)),
+        catalog=catalog,
+    )
+
+    thread_id = await _confirm_an_order(handle, repo, catalog, "a")
+
+    _, state = repo.states[thread_id]
+    assert state.paused_at == NOW
+    handoff = state.context[CTX_HANDOFF]
+    assert handoff["reason"] == "order_confirmed"
+    assert handoff["summary"]["order_confirmed"] is True
+
+    second_page_item, first_item = catalog[10], catalog[0]
+    record = state.context[CTX_ORDER_RECORD]
+    assert record["items"] == [
+        {
+            "product_id": second_page_item.product_id,
+            "name": second_page_item.name,
+            "qty": 1,
+            "unit_price": str(second_page_item.price_amount),
+            "currency": "COP",
+        },
+        {
+            "product_id": first_item.product_id,
+            "name": first_item.name,
+            "qty": 2,
+            "unit_price": str(first_item.price_amount),
+            "currency": "COP",
+        },
+    ]
+    expected_total = second_page_item.price_amount + 2 * first_item.price_amount
+    assert Decimal(record["total"]) == expected_total
+    assert record["currency"] == "COP"
+    assert record["collected"] == {"direccion": "Calle 10 # 5-20, Centro"}
+    assert record["confirmed_at"] == NOW.isoformat()
+    assert record["source_message_id"] == "wamid.a.confirm"
+
+    order = read_order(state.context)
+    assert order is not None
+    assert order.total == expected_total
+    assert order.item_count == 3
+    assert order_ready_text(order).startswith("¡Tu pedido está listo!")
+
+    # The engine's working order is closed: a resumed chat starts a new one.
+    assert "order" not in state.context
+    assert "order_confirmed" not in state.context
+    # No `messages` row was invented for the order: only the 10 inbound ones exist.
+    assert len(repo.messages) == 10
+    assert all(row["direction"] == "inbound" for row in repo.messages.values())
+
+
+async def test_a_second_confirmation_does_not_duplicate_the_order() -> None:
+    repo = MemoryWhatsAppInboxRepository()
+    catalog = _twelve_item_catalog()
+    clock = _Clock(NOW)
+    handle = whatsapp_messages_handler(
+        resolve=Resolver(),
+        repo=repo,
+        menu_loader=MenuCounter(PublishedMenu(BIANKI_DEMO_MENU, MENU_VERSION)),
+        catalog_loader=lambda phone_row_id: catalog,
+        clock=clock,
+    )
+    thread_id = await _confirm_an_order(handle, repo, catalog, "a")
+    first = repo.states[thread_id][1].context[CTX_ORDER_RECORD]
+    outbox_before = len(repo.outbox)
+
+    # A replayed delivery of the confirming message: stored once, never stepped again.
+    clock.at = datetime(2026, 10, 14, 13, 0, tzinfo=UTC)
+    await handle(_event(_value(_text_message("Calle 10 # 5-20, Centro", "wamid.a.confirm"))))
+    assert repo.states[thread_id][1].context[CTX_ORDER_RECORD] == first
+    assert len(repo.outbox) == outbox_before
+
+    # A person resumes the chat; the customer then asks for a person again. That handoff
+    # carries no confirmed order (the working order was closed), so the record stands.
+    tenant_id, paused = repo.states[thread_id]
+    repo.states[thread_id] = (tenant_id, replace(paused, paused_at=None))
+    await handle(_event(_value(_text_message("persona", "wamid.b.1"))))
+    _, state = repo.states[thread_id]
+    assert state.context[CTX_HANDOFF]["reason"] == "customer_request"
+    assert state.context[CTX_HANDOFF]["summary"]["order_confirmed"] is False
+    assert state.context[CTX_HANDOFF]["summary"]["order"] == []
+    assert state.context[CTX_ORDER_RECORD] == first
+    assert first["confirmed_at"] == NOW.isoformat()
+
+
+async def test_a_new_order_after_resuming_replaces_the_record_and_starts_from_zero() -> None:
+    repo = MemoryWhatsAppInboxRepository()
+    catalog = _twelve_item_catalog()
+    clock = _Clock(NOW)
+    handle = whatsapp_messages_handler(
+        resolve=Resolver(),
+        repo=repo,
+        menu_loader=MenuCounter(PublishedMenu(BIANKI_DEMO_MENU, MENU_VERSION)),
+        catalog_loader=lambda phone_row_id: catalog,
+        clock=clock,
+    )
+    thread_id = await _confirm_an_order(handle, repo, catalog, "a")
+    tenant_id, paused = repo.states[thread_id]
+    repo.states[thread_id] = (tenant_id, replace(paused, paused_at=None))
+
+    later = datetime(2026, 10, 15, 9, 0, tzinfo=UTC)
+    clock.at = later
+    await _confirm_an_order(handle, repo, catalog, "b")
+
+    record = repo.states[thread_id][1].context[CTX_ORDER_RECORD]
+    assert record["source_message_id"] == "wamid.b.confirm"
+    assert record["confirmed_at"] == later.isoformat()
+    # Quantities did not carry over from the first order: 1 + 2, not 2 + 4.
+    assert [line["qty"] for line in record["items"]] == [1, 2]
 
 
 # --- through the processor ------------------------------------------------------------
