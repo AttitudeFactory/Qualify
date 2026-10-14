@@ -144,6 +144,9 @@ class EntryConfig(_Model):
     ice_breakers: list[IceBreaker] = Field(default_factory=list, max_length=MAX_ICE_BREAKERS)
     commands: list[Command] = Field(default_factory=list, max_length=MAX_COMMANDS)
     welcome: str | None = Field(default=None, max_length=BODY_MAX_LEN)
+    # Handoff node the engine renders after `MAX_UNKNOWN_ATTEMPTS` unrecognized
+    # answers in a row; `None` falls back to the engine's built-in handoff text.
+    fallback_node: str | None = None
 
     @field_validator("keywords")
     @classmethod
@@ -181,11 +184,14 @@ class EntryConfig(_Model):
         return value
 
     def referenced_nodes(self) -> set[str]:
-        return (
+        refs = (
             set(self.keywords.values())
             | {ib.node for ib in self.ice_breakers}
             | {c.node for c in self.commands}
         )
+        if self.fallback_node:
+            refs.add(self.fallback_node)
+        return refs
 
 
 # --- Nodes -----------------------------------------------------------------------
@@ -389,6 +395,10 @@ class MenuDefinition(_Model):
                 dangling.append(f"entry -> {ref!r}")
         if dangling:
             raise ValueError("dangling node references: " + ", ".join(dangling))
+
+        fallback = self.entry.fallback_node
+        if fallback is not None and not isinstance(self.nodes[fallback], HandoffNode):
+            raise ValueError(f"entry.fallback_node {fallback!r} must be a handoff node")
 
         summaries = [i for i, n in self.nodes.items() if isinstance(n, OrderSummaryNode)]
         if len(summaries) > 1:
