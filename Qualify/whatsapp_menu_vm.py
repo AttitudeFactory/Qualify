@@ -389,6 +389,59 @@ def _node_to_form(node_id: str, node: Any) -> NodeForm:
     return apply_kind_defaults(base)
 
 
+def _ordered_refs(node: Any) -> list[str]:
+    """A step's arrows in the order the customer meets them (the schema's
+    `references()` is a set)."""
+    if isinstance(node, TextNode | CollectNode):
+        return [node.next] if node.next else []
+    if isinstance(node, ButtonsNode):
+        return [o.next for o in node.options]
+    if isinstance(node, ListNode):
+        return [r.next for s in node.sections for r in s.rows]
+    if isinstance(node, ProductsNode):
+        return [node.next_after_pick]
+    if isinstance(node, OrderSummaryNode):
+        return [node.confirm_next, node.add_more_next, node.cancel_next]
+    return []
+
+
+def flow_order(definition: MenuDefinition) -> list[str]:
+    """The steps in the order a conversation reaches them: the start step, then
+    breadth-first along the arrows, then what only the entry reaches (keywords, ice
+    breakers, commands, fallback), then anything unreachable, alphabetically.
+
+    Why not the stored order: `whatsapp_menu_versions.definition` is `jsonb`, and jsonb
+    does not keep object key order (it sorts keys by length, then bytes), so a saved menu
+    comes back as `info, inicio, horario, …`. The schema forbids extra keys, so an order
+    cannot be stored next to the steps; the flow order is stable and reads like the menu.
+    """
+    order: list[str] = []
+    seen: set[str] = set()
+
+    def walk(roots: list[str]) -> None:
+        queue = [r for r in roots if r in definition.nodes]
+        while queue:
+            node_id = queue.pop(0)
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+            order.append(node_id)
+            queue.extend(
+                r for r in _ordered_refs(definition.nodes[node_id]) if r in definition.nodes
+            )
+
+    entry = definition.entry
+    walk([definition.start_node])
+    walk(
+        [ib.node for ib in entry.ice_breakers]
+        + [c.node for c in entry.commands]
+        + sorted(set(entry.keywords.values()))
+        + ([entry.fallback_node] if entry.fallback_node else [])
+    )
+    walk(sorted(definition.nodes))
+    return order
+
+
 def definition_to_form(definition: MenuDefinition) -> MenuForm:
     entry = definition.entry
     return MenuForm(
@@ -396,10 +449,13 @@ def definition_to_form(definition: MenuDefinition) -> MenuForm:
         on_first_message=entry.on_first_message,
         start_node=definition.start_node,
         fallback_node=entry.fallback_node or NONE_VALUE,
-        keywords=[KeywordForm(word=w, node=n) for w, n in entry.keywords.items()],
+        # Keywords are a jsonb object too: alphabetical is the only stable order.
+        keywords=[KeywordForm(word=w, node=n) for w, n in sorted(entry.keywords.items())],
         ice_breakers=[IceBreakerForm(text=ib.text, node=ib.node) for ib in entry.ice_breakers],
         commands=[CommandForm(name=c.name, hint=c.hint, node=c.node) for c in entry.commands],
-        nodes=[_node_to_form(node_id, node) for node_id, node in definition.nodes.items()],
+        nodes=[
+            _node_to_form(node_id, definition.nodes[node_id]) for node_id in flow_order(definition)
+        ],
     )
 
 
@@ -1327,6 +1383,7 @@ __all__ = [
     "change_kind",
     "definition_to_form",
     "empty_form",
+    "flow_order",
     "form_to_payload",
     "handoff_note",
     "issues_summary",

@@ -618,11 +618,6 @@ def _step_row(node: NodeForm, index: rx.Var[int]) -> rx.Component:
             flex="1",
             min_width="0",
         ),
-        rx.vstack(
-            _icon_button("chevron-up", "Subir", S.move_node(index, -1)),
-            _icon_button("chevron-down", "Bajar", S.move_node(index, 1)),
-            spacing="0",
-        ),
         _icon_button("trash-2", "Quitar paso", S.remove_node(index)),
         spacing="1",
         align="center",

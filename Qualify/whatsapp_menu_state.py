@@ -647,19 +647,6 @@ class WhatsAppMenuState(rx.State):
         self._apply(replace(self._form(), nodes=nodes))
 
     @rx.event
-    def move_node(self, index: int, delta: int) -> None:
-        target = index + delta
-        if not (0 <= index < len(self.nodes) and 0 <= target < len(self.nodes)):
-            return
-        nodes = list(self.nodes)
-        nodes[index], nodes[target] = nodes[target], nodes[index]
-        if self.selected_node == index:
-            self.selected_node = target
-        elif self.selected_node == target:
-            self.selected_node = index
-        self._apply(replace(self._form(), nodes=nodes))
-
-    @rx.event
     def set_node_field(self, field: str, value: str) -> None:
         index = self.selected_node
         if field not in _NODE_FIELDS or not isinstance(value, str):

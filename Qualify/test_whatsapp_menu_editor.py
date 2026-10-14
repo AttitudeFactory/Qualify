@@ -212,6 +212,27 @@ def test_change_kind_keeps_text_and_options() -> None:
     assert "{total}" in summary.body and summary.confirm_label == "Confirmar"
 
 
+def test_steps_come_back_in_flow_order_whatever_jsonb_did_to_the_keys() -> None:
+    """Browser finding (2026-10-14): a saved menu reloaded with its steps as
+    `info, inicio, horario, …` — `jsonb` sorts object keys by length, then bytes. The
+    editor now orders steps by the conversation flow, the same before and after a save."""
+    from qualify_api.whatsapp.menus.schema import MenuDefinition
+
+    from .whatsapp_menu_vm import flow_order
+
+    payload = BIANKI_DEMO_MENU.model_dump(mode="json")
+    jsonb_like = dict(sorted(payload["nodes"].items(), key=lambda kv: (len(kv[0]), kv[0])))
+    reloaded = MenuDefinition.model_validate({**payload, "nodes": jsonb_like})
+    assert list(reloaded.nodes)[:2] == ["info", "inicio"]  # what Postgres hands back
+
+    order = [n.node_id for n in definition_to_form(reloaded).nodes]
+    assert order == [n.node_id for n in definition_to_form(BIANKI_DEMO_MENU).nodes]
+    assert order == flow_order(BIANKI_DEMO_MENU)
+    assert order[0] == "inicio"
+    assert order.index("productos") < order.index("agregado") < order.index("resumen")
+    assert sorted(order) == sorted(BIANKI_DEMO_MENU.nodes)
+
+
 def test_new_option_ids_are_unique_inside_the_step() -> None:
     node = new_node(KIND_BUTTONS, "b")
     first = new_option(node)
