@@ -202,14 +202,20 @@ async def test_a_meta_window_refusal_is_terminal_not_a_retry() -> None:
 async def test_a_second_message_to_the_same_recipient_is_deferred_not_failed() -> None:
     rig = Rig(FakeClient(WAMID, "wamid.second"))
     first = rig.enqueue(payload=build_text_body(TO, "1", False))
+    rig.clock.advance(timedelta(milliseconds=1))  # distinct created_at, as real rows have
     second = rig.enqueue(payload=build_text_body("573001234567", "2", False))  # same phone
+    rig.clock.now = T0 + PACING  # both are due; the sender runs them in creation order
     report = await rig.tick()
 
     assert (report.sent, report.deferred) == (1, 1)
-    assert rig.repo.rows[first].status == "sent"
+    # Creation order decides: the older row goes out, the newer one waits for the pair gap.
+    assert [rig.repo.rows[i].status for i in (first, second)] == ["sent", "pending"]
+    assert rig.client.payloads == [build_text_body(TO, "1", False)]
+    sent_at = rig.repo.rows[first].sent_at
+    assert sent_at == T0 + PACING
     deferred = rig.repo.rows[second]
     assert (deferred.status, deferred.attempts, deferred.error_code) == ("pending", 0, None)
-    assert deferred.next_attempt_at == T0 + PACING
+    assert deferred.next_attempt_at == sent_at + PACING
 
     rig.clock.advance(PACING - timedelta(seconds=1))
     assert (await rig.tick()).claimed == 0  # not due yet

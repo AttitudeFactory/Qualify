@@ -58,6 +58,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from itertools import count
 from typing import Any, Final, Protocol
 from uuid import UUID, uuid4
 
@@ -459,6 +460,10 @@ class MemoryOutboxRow:
     error_code: str | None = None
     created_by_user_id: UUID | None = None
     sent_at: datetime | None = None
+    # Insertion order — the tie-break Postgres gets for free because every enqueue is its
+    # own transaction with its own now(); a frozen test clock would otherwise leave two
+    # rows tied on created_at and ordered by their random ids.
+    seq: int = 0
 
 
 @dataclass(frozen=True)
@@ -478,6 +483,7 @@ class MemoryOutboxRepository:
 
     def __init__(self, *, clock: Callable[[], datetime] = _utcnow) -> None:
         self._clock = clock
+        self._seq = count()
         self.rows: dict[UUID, MemoryOutboxRow] = {}
         self.threads: dict[UUID, datetime | None] = {}
         self.thread_last_message_at: dict[UUID, datetime] = {}
@@ -505,6 +511,7 @@ class MemoryOutboxRepository:
             created_at=now,
             next_attempt_at=now,
             created_by_user_id=created_by_user_id,
+            seq=next(self._seq),
         )
         self.rows[row.id] = row
         return row.id
@@ -514,7 +521,7 @@ class MemoryOutboxRepository:
     ) -> list[ClaimedOutboxItem]:
         stale = now - STALE_AFTER
         claimed: list[ClaimedOutboxItem] = []
-        for row in sorted(self.rows.values(), key=lambda r: (r.created_at, str(r.id))):
+        for row in sorted(self.rows.values(), key=lambda r: (r.created_at, r.seq)):
             if row.tenant_id != tenant_id or len(claimed) >= limit:
                 continue
             is_stale = (
