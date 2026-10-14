@@ -46,7 +46,10 @@ explicit = true
 # catalog (`qualify_api.hashtags.ai`) and for copy, so the app's venv needs it installed.
 # `[media]` = PyAV, which fits a carousel's video slides to the feed (§ 2026-10-09).
 backend = ["qualify-api", "qualify-shared", "qualify-scraper", "qualify-creative[llm,media]"]
-crm = ["reflex>=0.9.12", "sqlmodel>=0.0.47", "python-dotenv>=1.2.4"]
+# `greenlet`: Reflex imports `sqlalchemy.ext.asyncio` at startup, and SQLAlchemy 2.1 no
+# longer pulls greenlet in transitively (Dependabot 1e0179e moved it to 2.1.3) — without it
+# `reflex run` dies on import in dev and prod mode.
+crm = ["reflex>=0.9.12", "sqlmodel>=0.0.47", "python-dotenv>=1.2.4", "greenlet>=3.2.4"]
 # Heavy ML tree (torch/transformers via qualify-models) — kept out of default-groups.
 ml = ["qualify-models"]
 # The production image's local-model runtime (founder decision: robertuito runs on the VPS,
