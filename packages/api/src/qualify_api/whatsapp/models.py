@@ -1,7 +1,7 @@
-"""ORM models for the WhatsApp module (WA-04 + WA-14). DDL/RLS/grants are the job of
-migrations 0057 (numbers, thread state, outbox) and 0058 (menus, versions); these mirror
-them for typed access via the sanctioned sessions — same relationship `inbox/models.py`
-has to 0004.
+"""ORM models for the WhatsApp module (WA-04 + WA-14 + WA-18/19/20). DDL/RLS/grants are
+the job of migrations 0057 (numbers, thread state, outbox), 0058 (menus, versions) and 0060
+(templates, opt-ins, campaigns, campaign sends); these mirror them for typed access via the
+sanctioned sessions — same relationship `inbox/models.py` has to 0004.
 
 Every table carries a denormalized `tenant_id` with a composite FK to its parent
 (`social_connections`, `threads`, `whatsapp_phone_numbers` or `whatsapp_menus`, R2
@@ -14,6 +14,7 @@ The conversation itself is NOT here: a WhatsApp chat is a `Thread` with `channel
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -25,6 +26,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    Numeric,
     Text,
     UniqueConstraint,
 )
@@ -40,6 +42,26 @@ from qualify_api.tenancy.models import Base
 OUTBOX_KINDS: tuple[str, ...] = ("reply", "automation", "campaign_send")
 OUTBOX_STATUSES: tuple[str, ...] = ("pending", "sending", "sent", "failed", "dead")
 DELIVERY_STATUSES: tuple[str, ...] = ("sent", "delivered", "read", "failed")
+# 0060 (WA-18/19/20).
+TEMPLATE_CATEGORIES: tuple[str, ...] = ("marketing", "utility", "authentication")
+OPT_IN_SOURCES: tuple[str, ...] = ("lead_form", "menu", "import", "manual")
+CAMPAIGN_STATUSES: tuple[str, ...] = (
+    "draft",
+    "scheduled",
+    "running",
+    "paused",
+    "done",
+    "cancelled",
+)
+CAMPAIGN_SEND_STATUSES: tuple[str, ...] = (
+    "pending",
+    "queued",
+    "sent",
+    "delivered",
+    "read",
+    "failed",
+    "skipped",
+)
 
 
 def _sql_list(values: tuple[str, ...]) -> str:
@@ -150,6 +172,8 @@ class WhatsAppOutboxItem(Base):
 
     __tablename__ = "whatsapp_outbox"
     __table_args__ = (
+        # Target of `whatsapp_campaign_sends`' composite FK (added by 0060).
+        UniqueConstraint("id", "tenant_id", name="uq_wa_outbox_id_tenant"),
         ForeignKeyConstraint(
             ["connection_id", "tenant_id"],
             ["social_connections.id", "social_connections.tenant_id"],
@@ -297,3 +321,209 @@ class WhatsAppMenuVersion(Base):
         PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
+
+
+class WhatsAppTemplate(Base):
+    """The mirror of one message template of a WABA (0060, WA-18).
+
+    Natural key `(tenant_id, waba_id, name, language)`. `status`/`quality` are Meta's
+    strings verbatim (no CHECK: Meta adds statuses without notice); `category` is one of
+    `TEMPLATE_CATEGORIES` (lowercase — Meta's uppercase is normalized on the way in).
+    `meta_template_id` is NULL until Meta answers the create call or a sync finds it.
+    """
+
+    __tablename__ = "whatsapp_templates"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "waba_id", "name", "language", name="uq_wa_template_natural_key"
+        ),
+        UniqueConstraint("id", "tenant_id", name="uq_wa_template_id_tenant"),
+        ForeignKeyConstraint(
+            ["phone_number_row_id", "tenant_id"],
+            ["whatsapp_phone_numbers.id", "whatsapp_phone_numbers.tenant_id"],
+            name="fk_wa_template_phone_tenant",
+        ),
+        CheckConstraint(
+            f"category IN ({_sql_list(TEMPLATE_CATEGORIES)})", name="ck_wa_template_category"
+        ),
+        CheckConstraint("length(btrim(name)) > 0", name="ck_wa_template_name_not_blank"),
+        Index("ix_wa_template_tenant", "tenant_id"),
+        Index(
+            "ix_wa_template_meta_id",
+            "waba_id",
+            "meta_template_id",
+            postgresql_where=sql_now("meta_template_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sql_now("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    waba_id: Mapped[str] = mapped_column(Text, nullable=False)
+    phone_number_row_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    meta_template_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    language: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    quality: Mapped[str | None] = mapped_column(Text, nullable=True)
+    components: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, server_default=sql_now("'[]'::jsonb")
+    )
+    rejected_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
+
+
+class WhatsAppOptIn(Base):
+    """One consent to receive a tenant's WhatsApp messages (0060, WA-19).
+
+    One row per `(tenant_id, phone_e164)`. A revocation sets `revoked_at` and keeps the
+    row: it is the evidence the audience must exclude that phone. `consent_text` is the
+    text the person agreed to, stored with the row.
+    """
+
+    __tablename__ = "whatsapp_opt_ins"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "phone_e164", name="uq_wa_opt_in_tenant_phone"),
+        CheckConstraint(f"source IN ({_sql_list(OPT_IN_SOURCES)})", name="ck_wa_opt_in_source"),
+        CheckConstraint(r"phone_e164 ~ '^\+[1-9][0-9]{7,14}$'", name="ck_wa_opt_in_phone_e164"),
+        CheckConstraint(
+            "length(btrim(consent_text)) > 0", name="ck_wa_opt_in_consent_text_not_blank"
+        ),
+        Index("ix_wa_opt_in_tenant", "tenant_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sql_now("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("brands.id"), nullable=True
+    )
+    phone_e164: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    consent_text: Mapped[str] = mapped_column(Text, nullable=False)
+    consent_policy_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proof: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class WhatsAppCampaign(Base):
+    """One marketing send from one number with one template (0060, WA-20).
+
+    `audience_filter` is evaluated against live opt-ins at launch; `send_components` is
+    the `components` array of the template send body (its parameters), passed verbatim to
+    `client.build_template_body`; `max_per_minute` paces the outbox rows it enqueues.
+    """
+
+    __tablename__ = "whatsapp_campaigns"
+    __table_args__ = (
+        UniqueConstraint("id", "tenant_id", name="uq_wa_campaign_id_tenant"),
+        ForeignKeyConstraint(
+            ["connection_id", "tenant_id"],
+            ["social_connections.id", "social_connections.tenant_id"],
+            name="fk_wa_campaign_conn_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["template_id", "tenant_id"],
+            ["whatsapp_templates.id", "whatsapp_templates.tenant_id"],
+            name="fk_wa_campaign_template_tenant",
+        ),
+        CheckConstraint(
+            f"status IN ({_sql_list(CAMPAIGN_STATUSES)})", name="ck_wa_campaign_status"
+        ),
+        CheckConstraint("max_per_minute BETWEEN 1 AND 1000", name="ck_wa_campaign_max_per_minute"),
+        CheckConstraint("length(btrim(name)) > 0", name="ck_wa_campaign_name_not_blank"),
+        Index("ix_wa_campaign_tenant", "tenant_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sql_now("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False
+    )
+    brand_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("brands.id"), nullable=True
+    )
+    connection_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    template_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="draft")
+    audience_filter: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=sql_now("'{}'::jsonb")
+    )
+    send_components: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, server_default=sql_now("'[]'::jsonb")
+    )
+    max_per_minute: Mapped[int] = mapped_column(Integer, nullable=False, server_default="30")
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
+
+
+class WhatsAppCampaignSend(Base):
+    """One recipient of one campaign (0060, WA-20). UNIQUE `(campaign_id, phone_e164)`:
+    relaunching never sends twice. `wamid` and the `sent`/`failed`/`skipped` settle are
+    mirrored from the outbox row by the trigger `wa_outbox_campaign_mirror`; receipts
+    (`delivered`/`read`/`failed`, `price_category`) arrive by `wamid` from the webhook."""
+
+    __tablename__ = "whatsapp_campaign_sends"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "phone_e164", name="uq_wa_campaign_send_phone"),
+        ForeignKeyConstraint(
+            ["campaign_id", "tenant_id"],
+            ["whatsapp_campaigns.id", "whatsapp_campaigns.tenant_id"],
+            name="fk_wa_campaign_send_campaign_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["outbox_id", "tenant_id"],
+            ["whatsapp_outbox.id", "whatsapp_outbox.tenant_id"],
+            name="fk_wa_campaign_send_outbox_tenant",
+        ),
+        CheckConstraint(
+            f"status IN ({_sql_list(CAMPAIGN_SEND_STATUSES)})", name="ck_wa_campaign_send_status"
+        ),
+        CheckConstraint(
+            "cost_estimate IS NULL OR cost_estimate >= 0", name="ck_wa_campaign_send_cost"
+        ),
+        Index("ix_wa_campaign_send_tenant", "tenant_id"),
+        Index("ix_wa_campaign_send_campaign_status", "campaign_id", "status"),
+        Index("ix_wa_campaign_send_wamid", "wamid", postgresql_where=sql_now("wamid IS NOT NULL")),
+        Index(
+            "ix_wa_campaign_send_outbox",
+            "outbox_id",
+            postgresql_where=sql_now("outbox_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=sql_now("gen_random_uuid()")
+    )
+    tenant_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    campaign_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    phone_e164: Mapped[str] = mapped_column(Text, nullable=False)
+    outbox_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    wamid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
+    error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    price_category: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cost_estimate: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
+    currency: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)

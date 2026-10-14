@@ -254,8 +254,9 @@ def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
         for c in ("id", "tenant_id", "platform", "external_account_id", "status")
     } | {
         # 0059 (WA-15) adds `brand_id`: the catalog loader finds the number's brand.
+        # 0060 (WA-18) adds `waba_id`: template webhooks resolve the tenant by WABA.
         ("qualify_webhook_worker", "whatsapp_phone_numbers", c, "SELECT")
-        for c in ("id", "tenant_id", "connection_id", "phone_number_id", "brand_id")
+        for c in ("id", "tenant_id", "connection_id", "phone_number_id", "brand_id", "waba_id")
     } | {
         # 0059 (WA-15): the menu's `products` node reads the brand's active catalog.
         ("qualify_webhook_worker", "brand_products", c, "SELECT")
@@ -270,6 +271,37 @@ def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
             "is_active",
             "position",
         )
+    } | {
+        # 0060 (WA-18/19/20): template webhooks, the STOP revocation, campaign receipts.
+        ("qualify_webhook_worker", "whatsapp_templates", c, "SELECT")
+        for c in ("id", "tenant_id", "waba_id", "name", "language", "meta_template_id")
+    } | {
+        ("qualify_webhook_worker", "whatsapp_templates", c, "UPDATE")
+        for c in ("status", "quality", "rejected_reason", "updated_at")
+    } | {
+        ("qualify_webhook_worker", "whatsapp_opt_ins", c, "SELECT")
+        for c in ("id", "tenant_id", "phone_e164", "revoked_at")
+    } | {
+        ("qualify_webhook_worker", "whatsapp_opt_ins", c, "UPDATE")
+        for c in ("revoked_at", "revoke_reason")
+    } | {
+        ("qualify_webhook_worker", "whatsapp_opt_ins", c, "INSERT")
+        for c in (
+            "tenant_id",
+            "brand_id",
+            "phone_e164",
+            "source",
+            "consent_text",
+            "consent_policy_version",
+            "proof",
+            "captured_at",
+        )
+    } | {
+        ("qualify_webhook_worker", "whatsapp_campaign_sends", c, "SELECT")
+        for c in ("id", "tenant_id", "outbox_id", "wamid", "status")
+    } | {
+        ("qualify_webhook_worker", "whatsapp_campaign_sends", c, "UPDATE")
+        for c in ("status", "error_code", "price_category", "updated_at")
     } | {
         # 0058 (WA-14): the handler loads the live menu of a number and its definition.
         ("qualify_webhook_worker", "whatsapp_menus", c, "SELECT")

@@ -25,6 +25,12 @@ What one change does, in order (plan §6.2):
    debug and ignored — it is not an error of this change.
 5. `processed`.
 
+**Marketing hooks (WA-19/20), both optional and wired in production.** Between 3's insert
+and the menu step, a text that is exactly `STOP`/`BAJA`/`CANCELAR`
+(`optins.is_stop_keyword`) revokes the sender's opt-in through `opt_outs` and the menu is
+skipped for it. In 4, every delivery status is also offered to `campaign_receipts` by
+`wamid` (with Meta's `pricing.category`): a campaign send has no `messages` row.
+
 **What is stored as `text`.** The body of a `text` message, the reply title of an
 `interactive` reply; `None` for every other type (image, audio, location, order…). The
 message type itself is not a column of `messages` (0004/0057) and nothing is invented to
@@ -71,7 +77,7 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Any, Final
+from typing import Any, Final, Protocol
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -115,6 +121,12 @@ from qualify_api.whatsapp.menus.engine import (
 )
 from qualify_api.whatsapp.menus.schema import MenuDefinition
 from qualify_api.whatsapp.models import DELIVERY_STATUSES
+from qualify_api.whatsapp.optins import (
+    REVOKE_REASON_STOP,
+    OptOutRepository,
+    is_stop_keyword,
+    phone_from_wa_id,
+)
 from qualify_api.whatsapp.orders import record_confirmed_order
 from qualify_api.whatsapp.repository import (
     OUTBOX_KIND_AUTOMATION,
@@ -159,6 +171,20 @@ PhoneResolver = Callable[[str], PhoneResolution]
 MenuLoader = Callable[[UUID], "tuple[MenuDefinition, UUID] | PublishedMenu | None"]
 CatalogLoader = Callable[[UUID], Sequence[CatalogItem]]  # by `phone_row_id`
 Clock = Callable[[], datetime]
+
+
+class CampaignReceiptSink(Protocol):
+    """WA-20: `campaigns.PostgresCampaignReceiptRepository` in production."""
+
+    def apply_receipt(
+        self,
+        *,
+        tenant_id: UUID,
+        wamid: str,
+        status: str,
+        error_code: str | None,
+        price_category: str | None,
+    ) -> bool: ...
 
 
 def no_menu(phone_row_id: UUID) -> tuple[MenuDefinition, UUID] | PublishedMenu | None:
@@ -306,9 +332,17 @@ def whatsapp_messages_handler(
     menu_loader: MenuLoader = no_menu,
     catalog_loader: CatalogLoader = no_catalog,
     clock: Clock = _utcnow,
+    opt_outs: OptOutRepository | None = None,
+    campaign_receipts: CampaignReceiptSink | None = None,
 ) -> Handler:
     """Build the handler. Everything that touches the database runs in a worker thread
-    (`asyncio.to_thread`), as `mentions_handler` does for its sync reads."""
+    (`asyncio.to_thread`), as `mentions_handler` does for its sync reads.
+
+    `opt_outs` (WA-19): when given, an inbound text that `optins.is_stop_keyword` matches
+    revokes that phone's opt-in and the menu is NOT stepped for it (an opt-out is not a
+    menu input). `campaign_receipts` (WA-20): when given, every delivery status is also
+    offered to it, keyed by `wamid` — campaign sends have no `messages` row, so
+    `apply_status` alone never sees them. Both default to off (production wires both)."""
 
     def _automate(ctx: _ChangeContext, *, thread_id: UUID, message: WAMessage, first: bool) -> None:
         stored = repo.get_thread_state(thread_id)
@@ -378,6 +412,33 @@ def whatsapp_messages_handler(
             result.handed_off,
         )
 
+    def _is_opt_out(message: WAMessage) -> bool:
+        return message.type == "text" and is_stop_keyword(message_text(message))
+
+    def _revoke(ctx: _ChangeContext, message: WAMessage) -> None:
+        assert opt_outs is not None
+        try:
+            phone = phone_from_wa_id(message.from_)
+        except ValueError:
+            logger.warning(
+                "whatsapp webhook: tenant=%s wamid=%s opt-out from a non-E.164 sender ignored",
+                ctx.tenant_id,
+                message.id,
+            )
+            return
+        revoked = opt_outs.revoke(
+            tenant_id=ctx.tenant_id,
+            phone_e164=phone,
+            at=epoch_to_datetime(message.timestamp) or clock(),
+            reason=REVOKE_REASON_STOP,
+        )
+        logger.info(
+            "whatsapp webhook: tenant=%s wamid=%s stop keyword — opt-in revoked=%s, menu skipped",
+            ctx.tenant_id,
+            message.id,
+            revoked,
+        )
+
     def _inbound(ctx: _ChangeContext, value: WAMessagesValue) -> None:
         names = {
             c.wa_id: c.profile.name
@@ -411,6 +472,9 @@ def whatsapp_messages_handler(
                     message.id,
                 )
                 continue
+            if opt_outs is not None and _is_opt_out(message):
+                _revoke(ctx, message)
+                continue
             _automate(ctx, thread_id=upsert.thread_id, message=message, first=upsert.created)
 
     def _receipts(ctx: _ChangeContext, statuses: Sequence[WAStatus]) -> None:
@@ -424,6 +488,14 @@ def whatsapp_messages_handler(
                 )
                 continue
             error_code = next((str(e.code) for e in status.errors if e.code is not None), None)
+            if campaign_receipts is not None:
+                campaign_receipts.apply_receipt(
+                    tenant_id=ctx.tenant_id,
+                    wamid=status.id,
+                    status=status.status,
+                    error_code=error_code,
+                    price_category=status.pricing.category if status.pricing else None,
+                )
             applied = repo.apply_status(
                 connection_id=ctx.connection_id,
                 external_message_id=status.id,
@@ -469,6 +541,7 @@ def whatsapp_messages_handler(
 
 __all__ = [
     "CTX_ATTEMPTS",
+    "CampaignReceiptSink",
     "CTX_HANDOFF",
     "WHATSAPP_MESSAGES_HANDLER_KEY",
     "CatalogLoader",
