@@ -71,3 +71,4 @@ each agent records what changes someone else's assumptions here, by the durable-
 - **WA-07 contract:** `menu_loader(phone_number_row_id)` returns `(definition, version_id)`; store `version_id` in
   `whatsapp_thread_state.menu_version_id` (now FK-checked, composite with `tenant_id`) and the engine's `attempts` in the new
   `whatsapp_thread_state.attempts` column (worker already has table-level UPDATE on thread_state).
+- **PR:** https://github.com/AttitudeFactory/Qualify/pull/132 (`feat/wa-14-menus-migration` → `main`, carries 0057 until PR WA-04 merges). Offline 3819 / db 591 green; alembic 0057↔0058 round trip clean.
