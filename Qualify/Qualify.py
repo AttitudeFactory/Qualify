@@ -50,6 +50,8 @@ from .styleguide_page import styleguide_index
 from .ui import app_shell, page_body
 from .vitrina_page import vitrina_index
 from .voice_lab import VoiceLabState
+from .whatsapp_page import whatsapp_index
+from .whatsapp_state import WhatsAppState
 
 # QUA-99 latency follow-up: this app never configured Python's logging at all before
 # now — `logging.getLogger(__name__).info(...)` calls anywhere in the codebase (e.g.
@@ -189,6 +191,14 @@ app.add_page(
         ConnectionsState.load_connections,
     ],
     title="Qualify · Conexiones",
+)
+# WA-12: the WhatsApp module. `enter_page` reads `?tab=` and loads the tenant's numbers;
+# each tab loads its own data on mount (see `whatsapp_page.py`).
+app.add_page(
+    whatsapp_index,
+    route="/whatsapp",
+    on_load=[AuthState.require_login, WhatsAppState.enter_page],
+    title="Qualify · WhatsApp",
 )
 app.add_page(
     publish_index,
