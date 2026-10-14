@@ -259,6 +259,7 @@ def production_processor(*, worker_id: str) -> Processor:
         WHATSAPP_MESSAGES_HANDLER_KEY,
         whatsapp_messages_handler,
     )
+    from qualify_api.whatsapp.menus import load_published_menu_for_phone  # noqa: PLC0415
     from qualify_api.whatsapp.repository import PostgresWhatsAppInboxRepository  # noqa: PLC0415
     from qualify_api.whatsapp.resolve import resolve_phone_number  # noqa: PLC0415
 
@@ -270,9 +271,11 @@ def production_processor(*, worker_id: str) -> Processor:
                 ingest=ingest_mention,
                 analyze=analyze_mention_after_ingest,
             ),
+            # The catalog stays empty until WA-15 wires `brand_products`.
             WHATSAPP_MESSAGES_HANDLER_KEY: whatsapp_messages_handler(
                 resolve=resolve_phone_number,
                 repo=PostgresWhatsAppInboxRepository(),
+                menu_loader=load_published_menu_for_phone,
             ),
         },
         worker_id=worker_id,

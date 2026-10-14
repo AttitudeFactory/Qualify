@@ -16,13 +16,17 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from psycopg.errors import ForeignKeyViolation
 from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
 from qualify_api.inbox.models import Message, Thread
 from qualify_api.tenancy.models import Tenant, User
+from qualify_api.whatsapp.menus import PostgresMenuRepository, load_published_menu_for_phone
+from qualify_api.whatsapp.menus.examples import BIANKI_DEMO_MENU
 from qualify_api.whatsapp.models import (
     WhatsAppOutboxItem,
     WhatsAppPhoneNumber,
@@ -225,13 +229,29 @@ def test_inbound_message_insert_dedups_by_wamid_and_statuses_are_monotonic(seede
 # --- thread state + outbox --------------------------------------------------------------
 
 
+def _published_version(seeded: dict[str, UUID | str]) -> UUID:
+    """A real `whatsapp_menus` + `whatsapp_menu_versions` pair, published on the seeded
+    number through the editor's door — the only thing `fk_wa_thread_state_menu_version_
+    tenant` (0058) lets a thread point at."""
+    menus = PostgresMenuRepository()
+    menu = menus.create_menu(
+        tenant_id=TENANT, phone_number_row_id=seeded["phone_row"], name=f"menu-{uuid4()}"
+    )
+    version = menus.save_version(tenant_id=TENANT, menu_id=menu.id, definition=BIANKI_DEMO_MENU)
+    menus.publish_version(tenant_id=TENANT, menu_id=menu.id, version_id=version.id, user_id=None)
+    return version.id
+
+
 def test_thread_state_round_trips_and_never_unpauses(seeded) -> None:
     repo = PostgresWhatsAppInboxRepository()
     connection_id = seeded["connection"]
     thread_id = repo.upsert_thread(
         tenant_id=TENANT, connection_id=connection_id, wa_id=f"wa-{uuid4()}", inbound_at=T0
     ).thread_id
-    version_id = uuid4()
+    version_id = _published_version(seeded)
+    # The loader the production handler uses sees exactly that version.
+    loaded_menu = load_published_menu_for_phone(seeded["phone_row"])
+    assert loaded_menu is not None and loaded_menu[1] == version_id
 
     assert repo.get_thread_state(thread_id) is None
 
@@ -239,15 +259,22 @@ def test_thread_state_round_trips_and_never_unpauses(seeded) -> None:
         thread_id=thread_id,
         tenant_id=TENANT,
         state=StoredThreadState(
-            menu_version_id=version_id,
-            node_id="inicio",
-            context={"order": [], "_attempts": 1},
+            menu_version_id=version_id, node_id="inicio", context={"order": []}, attempts=1
         ),
     )
     loaded = repo.get_thread_state(thread_id)
     assert loaded == StoredThreadState(
-        menu_version_id=version_id, node_id="inicio", context={"order": [], "_attempts": 1}
+        menu_version_id=version_id, node_id="inicio", context={"order": []}, attempts=1
     )
+
+    # A version id that is not a row of this tenant is refused by the FK, not stored.
+    with pytest.raises(IntegrityError) as exc_info:
+        repo.save_thread_state(
+            thread_id=thread_id,
+            tenant_id=TENANT,
+            state=StoredThreadState(menu_version_id=uuid4(), node_id="inicio"),
+        )
+    assert isinstance(exc_info.value.orig, ForeignKeyViolation)
 
     paused_at = T0 + timedelta(minutes=5)
     repo.save_thread_state(
@@ -264,7 +291,7 @@ def test_thread_state_round_trips_and_never_unpauses(seeded) -> None:
     loaded = repo.get_thread_state(thread_id)
     assert loaded is not None
     assert loaded.paused_at == paused_at
-    assert (loaded.node_id, loaded.context) == ("inicio", {"x": 1})
+    assert (loaded.node_id, loaded.context, loaded.attempts) == ("inicio", {"x": 1}, 0)
 
     with tenant_session(TENANT) as session:
         row = session.get(WhatsAppThreadState, thread_id)

@@ -31,11 +31,19 @@ message type itself is not a column of `messages` (0004/0057) and nothing is inv
 carry it: the raw change is in `meta_webhook_deliveries`/`meta_webhook_events`
 (`raw_payload_r2_key` stays `None` for the same reason), and media download is WA-11's.
 
-**Reserved context keys.** `whatsapp_thread_state` (0057) has no `attempts` column, so the
-engine's unknown-input counter travels inside `context` under `CTX_ATTEMPTS` until 0058
-adds the column; a `Handoff` leaves its reason and structured summary under `CTX_HANDOFF`
-(no new `messages` row is invented for it — the internal order message is WA-15's). Both
-keys start with `_` so they never collide with the engine's own `order`/`collected`/…
+**Reserved context key.** A `Handoff` leaves its reason and structured summary under
+`CTX_HANDOFF` in `context` (no new `messages` row is invented for it — the internal order
+message is WA-15's). The key starts with `_` so it never collides with the engine's own
+`order`/`collected`/…. The engine's unknown-input counter is NOT in `context`: it is the
+`whatsapp_thread_state.attempts` column 0058 added (`StoredThreadState.attempts`).
+`CTX_ATTEMPTS` survives only as a read-once shim for rows a pre-0058 build of this
+handler wrote; nothing writes it any more.
+
+**The menu.** `menu_loader(phone_row_id)` is `menus.load_published_menu_for_phone` in
+production (`tuple[MenuDefinition, UUID] | None` — the live definition and the
+`whatsapp_menu_versions.id` recorded on the thread; `None` when the number has no
+published menu or it is paused). A test may also return a `PublishedMenu` directly, e.g.
+around `examples.BIANKI_DEMO_MENU` with no version row.
 
 **Menu version change.** When the stored `menu_version_id` differs from the loaded one,
 `node_id` is reset (the conversation re-enters the new menu at its start on the next
@@ -112,9 +120,11 @@ logger = logging.getLogger("qualify_api.whatsapp.handler")
 
 WHATSAPP_MESSAGES_HANDLER_KEY: Final = handler_key(OBJECT_WHATSAPP_BUSINESS_ACCOUNT, FIELD_MESSAGES)
 
-# Reserved keys inside `whatsapp_thread_state.context` (see the module docstring).
-CTX_ATTEMPTS: Final = "_attempts"
+# Reserved key inside `whatsapp_thread_state.context` (see the module docstring).
 CTX_HANDOFF: Final = "_handoff"
+# Pre-0058 shim: where this handler kept `attempts` before the column existed. Read once
+# when the column is still 0, dropped on the next save, never written.
+CTX_ATTEMPTS: Final = "_attempts"
 
 
 @dataclass(frozen=True)
@@ -126,15 +136,27 @@ class PublishedMenu:
     definition: MenuDefinition
     version_id: UUID | None = None
 
+    @classmethod
+    def coerce(
+        cls, loaded: tuple[MenuDefinition, UUID] | PublishedMenu | None
+    ) -> PublishedMenu | None:
+        """Accept what `menus.load_published_menu_for_phone` returns, or an instance."""
+        if loaded is None or isinstance(loaded, PublishedMenu):
+            return loaded
+        definition, version_id = loaded
+        return cls(definition=definition, version_id=version_id)
+
 
 PhoneResolver = Callable[[str], PhoneResolution]
-MenuLoader = Callable[[UUID], PublishedMenu | None]  # by `phone_row_id`
+# By `phone_row_id`; the production implementation is `menus.load_published_menu_for_phone`.
+MenuLoader = Callable[[UUID], "tuple[MenuDefinition, UUID] | PublishedMenu | None"]
 CatalogLoader = Callable[[UUID], Sequence[CatalogItem]]  # by `phone_row_id`
 Clock = Callable[[], datetime]
 
 
-def no_menu(phone_row_id: UUID) -> PublishedMenu | None:
-    """The default until WA-16 wires `whatsapp_menu_versions`: no number has a menu."""
+def no_menu(phone_row_id: UUID) -> tuple[MenuDefinition, UUID] | PublishedMenu | None:
+    """The offline default: no number has a menu (production passes
+    `menus.load_published_menu_for_phone`)."""
     return None
 
 
@@ -151,26 +173,28 @@ def _utcnow() -> datetime:
 
 
 def menu_state_from_stored(stored: StoredThreadState | None) -> ThreadMenuState:
-    """The engine's view of a stored row: `attempts` comes out of `CTX_ATTEMPTS`, the
-    reserved keys stay in `context` (the engine ignores keys it does not own)."""
+    """The engine's view of a stored row. `attempts` is the 0058 column; a row written
+    by the pre-0058 shim (counter under `CTX_ATTEMPTS`, column still 0) is read once.
+    The reserved keys stay in `context` — the engine ignores keys it does not own."""
     if stored is None:
         return ThreadMenuState()
-    attempts = stored.context.get(CTX_ATTEMPTS, 0)
+    attempts = stored.attempts
+    if attempts == 0:
+        legacy = stored.context.get(CTX_ATTEMPTS, 0)
+        attempts = legacy if isinstance(legacy, int) and legacy > 0 else 0
     return ThreadMenuState(
         node_id=stored.node_id,
         context=dict(stored.context),
         paused=stored.paused_at is not None,
-        attempts=int(attempts) if isinstance(attempts, int) else 0,
+        attempts=attempts,
     )
 
 
 def stored_context(state: ThreadMenuState) -> dict[str, Any]:
-    """`state.context` with `CTX_ATTEMPTS` folded in (present only when non-zero)."""
+    """`state.context` as it is persisted: the pre-0058 shim key is dropped (the counter
+    lives in `StoredThreadState.attempts` now)."""
     context = dict(state.context)
-    if state.attempts > 0:
-        context[CTX_ATTEMPTS] = state.attempts
-    else:
-        context.pop(CTX_ATTEMPTS, None)
+    context.pop(CTX_ATTEMPTS, None)
     return context
 
 
@@ -257,7 +281,7 @@ class _ChangeContext:
 
     def menu(self) -> PublishedMenu | None:
         if not self._menu_loaded:
-            self._menu = self._menu_loader(self.phone_row_id)
+            self._menu = PublishedMenu.coerce(self._menu_loader(self.phone_row_id))
             self._menu_loaded = True
         return self._menu
 
@@ -315,6 +339,7 @@ def whatsapp_messages_handler(
                 node_id=result.state.node_id,
                 context=context,
                 paused_at=clock() if result.state.paused else None,
+                attempts=result.state.attempts,
             ),
         )
         for payload in payloads:

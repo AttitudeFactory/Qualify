@@ -33,6 +33,7 @@ from qualify_api.whatsapp.handler import (
 )
 from qualify_api.whatsapp.menus.engine import CatalogItem, ThreadMenuState
 from qualify_api.whatsapp.menus.examples import BIANKI_DEMO_MENU
+from qualify_api.whatsapp.menus.schema import MenuDefinition
 from qualify_api.whatsapp.repository import (
     MemoryWhatsAppInboxRepository,
     StoredThreadState,
@@ -395,7 +396,7 @@ async def test_a_handoff_pauses_the_thread_and_keeps_the_summary_in_context() ->
     assert repo.states[thread_id][1] == state
 
 
-async def test_unknown_input_attempts_travel_inside_context_until_0058() -> None:
+async def test_unknown_input_attempts_are_persisted_in_their_own_column() -> None:
     repo = MemoryWhatsAppInboxRepository()
     handle = _handler(repo, menu_loader=MenuCounter(PublishedMenu(BIANKI_DEMO_MENU, MENU_VERSION)))
     await handle(_event(_value(_text_message("Hola", "wamid.1"))))
@@ -404,8 +405,38 @@ async def test_unknown_input_attempts_travel_inside_context_until_0058() -> None
     await handle(_event(_value(_text_message("asdfgh", "wamid.2"))))
 
     _, state = repo.states[thread_id]
-    assert state.context[CTX_ATTEMPTS] == 1
+    assert state.attempts == 1
+    assert CTX_ATTEMPTS not in state.context  # 0058: a column, not a context key
     assert menu_state_from_stored(state).attempts == 1
+
+    # A recognized answer resets the counter.
+    await handle(_event(_value(_reply_message("info", "Horario y ubicación", "wamid.3"))))
+    assert repo.states[thread_id][1].attempts == 0
+
+
+async def test_the_production_loader_shape_is_accepted_as_is() -> None:
+    """`menus.load_published_menu_for_phone` returns `(definition, version_id)`."""
+    repo = MemoryWhatsAppInboxRepository()
+    calls: list[UUID] = []
+
+    def loader(phone_row_id: UUID) -> tuple[MenuDefinition, UUID] | None:
+        calls.append(phone_row_id)
+        return BIANKI_DEMO_MENU, MENU_VERSION
+
+    handle = whatsapp_messages_handler(
+        resolve=Resolver(), repo=repo, menu_loader=loader, clock=lambda: NOW
+    )
+
+    await handle(_event(_value(_text_message("Hola", "wamid.1"))))
+
+    thread_id = repo.threads[(CONNECTION, "whatsapp", WA_ID)]["id"]
+    assert calls == [PHONE_ROW]
+    assert repo.states[thread_id][1].menu_version_id == MENU_VERSION
+    assert len(repo.outbox) == 2
+    assert PublishedMenu.coerce(None) is None
+    assert PublishedMenu.coerce((BIANKI_DEMO_MENU, MENU_VERSION)) == PublishedMenu(
+        BIANKI_DEMO_MENU, MENU_VERSION
+    )
 
 
 async def test_a_menu_version_change_resets_the_cursor_but_keeps_the_context() -> None:
@@ -481,14 +512,22 @@ async def test_the_processor_routes_whatsapp_messages_to_this_handler_only() -> 
 # --- the state bridge ---------------------------------------------------------------
 
 
-def test_stored_context_round_trips_attempts() -> None:
+def test_attempts_round_trip_through_the_column_and_the_shim_is_read_once() -> None:
     state = ThreadMenuState(node_id="n", context={"order": []}, attempts=2)
-    stored = StoredThreadState(node_id="n", context=stored_context(state))
-    assert stored.context == {"order": [], CTX_ATTEMPTS: 2}
+    stored = StoredThreadState(node_id="n", context=stored_context(state), attempts=state.attempts)
+    assert stored.context == {"order": []}
     assert menu_state_from_stored(stored) == ThreadMenuState(
-        node_id="n", context={"order": [], CTX_ATTEMPTS: 2}, attempts=2
+        node_id="n", context={"order": []}, attempts=2
     )
-    assert CTX_ATTEMPTS not in stored_context(ThreadMenuState(context={CTX_ATTEMPTS: 3}))
+    # A row a pre-0058 build wrote: the counter under the shim key, the column at 0.
+    legacy = StoredThreadState(node_id="n", context={CTX_ATTEMPTS: 1}, attempts=0)
+    assert menu_state_from_stored(legacy).attempts == 1
+    assert CTX_ATTEMPTS not in stored_context(menu_state_from_stored(legacy))
+    # The column wins once it is set.
+    assert (
+        menu_state_from_stored(StoredThreadState(context={CTX_ATTEMPTS: 1}, attempts=2)).attempts
+        == 2
+    )
 
 
 @pytest.mark.parametrize("paused_at", [None, NOW])

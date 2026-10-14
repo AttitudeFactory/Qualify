@@ -86,6 +86,8 @@ class StoredThreadState:
     node_id: str | None = None
     context: dict[str, Any] = field(default_factory=dict)
     paused_at: datetime | None = None
+    # 0058: the engine's consecutive-unknown-input counter, its own column.
+    attempts: int = 0
 
 
 class WhatsAppInboxRepository(Protocol):
@@ -188,7 +190,7 @@ _APPLY_STATUS = text(
 
 _GET_STATE = text(
     """
-    SELECT menu_version_id, node_id, context, automation_paused_at
+    SELECT menu_version_id, node_id, context, attempts, automation_paused_at
       FROM whatsapp_thread_state
      WHERE thread_id = :thread_id
     """
@@ -197,13 +199,14 @@ _GET_STATE = text(
 _SAVE_STATE = text(
     """
     INSERT INTO whatsapp_thread_state (thread_id, tenant_id, menu_version_id, node_id,
-                                       context, automation_paused_at, updated_at)
+                                       context, attempts, automation_paused_at, updated_at)
     VALUES (:thread_id, :tenant_id, :menu_version_id, :node_id, CAST(:context AS jsonb),
-            :paused_at, now())
+            :attempts, :paused_at, now())
     ON CONFLICT (thread_id) DO UPDATE
        SET menu_version_id = EXCLUDED.menu_version_id,
            node_id = EXCLUDED.node_id,
            context = EXCLUDED.context,
+           attempts = EXCLUDED.attempts,
            automation_paused_at = COALESCE(whatsapp_thread_state.automation_paused_at,
                                            EXCLUDED.automation_paused_at),
            updated_at = now()
@@ -307,6 +310,7 @@ class PostgresWhatsAppInboxRepository:
             node_id=row.node_id,
             context=dict(row.context or {}),
             paused_at=row.automation_paused_at,
+            attempts=int(row.attempts),
         )
 
     def save_thread_state(
@@ -321,6 +325,7 @@ class PostgresWhatsAppInboxRepository:
                     "menu_version_id": state.menu_version_id,
                     "node_id": state.node_id,
                     "context": json.dumps(state.context, ensure_ascii=False),
+                    "attempts": state.attempts,
                     "paused_at": state.paused_at,
                 },
             )
@@ -480,6 +485,7 @@ class MemoryWhatsAppInboxRepository:
             node_id=state.node_id,
             context=copy.deepcopy(state.context),
             paused_at=state.paused_at,
+            attempts=state.attempts,
         )
 
     def save_thread_state(
@@ -496,6 +502,7 @@ class MemoryWhatsAppInboxRepository:
                 node_id=state.node_id,
                 context=copy.deepcopy(state.context),
                 paused_at=paused_at,
+                attempts=state.attempts,
             ),
         )
 
