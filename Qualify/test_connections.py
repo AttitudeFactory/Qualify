@@ -57,11 +57,16 @@ from .connections_provider import NoActingUser, _data_access_warning, _scope_lab
 from .connections_vm import (
     CONNECT_REQUIREMENTS,
     CONNECT_RESULT_NOTICES,
+    WHATSAPP_RECONNECT_HINT,
     CapabilityVM,
     ConnectionVM,
     connect_result_guidance,
     connect_result_notice,
+    whatsapp_label,
 )
+from .ui import tokens as T
+
+_WA_SCOPES = ["whatsapp_business_messaging", "whatsapp_business_management"]
 
 # Field-name fragments that must never appear on a client-serialized view-model.
 _FORBIDDEN_FIELD_FRAGMENTS = (
@@ -685,3 +690,80 @@ def test_request_support_delegates_to_the_real_seam_with_a_fixed_topic() -> None
     assert seen["tenant_id"] == _TENANT
     assert seen["topic"] == "connect_accounts"
     assert seen["context"] == {"screen": "connections", "outcome": "link_required", "pages": 2}
+
+
+# --------------------------------------------------------------------------------------
+# WA-05: the WhatsApp card
+# --------------------------------------------------------------------------------------
+
+
+def _wa_row(**overrides: object) -> SocialConnection:
+    defaults: dict[str, object] = {
+        "platform": "whatsapp",
+        "account_type": "waba_phone_number",
+        "external_account_id": "987654321098765",
+        "external_username": "+57 300 1234567",
+        "linked_page_id": None,
+        "granted_scopes": list(_WA_SCOPES),
+    }
+    defaults.update(overrides)
+    return _row(**defaults)
+
+
+def test_whatsapp_badge_has_a_label_and_a_scale() -> None:
+    """`platform_badge` resolves both from the design tokens, for static strings and
+    for Vars alike (its `rx.match` iterates `PLATFORM_SCALE`) — so the tokens ARE the
+    contract. No Reflex import here, by this file's rule."""
+    assert T.PLATFORM_LABEL["whatsapp"] == "WhatsApp"
+    assert "whatsapp" in T.PLATFORM_SCALE
+    assert T.platform_scale("whatsapp") == T.PLATFORM_SCALE["whatsapp"]
+
+
+def test_whatsapp_label_composes_number_and_verified_name() -> None:
+    assert whatsapp_label("+57 300 1234567", "Bianki") == "+57 300 1234567 · Bianki"
+    assert whatsapp_label("+57 300 1234567", None) == "+57 300 1234567"
+    assert whatsapp_label("+57 300 1234567", "  ") == "+57 300 1234567"
+
+
+def test_whatsapp_card_title_uses_display_number_and_verified_name() -> None:
+    vm = _to_vm(_wa_row(), "Bianki", verified_name="Bianki")
+    assert vm.platform == "whatsapp"
+    assert vm.external_username == "+57 300 1234567 · Bianki"
+    # Without a phone row (or before the first sync) the number stands alone.
+    assert _to_vm(_wa_row(), "Bianki").external_username == "+57 300 1234567"
+    # Instagram ignores the argument entirely — it has no verified name to show.
+    assert _to_vm(_row(), "PuntoServis", verified_name="x").external_username == "@puntoservis"
+
+
+def test_whatsapp_card_shows_only_whatsapp_capabilities() -> None:
+    """Platform is data on each matrix rule: a WhatsApp card never lists the seven
+    Instagram capabilities as disabled, and an Instagram card never lists the WhatsApp
+    ones."""
+    vm = _to_vm(_wa_row(), "Bianki", verified_name="Bianki")
+    shown = {c.key for c in vm.enabled_capabilities} | {c.key for c in vm.disabled_capabilities}
+    assert shown == {"wa_send", "wa_templates", "wa_automation"}
+    assert {c.key for c in vm.enabled_capabilities} == shown
+    assert vm.disabled_capabilities == []
+    assert vm.granted_scopes == ["WhatsApp: mensajería", "WhatsApp: administración"]
+
+    ig = _to_vm(_row(), "PuntoServis")
+    ig_shown = {c.key for c in ig.enabled_capabilities} | {c.key for c in ig.disabled_capabilities}
+    assert ig_shown.isdisjoint(shown)
+    assert len(ig_shown) == 7
+
+
+def test_whatsapp_card_with_management_only_disables_send() -> None:
+    vm = _to_vm(_wa_row(granted_scopes=["whatsapp_business_management"]), "Bianki")
+    assert {c.key for c in vm.enabled_capabilities} == {"wa_templates", "wa_automation"}
+    (disabled,) = vm.disabled_capabilities
+    assert disabled.key == "wa_send"
+    assert disabled.reason == CAPABILITY_DISABLED_REASONS[Capability.WA_SEND]
+
+
+def test_whatsapp_reconnect_hint_has_no_jargon_and_no_button_wording() -> None:
+    """The WhatsApp banner replaces the Instagram «Reconectar» button (which would start
+    the OAuth flow) with an administrative hint — operator copy, no OAuth/token words."""
+    lowered = WHATSAPP_RECONNECT_HINT.lower()
+    for jargon in ("oauth", "token", "scope", "cli", "comando"):
+        assert jargon not in lowered, jargon
+    assert "whatsapp" in lowered

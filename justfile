@@ -96,6 +96,17 @@ webhook-purge-account account *args:
 whatsapp-smoke *args:
     uv run --no-sync python -m qualify_api.whatsapp.smoke {{args}}
 
+# WA-05: connect a WhatsApp Business number to a tenant (administrative, no OAuth). The
+# system-user token comes from QUALIFY_WA_SYSTEM_USER_TOKEN in the environment of THIS ONE
+# process only: it is verified (/debug_token + GET /{phone_number_id}), encrypted into
+# oauth_credentials and never printed. Re-running rotates the credential and refreshes the
+# number's metadata. Exit 2 = token rejected/missing scopes, 3 = Meta auth error (nothing
+# written in either case).
+#   QUALIFY_WA_SYSTEM_USER_TOKEN=... just whatsapp-connect --tenant <uuid> --brand <uuid> \
+#       --waba-id <id> --phone-number-id <id>
+whatsapp-connect *args:
+    uv run --no-sync python -m qualify_api.whatsapp.connect {{args}}
+
 # --- Production (Hetzner VPS, docs/despliegue-hetzner.md) ---------------------------------
 # `target` = the server's ssh target, e.g. deploy@203.0.113.10.
 #   just deploy deploy@<ip>               # origin/main

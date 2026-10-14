@@ -47,8 +47,10 @@ class ConnectionVM:
     """
 
     id: str
-    platform: str  # "instagram" | "facebook"
+    platform: str  # "instagram" | "facebook" | "whatsapp" (WA-05)
     brand: str
+    # The card's title. Instagram: the @username. WhatsApp: the display number, plus the
+    # verified name when `whatsapp_phone_numbers` has one (WA-05) — see `whatsapp_label`.
     external_username: str
     status: ConnectionStatus
     last_verified_at: str  # PRE-FORMATTED server-side (never a raw datetime var)
@@ -77,6 +79,24 @@ class ConnectionVM:
     # True when any shown capability is provisional (C-05.4) — drives an honest
     # "por verificar" marker in the UI rather than asserting an unverified row.
     has_provisional_capabilities: bool = False
+
+
+# WA-05: a WhatsApp number is connected by an administrator with a system-user token
+# (`qualify_api.whatsapp.connect`), not through Meta's consent screen — so its degraded/
+# revoked banners carry this hint instead of the Instagram «Reconectar» button, which
+# would start the wrong flow. Self-service connect is QUA-203, deliberately out of scope.
+WHATSAPP_RECONNECT_HINT = (
+    "Los números de WhatsApp se conectan desde la administración de Qualify, no desde "
+    "esta pantalla. Pide al equipo de Qualify que vuelva a ejecutar la conexión del número."
+)
+
+
+def whatsapp_label(display_phone_number: str, verified_name: str | None) -> str:
+    """The card title of a WhatsApp connection: «+57 300 1234567 · Bianki» when Meta
+    reported a verified name, the bare number otherwise. Pre-composed server-side so the
+    client receives one string, same discipline as every other formatted field here."""
+    name = (verified_name or "").strip()
+    return f"{display_phone_number} · {name}" if name else display_phone_number
 
 
 def _capability_vm(verdict: CapabilityVerdict) -> CapabilityVM:
