@@ -395,6 +395,7 @@ class AuthState(rx.State):
             from .stories_state import StoriesState
             from .trending_state import TrendingState
             from .voice_lab import VoiceLabState
+            from .whatsapp_menu_state import WhatsAppMenuState
             from .whatsapp_state import WhatsAppState
 
             for state_cls in (
@@ -436,6 +437,8 @@ class AuthState(rx.State):
                 CatalogState,
                 # WA-12: the tenant's WhatsApp numbers, business profile and QR codes
                 WhatsAppState,
+                # WA-16: the number's menus, the open editor draft and the preview chat
+                WhatsAppMenuState,
             ):
                 substate = await self.get_state(state_cls)
                 substate.reset()

@@ -499,3 +499,39 @@ def test_publish_notice_copy() -> None:
 @pytest.mark.parametrize("kind", [KIND_TEXT, KIND_BUTTONS, KIND_LIST, KIND_HANDOFF])
 def test_new_nodes_carry_their_kind_label(kind: str) -> None:
     assert new_node(kind, "x").kind_label
+
+
+# --- 6. the tab renders, and talks to its state only ------------------------------------
+
+
+def test_the_menu_tab_renders_its_sections() -> None:
+    import json
+    from pathlib import Path
+
+    from . import whatsapp_tab_menu
+
+    rendered = str(whatsapp_tab_menu.menu_tab().render())
+
+    def present(text: str) -> bool:
+        escaped = json.dumps(text)[1:-1].replace("\\", "\\\\")
+        return text in rendered or escaped in rendered
+
+    for text in (
+        "Menús de este número",
+        "Nuevo menú",
+        "Empezar desde el ejemplo de comida rápida",
+        "Guardar versión",
+        "Pausar menú en este número",
+        "Responder al primer mensaje",
+        "Palabras clave",
+        "Atajos",
+        "Comandos",
+        "Pasos",
+        "Versiones",
+        "Publicar esta versión",
+        "Vista previa",
+        "Reiniciar",
+    ):
+        assert present(text), text
+    source = (Path(__file__).parent / "whatsapp_tab_menu.py").read_text()
+    assert "whatsapp_menu_provider" not in source and "qualify_api" not in source
