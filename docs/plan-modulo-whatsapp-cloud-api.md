@@ -229,41 +229,43 @@ packages/api/src/qualify_api/whatsapp/
 ├── menus.py             # motor determinista (puro) + publicación de conversational_automation
 ├── templates.py         # alta/sync de plantillas
 ├── campaigns.py         # audiencia, ritmo, envíos
-├── service.py           # inbound (webhook → thread/message → menú), outbound (texto/plantilla)
+├── handler.py           # WA-07: el handler `whatsapp_business_account/messages` que registra webhooks.processor
+├── service.py           # outbound (texto/plantilla) y la orquestación del menú que el handler invoca
 ├── worker.py            # just whatsapp-worker
 └── composition.py
 packages/api/src/qualify_api/http/whatsapp_routes.py   # GET/POST /api/whatsapp/webhook (+ API de lectura)
 packages/shared/src/qualify_shared/social/wa_shapes.py # contrato de formas, como ig_shapes (QUA-67)
-migrations/postgres/versions/0046_whatsapp.py
+migrations/postgres/versions/0056_whatsapp.py
 Qualify/whatsapp_page.py, whatsapp_state.py, whatsapp_vm.py, whatsapp_provider.py
 ```
 
-### 6.2 Flujo del webhook
+### 6.2 Flujo del webhook — sobre el intake genérico de QUA-147
+
+**Corrección 2026-10-14.** `main` ya trae (QUA-147, migración `0050`) un intake genérico de webhooks de Meta: `meta_webhook_deliveries` (una fila por entrega HTTP, con el cuerpo crudo y la firma) + `meta_webhook_events` (una fila por `change`, con `dedup_key`, estado, reintentos con backoff, purga a 29 días), escritos por el rol `qualify_webhook` (solo INSERT) y procesados fuera de la petición por `qualify_api.webhooks.worker` (rol `qualify_webhook_worker`), que ya corre **siempre encendido** en producción (`deploy/docker-compose.prod.yml`, servicio `webhook-worker`). El sobre de Meta es el mismo para todos los productos, así que **el receptor de WhatsApp graba ahí**, con el mismo `record_delivery` que el de menciones, y no inventa tablas ni colas propias.
 
 ```mermaid
 sequenceDiagram
     participant WA as Meta (Cloud API)
     participant C as Caddy /api/*
     participant R as whatsapp_routes
-    participant S as WhatsAppService
-    participant DB as Postgres (RLS)
+    participant I as meta_webhook_deliveries/events (qualify_webhook)
+    participant W as webhooks.worker (qualify_webhook_worker)
+    participant DB as threads/messages (RLS)
     WA->>C: POST /api/whatsapp/webhook (X-Hub-Signature-256)
     C->>R: proxy api:8000
-    R->>R: verifica firma con app secret
-    R->>S: handle(payload)
-    S->>DB: resolve phone_number_id → connection (tenant)
-    S->>DB: INSERT messages ON CONFLICT (connection_id, wamid) DO NOTHING
-    alt mensaje nuevo y menú activo
-        S->>S: menus.step(thread_state, reply_id)
-        S->>WA: POST /{PHONE_NUMBER_ID}/messages (interactivo)
-    end
-    S->>DB: webhook_events (ledger) + statuses
-    R-->>WA: 200 en < 1 s
+    R->>R: 413 si > 1 MiB · 403 si la firma no cuadra
+    R->>I: record_delivery(body, firma) — INSERT, dedup por sha256 y por change
+    R-->>WA: 200 solo tras el commit (500 si falla → Meta reintenta)
+    W->>I: claim(batch) con backoff
+    W->>W: handler por object+field (WA-07: whatsapp_business_account/messages)
+    W->>DB: resolve phone_number_id → tenant · upsert thread/message por wamid · menú
+    W->>WA: POST /{PHONE_NUMBER_ID}/messages (respuesta del menú)
+    W->>I: settle(processed | orphan | unsupported | dead)
 ```
 
-Reglas: responder 200 antes de cualquier trabajo lento (Meta reintenta 7 días); el envío de la respuesta del menú puede quedar en una tabla `outbox` que el worker drena si la llamada a Meta falla; `tenant_id` se resuelve **desde el `phone_number_id`**, nunca desde el payload del usuario.
+Reglas: el receptor no interpreta el cuerpo (un sobre que no es de WhatsApp es decisión del procesador); hasta que WA-07 registre su handler, cada change de WhatsApp queda `unsupported` en el intake, **conservado 29 días y reprocesable**, no perdido; `tenant_id` se resuelve en el worker **desde el `phone_number_id`**, nunca desde el payload del usuario. La respuesta del menú sale del worker, no de la petición HTTP.
 
-### 6.3 Tablas nuevas (0046, todas con RLS y la política `NULLIF` de 0001)
+### 6.3 Tablas nuevas (`0056` — `main` llegó a `0055` el 2026-10-14; todas con RLS y la política `NULLIF` de 0001)
 
 | Tabla | Clave natural | Nota |
 |---|---|---|
@@ -273,14 +275,13 @@ Reglas: responder 200 antes de cualquier trabajo lento (Meta reintenta 7 días);
 | `whatsapp_templates` | `(waba_id, name, language)` | categoría, estado, calidad, componentes jsonb, `meta_template_id` |
 | `whatsapp_opt_ins` | `(tenant_id, brand_id, phone_e164)` | source, proof, revoked_at |
 | `whatsapp_campaigns` / `whatsapp_campaign_sends` | `campaign_id`, `(campaign_id, phone_e164)` | estado por envío, error_code, price_category, cost_estimate |
-| `whatsapp_webhook_events` | `id` | append-only, `raw_payload_r2_key`, `event_type`, `wamid` |
-| `whatsapp_outbox` | `id` | envíos pendientes/reintentos del worker |
+| `whatsapp_outbox` | `id` | **solo envíos salientes** (plantillas de campaña, respuestas de menú que fallaron); la entrada ya la cubre el intake de QUA-147 |
 
 Cambios en tablas existentes: `threads.channel` CHECK + `'whatsapp'`; `social_connections.linked_page_id` → CHECK por plataforma (ver §5.1); `permission_capability.py` gana las filas de los dos scopes de WhatsApp → capacidades `WA_SEND`, `WA_TEMPLATES`, `WA_AUTOMATION`.
 
 ### 6.4 Lo que no se añade
 
-Ningún runtime nuevo (sin Node, sin Lambda), Redis **no** como cola (el webhook escribe en Postgres y el worker drena; si algún día hace falta, el `outbox` es el punto de inserción de Celery), ninguna dependencia de terceros tipo BSP/agregador para el tramo A.
+Ningún runtime nuevo (sin Node, sin Lambda), Redis **no** como cola (el intake de QUA-147 ya es la cola de entrada en Postgres y su worker ya está desplegado; `whatsapp_outbox` cubre la salida), ninguna tabla de eventos propia, ninguna dependencia de terceros tipo BSP/agregador para el tramo A.
 
 ---
 
@@ -301,10 +302,10 @@ Cada fase termina con algo que Bianki **usa**. Los gates son de producción, no 
 
 | # | Historia | Criterio |
 |---|---|---|
-| WA-04 | Migración `0046` (tablas de §6.3 mínimas: phone_numbers, webhook_events, outbox, thread_state) + `threads.channel='whatsapp'` + `linked_page_id` por plataforma; `just migrate-down` limpio | CI `test-db` verde |
+| WA-04 | Migración `0056` (tablas de §6.3 mínimas: `whatsapp_phone_numbers`, `whatsapp_thread_state`, `whatsapp_outbox`) + `threads.channel='whatsapp'` + `linked_page_id` por plataforma; `just migrate-down` limpio | CI `test-db` verde |
 | WA-05 | Alta de la conexión: `platform='whatsapp'` desde el token (sin OAuth), FSM, cifrado | Fila `active`; `Verificar ahora` lee calidad y tier |
 | WA-06 | `wa_shapes` [V] + `client.py` (texto, media, botones, lista, marcar leído) con tests contra fixtures reales del número de prueba | Fixtures guardadas en `tests/fixtures/whatsapp/` |
-| WA-07 | Inbound → `threads/messages` idempotente por `wamid`; payload a R2; estados de entrega | Dos entregas del mismo webhook = una fila |
+| WA-07 | Handler `whatsapp_business_account`/`messages` en `webhooks.processor` (el intake de QUA-147 ya dedup-lica y reintenta): resolver `phone_number_id` → tenant, upsert `threads/messages` por `wamid`, estados de entrega; el cuerpo crudo ya vive en `meta_webhook_deliveries` | Dos entregas del mismo webhook = una fila; un change sin tenant queda `orphan`, nunca en otro tenant |
 | WA-08 | Bandeja: canal WhatsApp en `/inbox`, indicador de ventana, respuesta humana (texto/media/botones) | Una persona atiende un chat completo desde Qualify |
 | WA-09 | Menú v0 por palabra clave con botones/lista + handoff | Paridad con el menú actual de Baileys |
 | WA-10 | Número real de Bianki según D1 (registro, verificación SMS, display name) y **apagado de Baileys** | Un cliente real recibe el menú; Baileys apagado |
@@ -414,11 +415,11 @@ Dos observaciones fuera de la lista que importan al plan:
 **WA-03 construido (2026-10-14), pendiente de desplegar.** Lo que hay en el repo:
 
 - `packages/shared/src/qualify_shared/social/wa_shapes.py` — contrato de formas del webhook (`SHAPE_VERSION = wa-webhook-shapes-0.1.0`): la mitad `statuses` está verificada contra la captura viva; la mitad `messages` (entrante) sigue **provisional** hasta que llegue el primer mensaje real de un usuario (fixture sintética `whatsapp_inbound_synthetic.json`, construida de la referencia oficial).
-- `packages/api/src/qualify_api/whatsapp/` — `config.py` (`QUALIFY_META_APP_SECRET` + `QUALIFY_WA_WEBHOOK_VERIFY_TOKEN`, token distinto del de menciones a propósito) y `sink.py` (`log_only_sink`: registra solo identificadores; WA-07 lo sustituye por la persistencia detrás del mismo tipo).
-- `packages/api/src/qualify_api/http/whatsapp_routes.py` — `GET /api/whatsapp/webhook` (handshake `hub.verify_token`) y `POST` (firma `X-Hub-Signature-256` sobre el cuerpo crudo → 403; todo lo demás 200 para que Meta no reintente 7 días). Cableado en `http/app.py`; Caddy ya enruta `/api/*`.
+- `packages/api/src/qualify_api/whatsapp/` — `config.py` (`QUALIFY_META_APP_SECRET` + `QUALIFY_WA_WEBHOOK_VERIFY_TOKEN`, token distinto del de menciones a propósito).
+- `packages/api/src/qualify_api/http/whatsapp_routes.py` — `GET /api/whatsapp/webhook` (handshake `hub.verify_token`) y `POST` (413 sobre 1 MiB; firma `X-Hub-Signature-256` sobre el cuerpo crudo → 403; **graba la entrega en el intake de QUA-147** con el mismo `record_delivery` que menciones y solo entonces 200; 500 si no pudo grabar, para que Meta reintente). Cableado en `http/app.py`; Caddy ya enruta `/api/*`. Segunda iteración 2026-10-14: la primera versión (PR #123) solo escribía un log; esta persiste.
 - Variables documentadas en `.env.example` y `deploy/.env.prod.example`.
 
-Para cerrar WA-03: (1) PR + `just merge`; (2) `QUALIFY_WA_WEBHOOK_VERIFY_TOKEN` en `.env.prod` (`openssl rand -hex 32`) y deploy; (3) en el panel, producto **Whatsapp Business Account** → callback `https://qualify.attitudefactory.co/api/whatsapp/webhook` + ese token → «Verificar y guardar» → suscribir los cinco campos; (4) reenviar la plantilla de prueba y comprobar la línea `whatsapp webhook: waba=2338576026889338 … statuses=…` en los logs del contenedor `api`.
+Para cerrar WA-03: (1) PR + `just merge`; (2) `QUALIFY_WA_WEBHOOK_VERIFY_TOKEN` en `.env.prod` (`openssl rand -hex 32`) y deploy; (3) en el panel, producto **Whatsapp Business Account** → callback `https://qualify.attitudefactory.co/api/whatsapp/webhook` + ese token → «Verificar y guardar» → suscribir los cinco campos; (4) reenviar la plantilla de prueba y comprobar la línea `whatsapp webhook: delivery=… parse=parsed changes=1 new=1` en los logs del contenedor `api` y una fila `object = whatsapp_business_account` en `meta_webhook_events` (estado `unsupported` hasta WA-07).
 
 Orden recomendado para el fundador, 15 minutos: (1) Continuar en el caso de uso WhatsApp → (3) crear el system user y el token → (4) configurar el webhook de WhatsApp una vez exista la ruta en producción → (5) quitar los dos permisos de la cola de revisión → (7) tarjeta, más adelante.
 

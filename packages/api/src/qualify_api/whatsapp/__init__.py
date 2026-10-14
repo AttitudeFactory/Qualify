@@ -1,11 +1,12 @@
 """WhatsApp Business Platform (Cloud API) module — WA-03 slice.
 
 Plan: `docs/plan-modulo-whatsapp-cloud-api.md` §6. What exists after WA-03 is the
-**receiving end only**: a webhook settings object, the signature check and a sink
-that logs identifier-only summaries. No tables (WA-04), no Graph client (WA-06),
-no persistence (WA-07) yet — this slice exists so the production callback
-`/api/whatsapp/webhook` can be registered in Meta's panel and the WhatsApp Business
-Account fields subscribed before the rest lands.
+**receiving end only**: the webhook settings object. The HTTP pair lives in
+`http/whatsapp_routes.py` and records every signature-valid delivery into the generic
+Meta webhook intake (`qualify_api.webhooks`, QUA-147) — no WhatsApp-specific table,
+queue or worker is needed for that. No Graph client (WA-06) and no handler in
+`webhooks.processor` (WA-07) yet; the typed view that handler will consume is
+`qualify_shared.social.wa_shapes`.
 
 Token discipline is inherited whole: the module never sees a WhatsApp access token
 (there is none to see until WA-02/WA-05 store the system-user token through
@@ -13,6 +14,5 @@ Token discipline is inherited whole: the module never sees a WhatsApp access tok
 """
 
 from qualify_api.whatsapp.config import WhatsAppWebhookSettings
-from qualify_api.whatsapp.sink import WhatsAppEventSink, log_only_sink
 
-__all__ = ["WhatsAppEventSink", "WhatsAppWebhookSettings", "log_only_sink"]
+__all__ = ["WhatsAppWebhookSettings"]

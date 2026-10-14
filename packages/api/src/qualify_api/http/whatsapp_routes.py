@@ -8,11 +8,22 @@ the POST). The HMAC primitive is the mentions module's own `verify_signature`: t
 App Secret and the header are the same for every Meta product, and a second copy of
 twelve lines would only be a second place to get `compare_digest` wrong.
 
-Response policy, per Meta's webhook docs (retries with decreasing frequency for up to
-**7 days** on anything but a 200, duplicates included): everything past signature
-validation answers 200 — a malformed body, an unknown field, a change whose value breaks
-the contract. None of those is a failure a retry fixes. Signature failure stays a 403:
-an unsigned or mis-signed body is not a confirmed Meta event.
+**Where a delivery goes: the SAME intake log as the mentions webhook** (QUA-147,
+migration 0050 — `meta_webhook_deliveries` + `meta_webhook_events`, written through
+`qualify_api.webhooks.receiver.record_delivery` as `qualify_webhook`). Meta's envelope is
+product-agnostic (`object` + `entry[].id` + `changes[].field/value`), the intake is keyed
+by it, and dedup (`body_sha256`, `dedup_key`) and retention already exist there. A
+WhatsApp change (`object = whatsapp_business_account`, `field = messages`) is therefore
+recorded durably BEFORE Meta gets its 200 and settled later by
+`qualify_api.webhooks.processor` — today as `unsupported` (kept 29 days, replayable), and
+as a real `threads`/`messages` write once WA-07 registers its handler there. The typed
+view the handler will use is `qualify_shared.social.wa_shapes`.
+
+Response policy, per Meta's WhatsApp webhook docs (retries with decreasing frequency for
+up to **7 days** on anything but a 200, duplicates included): `413` over the size cap and
+`403` on a missing/invalid signature write nothing; `200` only after the record is
+committed, including a malformed body (recorded `unparseable`, a retry would not fix it);
+`500` if the record fails, so the retry does its job instead of the event being lost.
 
 Dependencies go through FastAPI's `dependency_overrides` seam, raising until wired —
 same posture as every other route module here, so an unconfigured deployment fails
@@ -21,20 +32,24 @@ loudly instead of accepting an unverified webhook with a dev default.
 
 from __future__ import annotations
 
-import json
 import logging
+from collections.abc import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import ValidationError
-from qualify_shared.social.wa_shapes import parse_whatsapp_notification
+from starlette.concurrency import run_in_threadpool
 
 from qualify_api.mentions.signature import verify_signature
+from qualify_api.webhooks.envelope import MAX_BODY_BYTES
+from qualify_api.webhooks.receiver import RecordedDelivery
 from qualify_api.whatsapp.config import WhatsAppWebhookSettings
-from qualify_api.whatsapp.sink import WhatsAppEventSink
 
 router = APIRouter(prefix="/api/whatsapp", tags=["whatsapp"])
 
 _LOGGER = logging.getLogger(__name__)
+
+# `(body=..., signature_header=...) -> RecordedDelivery` — the same seam the mentions
+# route exposes, so production wires ONE recorder for both.
+DeliveryRecorder = Callable[..., RecordedDelivery]
 
 
 def get_webhook_settings() -> WhatsAppWebhookSettings:
@@ -42,9 +57,10 @@ def get_webhook_settings() -> WhatsAppWebhookSettings:
     raise NotImplementedError("whatsapp webhook settings dependency is not configured")
 
 
-def get_event_sink() -> WhatsAppEventSink:
-    """Overridden at app startup (to `log_only_sink` until WA-07) and in tests."""
-    raise NotImplementedError("whatsapp event sink dependency is not configured")
+def get_delivery_recorder() -> DeliveryRecorder:
+    """Overridden at app startup (to `webhooks.receiver.record_delivery`) and in tests (to
+    a fake, so the HTTP/HMAC contract tests never touch Postgres)."""
+    raise NotImplementedError("whatsapp delivery recorder dependency is not configured")
 
 
 @router.get("/webhook")
@@ -66,26 +82,39 @@ def verify_webhook(
 async def receive_webhook(
     request: Request,
     settings: WhatsAppWebhookSettings = Depends(get_webhook_settings),
-    sink: WhatsAppEventSink = Depends(get_event_sink),
+    record: DeliveryRecorder = Depends(get_delivery_recorder),
 ) -> Response:
-    """Validate signature on the RAW body, parse, hand the notification to the sink."""
+    """Size check, signature on the RAW body, durable record — and stop."""
     body = await request.body()
+    if len(body) > MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="payload too large")
+    signature_header = request.headers.get("x-hub-signature-256")
     if not verify_signature(
         body=body,
-        signature_header=request.headers.get("x-hub-signature-256"),
+        signature_header=signature_header,
         app_secret=settings.app_secret,
     ):
         raise HTTPException(status_code=403, detail="invalid signature")
 
     try:
-        notification = parse_whatsapp_notification(json.loads(body))
-    except (ValueError, ValidationError) as exc:
-        # Never log `body`: genuine (signature-verified) but not ours to put in a log
-        # line wholesale — it may carry a user's phone number and message text.
-        _LOGGER.warning(
-            "whatsapp webhook payload failed contract validation: %s", type(exc).__name__
+        # The record is synchronous DB work; keep it off the event loop.
+        recorded = await run_in_threadpool(
+            record, body=body, signature_header=signature_header or ""
         )
-        return Response(status_code=200)
+    except Exception as exc:  # noqa: BLE001 — any failure must become a retryable 500
+        # Never log `body`: genuine (signature-verified) but it may carry a user's phone
+        # number and message text — the exception type only.
+        _LOGGER.error(
+            "whatsapp webhook: delivery NOT recorded (%s) — answering 500", type(exc).__name__
+        )
+        return Response(status_code=500)
 
-    await sink(notification=notification, raw_body=body)
+    _LOGGER.info(
+        "whatsapp webhook: delivery=%s duplicate=%s parse=%s changes=%d new=%d",
+        recorded.delivery_id,
+        recorded.duplicate_delivery,
+        recorded.parse_status,
+        recorded.changes_total,
+        recorded.changes_new,
+    )
     return Response(status_code=200)
