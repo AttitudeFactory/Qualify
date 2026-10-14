@@ -1,123 +1,179 @@
-"""`DashboardState`'s computed vars (QUA-49) — constructed directly with `.mentions`
-pre-populated, same technique `test_inbox_state.py` uses for vars reachable without
-`self.get_state(AuthState)` (which needs a live `EventContext` `load_mentions` itself
-cannot get here — see that file's module docstring for the same pre-existing gap).
+"""`DashboardState`'s computed vars and query building (QUA-49, QUA-152) — the state is
+constructed directly, same technique `test_inbox_state.py` uses: the event handlers need a
+live `EventContext` (`self.get_state(AuthState)`) a unit test cannot provide. The paging,
+notice and refresh RULES those handlers apply are pure and tested in
+`test_mentions_paging.py`; the reads are tested in `test_mentions_provider.py` and, against
+Postgres, in `packages/api/tests/test_mentions_paging_db.py`.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
+
+from .mentions_paging import ALL_ACCOUNTS, ALL_HISTORY, ALL_ORIGINS, ALL_SENTIMENTS, DEFAULT_PERIOD
 from .mentions_provider import MentionVM
-from .state import DashboardState, MentionRow
+from .state import DashboardState, MentionRow, _window_start
 
 assert MentionRow is MentionVM  # the alias `state.py` documents, pinned structurally
 
-
-def _row(
-    *,
-    brand: str = "qualifymkt.co",
-    platform: str = "instagram",
-    sentiment: str = "",
-    caption: str = "hola @qualifymkt.co",
-    creator_handle: str = "@someone",
-) -> MentionRow:
-    return MentionRow(
-        id="1",
-        posted_at="01 Ago 2026",
-        platform=platform,
-        brand=brand,
-        creator_handle=creator_handle,
-        caption=caption,
-        sentiment=sentiment,
-        views="—",
-        likes="5",
-    )
+CONNECTION = "b0000000-0000-4000-8000-000000000001"
 
 
-def test_total_mentions_counts_the_filtered_list() -> None:
+def test_counters_come_from_the_backend_aggregates_not_the_visible_rows() -> None:
+    """The counters are fields filled from the backend's counts over the whole filtered
+    set; the 12 rows on screen do not feed them."""
     state = DashboardState()
-    state.mentions = [_row(), _row()]
+    state.mentions = []
+    state.total_mentions = 57
+    state.positive_count = 3
 
-    assert state.total_mentions == 2
+    assert state.total_mentions == 57
+    assert state.positive_count == 3
 
 
-def test_positive_negative_neutral_counts_use_the_real_pipeline_labels() -> None:
-    """Real mentions carry `"POS"`/`"NEG"`/`"NEU"` (or `""` for unanalyzed) — never the
-    old synthetic `"positive"`/`"neutral"`/`"negative"` strings."""
+def test_states_hint_lists_the_non_polarity_states_separately() -> None:
     state = DashboardState()
-    state.mentions = [
-        _row(sentiment="POS"),
-        _row(sentiment="POS"),
-        _row(sentiment="NEU"),
-        _row(sentiment="NEG"),
-        _row(sentiment=""),  # not yet analyzed
-    ]
+    state.pending_count, state.no_text_count, state.error_count = 4, 1, 2
 
-    assert state.positive_count == 2
-    assert state.neutral_count == 1
-    assert state.negative_count == 1
-    # An unanalyzed mention counts toward the total but no sentiment bucket — it must
-    # never be silently folded into "neutral".
-    assert state.total_mentions == 5
-    assert state.positive_count + state.neutral_count + state.negative_count == 4
+    assert state.states_hint == "4 pendientes de análisis · 3 sin análisis"
+
+    state.pending_count = state.no_text_count = state.error_count = 0
+    assert state.states_hint == ""
 
 
-def test_brand_filter_scopes_to_one_connected_account() -> None:
+def test_query_maps_filter_labels_to_backend_codes() -> None:
     state = DashboardState()
-    state.mentions = [_row(brand="qualifymkt.co"), _row(brand="other-brand.co")]
-    state.brand_filter = "qualifymkt.co"
+    state.accounts = {"@qualifymkt.co": CONNECTION}
+    state.account_filter = "@qualifymkt.co"
+    state.origin_filter = "Comentario"
+    state.sentiment_filter = "Pendiente"
+    state.search_query = "@QualifyMkt"
 
-    assert [r.brand for r in state.filtered_mentions] == ["qualifymkt.co"]
+    query = state._query()
+
+    assert query.connection_id == UUID(CONNECTION)
+    assert query.origin == "comment"
+    assert query.sentiment_state == "PENDING"
+    assert query.search_term == "QualifyMkt"
 
 
-def test_sentiment_filter_matches_the_raw_label() -> None:
+def test_default_filters_query_everything() -> None:
+    query = DashboardState()._query()
+
+    assert (query.connection_id, query.origin, query.sentiment_state) == (None, None, None)
+
+
+def test_an_unknown_account_label_does_not_narrow_the_query() -> None:
     state = DashboardState()
-    state.mentions = [_row(sentiment="POS"), _row(sentiment="NEG")]
-    state.sentiment_filter = "NEG"
+    state.account_filter = "@ya-desconectada"
 
-    assert len(state.filtered_mentions) == 1
-    assert state.filtered_mentions[0].sentiment == "NEG"
-
-    state.sentiment_filter = "Todos"
-    assert len(state.filtered_mentions) == 2
+    assert state._query().connection_id is None
 
 
-def test_search_query_matches_caption_or_creator() -> None:
+def test_account_options_start_with_all_accounts() -> None:
     state = DashboardState()
-    state.mentions = [
-        _row(caption="excelente servicio", creator_handle="@ana"),
-        _row(caption="no me gustó", creator_handle="@bruno"),
-    ]
-    state.search_query = "ana"
+    state.accounts = {"@b": "2", "@a": "1"}
 
-    assert [r.creator_handle for r in state.filtered_mentions] == ["@ana"]
+    assert state.account_options == [ALL_ACCOUNTS, "@a", "@b"]
 
 
-def test_brand_options_are_derived_from_the_loaded_mentions() -> None:
+def test_has_filters() -> None:
     state = DashboardState()
-    state.mentions = [_row(brand="b1"), _row(brand="b2")]
+    assert state.has_filters is False
 
-    assert state.brand_options == ["Todas", "b1", "b2"]
+    state.search_query = "   "
+    assert state.has_filters is False
+
+    state.search_query = "hola"
+    assert state.has_filters is True
+
+    state.search_query = ""
+    state.origin_filter = "Publicación"
+    assert state.has_filters is True
+
+    state.origin_filter = ALL_ORIGINS
+    state.sentiment_filter = "Pendiente"
+    assert state.has_filters is True
+
+    state.sentiment_filter = ALL_SENTIMENTS
+    assert state.has_filters is False
 
 
-def test_show_empty_state_is_true_only_once_loaded_clean_with_zero_rows() -> None:
-    """The three-way split `mentions_body` renders on: loading and an error both
-    suppress the empty state even with zero rows, so a load-in-progress or a failed load
-    never flashes "Aún no hay menciones" before the real reason is known."""
+def test_empty_state_and_no_results_never_overlap() -> None:
+    """Nothing stored -> "Aún no hay menciones"; nothing MATCHING -> "Ninguna mención
+    coincide". Loading or an error suppresses both."""
     state = DashboardState()
+    assert (state.show_empty_state, state.show_no_results) == (True, False)
 
-    # Default/initial state: not loading, no error, no rows yet.
-    assert state.show_empty_state is True
+    state.origin_filter = "Comentario"
+    assert (state.show_empty_state, state.show_no_results) == (False, True)
 
     state.is_loading_mentions = True
-    assert state.show_empty_state is False
+    assert (state.show_empty_state, state.show_no_results) == (False, False)
 
     state.is_loading_mentions = False
     state.mentions_error = "No se pudieron cargar las menciones."
-    assert state.show_empty_state is False
+    assert (state.show_empty_state, state.show_no_results) == (False, False)
 
     state.mentions_error = ""
-    state.mentions = [_row()]
-    assert state.show_empty_state is False
+    state.filtered_total = 3
+    assert (state.show_empty_state, state.show_no_results) == (False, False)
 
-    state.mentions = []
-    assert state.show_empty_state is True
+
+def test_pager_vars() -> None:
+    state = DashboardState()
+    state.page, state.total_pages = 1, 5
+    assert (state.has_prev, state.has_next) == (False, True)
+    assert state.page_items == ["1", "2", "3", "4", "5"]
+
+    state.page = 5
+    assert (state.has_prev, state.has_next) == (True, False)
+
+
+def test_new_mentions_notice_reads_from_the_count() -> None:
+    state = DashboardState()
+    assert state.new_mentions_notice == ""
+
+    state.new_count = 1
+    assert state.new_mentions_notice == "1 mención nueva"
+
+    state.new_count = 50
+    assert state.new_mentions_notice == "50+ menciones nuevas"
+
+
+def test_the_screen_opens_on_the_last_14_days() -> None:
+    state = DashboardState()
+
+    assert state.period_filter == DEFAULT_PERIOD == "Últimos 14 días"
+    assert state.is_windowed is True
+
+
+def test_the_window_start_follows_the_period_and_feeds_the_query() -> None:
+    before = datetime.now(UTC)
+    start = datetime.fromisoformat(_window_start("Últimos 7 días"))
+
+    assert timedelta(days=7) - timedelta(seconds=5) < before - start < timedelta(days=7, seconds=5)
+    assert _window_start(ALL_HISTORY) == ""
+
+    state = DashboardState()
+    state.since = start.isoformat()
+    assert state._query().since == start
+    state.since = ""
+    assert state._query().since is None
+
+
+def test_whole_history_is_not_a_window() -> None:
+    state = DashboardState()
+    state.period_filter = ALL_HISTORY
+
+    assert state.is_windowed is False
+
+
+def test_the_account_filter_shows_only_with_several_accounts() -> None:
+    state = DashboardState()
+    state.accounts = {"@a": "1"}
+    assert state.show_account_filter is False
+
+    state.accounts = {"@a": "1", "@b": "2"}
+    assert state.show_account_filter is True

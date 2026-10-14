@@ -1,32 +1,52 @@
-"""State for the Dashboard de Menciones (QUA-49).
+"""State for the Dashboard de Menciones (QUA-49, paginated and auto-refreshed by QUA-152).
 
-**Production data source is the real `mentions` backend now** — `load_mentions` reads
-through `.mentions_provider.list_mentions`, an in-process seam over
-`qualify_api.mentions.composition.list_mentions_for_tenant`, exactly the pattern
-`inbox_state.py` already establishes for its own screen (`AuthState.session_tenant_id` ->
-`asyncio.to_thread` -> a provider function). `.db`/`.models`/`.seed_data` (the SQLite mock
-this screen used to depend on) are deliberately NOT imported here anymore — they still
-exist on disk for whatever still finds them useful (a quick manual demo, a future
-fixture), but this screen's production path no longer has a functional dependency on
-them, per the QUA-49 audit's explicit instruction.
+Reads through `.mentions_provider` (an in-process seam over `qualify_api.mentions.
+composition`), same pattern `inbox_state.py` establishes: `AuthState.session_tenant_id` ->
+`asyncio.to_thread` -> a provider function.
 
-`sentiment` on a `MentionRow` is the raw pipeline vocabulary (`"POS"`/`"NEG"`/`"NEU"`/`""`
-for "not yet analyzed") — `ui.primitives.sentiment_badge` already matches this exact set
-(QUA-92), so the counts below compare against it directly rather than against the old
-synthetic `"positive"`/`"neutral"`/`"negative"` strings.
+## Paging over ALL stored mentions (QUA-152)
+
+The table shows 12 mentions per page, read from the backend — never a capped slice
+filtered in the browser. Totals and counters come from the backend too, over the whole
+filtered set. Every page of one listing is read under one snapshot (`as_of`); the rules
+for paging, the refresh tick and the new-mention notice live in `.mentions_paging`
+(pure, tested there), and this class only applies them:
+
+- changing a filter or the search starts a new snapshot on page 1;
+- changing page keeps the snapshot, so no row repeats or goes missing;
+- the 45-second tick re-reads the SAME page under the SAME snapshot (fresh sentiment
+  states, no skeleton) and counts what arrived after it — it never inserts a new row by
+  itself: the notice offers "Actualizar lista", and those rows come back marked "Nueva".
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import reflex as rx
-from sqlalchemy.exc import SQLAlchemyError
+from qualify_api.mentions.repository import NEW_MENTIONS_CAP, MentionQuery
 
 from .auth_state import AuthState
+from .mentions_paging import (
+    ALL_ACCOUNTS,
+    ALL_HISTORY,
+    ALL_ORIGINS,
+    ALL_SENTIMENTS,
+    DEFAULT_PERIOD,
+    ORIGIN_OPTIONS,
+    PERIOD_OPTIONS,
+    SENTIMENT_OPTIONS,
+    decide_tick,
+    new_mentions_label,
+)
+from .mentions_paging import page_items as _page_items
+from .mentions_provider import MentionPageVM, count_new, load_page, refresh_content
 from .mentions_provider import MentionVM as MentionRow
-from .mentions_provider import list_mentions
+from .mentions_provider import account_options as _account_options
 from .tenant import tenant_uuid
 
 logger = logging.getLogger(__name__)
@@ -35,6 +55,22 @@ __all__ = ["DashboardState", "MentionRow"]
 
 _NO_TENANT = "No hay una sesión activa."
 _LOAD_ERROR = "No se pudieron cargar las menciones."
+_REFRESH_ERROR = "No se pudo actualizar la lista. Se muestran los últimos datos cargados."
+
+
+def _utc_stamp() -> str:
+    """'2026-10-13T22:53:12Z' — what `rx.moment` parses reliably. A full `isoformat()`
+    (microseconds + '+00:00') was read in the browser as local midnight, so the "Actualizado
+    hace X" indicator said "hace 19 horas" right after a load (found in QUA-152's visual
+    validation)."""
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _window_start(period: str) -> str:
+    """The view window's start for `period` (ISO-8601), '' for the whole history. Fixed
+    when a listing starts, so every page of one snapshot uses the same window."""
+    days = PERIOD_OPTIONS.get(period)
+    return "" if days is None else (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
 
 class DashboardState(rx.State):
@@ -43,102 +79,313 @@ class DashboardState(rx.State):
     mentions: list[MentionRow] = []
     is_loading_mentions: bool = False
     mentions_error: str = ""
+    refresh_error: str = ""
 
-    brand_filter: str = "Todas"
-    platform_filter: str = "Todas"
-    sentiment_filter: str = "Todos"
+    page: int = 1
+    total_pages: int = 1
+    pages_label: str = ""
+    # What the table shows: the fully filtered set.
+    filtered_total: int = 0
+    # The summary cards: the scope only (account + period) — never moved by a search.
+    total_mentions: int = 0
+    positive_count: int = 0
+    neutral_count: int = 0
+    negative_count: int = 0
+    pending_count: int = 0
+    no_text_count: int = 0
+    error_count: int = 0
+
+    # The snapshot every page of this listing is read under (ISO-8601), and how many
+    # mentions it held. A tick that re-reads a different total announces the change.
+    as_of: str = ""
+    snapshot_total: int = 0
+    new_count: int = 0
+    list_changed: bool = False
+    # Rows received after this instant are marked "Nueva" (set by "Actualizar lista").
+    new_since: str = ""
+    last_updated: str = ""
+    # True while "Actualizar" re-reads the visible mentions from their network.
+    is_refreshing: bool = False
+
+    account_filter: str = ALL_ACCOUNTS
+    # The view window: opens on the last 14 days (nothing is deleted; "Todo el historial"
+    # shows everything). `since` is its start, fixed per listing.
+    period_filter: str = DEFAULT_PERIOD
+    since: str = ""
+    origin_filter: str = ALL_ORIGINS
+    sentiment_filter: str = ALL_SENTIMENTS
     search_query: str = ""
+    # '@username' -> connection id, for the account filter.
+    accounts: dict[str, str] = {}
 
-    @rx.event
-    async def load_mentions(self) -> None:
-        async with self:
-            self.is_loading_mentions = True
-            self.mentions_error = ""
-
-        auth = await self.get_state(AuthState)
-        tenant_id = tenant_uuid(auth.session_tenant_id)
-        if tenant_id is None:
-            async with self:
-                self.is_loading_mentions = False
-                self.mentions_error = _NO_TENANT
-            return
-
-        try:
-            rows = await asyncio.to_thread(list_mentions, tenant_id)
-        except SQLAlchemyError as exc:
-            logger.error("mentions_provider.list_mentions failed: %s", type(exc).__name__)
-            async with self:
-                self.is_loading_mentions = False
-                self.mentions_error = _LOAD_ERROR
-            return
-
-        async with self:
-            self.mentions = rows
-            self.is_loading_mentions = False
+    # ----------------------------------------------------------------- derived
 
     @rx.var
-    def brand_options(self) -> list[str]:
-        return ["Todas"] + sorted({m.brand for m in self.mentions})
+    def account_options(self) -> list[str]:
+        return [ALL_ACCOUNTS, *sorted(self.accounts)]
 
     @rx.var
-    def platform_options(self) -> list[str]:
-        return ["Todas"] + sorted({m.platform for m in self.mentions})
+    def show_account_filter(self) -> bool:
+        """Only useful with more than one connected account — the common case has one."""
+        return len(self.accounts) > 1
 
     @rx.var
-    def filtered_mentions(self) -> list[MentionRow]:
-        rows = self.mentions
-        if self.brand_filter != "Todas":
-            rows = [r for r in rows if r.brand == self.brand_filter]
-        if self.platform_filter != "Todas":
-            rows = [r for r in rows if r.platform == self.platform_filter]
-        if self.sentiment_filter != "Todos":
-            rows = [r for r in rows if r.sentiment == self.sentiment_filter]
-        if self.search_query:
-            query = self.search_query.lower()
-            rows = [
-                r for r in rows if query in r.caption.lower() or query in r.creator_handle.lower()
-            ]
-        return rows
+    def is_windowed(self) -> bool:
+        return self.period_filter != ALL_HISTORY
 
     @rx.var
-    def show_empty_state(self) -> bool:
-        """True only once loading finished cleanly with zero rows to show — never
-        overlapping with the loading skeleton or the error callout, same three-way split
-        `InboxState.show_empty_state` establishes for its own screen. This is the
-        expected state in production until Meta Business Verification unblocks Advanced
-        Access (QUA-97 §B): zero real mentions have ever been delivered yet."""
+    def page_items(self) -> list[str]:
+        return _page_items(self.page, self.total_pages)
+
+    @rx.var
+    def has_prev(self) -> bool:
+        return self.page > 1
+
+    @rx.var
+    def has_next(self) -> bool:
+        return self.page < self.total_pages
+
+    @rx.var
+    def new_mentions_notice(self) -> str:
+        return new_mentions_label(self.new_count, cap=NEW_MENTIONS_CAP)
+
+    @rx.var
+    def has_filters(self) -> bool:
         return (
-            not self.is_loading_mentions and not self.mentions_error and not self.filtered_mentions
+            self.account_filter != ALL_ACCOUNTS
+            or self.origin_filter != ALL_ORIGINS
+            or self.sentiment_filter != ALL_SENTIMENTS
+            or bool(self.search_query.strip())
         )
 
     @rx.var
-    def total_mentions(self) -> int:
-        return len(self.filtered_mentions)
+    def show_empty_state(self) -> bool:
+        """No mention stored at all — never overlapping the skeleton or the error."""
+        return (
+            not self.is_loading_mentions
+            and not self.mentions_error
+            and self.filtered_total == 0
+            and not self.has_filters
+        )
 
     @rx.var
-    def positive_count(self) -> int:
-        return sum(1 for r in self.filtered_mentions if r.sentiment == "POS")
+    def show_no_results(self) -> bool:
+        """Mentions exist, but none match the filters."""
+        return (
+            not self.is_loading_mentions
+            and not self.mentions_error
+            and self.filtered_total == 0
+            and self.has_filters
+        )
 
     @rx.var
-    def neutral_count(self) -> int:
-        return sum(1 for r in self.filtered_mentions if r.sentiment == "NEU")
+    def states_hint(self) -> str:
+        """What is not (yet) a polarity, under the total — never folded into one. "Sin
+        análisis" groups the mentions with no text and the ones the model could not read:
+        neither is a sentiment (founder review 2026-10-13)."""
+        parts = []
+        if self.pending_count:
+            parts.append(f"{self.pending_count} pendientes de análisis")
+        unanalyzed = self.no_text_count + self.error_count
+        if unanalyzed:
+            parts.append(f"{unanalyzed} sin análisis")
+        return " · ".join(parts)
 
-    @rx.var
-    def negative_count(self) -> int:
-        return sum(1 for r in self.filtered_mentions if r.sentiment == "NEG")
+    # ---------------------------------------------------------------- helpers
+
+    def _query(self) -> MentionQuery:
+        return MentionQuery(
+            connection_id=(
+                UUID(self.accounts[self.account_filter])
+                if self.account_filter in self.accounts
+                else None
+            ),
+            origin=ORIGIN_OPTIONS.get(self.origin_filter),
+            sentiment_state=SENTIMENT_OPTIONS.get(self.sentiment_filter),
+            search=self.search_query,
+            since=datetime.fromisoformat(self.since) if self.since else None,
+        )
+
+    async def _tenant(self) -> UUID | None:
+        auth = await self.get_state(AuthState)
+        return tenant_uuid(auth.session_tenant_id)
+
+    def _apply_page(self, vm: MentionPageVM, *, new_snapshot: bool) -> None:
+        self.mentions = vm.rows
+        self.page = vm.page
+        self.total_pages = vm.total_pages
+        self.pages_label = vm.pages_label
+        self.filtered_total = vm.filtered_total
+        counts = vm.summary
+        self.total_mentions = counts.total
+        self.positive_count = counts.positive
+        self.neutral_count = counts.neutral
+        self.negative_count = counts.negative
+        self.pending_count = counts.pending
+        self.no_text_count = counts.no_text
+        self.error_count = counts.error
+        if new_snapshot:
+            self.as_of = vm.as_of
+            self.snapshot_total = vm.filtered_total
+            self.new_count = 0
+            self.list_changed = False
+        self.last_updated = _utc_stamp()
+        self.refresh_error = ""
+
+    async def _read(self, *, page: int, new_snapshot: bool) -> None:
+        """Read one page — under a new snapshot, or the current one — and apply it."""
+        tenant_id = await self._tenant()
+        if tenant_id is None:
+            self.mentions_error = _NO_TENANT
+            return
+        if new_snapshot:
+            self.since = _window_start(self.period_filter)
+        try:
+            vm = await asyncio.to_thread(
+                load_page,
+                tenant_id,
+                query=self._query(),
+                page=page,
+                as_of="" if new_snapshot else self.as_of,
+                new_since=self.new_since,
+            )
+        except Exception as exc:  # noqa: BLE001 — shown as a callout, logged by type only
+            logger.error("mentions_provider.load_page failed: %s", type(exc).__name__)
+            self.mentions_error = _LOAD_ERROR
+            return
+        self.mentions_error = ""
+        self._apply_page(vm, new_snapshot=new_snapshot)
+
+    async def _restart(self) -> None:
+        """A new listing: page 1 under a new snapshot, no "Nueva" marks. Keeps the rows
+        on screen while it reads (no skeleton) — a filter change must not flash."""
+        self.new_since = ""
+        await self._read(page=1, new_snapshot=True)
+
+    # ----------------------------------------------------------------- events
 
     @rx.event
-    def set_brand_filter(self, value: str) -> None:
-        self.brand_filter = value
+    async def load_mentions(self) -> AsyncIterator[None]:
+        """Opening the screen: the accounts for the filter, then page 1."""
+        self.is_loading_mentions = True
+        self.mentions_error = ""
+        yield
+        tenant_id = await self._tenant()
+        if tenant_id is None:
+            self.is_loading_mentions = False
+            self.mentions_error = _NO_TENANT
+            return
+        try:
+            self.accounts = await asyncio.to_thread(_account_options, tenant_id)
+        except Exception as exc:  # noqa: BLE001 — the filter degrades to "all accounts"
+            logger.error("mentions_provider.account_options failed: %s", type(exc).__name__)
+            self.accounts = {}
+        if self.account_filter not in self.accounts:
+            self.account_filter = ALL_ACCOUNTS
+        await self._restart()
+        self.is_loading_mentions = False
 
     @rx.event
-    def set_platform_filter(self, value: str) -> None:
-        self.platform_filter = value
+    async def set_account_filter(self, value: str) -> None:
+        self.account_filter = value
+        await self._restart()
 
     @rx.event
-    def set_sentiment_filter(self, value: str) -> None:
+    async def set_period_filter(self, value: str) -> None:
+        self.period_filter = value if value in PERIOD_OPTIONS else DEFAULT_PERIOD
+        await self._restart()
+
+    @rx.event
+    async def set_origin_filter(self, value: str) -> None:
+        self.origin_filter = value
+        await self._restart()
+
+    @rx.event
+    async def set_sentiment_filter(self, value: str) -> None:
         self.sentiment_filter = value
+        await self._restart()
 
     @rx.event
-    def set_search_query(self, value: str) -> None:
+    async def set_search_query(self, value: str) -> None:
         self.search_query = value
+        await self._restart()
+
+    @rx.event
+    async def go_to_page(self, page: str) -> None:
+        """Same snapshot, another page: no row can repeat or be skipped."""
+        if not page.isdigit():
+            return  # the "…" gap is not a page
+        await self._read(page=int(page), new_snapshot=False)
+
+    @rx.event
+    async def prev_page(self) -> None:
+        if self.page > 1:
+            await self._read(page=self.page - 1, new_snapshot=False)
+
+    @rx.event
+    async def next_page(self) -> None:
+        if self.page < self.total_pages:
+            await self._read(page=self.page + 1, new_snapshot=False)
+
+    @rx.event
+    async def refresh_list(self) -> None:
+        """ "Actualizar lista" / "Actualizar": a new snapshot on page 1, keeping the
+        filters; what arrived since the old snapshot comes back marked "Nueva"."""
+        self.new_since = self.as_of
+        await self._read(page=1, new_snapshot=True)
+
+    @rx.event
+    async def refresh_now(self) -> AsyncIterator[None]:
+        """The refresh button: re-read the VISIBLE mentions from their network (likes,
+        text, link may have changed since they arrived), then start a new listing. Only
+        this click calls the network — the 45 s tick reads Postgres alone."""
+        if self.is_refreshing:
+            return
+        self.is_refreshing = True
+        yield
+        tenant_id = await self._tenant()
+        if tenant_id is not None and self.mentions:
+            try:
+                await refresh_content(tenant_id, [row.id for row in self.mentions])
+            except Exception as exc:  # noqa: BLE001 — the reload below still runs
+                logger.warning("mentions content refresh failed: %s", type(exc).__name__)
+        self.new_since = self.as_of
+        await self._read(page=self.page, new_snapshot=True)
+        self.is_refreshing = False
+
+    @rx.event
+    async def refresh_tick(self) -> None:
+        """The 45-second heartbeat. Re-reads the current page under the SAME snapshot and
+        counts what arrived after it; never changes the page's set of rows by itself."""
+        if self.is_loading_mentions or not self.as_of or self.mentions_error:
+            return
+        tenant_id = await self._tenant()
+        if tenant_id is None:
+            return
+        query = self._query()
+        try:
+            new_count = await asyncio.to_thread(count_new, tenant_id, query=query, as_of=self.as_of)
+            reread = await asyncio.to_thread(
+                load_page,
+                tenant_id,
+                query=query,
+                page=self.page,
+                as_of=self.as_of,
+                new_since=self.new_since,
+            )
+        except Exception as exc:  # noqa: BLE001 — keep the rows; say it, don't break
+            logger.warning("mentions refresh tick failed: %s", type(exc).__name__)
+            self.refresh_error = _REFRESH_ERROR
+            return
+        decision = decide_tick(
+            snapshot_total=self.snapshot_total,
+            reread_total=reread.filtered_total,
+            new_count=new_count,
+        )
+        self.new_count = decision.new_count
+        if decision.action == "update_rows":
+            self._apply_page(reread, new_snapshot=False)
+        else:
+            self.list_changed = True
+            self.last_updated = _utc_stamp()
+            self.refresh_error = ""
