@@ -9,6 +9,9 @@
 # Only Caddy publishes ports (80/443). Postgres and Redis are reachable on the internal
 # compose network only — never published, never reachable from the internet.
 #
+# Always on: caddy, api, reflex, postgres, redis, webhook-worker (QUA-147: settles recorded
+# Meta webhooks; read-only toward Meta, never publishes). `migrate` is a one-shot (below).
+#
 # Optional services, OFF unless their profile is enabled (COMPOSE_PROFILES in .env.prod):
 #   calendar-worker  QUA-111 executor — PUBLISHES FOR REAL to connected accounts.
 #   render           Remotion render service (Node + headless Chrome, ~1 GB RAM under load).
@@ -36,6 +39,9 @@ x-app-env: &app-env
   QUALIFY_APP_DSN: postgresql+psycopg://qualify_app:${QUALIFY_DB_APP_PASSWORD:?set in .env.prod}@postgres:5432/qualify
   QUALIFY_ADMIN_DSN: postgresql+psycopg://qualify_admin:${QUALIFY_DB_ADMIN_PASSWORD:?set in .env.prod}@postgres:5432/qualify
   QUALIFY_CREDENTIAL_DSN: postgresql+psycopg://qualify_credential:${QUALIFY_DB_CREDENTIAL_PASSWORD:?set in .env.prod}@postgres:5432/qualify
+  # Meta webhook intake (QUA-147, migration 0050): INSERT-only receiver + intake processor.
+  QUALIFY_WEBHOOK_DSN: postgresql+psycopg://qualify_webhook:${QUALIFY_DB_WEBHOOK_PASSWORD:?set in .env.prod}@postgres:5432/qualify
+  QUALIFY_WEBHOOK_WORKER_DSN: postgresql+psycopg://qualify_webhook_worker:${QUALIFY_DB_WEBHOOK_WORKER_PASSWORD:?set in .env.prod}@postgres:5432/qualify
   QUALIFY_REDIS_URL: redis://redis:6379/0
   # One public origin for everything (Caddy routes by path).
   QUALIFY_PUBLIC_MEDIA_BASE_URL: ${QUALIFY_PUBLIC_URL:?set in .env.prod}
@@ -67,6 +73,8 @@ x-app-env: &app-env
   QUALIFY_DB_APP_PASSWORD: ""
   QUALIFY_DB_ADMIN_PASSWORD: ""
   QUALIFY_DB_CREDENTIAL_PASSWORD: ""
+  QUALIFY_DB_WEBHOOK_PASSWORD: ""
+  QUALIFY_DB_WEBHOOK_WORKER_PASSWORD: ""
 
 x-app-env-file: &app-env-file
   env_file:
@@ -132,10 +140,13 @@ services:
     environment:
       <<: *app-env
       QUALIFY_MIGRATION_DSN: postgresql+psycopg://qualify_owner:${QUALIFY_DB_OWNER_PASSWORD}@postgres:5432/qualify
-      # bootstrap_db_roles.py sets these on the three roles (blanked in every other service).
+      # bootstrap_db_roles.py sets these on the application roles (blanked in every other
+      # service).
       QUALIFY_DB_APP_PASSWORD: ${QUALIFY_DB_APP_PASSWORD}
       QUALIFY_DB_ADMIN_PASSWORD: ${QUALIFY_DB_ADMIN_PASSWORD}
       QUALIFY_DB_CREDENTIAL_PASSWORD: ${QUALIFY_DB_CREDENTIAL_PASSWORD}
+      QUALIFY_DB_WEBHOOK_PASSWORD: ${QUALIFY_DB_WEBHOOK_PASSWORD}
+      QUALIFY_DB_WEBHOOK_WORKER_PASSWORD: ${QUALIFY_DB_WEBHOOK_WORKER_PASSWORD}
     command:
       - sh
       - -c
@@ -233,12 +244,40 @@ services:
     volumes:
       - caddy_data:/data
       - caddy_config:/config
+    # `pedidos`: red externa del compose de Pedidos (Bianki·Polette), que vive en este mismo
+    # VPS y se publica desde este Caddy (bloque `pedidos.attitudefactory.co` del Caddyfile).
+    # Debe existir antes de `up`: `docker network create pedidos`.
+    networks:
+      - default
+      - pedidos
     depends_on:
       api:
         condition: service_started
       reflex:
         condition: service_started
     <<: *logging
+
+  # QUA-147 Meta webhook intake processor. Settles what `POST /api/mentions/webhook`
+  # recorded: mentions -> tenant resolution + ingest (one read-only Graph call each);
+  # every other field, comments included, is kept as `unsupported`. Deliberately NOT
+  # behind a profile: it never publishes, replies or writes to Meta, and without it every
+  # mention the receiver records stays `pending` forever. Also runs the 29-day retention
+  # purge once at start and every 24 h. Several instances at once are safe
+  # (FOR UPDATE SKIP LOCKED), but one is enough.
+  webhook-worker:
+    <<: [*app-image, *app-env-file, *logging]
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+    command:
+      - python
+      - -m
+      - qualify_api.webhooks.worker
+      - --interval
+      - ${QUALIFY_WEBHOOK_WORKER_INTERVAL:-30}
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   # --- optional -------------------------------------------------------------------------
 
@@ -294,3 +333,7 @@ volumes:
   renders:
   caddy_data:
   caddy_config:
+
+networks:
+  pedidos:
+    external: true

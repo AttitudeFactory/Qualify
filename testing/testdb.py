@@ -8,7 +8,7 @@ ones. This module is the whole fix, used by the root `conftest.py` and by
 
 - `apply_test_defaults()` points every DSN + Redis at the test targets, unless already set.
 - `guard_problems()` is the guardrail: every DSN must name a database ending in `_test`
-  (never `qualify`), all four the same one, and Redis must not be db 0. Any violation
+  (never `qualify`), all of them the same one, and Redis must not be db 0. Any violation
   aborts the run — whatever the command, whoever set the variable.
 - `ensure()` creates `qualify_test` if missing and applies NEW migrations. It never
   deletes data: what a run leaves behind stays there, pass or fail, for inspection.
@@ -49,6 +49,8 @@ DSN_VARS = (
     "QUALIFY_APP_DSN",
     "QUALIFY_ADMIN_DSN",
     "QUALIFY_CREDENTIAL_DSN",
+    "QUALIFY_WEBHOOK_DSN",
+    "QUALIFY_WEBHOOK_WORKER_DSN",
     "QUALIFY_MIGRATION_DSN",
 )
 REDIS_VAR = "QUALIFY_REDIS_URL"
@@ -61,6 +63,12 @@ TEST_DEFAULTS: dict[str, str] = {
     "QUALIFY_ADMIN_DSN": "postgresql+psycopg://qualify_admin:admin_dev@localhost:5432/qualify_test",
     "QUALIFY_CREDENTIAL_DSN": (
         "postgresql+psycopg://qualify_credential:credential_dev@localhost:5432/qualify_test"
+    ),
+    "QUALIFY_WEBHOOK_DSN": (
+        "postgresql+psycopg://qualify_webhook:webhook_dev@localhost:5432/qualify_test"
+    ),
+    "QUALIFY_WEBHOOK_WORKER_DSN": (
+        "postgresql+psycopg://qualify_webhook_worker:webhook_worker_dev@localhost:5432/qualify_test"
     ),
     "QUALIFY_MIGRATION_DSN": (
         "postgresql+psycopg://qualify_owner:dev_only@localhost:5432/qualify_test"

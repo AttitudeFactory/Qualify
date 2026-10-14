@@ -121,6 +121,35 @@ Producción es un VPS de Hetzner (`qualify-prod` en `~/.ssh/config`) con el stac
 | Respaldo de la base ahora | `just deploy-backup qualify-prod` |
 | Cambiar un secreto, sin desplegar código | `just env-push qualify-prod KEY` |
 
+### Sesión remota de Claude en el servidor
+
+En el VPS corre una sesión de Claude Code, **`qualify-prod`**, para operar producción desde claude.ai/code o la app móvil de Claude (estado, logs, reinicios, respaldos, rollbacks). Montaje y riesgos: [`docs/despliegue-hetzner.md`](docs/despliegue-hetzner.md) §13.
+
+- **Conectarse:** abrir [claude.ai/code](https://claude.ai/code) o la pestaña *Code* de la app y elegir la sesión `qualify-prod`. Está iniciada con la cuenta del fundador y solo aparece ahí.
+- **Si no aparece** (reinicio del servidor, o la red se cayó más de ~10 min):
+  ```bash
+  ssh -t -i ~/.ssh/qualify_hetzner deploy@2.28.112.133 'bash -lc "qualify-claude --continue"'
+  ```
+  Desengancharse con **Ctrl-b d**; nunca Ctrl-C, que la apaga.
+- **Login vencido** (avisa con 3 días): `/login` dentro de la sesión.
+
+### Desplegar sin GitHub Actions
+
+Para no gastar minutos de Actions: se compila en el servidor desde la Mac. En los ejemplos, `78821b7` es el commit que estaba en producción el 2026-10-12 y `113` un número de PR.
+
+```bash
+just deploy qualify-prod          # main
+just deploy qualify-prod 78821b7  # un commit concreto, o revertir a uno anterior
+```
+
+Sube el código por ssh, compila en el servidor, corre `migrate`, levanta el stack y chequea la salud. Si falla la compilación o la migración, producción sigue en el release anterior. Tarda más que por Actions (2 vCPU que siguen atendiendo tráfico).
+
+- **Desde la sesión remota** no se puede: el servidor no tiene el código ni acceso a GitHub, a propósito. Lo que sí hace sin gastar minutos es revertir a un sha que ya tenga imágenes en GHCR: pedirle, por ejemplo, «revierte a `78821b7d0260ac2c1823ff74a92ee34a2a3623d8`» (corre `/opt/qualify/bin/server-deploy.sh rollback 78821b7d0260ac2c1823ff74a92ee34a2a3623d8`, que salta `migrate` y por eso sirve también a través de una migración, donde `just deploy 78821b7` falla). El sha va completo, de 40 caracteres; en `ls /opt/qualify/releases`, los que desplegó Actions (y por eso tienen imágenes en GHCR) son los de nombre de 40 caracteres; los de `just deploy` tienen 12.
+- **Sin CI** (sin minutos, `just merge` se niega): correr lo mismo en la Mac y forzar a propósito, solo el fundador:
+  ```bash
+  just ci-lint && just ci-test && just up && just test-db && just merge 113 --admin
+  ```
+
 ### Cambiar un secreto (`just env-push`)
 
 Los secretos de producción viven en **un solo archivo**: `/opt/qualify/.env.prod` en el servidor (dueño `deploy`, permisos 600). Ningún despliegue lo sobrescribe, ni `just deploy` ni el de GitHub Actions: lo que se cambia ahí queda. Se edita desde la Mac, nunca a mano en el servidor:
@@ -140,7 +169,7 @@ Qué hace:
 
 - Copia **sólo las claves nombradas**. Las demás de `.env.prod` no se tocan.
 - Antes de escribir deja un respaldo `/opt/qualify/.env.prod.bak-<UTC>` y conserva los 10 más recientes.
-- Corre `docker compose up -d --no-build`. Compose recrea exactamente los servicios que leen `.env.prod` (`api`, `reflex` y `calendar-worker` si está activo) y no reinicia `postgres`, `redis` ni `caddy`. No construye imágenes ni corre `migrate`. Son unos 10 s, y al final imprime la salud del sitio.
+- Corre `docker compose up -d --no-build`. Compose recrea exactamente los servicios que leen `.env.prod` (`api`, `reflex`, `webhook-worker` y `calendar-worker` si está activo) y no reinicia `postgres`, `redis` ni `caddy`. No construye imágenes ni corre `migrate`. Son unos 10 s, y al final imprime la salud del sitio.
 - Los valores viajan por el stdin de ssh, nunca por argumentos ni por la terminal.
 - Desde un worktree lee el `.env` del checkout principal. Otro archivo: `QUALIFY_ENV_SOURCE=/ruta/.env just env-push …`.
 - Una clave nueva llega a los contenedores sin tocar el compose, porque el compose les pasa `.env.prod` completo.

@@ -90,6 +90,7 @@ from .ui import (
     page_body,
     page_header,
     progress_panel,
+    qualify_mark,
     removable_pill,
     skeleton_card,
     tag,
@@ -1389,7 +1390,7 @@ _TILE_FRAME = {
 
 
 def _mark_icon(size: int) -> rx.Component:
-    return rx.icon("radar", size=size, color=T.tone_color("accent", 9))
+    return qualify_mark(size)
 
 
 def _mark_text(size: str) -> rx.Component:
@@ -2955,7 +2956,7 @@ def brand_choice_index() -> rx.Component:
                         _fork_option(
                             "user-plus",
                             "No, todavía no",
-                            "Te ayudamos a crear tu cuenta en Instagram o TikTok antes de empezar.",
+                            "Te ayudamos a crear tu cuenta en una red social antes de empezar.",
                             "/brand/connect/setup",
                         ),
                         spacing="4",
@@ -3056,7 +3057,7 @@ def brand_connect_setup_index() -> rx.Component:
     return _wizard_shell(
         page_header(
             "Crea tu cuenta",
-            "Necesitas un perfil en Instagram o TikTok antes de leer tu contenido.",
+            "Necesitas un perfil en una red social antes de leer tu contenido.",
             title_size="8",
         ),
         page_body(
