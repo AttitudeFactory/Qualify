@@ -21,10 +21,13 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from qualify_api.config import MetaOAuthSettings
 from qualify_api.whatsapp.client import (
     BusinessProfile,
     BusinessProfileUpdate,
+    HttpWhatsAppClient,
     PhoneNumberInfo,
+    ProfilePictureUploadNotConfigured,
     QrCode,
     WhatsAppApiError,
 )
@@ -63,6 +66,7 @@ class FakeClient:
     def __init__(self, fail_with: WhatsAppApiError | None = None) -> None:
         self.calls: list[tuple[str, Any]] = []
         self.fail_with = fail_with
+        self.upload_not_configured = False
         self.qr_codes = [
             QrCode(
                 code="QR1",
@@ -97,10 +101,12 @@ class FakeClient:
         self.calls.append(("update_business_profile", profile))
         self._maybe_fail()
 
-    async def upload_media(self, content: bytes, content_type: str, filename: str) -> str:
-        self.calls.append(("upload_media", (len(content), content_type, filename)))
+    async def upload_profile_picture(self, content: bytes, content_type: str) -> str:
+        self.calls.append(("upload_profile_picture", (len(content), content_type)))
+        if self.upload_not_configured:
+            raise ProfilePictureUploadNotConfigured("no app id")
         self._maybe_fail()
-        return "MEDIA-1"
+        return "4::aGFuZGxl"
 
     async def list_qr_codes(self) -> list[QrCode]:
         self.calls.append(("list_qr_codes", None))
@@ -248,18 +254,42 @@ async def test_save_profile_sends_the_update() -> None:
 
 
 async def test_profile_picture_uploads_then_points_the_profile_at_it() -> None:
+    """The Resumable Upload handle — not a `/media` id — is what the profile takes."""
     h = Harness(FakeClient())
-    await set_profile_picture(TENANT, CONNECTION, b"\xff\xd8jpeg", "image/jpeg", "p.jpg", **h.graph)
-    assert _names(h.client.calls) == ["upload_media", "update_business_profile"]
-    assert h.client.calls[0][1] == (6, "image/jpeg", "p.jpg")
-    assert h.client.calls[1][1] == BusinessProfileUpdate(profile_picture_handle="MEDIA-1")
+    await set_profile_picture(TENANT, CONNECTION, b"\xff\xd8jpeg", "image/jpeg", **h.graph)
+    assert _names(h.client.calls) == ["upload_profile_picture", "update_business_profile"]
+    assert h.client.calls[0][1] == (6, "image/jpeg")
+    assert h.client.calls[1][1] == BusinessProfileUpdate(profile_picture_handle="4::aGFuZGxl")
 
 
 async def test_profile_picture_auth_error_degrades() -> None:
     h = Harness(FakeClient(fail_with=WhatsAppApiError("x", status=401)))
     with pytest.raises(WhatsAppApiError):
-        await set_profile_picture(TENANT, CONNECTION, b"x", "image/png", "p.png", **h.graph)
+        await set_profile_picture(TENANT, CONNECTION, b"x", "image/png", **h.graph)
     assert len(h.degraded) == 1
+
+
+@pytest.mark.parametrize(
+    ("content", "content_type"),
+    [(b"GIF89a", "image/gif"), (b"RIFF", "image/webp"), (b"", "image/jpeg")],
+)
+async def test_profile_picture_refuses_before_opening_a_client(
+    content: bytes, content_type: str
+) -> None:
+    h = Harness(FakeClient())
+    with pytest.raises(ValueError):
+        await set_profile_picture(TENANT, CONNECTION, content, content_type, **h.graph)
+    assert h.opened == [] and h.client.calls == []
+
+
+async def test_profile_picture_not_configured_propagates_without_degrading() -> None:
+    client = FakeClient()
+    client.upload_not_configured = True
+    h = Harness(client)
+    with pytest.raises(ProfilePictureUploadNotConfigured):
+        await set_profile_picture(TENANT, CONNECTION, b"\x89PNG", "image/png", **h.graph)
+    assert _names(client.calls) == ["upload_profile_picture"]
+    assert h.degraded == []
 
 
 # --- QR -----------------------------------------------------------------------------------
@@ -310,7 +340,59 @@ def test_graph_goes_through_the_resolver_never_a_token() -> None:
         assert forbidden not in source, f"{forbidden}: the screen must never handle a token"
 
 
+class _ClosableClient:
+    def __init__(self, scheme: str) -> None:
+        self.scheme = scheme
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class _FakeResolver:
+    """Stands in for `InjectingCredentialResolver`: records the scheme of every client."""
+
+    instances: list[_FakeResolver] = []
+
+    def __init__(self, *_args: object) -> None:
+        self.clients: list[_ClosableClient] = []
+        _FakeResolver.instances.append(self)
+
+    async def client_for(self, connection_id: UUID, *, scheme: str) -> _ClosableClient:
+        assert connection_id == CONNECTION
+        client = _ClosableClient(scheme)
+        self.clients.append(client)
+        return client
+
+
+async def test_opener_wires_the_upload_client_and_closes_both(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`upload_profile_picture` needs the app id and an `OAuth`-scheme client; the
+    opener builds both through the resolver and closes both on exit."""
+    settings = MetaOAuthSettings.from_env()
+    monkeypatch.setattr(whatsapp_provider, "_phone_ids", lambda _t, _c: ("PN-1", "WABA-1"))
+    monkeypatch.setattr(whatsapp_provider, "InjectingCredentialResolver", _FakeResolver)
+    monkeypatch.setattr(whatsapp_provider, "DbCredentialReader", lambda _tenant: None)
+    async with whatsapp_provider.open_whatsapp_client(TENANT, CONNECTION) as client:
+        graph, upload = _FakeResolver.instances[-1].clients
+        assert graph.scheme == "Bearer"
+        assert upload.scheme == settings.rupload_auth_scheme
+        assert isinstance(client, HttpWhatsAppClient)
+        assert client._app_id == settings.app_id  # noqa: SLF001
+        assert client._upload_client is upload  # noqa: SLF001
+        assert client._graph is graph  # noqa: SLF001
+    assert graph.closed and upload.closed
+
+
 def test_opener_is_the_real_one_by_default() -> None:
-    for fn in (verify_number, load_profile, save_profile, list_qr_codes, create_qr_code):
+    for fn in (
+        verify_number,
+        load_profile,
+        save_profile,
+        set_profile_picture,
+        list_qr_codes,
+        create_qr_code,
+    ):
         default = inspect.signature(fn).parameters["opener"].default
         assert default is whatsapp_provider.open_whatsapp_client

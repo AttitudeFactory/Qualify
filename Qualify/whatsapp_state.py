@@ -29,7 +29,11 @@ import httpx
 import reflex as rx
 from qualify_api.connections.credential_reader import CredentialNotFound
 from qualify_api.connections.token_health import TokenHealthError
-from qualify_api.whatsapp.client import WhatsAppApiError
+from qualify_api.whatsapp.client import (
+    PROFILE_PICTURE_TYPES,
+    ProfilePictureUploadNotConfigured,
+    WhatsAppApiError,
+)
 from sqlalchemy.exc import SQLAlchemyError
 
 from .auth_state import AuthState
@@ -76,13 +80,18 @@ _VERIFY_FAILED = "No se pudo verificar el número con Meta. Vuelve a intentarlo 
 _PROFILE_SAVED = "Perfil guardado en WhatsApp."
 _PHOTO_SAVED = "Foto de perfil actualizada en WhatsApp."
 _PHOTO_INVALID = "Sube una foto JPG o PNG de hasta 5 MB."
+_PHOTO_NOT_CONFIGURED = (
+    "Este servidor todavía no puede subir fotos de perfil a WhatsApp. "
+    "Pide al equipo de Qualify que lo active."
+)
 _QR_CREATED = "Código QR creado."
 _QR_DELETED = "Código QR eliminado."
 _QR_EMPTY = "Elige un canal o escribe el mensaje con el que llega el cliente."
 _QR_TOO_LONG = f"El mensaje admite hasta {MAX_QR_MESSAGE_CHARS} caracteres."
 
-# Profile photo: what Meta accepts for a WhatsApp business profile picture.
-_PHOTO_TYPES = frozenset({"image/jpeg", "image/png"})
+# Profile photo: what Meta accepts for a WhatsApp business profile picture — the
+# client's own list, so the UI refuses exactly what the upload would.
+_PHOTO_TYPES = frozenset(PROFILE_PICTURE_TYPES)
 _PHOTO_MAX_BYTES = 5 * 1024 * 1024
 
 _PROFILE_FIELDS = frozenset(
@@ -142,7 +151,7 @@ class WhatsAppState(rx.State):
     profile_banner_tone: str = "info"
     # Backend-only (underscore): the dropped photo waits here for the background upload,
     # so the bytes never travel to the browser and back as an event argument.
-    _pending_photo: tuple[bytes, str, str] | None = None
+    _pending_photo: tuple[bytes, str] | None = None
 
     # -- QR ------------------------------------------------------------------------------
     qr_codes: list[QrCodeVM] = []
@@ -484,7 +493,7 @@ class WhatsAppState(rx.State):
         if content_type not in _PHOTO_TYPES or not data or len(data) > _PHOTO_MAX_BYTES:
             self.profile_banner, self.profile_banner_tone = _PHOTO_INVALID, "warn"
             return None
-        self._pending_photo = (data, content_type, name)
+        self._pending_photo = (data, content_type)
         return WhatsAppState.upload_pending_photo
 
     @rx.event(background=True)
@@ -503,9 +512,15 @@ class WhatsAppState(rx.State):
                 self.photo_uploading = False
                 self.profile_banner, self.profile_banner_tone = _NO_SESSION, "error"
             return
-        data, content_type, name = pending
+        data, content_type = pending
         try:
-            await set_profile_picture(tenant_id, UUID(connection_id), data, content_type, name)
+            await set_profile_picture(tenant_id, UUID(connection_id), data, content_type)
+        except ProfilePictureUploadNotConfigured:
+            logger.error("whatsapp photo upload is not configured (app id / upload client)")
+            async with self:
+                self.photo_uploading = False
+                self.profile_banner, self.profile_banner_tone = _PHOTO_NOT_CONFIGURED, "warn"
+            return
         except ValueError:
             async with self:
                 self.photo_uploading = False

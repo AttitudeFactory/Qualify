@@ -41,6 +41,7 @@ from qualify_api.connections.resolver import InjectingCredentialResolver
 from qualify_api.inbox.models import Message
 from qualify_api.tenancy.models import Brand
 from qualify_api.whatsapp.client import (
+    PROFILE_PICTURE_TYPES,
     BusinessProfileUpdate,
     HttpWhatsAppClient,
     PhoneNumberInfo,
@@ -173,23 +174,33 @@ async def open_whatsapp_client(
 ) -> AsyncIterator[WhatsAppClient]:
     """A `WhatsAppClient` bound to this connection's number, closed on exit.
 
+    Two resolver-built clients, both closed on exit: the `Bearer` one every Graph call
+    uses, and the `OAuth`-scheme one (`MetaOAuthSettings.rupload_auth_scheme`, R12) that
+    only `upload_profile_picture`'s byte upload rides, together with the app id the
+    Resumable Upload session is opened on. Neither carries a token this module can see.
+
     Raises `UnknownWhatsAppNumber` (no phone row visible) and `CredentialNotFound` (no
     credential visible) before any network call."""
     phone_number_id, waba_id = await asyncio.to_thread(_phone_ids, tenant_id, connection_id)
     settings = MetaOAuthSettings.from_env()
     resolver = InjectingCredentialResolver(DbCredentialReader(tenant_id), DevEncryptor())
     graph = await resolver.client_for(connection_id, scheme=_GRAPH_SCHEME)
+    upload = None
     try:
+        upload = await resolver.client_for(connection_id, scheme=settings.rupload_auth_scheme)
         yield HttpWhatsAppClient(
             graph_client=graph,
             graph_url=settings.graph_url,
             phone_number_id=phone_number_id,
             waba_id=waba_id,
+            app_id=settings.app_id,
+            upload_client=upload,
         )
     finally:
-        aclose = getattr(graph, "aclose", None)
-        if aclose is not None:
-            await aclose()
+        for client in (upload, graph):
+            aclose = getattr(client, "aclose", None)
+            if aclose is not None:
+                await aclose()
 
 
 async def _call[T](
@@ -309,28 +320,24 @@ async def set_profile_picture(
     connection_id: UUID,
     content: bytes,
     content_type: str,
-    filename: str,
     *,
     opener: ClientOpener = open_whatsapp_client,
     degrader: Degrader = degrade_connection_on_auth_error,
 ) -> None:
-    """Upload the photo and point the business profile at it.
+    """Upload the photo through Meta's Resumable Upload API and point the business
+    profile at the returned handle (`HttpWhatsAppClient.upload_profile_picture`).
 
-    TODO(WA-06 follow-up): Meta documents `profile_picture_handle` as the `h` handle of
-    the **Resumable Upload API** (`POST /{APP_ID}/uploads?file_length=&file_type=` →
-    `POST /upload:{SESSION_ID}` with header `file_offset: 0`, which answers `{"h": …}`),
-    not the media id `POST /{PHONE_NUMBER_ID}/media` returns. `HttpWhatsAppClient` only
-    has `upload_media` (its `BusinessProfileUpdate` docstring says the handle is
-    "accepted as an opaque string"), so this sends the media id and Meta will most
-    likely refuse it with a code-100 parameter error, which the screen shows as a `warn`
-    banner with that code. The fix belongs in `packages/api` (owned by the backend), as
-    a `upload_profile_picture(content, content_type) -> str` on the client, needing the
-    app id plus the scheme R12 pins for the upload host; once it exists, swap the first
-    call below for it — nothing else here changes.
-    """
+    Raises `ValueError` for a type other than JPEG/PNG or empty bytes (checked here,
+    before any client is opened), `ProfilePictureUploadNotConfigured` when the client was
+    built without the app id / upload client, and `WhatsAppApiError` for a platform
+    refusal (an auth one degrades the connection first)."""
+    if not content:
+        raise ValueError("profile picture content must not be empty")
+    if content_type not in PROFILE_PICTURE_TYPES:
+        raise ValueError(f"content_type must be one of {PROFILE_PICTURE_TYPES}")
     async with opener(tenant_id, connection_id) as client:
         try:
-            handle = await client.upload_media(content, content_type, filename)
+            handle = await client.upload_profile_picture(content, content_type)
             await client.update_business_profile(
                 BusinessProfileUpdate(profile_picture_handle=handle)
             )
