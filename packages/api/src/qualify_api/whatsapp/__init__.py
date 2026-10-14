@@ -44,6 +44,8 @@ from qualify_api.whatsapp.client import (
 from qualify_api.whatsapp.config import WhatsAppWebhookSettings
 from qualify_api.whatsapp.connect import ConnectOutcome, connect_whatsapp_number
 from qualify_api.whatsapp.models import (
+    WhatsAppMenu,
+    WhatsAppMenuVersion,
     WhatsAppOutboxItem,
     WhatsAppPhoneNumber,
     WhatsAppThreadState,
@@ -90,6 +92,8 @@ __all__ = [
     "WhatsAppApiError",
     "WhatsAppClient",
     "WhatsAppInboxRepository",
+    "WhatsAppMenu",
+    "WhatsAppMenuVersion",
     "WhatsAppOutboxItem",
     "WhatsAppPhoneNumber",
     "WhatsAppPhoneNumberRepository",

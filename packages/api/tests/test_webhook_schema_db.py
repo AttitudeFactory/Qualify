@@ -255,6 +255,13 @@ def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
     } | {
         ("qualify_webhook_worker", "whatsapp_phone_numbers", c, "SELECT")
         for c in ("id", "tenant_id", "connection_id", "phone_number_id")
+    } | {
+        # 0058 (WA-14): the handler loads the live menu of a number and its definition.
+        ("qualify_webhook_worker", "whatsapp_menus", c, "SELECT")
+        for c in ("id", "tenant_id", "phone_number_row_id", "published_version_id", "is_paused")
+    } | {
+        ("qualify_webhook_worker", "whatsapp_menu_versions", c, "SELECT")
+        for c in ("id", "tenant_id", "menu_id", "version", "definition")
     }
 
 

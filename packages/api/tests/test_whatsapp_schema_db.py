@@ -217,9 +217,12 @@ def test_exactly_the_documented_grants_and_nothing_more(engines) -> None:
             (r.grantee, r.table_name, r.privilege_type)
             for r in conn.execute(
                 text(
+                    # The three 0057 tables only: 0058's menus are pinned by
+                    # `test_whatsapp_menus_schema_db.py`.
                     "SELECT grantee, table_name, privilege_type "
                     "FROM information_schema.role_table_grants "
-                    "WHERE table_name LIKE 'whatsapp_%' AND grantee LIKE 'qualify_%' "
+                    "WHERE table_name IN ('whatsapp_phone_numbers', 'whatsapp_thread_state', "
+                    "'whatsapp_outbox') AND grantee LIKE 'qualify_%' "
                     "AND grantee <> 'qualify_owner'"
                 )
             )
