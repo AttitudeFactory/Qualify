@@ -156,6 +156,28 @@ def build_production_whatsapp_media_locator() -> whatsapp_routes.MediaLocator:
     return NotCapturedMediaLocator()
 
 
+def build_production_whatsapp_metrics_service() -> whatsapp_routes.ConversationMetricsService:
+    """WA-17. Lazy like the chat service; per-call `tenant_session`, cheap to build."""
+    from qualify_api.whatsapp.metrics import production_metrics_service  # noqa: PLC0415
+
+    return production_metrics_service()
+
+
+def build_production_whatsapp_qr_prefix_source() -> whatsapp_routes.QrPrefixSource:
+    """WA-17: QR codes listed through the resolver-built client; Meta settings are read
+    only when a metrics request actually arrives."""
+    from qualify_api.whatsapp.metrics import production_qr_prefix_source  # noqa: PLC0415
+
+    return production_qr_prefix_source()
+
+
+def build_production_whatsapp_analytics_service() -> whatsapp_routes.WabaAnalyticsService:
+    """WA-21. Lazy for the same reason as the QR source: Meta settings at request time."""
+    from qualify_api.whatsapp.analytics import production_analytics_service  # noqa: PLC0415
+
+    return production_analytics_service()
+
+
 def build_production_leads_service() -> LeadIntakeService:
     """Lazy import like the publishing builders: the leads module needs Redis only at
     the first intake, and an app booted without one should fail THAT request loudly."""
@@ -289,6 +311,15 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
         )
         app.dependency_overrides[whatsapp_routes.get_media_locator] = (
             build_production_whatsapp_media_locator
+        )
+        app.dependency_overrides[whatsapp_routes.get_metrics_service] = (
+            build_production_whatsapp_metrics_service
+        )
+        app.dependency_overrides[whatsapp_routes.get_qr_prefix_source] = (
+            build_production_whatsapp_qr_prefix_source
+        )
+        app.dependency_overrides[whatsapp_routes.get_analytics_service] = (
+            build_production_whatsapp_analytics_service
         )
         # C1: parsed at assembly so a malformed QUALIFY_DEV_PRINCIPALS fails the boot,
         # not the first request.
