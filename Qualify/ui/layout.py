@@ -41,7 +41,11 @@ Item = tuple[str, str, str, bool]
 # axes (docs/index.md): what the market says, and what the business says. Connections is
 # the base of both, so it sits above them, untinted. The "Negocio" foot block is sales
 # measurement — deliberately outside the colour zones.
-NAV_BASE: list[Item] = [("Conexiones", "link", "/connections", True)]
+NAV_BASE: list[Item] = [
+    ("Conexiones", "link", "/connections", True),
+    # WA-12: the WhatsApp module (own number: connection, profile, QR, chats, menu).
+    ("WhatsApp", "message-circle", "/whatsapp", True),
+]
 
 NAV_ZONES: list[tuple[str, str, list[Item]]] = [
     (

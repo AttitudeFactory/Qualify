@@ -395,6 +395,7 @@ class AuthState(rx.State):
             from .stories_state import StoriesState
             from .trending_state import TrendingState
             from .voice_lab import VoiceLabState
+            from .whatsapp_state import WhatsAppState
 
             for state_cls in (
                 ConnectionsState,
@@ -433,6 +434,8 @@ class AuthState(rx.State):
                 # the product catalog (2026-10-05): the tenant's products, the open
                 # editor and any files still parked for ingest
                 CatalogState,
+                # WA-12: the tenant's WhatsApp numbers, business profile and QR codes
+                WhatsAppState,
             ):
                 substate = await self.get_state(state_cls)
                 substate.reset()
