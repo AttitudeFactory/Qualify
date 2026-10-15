@@ -20,7 +20,10 @@ and every confirmation is asked inside the panel, never in a dialog on top of it
 
 Colours are identity here, never state: a format has its scale (`q-kind-*` in
 `assets/qualify.css`), a goal has its scale, and Cold/Hot their own gradient. States keep
-speaking through `signal_pill` tones.
+speaking through `signal_pill` tones. Every block of the steps and of the event panel
+(tiles, plan cards, fact tiles, the hero, the timeline) sits on the system's card
+material and every chip on its control material — `assets/qualify-planner.css`, on the
+`--q-card-*` / `--q-control-*` tokens, no blur inside the grids (plan D5).
 """
 
 from __future__ import annotations
@@ -54,9 +57,10 @@ from .post_card import (
     media_fill,
     pill,
     temperature_badge,
+    viewable_src,
 )
 from .r2_media import BACKEND_BASE
-from .ui import callout, drawer, stepper
+from .ui import callout, drawer, skeleton_card, stepper
 from .ui import tokens as T
 
 _ONE_LINE = {"overflow": "hidden", "text_overflow": "ellipsis", "white_space": "nowrap"}
@@ -83,10 +87,12 @@ _KIND_FILTERS: tuple[tuple[str, str], ...] = (
 
 
 def platform_icon(platform: rx.Var[str], size: int = T.ICON_SM) -> rx.Component:
+    """The platform's glyph in its identity scale (`T.platform_scale`, step 9 — the solid
+    step, as the Radix variable so it follows light and dark)."""
     return rx.match(
         platform,
         *[
-            (key, rx.icon(icon, size=size, color=rx.color(T.platform_scale(key), 9)))
+            (key, rx.icon(icon, size=size, color=f"var(--{T.platform_scale(key)}-9)"))
             for key, icon in _PLATFORM_ICON.items()
         ],
         rx.icon("globe", size=size, color=T.TEXT_MUTED),
@@ -94,16 +100,17 @@ def platform_icon(platform: rx.Var[str], size: int = T.ICON_SM) -> rx.Component:
 
 
 def channel_mark(platform: rx.Var[str]) -> rx.Component:
-    """The channel at a glance: a small tile in the platform's own colours with a
-    generic glyph (Lucide has no brand logos), the platform's name as tooltip. Always
-    next to the account handle, so the word is there too."""
+    """The channel at a glance: a small tile in the platform's own colours (`.q-ch-*`,
+    `assets/qualify-planner.css` — the brand said in Radix scales) with a generic glyph
+    (Lucide has no brand logos) that inherits the tile's white, the platform's name as
+    tooltip. Always next to the account handle, so the word is there too."""
     return rx.match(
         platform,
         *[
             (
                 key,
                 rx.center(
-                    rx.icon(icon, size=10, color="white", stroke_width=2.5),
+                    rx.icon(icon, size=10, stroke_width=2.5),
                     class_name=f"q-ch q-ch-{key}",
                     title=T.PLATFORM_LABEL.get(key, key),
                     aria_label=T.PLATFORM_LABEL.get(key, key),
@@ -111,7 +118,7 @@ def channel_mark(platform: rx.Var[str]) -> rx.Component:
             )
             for key, icon in _PLATFORM_ICON.items()
         ],
-        rx.center(rx.icon("globe", size=10, color="white"), class_name="q-ch"),
+        rx.center(rx.icon("globe", size=10), class_name="q-ch"),
     )
 
 
@@ -250,7 +257,7 @@ def _tile(post) -> rx.Component:
                 rx.text(
                     rx.cond(post.readiness_note != "", post.readiness_note, post.approval_label),
                     size="1",
-                    color=rx.color("amber", 11),
+                    color=T.tone_color("warn", 11),
                     style=_ONE_LINE,
                 ),
             ),
@@ -529,7 +536,7 @@ def _repeat(row) -> rx.Component:
                     ),
                     rx.cond(
                         row.series.error != "",
-                        rx.text(row.series.error, size="1", color=rx.color("amber", 11)),
+                        rx.text(row.series.error, size="1", color=T.tone_color("warn", 11)),
                         rx.vstack(
                             rx.text(
                                 row.series.summary,
@@ -824,7 +831,7 @@ def _plan_card(row) -> rx.Component:
                 rx.text(
                     "No hay cuentas activas: conéctalas en Conexiones.",
                     size="1",
-                    color=rx.color("amber", 11),
+                    color=T.tone_color("warn", 11),
                 ),
             ),
             width="100%",
@@ -1274,7 +1281,7 @@ def _assign_footer() -> rx.Component:
                     rx.text(
                         PlannerState.form_step_error,
                         size="1",
-                        color=rx.color("amber", 11),
+                        color=T.tone_color("warn", 11),
                         style=_CLAMP_2,
                     ),
                 ),
@@ -1483,15 +1490,7 @@ def _detail_body() -> rx.Component:
         rx.box(
             rx.cond(
                 d.thumbnail_url != "",
-                rx.image(
-                    src=rx.cond(
-                        d.thumbnail_url.startswith("http"),
-                        d.thumbnail_url,
-                        rx.get_upload_url(d.thumbnail_url),
-                    ),
-                    alt="",
-                    class_name="q-stage-blur",
-                ),
+                rx.image(src=viewable_src(d.thumbnail_url), alt="", class_name="q-stage-blur"),
             ),
             class_name="q-stage-bg",
         ),
@@ -1691,7 +1690,7 @@ def _confirm_bar(text: str, action_label: str, on_confirm) -> rx.Component:
     and the red confirmation side by side — same size and shape as the actions."""
     return rx.vstack(
         rx.hstack(
-            rx.icon("triangle-alert", size=16, color=rx.color("red", 11), flex_shrink="0"),
+            rx.icon("triangle-alert", size=16, color=T.tone_color("error", 11), flex_shrink="0"),
             rx.text(text, size="2"),
             align="start",
             spacing="2",
@@ -1802,7 +1801,8 @@ def event_panel() -> rx.Component:
     return drawer(
         rx.cond(
             PlannerState.detail_loading,
-            rx.center(rx.spinner(), padding="3rem"),
+            # content loading (the POST, its media, dates): a skeleton, never a spinner
+            rx.box(skeleton_card(5), padding="0.5rem 0", width="100%"),
             rx.cond(
                 PlannerState.detail_error != "",
                 callout(PlannerState.detail_error, "error"),

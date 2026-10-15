@@ -29,6 +29,45 @@ Los scopes efectivamente **concedidos** por Meta (no los solicitados) se leen de
 `social_connections.granted_scopes` para la conexión real — no de ninguna variable de
 entorno ni de este repo.
 
+Desde QUA-147 (migración 0050) hay además dos roles de base de datos propios del webhook:
+
+| Variable | Rol | Para qué |
+|---|---|---|
+| `QUALIFY_WEBHOOK_DSN` (prod: `QUALIFY_DB_WEBHOOK_PASSWORD`) | `qualify_webhook` | El receptor HTTP: **solo INSERT** en el registro de entrada |
+| `QUALIFY_WEBHOOK_WORKER_DSN` (prod: `QUALIFY_DB_WEBHOOK_WORKER_PASSWORD`) | `qualify_webhook_worker` | El procesador y la purga |
+
+## 1.1 Registro de entrada y procesador (QUA-147)
+
+El `POST /api/mentions/webhook` **ya no procesa en la petición**. Verifica la firma,
+guarda la entrega en `meta_webhook_deliveries` (con el `raw_body` exacto) y una fila por
+cambio en `meta_webhook_events`, y **solo después** responde 200. Si no puede guardar,
+responde 500 para que Meta reintente.
+
+La resolución del tenant, la llamada a `mentioned_media`/`mentioned_comment` y la
+escritura en `mentions` las hace el **procesador**, fuera de la petición:
+
+```
+just webhook-tick                 # una pasada
+just webhook-worker               # en bucle (también purga lo de más de 29 días cada 24 h)
+just webhook-purge                # purga por antigüedad, en seco (añadir --execute para borrar)
+just webhook-purge-account <id>   # todo lo de una cuenta (gancho de QUA-127), en seco
+```
+
+**En producción** el procesador corre como el servicio `webhook-worker` de
+`deploy/docker-compose.prod.yml`. Arranca siempre, sin perfil, porque nunca publica ni
+escribe en Meta. Su cadencia es `QUALIFY_WEBHOOK_WORKER_INTERVAL`, 30 s por defecto, y sus
+logs se ven con `just deploy-logs qualify-prod webhook-worker`. **En local** no arranca solo:
+se usa `just webhook-tick` o `just webhook-worker`. Sin procesador, los eventos quedan en
+`pending`. Los cambios `comments` se guardan y quedan `unsupported`; el polling de
+comentarios no cambia.
+
+Un texto con un surrogate UTF-16 aislado o con un carácter NUL ya no hace fallar la
+entrega: se guarda con U+FFFD en su lugar, y `raw_body` conserva los bytes originales.
+
+Estados de `meta_webhook_events.status`: `pending` → `processing` → `processed` |
+`orphan` | `ambiguous` | `unsupported` | `failed` (reintenta: 1 min, 5 min, 30 min, 2 h,
+12 h) | `dead` (agotó 6 intentos, contrato inválido o resuelto pero no persistido).
+
 ## 2. Configuración en el Meta App Dashboard
 
 1. Webhooks → suscribir la app al campo **`mentions`** sobre el objeto `instagram`.
@@ -56,7 +95,9 @@ Ejecutar sólo después de que §5 esté resuelto (app Live + Advanced Access pa
 3. Desde una cuenta de Instagram **pública, distinta** de la conectada: publicar un
    Reel/foto con `@handle_de_la_cuenta_conectada` en el caption, **o** comentar
    `@handle_de_la_cuenta_conectada` en cualquier post.
-4. **Logs** — buscar una de estas dos líneas (nunca ambas para el mismo evento):
+4. **Logs** — primero el receptor: `meta webhook: delivery=... duplicate=False parse=parsed
+   changes=1 new=1`. Luego, en el proceso del procesador (`just webhook-worker`), una de
+   estas líneas (nunca ambas para el mismo evento):
    - Éxito: `mentions webhook: resolved tenant=... connection=... media_id=... comment_id=... mention_id=...`
    - Fallo de atribución (no debería pasar con una cuenta ya conectada):
      `mentions webhook: orphan event...` o `AMBIGUOUS external_account_id=...`
@@ -89,9 +130,21 @@ Ver la auditoría completa (sesión 2026-09-01) para el detalle; resumen acciona
 | **Advanced Access** para `instagram_manage_comments` (gatea webhook `mentions` + `mentioned_media`/`mentioned_comment`) | App Review de Meta, requiere Business Verification aprobada primero |
 | **Business Verification** | **Nuestra**, y hoy no ha empezado: dominio, entidad legal, documentos — proyecto Linear "Verificación Meta Business — Qualify" (QUA-5..QUA-12), 100% en Backlog |
 
-**Ninguna acción de ingeniería adelanta esto.** El código está listo para recibir el
-evento real desde el primer día en que la app pase a Live con Advanced Access — no
-requiere ningún deploy ni cambio adicional cuando eso ocurra.
+**Ninguna acción de ingeniería adelanta esto.**
+
+**Corrección (QUA-147, 2026-10-12).** La frase anterior decía que no haría falta ningún
+deploy ni cambio adicional. No es exacto. Además de lo de la tabla, para recibir eventos
+reales hacen falta:
+
+- **Suscribir la Página** a la app (`POST /{page-id}/subscribed_apps`). La documentación
+  de Meta lo exige (`webhooks-for-instagram.md:18`) y no existe código que lo haga
+  (QUA-129).
+- **Desplegar el procesador** (servicio `webhook-worker` del compose de producción).
+- **Definir en `.env.prod`** `QUALIFY_DB_WEBHOOK_PASSWORD`,
+  `QUALIFY_DB_WEBHOOK_WORKER_PASSWORD` y un `QUALIFY_META_WEBHOOK_VERIFY_TOKEN` propio.
+
+Según QUA-137 en Linear, la verificación (negocio y app) está en verde desde el
+2026-10-06. El envío a App Review (Advanced Access) **sigue pendiente**.
 
 ## 6. Qué queda deliberadamente sin poder probarse hasta entonces
 

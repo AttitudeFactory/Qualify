@@ -52,7 +52,9 @@ class CampaignState(rx.State):
     error: str = ""
 
     def _post_id(self) -> UUID | None:
-        raw = self.router.page.params.get("draft_id", "")
+        # the dynamic route arg, as `CreativeState._route_draft_id` reads it — not
+        # `router.page.params`, deprecated since Reflex 0.8.1 and gone in 1.0
+        raw = getattr(self, "draft_id", "")
         try:
             return UUID(str(raw))
         except (ValueError, AttributeError):

@@ -69,6 +69,63 @@ calendar-tick *args:
 calendar-worker *args:
     uv run --no-sync python -m qualify_api.planner.worker {{args}}
 
+# QUA-147: the Meta webhook intake processor. Settles recorded changes (mentions ->
+# resolution + ingestion; every other field, comments included -> `unsupported`).
+#   just webhook-tick                 # one batch, then exit
+#   just webhook-worker [--interval 30]   # a batch every N s until Ctrl+C; also runs the
+#                                         # 29-day retention purge at start and every 24 h
+webhook-tick *args:
+    uv run --no-sync python -m qualify_api.webhooks.worker --once {{args}}
+
+webhook-worker *args:
+    uv run --no-sync python -m qualify_api.webhooks.worker {{args}}
+
+# QUA-147: retention purges. DRY RUN unless --execute (they print what they would delete).
+#   just webhook-purge [--execute]                        # > 29 days, never pending/processing
+#   just webhook-purge-account <ig_account_id> [--execute]  # one account, any state (QUA-127)
+webhook-purge *args:
+    uv run --no-sync python -m qualify_api.webhooks.worker --purge {{args}}
+
+webhook-purge-account account *args:
+    uv run --no-sync python -m qualify_api.webhooks.worker --purge-account {{account}} {{args}}
+
+# Requeue Instagram `comments` recorded as unsupported before their handler existed, so
+# own-post comments that @mention the account become mentions. Dry run unless --execute.
+#   just webhook-requeue-comments [--account <ig_account_id>] [--execute]
+webhook-requeue-comments *args:
+    uv run --no-sync python -m qualify_api.webhooks.worker --requeue-comments {{args}}
+
+# WA-06: manual smoke of the WhatsApp Cloud API client against the test number. DEV ONLY —
+# reads QUALIFY_WA_SYSTEM_USER_TOKEN and QUALIFY_WA_PHONE_NUMBER_ID from the environment,
+# sends for real, prints only the wamid(s).
+#   just whatsapp-smoke --to +57300... --text "hola" [--buttons] [--phone-number]
+whatsapp-smoke *args:
+    uv run --no-sync python -m qualify_api.whatsapp.smoke {{args}}
+
+# WA-05: connect a WhatsApp Business number to a tenant (administrative, no OAuth). The
+# system-user token comes from QUALIFY_WA_SYSTEM_USER_TOKEN in the environment of THIS ONE
+# process only: it is verified (/debug_token + GET /{phone_number_id}), encrypted into
+# oauth_credentials and never printed. Re-running rotates the credential and refreshes the
+# number's metadata. Exit 2 = token rejected/missing scopes, 3 = Meta auth error (nothing
+# written in either case).
+#   QUALIFY_WA_SYSTEM_USER_TOKEN=... just whatsapp-connect --tenant <uuid> --brand <uuid> \
+#       --waba-id <id> --phone-number-id <id>
+whatsapp-connect *args:
+    uv run --no-sync python -m qualify_api.whatsapp.connect {{args}}
+
+# WA-08: the WhatsApp outbox sender (claim → 24 h window → pacing → send → settle). SENDS
+# FOR REAL from the connected numbers of the tenants in scope. Scope is mandatory:
+#   just whatsapp-tick --tenant <uuid>     # one pass, that tenant only (use this locally)
+#   just whatsapp-tick --all-tenants       # one pass, every tenant (production)
+whatsapp-tick *args:
+    uv run --no-sync python -m qualify_api.whatsapp.worker --once {{args}}
+
+# WA-08: the WhatsApp worker — a pass every --interval seconds (default 5) until Ctrl+C.
+#   just whatsapp-worker --tenant <uuid>
+#   just whatsapp-worker --all-tenants [--interval 5]
+whatsapp-worker *args:
+    uv run --no-sync python -m qualify_api.whatsapp.worker {{args}}
+
 # --- Production (Hetzner VPS, docs/despliegue-hetzner.md) ---------------------------------
 # `target` = the server's ssh target, e.g. deploy@203.0.113.10.
 #   just deploy deploy@<ip>               # origin/main
@@ -89,6 +146,17 @@ deploy-logs target service="":
 deploy-backup target:
     deploy/deploy.sh backup {{target}}
 
+# The VPS edge proxy (deploy/edge/): the only listener on 80/443, TLS for every product on the
+# box, owned by none of them. Copies deploy/edge/ to the server and runs install.sh there
+# (idempotent). One-time cutover from the old setup (Qualify's Caddy on 80/443):
+#   just edge-install <target> --wait-for-ports   # leave it waiting, THEN deploy Qualify
+# Later route changes: edit deploy/edge/Caddyfile, run `just edge-install <target>` again.
+# Runbook: docs/despliegue-hetzner.md, "Proxy de entrada".
+edge-install target *args:
+    ssh {{target}} 'rm -rf /tmp/qualify-edge && mkdir -p /tmp/qualify-edge'
+    scp -q deploy/edge/Caddyfile deploy/edge/docker-compose.yml deploy/edge/.env.example deploy/edge/install.sh {{target}}:/tmp/qualify-edge/
+    ssh -t {{target}} 'bash /tmp/qualify-edge/install.sh {{args}}'
+
 # Values never reach argv or the terminal; the output shows an 8-char sha256 fingerprint per
 # key, and a backup of .env.prod is kept. --dry-run compares without writing.
 #   just env-push qualify-prod SCRAPECREATORS_API_KEY [MORE_KEYS...]
@@ -96,6 +164,13 @@ deploy-backup target:
 # Copy KEYs from your local .env into .env.prod; recreate only the services they change.
 env-push target *keys:
     deploy/deploy.sh env-push {{target}} {{keys}}
+
+# Claude Code on the server as `deploy`, for Remote Control (docs/despliegue-hetzner.md §13).
+# `target` must log in as ROOT (the `qualify-prod` alias). Login is by hand afterwards.
+#   just claude-bootstrap qualify-prod
+claude-bootstrap target:
+    ssh {{target}} 'bash -s' < deploy/bootstrap-claude.sh
+    ssh {{target}} 'cat > /opt/qualify/CLAUDE.md && chmod 644 /opt/qualify/CLAUDE.md' < deploy/claude-server.md
 
 # Default test pass: unit + db, never external network. Mirrors CI.
 # Tests use `qualify_test` + Redis db 15, NEVER the dev `qualify` (root conftest.py aborts

@@ -6,6 +6,9 @@ Two jobs, both deterministic PIL over the operator's own images:
   gradient from the brand palette), the product image(s) placed untouched, the hook
   printed on top and the CTA as a pill at the bottom. With `carousel=True`, one slide
   per product plus a closing CTA slide.
+- `render_ad_slides` — the same frame over scenes a model GENERATED (Seedream, since
+  2026-10-07): the product is already inside each photograph, so only the hook, the CTA
+  and the brand's real logo are set here — a model is never trusted to spell the brand.
 - `compose_scene` — the background of an avatar video. HeyGen takes ONE background
   image and has no native way to put a product in the frame (verified against its v3
   spec, 2026-09-25): so the operator's background and products are composed here into
@@ -20,6 +23,7 @@ this the `FROM_UPLOAD` route: no AI disclosure for the image itself.
 from __future__ import annotations
 
 import io
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -39,6 +43,16 @@ _BOLD_FONTS = (
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 )
 _REGULAR_FONTS = ("arial.ttf", "DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+
+
+#: Emoji and their joiners/variation selectors: the printing fonts have no glyph for
+#: them, so they came out as empty boxes on the image (§ request 2026-10-08).
+_EMOJI = re.compile("[\U0001f000-\U0001faff\u2600-\u27bf\u2b00-\u2bff\ufe0f\u200d\u20e3]")
+
+
+def _printable(text: str) -> str:
+    """`text` as it can be printed: no emoji, single spaces."""
+    return " ".join(_EMOJI.sub("", text).split())
 
 
 @dataclass(frozen=True)
@@ -202,15 +216,16 @@ def _wrap(
 def _headline(
     canvas: Image.Image, text: str, box: tuple[int, int, int, int], *, dark_text: bool
 ) -> None:
-    """The hook, as big as fits in `box` (at most 3 lines), centred, with a soft shadow
-    so it reads over a photograph."""
+    """The hook, as big as fits in `box` (at most 4 lines), centred, with a soft shadow
+    so it reads over a photograph. It shrinks before it is ever cut (§ request
+    2026-10-08: the hook came out cut with «…»)."""
     if not text.strip():
         return
     left, top, right, bottom = box
     draw = ImageDraw.Draw(canvas)
-    for px in range(96, 30, -6):
+    for px in range(96, 26, -4):
         font = _font(px, bold=True)
-        lines = _wrap(draw, text, font, right - left, 3)
+        lines = _wrap(draw, text, font, right - left, 4)
         line_h = round(px * 1.15)
         if line_h * len(lines) <= bottom - top and all(
             draw.textlength(line, font=font) <= right - left for line in lines
@@ -232,33 +247,74 @@ def _headline(
         draw.text((x, y), line, font=font, fill=fill, anchor="ma")
 
 
+def cta_lines(draw: ImageDraw.ImageDraw, text: str, size: tuple[int, int]) -> tuple[int, list[str]]:
+    """The CTA's font size and lines on a canvas of `size`: the largest size at which it
+    fits whole on at most two lines, down to 60% of the full size."""
+    width, height = size
+    full = round(height * 0.036)
+    max_w = round(width * 0.84)
+    words = " ".join(text.split())
+    for px in range(full, max(round(full * 0.6), 16) - 1, -2):
+        lines = _wrap(draw, text, _font(px, bold=True), max_w - px * 2, 2)
+        if " ".join(lines) == words:
+            break
+    return px, lines
+
+
 def _cta_pill(canvas: Image.Image, text: str, center_y: int, accent: tuple[int, int, int]) -> None:
+    """The CTA as a pill: one line at full size when it fits, else smaller and on up to
+    two lines — it used to be forced onto ONE line and cut with «…» (§ request
+    2026-10-08). Cut only when even the smallest size cannot hold it."""
     if not text.strip():
         return
     draw = ImageDraw.Draw(canvas)
-    px = round(canvas.height * 0.036)
+    px, lines = cta_lines(draw, text, canvas.size)
     font = _font(px, bold=True)
-    max_w = round(canvas.width * 0.8)
-    label = _wrap(draw, text, font, max_w - px * 2, 1)[0]
-    width = round(draw.textlength(label, font=font)) + px * 2
-    height = round(px * 2.1)
+    line_h = round(px * 1.2)
+    width = max(round(draw.textlength(line, font=font)) for line in lines) + px * 2
+    height = line_h * len(lines) + round(px * 0.9)
     left = (canvas.width - width) // 2
     top = center_y - height // 2
-    draw.rounded_rectangle(
-        (left, top, left + width, top + height), height // 2, fill=(*accent, 255)
-    )
+    radius = height // 2 if len(lines) == 1 else round(px * 0.9)
+    draw.rounded_rectangle((left, top, left + width, top + height), radius, fill=(*accent, 255))
     text_fill = (17, 24, 39, 255) if _luminance(accent) > 0.6 else (255, 255, 255, 255)
-    draw.text((canvas.width // 2, center_y), label, font=font, fill=text_fill, anchor="mm")
+    y = center_y - (line_h * len(lines)) // 2 + line_h // 2
+    for line in lines:
+        draw.text((canvas.width // 2, y), line, font=font, fill=text_fill, anchor="mm")
+        y += line_h
 
 
-def _logo(canvas: Image.Image, data: bytes | None) -> None:
-    if data is None:
-        return
-    logo = _open(data)
-    size = round(canvas.width * 0.16)
-    logo.thumbnail((size, size), Image.LANCZOS)
+#: The logo's width as a share of the canvas: on its own in the top band, or sharing it
+#: with a headline (smaller, so the headline keeps room under it — 2026-10-09: "el logo
+#: tapa el texto").
+_LOGO_SHARE = 0.16
+_LOGO_SHARE_WITH_HEADLINE = 0.11
+
+
+def _logo(canvas: Image.Image, data: bytes | None, *, share: float = _LOGO_SHARE) -> int:
+    """The brand mark in the top-left corner. Returns the y its bottom edge reaches
+    (the top margin when there is no logo), so a headline can start under it."""
     margin = round(canvas.width * 0.05)
+    if data is None:
+        return margin
+    logo = _open(data)
+    size = round(canvas.width * share)
+    logo.thumbnail((size, size), Image.LANCZOS)
     canvas.alpha_composite(logo, (margin, margin))
+    return margin + logo.height
+
+
+def _headline_box(
+    size: tuple[int, int], *, under: int, closing: bool = False
+) -> tuple[int, int, int, int]:
+    """Where the headline goes. Closing: large and centred. Else the top band — starting
+    under the logo (`under`, a y in px) plus a gap, never over it, and reaching down to
+    30 % of the height, which is where the scrim ends."""
+    width, height = size
+    if closing:
+        return (round(width * 0.08), round(height * 0.3), round(width * 0.92), round(height * 0.62))
+    top = max(round(height * 0.07), under + round(height * 0.015))
+    return (round(width * 0.08), top, round(width * 0.92), round(height * 0.3))
 
 
 def _scrim(canvas: Image.Image) -> None:
@@ -296,10 +352,11 @@ def _slide(
     """One image. `closing` is a carousel's last slide: no product, the hook (the CTA
     line) large and centred, the CTA pill under it."""
     width, height = size
+    hook, cta = _printable(hook), _printable(cta)
     canvas = _background(size, background, base)
     photographic = background is not None
-    if photographic:
-        _scrim(canvas)
+    if photographic and (hook.strip() or cta.strip()):
+        _scrim(canvas)  # only where words go: a slide without text keeps its photo
     dark_text = not photographic and _luminance(base) > 0.6
     has_text_top = bool(hook.strip())
     product_top = round(height * (0.27 if has_text_top else 0.12))
@@ -307,14 +364,12 @@ def _slide(
     _place_products(
         canvas, products, (round(width * 0.07), product_top, round(width * 0.93), product_bottom)
     )
-    headline_box = (
-        (round(width * 0.08), round(height * 0.3), round(width * 0.92), round(height * 0.62))
-        if closing
-        else (round(width * 0.08), round(height * 0.07), round(width * 0.92), round(height * 0.25))
-    )
-    _headline(canvas, hook, headline_box, dark_text=dark_text)
+    # the logo goes first: with a headline in the top band it is drawn smaller, and the
+    # headline starts under it instead of across it (2026-10-09)
+    shares_band = has_text_top and not closing
+    under = _logo(canvas, logo, share=_LOGO_SHARE_WITH_HEADLINE if shares_band else _LOGO_SHARE)
+    _headline(canvas, hook, _headline_box(size, under=under, closing=closing), dark_text=dark_text)
     _cta_pill(canvas, cta, round(height * 0.89), accent)
-    _logo(canvas, logo)
     return _png(canvas)
 
 
@@ -345,25 +400,128 @@ def render_flyer(
     return slides
 
 
+def render_ad_slides(
+    *,
+    scenes: Sequence[bytes],
+    text: FlyerText,
+    palette: Sequence[str] = (),
+    logo: bytes | None = None,
+    carousel: bool = False,
+    size: tuple[int, int] = FEED_SIZE,
+) -> list[bytes]:
+    """The advertising image over generated scenes, as PNG bytes. Single: the first
+    scene with the hook and the CTA. Carousel: the first scene with the hook, one slide
+    per further scene, and a closing slide with the CTA on the brand gradient — the same
+    rhythm as `render_flyer`."""
+    if not scenes:
+        raise ValueError("an advertising image needs at least one generated scene")
+    base, accent = _palette(palette)
+    common = {"size": size, "base": base, "accent": accent, "logo": logo, "products": ()}
+    if not carousel:
+        return [_slide(background=scenes[0], hook=text.hook, cta=text.cta, **common)]
+    slides = [_slide(background=scenes[0], hook=text.hook, cta="", **common)]
+    slides.extend(_slide(background=scene, hook="", cta="", **common) for scene in scenes[1:])
+    closing_line = text.cta or text.hook
+    slides.append(_slide(background=None, hook=closing_line, cta="", closing=True, **common))
+    return slides
+
+
+def render_carousel_slide(
+    *,
+    scene: bytes,
+    hook: str = "",
+    cta: str = "",
+    palette: Sequence[str] = (),
+    logo: bytes | None = None,
+    size: tuple[int, int] = FEED_SIZE,
+) -> bytes:
+    """One generated slide of a carousel (`ContentKind.CAROUSEL`) as PNG bytes: the scene
+    with the words the operator chose for it — the hook on top, the CTA as a pill, or
+    neither — and the logo, the same drawing as the advertising image's slides."""
+    base, accent = _palette(palette)
+    return _slide(
+        size=size,
+        background=scene,
+        base=base,
+        accent=accent,
+        products=(),
+        hook=hook,
+        cta=cta,
+        logo=logo,
+    )
+
+
+def render_closing_slide(
+    *,
+    line: str,
+    palette: Sequence[str] = (),
+    logo: bytes | None = None,
+    size: tuple[int, int] = FEED_SIZE,
+) -> bytes:
+    """A carousel's closing slide: `line` (the CTA) large on the brand gradient."""
+    base, accent = _palette(palette)
+    return _slide(
+        size=size,
+        background=None,
+        base=base,
+        accent=accent,
+        products=(),
+        hook=line,
+        cta="",
+        logo=logo,
+        closing=True,
+    )
+
+
+def text_layer(
+    *,
+    size: tuple[int, int],
+    hook: str = "",
+    cta: str = "",
+    palette: Sequence[str] = (),
+    logo: bytes | None = None,
+) -> bytes:
+    """The words of a slide WITHOUT its picture, as a transparent RGBA PNG — what is laid
+    over an animated slide's every frame (§ request 2026-10-09). Same scrim, headline,
+    pill and logo as `render_carousel_slide`, so a video slide reads like its neighbours."""
+    width, height = size
+    hook, cta = _printable(hook), _printable(cta)
+    _, accent = _palette(palette)
+    canvas = Image.new("RGBA", size, (0, 0, 0, 0))
+    if hook.strip() or cta.strip():
+        _scrim(canvas)
+    has_headline = bool(hook.strip())
+    under = _logo(canvas, logo, share=_LOGO_SHARE_WITH_HEADLINE if has_headline else _LOGO_SHARE)
+    _headline(canvas, hook, _headline_box(size, under=under), dark_text=False)
+    _cta_pill(canvas, cta, round(height * 0.89), accent)
+    out = io.BytesIO()
+    canvas.save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
 def compose_scene(
     *,
     products: Sequence[bytes] = (),
     background: bytes | None = None,
     palette: Sequence[str] = (),
     size: tuple[int, int] = REEL_SIZE,
+    logo: bytes | None = None,
 ) -> bytes | None:
     """The single background image an avatar video is rendered over: the operator's
     background (or the brand gradient) with the products in the upper band, clear of a
-    presenter standing in the lower two thirds. None when there is nothing to compose —
-    the video then keeps the avatar's own background."""
-    if background is None and not products:
+    presenter standing in the lower two thirds, and the brand's logo in the top corner
+    when the piece was given one (§ 2026-10-06) — the products then start below it.
+    None when there is nothing to compose — the video keeps the avatar's own background."""
+    if background is None and not products and logo is None:
         return None
     base, _accent = _palette(palette)
     width, height = size
     canvas = _background(size, background, base)
+    top = 0.06 if logo is None else 0.17  # clear of the logo's corner
     _place_products(
         canvas,
         products,
-        (round(width * 0.08), round(height * 0.06), round(width * 0.92), round(height * 0.3)),
+        (round(width * 0.08), round(height * top), round(width * 0.92), round(height * 0.34)),
     )
+    _logo(canvas, logo)
     return _png(canvas)

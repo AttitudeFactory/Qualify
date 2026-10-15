@@ -395,6 +395,13 @@ class AuthState(rx.State):
             from .stories_state import StoriesState
             from .trending_state import TrendingState
             from .voice_lab import VoiceLabState
+            from .whatsapp_campaigns_state import WhatsAppCampaignsState
+            from .whatsapp_chats_state import WhatsAppChatsState
+            from .whatsapp_contacts_state import WhatsAppContactsState
+            from .whatsapp_menu_state import WhatsAppMenuState
+            from .whatsapp_metrics_state import WhatsAppMetricsState
+            from .whatsapp_state import WhatsAppState
+            from .whatsapp_templates_state import WhatsAppTemplatesState
 
             for state_cls in (
                 ConnectionsState,
@@ -433,9 +440,23 @@ class AuthState(rx.State):
                 # the product catalog (2026-10-05): the tenant's products, the open
                 # editor and any files still parked for ingest
                 CatalogState,
+                # WA-12: the tenant's WhatsApp numbers, business profile and QR codes
+                WhatsAppState,
+                # WA-11: the number's conversations, the open thread, the composer draft
+                # and the acting user's id (a backend var — `reset` clears those too)
+                WhatsAppChatsState,
+                # WA-16: the number's menus, the open editor draft and the preview chat
+                WhatsAppMenuState,
+                # WA-18: templates, opt-ins, campaigns and the Conexión metrics block
+                WhatsAppTemplatesState,
+                WhatsAppContactsState,
+                WhatsAppCampaignsState,
+                WhatsAppMetricsState,
             ):
                 substate = await self.get_state(state_cls)
                 substate.reset()
             self.reset()
+        # A toast still on screen (e.g. a sync result) must not follow the person out.
+        yield rx.toast.dismiss()
         # § 2026-10-02: the first view after a logout is the Brand Kit, as on arrival
         yield rx.redirect(BRAND_START_ROUTE)

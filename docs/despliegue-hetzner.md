@@ -2,16 +2,20 @@
 
 **Estado:** `[LISTO PARA EJECUTAR 2026-10-05]` — el repo ya es desplegable; lo que falta lo hace el fundador (crear el servidor, el registro DNS, el `.env.prod` y los ajustes de Meta). Cierra la bifurcación de host de [`prioridad-despliegue-subdominio.md`](prioridad-despliegue-subdominio.md) §4: **Hetzner**.
 **Para qué:** que Meta App Review tenga una URL pública estable donde iniciar sesión, y que el callback OAuth de Meta tenga un redirect URI fijo (`https://qualify.attitudefactory.co/api/connections/callback`) en vez del túnel `cloudflared` efímero.
-**Piezas en el repo:** `deploy/Dockerfile`, `deploy/docker-compose.prod.yml`, `deploy/Caddyfile`, `deploy/.env.prod.example`, `deploy/deploy.sh`, `deploy/bootstrap-server.sh`, `deploy/backup-db.sh`, `deploy/bootstrap_db_roles.py`, y las recetas `just deploy*`.
+**Piezas en el repo:** `deploy/Dockerfile`, `deploy/docker-compose.prod.yml`, `deploy/Caddyfile`, `deploy/.env.prod.example`, `deploy/deploy.sh`, `deploy/bootstrap-server.sh`, `deploy/backup-db.sh`, `deploy/bootstrap_db_roles.py`, `deploy/bootstrap-claude.sh` + `deploy/claude-server.md` (§13), y las recetas `just deploy*`.
 
 ---
 
 ## 1. Qué corre en el servidor
 
-Un solo servidor, un solo `docker compose`, un solo origen público. Caddy es lo único expuesto a internet (80/443) y reparte por ruta:
+Un solo servidor con **dos composes independientes**: el de Qualify y el **proxy de entrada** del VPS (`/opt/edge`, ver §1.1). Desde el 2026-10-14 el proxy de entrada es lo único expuesto a internet (80/443): termina el TLS de todos los productos del servidor y le pasa a Qualify su dominio por la red Docker `qualify-edge`. El Caddy de Qualify ya no publica puertos; reparte por ruta en HTTP plano:
 
 ```
-                 internet ──► :80/:443  caddy  (TLS automático Let's Encrypt + frontend estático)
+                 internet ──► :80/:443  edge   (/opt/edge — TLS de todos los dominios del VPS)
+                                          │  qualify.attitudefactory.co ─► red qualify-edge
+                                          │  pedidos.attitudefactory.co ─► red pedidos (otro producto, otro compose)
+                                          ▼
+                                 :80  caddy  (router interno de Qualify + frontend estático; sin puertos publicados)
                                           │
         /api/*, /public/media/*  ─────────┼──► api      FastAPI  (uvicorn, qualify_api.http.app:create_app)
         /_event, /_upload, /ping,         │
@@ -39,6 +43,31 @@ No hay colisiones: las rutas que monta el `api_transformer` de Reflex (`/avatar`
 **Por qué dos imágenes y no tres.** `qualify-app` (Python) sirve a la vez `api`, `reflex`, `migrate` y `calendar-worker`, cambiando sólo el comando: el proceso de Reflex ya importa `qualify_api` en proceso (servicios de conexiones y publicación, e `inbox_provider.py` llama a `create_app()` por `httpx.ASGITransport`), así que una imagen "sólo API" tendría exactamente las mismas dependencias. `qualify-web` es Caddy con el frontend ya exportado adentro: en producción el frontend no necesita ni Node ni Python.
 
 **Lo que la imagen NO trae:** el grupo `ml` (torch/transformers) ni `dev`. `qualify_models` va en `PYTHONPATH` (igual que en CI) porque el CRM importa su tabla pura `permission_capability` al arrancar. Consecuencia: lo que necesita torch localmente — análisis de sentimiento de comentarios, borradores de respuesta y transcripción local con whisper del Brand Kit — **falla al usarse** en este servidor (no al arrancar). Ver §11.
+
+### 1.1 Proxy de entrada (`deploy/edge/`, vive en `/opt/edge`)
+
+**Regla del fundador (2026-10-14):** Qualify y Pedidos son dos productos que comparten VPS y no deben afectarse entre sí. Por eso la puerta del servidor no pertenece a ninguno:
+
+| Pieza | Dónde | Quién la cambia |
+|---|---|---|
+| Proxy de entrada (Caddy estándar, `caddy:2.11-alpine`) | `/opt/edge` (`docker-compose.yml`, `Caddyfile`, `.env`) | `just edge-install <target>`; nunca un despliegue de producto |
+| Red `qualify-edge` | Docker, externa | La crea `install.sh`; el Caddy de Qualify se une con el alias `qualify-web` |
+| Red `pedidos` | Docker, externa | La crea `install.sh`; el backend de Pedidos se une como `pedidos-backend:8420` |
+| Certificados TLS | volumen `edge_edge_data` | Caddy del proxy (Let's Encrypt, `EDGE_ACME_EMAIL`) |
+
+Qué garantiza: desplegar Qualify recrea su Caddy interno pero **no toca el proxy**, así que Pedidos no se corta; si Qualify o Pedidos están caídos, solo su dominio responde 502; las rutas de Pedidos ya no viven en este repo de producto sino en `deploy/edge/Caddyfile`. Lo fija `packages/api/tests/test_deploy_edge.py` (ningún servicio de Qualify publica puertos ni menciona Pedidos).
+
+**Cambiar una ruta del proxy:** editar `deploy/edge/Caddyfile` y `just edge-install <target>` (copia y aplica; Caddy recarga sin cortar conexiones si solo cambió el Caddyfile: `cd /opt/edge && docker compose exec edge caddy reload --config /etc/caddy/Caddyfile`).
+
+**Corte único desde el esquema anterior** (Caddy de Qualify en 80/443), en este orden:
+
+1. Una vez, como root en el servidor: `install -d -o deploy -g deploy /opt/edge`.
+2. Desde el Mac: `just edge-install <target>`. La primera vez crea `/opt/edge/.env` desde la plantilla y se detiene: poner `EDGE_ACME_EMAIL` (y revisar los dos dominios).
+3. Desde el Mac: `just edge-install <target> --wait-for-ports`. Crea las redes, copia los certificados actuales al volumen del proxy (no hace falta emitir nuevos), deja el contenedor creado y **se queda esperando** a que 80/443 queden libres.
+4. Con eso esperando, desplegar Qualify (workflow `deploy` o `just deploy`). Al recrearse, el Caddy de Qualify suelta 80/443 y el proxy arranca en ese mismo segundo. El healthcheck del despliegue ya pasa por el proxy.
+5. Comprobar: `install.sh` imprime `/ping` de Qualify (200) y el código de Pedidos (cualquier código HTTP; 502 = backend de Pedidos apagado).
+
+Corte esperado: unos segundos para los dos dominios, una sola vez. Vuelta atrás: `cd /opt/edge && docker compose down` y desplegar el commit anterior de Qualify (que vuelve a publicar 80/443).
 
 ## 2. Crear el servidor (consola de Hetzner)
 
@@ -81,7 +110,7 @@ Cada variable está comentada en el ejemplo. Lo esencial:
 |---|---|
 | `QUALIFY_PUBLIC_URL` / `QUALIFY_DOMAIN` | `https://qualify.attitudefactory.co` / `qualify.attitudefactory.co` |
 | `QUALIFY_ACME_EMAIL` | Correo para avisos de Let's Encrypt |
-| `QUALIFY_DB_OWNER_PASSWORD`, `QUALIFY_DB_APP_PASSWORD`, `QUALIFY_DB_ADMIN_PASSWORD`, `QUALIFY_DB_CREDENTIAL_PASSWORD` | `openssl rand -hex 24` cada una (hex: van dentro de una URL) |
+| `QUALIFY_DB_OWNER_PASSWORD`, `QUALIFY_DB_APP_PASSWORD`, `QUALIFY_DB_ADMIN_PASSWORD`, `QUALIFY_DB_CREDENTIAL_PASSWORD`, `QUALIFY_DB_WEBHOOK_PASSWORD`, `QUALIFY_DB_WEBHOOK_WORKER_PASSWORD` | `openssl rand -hex 24` cada una (hex: van dentro de una URL) |
 | `QUALIFY_DEV_FERNET_KEY` | `python3 -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`. **Guardarla también en el gestor de contraseñas:** si se pierde, todos los tokens OAuth guardados quedan ilegibles |
 | `QUALIFY_OAUTH_STATE_SECRET` | `openssl rand -hex 32` |
 | `QUALIFY_META_*`, `QUALIFY_SUPABASE_*`, `QUALIFY_R2_*`, `QUALIFY_ANTHROPIC_API_KEY`, … | Los mismos valores que el `.env` local (no copiar `QUALIFY_*_DSN` ni `QUALIFY_REDIS_URL`: el compose los arma) |
@@ -178,7 +207,7 @@ Montaje (una vez):
    ```bash
    ssh deploy@<IP> 'install -D -m 755 /opt/qualify/current/deploy/server-deploy.sh /opt/qualify/bin/server-deploy.sh'
    ```
-   Vive fuera de `releases/` a propósito: un deploy no puede reemplazar el comando que la llave tiene permitido. Si el script cambia en el repo, se reinstala con el mismo comando.
+   Vive fuera de `releases/` a propósito: un deploy no puede reemplazar el comando que la llave tiene permitido. **Si el script cambia en el repo, hay que reinstalarlo con el mismo comando** (el CD toma el compose y los scripts de cada release del bundle, pero ejecuta siempre esta copia fija). Detalle que el script ya contempla (2026-10-09): un `just deploy` desde la Mac entra como root y deja su release en `releases/` propiedad de root; la poda de releases viejas del CD, que corre como `deploy`, la hace entonces a través de un shell root de la imagen `qualify-web`, y va después del health check para que una limpieza nunca ponga en rojo un deploy que ya sirve.
 3. **Restringir la llave** en `~deploy/.ssh/authorized_keys` del servidor, en **una** línea:
    ```
    command="/opt/qualify/bin/server-deploy.sh",restrict ssh-ed25519 AAAA…(contenido de qualify_ci_deploy.pub)… qualify-ci-deploy
@@ -198,7 +227,7 @@ Montaje (una vez):
 
 6. **Primer deploy manual:** *Actions → deploy → Run workflow* (ref `main`). Debe terminar con los tres chequeos `ok` en el servidor y el smoke externo en verde.
 7. **Aviso en `#devops` (Zoho Cliq):** el job `notify` publica en `#devops` el resultado de cada deploy intentado (✅/❌, en qué etapa falló, commit y link a la corrida). Para activarlo, en Cliq: *perfil → Bots & Tools → Webhook Tokens → Generate New Token*. En GitHub, secreto `CLIQ_DEVOPS_WEBHOOK_URL` = `https://cliq.zoho.eu/api/v2/channelsbyname/devops/message?zapikey=<token>`. Sin el secreto el job sólo deja un aviso, y un fallo de Cliq nunca falla el deploy.
-8. **Opcional, deploy automático:** variable de repositorio `QUALIFY_AUTO_DEPLOY=true`. Con ella, cada run de `ci` en verde sobre `main` (después de un merge) despliega solo.
+8. **Opcional, deploy automático:** variable de repositorio `QUALIFY_AUTO_DEPLOY`. Con `merge` (o `true`) despliega cada push a `main`, es decir, cada merge. Con `daily` despliega una vez al día (07:23 UTC), solo si `main` cambió. Con cualquier otro valor no despliega solo. Comandos y calendario en el README, sección «Operación en producción».
 
 Operación:
 
@@ -282,6 +311,8 @@ Se activan con `COMPOSE_PROFILES` en `/opt/qualify/.env.prod` y un `just deploy`
 
 ## 12. Cómo se verificó (2026-10-05, en el Mac, sin servidor)
 
+*(Desde 2026-10-14 el compose de producción no publica puertos: para repetir este smoke añadir `-f deploy/docker-compose.standalone.yml`, que publica el Caddy de Qualify en `QUALIFY_HTTP_PORT`, y crear una vez `docker network create qualify-edge`.)*
+
 El mismo `deploy/docker-compose.prod.yml`, con un proyecto Compose aparte (`-p qualify-smoke`, sin chocar con el stack de desarrollo), un `.env` desechable y Caddy en `http://localhost:18480` sin TLS (`QUALIFY_DOMAIN=http://localhost`, `QUALIFY_PUBLIC_URL=http://localhost:18480`, `QUALIFY_HTTP_PORT=18480`, `QUALIFY_HTTPS_PORT=18443`):
 
 ```bash
@@ -314,3 +345,50 @@ QUALIFY_ENV_FILE=/ruta/.env.smoke docker compose -p qualify-smoke \
 | `deploy.sh status` / `deploy.sh backup` (mismo `ssh` de prueba) | `ok` en los tres chequeos y salida 0; si un chequeo no da el código esperado, `FAIL` y salida ≠ 0 (camino ejercitado en la primera corrida, que además destapó un fallo con arreglos vacíos en bash 3.2, ya corregido) |
 
 No verificado localmente: la emisión real del certificado (requiere DNS apuntando al servidor), el build en x86 del servidor (aquí fue arm64), el perfil `render` (su imagen no se construyó en esta sesión) y `deploy.sh` a través de un ssh real (se probó con un `ssh` de prueba que ejecuta los mismos comandos en local).
+
+## 13. Claude Code en el servidor (Remote Control)
+
+**Decisión del fundador, 2026-10-12:** una sesión de Claude Code corre **en el servidor**, como el usuario `deploy`, y se maneja desde claude.ai/code o la app móvil de Claude con *Remote Control*, para operar producción (estado, logs, diagnóstico, reinicios, rollbacks, respaldos) sin abrir el Mac. Se evaluaron tres modelos — usuario restringido a un script fijo, sin Claude en el VPS, y Claude como `deploy` — y se eligió el último a sabiendas de lo que implica:
+
+- `deploy` está en el grupo `docker`, que **equivale a root**: Claude puede leer `.env.prod`, la base de datos con datos de clientes y cualquier volumen. Lo que lee viaja a Anthropic como parte de la conversación.
+- La sesión entra con la cuenta **Pro/Max personal** del fundador: quien acceda a esa cuenta de claude.ai maneja producción. Conviene tener 2FA activo en ella.
+- Las reglas de `/etc/claude-code/managed-settings.json` (instaladas por el script) son **cinturón contra accidentes, no frontera de seguridad**: la documentación de Claude Code aclara que las reglas de Bash comparan texto, no el programa que corre. Bloquean lo obvio — `down -v`, `docker volume rm/prune`, `system prune`, `DROP DATABASE`, leer o editar `.env.prod` — y desactivan el modo `bypassPermissions`, así que cada comando que cambia algo pide aprobación (desde el móvil, un toque).
+- Si un día hace falta que el modelo sea frontera de verdad, el camino es el modelo descartado: usuario `claude` sin `docker`, con `sudo -u deploy` sólo sobre un script fijo, igual que la llave del CI (§7.1).
+
+**Qué se instala** (`deploy/bootstrap-claude.sh`, idempotente): `tmux`; Claude Code para `deploy` con el instalador nativo oficial (`~deploy/.local/bin/claude`, se actualiza solo); `qdc`, el alias `dc` de §7 convertido en comando (los alias no existen en el shell no interactivo de Claude); `qualify-claude`, que arranca o re-engancha la sesión en `tmux`; los *managed settings*; y `/opt/qualify/CLAUDE.md` (fuente: `deploy/claude-server.md`), con las reglas de operación que Claude lee al arrancar.
+
+**Montaje (una vez):**
+
+1. Desde el Mac, con el alias que entra como **root**:
+   ```bash
+   just claude-bootstrap qualify-prod
+   ```
+2. Iniciar sesión — es interactivo y no se puede automatizar (Remote Control no acepta API key ni el token de `claude setup-token`):
+   ```bash
+   ssh deploy@<IP>
+   claude          # dentro: /login → tecla c copia la URL → abrirla en el navegador del Mac → pegar el código
+   ```
+   Salir con `/exit`.
+3. Arrancar la sesión remota, en el mismo ssh:
+   ```bash
+   qualify-claude
+   ```
+   La primera vez pregunta si habilitar Remote Control (`y`) y si confiar en `/opt/qualify` (`y`). Muestra una URL y un QR. Desengancharse con **Ctrl-b d**: la sesión sigue viva en `tmux` al cerrar el ssh.
+4. En claude.ai/code o en la app móvil aparece la sesión **`qualify-prod`**.
+
+**Operación:**
+
+| Situación | Qué hacer |
+|---|---|
+| Volver a la terminal de la sesión | `ssh deploy@<IP>` → `qualify-claude` (re-engancha) |
+| La red se cayó más de ~10 min y la sesión desapareció | `qualify-claude --continue` (retoma la conversación; funciona durante ~4 h) |
+| Reinicio del servidor | La sesión **no** vuelve sola: `qualify-claude` de nuevo |
+| Aviso de que el login vence (llega con 3 días) | En la sesión, `/login` otra vez; si vence, Remote Control se detiene hasta re-loguear |
+| Cambiar las reglas de Claude | Editar `deploy/bootstrap-claude.sh` / `deploy/claude-server.md` en el repo y repetir `just claude-bootstrap qualify-prod` |
+| Quitarlo | `ssh deploy@<IP> 'tmux kill-session -t claude; ~/.local/bin/claude logout'` |
+
+**Límites:**
+- Desde el servidor Claude sólo puede desplegar shas cuyas imágenes **ya están en GHCR** (`/opt/qualify/bin/server-deploy.sh deploy|rollback <sha>`): un commit nuevo de `main` lo despliega el workflow `deploy` (§7.1). No hay checkout del repo ni credenciales de GitHub en el servidor, a propósito.
+- Requisitos que la documentación de Remote Control impone y conviene no romper: no exportar `ANTHROPIC_API_KEY` en el entorno de `deploy` (bloquea Remote Control), ni `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`. Sólo usa HTTPS saliente: no hay que abrir puertos ni tocar `ufw`.
+- Memoria: el proceso de Claude Code ocupa unos cientos de MB; en un CX23 con el stack completo hay margen, con el perfil `render` activo, vigilar `free -h`.
+- **Sin verificar todavía contra un servidor real** (se escribió el 2026-10-12 desde el Mac): que `remote-control` aplique los *managed settings* a sus sesiones (es lo esperado, son procesos locales) y que la app de escritorio de Claude pueda engancharse a la sesión (la documentación sólo nombra claude.ai/code y la app móvil).

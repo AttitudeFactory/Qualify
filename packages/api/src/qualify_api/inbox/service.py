@@ -8,18 +8,19 @@ again, there is nothing here that sleeps or polls on its own.
 
 - `list_candidate_media` — what the "pick what to monitor" UI would call. Reads Meta
   (last 2 weeks, via `MediaClient.list_recent_media`) and cross-references what is
-  already monitored, so the caller sees both in one shape. Also enforces "Reels only"
-  (2026-08-14, same session as the 2-week rule): the rest of the product only ever
-  operates on `media_product_type == "REELS"` (`publishing_provider.start_publish` fixes
-  the same value for the opposite direction), so a picker offering photos/carousels to
-  "monitor" would offer something nothing downstream is built for. Filtered HERE, not in
+  already monitored, so the caller sees both in one shape. Also enforces which surfaces
+  can be monitored: "Reels only" from 2026-08-14, widened by QUA-146 to `FEED` posts too
+  (images, feed videos, carousels — any `media_type`), still never Stories or ads
+  (`MONITORABLE_MEDIA_PRODUCT_TYPES`). A carousel is monitored as the album: its
+  comments are read on the album id, never per child. Filtered HERE, not in
   `media_client.py`, which stays a faithful mirror of whatever Meta returns — same
   separation of concerns `MONITORING_WINDOW` already establishes for the time rule.
 - `set_media_monitored` — the toggle. **Re-validates the 2-week window against Meta
   itself before allowing `monitored=True`** (product decision, 2026-08-14): a caller
   that bypasses the candidate-listing UI and calls this directly with an old media_id
-  must be rejected exactly as if the UI had never offered it. Turning monitoring OFF is
-  never gated by age — the rule only bounds what can be ADDED.
+  must be rejected exactly as if the UI had never offered it. The surface rule is
+  re-validated the same way (QUA-146): a Story or an ad id is refused here too. Turning
+  monitoring OFF is never gated by age — the rule only bounds what can be ADDED.
 - `sync_comments` — B2, extended by QUA-101. Reads ONLY `InboxRepository.
   list_monitored_media_ids`, never Meta's full media list. Walks EVERY comment page per
   monitored media to completion — to `paging.cursors.after` being absent, or the QUA-88
@@ -42,24 +43,41 @@ http.inbox_routes.sync_inbox` (`POST /api/inbox/sync`, B2's acceptance-criterion
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
+from enum import Enum
 from typing import Final, Protocol
 from uuid import UUID
 
+import httpx
 from qualify_shared.social.ig_shapes import COMMENTS_EDGE_PERMISSIONS
 
 from qualify_api.inbox.client import CommentsClient, CommentsReadError
-from qualify_api.inbox.media_client import MediaClient, MediaReadError
+from qualify_api.inbox.media_client import MediaClient, MediaReadError, MediaSummary
+from qualify_api.inbox.media_type import is_unrecognized_media_type
+from qualify_api.inbox.monitoring import (
+    MONITORING_WINDOW,
+    MediaMetadata,
+    MediaToSync,
+    MetadataFetchError,
+    is_within_window,
+    metadata_read_due,
+)
 from qualify_api.inbox.repository import InboxRepository
 
 # The product rule (Herwin, 2026-08-14): only the last 2 weeks of content is offered for
-# monitoring, and re-enforced here — not merely in what the candidate list returns.
-MONITORING_WINDOW = timedelta(days=14)
+# monitoring, and re-enforced here — not merely in what the candidate list returns. The
+# window itself lives in `monitoring.py` (QUA-149), the one place every caller reads it;
+# it is still importable from here for existing callers.
 
-# The only media type this product's monitoring (and publishing — see
-# `publishing_provider.start_publish`) ever operates on.
-_MONITORABLE_MEDIA_PRODUCT_TYPE = "REELS"
+_LOGGER = logging.getLogger(__name__)
+
+# The surfaces (`media_product_type`) a tenant may opt a media into monitoring on:
+# Reels since 2026-08-14, feed posts since QUA-146 — whatever their `media_type`
+# (image, video, carousel, or one Meta adds later). Never `STORY` or `AD`; a media whose
+# surface Meta did not report is not offered either (fail closed).
+MONITORABLE_MEDIA_PRODUCT_TYPES: Final = frozenset({"REELS", "FEED"})
 
 # `reference/meta-instagram-platform/ACCESS-MODEL.md:56` — "rate-limited to 200
 # calls/hour per page-app pair" in development mode. QUA-20's own cited floor; QUA-88
@@ -86,6 +104,14 @@ class CandidateMedia:
     caption: str | None = None
     permalink: str | None = None
     thumbnail_url: str | None = None
+    # QUA-146: where the media lives (`REELS`/`FEED`) and what it is (`IMAGE`/`VIDEO`/
+    # `CAROUSEL_ALBUM`, or a value this code does not know) — verbatim from Meta, for the
+    # picker to label each row. Display only: eligibility is decided above, not on these.
+    media_product_type: str | None = None
+    media_type: str | None = None
+    # QUA-146: Meta's `media_url` — the picture of a photo/carousel, which has no
+    # `thumbnail_url` (VIDEO-only). Display only, like the two fields above.
+    media_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -114,6 +140,22 @@ class SyncSummary:
     # Defaults to 0 so every pre-existing call site/equality check is unaffected, same
     # reasoning `truncated`/`skipped_missing_media` already document.
     deleted_comments: int = 0
+    # QUA-149. Every counter below defaults to 0 so pre-existing call sites/equality
+    # checks are unaffected, same reasoning as the fields above.
+    # Monitored media past the 14-day window: never synced, never a Meta call. Counts
+    # both rows already known to be expired and legacy rows this pass found expired once
+    # their metadata was read.
+    expired_skipped: int = 0
+    # Legacy rows (monitored before QUA-149) whose metadata was read successfully now.
+    metadata_backfilled: int = 0
+    # Metadata reads that failed this pass (transient, permission, rate limit, unknown) —
+    # recorded on the row for a spaced retry; nothing stored was changed.
+    metadata_failed: int = 0
+    # Legacy rows still missing metadata whose last failure's wait is not over: no
+    # metadata call this pass. Their comments ARE still synced (date unknown), so each one
+    # may be costing comment calls on a media that is in fact already expired — see the
+    # "Known limitation" in `InboxService.sync_comments`.
+    metadata_deferred: int = 0
 
 
 class CommentsPermissionMissing(Exception):
@@ -147,10 +189,11 @@ class SyncBudgetExhausted(Exception):
 
 
 class MediaNotEligible(Exception):
-    """`set_media_monitored(monitored=True)` refused this media. `reason` distinguishes
-    "too old" (the product rule) from "could not verify" (Meta 404/error) — both collapse
-    to "cannot monitor this" for the caller, but a future UI message should not conflate
-    them."""
+    """`set_media_monitored(monitored=True)` refused this media. `reason` is one of
+    `"too_old"` (the 14-day product rule), `"not_found_or_inaccessible"` (Meta 404/error,
+    could not verify) or `"unsupported_surface"` (QUA-146: a Story, an ad, or a surface
+    Meta did not report) — all collapse to "cannot monitor this" for the caller, but a
+    future UI message should not conflate them."""
 
     def __init__(self, external_media_id: str, *, reason: str) -> None:
         super().__init__(f"media {external_media_id!r} is not eligible for monitoring: {reason}")
@@ -180,7 +223,7 @@ class ConnectionDegrader(Protocol):
     def __call__(self, *, tenant_id: UUID, connection_id: UUID) -> object | None: ...
 
 
-def _is_missing_media_error(exc: CommentsReadError) -> bool:
+def _is_missing_media_error(exc: CommentsReadError | MediaReadError) -> bool:
     """True only for Meta's well-established Graph API signature for "this node no
     longer exists (or this app can no longer see it)": HTTP 400, `error.code=100`,
     `error.error_subcode=33`. That pairing — not `code=100` alone — is the documented,
@@ -208,6 +251,36 @@ def _is_missing_media_error(exc: CommentsReadError) -> bool:
     has (verified live 2026-08-14 per QUA-90's docstring).
     """
     return exc.http_status == 400 and exc.platform_code == 100 and exc.platform_subcode == 33
+
+
+def _is_auth_error(exc: CommentsReadError | MediaReadError) -> bool:
+    """QUA-90's signature for an expired/revoked token: HTTP 401 and/or `error.code=190`."""
+    return exc.http_status == 401 or exc.platform_code == 190
+
+
+# Graph API error codes (QUA-149), used only to label a FAILED metadata read so it can be
+# retried on a sensible schedule (`monitoring.METADATA_RETRY_AFTER`). None of them ever
+# turns monitoring off — only `_is_missing_media_error` is evidence of a deletion.
+# Rate limiting: app (4), user (17), page (32), call-type (613) and business-use-case
+# (80001-80014, Instagram's own family).
+_RATE_LIMIT_CODES: Final = frozenset({4, 17, 32, 613, *range(80001, 80015)})
+# Permissions: generic (10) and the 200-299 permission family.
+_PERMISSION_CODES: Final = frozenset({10, *range(200, 300)})
+# Meta's own "try again" codes: unknown error (1), temporary service issue (2).
+_TRANSIENT_CODES: Final = frozenset({1, 2})
+
+
+def _classify_metadata_error(exc: MediaReadError) -> MetadataFetchError:
+    """Why a `get_media` call failed, for a failure that is NOT a confirmed deletion and
+    NOT an auth error (both are handled before this is called)."""
+    status, code = exc.http_status, exc.platform_code
+    if status == 429 or code in _RATE_LIMIT_CODES:
+        return MetadataFetchError.RATE_LIMITED
+    if status == 403 or code in _PERMISSION_CODES:
+        return MetadataFetchError.PERMISSION
+    if (status is not None and status >= 500) or code in _TRANSIENT_CODES:
+        return MetadataFetchError.TRANSIENT
+    return MetadataFetchError.UNKNOWN
 
 
 def _no_op_degrader(*, tenant_id: UUID, connection_id: UUID) -> None:
@@ -254,9 +327,12 @@ class InboxService:
                 caption=media.caption,
                 permalink=media.permalink,
                 thumbnail_url=media.thumbnail_url,
+                media_product_type=media.media_product_type,
+                media_type=media.media_type,
+                media_url=media.media_url,
             )
             for media in recent
-            if media.media_product_type == _MONITORABLE_MEDIA_PRODUCT_TYPE
+            if media.media_product_type in MONITORABLE_MEDIA_PRODUCT_TYPES
         )
 
     async def set_media_monitored(
@@ -269,18 +345,33 @@ class InboxService:
         now: datetime | None = None,
     ) -> None:
         if monitored:
-            # Re-verify against Meta, live — never trust a client-supplied timestamp and
-            # never a cached one (there is none; this is the whole point of not adding
-            # `media_posted_at` to the table).
+            # Re-verify against Meta, live — never trust a client-supplied timestamp nor
+            # the stored one. `media_posted_at` is persisted below (QUA-149, 0046) only so
+            # the window can still be judged after the media leaves Meta's 14-day listing;
+            # activation always decides on the date Meta returns now.
             try:
                 media = await self._media_client.get_media(media_id=external_media_id)
             except MediaReadError as exc:
                 raise MediaNotEligible(
                     external_media_id, reason="not_found_or_inaccessible"
                 ) from exc
+            if media.media_product_type not in MONITORABLE_MEDIA_PRODUCT_TYPES:
+                # QUA-146: same rule as the candidate list, re-enforced on a direct call.
+                raise MediaNotEligible(external_media_id, reason="unsupported_surface")
             reference_now = now if now is not None else datetime.now(UTC)
-            if media.timestamp < reference_now - MONITORING_WINDOW:
+            if not is_within_window(media.timestamp, reference_now):
                 raise MediaNotEligible(external_media_id, reason="too_old")
+            # QUA-149: what Meta just returned is kept, so the media stays readable (and
+            # can be judged expired) after it leaves Meta's 14-day listing.
+            self._repository.set_media_monitored(
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                external_media_id=external_media_id,
+                monitored=True,
+                metadata=_metadata_from(media),
+                fetched_at=reference_now,
+            )
+            return
         self._repository.set_media_monitored(
             tenant_id=tenant_id,
             connection_id=connection_id,
@@ -315,15 +406,36 @@ class InboxService:
         stored under that medium but no longer returned is soft-deleted, and anything
         soft-deleted that reappears is restored. See `SyncSummary.deleted_comments` and
         `InboxRepository.reconcile_media_comments`.
+
+        **QUA-149.** Only media still inside the 14-day window are synced
+        (`InboxRepository.list_media_to_sync`): a media KNOWN to be expired costs no Meta
+        call, no ledger entry, no place in the budget floor, and is never reconciled — its
+        stored comments and metadata stay exactly as they are. A legacy row (monitored
+        before its publication date was stored) gets its metadata read once, here, before
+        its comments (`_backfill_metadata`); if that read shows it expired, it is skipped
+        like any other expired media. Only Meta's confirmed-deletion signature turns
+        monitoring off; a rate-limited read ends the pass early (`truncated=True`).
+
+        **Known limitation (accepted 2026-10-09).** While a legacy row's metadata read
+        keeps failing, its publication date stays unknown, so it is treated as active
+        (`monitoring.effective_state`) and its COMMENTS ARE STILL SYNCED on every pass —
+        even if the media is in fact already past its window. Such a row can therefore
+        keep costing comment calls until one metadata read succeeds (retries are spaced
+        by `monitoring.METADATA_RETRY_AFTER`, so the metadata read itself is not repeated
+        every pass). Expired media stop costing calls once their date is KNOWN, not
+        before. `SyncSummary.metadata_failed`/`metadata_deferred` make these rows visible.
         """
         if not set(COMMENTS_EDGE_PERMISSIONS) <= self._granted_scopes:
             raise CommentsPermissionMissing(connection_id=connection_id)
 
         reference_now = now if now is not None else datetime.now(UTC)
-        monitored_ids = self._repository.list_monitored_media_ids(
-            tenant_id=tenant_id, connection_id=connection_id
+        to_sync = self._repository.list_media_to_sync(
+            tenant_id=tenant_id, connection_id=connection_id, now=reference_now
         )
-        needed = len(monitored_ids)  # the floor: at least one call per monitored medium
+        expired_skipped = self._repository.count_expired_media(
+            tenant_id=tenant_id, connection_id=connection_id, now=reference_now
+        )
+        needed = len(to_sync)  # the floor: at least one call per media still in its window
         calls_made = self._repository.calls_in_last_hour(
             tenant_id=tenant_id, connection_id=connection_id, now=reference_now
         )
@@ -336,10 +448,47 @@ class InboxService:
         deleted_comments = 0
         truncated = False
         skipped_missing_media: list[str] = []
-        for media_id in monitored_ids:
+        metadata_backfilled = 0
+        metadata_failed = 0
+        metadata_deferred = 0
+        for media in to_sync:
+            media_id = media.external_media_id
             if remaining <= 0:
                 truncated = True
                 break
+            if metadata_read_due(media, reference_now):
+                # One real Meta call: logged immediately before it fires, like every
+                # comments call below.
+                self._repository.record_call(
+                    tenant_id=tenant_id, connection_id=connection_id, called_at=reference_now
+                )
+                remaining -= 1
+                outcome = await self._backfill_metadata(
+                    tenant_id=tenant_id,
+                    connection_id=connection_id,
+                    media=media,
+                    now=reference_now,
+                )
+                if outcome is _Backfill.DELETED:
+                    skipped_missing_media.append(media_id)
+                    continue
+                if outcome is _Backfill.EXPIRED:
+                    metadata_backfilled += 1
+                    expired_skipped += 1
+                    continue
+                if outcome is _Backfill.ACTIVE:
+                    metadata_backfilled += 1
+                else:
+                    metadata_failed += 1
+                    if outcome is _Backfill.RATE_LIMITED:
+                        # Meta is refusing calls: stop now, the next pass resumes.
+                        truncated = True
+                        break
+                if remaining <= 0:
+                    truncated = True
+                    break
+            elif media.needs_metadata:
+                metadata_deferred += 1
             media_checked += 1
             after: str | None = None
             # QUA-101: every comment id actually observed this walk, regardless of
@@ -362,7 +511,7 @@ class InboxService:
                         ig_media_id=media_id, after=after
                     )
                 except CommentsReadError as exc:
-                    if exc.http_status == 401 or exc.platform_code == 190:
+                    if _is_auth_error(exc):
                         # QUA-90: degrade before re-raising, so by the time the caller
                         # (the HTTP route, then Reflex) sees `CommentsAuthExpired`,
                         # Conexiones already has the real "reconnect" state to show —
@@ -440,4 +589,155 @@ class InboxService:
             truncated=truncated,
             skipped_missing_media=tuple(skipped_missing_media),
             deleted_comments=deleted_comments,
+            expired_skipped=expired_skipped,
+            metadata_backfilled=metadata_backfilled,
+            metadata_failed=metadata_failed,
+            metadata_deferred=metadata_deferred,
+        )
+
+    async def _backfill_metadata(
+        self, *, tenant_id: UUID, connection_id: UUID, media: MediaToSync, now: datetime
+    ) -> _Backfill:
+        """QUA-149: reads a legacy row's metadata once (`GET /{media}`) — the caller has
+        already logged the call. Never erases or overwrites stored data on failure:
+
+        - success → stored as complete; `EXPIRED` if the date shows the window is over,
+          else `ACTIVE`;
+        - Meta's confirmed-deletion signature (HTTP 400, code 100, subcode 33) → turned
+          off, exactly as the comments path does (`_is_missing_media_error`);
+        - auth failure (401/190) → the connection is degraded and `CommentsAuthExpired`
+          raised, same as the comments path (QUA-90);
+        - a timeout/connection error (`httpx.TransportError`) → recorded as `TRANSIENT`;
+        - anything else → recorded as a labelled failure for a spaced retry, monitoring
+          untouched.
+        """
+        media_id = media.external_media_id
+        try:
+            summary = await self._media_client.get_media(media_id=media_id)
+        except MediaReadError as exc:
+            if _is_auth_error(exc):
+                self._degrade(tenant_id=tenant_id, connection_id=connection_id)
+                raise CommentsAuthExpired(connection_id=connection_id) from exc
+            if _is_missing_media_error(exc):
+                self._repository.set_media_monitored(
+                    tenant_id=tenant_id,
+                    connection_id=connection_id,
+                    external_media_id=media_id,
+                    monitored=False,
+                )
+                return _Backfill.DELETED
+            error = _classify_metadata_error(exc)
+            self._repository.record_media_metadata_failure(
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                external_media_id=media_id,
+                error=error,
+                attempted_at=now,
+            )
+            return (
+                _Backfill.RATE_LIMITED
+                if error is MetadataFetchError.RATE_LIMITED
+                else _Backfill.FAILED
+            )
+        except httpx.TransportError:
+            # A timeout or connection failure never reached Meta's answer, so it proves
+            # nothing about the media: a TRANSIENT failure, retried after its wait, and
+            # the pass goes on with the other media. Scoped to this metadata read only —
+            # the comments path below keeps letting such errors fail the pass, unchanged.
+            self._repository.record_media_metadata_failure(
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                external_media_id=media_id,
+                error=MetadataFetchError.TRANSIENT,
+                attempted_at=now,
+            )
+            return _Backfill.FAILED
+        if not media.needs_metadata:
+            return self._complete_media_type(
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                media_id=media_id,
+                summary=summary,
+                now=now,
+            )
+        self._repository.record_media_metadata(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            external_media_id=media_id,
+            metadata=_metadata_from(summary),
+            fetched_at=now,
+        )
+        return _Backfill.ACTIVE if is_within_window(summary.timestamp, now) else _Backfill.EXPIRED
+
+    def _complete_media_type(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        media_id: str,
+        summary: MediaSummary,
+        now: datetime,
+    ) -> _Backfill:
+        """QUA-146: the dedicated read of a row whose metadata was already complete but had
+        no `media_type`. Only that field is written — the stored caption, date and
+        `metadata_fetched_at` stay as they were. The row was handed over by
+        `list_media_to_sync`, so it is inside the window: `ACTIVE`, comments synced next.
+
+        A successful response WITHOUT `media_type` is recorded as an `UNKNOWN` failure,
+        so the row waits `METADATA_RETRY_AFTER[UNKNOWN]` instead of being re-read every
+        pass; once its window ends it is never handed over, so never read, again."""
+        if summary.media_type is None:
+            self._repository.record_media_metadata_failure(
+                tenant_id=tenant_id,
+                connection_id=connection_id,
+                external_media_id=media_id,
+                error=MetadataFetchError.UNKNOWN,
+                attempted_at=now,
+            )
+            return _Backfill.FAILED
+        _warn_if_unrecognized(summary)
+        self._repository.record_media_type(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            external_media_id=media_id,
+            media_type=summary.media_type,
+            fetched_at=now,
+        )
+        return _Backfill.ACTIVE
+
+
+class _Backfill(Enum):
+    """Outcome of one metadata read made by the sync (`InboxService._backfill_metadata`):
+    a legacy row's full read (QUA-149) or a complete row's dedicated `media_type` read
+    (QUA-146, `_complete_media_type`)."""
+
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    DELETED = "deleted"
+    FAILED = "failed"
+    RATE_LIMITED = "rate_limited"
+
+
+def _metadata_from(media: MediaSummary) -> MediaMetadata:
+    """What `monitored_media` keeps from Meta's `GET /{media}` (QUA-149; `media_type` since
+    QUA-146, verbatim, an unknown value included)."""
+    _warn_if_unrecognized(media)
+    return MediaMetadata(
+        posted_at=media.timestamp,
+        caption=media.caption,
+        permalink=media.permalink,
+        media_product_type=media.media_product_type,
+        media_type=media.media_type,
+    )
+
+
+def _warn_if_unrecognized(media: MediaSummary) -> None:
+    """QUA-146: a `media_type` this code does not know is stored as received and the write
+    goes on; this log line is how it gets noticed. Ids and the value only — never a token
+    or the caption."""
+    if media.media_type is not None and is_unrecognized_media_type(media.media_type):
+        _LOGGER.warning(
+            "inbox.media_type.unrecognized media_id=%s media_type=%r",
+            media.id,
+            media.media_type[:64],
         )

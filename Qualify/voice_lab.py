@@ -53,10 +53,12 @@ from .tenant import tenant_uuid
 from .ui import (
     callout,
     card,
+    dropzone,
     loading_spinner,
     progress_panel,
     removable_pill,
     signal_pill,
+    status_dot,
 )
 from .ui import tokens as T
 
@@ -78,15 +80,18 @@ _TOO_SHORT = (
     "Se entendieron muy pocas palabras. Sube una grabación de al menos 30 segundos hablando."
 )
 _ANALYSIS_FAILED = "No pudimos analizar la grabación. Inténtalo de nuevo en un momento."
-_HEYGEN_OFF = "La clonación no está disponible: falta configurar HeyGen."
-_CLONE_FAILED = "HeyGen no pudo clonar la voz. Prueba con una grabación más limpia."
-_CLONE_DOWN = "No pudimos pedir la clonación a HeyGen. Inténtalo de nuevo en un momento."
-_CLONE_LIMIT = "La cuenta de HeyGen llegó a su límite de voces clonadas."
+# § request 2026-10-08: no vendor names in what the operator reads
+_HEYGEN_OFF = "La clonación de voz no está disponible ahora mismo."
+_CLONE_FAILED = "No pudimos clonar la voz. Prueba con una grabación más limpia."
+_CLONE_DOWN = "No pudimos pedir la clonación. Inténtalo de nuevo en un momento."
+_CLONE_LIMIT = "Se alcanzó el límite de voces clonadas."
 _CLONE_PLAN = "Clonar voces requiere un plan de pago de HeyGen."
 _DB_ERROR = "No se pudo leer la base de datos."
 #: The microphone recorder, shipped INSIDE the `rx.call_script` that starts it: the
-#: app's `head_components` scripts go through react-helmet and were measured not to
-#: load (2026-10-01), while `call_script` is a plain `eval`. The file is idempotent
+#: app's `head_components` scripts go through react-helmet, which on Reflex < 0.9.9
+#: could drop them around hydration (measured 2026-10-01 on a 0.9.7 venv; fixed
+#: upstream in 0.9.9, see the note on `head_components` in Qualify.py), while
+#: `call_script` is a plain `eval`. The file is idempotent
 #: (`if (window.qualifyVoice) return;`), so sending it with every Grabar is safe.
 _RECORDER_JS = (Path(__file__).resolve().parent.parent / "assets" / "voice-recorder.js").read_text(
     encoding="utf-8"
@@ -688,13 +693,8 @@ def _recorder() -> rx.Component:
     return rx.cond(
         VoiceLabState.recording,
         rx.hstack(
-            rx.box(
-                width="0.6rem",
-                height="0.6rem",
-                border_radius="9999px",
-                background=T.tone_color("error", 9),
-                flex_shrink="0",
-            ),
+            # the system's dot (error tone), next to its word (P1)
+            status_dot("error", "0.6rem"),
             rx.text("Grabando", size="2", weight="medium"),
             rx.el.span("0:00", id="q-voice-clock", class_name="q-nums"),
             rx.spacer(),
@@ -814,7 +814,7 @@ def _voice_lab_card() -> rx.Component:
                     _recorder(),
                     # Always mounted while there is no recording yet: a finished
                     # recording is handed to THIS dropzone (`assets/voice-recorder.js`).
-                    rx.upload(
+                    dropzone(
                         rx.vstack(
                             rx.icon("upload", size=T.ICON_MD, color=T.TEXT_FAINT),
                             rx.text(
@@ -825,19 +825,17 @@ def _voice_lab_card() -> rx.Component:
                             ),
                             spacing="1",
                             align="center",
+                            width="100%",
                         ),
-                        id=VOICE_UPLOAD_ID,
+                        upload_id=VOICE_UPLOAD_ID,
                         accept=_AUDIO_ACCEPT,
                         max_files=1,
                         on_drop=VoiceLabState.handle_sample_upload(
                             rx.upload_files(upload_id=VOICE_UPLOAD_ID)
                         ),
-                        border=f"1px dashed {rx.color('gray', 7)}",
-                        border_radius=T.RADIUS_CONTROL,
-                        padding="1rem",
+                        variant="compact",
                         width="100%",
-                        cursor="pointer",
-                        display=rx.cond(VoiceLabState.recording, "none", "block"),
+                        display=rx.cond(VoiceLabState.recording, "none", "flex"),
                     ),
                     spacing="2",
                     width="100%",

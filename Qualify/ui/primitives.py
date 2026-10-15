@@ -15,7 +15,7 @@ it. The rules, in short (full text in docs/design-system.md §5):
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 import reflex as rx
 
@@ -32,20 +32,19 @@ def card(
     interactive: bool = False,
     **props,
 ) -> rx.Component:
-    """The surface everything sits on: gray-2 fill, gray-5 hairline, card radius and the
-    resting elevation of the system. ``interactive=True`` adds the hover lift — only for
-    a card that actually does something when clicked, so elevation keeps meaning
-    'this responds to you' rather than being decoration."""
-    style = {
-        "border": T.BORDER,
-        "border_radius": T.RADIUS_CARD,
-        "background": T.CARD_BG,
-        "box_shadow": T.ELEV_ISLAND,
+    """The surface everything sits on — the kit's *card* material (`.q-card`,
+    assets/qualify.css, "Liquid Glass: Radix skin"): a translucent relief inside the
+    opaque page panel, the card radius and the resting elevation of the system, no
+    backdrop blur (plan D5). ``interactive=True`` adds the hover lift — only for a card
+    that actually does something when clicked, so elevation keeps meaning 'this
+    responds to you' rather than being decoration. Inline ``props`` still win over the
+    class (`skeleton_card` passes ``background="transparent"``)."""
+    style: dict = {
         "padding": padding,
         "width": "100%",
+        "class_name": "q-card q-lift" if interactive else "q-card",
     }
     if interactive:
-        style["class_name"] = "q-lift"
         style["cursor"] = "pointer"
     style.update(props)
     return rx.box(*children, **style)
@@ -57,8 +56,13 @@ def stat_card(
     tone: str = "accent",
     hint: str | rx.Var | None = None,
 ) -> rx.Component:
-    """One figure with its label. Tone colours the figure only; the label stays muted."""
-    value_var = value.to_string() if isinstance(value, rx.Var) else value
+    """One figure with its label. Tone colours the figure only; the label stays muted.
+
+    A numeric Var is cast to text for the figure; a Var that already holds text is
+    passed as is — `to_string()` on a string Var compiles to `JSON.stringify`, which
+    renders the figure in quotes (found by lote A on Clarity's and Vitrina's stats)."""
+    is_text_var = isinstance(value, rx.Var) and getattr(value, "_var_type", None) is str
+    value_var = value.to_string() if isinstance(value, rx.Var) and not is_text_var else value
     return card(
         rx.text(label, size="2", color=T.TEXT_MUTED),
         # A text, not a heading: a figure is not a section of the document outline.
@@ -363,8 +367,26 @@ def empty_state(
     )
 
 
+# ---------------------------------------------------------------------------------------
+# Waiting. Two primitives, one rule (founder, 2026-10-08, docs/design-system.md §5.4):
+#
+#   * **skeleton = content loading.** Something is being READ and will appear in this
+#     place: a list, a detail, a catalogue, a calendar. The placeholder has the shape of
+#     what is coming. ALWAYS a skeleton — never a spinner — and always through
+#     `skeleton_card`/`skeleton_rows`, never `rx.skeleton` from a page.
+#   * **spinner = work in progress.** Something is being DONE: scraping, generating,
+#     syncing, publishing, uploading, cloning a voice. A spinner next to the sentence
+#     that says what is happening. ALWAYS `loading_spinner`, never `rx.spinner`.
+#
+# `Qualify/test_design_system_guard.py` fails the build on either `rx.spinner(` or
+# `rx.skeleton(` outside this package.
+# ---------------------------------------------------------------------------------------
+
+
 def skeleton_card(lines: int = 3) -> rx.Component:
-    """Loading placeholder shaped like ``card``. Use as many as rows you expect."""
+    """Content-loading placeholder shaped like ``card``: a title line and as many body
+    lines as the content will have. The shimmer is the kit's (`.rt-Skeleton` skin in
+    `assets/qualify.css`)."""
     widths = ["40%", "60%", "100%", "80%", "50%"]
     return card(
         rx.vstack(
@@ -380,32 +402,41 @@ def skeleton_card(lines: int = 3) -> rx.Component:
     )
 
 
-def skeleton_rows(rows: int = 3, height: str = "2.5rem") -> rx.Component:
-    """Loading placeholder for a table or list."""
+def skeleton_rows(
+    rows: int = 3, height: str = "2.5rem", width: str = "100%", radius: str | None = None
+) -> rx.Component:
+    """Content-loading placeholder for a table, a list, a grid of tiles, a media
+    block: ``rows`` blocks of ``height`` × ``width``. ``radius`` defaults to the control
+    radius; pass ``T.RADIUS_CARD`` for a card-sized block, ``"9999px"`` for an avatar.
+    One row with a height is how a page draws a single big block (a preview, a calendar)."""
     return rx.vstack(
-        *[rx.skeleton(rx.box(height=height, width="100%")) for _ in range(rows)],
+        *[
+            rx.skeleton(
+                rx.box(height=height, width=width, border_radius=radius or T.RADIUS_CONTROL)
+            )
+            for _ in range(rows)
+        ],
         spacing="2",
-        width="100%",
+        width=width,
         aria_busy="true",
     )
 
 
 #: `loading_spinner`'s one real variant — size. There is no light/dark variant to
-#: pick: the ring's colour (`.q-spinner` in `assets/qualify.css`) is built from the
-#: gray scale, so it adapts to the theme on its own. size -> (diameter, ring track).
+#: pick: the ring (`.q-spinner` in `assets/qualify.css`) is the kit's — a quiet track
+#: in the gray scale and the accent on top. size -> (diameter, ring track).
 _SPINNER_SIZES: dict[str, tuple[str, str]] = {
-    "sm": ("1.25rem", "2px"),  # inline, next to a line of text
+    "sm": ("1.25rem", "2px"),  # inline, next to the sentence that says what is happening
     "md": ("2.25rem", "3px"),  # a standalone wait (default)
     "lg": ("3.5rem", "4px"),  # a full-panel wait — e.g. the Brand Kit wizard's own
 }
 
 
 def loading_spinner(size: str = "md") -> rx.Component:
-    """The "spinner de página completa" §5.4 already names as `skeleton_card`/
-    `skeleton_rows`'s opposite case — a gradient ring (`.q-spinner`), not Radix's own
-    dashed `rx.spinner`. Use this, not `rx.spinner`, for a full-panel/full-content
-    wait; `rx.spinner` stays fine inline inside a button's own `loading=` state,
-    which already renders correctly on its own."""
+    """Work in progress — scraping, generating, syncing, publishing. The kit's ring
+    (`.q-spinner`), never Radix's own `rx.spinner`, and never for content that is merely
+    loading (that is a skeleton, see the rule above). Inside a button's busy state too:
+    `rx.cond(busy, loading_spinner("sm"), rx.icon(...))` keeps the icon slot."""
     diameter, track = _SPINNER_SIZES.get(size, _SPINNER_SIZES["md"])
     return rx.box(
         class_name="q-spinner",
@@ -508,6 +539,182 @@ def progress_panel(
         width="100%",
         padding="2.5rem 0",
         class_name="q-progress-panel",
+    )
+
+
+# ---------------------------------------------------------------------------------------
+# Choosing, uploading, showing, conversing (founder, 2026-10-09). Four recipes the
+# Liquid Glass batches found repeated on two or more screens AND present in the kit —
+# the plan's two conditions for a primitive (docs/plan-migracion-liquid-glass.md §0).
+# Each one is the system's only door to its material: `.q-choice-card`, `.q-dropzone`,
+# `.q-thumb`, `.q-bubble` in assets/qualify.css ("Shared primitives").
+# ---------------------------------------------------------------------------------------
+
+DropzoneVariant = Literal["zone", "compact", "tile", "bare"]
+
+
+def dropzone(
+    *children: rx.Component,
+    upload_id: str,
+    on_drop: Any,
+    accept: dict[str, list[str]] | None = None,
+    max_files: int | rx.Var = 1,
+    multiple: bool = False,
+    variant: DropzoneVariant = "zone",
+    tile_size: str | None = None,
+    **upload_props: Any,
+) -> rx.Component:
+    """Where files are dropped or picked: ``rx.upload.root`` wearing the kit's sunken,
+    dashed field (`.q-dropzone`), the accent when a file hovers it. The ONLY way a page
+    builds an upload — the styled ``rx.upload`` paints its own inline dashed border that
+    no class can override, which is the trap this hides; the guard forbids both forms
+    outside here.
+
+    ``variant``: ``"zone"`` is the big empty-state prompt; ``"compact"`` a one-line or
+    small well inside a form; ``"tile"`` a square that sits in a grid of selected media
+    (``tile_size`` sets its side); ``"bare"`` no material at all — a button or a whole
+    tile that is itself the hit area, the look drawn by its children. Any other
+    ``rx.upload`` prop (``max_size``, ``disabled``, ``on_drop_rejected``, ``padding``…)
+    passes through."""
+    classes = {
+        "zone": "q-dropzone",
+        "compact": "q-dropzone q-dropzone--compact",
+        "tile": "q-dropzone q-dropzone--tile",
+        "bare": "q-dropzone--bare",
+    }
+    style = dict(upload_props.pop("style", {}) or {})
+    if tile_size is not None:
+        style["--q-dropzone-tile"] = tile_size
+    return rx.upload.root(
+        *children,
+        id=upload_id,
+        accept=accept,
+        max_files=max_files,
+        multiple=multiple,
+        on_drop=on_drop,
+        class_name=classes[variant],
+        **({"style": style} if style else {}),
+        **upload_props,
+    )
+
+
+def choice_card(
+    *children: rx.Component,
+    selected: rx.Var[bool] | bool,
+    on_select: Any = None,
+    role: Literal["radio", "checkbox"] = "radio",
+    disabled: rx.Var[bool] | bool = False,
+    padding: str = "1rem 1.25rem",
+    **props: Any,
+) -> rx.Component:
+    """A card that is a choice: a real ``<button>`` (§8 — never a box with ``on_click``)
+    on the card material, a 2px accent ring plus wash when ``selected``, the kit's lift
+    under the pointer. ``role="radio"`` for one-of-many (the usual), ``"checkbox"`` for
+    any-of-many; either way the state is also in ``aria-checked``, so a screen reader
+    hears it. ``disabled`` draws it dashed and quiet and really disables the button
+    (native ``disabled``: no click, no Enter/Space, nothing for ``on_select`` to hear),
+    with ``aria-disabled`` alongside for readers; a reason belongs in the children,
+    next to the title. Put the check mark the kit draws
+    in the corner with ``choice_card_check()`` when the ring alone would be too quiet."""
+    is_disabled = disabled
+    on = rx.cond(selected, "q-choice-card q-choice-card--on", "q-choice-card")
+    class_name = (
+        rx.cond(is_disabled, "q-choice-card q-choice-card--off", on)
+        if isinstance(is_disabled, rx.Var)
+        else ("q-choice-card q-choice-card--off" if is_disabled else on)
+    )
+    aria_disabled = (
+        rx.cond(is_disabled, "true", "false")
+        if isinstance(is_disabled, rx.Var)
+        else ("true" if is_disabled else "false")
+    )
+    return rx.el.button(
+        *children,
+        type="button",
+        role=role,
+        aria_checked=rx.cond(selected, "true", "false"),
+        aria_disabled=aria_disabled,
+        disabled=is_disabled,
+        on_click=on_select,
+        class_name=class_name,
+        padding=padding,
+        **props,
+    )
+
+
+def choice_card_check(size: str = "1.15rem") -> rx.Component:
+    """The solid accent check in a selected `choice_card`'s corner: colour + shape +
+    the word in the title, never the ring alone (P1). Render it under ``rx.cond``."""
+    return rx.box(
+        rx.icon("check", size=12),
+        class_name="q-choice-card-check",
+        width=size,
+        height=size,
+        min_width=size,
+        aria_hidden="true",
+    )
+
+
+def media_thumb(
+    src: rx.Var[str] | str,
+    *,
+    size: str | None = "72px",
+    width: str | None = None,
+    height: str | None = None,
+    round: bool = False,
+    icon: str = "image",
+    icon_size: int = 26,
+    alt: str | rx.Var[str] = "",
+    fit: str = "cover",
+    has: rx.Var[bool] | None = None,
+    **img_props: Any,
+) -> rx.Component:
+    """A picture in the system's frame (`.q-thumb`: control material, hairline, control
+    radius) — or, when there is none, the same frame holding ``icon``, so a list never
+    shows a hole or a broken-image glyph. ``round=True`` is the avatar: a circle, the
+    kit's `.lq-avatar`. ``size`` sets a square; ``width``/``height`` override it (a
+    full-width ``height``-only thumb is the card-top picture). ``has`` replaces the
+    default emptiness test (``src != ""``) when the VM already says so. ``alt`` defaults
+    to ``""``: the thumb is decorative next to its own caption; pass a real one when it
+    is the only thing that names the content. ``img_props`` reach the ``<img>``
+    (``custom_attrs`` for ``referrerpolicy``/``draggable``, ``object_position``…)."""
+    box_w = width or size
+    box_h = height or size
+    present = has if has is not None else (src != "" if isinstance(src, rx.Var) else bool(src))
+    classes = "q-thumb q-thumb--round" if round else "q-thumb"
+    frame = {"width": box_w, "height": box_h, "min_width": box_w}
+    picture = rx.image(
+        src=src,
+        alt=alt,
+        object_fit=fit,
+        class_name=classes,
+        **frame,
+        **img_props,
+    )
+    empty = rx.center(
+        rx.icon(icon, size=icon_size),
+        class_name=f"{classes} q-thumb--empty",
+        aria_hidden="true",
+        **frame,
+    )
+    return rx.cond(present, picture, empty)
+
+
+def chat_bubble(
+    *children: rx.Component,
+    direction: Literal["out", "in"] = "out",
+    meta: rx.Component | None = None,
+    **props: Any,
+) -> rx.Component:
+    """One message in a conversation, the kit's chat bubble: ``"out"`` is what we say
+    (the accent wash, tail at the bottom left — the inbox's drafted replies), ``"in"``
+    what the other side said (the control material, tail at the bottom right).
+    ``meta`` (a time, a status pill) sits under the text, inside the bubble."""
+    return rx.box(
+        *children,
+        *([meta] if meta is not None else []),
+        class_name=f"q-bubble q-bubble--{direction}",
+        **props,
     )
 
 

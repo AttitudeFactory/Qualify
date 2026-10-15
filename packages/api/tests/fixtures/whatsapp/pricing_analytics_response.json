@@ -1,0 +1,21 @@
+{
+  "_fixture_note": "DOC-DERIVED, not recorded: data points read on 2026-10-14 from developers.facebook.com/documentation/business-messaging/whatsapp/analytics (the `pricing_analytics` example response, a subset of its 14 points with the doc's values). The `currency` and `id` keys are added because this client requests `currency` alongside (WABA node default field, Graph reference whats-app-business-account); `USD` is a placeholder. Replace with a recorded payload from the smoke run.",
+  "currency": "USD",
+  "pricing_analytics": {
+    "data": [
+      {
+        "data_points": [
+          {"start": 1749193200, "end": 1749279600, "country": "IN", "pricing_type": "FREE_CUSTOMER_SERVICE", "pricing_category": "SERVICE", "volume": 2, "cost": 0},
+          {"start": 1749106800, "end": 1749193200, "country": "IN", "tier": "0:750000", "pricing_type": "REGULAR", "pricing_category": "AUTHENTICATION_INTERNATIONAL", "volume": 2, "cost": 4.6},
+          {"start": 1748934000, "end": 1749020400, "country": "US", "tier": "0:MAX", "pricing_type": "REGULAR", "pricing_category": "MARKETING", "volume": 1, "cost": 10},
+          {"start": 1748847600, "end": 1748934000, "country": "US", "pricing_type": "FREE_ENTRY_POINT", "pricing_category": "SERVICE", "volume": 6, "cost": 0},
+          {"start": 1748847600, "end": 1748934000, "country": "IN", "tier": "0:750000", "pricing_type": "REGULAR", "pricing_category": "AUTHENTICATION_INTERNATIONAL", "volume": 1, "cost": 2.3},
+          {"start": 1748761200, "end": 1748847600, "country": "US", "pricing_type": "FREE_CUSTOMER_SERVICE", "pricing_category": "UTILITY", "volume": 1, "cost": 0},
+          {"start": 1748761200, "end": 1748847600, "country": "US", "tier": "0:2", "pricing_type": "REGULAR", "pricing_category": "UTILITY", "volume": 1, "cost": 10},
+          {"start": 1748761200, "end": 1748847600, "country": "US", "tier": "0:MAX", "pricing_type": "REGULAR", "pricing_category": "MARKETING", "volume": 4, "cost": 40}
+        ]
+      }
+    ]
+  },
+  "id": "161311403722088"
+}

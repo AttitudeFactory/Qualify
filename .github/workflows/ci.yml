@@ -2,17 +2,20 @@
 # (same commands as the steps below). What blocks vs. what only informs is documented in
 # CLAUDE.md § "CI".
 #
-# Minutes matter (GitHub Free, 2,000 min/month on a private repo, and every job is billed
-# rounded UP to the whole minute). Measured 2026-10-01..08: 1,658 billed minutes, ~6,000/month
-# projected, most of it short jobs paying a full minute each. So (docs/plan-sre-devops-
-# produccion.md, 2026-10-09):
+# Minutes matter: from 2026-11 the org is back on GitHub Free (2,000 min/month on a private
+# repo, every job billed rounded UP to the whole minute). Measured 2026-10-01..15: 4,294
+# billed minutes (~8,600/month), 94 merges to main, most of it short jobs paying a full
+# minute each and work repeated on main. So:
 #   - ONE job (`test`) does lint + offline tests + the migration gate + db tests: one runner
 #     boot and one `uv sync` instead of four (`changes`, `lint`, `test`, `test-db`).
+#   - PRs only. No run on push to main: the PR already ran this exact gate, and `just merge`
+#     refuses a red PR. Production is fed by deploy.yml (daily + by hand), which builds the
+#     images of the tip of main itself — a broken build keeps the previous release live.
 #   - Docker/Node checks live in workflows with `paths:` filters (images.yml, render.yml), so
 #     a PR that does not touch their inputs starts no runner at all.
-#   - Draft PRs run nothing; older runs of the same ref are cancelled.
+#   - Draft PRs run nothing; older runs of the same PR are cancelled.
 #   - Secret scanning per PR is a gitleaks step over the PR's own commits (seconds); the full
-#     history scan stays in security.yml (daily).
+#     history scan stays in security.yml (weekly).
 #
 # Every third-party action is pinned to a commit SHA (the tag is kept in the comment so
 # Dependabot can bump both).
@@ -22,14 +25,10 @@ on:
   pull_request:
     branches: ["main"]
     types: [opened, synchronize, reopened, ready_for_review]
-  push:
-    branches: ["main"]
   workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  # A newer push supersedes the running one, on main too: auto-deploy only ever ships the
-  # tip of main (deploy.yml), and a cancelled run is simply not deployed.
   cancel-in-progress: true
 
 permissions:
@@ -81,6 +80,8 @@ jobs:
       QUALIFY_APP_DSN: postgresql+psycopg://qualify_app:app_dev@localhost:5432/qualify_test
       QUALIFY_ADMIN_DSN: postgresql+psycopg://qualify_admin:admin_dev@localhost:5432/qualify_test
       QUALIFY_CREDENTIAL_DSN: postgresql+psycopg://qualify_credential:credential_dev@localhost:5432/qualify_test
+      QUALIFY_WEBHOOK_DSN: postgresql+psycopg://qualify_webhook:webhook_dev@localhost:5432/qualify_test
+      QUALIFY_WEBHOOK_WORKER_DSN: postgresql+psycopg://qualify_webhook_worker:webhook_worker_dev@localhost:5432/qualify_test
       QUALIFY_REDIS_URL: redis://localhost:6379/15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

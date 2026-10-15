@@ -44,15 +44,19 @@ explicit = true
 [dependency-groups]
 # `qualify-creative[llm]` = the anthropic SDK: the CRM calls Claude for the hashtag
 # catalog (`qualify_api.hashtags.ai`) and for copy, so the app's venv needs it installed.
-backend = ["qualify-api", "qualify-shared", "qualify-scraper", "qualify-creative[llm]"]
-crm = ["reflex>=0.9.12", "sqlmodel>=0.0.47", "python-dotenv>=1.2.3"]
+# `[media]` = PyAV, which fits a carousel's video slides to the feed (§ 2026-10-09).
+backend = ["qualify-api", "qualify-shared", "qualify-scraper", "qualify-creative[llm,media]"]
+# `greenlet`: Reflex imports `sqlalchemy.ext.asyncio` at startup, and SQLAlchemy 2.1 no
+# longer pulls greenlet in transitively (Dependabot 1e0179e moved it to 2.1.3) — without it
+# `reflex run` dies on import in dev and prod mode.
+crm = ["reflex>=0.9.12", "sqlmodel>=0.0.47", "python-dotenv>=1.2.4", "greenlet>=3.2.4"]
 # Heavy ML tree (torch/transformers via qualify-models) — kept out of default-groups.
 ml = ["qualify-models"]
 # The production image's local-model runtime (founder decision: robertuito runs on the VPS,
 # zero API cost). Only what `LocalRobertuitoSentimentProvider` and the hosted
 # `InferenceClient` paths import — not the rest of `ml` (whisper, torchvision, accelerate,
 # av). `qualify_models` itself reaches the image through PYTHONPATH (deploy/Dockerfile).
-sentiment = ["torch>=2.13.0", "transformers>=5.14.1", "huggingface-hub>=1.24.0"]
+sentiment = ["torch>=2.14.1", "transformers>=5.18.0", "huggingface-hub>=1.24.0"]
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=0.24.0",
@@ -60,8 +64,8 @@ dev = [
     "pytest-cov>=7.0.0",
     # `Qualify/test_voice_lab.py` builds a WAV from samples; numpy alone (no torch) lets
     # it run in CI's default sync instead of being skipped there
-    "numpy>=2.5",
-    "ruff>=0.16.9",
+    "numpy>=2.5.3",
+    "ruff>=0.16.10",
     "pre-commit>=4.6.2",
 ]
 

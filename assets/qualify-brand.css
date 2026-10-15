@@ -1,0 +1,411 @@
+/*
+ * Qualify — Brand Kit and creative (lote E of the Liquid Glass migration): the deck, the influence ranking, the draft review and the /drafts gallery. Owned by that batch; shared chips (q-kind-*, q-tint-*, q-temp, q-section-glyph) stay in qualify.css.
+ *
+ * Loaded after qualify.css (rx.App(stylesheets=…) in Qualify/Qualify.py); the tokens
+ * (--q-*, --lq-*) and the Radix skin come from there. Reference: docs/design-system.md
+ * and docs/plan-migracion-liquid-glass.md §3 D10.
+ */
+
+/* ── Brand Kit deck (Referente, competencia o detractor) ──────────────────────
+   One card in the middle, three PANELS around it (left, right, below) — each one
+   the whole drop target and the tap target, drawn in the same quiet card-with-ring
+   language `_choice_card` uses (revised 2026-09-14: the zones used to be bare
+   arrows in a small box, plus a row of buttons under the card). The motion has to
+   SAY "this moves":
+   - a new card settles in, nudges once left and right, then floats gently
+     (`.q-deck-enter`);
+   - two gentle, SMOOTHED scales (revised 2026-09-14: "un scale suave, no mucho,
+     105%… y cuando se mueva otro scale, 110%… un pequeño suavizado entre los
+     scales"): 105% the instant the long press arms the drag (`.q-armed`), 110% once
+     it actually moves (`.q-moving`). Both live on the CSS `scale` property, not in
+     `transform`: the script rewrites `transform` (translate + tilt) on every
+     pointer move, so it must never be eased — while `scale` is its own property and
+     can carry its own short transition. 1 → 1.05 → 1.1 → back to 1, each step
+     eased, no overshoot. No shadow either: one used to appear here and read as a
+     stray extra border.
+   - the card is dragged with the pointer (`assets/deck-drag.js`): it follows the
+     finger/mouse and tilts (`.q-dragging`), shrinks into the panel it is released
+     on (`.q-drag-release`) or springs back to the middle (`.q-drag-return`, then
+     `.q-deck-settled` so the entrance does not replay);
+   - the panels themselves carry NO background at any state — the only panel
+     feedback is colour, PLUS the arrow and its label POPPING only when the dragged
+     card comes NEAR that panel (`data-over`, decided by the card's own edges in
+     `deck-drag.js`, not by the pointer — so it fires before the card covers the
+     letters) or lands in it (`data-hit`); no idle loops on the arrows. A TAP also
+     sends a ghost of the card flying out the way it went (`.q-fly-*`) — a drop
+     does not, the real card just went there.
+   Only `transform`, `scale`, `opacity` and `color` — nothing that reflows. */
+.q-deck-card {
+  will-change: transform, scale;
+  transition: scale var(--q-deck-scale-dur) var(--q-ease);
+  /* a long press on a phone must not open the browser's own callout / selection */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  --q-deck-scale-dur: 180ms;
+}
+.q-deck-card.q-armed  { scale: 1.05; }
+.q-deck-card.q-moving { scale: 1.1; }
+/* Following the pointer: the script owns `transform`, so every keyframe animation
+   (entrance, nudge, float) has to be off — an animation would override the inline
+   transform — and `transform` itself is never transitioned (only `scale` is).
+   `pointer-events: none` keeps the card from swallowing the hit-testing. */
+.q-deck-card.q-dragging {
+  animation: none;
+  transition: scale var(--q-deck-scale-dur) var(--q-ease);
+  cursor: grabbing;
+  pointer-events: none;
+  position: relative;
+  z-index: 5;
+}
+.q-deck-card.q-drag-release {
+  animation: none;
+  pointer-events: none;
+  position: relative;
+  z-index: 5;
+  transition:
+    transform 0.19s cubic-bezier(0.4, 0, 1, 1),
+    scale 0.19s cubic-bezier(0.4, 0, 1, 1),
+    opacity 0.19s ease-in;
+  opacity: 0;
+}
+.q-deck-card.q-drag-return {
+  animation: none;
+  transition:
+    transform 0.4s var(--q-spring),
+    scale var(--q-deck-scale-dur) var(--q-ease);
+}
+.q-deck-card.q-deck-settled {
+  animation: q-deck-float 3.2s ease-in-out infinite;
+}
+@keyframes q-deck-enter {
+  from { opacity: 0; transform: translateY(14px) scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes q-deck-nudge {
+  0%, 100% { transform: none; }
+  30%      { transform: translateX(-14px) rotate(-2.5deg); }
+  70%      { transform: translateX(14px) rotate(2.5deg); }
+}
+@keyframes q-deck-float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-4px); }
+}
+.q-deck-enter {
+  animation:
+    q-deck-enter var(--q-dur-slow) var(--q-ease) both,
+    q-deck-nudge 1.1s var(--q-ease) 0.9s 1,
+    q-deck-float 3.2s ease-in-out 2.2s infinite;
+}
+
+/* The panels. NO background at any state (revised 2026-09-14, "quites el fondo…
+   y en vez de eso que las letras y flecha sufran un scale" — they used to tint on
+   hover/armed/over and animate `background-color` on landing). Colour is the only
+   panel-level cue left; `:focus-visible`'s outline is accessibility (a keyboard
+   user needs SOME way to see which panel has focus), not decoration. Which panel
+   is under the card is instead said by the arrow + label POPPING — see below. */
+.q-deck-zone {
+  appearance: none;
+  border: 0;
+  border-radius: var(--q-radius-card);
+  background: transparent;
+  color: var(--gray-10);
+  font: inherit;
+  cursor: pointer;
+  transition: color var(--q-dur) var(--q-ease);
+}
+/* only on a real pointer: on a phone `:hover` sticks after a tap */
+@media (hover: hover) {
+  .q-deck-zone:hover {
+    color: var(--accent-11);
+  }
+}
+.q-deck-zone:focus-visible {
+  color: var(--accent-11);
+  outline: 2px solid var(--accent-8);
+  outline-offset: -2px;
+}
+body[data-deck-dragging] .q-deck-zone {
+  color: var(--accent-11);
+}
+.q-deck-zone[data-over="true"] {
+  color: var(--accent-11);
+}
+
+/* The arrows: STILL at rest and while dragging — no idle breathing, no continuous
+   pulse while held (§ request 2026-09-14: "no quiero la animacion de las flechas
+   parpadeando… solo quiero el scale cuando esté cerca la card a la opción" — both
+   loops are gone). `.q-deck-label` wraps the title + blurb text
+   (`creative_wizard_pages._deck_zone`) so both lines pop together as one block.
+   The ONLY motion left on either is the one-shot pop below, on proximity. */
+.q-deck-arrow { will-change: transform; }
+.q-deck-label { will-change: transform; }
+
+/* The pop that replaces the old background tint: the arrow AND the label text
+   scale up together — while the dragged card is over this panel (`data-over`, a
+   held pop) and, bigger and springier, the instant it lands (`data-hit`, a bounce).
+   Setting a fresh `animation` on the SAME element (arrow/label) simply replaces
+   whatever animation was already running on it (the idle breathe/pulse above), no
+   conflict — that's how `data-over`/`data-hit` cleanly take over mid-animation. */
+@keyframes q-zone-enter-pop {
+  0%   { transform: scale(1); }
+  100% { transform: scale(1.22); }
+}
+@keyframes q-zone-hit-pop {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.45); }
+  100% { transform: scale(1); }
+}
+.q-deck-zone[data-over="true"] .q-deck-arrow,
+.q-deck-zone[data-over="true"] .q-deck-label {
+  animation: q-zone-enter-pop 0.22s var(--q-ease) both;
+}
+.q-deck-zone[data-hit="true"] .q-deck-arrow,
+.q-deck-zone[data-hit="true"] .q-deck-label {
+  animation: q-zone-hit-pop 0.6s var(--q-spring) both;
+}
+
+/* The ghost: the card that just left, flying out the way it went. */
+@keyframes q-fly-left  { to { opacity: 0; transform: translateX(-150%) rotate(-16deg) scale(0.9); } }
+@keyframes q-fly-right { to { opacity: 0; transform: translateX(150%) rotate(16deg) scale(0.9); } }
+@keyframes q-fly-down  { to { opacity: 0; transform: translateY(130%) rotate(4deg) scale(0.85); } }
+.q-deck-ghost {
+  animation-duration: 0.5s;
+  animation-timing-function: cubic-bezier(0.4, 0, 1, 1);
+  animation-fill-mode: forwards;
+}
+.q-fly-left  { animation-name: q-fly-left; }
+.q-fly-right { animation-name: q-fly-right; }
+.q-fly-down  { animation-name: q-fly-down; }
+
+/* The deck on a phone (below Reflex's `sm`, 48em — same breakpoint `_connect_step_
+   sort`'s grid switches on). Same directions as on desktop — Referentes left,
+   Competencia right, Detractores below — so the drag reads the same: the side
+   panels are thin strips (2.75rem) with a smaller arrow and the title written
+   vertically, the bottom panel a short row, the blurbs of the three panels hidden
+   (the title says enough at that size) and the card's own blurb clamped to 3 lines
+   so a long bio cannot push the bottom panel off-screen. */
+@media (max-width: 47.99em) {
+  .q-deck-zone .q-deck-arrow {
+    width: 26px;
+    height: 26px;
+  }
+  .q-deck-zone-blurb {
+    display: none;
+  }
+  .q-deck-zone--side .q-deck-zone-title {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    white-space: nowrap;
+    letter-spacing: 0.04em;
+    font-size: var(--font-size-1);
+  }
+  /* the left strip reads bottom-to-top, so both titles face the card */
+  .q-deck-zone--side[aria-label="Referentes"] .q-deck-zone-title {
+    transform: rotate(180deg);
+  }
+  .q-deck-zone--down > div {
+    flex-direction: row;
+    gap: 0.5rem;
+  }
+  .q-deck-blurb {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}
+
+
+/* Resultados e insights (2026-10-05): a referente card's bio, cut to two lines so the
+   cards of the grid keep one height; the whole bio is on the profile the card opens. */
+.q-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+
+/* ── Influence ranking (Brand Kit, Resultados e insights) ────────────────────
+   Driven by `assets/rank-drag.js` (§ requests 2026-09-29) with the deck's own motion
+   ("Brand Kit deck" above): a click opens the profile; a long press arms the card at
+   105% (`.q-armed`), 110% once it moves (`.q-moving`), and it follows the pointer
+   without tilting (`.q-dragging`, the script owns `transform`). While it is held the
+   other cards of its group slide out of its way (`.q-shifting`, § 2026-10-05: a live
+   sortable list, no waiting for the server); released, it settles into the free slot
+   (`.q-rank-release`), or everything springs back (`.q-drag-return`).
+   Only `transform`, `scale`, `opacity`, `outline-color` — nothing that reflows. */
+.q-rank-card {
+  position: relative;
+  padding: 0.75rem;
+  border: 1px solid var(--q-card-edge);
+  border-radius: var(--q-radius-card);
+  background: var(--q-card-fill);
+  box-shadow: inset 0 1px 0 var(--q-card-hi), var(--q-elev-island);
+  cursor: pointer;
+  will-change: transform, scale;
+  --q-rank-scale-dur: 180ms;
+  transition:
+    scale var(--q-rank-scale-dur) var(--q-ease),
+    outline-color var(--q-dur-fast) var(--q-ease);
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  touch-action: pan-y;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+@media (hover: hover) {
+  .q-rank-card:hover { outline-color: var(--q-card-edge-hover); }
+}
+/* The accounts added by hand (pinned first): an accent wash under the same glass. */
+.q-rank-card--pinned {
+  background: linear-gradient(var(--accent-a2), var(--accent-a2)), var(--q-card-fill);
+}
+.q-rank-card.q-armed  { scale: 1.05; }
+.q-rank-card.q-moving { scale: 1.1; }
+.q-rank-card.q-dragging {
+  cursor: grabbing;
+  pointer-events: none;
+  z-index: 5;
+}
+.q-rank-card.q-shifting {
+  transition:
+    transform 0.2s var(--q-ease),
+    scale var(--q-rank-scale-dur) var(--q-ease),
+    outline-color var(--q-dur-fast) var(--q-ease);
+}
+.q-rank-card.q-rank-release {
+  pointer-events: none;
+  z-index: 5;
+  transition:
+    transform 0.18s var(--q-ease),
+    scale var(--q-rank-scale-dur) var(--q-ease);
+}
+.q-rank-card.q-drag-return {
+  transition:
+    transform 0.4s var(--q-spring),
+    scale var(--q-rank-scale-dur) var(--q-ease);
+}
+body[data-rank-dragging] { cursor: grabbing; }
+.q-rank-card[data-over] {
+  outline-color: var(--accent-9);
+  scale: 1.03;
+}
+@media (prefers-reduced-motion: reduce) {
+  .q-rank-card,
+  .q-rank-card.q-shifting,
+  .q-rank-card.q-rank-release,
+  .q-rank-card.q-drag-return { transition: none; }
+  .q-rank-card.q-armed,
+  .q-rank-card.q-moving,
+  .q-rank-card[data-over] { scale: 1; }
+}
+
+
+
+/* ── Brand Kit surfaces (lote E1, Liquid Glass) ───────────────────────────────
+   The recipes `creative_wizard_pages.py`, `brand_kit_editor.py` and `voice_lab.py`
+   used to write inline, on the system's material tokens (plan D5): a block is the
+   card material (`--q-card-*`, translucent relief, no blur), a control, chip or
+   swatch the control material (`--q-control-*`), a well the field fill. Colours come
+   only from the tokens and the Radix scales; the palette a brand picks stays data
+   (inline `background=` from state) and only its ring lives here. */
+
+/* The choice card is `ui.choice_card` now (qualify.css, "Shared primitives"). */
+
+/* `.q-dropzone` is shared — defined once in qualify.css (lote 6). */
+
+/* A tile's preview well (an uploaded element, a type face): a sunken field, not a
+   card inside a card. */
+.q-tile-preview {
+  border-radius: var(--q-radius-control);
+  background: var(--q-field-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge);
+}
+
+/* The accent glyph that anchors a step, a choice or an editor section: a tinted
+   circle with the control relief; the icon takes its colour from here. */
+.q-brand-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  color: var(--accent-10);
+  background: var(--accent-a3);
+  box-shadow: inset 0 0 0 1px var(--accent-a4), inset 0 1px 0 var(--q-control-hi);
+}
+.q-brand-glyph--square { border-radius: var(--q-radius-control); }
+
+/* An account's round picture is `ui.media_thumb(round=True)` now. */
+
+/* A palette swatch: the brand's own colour is DATA (`background=` from state); this is
+   only the ring that keeps a white or a near-panel colour visible in both themes.
+   `--edit` is the swatch that opens its own picker (`_swatch`): it grows under the
+   pointer — a size change, so `T.SPRING` (P8). `.q-swatch-remove` is its ✕. */
+.q-brand-swatch {
+  flex-shrink: 0;
+  border-radius: 9999px;
+  box-shadow: inset 0 0 0 1px var(--q-control-edge-hover);
+}
+.q-brand-swatch--edit {
+  cursor: pointer;
+  transition: transform var(--q-dur) var(--q-spring);
+}
+/* the pencil over the swatch's dark scrim (`.q-swatch-edit`, qualify.css): white in
+   both themes, because the scrim under it is the same in both */
+.q-brand-swatch .q-swatch-edit { color: white; }
+@media (hover: hover) {
+  .q-brand-swatch--edit:hover { transform: scale(1.15); }
+}
+.q-swatch-remove {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 9999px;
+  color: var(--tomato-contrast, white);
+  background: var(--tomato-9);
+  box-shadow: 0 0 0 2px var(--color-panel-solid);
+}
+
+/* The colour wheel (`_colour_wheel`): the hue circle is the affordance, the native
+   picker sits transparent on top. The spectrum is drawn here, in hue, not in the page. */
+.q-colour-wheel {
+  position: relative;
+  width: 11rem;
+  height: 11rem;
+  border-radius: 9999px;
+  background: conic-gradient(
+    hsl(0 100% 50%),
+    hsl(60 100% 50%),
+    hsl(120 100% 50%),
+    hsl(180 100% 50%),
+    hsl(240 100% 50%),
+    hsl(300 100% 50%),
+    hsl(360 100% 50%)
+  );
+  box-shadow: inset 0 0 0 1px var(--q-control-edge-hover), var(--q-elev-island);
+}
+
+/* One metric of the read account (`_metric_tile`): a control-material tile. */
+.q-metric-tile {
+  padding: 0.75rem 0.85rem;
+  border-radius: var(--q-radius-control);
+  background: var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge), inset 0 1px 0 var(--q-control-hi);
+}
+
+/* The Brand Kit editor: the section open for editing (and Tu voz y tono while it is
+   the first thing asked) wears an accent edge over the card material. */
+.q-card.q-kit-section--open {
+  border-color: var(--accent-8);
+  box-shadow: inset 0 1px 0 var(--q-card-hi), 0 0 0 3px var(--accent-a3), var(--q-elev-island);
+}
+

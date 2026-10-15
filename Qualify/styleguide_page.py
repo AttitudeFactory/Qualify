@@ -15,11 +15,16 @@ from .ui import (
     app_shell,
     callout,
     card,
+    chat_bubble,
+    choice_card,
+    choice_card_check,
     demo_notice,
     drawer,
+    dropzone,
     empty_state,
     kv,
     loading_spinner,
+    media_thumb,
     mono,
     page_body,
     page_header,
@@ -296,17 +301,118 @@ def _space_section() -> rx.Component:
                     kv("gutter de página", "var(--q-page-x) = 2rem / 1rem < 900px", mono=True),
                     width="100%",
                 ),
-                kv("sidebar", "220px", mono=True),
-                kv("radio tarjeta", "0.75rem", mono=True),
-                kv("radio control", "0.5rem", mono=True),
+                kv("sidebar", "232px (zen: 72px)", mono=True),
+                kv("radio isla", "32px = --q-lab-radius (dial del Lab)", mono=True),
+                kv("radio tarjeta", "20px = --lq-radius", mono=True),
+                kv("radio control", "12px = --lq-radius-sm", mono=True),
                 kv("borde", "1px gray-5 (fuerte: gray-7)", mono=True),
-                kv("elevación", "ninguna: superficies planas, gray-2 sobre gray-1", mono=True),
+                kv("elevación", "reposo --lq-shadow-soft · lift --lq-shadow · overlay", mono=True),
                 spacing="3",
                 width="100%",
                 align_items="start",
             )
         ),
         description="Escala Radix (spacing 1-9). El gutter horizontal es un token CSS.",
+    )
+
+
+# ---------------------------------------------------------------------------------------
+# Material (Glass Lab)
+# ---------------------------------------------------------------------------------------
+
+# The Glass Lab's dials, one per token (assets/qualify.css, "Glass Lab dials"; the two
+# filter dials also in ui.layout.LAB_REFRACTION / LAB_FREQUENCY). Static strings on
+# purpose: this is the record a designer compares against the Lab, and the CSS is the
+# source — change both when the Lab changes (docs/design-system.md §3.4).
+_LAB_DIALS: list[tuple[str, str]] = [
+    ("material", "Liquid (--q-glass-fill)"),
+    ("backdrop scene", "Noir (.q-ground)"),
+    ("backdrop blur", "0px (--q-lab-blur)"),
+    ("surface opacity", "9% (--q-lab-opacity: 0.09)"),
+    ("saturation", "120% (--q-lab-saturation)"),
+    ("corner radius", "32px (--q-lab-radius)"),
+    ("edge highlight", "34% (--q-lab-border: 0.34)"),
+    ("refraction", "21 (--q-lab-refraction, #q-refraction)"),
+    ("surface frequency", "9 → 0.009 (--q-lab-frequency)"),
+    ("optical depth", "100% (--q-lab-depth: 1 · blur 6px)"),
+    ("material tint", "el acento (--q-lab-tint: --accent-9)"),
+]
+
+
+def _material_sample(role: str, where: str, surface: rx.Component) -> rx.Component:
+    """One of the three materials, rendered by the real theme, with its role above it."""
+    return rx.vstack(
+        rx.text(role, size="2", weight="medium"),
+        rx.text(where, size="1", color=T.TEXT_MUTED),
+        surface,
+        spacing="1",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _material_section() -> rx.Component:
+    """§3.4: the dials the material is made of, and the three materials by role side by
+    side — island (glass with blur), card (translucent relief, no blur), control
+    (relief). Only existing primitives and the system's own classes."""
+    island = rx.box(
+        rx.vstack(
+            rx.text("Isla de vidrio", size="2", weight="medium"),
+            rx.text("Refracta el suelo; la luz sigue al puntero.", size="1", color=T.TEXT_MUTED),
+            spacing="1",
+            align_items="start",
+            # Above the island's own depth layer (`.q-island::before`, z 0).
+            position="relative",
+            z_index="1",
+        ),
+        class_name="q-island",
+        padding="1rem 1.25rem",
+        width="100%",
+        style={"--q-zone-tint": T.zone_tint("listen"), "--q-zone-line": T.zone_line("listen")},
+    )
+    sample_card = card(
+        rx.vstack(
+            rx.text("Tarjeta", size="2", weight="medium"),
+            rx.text("Relieve translúcido dentro del panel opaco.", size="1", color=T.TEXT_MUTED),
+            spacing="1",
+            align_items="start",
+        ),
+        padding="1rem 1.25rem",
+    )
+    control = rx.hstack(
+        rx.button("Control", variant="soft", size="2"),
+        rx.button("Principal", size="2"),
+        spacing="2",
+        align="center",
+        wrap="wrap",
+    )
+    return section(
+        "Material (Glass Lab)",
+        rx.text(
+            "El material lo definen los diales del Glass Lab del kit, uno por token "
+            "(--q-lab-*). La paleta sigue siendo nuestra: el tinte es el acento. Para "
+            "cambiarlo, mover los diales en el Lab y copiar los números al CSS.",
+            size="2",
+            color=T.TEXT_MUTED,
+        ),
+        card(
+            rx.vstack(
+                *[kv(label, value, mono=True) for label, value in _LAB_DIALS],
+                spacing="2",
+                width="100%",
+                align_items="start",
+            )
+        ),
+        rx.grid(
+            _material_sample("island", "sidebar, overlays, header sticky · con blur", island),
+            _material_sample("card", "ui.card, tabla, callout · sin blur", sample_card),
+            _material_sample("control", "botón, campo, badge · solo relieve", control),
+            columns=rx.breakpoints(initial="1", md="3"),
+            spacing="3",
+            width="100%",
+        ),
+        description="Tres materiales por rol; nunca blur en grids, ≤ 8 por pantalla.",
+        spacing="4",
     )
 
 
@@ -339,8 +445,8 @@ def _motion_section() -> rx.Component:
         ),
         card(
             rx.vstack(
-                _motion_row("--q-spring", "cubic-bezier(.34,1.4,.5,1)", "ancho, forma, colapso"),
-                _motion_row("--q-ease", "cubic-bezier(.22,.8,.25,1)", "color, opacidad, máscara"),
+                _motion_row("--q-spring", "cubic-bezier(.16,1.18,.3,1)", "ancho, forma, colapso"),
+                _motion_row("--q-ease", "cubic-bezier(.22,1,.36,1)", "color, opacidad, máscara"),
                 _motion_row("--q-dur-fast", "140ms", "hover, foco, cambio de color"),
                 _motion_row("--q-dur", "240ms", "elevación, entrada de un bloque"),
                 _motion_row("--q-dur-slow", "380ms", "colapso del rail, revelado de etiqueta"),
@@ -640,11 +746,19 @@ def _states() -> rx.Component:
     return rx.grid(
         card(
             rx.vstack(
-                rx.text("Cargando", size="2", weight="medium"),
+                rx.text("Cargando contenido = skeleton", size="2", weight="medium"),
+                rx.text(
+                    "Algo se está leyendo y va a aparecer aquí: la forma de lo que viene. "
+                    "Siempre skeleton, nunca spinner.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
                 skeleton_card(),
                 skeleton_rows(2),
+                rx.text("Trabajo en curso = spinner", size="2", weight="medium"),
                 rx.text(
-                    "Espera de página completa — no la forma del contenido",
+                    "Algo se está haciendo: scraping, generando, sincronizando, publicando. "
+                    "Siempre junto a la frase que dice qué pasa.",
                     size="1",
                     color=T.TEXT_MUTED,
                 ),
@@ -688,7 +802,7 @@ def _states() -> rx.Component:
                 empty_state(
                     "link-2-off",
                     "Aún no conectas ninguna cuenta",
-                    "Conecta tu primera cuenta de Instagram o Facebook para empezar a "
+                    "Conecta tu primera red social para empezar a "
                     "escuchar y responder desde Qualify.",
                     action=rx.button(rx.icon("plus", size=16), "Conectar cuenta", size="3"),
                 ),
@@ -754,6 +868,147 @@ def _pills() -> rx.Component:
 
 
 _DEMO_STEPS = ["Post", "Fecha y hora", "Cuentas", "Confirmar"]
+
+
+def _four() -> rx.Component:
+    """The four recipes promoted to primitives on 2026-10-09 (plan §0: repeated on ≥ 2
+    screens and present in the kit): choosing, uploading, showing, conversing."""
+    return rx.grid(
+        card(
+            rx.vstack(
+                rx.text("Elegir — choice_card", size="2", weight="medium"),
+                rx.text(
+                    "Un botón real con la tarjeta como cuerpo; anillo + check cuando está "
+                    "elegido, punteado cuando no se puede.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                choice_card(
+                    rx.hstack(
+                        rx.vstack(
+                            rx.text("Guion para creador real", size="2", weight="bold"),
+                            rx.text(
+                                "Una persona de tu marca lo graba.", size="1", color=T.TEXT_MUTED
+                            ),
+                            spacing="1",
+                            align_items="start",
+                        ),
+                        rx.spacer(),
+                        choice_card_check(),
+                        width="100%",
+                        align="start",
+                    ),
+                    selected=True,
+                ),
+                choice_card(
+                    rx.text("Imagen publicitaria", size="2", weight="bold"),
+                    rx.text("Un anuncio con tu producto.", size="1", color=T.TEXT_MUTED),
+                    selected=False,
+                ),
+                choice_card(
+                    rx.text("Con plantilla", size="2", weight="bold"),
+                    rx.text(
+                        "Próximamente: necesita fotos en el catálogo.", size="1", color=T.TEXT_MUTED
+                    ),
+                    selected=False,
+                    disabled=True,
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            )
+        ),
+        card(
+            rx.vstack(
+                rx.text("Subir — dropzone", size="2", weight="medium"),
+                rx.text(
+                    "zone (vacío), compact (en un formulario), tile (en una grilla), bare "
+                    "(un botón que abre el selector).",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                dropzone(
+                    rx.vstack(
+                        rx.icon("image-up", size=T.ICON_MD, color=T.TEXT_FAINT),
+                        rx.text("Arrastra tu foto o haz clic", size="1", color=T.TEXT_MUTED),
+                        align="center",
+                        spacing="1",
+                    ),
+                    upload_id="design_dz_compact",
+                    on_drop=None,
+                    variant="compact",
+                    width="100%",
+                ),
+                rx.hstack(
+                    dropzone(
+                        rx.icon("plus", size=T.ICON_MD, color=T.TEXT_FAINT),
+                        upload_id="design_dz_tile",
+                        on_drop=None,
+                        variant="tile",
+                        tile_size="5rem",
+                    ),
+                    dropzone(
+                        rx.button(rx.icon("upload", size=T.ICON_SM), "Subir brief", variant="soft"),
+                        upload_id="design_dz_bare",
+                        on_drop=None,
+                        variant="bare",
+                    ),
+                    spacing="3",
+                    align="center",
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            )
+        ),
+        card(
+            rx.vstack(
+                rx.text("Mostrar — media_thumb", size="2", weight="medium"),
+                rx.text(
+                    "La foto en el marco del sistema, o el marco con un icono cuando no hay; "
+                    "round=True es el avatar.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                rx.hstack(
+                    media_thumb("", size="72px", icon="film"),
+                    media_thumb("", size="56px", icon="image-off", icon_size=20),
+                    media_thumb("", size="2.5rem", round=True, icon="user-round", icon_size=18),
+                    media_thumb("/favicon.ico", size="2.5rem", round=True, alt="Qualify"),
+                    spacing="3",
+                    align="center",
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            )
+        ),
+        card(
+            rx.vstack(
+                rx.text("Conversar — chat_bubble", size="2", weight="medium"),
+                rx.text(
+                    "out = lo que decimos (acento); in = lo que dijeron.",
+                    size="1",
+                    color=T.TEXT_MUTED,
+                ),
+                chat_bubble(
+                    rx.text("Hola, ¿tienen mesa para cuatro el viernes?", size="2"),
+                    direction="in",
+                    meta=rx.text("@laura · 19:02", size="1", color=T.TEXT_MUTED),
+                ),
+                chat_bubble(
+                    rx.text("¡Claro! Te reservamos a las 20:00. ¿A nombre de quién?", size="2"),
+                    direction="out",
+                ),
+                spacing="2",
+                width="100%",
+                align_items="start",
+            )
+        ),
+        columns=rx.breakpoints(initial="1", lg="2"),
+        spacing="3",
+        width="100%",
+    )
 
 
 def _flow() -> rx.Component:
@@ -825,6 +1080,13 @@ def _components_section() -> rx.Component:
         _buttons(),
         _forms(),
         card(_feedback()),
+        rx.text(
+            "Elegir, subir, mostrar, conversar (choice_card · dropzone · media_thumb · "
+            "chat_bubble — 2026-10-09)",
+            size="2",
+            weight="medium",
+        ),
+        _four(),
         rx.text("Flujo por pasos (stepper + drawer — QUA-118)", size="2", weight="medium"),
         _flow(),
         rx.text(
@@ -870,6 +1132,7 @@ def styleguide_index() -> rx.Component:
             _colour_section(),
             _type_section(),
             _space_section(),
+            _material_section(),
             _motion_section(),
             _components_section(),
             spacing="6",

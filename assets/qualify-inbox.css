@@ -1,0 +1,108 @@
+/*
+ * Qualify — Contenido / inbox (lote D of the Liquid Glass migration).
+ *
+ * Loaded after qualify.css (rx.App(stylesheets=…) in Qualify/Qualify.py); the tokens
+ * (--q-*, --lq-*) and the Radix skin come from there. Reference: docs/design-system.md
+ * and docs/plan-migracion-liquid-glass.md §3 D5 (material by role), D10 (one sheet per
+ * domain).
+ *
+ * Every block on /inbox (a Reel row, a comment, a reply draft, the sync strip) is
+ * `ui.card` — the card material from qualify.css. This sheet only adds the three
+ * recipes the page has that no primitive covers, all on the *control* tokens
+ * (`--q-control-*`): relief alone, no backdrop-filter (D5 — these repeat inside lists).
+ */
+
+/* The 72px thumbnail is `ui.media_thumb` now (qualify.css, "Shared primitives"). */
+
+/* A Reel row's content-loading placeholder (`_card_skeleton`): the card's frame with
+   nothing behind it, same as `ui.skeleton_card` — the shape of the row that is coming,
+   not a second card competing with the rows already there. */
+.q-card.q-inbox-skeleton {
+  background: transparent;
+  box-shadow: none;
+}
+
+/* The drafted reply's bubble is `ui.chat_bubble` now. */
+
+/* ── WhatsApp → Chats (WA-11, `Qualify/whatsapp_tab_chats.py`) ─────────────────────
+   Two panes on desktop (list | conversation); under 768 px ONE pane at a time: the list
+   until a conversation is open (`.q-wa-chats--open`), then the conversation with its
+   back button. Rows are `ui.card` with the lift (they open something); the active one
+   gets the accent edge. Bubbles are `ui.chat_bubble`: outbound right, inbound left, the
+   kit's tail turned to point at the side it comes from. */
+.q-wa-chats {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+  width: 100%;
+}
+.q-wa-chats__list,
+.q-wa-chats__conv {
+  min-width: 0;
+}
+.q-wa-chats__back {
+  display: none;
+}
+.q-wa-row--active {
+  box-shadow: inset 0 0 0 1px var(--accent-8), var(--q-elev-island);
+}
+.q-wa-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.q-wa-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.q-wa-scroll--list {
+  max-height: 70vh;
+  padding: 2px;
+}
+/* column-reverse anchors the scroll at the newest message without any script. */
+.q-wa-scroll--messages {
+  display: flex;
+  flex-direction: column-reverse;
+  max-height: 45vh;
+  min-height: 12rem;
+  padding: 0.25rem;
+}
+.q-wa-msg {
+  display: flex;
+  width: 100%;
+}
+.q-wa-msg .q-bubble {
+  width: auto;
+  max-width: min(78%, 34rem);
+}
+.q-wa-msg--out {
+  justify-content: flex-end;
+}
+.q-wa-msg--out .q-bubble--out {
+  border-radius: 14px 14px 4px 14px;
+}
+.q-wa-msg--in .q-bubble--in {
+  border-radius: 14px 14px 14px 4px;
+}
+.q-wa-composer {
+  border-top: 1px solid var(--gray-a5);
+}
+@media (max-width: 767px) {
+  .q-wa-chats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .q-wa-chats--open .q-wa-chats__list,
+  .q-wa-chats:not(.q-wa-chats--open) .q-wa-chats__conv {
+    display: none;
+  }
+  .q-wa-chats__back {
+    display: inline-flex;
+  }
+  .q-wa-scroll--list {
+    max-height: none;
+  }
+  .q-wa-msg .q-bubble {
+    max-width: 88%;
+  }
+}

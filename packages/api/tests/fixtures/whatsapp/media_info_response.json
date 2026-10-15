@@ -1,0 +1,9 @@
+{
+  "_fixture_note": "DOC-DERIVED, not recorded: shape read on 2026-10-14 from cloud-api/reference/media (GET /{MEDIA_ID}). Phone numbers and ids are placeholders. The smoke CLI (qualify_api.whatsapp.smoke) against the test number is what replaces this with a recorded payload.",
+  "messaging_product": "whatsapp",
+  "url": "https://lookaside.fbsbx.com/whatsapp_business/attachments/?mid=1234567890123456&ext=1700000000&hash=ATcEXAMPLE",
+  "mime_type": "image/jpeg",
+  "sha256": "e0d9c2f1a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7",
+  "file_size": 303833,
+  "id": "1234567890123456"
+}

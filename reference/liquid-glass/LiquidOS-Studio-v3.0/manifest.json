@@ -1,0 +1,26 @@
+{
+  "name": "LiquidOS Studio",
+  "version": "3.0.0",
+  "entry": "index.html",
+  "runtimeDependencies": [],
+  "minimumViewportWidth": 320,
+  "demos": [
+    { "name": "Component Library", "entry": "demos/index.html" },
+    { "name": "Advanced Elements", "entry": "demos/index_2.html" },
+    { "name": "System Components", "entry": "demos/ios_components.html" },
+    { "name": "Admin Intelligence", "entry": "demos/admin_dashboard_demo.html" },
+    { "name": "Liquid Calculator", "entry": "demos/calculator_demo.html" },
+    { "name": "Project Estimator", "entry": "demos/quote_calculator_demo.html" },
+    { "name": "Secure Workspace", "entry": "demos/working_login_form_demo.html" },
+    { "name": "Liquid Home", "entry": "demos/liquid_home.html" },
+    { "name": "Liquid Vault", "entry": "demos/liquid_vault.html" },
+    { "name": "Liquid Studio", "entry": "demos/liquidstudio.html" },
+    { "name": "LiquidFi Terminal", "entry": "demos/trading_terminal.html" },
+    { "name": "Cloud Launcher", "entry": "demos/gaming_dashboard.html" },
+    { "name": "Spectre Uplink", "entry": "demos/drone_terminal.html" },
+    { "name": "Liquid Menu Motion", "entry": "demos/glass_menu.html" },
+    { "name": "Organic Liquid Field", "entry": "demos/organic_liquid.html" },
+    { "name": "LiquidOS Intro", "entry": "demos/intro_html_forvideo.html" },
+    { "name": "Effects Playground", "entry": "demos/ease_of_use.html" }
+  ]
+}

@@ -68,7 +68,7 @@ from .publishing_vm import ConnectionOptionVM, PendingItemVM
 from .stories_page import stories_flow, stories_tips_card
 from .stories_state import StoriesState
 from .trending_panel import trending_card
-from .ui import app_shell, callout, card, page_body, page_header, section
+from .ui import app_shell, callout, card, dropzone, loading_spinner, page_body, page_header, section
 from .ui import tokens as T
 from .ui.image_preview import gallery_image_preview_capture_anchor
 from .ui.video_preview import gallery_preview_capture_anchor, video_frame_preview_src
@@ -102,7 +102,7 @@ def _connection_section() -> rx.Component:
     return section(
         "Cuenta",
         _connection_selector(),
-        description="La cuenta de Instagram conectada donde se publicará este contenido.",
+        description="La cuenta conectada donde se publicará este contenido.",
     )
 
 
@@ -130,16 +130,7 @@ def _pending_tile(item: PendingItemVM, index: rx.Var[int]) -> rx.Component:
     return rx.box(
         rx.cond(
             preview_src != "",
-            rx.el.img(
-                src=preview_src,
-                alt=item.filename,
-                style={
-                    "width": "100%",
-                    "height": "100%",
-                    "object_fit": "cover",
-                    "display": "block",
-                },
-            ),
+            rx.el.img(src=preview_src, alt=item.filename, class_name="q-pub-tile-img"),
             rx.vstack(
                 rx.cond(
                     item.kind == "image",
@@ -163,45 +154,27 @@ def _pending_tile(item: PendingItemVM, index: rx.Var[int]) -> rx.Component:
                 padding="0.4rem",
             ),
         ),
-        rx.badge(
-            index + 1,
-            color_scheme="gray",
-            variant="solid",
-            size="1",
-            position="absolute",
-            top="0.3rem",
-            left="0.3rem",
-        ),
-        rx.button(
-            rx.icon("x", size=14, color="white"),
+        # The carousel position: a dark glass chip (`.q-pub-tile-pos`), readable on any
+        # first frame — a chip, never a solid badge.
+        rx.box(index + 1, class_name="q-pub-tile-pos", aria_hidden="true"),
+        # A thumbnail can be almost any color underneath this — the dark glass chip
+        # with its ring (`.q-pub-tile-x`, assets/qualify-publish.css) is what keeps the
+        # X readable regardless (a plain solid red circle alone was reported hard to
+        # notice against a busy first frame). Soft under the skin, so «Publicar» stays
+        # the screen's one solid button.
+        rx.icon_button(
+            rx.icon("x", size=14),
             on_click=PublishState.remove_pending_file(index),
             disabled=~PublishState.can_edit_gallery,
             title="Quitar este archivo",
+            aria_label="Quitar este archivo",
             size="1",
-            variant="solid",
-            color_scheme="tomato",
+            variant="soft",
+            color_scheme=T.tone_scale("error"),
             radius="full",
-            position="absolute",
-            top="0.25rem",
-            right="0.25rem",
-            width="1.6rem",
-            height="1.6rem",
-            padding="0",
-            # A thumbnail can be almost any color underneath this — the white ring plus
-            # a drop shadow is what keeps the X readable regardless (a plain solid red
-            # circle alone was reported hard to notice against a busy first frame).
-            border=f"2px solid {T.CARD_BG}",
-            box_shadow="0 1px 3px rgba(0, 0, 0, 0.35)",
-            cursor="pointer",
-            _hover={"background": rx.color("tomato", 10)},
+            class_name="q-pub-tile-x",
         ),
-        position="relative",
-        width="6.5rem",
-        height="6.5rem",
-        overflow="hidden",  # keeps the thumbnail's object-fit:cover inside the rounded tile
-        border=f"1.5px solid {rx.color('grass', 7)}",
-        border_radius=T.RADIUS_CARD,
-        background=T.tone_color("ok", 2),
+        class_name="q-pub-tile",
     )
 
 
@@ -215,9 +188,9 @@ def _upload_widget(children: rx.Component, *, compact: bool) -> rx.Component:
     `PublishState.add_files`, which this is only a client-side nicety on top of, same
     posture the original single-video dropzone already documented for itself.
     """
-    return rx.upload(
+    return dropzone(
         children,
-        id=_UPLOAD_ID,
+        upload_id=_UPLOAD_ID,
         # QUA-103: JPEG joins the two video containers Meta already accepted here —
         # JPEG is the ONLY image format Meta's Content Publishing API supports at all
         # (a platform restriction, not an incomplete whitelist — see
@@ -261,20 +234,7 @@ def _upload_widget(children: rx.Component, *, compact: bool) -> rx.Component:
             "Formato no permitido",
             description=f"Solo se aceptan archivos MP4, MOV o JPEG, hasta {_MAX_ITEMS} en total.",
         ),
-        border=f"1.5px dashed {rx.color('gray', 7)}",
-        border_radius=T.RADIUS_CARD,
-        background=T.CARD_BG,
-        width="6.5rem" if compact else "100%",
-        height="6.5rem" if compact else "auto",
-        padding="0" if compact else "2.5rem 1.5rem",
-        display="flex",
-        align_items="center",
-        justify_content="center",
-        transition=f"border-color {T.DUR_FAST} {T.EASE}, background {T.DUR_FAST} {T.EASE}",
-        _hover={
-            "border_color": rx.color("accent", 8),
-            "background": T.tone_color("accent", 2),
-        },
+        variant="tile" if compact else "zone",
     )
 
 
@@ -405,9 +365,9 @@ def _status_block() -> rx.Component:
         PublishState.phase,
         (
             "staging_and_starting",
-            rx.callout(
+            callout(
                 rx.hstack(
-                    rx.spinner(size="2"),
+                    loading_spinner("sm"),
                     rx.cond(
                         is_carousel,
                         rx.text(
@@ -419,16 +379,16 @@ def _status_block() -> rx.Component:
                     spacing="2",
                     align="center",
                 ),
-                color_scheme="gray",
-                width="100%",
+                "neutral",
+                icon="upload",
             ),
         ),
         (
             "polling",
-            rx.callout(
+            callout(
                 rx.vstack(
                     rx.hstack(
-                        rx.spinner(size="2"),
+                        loading_spinner("sm"),
                         # QUA-99 UX follow-up: `carousel_stage_label` is only non-empty
                         # for a carousel attempt that has already taken its first poll
                         # tick — everything else (a single video, or the first tick
@@ -449,7 +409,7 @@ def _status_block() -> rx.Component:
                                 PublishState.elapsed_label,
                                 size="1",
                                 color=T.TEXT_FAINT,
-                                font_family="monospace",
+                                class_name="q-mono q-nums",
                             ),
                             rx.fragment(),
                         ),
@@ -462,24 +422,15 @@ def _status_block() -> rx.Component:
                     align_items="start",
                     width="100%",
                 ),
+                "warn",
                 icon="clock",
-                color_scheme="amber",
-                width="100%",
             ),
         ),
         # QUA-98: "success" has no inline arm on purpose — the confirmation moved to a
         # transient `rx.toast.success` fired from `publishing_state.py` (same convention
         # `inbox_state.py` already established: success = toast, error = persistent
         # callout below, unchanged). Falls through to the catch-all `rx.fragment()`.
-        (
-            "failure",
-            rx.callout(
-                PublishState.error,
-                icon="triangle-alert",
-                color_scheme="tomato",
-                width="100%",
-            ),
-        ),
+        ("failure", callout(PublishState.error, "error")),
         rx.fragment(),
     )
 
@@ -605,7 +556,7 @@ def _posts_flow() -> rx.Component:
 def publish_topbar() -> rx.Component:
     return page_header(
         "Publicar",
-        "Publica de inmediato en una de tus cuentas de Instagram conectadas: una "
+        "Publica de inmediato en una de tus cuentas conectadas: una "
         "publicación (imagen, reel o carrusel) o una Story",
     )
 

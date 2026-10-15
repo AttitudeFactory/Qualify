@@ -34,9 +34,23 @@
         "8320"
       ],
       "env": {
-        "PYTHONPATH": "packages/api/src:packages/shared/src:packages/scraper/src:packages/creative/src:packages/models/src"
+        "PYTHONPATH": "packages/api/src:packages/shared/src:packages/scraper/src:packages/creative/src:packages/models/src",
+        "UV_PROJECT_ENVIRONMENT": "/Users/herwin/Desktop/Qualify/.venv"
       },
       "port": 3320,
+      "autoPort": false
+    },
+    {
+      "name": "liquid-glass-kit",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "3330",
+        "--directory",
+        "reference/liquid-glass/LiquidOS-Studio-v3.0"
+      ],
+      "port": 3330,
       "autoPort": false
     }
   ]

@@ -30,6 +30,7 @@ from qualify_api.http import (
     publishing_routes,
     replies_routes,
     sentiment_routes,
+    whatsapp_routes,
 )
 from qualify_api.http.inbox_routes import SyncComments
 from qualify_api.http.replies_routes import (
@@ -110,21 +111,13 @@ def build_production_mentions_settings() -> mentions_routes.MentionsWebhookSetti
     return mentions_routes.MentionsWebhookSettings.from_env()
 
 
-def build_production_tenant_resolver() -> mentions_routes.TenantResolver:
-    """Lazy import: `resolve_external_account` pulls in `qualify_api.connections.models`
-    only when the mentions webhook route is actually exercised, same reasoning
-    `build_production_inbox_sync` gives for deferring its own Meta-touching import."""
-    from qualify_api.mentions.resolve import resolve_external_account  # noqa: PLC0415
+def build_production_delivery_recorder() -> mentions_routes.DeliveryRecorder:
+    """The INSERT-only intake recorder (QUA-147). Resolution, Graph enrichment and
+    persistence of the mention run later in `qualify_api.webhooks.processor`, never in
+    the request."""
+    from qualify_api.webhooks.receiver import record_delivery  # noqa: PLC0415
 
-    return resolve_external_account
-
-
-def build_production_mention_ingestor() -> mentions_routes.MentionIngestor:
-    """Lazy import: `ingest_mention` builds a credential-resolved Meta client per call,
-    same reasoning `build_production_inbox_sync` gives for its own module."""
-    from qualify_api.mentions.composition import ingest_mention  # noqa: PLC0415
-
-    return ingest_mention
+    return record_delivery
 
 
 def build_production_list_mentions() -> mentions_routes.ListMentions:
@@ -140,6 +133,51 @@ def build_production_analyze_mention_sentiment() -> mentions_routes.AnalyzeMenti
     from qualify_api.mentions.composition import analyze_pending_mentions  # noqa: PLC0415
 
     return analyze_pending_mentions
+
+
+def build_production_whatsapp_settings() -> whatsapp_routes.WhatsAppWebhookSettings:
+    """Env read only, not lazy — same reasoning as `build_production_mentions_settings`."""
+    return whatsapp_routes.WhatsAppWebhookSettings.from_env()
+
+
+def build_production_whatsapp_chat_service() -> whatsapp_routes.ChatService:
+    """WA-10. Lazy like the publishing builders; the service holds no connection of its
+    own (each call opens `tenant_session`), so building it per request is cheap."""
+    from qualify_api.whatsapp.chats import production_chat_service  # noqa: PLC0415
+
+    return production_chat_service()
+
+
+def build_production_whatsapp_media_locator() -> whatsapp_routes.MediaLocator:
+    """0061: download-on-first-request into R2, served through the public-media token.
+    Lazy like `build_production_public_media_gate`: it needs the R2, Redis, public base URL
+    and Meta env, and an app booted without them should fail the media request loudly,
+    not the whole boot."""
+    from qualify_api.whatsapp.media import production_media_locator  # noqa: PLC0415
+
+    return production_media_locator()
+
+
+def build_production_whatsapp_metrics_service() -> whatsapp_routes.ConversationMetricsService:
+    """WA-17. Lazy like the chat service; per-call `tenant_session`, cheap to build."""
+    from qualify_api.whatsapp.metrics import production_metrics_service  # noqa: PLC0415
+
+    return production_metrics_service()
+
+
+def build_production_whatsapp_qr_prefix_source() -> whatsapp_routes.QrPrefixSource:
+    """WA-17: QR codes listed through the resolver-built client; Meta settings are read
+    only when a metrics request actually arrives."""
+    from qualify_api.whatsapp.metrics import production_qr_prefix_source  # noqa: PLC0415
+
+    return production_qr_prefix_source()
+
+
+def build_production_whatsapp_analytics_service() -> whatsapp_routes.WabaAnalyticsService:
+    """WA-21. Lazy for the same reason as the QR source: Meta settings at request time."""
+    from qualify_api.whatsapp.analytics import production_analytics_service  # noqa: PLC0415
+
+    return production_analytics_service()
 
 
 def build_production_leads_service() -> LeadIntakeService:
@@ -215,6 +253,7 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
     app.include_router(sentiment_routes.router)
     app.include_router(mentions_routes.router)
     app.include_router(replies_routes.router)
+    app.include_router(whatsapp_routes.router)
     if configure_production:
         app.dependency_overrides[connections_routes.get_connect_service] = build_production_service
         app.dependency_overrides[publishing_routes.get_publish_service] = (
@@ -237,11 +276,8 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
         app.dependency_overrides[mentions_routes.get_webhook_settings] = (
             build_production_mentions_settings
         )
-        app.dependency_overrides[mentions_routes.get_tenant_resolver] = (
-            build_production_tenant_resolver
-        )
-        app.dependency_overrides[mentions_routes.get_mention_ingestor] = (
-            build_production_mention_ingestor
+        app.dependency_overrides[mentions_routes.get_delivery_recorder] = (
+            build_production_delivery_recorder
         )
         app.dependency_overrides[mentions_routes.get_list_mentions] = build_production_list_mentions
         app.dependency_overrides[mentions_routes.get_analyze_mention_sentiment] = (
@@ -263,6 +299,29 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
         )
         app.dependency_overrides[creative_routes.get_approved_creative_reader] = (
             build_production_approved_creative_reader
+        )
+        app.dependency_overrides[whatsapp_routes.get_webhook_settings] = (
+            build_production_whatsapp_settings
+        )
+        # The WhatsApp webhook records into the SAME intake log as the mentions one
+        # (QUA-147): one recorder, one queue, one worker for every Meta product.
+        app.dependency_overrides[whatsapp_routes.get_delivery_recorder] = (
+            build_production_delivery_recorder
+        )
+        app.dependency_overrides[whatsapp_routes.get_chat_service] = (
+            build_production_whatsapp_chat_service
+        )
+        app.dependency_overrides[whatsapp_routes.get_media_locator] = (
+            build_production_whatsapp_media_locator
+        )
+        app.dependency_overrides[whatsapp_routes.get_metrics_service] = (
+            build_production_whatsapp_metrics_service
+        )
+        app.dependency_overrides[whatsapp_routes.get_qr_prefix_source] = (
+            build_production_whatsapp_qr_prefix_source
+        )
+        app.dependency_overrides[whatsapp_routes.get_analytics_service] = (
+            build_production_whatsapp_analytics_service
         )
         # C1: parsed at assembly so a malformed QUALIFY_DEV_PRINCIPALS fails the boot,
         # not the first request.

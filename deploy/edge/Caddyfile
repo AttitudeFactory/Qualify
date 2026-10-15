@@ -1,0 +1,39 @@
+# Edge proxy of the VPS: the ONLY process that listens on 80/443. It terminates TLS for every
+# product hosted on this box and forwards each host to that product's own router over a Docker
+# network. It belongs to no product: deploying Qualify or Pedidos never restarts it, and a
+# product being down only turns ITS host into a 502.
+#
+#   {$QUALIFY_DOMAIN}  -> qualify-web:80      Qualify's internal Caddy (network `qualify-edge`)
+#   {$PEDIDOS_DOMAIN}  -> pedidos-backend:8420 Pedidos backend (network `pedidos`)
+#
+# Values come from /opt/edge/.env (see .env.example next to this file). Changing a route is
+# `docker compose exec edge caddy reload --config /etc/caddy/Caddyfile` — no restart, no
+# dropped connections. Runbook: docs/despliegue-hetzner.md, section "Proxy de entrada".
+{
+	email {$EDGE_ACME_EMAIL}
+}
+
+(edge_common) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	log {
+		output stdout
+		format console
+	}
+}
+
+{$QUALIFY_DOMAIN} {
+	import edge_common
+	# Qualify's own Caddy already compresses and routes /api, /_event (websocket), /_upload…
+	# so the edge only forwards. Caddy passes the original Host and sets X-Forwarded-*.
+	reverse_proxy qualify-web:80
+}
+
+{$PEDIDOS_DOMAIN} {
+	import edge_common
+	encode zstd gzip
+	header X-Content-Type-Options "nosniff"
+	reverse_proxy pedidos-backend:8420
+}

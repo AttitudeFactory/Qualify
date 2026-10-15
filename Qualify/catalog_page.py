@@ -25,7 +25,9 @@ from .ui import (
     app_shell,
     callout,
     card,
+    dropzone,
     empty_state,
+    media_thumb,
     page_body,
     page_header,
     progress_panel,
@@ -35,8 +37,6 @@ from .ui import (
     tone_badge,
 )
 from .ui import tokens as T
-
-_THUMB_HEIGHT = "9.5rem"
 
 
 def _field(label: str, control: rx.Component, hint: str | None = None) -> rx.Component:
@@ -155,7 +155,7 @@ def _new_product_form() -> rx.Component:
                     rx.button(
                         rx.icon("x", size=T.ICON_SM),
                         variant="ghost",
-                        color_scheme="gray",
+                        color_scheme=T.tone_scale("neutral"),
                         size="1",
                         type="button",
                         on_click=CatalogState.close_form,
@@ -186,7 +186,7 @@ def _new_product_form() -> rx.Component:
                     rx.button(
                         "Cancelar",
                         variant="ghost",
-                        color_scheme="gray",
+                        color_scheme=T.tone_scale("neutral"),
                         size="2",
                         type="button",
                         on_click=CatalogState.close_form,
@@ -225,18 +225,13 @@ def _media_tile(item: rx.Var[ProductMediaVM]) -> rx.Component:
                 item.media_type == "video",
                 rx.box(
                     rx.video(src=src, controls=True, muted=True, width="100%", height="100%"),
-                    width="100%",
-                    height=_THUMB_HEIGHT,
-                    overflow="hidden",
-                    border_radius=T.RADIUS_CONTROL,
-                    background=T.SURFACE_BG_RAISED,
+                    class_name="q-catalog-video",
                 ),
-                rx.image(
-                    src=src,
+                media_thumb(
+                    src,
+                    size=None,
                     width="100%",
-                    height=_THUMB_HEIGHT,
-                    object_fit="cover",
-                    border_radius=T.RADIUS_CONTROL,
+                    height="var(--q-catalog-thumb-h, 9.5rem)",
                     alt=item.filename,
                 ),
             ),
@@ -276,7 +271,7 @@ def _media_tile(item: rx.Var[ProductMediaVM]) -> rx.Component:
             rx.icon_button(
                 rx.icon("trash-2", size=12),
                 variant="ghost",
-                color_scheme="gray",
+                color_scheme=T.tone_scale("neutral"),
                 size="1",
                 on_click=CatalogState.delete_media(item.media_id),
                 disabled=CatalogState.media_busy,
@@ -292,7 +287,7 @@ def _media_tile(item: rx.Var[ProductMediaVM]) -> rx.Component:
 
 
 def _upload_zone() -> rx.Component:
-    return rx.upload(
+    return dropzone(
         rx.vstack(
             rx.icon("image-up", size=T.ICON_MD, color=T.TEXT_FAINT),
             rx.text(
@@ -310,17 +305,12 @@ def _upload_zone() -> rx.Component:
             align="center",
             spacing="1",
         ),
-        id="catalog_media",
+        upload_id="catalog_media",
         accept=MEDIA_ACCEPT,
         multiple=True,
         max_files=12,
         on_drop=CatalogState.handle_media_upload(rx.upload_files(upload_id="catalog_media")),
-        border=f"1px dashed {rx.color('gray', 7)}",
-        border_radius=T.RADIUS_CONTROL,
-        background=T.CARD_BG,
-        padding="1rem",
-        cursor="pointer",
-        width="100%",
+        variant="compact",
     )
 
 
@@ -397,7 +387,7 @@ def _editor() -> rx.Component:
                     rx.icon("x", size=T.ICON_SM),
                     "Cerrar",
                     variant="ghost",
-                    color_scheme="gray",
+                    color_scheme=T.tone_scale("neutral"),
                     size="1",
                     on_click=CatalogState.close_editor,
                 ),
@@ -448,23 +438,15 @@ def _editor() -> rx.Component:
 
 
 def _thumb(product: rx.Var[ProductVM]) -> rx.Component:
-    return rx.cond(
-        product.primary_photo_key != "",
-        rx.image(
-            src=rx.get_upload_url(product.primary_photo_key),
-            width="100%",
-            height=_THUMB_HEIGHT,
-            object_fit="cover",
-            border_radius=T.RADIUS_CONTROL,
-            alt=product.name,
-        ),
-        rx.center(
-            rx.icon("image-off", size=T.ICON_LG, color=T.TEXT_FAINT),
-            width="100%",
-            height=_THUMB_HEIGHT,
-            background=T.SURFACE_BG_RAISED,
-            border_radius=T.RADIUS_CONTROL,
-        ),
+    return media_thumb(
+        rx.get_upload_url(product.primary_photo_key),
+        has=product.primary_photo_key != "",
+        size=None,
+        width="100%",
+        height="var(--q-catalog-thumb-h, 9.5rem)",
+        alt=product.name,
+        icon="image-off",
+        icon_size=T.ICON_LG,
     )
 
 
@@ -512,8 +494,9 @@ def _product_card(product: rx.Var[ProductVM]) -> rx.Component:
         interactive=True,
         on_click=CatalogState.select_product(product.product_id),
         padding="0.75rem",
-        border=rx.cond(selected, f"1px solid {T.tone_color('accent', 8)}", T.BORDER),
-        background=rx.cond(selected, T.tone_color("accent", 2), T.CARD_BG),
+        # The selected card is ringed and washed in the accent by the sheet
+        # (`.q-card[data-selected]`), so it keeps the card material.
+        data_selected=rx.cond(selected, "true", "false"),
         key=product.product_id,
         role="button",
         aria_pressed=rx.cond(selected, "true", "false"),

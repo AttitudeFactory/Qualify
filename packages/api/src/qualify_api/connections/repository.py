@@ -59,7 +59,9 @@ class GrantInput:
     account_type: str
     external_account_id: str
     external_username: str | None
-    linked_page_id: str
+    # None only for `platform = 'whatsapp'` (0057, `ck_conn_linked_page_by_platform`);
+    # Postgres refuses it for every other platform, so this layer does not re-check.
+    linked_page_id: str | None
     granted_scopes: tuple[str, ...]
     access_posture: str
     ciphertext: bytes

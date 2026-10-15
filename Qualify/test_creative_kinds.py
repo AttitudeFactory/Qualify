@@ -4,6 +4,7 @@ the image route from them, and how a draft's media and script are shown."""
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 from uuid import UUID
 
@@ -11,7 +12,7 @@ import pytest
 from qualify_creative.enums import ContentKind, ImageRoute
 
 from . import creative_provider
-from .creative_state import CreativeState, generator_steps
+from .creative_state import CreativeState, generator_sections
 from .creative_vm import KIND_OPTIONS, build_media_vms, build_variant_vm
 
 _TENANT_ID = UUID("a0000000-0000-4000-8000-000000000001")
@@ -19,7 +20,7 @@ _BRAND_ID = UUID("b0000000-0000-4000-8000-000000000001")
 _USER_ID = UUID("c0000000-0000-4000-8000-000000000001")
 
 
-def test_the_picker_offers_the_five_kinds_in_order() -> None:
+def test_the_picker_offers_the_six_kinds_in_order() -> None:
     assert (
         [key for key, *_ in KIND_OPTIONS]
         == [kind.value for kind in ContentKind if kind]
@@ -29,6 +30,7 @@ def test_the_picker_offers_the_five_kinds_in_order() -> None:
             "animated_avatar_video",
             "static_flyer",
             "template",
+            "carousel",
         ]
     )
 
@@ -46,11 +48,45 @@ def test_the_template_kind_is_chosen_and_reads_the_catalog_once() -> None:
     assert state.brief_kind == "creator_script"
 
 
-def test_an_avatar_kind_loads_heygens_catalog_once() -> None:
+def test_an_avatar_kind_loads_heygens_catalog_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("QUALIFY_VIDEO_ENGINE", "heygen")
     state = CreativeState()
     assert state.choose_kind("avatar_video") is not None  # chains load_heygen_catalog
+    assert state.video_engine == "heygen"
     state.heygen_voices = [{"id": "vo", "name": "Elena"}]
     assert state.choose_kind("animated_avatar_video") is None
+
+
+def test_on_seedance_an_avatar_kind_loads_no_heygen_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """§ request 2026-10-07: Seedance is the default engine — no library, no voices."""
+    monkeypatch.delenv("QUALIFY_VIDEO_ENGINE", raising=False)
+    state = CreativeState()
+    assert state.choose_kind("avatar_video") is None
+    assert state.video_engine == "seedance" and state.video_on_seedance
+
+
+def test_a_seedance_presenter_is_always_described_and_needs_no_voice() -> None:
+    state = CreativeState()
+    state.brief_kind = "avatar_video"
+    state.video_engine = "seedance"
+    assert state._kind_problem() == ""  # «Mujer»: no look, no voice to pick
+    media = state._media_inputs()
+    assert media["video_engine"] == "seedance"
+    assert media["avatar_source"] == "ai" and "Mujer" in str(media["avatar_prompt"])
+    assert "voice_id" not in media and "avatar_look_id" not in media
+    state.set_human_avatar_mode("custom")
+    assert "Describe cómo es la persona" in state._kind_problem()
+    state.set_human_avatar_prompt("Chef de 40 años con delantal verde")
+    assert state._media_inputs()["avatar_prompt"] == "Chef de 40 años con delantal verde"
+    state.brief_kind = "animated_avatar_video"
+    state.avatar_source = "image"
+    state.avatar_image_key = "uploads/t/mascota.png"
+    state.avatar_rights_confirmed = True
+    assert state._kind_problem() == ""
+    media = state._media_inputs()
+    assert media["avatar_image_key"] == "uploads/t/mascota.png" and "voice_id" not in media
 
 
 _LOOKS = [
@@ -66,6 +102,7 @@ _VOICES = [
 def _catalog_state() -> CreativeState:
     state = CreativeState()
     state.brief_kind = "avatar_video"
+    state.video_engine = "heygen"
     state.heygen_looks = list(_LOOKS)
     state.heygen_voices = list(_VOICES)
     state._sync_voice()
@@ -152,6 +189,8 @@ def test_an_ad_image_asks_for_the_photos_its_mode_names() -> None:
     state.media_product_keys = ["uploads/t/vaso.png"]
     assert "fondo" in state._kind_problem()
     state.set_ad_mode("product")
+    assert "escena" in state._kind_problem()  # § 2026-10-08: the scene is required
+    state.set_ad_scene_prompt("Una mano con el vaso")
     assert state._kind_problem() == ""
     state.set_ad_mode("background")
     assert "fondo" in state._kind_problem()
@@ -180,6 +219,35 @@ def test_an_ad_image_sends_only_its_modes_photos_and_the_scene() -> None:
     assert state._media_inputs()["background_key"] is None
 
 
+def test_the_ad_images_scene_is_its_whole_brief() -> None:
+    """§ request 2026-10-08: the scene is what the piece is about — sent as its topic."""
+    state = CreativeState()
+    state.brief_kind = "static_flyer"
+    state.brief_topic = "left over from another kind"
+    state.set_ad_scene_prompt("  Una mano con el vaso en el local  ")
+    assert state._generator_form()["topic"] == "Una mano con el vaso en el local"
+    state.brief_kind = "creator_script"
+    assert state._generator_form()["topic"] == "left over from another kind"
+
+
+def test_going_to_review_starts_the_generator_over() -> None:
+    """§ request 2026-10-08: back on «Crear pieza» after «Revisar y aprobar», the first
+    screen — not the piece already sent to Borradores."""
+    state = CreativeState()
+    state.generator_view = "result"
+    state.gen_draft_id = "d0000000-0000-4000-8000-000000000001"
+    state.brief_topic = "Smash doble"
+    state.ad_scene_prompt = "Una mano con la smash"
+    state.media_product_keys = ["uploads/t/p.png"]
+
+    redirect = state.review_in_drafts()
+
+    assert redirect is not None and "/drafts/d0000000-0000-4000-8000-000000000001" in str(redirect)
+    assert state.generator_view == "form"
+    assert state.gen_draft_id == "" and state.brief_topic == ""
+    assert state.ad_scene_prompt == "" and state.media_product_keys == []
+
+
 def test_leaving_the_flyer_drops_the_carousel() -> None:
     state = CreativeState()
     state.media_carousel = True
@@ -200,7 +268,20 @@ def test_leaving_the_flyer_drops_the_carousel() -> None:
             {"voice_id": "vo", "avatar_source": "image", "avatar_image_key": "uploads/t/a.png"},
             "Confirma",
         ),
-        ("static_flyer", {"ad_mode": "product", "media_product_keys": ["uploads/t/p.png"]}, ""),
+        (
+            "static_flyer",
+            {
+                "ad_mode": "product",
+                "media_product_keys": ["uploads/t/p.png"],
+                "ad_scene_prompt": "Una mano con el vaso",
+            },
+            "",
+        ),
+        (
+            "static_flyer",
+            {"ad_mode": "product", "media_product_keys": ["uploads/t/p.png"]},
+            "Describe la escena",
+        ),
         ("static_flyer", {}, "Sube la foto de tu producto"),
         ("creator_script", {}, ""),
     ],
@@ -210,6 +291,7 @@ def test_what_each_kind_still_needs_is_said_before_sending(
 ) -> None:
     state = CreativeState()
     state.brief_kind = kind
+    state.video_engine = "heygen"  # the library look and the voice are HeyGen's
     for name, value in fields.items():
         setattr(state, name, value)
     if problem:
@@ -232,7 +314,8 @@ def test_the_inputs_sent_are_only_the_kinds_own() -> None:
 
     state.brief_kind = "static_flyer"
     flyer = state._media_inputs()
-    assert flyer["product_keys"] == ["uploads/t/p1.png"] and flyer["carousel"] is True
+    # § 2026-10-09: the ad image is one image — the carousel is its own kind
+    assert flyer["product_keys"] == ["uploads/t/p1.png"] and flyer["carousel"] is False
     assert "avatar_prompt" not in flyer
 
     state.brief_kind = "animated_avatar_video"
@@ -381,16 +464,17 @@ def test_a_format_the_kind_does_not_offer_is_ignored_and_a_new_kind_resets_it() 
     assert state.brief_format == "" and state.effective_format == "feed_4_5"
 
 
-def test_the_carousel_is_only_offered_for_a_flyer_in_a_feed_format() -> None:
+def test_the_ad_image_is_never_a_carousel_any_more() -> None:
+    """§ request 2026-10-09: «quitar la opción de carrusel en imágenes publicitarias»."""
     state = CreativeState()
     state.choose_kind("static_flyer")
     state.set_media_carousel(True)
-    assert state.carousel_allowed and state.media_carousel
-    state.set_brief_format("story_9_16")
     assert not state.carousel_allowed and state.media_carousel is False
-    state.set_media_carousel(True)
-    assert state.media_carousel is False
+    state.media_carousel = True  # a stale flag never reaches the brief
     assert state._media_inputs()["carousel"] is False
+    from .content_generator import _products_upload
+
+    assert "Hacerlo carrusel" not in str(_products_upload("Foto del producto"))
 
 
 def test_back_to_the_form_keeps_the_inputs() -> None:
@@ -478,147 +562,101 @@ def test_an_own_script_and_the_engine_reach_the_inputs() -> None:
     assert "own_script" not in state._media_inputs()
 
 
-# -- the generator as a wizard (§ request 2026-09-30) ----------------------------------
+# -- the generator as one view with sections (§ request 2026-10-08) --------------------
 
 
-def test_only_the_avatar_kinds_ask_who_presents() -> None:
-    assert generator_steps("avatar_video") == [
-        "kind",
-        "topic",
-        "channel",
-        "presenter",
-        "details",
-        "rules",
-        "review",
-    ]
-    assert "presenter" in generator_steps("animated_avatar_video")
-    for kind in ("creator_script", "static_flyer"):
-        assert "presenter" not in generator_steps(kind)
-        assert "recipe" not in generator_steps(kind)
-        assert len(generator_steps(kind)) == 6
+def test_each_kind_shows_only_its_sections_in_order() -> None:
+    assert generator_sections("avatar_video") == ["topic", "channel", "presenter", "details"]
+    assert generator_sections("animated_avatar_video") == generator_sections("avatar_video")
+    assert generator_sections("creator_script") == ["topic", "channel", "details"]
+    assert generator_sections("template") == ["topic", "channel", "details"]
+    # the ad image asks no «¿Qué quieres en la imagen?» — its scene is it
+    assert generator_sections("static_flyer") == ["channel", "details"]
 
 
-def test_only_the_template_kind_asks_how_it_is_made() -> None:
-    """«¿Cómo la hacemos?» (the recipe step, plan §2.1 #4) sits right before the review
-    and only for the template kind."""
-    steps = generator_steps("template")
-    assert steps == ["kind", "topic", "channel", "details", "rules", "recipe", "review"]
-    for kind in ("creator_script", "avatar_video", "animated_avatar_video", "static_flyer"):
-        assert "recipe" not in generator_steps(kind)
-
-
-def test_the_counter_follows_the_kind() -> None:
+def test_the_sections_renumber_as_the_kind_changes() -> None:
     state = CreativeState()
     state.brief_kind = "creator_script"
-    state.gen_step = "details"
-    assert (state.gen_step_number, state.gen_step_total) == (4, 6)
+    assert state.gen_section_numbers == {"topic": 1, "channel": 2, "details": 3}
     state.brief_kind = "avatar_video"
-    assert (state.gen_step_number, state.gen_step_total) == (5, 7)
+    assert state.gen_section_numbers["presenter"] == 3
+    assert state.gen_section_numbers["details"] == 4
+    state.brief_kind = "static_flyer"
+    assert state.gen_section_numbers == {"channel": 1, "details": 2}
 
 
-def test_continuar_walks_the_kinds_steps_and_atras_walks_back() -> None:
-    state = CreativeState()
-    state.brief_kind = "creator_script"
-    state.brief_topic = "Smash doble"
-    seen = [state.gen_step]
-    for _ in range(10):
-        state.gen_next()
-        seen.append(state.gen_step)
-    assert seen[:6] == generator_steps("creator_script")
-    assert set(seen[6:]) == {"review"}  # the last step stays put: Generar takes over
-    state.gen_back()
-    assert state.gen_step == "rules"
-    for _ in range(10):
-        state.gen_back()
-    assert state.gen_step == "kind"
-
-
-def test_a_step_does_not_move_on_until_it_is_complete() -> None:
+def test_generar_says_the_first_thing_still_missing_in_section_order() -> None:
     state = CreativeState()
     state.brief_kind = "avatar_video"
-    state.gen_step = "topic"
-    state.gen_next()
-    assert state.gen_step == "topic" and state.create_error != ""
+    state.video_engine = "heygen"
+    assert "Cuéntanos qué quieres" in state._form_problem()
     state.brief_topic = "Smash doble"
-    state.gen_next()
-    assert state.gen_step == "channel" and state.create_error == ""
-    state.gen_next()
-    assert state.gen_step == "presenter"
-    state.gen_next()
-    assert state.gen_step == "presenter" and "Elige el avatar" in state.create_error
+    assert "Elige el avatar" in state._form_problem()
     state.avatar_look_id = "lk"
     state.voice_id = "vo"
-    state.gen_next()
-    assert state.gen_step == "details"
     state.own_script_on = True
-    state.gen_next()
-    assert state.gen_step == "details" and "Escribe tu guion" in state.create_error
-    state.gen_back()
-    assert state.gen_step == "presenter" and state.create_error == ""
+    assert "Escribe tu guion" in state._form_problem()
+    state.own_script = "Hola, mano."
+    assert state._form_problem() == ""
+
+
+def test_a_creators_script_takes_no_brand_resources() -> None:
+    """§ 2026-10-08: no «Recursos de tu marca» for a real creator's script — not shown,
+    and nothing chosen for another kind leaks into its brief."""
+    state = CreativeState()
+    state.brand_logo_key = "t/x/logo.png"
+    state.brand_element_keys = ["t/x/sello.png"]
+    state.brief_kind = "creator_script"
+    media = state._media_inputs()
+    assert media["brand_logo_key"] is None and media["brand_element_keys"] == []
+    state.brief_kind = "static_flyer"
+    media = state._media_inputs()
+    assert media["brand_logo_key"] == "t/x/logo.png"
+    assert media["brand_element_keys"] == ["t/x/sello.png"]
+
+
+def test_the_rules_are_folded_until_opened() -> None:
+    state = CreativeState()
+    assert state.rules_open is False
+    state.toggle_rules()
+    assert state.rules_open is True
 
 
 def test_no_kind_asks_for_objetivo_or_destino() -> None:
     """§ request 2026-10-05 ("quitar objetivo y destino en todas las opciones"): every
-    kind shares the topic and channel steps, and neither asks any more; the brief still
-    carries both fields at their defaults."""
-    from .content_generator import _step_channel, _step_topic
+    kind shares the topic and channel sections, and neither asks any more; the brief
+    still carries both fields at their defaults."""
+    from .content_generator import _section_channel, _section_topic
 
-    for step in (_step_topic(), _step_channel()):
-        rendered = str(step)
+    for section in (_section_topic(), _section_channel()):
+        rendered = str(section)
         assert '"Objetivo"' not in rendered and '"Destino"' not in rendered
     state = CreativeState()
     assert (state.brief_objective, state.brief_intent) == ("consideration", "organic")
 
 
-def test_the_review_recaps_the_brief() -> None:
+def test_generar_waits_while_a_piece_is_generating() -> None:
     state = CreativeState()
-    state.brief_kind = "static_flyer"
-    state.brief_topic = "  Smash doble  "
-    state.brief_objective = "sale"
-    state.brief_intent = "ads"
-    state.brief_must_mention = "envío gratis"
-    recap = dict(state.gen_recap)
-    assert recap["Tipo de pieza"] == {key: title for key, title, *_ in KIND_OPTIONS}["static_flyer"]
-    assert recap["Tema o producto"] == "Smash doble"
-    # § 2026-10-05: Objetivo and Destino are no longer asked nor recapped
-    assert "Objetivo" not in recap and "Destino" not in recap
-    assert recap["Formato"] != ""
-    assert recap["Debe mencionar"] == "envío gratis"
-    assert recap["Debe evitar"] == ""
-
-
-def test_crear_otro_starts_the_wizard_again() -> None:
-    state = CreativeState()
-    state.gen_step = "review"
+    assert state.gen_generating is False
     state.generator_view = "result"
-    state.new_generation()
-    assert state.gen_step == "kind"
+    state.gen_draft_id = "d1"
+    assert state.gen_generating is True  # created, nothing read back yet
+    state.gen_timed_out = True
+    assert state.gen_generating is False  # it outlasted the wait: free to try again
+
+
+def test_crear_otro_takes_the_result_away_and_keeps_the_inputs() -> None:
+    state = CreativeState()
+    state.generator_view = "result"
+    state.gen_draft_id = "d1"
+    state.brief_topic = "Smash doble"
+    event = state.new_generation()
+    assert state.generator_view == "form" and state.gen_draft_id == ""
+    assert state.brief_topic == "Smash doble"  # to try a variation
+    assert "scrollTo" in str(event)
 
 
 # -- the template kind (plan-mvp-plantillas-remotion.md, 2026-10-05) ---------------------
-
-
-def _recipe(key: str, **kw: Any):
-    from .creative_vm import RecipeOptionVM
-
-    base: dict[str, Any] = {
-        "key": key,
-        "engine_label": key.title(),
-        "engine_tone": "accent",
-        "label": "Promo de producto",
-        "template_id": "promo_producto" if key == "remotion" else "",
-        "template_version": 1 if key == "remotion" else 0,
-        "cost_label": "USD 0.00",
-        "eta_label": "~38 s",
-        "outputs_label": "Reel · Feed · Historia",
-        "suggested": False,
-        "available": True,
-        "reason": "",
-        "selectable": key != "ugc",
-        "rule": 0,
-    }
-    base.update(kw)
-    return RecipeOptionVM(**base)
 
 
 def test_picking_a_catalog_product_sets_the_reference_photos_and_topic() -> None:
@@ -646,7 +684,7 @@ def test_picking_a_catalog_product_sets_the_reference_photos_and_topic() -> None
         "uploads/t/catalog/p1/b.jpg",
     ]
     assert media["background_key"] is None  # a template takes no background
-    assert "template_id" not in media  # no recipe pinned yet
+    assert "template_id" not in media  # the router picks the template
     # a typed topic is never overwritten; picking the same product again unpicks it
     state.brief_topic = "Promo de martes"
     state.choose_product("p1")
@@ -655,76 +693,357 @@ def test_picking_a_catalog_product_sets_the_reference_photos_and_topic() -> None
     assert state.template_photo_count == 2  # only the piece's own uploads remain
 
 
-def test_a_template_without_any_photo_cannot_leave_the_details_step() -> None:
+def test_a_template_needs_two_photos_before_generating() -> None:
+    """§ 2026-10-08: the template keeps its 2 photos (only the ad image takes one), and
+    says so in its own section instead of on Generar."""
     state = CreativeState()
     state.brief_kind = "template"
     state.brief_topic = "Promo"
-    state.gen_step = "details"
-    assert state.gen_next() is None
-    assert state.gen_step == "details"
-    assert "foto" in state.create_error.lower()
+    assert "al menos 2" in state._form_problem()
     state.media_product_keys = ["uploads/t/a.jpg"]
-    state.gen_next()
-    assert state.gen_step == "rules"
-    # Continuar out of the rules step lands on the recipes and quotes them
-    assert state.gen_next() is not None  # chains load_recipe_options
-    assert state.gen_step == "recipe"
-
-
-def test_choosing_a_remotion_recipe_pins_the_template_on_the_brief() -> None:
-    state = CreativeState()
-    state.brief_kind = "template"
+    assert "al menos 2" in state._form_problem()
     state.media_product_keys = ["uploads/t/a.jpg", "uploads/t/b.jpg"]
-    state.recipe_items = [
-        _recipe("remotion", suggested=True, rule=2),
-        _recipe("heygen", available=False, selectable=False, reason="sin avatar"),
-        _recipe("ugc", reason="solo cotiza"),
-    ]
-    state.gen_step = "recipe"
-    # nothing picked yet: Continuar refuses
-    assert state.gen_next() is None and state.gen_step == "recipe"
-    assert state.create_error != ""
+    assert state._form_problem() == ""
 
-    assert state.choose_recipe("remotion") is None
-    assert state.selected_recipe == "remotion"
-    assert (state.media_template_id, state.media_template_version) == ("promo_producto", 1)
+
+# -- a carousel shown as a carousel (§ request 2026-10-08) -------------------------------
+
+
+def _draft_with_media(draft_id: str, *media_types: str):  # noqa: ANN202
+    from .creative_vm import MediaVM, build_draft_vm
+
+    return build_draft_vm(
+        draft_id=draft_id,
+        status="generated",
+        failure_reason=None,
+        variants=(),
+        image_url=None,
+        total_cost_usd=None,
+        voice_profile_version=None,
+        model_ids=(),
+        requires_ai_disclosure=True,
+        created_label="",
+        media=tuple(
+            MediaVM(key=f"k/{i}", media_type=kind, position=i, label=f"Slide {i + 1}")
+            for i, kind in enumerate(media_types)
+        ),
+    )
+
+
+def test_only_several_images_make_a_carousel() -> None:
+    state = CreativeState()
+    assert not state.gen_is_carousel and not state.draft_is_carousel
+    state.gen_draft = _draft_with_media("d1", "image")
+    assert not state.gen_is_carousel  # one image: shown as today
+    state.gen_draft = _draft_with_media("d1", "video")
+    assert not state.gen_is_carousel
+    state.gen_draft = _draft_with_media("d1", "image", "image", "image")
+    state.draft = _draft_with_media("d2", "image", "image")
+    assert state.gen_is_carousel and state.draft_is_carousel
+
+
+def test_the_arrows_and_dots_stay_within_the_slides() -> None:
+    state = CreativeState()
+    state.gen_draft = _draft_with_media("d1", "image", "image", "image")
+    state.gen_slide_step(-1)
+    assert state.gen_slide == 0  # no slide before the first
+    state.gen_slide_step(1)
+    state.gen_slide_step(1)
+    state.gen_slide_step(1)
+    assert state.gen_slide == 2  # nor after the last
+    state.gen_slide_pick(1)
+    assert state.gen_slide == 1
+    state.draft = _draft_with_media("d2", "image", "image")
+    state.draft_slide_pick(9)
+    assert state.draft_slide == 1
+
+
+def test_the_carousel_moves_on_by_itself_and_wraps_around() -> None:
+    """§ 2026-10-08: the slides change by themselves after a short delay."""
+    state = CreativeState()
+    state.gen_draft = _draft_with_media("d1", "image", "image", "image")
+    state.gen_slide_auto()
+    state.gen_slide_auto()
+    assert state.gen_slide == 2
+    state.gen_slide_auto()
+    assert state.gen_slide == 0  # after the last, the first again
+    state.draft = _draft_with_media("d2", "image", "image")
+    state.draft_slide_auto()
+    state.draft_slide_auto()
+    assert state.draft_slide == 0
+
+
+def test_a_new_piece_or_another_draft_opens_on_its_first_slide() -> None:
+    state = CreativeState()
+    state.gen_draft = _draft_with_media("d1", "image", "image")
+    state.gen_slide_pick(1)
+    state.new_generation()
+    assert state.gen_slide == 0
+    state._apply_detail(_draft_with_media("d2", "image", "image"))
+    state.draft_slide_pick(1)
+    state._apply_detail(_draft_with_media("d2", "image", "image"))  # the same, re-read
+    assert state.draft_slide == 1
+    state._apply_detail(_draft_with_media("d3", "image", "image"))
+    assert state.draft_slide == 0
+
+
+def test_both_screens_show_a_carousel_with_arrows_dots_and_a_counter() -> None:
+    from .content_generator import _media_result
+    from .creative_pages import _media_column
+
+    for rendered, prefix in (
+        (str(_media_result(title="Imagen", icon="image")), "gen"),
+        (str(_media_column()), "draft"),
+    ):
+        assert f"{prefix}_is_carousel" in rendered
+        assert f"{prefix}_slide_step" in rendered and f"{prefix}_slide_pick" in rendered
+        assert "Diapositiva anterior" in rendered and "Diapositiva siguiente" in rendered
+        assert f"{prefix}_slide_auto" in rendered and "10000" in rendered  # the autoplay
+
+
+def test_the_viewer_arrows_are_centred_without_a_transform() -> None:
+    """2026-10-09: the kit lifts a solid button on hover with `transform`, which replaced
+    the centring `translateY(-50%)` and made the arrow jump away from the pointer."""
+    from .media_carousel import AUTOPLAY_MS, _arrow
+
+    assert AUTOPLAY_MS == 10000
+    rendered = str(
+        _arrow("chevron-right", "Diapositiva siguiente", "right", CreativeState.gen_slide_step(1))
+    )
+    assert "translateY" not in rendered and "marginTop" in rendered
+
+
+def test_a_carousel_video_slide_keeps_its_feed_shape_in_both_previews() -> None:
+    """2026-10-09: framed 9:16 like a Reel, a 4:5 video slide lost its sides — and the
+    words printed on them."""
+    from .content_generator import _media_preview
+    from .creative_pages import _media_item
+
+    for rendered in (
+        str(_media_preview(CreativeState.gen_draft.media[0])),
+        str(_media_item(CreativeState.draft.media[0])),
+    ):
+        assert "q-rv-media--slide" in rendered and "q-rv-media--video" in rendered
+        assert "is_slide" in rendered
+
+
+def test_the_form_is_off_while_a_piece_generates() -> None:
+    from .content_generator import generator_page
+
+    rendered = str(generator_page())
+    assert "q-cr-form--busy" in rendered and "gen_generating" in rendered
+    assert "El formulario se reactiva cuando termine" in rendered
+
+
+def test_the_app_says_when_the_piece_lands() -> None:
+    from .creative_state import _generation_done_events, _notify_js
+
+    ready = [str(event) for event in _generation_done_events("ready")]
+    failed = [str(event) for event in _generation_done_events("failed")]
+    assert any("Tu pieza est" in event for event in ready)
+    assert any("No se pudo generar" in event for event in failed)
+    # a draft regenerated in Borradores says where to look (pendientes §5)
+    draft_ready = [str(event) for event in _generation_done_events("ready", source="draft")]
+    draft_failed = [str(event) for event in _generation_done_events("failed", source="draft")]
+    assert any("regenerado. Rev" in event and "Borradores" in event for event in draft_ready)
+    assert any("No se pudo regenerar" in event for event in draft_failed)
+    # the browser's own notice only when the tab is in the background, and only if allowed
+    script = _notify_js("Qualify", "lista")
+    assert "document.hidden" in script and "Notification.permission === 'granted'" in script
+
+
+# -- the carousel kind (§ request 2026-10-09) -------------------------------------------
+
+
+def _carousel_state() -> CreativeState:
+    state = CreativeState()
+    state.choose_category("carousel")
+    state.brief_topic = "Promo de la smash doble"
+    return state
+
+
+def test_the_carousel_opens_on_a_cover_an_animated_slide_and_the_closing() -> None:
+    state = _carousel_state()
+    assert (state.gen_category, state.brief_kind) == ("carousel", "carousel")
+    assert generator_sections("carousel") == ["topic", "channel", "details"]
+    assert [slide["source"] for slide in state.carousel_slides] == ["generated", "animated"]
+    assert state.carousel_slides[0]["text"] == "hook"
+    assert state.carousel_closing and state.carousel_slide_count == 3
+    assert state._form_problem() == ""
+    assert [value for value, _ in state.format_options] == ["feed_4_5", "feed_1_1"]
+
+
+def test_the_strip_adds_selects_moves_and_removes_slides() -> None:
+    """§ 2026-10-09, option A: a new slide opens in the editor, and the editor follows
+    the slide it was on when it moves."""
+    state = _carousel_state()
+    assert state.carousel_selected == 0 and state.carousel_current["n"] == "1"
+    state.toggle_carousel_adding()
+    assert state.carousel_adding
+    state.add_carousel_slide("generated")
+    assert not state.carousel_adding
+    assert state.carousel_selected == 2 and state.carousel_current["source"] == "generated"
+    assert [row["selected"] for row in state.carousel_slide_rows] == ["", "", "1"]
+    state.move_carousel_slide(2, -1)
+    assert state.carousel_selected == 1 and state.carousel_current["source"] == "generated"
+    assert [slide["source"] for slide in state.carousel_slides] == [
+        "generated",
+        "generated",
+        "animated",
+    ]
+    state.select_carousel_slide(2)
+    state.remove_carousel_slide(2)
+    assert state.carousel_selected == 1 and len(state.carousel_slides) == 2
+    state.select_carousel_slide(9)  # not a slide: ignored
+    assert state.carousel_selected == 1
+
+
+def test_a_slides_fields_keep_to_what_a_slide_takes() -> None:
+    state = _carousel_state()
+    state.set_slide_field(1, "text", "cta")
+    state.set_slide_field(1, "seconds", "10")
+    state.set_slide_field(1, "text", "bold")  # not a value: ignored
+    state.set_slide_field(1, "seconds", "7")  # not a length Seedance makes: ignored
+    state.set_slide_field(1, "photo_key", "uploads/other/forged.jpg")  # not editable
+    slide = state.carousel_slides[1]
+    assert (slide["text"], slide["seconds"], slide["photo_key"]) == ("cta", "10", "")
+    assert state.carousel_slide_rows[1]["text_label"] == "Botón"
+
+
+def test_the_strip_stops_at_ten_with_the_closing_slide() -> None:
+    state = _carousel_state()
+    for _ in range(12):
+        state.add_carousel_slide("generated")
+    assert state.carousel_slide_count == 10 and state.carousel_full  # 9 + the closing
+    state.toggle_carousel_adding()
+    assert not state.carousel_adding  # «+» has nothing to add
+    state.set_carousel_closing(False)
+    state.add_carousel_slide("generated")
+    assert state.carousel_slide_count == 10
+    state.set_carousel_closing(True)  # no room for it any more
+    assert not state.carousel_closing
+
+
+def test_too_few_slides_block_generar() -> None:
+    state = _carousel_state()
+    state.remove_carousel_slide(1)
+    state.set_carousel_closing(False)
+    assert "al menos 2 diapositivas" in state._form_problem()
+
+
+def test_a_piece_is_picked_only_from_the_brands_list() -> None:
+    state = _carousel_state()
+    state.piece_items = [
+        {"key": "t/x/generated/d/r1/video.mp4", "media_type": "video", "label": "Reel", "view": ""}
+    ]
+    state.pick_piece("t/other/forged.jpg")
+    assert len(state.carousel_slides) == 2
+    state.carousel_adding = state.piece_picker_open = True
+    state.pick_piece("t/x/generated/d/r1/video.mp4")
+    reused = state.carousel_slides[-1]
+    assert (reused["source"], reused["key"], reused["media_type"]) == (
+        "existing",
+        "t/x/generated/d/r1/video.mp4",
+        "video",
+    )
+    assert state.carousel_selected == 2 and not state.carousel_adding
+    assert not state.piece_picker_open
+    state.set_slide_field(2, "text", "hook")  # a reused piece goes as it is
+    assert state.carousel_slides[2]["text"] == "none"
+
+
+def test_each_slide_brings_its_own_photo_to_the_brief() -> None:
+    """§ 2026-10-09: the product photo is uploaded in the slide; the brief carries
+    the photos once each and every slide points at its own."""
+    state = _carousel_state()
+    state.media_product_keys = ["uploads/t/left-over.jpg"]  # not the carousel's
+    state.media_background_key = "uploads/t/bar.jpg"
+    state.carousel_slides = [
+        {**state.carousel_slides[0], "photo_key": "uploads/t/burger.jpg"},
+        {**state.carousel_slides[1], "photo_key": "uploads/t/burger.jpg", "background": ""},
+    ]
+    state.add_carousel_slide("generated")  # no photo: a scene from the words only
+    state.piece_items = [{"key": "t/x/a.jpg", "media_type": "image", "label": "A", "view": ""}]
+    state.pick_piece("t/x/a.jpg")
     media = state._media_inputs()
-    assert (media["template_id"], media["template_version"]) == ("promo_producto", 1)
-    assert state.selected_recipe_label == "Promo de producto · Remotion"
-    assert state.selected_recipe_cost == "USD 0.00 · ~38 s"
-    assert ["Receta", "Promo de producto · Remotion"] in state.gen_recap
-    assert ["Costo estimado", "USD 0.00 · ~38 s"] in state.gen_recap
+    assert media["product_keys"] == ["uploads/t/burger.jpg"]
+    assert media["background_key"] == "uploads/t/bar.jpg"
+    assert media["closing_slide"] is True and media["carousel"] is False
+    first, second, third, fourth = media["slides"]
+    assert first == {
+        "source": "generated",
+        "scene_prompt": "",
+        "product_index": 0,
+        "use_background": True,
+        "text": "hook",
+        "seconds": 5,
+    }
+    assert (second["source"], second["product_index"], second["use_background"]) == (
+        "animated",
+        0,
+        False,
+    )
+    assert third["product_index"] is None
+    assert fourth == {"source": "existing", "object_key": "t/x/a.jpg"}
+    from qualify_creative.schemas import MediaInputs
 
-    state.gen_next()
-    assert state.gen_step == "review"
+    MediaInputs.model_validate(media)  # what build_brief will validate
 
 
-def test_ugc_only_quotes_and_an_unavailable_recipe_says_why() -> None:
+def test_a_slide_photo_is_uploaded_into_the_open_slide(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    state = _carousel_state()
+    state.select_carousel_slide(1)
+
+    async def saved(self: CreativeState, files: list) -> list[tuple[str, str]]:
+        return [("uploads/t/papas.jpg", "papas.jpg")]
+
+    monkeypatch.setattr(CreativeState, "_save_uploads", saved)
+    asyncio.run(state.handle_slide_photo_upload([object()]))  # type: ignore[list-item]
+    assert state.carousel_slides[1]["photo_key"] == "uploads/t/papas.jpg"
+    assert state.carousel_slides[0]["photo_key"] == ""
+    state.clear_slide_photo()
+    assert state.carousel_slides[1]["photo_key"] == ""
+
+
+def test_a_mixed_carousel_is_shown_as_one_and_holds_on_a_video() -> None:
+    from .creative_vm import build_media_vms
+
+    media = build_media_vms(
+        [
+            ("k/1.jpg", "image", 0, {"slide": 1}),
+            ("k/2.mp4", "video", 1, {"slide": 2, "thumbnail_key": "k/2.jpg"}),
+        ]
+    )
+    assert [item.label for item in media] == ["Slide 1 de 2", "Slide 2 de 2"]
+    assert media[1].poster_key == "k/2.jpg" and all(item.is_slide for item in media)
     state = CreativeState()
-    state.brief_kind = "template"
-    state.recipe_items = [
-        _recipe("remotion", available=False, selectable=False, reason="necesita 2 fotos"),
-        _recipe("heygen", available=False, selectable=False, reason="sin avatar"),
-        _recipe("ugc", reason="solo cotiza"),
-    ]
-    assert state.choose_recipe("ugc") is None
-    assert state.selected_recipe == "" and "cotiza" in state.recipe_notice
-    assert state.choose_recipe("remotion") is None
-    assert state.selected_recipe == "" and "necesita 2 fotos" in state.recipe_notice
+    state.gen_draft = dataclasses.replace(_draft_with_media("d1", "image"), media=media)
+    assert state.gen_is_carousel
+    state.gen_slide_auto()
+    assert state.gen_slide == 1
+    state.gen_slide_auto()
+    assert state.gen_slide == 1  # a video slide holds until the arrows move on
 
 
-def test_choosing_heygen_turns_the_piece_into_an_avatar_video() -> None:
-    state = CreativeState()
-    state.brief_kind = "template"
-    state.gen_step = "recipe"
-    state.recipe_items = [
-        _recipe("remotion"),
-        _recipe("heygen", engine_tone="info", label="Avatar hablando a cámara"),
-        _recipe("ugc"),
-    ]
-    assert state.choose_recipe("heygen") is not None  # chains load_heygen_catalog
-    assert state.brief_kind == "avatar_video"
-    assert state.gen_step == "presenter"
-    assert "avatar" in state.recipe_notice.lower()
-    assert state.media_template_id == "" and state.recipe_items == []
-    assert "recipe" not in generator_steps(state.brief_kind)
+def test_the_carousel_explains_its_options_and_says_titulo_and_boton() -> None:
+    """§ request 2026-10-09: a «?» on each kind of slide, the photo, the background, the
+    text and the closing slide; «Gancho» / «Llamado (CTA)» renamed for the operator."""
+    import json
+
+    from .content_generator import _carousel_adder, _carousel_section
+
+    def rendered(text: str) -> str:  # the compiled JSX escapes every accent
+        return json.dumps(text)[1:-1]
+
+    section = str(_carousel_section())
+    adder = str(_carousel_adder())
+    assert rendered("Título") in section and rendered("Botón de acción") in section
+    assert "Gancho" not in section and "Llamado (CTA)" not in section
+    for help_title in ("Foto del producto", "Fondo común (opcional)", "Diapositiva de cierre"):
+        assert rendered(f"Qué es «{help_title}»") in section
+    for kind in ("Imagen generada", "Video animado", "De una pieza"):
+        assert rendered(f"Qué es «{kind}»") in adder
+    state = _carousel_state()
+    assert [row["text_label"] for row in state.carousel_slide_rows] == ["Título", ""]

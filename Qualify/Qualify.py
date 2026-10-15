@@ -50,6 +50,8 @@ from .styleguide_page import styleguide_index
 from .ui import app_shell, page_body
 from .vitrina_page import vitrina_index
 from .voice_lab import VoiceLabState
+from .whatsapp_page import whatsapp_index
+from .whatsapp_state import WhatsAppState
 
 # QUA-99 latency follow-up: this app never configured Python's logging at all before
 # now — `logging.getLogger(__name__).info(...)` calls anywhere in the codebase (e.g.
@@ -93,7 +95,18 @@ _FONTS = (
     "&display=swap"
 )
 app = rx.App(
-    stylesheets=[_FONTS, "/qualify.css"],
+    # The design system (tokens, Liquid Glass bridge + Radix skin, shell, primitives)
+    # first; then one sheet per domain, each owned by its migration batch (plan D10).
+    stylesheets=[
+        _FONTS,
+        "/qualify.css",
+        "/qualify-planner.css",
+        "/qualify-brand.css",
+        "/qualify-publish.css",
+        "/qualify-inbox.css",
+        "/qualify-listen.css",
+        "/qualify-creative.css",
+    ],
     html_lang="es",
     # Bug reported 2026-08-25, revised same day: bottom-right (Sonner's own default)
     # is the preferred position after all — the actual complaint was that it was easy
@@ -107,7 +120,12 @@ app = rx.App(
     api_transformer=avatar_api,
     # The Brand Kit deck's pointer drag (`assets/deck-drag.js`) and the influence
     # ranking's (`assets/rank-drag.js`): plain DOM, delegated at the document, so they
-    # are loaded once here rather than per page.
+    # are loaded once here rather than per page. These go through react-helmet, which
+    # only injects them on Reflex >= 0.9.9 (`defer=False`); a venv left at 0.9.7 shows
+    # them missing in dev while production (lock: 0.9.12) is fine — measured
+    # 2026-10-08, PR #101. The sidebar's `assets/glass-nav.js` is loaded by the rail
+    # itself (`ui.layout.sidebar`, an async `<script>` React hoists), independent of
+    # the Reflex version.
     head_components=[rx.script(src="/deck-drag.js"), rx.script(src="/rank-drag.js")],
 )
 
@@ -173,6 +191,14 @@ app.add_page(
         ConnectionsState.load_connections,
     ],
     title="Qualify · Conexiones",
+)
+# WA-12: the WhatsApp module. `enter_page` reads `?tab=` and loads the tenant's numbers;
+# each tab loads its own data on mount (see `whatsapp_page.py`).
+app.add_page(
+    whatsapp_index,
+    route="/whatsapp",
+    on_load=[AuthState.require_login, WhatsAppState.enter_page],
+    title="Qualify · WhatsApp",
 )
 app.add_page(
     publish_index,

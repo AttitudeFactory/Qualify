@@ -26,7 +26,7 @@
 
 ARG PYTHON_IMAGE=python:3.12-slim-bookworm
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11.29
-ARG CADDY_IMAGE=caddy:2.10-alpine
+ARG CADDY_IMAGE=caddy:2.11-alpine
 # Reflex 0.9.12 requires bun >= 1.4.0 (reflex_base.constants.Bun.MIN_VERSION) and uses one
 # found on PATH instead of downloading its own — same pattern as Reflex's official
 # docker-example/production-compose.
@@ -125,7 +125,7 @@ COPY deploy/Caddyfile /etc/caddy/Caddyfile
 COPY --from=frontend-build /srv /srv
 
 # --------------------------------------------------------------------------------------
-# app: runtime for api / reflex backend / migrate / calendar-worker (command per service)
+# app: runtime for api / reflex backend / migrate / webhook-worker / calendar-worker (command per service)
 # --------------------------------------------------------------------------------------
 FROM ${PYTHON_IMAGE} AS app
 # No apt packages: a `--backend-only` prod backend never touches the JS toolchain (bun,

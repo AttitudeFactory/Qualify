@@ -277,6 +277,43 @@ def test_props_problems_are_all_reported_before_any_render(registry: TemplateReg
     assert problems == {("cta", "too_long"), ("photos", "too_few")}
 
 
+def test_a_cta_over_its_port_is_shortened_where_a_person_would_stop(
+    registry: TemplateRegistry,
+) -> None:
+    """§ request 2026-10-08: «'cta' has 46 chars; the port allows 40» failed a render."""
+    manifest = registry.get("promo_producto")
+    brief = _brief(product_keys=("uploads/t/a.jpg", "uploads/t/b.jpg"))
+    props = build_props(
+        manifest=manifest,
+        brief=brief,
+        copy=CopyPayload(
+            hook="Hoy", caption="c", cta="Escríbanos en el WhatsApp y se la montamos ya."
+        ),
+        kit=make_kit(),
+        brand_name="Bianki",
+        products=[],
+        tenant_id=TENANT_ID,
+        draft_id=DRAFT_ID,
+    )
+    assert props.texts["cta"] == "Escríbanos en el WhatsApp"
+    assert validate_props(manifest, props) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "fitted"),
+    [
+        ("Escríbenos al DM y te la armamos capa por capa hoy mismo.", "Escríbenos al DM"),
+        ("Pide la tuya hoy por WhatsApp antes de que se acabe", "Pide la tuya hoy por WhatsApp"),
+        ("Corta y cabe", "Corta y cabe"),
+        ("x" * 41, "x" * 41),  # nowhere to cut: left for validate_props to report
+    ],
+)
+def test_fit_text_never_ends_on_a_dangling_word(text: str, fitted: str) -> None:
+    from qualify_creative.render.props import fit_text
+
+    assert fit_text(text, 40) == fitted
+
+
 def test_props_cap_photos_at_the_port_max_and_take_the_video_port(
     registry: TemplateRegistry,
 ) -> None:

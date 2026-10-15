@@ -10,33 +10,29 @@ this account", and it must answer that BEFORE any `tenant_session(tenant_id)` ca
 opened — that door requires the tenant id as its own argument, which is exactly the
 thing not yet known.
 
-## Why `admin_session()` specifically, and why that is not a rule change
+## Which door, and why it is narrow (QUA-147)
 
-`qualify_shared.db.admin.admin_session` is documented as BYPASSRLS and reserved for
-provisioning/seed, with "nothing on the request path may import it" stated as the
-general rule. This module is a DELIBERATE, NARROW exception to that rule, not a
-reinterpretation of it:
+This lookup reads `social_connections` ACROSS tenants, which FORCE RLS forbids to every
+tenant-scoped role. It runs through `qualify_shared.db.webhook.webhook_worker_session` —
+`qualify_webhook_worker`, created by migration 0050 for exactly this — never through
+`admin_session` any more:
 
-- It is the ONLY function in this codebase that does so on a request path.
-- It is READ-ONLY — see `resolve_external_account` below, which issues exactly one
-  `SELECT` and no `INSERT`/`UPDATE`/`DELETE`. `test_mentions_resolve.py`'s
-  `test_resolution_never_writes` pins this with a real Postgres check, not just a
-  reading of this docstring.
+- It runs in the intake PROCESSOR (`qualify_api.webhooks.processor`), outside the HTTP
+  request. Before QUA-147 it ran inline in the public webhook route under
+  `admin_session`; that exception is gone.
+- The role has BYPASSRLS, but BYPASSRLS never bypasses a GRANT: on `social_connections`
+  it may SELECT only `id, tenant_id, platform, external_account_id, status`, and it holds
+  no privilege on any other tenant table. `test_webhook_schema_db.py` pins that set.
+- It is READ-ONLY — one `SELECT`, no `INSERT`/`UPDATE`/`DELETE` (the role could not
+  write `social_connections` anyway). `test_mentions_resolve.py`'s
+  `test_resolution_never_writes` pins this with a real Postgres check.
 - It queries by `(platform, external_account_id)` ONLY — never accepts a `tenant_id`
   from the caller as a shortcut or a trust mechanism. A `tenant_id` supplied by an
   inbound request is not evidence of anything; the whole point of this function is to
   derive that value independently.
-- The one existing precedent for `admin_session` on a request path
-  (`auth/service.py`'s signup flow) is narrower than this: it uses `admin_session` only
-  to WRITE a brand-new tenant under an identifier already minted by this process, and
-  its own docstring states "no cross-tenant READ happens on the login path at all."
-  This module is the first genuine cross-tenant SEARCH in the codebase — worth this
-  much explanation for exactly that reason.
 - Immediately after this function returns a `RESOLVED` outcome, every subsequent read
   MUST go back through `tenant_session(tenant_id)` using the tenant id this function
-  just produced. Nothing downstream of this module is licensed to keep using
-  `admin_session` — the exception is scoped to this one lookup, not inherited by
-  whatever consumes its result.
+  just produced (`mentions.composition.ingest_mention` does).
 
 ## Why three outcomes, never a silent pick
 
@@ -58,7 +54,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
 
-from qualify_shared.db.admin import admin_session
+from qualify_shared.db.webhook import webhook_worker_session
 from sqlalchemy import select
 
 from qualify_api.connections.models import SocialConnection
@@ -89,12 +85,12 @@ class TenantResolution:
 def resolve_external_account(*, platform: str, external_account_id: str) -> TenantResolution:
     """READ-ONLY cross-tenant lookup of who owns `(platform, external_account_id)`.
 
-    See this module's docstring for why `admin_session` is used here and nowhere
-    else on a request path. Deliberately takes no `tenant_id` parameter — accepting
+    See this module's docstring for the door it uses and why it is narrow.
+    Deliberately takes no `tenant_id` parameter — accepting
     one from a caller would defeat the entire point of this function, which is to
     derive that value independently rather than trust an assertion of it.
     """
-    with admin_session() as session:
+    with webhook_worker_session() as session:
         rows = session.execute(
             select(SocialConnection.tenant_id, SocialConnection.id).where(
                 SocialConnection.platform == platform,
@@ -111,3 +107,18 @@ def resolve_external_account(*, platform: str, external_account_id: str) -> Tena
     return TenantResolution(
         outcome=ResolutionOutcome.RESOLVED, tenant_id=tenant_id, connection_id=connection_id
     )
+
+
+def instagram_tenant_ids() -> tuple[UUID, ...]:
+    """READ-ONLY: the tenants that have at least one Instagram connection — the set the
+    intake worker's mention-sentiment sweep visits (QUA-152). Same narrow door and the
+    same two granted columns (`tenant_id`, `platform`) as `resolve_external_account`;
+    every per-tenant read after this goes back through `tenant_session`."""
+    with webhook_worker_session() as session:
+        return tuple(
+            session.scalars(
+                select(SocialConnection.tenant_id)
+                .where(SocialConnection.platform == PLATFORM_INSTAGRAM)
+                .distinct()
+            ).all()
+        )

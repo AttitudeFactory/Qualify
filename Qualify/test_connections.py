@@ -55,11 +55,18 @@ from .capabilities import (
 )
 from .connections_provider import NoActingUser, _data_access_warning, _scope_labels, _to_vm
 from .connections_vm import (
+    CONNECT_REQUIREMENTS,
     CONNECT_RESULT_NOTICES,
+    WHATSAPP_RECONNECT_HINT,
     CapabilityVM,
     ConnectionVM,
+    connect_result_guidance,
     connect_result_notice,
+    whatsapp_label,
 )
+from .ui import tokens as T
+
+_WA_SCOPES = ["whatsapp_business_messaging", "whatsapp_business_management"]
 
 # Field-name fragments that must never appear on a client-serialized view-model.
 _FORBIDDEN_FIELD_FRAGMENTS = (
@@ -149,7 +156,7 @@ def test_ui_copy_covers_every_capability_and_scope() -> None:
 
 
 def test_using_the_real_assessment_not_a_stub() -> None:
-    assert ASSESSMENT_VERSION == "perm-capability-v2"
+    assert ASSESSMENT_VERSION == "perm-capability-v3"
 
 
 def test_matrix_pessimistic_read_analyze_require_manage_comments() -> None:
@@ -470,21 +477,31 @@ def test_begin_connect_attributes_the_grant_to_the_tenants_own_user() -> None:
     """`user_id` is signed into the `state` payload, so it must be a real in-tenant row."""
     seen: dict[str, object] = {}
 
-    def _capture(*, tenant_id: UUID, brand_id: UUID | None, user_id: UUID) -> str:
-        seen.update(tenant_id=tenant_id, brand_id=brand_id, user_id=user_id)
+    def _capture(
+        *, tenant_id: UUID, brand_id: UUID | None, user_id: UUID, rerequest: bool = False
+    ) -> str:
+        seen.update(tenant_id=tenant_id, brand_id=brand_id, user_id=user_id, rerequest=rerequest)
         return "https://www.facebook.com/v23.0/dialog/oauth?state=signed"
 
     with _patched(start_connect=_capture, acting_user_id=lambda _tenant: _USER):
         assert connections_provider.begin_connect(_TENANT).startswith("https://")
     # brand_id is None on purpose: no brand picker in Sprint 1, and the repository
-    # reads a null brand on a grant as "keep the one already there".
-    assert seen == {"tenant_id": _TENANT, "brand_id": None, "user_id": _USER}
+    # reads a null brand on a grant as "keep the one already there". `rerequest` is
+    # False on a first connect (QUA-202): only the retry after `page_access_required`
+    # asks Meta to show the Page picker again.
+    assert seen == {"tenant_id": _TENANT, "brand_id": None, "user_id": _USER, "rerequest": False}
+
+    with _patched(start_connect=_capture, acting_user_id=lambda _tenant: _USER):
+        connections_provider.begin_connect(_TENANT, rerequest=True)
+    assert seen["rerequest"] is True
 
 
 def test_begin_connect_refuses_when_the_tenant_has_no_user() -> None:
     """Rather than fabricate a uuid into the audit trail of `connected_by_user_id`."""
 
-    def _unreachable(*, tenant_id: UUID, brand_id: UUID | None, user_id: UUID) -> str:
+    def _unreachable(
+        *, tenant_id: UUID, brand_id: UUID | None, user_id: UUID, rerequest: bool = False
+    ) -> str:
         raise AssertionError("start_connect must not be called without an acting user")
 
     with _patched(start_connect=_unreachable, acting_user_id=lambda _tenant: None):
@@ -565,3 +582,188 @@ def _run() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_run())
+
+
+# --------------------------------------------------------------------------------------
+# QUA-202: guided connection — the copy a non-technical operator reads
+# --------------------------------------------------------------------------------------
+
+_JARGON = ("oauth", "scope", "token", "callback", "api", "graph", "rls")
+
+
+def _no_jargon(text: str) -> None:
+    lowered = text.lower()
+    for word in _JARGON:
+        assert word not in lowered, f"{word!r} is engineering vocabulary: {text!r}"
+
+
+def test_the_two_dead_ends_get_opposite_instructions() -> None:
+    """R9(f): zero Pages and "Pages but none linked" need OPPOSITE fixes. One panel per
+    outcome, each naming its own fix, and only the picker case asks for `rerequest`."""
+    linking = connect_result_guidance("link_required", pages="2", linked="0")
+    picker = connect_result_guidance("page_access_required", pages="0", linked="0")
+
+    assert "2 Páginas de Facebook" in linking.summary
+    assert "vincul" in linking.title.lower()
+    assert any("Conectar o crear" in step for step in linking.steps)
+    assert linking.rerequest is False
+
+    assert "no compartió ninguna Página" in picker.title
+    assert any("marca la Página" in step for step in picker.steps)
+    assert picker.rerequest is True
+
+    assert linking.summary != picker.summary and linking.steps != picker.steps
+
+
+def test_one_page_reads_in_singular() -> None:
+    assert "1 Página de Facebook," in connect_result_guidance("link_required", "1", "0").summary
+
+
+def test_guidance_ignores_junk_counts_from_the_url() -> None:
+    """`?pages=` arrives in the URL: anything but a small integer is dropped, never
+    rendered — and the panel still says something true without it."""
+    for junk in ("<script>", "-1", "99999", ""):
+        guidance = connect_result_guidance("link_required", pages=junk, linked="0")
+        assert guidance.code == "link_required"
+        assert junk not in guidance.summary or junk == ""
+        assert "ninguna Página de Facebook con tu Instagram vinculado" in guidance.summary
+
+
+def test_every_other_code_has_no_panel() -> None:
+    """Success, denial and an expired link keep the one-line notice (QUA-123); junk gets
+    nothing — the panel is reserved for the two outcomes the operator must act on."""
+    for code in ("active", "degraded", "denied", "invalid_state", "", "<script>"):
+        guidance = connect_result_guidance(code, "3", "1")
+        assert guidance.code == "" and guidance.title == "" and guidance.steps == []
+        assert guidance.rerequest is False
+
+
+def test_guidance_and_checklist_copy_have_no_jargon() -> None:
+    """The audience is a business owner with a phone, not a developer."""
+    for requirement in CONNECT_REQUIREMENTS:
+        _no_jargon(requirement.title)
+        _no_jargon(requirement.summary)
+        for step in requirement.steps:
+            _no_jargon(step)
+    for code in ("link_required", "page_access_required"):
+        guidance = connect_result_guidance(code, "2", "0")
+        _no_jargon(guidance.title)
+        _no_jargon(guidance.summary)
+        assert len(guidance.steps) == 3
+        for step in guidance.steps:
+            _no_jargon(step)
+
+
+def test_checklist_names_the_three_requirements_in_order() -> None:
+    keys = [requirement.key for requirement in CONNECT_REQUIREMENTS]
+    assert keys == ["professional", "page", "linked"]
+    # The Page path is spelled identically wherever it appears, so a renamed menu is a
+    # one-line change.
+    path = "Editar perfil → Información pública de la empresa → Página"
+    assert all(any(path in step for step in r.steps) for r in CONNECT_REQUIREMENTS[1:])
+    assert any("marca la de tu negocio" in step for step in CONNECT_REQUIREMENTS[2].steps)
+
+
+def test_request_support_delegates_to_the_real_seam_with_a_fixed_topic() -> None:
+    """The screen only ever asks for help connecting accounts; the topic is not the
+    caller's to choose. `context` is passed through untouched — the service is the one
+    that refuses keys it does not know."""
+    seen: dict[str, object] = {}
+
+    def _capture(**kwargs: object) -> object:
+        seen.update(kwargs)
+        return "ticket"
+
+    original = connections_provider.create_support_request
+    connections_provider.create_support_request = _capture  # type: ignore[assignment]
+    try:
+        result = connections_provider.request_support(
+            _TENANT,
+            contact_email="dueno@bianki.co",
+            contact_whatsapp="",
+            message="hola",
+            context={"screen": "connections", "outcome": "link_required", "pages": 2},
+        )
+    finally:
+        connections_provider.create_support_request = original  # type: ignore[assignment]
+    assert result == "ticket"
+    assert seen["tenant_id"] == _TENANT
+    assert seen["topic"] == "connect_accounts"
+    assert seen["context"] == {"screen": "connections", "outcome": "link_required", "pages": 2}
+
+
+# --------------------------------------------------------------------------------------
+# WA-05: the WhatsApp card
+# --------------------------------------------------------------------------------------
+
+
+def _wa_row(**overrides: object) -> SocialConnection:
+    defaults: dict[str, object] = {
+        "platform": "whatsapp",
+        "account_type": "waba_phone_number",
+        "external_account_id": "987654321098765",
+        "external_username": "+57 300 1234567",
+        "linked_page_id": None,
+        "granted_scopes": list(_WA_SCOPES),
+    }
+    defaults.update(overrides)
+    return _row(**defaults)
+
+
+def test_whatsapp_badge_has_a_label_and_a_scale() -> None:
+    """`platform_badge` resolves both from the design tokens, for static strings and
+    for Vars alike (its `rx.match` iterates `PLATFORM_SCALE`) — so the tokens ARE the
+    contract. No Reflex import here, by this file's rule."""
+    assert T.PLATFORM_LABEL["whatsapp"] == "WhatsApp"
+    assert "whatsapp" in T.PLATFORM_SCALE
+    assert T.platform_scale("whatsapp") == T.PLATFORM_SCALE["whatsapp"]
+
+
+def test_whatsapp_label_composes_number_and_verified_name() -> None:
+    assert whatsapp_label("+57 300 1234567", "Bianki") == "+57 300 1234567 · Bianki"
+    assert whatsapp_label("+57 300 1234567", None) == "+57 300 1234567"
+    assert whatsapp_label("+57 300 1234567", "  ") == "+57 300 1234567"
+
+
+def test_whatsapp_card_title_uses_display_number_and_verified_name() -> None:
+    vm = _to_vm(_wa_row(), "Bianki", verified_name="Bianki")
+    assert vm.platform == "whatsapp"
+    assert vm.external_username == "+57 300 1234567 · Bianki"
+    # Without a phone row (or before the first sync) the number stands alone.
+    assert _to_vm(_wa_row(), "Bianki").external_username == "+57 300 1234567"
+    # Instagram ignores the argument entirely — it has no verified name to show.
+    assert _to_vm(_row(), "PuntoServis", verified_name="x").external_username == "@puntoservis"
+
+
+def test_whatsapp_card_shows_only_whatsapp_capabilities() -> None:
+    """Platform is data on each matrix rule: a WhatsApp card never lists the seven
+    Instagram capabilities as disabled, and an Instagram card never lists the WhatsApp
+    ones."""
+    vm = _to_vm(_wa_row(), "Bianki", verified_name="Bianki")
+    shown = {c.key for c in vm.enabled_capabilities} | {c.key for c in vm.disabled_capabilities}
+    assert shown == {"wa_send", "wa_templates", "wa_automation"}
+    assert {c.key for c in vm.enabled_capabilities} == shown
+    assert vm.disabled_capabilities == []
+    assert vm.granted_scopes == ["WhatsApp: mensajería", "WhatsApp: administración"]
+
+    ig = _to_vm(_row(), "PuntoServis")
+    ig_shown = {c.key for c in ig.enabled_capabilities} | {c.key for c in ig.disabled_capabilities}
+    assert ig_shown.isdisjoint(shown)
+    assert len(ig_shown) == 7
+
+
+def test_whatsapp_card_with_management_only_disables_send() -> None:
+    vm = _to_vm(_wa_row(granted_scopes=["whatsapp_business_management"]), "Bianki")
+    assert {c.key for c in vm.enabled_capabilities} == {"wa_templates", "wa_automation"}
+    (disabled,) = vm.disabled_capabilities
+    assert disabled.key == "wa_send"
+    assert disabled.reason == CAPABILITY_DISABLED_REASONS[Capability.WA_SEND]
+
+
+def test_whatsapp_reconnect_hint_has_no_jargon_and_no_button_wording() -> None:
+    """The WhatsApp banner replaces the Instagram «Reconectar» button (which would start
+    the OAuth flow) with an administrative hint — operator copy, no OAuth/token words."""
+    lowered = WHATSAPP_RECONNECT_HINT.lower()
+    for jargon in ("oauth", "token", "scope", "cli", "comando"):
+        assert jargon not in lowered, jargon
+    assert "whatsapp" in lowered

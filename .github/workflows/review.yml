@@ -1,7 +1,9 @@
 # Automatic code review for pull requests — two independent jobs:
 #
-#   claude-review   automatic review by Claude when a non-draft PR to main is opened (or
-#                   reopened / marked ready). NOT on every push: ask again with `@claude`.
+#   claude-review   review by Claude, ON DEMAND: add the label `claude-review` to the PR
+#                   (remove and re-add it for another pass). Not automatic: on GitHub Free
+#                   (2,000 min/month) an automatic review on every PR cost ~2 billed minutes
+#                   each, ~380 in the first half of October 2026.
 #   claude-mention  on-demand `@claude ...` in issue / PR comments.
 #
 # ruff findings are annotated on the diff by ci.yml's `ruff check --output-format=github`
@@ -24,7 +26,7 @@ name: review
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review]
+    types: [labeled]
     branches: [main]
   issue_comment:
     types: [created]
@@ -36,7 +38,7 @@ jobs:
     name: Claude auto-review
     if: >-
       github.event_name == 'pull_request'
-      && github.event.pull_request.draft == false
+      && github.event.label.name == 'claude-review'
       && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 25

@@ -1,11 +1,14 @@
 # Production-image check (was ci.yml `docker-deploy`): build deploy/Dockerfile's `web` and
-# `app` targets and boot-test them, so a broken Dockerfile or a page that breaks the static
-# export is caught on the PR. ~4 billed minutes per run, so it starts ONLY when a PR touches
-# an input of those images (`paths:` below) — no runner boots otherwise.
+# `app` targets and boot-test them. ~4-5 billed minutes per run, so it starts ONLY when a PR
+# touches what the BUILD itself depends on (`paths:` below): the Dockerfile and deploy/, the
+# dependency locks, the Reflex/bun lock and config. Plain code PRs (Qualify/**, packages/*/
+# src/**, migrations/**) do not run it: their code is already exercised by ci.yml `test`,
+# and the daily deploy.yml build is the backstop — a build that breaks there keeps the
+# previous release live in production (server-deploy.sh never swaps a release it could not
+# build/pull), so the cost of a miss is one day's delay, not an outage.
 #
-# Not on push to main: deploy.yml builds and pushes the real (arm64) images from main, so a
-# second amd64 build of the same commit only spent minutes. `just merge` requires this
-# check only when it reported (a PR that does not touch the images has none).
+# Not on push to main: deploy.yml builds and pushes the real (arm64) images from main.
+# `just merge` requires this check only when it reported.
 name: images
 
 on:
@@ -18,11 +21,9 @@ on:
       - '.dockerignore'
       - 'pyproject.toml'
       - 'uv.lock'
+      - 'packages/*/pyproject.toml'
       - 'rxconfig.py'
       - 'reflex.lock/**'
-      - 'assets/**'
-      - 'Qualify/**'
-      - 'packages/*/pyproject.toml'
   workflow_dispatch:
 
 concurrency:
@@ -78,6 +79,13 @@ jobs:
             sleep 2
           done
           docker logs reflex; exit 1
+      - name: Validate both Caddyfiles (Qualify's internal router + the VPS edge proxy)
+        run: |
+          docker run --rm -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" qualify-web:ci \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          docker run --rm -e QUALIFY_DOMAIN=qualify.example.com -e PEDIDOS_DOMAIN=pedidos.example.com \
+            -e EDGE_ACME_EMAIL=ci@example.com -v "$PWD/deploy/edge/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            qualify-web:ci caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
       - name: Smoke — Caddy serves the exported frontend
         run: |
           docker run -d --name web -p 18080:80 -e QUALIFY_DOMAIN=http://localhost \
