@@ -21,6 +21,9 @@ from qualify_shared.social.ig_shapes import (
     COMMENT_LIMITS,
     COMMENTS_EDGE_PERMISSIONS,
     COMMENTS_EDGE_PERMISSIONS_CITATION,
+    COMMENTS_FROM_CITATION,
+    COMMENTS_ID_CITATION,
+    COMMENTS_TEXT_CITATION,
     CORPUS_ROOT,
     IGSID_CITATION,
     IGSID_IS_PORTABLE_IDENTITY,
@@ -38,12 +41,15 @@ from qualify_shared.social.ig_shapes import (
     UNCOVERED_SURFACES,
     UNSUPPORTED_FIELDS,
     Citation,
+    CommentsChangeValue,
     IGComment,
     LoginFork,
     MentionedComment,
     MentionedMedia,
     MentionEvent,
     Presence,
+    mentions_username,
+    normalize_handle,
     parse_comments_page,
     parse_mentioned_comment,
     parse_mentioned_media,
@@ -75,6 +81,9 @@ def _all_citations() -> list[Citation]:
         MENTIONED_MEDIA_FIELDS_CITATION,
         MENTIONED_MEDIA_NO_VIEWS_CITATION,
         MENTIONED_COMMENT_FIELDS_CITATION,
+        COMMENTS_FROM_CITATION,
+        COMMENTS_ID_CITATION,
+        COMMENTS_TEXT_CITATION,
         *COMMENT_LIMITS.citations,
         *UNSUPPORTED_FIELDS.values(),
         *(surface.citation for surface in UNCOVERED_SURFACES),
@@ -661,3 +670,97 @@ def test_parse_mentioned_comment_requires_an_id() -> None:
 def test_mentioned_comment_has_no_views_field_in_its_contract() -> None:
     assert "views" not in MentionedComment.__dataclass_fields__
     assert "plays" not in MentionedComment.__dataclass_fields__
+
+
+# ---------------------------------------------------------------------------
+# `comments` webhook value + @mention recognition
+# ---------------------------------------------------------------------------
+
+
+def test_comments_value_reads_the_field_reference_shape() -> None:
+    value = CommentsChangeValue.model_validate(
+        {
+            "from": {"id": "123", "username": "yesii_roa"},
+            "id": "c1",
+            "text": "@marca.co hola",
+            "media": {"id": "m1", "media_product_type": "REELS"},
+            "unexpected": True,
+        }
+    )
+
+    assert value.the_comment_id == "c1"
+    assert value.media.id == "m1"
+    assert value.from_ is not None and value.from_.username == "yesii_roa"
+    assert value.text == "@marca.co hola"
+
+
+def test_comments_value_accepts_a_from_without_its_id() -> None:
+    value = CommentsChangeValue.model_validate(
+        {"id": "c", "media": {"id": "m"}, "from": {"username": "fan"}}
+    )
+
+    assert value.from_ is not None
+    assert (value.from_.id, value.from_.username) == (None, "fan")
+
+
+def test_comments_value_accepts_the_facebook_login_sample_spelling() -> None:
+    value = CommentsChangeValue.model_validate({"comment_id": "c2", "media": {"id": "m"}})
+
+    assert value.the_comment_id == "c2"
+    assert value.text is None and value.from_ is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"media": {"id": "m"}},
+        {"id": "a", "comment_id": "b", "media": {"id": "m"}},
+        {"id": "a"},
+    ],
+)
+def test_comments_value_rejects_an_off_contract_shape(payload: dict) -> None:
+    with pytest.raises(ValidationError):
+        CommentsChangeValue.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("@marca.co hola", True),
+        ("hola @Marca.Co", True),
+        ("fin de frase @marca.co.", True),
+        ("(@marca.co)", True),
+        ("hola,@marca.co!", True),
+        ("Gracias.@marca.co", True),
+        ("mira...@marca.co", True),
+        ("@marca.colombia", False),
+        ("@marca.co_x", False),
+        ("@marca.co.x", False),
+        ("@marca", False),
+        ("hola@marca.co", False),
+        ("mail a x.y@marca.co", False),
+        ("@@marca.co", False),
+        ("marca.co sin arroba", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_mentions_username_matches_only_the_whole_handle(text: str | None, expected: bool) -> None:
+    assert mentions_username(text, "marca.co") is expected
+
+
+@pytest.mark.parametrize("username", [None, "", "   ", "@"])
+def test_mentions_username_without_a_username_is_never_a_match(username: str | None) -> None:
+    assert mentions_username("@marca.co", username) is False
+
+
+def test_mentions_username_tolerates_a_stored_leading_at() -> None:
+    assert mentions_username("hola @marca.co", "@marca.co") is True
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(" @Marca.Co ", "marca.co"), ("marca.co", "marca.co"), (None, ""), ("  ", ""), ("@", "")],
+)
+def test_normalize_handle(raw: str | None, expected: str) -> None:
+    assert normalize_handle(raw) == expected

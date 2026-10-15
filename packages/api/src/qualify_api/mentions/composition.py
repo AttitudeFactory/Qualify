@@ -87,6 +87,17 @@ class _ConnectionIgUserIdReader:
             )
 
 
+def connection_username(*, tenant_id: UUID, connection_id: UUID) -> str | None:
+    """The connected account's Instagram username (`social_connections.external_username`)
+    — what an own-post comment must @mention to be a mention. Read through
+    `tenant_session` with the tenant `resolve_external_account` just produced, never
+    through the webhook worker's cross-tenant door."""
+    with tenant_session(tenant_id) as session:
+        return session.scalar(
+            select(SocialConnection.external_username).where(SocialConnection.id == connection_id)
+        )
+
+
 @cache
 def production_mentions_repository() -> MentionsRepository:
     return PostgresMentionsRepository()
@@ -148,6 +159,9 @@ async def ingest_mention(
     media_id: str,
     comment_id: str | None,
     resolution: TenantResolution,
+    text: str | None = None,
+    author_username: str | None = None,
+    observed_at: datetime | None = None,
 ) -> UUID | None:
     """Enrich (best-effort) and persist one `RESOLVED` mention event. Returns the
     persisted mention's id, or `None` if the connection turned out not to be resolvable
@@ -156,6 +170,11 @@ async def ingest_mention(
     Enrichment picks exactly one endpoint: `mentioned_comment` when `comment_id` is
     present (a mention inside a comment), `mentioned_media` otherwise (a caption
     mention) — mirrors `MentionsChangeValue`'s own caption-vs-comment split, never both.
+
+    `text`/`author_username`/`observed_at` come only from the `comments` webhook (a
+    comment on the account's OWN media that @mentions it), which carries what
+    `mentions` does not — see `_enrich_and_store`. The `mentions` path passes none of
+    them and behaves exactly as before.
     """
     assert resolution.tenant_id is not None and resolution.connection_id is not None
 
@@ -172,6 +191,9 @@ async def ingest_mention(
             media_id=media_id,
             comment_id=comment_id,
             resolution=resolution,
+            webhook_text=text,
+            webhook_author=author_username,
+            observed_at=observed_at,
         )
     finally:
         await _close_client(client)
@@ -184,7 +206,24 @@ async def _enrich_and_store(
     media_id: str,
     comment_id: str | None,
     resolution: TenantResolution,
+    webhook_text: str | None = None,
+    webhook_author: str | None = None,
+    observed_at: datetime | None = None,
 ) -> UUID:
+    """`webhook_text`/`webhook_author`/`observed_at` (the `comments` webhook only) default
+    to None, which leaves the `mentions` path exactly as it was. When given, for a comment:
+
+    - the author is the commenter (`from.username`), never the publication's owner;
+    - the network text wins; the webhook text is used when the network gives none, so the
+      mention is readable even if `mentioned_comment` refuses (still ENRICHED: the content
+      came from Meta, through the webhook);
+    - `observed_at` (when Meta sent the change) dates the mention only when the network
+      gave no creation date, so a replayed old comment is not shown as just received;
+    - the same `(connection, media_id, comment_id)` already stored (e.g. first by
+      `mentions`) is never duplicated: a successful network read is written to it as
+      "Actualizar" would (`refresh_content`); without one, only its missing text/author
+      are filled in (`fill_missing_comment_fields`).
+    """
     assert resolution.tenant_id is not None and resolution.connection_id is not None
     caption: str | None = None
     text: str | None = None
@@ -230,8 +269,21 @@ async def _enrich_and_store(
             type(exc).__name__,
         )
 
+    network_read = enrichment_status == ENRICHMENT_OK
+    network_posted_at = content_posted_at
+    from_comments_webhook = comment_id is not None and (
+        webhook_text is not None or webhook_author is not None
+    )
+    if from_comments_webhook:
+        author_username = webhook_author
+        if text is None and webhook_text is not None:
+            text = webhook_text
+            enrichment_status = ENRICHMENT_OK
+        if content_posted_at is None:
+            content_posted_at = observed_at
+
     permalink: str | None = None
-    if enrichment_status == ENRICHMENT_OK:
+    if network_read:
         # QUA-152: best-effort, AFTER the content read and in its own call — a refusal
         # leaves the mention exactly as it would be without a link, never ENRICHMENT_FAILED.
         permalink = await _read_permalink(
@@ -253,7 +305,33 @@ async def _enrich_and_store(
         enrichment_status=enrichment_status,
         permalink=permalink,
     )
-    mention_id, _created = production_mentions_repository().upsert_mention(mention)
+    repo = production_mentions_repository()
+    mention_id, created = repo.upsert_mention(mention)
+    if not created and from_comments_webhook:
+        # Already stored (e.g. first by `mentions`, which carries no author).
+        if network_read:
+            # The network's current content, as "Actualizar" writes it; the author is
+            # never part of a network read, so it only fills a missing one (below).
+            repo.refresh_content(
+                tenant_id=resolution.tenant_id,
+                mention_id=mention_id,
+                content=MentionContent(
+                    caption=None,
+                    text=text,
+                    author_username=None,
+                    media_type=None,
+                    like_count=like_count,
+                    # Never the send-time fallback: it would overwrite a real date.
+                    content_posted_at=network_posted_at,
+                    permalink=permalink,
+                ),
+            )
+        repo.fill_missing_comment_fields(
+            tenant_id=resolution.tenant_id,
+            mention_id=mention_id,
+            text=None if network_read else text,
+            author_username=author_username,
+        )
     return mention_id
 
 

@@ -89,6 +89,12 @@ webhook-purge *args:
 webhook-purge-account account *args:
     uv run --no-sync python -m qualify_api.webhooks.worker --purge-account {{account}} {{args}}
 
+# Requeue Instagram `comments` recorded as unsupported before their handler existed, so
+# own-post comments that @mention the account become mentions. Dry run unless --execute.
+#   just webhook-requeue-comments [--account <ig_account_id>] [--execute]
+webhook-requeue-comments *args:
+    uv run --no-sync python -m qualify_api.webhooks.worker --requeue-comments {{args}}
+
 # WA-06: manual smoke of the WhatsApp Cloud API client against the test number. DEV ONLY —
 # reads QUALIFY_WA_SYSTEM_USER_TOKEN and QUALIFY_WA_PHONE_NUMBER_ID from the environment,
 # sends for real, prints only the wamid(s).

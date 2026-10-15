@@ -361,3 +361,338 @@ async def test_refresh_never_touches_another_tenants_mention(
 
     assert (report.refreshed, report.failed) == (0, 0)
     assert _only_record(memory_repo).like_count == 3
+
+
+# --- own-post comments delivered by the `comments` webhook ------------------------------
+
+_OWN_COMMENT = MentionedComment(
+    id="comment-9",
+    text="@qualifymkt.co mira esto",
+    like_count=2,
+    timestamp=datetime(2026, 10, 14, 17, 0, tzinfo=UTC),
+)
+
+
+SENT_AT = datetime(2026, 10, 1, 9, 30, tzinfo=UTC)
+
+
+async def _ingest_own_comment(
+    *,
+    text: str | None = "@qualifymkt.co mira esto",
+    author: str | None = "yesii_roa",
+    observed_at: datetime | None = SENT_AT,
+) -> UUID | None:
+    return await composition.ingest_mention(
+        media_id="media-9",
+        comment_id="comment-9",
+        resolution=RESOLUTION,
+        text=text,
+        author_username=author,
+        observed_at=observed_at,
+    )
+
+
+async def test_an_own_post_comment_stores_ids_text_author_likes_and_date(
+    monkeypatch: pytest.MonkeyPatch, memory_repo: MemoryMentionsRepository
+) -> None:
+    client = FakeContentClient(comment=_OWN_COMMENT, permalink="https://www.instagram.com/p/X/")
+    _patch_content_client(monkeypatch, client)
+
+    mention_id = await _ingest_own_comment()
+
+    record = _only_record(memory_repo)
+    assert record.id == mention_id
+    assert (record.connection_id, record.media_id, record.comment_id) == (
+        CONNECTION,
+        "media-9",
+        "comment-9",
+    )
+    assert (record.text, record.author_username) == ("@qualifymkt.co mira esto", "yesii_roa")
+    assert (record.like_count, record.content_posted_at) == (2, _OWN_COMMENT.timestamp)
+    assert record.caption is None
+    assert record.enrichment_status == ENRICHMENT_OK
+    assert record.permalink == "https://www.instagram.com/p/X/"
+    assert client.comment_calls == [(IG_USER, "comment-9")]
+    assert client.media_calls == []
+
+
+async def test_a_refused_network_read_keeps_the_webhook_text_and_author(
+    monkeypatch: pytest.MonkeyPatch, memory_repo: MemoryMentionsRepository
+) -> None:
+    _patch_content_client(
+        monkeypatch,
+        FakeContentClient(comment_error=MentionedContentReadError("refused", http_status=400)),
+    )
+
+    await _ingest_own_comment()
+
+    record = _only_record(memory_repo)
+    assert (record.text, record.author_username) == ("@qualifymkt.co mira esto", "yesii_roa")
+    assert record.enrichment_status == ENRICHMENT_OK
+    assert record.like_count is None
+
+
+async def test_no_text_anywhere_is_still_persisted_as_failed_enrichment(
+    monkeypatch: pytest.MonkeyPatch, memory_repo: MemoryMentionsRepository
+) -> None:
+    _patch_content_client(
+        monkeypatch,
+        FakeContentClient(comment_error=MentionedContentReadError("refused", http_status=400)),
+    )
+
+    await _ingest_own_comment(text=None)
+
+    record = _only_record(memory_repo)
+    assert record.enrichment_status == ENRICHMENT_FAILED
+    assert record.author_username == "yesii_roa"
+
+
+async def test_a_connection_without_ig_user_persists_nothing(
+    monkeypatch: pytest.MonkeyPatch, memory_repo: MemoryMentionsRepository
+) -> None:
+    async def no_client(*, tenant_id: UUID, connection_id: UUID):
+        return None
+
+    monkeypatch.setattr(composition, "_content_client_for", no_client)
+
+    assert await _ingest_own_comment() is None
+    assert (
+        memory_repo.list_mentions(
+            tenant_id=TENANT,
+            connection_id=None,
+            version=composition.current_mention_analysis_version(),
+        )
+        == ()
+    )
+
+
+async def test_comments_then_mentions_for_the_same_comment_is_one_row_with_its_author(
+    monkeypatch: pytest.MonkeyPatch, memory_repo: MemoryMentionsRepository
+) -> None:
+    _patch_content_client(monkeypatch, FakeContentClient(comment=_OWN_COMMENT))
+
+    first = await _ingest_own_comment()
+    second = await composition.ingest_mention(
+        media_id="media-9", comment_id="comment-9", resolution=RESOLUTION
+    )
+
+    record = _only_record(memory_repo)
+    assert first == second == record.id
+    assert record.author_username == "yesii_roa"
+
+
+async def test_mentions_then_comments_for_the_same_comment_fills_the_author_in(
+    monkeypatch: pytest.MonkeyPatch, memory_repo: MemoryMentionsRepository
+) -> None:
+    _patch_content_client(monkeypatch, FakeContentClient(comment=_OWN_COMMENT))
+
+    first = await composition.ingest_mention(
+        media_id="media-9", comment_id="comment-9", resolution=RESOLUTION
+    )
+    assert _only_record(memory_repo).author_username is None
+    second = await _ingest_own_comment()
+
+    record = _only_record(memory_repo)
+    assert first == second == record.id
+    assert record.author_username == "yesii_roa"
+    assert record.text == "@qualifymkt.co mira esto"
+
+
+async def test_a_later_comments_event_never_overwrites_stored_values(
+    monkeypatch: pytest.MonkeyPatch, memory_repo: MemoryMentionsRepository
+) -> None:
+    _patch_content_client(monkeypatch, FakeContentClient(comment=_OWN_COMMENT))
+    await _ingest_own_comment()
+
+    await _ingest_own_comment(text="@qualifymkt.co texto distinto", author="otra_persona")
+
+    record = _only_record(memory_repo)
+    assert (record.text, record.author_username) == ("@qualifymkt.co mira esto", "yesii_roa")
+
+
+async def test_an_earlier_unread_mention_gets_its_text_from_the_comments_event(
+    monkeypatch: pytest.MonkeyPatch, memory_repo: MemoryMentionsRepository
+) -> None:
+    _patch_content_client(
+        monkeypatch,
+        FakeContentClient(comment_error=MentionedContentReadError("refused", http_status=400)),
+    )
+    await composition.ingest_mention(
+        media_id="media-9", comment_id="comment-9", resolution=RESOLUTION
+    )
+    assert _only_record(memory_repo).enrichment_status == ENRICHMENT_FAILED
+
+    await _ingest_own_comment()
+
+    record = _only_record(memory_repo)
+    assert record.text == "@qualifymkt.co mira esto"
+    assert record.author_username == "yesii_roa"
+    assert record.enrichment_status == ENRICHMENT_OK
+
+
+async def test_replaying_the_same_comments_event_through_the_worker_never_duplicates(
+    monkeypatch: pytest.MonkeyPatch, memory_repo: MemoryMentionsRepository
+) -> None:
+    """End to end over the real handler + real ingest: the event a requeue hands back to
+    the worker, processed three times, is still one mention."""
+    from qualify_api.webhooks.processor import (
+        INSTAGRAM_COMMENTS_HANDLER_KEY,
+        Processor,
+        comment_mentions_handler,
+    )
+    from qualify_api.webhooks.repository import ClaimedEvent
+
+    _patch_content_client(monkeypatch, FakeContentClient(comment=_OWN_COMMENT))
+    handler = comment_mentions_handler(
+        resolve=lambda *, platform, external_account_id: RESOLUTION,
+        username_of=lambda *, tenant_id, connection_id: "qualifymkt.co",
+        ingest=composition.ingest_mention,
+    )
+    value = {
+        "from": {"id": "igsid", "username": "yesii_roa"},
+        "id": "comment-9",
+        "text": "@qualifymkt.co mira esto",
+        "media": {"id": "media-9"},
+    }
+
+    class ReplayQueue:
+        def __init__(self) -> None:
+            self.settled: list[str] = []
+            self._events = [
+                ClaimedEvent(
+                    id=UUID(int=n),
+                    delivery_id=None,
+                    object="instagram",
+                    entry_id=IG_USER,
+                    field="comments",
+                    value=value,
+                    attempts=1,
+                )
+                for n in (1, 2, 3)
+            ]
+
+        def claim(self, *, worker_id, now, limit):
+            batch, self._events = self._events, []
+            return batch
+
+        def settle(self, *, event_id, worker_id, now, status, error=None) -> bool:
+            self.settled.append(status)
+            return True
+
+        def fail(self, **kwargs) -> str:
+            raise AssertionError(f"unexpected failure {kwargs}")
+
+    queue = ReplayQueue()
+    processor = Processor(
+        queue=queue, handlers={INSTAGRAM_COMMENTS_HANDLER_KEY: handler}, worker_id="w"
+    )
+
+    await processor.run_once()
+
+    assert queue.settled == ["processed", "processed", "processed"]
+    record = _only_record(memory_repo)
+    assert (record.comment_id, record.author_username) == ("comment-9", "yesii_roa")
+
+
+async def test_the_network_date_wins_over_metas_send_time(
+    monkeypatch: pytest.MonkeyPatch, memory_repo: MemoryMentionsRepository
+) -> None:
+    _patch_content_client(monkeypatch, FakeContentClient(comment=_OWN_COMMENT))
+
+    await _ingest_own_comment()
+
+    assert _only_record(memory_repo).content_posted_at == _OWN_COMMENT.timestamp
+
+
+async def test_without_a_network_date_the_mention_is_dated_when_meta_sent_it(
+    monkeypatch: pytest.MonkeyPatch, memory_repo: MemoryMentionsRepository
+) -> None:
+    """A replayed old comment whose network read is refused keeps its own date: it is not
+    shown, sorted or counted as just received."""
+    _patch_content_client(
+        monkeypatch,
+        FakeContentClient(comment_error=MentionedContentReadError("refused", http_status=400)),
+    )
+
+    await _ingest_own_comment()
+
+    assert _only_record(memory_repo).content_posted_at == SENT_AT
+
+
+async def test_mentions_path_never_uses_a_send_time(
+    monkeypatch: pytest.MonkeyPatch, memory_repo: MemoryMentionsRepository
+) -> None:
+    _patch_content_client(
+        monkeypatch,
+        FakeContentClient(comment_error=MentionedContentReadError("refused", http_status=400)),
+    )
+
+    await composition.ingest_mention(
+        media_id="media-9", comment_id="comment-9", resolution=RESOLUTION
+    )
+
+    record = _only_record(memory_repo)
+    assert record.content_posted_at is None
+    assert record.enrichment_status == ENRICHMENT_FAILED
+
+
+async def test_a_successful_read_completes_a_mention_first_stored_unread(
+    monkeypatch: pytest.MonkeyPatch, memory_repo: MemoryMentionsRepository
+) -> None:
+    """`mentions` first, refused (no likes, date or link); then the `comments` event reads
+    it: the fresh read is written to the SAME row, not thrown away."""
+    _patch_content_client(
+        monkeypatch,
+        FakeContentClient(comment_error=MentionedContentReadError("refused", http_status=400)),
+    )
+    first = await composition.ingest_mention(
+        media_id="media-9", comment_id="comment-9", resolution=RESOLUTION
+    )
+    _patch_content_client(
+        monkeypatch,
+        FakeContentClient(comment=_OWN_COMMENT, permalink="https://www.instagram.com/p/X/"),
+    )
+
+    second = await _ingest_own_comment()
+
+    record = _only_record(memory_repo)
+    assert first == second == record.id
+    assert (record.text, record.author_username) == ("@qualifymkt.co mira esto", "yesii_roa")
+    assert (record.like_count, record.content_posted_at) == (2, _OWN_COMMENT.timestamp)
+    assert record.permalink == "https://www.instagram.com/p/X/"
+    assert record.enrichment_status == ENRICHMENT_OK
+
+
+async def test_a_refused_read_does_not_ask_for_the_link_either(
+    monkeypatch: pytest.MonkeyPatch, memory_repo: MemoryMentionsRepository
+) -> None:
+    client = FakeContentClient(
+        comment_error=MentionedContentReadError("refused", http_status=400),
+        permalink="https://www.instagram.com/p/X/",
+    )
+    _patch_content_client(monkeypatch, client)
+
+    await _ingest_own_comment()
+
+    assert client.permalink_calls == []
+    assert _only_record(memory_repo).permalink is None
+
+
+async def test_a_read_without_a_date_never_overwrites_a_stored_date(
+    monkeypatch: pytest.MonkeyPatch, memory_repo: MemoryMentionsRepository
+) -> None:
+    """The send-time fallback dates a NEW row only; it is never written over a real date."""
+    _patch_content_client(monkeypatch, FakeContentClient(comment=_OWN_COMMENT))
+    await composition.ingest_mention(
+        media_id="media-9", comment_id="comment-9", resolution=RESOLUTION
+    )
+    undated = MentionedComment(
+        id="comment-9", text="@qualifymkt.co mira esto", like_count=3, timestamp=None
+    )
+    _patch_content_client(monkeypatch, FakeContentClient(comment=undated))
+
+    await _ingest_own_comment()
+
+    record = _only_record(memory_repo)
+    assert record.content_posted_at == _OWN_COMMENT.timestamp
+    assert record.like_count == 3

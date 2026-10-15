@@ -36,12 +36,13 @@ WHAT "NULLABLE" MEANS HERE.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Final, NewType
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Bumped when a field's name, type, nullability or policy changes in a way that
 # makes a consumer's assumptions wrong. Consumers should record it alongside the
@@ -834,6 +835,99 @@ class MentionsChangeValue(BaseModel):
 
     media_id: str
     comment_id: str | None = None
+
+
+# --------------------------------------------------------------------------
+# `comments` webhook field — a comment on media the connected account OWNS.
+# A comment there that @mentions the account is a mention too, and Meta delivers it
+# under this field (with its author); see `qualify_api.webhooks.processor`.
+# --------------------------------------------------------------------------
+
+COMMENTS_FROM_CITATION: Final = Citation(
+    path=_WEBHOOKS_INSTAGRAM_REFERENCE,
+    line=17,
+    quote="Instagram-scoped ID and username of the Instagram user who created the comment",
+)
+
+COMMENTS_ID_CITATION: Final = Citation(
+    path=_WEBHOOKS_INSTAGRAM_REFERENCE, line=27, quote="The id of the object"
+)
+
+COMMENTS_TEXT_CITATION: Final = Citation(
+    path=_WEBHOOKS_INSTAGRAM_REFERENCE, line=29, quote="Comment text"
+)
+
+
+class CommentsChangeFrom(BaseModel):
+    """`value.from` of a `comments` change: who wrote the comment. Both fields optional —
+    unlike `IGCommentFrom` (a Graph read), a webhook `from` missing its id must not cost
+    the whole mention; it only means the author is not known."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str | None = None
+    username: str | None = None
+
+
+class CommentsChangeValue(BaseModel):
+    """`entry[].changes[].value` for an Instagram `"field": "comments"` change.
+
+    The comment's id is `id` in the field reference (`COMMENTS_ID_CITATION`) but
+    `comment_id` in the Facebook Login sample payload of `comment-moderation.md`; both
+    are accepted, and two different values are a contract violation. `media.id` is the
+    commented post. `text` and `from` may be absent (a comment with no text; `from` is
+    documented, never guaranteed) — the consumer decides what that means."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    id: str | None = None
+    comment_id: str | None = None
+    text: str | None = None
+    from_: CommentsChangeFrom | None = Field(default=None, alias="from")
+    media: IGCommentMedia
+    parent_id: str | None = None
+
+    @model_validator(mode="after")
+    def _one_comment_id(self) -> CommentsChangeValue:
+        if not (self.id or self.comment_id):
+            raise ValueError("comments change carries no comment id")
+        if self.id and self.comment_id and self.id != self.comment_id:
+            raise ValueError("comments change carries two different comment ids")
+        return self
+
+    @property
+    def the_comment_id(self) -> str:
+        return self.id or self.comment_id or ""
+
+
+# Instagram usernames: letters, digits, "_" and "." (never ending in "."), at most 30.
+_USERNAME_CHAR = r"[A-Za-z0-9_]"
+
+
+def normalize_handle(username: str | None) -> str:
+    """An Instagram username as compared here: no surrounding blanks, no leading "@",
+    case-folded. "" when there is none."""
+    return (username or "").strip().lstrip("@").casefold()
+
+
+def mentions_username(text: str | None, username: str | None) -> bool:
+    """Whether `text` @mentions exactly `username` (case-insensitive).
+
+    A match must be `@username` as a whole handle: not glued to a word or an email before
+    it (`x@marca.co`, `hola@marca.co` — an email's local part never ends in "."), and not
+    the prefix of a longer handle after it (`@marca.colombia`, `@marca.co_x`,
+    `@marca.co.x`). Punctuation around it is fine: `Gracias.@marca.co`, `...@marca.co`,
+    and a trailing sentence period (`@marca.co.`) — a handle never ends in "."."""
+    if not text:
+        return False
+    handle = normalize_handle(username)
+    if not handle:
+        return False
+    pattern = (
+        rf"(?<![A-Za-z0-9_@])@{re.escape(handle)}"
+        rf"(?!{_USERNAME_CHAR})(?!\.{_USERNAME_CHAR})"
+    )
+    return re.search(pattern, text, flags=re.IGNORECASE) is not None
 
 
 class MentionsWebhookEntry(BaseModel):

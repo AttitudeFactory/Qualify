@@ -8,14 +8,25 @@ behavior: unsupported fields, retries with backoff, `dead` after the last attemp
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
 
 from qualify_api.mentions.resolve import ResolutionOutcome, TenantResolution
-from qualify_api.webhooks.processor import Outcome, Processor, handler_key, mentions_handler
+from qualify_api.webhooks.processor import (
+    INSTAGRAM_COMMENTS_HANDLER_KEY,
+    NOT_A_MENTION,
+    SELF_COMMENT,
+    Outcome,
+    Processor,
+    comment_mentions_handler,
+    handler_key,
+    mentions_handler,
+)
 from qualify_api.webhooks.repository import (
+    COMMENT_USERNAME_UNKNOWN,
     MAX_ATTEMPTS,
     ClaimedEvent,
     backoff_for,
@@ -392,3 +403,417 @@ def test_handler_key_is_object_colon_field() -> None:
     assert handler_key("whatsapp_business_account", "messages") == (
         "whatsapp_business_account:messages"
     )
+
+
+# --- `instagram:comments`: comments on the account's own media that @mention it ---------
+
+ACCOUNT = "qualifymkt.co"
+
+
+class CommentPipeline:
+    """Fake resolver + username reader + comment ingestor, recording their calls."""
+
+    def __init__(
+        self,
+        *,
+        username: str | None = ACCOUNT,
+        resolution: TenantResolution | None = None,
+        ingest_returns: UUID | None = MENTION,
+        ingest_raises: Exception | None = None,
+    ) -> None:
+        self.username = username
+        self.resolution = resolution or RESOLVED
+        self.resolver_calls: list[str] = []
+        self.username_calls: list[tuple[UUID | None, UUID | None]] = []
+        self.ingestor_calls: list[dict[str, object]] = []
+        self._returns = ingest_returns
+        self._raises = ingest_raises
+
+    def resolve(self, *, platform: str, external_account_id: str) -> TenantResolution:
+        self.resolver_calls.append(external_account_id)
+        return self.resolution
+
+    def username_of(self, *, tenant_id: UUID | None, connection_id: UUID | None) -> str | None:
+        self.username_calls.append((tenant_id, connection_id))
+        return self.username
+
+    async def ingest(self, **kwargs: object) -> UUID | None:
+        self.ingestor_calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return self._returns
+
+    def processor(self, queue: FakeQueue, *, analyze=None) -> Processor:
+        return Processor(
+            queue=queue,
+            handlers={
+                "mentions": mentions_handler(resolve=self.resolve, ingest=self.ingest),
+                INSTAGRAM_COMMENTS_HANDLER_KEY: comment_mentions_handler(
+                    resolve=self.resolve,
+                    username_of=self.username_of,
+                    ingest=self.ingest,
+                    analyze=analyze,
+                ),
+            },
+            worker_id="w1",
+            clock=lambda: NOW,
+        )
+
+
+def _comment(
+    text: str | None = "@qualifymkt.co mira esto",
+    *,
+    drop: tuple[str, ...] = (),
+    object_: str = "instagram",
+    **extra: object,
+) -> ClaimedEvent:
+    """The `comments` value as the webhooks field reference documents it (`id` = comment)."""
+    value: dict[str, object] = {
+        "from": {"id": "irrelevant-igsid", "username": "yesii_roa"},
+        "id": "comment-9",
+        "media": {"id": "media-9", "media_product_type": "REELS"},
+    }
+    if text is not None:
+        value["text"] = text
+    value.update(extra)
+    for key in drop:
+        value.pop(key)
+    return _event("comments", value=value, object_=object_)
+
+
+async def test_a_comment_mentioning_the_account_is_ingested_with_ids_text_and_author() -> None:
+    pipeline = CommentPipeline()
+    event = _comment()
+    queue = FakeQueue([event])
+
+    report = await pipeline.processor(queue).run_once()
+
+    assert pipeline.resolver_calls == ["111"]
+    assert pipeline.username_calls == [(TENANT, CONNECTION)]
+    assert pipeline.ingestor_calls == [
+        {
+            "media_id": "media-9",
+            "comment_id": "comment-9",
+            "resolution": RESOLVED,
+            "text": "@qualifymkt.co mira esto",
+            "author_username": "yesii_roa",
+            "observed_at": None,  # this event recorded no `entry[].time`
+        }
+    ]
+    assert queue.settled[event.id] == ("processed", None)
+    assert report.outcomes == {"processed": 1}
+
+
+async def test_the_facebook_login_comment_id_spelling_is_accepted() -> None:
+    pipeline = CommentPipeline()
+    event = _comment(drop=("id",), comment_id="comment-7")
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert pipeline.ingestor_calls[0]["comment_id"] == "comment-7"
+    assert queue.settled[event.id] == ("processed", None)
+
+
+async def test_a_missing_author_still_ingests_with_no_author() -> None:
+    pipeline = CommentPipeline()
+    event = _comment(drop=("from",))
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert pipeline.ingestor_calls[0]["author_username"] is None
+    assert queue.settled[event.id] == ("processed", None)
+
+
+@pytest.mark.parametrize("text", ["@otra.cuenta mira esto", "@yesii_roa hola"])
+async def test_a_comment_mentioning_someone_else_is_unsupported_and_not_ingested(
+    text: str,
+) -> None:
+    pipeline = CommentPipeline()
+    event = _comment(text)
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert pipeline.ingestor_calls == []
+    assert queue.settled[event.id] == ("unsupported", NOT_A_MENTION)
+
+
+@pytest.mark.parametrize("text", [None, "", "qué lindo post"])
+async def test_a_comment_with_no_at_sign_is_unsupported_without_any_lookup(
+    text: str | None,
+) -> None:
+    pipeline = CommentPipeline()
+    event = _comment(text)
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert pipeline.resolver_calls == []
+    assert pipeline.ingestor_calls == []
+    assert queue.settled[event.id] == ("unsupported", NOT_A_MENTION)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "@qualifymkt.colombia hola",  # a longer handle that starts with ours
+        "@qualifymkt.co_oficial hola",
+        "@qualifymkt hola",  # a prefix of ours
+        "escríbenos a hola@qualifymkt.co",  # an email, not a mention
+        "x@qualifymkt.co",
+        "@@qualifymkt.co",
+    ],
+)
+async def test_a_partial_username_match_is_not_a_mention(text: str) -> None:
+    pipeline = CommentPipeline()
+    event = _comment(text)
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert pipeline.ingestor_calls == []
+    assert queue.settled[event.id] == ("unsupported", NOT_A_MENTION)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "@QualifyMkt.co mira",  # case-insensitive, like Instagram handles
+        "mira esto @qualifymkt.co.",  # sentence period: a handle never ends in "."
+        "(@qualifymkt.co) genial",
+        "hola,@qualifymkt.co!",
+        "@yesii_roa @qualifymkt.co",
+        "@qualifymkt.co",
+        "Gracias.@qualifymkt.co",  # punctuation glued before it
+        "mira esto...@qualifymkt.co",
+    ],
+)
+async def test_a_whole_handle_mention_is_recognized(text: str) -> None:
+    pipeline = CommentPipeline()
+    event = _comment(text)
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert len(pipeline.ingestor_calls) == 1
+    assert queue.settled[event.id] == ("processed", None)
+
+
+async def test_an_orphan_comment_is_never_ingested() -> None:
+    pipeline = CommentPipeline(resolution=TenantResolution(outcome=ResolutionOutcome.ORPHAN))
+    event = _comment()
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert pipeline.username_calls == []
+    assert pipeline.ingestor_calls == []
+    assert queue.settled[event.id] == ("orphan", None)
+
+
+async def test_an_ambiguous_comment_is_never_ingested() -> None:
+    pipeline = CommentPipeline(resolution=TenantResolution(outcome=ResolutionOutcome.AMBIGUOUS))
+    event = _comment()
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert pipeline.username_calls == []
+    assert pipeline.ingestor_calls == []
+    assert queue.settled[event.id] == ("ambiguous", None)
+
+
+async def test_no_stored_username_keeps_the_comment_replayable() -> None:
+    pipeline = CommentPipeline(username=None)
+    event = _comment()
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert pipeline.ingestor_calls == []
+    assert queue.settled[event.id] == ("unsupported", COMMENT_USERNAME_UNKNOWN)
+
+
+async def test_the_account_commenting_on_its_own_post_is_not_a_mention() -> None:
+    pipeline = CommentPipeline()
+    event = _comment(**{"from": {"id": "111", "username": "QualifyMkt.co"}})
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert pipeline.ingestor_calls == []
+    assert queue.settled[event.id] == ("unsupported", SELF_COMMENT)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"text": "@qualifymkt.co", "media": {"id": "m"}},  # no comment id at all
+        {"id": "c", "text": "@qualifymkt.co"},  # no media
+        {"id": "c", "comment_id": "other", "text": "@qualifymkt.co", "media": {"id": "m"}},
+        {"id": "c", "text": "@qualifymkt.co", "media": "not-an-object"},
+        {"id": "c", "text": "@qualifymkt.co", "media": {"id": "m"}, "from": "not-an-object"},
+    ],
+)
+async def test_a_mention_of_the_account_with_an_off_contract_value_is_dead(value: dict) -> None:
+    """Held to the contract only once it is known to mention the account."""
+    pipeline = CommentPipeline()
+    event = _event("comments", value=value)
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert pipeline.ingestor_calls == []
+    assert queue.settled[event.id] == ("dead", "contract_violation")
+
+
+@pytest.mark.parametrize("value", [["not", "an", "object"], "a string", 7])
+async def test_a_value_that_is_not_an_object_is_dead_without_resolving(value: object) -> None:
+    pipeline = CommentPipeline()
+    event = _event("comments", value=value)
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert pipeline.resolver_calls == []
+    assert queue.settled[event.id] == ("dead", "contract_violation")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"from": {"username": "x"}, "id": "c", "text": "@amiga mira", "media": {"id": "m"}},
+        {"text": "@amiga mira esto"},  # no ids, no media
+    ],
+)
+async def test_tagging_someone_else_with_an_odd_shape_is_unsupported_not_dead(
+    value: dict,
+) -> None:
+    pipeline = CommentPipeline()
+    event = _event("comments", value=value)
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert pipeline.ingestor_calls == []
+    assert queue.settled[event.id] == ("unsupported", NOT_A_MENTION)
+
+
+async def test_a_resolved_comment_not_persisted_is_dead() -> None:
+    pipeline = CommentPipeline(ingest_returns=None)
+    event = _comment()
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert queue.settled[event.id] == ("dead", "resolved_not_persisted")
+
+
+async def test_a_failing_comment_ingest_is_a_retry_and_the_batch_continues() -> None:
+    pipeline = CommentPipeline(ingest_raises=RuntimeError("db blip"))
+    failing = _comment()
+    other = _event("story_insights", value={})
+    queue = FakeQueue([failing, other])
+
+    report = await pipeline.processor(queue).run_once()
+
+    assert queue.failed[failing.id] == (1, "RuntimeError")
+    assert failing.id not in queue.settled
+    assert queue.settled[other.id] == ("unsupported", None)
+    assert report.claimed == 2
+
+
+async def test_comments_of_another_object_never_reach_the_instagram_handler() -> None:
+    pipeline = CommentPipeline()
+    event = _comment(object_="page")
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert pipeline.resolver_calls == []
+    assert queue.settled[event.id] == ("unsupported", None)
+
+
+async def test_a_mention_on_a_comment_is_analyzed_after_ingest() -> None:
+    pipeline = CommentPipeline()
+    analyzed: list[tuple[UUID | None, UUID]] = []
+    event = _comment()
+    queue = FakeQueue([event])
+
+    def analyze(*, tenant_id: UUID | None, mention_id: UUID) -> None:
+        analyzed.append((tenant_id, mention_id))
+
+    await pipeline.processor(queue, analyze=analyze).run_once()
+
+    assert analyzed == [(TENANT, MENTION)]
+    assert queue.settled[event.id] == ("processed", None)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"text": "hola"},  # no media, no id — but no "@" either
+        {"from": {"username": "x"}, "text": "qué lindo"},  # `from` without its id
+        {"id": "c", "text": 5, "media": {"id": "m"}},
+        {"id": "c", "media": {"id": "m"}, "text": None},
+    ],
+)
+async def test_an_odd_comment_without_an_at_sign_stays_unsupported_not_dead(value: dict) -> None:
+    """Before this handler every comment was `unsupported`; one that can never be a mention
+    must not become `dead` just because its shape is unexpected."""
+    pipeline = CommentPipeline()
+    event = _event("comments", value=value)
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert pipeline.resolver_calls == []
+    assert queue.settled[event.id] == ("unsupported", NOT_A_MENTION)
+
+
+async def test_the_account_commenting_without_a_username_is_still_its_own_comment() -> None:
+    """Meta may send `from` with the id only: the account's own id (the entry) is enough."""
+    pipeline = CommentPipeline()
+    event = _comment(**{"from": {"id": "111"}})  # `_event`'s entry id is "111"
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert pipeline.ingestor_calls == []
+    assert queue.settled[event.id] == ("unsupported", SELF_COMMENT)
+
+
+@pytest.mark.parametrize(
+    ("entry_time", "expected"),
+    [
+        (1_760_000_000, datetime(2025, 10, 9, 8, 53, 20, tzinfo=UTC)),  # seconds (documented)
+        (1_760_000_000_000, datetime(2025, 10, 9, 8, 53, 20, tzinfo=UTC)),  # milliseconds
+        (None, None),
+        (0, None),
+        (-5, None),
+    ],
+)
+async def test_metas_send_time_is_passed_as_the_fallback_date(
+    entry_time: int | None, expected: datetime | None
+) -> None:
+    pipeline = CommentPipeline()
+    event = replace(_comment(), entry_time=entry_time)
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert pipeline.ingestor_calls[0]["observed_at"] == expected
+
+
+async def test_a_from_without_its_id_still_ingests_with_the_author() -> None:
+    """`from` is documented, never guaranteed: a missing id must not cost the mention."""
+    pipeline = CommentPipeline()
+    event = _comment(**{"from": {"username": "fan_1"}})
+    queue = FakeQueue([event])
+
+    await pipeline.processor(queue).run_once()
+
+    assert pipeline.ingestor_calls[0]["author_username"] == "fan_1"
+    assert queue.settled[event.id] == ("processed", None)
