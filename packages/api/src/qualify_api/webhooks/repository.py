@@ -58,6 +58,10 @@ PURGEABLE_STATUSES = (
     STATUS_DEAD,
 )
 
+# `last_error` of a `comments` change kept `unsupported` because its connection had no
+# username to recognize a mention with — replayable by `requeue_unsupported_comments`.
+COMMENT_USERNAME_UNKNOWN = "connection_username_unknown"
+
 MAX_ATTEMPTS = 6
 # Wait after the Nth failed attempt (N = 1..5); the 6th failure is `dead`.
 BACKOFF: tuple[timedelta, ...] = (
@@ -83,6 +87,7 @@ class ClaimedEvent:
     field: str
     value: Any
     attempts: int  # including this claim
+    entry_time: int | None = None  # Meta's `entry[].time` for the change, as recorded
 
 
 @dataclass(frozen=True)
@@ -135,7 +140,7 @@ class WebhookQueue:
                          LIMIT :limit
                          FOR UPDATE SKIP LOCKED)
                     RETURNING id, delivery_id, object, entry_id, field, value, attempts,
-                              received_at, change_index
+                              entry_time, received_at, change_index
                     """
                 ),
                 {"now": now, "worker": worker_id, "stale": stale_cutoff, "limit": limit},
@@ -150,6 +155,7 @@ class WebhookQueue:
                 field=r.field,
                 value=r.value,
                 attempts=r.attempts,
+                entry_time=r.entry_time,
             )
             for r in rows
         ]
@@ -222,6 +228,55 @@ class WebhookQueue:
                 },
             ).rowcount
         return status if written == 1 else None
+
+    # -- replay ----------------------------------------------------------------------
+
+    def requeue_unsupported_comments(
+        self, *, now: datetime, execute: bool = False, entry_id: str | None = None
+    ) -> int:
+        """Put Instagram `comments` changes settled `unsupported` back in the queue, so the
+        `instagram:comments` handler sees the ones recorded before it existed. Dry run
+        (count only) unless `execute`.
+
+        Takes only the replayable ones: `last_error IS NULL` (settled when no handler
+        existed) or `COMMENT_USERNAME_UNKNOWN` (the connection had no username yet). A
+        comment the handler already judged — `no_account_mention`, `self_comment` — or
+        any other state is never taken, so running this twice replays nothing twice and
+        the mention's own natural key keeps every replay single. Touches only the queue
+        columns (migration 0050's grant): nothing is deleted and `received_at` is kept, so
+        once the worker settles them again they age out on their original 29-day clock.
+        While `pending` they are, like any pending change, never purged — run it only
+        where the worker is running. `entry_id` narrows it to one account. Returns how
+        many changes are (or would be) requeued."""
+        where = """
+            object = 'instagram' AND field = 'comments' AND status = 'unsupported'
+            AND (last_error IS NULL OR last_error = :replayable)
+            AND (CAST(:entry_id AS text) IS NULL OR entry_id = :entry_id)
+        """
+        params: dict[str, Any] = {
+            "replayable": COMMENT_USERNAME_UNKNOWN,
+            "now": now,
+            "entry_id": entry_id,
+        }
+        with self._session() as session:
+            if not execute:
+                return int(
+                    session.execute(
+                        text(f"SELECT count(*) FROM meta_webhook_events WHERE {where}"), params
+                    ).scalar_one()
+                )
+            return session.execute(
+                text(
+                    f"""
+                    UPDATE meta_webhook_events
+                       SET status = 'pending', attempts = 0, next_attempt_at = :now,
+                           processed_at = NULL, last_error = NULL,
+                           locked_at = NULL, locked_by = NULL
+                     WHERE {where}
+                    """
+                ),
+                params,
+            ).rowcount
 
     # -- retention -------------------------------------------------------------------
 

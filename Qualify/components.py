@@ -600,7 +600,8 @@ def mentions_body() -> rx.Component:
                                 rx.vstack(
                                     mentions_table(),
                                     mentions_cards(),
-                                    rx.separator(size="4"),
+                                    # No separator: the last row (or card) already draws
+                                    # the one line above the pager.
                                     pager(),
                                     spacing="3",
                                     width="100%",

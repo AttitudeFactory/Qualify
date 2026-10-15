@@ -37,6 +37,9 @@ LANDING_URL = "https://attitudefactory.co/qualify"
 # hardcoded.
 Item = tuple[str, str, str, bool]
 
+# Not a Lucide name: the app's own composed icon (`mention_icon`), resolved by `nav_icon`.
+MENTION_ICON = "qualify-mention"
+
 # Order follows the operator's flow, and the two tinted zones are the product's own two
 # axes (docs/index.md): what the market says, and what the business says. Connections is
 # the base of both, so it sits above them, untinted. The "Negocio" foot block is sales
@@ -52,7 +55,7 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
         "listen",
         "Escuchas",
         [
-            ("Menciones", "message-circle", "/", True),
+            ("Menciones", MENTION_ICON, "/", True),
             ("Contenido", "film", "/inbox", True),
             ("Creadores", "users", "#", False),
             ("Señales", "bell", "#", False),
@@ -156,6 +159,48 @@ def qualify_mark(size: int = 22) -> rx.Component:
     )
 
 
+# "Menciones": an @ that speaks (founder request 2026-10-14 — the plain bubble read as a
+# conversation, and WhatsApp uses it). Lucide has no such glyph; it is built from two
+# Lucide (ISC) icons that share the same r=10 ring around (12, 12): `at-sign`'s outer arc
+# IS `message-circle`'s bubble. The @ keeps its opening bottom-right, the bubble keeps its
+# tail bottom-left (verbatim from `message-circle`), and the hook of the @ runs into the
+# ring as in `at-sign`. Inner circle 3.5 (not 4) for air at 18 px. Same 24-unit grid,
+# 2-unit stroke and round caps as every other menu icon — nothing scaled.
+_MENTION_INNER_RADIUS = "3.5"
+_MENTION_RING = (
+    "M15.5 8.5v4.5a3.25 3.25 0 0 0 6.5 0v-1"  # the @'s hook, into the ring at (22, 12)
+    "A10 10 0 1 0 2.992 16.342"  # the ring, up and around, to the tail
+    "a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092"
+    "A10 10 0 0 0 18 20"  # on along the bottom, stopping at the @'s opening
+)
+
+
+def mention_icon(size: int) -> rx.Component:
+    """The Menciones icon, drawn like `rx.icon` (currentColor, 2-unit stroke)."""
+    svg = rx.el.svg
+    return svg(
+        svg.circle(cx=12, cy=12, r=_MENTION_INNER_RADIUS),
+        svg.path(d=_MENTION_RING),
+        view_box="0 0 24 24",
+        width=f"{size}px",
+        height=f"{size}px",
+        fill="none",
+        stroke="currentColor",
+        stroke_width="2",
+        stroke_linecap="round",
+        stroke_linejoin="round",
+        flex_shrink="0",
+        aria_hidden="true",
+    )
+
+
+def nav_icon(icon: str, size: int) -> rx.Component:
+    """A menu item's icon: a Lucide name, or one of the app's own composed icons."""
+    if icon == MENTION_ICON:
+        return mention_icon(size)
+    return rx.icon(icon, size=size)
+
+
 def brand_mark(size: int = 22, heading_size: str = "5") -> rx.Component:
     """The wordmark: the Q-radar mark + "Qualify". Same everywhere it appears."""
     return rx.hstack(
@@ -184,13 +229,16 @@ def _nav_row(
     ``rx.el.button``) carries no padding of its own.
     """
     return rx.hstack(
-        rx.icon(icon, size=T.ICON_MD),
+        nav_icon(icon, T.ICON_MD),
         rx.el.span(
             label,
             class_name="q-label",
             style={"whiteSpace": "nowrap", "fontSize": "var(--font-size-3)"},
         ),
         *([trailing] if trailing is not None else []),
+        # Centred on the label's line box: Reflex's hstack defaults to `start`, which
+        # pinned the 18 px icon to the top of the 24 px text line.
+        align="center",
         width="100%",
         gap="0.6rem",
         padding="0.5rem 0.6rem",

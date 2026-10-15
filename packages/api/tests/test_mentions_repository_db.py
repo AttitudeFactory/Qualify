@@ -9,6 +9,7 @@ believes it does.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -17,6 +18,7 @@ from qualify_shared.db.admin import admin_session
 from qualify_shared.db.session import tenant_session
 
 from qualify_api.connections.models import PlatformApp, SocialConnection
+from qualify_api.mentions.models import Mention
 from qualify_api.mentions.repository import (
     ENRICHMENT_OK,
     NewMention,
@@ -217,3 +219,61 @@ def test_sentiment_result_idempotency_is_enforced_by_postgres() -> None:
     records = repo.list_mentions(tenant_id=TENANT_A, connection_id=None, version=VERSION)
     analyzed = next(r for r in records if r.id == mention_id)
     assert analyzed.sentiment_label == "POS"
+
+
+def test_fill_missing_comment_fields_completes_only_what_is_null() -> None:
+    """A comment mention stored first by the `mentions` webhook (no author, maybe no text)
+    is completed by the `comments` webhook's values — through the real `qualify_app`
+    column grants of migration 0053 — and a stored value is never overwritten."""
+    connection_id = _seed_connection(TENANT_A)
+    repo = PostgresMentionsRepository()
+    bare = replace(
+        _mention(
+            tenant_id=TENANT_A,
+            connection_id=connection_id,
+            media_id=f"media-{uuid4()}",
+            comment_id=f"c-{uuid4()}",
+        ),
+        text=None,
+        author_username=None,
+        enrichment_status="ENRICHMENT_FAILED",
+    )
+    mention_id, _ = repo.upsert_mention(bare)
+
+    assert repo.fill_missing_comment_fields(
+        tenant_id=TENANT_A, mention_id=mention_id, text="@marca hola", author_username="autora"
+    )
+    assert not repo.fill_missing_comment_fields(
+        tenant_id=TENANT_A, mention_id=mention_id, text="otro", author_username="otra"
+    )
+    # Another tenant can never touch it (RLS + the explicit tenant filter).
+    assert not repo.fill_missing_comment_fields(
+        tenant_id=TENANT_B, mention_id=mention_id, text="x", author_username="y"
+    )
+
+    with tenant_session(TENANT_A) as session:
+        row = session.get(Mention, mention_id)
+        assert (row.text, row.author_username, row.enrichment_status) == (
+            "@marca hola",
+            "autora",
+            ENRICHMENT_OK,
+        )
+
+
+def test_fill_missing_comment_fields_never_touches_a_caption_mention() -> None:
+    connection_id = _seed_connection(TENANT_A)
+    repo = PostgresMentionsRepository()
+    caption = replace(
+        _mention(
+            tenant_id=TENANT_A,
+            connection_id=connection_id,
+            media_id=f"media-{uuid4()}",
+            comment_id=None,
+        ),
+        author_username=None,
+    )
+    mention_id, _ = repo.upsert_mention(caption)
+
+    assert not repo.fill_missing_comment_fields(
+        tenant_id=TENANT_A, mention_id=mention_id, text="x", author_username="y"
+    )

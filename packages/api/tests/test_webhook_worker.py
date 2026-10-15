@@ -22,6 +22,10 @@ class RecordingQueue:
         RecordingQueue.calls.append(("account", entry_id, execute))
         return PurgeReport(events=0, deliveries=0, executed=execute)
 
+    def requeue_unsupported_comments(self, *, now, execute, entry_id=None):
+        RecordingQueue.calls.append(("requeue", entry_id, execute))
+        return 3
+
 
 @pytest.fixture(autouse=True)
 def fake_queue(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -56,6 +60,25 @@ def test_execute_without_a_purge_is_refused() -> None:
 def test_modes_are_mutually_exclusive() -> None:
     with pytest.raises(SystemExit):
         worker.main(["--once", "--purge"])
+    with pytest.raises(SystemExit):
+        worker.main(["--requeue-comments", "--purge"])
+
+
+def test_requeue_comments_is_a_dry_run_by_default(capsys) -> None:
+    assert worker.main(["--requeue-comments"]) == 0
+    assert RecordingQueue.calls == [("requeue", None, False)]
+    assert "would requeue (dry run) events=3" in capsys.readouterr().out
+
+
+def test_requeue_comments_execute_for_one_account(capsys) -> None:
+    assert worker.main(["--requeue-comments", "--account", "ig-1", "--execute"]) == 0
+    assert RecordingQueue.calls == [("requeue", "ig-1", True)]
+    assert "requeued events=3" in capsys.readouterr().out
+
+
+def test_account_without_requeue_is_refused() -> None:
+    assert worker.main(["--purge", "--account", "ig-1"]) == 2
+    assert RecordingQueue.calls == []
 
 
 def test_a_too_short_interval_is_refused() -> None:

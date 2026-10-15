@@ -466,6 +466,15 @@ class MentionsRepository(Protocol):
         the next run). Content and `content_refreshed_at` are untouched."""
         ...
 
+    def fill_missing_comment_fields(
+        self, *, tenant_id: UUID, mention_id: UUID, text: str | None, author_username: str | None
+    ) -> bool:
+        """Complete a COMMENT mention already stored by another path (the `mentions` webhook
+        stores no author): each given value is written only where the column is still
+        NULL — never over a stored value. Writing a text where there was none also marks
+        the row ENRICHED. Returns True when anything changed."""
+        ...
+
 
 def _error_class(name: str) -> str:
     """Bound to the 0051 CHECK (1..200 chars) so recording a failure can never itself fail."""
@@ -933,6 +942,22 @@ class MemoryMentionsRepository:
         if m is not None and m.tenant_id == tenant_id:
             m.content_refresh_attempted_at = self._stamp()
 
+    def fill_missing_comment_fields(
+        self, *, tenant_id: UUID, mention_id: UUID, text: str | None, author_username: str | None
+    ) -> bool:
+        m = self._mentions.get(mention_id)
+        if m is None or m.tenant_id != tenant_id or m.comment_id is None:
+            return False
+        changed = False
+        if author_username is not None and m.author_username is None:
+            m.author_username = author_username
+            changed = True
+        if text is not None and m.text is None:
+            m.text = text
+            m.enrichment_status = ENRICHMENT_OK
+            changed = True
+        return changed
+
 
 class PostgresMentionsRepository:
     """All access through `tenant_session` — RLS scopes every statement, and the
@@ -1383,3 +1408,27 @@ class PostgresMentionsRepository:
                 .where(Mention.id == mention_id, Mention.tenant_id == tenant_id)
                 .values(content_refresh_attempted_at=func.now())
             )
+
+    def fill_missing_comment_fields(
+        self, *, tenant_id: UUID, mention_id: UUID, text: str | None, author_username: str | None
+    ) -> bool:
+        changed = 0
+        scope = (
+            Mention.id == mention_id,
+            Mention.tenant_id == tenant_id,
+            Mention.comment_id.is_not(None),
+        )
+        with tenant_session(tenant_id) as session:
+            if author_username is not None:
+                changed += session.execute(
+                    update(Mention)
+                    .where(*scope, Mention.author_username.is_(None))
+                    .values(author_username=author_username)
+                ).rowcount
+            if text is not None:
+                changed += session.execute(
+                    update(Mention)
+                    .where(*scope, Mention.text.is_(None))
+                    .values(text=text, enrichment_status=ENRICHMENT_OK)
+                ).rowcount
+        return changed > 0
