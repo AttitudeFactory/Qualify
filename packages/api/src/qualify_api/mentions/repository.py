@@ -457,8 +457,9 @@ class MentionsRepository(Protocol):
     ) -> bool:
         """Write a fresh read (QUA-152, migrations 0053/0054): every field the read GAVE is
         stored — `like_count=0` included — and every field it omitted (`None`) keeps its
-        stored value. Marks the row ENRICHED and stamps both refresh timestamps. Returns
-        False when the mention is not this tenant's."""
+        stored value. Marks the row ENRICHED and stamps both refresh timestamps. A
+        successful read proves the content exists, so a removed mention shows again
+        (`removed_at` cleared). Returns False when the mention is not this tenant's."""
         ...
 
     def mark_refresh_attempt(self, *, tenant_id: UUID, mention_id: UUID) -> None:
@@ -469,8 +470,9 @@ class MentionsRepository(Protocol):
     def mark_removed(self, *, tenant_id: UUID, mention_id: UUID) -> bool:
         """The network confirmed the mentioned content no longer exists (migration 0062):
         stamp `removed_at` (and the attempt), so every read excludes the mention from now
-        on. Content is kept. Returns False when the mention is not this tenant's or was
-        already removed."""
+        on. Content is kept. Idempotent: an already-removed mention keeps its first stamp
+        and still returns True (another run removed it first). Returns False only when the
+        mention is not this tenant's."""
         ...
 
     def fill_missing_comment_fields(
@@ -945,6 +947,7 @@ class MemoryMentionsRepository:
         for column, value in _given_content(content).items():
             setattr(m, column, value)
         m.enrichment_status = ENRICHMENT_OK
+        m.removed_at = None
         m.content_refreshed_at = m.content_refresh_attempted_at = self._stamp()
         return True
 
@@ -955,9 +958,11 @@ class MemoryMentionsRepository:
 
     def mark_removed(self, *, tenant_id: UUID, mention_id: UUID) -> bool:
         m = self._mentions.get(mention_id)
-        if m is None or m.tenant_id != tenant_id or m.removed_at is not None:
+        if m is None or m.tenant_id != tenant_id:
             return False
-        m.removed_at = m.content_refresh_attempted_at = self._stamp()
+        stamp = self._stamp()
+        m.removed_at = m.removed_at or stamp
+        m.content_refresh_attempted_at = stamp
         return True
 
     def fill_missing_comment_fields(
@@ -1418,6 +1423,7 @@ class PostgresMentionsRepository:
                 .values(
                     **_given_content(content),
                     enrichment_status=ENRICHMENT_OK,
+                    removed_at=None,
                     content_refreshed_at=func.now(),
                     content_refresh_attempted_at=func.now(),
                 )
@@ -1436,12 +1442,11 @@ class PostgresMentionsRepository:
         with tenant_session(tenant_id) as session:
             updated = session.execute(
                 update(Mention)
-                .where(
-                    Mention.id == mention_id,
-                    Mention.tenant_id == tenant_id,
-                    Mention.removed_at.is_(None),
+                .where(Mention.id == mention_id, Mention.tenant_id == tenant_id)
+                .values(
+                    removed_at=func.coalesce(Mention.removed_at, func.now()),
+                    content_refresh_attempted_at=func.now(),
                 )
-                .values(removed_at=func.now(), content_refresh_attempted_at=func.now())
             ).rowcount
             return updated == 1
 

@@ -554,7 +554,7 @@ def test_a_removed_mention_leaves_every_read_and_a_redelivery_keeps_it_out() -> 
 
     assert repo.mark_removed(tenant_id=other_tenant, mention_id=gone) is False  # RLS
     assert repo.mark_removed(tenant_id=tenant_id, mention_id=gone) is True
-    assert repo.mark_removed(tenant_id=tenant_id, mention_id=gone) is False  # once
+    assert repo.mark_removed(tenant_id=tenant_id, mention_id=gone) is True  # idempotent
 
     page = _page(repo, tenant_id)
     assert [row.id for row in page.rows] == [kept]
@@ -600,3 +600,15 @@ def test_a_removed_mention_leaves_every_read_and_a_redelivery_keeps_it_out() -> 
     )
     assert (again, created) == (gone, False)
     assert [row.id for row in _page(repo, tenant_id).rows] == [kept]
+
+
+def test_a_successful_read_clears_removed_at() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    mention_id = _add(repo, tenant_id, connection_id)
+    repo.mark_removed(tenant_id=tenant_id, mention_id=mention_id)
+    assert _page(repo, tenant_id).counts.total == 0
+
+    repo.refresh_content(tenant_id=tenant_id, mention_id=mention_id, content=_content())
+
+    assert [row.id for row in _page(repo, tenant_id).rows] == [mention_id]

@@ -66,12 +66,15 @@ class ScriptedClient:
         permalink: str | None = "https://www.instagram.com/p/NEW/",
         permalink_error: Exception | None = None,
         usage_percent: int = 0,
+        account_error: Exception | None = None,
     ) -> None:
         self._answers = answers or {}
         self._default = default
         self._permalink = permalink
         self._permalink_error = permalink_error
         self.usage_percent = usage_percent
+        self._account_error = account_error
+        self.account_checks = 0
         self.calls: list[str] = []
         self.permalink_calls: list[str] = []
         self.closed = 0
@@ -99,6 +102,11 @@ class ScriptedClient:
         answer = self._next(comment_id)
         assert isinstance(answer, MentionedComment)
         return answer
+
+    async def account_reachable(self, *, ig_user_id: str) -> None:
+        self.account_checks += 1
+        if self._account_error is not None:
+            raise self._account_error
 
     async def get_mentioned_permalink(
         self, *, ig_user_id: str, media_id: str, comment_id: str | None
@@ -778,7 +786,7 @@ async def test_an_account_problem_is_not_stamped_on_the_mentions(
 
 # ------------------------------------------------------------------ deleted on the network
 
-DELETED = MentionedContentReadError("deleted", http_status=400, platform_code=100)
+CODE_100_ONLY = MentionedContentReadError("deleted", http_status=400, platform_code=100)
 GONE = MentionedContentReadError(
     "does not exist", http_status=400, platform_code=100, platform_subcode=33
 )
@@ -860,7 +868,7 @@ async def test_only_the_does_not_exist_signature_removes_a_mention(
     """Code 100 without subcode 33 also covers unrelated validation errors, and comments
     disabled or a permission refusal are not a deletion: the mention and its data stay."""
     kept = {
-        "no-subcode": DELETED,
+        "no-subcode": CODE_100_ONLY,
         "comments-off": MentionedContentReadError("off", http_status=400, platform_code=10),
         "not-400": MentionedContentReadError(
             "x", http_status=403, platform_code=100, platform_subcode=33
@@ -897,4 +905,81 @@ async def test_a_mention_that_cannot_be_removed_counts_as_failed(
     report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
 
     assert (report.removed, report.failed) == (0, 1)
+    assert _visible_ids(repo) == {gone_id}
+
+
+async def test_a_does_not_exist_about_the_account_removes_nothing(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """The reads are field expansions on the account's node: when the account itself is
+    unreadable (unlinked, access lost), every read answers 100/33 too. That is an account
+    problem — no mention is removed, and the account is checked once per run."""
+    ids = {_store(repo, f"m{i}") for i in range(5)}
+    client = ScriptedClient(default=GONE, account_error=GONE)
+    _use(monkeypatch, client)
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.removed, report.credential_failed) == (0, 5)
+    assert _visible_ids(repo) == ids
+    assert client.account_checks == 1
+
+
+async def test_a_throttled_account_check_stops_the_run_without_removing(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    gone_id = _store(repo, "gone")
+    throttled = MentionedContentReadError("limit", http_status=400, platform_code=4)
+    _use(monkeypatch, ScriptedClient({"gone": [GONE]}, account_error=throttled))
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.removed, report.rate_limited, report.not_attempted) == (0, True, 1)
+    assert _visible_ids(repo) == {gone_id}
+
+
+async def test_the_account_is_checked_once_for_many_deleted_mentions(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    for i in range(4):
+        _store(repo, f"m{i}")
+    client = ScriptedClient(default=GONE)
+    _use(monkeypatch, client)
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.removed, report.remaining_scope, client.account_checks) == (4, 0, 1)
+
+
+def test_removing_twice_still_counts_as_removed(repo: MemoryMentionsRepository) -> None:
+    """Two runs (two tabs) can both find the same deleted mention: the second one must not
+    report it as "no se pudo leer"."""
+    gone_id = _store(repo, "gone")
+
+    assert repo.mark_removed(tenant_id=TENANT, mention_id=gone_id) is True
+    assert repo.mark_removed(tenant_id=TENANT, mention_id=gone_id) is True
+    assert _visible_ids(repo) == set()
+
+
+def test_a_successful_read_brings_a_removed_mention_back(repo: MemoryMentionsRepository) -> None:
+    from qualify_api.mentions.repository import MentionContent
+
+    gone_id = _store(repo, "gone")
+    repo.mark_removed(tenant_id=TENANT, mention_id=gone_id)
+
+    stored = repo.refresh_content(
+        tenant_id=TENANT,
+        mention_id=gone_id,
+        content=MentionContent(
+            caption=None,
+            text=None,
+            author_username=None,
+            media_type=None,
+            like_count=4,
+            content_posted_at=None,
+            permalink=None,
+        ),
+    )
+
+    assert stored is True
     assert _visible_ids(repo) == {gone_id}

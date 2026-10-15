@@ -172,19 +172,19 @@ def refresh_outcome(
     so they left the list. That is not pending work — only announced, never a warning."""
     if planning_failed:
         return RefreshOutcome(REFRESH_FAILED_NOTICE, "warn")
-    removed_note = _removed_note(removed)
+    note = removed_note(removed)
     if failed == 0 and not_attempted == 0 and credential_failed == 0:
         if in_scope == 0:
-            if removed_note:
-                return RefreshOutcome(removed_note, "ok")
+            if note:
+                return RefreshOutcome(note, "ok")
             return RefreshOutcome("No hay menciones en este periodo para actualizar.", "info")
         noun = "la mención" if in_scope == 1 else f"las {in_scope} menciones"
         message = f"Se actualizaron {noun} del periodo."
-        return RefreshOutcome(f"{message} {removed_note}" if removed_note else message, "ok")
+        return RefreshOutcome(f"{message} {note}" if note else message, "ok")
     current = refreshed + already_fresh
     parts = [f"Se actualizaron {current} de {in_scope} menciones."]
-    if removed_note:
-        parts.append(removed_note)
+    if note:
+        parts.append(note)
     if failed:
         parts.append(
             "1 no se pudo leer en la red social (puede que ya no exista o que no haya "
@@ -215,7 +215,8 @@ def refresh_outcome(
     return RefreshOutcome(" ".join(parts), "warn")
 
 
-def _removed_note(removed: int) -> str:
+def removed_note(removed: int) -> str:
+    """How many mentions left the list because their content was deleted; '' for none."""
     if removed <= 0:
         return ""
     if removed == 1:

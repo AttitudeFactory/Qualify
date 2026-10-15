@@ -366,6 +366,25 @@ async def test_a_mention_deleted_on_the_network_never_leaves_a_warning(
     assert len(emitted) == 1
 
 
+async def test_removals_are_announced_when_the_run_stops_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .mentions_paging import THROTTLED_NOTICE
+
+    _wire(
+        monkeypatch,
+        visible=_report(in_scope=2, refreshed=0, removed=1, rate_limited=True),
+        scope=_report(),
+    )
+    state = _running_state()
+
+    await _run(state)
+
+    assert state.refresh_tone == "warn"
+    assert state.refresh_notice.startswith("1 mención ya no existe en la red social")
+    assert state.refresh_notice.endswith(THROTTLED_NOTICE)
+
+
 async def test_a_throttled_visible_pass_stops_the_run_and_says_so(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

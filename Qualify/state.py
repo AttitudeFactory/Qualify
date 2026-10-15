@@ -49,6 +49,7 @@ from .mentions_paging import (
     new_mentions_label,
     refresh_outcome,
     refresh_still_running,
+    removed_note,
 )
 from .mentions_paging import page_items as _page_items
 from .mentions_provider import (
@@ -453,18 +454,19 @@ class DashboardState(rx.State):
             if self.refresh_run != run:
                 return  # superseded: the newer run owns the button and the notice
             self.is_refreshing = False
-            if stopped_notice:
-                self.refresh_notice, self.refresh_tone = stopped_notice, "warn"
-                return
-            if report is None:
-                self.refresh_notice, self.refresh_tone = REFRESH_FAILED_NOTICE, "warn"
-                return
             # A mention whose content was deleted left the scope: it is neither current nor
-            # pending, only announced. The visible pass removes before the scope run plans,
-            # so both passes' removals are added up.
-            removed = report.removed + (visible.removed if visible is not None else 0)
+            # pending, only announced — also when the run stops early. The visible pass
+            # removes before the scope run plans, so both passes' removals are added up.
+            visible_removed = visible.removed if visible is not None else 0
+            if stopped_notice or report is None:
+                notice = stopped_notice or REFRESH_FAILED_NOTICE
+                note = removed_note(visible_removed)
+                self.refresh_notice = f"{note} {notice}" if note else notice
+                self.refresh_tone = "warn"
+                return
+            removed = report.removed + visible_removed
             outcome = refresh_outcome(
-                in_scope=report.in_scope - report.removed,
+                in_scope=report.remaining_scope,
                 refreshed=report.refreshed,
                 already_fresh=report.already_fresh,
                 failed=report.failed,

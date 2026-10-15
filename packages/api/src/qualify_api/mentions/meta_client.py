@@ -91,11 +91,16 @@ def is_transient(exc: MentionedContentReadError) -> bool:
 
 
 def is_gone(exc: MentionedContentReadError) -> bool:
-    """Meta confirms the mentioned object no longer exists: HTTP 400, `code=100`,
+    """Meta says an object of the call no longer exists: HTTP 400, `code=100`,
     `error_subcode=33`. The same narrow signature `inbox.service._is_missing_media_error`
     acts on ([VERIFIED live 2026-09-01] on a deleted media) — `code=100` alone also covers
     unrelated validation errors, so it is never matched without the subcode. Any other
-    refusal (comments disabled, permissions) keeps the mention."""
+    refusal (comments disabled, permissions) keeps the mention.
+
+    NOT proof on its own that the MENTION is gone: these reads are field expansions on
+    the connected account's node (`GET /{ig-user-id}?fields=mentioned_…`), so the same
+    signature can be about the account itself (unlinked, access lost). The caller confirms
+    the account is still reachable (`account_reachable`) before removing anything."""
     return exc.http_status == 400 and exc.platform_code == 100 and exc.platform_subcode == 33
 
 
@@ -138,6 +143,8 @@ class MentionedContentClient(Protocol):
     async def get_mentioned_permalink(
         self, *, ig_user_id: str, media_id: str, comment_id: str | None
     ) -> str | None: ...
+
+    async def account_reachable(self, *, ig_user_id: str) -> None: ...
 
 
 # QUA-152: the "Ver" link. `permalink` is a Public IG Media field but is NOT in the
@@ -258,6 +265,12 @@ class HttpMentionedContentClient:
     async def get_mentioned_comment(self, *, ig_user_id: str, comment_id: str) -> MentionedComment:
         fields_expr = f"mentioned_comment.comment_id({comment_id}){{{MENTIONED_COMMENT_FIELDS}}}"
         return _parse_mentioned_comment_response(await self._get(ig_user_id, fields_expr))
+
+    async def account_reachable(self, *, ig_user_id: str) -> None:
+        """`GET /{ig-user-id}?fields=id`: returns when the connected account's node is
+        readable, raises `MentionedContentReadError` otherwise. Tells a "does not exist"
+        about the mentioned object apart from one about the account itself."""
+        await self._get(ig_user_id, "id")
 
     async def get_mentioned_permalink(
         self, *, ig_user_id: str, media_id: str, comment_id: str | None

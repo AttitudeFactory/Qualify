@@ -363,8 +363,10 @@ def list_mentions_for_tenant(
 #     stops the run: nothing more is requested, what is left is reported as pending;
 #   - a mention re-read successfully in the last REFRESH_FRESH_SECONDS is current and is
 #     not requested again (two tabs, a double click);
-#   - a mention whose content Meta confirms deleted (`is_gone`) is marked removed and
-#     stops showing — it is not a failure, there is nothing left to read.
+#   - a mention whose content Meta reports deleted (`is_gone`) is marked removed and stops
+#     showing — once per connection and run, the account itself is confirmed readable
+#     first, since the same answer can be about the account (then it is an account
+#     problem: nothing is removed). Not a failure: there is nothing left to read.
 # One read per mention; the link only while it is not stored yet (it does not change).
 
 REFRESH_MAX_PER_RUN = 200
@@ -400,6 +402,11 @@ class ContentRefreshReport:
     # The network confirmed the content was deleted: the mention was removed from the
     # dashboard (migration 0062). Neither current nor pending — it left the scope.
     removed: int = 0
+
+    @property
+    def remaining_scope(self) -> int:
+        """The scope once the removed mentions left it — what "N de M" counts."""
+        return self.in_scope - self.removed
 
     @property
     def pending(self) -> int:
@@ -486,6 +493,9 @@ async def _refresh_targets(
     stop = asyncio.Event()  # no new reads: throttled, or usage at the limit
     throttled = asyncio.Event()
     usage_paused = asyncio.Event()
+    # connection -> whether its account node is readable, checked once per run and only
+    # when a read says "does not exist" (see `is_gone`).
+    reachable: dict[UUID, asyncio.Task[bool]] = {}
 
     async def client_for(connection_id: UUID) -> tuple[HttpMentionedContentClient, str] | None:
         async with clients_lock:  # ONE credential resolution per connection and run
@@ -507,6 +517,13 @@ async def _refresh_targets(
         throttled.set()
         stop.set()
 
+    async def account_ok(client: HttpMentionedContentClient, ig_user_id: str, cid: UUID) -> bool:
+        async with clients_lock:
+            if cid not in reachable:
+                reachable[cid] = asyncio.ensure_future(_account_reachable(client, ig_user_id))
+            task = reachable[cid]
+        return await asyncio.shield(task)
+
     async def refresh_one(target: RefreshTarget) -> _Outcome:
         async with slots:
             if stop.is_set():
@@ -525,6 +542,20 @@ async def _refresh_targets(
                 return "not_attempted"
             except MentionedContentReadError as exc:
                 if is_gone(exc):
+                    try:
+                        account_readable = await account_ok(
+                            client, ig_user_id, target.connection_id
+                        )
+                    except _RateLimited:
+                        on_throttle()
+                        return "not_attempted"
+                    if not account_readable:
+                        # The "does not exist" is about the account: nothing is removed.
+                        _LOGGER.warning(
+                            "mentions refresh: connection=%s account node not readable",
+                            target.connection_id,
+                        )
+                        return "credential_failed"
                     removed = await asyncio.to_thread(
                         _mark_removed, repo, tenant_id=tenant_id, mention_id=target.mention_id
                     )
@@ -606,6 +637,19 @@ def _mark_attempt(repo: MentionsRepository, *, tenant_id: UUID, mention_id: UUID
         repo.mark_refresh_attempt(tenant_id=tenant_id, mention_id=mention_id)
     except Exception as exc:  # noqa: BLE001 — bookkeeping only
         _LOGGER.info("mentions refresh attempt not stamped (%s)", type(exc).__name__)
+
+
+async def _account_reachable(client: HttpMentionedContentClient, ig_user_id: str) -> bool:
+    """Raises `_RateLimited` when Meta throttles the check; any other failure is False."""
+    try:
+        await client.account_reachable(ig_user_id=ig_user_id)
+    except MentionedContentReadError as exc:
+        if is_rate_limited(exc):
+            raise _RateLimited from exc
+        return False
+    except Exception:  # noqa: BLE001 — unknown: never remove on a doubt
+        return False
+    return True
 
 
 def _mark_removed(repo: MentionsRepository, *, tenant_id: UUID, mention_id: UUID) -> bool:
