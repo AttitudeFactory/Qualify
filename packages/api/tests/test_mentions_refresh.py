@@ -774,3 +774,127 @@ async def test_an_account_problem_is_not_stamped_on_the_mentions(
 
     assert first.credential_failed == 1
     assert (second.refreshed, client.calls) == (1, ["m1"])  # retried at once, not "recent"
+
+
+# ------------------------------------------------------------------ deleted on the network
+
+DELETED = MentionedContentReadError("deleted", http_status=400, platform_code=100)
+GONE = MentionedContentReadError(
+    "does not exist", http_status=400, platform_code=100, platform_subcode=33
+)
+
+
+def _visible_ids(repo: MemoryMentionsRepository, tenant_id: UUID = TENANT) -> set[UUID]:
+    page = repo.list_mentions_page(
+        tenant_id=tenant_id,
+        version=composition.current_mention_analysis_version(),
+        query=MentionQuery(),
+        page=1,
+        page_size=1000,
+    )
+    return {row.id for row in page.rows}
+
+
+async def test_a_deleted_mention_is_removed_and_the_run_is_complete(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    ok_id = _store(repo, "ok")
+    gone_id = _store(repo, "gone")
+    _use(monkeypatch, ScriptedClient({"gone": [GONE]}))
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.refreshed, report.removed, report.failed, report.complete) == (1, 1, 0, True)
+    assert _visible_ids(repo) == {ok_id}
+    assert gone_id not in _visible_ids(repo)
+
+
+async def test_a_deleted_comment_mention_is_removed_too(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    comment_id = _store(repo, "post", comment_id="c1")
+    _use(monkeypatch, ScriptedClient({"c1": [GONE]}))
+
+    report = await composition.refresh_mentions_content(tenant_id=TENANT, mention_ids=(comment_id,))
+
+    assert (report.removed, report.failed) == (1, 0)
+    assert _visible_ids(repo) == set()
+
+
+async def test_a_removed_mention_leaves_every_read(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    gone_id = _store(repo, "gone")
+    _use(monkeypatch, ScriptedClient({"gone": [GONE]}))
+    await composition.refresh_mentions_content(tenant_id=TENANT, mention_ids=(gone_id,))
+    version = composition.current_mention_analysis_version()
+
+    counts = repo.summarize(
+        tenant_id=TENANT, version=version, query=MentionQuery(), as_of=datetime.now(UTC)
+    )
+    plan = repo.plan_scope_refresh(tenant_id=TENANT, query=SCOPE, fresh_seconds=0, limit=10)
+
+    assert counts.total == 0
+    assert (plan.in_scope, plan.targets) == (0, ())
+    assert repo.list_pending_for_analysis(tenant_id=TENANT, version=version) == ()
+    assert repo.list_refresh_targets(tenant_id=TENANT, mention_ids=(gone_id,)) == ()
+    assert repo.list_mentions(tenant_id=TENANT, connection_id=None, version=version) == ()
+
+
+async def test_a_redelivered_webhook_does_not_bring_a_removed_mention_back(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    gone_id = _store(repo, "gone")
+    _use(monkeypatch, ScriptedClient({"gone": [GONE]}))
+    await composition.refresh_mentions_content(tenant_id=TENANT, mention_ids=(gone_id,))
+
+    again_id = _store(repo, "gone")
+
+    assert again_id == gone_id
+    assert _visible_ids(repo) == set()
+
+
+async def test_only_the_does_not_exist_signature_removes_a_mention(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """Code 100 without subcode 33 also covers unrelated validation errors, and comments
+    disabled or a permission refusal are not a deletion: the mention and its data stay."""
+    kept = {
+        "no-subcode": DELETED,
+        "comments-off": MentionedContentReadError("off", http_status=400, platform_code=10),
+        "not-400": MentionedContentReadError(
+            "x", http_status=403, platform_code=100, platform_subcode=33
+        ),
+    }
+    ids = {name: _store(repo, name, like_count=7) for name in kept}
+    _use(monkeypatch, ScriptedClient({name: [error] for name, error in kept.items()}))
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.removed, report.failed) == (0, 3)
+    assert _visible_ids(repo) == set(ids.values())
+    assert all(_record(repo, mention_id).like_count == 7 for mention_id in ids.values())
+
+
+async def test_removing_never_touches_another_tenant(repo: MemoryMentionsRepository) -> None:
+    foreign = _store(repo, "m1", tenant_id=OTHER_TENANT)
+
+    assert repo.mark_removed(tenant_id=TENANT, mention_id=foreign) is False
+    assert _visible_ids(repo, OTHER_TENANT) == {foreign}
+
+
+async def test_a_mention_that_cannot_be_removed_counts_as_failed(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    gone_id = _store(repo, "gone")
+    _use(monkeypatch, ScriptedClient({"gone": [GONE]}))
+
+    def broken(**_kwargs: object) -> bool:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(repo, "mark_removed", broken)
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.removed, report.failed) == (0, 1)
+    assert _visible_ids(repo) == {gone_id}

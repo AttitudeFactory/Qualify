@@ -507,6 +507,7 @@ def test_the_app_role_may_stamp_refreshes_but_not_rewrite_identity() -> None:
             for column in (
                 "content_refreshed_at",
                 "content_refresh_attempted_at",
+                "removed_at",
                 "like_count",
                 "tenant_id",
                 "media_id",
@@ -516,6 +517,7 @@ def test_the_app_role_may_stamp_refreshes_but_not_rewrite_identity() -> None:
     assert grants == {
         "content_refreshed_at": True,
         "content_refresh_attempted_at": True,
+        "removed_at": True,
         "like_count": True,
         "tenant_id": False,
         "media_id": False,
@@ -536,3 +538,65 @@ def test_scope_plan_reports_a_moments_ago_failure_without_requesting_it_again() 
 
     assert [t.mention_id for t in plan.targets] == [other]
     assert (plan.in_scope, plan.fresh, plan.recently_failed) == (2, 0, 1)
+
+
+def test_a_removed_mention_leaves_every_read_and_a_redelivery_keeps_it_out() -> None:
+    """Migration 0062: the app role may stamp `removed_at`; from then on the mention is out
+    of the page, the counts, the new-mention count, the refresh plan and the sentiment
+    queue — and re-inserting the same natural key (a redelivered webhook) does not
+    bring it back."""
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    other_tenant, _ = _fresh_tenant_with_connection()
+    kept = _add(repo, tenant_id, connection_id)
+    gone = _add(repo, tenant_id, connection_id, comment=True)
+    before = _page(repo, tenant_id).as_of
+
+    assert repo.mark_removed(tenant_id=other_tenant, mention_id=gone) is False  # RLS
+    assert repo.mark_removed(tenant_id=tenant_id, mention_id=gone) is True
+    assert repo.mark_removed(tenant_id=tenant_id, mention_id=gone) is False  # once
+
+    page = _page(repo, tenant_id)
+    assert [row.id for row in page.rows] == [kept]
+    assert page.counts.total == 1
+    assert repo.summarize(
+        tenant_id=tenant_id, version=VERSION, query=MentionQuery(), as_of=page.as_of
+    ) == MentionCounts(total=1, pending=1)
+    assert (
+        repo.count_received_after(
+            tenant_id=tenant_id, version=VERSION, query=MentionQuery(), after=before
+        )
+        == 0
+    )
+    plan = repo.plan_scope_refresh(
+        tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=0, limit=10
+    )
+    assert (plan.in_scope, [t.mention_id for t in plan.targets]) == (1, [kept])
+    assert repo.list_refresh_targets(tenant_id=tenant_id, mention_ids=(gone,)) == ()
+    pending = repo.list_pending_for_analysis(tenant_id=tenant_id, version=VERSION)
+    assert [p.mention_id for p in pending] == [kept]
+    listed = repo.list_mentions(tenant_id=tenant_id, connection_id=None, version=VERSION)
+    assert [m.id for m in listed] == [kept]
+
+    with tenant_session(tenant_id) as session:
+        row = session.get(Mention, gone)
+        assert row is not None and row.removed_at is not None
+        media_id, comment_id = row.media_id, row.comment_id
+    again, created = repo.upsert_mention(
+        NewMention(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            external_account_id="ig-user-1",
+            media_id=media_id,
+            comment_id=comment_id,
+            caption=None,
+            text="un comentario",
+            author_username=None,
+            media_type=None,
+            like_count=None,
+            content_posted_at=None,
+            enrichment_status=ENRICHMENT_OK,
+        )
+    )
+    assert (again, created) == (gone, False)
+    assert [row.id for row in _page(repo, tenant_id).rows] == [kept]

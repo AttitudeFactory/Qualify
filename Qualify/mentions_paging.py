@@ -162,19 +162,29 @@ def refresh_outcome(
     usage_paused: bool = False,
     planning_failed: bool = False,
     credential_failed: int = 0,
+    removed: int = 0,
 ) -> RefreshOutcome:
     """Never says "done" while anything of the scope is still pending: a mention the
     network refused, or one left for a later run (per-run cap, throttling, usage pause),
-    keeps the notice in warning tone with what to do next."""
+    keeps the notice in warning tone with what to do next.
+
+    `in_scope` excludes the `removed` mentions: their content was deleted on the network,
+    so they left the list. That is not pending work — only announced, never a warning."""
     if planning_failed:
         return RefreshOutcome(REFRESH_FAILED_NOTICE, "warn")
+    removed_note = _removed_note(removed)
     if failed == 0 and not_attempted == 0 and credential_failed == 0:
         if in_scope == 0:
+            if removed_note:
+                return RefreshOutcome(removed_note, "ok")
             return RefreshOutcome("No hay menciones en este periodo para actualizar.", "info")
         noun = "la mención" if in_scope == 1 else f"las {in_scope} menciones"
-        return RefreshOutcome(f"Se actualizaron {noun} del periodo.", "ok")
+        message = f"Se actualizaron {noun} del periodo."
+        return RefreshOutcome(f"{message} {removed_note}" if removed_note else message, "ok")
     current = refreshed + already_fresh
     parts = [f"Se actualizaron {current} de {in_scope} menciones."]
+    if removed_note:
+        parts.append(removed_note)
     if failed:
         parts.append(
             "1 no se pudo leer en la red social (puede que ya no exista o que no haya "
@@ -203,3 +213,11 @@ def refresh_outcome(
         )
     parts.append("Vuelve a pulsar Actualizar para continuar.")
     return RefreshOutcome(" ".join(parts), "warn")
+
+
+def _removed_note(removed: int) -> str:
+    if removed <= 0:
+        return ""
+    if removed == 1:
+        return "1 mención ya no existe en la red social y se quitó de la lista."
+    return f"{removed} menciones ya no existen en la red social y se quitaron de la lista."

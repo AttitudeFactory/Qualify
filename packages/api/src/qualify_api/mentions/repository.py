@@ -466,6 +466,13 @@ class MentionsRepository(Protocol):
         the next run). Content and `content_refreshed_at` are untouched."""
         ...
 
+    def mark_removed(self, *, tenant_id: UUID, mention_id: UUID) -> bool:
+        """The network confirmed the mentioned content no longer exists (migration 0062):
+        stamp `removed_at` (and the attempt), so every read excludes the mention from now
+        on. Content is kept. Returns False when the mention is not this tenant's or was
+        already removed."""
+        ...
+
     def fill_missing_comment_fields(
         self, *, tenant_id: UUID, mention_id: UUID, text: str | None, author_username: str | None
     ) -> bool:
@@ -672,6 +679,7 @@ class MemoryMentionsRepository:
             m
             for m in self._mentions.values()
             if m.tenant_id == tenant_id
+            and m.removed_at is None
             and (connection_id is None or m.connection_id == connection_id)
         ]
         rows.sort(key=lambda m: (m.received_at, m.id), reverse=True)
@@ -703,7 +711,7 @@ class MemoryMentionsRepository:
         term = query.search_term.lower()
         matched = []
         for m in self._mentions.values():
-            if m.tenant_id != tenant_id:
+            if m.tenant_id != tenant_id or m.removed_at is not None:
                 continue
             if query.connection_id is not None and m.connection_id != query.connection_id:
                 continue
@@ -814,7 +822,7 @@ class MemoryMentionsRepository:
         for candidate_id, m in ordered:
             if limit is not None and len(pending) >= limit:
                 break
-            if m.tenant_id != tenant_id:
+            if m.tenant_id != tenant_id or m.removed_at is not None:
                 continue
             if mention_id is not None and candidate_id != mention_id:
                 continue
@@ -883,7 +891,9 @@ class MemoryMentionsRepository:
         return tuple(
             _target(m)
             for mention_id in mention_ids
-            if (m := self._mentions.get(mention_id)) is not None and m.tenant_id == tenant_id
+            if (m := self._mentions.get(mention_id)) is not None
+            and m.tenant_id == tenant_id
+            and m.removed_at is None
         )
 
     def plan_scope_refresh(
@@ -894,6 +904,7 @@ class MemoryMentionsRepository:
             m
             for m in self._mentions.values()
             if m.tenant_id == tenant_id
+            and m.removed_at is None
             and (query.connection_id is None or m.connection_id == query.connection_id)
             and (query.since is None or (m.content_posted_at or m.received_at) >= query.since)
         ]
@@ -941,6 +952,13 @@ class MemoryMentionsRepository:
         m = self._mentions.get(mention_id)
         if m is not None and m.tenant_id == tenant_id:
             m.content_refresh_attempted_at = self._stamp()
+
+    def mark_removed(self, *, tenant_id: UUID, mention_id: UUID) -> bool:
+        m = self._mentions.get(mention_id)
+        if m is None or m.tenant_id != tenant_id or m.removed_at is not None:
+            return False
+        m.removed_at = m.content_refresh_attempted_at = self._stamp()
+        return True
 
     def fill_missing_comment_fields(
         self, *, tenant_id: UUID, mention_id: UUID, text: str | None, author_username: str | None
@@ -1015,7 +1033,7 @@ class PostgresMentionsRepository:
             )
             stmt = (
                 select(Mention, sentiment_subq.limit(1).scalar_subquery().label("sentiment_label"))
-                .where(Mention.tenant_id == tenant_id)
+                .where(Mention.tenant_id == tenant_id, Mention.removed_at.is_(None))
                 .order_by(Mention.received_at.desc(), Mention.id.desc())
                 .limit(limit)
             )
@@ -1081,7 +1099,7 @@ class PostgresMentionsRepository:
             else_=literal(SENTIMENT_PENDING),
         )
 
-        conditions = [Mention.tenant_id == tenant_id]
+        conditions = [Mention.tenant_id == tenant_id, Mention.removed_at.is_(None)]
         if query.connection_id is not None:
             conditions.append(Mention.connection_id == query.connection_id)
         if query.origin == ORIGIN_POST:
@@ -1220,6 +1238,7 @@ class PostgresMentionsRepository:
                 Mention.id, Mention.text, Mention.caption, Mention.analysis_text_md5
             ).where(
                 Mention.tenant_id == tenant_id,
+                Mention.removed_at.is_(None),
                 ~already_analyzed,
                 failed < max_attempts,
             )
@@ -1339,14 +1358,18 @@ class PostgresMentionsRepository:
             return ()
         with tenant_session(tenant_id) as session:
             rows = session.scalars(
-                select(Mention).where(Mention.tenant_id == tenant_id, Mention.id.in_(mention_ids))
+                select(Mention).where(
+                    Mention.tenant_id == tenant_id,
+                    Mention.id.in_(mention_ids),
+                    Mention.removed_at.is_(None),
+                )
             ).all()
             return tuple(_target(m) for m in rows)
 
     def plan_scope_refresh(
         self, *, tenant_id: UUID, query: MentionQuery, fresh_seconds: int, limit: int
     ) -> RefreshPlan:
-        conditions = [Mention.tenant_id == tenant_id]
+        conditions = [Mention.tenant_id == tenant_id, Mention.removed_at.is_(None)]
         if query.connection_id is not None:
             conditions.append(Mention.connection_id == query.connection_id)
         if query.since is not None:
@@ -1408,6 +1431,19 @@ class PostgresMentionsRepository:
                 .where(Mention.id == mention_id, Mention.tenant_id == tenant_id)
                 .values(content_refresh_attempted_at=func.now())
             )
+
+    def mark_removed(self, *, tenant_id: UUID, mention_id: UUID) -> bool:
+        with tenant_session(tenant_id) as session:
+            updated = session.execute(
+                update(Mention)
+                .where(
+                    Mention.id == mention_id,
+                    Mention.tenant_id == tenant_id,
+                    Mention.removed_at.is_(None),
+                )
+                .values(removed_at=func.now(), content_refresh_attempted_at=func.now())
+            ).rowcount
+            return updated == 1
 
     def fill_missing_comment_fields(
         self, *, tenant_id: UUID, mention_id: UUID, text: str | None, author_username: str | None

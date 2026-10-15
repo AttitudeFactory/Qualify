@@ -44,6 +44,7 @@ from qualify_api.connections.resolver import AuthenticatedClient, InjectingCrede
 from qualify_api.mentions.meta_client import (
     HttpMentionedContentClient,
     MentionedContentReadError,
+    is_gone,
     is_rate_limited,
     is_transient,
 )
@@ -361,7 +362,9 @@ def list_mentions_for_tenant(
 #   - a throttling answer from Meta, or a reported usage at/above REFRESH_USAGE_STOP_PERCENT,
 #     stops the run: nothing more is requested, what is left is reported as pending;
 #   - a mention re-read successfully in the last REFRESH_FRESH_SECONDS is current and is
-#     not requested again (two tabs, a double click).
+#     not requested again (two tabs, a double click);
+#   - a mention whose content Meta confirms deleted (`is_gone`) is marked removed and
+#     stops showing — it is not a failure, there is nothing left to read.
 # One read per mention; the link only while it is not stored yet (it does not change).
 
 REFRESH_MAX_PER_RUN = 200
@@ -371,7 +374,7 @@ REFRESH_BACKOFF_SECONDS = (1.0, 3.0)
 REFRESH_USAGE_STOP_PERCENT = 75
 REFRESH_FRESH_SECONDS = 60
 
-_Outcome = Literal["refreshed", "failed", "not_attempted", "credential_failed"]
+_Outcome = Literal["refreshed", "failed", "not_attempted", "credential_failed", "removed"]
 
 
 class _RateLimited(Exception):
@@ -394,6 +397,9 @@ class ContentRefreshReport:
     # Not readable because the CONNECTION has no usable credential (revoked, undecryptable):
     # an account problem, not the mention's — never stamped as an attempt on the mention.
     credential_failed: int = 0
+    # The network confirmed the content was deleted: the mention was removed from the
+    # dashboard (migration 0062). Neither current nor pending — it left the scope.
+    removed: int = 0
 
     @property
     def pending(self) -> int:
@@ -517,6 +523,32 @@ async def _refresh_targets(
                 on_throttle()
                 _LOGGER.warning("mentions refresh stopped: Meta is throttling this account")
                 return "not_attempted"
+            except MentionedContentReadError as exc:
+                if is_gone(exc):
+                    removed = await asyncio.to_thread(
+                        _mark_removed, repo, tenant_id=tenant_id, mention_id=target.mention_id
+                    )
+                    if removed:
+                        _LOGGER.info(
+                            "mentions refresh removed a deleted mention: mention=%s",
+                            target.mention_id,
+                        )
+                        return "removed"
+                # Error codes only, never the body: they are what tells a deleted object
+                # apart from any other refusal when this path is checked in production.
+                _LOGGER.info(
+                    "mentions refresh kept stored content: mention=%s (%s http=%s code=%s "
+                    "subcode=%s)",
+                    target.mention_id,
+                    type(exc).__name__,
+                    exc.http_status,
+                    exc.platform_code,
+                    exc.platform_subcode,
+                )
+                await asyncio.to_thread(
+                    _mark_attempt, repo, tenant_id=tenant_id, mention_id=target.mention_id
+                )
+                return "failed"
             except Exception as exc:  # noqa: BLE001 — keep the stored data, log the type only
                 _LOGGER.info(
                     "mentions refresh kept stored content: mention=%s (%s)",
@@ -562,6 +594,7 @@ async def _refresh_targets(
         # is reported as failed, not requested again.
         failed=outcomes.count("failed") + recently_failed,
         credential_failed=outcomes.count("credential_failed"),
+        removed=outcomes.count("removed"),
         not_attempted=outcomes.count("not_attempted") + max(0, planned_but_left),
         rate_limited=throttled.is_set(),
         usage_paused=usage_paused.is_set() and not throttled.is_set(),
@@ -573,6 +606,15 @@ def _mark_attempt(repo: MentionsRepository, *, tenant_id: UUID, mention_id: UUID
         repo.mark_refresh_attempt(tenant_id=tenant_id, mention_id=mention_id)
     except Exception as exc:  # noqa: BLE001 — bookkeeping only
         _LOGGER.info("mentions refresh attempt not stamped (%s)", type(exc).__name__)
+
+
+def _mark_removed(repo: MentionsRepository, *, tenant_id: UUID, mention_id: UUID) -> bool:
+    """False (the mention then counts as failed and keeps showing) when the write fails."""
+    try:
+        return repo.mark_removed(tenant_id=tenant_id, mention_id=mention_id)
+    except Exception as exc:  # noqa: BLE001 — the next run sees the same answer again
+        _LOGGER.warning("mentions refresh could not remove (%s)", type(exc).__name__)
+        return False
 
 
 async def _read_content(

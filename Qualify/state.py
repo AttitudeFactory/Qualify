@@ -411,6 +411,7 @@ class DashboardState(rx.State):
         warning that stays with what to do. A run superseded by a newer one, or by
         reopening the screen, never writes its outcome over theirs."""
         report = None
+        visible = None
         stopped_notice = ""
         try:
             async with self:
@@ -424,7 +425,6 @@ class DashboardState(rx.State):
                 logger.warning("mentions refresh: no tenant for this session")
                 stopped_notice = _NO_TENANT
             else:
-                visible = None
                 if visible_ids:
                     try:
                         visible = await refresh_content(tenant_id, visible_ids)
@@ -459,8 +459,12 @@ class DashboardState(rx.State):
             if report is None:
                 self.refresh_notice, self.refresh_tone = REFRESH_FAILED_NOTICE, "warn"
                 return
+            # A mention whose content was deleted left the scope: it is neither current nor
+            # pending, only announced. The visible pass removes before the scope run plans,
+            # so both passes' removals are added up.
+            removed = report.removed + (visible.removed if visible is not None else 0)
             outcome = refresh_outcome(
-                in_scope=report.in_scope,
+                in_scope=report.in_scope - report.removed,
                 refreshed=report.refreshed,
                 already_fresh=report.already_fresh,
                 failed=report.failed,
@@ -469,6 +473,7 @@ class DashboardState(rx.State):
                 usage_paused=report.usage_paused,
                 planning_failed=report.planning_failed,
                 credential_failed=report.credential_failed,
+                removed=removed,
             )
             pending = outcome.tone == "warn"
             self.refresh_notice = outcome.message if pending else ""

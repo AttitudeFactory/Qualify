@@ -347,6 +347,25 @@ async def test_the_background_run_updates_the_visible_page_then_the_scope(
     assert len(emitted) == 1
 
 
+async def test_a_mention_deleted_on_the_network_never_leaves_a_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The case of the 2026-10-15 report: the visible pass finds one mention deleted, the
+    scope run then sees only the rest. The run is done — no "no se pudo leer" warning."""
+    _wire(
+        monkeypatch,
+        visible=_report(in_scope=2, refreshed=1, removed=1),
+        scope=_report(in_scope=1, refreshed=0, already_fresh=1),
+    )
+    state = _running_state()
+
+    emitted = await _run(state)
+
+    assert (state.refresh_notice, state.refresh_tone) == ("", "")
+    assert state.is_refreshing is False
+    assert len(emitted) == 1
+
+
 async def test_a_throttled_visible_pass_stops_the_run_and_says_so(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

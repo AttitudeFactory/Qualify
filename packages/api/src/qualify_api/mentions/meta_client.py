@@ -90,6 +90,15 @@ def is_transient(exc: MentionedContentReadError) -> bool:
     return (status is not None and status >= 500) or exc.platform_code in _TRANSIENT_CODES
 
 
+def is_gone(exc: MentionedContentReadError) -> bool:
+    """Meta confirms the mentioned object no longer exists: HTTP 400, `code=100`,
+    `error_subcode=33`. The same narrow signature `inbox.service._is_missing_media_error`
+    acts on ([VERIFIED live 2026-09-01] on a deleted media) — `code=100` alone also covers
+    unrelated validation errors, so it is never matched without the subcode. Any other
+    refusal (comments disabled, permissions) keeps the mention."""
+    return exc.http_status == 400 and exc.platform_code == 100 and exc.platform_subcode == 33
+
+
 def usage_percent(headers: httpx.Headers) -> int:
     """The highest usage Meta reports for this app (`X-App-Usage`) or this account's
     Business Use Case budget (`X-Business-Use-Case-Usage`), 0-100. Unreadable or absent
