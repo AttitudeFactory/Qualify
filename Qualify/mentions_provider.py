@@ -12,9 +12,10 @@ This module owns exactly one thing: turning a `MentionRecord` (a service shape) 
   on Instagram; the reception time only when Meta did not give one.
 - **Canal** / **Tipo** — where (Instagram) and what (Publicación / Comentario), apart.
 - **Autor** — who mentioned the account: the publication's author for a mention in a
-  caption. Instagram does not share who wrote a comment that mentions the account, so a
-  comment mention reads "No disponible" with that reason; the publication's author is
-  NEVER shown as the comment's.
+  caption; for a comment on one of the account's OWN posts, the commenter (the `comments`
+  webhook carries it). Instagram does not share who wrote a comment on SOMEONE ELSE's post
+  that mentions the account, so that comment mention reads "No disponible" with that
+  reason; the publication's author is NEVER shown as the comment's.
 - **Mención** — the caption or the comment text, full text on hover.
 - **Likes** — of that mention (the post or the comment). Absent is never a 0: "Ocultos"
   when the owner hid them, "—" when Meta gave nothing.
@@ -147,10 +148,13 @@ def account_labels(tenant_id: UUID) -> dict[UUID, str]:
 def _author(record: MentionRecord, *, is_comment: bool, unread: bool) -> tuple[str, str]:
     if unread:
         return NOT_AVAILABLE, AUTHOR_NOTE_UNREAD
-    if is_comment:
-        return NOT_AVAILABLE, AUTHOR_NOTE_COMMENT
+    # A comment row's author can only be the commenter: it is written solely from the
+    # `comments` webhook's `from` (comments on the account's own posts); no read ever puts
+    # the publication's owner there.
     if record.author_username:
         return f"@{record.author_username}", ""
+    if is_comment:
+        return NOT_AVAILABLE, AUTHOR_NOTE_COMMENT
     return NOT_AVAILABLE, AUTHOR_NOTE_POST
 
 

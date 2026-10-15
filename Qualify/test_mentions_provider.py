@@ -10,7 +10,7 @@ reception dates kept apart, every sentiment state passed through as its own valu
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -113,6 +113,21 @@ def test_comment_mention_never_borrows_the_publication_author() -> None:
     assert vm.author == NOT_AVAILABLE
     assert vm.author_note == AUTHOR_NOTE_COMMENT
     assert vm.text == "@qualifymkt.co mira esto"
+
+
+def test_a_comment_on_an_own_post_shows_its_commenter() -> None:
+    """Only the `comments` webhook writes a comment row's author, and it is the commenter."""
+    vm = _vm(replace(_record(comment=True), author_username="yesii_roa"))
+
+    assert (vm.kind, vm.author, vm.author_note) == ("comment", "@yesii_roa", "")
+
+
+def test_an_unread_comment_never_shows_an_author() -> None:
+    record = replace(
+        _record(comment=True, enrichment=ENRICHMENT_FAILED), author_username="yesii_roa"
+    )
+
+    assert (_vm(record).author, _vm(record).author_note) == (NOT_AVAILABLE, AUTHOR_NOTE_UNREAD)
 
 
 def test_a_failed_meta_read_says_so_in_author_and_text() -> None:
