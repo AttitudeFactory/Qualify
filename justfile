@@ -200,13 +200,13 @@ fmt:
 # --- CI mirrors (.github/workflows/ci.yml) ------------------------------------------
 # Same commands the workflow runs, so a red job can be reproduced here before pushing.
 
-# `lint` job: ruff check + format --check (the workflow installs only the `dev` group).
+# The lint steps of the `test` job: ruff check + format --check.
 ci-lint:
     uv run --no-sync ruff check .
     uv run --no-sync ruff format --check .
 
 # `test` job: offline tests with coverage per package. XML in coverage.xml, table in
-# coverage-summary.md (what the PR comment shows). `db` tests run in the `test-db` job
+# coverage-summary.md (what the PR comment shows). `db` tests run later in the same job
 # (`just test-db` here); `integration` never runs in CI.
 ci-test:
     uv run --no-sync pytest -m "not integration and not db and not slow" \
@@ -255,7 +255,11 @@ merge pr *flags:
     #!/usr/bin/env bash
     set -euo pipefail
     repo=repos/AttitudeFactory/Qualify
-    required="changes lint test test-db node-render docker-deploy"
+    # `test` must always report. The others live in path-filtered workflows (images.yml,
+    # render.yml) that start no runner when the PR does not touch their inputs, so they are
+    # required only when they reported — and then they must be green.
+    required="test"
+    required_if_present="docker-deploy node-render docker-render"
     pr_state=$(gh api "$repo/pulls/{{pr}}" --jq '"\(.state) \(.merged) \(.head.sha)"')
     read -r state merged sha <<<"$pr_state"
     [ "$state" = open ] || { echo "just merge: #{{pr}} no está abierto (state=$state merged=$merged)." >&2; exit 1; }
@@ -264,11 +268,11 @@ merge pr *flags:
       gh api "$repo/commits/$sha/status" --jq '.statuses[] | "\(.context)=\(.state | ascii_upcase)"'
     )
     missing=""; failed=""
-    for job in $required; do
+    for job in $required $required_if_present; do
       state=$(printf '%s\n' "$rollup" | awk -F= -v j="$job" '$1==j {print $2; exit}')
       case "${state:-}" in
         SUCCESS|SKIPPED) ;;
-        "") missing="$missing $job" ;;
+        "") case " $required " in *" $job "*) missing="$missing $job" ;; esac ;;
         *) failed="$failed $job=$state" ;;
       esac
     done

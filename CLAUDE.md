@@ -107,9 +107,9 @@ Full handoff, including who was mid-what: `.claude/sprint-state-2026-07-26-c04-i
 **Founder's rule (2026-10-05): nothing merges to `main` with CI red; only a repository
 administrator may bypass, deliberately.** GitHub cannot enforce it on this plan (private
 repo, organization on GitHub Free → branch protection and rulesets answer 403), so the
-gate is `just merge <pr>`: it refuses unless the required checks (`changes`, `lint`, `test`, `test-db`,
-`node-render`, `docker-deploy`) are green or skipped — `changes` is required because a failed
-`changes` would otherwise turn the jobs gated on it into green skips; `just merge <pr> --admin` forces it and leaves a comment on the PR.
+gate is `just merge <pr>`: it refuses unless `test` is green, and — **only when they reported** —
+`docker-deploy`, `node-render` and `docker-render` too (they live in path-filtered workflows that
+start no runner on PRs that do not touch their inputs); `just merge <pr> --admin` forces it and leaves a comment on the PR.
 **Agents merge through `just merge`, never `gh pr merge` directly.** The recipe talks to GitHub over REST only (`gh api`): Claude Code cloud sessions have `gh` authenticated through an injected token but **GraphQL is blocked there**, so `gh pr view/checks/merge/comment` fail in the cloud while `gh api` works — keep any new gh tooling on REST. The ruleset to apply
 the day the plan allows it is `infra/github/ruleset-main.json` (`just protect-main`).
 
@@ -126,8 +126,8 @@ just seed         # the two real tenants, via admin_session()
 just test         # uv run pytest -m "not integration"  — mirrors CI
 just test-db      # only the tests needing the compose Postgres/Redis
 just lint / fmt   # ruff check . / ruff format .
-just ci-lint      # exactly the CI `lint` job (ruff check + format --check), no sync
-just ci-test      # exactly the CI `test` job: offline tests + coverage per package
+just ci-lint      # the lint steps of the CI `test` job (ruff check + format --check), no sync
+just ci-test      # the offline-tests step of the CI `test` job: offline tests + coverage per package
 just audit        # pip-audit over the lock + npm audit (packages/render) — informational
 just down         # docker compose down -v — DROPS the pgdata volume
 just calendar-tick --tenant <uuid>     # QUA-111: one Planificador tick — PUBLISHES FOR REAL
@@ -153,22 +153,19 @@ For the Reflex UI specifically, follow the **reflex-process-management** skill (
 
 **Both numbers cover the root `testpaths` only** (`packages/api|shared|scraper/tests` + `Qualify/`). `packages/models/tests` is deliberately excluded from the root gate (R11(b) — collecting it would drag the `ml`/torch group into the default run), so **neither number says anything about the models suite** — see the `jiwer` trap above before claiming it passes (with the `--with jiwer` workaround it measured 288/288 offline on 2026-08-08).
 
-### CI (GitHub Actions, since 2026-10-05)
+### CI (GitHub Actions, since 2026-10-05; minutes cut 2026-10-15)
 
-Two workflows under `.github/workflows/`, both triggered by `pull_request` → `main`, `workflow_dispatch`, and (`ci` only) `push` to `main` — **never** by pushes to other branches, so a PR costs one run per push, not two. Older runs of the same PR are cancelled. The repo is private on GitHub Free (2,000 Actions min/month): every job has a timeout, uv/npm/Docker layers are cached, and nothing uploads SARIF (needs Advanced Security). All actions are pinned to commit SHAs; Dependabot (`.github/dependabot.yml`, weekly, grouped) bumps uv, npm (`packages/render`), actions and the render Dockerfile base image.
+Triggered by `pull_request` → `main` (never on drafts) and `workflow_dispatch`. **`ci` does not run on push to `main`**: the PR already passed the same gate and `just merge` refuses a red PR. Only `render` (when `packages/render/**` changes), `sonar` (opt-in) and `deploy` react to pushes to main. Older runs of the same PR are cancelled. **Budget: GitHub Free from 2026-11 = 2,000 Actions min/month, every job billed rounded up to the whole minute** (the org is on GitHub Enterprise, 50,000 min, until then). 2026-10-01..15 measured **4,294 billed min (~8,600/month) with 94 merges** — mostly short jobs paying a full minute each, CI repeated on main, Docker on every PR and a deploy per merge. Hence the shape below: **one** blocking job, Docker/Node/security only when their inputs change, Claude review on demand, and deploys switched from per-merge to daily (`QUALIFY_AUTO_DEPLOY=daily`) on **2026-11-12**. Every job has a timeout, uv/npm/Docker layers are cached, nothing uploads SARIF (needs Advanced Security). All actions are pinned to commit SHAs; Dependabot (`.github/dependabot.yml`, weekly, grouped) bumps uv, npm (`packages/render`), actions and the render Dockerfile base image.
 
 | Workflow / job | Runs | What | Blocks? |
 |---|---|---|---|
-| `ci` / `lint` | always | `ruff check .` + `ruff format --check .` (dev group only) | **yes** |
-| `ci` / `test` | always | `pytest -m "not integration and not db and not slow"` + `--cov` per package; `coverage.xml`/`.json` as artifact, per-package table in the step summary and a sticky PR comment (`.github/scripts/coverage_summary.py`) | **yes** (coverage % informs only) |
-| `ci` / `test-db` | always | Postgres 16 + Redis 7 service containers, `alembic upgrade head` → `downgrade base` (must leave no revision) → `upgrade head`, then `pytest -m db` | **yes** (reversibility is a gate, ADR 27) |
-| `ci` / `node-render` | if `packages/render/package.json` exists | `npm ci` + `npm run typecheck` (Node 22, npm cache) | **yes** |
-| `ci` / `docker-render` | if `packages/render/Dockerfile` exists AND (PR touches `packages/render/**` OR main) | `docker build` with `push: false`, GHA layer cache | **yes** |
-| `ci` / `docker-deploy` | PR touching an input of the production images (`deploy/**`, `Qualify/**`, `packages/*/src/**`, lock files, `rxconfig.py`, `assets/**`, `migrations/**`…) OR main | builds `deploy/Dockerfile` `web` + `app` (`push: false`, GHA cache), then smoke: Reflex backend `/ping` 200 and Caddy serving `/`, `/login`, a dynamic route | **yes** (required by `just merge`; a skip counts as green) |
-| `deploy` / `images` + `deploy` | **manual only** (`workflow_dispatch`), plus every green `ci` run on main once the repo variable `QUALIFY_AUTO_DEPLOY=true` | builds + pushes `ghcr.io/attitudefactory/qualify-{app,web,deploy}:<sha>` for a commit of main, then ssh with a forced-command key that can only send `deploy <sha>` → `deploy/server-deploy.sh` (pull; compose/scripts from `qualify-deploy`, never from the client; migrate → up) + external smoke. Inert until the founder sets the secrets (`docs/despliegue-hetzner.md` §7.1) | n/a (deploys, does not gate) |
-| `security` / `sast` | PR, weekly (Mon 06:17 UTC), manual | semgrep (`p/ci`+`p/python`+`p/github-actions`, no account, metrics off) + bandit (medium+) over `packages/*/src` and `Qualify/` | no (summary + artifact) |
-| `security` / `deps` | same | `pip-audit` over `uv export` of the locked default groups (never `ml`) + `npm audit --audit-level=high` in `packages/render` | no |
-| `security` / `repo` | same | `trivy fs` (vuln + secret + misconfig, HIGH/CRITICAL) + `gitleaks git` over the full history (binary from the release, checksum-verified; the official Action needs an org licence) | trivy no; **gitleaks yes** when it finds a committed secret (redacted output — rotate, then purge or allowlist in `.gitleaks.toml`) |
+| `ci` / `test` | every non-draft PR event (not on main) | ONE runner, ONE `uv sync`: `ruff check --output-format=github` (inline annotations) + `ruff format --check` → gitleaks over the PR's own commits → `pytest -m "not integration and not db and not slow"` + `--cov` per package (artifact, step summary, sticky PR comment via `.github/scripts/coverage_summary.py`) → Postgres 16 + Redis 7 service containers: `alembic upgrade head` → `downgrade base` (must leave no revision) → `upgrade head` → `pytest -m db` | **yes** (coverage % informs only; reversibility is a gate, ADR 27; gitleaks fails on a real secret) |
+| `images` / `docker-deploy` | PR touching what the **build** depends on (`deploy/**`, `.dockerignore`, `pyproject.toml`/`uv.lock`/member manifests, `rxconfig.py`, `reflex.lock/**`) — **not** plain code PRs (`Qualify/**`, `packages/*/src/**`: `test` covers the code, and a build that breaks in `deploy` keeps the previous release live) and **not** on main | builds `deploy/Dockerfile` `web` + `app` (`push: false`, GHA cache), validates both Caddyfiles, then smoke: Reflex backend `/ping` 200 and Caddy serving `/`, `/login`, a dynamic route | **yes, when it ran** |
+| `render` / `node-render` + `docker-render` | PR or main touching `packages/render/**` | `npm ci` + `npm run typecheck` (Node 22); `docker build` with `push: false` | **yes, when they ran** |
+| `deploy` / `resolve` → `images` → `deploy` → `notify` | manual (`workflow_dispatch`), plus on its own per the repo variable `QUALIFY_AUTO_DEPLOY`: `merge` (or `true`) = every push to main; `daily` = 07:23 UTC, the tip of main only if GHCR has no image for it yet; anything else = manual only. Set to per-merge until **2026-11-12**, then `daily` | builds + pushes `ghcr.io/attitudefactory/qualify-{app,web,deploy}:<sha>` (arm64), ssh with a forced-command key that can only send `deploy <sha>` → `deploy/server-deploy.sh` (pull; migrate → up) + external smoke; `notify` posts the result to Cliq #devops (`CLIQ_DEVOPS_WEBHOOK_URL`) | n/a (deploys, does not gate) |
+| `security` / `sast`, `deps`, `repo` | weekly (Mon 06:17 UTC) on main, manual, and PRs touching dependencies, workflows, `deploy/**`, `infra/**`, Dockerfiles | semgrep + bandit (medium+); `pip-audit` over `uv export` (never `ml`) + `npm audit` high+; `trivy fs` + `gitleaks git` over the **full** history | trivy/semgrep/bandit/audits no (summary + artifact); **gitleaks yes** (redacted — rotate, then purge or allowlist in `.gitleaks.toml`) |
+| `review` / `Claude auto-review` | **on demand only**: add the label `claude-review` to the PR (remove + re-add for another pass); `@claude` in a comment for anything else | review by Claude | no |
+| `sonar` / `scan main` | push to main, only with the repo variable `SONAR_ENABLED=true` | SonarQube Community Build | no |
 
 Reproduce locally: `just ci-lint`, `just ci-test`, `just test-db` (needs `just up`), `just audit`. Reading a run: `gh run list --workflow ci --limit 5`, `gh run view <id>` (job list + durations), `gh run view <id> --log-failed` (only the failing steps), `gh run watch <id>`; scanner findings live in each run's **Summary** tab and in the `sast-reports` / `dependency-audits` / `repo-scans` artifacts. The `ml`/torch group is never installed in CI — `packages/models/tests` is not part of the gate (R11(b) above).
 

@@ -14,10 +14,19 @@
 #             QUALIFY_DEPLOY_SSH_TARGET       e.g. deploy@203.0.113.10
 #             QUALIFY_DEPLOY_SSH_KNOWN_HOSTS  `ssh-keyscan -t ed25519 <ip>` output, verified
 #             CLIQ_DEVOPS_WEBHOOK_URL         optional: #devops notice per deploy (job `notify`)
-#   variable  QUALIFY_AUTO_DEPLOY = true      also deploy every green `ci` run on main
-#                                             (without it: manual runs only)
+#   variable  QUALIFY_AUTO_DEPLOY             when to deploy on its own (manual always works):
+#               merge (or true)  every push to main = every merge (the PR already passed `ci`)
+#               daily            the tip of main once a day, only if it changed
+#               anything else    never — manual runs only
 #   server    /opt/qualify/bin/server-deploy.sh + authorized_keys line + `docker login ghcr.io`
 #             (docs/despliegue-hetzner.md, "Deploy desde GitHub Actions")
+#
+# Why `daily` exists: on GitHub Free (2,000 min/month) a deploy costs ~8 billed minutes and
+# October 2026 saw ~190 merges/month — per-merge deploys alone would eat the whole quota.
+# The daily run ships whatever merged that day in one go, and skips when the tip of main
+# already has images in GHCR (built = already deployed, or a failed deploy that a human must
+# look at — retrying it every night would not help). In the mode that is off, the trigger
+# still fires but `resolve` is skipped by its `if:` before any runner starts: zero minutes.
 #
 # Rollback: run this workflow by hand with an older sha of main (its images are still in
 # GHCR). Across a migration, tick `skip_migrate`: the older image cannot run `alembic upgrade`
@@ -38,10 +47,12 @@ on:
         type: boolean
         required: false
         default: false
-  workflow_run:
-    workflows: ["ci"]
-    types: [completed]
+  push:
     branches: ["main"]
+  schedule:
+    # Daily 07:23 UTC = 03:23 Caracas — off the hour (GitHub delays on-the-hour crons), and
+    # outside business hours, since `up` restarts the app containers for a few seconds.
+    - cron: "23 7 * * *"
 
 # One production deploy at a time, never cancelled half-way.
 concurrency:
@@ -54,37 +65,51 @@ permissions:
 jobs:
   # Which commit, and whether to deploy it at all.
   resolve:
-    # Auto: only a green `ci` push run on main, and only when the founder turned it on.
+    # By hand, always; on its own, per QUALIFY_AUTO_DEPLOY (see the header).
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (vars.QUALIFY_AUTO_DEPLOY == 'true' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push')
+      (github.event_name == 'push' &&
+       (vars.QUALIFY_AUTO_DEPLOY == 'merge' || vars.QUALIFY_AUTO_DEPLOY == 'true')) ||
+      (github.event_name == 'schedule' && vars.QUALIFY_AUTO_DEPLOY == 'daily')
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: read # the scheduled run asks GHCR whether the tip was already built
     outputs:
       sha: ${{ steps.sha.outputs.sha }}
       go: ${{ steps.sha.outputs.go }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || inputs.ref }}
+          ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
       # Production runs reviewed code only: any commit of main (older ones = rollback, by
-      # hand), never an unmerged branch. An AUTO deploy only ships the tip of main: `ci` runs
-      # can finish out of order, and the concurrency group serializes without ordering, so an
-      # older commit must never land on top of a newer one.
+      # hand), never an unmerged branch. A per-merge run ships its push only while it is
+      # still the tip (the concurrency group serializes without ordering, so an older commit
+      # must never land on top of a newer one). The scheduled run ships the tip, and only
+      # when GHCR has no image for it yet: images are pushed by this workflow alone, right
+      # before deploying, so "already built" means "already deployed" (or a failed deploy
+      # that needs a human, not a nightly retry). By hand it always goes.
       - id: sha
         env:
           EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           sha=$(git rev-parse HEAD)
           git merge-base --is-ancestor "$sha" origin/main ||
             { echo "::error::$sha is not on main; only commits of main are deployed."; exit 1; }
           go=true
-          if [ "$EVENT" = workflow_run ] && [ "$sha" != "$(git rev-parse origin/main)" ]; then
-            echo "::notice::$sha is no longer the tip of main; the auto-deploy of the tip will ship it."
+          if [ "$EVENT" = push ] && [ "$sha" != "$(git rev-parse origin/main)" ]; then
+            echo "::notice::$sha is no longer the tip of main; the deploy of the tip will ship it."
             go=false
+          fi
+          if [ "$EVENT" = schedule ]; then
+            echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
+            if docker buildx imagetools inspect "ghcr.io/attitudefactory/qualify-app:$sha" >/dev/null 2>&1; then
+              echo "::notice::$sha (tip of main) already has images in GHCR — nothing new to deploy."
+              go=false
+            fi
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "go=$go" >> "$GITHUB_OUTPUT"
@@ -206,8 +231,8 @@ jobs:
           RESOLVE: ${{ needs.resolve.result }}
           IMAGES: ${{ needs.images.result }}
           DEPLOY: ${{ needs.deploy.result }}
-          SHA: ${{ needs.resolve.outputs.sha || github.event.workflow_run.head_sha || inputs.ref }}
-          TRIGGER: ${{ github.event_name == 'workflow_dispatch' && format('manual, by {0}', github.actor) || 'auto, green ci on main' }}
+          SHA: ${{ needs.resolve.outputs.sha || inputs.ref || 'main' }}
+          TRIGGER: ${{ github.event_name == 'workflow_dispatch' && format('manual, by {0}', github.actor) || (github.event_name == 'push' && 'auto, merge to main' || 'auto, daily tip of main') }}
           ACTION: ${{ inputs.skip_migrate && 'rollback (no migrate)' || 'deploy' }}
           PUBLIC_URL: ${{ vars.QUALIFY_PUBLIC_URL || 'https://qualify.attitudefactory.co' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

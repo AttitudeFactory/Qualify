@@ -120,13 +120,25 @@ El runbook completo, desde el primer despliegue hasta los respaldos, está en [`
 
 ### Cómo llega un cambio a producción
 
-**Despliegue automático (activado desde el 2026-10-14).** Cada merge a `main` cuyo `ci` termina en verde se despliega solo:
+**Despliegue automático.** Lo controla la variable de repositorio `QUALIFY_AUTO_DEPLOY`:
+
+| Valor | Cuándo despliega solo | Costo aproximado |
+|---|---|---|
+| `merge` (o `true`) | en cada merge a `main` | ~8 min de Actions por merge |
+| `daily` | una vez al día, 07:23 UTC (03:23 en Caracas), solo si `main` cambió desde el último despliegue | ~8 min por día con cambios |
+| cualquier otro (`off`) | nunca; solo a mano | 0 |
+
+**Calendario:** hasta el **12 de noviembre de 2026** queda en `merge`, mientras la organización tiene GitHub Enterprise (50.000 minutos al mes). Ese día se pasa a `daily`, porque con GitHub Free (2.000 minutos al mes) un despliegue por merge se come la cuota sola: en la primera quincena de octubre hubo 94 merges.
+
+```bash
+gh variable set QUALIFY_AUTO_DEPLOY --body daily
+```
 
 ```
-PR → just merge <pr> → ci verde en main → flujo `deploy` (automático) → producción
+PR (ci en verde) → just merge <pr> → flujo `deploy` (por merge o diario) → producción
 ```
 
-1. **`ci`** solo prueba y **nunca publica imágenes**.
+1. **`ci`** corre solo en los PRs, no en `main` (el PR ya pasó esa misma prueba), y **nunca publica imágenes**.
 2. **`deploy`** (`.github/workflows/deploy.yml`) hace todo lo demás para ese commit:
    - **`images`**: construye y publica `ghcr.io/attitudefactory/qualify-{app,web,deploy}:<sha completo>`.
    - **`deploy`**: entra por ssh al servidor, con una llave que solo puede correr `server-deploy.sh`. El servidor descarga las imágenes, corre `migrate`, levanta el stack y prueba la salud a través del proxy.
@@ -143,9 +155,10 @@ Por eso un commit solo tiene imágenes en GHCR si `deploy` lo construyó. Si alg
 
 | Qué | Comando |
 |---|---|
-| **Apagar** el despliegue automático (desde ahí, solo a mano) | `gh variable set QUALIFY_AUTO_DEPLOY --body false` |
-| **Encender** el despliegue automático | `gh variable set QUALIFY_AUTO_DEPLOY --body true` |
-| ¿Está encendido? | `gh variable get QUALIFY_AUTO_DEPLOY` |
+| Desplegar **en cada merge** | `gh variable set QUALIFY_AUTO_DEPLOY --body merge` |
+| Desplegar **una vez al día** (desde el 2026-11-12) | `gh variable set QUALIFY_AUTO_DEPLOY --body daily` |
+| **Apagar** el despliegue automático (desde ahí, solo a mano) | `gh variable set QUALIFY_AUTO_DEPLOY --body off` |
+| ¿En qué modo está? | `gh variable get QUALIFY_AUTO_DEPLOY` |
 | Desplegar `main` a mano (con el automático apagado, o para repetir uno) | `gh workflow run deploy -f ref=main` |
 | Desplegar un commit concreto de `main` | `gh workflow run deploy -f ref=<sha de 40 caracteres>` |
 | **Rollback** a un commit anterior | `gh workflow run deploy -f ref=<sha anterior de 40>` |
@@ -169,7 +182,14 @@ Cosas que fallan si se olvidan:
 - **Si un cambio necesita preparar el servidor antes** (una variable nueva en `.env.prod`, el proxy de entrada, un volumen), hay que apagar el despliegue automático antes de mergear. Luego se prepara el servidor, se despliega a mano y se vuelve a encender. Así se hizo el corte del proxy de entrada el 2026-10-14.
 - **Cambios en `deploy/edge/`** no llegan con el despliegue de Qualify: se aplican con `just edge-install qualify-prod`, desde un `main` actualizado (`git pull --ff-only origin main` antes). Reinicia el proxy, así que Qualify y Pedidos se cortan 1 o 2 segundos.
 
-**Minutos de Actions.** La organización está en GitHub Enterprise (50.000 minutos al mes). Cada despliegue gasta unos 10 minutos facturados, además del `ci` de cada merge.
+**Minutos de Actions.** Hasta noviembre la organización está en GitHub Enterprise (50.000 minutos al mes); después vuelve a GitHub Free (2.000). GitHub cobra cada trabajo redondeado al minuto. Para caber en Free, desde el 2026-10-15:
+
+- **`ci`** es un solo trabajo, `test`, y corre solo en PRs que no sean borradores.
+- **La imagen Docker en el PR** solo se construye si cambian `deploy/`, el Dockerfile o las dependencias. Si un PR de código rompe la imagen, falla el `deploy` y producción sigue en la versión anterior.
+- **El escaneo de seguridad** corre en PRs que tocan dependencias, flujos o `deploy/`, y además una vez por semana.
+- **La revisión de Claude** se pide poniendo la etiqueta `claude-review` en el PR, o escribiendo `@claude` en un comentario.
+
+Para ver el gasto del mes: `gh api orgs/AttitudeFactory/settings/billing/usage --jq '[.usageItems[]|select(.product=="actions")|.quantity]|add'`.
 
 ### Sesión remota de Claude en el servidor
 
