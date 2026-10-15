@@ -110,16 +110,66 @@ Qualify/
 
 ## Operación en producción (runbook)
 
-Producción es un VPS de Hetzner (`qualify-prod` en `~/.ssh/config`) con el stack de `deploy/docker-compose.prod.yml`: `caddy`, `api`, `reflex`, `postgres` y `redis`. El runbook completo, desde el primer despliegue hasta los respaldos, está en [`docs/despliegue-hetzner.md`](docs/despliegue-hetzner.md). Todo se corre desde la Mac, dentro del repo:
+Producción es un VPS de Hetzner (`qualify-prod` en `~/.ssh/config`, `2.28.112.133`). En él conviven dos productos que no se tocan entre sí:
+
+- **Qualify** en `/opt/qualify`: el stack de `deploy/docker-compose.prod.yml` (`caddy` interno, `api`, `reflex`, `webhook-worker`, `whatsapp-worker`, `postgres`, `redis`).
+- **Pedidos** (`pedidos-backend`, `pedidos-base`), otro producto con su propio despliegue.
+- **El proxy de entrada** en `/opt/edge`: un Caddy estándar, dueño de los puertos 80/443 y de los certificados de los dos dominios. Ningún despliegue de Qualify lo toca, así que Pedidos no se cae cuando Qualify se reinicia.
+
+El runbook completo, desde el primer despliegue hasta los respaldos, está en [`docs/despliegue-hetzner.md`](docs/despliegue-hetzner.md). Todo se corre desde la Mac, dentro del repo.
+
+### Cómo llega un cambio a producción
+
+**Despliegue automático (activado desde el 2026-10-14).** Cada merge a `main` cuyo `ci` termina en verde se despliega solo:
+
+```
+PR → just merge <pr> → ci verde en main → flujo `deploy` (automático) → producción
+```
+
+1. **`ci`** solo prueba y **nunca publica imágenes**.
+2. **`deploy`** (`.github/workflows/deploy.yml`) hace todo lo demás para ese commit:
+   - **`images`**: construye y publica `ghcr.io/attitudefactory/qualify-{app,web,deploy}:<sha completo>`.
+   - **`deploy`**: entra por ssh al servidor, con una llave que solo puede correr `server-deploy.sh`. El servidor descarga las imágenes, corre `migrate`, levanta el stack y prueba la salud a través del proxy.
+   - **`notify`**: avisa el resultado en el canal #devops de Cliq.
+3. Tarda unos 7 minutos.
+4. Si se mergean varios PRs seguidos, los despliegues hacen fila: uno a la vez y nunca se cancelan a medias.
+5. **Si falla la construcción o la migración, producción sigue en la versión anterior.**
+
+Por eso un commit solo tiene imágenes en GHCR si `deploy` lo construyó. Si alguien busca en GHCR las imágenes de un commit y no las encuentra, es porque `deploy` no ha corrido para ese commit.
+
+**Nadie despliega a mano en el día a día:** mergear con `just merge` basta. Nunca se corre `server-deploy.sh` ni `docker compose` a mano en el servidor para desplegar.
+
+### Comandos de despliegue
 
 | Qué | Comando |
 |---|---|
-| Desplegar `main` (construye en el servidor, migra, reinicia) | `just deploy qualify-prod` |
-| Desplegar otro ref (rollback = un sha anterior) | `just deploy qualify-prod <sha\|rama>` |
-| Contenedores + salud a través de Caddy | `just deploy-status qualify-prod` |
-| Logs (todos, o un servicio) | `just deploy-logs qualify-prod [api\|reflex\|caddy\|postgres\|redis]` |
+| **Apagar** el despliegue automático (desde ahí, solo a mano) | `gh variable set QUALIFY_AUTO_DEPLOY --body false` |
+| **Encender** el despliegue automático | `gh variable set QUALIFY_AUTO_DEPLOY --body true` |
+| ¿Está encendido? | `gh variable get QUALIFY_AUTO_DEPLOY` |
+| Desplegar `main` a mano (con el automático apagado, o para repetir uno) | `gh workflow run deploy -f ref=main` |
+| Desplegar un commit concreto de `main` | `gh workflow run deploy -f ref=<sha de 40 caracteres>` |
+| **Rollback** a un commit anterior | `gh workflow run deploy -f ref=<sha anterior de 40>` |
+| Rollback **a través de una migración** (el código viejo corre sobre el esquema nuevo) | `gh workflow run deploy -f ref=<sha anterior de 40> -f skip_migrate=true` |
+| Ver los últimos despliegues | `gh run list --workflow deploy --limit 5` |
+| Seguir el último en vivo | `gh run watch $(gh run list --workflow deploy --limit 1 --json databaseId --jq '.[0].databaseId')` |
+| Ver por qué falló uno | `gh run view <id> --log-failed` |
+| Qué commit está en producción | `ssh qualify-prod 'readlink /opt/qualify/current'` |
+| Contenedores + salud | `just deploy-status qualify-prod` |
+| Logs (todos, o un servicio) | `just deploy-logs qualify-prod [api\|reflex\|caddy\|webhook-worker\|whatsapp-worker\|postgres\|redis]` |
 | Respaldo de la base ahora | `just deploy-backup qualify-prod` |
 | Cambiar un secreto, sin desplegar código | `just env-push qualify-prod KEY` |
+| Instalar o actualizar el proxy de entrada (`deploy/edge/`) | `just edge-install qualify-prod` |
+| Desplegar compilando en el servidor, sin Actions | `just deploy qualify-prod [<sha\|rama>]` |
+
+Cosas que fallan si se olvidan:
+
+- **`ref` va con el sha completo (40 caracteres) o `main`.** Un sha corto como `f11aefb` falla en el primer paso, `resolve`, sin tocar el servidor. Para sacar el sha completo: `git rev-parse <sha corto>`.
+- **El commit tiene que estar en `main`.** No se despliegan ramas por Actions.
+- **Un rollback sin `skip_migrate` falla si entre medio hubo una migración**: la imagen vieja no sabe correr `alembic upgrade` sobre una base más nueva. Con `skip_migrate=true` arranca el código viejo sobre el esquema nuevo. Sirve mientras la migración solo añada cosas; si el esquema rompió algo, hay que revisar antes de volver atrás.
+- **Si un cambio necesita preparar el servidor antes** (una variable nueva en `.env.prod`, el proxy de entrada, un volumen), hay que apagar el despliegue automático antes de mergear. Luego se prepara el servidor, se despliega a mano y se vuelve a encender. Así se hizo el corte del proxy de entrada el 2026-10-14.
+- **Cambios en `deploy/edge/`** no llegan con el despliegue de Qualify: se aplican con `just edge-install qualify-prod`, desde un `main` actualizado (`git pull --ff-only origin main` antes). Reinicia el proxy, así que Qualify y Pedidos se cortan 1 o 2 segundos.
+
+**Minutos de Actions.** La organización está en GitHub Enterprise (50.000 minutos al mes). Cada despliegue gasta unos 10 minutos facturados, además del `ci` de cada merge.
 
 ### Sesión remota de Claude en el servidor
 
@@ -135,7 +185,7 @@ En el VPS corre una sesión de Claude Code, **`qualify-prod`**, para operar prod
 
 ### Desplegar sin GitHub Actions
 
-Para no gastar minutos de Actions: se compila en el servidor desde la Mac. En los ejemplos, `78821b7` es el commit que estaba en producción el 2026-10-12 y `113` un número de PR.
+Plan B, para cuando Actions no está disponible (sin minutos, o GitHub caído): se compila en el servidor desde la Mac. En los ejemplos, `78821b7` es el commit que estaba en producción el 2026-10-12 y `113` un número de PR.
 
 ```bash
 just deploy qualify-prod          # main
