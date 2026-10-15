@@ -87,6 +87,20 @@ SENTIMENT_STATES = (
     SENTIMENT_ERROR,
 )
 
+# A removed mention (migration 0062) is re-read at most once per this window, with the
+# capacity a refresh run has left: "no longer available" can end (an account made public
+# again, a block lifted), and a successful read shows it again.
+REMOVED_RECHECK_SECONDS = 24 * 60 * 60
+# At most this many removed mentions are re-checked per run: optional work the person is
+# waiting behind, so it stays small however much room the run has left.
+REMOVED_RECHECK_PER_RUN = 20
+# A mention removed longer ago than this is no longer re-checked (QUA-152, 2026-10-15):
+# after a month, coming back is rare and every recheck spends Meta budget. The row and its
+# content stay as they are — what happens to them later is QUA-127's retention decision.
+# Measured from `removed_at`, the FIRST removal (a repeated removal keeps that stamp; a
+# successful read clears it, so a later removal starts a new window).
+REMOVED_RECHECK_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
+
 # A mention is analyzed at most this many times per analysis version (migration 0051
 # records each failed attempt). After that it is `ERROR` and no longer retried, until a
 # new model/pipeline version starts its attempts from zero.
@@ -167,6 +181,9 @@ class RefreshTarget:
     media_id: str
     comment_id: str | None
     has_permalink: bool = False  # a stored link is never re-requested (it does not change)
+    # A removed mention re-read to see whether it is available again (migration 0062). It
+    # is outside the scope's counts: a run reports it only when it comes back.
+    removed: bool = False
 
 
 @dataclass(frozen=True)
@@ -442,14 +459,28 @@ class MentionsRepository(Protocol):
         ...
 
     def plan_scope_refresh(
-        self, *, tenant_id: UUID, query: MentionQuery, fresh_seconds: int, limit: int
+        self,
+        *,
+        tenant_id: UUID,
+        query: MentionQuery,
+        fresh_seconds: int,
+        limit: int,
+        recheck_removed_seconds: int = REMOVED_RECHECK_SECONDS,
+        recheck_removed_max_age_seconds: int = REMOVED_RECHECK_MAX_AGE_SECONDS,
     ) -> RefreshPlan:
         """The next bounded run over the SCOPE of `query` — its account and period only
         (`connection_id`, `since`); origin, sentiment and search never narrow a refresh.
         Skips mentions re-read successfully in the last `fresh_seconds`, and those whose
         last attempt in that window failed (`recently_failed`); of the rest, takes
         the `limit` least recently ATTEMPTED (never-attempted first), so mentions the
-        network keeps refusing cannot starve the others (migration 0054)."""
+        network keeps refusing cannot starve the others (migration 0054).
+
+        Removed mentions never count in the scope. Only when the live ones leave room
+        under `limit`, up to REMOVED_RECHECK_PER_RUN of those not attempted for
+        `recheck_removed_seconds` are appended (`RefreshTarget.removed`), least recently
+        attempted first — and only while removed for at most
+        `recheck_removed_max_age_seconds` (`removed_at` on or after now minus that age,
+        on the same clock that stamped it)."""
         ...
 
     def refresh_content(
@@ -457,13 +488,28 @@ class MentionsRepository(Protocol):
     ) -> bool:
         """Write a fresh read (QUA-152, migrations 0053/0054): every field the read GAVE is
         stored — `like_count=0` included — and every field it omitted (`None`) keeps its
-        stored value. Marks the row ENRICHED and stamps both refresh timestamps. Returns
-        False when the mention is not this tenant's."""
+        stored value. Marks the row ENRICHED and stamps both refresh timestamps. A
+        successful read proves the content exists, so a removed mention shows again
+        (`removed_at` cleared). Returns False when the mention is not this tenant's."""
         ...
 
     def mark_refresh_attempt(self, *, tenant_id: UUID, mention_id: UUID) -> None:
         """A re-read was attempted and failed: stamp the attempt only (fair ordering of
         the next run). Content and `content_refreshed_at` are untouched."""
+        ...
+
+    def mark_removed(
+        self, *, tenant_id: UUID, mention_id: UUID, unless_read_after: datetime | None = None
+    ) -> bool:
+        """The network says the mentioned content is no longer available (migration 0062):
+        stamp `removed_at` (and the attempt), so every read excludes the mention until a
+        successful read clears it. Content is kept. Idempotent: an already-removed mention
+        keeps its first stamp and still returns True (another run removed it first).
+
+        Returns False — nothing written — when the mention is not this tenant's, or was
+        read successfully AFTER `unless_read_after` (the moment the refusing read started):
+        another tab or the comments webhook read it meanwhile, and that newer evidence
+        says it exists. A read from before that moment never protects it."""
         ...
 
     def fill_missing_comment_fields(
@@ -563,6 +609,7 @@ def _target(m: Mention) -> RefreshTarget:
         media_id=m.media_id,
         comment_id=m.comment_id,
         has_permalink=m.permalink is not None,
+        removed=m.removed_at is not None,
     )
 
 
@@ -672,6 +719,7 @@ class MemoryMentionsRepository:
             m
             for m in self._mentions.values()
             if m.tenant_id == tenant_id
+            and m.removed_at is None
             and (connection_id is None or m.connection_id == connection_id)
         ]
         rows.sort(key=lambda m: (m.received_at, m.id), reverse=True)
@@ -703,7 +751,7 @@ class MemoryMentionsRepository:
         term = query.search_term.lower()
         matched = []
         for m in self._mentions.values():
-            if m.tenant_id != tenant_id:
+            if m.tenant_id != tenant_id or m.removed_at is not None:
                 continue
             if query.connection_id is not None and m.connection_id != query.connection_id:
                 continue
@@ -814,7 +862,7 @@ class MemoryMentionsRepository:
         for candidate_id, m in ordered:
             if limit is not None and len(pending) >= limit:
                 break
-            if m.tenant_id != tenant_id:
+            if m.tenant_id != tenant_id or m.removed_at is not None:
                 continue
             if mention_id is not None and candidate_id != mention_id:
                 continue
@@ -883,20 +931,31 @@ class MemoryMentionsRepository:
         return tuple(
             _target(m)
             for mention_id in mention_ids
-            if (m := self._mentions.get(mention_id)) is not None and m.tenant_id == tenant_id
+            if (m := self._mentions.get(mention_id)) is not None
+            and m.tenant_id == tenant_id
+            and m.removed_at is None
         )
 
     def plan_scope_refresh(
-        self, *, tenant_id: UUID, query: MentionQuery, fresh_seconds: int, limit: int
+        self,
+        *,
+        tenant_id: UUID,
+        query: MentionQuery,
+        fresh_seconds: int,
+        limit: int,
+        recheck_removed_seconds: int = REMOVED_RECHECK_SECONDS,
+        recheck_removed_max_age_seconds: int = REMOVED_RECHECK_MAX_AGE_SECONDS,
     ) -> RefreshPlan:
-        window_start = datetime.now().astimezone() - timedelta(seconds=fresh_seconds)
-        scope = [
+        now = datetime.now().astimezone()
+        window_start = now - timedelta(seconds=fresh_seconds)
+        in_query = [
             m
             for m in self._mentions.values()
             if m.tenant_id == tenant_id
             and (query.connection_id is None or m.connection_id == query.connection_id)
             and (query.since is None or (m.content_posted_at or m.received_at) >= query.since)
         ]
+        scope = [m for m in in_query if m.removed_at is None]
         fresh = [
             m
             for m in scope
@@ -918,8 +977,24 @@ class MemoryMentionsRepository:
                 m.id,
             )
         )
+        live = stale[:limit]
+        recheck_before = now - timedelta(seconds=recheck_removed_seconds)
+        removed_since = now - timedelta(seconds=recheck_removed_max_age_seconds)
+        recheck = sorted(
+            (
+                m
+                for m in in_query
+                if m.removed_at is not None
+                and m.removed_at >= removed_since
+                and (m.content_refresh_attempted_at or m.removed_at) <= recheck_before
+            ),
+            key=lambda m: (m.content_refresh_attempted_at or m.removed_at, m.id),
+        )
         return RefreshPlan(
-            targets=tuple(_target(m) for m in stale[:limit]),
+            targets=tuple(
+                _target(m)
+                for m in [*live, *recheck[: min(limit - len(live), REMOVED_RECHECK_PER_RUN)]]
+            ),
             in_scope=len(scope),
             fresh=len(fresh),
             recently_failed=len(recently_failed),
@@ -934,6 +1009,7 @@ class MemoryMentionsRepository:
         for column, value in _given_content(content).items():
             setattr(m, column, value)
         m.enrichment_status = ENRICHMENT_OK
+        m.removed_at = None
         m.content_refreshed_at = m.content_refresh_attempted_at = self._stamp()
         return True
 
@@ -941,6 +1017,23 @@ class MemoryMentionsRepository:
         m = self._mentions.get(mention_id)
         if m is not None and m.tenant_id == tenant_id:
             m.content_refresh_attempted_at = self._stamp()
+
+    def mark_removed(
+        self, *, tenant_id: UUID, mention_id: UUID, unless_read_after: datetime | None = None
+    ) -> bool:
+        m = self._mentions.get(mention_id)
+        if m is None or m.tenant_id != tenant_id:
+            return False
+        if (
+            unless_read_after is not None
+            and m.content_refreshed_at is not None
+            and m.content_refreshed_at > unless_read_after
+        ):
+            return False
+        stamp = self._stamp()
+        m.removed_at = m.removed_at or stamp
+        m.content_refresh_attempted_at = stamp
+        return True
 
     def fill_missing_comment_fields(
         self, *, tenant_id: UUID, mention_id: UUID, text: str | None, author_username: str | None
@@ -1015,7 +1108,7 @@ class PostgresMentionsRepository:
             )
             stmt = (
                 select(Mention, sentiment_subq.limit(1).scalar_subquery().label("sentiment_label"))
-                .where(Mention.tenant_id == tenant_id)
+                .where(Mention.tenant_id == tenant_id, Mention.removed_at.is_(None))
                 .order_by(Mention.received_at.desc(), Mention.id.desc())
                 .limit(limit)
             )
@@ -1081,7 +1174,7 @@ class PostgresMentionsRepository:
             else_=literal(SENTIMENT_PENDING),
         )
 
-        conditions = [Mention.tenant_id == tenant_id]
+        conditions = [Mention.tenant_id == tenant_id, Mention.removed_at.is_(None)]
         if query.connection_id is not None:
             conditions.append(Mention.connection_id == query.connection_id)
         if query.origin == ORIGIN_POST:
@@ -1220,6 +1313,7 @@ class PostgresMentionsRepository:
                 Mention.id, Mention.text, Mention.caption, Mention.analysis_text_md5
             ).where(
                 Mention.tenant_id == tenant_id,
+                Mention.removed_at.is_(None),
                 ~already_analyzed,
                 failed < max_attempts,
             )
@@ -1339,12 +1433,23 @@ class PostgresMentionsRepository:
             return ()
         with tenant_session(tenant_id) as session:
             rows = session.scalars(
-                select(Mention).where(Mention.tenant_id == tenant_id, Mention.id.in_(mention_ids))
+                select(Mention).where(
+                    Mention.tenant_id == tenant_id,
+                    Mention.id.in_(mention_ids),
+                    Mention.removed_at.is_(None),
+                )
             ).all()
             return tuple(_target(m) for m in rows)
 
     def plan_scope_refresh(
-        self, *, tenant_id: UUID, query: MentionQuery, fresh_seconds: int, limit: int
+        self,
+        *,
+        tenant_id: UUID,
+        query: MentionQuery,
+        fresh_seconds: int,
+        limit: int,
+        recheck_removed_seconds: int = REMOVED_RECHECK_SECONDS,
+        recheck_removed_max_age_seconds: int = REMOVED_RECHECK_MAX_AGE_SECONDS,
     ) -> RefreshPlan:
         conditions = [Mention.tenant_id == tenant_id]
         if query.connection_id is not None:
@@ -1360,24 +1465,43 @@ class PostgresMentionsRepository:
             Mention.content_refresh_attempted_at >= window_start, False
         )
         recently_failed = and_(~is_fresh, attempted_recently)
+        live = [*conditions, Mention.removed_at.is_(None)]
+        last_seen = func.coalesce(Mention.content_refresh_attempted_at, Mention.removed_at)
         with tenant_session(tenant_id) as session:
             in_scope, fresh, failed = session.execute(
                 select(
                     func.count(),
                     func.count().filter(is_fresh),
                     func.count().filter(recently_failed),
-                ).where(*conditions)
+                ).where(*live)
             ).one()
-            targets = session.scalars(
-                select(Mention)
-                .where(*conditions, ~is_fresh, ~attempted_recently)
-                .order_by(
-                    Mention.content_refresh_attempted_at.asc().nulls_first(),
-                    Mention.received_at.asc(),
-                    Mention.id.asc(),
-                )
-                .limit(limit)
-            ).all()
+            targets = list(
+                session.scalars(
+                    select(Mention)
+                    .where(*live, ~is_fresh, ~attempted_recently)
+                    .order_by(
+                        Mention.content_refresh_attempted_at.asc().nulls_first(),
+                        Mention.received_at.asc(),
+                        Mention.id.asc(),
+                    )
+                    .limit(limit)
+                ).all()
+            )
+            room = min(limit - len(targets), REMOVED_RECHECK_PER_RUN)
+            if room > 0:
+                targets += session.scalars(
+                    select(Mention)
+                    .where(
+                        *conditions,
+                        Mention.removed_at.is_not(None),
+                        # Database clock on both sides: it is the one that stamped them.
+                        Mention.removed_at
+                        >= func.now() - timedelta(seconds=recheck_removed_max_age_seconds),
+                        last_seen <= func.now() - timedelta(seconds=recheck_removed_seconds),
+                    )
+                    .order_by(last_seen.asc(), Mention.id.asc())
+                    .limit(room)
+                ).all()
             return RefreshPlan(
                 targets=tuple(_target(m) for m in targets),
                 in_scope=in_scope,
@@ -1395,6 +1519,7 @@ class PostgresMentionsRepository:
                 .values(
                     **_given_content(content),
                     enrichment_status=ENRICHMENT_OK,
+                    removed_at=None,
                     content_refreshed_at=func.now(),
                     content_refresh_attempted_at=func.now(),
                 )
@@ -1408,6 +1533,25 @@ class PostgresMentionsRepository:
                 .where(Mention.id == mention_id, Mention.tenant_id == tenant_id)
                 .values(content_refresh_attempted_at=func.now())
             )
+
+    def mark_removed(
+        self, *, tenant_id: UUID, mention_id: UUID, unless_read_after: datetime | None = None
+    ) -> bool:
+        guard = (
+            [~func.coalesce(Mention.content_refreshed_at > unless_read_after, False)]
+            if unless_read_after is not None
+            else []
+        )
+        with tenant_session(tenant_id) as session:
+            updated = session.execute(
+                update(Mention)
+                .where(Mention.id == mention_id, Mention.tenant_id == tenant_id, *guard)
+                .values(
+                    removed_at=func.coalesce(Mention.removed_at, func.now()),
+                    content_refresh_attempted_at=func.now(),
+                )
+            ).rowcount
+            return updated == 1
 
     def fill_missing_comment_fields(
         self, *, tenant_id: UUID, mention_id: UUID, text: str | None, author_username: str | None

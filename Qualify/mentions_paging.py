@@ -162,19 +162,31 @@ def refresh_outcome(
     usage_paused: bool = False,
     planning_failed: bool = False,
     credential_failed: int = 0,
+    removed: int = 0,
+    restored: int = 0,
 ) -> RefreshOutcome:
     """Never says "done" while anything of the scope is still pending: a mention the
     network refused, or one left for a later run (per-run cap, throttling, usage pause),
-    keeps the notice in warning tone with what to do next."""
+    keeps the notice in warning tone with what to do next.
+
+    `in_scope` excludes the `removed` mentions: the network no longer gives their content,
+    so they left the list. That is not pending work — only announced, never a warning;
+    neither is a removed mention that answered again (`restored`)."""
     if planning_failed:
-        return RefreshOutcome(REFRESH_FAILED_NOTICE, "warn")
+        return stopped_outcome(REFRESH_FAILED_NOTICE, removed=removed, restored=restored)
+    note = changes_note(removed=removed, restored=restored)
     if failed == 0 and not_attempted == 0 and credential_failed == 0:
         if in_scope == 0:
+            if note:
+                return RefreshOutcome(note, "ok")
             return RefreshOutcome("No hay menciones en este periodo para actualizar.", "info")
         noun = "la mención" if in_scope == 1 else f"las {in_scope} menciones"
-        return RefreshOutcome(f"Se actualizaron {noun} del periodo.", "ok")
+        message = f"Se actualizaron {noun} del periodo."
+        return RefreshOutcome(f"{message} {note}" if note else message, "ok")
     current = refreshed + already_fresh
     parts = [f"Se actualizaron {current} de {in_scope} menciones."]
+    if note:
+        parts.append(note)
     if failed:
         parts.append(
             "1 no se pudo leer en la red social (puede que ya no exista o que no haya "
@@ -203,3 +215,27 @@ def refresh_outcome(
         )
     parts.append("Vuelve a pulsar Actualizar para continuar.")
     return RefreshOutcome(" ".join(parts), "warn")
+
+
+def stopped_outcome(notice: str, *, removed: int = 0, restored: int = 0) -> RefreshOutcome:
+    """A run that stopped before its outcome (throttled, paused, failed): the warning,
+    after what the run did change in the list — rows never vanish unexplained."""
+    note = changes_note(removed=removed, restored=restored)
+    return RefreshOutcome(f"{note} {notice}" if note else notice, "warn")
+
+
+def changes_note(*, removed: int = 0, restored: int = 0) -> str:
+    """What left or came back to the list in this run; '' for nothing."""
+    parts = []
+    if removed == 1:
+        parts.append("1 mención ya no está disponible en la red social y se quitó de la lista.")
+    elif removed > 1:
+        parts.append(
+            f"{removed} menciones ya no están disponibles en la red social y se quitaron "
+            "de la lista."
+        )
+    if restored == 1:
+        parts.append("1 mención volvió a estar disponible y se muestra de nuevo.")
+    elif restored > 1:
+        parts.append(f"{restored} menciones volvieron a estar disponibles y se muestran de nuevo.")
+    return " ".join(parts)

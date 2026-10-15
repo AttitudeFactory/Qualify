@@ -49,6 +49,7 @@ from .mentions_paging import (
     new_mentions_label,
     refresh_outcome,
     refresh_still_running,
+    stopped_outcome,
 )
 from .mentions_paging import page_items as _page_items
 from .mentions_provider import (
@@ -411,6 +412,7 @@ class DashboardState(rx.State):
         warning that stays with what to do. A run superseded by a newer one, or by
         reopening the screen, never writes its outcome over theirs."""
         report = None
+        visible = None
         stopped_notice = ""
         try:
             async with self:
@@ -424,7 +426,6 @@ class DashboardState(rx.State):
                 logger.warning("mentions refresh: no tenant for this session")
                 stopped_notice = _NO_TENANT
             else:
-                visible = None
                 if visible_ids:
                     try:
                         visible = await refresh_content(tenant_id, visible_ids)
@@ -453,14 +454,18 @@ class DashboardState(rx.State):
             if self.refresh_run != run:
                 return  # superseded: the newer run owns the button and the notice
             self.is_refreshing = False
-            if stopped_notice:
-                self.refresh_notice, self.refresh_tone = stopped_notice, "warn"
-                return
-            if report is None:
-                self.refresh_notice, self.refresh_tone = REFRESH_FAILED_NOTICE, "warn"
+            # A mention whose content was deleted left the scope: it is neither current nor
+            # pending, only announced — also when the run stops early. The visible pass
+            # removes before the scope run plans, so both passes' removals are added up.
+            visible_removed = visible.removed if visible is not None else 0
+            if stopped_notice or report is None:
+                stopped = stopped_outcome(
+                    stopped_notice or REFRESH_FAILED_NOTICE, removed=visible_removed
+                )
+                self.refresh_notice, self.refresh_tone = stopped.message, stopped.tone
                 return
             outcome = refresh_outcome(
-                in_scope=report.in_scope,
+                in_scope=report.remaining_scope,
                 refreshed=report.refreshed,
                 already_fresh=report.already_fresh,
                 failed=report.failed,
@@ -469,6 +474,8 @@ class DashboardState(rx.State):
                 usage_paused=report.usage_paused,
                 planning_failed=report.planning_failed,
                 credential_failed=report.credential_failed,
+                removed=report.removed + visible_removed,
+                restored=report.restored,
             )
             pending = outcome.tone == "warn"
             self.refresh_notice = outcome.message if pending else ""

@@ -146,6 +146,32 @@ def test_an_account_problem_is_named_as_such_not_as_deleted_content() -> None:
     assert "1 no se pudo leer porque" in _outcome(refreshed=29, credential_failed=1).message
 
 
+def test_removed_mentions_are_announced_without_a_warning() -> None:
+    outcome = _outcome(in_scope=6, refreshed=6, removed=1)
+
+    assert outcome == RefreshOutcome(
+        "Se actualizaron las 6 menciones del periodo. 1 mención ya no está disponible en la red "
+        "social y se quitó de la lista.",
+        "ok",
+    )
+    assert "2 menciones ya no están disponibles" in _outcome(removed=2).message
+
+
+def test_a_scope_left_empty_by_removals_is_still_announced() -> None:
+    outcome = _outcome(in_scope=0, refreshed=0, removed=1)
+
+    assert outcome.tone == "ok"
+    assert outcome.message.startswith("1 mención ya no está disponible en la red social")
+
+
+def test_removals_never_hide_what_is_still_pending() -> None:
+    outcome = _outcome(in_scope=6, refreshed=5, failed=1, removed=1)
+
+    assert outcome.tone == "warn"
+    assert outcome.message.startswith("Se actualizaron 5 de 6 menciones. 1 mención ya no")
+    assert "Vuelve a pulsar Actualizar" in outcome.message
+
+
 def test_a_live_run_keeps_the_button_when_the_screen_is_reopened() -> None:
     assert refresh_still_running(
         is_refreshing=True, alive_run=3, current_run=3, started_at=1000.0, now=1060.0
@@ -161,3 +187,20 @@ def test_a_run_that_never_started_or_died_unlocks_the_button() -> None:
     assert not refresh_still_running(
         is_refreshing=False, alive_run=3, current_run=3, started_at=1000.0, now=1001.0
     )
+
+
+def test_a_failed_plan_still_explains_rows_that_left_the_list() -> None:
+    from .mentions_paging import REFRESH_FAILED_NOTICE
+
+    outcome = _outcome(in_scope=0, refreshed=0, planning_failed=True, removed=2)
+
+    assert outcome.tone == "warn"
+    assert outcome.message.startswith("2 menciones ya no están disponibles")
+    assert outcome.message.endswith(REFRESH_FAILED_NOTICE)
+
+
+def test_restored_mentions_are_announced() -> None:
+    outcome = _outcome(restored=1)
+
+    assert outcome.tone == "ok"
+    assert outcome.message.endswith("1 mención volvió a estar disponible y se muestra de nuevo.")

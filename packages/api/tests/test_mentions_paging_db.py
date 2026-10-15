@@ -507,6 +507,7 @@ def test_the_app_role_may_stamp_refreshes_but_not_rewrite_identity() -> None:
             for column in (
                 "content_refreshed_at",
                 "content_refresh_attempted_at",
+                "removed_at",
                 "like_count",
                 "tenant_id",
                 "media_id",
@@ -516,6 +517,7 @@ def test_the_app_role_may_stamp_refreshes_but_not_rewrite_identity() -> None:
     assert grants == {
         "content_refreshed_at": True,
         "content_refresh_attempted_at": True,
+        "removed_at": True,
         "like_count": True,
         "tenant_id": False,
         "media_id": False,
@@ -536,3 +538,209 @@ def test_scope_plan_reports_a_moments_ago_failure_without_requesting_it_again() 
 
     assert [t.mention_id for t in plan.targets] == [other]
     assert (plan.in_scope, plan.fresh, plan.recently_failed) == (2, 0, 1)
+
+
+def test_a_removed_mention_leaves_every_read_and_a_redelivery_keeps_it_out() -> None:
+    """Migration 0062: the app role may stamp `removed_at`; from then on the mention is out
+    of the page, the counts, the new-mention count, the refresh plan and the sentiment
+    queue — and re-inserting the same natural key (a redelivered webhook) does not
+    bring it back."""
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    other_tenant, _ = _fresh_tenant_with_connection()
+    kept = _add(repo, tenant_id, connection_id)
+    gone = _add(repo, tenant_id, connection_id, comment=True)
+    before = _page(repo, tenant_id).as_of
+
+    assert repo.mark_removed(tenant_id=other_tenant, mention_id=gone) is False  # RLS
+    assert repo.mark_removed(tenant_id=tenant_id, mention_id=gone) is True
+    assert repo.mark_removed(tenant_id=tenant_id, mention_id=gone) is True  # idempotent
+
+    page = _page(repo, tenant_id)
+    assert [row.id for row in page.rows] == [kept]
+    assert page.counts.total == 1
+    assert repo.summarize(
+        tenant_id=tenant_id, version=VERSION, query=MentionQuery(), as_of=page.as_of
+    ) == MentionCounts(total=1, pending=1)
+    assert (
+        repo.count_received_after(
+            tenant_id=tenant_id, version=VERSION, query=MentionQuery(), after=before
+        )
+        == 0
+    )
+    plan = repo.plan_scope_refresh(
+        tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=0, limit=10
+    )
+    assert (plan.in_scope, [t.mention_id for t in plan.targets]) == (1, [kept])
+    assert repo.list_refresh_targets(tenant_id=tenant_id, mention_ids=(gone,)) == ()
+    pending = repo.list_pending_for_analysis(tenant_id=tenant_id, version=VERSION)
+    assert [p.mention_id for p in pending] == [kept]
+    listed = repo.list_mentions(tenant_id=tenant_id, connection_id=None, version=VERSION)
+    assert [m.id for m in listed] == [kept]
+
+    with tenant_session(tenant_id) as session:
+        row = session.get(Mention, gone)
+        assert row is not None and row.removed_at is not None
+        media_id, comment_id = row.media_id, row.comment_id
+    again, created = repo.upsert_mention(
+        NewMention(
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            external_account_id="ig-user-1",
+            media_id=media_id,
+            comment_id=comment_id,
+            caption=None,
+            text="un comentario",
+            author_username=None,
+            media_type=None,
+            like_count=None,
+            content_posted_at=None,
+            enrichment_status=ENRICHMENT_OK,
+        )
+    )
+    assert (again, created) == (gone, False)
+    assert [row.id for row in _page(repo, tenant_id).rows] == [kept]
+
+
+def test_a_successful_read_clears_removed_at() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    mention_id = _add(repo, tenant_id, connection_id)
+    repo.mark_removed(tenant_id=tenant_id, mention_id=mention_id)
+    assert _page(repo, tenant_id).counts.total == 0
+
+    repo.refresh_content(tenant_id=tenant_id, mention_id=mention_id, content=_content())
+
+    assert [row.id for row in _page(repo, tenant_id).rows] == [mention_id]
+
+
+def test_scope_plan_rechecks_long_removed_mentions_only_with_spare_capacity() -> None:
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    live = _add(repo, tenant_id, connection_id)
+    old_removed = _add(repo, tenant_id, connection_id)
+    new_removed = _add(repo, tenant_id, connection_id)
+    repo.mark_removed(tenant_id=tenant_id, mention_id=old_removed)
+    repo.mark_removed(tenant_id=tenant_id, mention_id=new_removed)
+    two_days_ago = datetime.now(UTC) - timedelta(days=2)
+    with tenant_session(tenant_id) as session:
+        session.execute(
+            update(Mention)
+            .where(Mention.id == old_removed)
+            .values(removed_at=two_days_ago, content_refresh_attempted_at=two_days_ago)
+        )
+
+    plan = repo.plan_scope_refresh(
+        tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=0, limit=10
+    )
+    assert plan.in_scope == 1
+    assert [(t.mention_id, t.removed) for t in plan.targets] == [
+        (live, False),
+        (old_removed, True),
+    ]
+
+    full = repo.plan_scope_refresh(
+        tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=0, limit=1
+    )
+    assert [t.mention_id for t in full.targets] == [live]
+
+
+def test_mark_removed_never_hides_a_mention_read_after_the_refusing_read_started() -> None:
+    from datetime import timedelta
+
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    mention_id = _add(repo, tenant_id, connection_id)
+    read_started = datetime.now(UTC) - timedelta(seconds=5)
+    repo.refresh_content(tenant_id=tenant_id, mention_id=mention_id, content=_content())
+
+    assert (
+        repo.mark_removed(
+            tenant_id=tenant_id, mention_id=mention_id, unless_read_after=read_started
+        )
+        is False
+    )
+    assert [row.id for row in _page(repo, tenant_id).rows] == [mention_id]
+    # A read older than the refusing one never shields it.
+    assert (
+        repo.mark_removed(
+            tenant_id=tenant_id,
+            mention_id=mention_id,
+            unless_read_after=datetime.now(UTC) + timedelta(seconds=5),
+        )
+        is True
+    )
+
+
+def test_scope_plan_stops_rechecking_after_thirty_days_on_the_database_clock() -> None:
+    """Boundaries are set from the database clock (`now()`), the one that stamps
+    `removed_at`, so the test is immune to any app/database clock difference."""
+    from datetime import timedelta
+
+    from sqlalchemy import text as sql
+    from sqlalchemy import update
+
+    from qualify_api.mentions.repository import REMOVED_RECHECK_MAX_AGE_SECONDS
+
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    ages = {
+        "day-2": timedelta(days=2),
+        "just-inside": timedelta(seconds=REMOVED_RECHECK_MAX_AGE_SECONDS) - timedelta(minutes=1),
+        "just-outside": timedelta(seconds=REMOVED_RECHECK_MAX_AGE_SECONDS) + timedelta(minutes=1),
+    }
+    ids = {}
+    with tenant_session(tenant_id) as session:
+        db_now = session.scalar(sql("select now()"))
+    for name, age in ages.items():
+        mention_id = _add(repo, tenant_id, connection_id)
+        repo.mark_removed(tenant_id=tenant_id, mention_id=mention_id)
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                update(Mention)
+                .where(Mention.id == mention_id)
+                .values(removed_at=db_now - age, content_refresh_attempted_at=db_now - age)
+            )
+        ids[mention_id] = name
+
+    plan = repo.plan_scope_refresh(
+        tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=60, limit=200
+    )
+
+    assert sorted(ids[t.mention_id] for t in plan.targets) == ["day-2", "just-inside"]
+    assert plan.in_scope == 0
+
+
+def test_scope_plan_caps_rechecks_and_never_takes_live_capacity() -> None:
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    from qualify_api.mentions.repository import REMOVED_RECHECK_PER_RUN
+
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    live = [_add(repo, tenant_id, connection_id) for _ in range(3)]
+    removed = [_add(repo, tenant_id, connection_id) for _ in range(REMOVED_RECHECK_PER_RUN + 10)]
+    two_days_ago = datetime.now(UTC) - timedelta(days=2)
+    with tenant_session(tenant_id) as session:
+        session.execute(
+            update(Mention)
+            .where(Mention.id.in_(removed))
+            .values(removed_at=two_days_ago, content_refresh_attempted_at=two_days_ago)
+        )
+
+    plan = repo.plan_scope_refresh(
+        tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=0, limit=200
+    )
+    assert [t.mention_id for t in plan.targets if not t.removed] == live
+    assert sum(t.removed for t in plan.targets) == REMOVED_RECHECK_PER_RUN
+
+    tight = repo.plan_scope_refresh(
+        tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=0, limit=3
+    )
+    assert [t.mention_id for t in tight.targets] == live
