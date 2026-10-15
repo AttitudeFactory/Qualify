@@ -381,7 +381,7 @@ async def test_removals_are_announced_when_the_run_stops_early(
     await _run(state)
 
     assert state.refresh_tone == "warn"
-    assert state.refresh_notice.startswith("1 mención ya no existe en la red social")
+    assert state.refresh_notice.startswith("1 mención ya no está disponible en la red social")
     assert state.refresh_notice.endswith(THROTTLED_NOTICE)
 
 

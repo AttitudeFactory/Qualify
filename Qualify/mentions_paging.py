@@ -163,16 +163,18 @@ def refresh_outcome(
     planning_failed: bool = False,
     credential_failed: int = 0,
     removed: int = 0,
+    restored: int = 0,
 ) -> RefreshOutcome:
     """Never says "done" while anything of the scope is still pending: a mention the
     network refused, or one left for a later run (per-run cap, throttling, usage pause),
     keeps the notice in warning tone with what to do next.
 
-    `in_scope` excludes the `removed` mentions: their content was deleted on the network,
-    so they left the list. That is not pending work — only announced, never a warning."""
+    `in_scope` excludes the `removed` mentions: the network no longer gives their content,
+    so they left the list. That is not pending work — only announced, never a warning;
+    neither is a removed mention that answered again (`restored`)."""
     if planning_failed:
-        return RefreshOutcome(REFRESH_FAILED_NOTICE, "warn")
-    note = removed_note(removed)
+        return stopped_outcome(REFRESH_FAILED_NOTICE, removed=removed, restored=restored)
+    note = changes_note(removed=removed, restored=restored)
     if failed == 0 and not_attempted == 0 and credential_failed == 0:
         if in_scope == 0:
             if note:
@@ -215,10 +217,25 @@ def refresh_outcome(
     return RefreshOutcome(" ".join(parts), "warn")
 
 
-def removed_note(removed: int) -> str:
-    """How many mentions left the list because their content was deleted; '' for none."""
-    if removed <= 0:
-        return ""
+def stopped_outcome(notice: str, *, removed: int = 0, restored: int = 0) -> RefreshOutcome:
+    """A run that stopped before its outcome (throttled, paused, failed): the warning,
+    after what the run did change in the list — rows never vanish unexplained."""
+    note = changes_note(removed=removed, restored=restored)
+    return RefreshOutcome(f"{note} {notice}" if note else notice, "warn")
+
+
+def changes_note(*, removed: int = 0, restored: int = 0) -> str:
+    """What left or came back to the list in this run; '' for nothing."""
+    parts = []
     if removed == 1:
-        return "1 mención ya no existe en la red social y se quitó de la lista."
-    return f"{removed} menciones ya no existen en la red social y se quitaron de la lista."
+        parts.append("1 mención ya no está disponible en la red social y se quitó de la lista.")
+    elif removed > 1:
+        parts.append(
+            f"{removed} menciones ya no están disponibles en la red social y se quitaron "
+            "de la lista."
+        )
+    if restored == 1:
+        parts.append("1 mención volvió a estar disponible y se muestra de nuevo.")
+    elif restored > 1:
+        parts.append(f"{restored} menciones volvieron a estar disponibles y se muestran de nuevo.")
+    return " ".join(parts)

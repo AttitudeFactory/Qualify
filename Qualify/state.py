@@ -49,7 +49,7 @@ from .mentions_paging import (
     new_mentions_label,
     refresh_outcome,
     refresh_still_running,
-    removed_note,
+    stopped_outcome,
 )
 from .mentions_paging import page_items as _page_items
 from .mentions_provider import (
@@ -459,12 +459,11 @@ class DashboardState(rx.State):
             # removes before the scope run plans, so both passes' removals are added up.
             visible_removed = visible.removed if visible is not None else 0
             if stopped_notice or report is None:
-                notice = stopped_notice or REFRESH_FAILED_NOTICE
-                note = removed_note(visible_removed)
-                self.refresh_notice = f"{note} {notice}" if note else notice
-                self.refresh_tone = "warn"
+                stopped = stopped_outcome(
+                    stopped_notice or REFRESH_FAILED_NOTICE, removed=visible_removed
+                )
+                self.refresh_notice, self.refresh_tone = stopped.message, stopped.tone
                 return
-            removed = report.removed + visible_removed
             outcome = refresh_outcome(
                 in_scope=report.remaining_scope,
                 refreshed=report.refreshed,
@@ -475,7 +474,8 @@ class DashboardState(rx.State):
                 usage_paused=report.usage_paused,
                 planning_failed=report.planning_failed,
                 credential_failed=report.credential_failed,
-                removed=removed,
+                removed=report.removed + visible_removed,
+                restored=report.restored,
             )
             pending = outcome.tone == "warn"
             self.refresh_notice = outcome.message if pending else ""

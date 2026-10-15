@@ -87,6 +87,11 @@ SENTIMENT_STATES = (
     SENTIMENT_ERROR,
 )
 
+# A removed mention (migration 0062) is re-read at most once per this window, with the
+# capacity a refresh run has left: "no longer available" can end (an account made public
+# again, a block lifted), and a successful read shows it again.
+REMOVED_RECHECK_SECONDS = 24 * 60 * 60
+
 # A mention is analyzed at most this many times per analysis version (migration 0051
 # records each failed attempt). After that it is `ERROR` and no longer retried, until a
 # new model/pipeline version starts its attempts from zero.
@@ -167,6 +172,9 @@ class RefreshTarget:
     media_id: str
     comment_id: str | None
     has_permalink: bool = False  # a stored link is never re-requested (it does not change)
+    # A removed mention re-read to see whether it is available again (migration 0062). It
+    # is outside the scope's counts: a run reports it only when it comes back.
+    removed: bool = False
 
 
 @dataclass(frozen=True)
@@ -442,14 +450,24 @@ class MentionsRepository(Protocol):
         ...
 
     def plan_scope_refresh(
-        self, *, tenant_id: UUID, query: MentionQuery, fresh_seconds: int, limit: int
+        self,
+        *,
+        tenant_id: UUID,
+        query: MentionQuery,
+        fresh_seconds: int,
+        limit: int,
+        recheck_removed_seconds: int = REMOVED_RECHECK_SECONDS,
     ) -> RefreshPlan:
         """The next bounded run over the SCOPE of `query` — its account and period only
         (`connection_id`, `since`); origin, sentiment and search never narrow a refresh.
         Skips mentions re-read successfully in the last `fresh_seconds`, and those whose
         last attempt in that window failed (`recently_failed`); of the rest, takes
         the `limit` least recently ATTEMPTED (never-attempted first), so mentions the
-        network keeps refusing cannot starve the others (migration 0054)."""
+        network keeps refusing cannot starve the others (migration 0054).
+
+        Removed mentions never count in the scope. Only when the live ones leave room
+        under `limit`, those not attempted for `recheck_removed_seconds` are appended
+        (`RefreshTarget.removed`), least recently attempted first."""
         ...
 
     def refresh_content(
@@ -572,6 +590,7 @@ def _target(m: Mention) -> RefreshTarget:
         media_id=m.media_id,
         comment_id=m.comment_id,
         has_permalink=m.permalink is not None,
+        removed=m.removed_at is not None,
     )
 
 
@@ -899,17 +918,24 @@ class MemoryMentionsRepository:
         )
 
     def plan_scope_refresh(
-        self, *, tenant_id: UUID, query: MentionQuery, fresh_seconds: int, limit: int
+        self,
+        *,
+        tenant_id: UUID,
+        query: MentionQuery,
+        fresh_seconds: int,
+        limit: int,
+        recheck_removed_seconds: int = REMOVED_RECHECK_SECONDS,
     ) -> RefreshPlan:
-        window_start = datetime.now().astimezone() - timedelta(seconds=fresh_seconds)
-        scope = [
+        now = datetime.now().astimezone()
+        window_start = now - timedelta(seconds=fresh_seconds)
+        in_query = [
             m
             for m in self._mentions.values()
             if m.tenant_id == tenant_id
-            and m.removed_at is None
             and (query.connection_id is None or m.connection_id == query.connection_id)
             and (query.since is None or (m.content_posted_at or m.received_at) >= query.since)
         ]
+        scope = [m for m in in_query if m.removed_at is None]
         fresh = [
             m
             for m in scope
@@ -931,8 +957,19 @@ class MemoryMentionsRepository:
                 m.id,
             )
         )
+        live = stale[:limit]
+        recheck_before = now - timedelta(seconds=recheck_removed_seconds)
+        recheck = sorted(
+            (
+                m
+                for m in in_query
+                if m.removed_at is not None
+                and (m.content_refresh_attempted_at or m.removed_at) <= recheck_before
+            ),
+            key=lambda m: (m.content_refresh_attempted_at or m.removed_at, m.id),
+        )
         return RefreshPlan(
-            targets=tuple(_target(m) for m in stale[:limit]),
+            targets=tuple(_target(m) for m in [*live, *recheck[: limit - len(live)]]),
             in_scope=len(scope),
             fresh=len(fresh),
             recently_failed=len(recently_failed),
@@ -1372,9 +1409,15 @@ class PostgresMentionsRepository:
             return tuple(_target(m) for m in rows)
 
     def plan_scope_refresh(
-        self, *, tenant_id: UUID, query: MentionQuery, fresh_seconds: int, limit: int
+        self,
+        *,
+        tenant_id: UUID,
+        query: MentionQuery,
+        fresh_seconds: int,
+        limit: int,
+        recheck_removed_seconds: int = REMOVED_RECHECK_SECONDS,
     ) -> RefreshPlan:
-        conditions = [Mention.tenant_id == tenant_id, Mention.removed_at.is_(None)]
+        conditions = [Mention.tenant_id == tenant_id]
         if query.connection_id is not None:
             conditions.append(Mention.connection_id == query.connection_id)
         if query.since is not None:
@@ -1388,24 +1431,40 @@ class PostgresMentionsRepository:
             Mention.content_refresh_attempted_at >= window_start, False
         )
         recently_failed = and_(~is_fresh, attempted_recently)
+        live = [*conditions, Mention.removed_at.is_(None)]
+        last_seen = func.coalesce(Mention.content_refresh_attempted_at, Mention.removed_at)
         with tenant_session(tenant_id) as session:
             in_scope, fresh, failed = session.execute(
                 select(
                     func.count(),
                     func.count().filter(is_fresh),
                     func.count().filter(recently_failed),
-                ).where(*conditions)
+                ).where(*live)
             ).one()
-            targets = session.scalars(
-                select(Mention)
-                .where(*conditions, ~is_fresh, ~attempted_recently)
-                .order_by(
-                    Mention.content_refresh_attempted_at.asc().nulls_first(),
-                    Mention.received_at.asc(),
-                    Mention.id.asc(),
-                )
-                .limit(limit)
-            ).all()
+            targets = list(
+                session.scalars(
+                    select(Mention)
+                    .where(*live, ~is_fresh, ~attempted_recently)
+                    .order_by(
+                        Mention.content_refresh_attempted_at.asc().nulls_first(),
+                        Mention.received_at.asc(),
+                        Mention.id.asc(),
+                    )
+                    .limit(limit)
+                ).all()
+            )
+            room = limit - len(targets)
+            if room > 0:
+                targets += session.scalars(
+                    select(Mention)
+                    .where(
+                        *conditions,
+                        Mention.removed_at.is_not(None),
+                        last_seen <= func.now() - timedelta(seconds=recheck_removed_seconds),
+                    )
+                    .order_by(last_seen.asc(), Mention.id.asc())
+                    .limit(room)
+                ).all()
             return RefreshPlan(
                 targets=tuple(_target(m) for m in targets),
                 in_scope=in_scope,

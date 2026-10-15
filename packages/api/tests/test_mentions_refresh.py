@@ -983,3 +983,123 @@ def test_a_successful_read_brings_a_removed_mention_back(repo: MemoryMentionsRep
 
     assert stored is True
     assert _visible_ids(repo) == {gone_id}
+
+
+def _remove_long_ago(repo: MemoryMentionsRepository, mention_id: UUID) -> None:
+    repo.mark_removed(tenant_id=TENANT, mention_id=mention_id)
+    row = repo._mentions[mention_id]
+    row.removed_at = row.content_refresh_attempted_at = datetime.now(UTC) - timedelta(days=2)
+
+
+async def test_a_removed_mention_that_answers_again_shows_again(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """ "Ya no está disponible" can end (account public again, block lifted): spare
+    capacity re-reads removed mentions, and one that answers comes back."""
+    live_id = _store(repo, "live")
+    back_id = _store(repo, "back")
+    _remove_long_ago(repo, back_id)
+    _use(monkeypatch, ScriptedClient())
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.in_scope, report.refreshed, report.restored, report.complete) == (
+        1,
+        1,
+        1,
+        True,
+    )
+    assert _visible_ids(repo) == {live_id, back_id}
+
+
+async def test_a_removed_mention_still_unavailable_stays_out_silently(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    gone_id = _store(repo, "gone")
+    _remove_long_ago(repo, gone_id)
+    client = ScriptedClient({"gone": [GONE]})
+    _use(monkeypatch, client)
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert client.calls == ["gone"]
+    assert (report.in_scope, report.failed, report.restored, report.complete) == (0, 0, 0, True)
+    assert _visible_ids(repo) == set()
+    # Re-checked now: not again before the recheck window passes.
+    client.calls.clear()
+    await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+    assert client.calls == []
+
+
+async def test_removed_mentions_are_rechecked_only_with_spare_capacity(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    for name in ("a", "b"):
+        _store(repo, name)
+    gone_id = _store(repo, "gone")
+    _remove_long_ago(repo, gone_id)
+    client = ScriptedClient()
+    _use(monkeypatch, client)
+
+    report = await composition.refresh_mentions_in_scope(
+        tenant_id=TENANT, scope=SCOPE, max_mentions=2
+    )
+
+    assert sorted(client.calls) == ["a", "b"]
+    assert (report.restored, report.not_attempted) == (0, 0)
+
+
+async def test_a_recently_removed_mention_is_not_rechecked(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    gone_id = _store(repo, "gone")
+    repo.mark_removed(tenant_id=TENANT, mention_id=gone_id)
+    client = ScriptedClient()
+    _use(monkeypatch, client)
+
+    await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert client.calls == []
+
+
+async def test_a_failing_account_check_is_a_plain_failure_never_a_removal(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """A network blip on the account check (retried, then given up) proves nothing:
+    the mention is kept and asked again later — not blamed on the account."""
+    gone_id = _store(repo, "gone")
+    server = MentionedContentReadError("server", http_status=503)
+    _use(monkeypatch, ScriptedClient({"gone": [GONE]}, account_error=server))
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.removed, report.credential_failed, report.failed) == (0, 0, 1)
+    assert _visible_ids(repo) == {gone_id}
+
+
+async def test_an_expired_token_on_the_account_check_is_an_account_problem(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    gone_id = _store(repo, "gone")
+    expired = MentionedContentReadError("expired", http_status=401, platform_code=190)
+    _use(monkeypatch, ScriptedClient({"gone": [GONE]}, account_error=expired))
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.removed, report.credential_failed) == (0, 1)
+    assert _visible_ids(repo) == {gone_id}
+
+
+def test_inbox_and_mentions_share_one_missing_object_signature() -> None:
+    from qualify_api.inbox.client import CommentsReadError
+    from qualify_api.inbox.service import _is_missing_media_error
+    from qualify_api.mentions.meta_client import is_gone
+
+    for status, code, subcode in ((400, 100, 33), (400, 100, None), (403, 100, 33)):
+        inbox = CommentsReadError(
+            "x", http_status=status, platform_code=code, platform_subcode=subcode
+        )
+        mention = MentionedContentReadError(
+            "x", http_status=status, platform_code=code, platform_subcode=subcode
+        )
+        assert _is_missing_media_error(inbox) == is_gone(mention)

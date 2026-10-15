@@ -36,6 +36,7 @@ import json
 from typing import Any, Protocol
 
 import httpx
+from qualify_shared.social.graph_errors import is_missing_object_error
 from qualify_shared.social.ig_shapes import (
     MENTIONED_COMMENT_FIELDS,
     MENTIONED_MEDIA_FIELDS,
@@ -91,17 +92,21 @@ def is_transient(exc: MentionedContentReadError) -> bool:
 
 
 def is_gone(exc: MentionedContentReadError) -> bool:
-    """Meta says an object of the call no longer exists: HTTP 400, `code=100`,
-    `error_subcode=33`. The same narrow signature `inbox.service._is_missing_media_error`
-    acts on ([VERIFIED live 2026-09-01] on a deleted media) — `code=100` alone also covers
-    unrelated validation errors, so it is never matched without the subcode. Any other
-    refusal (comments disabled, permissions) keeps the mention.
+    """Meta answers "does not exist, or this app can no longer see it" (400/100/33, see
+    `qualify_shared.social.graph_errors`). For a mention that means it is no longer
+    available to the brand — deleted, made private, or the author blocked the account —
+    which is exactly when it should stop showing. Any other refusal (comments disabled,
+    validation, throttling) keeps the mention.
 
-    NOT proof on its own that the MENTION is gone: these reads are field expansions on
-    the connected account's node (`GET /{ig-user-id}?fields=mentioned_…`), so the same
-    signature can be about the account itself (unlinked, access lost). The caller confirms
-    the account is still reachable (`account_reachable`) before removing anything."""
-    return exc.http_status == 400 and exc.platform_code == 100 and exc.platform_subcode == 33
+    Two caveats the caller handles: the same answer can be about the connected account's
+    own node (these reads are field expansions on it), so the account is confirmed
+    readable before removing (`account_reachable`); and "can no longer see it" can end,
+    so a removed mention is re-read now and then and shows again when it answers."""
+    return is_missing_object_error(
+        http_status=exc.http_status,
+        platform_code=exc.platform_code,
+        platform_subcode=exc.platform_subcode,
+    )
 
 
 def usage_percent(headers: httpx.Headers) -> int:

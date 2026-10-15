@@ -612,3 +612,38 @@ def test_a_successful_read_clears_removed_at() -> None:
     repo.refresh_content(tenant_id=tenant_id, mention_id=mention_id, content=_content())
 
     assert [row.id for row in _page(repo, tenant_id).rows] == [mention_id]
+
+
+def test_scope_plan_rechecks_long_removed_mentions_only_with_spare_capacity() -> None:
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    live = _add(repo, tenant_id, connection_id)
+    old_removed = _add(repo, tenant_id, connection_id)
+    new_removed = _add(repo, tenant_id, connection_id)
+    repo.mark_removed(tenant_id=tenant_id, mention_id=old_removed)
+    repo.mark_removed(tenant_id=tenant_id, mention_id=new_removed)
+    two_days_ago = datetime.now(UTC) - timedelta(days=2)
+    with tenant_session(tenant_id) as session:
+        session.execute(
+            update(Mention)
+            .where(Mention.id == old_removed)
+            .values(removed_at=two_days_ago, content_refresh_attempted_at=two_days_ago)
+        )
+
+    plan = repo.plan_scope_refresh(
+        tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=0, limit=10
+    )
+    assert plan.in_scope == 1
+    assert [(t.mention_id, t.removed) for t in plan.targets] == [
+        (live, False),
+        (old_removed, True),
+    ]
+
+    full = repo.plan_scope_refresh(
+        tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=0, limit=1
+    )
+    assert [t.mention_id for t in full.targets] == [live]
