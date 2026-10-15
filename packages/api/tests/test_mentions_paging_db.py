@@ -649,15 +649,98 @@ def test_scope_plan_rechecks_long_removed_mentions_only_with_spare_capacity() ->
     assert [t.mention_id for t in full.targets] == [live]
 
 
-def test_mark_removed_never_hides_a_mention_read_moments_ago() -> None:
+def test_mark_removed_never_hides_a_mention_read_after_the_refusing_read_started() -> None:
+    from datetime import timedelta
+
     repo = PostgresMentionsRepository()
     tenant_id, connection_id = _fresh_tenant_with_connection()
     mention_id = _add(repo, tenant_id, connection_id)
+    read_started = datetime.now(UTC) - timedelta(seconds=5)
     repo.refresh_content(tenant_id=tenant_id, mention_id=mention_id, content=_content())
 
     assert (
-        repo.mark_removed(tenant_id=tenant_id, mention_id=mention_id, unless_read_within=60)
+        repo.mark_removed(
+            tenant_id=tenant_id, mention_id=mention_id, unless_read_after=read_started
+        )
         is False
     )
     assert [row.id for row in _page(repo, tenant_id).rows] == [mention_id]
-    assert repo.mark_removed(tenant_id=tenant_id, mention_id=mention_id) is True
+    # A read older than the refusing one never shields it.
+    assert (
+        repo.mark_removed(
+            tenant_id=tenant_id,
+            mention_id=mention_id,
+            unless_read_after=datetime.now(UTC) + timedelta(seconds=5),
+        )
+        is True
+    )
+
+
+def test_scope_plan_stops_rechecking_after_thirty_days_on_the_database_clock() -> None:
+    """Boundaries are set from the database clock (`now()`), the one that stamps
+    `removed_at`, so the test is immune to any app/database clock difference."""
+    from datetime import timedelta
+
+    from sqlalchemy import text as sql
+    from sqlalchemy import update
+
+    from qualify_api.mentions.repository import REMOVED_RECHECK_MAX_AGE_SECONDS
+
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    ages = {
+        "day-2": timedelta(days=2),
+        "just-inside": timedelta(seconds=REMOVED_RECHECK_MAX_AGE_SECONDS) - timedelta(minutes=1),
+        "just-outside": timedelta(seconds=REMOVED_RECHECK_MAX_AGE_SECONDS) + timedelta(minutes=1),
+    }
+    ids = {}
+    with tenant_session(tenant_id) as session:
+        db_now = session.scalar(sql("select now()"))
+    for name, age in ages.items():
+        mention_id = _add(repo, tenant_id, connection_id)
+        repo.mark_removed(tenant_id=tenant_id, mention_id=mention_id)
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                update(Mention)
+                .where(Mention.id == mention_id)
+                .values(removed_at=db_now - age, content_refresh_attempted_at=db_now - age)
+            )
+        ids[mention_id] = name
+
+    plan = repo.plan_scope_refresh(
+        tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=60, limit=200
+    )
+
+    assert sorted(ids[t.mention_id] for t in plan.targets) == ["day-2", "just-inside"]
+    assert plan.in_scope == 0
+
+
+def test_scope_plan_caps_rechecks_and_never_takes_live_capacity() -> None:
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    from qualify_api.mentions.repository import REMOVED_RECHECK_PER_RUN
+
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    live = [_add(repo, tenant_id, connection_id) for _ in range(3)]
+    removed = [_add(repo, tenant_id, connection_id) for _ in range(REMOVED_RECHECK_PER_RUN + 10)]
+    two_days_ago = datetime.now(UTC) - timedelta(days=2)
+    with tenant_session(tenant_id) as session:
+        session.execute(
+            update(Mention)
+            .where(Mention.id.in_(removed))
+            .values(removed_at=two_days_ago, content_refresh_attempted_at=two_days_ago)
+        )
+
+    plan = repo.plan_scope_refresh(
+        tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=0, limit=200
+    )
+    assert [t.mention_id for t in plan.targets if not t.removed] == live
+    assert sum(t.removed for t in plan.targets) == REMOVED_RECHECK_PER_RUN
+
+    tight = repo.plan_scope_refresh(
+        tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=0, limit=3
+    )
+    assert [t.mention_id for t in tight.targets] == live

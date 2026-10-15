@@ -27,7 +27,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import cache
 from typing import Literal
 from uuid import UUID
@@ -368,8 +368,9 @@ def list_mentions_for_tenant(
 #     marked removed and stops showing — once per connection and run, the account itself
 #     is confirmed readable first, since the same answer can be about the account (then
 #     it is an account problem: nothing is removed). Not a failure: nothing to read;
-#   - with the capacity left, removed mentions not tried for REMOVED_RECHECK_SECONDS are
-#     re-read: one that answers shows again (`restored`).
+#   - with the capacity left (at most REMOVED_RECHECK_PER_RUN), removed mentions not tried
+#     for REMOVED_RECHECK_SECONDS and removed no longer than REMOVED_RECHECK_MAX_AGE_SECONDS
+#     ago are re-read: one that answers shows again (`restored`).
 # One read per mention; the link only while it is not stored yet (it does not change).
 
 REFRESH_MAX_PER_RUN = 200
@@ -585,6 +586,9 @@ async def _refresh_targets(
                 return "unchanged"
             client_and_user = await client_for(target.connection_id)
             if client_and_user is None:
+                # Stamped all the same: an unreadable connection's removed mentions must
+                # not stay first in line and starve every other connection's rechecks.
+                await stamp_attempt(target)
                 return "unchanged"
             client, ig_user_id = client_and_user
             try:
@@ -612,6 +616,11 @@ async def _refresh_targets(
             if client_and_user is None:
                 return "credential_failed"
             client, ig_user_id = client_and_user
+            # Taken BEFORE the read: only a successful read that lands after this moment
+            # (another tab, the comments webhook) can keep a refused mention from removal.
+            # Compared with `content_refreshed_at`, which Postgres stamps: app and database
+            # share the host clock (compose locally, one VPS in production).
+            read_started = datetime.now(UTC)
             try:
                 content = await _read_content(
                     client, ig_user_id=ig_user_id, target=target, on_throttle=on_throttle
@@ -628,6 +637,7 @@ async def _refresh_targets(
                     except _RateLimited:
                         on_throttle()
                         return "not_attempted"
+                    watch_usage(client)  # the account check is a Graph call too
                     if account == "account_gone":
                         # The "does not exist" is about the account: nothing is removed.
                         _LOGGER.warning(
@@ -637,7 +647,11 @@ async def _refresh_targets(
                         return "credential_failed"
                     if account == "ok":
                         removed = await asyncio.to_thread(
-                            _mark_removed, repo, tenant_id=tenant_id, mention_id=target.mention_id
+                            _mark_removed,
+                            repo,
+                            tenant_id=tenant_id,
+                            mention_id=target.mention_id,
+                            read_started=read_started,
                         )
                         if removed is not None:
                             _LOGGER.info(
@@ -645,8 +659,8 @@ async def _refresh_targets(
                                 target.mention_id,
                                 "removed (unavailable)" if removed else "read meanwhile, kept",
                             )
-                            # Not removed = another refresh read it successfully moments ago:
-                            # the newest evidence says it exists, and it is current.
+                            # Not removed = a successful read landed after this one started
+                            # (another tab, the comments webhook): it exists and is current.
                             return "removed" if removed else "refreshed"
                     # The account check itself failed (network, 5xx), or the removal could
                     # not be written: never remove on a doubt — a plain failure, asked
@@ -753,12 +767,14 @@ async def _account_state(client: HttpMentionedContentClient, ig_user_id: str) ->
     return "ok"
 
 
-def _mark_removed(repo: MentionsRepository, *, tenant_id: UUID, mention_id: UUID) -> bool | None:
+def _mark_removed(
+    repo: MentionsRepository, *, tenant_id: UUID, mention_id: UUID, read_started: datetime
+) -> bool | None:
     """`repo.mark_removed`'s answer, or None when the write fails (the mention then counts
     as failed and keeps showing; the next run sees the same answer again)."""
     try:
         return repo.mark_removed(
-            tenant_id=tenant_id, mention_id=mention_id, unless_read_within=REFRESH_FRESH_SECONDS
+            tenant_id=tenant_id, mention_id=mention_id, unless_read_after=read_started
         )
     except Exception as exc:  # noqa: BLE001
         _LOGGER.warning("mentions refresh could not remove (%s)", type(exc).__name__)

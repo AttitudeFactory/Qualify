@@ -1155,16 +1155,185 @@ async def test_an_unknown_account_answer_is_asked_again_for_the_next_mention(
     assert client.account_checks == 2 * (composition.REFRESH_RETRIES + 1)  # not cached
 
 
-async def test_a_mention_read_successfully_moments_ago_is_never_removed(
+class _ReadMeanwhileClient(ScriptedClient):
+    """Another tab (or the comments webhook) stores a successful read WHILE this run's
+    read is in flight, and this run's read then answers "does not exist"."""
+
+    def __init__(self, repo: MemoryMentionsRepository, mention_id: UUID) -> None:
+        super().__init__({"m1": [GONE]})
+        self._repo = repo
+        self._mention_id = mention_id
+
+    async def get_mentioned_media(self, *, ig_user_id: str, media_id: str) -> MentionedMedia:
+        # Lands clearly after this read started (a coarse OS clock — Windows — can hand
+        # two consecutive calls the same instant; Postgres stamps microseconds).
+        later = datetime.now(UTC) + timedelta(seconds=1)
+        self._repo._mentions[self._mention_id].content_refreshed_at = later
+        return await super().get_mentioned_media(ig_user_id=ig_user_id, media_id=media_id)
+
+
+async def test_a_mention_read_successfully_meanwhile_is_never_removed(
     monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
 ) -> None:
-    """Another tab or the comments webhook read it a moment ago: that newest evidence wins
-    over a "does not exist" answered meanwhile."""
+    """A successful read that lands after this one started is newer evidence: it wins
+    over the "does not exist" this run got, and the mention counts as current."""
     mention_id = _store(repo, "m1")
-    repo._mentions[mention_id].content_refreshed_at = datetime.now(UTC)
-    _use(monkeypatch, ScriptedClient({"m1": [GONE]}))
+    _use(monkeypatch, _ReadMeanwhileClient(repo, mention_id))
 
     report = await composition.refresh_mentions_content(tenant_id=TENANT, mention_ids=(mention_id,))
 
     assert (report.removed, report.refreshed, report.failed) == (0, 1, 0)
     assert _visible_ids(repo) == {mention_id}
+
+
+async def test_an_earlier_successful_read_never_shields_a_mention_deleted_since(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """Read fine on one click; the author deletes it; the next click, seconds later, gets
+    "does not exist". The earlier read is older evidence: the mention is removed."""
+    mention_id = _store(repo, "m1")
+    repo._mentions[mention_id].content_refreshed_at = datetime.now(UTC) - timedelta(seconds=10)
+    _use(monkeypatch, ScriptedClient({"m1": [GONE]}))
+
+    report = await composition.refresh_mentions_content(tenant_id=TENANT, mention_ids=(mention_id,))
+
+    assert (report.removed, report.refreshed) == (1, 0)
+    assert _visible_ids(repo) == set()
+
+
+async def test_rechecks_of_an_unreadable_connection_never_starve_the_others(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    revoked = _store(repo, "revoked", connection_id=OTHER_CONNECTION)
+    _remove_long_ago(repo, revoked)
+    client = ScriptedClient()
+
+    async def client_for(*, tenant_id: UUID, connection_id: UUID):
+        return (client, IG_USER) if connection_id == CONNECTION else None
+
+    monkeypatch.setattr(composition, "_content_client_for", client_for)
+    await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert repo._mentions[revoked].content_refresh_attempted_at > datetime.now(UTC) - timedelta(
+        minutes=1
+    )  # stamped: it goes to the back of the line, not first again
+
+
+async def test_rechecks_are_capped_per_run(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    from qualify_api.mentions.repository import REMOVED_RECHECK_PER_RUN
+
+    for i in range(REMOVED_RECHECK_PER_RUN + 5):
+        _remove_long_ago(repo, _store(repo, f"r{i}"))
+    client = ScriptedClient(default=GONE)
+    _use(monkeypatch, client)
+
+    await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert len(client.calls) == REMOVED_RECHECK_PER_RUN
+
+
+# ------------------------------------------------------------------ recheck window and capacity
+
+
+def _plan_ids(repo: MemoryMentionsRepository, *, limit: int = 200) -> list[tuple[str, bool]]:
+    plan = repo.plan_scope_refresh(
+        tenant_id=TENANT, query=MentionQuery(), fresh_seconds=60, limit=limit
+    )
+    return [(repo._mentions[t.mention_id].media_id, t.removed) for t in plan.targets]
+
+
+def _removed_for(repo: MemoryMentionsRepository, media_id: str, age: timedelta) -> UUID:
+    mention_id = _store(repo, media_id)
+    repo.mark_removed(tenant_id=TENANT, mention_id=mention_id)
+    row = repo._mentions[mention_id]
+    row.removed_at = datetime.now().astimezone() - age
+    row.content_refresh_attempted_at = row.removed_at  # last tried when removed
+    return mention_id
+
+
+def test_the_recheck_window_closes_after_thirty_days_exactly() -> None:
+    from qualify_api.mentions.repository import REMOVED_RECHECK_MAX_AGE_SECONDS
+
+    repo = MemoryMentionsRepository()
+    max_age = timedelta(seconds=REMOVED_RECHECK_MAX_AGE_SECONDS)
+    _removed_for(repo, "day-2", timedelta(days=2))
+    _removed_for(repo, "just-inside", max_age - timedelta(minutes=1))
+    _removed_for(repo, "just-outside", max_age + timedelta(minutes=1))
+    _removed_for(repo, "day-90", timedelta(days=90))
+
+    assert sorted(_plan_ids(repo)) == [("day-2", True), ("just-inside", True)]
+
+
+def test_a_mention_removed_under_a_day_ago_waits_for_the_recheck_interval() -> None:
+    repo = MemoryMentionsRepository()
+    _removed_for(repo, "hour-old", timedelta(hours=1))
+
+    assert _plan_ids(repo) == []
+
+
+def test_many_removed_and_few_visible_live_mentions_get_all_their_capacity() -> None:
+    from qualify_api.mentions.repository import REMOVED_RECHECK_PER_RUN
+
+    repo = MemoryMentionsRepository()
+    for i in range(3):
+        _store(repo, f"live{i}")
+    for i in range(500):
+        _removed_for(repo, f"r{i}", timedelta(days=2))
+
+    targets = _plan_ids(repo)
+
+    assert [name for name, removed in targets if not removed] == ["live0", "live1", "live2"]
+    assert sum(removed for _name, removed in targets) == REMOVED_RECHECK_PER_RUN
+
+
+def test_a_full_run_of_live_mentions_leaves_no_room_for_rechecks() -> None:
+    repo = MemoryMentionsRepository()
+    for i in range(10):
+        _store(repo, f"live{i}")
+    for i in range(50):
+        _removed_for(repo, f"r{i}", timedelta(days=2))
+
+    targets = _plan_ids(repo, limit=10)
+
+    assert len(targets) == 10 and not any(removed for _name, removed in targets)
+
+
+async def test_a_run_with_many_removed_reads_the_live_ones_first_and_caps_the_rest(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    from qualify_api.mentions.repository import REMOVED_RECHECK_PER_RUN
+
+    for i in range(3):
+        _store(repo, f"live{i}")
+    for i in range(300):
+        _removed_for(repo, f"r{i}", timedelta(days=2))
+    client = ScriptedClient(default=GONE)
+    client._answers.update({f"live{i}": [_media(f"live{i}")] for i in range(3)})
+    _use(monkeypatch, client)
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert set(client.calls[:3]) == {"live0", "live1", "live2"}
+    assert len(client.calls) == 3 + REMOVED_RECHECK_PER_RUN
+    assert (report.in_scope, report.refreshed, report.complete) == (3, 3, True)
+
+
+def test_a_removal_after_a_restore_starts_a_new_window() -> None:
+    from qualify_api.mentions.repository import MentionContent
+
+    repo = MemoryMentionsRepository()
+    mention_id = _removed_for(repo, "m1", timedelta(days=90))
+    assert _plan_ids(repo) == []  # long past the window
+
+    repo.refresh_content(
+        tenant_id=TENANT,
+        mention_id=mention_id,
+        content=MentionContent(None, None, None, None, 1, None, None),
+    )
+    repo.mark_removed(tenant_id=TENANT, mention_id=mention_id)
+
+    assert repo._mentions[mention_id].removed_at > datetime.now().astimezone() - timedelta(
+        minutes=1
+    )
