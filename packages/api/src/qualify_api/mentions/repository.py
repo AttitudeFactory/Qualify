@@ -485,12 +485,17 @@ class MentionsRepository(Protocol):
         the next run). Content and `content_refreshed_at` are untouched."""
         ...
 
-    def mark_removed(self, *, tenant_id: UUID, mention_id: UUID) -> bool:
-        """The network confirmed the mentioned content no longer exists (migration 0062):
-        stamp `removed_at` (and the attempt), so every read excludes the mention from now
-        on. Content is kept. Idempotent: an already-removed mention keeps its first stamp
-        and still returns True (another run removed it first). Returns False only when the
-        mention is not this tenant's."""
+    def mark_removed(
+        self, *, tenant_id: UUID, mention_id: UUID, unless_read_within: int = 0
+    ) -> bool:
+        """The network says the mentioned content is no longer available (migration 0062):
+        stamp `removed_at` (and the attempt), so every read excludes the mention until a
+        successful read clears it. Content is kept. Idempotent: an already-removed mention
+        keeps its first stamp and still returns True (another run removed it first).
+
+        Returns False — nothing written — when the mention is not this tenant's, or was
+        read successfully in the last `unless_read_within` seconds (another tab or the
+        comments webhook): the newest evidence says it exists."""
         ...
 
     def fill_missing_comment_fields(
@@ -993,11 +998,19 @@ class MemoryMentionsRepository:
         if m is not None and m.tenant_id == tenant_id:
             m.content_refresh_attempted_at = self._stamp()
 
-    def mark_removed(self, *, tenant_id: UUID, mention_id: UUID) -> bool:
+    def mark_removed(
+        self, *, tenant_id: UUID, mention_id: UUID, unless_read_within: int = 0
+    ) -> bool:
         m = self._mentions.get(mention_id)
         if m is None or m.tenant_id != tenant_id:
             return False
         stamp = self._stamp()
+        if (
+            unless_read_within > 0
+            and m.content_refreshed_at is not None
+            and m.content_refreshed_at >= stamp - timedelta(seconds=unless_read_within)
+        ):
+            return False
         m.removed_at = m.removed_at or stamp
         m.content_refresh_attempted_at = stamp
         return True
@@ -1497,11 +1510,18 @@ class PostgresMentionsRepository:
                 .values(content_refresh_attempted_at=func.now())
             )
 
-    def mark_removed(self, *, tenant_id: UUID, mention_id: UUID) -> bool:
+    def mark_removed(
+        self, *, tenant_id: UUID, mention_id: UUID, unless_read_within: int = 0
+    ) -> bool:
+        read_recently = func.coalesce(
+            Mention.content_refreshed_at >= func.now() - timedelta(seconds=unless_read_within),
+            False,
+        )
+        guard = [~read_recently] if unless_read_within > 0 else []
         with tenant_session(tenant_id) as session:
             updated = session.execute(
                 update(Mention)
-                .where(Mention.id == mention_id, Mention.tenant_id == tenant_id)
+                .where(Mention.id == mention_id, Mention.tenant_id == tenant_id, *guard)
                 .values(
                     removed_at=func.coalesce(Mention.removed_at, func.now()),
                     content_refresh_attempted_at=func.now(),

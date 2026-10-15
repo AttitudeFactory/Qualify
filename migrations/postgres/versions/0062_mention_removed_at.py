@@ -11,10 +11,12 @@ already acts on), the mention is marked here and every read excludes it: list, c
 new-mention count, sentiment sweep and refresh planning.
 
 `removed_at` is a soft delete, the same "flag on the row" `messages.deleted_at` uses: the
-row stays, so a redelivered webhook for the same natural key hits the existing row and can
-never bring the mention back. The app role may UPDATE this one column on top of 0053/0054;
-identity stays immutable. `downgrade` revokes the grant and drops the column — removed
-mentions then show again, nothing else is lost.
+row stays, so re-inserting the same natural key (a redelivered `mentions` webhook) hits the
+existing row and does not bring the mention back by itself. Only a SUCCESSFUL read of its
+content clears the flag — a refresh re-check, or the `comments` webhook reading it again —
+because that read proves it is available again. The app role may UPDATE this one column on
+top of 0053/0054; identity stays immutable. `downgrade` revokes the grant and drops the
+column — removed mentions then show again, nothing else is lost.
 """
 
 from __future__ import annotations

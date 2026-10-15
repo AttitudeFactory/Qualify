@@ -19,3 +19,9 @@ def is_missing_object_error(
     lost access to are the same answer. Callers decide what that ambiguity allows.
     """
     return http_status == 400 and platform_code == 100 and platform_subcode == 33
+
+
+def is_auth_error(*, http_status: int | None, platform_code: int | None) -> bool:
+    """An expired or revoked token: HTTP 401 and/or `error.code=190` (QUA-90, [VERIFIED
+    live 2026-08-14]). About the credential, never about the object asked for."""
+    return http_status == 401 or platform_code == 190

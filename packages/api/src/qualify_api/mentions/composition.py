@@ -34,6 +34,7 @@ from uuid import UUID
 
 import httpx
 from qualify_shared.db.session import tenant_session
+from qualify_shared.social.graph_errors import is_auth_error
 from sqlalchemy import select
 
 from qualify_api.config import MetaOAuthSettings
@@ -508,9 +509,10 @@ async def _refresh_targets(
     stop = asyncio.Event()  # no new reads: throttled, or usage at the limit
     throttled = asyncio.Event()
     usage_paused = asyncio.Event()
-    # connection -> the state of its account node, checked once per run and only when a
-    # read says "does not exist" (see `is_gone`). Registered without awaiting, so it needs
-    # no lock and never waits behind another connection's credential resolution.
+    # connection -> the state of its account node, checked only when a read says "does
+    # not exist" (see `is_gone`). A settled answer is kept for the run; an `unknown` one is
+    # dropped so the next mention asks again. Registered without awaiting: no lock, so it
+    # never waits behind another connection's credential resolution.
     accounts: dict[UUID, asyncio.Task[_AccountState]] = {}
 
     async def client_for(connection_id: UUID) -> tuple[HttpMentionedContentClient, str] | None:
@@ -533,6 +535,12 @@ async def _refresh_targets(
         throttled.set()
         stop.set()
 
+    def watch_usage(client: HttpMentionedContentClient) -> None:
+        if getattr(client, "usage_percent", 0) >= REFRESH_USAGE_STOP_PERCENT:
+            usage_paused.set()
+            stop.set()
+            _LOGGER.warning("mentions refresh paused: Meta usage at or above the limit")
+
     async def account_state(
         client: HttpMentionedContentClient, ig_user_id: str, connection_id: UUID
     ) -> _AccountState:
@@ -540,11 +548,38 @@ async def _refresh_targets(
         if task is None:
             task = asyncio.ensure_future(_account_state(client, ig_user_id))
             accounts[connection_id] = task
-        return await task
+        state = await task
+        if state == "unknown" and accounts.get(connection_id) is task:
+            del accounts[connection_id]
+        return state
+
+    async def store(target: RefreshTarget, content: MentionContent) -> bool | None:
+        """True stored, False not this tenant's, None the database failed."""
+        try:
+            return await asyncio.to_thread(
+                repo.refresh_content,
+                tenant_id=tenant_id,
+                mention_id=target.mention_id,
+                content=content,
+            )
+        except Exception as exc:  # noqa: BLE001 — a DB error on one row, not the run
+            _LOGGER.warning(
+                "mentions refresh could not store: mention=%s (%s)",
+                target.mention_id,
+                type(exc).__name__,
+            )
+            return None
+
+    async def stamp_attempt(target: RefreshTarget) -> None:
+        await asyncio.to_thread(
+            _mark_attempt, repo, tenant_id=tenant_id, mention_id=target.mention_id
+        )
 
     async def recheck_removed(target: RefreshTarget) -> _Outcome:
-        """A removed mention, re-read with the run's spare capacity: it shows again only
-        if it answers. Nothing about it is reported unless it comes back."""
+        """A removed mention, re-read with the spare capacity left once every live mention
+        is done: it shows again only if it answers. Nothing about it is reported unless it
+        comes back, and a throttling answer here only ends the rechecks — it never turns
+        the run into a "limited" one the person has to retry."""
         async with slots:
             if stop.is_set():
                 return "unchanged"
@@ -554,41 +589,30 @@ async def _refresh_targets(
             client, ig_user_id = client_and_user
             try:
                 content = await _read_content(
-                    client, ig_user_id=ig_user_id, target=target, on_throttle=on_throttle
+                    client, ig_user_id=ig_user_id, target=target, on_throttle=stop.set
                 )
             except _RateLimited:
-                on_throttle()
+                stop.set()
                 return "unchanged"
             except Exception:  # noqa: BLE001 — still unavailable (or unknown): stays removed
-                await asyncio.to_thread(
-                    _mark_attempt, repo, tenant_id=tenant_id, mention_id=target.mention_id
-                )
+                await stamp_attempt(target)
                 return "unchanged"
-            try:
-                stored = await asyncio.to_thread(
-                    repo.refresh_content,
-                    tenant_id=tenant_id,
-                    mention_id=target.mention_id,
-                    content=content,
-                )
-            except Exception as exc:  # noqa: BLE001 — a DB error on one row, not the run
-                _LOGGER.warning("mentions recheck could not store (%s)", type(exc).__name__)
-                return "unchanged"
-            if stored:
+            finally:
+                watch_usage(client)
+            if await store(target, content):
                 _LOGGER.info("mentions refresh restored a mention: mention=%s", target.mention_id)
-            return "restored" if stored else "unchanged"
+                return "restored"
+            return "unchanged"
 
     async def refresh_one(target: RefreshTarget) -> _Outcome:
-        if target.removed:
-            return await recheck_removed(target)
         async with slots:
             if stop.is_set():
                 return "not_attempted"
+            client_and_user = await client_for(target.connection_id)
+            if client_and_user is None:
+                return "credential_failed"
+            client, ig_user_id = client_and_user
             try:
-                client_and_user = await client_for(target.connection_id)
-                if client_and_user is None:
-                    return "credential_failed"
-                client, ig_user_id = client_and_user
                 content = await _read_content(
                     client, ig_user_id=ig_user_id, target=target, on_throttle=on_throttle
                 )
@@ -597,6 +621,7 @@ async def _refresh_targets(
                 _LOGGER.warning("mentions refresh stopped: Meta is throttling this account")
                 return "not_attempted"
             except MentionedContentReadError as exc:
+                watch_usage(client)
                 if is_gone(exc):
                     try:
                         account = await account_state(client, ig_user_id, target.connection_id)
@@ -610,17 +635,22 @@ async def _refresh_targets(
                             target.connection_id,
                         )
                         return "credential_failed"
-                    removed = account == "ok" and await asyncio.to_thread(
-                        _mark_removed, repo, tenant_id=tenant_id, mention_id=target.mention_id
-                    )
-                    if removed:
-                        _LOGGER.info(
-                            "mentions refresh removed an unavailable mention: mention=%s",
-                            target.mention_id,
+                    if account == "ok":
+                        removed = await asyncio.to_thread(
+                            _mark_removed, repo, tenant_id=tenant_id, mention_id=target.mention_id
                         )
-                        return "removed"
-                    # The account check itself failed (network, 5xx): never remove on a
-                    # doubt — the mention is a plain failure and is asked again later.
+                        if removed is not None:
+                            _LOGGER.info(
+                                "mentions refresh: mention=%s %s",
+                                target.mention_id,
+                                "removed (unavailable)" if removed else "read meanwhile, kept",
+                            )
+                            # Not removed = another refresh read it successfully moments ago:
+                            # the newest evidence says it exists, and it is current.
+                            return "removed" if removed else "refreshed"
+                    # The account check itself failed (network, 5xx), or the removal could
+                    # not be written: never remove on a doubt — a plain failure, asked
+                    # again later.
                 # Error codes only, never the body: they are what tells a deleted object
                 # apart from any other refusal when this path is checked in production.
                 _LOGGER.info(
@@ -632,9 +662,7 @@ async def _refresh_targets(
                     exc.platform_code,
                     exc.platform_subcode,
                 )
-                await asyncio.to_thread(
-                    _mark_attempt, repo, tenant_id=tenant_id, mention_id=target.mention_id
-                )
+                await stamp_attempt(target)
                 return "failed"
             except Exception as exc:  # noqa: BLE001 — keep the stored data, log the type only
                 _LOGGER.info(
@@ -642,43 +670,49 @@ async def _refresh_targets(
                     target.mention_id,
                     type(exc).__name__,
                 )
-                await asyncio.to_thread(
-                    _mark_attempt, repo, tenant_id=tenant_id, mention_id=target.mention_id
-                )
+                await stamp_attempt(target)
                 return "failed"
-            if getattr(client, "usage_percent", 0) >= REFRESH_USAGE_STOP_PERCENT:
-                usage_paused.set()
-                stop.set()
-                _LOGGER.warning("mentions refresh paused: Meta usage at or above the limit")
-            try:
-                stored = await asyncio.to_thread(
-                    repo.refresh_content,
-                    tenant_id=tenant_id,
-                    mention_id=target.mention_id,
-                    content=content,
-                )
-            except Exception as exc:  # noqa: BLE001 — a DB error on one row, not the run
-                _LOGGER.warning(
-                    "mentions refresh could not store: mention=%s (%s)",
-                    target.mention_id,
-                    type(exc).__name__,
-                )
-                return "failed"
-            return "refreshed" if stored else "failed"
+            watch_usage(client)
+            return "refreshed" if await store(target, content) else "failed"
 
+    async def run_all(
+        batch: list[RefreshTarget],
+        one: Callable[[RefreshTarget], Awaitable[_Outcome]],
+        *,
+        on_error: _Outcome,
+    ) -> list[_Outcome]:
+        """Every coroutine settles before this returns — an unexpected error in one never
+        leaves the others running against clients the `finally` below closes."""
+        results = await asyncio.gather(*(one(target) for target in batch), return_exceptions=True)
+        outcomes: list[_Outcome] = []
+        for result in results:
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, BaseException):
+                _LOGGER.warning("mentions refresh: unexpected error (%s)", type(result).__name__)
+                outcomes.append(on_error)
+            else:
+                outcomes.append(result)
+        return outcomes
+
+    live = [target for target in targets if not target.removed]
+    rechecks = [target for target in targets if target.removed]
     try:
-        outcomes = await asyncio.gather(*(refresh_one(target) for target in targets))
+        outcomes = await run_all(live, refresh_one, on_error="failed")
+        # Removed mentions only with what the live ones left: never competing for the
+        # slots, the usage budget or the throttling answer of what the person asked for.
+        if rechecks and not stop.is_set():
+            outcomes += await run_all(rechecks, recheck_removed, on_error="unchanged")
     finally:
-        # A cancelled run may leave an account check in flight: finish it before the
-        # clients it uses are closed, and never leave its exception unretrieved.
+        # A cancelled run may leave an account check in flight: cancel it, wait until it
+        # has settled (its exception retrieved), and only then close the clients it uses.
         for task in accounts.values():
             task.cancel()
         await asyncio.gather(*accounts.values(), return_exceptions=True)
         for client_and_user in clients.values():
             if client_and_user is not None:
                 await _close_client(client_and_user[0])
-    live_targets = sum(1 for target in targets if not target.removed)
-    planned_but_left = in_scope - already_fresh - recently_failed - live_targets
+    planned_but_left = in_scope - already_fresh - recently_failed - len(live)
     return ContentRefreshReport(
         in_scope=in_scope,
         refreshed=outcomes.count("refreshed"),
@@ -712,20 +746,23 @@ async def _account_state(client: HttpMentionedContentClient, ig_user_id: str) ->
     except _RateLimited:
         raise
     except MentionedContentReadError as exc:
-        auth = exc.http_status == 401 or exc.platform_code == 190
+        auth = is_auth_error(http_status=exc.http_status, platform_code=exc.platform_code)
         return "account_gone" if is_gone(exc) or auth else "unknown"
     except Exception:  # noqa: BLE001 — network or anything else: never remove on a doubt
         return "unknown"
     return "ok"
 
 
-def _mark_removed(repo: MentionsRepository, *, tenant_id: UUID, mention_id: UUID) -> bool:
-    """False (the mention then counts as failed and keeps showing) when the write fails."""
+def _mark_removed(repo: MentionsRepository, *, tenant_id: UUID, mention_id: UUID) -> bool | None:
+    """`repo.mark_removed`'s answer, or None when the write fails (the mention then counts
+    as failed and keeps showing; the next run sees the same answer again)."""
     try:
-        return repo.mark_removed(tenant_id=tenant_id, mention_id=mention_id)
-    except Exception as exc:  # noqa: BLE001 — the next run sees the same answer again
+        return repo.mark_removed(
+            tenant_id=tenant_id, mention_id=mention_id, unless_read_within=REFRESH_FRESH_SECONDS
+        )
+    except Exception as exc:  # noqa: BLE001
         _LOGGER.warning("mentions refresh could not remove (%s)", type(exc).__name__)
-        return False
+        return None
 
 
 async def _read_content(

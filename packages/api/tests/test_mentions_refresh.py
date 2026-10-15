@@ -1103,3 +1103,68 @@ def test_inbox_and_mentions_share_one_missing_object_signature() -> None:
             "x", http_status=status, platform_code=code, platform_subcode=subcode
         )
         assert _is_missing_media_error(inbox) == is_gone(mention)
+
+
+async def test_rechecks_respect_the_usage_pause(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    for i in range(5):
+        _remove_long_ago(repo, _store(repo, f"r{i}"))
+    monkeypatch.setattr(composition, "REFRESH_CONCURRENCY", 1)
+    client = ScriptedClient(usage_percent=composition.REFRESH_USAGE_STOP_PERCENT)
+    _use(monkeypatch, client)
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert len(client.calls) == 1  # optional work stops at the limit too
+    assert report.restored == 1
+
+
+async def test_a_throttled_recheck_never_turns_the_run_into_a_limited_one(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """Rechecks run only after every live mention is done, and a throttling answer there
+    just ends the rechecks: the person is not told to retry for work they never asked."""
+    live_ids = {_store(repo, f"m{i}") for i in range(3)}
+    for i in range(3):
+        _remove_long_ago(repo, _store(repo, f"r{i}"))
+    throttled = MentionedContentReadError("limit", http_status=400, platform_code=4)
+    client = ScriptedClient({f"r{i}": [throttled] for i in range(3)})
+    _use(monkeypatch, client)
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.refreshed, report.rate_limited, report.complete) == (3, False, True)
+    assert set(client.calls[:3]) == {"m0", "m1", "m2"}  # live first
+    assert _visible_ids(repo) == live_ids
+
+
+async def test_an_unknown_account_answer_is_asked_again_for_the_next_mention(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    for name in ("a", "b"):
+        _store(repo, name)
+    monkeypatch.setattr(composition, "REFRESH_CONCURRENCY", 1)
+    server = MentionedContentReadError("server", http_status=503)
+    client = ScriptedClient(default=GONE, account_error=server)
+    _use(monkeypatch, client)
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert report.failed == 2
+    assert client.account_checks == 2 * (composition.REFRESH_RETRIES + 1)  # not cached
+
+
+async def test_a_mention_read_successfully_moments_ago_is_never_removed(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """Another tab or the comments webhook read it a moment ago: that newest evidence wins
+    over a "does not exist" answered meanwhile."""
+    mention_id = _store(repo, "m1")
+    repo._mentions[mention_id].content_refreshed_at = datetime.now(UTC)
+    _use(monkeypatch, ScriptedClient({"m1": [GONE]}))
+
+    report = await composition.refresh_mentions_content(tenant_id=TENANT, mention_ids=(mention_id,))
+
+    assert (report.removed, report.refreshed, report.failed) == (0, 1, 0)
+    assert _visible_ids(repo) == {mention_id}

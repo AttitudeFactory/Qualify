@@ -647,3 +647,17 @@ def test_scope_plan_rechecks_long_removed_mentions_only_with_spare_capacity() ->
         tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=0, limit=1
     )
     assert [t.mention_id for t in full.targets] == [live]
+
+
+def test_mark_removed_never_hides_a_mention_read_moments_ago() -> None:
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    mention_id = _add(repo, tenant_id, connection_id)
+    repo.refresh_content(tenant_id=tenant_id, mention_id=mention_id, content=_content())
+
+    assert (
+        repo.mark_removed(tenant_id=tenant_id, mention_id=mention_id, unless_read_within=60)
+        is False
+    )
+    assert [row.id for row in _page(repo, tenant_id).rows] == [mention_id]
+    assert repo.mark_removed(tenant_id=tenant_id, mention_id=mention_id) is True
