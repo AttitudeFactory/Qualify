@@ -9,14 +9,17 @@ composition`), same pattern `inbox_state.py` establishes: `AuthState.session_ten
 The table shows 12 mentions per page, read from the backend — never a capped slice
 filtered in the browser. Totals and counters come from the backend too, over the whole
 filtered set. Every page of one listing is read under one snapshot (`as_of`); the rules
-for paging, the refresh tick and the new-mention notice live in `.mentions_paging`
-(pure, tested there), and this class only applies them:
+for paging and the refresh tick live in `.mentions_paging` (pure, tested there), and this
+class only applies them:
 
 - changing a filter or the search starts a new snapshot on page 1;
-- changing page keeps the snapshot, so no row repeats or goes missing;
-- the 45-second tick re-reads the SAME page under the SAME snapshot (fresh sentiment
-  states, no skeleton) and counts what arrived after it — it never inserts a new row by
-  itself: the notice offers "Actualizar lista", and those rows come back marked "Nueva".
+- changing page keeps the snapshot, so no row repeats or goes missing — except going back
+  to page 1, which takes a new snapshot so what arrived meanwhile shows at once;
+- the 45-second tick re-reads the current page (fresh sentiment states, no skeleton):
+  under the SAME snapshot on a later page; on page 1 under a NEW one, with the period's
+  window recomputed, so new mentions appear with no notice and no "Nueva" mark — a
+  mention is not a message (QUA-152, 2026-10-15). A failed tick keeps the rows and says
+  so softly; the next tick runs as usual.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import reflex as rx
-from qualify_api.mentions.repository import NEW_MENTIONS_CAP, MentionQuery
+from qualify_api.mentions.repository import MentionQuery
 
 from .auth_state import AuthState
 from .mentions_paging import (
@@ -41,20 +44,19 @@ from .mentions_paging import (
     ORIGIN_OPTIONS,
     PERIOD_OPTIONS,
     REFRESH_FAILED_NOTICE,
-    REFRESHING_NOTICE,
+    REFRESH_STARTED_TOAST,
     SENTIMENT_OPTIONS,
     THROTTLED_NOTICE,
     USAGE_PAUSED_NOTICE,
     decide_tick,
-    new_mentions_label,
     refresh_outcome,
     refresh_still_running,
     stopped_outcome,
+    tick_takes_new_snapshot,
 )
 from .mentions_paging import page_items as _page_items
 from .mentions_provider import (
     MentionPageVM,
-    count_new,
     load_page,
     refresh_content,
     refresh_scope,
@@ -113,17 +115,14 @@ class DashboardState(rx.State):
     # mentions it held. A tick that re-reads a different total announces the change.
     as_of: str = ""
     snapshot_total: int = 0
-    new_count: int = 0
     list_changed: bool = False
-    # Rows received after this instant are marked "Nueva" (set by "Actualizar lista").
-    new_since: str = ""
     last_updated: str = ""
     # True for the whole "Actualizar menciones" run: the visible page first, then the
     # rest of the scope (account + period) in the background.
     is_refreshing: bool = False
-    # What that run says: in progress, done, or what is still pending (never "done" then).
+    # One short on-page sentence with what to do about a run that left something pending;
+    # '' otherwise. The run's flow (started, finished) is told by toasts, never here.
     refresh_notice: str = ""
-    refresh_tone: str = ""
     # Bumped by every new run and when opening the screen unlocks a dead one: a run whose
     # token is no longer current stops and never writes, so it cannot overwrite a newer one.
     refresh_run: int = 0
@@ -171,10 +170,6 @@ class DashboardState(rx.State):
         return self.page < self.total_pages
 
     @rx.var
-    def new_mentions_notice(self) -> str:
-        return new_mentions_label(self.new_count, cap=NEW_MENTIONS_CAP)
-
-    @rx.var
     def has_filters(self) -> bool:
         return (
             self.account_filter != ALL_ACCOUNTS
@@ -218,7 +213,9 @@ class DashboardState(rx.State):
 
     # ---------------------------------------------------------------- helpers
 
-    def _query(self) -> MentionQuery:
+    def _query(self, since: str | None = None) -> MentionQuery:
+        """The listing's query; `since` overrides the stored window start (ISO-8601)."""
+        since = self.since if since is None else since
         return MentionQuery(
             connection_id=(
                 UUID(self.accounts[self.account_filter])
@@ -228,7 +225,7 @@ class DashboardState(rx.State):
             origin=ORIGIN_OPTIONS.get(self.origin_filter),
             sentiment_state=SENTIMENT_OPTIONS.get(self.sentiment_filter),
             search=self.search_query,
-            since=datetime.fromisoformat(self.since) if self.since else None,
+            since=datetime.fromisoformat(since) if since else None,
         )
 
     def _scope_query(self) -> MentionQuery:
@@ -264,7 +261,6 @@ class DashboardState(rx.State):
         if new_snapshot:
             self.as_of = vm.as_of
             self.snapshot_total = vm.filtered_total
-            self.new_count = 0
             self.list_changed = False
         self.last_updated = _utc_stamp()
         self.refresh_error = ""
@@ -284,7 +280,6 @@ class DashboardState(rx.State):
                 query=self._query(),
                 page=page,
                 as_of="" if new_snapshot else self.as_of,
-                new_since=self.new_since,
             )
         except Exception as exc:  # noqa: BLE001 — shown as a callout, logged by type only
             logger.error("mentions_provider.load_page failed: %s", type(exc).__name__)
@@ -294,9 +289,8 @@ class DashboardState(rx.State):
         self._apply_page(vm, new_snapshot=new_snapshot)
 
     async def _restart(self) -> None:
-        """A new listing: page 1 under a new snapshot, no "Nueva" marks. Keeps the rows
-        on screen while it reads (no skeleton) — a filter change must not flash."""
-        self.new_since = ""
+        """A new listing: page 1 under a new snapshot. Keeps the rows on screen while it
+        reads (no skeleton) — a filter change must not flash."""
         if not self.is_refreshing:
             self.refresh_notice = ""  # it described another scope
         await self._read(page=1, new_snapshot=True)
@@ -316,14 +310,14 @@ class DashboardState(rx.State):
             started_at=self.refresh_started_at,
             now=time.time(),
         ):
-            # A live run keeps the button; it reports when it finishes.
-            self.refresh_notice, self.refresh_tone = REFRESHING_NOTICE, "info"
+            # A live run keeps the button (it shows as loading); it reports when it finishes.
+            pass
         else:
             # A run that never started (tab closed after the click) or died (restart) must
             # not leave the button locked; bumping the token stops it if it ever resumes.
             self.is_refreshing = False
             self.refresh_run += 1
-            self.refresh_notice, self.refresh_tone = "", ""
+            self.refresh_notice = ""
         tenant_id = await self._tenant()
         if tenant_id is None:
             self.is_loading_mentions = False
@@ -366,15 +360,16 @@ class DashboardState(rx.State):
 
     @rx.event
     async def go_to_page(self, page: str) -> None:
-        """Same snapshot, another page: no row can repeat or be skipped."""
+        """Same snapshot, another page: no row can repeat or be skipped. Page 1 takes a
+        new snapshot: what arrived meanwhile shows at once."""
         if not page.isdigit():
             return  # the "…" gap is not a page
-        await self._read(page=int(page), new_snapshot=False)
+        await self._read(page=int(page), new_snapshot=int(page) == 1)
 
     @rx.event
     async def prev_page(self) -> None:
         if self.page > 1:
-            await self._read(page=self.page - 1, new_snapshot=False)
+            await self._read(page=self.page - 1, new_snapshot=self.page - 1 == 1)
 
     @rx.event
     async def next_page(self) -> None:
@@ -382,35 +377,32 @@ class DashboardState(rx.State):
             await self._read(page=self.page + 1, new_snapshot=False)
 
     @rx.event
-    async def refresh_list(self) -> None:
-        """ "Actualizar lista" / "Actualizar": a new snapshot on page 1, keeping the
-        filters; what arrived since the old snapshot comes back marked "Nueva"."""
-        self.new_since = self.as_of
-        await self._read(page=1, new_snapshot=True)
-
-    @rx.event
-    def refresh_now(self) -> rx.event.EventSpec | None:
+    def refresh_now(self) -> list[rx.event.EventSpec] | None:
         """ "Actualizar menciones": re-read from the network every mention of the scope
         (account + period, all pages) and store what changed. This handler only marks the
         run as started; the work happens in `refresh_scope`, in the background, so the
         network reads never hold this session — filters, paging and the tick stay
         responsive however slowly the network answers. Only this click calls the network —
-        the 45 s tick reads Postgres alone."""
+        the 45 s tick reads Postgres alone. That it started is a toast; the button shows
+        it as loading until the run reports."""
         if self.is_refreshing:
             return None
         self.is_refreshing = True
         self.refresh_run += 1
         self.refresh_started_at = time.time()
-        self.refresh_notice, self.refresh_tone = REFRESHING_NOTICE, "info"
-        return DashboardState.refresh_scope(self.refresh_run)
+        self.refresh_notice = ""
+        return [
+            rx.toast.info(REFRESH_STARTED_TOAST),
+            DashboardState.refresh_scope(self.refresh_run),
+        ]
 
     @rx.event(background=True)
     async def refresh_scope(self, run: int) -> AsyncIterator[rx.event.EventSpec]:
         """The "Actualizar menciones" run. The VISIBLE page first, so what the person is
         looking at updates right away; then one bounded run over the scope; then the
-        outcome — "done" only when nothing of the scope is pending (a toast), otherwise a
-        warning that stays with what to do. A run superseded by a newer one, or by
-        reopening the screen, never writes its outcome over theirs."""
+        outcome: always a toast (done, or a warning when something is pending), plus one
+        short on-page notice with what to do when something is pending. A run superseded by
+        a newer one, or by reopening the screen, never writes its outcome over theirs."""
         report = None
         visible = None
         stopped_notice = ""
@@ -434,7 +426,6 @@ class DashboardState(rx.State):
                 async with self:
                     if self.refresh_run != run:
                         return
-                    self.new_since = self.as_of
                     await self._read(page=self.page, new_snapshot=True)
                 if visible is not None and visible.rate_limited:
                     # Throttled already: asking for the rest of the scope now would only
@@ -459,67 +450,64 @@ class DashboardState(rx.State):
             # removes before the scope run plans, so both passes' removals are added up.
             visible_removed = visible.removed if visible is not None else 0
             if stopped_notice or report is None:
-                stopped = stopped_outcome(
+                outcome = stopped_outcome(
                     stopped_notice or REFRESH_FAILED_NOTICE, removed=visible_removed
                 )
-                self.refresh_notice, self.refresh_tone = stopped.message, stopped.tone
-                return
-            outcome = refresh_outcome(
-                in_scope=report.remaining_scope,
-                refreshed=report.refreshed,
-                already_fresh=report.already_fresh,
-                failed=report.failed,
-                not_attempted=report.not_attempted,
-                rate_limited=report.rate_limited,
-                usage_paused=report.usage_paused,
-                planning_failed=report.planning_failed,
-                credential_failed=report.credential_failed,
-                removed=report.removed + visible_removed,
-                restored=report.restored,
-            )
-            pending = outcome.tone == "warn"
-            self.refresh_notice = outcome.message if pending else ""
-            self.refresh_tone = outcome.tone if pending else ""
-            # Same page under a NEW snapshot: the stored changes (likes, text, a date that
-            # moves a row, a sentiment that changes its filter) are what the page now shows,
-            # and the snapshot's total is re-taken so the tick does not report a stale change.
-            await self._read(page=self.page, new_snapshot=True)
-        if outcome.tone == "ok":
-            yield rx.toast.success(outcome.message)
-        elif outcome.tone == "info":
-            yield rx.toast.info(outcome.message)
+            else:
+                outcome = refresh_outcome(
+                    in_scope=report.remaining_scope,
+                    refreshed=report.refreshed,
+                    already_fresh=report.already_fresh,
+                    failed=report.failed,
+                    not_attempted=report.not_attempted,
+                    rate_limited=report.rate_limited,
+                    usage_paused=report.usage_paused,
+                    planning_failed=report.planning_failed,
+                    credential_failed=report.credential_failed,
+                    removed=report.removed + visible_removed,
+                    restored=report.restored,
+                )
+                # Same page under a NEW snapshot: the stored changes (likes, text, a date
+                # that moves a row, a sentiment that changes its filter) are what the page
+                # now shows, and the snapshot's total is re-taken so the tick does not
+                # report a stale change.
+                await self._read(page=self.page, new_snapshot=True)
+            self.refresh_notice = outcome.notice
+        show = {"ok": rx.toast.success, "warn": rx.toast.warning}.get(outcome.tone, rx.toast.info)
+        yield show(outcome.toast)
 
     @rx.event
     async def refresh_tick(self) -> None:
-        """The 45-second heartbeat. Re-reads the current page under the SAME snapshot and
-        counts what arrived after it; never changes the page's set of rows by itself."""
+        """The 45-second heartbeat. Re-reads the current page: on page 1 under a NEW
+        snapshot with the period's window recomputed, so what arrived meanwhile simply shows
+        (no notice); on a later page under the SAME snapshot, whose set of rows never changes
+        by itself. ONE read per tick. A failure keeps the rows on screen with a soft notice
+        and never stops the next tick (it never touches `mentions_error`)."""
         if self.is_loading_mentions or not self.as_of or self.mentions_error:
             return
         tenant_id = await self._tenant()
         if tenant_id is None:
             return
-        query = self._query()
+        fresh = tick_takes_new_snapshot(self.page)
+        since = _window_start(self.period_filter) if fresh else self.since
         try:
-            new_count = await asyncio.to_thread(count_new, tenant_id, query=query, as_of=self.as_of)
             reread = await asyncio.to_thread(
                 load_page,
                 tenant_id,
-                query=query,
+                query=self._query(since=since),
                 page=self.page,
-                as_of=self.as_of,
-                new_since=self.new_since,
+                as_of="" if fresh else self.as_of,
             )
         except Exception as exc:  # noqa: BLE001 — keep the rows; say it, don't break
             logger.warning("mentions refresh tick failed: %s", type(exc).__name__)
             self.refresh_error = _REFRESH_ERROR
             return
-        decision = decide_tick(
-            snapshot_total=self.snapshot_total,
-            reread_total=reread.filtered_total,
-            new_count=new_count,
-        )
-        self.new_count = decision.new_count
-        if decision.action == "update_rows":
+        if fresh:
+            self.since = since
+            self._apply_page(reread, new_snapshot=True)
+        elif decide_tick(
+            snapshot_total=self.snapshot_total, reread_total=reread.filtered_total
+        ) == ("update_rows"):
             self._apply_page(reread, new_snapshot=False)
         else:
             self.list_changed = True

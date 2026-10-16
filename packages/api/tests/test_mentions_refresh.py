@@ -1337,3 +1337,518 @@ def test_a_removal_after_a_restore_starts_a_new_window() -> None:
     assert repo._mentions[mention_id].removed_at > datetime.now().astimezone() - timedelta(
         minutes=1
     )
+
+
+# ------------------------------------------- a deleted COMMENT answers 400/100, no subcode
+#
+# [VERIFIED LIVE 2026-10-15, production] A `mentioned_comment` read of a comment read
+# successfully hours earlier, then deleted, answered 400 / code 100 / no subcode:
+# "(#100) Param comment_id is not a valid instagram comment ID". Removed only for a
+# comment mention read successfully before, when another comment read of the same
+# connection succeeded in the same run and the account answers.
+
+NOT_A_VALID_COMMENT = MentionedContentReadError(
+    "GET /ig-user-1 failed with HTTP 400", http_status=400, platform_code=100
+)
+
+
+def _comment(comment_id: str) -> MentionedComment:
+    return MentionedComment(
+        id=comment_id, text=f"sigue {comment_id}", like_count=1, timestamp=POSTED
+    )
+
+
+def _read_before(repo: MemoryMentionsRepository, mention_id: UUID) -> None:
+    """The mention was re-read successfully hours ago (`content_refreshed_at` set)."""
+    repo._mentions[mention_id].content_refreshed_at = datetime.now(UTC) - timedelta(hours=3)
+
+
+def _comment_mention(
+    repo: MemoryMentionsRepository,
+    comment_id: str,
+    *,
+    read_before: bool = True,
+    connection_id: UUID = CONNECTION,
+) -> UUID:
+    mention_id = _store(
+        repo, f"post-{comment_id}", comment_id=comment_id, connection_id=connection_id
+    )
+    if read_before:
+        _read_before(repo, mention_id)
+    return mention_id
+
+
+def test_the_unavailable_comment_candidate_is_400_100_without_subcode_only() -> None:
+    from qualify_api.mentions.meta_client import is_comment_unavailable_candidate
+
+    def error(
+        status: int | None, code: int | None, subcode: int | None = None
+    ) -> MentionedContentReadError:
+        return MentionedContentReadError(
+            "x", http_status=status, platform_code=code, platform_subcode=subcode
+        )
+
+    assert is_comment_unavailable_candidate(error(400, 100)) is True
+    for refused in (
+        error(400, 100, 33),  # already `is_gone`
+        error(400, 100, 2207),  # another subcode
+        error(400, 190),  # credential
+        error(400, 10),  # permission
+        error(403, 100),
+        error(429, None),
+        error(500, 100),
+        error(None, None),  # a 200 whose body did not match the contract
+    ):
+        assert is_comment_unavailable_candidate(refused) is False
+
+
+def test_the_shared_missing_object_signature_still_requires_subcode_33() -> None:
+    """The inbox keeps its rule: the widening lives in the mentions module only."""
+    from qualify_shared.social.graph_errors import is_missing_object_error
+
+    assert is_missing_object_error(http_status=400, platform_code=100, platform_subcode=33)
+    assert not is_missing_object_error(http_status=400, platform_code=100, platform_subcode=None)
+
+
+async def test_a_deleted_comment_answering_without_subcode_is_removed(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    gone_id = _comment_mention(repo, "gone")
+    ok_id = _comment_mention(repo, "ok")
+    stored_text = repo._mentions[gone_id].text
+    _use(monkeypatch, ScriptedClient({"gone": [NOT_A_VALID_COMMENT], "ok": [_comment("ok")]}))
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.removed, report.refreshed, report.failed, report.complete) == (1, 1, 0, True)
+    assert _visible_ids(repo) == {ok_id}
+    # A soft delete: the stored content is kept for a possible restore.
+    assert repo._mentions[gone_id].text == stored_text
+
+
+async def test_the_visible_pass_removes_it_too(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    gone_id = _comment_mention(repo, "gone")
+    ok_id = _comment_mention(repo, "ok")
+    _use(monkeypatch, ScriptedClient({"gone": [NOT_A_VALID_COMMENT], "ok": [_comment("ok")]}))
+
+    report = await composition.refresh_mentions_content(
+        tenant_id=TENANT, mention_ids=(gone_id, ok_id)
+    )
+
+    assert (report.removed, report.failed) == (1, 0)
+    assert _visible_ids(repo) == {ok_id}
+
+
+async def test_the_decision_waits_for_every_live_read(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """The comparable read finishing AFTER the refused one still counts: candidates are
+    settled once every live read is done, never in completion order."""
+    gone_id = _comment_mention(repo, "gone")  # stored first: read first
+    for i in range(3):
+        _comment_mention(repo, f"ok{i}")
+    monkeypatch.setattr(composition, "REFRESH_CONCURRENCY", 1)
+    _use(monkeypatch, ScriptedClient({"gone": [NOT_A_VALID_COMMENT]}, default=_comment("x")))
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert report.removed == 1
+    assert gone_id not in _visible_ids(repo)
+
+
+async def test_a_comment_never_read_successfully_is_kept(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """Without an earlier good read, "not a valid comment ID" may be an id that never was."""
+    never_id = _comment_mention(repo, "never", read_before=False)
+    _comment_mention(repo, "ok")
+    stored_text = _record(repo, never_id).text
+    _use(monkeypatch, ScriptedClient({"never": [NOT_A_VALID_COMMENT], "ok": [_comment("ok")]}))
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.removed, report.failed) == (0, 1)
+    assert never_id in _visible_ids(repo)
+    assert _record(repo, never_id).text == stored_text  # the failed read wrote nothing
+
+
+async def test_every_comment_read_refused_removes_nothing(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """A refusal of EVERY comment read is systematic (a request-shape change, an outage),
+    not a deletion: nothing leaves the dashboard and nothing is overwritten."""
+    ids = {_comment_mention(repo, f"c{i}") for i in range(3)}
+    texts = {mention_id: _record(repo, mention_id).text for mention_id in ids}
+    client = ScriptedClient(default=NOT_A_VALID_COMMENT)
+    _use(monkeypatch, client)
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.removed, report.failed) == (0, 3)
+    assert _visible_ids(repo) == ids
+    assert {mention_id: _record(repo, mention_id).text for mention_id in ids} == texts
+    assert client.account_checks == 0
+
+
+async def test_only_a_comment_read_of_the_same_connection_is_comparable(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """A successful MEDIA read, or a comment read of ANOTHER connection, says nothing about
+    whether this connection's `mentioned_comment` requests are valid."""
+    gone_id = _comment_mention(repo, "gone")
+    _store(repo, "media-ok")  # a caption mention, same connection
+    _comment_mention(repo, "elsewhere", connection_id=OTHER_CONNECTION)
+    _use(
+        monkeypatch,
+        ScriptedClient({"gone": [NOT_A_VALID_COMMENT], "elsewhere": [_comment("elsewhere")]}),
+    )
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.removed, report.failed) == (0, 1)
+    assert gone_id in _visible_ids(repo)
+
+
+@pytest.mark.parametrize(
+    ("account_error", "expected"),
+    [
+        (GONE, "credential_failed"),  # "does not exist" about the account itself
+        (
+            MentionedContentReadError("expired", http_status=401, platform_code=190),
+            "credential_failed",
+        ),
+        (MentionedContentReadError("server", http_status=503), "failed"),
+        (NOT_A_VALID_COMMENT, "failed"),
+    ],
+)
+async def test_an_unreadable_account_removes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: MemoryMentionsRepository,
+    account_error: MentionedContentReadError,
+    expected: str,
+) -> None:
+    gone_id = _comment_mention(repo, "gone")
+    _comment_mention(repo, "ok")
+    _use(
+        monkeypatch,
+        ScriptedClient(
+            {"gone": [NOT_A_VALID_COMMENT], "ok": [_comment("ok")]}, account_error=account_error
+        ),
+    )
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert report.removed == 0
+    assert getattr(report, expected) == 1
+    assert gone_id in _visible_ids(repo)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        MentionedContentReadError(
+            "other", http_status=400, platform_code=100, platform_subcode=2207
+        ),
+        MentionedContentReadError("permission", http_status=400, platform_code=10),
+        MentionedContentReadError("expired", http_status=400, platform_code=190),
+        MentionedContentReadError("server", http_status=500, platform_code=100),
+        MentionedContentReadError("forbidden", http_status=403, platform_code=100),
+    ],
+)
+async def test_any_other_refusal_keeps_the_comment_and_its_data(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: MemoryMentionsRepository,
+    error: MentionedContentReadError,
+) -> None:
+    kept_id = _comment_mention(repo, "kept")
+    _comment_mention(repo, "ok")
+    stored_text = _record(repo, kept_id).text
+    _use(monkeypatch, ScriptedClient({"kept": [error], "ok": [_comment("ok")]}))
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.removed, report.failed) == (0, 1)
+    assert kept_id in _visible_ids(repo)
+    assert _record(repo, kept_id).text == stored_text
+
+
+async def test_throttling_keeps_the_comment(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    kept_id = _comment_mention(repo, "kept")
+    _comment_mention(repo, "ok")
+    throttled = MentionedContentReadError("limit", http_status=429)
+    _use(monkeypatch, ScriptedClient({"kept": [throttled], "ok": [_comment("ok")]}))
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.removed, report.rate_limited) == (0, True)
+    assert kept_id in _visible_ids(repo)
+
+
+async def test_a_media_mention_answering_without_subcode_keeps_the_current_behavior(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """No live evidence yet for a deleted `mentioned_media`: 400/100 without subcode stays a
+    plain failure there, however good the other reads are."""
+    media_id = _store(repo, "media-gone", like_count=7)
+    _read_before(repo, media_id)
+    _store(repo, "media-ok")
+    _comment_mention(repo, "ok")
+    _use(monkeypatch, ScriptedClient({"media-gone": [CODE_100_ONLY], "ok": [_comment("ok")]}))
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.removed, report.failed) == (0, 1)
+    assert media_id in _visible_ids(repo)
+    assert _record(repo, media_id).like_count == 7
+
+
+async def test_a_comment_read_meanwhile_is_never_removed(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """The guard of every removal applies here too: a good read that landed after the
+    refused one started (another tab, the comments webhook) keeps the mention."""
+    gone_id = _comment_mention(repo, "gone")
+    _comment_mention(repo, "ok")
+
+    class _ReadMeanwhile(ScriptedClient):
+        async def account_reachable(self, *, ig_user_id: str) -> None:
+            repo._mentions[gone_id].content_refreshed_at = datetime.now(UTC) + timedelta(seconds=1)
+
+    _use(monkeypatch, _ReadMeanwhile({"gone": [NOT_A_VALID_COMMENT], "ok": [_comment("ok")]}))
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.removed, report.refreshed) == (0, 2)
+    assert gone_id in _visible_ids(repo)
+
+
+async def test_a_removed_comment_that_answers_again_is_restored(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    gone_id = _comment_mention(repo, "gone")
+    _comment_mention(repo, "ok")
+    _use(monkeypatch, ScriptedClient({"gone": [NOT_A_VALID_COMMENT], "ok": [_comment("ok")]}))
+    await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+    assert gone_id not in _visible_ids(repo)
+
+    _remove_long_ago(repo, gone_id)  # past the recheck interval
+    _use(monkeypatch, ScriptedClient({"gone": [_comment("gone")]}))
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert report.restored == 1
+    assert gone_id in _visible_ids(repo)
+    assert _record(repo, gone_id).text == "sigue gone"
+
+
+# ------------------------------------- review follow-ups: the two passes of one click
+
+_SINCE_FOREVER = datetime(2000, 1, 1, tzinfo=UTC)
+
+
+def _attempted_at(repo: MemoryMentionsRepository, mention_id: UUID) -> datetime | None:
+    return repo._mentions[mention_id].content_refresh_attempted_at
+
+
+async def test_a_lone_comment_on_the_visible_page_is_settled_by_the_scope_pass(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """The visible page holds the deleted comment and posts only: no proof yet, so it is
+    kept and NOT stamped — the scope pass of the same click re-reads it next to the
+    connection's other comments, and removes it."""
+    gone_id = _comment_mention(repo, "gone")
+    post_id = _store(repo, "post-1")
+    _comment_mention(repo, "elsewhere")  # another comment of the connection, not visible
+    _use(monkeypatch, ScriptedClient({"gone": [NOT_A_VALID_COMMENT], "elsewhere": [_comment("e")]}))
+
+    visible = await composition.refresh_mentions_content(
+        tenant_id=TENANT, mention_ids=(gone_id, post_id)
+    )
+    assert (visible.removed, visible.failed) == (0, 1)
+    assert _attempted_at(repo, gone_id) is None  # left for the scope pass
+
+    scope = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert scope.removed == 1
+    assert gone_id not in _visible_ids(repo)
+
+
+async def test_a_comment_read_by_the_visible_pass_is_proof_for_the_scope_pass(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """The other comment was re-read by the visible pass moments ago, so the scope pass
+    skips it as fresh — its success still counts as the comparable read."""
+    seen_id = _comment_mention(repo, "seen")
+    gone_id = _comment_mention(repo, "gone")
+    client = ScriptedClient({"seen": [_comment("seen")], "gone": [NOT_A_VALID_COMMENT]})
+    _use(monkeypatch, client)
+
+    await composition.refresh_mentions_content(tenant_id=TENANT, mention_ids=(seen_id,))
+    client.calls.clear()
+    scope = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert client.calls == ["gone"]  # "seen" is fresh: not read again
+    assert scope.removed == 1
+    assert gone_id not in _visible_ids(repo)
+
+
+async def test_an_old_comment_read_is_no_proof(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """Outside the window, an earlier good read of another comment proves nothing about
+    the requests of this run."""
+    gone_id = _comment_mention(repo, "gone")
+    old_id = _comment_mention(repo, "old")  # read 3 h ago (`_read_before`)
+    _use(monkeypatch, ScriptedClient({"gone": [NOT_A_VALID_COMMENT], "old": [NOT_A_VALID_COMMENT]}))
+
+    report = await composition.refresh_mentions_content(
+        tenant_id=TENANT, mention_ids=(gone_id, old_id)
+    )
+
+    assert (report.removed, report.failed) == (0, 2)
+    assert _visible_ids(repo) >= {gone_id, old_id}
+
+
+def _age_attempt(repo: MemoryMentionsRepository, mention_id: UUID, minutes: int) -> None:
+    """The last attempt happened `minutes` ago — past the freshness window when > 1."""
+    stamp = datetime.now(UTC) - timedelta(minutes=minutes)
+    repo._mentions[mention_id].content_refresh_attempted_at = stamp
+
+
+async def test_a_connection_without_another_comment_never_removes_and_retries_later(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """The guard stays for a connection with no other comment mention: kept. The scope
+    pass stamps it, so a second click right away does not read it again (no repeated
+    Graph call); once the freshness window has passed it is retried as usual."""
+    gone_id = _comment_mention(repo, "gone")
+    client = ScriptedClient({"gone": [NOT_A_VALID_COMMENT]})
+    _use(monkeypatch, client)
+
+    first = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+    assert (first.removed, first.failed) == (0, 1)
+    assert _attempted_at(repo, gone_id) is not None  # stamped by the scope pass
+
+    again = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+    assert (again.failed, client.calls) == (1, ["gone"])  # reported, not re-read
+
+    _age_attempt(repo, gone_id, minutes=5)
+    later = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (later.removed, later.failed, client.calls) == (0, 1, ["gone", "gone"])
+    assert client.account_checks == 0
+    assert gone_id in _visible_ids(repo)
+
+
+async def test_one_click_reads_an_unproven_candidate_at_most_twice(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """Visible pass (unstamped, left for the scope pass), then the scope pass (stamped).
+    A second click moments later reads it no more."""
+    gone_id = _comment_mention(repo, "gone")
+    client = ScriptedClient({"gone": [NOT_A_VALID_COMMENT]})
+    _use(monkeypatch, client)
+
+    for _click in range(2):
+        await composition.refresh_mentions_content(tenant_id=TENANT, mention_ids=(gone_id,))
+        await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    # The second visible pass re-reads what is on screen (always does); the second scope
+    # pass skips it as failed moments ago.
+    assert client.calls == ["gone", "gone", "gone"]
+
+
+async def test_a_stamped_candidate_goes_to_the_back_of_the_queue(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """Review finding: an unproven candidate must not stay first in line and starve the
+    other mentions under the per-run cap."""
+    gone_id = _comment_mention(repo, "gone")
+    waiting_id = _store(repo, "waiting")
+    _age_attempt(repo, waiting_id, minutes=60)  # attempted an hour ago
+    _use(monkeypatch, ScriptedClient({"gone": [NOT_A_VALID_COMMENT]}))
+    # Only the candidate this time (never attempted, so it goes first).
+    await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE, max_mentions=1)
+
+    # Next run (no freshness window, so nothing is skipped): the one waiting longest
+    # goes first — the candidate was stamped, it does not jump the queue again.
+    plan = repo.plan_scope_refresh(tenant_id=TENANT, query=SCOPE, fresh_seconds=0, limit=1)
+
+    assert _attempted_at(repo, gone_id) is not None
+    assert [t.mention_id for t in plan.targets] == [waiting_id]
+
+
+async def test_a_stamped_candidate_is_removed_once_the_proof_exists(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """Stamping never blocks a removal: on a later click, when another comment of the
+    connection reads fine, the safeguards hold and the mention leaves the list."""
+    gone_id = _comment_mention(repo, "gone")
+    client = ScriptedClient({"gone": [NOT_A_VALID_COMMENT], "new": [_comment("new")]})
+    _use(monkeypatch, client)
+    first = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+    assert (first.removed, first.failed) == (0, 1)
+
+    _comment_mention(repo, "new")  # another comment mention arrives on the connection
+    _age_attempt(repo, gone_id, minutes=5)
+    later = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert later.removed == 1
+    assert gone_id not in _visible_ids(repo)
+
+
+async def test_throttling_leaves_a_candidate_pending_and_unstamped(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """Meta throttles after the candidate was refused: nothing was decided, so it is
+    pending (not failed) and not stamped, and the run reports the throttling (which the
+    dashboard turns into its "La red social limitó las consultas" notice)."""
+    gone_id = _comment_mention(repo, "gone")  # read first
+    _comment_mention(repo, "ok")
+    _comment_mention(repo, "limited")
+    monkeypatch.setattr(composition, "REFRESH_CONCURRENCY", 1)
+    throttled = MentionedContentReadError("limit", http_status=429)
+    _use(
+        monkeypatch,
+        ScriptedClient(
+            {"gone": [NOT_A_VALID_COMMENT], "ok": [_comment("ok")], "limited": [throttled]}
+        ),
+    )
+
+    report = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (report.removed, report.failed, report.rate_limited) == (0, 0, True)
+    assert report.not_attempted == 2  # the candidate and the throttled read
+    assert _attempted_at(repo, gone_id) is None
+    assert gone_id in _visible_ids(repo)
+
+
+async def test_a_kept_candidate_logs_the_codes_meta_returned_and_nothing_else(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: MemoryMentionsRepository,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    comment_text = "texto privado del comentario"
+    gone_id = _comment_mention(repo, "gone")
+    repo._mentions[gone_id].text = comment_text
+    _use(
+        monkeypatch,
+        ScriptedClient(
+            {"gone": [NOT_A_VALID_COMMENT], "ok": [_comment("ok")]},
+            account_error=MentionedContentReadError("server", http_status=503),
+        ),
+    )
+    _comment_mention(repo, "ok")
+
+    with caplog.at_level("INFO", logger="qualify_api.mentions.composition"):
+        await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    kept = [r.getMessage() for r in caplog.records if "kept stored content" in r.getMessage()]
+    assert kept == [
+        f"mentions refresh kept stored content: mention={gone_id} "
+        "(MentionedContentReadError http=400 code=100 subcode=None)"
+    ]
+    assert all(comment_text not in r.getMessage() for r in caplog.records)
