@@ -24,11 +24,21 @@ nothing worth saving there.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
-from qualify_api.auth.provider import AuthSession, EmailAlreadyRegistered, InvalidCredentials
+from qualify_api.auth.provider import (
+    AuthSession,
+    EmailAlreadyRegistered,
+    InvalidCredentials,
+    PasswordRejected,
+    SessionExpired,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -52,6 +62,9 @@ class FakeAuthProvider:
         self._persist_path = persist_path
         self._users_by_email: dict[str, _FakeUser] = {}
         self._token_counter = 0
+        #: Every recovery link "emailed": `(email, link)`. Tests read it; in dev the
+        #: link is also logged, since the fake has no mailbox to deliver to.
+        self.sent_resets: list[tuple[str, str]] = []
         if self._persist_path is not None:
             self._users_by_email = _load_users(self._persist_path)
 
@@ -83,6 +96,33 @@ class FakeAuthProvider:
         self._users_by_email[email] = user
         self._persist()
         return user.auth_user_id
+
+    def send_password_reset(self, email: str, redirect_to: str) -> None:
+        user = self._users_by_email.get(email)
+        if user is None:
+            return  # silent, like the real provider: no enumeration
+        self._token_counter += 1
+        token = f"fake-recovery-{user.auth_user_id}-{self._token_counter}"
+        user.live_tokens.add(token)
+        link = f"{redirect_to}#{urlencode({'access_token': token, 'type': 'recovery'})}"
+        self.sent_resets.append((email, link))
+        logger.warning("fake auth: recovery link for %s -> %s", email, link)
+
+    def user_email(self, access_token: str) -> str:
+        return self._user_by_token(access_token).email
+
+    def update_password(self, access_token: str, new_password: str) -> None:
+        user = self._user_by_token(access_token)
+        if user.password == new_password:
+            raise PasswordRejected("La nueva contraseña debe ser distinta de la actual.")
+        user.password = new_password
+        self._persist()
+
+    def _user_by_token(self, access_token: str) -> _FakeUser:
+        for user in self._users_by_email.values():
+            if access_token in user.live_tokens:
+                return user
+        raise SessionExpired()
 
     # Test helpers — not part of the AuthProvider protocol.
 

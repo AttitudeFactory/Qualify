@@ -68,6 +68,9 @@ x-app-env: &app-env
   # Dev-only escape hatches, forced empty whatever the env file says.
   QUALIFY_AUTH_FAKE: ""
   QUALIFY_AUTH_FAKE_STATE_PATH: ""
+  QUALIFY_MAIL_FAKE: ""
+  # Signup is invite-only (`just invite`); this dev hatch must never open it in production.
+  QUALIFY_SIGNUP_OPEN: ""
   # `env_file` hands the WHOLE .env.prod to every app container; blank the raw database
   # passwords there. Serving processes only need the per-role DSNs above — and the owner
   # password in particular is a superuser that bypasses RLS, which none of them may hold.

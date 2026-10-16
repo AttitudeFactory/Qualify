@@ -113,6 +113,7 @@ Cada variable está comentada en el ejemplo. Lo esencial:
 | `QUALIFY_DB_OWNER_PASSWORD`, `QUALIFY_DB_APP_PASSWORD`, `QUALIFY_DB_ADMIN_PASSWORD`, `QUALIFY_DB_CREDENTIAL_PASSWORD`, `QUALIFY_DB_WEBHOOK_PASSWORD`, `QUALIFY_DB_WEBHOOK_WORKER_PASSWORD` | `openssl rand -hex 24` cada una (hex: van dentro de una URL) |
 | `QUALIFY_DEV_FERNET_KEY` | `python3 -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`. **Guardarla también en el gestor de contraseñas:** si se pierde, todos los tokens OAuth guardados quedan ilegibles |
 | `QUALIFY_OAUTH_STATE_SECRET` | `openssl rand -hex 32` |
+| `QUALIFY_RESEND_API_KEY`, `QUALIFY_MAIL_FROM`, `QUALIFY_INVITE_SIGNER`, `QUALIFY_MAIL_REPLY_TO` | Correo transaccional (invitaciones y SMTP de Supabase), ver §9 «Resend». Sin la API key la app arranca igual: `just invite` crea la invitación y **imprime el enlace** para mandarlo a mano, y la recuperación de contraseña sigue saliendo por el remitente por defecto de Supabase (sólo llega a miembros del proyecto) |
 | `QUALIFY_META_*`, `QUALIFY_SUPABASE_*`, `QUALIFY_R2_*`, `QUALIFY_ANTHROPIC_API_KEY`, … | Los mismos valores que el `.env` local (no copiar `QUALIFY_*_DSN` ni `QUALIFY_REDIS_URL`: el compose los arma) |
 
 El compose **se niega a arrancar** si falta alguno de: contraseñas de BD, `QUALIFY_DEV_FERNET_KEY`, `QUALIFY_OAUTH_STATE_SECRET`, `QUALIFY_META_APP_ID/SECRET`, `QUALIFY_SUPABASE_URL/PUBLISHABLE_KEY`. Es a propósito: en el código esos valores caen a un default de desarrollo **commiteado**, y sin este chequeo producción correría silenciosamente con la llave de desarrollo. `QUALIFY_AUTH_FAKE` se fuerza vacío pase lo que pase en el archivo.
@@ -288,6 +289,33 @@ Los roles son globales del clúster y sobreviven al `DROP DATABASE`, así que no
 5. Para los revisores de App Review: crear un usuario de prueba con `/signup` y darles esas credenciales en las instrucciones de la revisión.
 
 **Supabase** (auth de la app): *Authentication → URL Configuration*: Site URL `https://qualify.attitudefactory.co` y añadirla a *Redirect URLs*.
+
+**Resend** — correo transaccional de Qualify: las invitaciones de `just invite` (`qualify_api.mail`, PR #106) y el **SMTP propio de Supabase Auth** para los correos de recuperación de contraseña (`/forgot` → `/reset`). Sin SMTP propio, Supabase sólo manda correo a los miembros del proyecto y con tope de 2 por hora: ningún cliente recibiría el enlace. El dominio de envío es `send.attitudefactory.co` (región `sa-east-1`); sus tres registros DNS están en la zona de Vercel desde 2026-10-09. Plan Free: 3.000 correos/mes, 100/día, **un solo dominio verificado**.
+
+1. <https://resend.com/domains>: `send.attitudefactory.co` debe aparecer **Verified**. Si sigue en *Pending*, pulsar *Verify DNS records* (los registros ya existen; Resend los relee).
+2. <https://resend.com/api-keys> → *Create API Key*: nombre `qualify-prod`, permiso **Sending access**, dominio limitado a `send.attitudefactory.co`. La clave (`re_…`) se muestra una sola vez: guardarla en el gestor de contraseñas.
+3. En `/opt/qualify/.env.prod`:
+
+   ```bash
+   QUALIFY_RESEND_API_KEY=re_…
+   QUALIFY_MAIL_FROM=Herwin de Qualify <no-reply@send.attitudefactory.co>
+   QUALIFY_INVITE_SIGNER=Herwin Rey
+   # Opcional: con valor, la invitación dice «Responde este correo». Un buzón que alguien lea.
+   QUALIFY_MAIL_REPLY_TO=
+   ```
+
+   Un cambio en `.env.prod` no recrea nada por sí solo: `dc up -d` (o el siguiente deploy) para que `api` y `reflex` lo lean.
+4. Supabase → *Authentication → Emails → SMTP Settings* → **Enable Custom SMTP**: sender email `no-reply@send.attitudefactory.co`, sender name `Qualify`, host `smtp.resend.com`, puerto `465`, usuario `resend`, contraseña = la misma API key. Al activarlo, Supabase sube el tope de correos de auth a 30/hora; se ajusta en *Authentication → Rate Limits*.
+5. Supabase → *Authentication → URL Configuration → Redirect URLs*: añadir `https://qualify.attitudefactory.co/reset` y `http://localhost:3100/reset` (el enlace de recuperación vuelve ahí con el token; una URL que no esté en la lista cae al Site URL y el token se pierde).
+6. Comprobar: `/forgot` con un correo propio → llega desde `no-reply@send.attitudefactory.co`; y una invitación real desde el servidor, que debe llegar al buzón (si Resend falla, el CLI imprime el enlace y el motivo —dominio sin verificar, clave inválida, cuota— queda en el log):
+
+   ```bash
+   dc run --rm -T api python -m qualify_api.auth.provision invite --email <tu correo> --name Prueba
+   ```
+
+   Cada envío aparece en <https://resend.com/emails> con su estado (delivered / bounced).
+
+*Remitente en `qualify.la`.* Desde 2026-10-15 el producto tiene dominio propio y Lark Mail ocupa la raíz de `qualify.la` (MX, SPF, DKIM). Para que las invitaciones salgan de ahí, añadir en Resend el subdominio `send.qualify.la` (los tres registros que entrega van a la zona de Vercel; la raíz no se toca), esperar *Verified* y cambiar `QUALIFY_MAIL_FROM` y el sender de Supabase a `no-reply@send.qualify.la`. En el plan Free eso **reemplaza** a `send.attitudefactory.co` (un dominio); tener los dos a la vez es plan Pro.
 
 **Canva**: registrar `https://qualify.attitudefactory.co/canva/callback` y `https://qualify.attitudefactory.co/canva/return` en el portal de desarrolladores, y `QUALIFY_CANVA_REDIRECT_URI` igual a la primera.
 
