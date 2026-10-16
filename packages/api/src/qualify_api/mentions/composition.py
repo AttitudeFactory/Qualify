@@ -307,6 +307,11 @@ async def _enrich_and_store(
         content_posted_at=content_posted_at,
         enrichment_status=enrichment_status,
         permalink=permalink,
+        # A successful network read at ingestion IS a read: without this stamp a mention
+        # born here was never `ever_read`, so a comment deleted on Instagram afterwards
+        # answered 400/100 to "Actualizar" and was kept as failed instead of removed.
+        # Webhook-only text (the network refused) stays unstamped on purpose.
+        read_from_network=network_read,
     )
     repo = production_mentions_repository()
     mention_id, created = repo.upsert_mention(mention)
