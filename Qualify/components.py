@@ -57,8 +57,15 @@ _MENTION_COL_WIDTH = rx.breakpoints(initial="220px", xl="260px")
 # that the sidebar leaves ~700 px, measured too narrow for it. Below it (phones, tablets,
 # small laptops) each mention is a card and the pager shrinks to "‹ Página n de N ›". A
 # hover card does not exist on touch, so the card shows the text itself.
-_TABLE_ONLY = rx.breakpoints(initial="none", lg="block")
-_CARDS_ONLY = rx.breakpoints(initial="block", lg="none")
+#
+# The switch is a CSS class, not `rx.breakpoints` on `display` (2026-10-16). In the exported
+# build the global stylesheet is linked twice (once in the prerendered head, once more by the
+# hydration, AFTER emotion's style tags), so Radix's `.rt-Box { display: block }` outranked
+# emotion's media rules and the table and the cards showed at once. The rules live in
+# assets/qualify-listen.css, which is compiled INTO that global stylesheet after Radix's
+# own rules — the `.q-wa-chats` pattern — so they win in every copy of it.
+_TABLE_ONLY = "q-mentions-table-only"
+_CARDS_ONLY = "q-mentions-cards-only"
 # Breathing room after the mention, so its column never reads as glued to Sentimiento.
 _MENTION_GUTTER = "2rem"
 
@@ -361,8 +368,8 @@ def mention_card(mention: MentionRow) -> rx.Component:
 
 
 def mentions_cards() -> rx.Component:
-    # The responsive `display` lives on a plain box: a Radix Flex (`vstack`) owns its own
-    # `display` and would ignore the breakpoint.
+    # The responsive class lives on a plain box: a Radix Flex (`vstack`) owns its own
+    # `display` and would fight the rule.
     return rx.box(
         rx.vstack(
             rx.foreach(DashboardState.mentions, mention_card),
@@ -370,7 +377,7 @@ def mentions_cards() -> rx.Component:
             width="100%",
         ),
         width="100%",
-        display=_CARDS_ONLY,
+        class_name=_CARDS_ONLY,
     )
 
 
@@ -399,7 +406,7 @@ def mentions_table() -> rx.Component:
         ),
         overflow_x="auto",
         width="100%",
-        display=_TABLE_ONLY,
+        class_name=_TABLE_ONLY,
     )
 
 
@@ -458,7 +465,7 @@ def pager() -> rx.Component:
                 width="100%",
                 align="center",
             ),
-            display=_TABLE_ONLY,
+            class_name=_TABLE_ONLY,
         ),
         rx.box(
             rx.hstack(
@@ -488,7 +495,7 @@ def pager() -> rx.Component:
                 spacing="3",
                 width="100%",
             ),
-            display=_CARDS_ONLY,
+            class_name=_CARDS_ONLY,
         ),
         width="100%",
     )
