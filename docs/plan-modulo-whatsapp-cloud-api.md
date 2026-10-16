@@ -424,6 +424,18 @@ Dos observaciones fuera de la lista que importan al plan:
 
 Para cerrar WA-03: (1) PR + `just merge`; (2) `QUALIFY_WA_WEBHOOK_VERIFY_TOKEN` en `.env.prod` (`openssl rand -hex 32`) y deploy; (3) en el panel, producto **Whatsapp Business Account** → callback `https://qualify.attitudefactory.co/api/whatsapp/webhook` + ese token → «Verificar y guardar» → suscribir los cinco campos; (4) reenviar la plantilla de prueba y comprobar la línea `whatsapp webhook: delivery=… parse=parsed changes=1 new=1` en los logs del contenedor `api` y una fila `object = whatsapp_business_account` en `meta_webhook_events` (estado `unsupported` hasta WA-07).
 
+**Paso 2 («Configuración de producción») — COMPLETADO. Verificado en el panel el 2026-10-16** (sesión del fundador en Chrome, solo lectura). Las cuatro tareas aparecen con marca verde:
+
+| Activo | Valor observado |
+|---|---|
+| WABA real | «Bianki», id `2424476465026205`, propiedad de Qualify.co (la WABA de prueba `2338576026889338` sigue existiendo al lado) |
+| Número | +58 424-8837639 (Venezuela), `phone_number_id` `1355617947639492`, estado **Conectado**, calidad **Alta**, nombre visible «Bianki» sin alerta de revisión pendiente, categoría «Comida y comestibles» |
+| Webhook | callback `https://qualify.attitudefactory.co/api/whatsapp/webhook` guardado y **verificado** por Meta (luego el verify token ya está en `.env.prod`). Suscritos: `messages`, `account_alerts`, `account_review_update`, `account_update`, `calls`, `message_template_quality_update`, `message_template_status_update`, `phone_number_name_update`, `phone_number_quality_update`, `security` |
+| Pago y envío | marcados como hechos en la guía; el número real lleva 0 mensajes enviados por API (los 3 del mes salieron del número de prueba) |
+| Perfil de empresa | **vacío** al verificarlo (sin foto, descripción, dirección, correo ni web): es lo que hace que el número «no se vea como negocio». Se llena desde WhatsApp Manager → Números de teléfono → Perfil, con los datos anotados en `docs/backlog-modulo-whatsapp.md` (WA-13) |
+
+Con esto los puntos 1, 2, 4 y 6 de la tabla de arriba y el cierre de WA-03 quedan hechos. Lo que sigue abierto del tramo de operación es el alta del número en Qualify (`just whatsapp-connect` en producción, paso 5 del runbook de WA-13) y, con él, la primera conversación real.
+
 Orden recomendado para el fundador, 15 minutos: (1) Continuar en el caso de uso WhatsApp → (3) crear el system user y el token → (4) configurar el webhook de WhatsApp una vez exista la ruta en producción → (5) quitar los dos permisos de la cola de revisión → (7) tarjeta, más adelante.
 
 ---
