@@ -133,15 +133,10 @@ def test_pager_vars() -> None:
     assert (state.has_prev, state.has_next) == (True, False)
 
 
-def test_new_mentions_notice_reads_from_the_count() -> None:
-    state = DashboardState()
-    assert state.new_mentions_notice == ""
-
-    state.new_count = 1
-    assert state.new_mentions_notice == "1 mención nueva"
-
-    state.new_count = 50
-    assert state.new_mentions_notice == "50+ menciones nuevas"
+def test_the_dashboard_has_no_new_mention_notice() -> None:
+    """A mention is not a message (QUA-152): no counter or notice of new arrivals exists."""
+    names = set(DashboardState.get_fields()) | set(DashboardState.computed_vars)
+    assert not {"new_count", "new_mentions_notice", "new_since"} & names
 
 
 def test_the_screen_opens_on_the_last_14_days() -> None:
@@ -187,7 +182,6 @@ def test_the_account_filter_shows_only_with_several_accounts() -> None:
 def _row(mention_id: str) -> MentionVM:
     return MentionVM(
         id=mention_id,
-        is_new=False,
         platform="instagram",
         kind="post",
         kind_label="Publicación",
@@ -568,3 +562,98 @@ async def test_a_failing_visible_pass_still_reloads_and_continues(
     assert seen["reads"] == 2  # the page is re-read anyway
     assert "scope" in seen  # and the scope still runs
     assert state.is_refreshing is False
+
+
+# --- a new mention appears, never announced as a message (QUA-152) ----------------------
+
+OLD_SNAPSHOT = "2026-10-14T00:00:00+00:00"
+NEW_SNAPSHOT = "2026-10-15T00:00:00+00:00"
+
+
+def _wire_tick(monkeypatch: pytest.MonkeyPatch, *, arrived: int) -> dict:
+    """The tick's two reads: `count_new` (what arrived after the snapshot) and `load_page`
+    — under the old snapshot it holds m1/m2, under a new one also the webhook's m3."""
+    from . import state as state_module
+    from .mentions_provider import MentionCountsVM, MentionPageVM
+
+    seen: dict = {"loads": []}
+
+    async def fake_tenant(self: DashboardState) -> UUID:
+        return UUID("a0000000-0000-4000-8000-000000000001")
+
+    def fake_count_new(tenant_id: UUID, **kwargs: object) -> int:
+        return arrived
+
+    def fake_load_page(tenant_id: UUID, *, page: int, as_of: str, **kwargs: object):
+        seen["loads"].append((page, as_of))
+        ids = ["m1", "m2"] if as_of else ["m3", "m1", "m2"]
+        return MentionPageVM(
+            rows=[_row(i) for i in ids],
+            summary=MentionCountsVM(total=len(ids)),
+            filtered_total=len(ids),
+            page=page,
+            total_pages=1,
+            pages_label="",
+            as_of=as_of or NEW_SNAPSHOT,
+        )
+
+    monkeypatch.setattr(DashboardState, "_tenant", fake_tenant)
+    monkeypatch.setattr(state_module, "count_new", fake_count_new)
+    monkeypatch.setattr(state_module, "load_page", fake_load_page)
+    return seen
+
+
+def _listing_state(page: int = 1) -> DashboardState:
+    state = DashboardState()
+    state.mentions = [_row("m1"), _row("m2")]
+    state.as_of = OLD_SNAPSHOT
+    state.snapshot_total = 2
+    state.page = page
+    return state
+
+
+async def test_a_new_mention_appears_on_the_first_page_without_any_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _wire_tick(monkeypatch, arrived=1)
+    state = _listing_state()
+
+    await DashboardState.refresh_tick.fn(state)
+
+    assert [row.id for row in state.mentions] == ["m3", "m1", "m2"]
+    assert seen["loads"][-1] == (1, "")  # a new snapshot, taken by itself
+    assert (state.as_of, state.snapshot_total) == (NEW_SNAPSHOT, 3)
+    # Nothing presents it as a message that arrived.
+    assert (state.refresh_notice, state.list_changed, state.refresh_error) == ("", False, "")
+
+
+async def test_a_new_mention_never_shifts_a_later_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _wire_tick(monkeypatch, arrived=1)
+    state = _listing_state(page=2)
+
+    await DashboardState.refresh_tick.fn(state)
+
+    assert seen["loads"] == [(2, OLD_SNAPSHOT)]  # same snapshot: paging stays exact
+    assert state.as_of == OLD_SNAPSHOT
+    assert (state.refresh_notice, state.list_changed) == ("", False)
+
+
+async def test_a_tick_with_nothing_new_keeps_the_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _wire_tick(monkeypatch, arrived=0)
+    state = _listing_state()
+
+    await DashboardState.refresh_tick.fn(state)
+
+    assert seen["loads"] == [(1, OLD_SNAPSHOT)]
+    assert [row.id for row in state.mentions] == ["m1", "m2"]
+
+
+def test_the_notices_never_announce_a_new_mention() -> None:
+    from .components import notices
+
+    rendered = str(notices())
+
+    for announcement in ("menciones nuevas", "Ver nuevas", "bell", "new_mentions"):
+        assert announcement not in rendered
+    # The legitimate refresh outcomes are still there.
+    assert "list_changed" in rendered and "refresh_notice" in rendered

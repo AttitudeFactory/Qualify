@@ -9,11 +9,12 @@ app (same split `inbox_sync_policy.py` makes for `/inbox`).
 
 Every page of a listing is read under one snapshot, `as_of` (`received_at <= as_of`, see
 `qualify_api.mentions.repository.MentionPage`). Paging keeps it, so walking pages never
-shows a duplicate or skips a row. A new mention therefore never appears by itself: a
-refresh tick only COUNTS what arrived after `as_of` and announces it; the user takes it in
-with "Actualizar lista", which starts a new snapshot on page 1. The order stays
-chronological by publication date, so a new mention about an old post can land on a later
-page — the guarantee is to detect and announce it, not to put it first.
+shows a duplicate or skips a row. A refresh tick COUNTS what arrived after `as_of`; on the
+first page it takes those mentions in directly — a new snapshot, silently: a mention is not
+a message, so its arrival is never announced as one (no notice, no "Nueva" mark; QUA-152,
+founder's call 2026-10-15). On a later page the snapshot is kept, so paging never shifts
+under the person; the next tick on page 1 takes them in. The order stays chronological by
+publication date, so a new mention about an old post can land on a later page.
 """
 
 from __future__ import annotations
@@ -78,34 +79,24 @@ def pages_label(total_pages: int) -> str:
     return "Total de 1 página" if total_pages <= 1 else f"Total de {total_pages} páginas"
 
 
-def new_mentions_label(count: int, *, cap: int) -> str:
-    """The notice text; '' when there is nothing new. At the cap it reads 'N+'."""
-    if count <= 0:
-        return ""
-    amount = f"{cap}+" if count >= cap else str(count)
-    return "1 mención nueva" if amount == "1" else f"{amount} menciones nuevas"
+TickAction = Literal["take_new", "update_rows", "announce_change"]
 
 
-TickAction = Literal["update_rows", "announce_change"]
+def decide_tick(*, snapshot_total: int, reread_total: int, new_count: int, page: int) -> TickAction:
+    """What a refresh tick does with the page it just re-read under the SAME snapshot.
 
-
-@dataclass(frozen=True)
-class TickDecision:
-    """What a refresh tick does with the page it just re-read under the SAME snapshot."""
-
-    action: TickAction
-    new_count: int
-
-
-def decide_tick(*, snapshot_total: int, reread_total: int, new_count: int) -> TickDecision:
-    """Same total under the same snapshot = the same set of rows: replace them in place,
-    which only refreshes their data (a sentiment that just got analyzed). A different total
-    means the set itself changed (a row deleted, a mention committed late into the
-    snapshot, or a sentiment filter whose matches moved): never swap the rows silently —
-    announce it and let the user refresh."""
+    Mentions arrived after the snapshot and the person is on page 1: take them in — the
+    first page is re-read under a new snapshot, with no notice (a mention is not a
+    message). Otherwise, same total = the same set of rows: replace them in place, which
+    only refreshes their data (a sentiment that just got analyzed). A different total means
+    the set itself changed (a row deleted, a mention committed late into the snapshot, or a
+    sentiment filter whose matches moved): never swap the rows silently — announce it and
+    let the user refresh."""
+    if new_count > 0 and page == 1:
+        return "take_new"
     if reread_total != snapshot_total:
-        return TickDecision(action="announce_change", new_count=new_count)
-    return TickDecision(action="update_rows", new_count=new_count)
+        return "announce_change"
+    return "update_rows"
 
 
 # --- "Actualizar menciones" outcome (QUA-152) ------------------------------------------

@@ -15,8 +15,9 @@ for paging, the refresh tick and the new-mention notice live in `.mentions_pagin
 - changing a filter or the search starts a new snapshot on page 1;
 - changing page keeps the snapshot, so no row repeats or goes missing;
 - the 45-second tick re-reads the SAME page under the SAME snapshot (fresh sentiment
-  states, no skeleton) and counts what arrived after it — it never inserts a new row by
-  itself: the notice offers "Actualizar lista", and those rows come back marked "Nueva".
+  states, no skeleton) and counts what arrived after it. On page 1 the new mentions are
+  taken in directly (a new snapshot) with no notice and no "Nueva" mark: a mention is not
+  a message and is never presented as one arriving (QUA-152, 2026-10-15).
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import reflex as rx
-from qualify_api.mentions.repository import NEW_MENTIONS_CAP, MentionQuery
+from qualify_api.mentions.repository import MentionQuery
 
 from .auth_state import AuthState
 from .mentions_paging import (
@@ -46,7 +47,6 @@ from .mentions_paging import (
     THROTTLED_NOTICE,
     USAGE_PAUSED_NOTICE,
     decide_tick,
-    new_mentions_label,
     refresh_outcome,
     refresh_still_running,
     stopped_outcome,
@@ -113,10 +113,7 @@ class DashboardState(rx.State):
     # mentions it held. A tick that re-reads a different total announces the change.
     as_of: str = ""
     snapshot_total: int = 0
-    new_count: int = 0
     list_changed: bool = False
-    # Rows received after this instant are marked "Nueva" (set by "Actualizar lista").
-    new_since: str = ""
     last_updated: str = ""
     # True for the whole "Actualizar menciones" run: the visible page first, then the
     # rest of the scope (account + period) in the background.
@@ -169,10 +166,6 @@ class DashboardState(rx.State):
     @rx.var
     def has_next(self) -> bool:
         return self.page < self.total_pages
-
-    @rx.var
-    def new_mentions_notice(self) -> str:
-        return new_mentions_label(self.new_count, cap=NEW_MENTIONS_CAP)
 
     @rx.var
     def has_filters(self) -> bool:
@@ -264,7 +257,6 @@ class DashboardState(rx.State):
         if new_snapshot:
             self.as_of = vm.as_of
             self.snapshot_total = vm.filtered_total
-            self.new_count = 0
             self.list_changed = False
         self.last_updated = _utc_stamp()
         self.refresh_error = ""
@@ -284,7 +276,6 @@ class DashboardState(rx.State):
                 query=self._query(),
                 page=page,
                 as_of="" if new_snapshot else self.as_of,
-                new_since=self.new_since,
             )
         except Exception as exc:  # noqa: BLE001 — shown as a callout, logged by type only
             logger.error("mentions_provider.load_page failed: %s", type(exc).__name__)
@@ -294,9 +285,8 @@ class DashboardState(rx.State):
         self._apply_page(vm, new_snapshot=new_snapshot)
 
     async def _restart(self) -> None:
-        """A new listing: page 1 under a new snapshot, no "Nueva" marks. Keeps the rows
-        on screen while it reads (no skeleton) — a filter change must not flash."""
-        self.new_since = ""
+        """A new listing: page 1 under a new snapshot. Keeps the rows on screen while it
+        reads (no skeleton) — a filter change must not flash."""
         if not self.is_refreshing:
             self.refresh_notice = ""  # it described another scope
         await self._read(page=1, new_snapshot=True)
@@ -383,9 +373,8 @@ class DashboardState(rx.State):
 
     @rx.event
     async def refresh_list(self) -> None:
-        """ "Actualizar lista" / "Actualizar": a new snapshot on page 1, keeping the
-        filters; what arrived since the old snapshot comes back marked "Nueva"."""
-        self.new_since = self.as_of
+        """ "Actualizar" (the list changed): a new snapshot on page 1, keeping the
+        filters."""
         await self._read(page=1, new_snapshot=True)
 
     @rx.event
@@ -434,7 +423,6 @@ class DashboardState(rx.State):
                 async with self:
                     if self.refresh_run != run:
                         return
-                    self.new_since = self.as_of
                     await self._read(page=self.page, new_snapshot=True)
                 if visible is not None and visible.rate_limited:
                     # Throttled already: asking for the rest of the scope now would only
@@ -492,7 +480,9 @@ class DashboardState(rx.State):
     @rx.event
     async def refresh_tick(self) -> None:
         """The 45-second heartbeat. Re-reads the current page under the SAME snapshot and
-        counts what arrived after it; never changes the page's set of rows by itself."""
+        counts what arrived after it. On page 1, new mentions are taken in directly under a
+        new snapshot, with no notice; elsewhere the page's set of rows never changes by
+        itself."""
         if self.is_loading_mentions or not self.as_of or self.mentions_error:
             return
         tenant_id = await self._tenant()
@@ -507,19 +497,20 @@ class DashboardState(rx.State):
                 query=query,
                 page=self.page,
                 as_of=self.as_of,
-                new_since=self.new_since,
             )
         except Exception as exc:  # noqa: BLE001 — keep the rows; say it, don't break
             logger.warning("mentions refresh tick failed: %s", type(exc).__name__)
             self.refresh_error = _REFRESH_ERROR
             return
-        decision = decide_tick(
+        action = decide_tick(
             snapshot_total=self.snapshot_total,
             reread_total=reread.filtered_total,
             new_count=new_count,
+            page=self.page,
         )
-        self.new_count = decision.new_count
-        if decision.action == "update_rows":
+        if action == "take_new":
+            await self._read(page=1, new_snapshot=True)
+        elif action == "update_rows":
             self._apply_page(reread, new_snapshot=False)
         else:
             self.list_changed = True

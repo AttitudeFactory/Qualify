@@ -29,7 +29,6 @@ from .ui import (
     skeleton_rows,
     stat_card,
     tag,
-    tone_badge,
 )
 from .ui import tokens as T
 
@@ -208,7 +207,6 @@ def _date_cell(mention: MentionRow) -> rx.Component:
             ),
             spacing="0",
         ),
-        rx.cond(mention.is_new, tone_badge("Nueva", "accent")),
         spacing="2",
         align="center",
     )
@@ -324,7 +322,6 @@ def mention_card(mention: MentionRow) -> rx.Component:
                     rx.text(mention.date, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
                     platform_badge(mention.platform),
                     tag(mention.kind_label),
-                    rx.cond(mention.is_new, tone_badge("Nueva", "accent")),
                     spacing="2",
                     align="center",
                     wrap="wrap",
@@ -501,18 +498,10 @@ def pager() -> rx.Component:
 
 
 def notices() -> rx.Component:
-    """The refresh outcomes. None of them changes the rows on screen by itself."""
+    """The refresh outcomes. None of them changes the rows on screen by itself. A new
+    mention has no notice here: it simply appears in the list (QUA-152) — it is not a
+    message and is never announced as one."""
     return rx.vstack(
-        rx.cond(
-            DashboardState.new_mentions_notice != "",
-            rx.hstack(
-                callout(DashboardState.new_mentions_notice, "info", icon="bell", flex="1"),
-                rx.button("Ver nuevas", size="2", on_click=DashboardState.refresh_list),
-                align="center",
-                spacing="3",
-                width="100%",
-            ),
-        ),
         rx.cond(
             DashboardState.list_changed,
             rx.hstack(

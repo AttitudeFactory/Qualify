@@ -10,7 +10,7 @@ reception dates kept apart, every sentiment state passed through as its own valu
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -90,8 +90,8 @@ def _record(
     )
 
 
-def _vm(record: MentionRecord, *, new_since: datetime | None = None) -> MentionVM:
-    return to_vm(record, new_since=new_since)
+def _vm(record: MentionRecord) -> MentionVM:
+    return to_vm(record)
 
 
 # --- columns ----------------------------------------------------------------------------
@@ -214,7 +214,7 @@ def test_account_options_are_unique_labels(monkeypatch: pytest.MonkeyPatch) -> N
     ]
 
 
-# --- sentiment and the "Nueva" mark -----------------------------------------------------
+# --- sentiment, and no "new" mark -------------------------------------------------------
 
 
 @pytest.mark.parametrize("state", ["POS", "NEU", "NEG", "PENDING", "NO_TEXT", "ERROR"])
@@ -222,12 +222,9 @@ def test_every_sentiment_state_passes_through_untouched(state: str) -> None:
     assert _vm(_record(state=state)).sentiment_state == state
 
 
-def test_rows_received_after_the_previous_snapshot_are_marked_new() -> None:
-    cut = datetime(2026, 10, 13, 14, 3, tzinfo=UTC)
-
-    assert _vm(_record(), new_since=cut).is_new is True  # received 14:05
-    assert _vm(_record(), new_since=datetime(2026, 10, 13, 15, 0, tzinfo=UTC)).is_new is False
-    assert _vm(_record(), new_since=None).is_new is False
+def test_a_row_carries_no_new_arrival_mark() -> None:
+    """A mention is not a message: its row is never flagged as a new arrival (QUA-152)."""
+    assert "is_new" not in {field.name for field in fields(MentionVM)}
 
 
 # --- page assembly ----------------------------------------------------------------------
