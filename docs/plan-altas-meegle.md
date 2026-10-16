@@ -93,7 +93,7 @@ qualify_api.meegle.processor
   ├─ ítem terminado        → invites.expire
   └─ nodo Datos revertido  → nada (deja reenviar)
 
-Resend ─ webhook email.delivered / bounced / opened ─▶ POST /api/mail/resend ─▶ invites.delivery → Meegle (nodo Invitada, estado)
+Resend ─ webhook email.delivered / opened / bounced (Svix) ─▶ POST /api/mail/resend ── bandeja (object="resend") ─▶ webhook-worker: invites.mark_delivery → Meegle (nodo Invitada, estado)
 Signup ─ register_business consume la invitación ─▶ Meegle (nodo Registrada, Tenant)
 ```
 
@@ -153,16 +153,39 @@ Signup ─ register_business consume la invitación ─▶ Meegle (nodo Registra
   `data` manipulado con una firma copiada pasaría. Meegle no ofrece nada más fuerte; lo que acota
   el daño es que el motor relee el ítem por la Open API autenticada antes de actuar y solo actúa
   sobre ítems del tipo y espacio configurados.
-- **Resend** (nuevo endpoint, M2): webhook firmado (Svix: `svix-id`, `svix-timestamp`,
-  `svix-signature` con `QUALIFY_RESEND_WEBHOOK_SECRET`) → columnas de `signup_invites`
-  (`resend_email_id`, `delivered_at`, `opened_at`, `bounced_at`; **(M1)** ya creadas por 0064) →
-  escritura en Meegle. **(M1)** `ResendMailer.send` devuelve el `id` de Resend y
-  `send_invite_email` lo guarda en `resend_email_id`; el `Mailer` ahora devuelve `str | None`.
+- **Resend** `[M2 ENTREGADO 2026-10-16]` — `POST /api/mail/resend` (`qualify_api.mail.routes`,
+  montada en `http/app.py`). Firma Svix verificada en `qualify_api.mail.webhook`: cabeceras
+  `svix-id`, `svix-timestamp`, `svix-signature` (`v1,<base64>`, varias separadas por espacio
+  durante una rotación), secreto `QUALIFY_RESEND_WEBHOOK_SECRET` (`whsec_<base64>`), HMAC-SHA256
+  de `"{svix-id}.{svix-timestamp}.{cuerpo}"` comparado en tiempo constante, marca de tiempo con
+  tolerancia de 5 min. **Sin secreto el endpoint responde 503 (log en ERROR) y nunca acepta un
+  evento sin firmar**; firma mala o cabecera ausente → 401 sin escribir; > 64 KB → 413. El evento
+  firmado se graba en la **misma bandeja** (`object = "resend"`, `field = "email.<evento>"`,
+  `entry_id = data.email_id`, dedup por hash del contenido; las tres cabeceras Svix quedan en
+  `signature_header` con prefijo `svix=`) y responde 200; el `webhook-worker` lo asienta con
+  `qualify_api.mail.handlers` (claves `resend:email.delivered|opened|bounced`; cualquier otro
+  evento de Resend queda `unsupported`, guardado y reprocesable). El handler: (1) `invites.
+  mark_delivery` casa `data.email_id` con `signup_invites.resend_email_id` y pone `delivered_at` /
+  `opened_at` / `bounced_at` **solo la primera vez** (un reintento o un segundo «abierto» se asienta
+  `processed` / `ignored:repeat`; un id sin invitación — p. ej. un correo de recuperación que
+  Supabase mandó por la misma cuenta — `ignored:unknown_email`); (2) si la invitación viene de un
+  ítem (`meegle_work_item_id`) y el motor está configurado, escribe en Meegle **a mejor esfuerzo**
+  (`OnboardingEngine.mark_delivered|mark_opened|mark_bounced`): entregada → `Estado Qualify =
+  entregada` + `confirm` del nodo **Invitada** (si ya estaba completo, Meegle lo rechaza y se deja
+  en log); abierta → `Estado = abierta` (no toca nodos; si el «abierto» llegó antes que el
+  «entregado», el estado no retrocede); rebotó → `Estado = rebotó` + comentario con
+  `data.bounce.message` (`type` / `subType`) y la indicación de corregir «Correo» y volver a
+  completar «Datos». Un fallo de Meegle se asienta `processed` / `meegle_failed:<tipo>` (la fila es
+  el registro; reintentar no volvería a escribir porque la columna ya está puesta). Las claves que
+  trae el payload de un rebote real se registran en el log (`resend bounce: … bounce_keys=…`)
+  para confirmar la forma documentada con el primer rebote. **(M1)** `ResendMailer.send` devuelve
+  el `id` de Resend y `send_invite_email` lo guarda en `resend_email_id`; el `Mailer` devuelve
+  `str | None`.
 
 **Variables nuevas (`.env.prod`):** `QUALIFY_MEEGLE_BASE_URL=https://meegle.com` (opcional),
 `QUALIFY_MEEGLE_PLUGIN_ID`, `QUALIFY_MEEGLE_PLUGIN_SECRET`, `QUALIFY_MEEGLE_CALLBACK_TOKEN`,
 `QUALIFY_MEEGLE_PROJECT_KEY`, `QUALIFY_MEEGLE_WORK_ITEM_TYPE`, `QUALIFY_MEEGLE_USER_KEY` (M1,
-documentadas en `.env.example` y `deploy/.env.prod.example`); `QUALIFY_RESEND_WEBHOOK_SECRET` (M2).
+documentadas en `.env.example` y `deploy/.env.prod.example`); `QUALIFY_RESEND_WEBHOOK_SECRET` (M2, también documentada en ambos; sin ella `/api/mail/resend` responde 503 y el resto sigue igual).
 Sin las seis de Meegle, el motor queda apagado — `MeegleNotConfigured` nombra las que faltan, el
 `just invite` de hoy sigue funcionando y los eventos quedan `unsupported` en la bandeja; el test
 estático `test_meegle_settings.py` confina el secreto del plugin a `qualify_api/meegle/`.
@@ -171,9 +194,9 @@ estático `test_meegle_settings.py` confina el secreto del plugin a `qualify_api
 
 | Fase | Entrega | Verificación |
 |---|---|---|
-| **M0 — manual (Herwin, sin código)** | Tipo «Alta de cliente» con nodos y campos en el espacio Qualify; plugin «Qualify» en el Developer Platform con Event Listener (tipo: *Other work item*; eventos 2001, 2004, 1005), URL de callback `https://app.qualify.la/api/meegle/events` y token; instalarlo en el espacio. Resend: API key en `.env.prod` (runbook `despliegue-hetzner.md` §9) y webhook hacia `/api/mail/resend`. | El plugin aparece instalado; el log del `api` muestra el primer evento firmado. |
+| **M0 — manual (Herwin, sin código)** | Tipo «Alta de cliente» con nodos y campos en el espacio Qualify; plugin «Qualify» en el Developer Platform con Event Listener (tipo: *Other work item*; eventos 2001, 2004, 1005), URL de callback `https://app.qualify.la/api/meegle/events` y token; instalarlo en el espacio. Resend: API key en `.env.prod` y el webhook hacia `https://app.qualify.la/api/mail/resend` con su *Signing Secret* en `QUALIFY_RESEND_WEBHOOK_SECRET` (runbook `despliegue-hetzner.md` §9, paso 7). | El plugin aparece instalado; el log del `api` muestra el primer evento firmado. |
 | **M1 — motor (PR)** — `[ENTREGADO 2026-10-16]` | `qualify_api.meegle` (settings, envelope, receiver, client, schema, onboarding, handlers), ruta `POST /api/meegle/events`, migración `0064` (`meegle_work_item_id` + `resend_email_id`/`delivered_at`/`opened_at`/`bounced_at`), handler de nodo Datos → invitación + correo + escritura, `1005` → vencer, `2004` → nada, `register_business` → nodo Registrada. Tests offline con `httpx.MockTransport` y motor falso (settings, sobre/firma, ruta, cliente, resolutor, casos de uso, handlers); `db` para la bandeja real + 0064 + el write-back del registro. | Completar «Datos» en Meegle manda el correo y el ítem muestra enlace y estado en < 1 min (el `webhook-worker` corre cada 30 s). **Pendiente de verificar en vivo**: requiere M0 (plugin instalado, tipo de ítem creado) y las variables en `.env.prod`. |
-| **M2 — entrega (PR)** | Webhook de Resend → `signup_invites` → nodo Invitada / estado rebotó / abierta. | Un correo real a un buzón propio avanza el nodo; uno a un dominio inexistente marca `rebotó`. |
+| **M2 — entrega (PR)** — `[ENTREGADO 2026-10-16]` | `POST /api/mail/resend` (`qualify_api.mail.webhook` + `routes` + `handlers`): firma Svix, bandeja de webhooks (`object = "resend"`), `invites.mark_delivery` → `delivered_at` / `opened_at` / `bounced_at` (primera vez), y escritura en Meegle a mejor esfuerzo (`mark_delivered` → estado `entregada` + nodo **Invitada**; `mark_opened` → `abierta`; `mark_bounced` → `rebotó` + comentario con el motivo). Variable `QUALIFY_RESEND_WEBHOOK_SECRET`; test estático la confina a `qualify_api/mail/`. Tests offline (firma válida / secreto equivocado / marca vencida / cabecera ausente, sobre, ruta, handlers con bandeja y Meegle falsos vía `httpx.MockTransport`, idempotencia) y `db` (columnas + bandeja real). Sin migración: las columnas son de 0064. | Un correo real a un buzón propio avanza el nodo; uno a un dominio inexistente marca `rebotó`. **Pendiente de verificar en vivo**: requiere el webhook registrado en Resend (runbook `despliegue-hetzner.md` §9) y el secreto en `.env.prod`. |
 | **M3 — automatizaciones (Herwin)** | Las 3–4 reglas nativas de §2 y, si quiere, el grupo de Lark por ítem. | Recordatorio llega al tercer día. |
 | **Futuro** | Nodos 4 y 5 los completa Qualify (Brand Kit guardado, primera publicación); el alta en la llamada (A2) crea el ítem desde Qualify o desde un formulario de Lark Base. | — |
 
