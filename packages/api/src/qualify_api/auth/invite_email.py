@@ -51,6 +51,10 @@ def _date_es(moment: datetime) -> str:
     return f"{local.day} de {_MONTHS[local.month - 1]}"
 
 
+#: Public alias: the Meegle comments use the same Spanish date as the email.
+date_es = _date_es
+
+
 def _first_name(full: str) -> str:
     return full.split()[0] if full.split() else ""
 

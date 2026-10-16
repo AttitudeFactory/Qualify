@@ -47,7 +47,10 @@ class OutgoingMail:
 
 
 class Mailer(Protocol):
-    def send(self, mail: OutgoingMail) -> None: ...
+    def send(self, mail: OutgoingMail) -> str | None:
+        """Send; return the provider's id for the message when it has one (Resend's
+        `id`), so a delivery webhook can be matched to it later."""
+        ...
 
 
 class ResendMailer:
@@ -56,7 +59,7 @@ class ResendMailer:
         self._sender = sender
         self._reply_to = reply_to
 
-    def send(self, mail: OutgoingMail) -> None:
+    def send(self, mail: OutgoingMail) -> str | None:
         payload: dict = {
             "from": self._sender,
             "to": [mail.to],
@@ -81,6 +84,11 @@ class ResendMailer:
             # no secret, and without it a 4xx is undebuggable.
             logger.error("resend answered %s: %s", response.status_code, response.text[:300])
             raise MailError(f"mail provider answered {response.status_code}")
+        try:
+            email_id = response.json().get("id")
+        except (ValueError, AttributeError):
+            return None
+        return email_id if isinstance(email_id, str) and email_id else None
 
 
 class FakeMailer:
@@ -89,9 +97,10 @@ class FakeMailer:
     def __init__(self) -> None:
         self.sent: list[OutgoingMail] = []
 
-    def send(self, mail: OutgoingMail) -> None:
+    def send(self, mail: OutgoingMail) -> str | None:
         self.sent.append(mail)
         logger.warning("fake mail to %s: %s\n%s", mail.to, mail.subject, mail.text)
+        return f"fake-{len(self.sent)}"
 
 
 _mailer: Mailer | None = None
