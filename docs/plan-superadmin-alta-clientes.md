@@ -2,7 +2,7 @@
 
 **Fecha:** 2026-10-07 · **Estado:** `[PLAN — pendiente de las decisiones del fundador (§9)]`
 **Origen:** pedido del fundador (2026-10-07): *«desde mi superadmin que administra los tenants puedo disparar nuevos tenants y adelantar configuración y scraping para que su Brand Kit sea más eficiente, ya precargado con su nicho de mercado (mientras hablo)»*, y *«invitar con plantilla de correo a clientes específicos; ahí no se precisa tanta seguridad porque en el boca a boca yo me aseguro de que son los dueños del emprendimiento»*.
-**Construye sobre:** el login endurecido + el registro **solo por invitación** (decisión del fundador 2026-10-14; el código compartido quedó en backlog) de la rama `claude/login-auth-improvements-6658d6` (migración `0056_signup_invites`, `qualify_api.auth.invites`, `qualify_api.mail` sobre Resend), el Brand Kit antes del login (migración `0037`, `qualify_api.auth.drafts`) y el worker embebido del Planificador (QUA-111).
+**Construye sobre:** el login endurecido + el registro **solo por invitación** (decisión del fundador 2026-10-14; el código compartido quedó en backlog) de la rama `claude/login-auth-improvements-6658d6` (migración `0063_signup_invites`, `qualify_api.auth.invites`, `qualify_api.mail` sobre Resend), el Brand Kit antes del login (migración `0037`, `qualify_api.auth.drafts`) y el worker embebido del Planificador (QUA-111).
 
 ---
 
@@ -257,6 +257,6 @@ Cada fase se puede desplegar sola y deja algo usable.
 ## 10. Riesgos
 
 - **Refactor del asistente (A2).** Es código grande y vivo (`creative_wizard_pages.py`); otras ramas lo tocan seguido. Mitigación: los tests de equivalencia van primero, y el refactor entra en un PR propio antes de las pantallas.
-- **Numeración de migraciones.** Este plan agrega al menos dos migraciones después de `0056`; si `main` avanza en paralelo, se renumera como ya pasó con `0043`.
+- **Numeración de migraciones.** Este plan agrega al menos dos migraciones después de `0063`; si `main` avanza en paralelo, se renumera como ya pasó con `0043`.
 - **Costo de vendors.** Los precios del §6 son estimados; la Fase A2 los mide. Si ScrapeCreators sube precio, el presupuesto por alta lo contiene.
 - **Lectura de §6.1.** Este plan asume que el ruling firmado se refiere a lo que ve un **cliente** (§2). Si el fundador lo lee distinto, el plan se detiene en A0.

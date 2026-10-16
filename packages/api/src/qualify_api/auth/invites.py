@@ -1,7 +1,7 @@
 """Who may register a business: an emailed invitation (founder decision, 2026-10-14).
 
 The MVP is **invite-only**. `create_invite` stores the SHA-256 of a random token
-(migration 0056) together with who it is for — the person's name, the business and an
+(migration 0063) together with who it is for — the person's name, the business and an
 optional personal note from whoever invites — and `send_invite_email` mails the link
 `/signup?invite=<token>` (template: `invite_email`). The invite opens signup only for ITS
 email, once, until it expires. Because the link reaches only that inbox, an invited

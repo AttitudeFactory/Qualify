@@ -1,7 +1,7 @@
 """signup_invites: single-use, emailed invitations to register a business
 
-Revision ID: 0056
-Revises: 0055
+Revision ID: 0063
+Revises: 0062
 Create Date: 2026-10-07
 
 § request 2026-10-07, narrowed 2026-10-14: the MVP is invite-only ("solo me interesa para
@@ -26,8 +26,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0056"
-down_revision = "0055"
+revision = "0063"
+down_revision = "0062"
 branch_labels = None
 depends_on = None
 
