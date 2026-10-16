@@ -32,7 +32,7 @@ Todo lo de abajo está en `main`, mergeado por `just merge` con CI verde. Suite 
 
 ### Pendiente fuera del código
 
-1. **D1 y WA-13** (abajo): sin número real no hay conversación de verdad.
+1. **WA-13** (abajo): el número real ya está en la Cloud API y el webhook verificado (2026-10-16); falta el alta en Qualify (`just whatsapp-connect` en producción), el perfil de empresa y la primera conversación real. Queda por dejar escrita en el plan §9.1 la opción de D1 que corresponde a ese número.
 2. **Tarifas reales.** `qualify_api/whatsapp/pricing.py` lleva `[RATE CARD PENDING]`; el costo estimado de campañas no es real hasta cargar el rate card vigente de Meta.
 3. **Consentimiento del formulario de leads.** Importar leads como opt-ins solo es válido si el texto de consentimiento cubre recibir mensajes de WhatsApp del negocio.
 4. **Método de pago en la WABA** para enviar plantillas (crearlas no lo necesita).
@@ -176,8 +176,8 @@ Conexión: número, nombre verificado, `name_status`, calidad, nivel de mensajer
 Todo el código que necesita ya está en `main`. Lo que falta son pasos de operación, en este orden:
 
 1. **Decidir D1** (plan §4): número nuevo, migrar el actual de Baileys (hay que borrarlo de la app antes de registrarlo) o coexistencia.
-2. **Producción lista para webhooks:** `QUALIFY_WA_WEBHOOK_VERIFY_TOKEN` en `.env.prod` y deploy; en el panel de Meta, producto «Whatsapp Business Account» → callback `https://qualify.attitudefactory.co/api/whatsapp/webhook` + ese token → suscribir `messages`, `message_template_status_update`, `message_template_quality_update`, `phone_number_quality_update`, `account_update`, `account_alerts`.
-3. **Paso 2 del panel:** WABA real bajo Qualify.co, registrar el número, verificación por SMS o voz, nombre visible, PIN de dos pasos, método de pago.
+2. ~~**Producción lista para webhooks**~~ **HECHO (verificado 2026-10-16):** callback `https://qualify.attitudefactory.co/api/whatsapp/webhook` guardado y verificado por Meta en el caso de uso WhatsApp de la app; suscritos `messages`, `account_alerts`, `account_review_update`, `account_update`, `calls`, `message_template_quality_update`, `message_template_status_update`, `phone_number_name_update`, `phone_number_quality_update`, `security`.
+3. ~~**Paso 2 del panel**~~ **HECHO (verificado 2026-10-16):** WABA real «Bianki» (`2424476465026205`) bajo Qualify.co; número +58 424-8837639 (`phone_number_id` `1355617947639492`) conectado, calidad alta, nombre visible «Bianki» aprobado; pago y envío de prueba marcados como completados en la guía de Meta. Perfil de empresa por llenar en WhatsApp Manager → Números de teléfono → Perfil: dirección «Feria de Comida, Korner Club, Av. Los Agustinos, San Cristóbal, Táchira», web `https://bianki.com.ve`, horario lunes a domingo de 4 pm a 12 de la medianoche, categoría «Comida y comestibles», foto = isotipo del sello sobre rojo (fuera del repo, `Desktop/bianki_locales/whatsapp/`). Falta anotar en el plan §9.1 cuál opción de D1 es este número (nuevo o el de Baileys).
 4. **Token de usuario de sistema** en Business Settings con `whatsapp_business_messaging`, `whatsapp_business_management` y `business_management`.
 5. **Alta en Qualify**, en producción y con el token solo en el entorno de ese proceso:
    `QUALIFY_WA_SYSTEM_USER_TOKEN=… just whatsapp-connect --tenant <tenant de Bianki> --brand <marca Bianki> --waba-id <id> --phone-number-id <id>`
