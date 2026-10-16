@@ -121,24 +121,27 @@ sigue funcionando); un test estático confina el secreto del plugin a `qualify_a
 
 | Fase | Entrega | Verificación |
 |---|---|---|
-| **M0 — manual (Herwin, sin código)** | Tipo «Alta de cliente» con nodos y campos en el espacio Qualify; plugin «Qualify» en el Developer Platform con Event Listener (tipo: *Other work item*; eventos 2001, 2004, 1005), URL de callback `https://qualify.attitudefactory.co/api/meegle/events` y token; instalarlo en el espacio. Resend: API key en `.env.prod` (runbook `despliegue-hetzner.md` §9) y webhook hacia `/api/mail/resend`. | El plugin aparece instalado; el log del `api` muestra el primer evento firmado. |
+| **M0 — manual (Herwin, sin código)** | Tipo «Alta de cliente» con nodos y campos en el espacio Qualify; plugin «Qualify» en el Developer Platform con Event Listener (tipo: *Other work item*; eventos 2001, 2004, 1005), URL de callback `https://app.qualify.la/api/meegle/events` y token; instalarlo en el espacio. Resend: API key en `.env.prod` (runbook `despliegue-hetzner.md` §9) y webhook hacia `/api/mail/resend`. | El plugin aparece instalado; el log del `api` muestra el primer evento firmado. |
 | **M1 — motor (PR)** | `qualify_api.meegle` (settings, client, receiver, handlers), ruta `/api/meegle/events`, migración `0064` (`meegle_work_item_id` + columnas de entrega), handler de nodo Datos → invitación + correo + escritura, `1005` → vencer, `register_business` → nodo Registrada. Tests offline con transporte falso; `db` para la bandeja. | Completar «Datos» en Meegle manda el correo y el ítem muestra enlace y estado en < 1 min. |
 | **M2 — entrega (PR)** | Webhook de Resend → `signup_invites` → nodo Invitada / estado rebotó / abierta. | Un correo real a un buzón propio avanza el nodo; uno a un dominio inexistente marca `rebotó`. |
 | **M3 — automatizaciones (Herwin)** | Las 3–4 reglas nativas de §2 y, si quiere, el grupo de Lark por ítem. | Recordatorio llega al tercer día. |
 | **Futuro** | Nodos 4 y 5 los completa Qualify (Brand Kit guardado, primera publicación); el alta en la llamada (A2) crea el ítem desde Qualify o desde un formulario de Lark Base. | — |
 
-## 5. Decisiones abiertas
+## 5. Decisiones (cerradas por el fundador el 2026-10-16)
 
-- **D1 — Quién firma en Meegle.** Las escrituras de Qualify salen a nombre del `X-User-Key`
-  configurado. Recomendado: un usuario «Qualify bot» miembro del espacio, para que el historial no
-  diga que fue Herwin. Hasta que exista, el de Herwin.
-- **D2 — Dominio del callback.** Hoy `qualify.attitudefactory.co`; cuando `app.qualify.la` esté en
-  Hetzner, se cambia la URL en el plugin (caliente, sin publicar versión nueva).
-- **D3 — Reenviar.** Revertir + completar «Datos» crea una invitación nueva (como `just invite`).
-  Alternativa: un campo booleano «Reenviar» que dispare `1009`. Recomendado: la reversión, es un
-  gesto nativo y queda en el historial del ítem.
-- **D4 — Resend en `qualify.la`.** Sigue abierta (ver runbook §9: en el plan Free reemplaza al
-  dominio actual).
+- **D1 — Quién firma en Meegle: un usuario «Qualify bot».** Se crea como miembro en Lark
+  (p. ej. `qualify@qualify.la`), se añade al espacio, y su `user_key` (`meegle user search`) va en
+  `QUALIFY_MEEGLE_USER_KEY`. Hasta que exista, el de Herwin (`7697105028321938981`).
+- **D2 — Dominio del callback: `app.qualify.la`.** El proxy de entrada del VPS lo sirve como host
+  extra hacia el mismo Qualify (`QUALIFY_EXTRA_HOSTS` en `/opt/edge/.env`, registro `A` → `2.28.112.133`
+  en la zona de Vercel; runbook `despliegue-hetzner.md` §1.1 y §5). La URL canónica de la app sigue
+  siendo `qualify.attitudefactory.co` hasta la migración completa (QUA-151). Callback del plugin:
+  `https://app.qualify.la/api/meegle/events`.
+- **D3 — Reenviar = revertir y completar «Datos».** Gesto nativo del flujo de nodos, queda en el
+  historial; crea una invitación nueva (la anterior sigue válida hasta vencer).
+- **D4 — Remitente: `no-reply@send.qualify.la`.** Dominio nuevo en Resend (reemplaza a
+  `send.attitudefactory.co` en el plan Free); registros en la zona de Vercel sin tocar la raíz, que es
+  de Lark Mail. Pasos exactos en el runbook §9.
 
 ## 6. Lo que este plan NO hace
 

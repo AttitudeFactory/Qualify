@@ -14,6 +14,8 @@ services:
     restart: unless-stopped
     environment:
       QUALIFY_DOMAIN: ${QUALIFY_DOMAIN:?set in /opt/edge/.env}
+      # Optional extra hostnames for Qualify (space-separated), same upstream; see Caddyfile.
+      QUALIFY_EXTRA_HOSTS: ${QUALIFY_EXTRA_HOSTS:-}
       PEDIDOS_DOMAIN: ${PEDIDOS_DOMAIN:?set in /opt/edge/.env}
       EDGE_ACME_EMAIL: ${EDGE_ACME_EMAIL:?set in /opt/edge/.env}
     ports:
