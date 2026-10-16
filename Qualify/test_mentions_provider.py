@@ -268,13 +268,13 @@ def test_load_page_returns_the_scope_summary_apart_from_the_filtered_total(
     assert (vm.page, vm.total_pages, vm.pages_label) == (2, 2, "Total de 2 páginas")
 
 
-def test_count_new_needs_a_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mentions_provider, "count_new_mentions_for_tenant", lambda **kwargs: 7)
+def test_has_new_needs_a_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mentions_provider, "has_new_mentions_for_tenant", lambda **kwargs: True)
 
-    assert mentions_provider.count_new(TENANT, query=MentionQuery(), as_of="") == 0
+    assert mentions_provider.has_new(TENANT, query=MentionQuery(), as_of="") is False
     assert (
-        mentions_provider.count_new(TENANT, query=MentionQuery(), as_of="2026-10-13T15:00:00+00:00")
-        == 7
+        mentions_provider.has_new(TENANT, query=MentionQuery(), as_of="2026-10-13T15:00:00+00:00")
+        is True
     )
 
 

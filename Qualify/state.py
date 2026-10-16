@@ -9,15 +9,17 @@ composition`), same pattern `inbox_state.py` establishes: `AuthState.session_ten
 The table shows 12 mentions per page, read from the backend — never a capped slice
 filtered in the browser. Totals and counters come from the backend too, over the whole
 filtered set. Every page of one listing is read under one snapshot (`as_of`); the rules
-for paging, the refresh tick and the new-mention notice live in `.mentions_paging`
-(pure, tested there), and this class only applies them:
+for paging and the refresh tick live in `.mentions_paging` (pure, tested there), and this
+class only applies them:
 
 - changing a filter or the search starts a new snapshot on page 1;
-- changing page keeps the snapshot, so no row repeats or goes missing;
+- changing page keeps the snapshot, so no row repeats or goes missing — except going back
+  to page 1, which takes a new snapshot so what arrived meanwhile shows at once;
 - the 45-second tick re-reads the SAME page under the SAME snapshot (fresh sentiment
-  states, no skeleton) and counts what arrived after it. On page 1 the new mentions are
-  taken in directly (a new snapshot) with no notice and no "Nueva" mark: a mention is not
-  a message and is never presented as one arriving (QUA-152, 2026-10-15).
+  states, no skeleton). On page 1 it first checks whether anything arrived and, if so,
+  reads the page under a new snapshot: new mentions appear with no notice and no "Nueva"
+  mark — a mention is not a message (QUA-152, 2026-10-15). A failed tick keeps the rows
+  and says so softly; the next tick runs as usual.
 """
 
 from __future__ import annotations
@@ -54,7 +56,7 @@ from .mentions_paging import (
 from .mentions_paging import page_items as _page_items
 from .mentions_provider import (
     MentionPageVM,
-    count_new,
+    has_new,
     load_page,
     refresh_content,
     refresh_scope,
@@ -356,15 +358,16 @@ class DashboardState(rx.State):
 
     @rx.event
     async def go_to_page(self, page: str) -> None:
-        """Same snapshot, another page: no row can repeat or be skipped."""
+        """Same snapshot, another page: no row can repeat or be skipped. Page 1 takes a
+        new snapshot: what arrived meanwhile shows at once."""
         if not page.isdigit():
             return  # the "…" gap is not a page
-        await self._read(page=int(page), new_snapshot=False)
+        await self._read(page=int(page), new_snapshot=int(page) == 1)
 
     @rx.event
     async def prev_page(self) -> None:
         if self.page > 1:
-            await self._read(page=self.page - 1, new_snapshot=False)
+            await self._read(page=self.page - 1, new_snapshot=self.page - 1 == 1)
 
     @rx.event
     async def next_page(self) -> None:
@@ -479,10 +482,11 @@ class DashboardState(rx.State):
 
     @rx.event
     async def refresh_tick(self) -> None:
-        """The 45-second heartbeat. Re-reads the current page under the SAME snapshot and
-        counts what arrived after it. On page 1, new mentions are taken in directly under a
-        new snapshot, with no notice; elsewhere the page's set of rows never changes by
-        itself."""
+        """The 45-second heartbeat. Re-reads the current page under the SAME snapshot; on
+        page 1, when anything arrived after it, under a new snapshot instead — new mentions
+        appear with no notice. Elsewhere the page's set of rows never changes by itself.
+        A failure keeps the rows on screen with a soft notice and never stops the next
+        tick (it never touches `mentions_error`)."""
         if self.is_loading_mentions or not self.as_of or self.mentions_error:
             return
         tenant_id = await self._tenant()
@@ -490,13 +494,15 @@ class DashboardState(rx.State):
             return
         query = self._query()
         try:
-            new_count = await asyncio.to_thread(count_new, tenant_id, query=query, as_of=self.as_of)
+            arrived = self.page == 1 and await asyncio.to_thread(
+                has_new, tenant_id, query=query, as_of=self.as_of
+            )
             reread = await asyncio.to_thread(
                 load_page,
                 tenant_id,
                 query=query,
                 page=self.page,
-                as_of=self.as_of,
+                as_of="" if arrived else self.as_of,
             )
         except Exception as exc:  # noqa: BLE001 — keep the rows; say it, don't break
             logger.warning("mentions refresh tick failed: %s", type(exc).__name__)
@@ -505,11 +511,11 @@ class DashboardState(rx.State):
         action = decide_tick(
             snapshot_total=self.snapshot_total,
             reread_total=reread.filtered_total,
-            new_count=new_count,
+            has_new=arrived,
             page=self.page,
         )
         if action == "take_new":
-            await self._read(page=1, new_snapshot=True)
+            self._apply_page(reread, new_snapshot=True)
         elif action == "update_rows":
             self._apply_page(reread, new_snapshot=False)
         else:

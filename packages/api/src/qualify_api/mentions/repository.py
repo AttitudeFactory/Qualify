@@ -60,10 +60,6 @@ DEFAULT_MENTION_PAGE_SIZE = 50
 # `DEFAULT_MENTION_PAGE_SIZE` above stays as the bound of the legacy `list_mentions` read
 # (the HTTP route still uses it); the dashboard no longer does.
 MENTIONS_PAGE_SIZE = 12
-# The new-mention notice counts at most this many ("50+"). It bounds the NOTICE only —
-# never the paginated set.
-NEW_MENTIONS_CAP = 50
-
 # Where the @mention was made: in the caption of a media, or inside a comment on it.
 ORIGIN_POST = "post"
 ORIGIN_COMMENT = "comment"
@@ -383,17 +379,17 @@ class MentionsRepository(Protocol):
         overall cap: this pages through ALL stored mentions (QUA-152)."""
         ...
 
-    def count_received_after(
+    def has_received_after(
         self,
         *,
         tenant_id: UUID,
         version: AnalysisVersion,
         query: MentionQuery,
         after: datetime,
-        cap: int = NEW_MENTIONS_CAP,
-    ) -> int:
-        """How many mentions matching `query` arrived after `after`, counted up to `cap`
-        (the new-mention notice shows "50+"). Never changes the paginated set."""
+    ) -> bool:
+        """Whether any mention matching `query` arrived after `after` — what tells the
+        dashboard's tick to take new mentions in. Reads at most one row; never changes the
+        paginated set."""
         ...
 
     def summarize(
@@ -513,6 +509,15 @@ class MentionsRepository(Protocol):
         read successfully AFTER `unless_read_after` (the moment the refusing read started):
         another tab or the comments webhook read it meanwhile, and that newer evidence
         says it exists. A read from before that moment never protects it."""
+        ...
+
+    def comment_read_recently(
+        self, *, tenant_id: UUID, connection_id: UUID, besides: UUID, within_seconds: int
+    ) -> bool:
+        """Whether another COMMENT mention of this connection (not `besides`) was re-read
+        successfully in the last `within_seconds`, on the database clock — the proof that
+        this connection's `mentioned_comment` requests are valid, carried across the two
+        passes of one "Actualizar menciones" click (QUA-152)."""
         ...
 
     def fill_missing_comment_fields(
@@ -834,23 +839,20 @@ class MemoryMentionsRepository:
             ]
         )
 
-    def count_received_after(
+    def has_received_after(
         self,
         *,
         tenant_id: UUID,
         version: AnalysisVersion,
         query: MentionQuery,
         after: datetime,
-        cap: int = NEW_MENTIONS_CAP,
-    ) -> int:
-        newer = sum(
-            1
+    ) -> bool:
+        return any(
+            m.received_at > after
             for m, _label, _state in self._matching(
                 tenant_id=tenant_id, version=version, query=query
             )
-            if m.received_at > after
         )
-        return min(newer, cap)
 
     def list_pending_for_analysis(
         self,
@@ -1038,6 +1040,20 @@ class MemoryMentionsRepository:
         m.removed_at = m.removed_at or stamp
         m.content_refresh_attempted_at = stamp
         return True
+
+    def comment_read_recently(
+        self, *, tenant_id: UUID, connection_id: UUID, besides: UUID, within_seconds: int
+    ) -> bool:
+        since = datetime.now().astimezone() - timedelta(seconds=within_seconds)
+        return any(
+            m.tenant_id == tenant_id
+            and m.connection_id == connection_id
+            and mention_id != besides
+            and m.comment_id is not None
+            and m.content_refreshed_at is not None
+            and m.content_refreshed_at >= since
+            for mention_id, m in self._mentions.items()
+        )
 
     def fill_missing_comment_fields(
         self, *, tenant_id: UUID, mention_id: UUID, text: str | None, author_username: str | None
@@ -1270,24 +1286,22 @@ class PostgresMentionsRepository:
         with tenant_session(tenant_id) as session:
             return _sql_counts(session, inner, [inner.c.received_at <= as_of, *state_filter])
 
-    def count_received_after(
+    def has_received_after(
         self,
         *,
         tenant_id: UUID,
         version: AnalysisVersion,
         query: MentionQuery,
         after: datetime,
-        cap: int = NEW_MENTIONS_CAP,
-    ) -> int:
+    ) -> bool:
         inner, state_filter = self._filtered(tenant_id=tenant_id, version=version, query=query)
         with tenant_session(tenant_id) as session:
-            newest = (
+            first = session.scalar(
                 select(inner.c.mention_id)
                 .where(inner.c.received_at > after, *state_filter)
-                .limit(cap)
-                .subquery()
+                .limit(1)
             )
-            return session.scalar(select(func.count()).select_from(newest)) or 0
+            return first is not None
 
     def list_pending_for_analysis(
         self,
@@ -1556,6 +1570,24 @@ class PostgresMentionsRepository:
                 )
             ).rowcount
             return updated == 1
+
+    def comment_read_recently(
+        self, *, tenant_id: UUID, connection_id: UUID, besides: UUID, within_seconds: int
+    ) -> bool:
+        with tenant_session(tenant_id) as session:
+            first = session.scalar(
+                select(Mention.id)
+                .where(
+                    Mention.tenant_id == tenant_id,
+                    Mention.connection_id == connection_id,
+                    Mention.id != besides,
+                    Mention.comment_id.is_not(None),
+                    # The database clock, the one that stamped `content_refreshed_at`.
+                    Mention.content_refreshed_at >= func.now() - timedelta(seconds=within_seconds),
+                )
+                .limit(1)
+            )
+            return first is not None
 
     def fill_missing_comment_fields(
         self, *, tenant_id: UUID, mention_id: UUID, text: str | None, author_username: str | None

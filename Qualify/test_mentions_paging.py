@@ -43,27 +43,27 @@ def test_pages_label() -> None:
 
 
 def test_a_tick_with_the_same_set_updates_rows_in_place() -> None:
-    assert decide_tick(snapshot_total=24, reread_total=24, new_count=0, page=1) == "update_rows"
+    assert decide_tick(snapshot_total=24, reread_total=24, has_new=False, page=1) == "update_rows"
 
 
 def test_new_mentions_on_page_one_are_taken_in_directly() -> None:
     """No notice to click: the first page takes them in under a new snapshot (QUA-152)."""
-    assert decide_tick(snapshot_total=24, reread_total=24, new_count=3, page=1) == "take_new"
+    assert decide_tick(snapshot_total=24, reread_total=24, has_new=True, page=1) == "take_new"
     # Also when the set changed meanwhile: the new snapshot covers both.
-    assert decide_tick(snapshot_total=24, reread_total=23, new_count=1, page=1) == "take_new"
+    assert decide_tick(snapshot_total=24, reread_total=23, has_new=True, page=1) == "take_new"
 
 
 def test_new_mentions_never_shift_a_later_page() -> None:
     """On page 2+ the snapshot is kept, so paging never repeats or skips a row; nothing
-    announces the new mentions — the next tick on page 1 takes them in."""
-    assert decide_tick(snapshot_total=24, reread_total=24, new_count=3, page=2) == "update_rows"
+    announces the new mentions — going back to page 1 takes them in."""
+    assert decide_tick(snapshot_total=24, reread_total=24, has_new=True, page=2) == "update_rows"
 
 
 def test_a_tick_that_finds_a_different_set_announces_it_and_never_swaps_rows() -> None:
-    assert decide_tick(snapshot_total=24, reread_total=23, new_count=0, page=1) == (
+    assert decide_tick(snapshot_total=24, reread_total=23, has_new=False, page=1) == (
         "announce_change"
     )
-    assert decide_tick(snapshot_total=24, reread_total=25, new_count=1, page=3) == (
+    assert decide_tick(snapshot_total=24, reread_total=25, has_new=True, page=3) == (
         "announce_change"
     )
 

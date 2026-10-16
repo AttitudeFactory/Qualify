@@ -373,8 +373,10 @@ def list_mentions_for_tenant(
 #     (`is_comment_unavailable_candidate`, what Meta really answers for a deleted comment
 #     through `mentioned_comment`) is settled once every live read is done: removed as
 #     above only if it was read successfully before AND another `mentioned_comment` read of
-#     the same connection succeeded in this run (the request shape is valid); otherwise it
-#     is a plain failure and keeps its data. Never applied to `mentioned_media`;
+#     the same connection succeeded in this run or in the last REFRESH_FRESH_SECONDS (the
+#     two passes of one click; the request shape is valid). Without that proof it keeps its
+#     data and is NOT stamped as attempted, so the next pass may settle it. Never applied
+#     to `mentioned_media`;
 #   - with the capacity left (at most REMOVED_RECHECK_PER_RUN), removed mentions not tried
 #     for REMOVED_RECHECK_SECONDS and removed no longer than REMOVED_RECHECK_MAX_AGE_SECONDS
 #     ago are re-read: one that answers shows again (`restored`).
@@ -528,7 +530,7 @@ async def _refresh_targets(
     # moment that read started). Settled only once every live read is done, so the order
     # in which concurrent reads finish never decides a removal.
     comment_read_ok: set[UUID] = set()
-    candidates: dict[UUID, datetime] = {}
+    candidates: dict[UUID, tuple[datetime, MentionedContentReadError]] = {}
 
     async def client_for(connection_id: UUID) -> tuple[HttpMentionedContentClient, str] | None:
         async with clients_lock:  # ONE credential resolution per connection and run
@@ -713,7 +715,7 @@ async def _refresh_targets(
                 ):
                     # Decided after every live read (`settle_candidate`): whether another
                     # comment read of this connection succeeded is only known then.
-                    candidates[target.mention_id] = read_started
+                    candidates[target.mention_id] = (read_started, exc)
                     return "deferred"
                 return await keep_as_failed(target, exc)
             except Exception as exc:  # noqa: BLE001 — keep the stored data, log the type only
@@ -729,25 +731,47 @@ async def _refresh_targets(
                 comment_read_ok.add(target.connection_id)
             return "refreshed" if await store(target, content) else "failed"
 
+    async def comparable_read(target: RefreshTarget) -> bool:
+        """Proof that this connection's `mentioned_comment` requests are valid: another
+        comment read of it succeeded in this run, or within REFRESH_FRESH_SECONDS — the
+        visible pass and the scope pass of one click are two runs."""
+        if target.connection_id in comment_read_ok:
+            return True
+        try:
+            return await asyncio.to_thread(
+                repo.comment_read_recently,
+                tenant_id=tenant_id,
+                connection_id=target.connection_id,
+                besides=target.mention_id,
+                within_seconds=REFRESH_FRESH_SECONDS,
+            )
+        except Exception as exc:  # noqa: BLE001 — no proof: never remove on a doubt
+            _LOGGER.info("mentions refresh: comparable read unknown (%s)", type(exc).__name__)
+            return False
+
     async def settle_candidate(target: RefreshTarget) -> _Outcome:
         """A comment mention whose read answered 400/100 with no subcode. Removed only when
-        another `mentioned_comment` read of the same connection succeeded in this run —
-        proof that the request itself is valid and the refusal is about this comment —
-        and the account answers. Otherwise kept, a plain failure (a systematic refusal of
-        every comment read is never taken for a deletion)."""
-        read_started = candidates[target.mention_id]
-        failure = MentionedContentReadError(
-            "mentioned_comment read refused", platform_code=100, http_status=400
-        )
+        another `mentioned_comment` read of the same connection succeeded (`comparable_read`)
+        — proof that the request itself is valid and the refusal is about this comment —
+        and the account answers. Without that proof it is kept and NOT stamped as attempted:
+        the next pass (the scope run of the same click) may have it. A systematic refusal of
+        every comment read is never taken for a deletion. A stopped run (throttled, usage
+        pause) leaves it pending: nothing was decided."""
+        read_started, failure = candidates[target.mention_id]
         async with slots:
-            if target.connection_id not in comment_read_ok:
-                _LOGGER.info(
-                    "mentions refresh: mention=%s no comparable comment read succeeded",
-                    target.mention_id,
-                )
-                return await keep_as_failed(target, failure)
             if stop.is_set():
-                return await keep_as_failed(target, failure)
+                return "not_attempted"
+            if not await comparable_read(target):
+                _LOGGER.info(
+                    "mentions refresh: mention=%s kept, no comparable comment read yet "
+                    "(%s http=%s code=%s subcode=%s)",
+                    target.mention_id,
+                    type(failure).__name__,
+                    failure.http_status,
+                    failure.platform_code,
+                    failure.platform_subcode,
+                )
+                return "failed"
             client_and_user = await client_for(target.connection_id)
             if client_and_user is None:
                 return "credential_failed"
@@ -985,10 +1009,10 @@ def summarize_mentions_for_tenant(
     )
 
 
-def count_new_mentions_for_tenant(*, tenant_id: UUID, query: MentionQuery, after: datetime) -> int:
-    """Mentions matching `query` that arrived after the dashboard's snapshot, up to
-    `NEW_MENTIONS_CAP` — what the new-mention notice shows (QUA-152)."""
-    return production_mentions_repository().count_received_after(
+def has_new_mentions_for_tenant(*, tenant_id: UUID, query: MentionQuery, after: datetime) -> bool:
+    """Whether any mention matching `query` arrived after the dashboard's snapshot — what
+    tells its tick to take new mentions in (QUA-152). Never shown as a count."""
+    return production_mentions_repository().has_received_after(
         tenant_id=tenant_id,
         version=current_mention_analysis_version(),
         query=query,

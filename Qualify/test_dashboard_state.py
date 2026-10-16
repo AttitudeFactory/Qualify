@@ -572,21 +572,26 @@ OLD_SNAPSHOT = "2026-10-14T00:00:00+00:00"
 NEW_SNAPSHOT = "2026-10-15T00:00:00+00:00"
 
 
-def _wire_tick(monkeypatch: pytest.MonkeyPatch, *, arrived: int) -> dict:
-    """The tick's two reads: `count_new` (what arrived after the snapshot) and `load_page`
-    — under the old snapshot it holds m1/m2, under a new one also the webhook's m3."""
+def _wire_tick(monkeypatch: pytest.MonkeyPatch, *, arrived: bool, broken: bool = False) -> dict:
+    """The tick's reads: `has_new` (did anything arrive after the snapshot) and `load_page`
+    — under the old snapshot it holds m1/m2, under a new one also the webhook's m3.
+    `broken` makes `load_page` fail once, like a database blip."""
     from . import state as state_module
     from .mentions_provider import MentionCountsVM, MentionPageVM
 
-    seen: dict = {"loads": []}
+    seen: dict = {"loads": [], "checks": 0, "broken": broken}
 
     async def fake_tenant(self: DashboardState) -> UUID:
         return UUID("a0000000-0000-4000-8000-000000000001")
 
-    def fake_count_new(tenant_id: UUID, **kwargs: object) -> int:
+    def fake_has_new(tenant_id: UUID, **kwargs: object) -> bool:
+        seen["checks"] += 1
         return arrived
 
     def fake_load_page(tenant_id: UUID, *, page: int, as_of: str, **kwargs: object):
+        if seen["broken"]:
+            seen["broken"] = False
+            raise RuntimeError("db blip")
         seen["loads"].append((page, as_of))
         ids = ["m1", "m2"] if as_of else ["m3", "m1", "m2"]
         return MentionPageVM(
@@ -594,13 +599,13 @@ def _wire_tick(monkeypatch: pytest.MonkeyPatch, *, arrived: int) -> dict:
             summary=MentionCountsVM(total=len(ids)),
             filtered_total=len(ids),
             page=page,
-            total_pages=1,
+            total_pages=2,
             pages_label="",
             as_of=as_of or NEW_SNAPSHOT,
         )
 
     monkeypatch.setattr(DashboardState, "_tenant", fake_tenant)
-    monkeypatch.setattr(state_module, "count_new", fake_count_new)
+    monkeypatch.setattr(state_module, "has_new", fake_has_new)
     monkeypatch.setattr(state_module, "load_page", fake_load_page)
     return seen
 
@@ -611,43 +616,96 @@ def _listing_state(page: int = 1) -> DashboardState:
     state.as_of = OLD_SNAPSHOT
     state.snapshot_total = 2
     state.page = page
+    state.total_pages = 2
     return state
 
 
 async def test_a_new_mention_appears_on_the_first_page_without_any_notice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    seen = _wire_tick(monkeypatch, arrived=1)
+    seen = _wire_tick(monkeypatch, arrived=True)
     state = _listing_state()
 
     await DashboardState.refresh_tick.fn(state)
 
     assert [row.id for row in state.mentions] == ["m3", "m1", "m2"]
-    assert seen["loads"][-1] == (1, "")  # a new snapshot, taken by itself
+    assert seen["loads"] == [(1, "")]  # ONE read, under a new snapshot
     assert (state.as_of, state.snapshot_total) == (NEW_SNAPSHOT, 3)
     # Nothing presents it as a message that arrived.
     assert (state.refresh_notice, state.list_changed, state.refresh_error) == ("", False, "")
 
 
-async def test_a_new_mention_never_shifts_a_later_page(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen = _wire_tick(monkeypatch, arrived=1)
+async def test_a_later_page_never_checks_for_new_mentions_nor_shifts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _wire_tick(monkeypatch, arrived=True)
     state = _listing_state(page=2)
 
     await DashboardState.refresh_tick.fn(state)
 
+    assert seen["checks"] == 0  # no query whose answer would be thrown away
     assert seen["loads"] == [(2, OLD_SNAPSHOT)]  # same snapshot: paging stays exact
     assert state.as_of == OLD_SNAPSHOT
     assert (state.refresh_notice, state.list_changed) == ("", False)
 
 
 async def test_a_tick_with_nothing_new_keeps_the_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen = _wire_tick(monkeypatch, arrived=0)
+    seen = _wire_tick(monkeypatch, arrived=False)
     state = _listing_state()
 
     await DashboardState.refresh_tick.fn(state)
 
     assert seen["loads"] == [(1, OLD_SNAPSHOT)]
     assert [row.id for row in state.mentions] == ["m1", "m2"]
+
+
+async def test_a_failed_tick_keeps_the_rows_and_the_next_tick_still_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review finding (QUA-152): taking new mentions in must never turn a database blip
+    into the screen's load error, which also stopped every later tick."""
+    seen = _wire_tick(monkeypatch, arrived=True, broken=True)
+    state = _listing_state()
+
+    await DashboardState.refresh_tick.fn(state)
+
+    assert [row.id for row in state.mentions] == ["m1", "m2"]  # kept
+    assert state.mentions_error == ""  # the screen is not broken
+    assert state.refresh_error != ""  # a soft notice says it
+    assert state.as_of == OLD_SNAPSHOT
+
+    await DashboardState.refresh_tick.fn(state)  # the next tick works
+
+    assert [row.id for row in state.mentions] == ["m3", "m1", "m2"]
+    assert state.refresh_error == ""
+    assert seen["loads"] == [(1, "")]
+
+
+@pytest.mark.parametrize("how", ["go_to_page", "prev_page"])
+async def test_going_back_to_page_one_shows_what_arrived_at_once(
+    monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    seen = _wire_tick(monkeypatch, arrived=True)
+    state = _listing_state(page=2)
+
+    if how == "go_to_page":
+        await DashboardState.go_to_page.fn(state, "1")
+    else:
+        await DashboardState.prev_page.fn(state)
+
+    assert seen["loads"] == [(1, "")]  # a new snapshot
+    assert [row.id for row in state.mentions] == ["m3", "m1", "m2"]
+
+
+async def test_moving_between_later_pages_keeps_the_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _wire_tick(monkeypatch, arrived=True)
+    state = _listing_state(page=1)
+
+    await DashboardState.go_to_page.fn(state, "2")
+
+    assert seen["loads"] == [(2, OLD_SNAPSHOT)]
 
 
 def test_the_notices_never_announce_a_new_mention() -> None:

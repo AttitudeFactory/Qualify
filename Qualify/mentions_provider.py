@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 
 from qualify_api.mentions.composition import (
     ContentRefreshReport,
-    count_new_mentions_for_tenant,
+    has_new_mentions_for_tenant,
     list_mentions_page_for_tenant,
     refresh_mentions_content,
     refresh_mentions_in_scope,
@@ -43,7 +43,6 @@ from qualify_api.mentions.composition import (
 )
 from qualify_api.mentions.repository import (
     ENRICHMENT_FAILED,
-    NEW_MENTIONS_CAP,
     MentionCounts,
     MentionQuery,
     MentionRecord,
@@ -244,13 +243,12 @@ def load_page(
     )
 
 
-def count_new(tenant_id: UUID, *, query: MentionQuery, as_of: str) -> int:
-    """Mentions matching `query` received after the snapshot, capped at `NEW_MENTIONS_CAP`
-    — what tells the tick to take new mentions in (never shown as a count). Blocking DB
-    call."""
+def has_new(tenant_id: UUID, *, query: MentionQuery, as_of: str) -> bool:
+    """Whether any mention matching `query` arrived after the snapshot — what tells the
+    tick to take new mentions in (never shown). Blocking DB call."""
     if not as_of:
-        return 0
-    return count_new_mentions_for_tenant(tenant_id=tenant_id, query=query, after=_parse(as_of))
+        return False
+    return has_new_mentions_for_tenant(tenant_id=tenant_id, query=query, after=_parse(as_of))
 
 
 async def refresh_content(tenant_id: UUID, mention_ids: list[str]) -> ContentRefreshReport:
@@ -281,14 +279,13 @@ def account_options(tenant_id: UUID) -> dict[str, str]:
 
 
 __all__ = [
-    "NEW_MENTIONS_CAP",
     "MentionCountsVM",
     "MentionPageVM",
     "MentionVM",
     "account_labels",
     "account_options",
-    "count_new",
     "format_moment",
+    "has_new",
     "load_page",
     "to_vm",
 ]

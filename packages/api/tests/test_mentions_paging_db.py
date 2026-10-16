@@ -1,4 +1,4 @@
-"""`PostgresMentionsRepository.list_mentions_page` / `count_received_after` (QUA-152)
+"""`PostgresMentionsRepository.list_mentions_page` / `has_received_after` (QUA-152)
 against real Postgres.
 
 What the in-memory twin cannot prove: that the SQL total order really yields every row
@@ -244,7 +244,7 @@ def test_search_treats_like_wildcards_literally() -> None:
     assert {r.id for r in _page(repo, tenant_id, MentionQuery(search="a_b")).rows} == {underscore}
 
 
-def test_snapshot_is_stable_and_new_mentions_are_only_counted_for_the_notice() -> None:
+def test_snapshot_is_stable_and_new_mentions_are_only_detected() -> None:
     repo = PostgresMentionsRepository()
     tenant_id, connection_id = _fresh_tenant_with_connection()
     for _ in range(13):
@@ -257,7 +257,7 @@ def test_snapshot_is_stable_and_new_mentions_are_only_counted_for_the_notice() -
 
     again_first = _page(repo, tenant_id, as_of=first.as_of)
     again_second = _page(repo, tenant_id, page=2, as_of=first.as_of)
-    new_count = repo.count_received_after(
+    arrived = repo.has_received_after(
         tenant_id=tenant_id, version=VERSION, query=MentionQuery(), after=first.as_of
     )
     refreshed = _page(repo, tenant_id)
@@ -265,27 +265,26 @@ def test_snapshot_is_stable_and_new_mentions_are_only_counted_for_the_notice() -
     assert [r.id for r in again_first.rows] == [r.id for r in first.rows]
     assert [r.id for r in again_second.rows] == [r.id for r in second_page.rows]
     assert again_first.counts.total == 13
-    assert new_count == 1
+    assert arrived is True
     assert refreshed.rows[0].id == late
     assert refreshed.counts.total == 14
 
 
-def test_new_mention_count_respects_filters_and_cap() -> None:
+def test_new_mention_detection_respects_filters() -> None:
     repo = PostgresMentionsRepository()
     tenant_id, connection_id = _fresh_tenant_with_connection()
     snapshot = _page(repo, tenant_id).as_of
-    for _ in range(3):
-        _add(repo, tenant_id, connection_id, comment=True)
-    _add(repo, tenant_id, connection_id)
+    _add(repo, tenant_id, connection_id)  # a caption mention only
 
-    def count(query: MentionQuery, cap: int = 50) -> int:
-        return repo.count_received_after(
-            tenant_id=tenant_id, version=VERSION, query=query, after=snapshot, cap=cap
+    def arrived(query: MentionQuery) -> bool:
+        return repo.has_received_after(
+            tenant_id=tenant_id, version=VERSION, query=query, after=snapshot
         )
 
-    assert count(MentionQuery()) == 4
-    assert count(MentionQuery(origin=ORIGIN_COMMENT)) == 3
-    assert count(MentionQuery(), cap=2) == 2
+    assert arrived(MentionQuery()) is True
+    assert arrived(MentionQuery(origin=ORIGIN_COMMENT)) is False
+    _add(repo, tenant_id, connection_id, comment=True)
+    assert arrived(MentionQuery(origin=ORIGIN_COMMENT)) is True
 
 
 def test_another_tenant_sees_no_rows_counts_or_new_mentions() -> None:
@@ -296,7 +295,7 @@ def test_another_tenant_sees_no_rows_counts_or_new_mentions() -> None:
         _add(repo, tenant_a, connection_a)
 
     page_b = _page(repo, tenant_b)
-    new_b = repo.count_received_after(
+    new_b = repo.has_received_after(
         tenant_id=tenant_b,
         version=VERSION,
         query=MentionQuery(),
@@ -305,7 +304,7 @@ def test_another_tenant_sees_no_rows_counts_or_new_mentions() -> None:
 
     assert page_b.counts == MentionCounts()
     assert page_b.rows == ()
-    assert new_b == 0
+    assert new_b is False
     assert _page(repo, tenant_a).counts.total == 5
 
 
@@ -562,11 +561,8 @@ def test_a_removed_mention_leaves_every_read_and_a_redelivery_keeps_it_out() -> 
     assert repo.summarize(
         tenant_id=tenant_id, version=VERSION, query=MentionQuery(), as_of=page.as_of
     ) == MentionCounts(total=1, pending=1)
-    assert (
-        repo.count_received_after(
-            tenant_id=tenant_id, version=VERSION, query=MentionQuery(), after=before
-        )
-        == 0
+    assert not repo.has_received_after(
+        tenant_id=tenant_id, version=VERSION, query=MentionQuery(), after=before
     )
     plan = repo.plan_scope_refresh(
         tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=0, limit=10
@@ -627,6 +623,39 @@ def test_a_refresh_target_says_whether_the_mention_was_ever_read() -> None:
     targets = repo.list_refresh_targets(tenant_id=tenant_id, mention_ids=(read_id, attempted_id))
 
     assert {t.mention_id: t.ever_read for t in targets} == {read_id: True, attempted_id: False}
+
+
+def test_a_recent_comment_read_is_proof_for_the_other_comments_of_its_connection() -> None:
+    """`comment_read_recently` (QUA-152 review): another COMMENT mention of the same
+    connection, re-read successfully within the window on the database clock — never the
+    mention itself, a caption mention, a failed attempt or another tenant's row."""
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    candidate = _add(repo, tenant_id, connection_id, comment=True)
+    other_comment = _add(repo, tenant_id, connection_id, comment=True)
+    caption = _add(repo, tenant_id, connection_id)
+    other_tenant, other_connection = _fresh_tenant_with_connection()
+
+    def proof() -> bool:
+        return repo.comment_read_recently(
+            tenant_id=tenant_id, connection_id=connection_id, besides=candidate, within_seconds=60
+        )
+
+    repo.refresh_content(tenant_id=tenant_id, mention_id=candidate, content=_content())
+    repo.refresh_content(tenant_id=tenant_id, mention_id=caption, content=_content())
+    repo.mark_refresh_attempt(tenant_id=tenant_id, mention_id=other_comment)
+    foreign = _add(repo, other_tenant, other_connection, comment=True)
+    repo.refresh_content(tenant_id=other_tenant, mention_id=foreign, content=_content())
+    assert proof() is False
+
+    repo.refresh_content(tenant_id=tenant_id, mention_id=other_comment, content=_content())
+    assert proof() is True
+    assert (
+        repo.comment_read_recently(
+            tenant_id=tenant_id, connection_id=connection_id, besides=candidate, within_seconds=0
+        )
+        is False
+    )
 
 
 def test_scope_plan_rechecks_long_removed_mentions_only_with_spare_capacity() -> None:
