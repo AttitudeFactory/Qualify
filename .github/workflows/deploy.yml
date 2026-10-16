@@ -13,7 +13,7 @@
 #   secrets   QUALIFY_DEPLOY_SSH_KEY          private half of the restricted deploy key
 #             QUALIFY_DEPLOY_SSH_TARGET       e.g. deploy@203.0.113.10
 #             QUALIFY_DEPLOY_SSH_KNOWN_HOSTS  `ssh-keyscan -t ed25519 <ip>` output, verified
-#             CLIQ_DEVOPS_WEBHOOK_URL         optional: #devops notice per deploy (job `notify`)
+#             DEVOPS_WEBHOOK_URL              optional: devops notice per deploy (job `notify`)
 #   variable  QUALIFY_AUTO_DEPLOY             when to deploy on its own (manual always works):
 #               merge (or true)  every push to main = every merge (the PR already passed `ci`)
 #               daily            the tip of main once a day, only if it changed
@@ -213,10 +213,15 @@ jobs:
           done
           echo "Deployed $SHA" >> "$GITHUB_STEP_SUMMARY"
 
-  # Tell #devops (Zoho Cliq) how every deploy that was attempted ended — success or failure,
+  # Tell the devops chat how every deploy that was attempted ended — success or failure,
   # and at which stage. Skipped when auto-deploy is off and nothing was attempted. A missing
-  # webhook or an unreachable Cliq never fails the deploy: it is a notice, not a gate.
-  #   secret  CLIQ_DEVOPS_WEBHOOK_URL   https://cliq.zoho.eu/api/v2/channelsbyname/devops/message?zapikey=<token>
+  # webhook or an unreachable chat never fails the deploy: it is a notice, not a gate.
+  #   secret  DEVOPS_WEBHOOK_URL   Lark custom bot in Qualify-devs:
+  #                                https://open.larksuite.com/open-apis/bot/v2/hook/<token>
+  #           CLIQ_DEVOPS_WEBHOOK_URL  legacy fallback (Zoho Cliq #devops) until it is deleted
+  # The payload carries both `text` (Cliq/Slack) and `msg_type`+`content` (Lark), like
+  # qualify_api.support.notify. Lark answers HTTP 200 even when it rejects a message, so its
+  # `code` field is checked too.
   notify:
     needs: [resolve, images, deploy]
     if: >-
@@ -225,9 +230,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Post the result to #devops
+      - name: Post the result to the devops chat
         env:
-          WEBHOOK: ${{ secrets.CLIQ_DEVOPS_WEBHOOK_URL }}
+          WEBHOOK: ${{ secrets.DEVOPS_WEBHOOK_URL || secrets.CLIQ_DEVOPS_WEBHOOK_URL }}
           RESOLVE: ${{ needs.resolve.result }}
           IMAGES: ${{ needs.images.result }}
           DEPLOY: ${{ needs.deploy.result }}
@@ -239,7 +244,7 @@ jobs:
           COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/
         run: |
           if [ -z "$WEBHOOK" ]; then
-            echo "::notice::CLIQ_DEVOPS_WEBHOOK_URL is not set; no #devops notice."
+            echo "::notice::DEVOPS_WEBHOOK_URL is not set; no devops notice."
             exit 0
           fi
           if [ "$DEPLOY" = success ]; then
@@ -253,7 +258,15 @@ jobs:
           fi
           text=$(printf '%s\n%s %s · %s\nCommit: %s%s\nRun: %s\n%s' \
             "$head" "$ACTION" "${SHA:0:7}" "$TRIGGER" "$COMMIT_URL" "$SHA" "$RUN_URL" "$PUBLIC_URL")
-          jq -n --arg text "$text" '{text: $text}' |
-            curl -sS --fail --max-time 15 -H 'Content-Type: application/json' \
-              --data @- "$WEBHOOK" >/dev/null ||
-            echo "::warning::Could not post to #devops (Cliq); the deploy result stands."
+          if ! answer=$(jq -n --arg text "$text" \
+                '{text: $text, msg_type: "text", content: {text: $text}}' |
+              curl -sS --fail --max-time 15 -H 'Content-Type: application/json' \
+                --data @- "$WEBHOOK"); then
+            echo "::warning::Could not post to the devops chat; the deploy result stands."
+          else
+            # Cliq answers with an empty body; only a JSON `code` other than 0 is a rejection.
+            code=$(jq -r '.code // 0' <<<"$answer" 2>/dev/null || true)
+            if [ "${code:-0}" != 0 ]; then
+              echo "::warning::The devops chat rejected the notice (code $code); the deploy result stands."
+            fi
+          fi
