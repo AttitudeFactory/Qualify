@@ -57,6 +57,8 @@ No hay colisiones: las rutas que monta el `api_transformer` de Reflex (`/avatar`
 
 Qué garantiza: desplegar Qualify recrea su Caddy interno pero **no toca el proxy**, así que Pedidos no se corta; si Qualify o Pedidos están caídos, solo su dominio responde 502; las rutas de Pedidos ya no viven en este repo de producto sino en `deploy/edge/Caddyfile`. Lo fija `packages/api/tests/test_deploy_edge.py` (ningún servicio de Qualify publica puertos ni menciona Pedidos).
 
+**Hosts extra de Qualify** (2026-10-16): `QUALIFY_EXTRA_HOSTS` en `/opt/edge/.env` (separados por espacio) hace que el proxy responda también en esos nombres hacia el mismo Qualify, con certificado propio; la URL canónica sigue siendo `QUALIFY_DOMAIN`. Primer uso: `app.qualify.la`, el dominio al que el plugin de Meegle manda sus eventos (`docs/plan-altas-meegle.md`). Pasos: registro `A` de `app` en la zona `qualify.la` (§5), `QUALIFY_EXTRA_HOSTS=app.qualify.la` en `/opt/edge/.env`, `just edge-install <target>` (recarga sin corte); comprobar `curl -I https://app.qualify.la/ping` → 200.
+
 **Cambiar una ruta del proxy:** editar `deploy/edge/Caddyfile` y `just edge-install <target>` (copia y aplica; Caddy recarga sin cortar conexiones si solo cambió el Caddyfile: `cd /opt/edge && docker compose exec edge caddy reload --config /etc/caddy/Caddyfile`).
 
 **Corte único desde el esquema anterior** (Caddy de Qualify en 80/443), en este orden:
@@ -127,6 +129,13 @@ vercel dns add attitudefactory.co qualify A <IPv4>
 vercel dns add attitudefactory.co qualify AAAA <IPv6>   # opcional
 vercel dns ls attitudefactory.co                         # verificar
 dig +short qualify.attitudefactory.co                    # debe devolver la IP del servidor
+```
+
+Para el host extra `app.qualify.la` (la zona `qualify.la` también tiene comodín `*` hacia Vercel):
+
+```bash
+vercel dns add qualify.la app A 2.28.112.133
+dig +short app.qualify.la                                # debe devolver 2.28.112.133
 ```
 
 **Importante:** la zona tiene un registro comodín `*` (ALIAS) que manda **todos** los subdominios a Vercel. Sin un registro `A` explícito para `qualify`, el subdominio seguiría resolviendo a Vercel y Caddy nunca obtendría el certificado. El registro explícito gana sobre el comodín.
@@ -290,39 +299,45 @@ Los roles son globales del clúster y sobreviven al `DROP DATABASE`, así que no
 
 **Supabase** (auth de la app): *Authentication → URL Configuration*: Site URL `https://qualify.attitudefactory.co` y añadirla a *Redirect URLs*.
 
-**Resend** — correo transaccional de Qualify: las invitaciones de `just invite` (`qualify_api.mail`, PR #106) y el **SMTP propio de Supabase Auth** para los correos de recuperación de contraseña (`/forgot` → `/reset`). Sin SMTP propio, Supabase sólo manda correo a los miembros del proyecto y con tope de 2 por hora: ningún cliente recibiría el enlace. El dominio de envío es `send.attitudefactory.co` (región `sa-east-1`); sus tres registros DNS están en la zona de Vercel desde 2026-10-09. Plan Free: 3.000 correos/mes, 100/día, **un solo dominio verificado**.
+**Resend** — correo transaccional de Qualify: las invitaciones de `just invite` (`qualify_api.mail`, PR #106) y el **SMTP propio de Supabase Auth** para los correos de recuperación de contraseña (`/forgot` → `/reset`). Sin SMTP propio, Supabase sólo manda correo a los miembros del proyecto y con tope de 2 por hora: ningún cliente recibiría el enlace. **Remitente decidido (2026-10-16): `no-reply@send.qualify.la`** — el dominio del producto; Lark Mail ocupa la raíz de `qualify.la` (MX, SPF, DKIM) y por eso el envío va en un subdominio. Plan Free de Resend: 3.000 correos/mes, 100/día, **un solo dominio verificado**, así que `send.attitudefactory.co` (DNS puestos el 2026-10-09) se retira una vez verificado el nuevo.
 
-1. <https://resend.com/domains>: `send.attitudefactory.co` debe aparecer **Verified**. Si sigue en *Pending*, pulsar *Verify DNS records* (los registros ya existen; Resend los relee).
-2. <https://resend.com/api-keys> → *Create API Key*: nombre `qualify-prod`, permiso **Sending access**, dominio limitado a `send.attitudefactory.co`. La clave (`re_…`) se muestra una sola vez: guardarla en el gestor de contraseñas.
-3. En `/opt/qualify/.env.prod`:
+1. <https://resend.com/domains> → *Add Domain*: `send.qualify.la`, región `sa-east-1`. Resend muestra tres registros (DKIM `resend._domainkey.send` TXT, y el par de envío: MX `send` + TXT SPF `send`, o sus equivalentes CNAME). Ponerlos en la zona de Vercel **sin tocar la raíz** (los MX/SPF/DKIM de Lark viven en `@`):
+
+   ```bash
+   vercel dns add qualify.la resend._domainkey.send TXT "<valor que da Resend>"
+   vercel dns add qualify.la send MX "<host feedback-smtp que da Resend>" 10
+   vercel dns add qualify.la send TXT "v=spf1 include:amazonses.com ~all"   # el SPF exacto lo da Resend
+   ```
+
+   Pulsar *Verify DNS records*; la propagación tarda minutos. Después, en Resend, borrar `send.attitudefactory.co` (plan Free: un dominio) y, cuando nada lo use, sus registros en la zona de `attitudefactory.co`.
+2. <https://resend.com/api-keys> → *Create API Key*: nombre `qualify-prod`, permiso **Sending access**, dominio limitado a `send.qualify.la`. La clave (`re_…`) se muestra una sola vez: guardarla en el gestor de contraseñas.
+3. En `/opt/qualify/.env.prod` (o desde el Mac con `just env-push qualify-prod QUALIFY_RESEND_API_KEY QUALIFY_MAIL_FROM QUALIFY_INVITE_SIGNER QUALIFY_MAIL_REPLY_TO`, que copia esas claves del `.env` local sin mostrarlas):
 
    ```bash
    QUALIFY_RESEND_API_KEY=re_…
-   QUALIFY_MAIL_FROM=Herwin de Qualify <no-reply@send.attitudefactory.co>
+   QUALIFY_MAIL_FROM=Herwin de Qualify <no-reply@send.qualify.la>
    QUALIFY_INVITE_SIGNER=Herwin Rey
    # Opcional: con valor, la invitación dice «Responde este correo». Un buzón que alguien lea.
-   QUALIFY_MAIL_REPLY_TO=
+   QUALIFY_MAIL_REPLY_TO=herwin.rey@qualify.la
    ```
 
    Un cambio en `.env.prod` no recrea nada por sí solo: `dc up -d` (o el siguiente deploy) para que `api` y `reflex` lo lean.
-4. Supabase → *Authentication → Emails → SMTP Settings* → **Enable Custom SMTP**: sender email `no-reply@send.attitudefactory.co`, sender name `Qualify`, host `smtp.resend.com`, puerto `465`, usuario `resend`, contraseña = la misma API key. Al activarlo, Supabase sube el tope de correos de auth a 30/hora; se ajusta en *Authentication → Rate Limits*.
-5. Supabase → *Authentication → URL Configuration → Redirect URLs*: añadir `https://qualify.attitudefactory.co/reset` y `http://localhost:3100/reset` (el enlace de recuperación vuelve ahí con el token; una URL que no esté en la lista cae al Site URL y el token se pierde).
-6. Comprobar: `/forgot` con un correo propio → llega desde `no-reply@send.attitudefactory.co`; y una invitación real desde el servidor, que debe llegar al buzón (si Resend falla, el CLI imprime el enlace y el motivo —dominio sin verificar, clave inválida, cuota— queda en el log):
+4. Supabase → *Authentication → Emails → SMTP Settings* → **Enable Custom SMTP**: sender email `no-reply@send.qualify.la`, sender name `Qualify`, host `smtp.resend.com`, puerto `465`, usuario `resend`, contraseña = la misma API key. Al activarlo, Supabase sube el tope de correos de auth a 30/hora; se ajusta en *Authentication → Rate Limits*.
+5. Supabase → *Authentication → URL Configuration → Redirect URLs*: añadir `https://qualify.attitudefactory.co/reset`, `https://app.qualify.la/reset` y `http://localhost:3100/reset` (el enlace de recuperación vuelve ahí con el token; una URL que no esté en la lista cae al Site URL y el token se pierde).
+6. Comprobar: `/forgot` con un correo propio → llega desde `no-reply@send.qualify.la`; y una invitación real desde el servidor, que debe llegar al buzón (si Resend falla, el CLI imprime el enlace y el motivo —dominio sin verificar, clave inválida, cuota— queda en el log):
 
    ```bash
    dc run --rm -T api python -m qualify_api.auth.provision invite --email <tu correo> --name Prueba
    ```
 
    Cada envío aparece en <https://resend.com/emails> con su estado (delivered / bounced).
-7. **Webhook de entrega** (plan `plan-altas-meegle.md`, M2): <https://resend.com/webhooks> → *Add Webhook* → *Endpoint URL* `https://app.qualify.la/api/mail/resend` (mientras `qualify.attitudefactory.co` sea el dominio canónico de la app, `https://qualify.attitudefactory.co/api/mail/resend`; es el mismo `${QUALIFY_PUBLIC_URL}/api/mail/resend`) → *Events*: marcar `email.delivered`, `email.opened` y `email.bounced` (los demás se aceptan y quedan `unsupported` en la bandeja; mejor no suscribirlos). Al crearlo, Resend muestra el **Signing Secret** (`whsec_…`): va en `/opt/qualify/.env.prod` como
+7. **Webhook de entrega** (plan `plan-altas-meegle.md`, M2): <https://resend.com/webhooks> → *Add Webhook* → *Endpoint URL* `https://app.qualify.la/api/mail/resend` (el mismo host extra del callback de Meegle, decisión D2 del plan; el proxy lo manda al mismo `api`, así que `https://qualify.attitudefactory.co/api/mail/resend` también respondería, pero se registra el de `qualify.la` para no cambiarlo tras la migración) → *Events*: marcar `email.delivered`, `email.opened` y `email.bounced` (los demás se aceptan y quedan `unsupported` en la bandeja; mejor no suscribirlos). Al crearlo, Resend muestra el **Signing Secret** (`whsec_…`): va en `/opt/qualify/.env.prod` como
 
    ```bash
    QUALIFY_RESEND_WEBHOOK_SECRET=whsec_…
    ```
 
    y luego `dc up -d` para que `api` lo lea. Sin la variable el endpoint responde **503** a cada evento (Resend reintenta y el log del `api` lo dice en ERROR); con ella, un evento mal firmado o viejo (> 5 min) es 401. Qué hace cada evento: entregado → `signup_invites.delivered_at` y, si la invitación salió de un ítem de Meegle, estado `entregada` + nodo **Invitada**; abierto → `opened_at` y estado `abierta`; rebote → `bounced_at`, estado `rebotó` y un comentario en el ítem con el motivo. Comprobar: mandar una invitación a un buzón propio y ver en <https://resend.com/webhooks> → el endpoint → *Attempts* un 200; en Meegle el ítem pasa a `entregada`. Un correo a un dominio inexistente debe dejar el ítem en `rebotó`. Nota: las recuperaciones de contraseña de Supabase salen por la misma cuenta y también disparan el webhook; no casan con ninguna invitación y se asientan `ignored:unknown_email`.
-
-*Remitente en `qualify.la`.* Desde 2026-10-15 el producto tiene dominio propio y Lark Mail ocupa la raíz de `qualify.la` (MX, SPF, DKIM). Para que las invitaciones salgan de ahí, añadir en Resend el subdominio `send.qualify.la` (los tres registros que entrega van a la zona de Vercel; la raíz no se toca), esperar *Verified* y cambiar `QUALIFY_MAIL_FROM` y el sender de Supabase a `no-reply@send.qualify.la`. En el plan Free eso **reemplaza** a `send.attitudefactory.co` (un dominio); tener los dos a la vez es plan Pro.
 
 **Canva**: registrar `https://qualify.attitudefactory.co/canva/callback` y `https://qualify.attitudefactory.co/canva/return` en el portal de desarrolladores, y `QUALIFY_CANVA_REDIRECT_URI` igual a la primera.
 
