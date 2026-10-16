@@ -18,6 +18,7 @@ the request.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
@@ -34,6 +35,11 @@ from qualify_api.webhooks.envelope import (
 
 PARSE_STATUS_PARSED = "parsed"
 PARSE_STATUS_UNPARSEABLE = "unparseable"
+
+# How a body becomes changes. Meta's envelope by default; another sender's shape (the
+# Meegle Event Listener, `qualify_api.meegle.envelope`) plugs in here, so every webhook
+# source shares ONE door, one dedup and one queue. Raises `EnvelopeError` → `unparseable`.
+DeliveryParser = Callable[[bytes], ParsedDelivery]
 
 _INSERT_DELIVERY = text(
     """
@@ -71,14 +77,16 @@ class RecordedDelivery:
     changes_new: int  # the rest were already recorded (same change, another delivery)
 
 
-def record_delivery(*, body: bytes, signature_header: str) -> RecordedDelivery:
+def record_delivery(
+    *, body: bytes, signature_header: str, parser: DeliveryParser = parse_delivery
+) -> RecordedDelivery:
     """Persist the delivery (raw body always) and one row per change it carries.
 
     The caller has already verified the signature. Raises whatever the database raises:
     the route turns that into a 500, never into a silent 200.
     """
     try:
-        parsed: ParsedDelivery | None = parse_delivery(body)
+        parsed: ParsedDelivery | None = parser(body)
     except EnvelopeError:
         parsed = None
 

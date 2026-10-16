@@ -33,6 +33,7 @@ from qualify_api.auth.invites import (
     SignupNotAllowed,
     create_invite,
     send_invite_email,
+    signup_base_url,
 )
 from qualify_api.auth.registry import default_auth_provider
 from qualify_api.auth.service import (
@@ -48,14 +49,6 @@ def _prompt_password() -> str:
     if password != confirm:
         raise SystemExit("passwords do not match")
     return password
-
-
-def _default_base_url() -> str:
-    return (
-        os.environ.get("QUALIFY_PUBLIC_URL")
-        or os.environ.get("REFLEX_DEPLOY_URL")
-        or "http://localhost:3100"
-    )
 
 
 def _invite(
@@ -130,7 +123,7 @@ def main(argv: list[str] | None = None) -> None:
         _invite(
             args.email,
             args.days,
-            args.base_url or _default_base_url(),
+            args.base_url or signup_base_url(),
             not args.no_email,
             name=args.name,
             business=args.business,

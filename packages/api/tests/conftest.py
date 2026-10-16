@@ -116,3 +116,87 @@ class FakeAsyncRedis:
 @pytest.fixture
 def fake_async_redis() -> FakeAsyncRedis:
     return FakeAsyncRedis()
+
+
+# --------------------------------------------------------------------------------------
+# Meegle Event Listener bodies (plan-altas-meegle M1) — shared by the envelope, route,
+# handler and intake tests. A plain fixture because test modules cannot import each other
+# here (importlib mode, no __init__.py).
+# --------------------------------------------------------------------------------------
+
+
+class MeegleEvents:
+    """Builds bodies shaped like the Event Listener docs (`Complete Node 2001`), signed."""
+
+    PLUGIN_ID = "MII_TEST"
+    TOKEN = "callback-token"
+    REQUEST_TIME = 1730184005453
+    IDEMPOTENT = "90d94fba3a8f14e372b0a0e7446fefc761056ef3dcf9d777271cc1c16b10c5d6"
+    WORK_ITEM_TYPE = "alta_cliente"
+    PROJECT_KEY = "proj-test"
+
+    def data(
+        self,
+        *,
+        event_type: int = 2001,
+        work_item_id: int | None = 5390584662,
+        nodes: list[str] | None = None,
+        idempotent_key: str | None = IDEMPOTENT,
+        work_item_type: str = WORK_ITEM_TYPE,
+    ) -> dict:
+        payload: dict = {
+            "event_type": event_type,
+            "is_batch_check": False,
+            "project_key": self.PROJECT_KEY,
+            "flow_type": 0,
+            "work_item_type_key": work_item_type,
+            "user_info": {"user_key": "7697105028321938981"},
+        }
+        if idempotent_key is not None:
+            payload["idempotent_key"] = idempotent_key
+        if work_item_id is not None:
+            payload["work_item_info"] = [
+                {
+                    "work_item_id": work_item_id,
+                    "work_item_name": "Arepera La Nona",
+                    "work_item_type_key": work_item_type,
+                }
+            ]
+        if nodes is not None:
+            payload["node_info"] = {"update_nodes": nodes, "reason": ""}
+        return payload
+
+    def body(
+        self,
+        *,
+        source: str = "normal",
+        request_time: object = REQUEST_TIME,
+        signature: str | None = None,
+        **data_kwargs: object,
+    ) -> bytes:
+        import json
+
+        from qualify_api.meegle.envelope import event_signature
+
+        if signature is None:
+            signature = event_signature(
+                plugin_id=self.PLUGIN_ID, request_time=request_time, callback_token=self.TOKEN
+            )
+        payload = {
+            "log_id": "2026XXXX",
+            "request_time": request_time,
+            "signature": signature,
+            "source": source,
+            "source_plug-in_id": self.PLUGIN_ID,
+            "data": self.data(**data_kwargs),  # type: ignore[arg-type]
+        }
+        return json.dumps(payload).encode("utf-8")
+
+    def value(self, *, source: str = "normal", **data_kwargs: object) -> dict:
+        """What the intake records as the change's `value` (`parse_meegle_delivery`)."""
+        return {"source": source, "data": self.data(**data_kwargs)}  # type: ignore[arg-type]
+
+
+@pytest.fixture
+def meegle_events() -> MeegleEvents:
+    return MeegleEvents()

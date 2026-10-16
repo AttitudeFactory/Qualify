@@ -19,6 +19,12 @@ user (an orphan there would block its email until an administrator deleted it).
 
 The invite's email is compared case-insensitively (GoTrue treats `A@b.co` and `a@b.co` as
 one account); the `+alias` stays literal, it IS the business.
+
+Since M1 of `docs/plan-altas-meegle.md` an invite may come from a Meegle "Alta de cliente"
+item (`meegle_work_item_id`, migration 0064): terminating the item expires its unused
+invites (`expire_invites_for_work_item`), and the signup that consumes it writes back to
+the item (`auth.service`). `send_invite_email` keeps the Resend email id
+(`resend_email_id`) so M2 can match delivery webhooks to the invite.
 """
 
 from __future__ import annotations
@@ -28,10 +34,10 @@ import os
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from qualify_shared.db.admin import admin_session
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from qualify_api.auth.invite_email import invite_email
@@ -63,6 +69,7 @@ class CreatedInvite:
     recipient_name: str = ""
     business_name: str = ""
     note: str = ""
+    id: UUID | None = None  # the row's id (`signup_invites.id`), minted on create
 
     def link(self, base_url: str) -> str:
         return f"{base_url.rstrip('/')}{SIGNUP_ROUTE}?invite={self.token}"
@@ -84,6 +91,16 @@ def _hash(token: str) -> str:
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def signup_base_url() -> str:
+    """Where the invite link points: the public app URL, then Reflex's deploy URL,
+    then the local dev port."""
+    return (
+        os.environ.get("QUALIFY_PUBLIC_URL")
+        or os.environ.get("REFLEX_DEPLOY_URL")
+        or "http://localhost:3100"
+    )
 
 
 def signup_open() -> bool:
@@ -119,9 +136,11 @@ def create_invite(
     recipient_name: str | None = None,
     business_name: str | None = None,
     note: str | None = None,
+    meegle_work_item_id: int | None = None,
 ) -> CreatedInvite:
     """Store a new invite for `email` (literal, like every login email — the `+alias`
-    is the business). Earlier unused invites for the same email stay valid."""
+    is the business). Earlier unused invites for the same email stay valid.
+    `meegle_work_item_id` links it to the "Alta de cliente" item that asked for it."""
     email = email.strip()
     if not _valid_email(email):
         raise SignupNotAllowed("El email no es válido.")
@@ -132,9 +151,11 @@ def create_invite(
     note = _clean(note, _NOTE_MAX)
     token = secrets.token_urlsafe(32)
     expires_at = _now() + timedelta(days=days)
+    invite_id = uuid4()
     with admin_session() as session:
         session.add(
             SignupInvite(
+                id=invite_id,
                 email=email,
                 token_hash=_hash(token),
                 invited_by=invited_by,
@@ -142,6 +163,7 @@ def create_invite(
                 business_name=business_name or None,
                 note=note or None,
                 expires_at=expires_at,
+                meegle_work_item_id=meegle_work_item_id,
             )
         )
     return CreatedInvite(
@@ -151,6 +173,7 @@ def create_invite(
         recipient_name=recipient_name,
         business_name=business_name,
         note=note,
+        id=invite_id,
     )
 
 
@@ -222,6 +245,22 @@ def consume_invite(session: Session, invite_id: UUID, email: str) -> None:
     mark_invite_used(session, lock_invite(session, invite_id, email))
 
 
+def expire_invites_for_work_item(work_item_id: int) -> int:
+    """Expire now every unused, unexpired invite created from that Meegle item (the item
+    was terminated). Returns how many were expired; idempotent."""
+    now = _now()
+    with admin_session() as session:
+        return session.execute(
+            update(SignupInvite)
+            .where(
+                SignupInvite.meegle_work_item_id == work_item_id,
+                SignupInvite.used_at.is_(None),
+                SignupInvite.expires_at > now,
+            )
+            .values(expires_at=now)
+        ).rowcount
+
+
 def send_invite_email(
     mailer: Mailer,
     invite: CreatedInvite,
@@ -229,5 +268,15 @@ def send_invite_email(
     *,
     signer: str = "",
     can_reply: bool = False,
-) -> None:
-    mailer.send(invite_email(invite, base_url, signer=signer, can_reply=can_reply))
+) -> str | None:
+    """Send the invitation. Returns the provider's email id (Resend's `id`) and stores it
+    on the invite row when both exist, so a delivery webhook can be matched later (M2)."""
+    email_id = mailer.send(invite_email(invite, base_url, signer=signer, can_reply=can_reply))
+    if email_id and invite.id is not None:
+        with admin_session() as session:
+            session.execute(
+                update(SignupInvite)
+                .where(SignupInvite.id == invite.id)
+                .values(resend_email_id=email_id)
+            )
+    return email_id
