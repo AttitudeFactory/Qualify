@@ -120,6 +120,11 @@ class Thread(Base):
     last_message_at: Mapped[datetime | None] = mapped_column(nullable=True)
     last_inbound_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
+    # 0063 (QUA-226): the poll-side conversation id (`t_…`), when known — never the
+    # thread's identity (that is the counterpart's id in `external_thread_id`); and when
+    # a person last opened the thread. Both NULL on comment and WhatsApp threads.
+    external_conversation_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Message(Base):
