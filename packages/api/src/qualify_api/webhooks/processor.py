@@ -36,7 +36,9 @@ its handler exists. The comment polling is untouched.
 
 The intake is not Meta-only any more: `qualify_api.meegle` records Meegle Event Listener
 calls as `object = "meegle"`, `field = "<event_type>"` and registers its handlers here
-(`production_meegle_handlers`), same queue, same `Outcome` contract.
+(`production_meegle_handlers`), same queue, same `Outcome` contract; `qualify_api.mail`
+does the same for Resend's delivery webhooks (`object = "resend"`, `field = "email.<x>"`,
+`production_resend_handlers`).
 """
 
 from __future__ import annotations
@@ -411,6 +413,7 @@ def production_processor(*, worker_id: str) -> Processor:
     """The real queue (`qualify_webhook_worker`), the real mentions pipeline, the real
     WhatsApp inbound handler (WA-07) and the template webhooks (WA-18). Imported lazily
     so building a processor for tests never pulls the Meta/credential stack."""
+    from qualify_api.mail.handlers import production_resend_handlers  # noqa: PLC0415
     from qualify_api.meegle.handlers import production_meegle_handlers  # noqa: PLC0415
     from qualify_api.mentions.composition import (  # noqa: PLC0415
         analyze_mention_after_ingest,
@@ -469,6 +472,9 @@ def production_processor(*, worker_id: str) -> Processor:
             # Meegle onboarding (plan-altas-meegle M1): `meegle:2001|1005|2004`, only when
             # QUALIFY_MEEGLE_* is set; otherwise those events stay `unsupported`.
             **production_meegle_handlers(),
+            # Resend delivery trail (plan-altas-meegle M2): `resend:email.delivered|opened|
+            # bounced` → `signup_invites` columns, then the Meegle item when configured.
+            **production_resend_handlers(),
         },
         worker_id=worker_id,
     )

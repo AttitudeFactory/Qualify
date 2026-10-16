@@ -261,6 +261,61 @@ def expire_invites_for_work_item(work_item_id: int) -> int:
         ).rowcount
 
 
+DELIVERY_DELIVERED = "delivered"
+DELIVERY_OPENED = "opened"
+DELIVERY_BOUNCED = "bounced"
+_DELIVERY_COLUMNS = {
+    DELIVERY_DELIVERED: "delivered_at",
+    DELIVERY_OPENED: "opened_at",
+    DELIVERY_BOUNCED: "bounced_at",
+}
+
+
+@dataclass(frozen=True)
+class DeliveryMark:
+    """What `mark_delivery` found and did for one Resend event."""
+
+    invite_id: UUID
+    meegle_work_item_id: int | None
+    first: bool  # this event set the column; False = already set by an earlier event
+    delivered_at: datetime | None
+    opened_at: datetime | None
+    bounced_at: datetime | None
+
+
+def mark_delivery(email_id: str, *, kind: str, at: datetime | None = None) -> DeliveryMark | None:
+    """Record a Resend delivery event on the invite whose email has that id (M2).
+
+    `kind` is one of `delivered` / `opened` / `bounced`; the matching column is set the
+    FIRST time only (`first`), so a retried or repeated event changes nothing. Returns
+    None when no invite was sent with that email id (a recovery email Supabase sent
+    through the same Resend account, for instance). Takes the row lock, so two events of
+    the same invite processed at once never both see `first`.
+    """
+    column = _DELIVERY_COLUMNS[kind]
+    with admin_session() as session:
+        invite = session.scalar(
+            select(SignupInvite)
+            .where(SignupInvite.resend_email_id == email_id)
+            .order_by(SignupInvite.created_at.desc())
+            .with_for_update()
+        )
+        if invite is None:
+            return None
+        first = getattr(invite, column) is None
+        if first:
+            setattr(invite, column, at or _now())
+            session.flush()
+        return DeliveryMark(
+            invite_id=invite.id,
+            meegle_work_item_id=invite.meegle_work_item_id,
+            first=first,
+            delivered_at=invite.delivered_at,
+            opened_at=invite.opened_at,
+            bounced_at=invite.bounced_at,
+        )
+
+
 def send_invite_email(
     mailer: Mailer,
     invite: CreatedInvite,

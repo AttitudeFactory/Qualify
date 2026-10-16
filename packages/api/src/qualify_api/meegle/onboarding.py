@@ -15,6 +15,10 @@ Three use-cases, all synchronous, all writing back to the same item:
 - `mark_registered(work_item_id, tenant_id)` — `register_business` consumed the invite:
   complete **Registrada**, write `Estado Qualify = registrada`, `Tenant`, `Registrada el`.
   Called best-effort from the signup path, after its transaction, never failing a signup.
+- `mark_delivered` / `mark_opened` / `mark_bounced` (M2) — the Resend webhook said the
+  invitation reached the inbox (`entregada` + **Invitada** completed), was opened
+  (`abierta`) or bounced (`rebotó` + a comment with the provider's reason). Called
+  best-effort from `qualify_api.mail.handlers`, after the invite row is updated.
 
 Field reads tolerate what Meegle returns for each type: a `text` is a string, a
 `multi_text` arrives as `{"doc_text": …}` (or that object as a JSON string), a `select` as
@@ -44,9 +48,12 @@ from qualify_api.mail import Mailer, MailError, MailNotConfigured, default_maile
 from qualify_api.meegle.client import MeegleApiError, MeegleClient, WorkItem
 from qualify_api.meegle.schema import SchemaResolver
 from qualify_api.meegle.settings import (
+    STATUS_BOUNCED,
+    STATUS_DELIVERED,
     STATUS_ERROR,
     STATUS_EXPIRED,
     STATUS_INVITED,
+    STATUS_OPENED,
     STATUS_REGISTERED,
     MeegleNames,
 )
@@ -248,6 +255,52 @@ class OnboardingEngine:
             expired,
         )
         return expired
+
+    # -- delivery (M2: fed by the Resend webhook, `qualify_api.mail.handlers`) -----------
+
+    def _set_status(self, work_item_id: int, label: str) -> None:
+        status_key, status_value = self._status_pair(label)
+        self._client.update_fields(work_item_id, {status_key: status_value})
+
+    def _confirm_node(self, work_item_id: int, name: str) -> None:
+        """Complete a node by name. Meegle refuses a node that is already completed (a
+        repeated event, or a person did it): the refusal is logged and is not an error."""
+        try:
+            node_id = self._resolver.node_id(work_item_id, name)
+            self._client.operate_node(work_item_id, node_id, action="confirm")
+        except MeegleApiError as exc:
+            logger.info(
+                "meegle onboarding: work_item=%s node %r not confirmed (%s)",
+                work_item_id,
+                name,
+                type(exc).__name__,
+            )
+
+    def mark_delivered(self, work_item_id: int, *, already_opened: bool = False) -> None:
+        """The invitation reached the inbox: `Estado Qualify = entregada` and **Invitada**
+        completed. `already_opened` (the open event arrived first) keeps the status at
+        `abierta` — a later state never goes backwards — but still completes the node."""
+        if not already_opened:
+            self._set_status(work_item_id, STATUS_DELIVERED)
+        self._confirm_node(work_item_id, self._names.node_invited)
+        logger.info("meegle onboarding: work_item=%s invitation delivered", work_item_id)
+
+    def mark_opened(self, work_item_id: int) -> None:
+        """The person opened the invitation: `Estado Qualify = abierta`, nodes untouched."""
+        self._set_status(work_item_id, STATUS_OPENED)
+        logger.info("meegle onboarding: work_item=%s invitation opened", work_item_id)
+
+    def mark_bounced(self, work_item_id: int, reason: str) -> None:
+        """The invitation bounced: `Estado Qualify = rebotó` and a comment with Resend's
+        reason, so the person corrects the email and completes **Datos** again (D3)."""
+        self._set_status(work_item_id, STATUS_BOUNCED)
+        detail = " ".join(reason.split())[:500] or "sin detalle del proveedor"
+        self._client.comment(
+            work_item_id,
+            f"El correo de invitación rebotó: {detail}\n"
+            f"Corrige «{self._names.email}» y vuelve a completar «{self._names.node_data}».",
+        )
+        logger.warning("meegle onboarding: work_item=%s invitation bounced", work_item_id)
 
     def mark_registered(self, work_item_id: int, tenant_id: UUID) -> None:
         names = self._names

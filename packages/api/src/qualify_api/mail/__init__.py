@@ -10,6 +10,8 @@ Configuration, read from the environment:
     QUALIFY_MAIL_FROM        sender, e.g. "Herwin de Qualify <no-reply@send.attitudefactory.co>"
     QUALIFY_MAIL_REPLY_TO    optional: where replies go (a mailbox a person reads)
     QUALIFY_MAIL_FAKE=1      dev/test: log the message instead of sending it
+    QUALIFY_RESEND_WEBHOOK_SECRET  the Svix signing secret of the delivery webhook
+                             (`webhook.py` / `routes.py` / `handlers.py`, plan M2)
 
 An unconfigured environment raises `MailNotConfigured` at send time — loud, never a silent
 drop. Callers that can degrade (the invite CLI prints the link anyway) catch it.

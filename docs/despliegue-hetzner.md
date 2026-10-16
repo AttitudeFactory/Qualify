@@ -113,7 +113,7 @@ Cada variable está comentada en el ejemplo. Lo esencial:
 | `QUALIFY_DB_OWNER_PASSWORD`, `QUALIFY_DB_APP_PASSWORD`, `QUALIFY_DB_ADMIN_PASSWORD`, `QUALIFY_DB_CREDENTIAL_PASSWORD`, `QUALIFY_DB_WEBHOOK_PASSWORD`, `QUALIFY_DB_WEBHOOK_WORKER_PASSWORD` | `openssl rand -hex 24` cada una (hex: van dentro de una URL) |
 | `QUALIFY_DEV_FERNET_KEY` | `python3 -c "import base64,os;print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`. **Guardarla también en el gestor de contraseñas:** si se pierde, todos los tokens OAuth guardados quedan ilegibles |
 | `QUALIFY_OAUTH_STATE_SECRET` | `openssl rand -hex 32` |
-| `QUALIFY_RESEND_API_KEY`, `QUALIFY_MAIL_FROM`, `QUALIFY_INVITE_SIGNER`, `QUALIFY_MAIL_REPLY_TO` | Correo transaccional (invitaciones y SMTP de Supabase), ver §9 «Resend». Sin la API key la app arranca igual: `just invite` crea la invitación y **imprime el enlace** para mandarlo a mano, y la recuperación de contraseña sigue saliendo por el remitente por defecto de Supabase (sólo llega a miembros del proyecto) |
+| `QUALIFY_RESEND_API_KEY`, `QUALIFY_MAIL_FROM`, `QUALIFY_INVITE_SIGNER`, `QUALIFY_MAIL_REPLY_TO`, `QUALIFY_RESEND_WEBHOOK_SECRET` | Correo transaccional (invitaciones y SMTP de Supabase), ver §9 «Resend». Sin la API key la app arranca igual: `just invite` crea la invitación y **imprime el enlace** para mandarlo a mano, y la recuperación de contraseña sigue saliendo por el remitente por defecto de Supabase (sólo llega a miembros del proyecto) |
 | `QUALIFY_META_*`, `QUALIFY_SUPABASE_*`, `QUALIFY_R2_*`, `QUALIFY_ANTHROPIC_API_KEY`, … | Los mismos valores que el `.env` local (no copiar `QUALIFY_*_DSN` ni `QUALIFY_REDIS_URL`: el compose los arma) |
 
 El compose **se niega a arrancar** si falta alguno de: contraseñas de BD, `QUALIFY_DEV_FERNET_KEY`, `QUALIFY_OAUTH_STATE_SECRET`, `QUALIFY_META_APP_ID/SECRET`, `QUALIFY_SUPABASE_URL/PUBLISHABLE_KEY`. Es a propósito: en el código esos valores caen a un default de desarrollo **commiteado**, y sin este chequeo producción correría silenciosamente con la llave de desarrollo. `QUALIFY_AUTH_FAKE` se fuerza vacío pase lo que pase en el archivo.
@@ -314,6 +314,13 @@ Los roles son globales del clúster y sobreviven al `DROP DATABASE`, así que no
    ```
 
    Cada envío aparece en <https://resend.com/emails> con su estado (delivered / bounced).
+7. **Webhook de entrega** (plan `plan-altas-meegle.md`, M2): <https://resend.com/webhooks> → *Add Webhook* → *Endpoint URL* `https://app.qualify.la/api/mail/resend` (mientras `qualify.attitudefactory.co` sea el dominio canónico de la app, `https://qualify.attitudefactory.co/api/mail/resend`; es el mismo `${QUALIFY_PUBLIC_URL}/api/mail/resend`) → *Events*: marcar `email.delivered`, `email.opened` y `email.bounced` (los demás se aceptan y quedan `unsupported` en la bandeja; mejor no suscribirlos). Al crearlo, Resend muestra el **Signing Secret** (`whsec_…`): va en `/opt/qualify/.env.prod` como
+
+   ```bash
+   QUALIFY_RESEND_WEBHOOK_SECRET=whsec_…
+   ```
+
+   y luego `dc up -d` para que `api` lo lea. Sin la variable el endpoint responde **503** a cada evento (Resend reintenta y el log del `api` lo dice en ERROR); con ella, un evento mal firmado o viejo (> 5 min) es 401. Qué hace cada evento: entregado → `signup_invites.delivered_at` y, si la invitación salió de un ítem de Meegle, estado `entregada` + nodo **Invitada**; abierto → `opened_at` y estado `abierta`; rebote → `bounced_at`, estado `rebotó` y un comentario en el ítem con el motivo. Comprobar: mandar una invitación a un buzón propio y ver en <https://resend.com/webhooks> → el endpoint → *Attempts* un 200; en Meegle el ítem pasa a `entregada`. Un correo a un dominio inexistente debe dejar el ítem en `rebotó`. Nota: las recuperaciones de contraseña de Supabase salen por la misma cuenta y también disparan el webhook; no casan con ninguna invitación y se asientan `ignored:unknown_email`.
 
 *Remitente en `qualify.la`.* Desde 2026-10-15 el producto tiene dominio propio y Lark Mail ocupa la raíz de `qualify.la` (MX, SPF, DKIM). Para que las invitaciones salgan de ahí, añadir en Resend el subdominio `send.qualify.la` (los tres registros que entrega van a la zona de Vercel; la raíz no se toca), esperar *Verified* y cambiar `QUALIFY_MAIL_FROM` y el sender de Supabase a `no-reply@send.qualify.la`. En el plan Free eso **reemplaza** a `send.attitudefactory.co` (un dominio); tener los dos a la vez es plan Pro.
 
