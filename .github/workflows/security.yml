@@ -247,7 +247,7 @@ jobs:
               echo "| Rule | File | Commit |"; echo "|---|---|---|"
               jq -r '.[:60][] | "| `\(.RuleID)` | `\(.File):\(.StartLine)` | `\(.Commit[0:10])` |"' gitleaks.json
               echo
-              echo "Secrets are redacted everywhere. Rotate the credential, then purge or allowlist (`.gitleaks.toml`)."
+              echo 'Secrets are redacted everywhere. Rotate the credential, then purge or allowlist (`.gitleaks.toml`).'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$code"

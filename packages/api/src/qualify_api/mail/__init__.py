@@ -7,7 +7,7 @@ external APIs — a thin typed client over httpx, no SDK.
 Configuration, read from the environment:
 
     QUALIFY_RESEND_API_KEY   the Resend API key (secret)
-    QUALIFY_MAIL_FROM        sender, e.g. "Herwin de Qualify <no-reply@send.attitudefactory.co>"
+    QUALIFY_MAIL_FROM        sender, e.g. "Herwin de Qualify <no-reply@send.qualify.la>"
     QUALIFY_MAIL_REPLY_TO    optional: where replies go (a mailbox a person reads)
     QUALIFY_MAIL_FAKE=1      dev/test: log the message instead of sending it
 

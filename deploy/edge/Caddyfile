@@ -4,6 +4,9 @@
 # product being down only turns ITS host into a 502.
 #
 #   {$QUALIFY_DOMAIN}  -> qualify-web:80      Qualify's internal Caddy (network `qualify-edge`)
+#   {$QUALIFY_EXTRA_HOSTS} (optional, space-separated) -> the same upstream: extra hostnames
+#                      Qualify answers on, e.g. `app.qualify.la` for the Meegle callback while
+#                      the canonical URL stays QUALIFY_DOMAIN. Empty = no extra host.
 #   {$PEDIDOS_DOMAIN}  -> pedidos-backend:8420 Pedidos backend (network `pedidos`)
 #
 # Values come from /opt/edge/.env (see .env.example next to this file). Changing a route is
@@ -24,7 +27,7 @@
 	}
 }
 
-{$QUALIFY_DOMAIN} {
+{$QUALIFY_DOMAIN} {$QUALIFY_EXTRA_HOSTS} {
 	import edge_common
 	# Qualify's own Caddy already compresses and routes /api, /_event (websocket), /_upload…
 	# so the edge only forwards. Caddy passes the original Host and sets X-Forwarded-*.
