@@ -30,7 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from qualify_api.auth.drafts import claim_draft, find_open_draft
-from qualify_api.auth.invites import consume_invite
+from qualify_api.auth.invites import lock_invite, mark_invite_used
 from qualify_api.auth.provider import (
     AuthProvider,
     AuthSession,
@@ -200,16 +200,19 @@ def register_business(
     a Brand Kit was started before login with this email (§ request 2026-10-02): then
     the signup adopts that draft's tenant, so the account opens with its Brand Kit.
 
-    `invite_id` (from `invites.authorize_signup`) is consumed in the same transaction
-    as the local half: the invite is spent only if the business really exists."""
+    `invite_id` (from `invites.authorize_signup`) is locked and re-checked in the same
+    transaction as the local half, BEFORE the identity user is created, and spent only
+    if the business really exists. Order matters: the identity provider is outside our
+    transaction, so a signup that lost the race on the invite must learn it before it
+    creates a user there (an orphan identity would block that email). The lock is held
+    across one provider call, on one row only the racing tabs of one link contend for."""
     _validate_signup(business_name, email, password)
     draft_tenant_id = _open_draft_tenant_id(email)
-    auth_user_id, tenant_id = _resolve_identity_for_signup(
-        provider, email, password, draft_tenant_id or uuid4()
-    )
     with admin_session() as session:
-        if invite_id is not None:
-            consume_invite(session, invite_id, email)
+        invite = lock_invite(session, invite_id, email) if invite_id is not None else None
+        auth_user_id, tenant_id = _resolve_identity_for_signup(
+            provider, email, password, draft_tenant_id or uuid4()
+        )
         draft = find_open_draft(session, email) if draft_tenant_id is not None else None
         # On the retry path the identity may already be stamped to another tenant: the
         # draft is only adopted by the tenant it was provisioned as.
@@ -235,6 +238,8 @@ def register_business(
             currency=currency,
             display_name=display_name or business_name.strip(),
         )
+        if invite is not None:
+            mark_invite_used(session, invite)
     return RegisteredBusiness(
         tenant_id=tenant_id,
         auth_user_id=auth_user_id,

@@ -59,5 +59,18 @@ def test_an_invite_makes_one_account() -> None:
     assert lookup_invite(created.token) is None  # spent
     with pytest.raises(SignupNotAllowed):
         authorize_signup(created.email, created.token)
-    with pytest.raises(SignupNotAllowed):  # a raced second signup fails at consume time
-        _register(FakeAuthProvider(), _email().replace("invite", "race"), invite_id)
+    loser = FakeAuthProvider()
+    created_users: list[str] = []
+    loser.admin_create_user = lambda email, password, tenant_id: created_users.append(email)  # type: ignore[method-assign]
+    with pytest.raises(SignupNotAllowed):  # a raced second signup fails at the row lock…
+        _register(loser, _email().replace("invite", "race"), invite_id)
+    assert created_users == []  # …before it creates an orphan identity user
+
+
+def test_an_invite_accepts_its_email_in_any_case() -> None:
+    created = create_invite(_email())
+    typed = created.email.upper()
+    invite_id = authorize_signup(typed, created.token)
+    assert invite_id is not None
+    _register(FakeAuthProvider(), typed, invite_id)
+    assert lookup_invite(created.token) is None

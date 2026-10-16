@@ -62,6 +62,8 @@ def test_a_valid_invite_opens_signup_for_its_email_only(monkeypatch: pytest.Monk
     assert "cliente+polet@negocio.com" in exc.value.message
     with pytest.raises(SignupNotAllowed):  # literal: the +alias is the business
         authorize_signup("cliente@negocio.com", "tok")
+    # Case is not identity (the provider folds it); the alias is.
+    assert authorize_signup("Cliente+Polet@Negocio.com", "tok") is not None
 
 
 def test_a_dead_invite_is_refused_even_with_signup_open(monkeypatch: pytest.MonkeyPatch) -> None:

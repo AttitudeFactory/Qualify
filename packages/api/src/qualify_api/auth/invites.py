@@ -11,9 +11,14 @@ Without an invite, signup is closed. `QUALIFY_SIGNUP_OPEN=1` reopens it for loca
 development and tests only; the production compose forces it empty. (A shared signup code
 existed briefly on this branch and went to the backlog with the same decision.)
 
-`authorize_signup` decides before the identity user is created; `consume_invite` marks
-the invite used inside `register_business`'s transaction, with a row lock, so two tabs
-racing on one link make one account.
+`authorize_signup` decides before anything is created. Inside `register_business`'s
+transaction, `lock_invite` takes the row lock and re-checks the invite BEFORE the identity
+user is created, and `mark_invite_used` spends it once the business exists — so two tabs
+racing on one link make one account and the loser creates nothing, not even an identity
+user (an orphan there would block its email until an administrator deleted it).
+
+The invite's email is compared case-insensitively (GoTrue treats `A@b.co` and `a@b.co` as
+one account); the `+alias` stays literal, it IS the business.
 """
 
 from __future__ import annotations
@@ -179,7 +184,7 @@ def authorize_signup(email: str, invite_token: str | None) -> UUID | None:
         invite = lookup_invite(invite_token)
         if invite is None:
             raise SignupNotAllowed(_INVITE_DEAD)
-        if invite.email != email:
+        if not _same_email(invite.email, email):
             raise SignupNotAllowed(
                 f"Esta invitación es para {invite.email}. Regístrate con ese correo."
             )
@@ -189,16 +194,32 @@ def authorize_signup(email: str, invite_token: str | None) -> UUID | None:
     raise SignupNotAllowed(_INVITE_ONLY)
 
 
-def consume_invite(session: Session, invite_id: UUID, email: str) -> None:
-    """Mark the invite used, inside the transaction that creates the business. The row
-    lock makes a second, concurrent signup with the same link fail here."""
+def _same_email(a: str, b: str) -> bool:
+    return a.strip().casefold() == b.strip().casefold()
+
+
+def lock_invite(session: Session, invite_id: UUID, email: str) -> SignupInvite:
+    """Take the invite's row lock and re-check it, inside the transaction that will
+    create the business and BEFORE the identity user exists. A second, concurrent
+    signup with the same link waits here and then fails: it never reaches the provider."""
     invite = session.scalar(
         select(SignupInvite).where(SignupInvite.id == invite_id).with_for_update()
     )
-    if not _usable(invite) or invite is None or invite.email != email:
+    if not _usable(invite) or invite is None or not _same_email(invite.email, email):
         raise SignupNotAllowed(_INVITE_DEAD)
+    return invite
+
+
+def mark_invite_used(session: Session, invite: SignupInvite) -> None:
+    """Spend a locked invite — called once the business really exists."""
     invite.used_at = _now()
     session.flush()
+
+
+def consume_invite(session: Session, invite_id: UUID, email: str) -> None:
+    """`lock_invite` + `mark_invite_used` in one step, for callers with nothing to do in
+    between."""
+    mark_invite_used(session, lock_invite(session, invite_id, email))
 
 
 def send_invite_email(

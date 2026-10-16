@@ -430,6 +430,40 @@ async def test_repeated_wrong_passwords_lock_the_email_with_the_real_wait(
     assert "min" in state.auth_error
 
 
+async def test_the_lock_ignores_the_email_capitalisation(monkeypatch, fresh_throttles) -> None:
+    seen: list[str] = []
+
+    def fake_login(email: str, password: str):
+        seen.append(email)
+        from qualify_api.auth import InvalidCredentials
+
+        raise InvalidCredentials()
+
+    monkeypatch.setattr(auth_state_module, "_login_blocking", fake_login)
+    state = _state()
+    for email in ("a@b.co", "A@b.co", "a@B.CO"):
+        async for _ in AuthState.handle_login.fn(state, {"email": email, "password": "x" * 8}):
+            pass
+    assert seen == ["a@b.co", "A@b.co"]  # one window for every spelling, literal to the provider
+    assert "min" in state.auth_error
+
+
+async def test_an_outage_does_not_spend_the_operator_attempts(monkeypatch, fresh_throttles) -> None:
+    from qualify_api.auth import AuthProviderError
+
+    def provider_down(email: str, password: str):
+        raise AuthProviderError("down")
+
+    monkeypatch.setattr(auth_state_module, "_login_blocking", provider_down)
+    state = _state()
+    for _ in range(5):
+        async for _ in AuthState.handle_login.fn(state, {"email": "a@b.co", "password": "x" * 8}):
+            pass
+    assert state.auth_error == auth_state_module._AUTH_DOWN  # never "wait N min"
+    login, _ = fresh_throttles
+    assert login.retry_after("a@b.co") == 0
+
+
 async def test_login_trims_only_surrounding_whitespace(monkeypatch, fresh_throttles) -> None:
     seen: list[str] = []
 

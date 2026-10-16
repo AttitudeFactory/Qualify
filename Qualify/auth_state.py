@@ -57,6 +57,7 @@ from qualify_api.auth import (
     resolve_login,
     signup_open,
     start_brand_kit_draft,
+    throttle_key,
 )
 from reflex.config import get_config
 from sqlalchemy.exc import SQLAlchemyError
@@ -423,7 +424,11 @@ class AuthState(rx.State):
         async with self:
             self.is_authenticating = True
             self.auth_error = ""
-        wait = login_throttle.retry_after(email)
+        # The attempt is reserved BEFORE the provider is called (check + count under one
+        # lock), keyed case-insensitively: parallel guesses, or the same email in other
+        # capitalisations, share the one window. Only a wrong password keeps the count.
+        key = throttle_key(email)
+        wait = login_throttle.try_acquire(key)
         if wait:
             async with self:
                 self.is_authenticating = False
@@ -432,17 +437,18 @@ class AuthState(rx.State):
         try:
             result = await asyncio.to_thread(_login_blocking, email, password)
         except InvalidCredentials:
-            login_throttle.note(email)
             async with self:
                 self.is_authenticating = False
                 self.auth_error = _BAD_CREDENTIALS
             return
         except IncompleteRegistration:
+            login_throttle.forgive(key)
             async with self:
                 self.is_authenticating = False
                 self.auth_error = _INCOMPLETE
             return
         except RateLimited:
+            login_throttle.forgive(key)
             async with self:
                 self.is_authenticating = False
                 self.auth_error = _RATE_LIMITED
@@ -450,11 +456,12 @@ class AuthState(rx.State):
         except (AuthProviderError, AuthNotConfigured, SQLAlchemyError) as exc:
             # Only the exception type is logged — same hygiene rule as every state.
             logger.error("login failed: %s", type(exc).__name__)
+            login_throttle.forgive(key)
             async with self:
                 self.is_authenticating = False
                 self.auth_error = _AUTH_DOWN
             return
-        login_throttle.clear(email)
+        login_throttle.clear(key)
         # Only the in-app destinations below; never a URL from the form itself.
         next_route = str(form_data.get("next", "/"))
         yield rx.redirect(await self._open_session(result, next_route))
@@ -571,7 +578,7 @@ class AuthState(rx.State):
                 self.is_authenticating = False
                 self.auth_error = "Escribe un correo válido."
             return
-        if reset_request_throttle.retry_after(email):
+        if reset_request_throttle.retry_after(throttle_key(email)):
             # Already sent one a moment ago: the screen says the same as a fresh send.
             async with self:
                 self.is_authenticating = False
@@ -593,7 +600,7 @@ class AuthState(rx.State):
                 self.is_authenticating = False
                 self.auth_error = _AUTH_DOWN
             return
-        reset_request_throttle.note(email)
+        reset_request_throttle.note(throttle_key(email))
         async with self:
             self.is_authenticating = False
             self.reset_sent_to = email
@@ -680,7 +687,7 @@ class AuthState(rx.State):
             return
         async with self:
             self._recovery_token = ""
-        login_throttle.clear(result.email)
+        login_throttle.clear(throttle_key(result.email))
         yield rx.redirect(await self._open_session(result, "/"))
         yield rx.toast.success("Listo: tu contraseña quedó cambiada.")
 
@@ -709,7 +716,10 @@ class AuthState(rx.State):
                 self.is_authenticating = False
                 self.auth_error = _SESSION_STALE
             return
-        wait = login_throttle.retry_after(email)
+        # Same reservation as the login: the current password is a guess until the
+        # provider says otherwise; every other outcome gives the attempt back.
+        key = throttle_key(email)
+        wait = login_throttle.try_acquire(key)
         if wait:
             async with self:
                 self.is_authenticating = False
@@ -718,33 +728,36 @@ class AuthState(rx.State):
         try:
             token = await asyncio.to_thread(_change_password_blocking, email, current, new, confirm)
         except InvalidCredentials:
-            login_throttle.note(email)
             async with self:
                 self.is_authenticating = False
                 self.auth_error = "La contraseña actual no es correcta."
             return
         except (PasswordChangeInvalid, PasswordRejected) as exc:
+            login_throttle.forgive(key)
             async with self:
                 self.is_authenticating = False
                 self.auth_error = exc.message
             return
         except SessionExpired:
+            login_throttle.forgive(key)
             async with self:
                 self.is_authenticating = False
                 self.auth_error = _SESSION_STALE
             return
         except RateLimited:
+            login_throttle.forgive(key)
             async with self:
                 self.is_authenticating = False
                 self.auth_error = _RATE_LIMITED
             return
         except (AuthProviderError, AuthNotConfigured) as exc:
             logger.error("password change failed: %s", type(exc).__name__)
+            login_throttle.forgive(key)
             async with self:
                 self.is_authenticating = False
                 self.auth_error = _AUTH_DOWN
             return
-        login_throttle.clear(email)
+        login_throttle.clear(key)
         async with self:
             self._access_token = token
             self.is_authenticating = False

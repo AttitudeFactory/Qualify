@@ -54,6 +54,7 @@ from qualify_api.auth.throttle import (
     AttemptThrottle,
     login_throttle,
     reset_request_throttle,
+    throttle_key,
 )
 
 __all__ = [
@@ -98,4 +99,5 @@ __all__ = [
     "send_invite_email",
     "signup_open",
     "start_brand_kit_draft",
+    "throttle_key",
 ]
