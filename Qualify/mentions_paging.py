@@ -9,11 +9,11 @@ app (same split `inbox_sync_policy.py` makes for `/inbox`).
 
 Every page of a listing is read under one snapshot, `as_of` (`received_at <= as_of`, see
 `qualify_api.mentions.repository.MentionPage`). Paging keeps it, so walking pages never
-shows a duplicate or skips a row. On the first page a refresh tick checks whether anything
-arrived after `as_of` and, if so, takes it in directly — a new snapshot, silently: a mention
-is not a message, so its arrival is never announced as one (no notice, no "Nueva" mark;
-QUA-152, founder's call 2026-10-15). On a later page the snapshot is kept, so paging never
-shifts under the person; going back to page 1 takes a new snapshot at once. The order
+shows a duplicate or skips a row. On the first page every refresh tick reads under a new
+snapshot (and the period's window recomputed), so what arrived meanwhile simply shows: a
+mention is not a message, so its arrival is never announced as one (no notice, no "Nueva"
+mark; QUA-152, founder's call 2026-10-15). On a later page the snapshot is kept, so paging
+never shifts under the person; going back to page 1 takes a new snapshot at once. The order
 stays chronological by publication date, so a new mention about an old post can land on a
 later page.
 """
@@ -80,21 +80,25 @@ def pages_label(total_pages: int) -> str:
     return "Total de 1 página" if total_pages <= 1 else f"Total de {total_pages} páginas"
 
 
-TickAction = Literal["take_new", "update_rows", "announce_change"]
+LIVE_PAGE: Final = 1
+
+TickAction = Literal["update_rows", "announce_change"]
 
 
-def decide_tick(*, snapshot_total: int, reread_total: int, has_new: bool, page: int) -> TickAction:
-    """What a refresh tick does with the page it just re-read under the SAME snapshot.
+def tick_takes_new_snapshot(page: int) -> bool:
+    """Whether the 45 s tick reads the page under a NEW snapshot (and the period's window
+    recomputed): only on the first page. There, whatever arrived or left meanwhile simply
+    shows — a mention is not a message, so nothing announces it (QUA-152). On a later page
+    the snapshot is kept, so paging never repeats or skips a row."""
+    return page == LIVE_PAGE
 
-    Mentions arrived after the snapshot and the person is on page 1: take them in — the
-    first page is re-read under a new snapshot, with no notice (a mention is not a
-    message). Otherwise, same total = the same set of rows: replace them in place, which
-    only refreshes their data (a sentiment that just got analyzed). A different total means
-    the set itself changed (a row deleted, a mention committed late into the snapshot, or a
-    sentiment filter whose matches moved): never swap the rows silently — announce it and
-    let the user refresh."""
-    if has_new and page == 1:
-        return "take_new"
+
+def decide_tick(*, snapshot_total: int, reread_total: int) -> TickAction:
+    """What a tick does with a later page it re-read under the SAME snapshot. Same total =
+    the same set of rows: replace them in place, which only refreshes their data (a
+    sentiment that just got analyzed). A different total means the set itself changed (a
+    row deleted, a mention committed late into the snapshot, or a sentiment filter whose
+    matches moved): never swap the rows silently — announce it and let the user refresh."""
     if reread_total != snapshot_total:
         return "announce_change"
     return "update_rows"
@@ -206,7 +210,8 @@ def _pending_notice(
     if not_attempted and usage_paused:
         return USAGE_PAUSED_NOTICE
     if not_attempted:
-        return f"Quedan {not_attempted} por actualizar. Pulsa Actualizar para continuar."
+        verb = "Queda" if not_attempted == 1 else "Quedan"
+        return f"{verb} {not_attempted} por actualizar. Pulsa Actualizar para continuar."
     return ""
 
 

@@ -348,25 +348,7 @@ def test_snapshot_excludes_later_mentions_and_the_notice_counts_them() -> None:
     assert again.counts.total == 13
     assert late not in {r.id for r in again.rows}
     assert [r.id for r in again.rows] == [r.id for r in first.rows]
-    assert repo.has_received_after(
-        tenant_id=TENANT, version=VERSION, query=MentionQuery(), after=first.as_of
-    )
-
-
-def test_has_received_after_answers_yes_or_no_only() -> None:
-    """The tick only needs to know whether anything arrived (QUA-152): no count, no cap."""
-    repo = MemoryMentionsRepository()
-    for i in range(55):
-        repo.upsert_mention(_paged_mention(i))
-
-    def arrived(after: datetime) -> bool:
-        return repo.has_received_after(
-            tenant_id=TENANT, version=VERSION, query=MentionQuery(), after=after
-        )
-
-    assert arrived(datetime(2000, 1, 1, tzinfo=UTC)) is True
-    assert arrived(datetime(2999, 1, 1, tzinfo=UTC)) is False
-    assert _page(repo).counts.total == 55
+    assert late in {r.id for r in _page(repo).rows}  # a NEW snapshot takes it in
 
 
 def test_a_page_past_the_end_lands_on_the_last_page() -> None:

@@ -1712,22 +1712,92 @@ async def test_an_old_comment_read_is_no_proof(
     assert _visible_ids(repo) >= {gone_id, old_id}
 
 
+def _age_attempt(repo: MemoryMentionsRepository, mention_id: UUID, minutes: int) -> None:
+    """The last attempt happened `minutes` ago — past the freshness window when > 1."""
+    stamp = datetime.now(UTC) - timedelta(minutes=minutes)
+    repo._mentions[mention_id].content_refresh_attempted_at = stamp
+
+
 async def test_a_connection_without_another_comment_never_removes_and_retries_later(
     monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
 ) -> None:
-    """The guard stays for a connection with no other comment mention: kept, and since
-    nothing was decided it is not stamped — the next click asks again."""
+    """The guard stays for a connection with no other comment mention: kept. The scope
+    pass stamps it, so a second click right away does not read it again (no repeated
+    Graph call); once the freshness window has passed it is retried as usual."""
     gone_id = _comment_mention(repo, "gone")
     client = ScriptedClient({"gone": [NOT_A_VALID_COMMENT]})
     _use(monkeypatch, client)
 
     first = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
-    second = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+    assert (first.removed, first.failed) == (0, 1)
+    assert _attempted_at(repo, gone_id) is not None  # stamped by the scope pass
 
-    assert (first.removed, first.failed, second.removed, second.failed) == (0, 1, 0, 1)
-    assert client.calls == ["gone", "gone"]  # not skipped as "failed moments ago"
+    again = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+    assert (again.failed, client.calls) == (1, ["gone"])  # reported, not re-read
+
+    _age_attempt(repo, gone_id, minutes=5)
+    later = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert (later.removed, later.failed, client.calls) == (0, 1, ["gone", "gone"])
     assert client.account_checks == 0
     assert gone_id in _visible_ids(repo)
+
+
+async def test_one_click_reads_an_unproven_candidate_at_most_twice(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """Visible pass (unstamped, left for the scope pass), then the scope pass (stamped).
+    A second click moments later reads it no more."""
+    gone_id = _comment_mention(repo, "gone")
+    client = ScriptedClient({"gone": [NOT_A_VALID_COMMENT]})
+    _use(monkeypatch, client)
+
+    for _click in range(2):
+        await composition.refresh_mentions_content(tenant_id=TENANT, mention_ids=(gone_id,))
+        await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    # The second visible pass re-reads what is on screen (always does); the second scope
+    # pass skips it as failed moments ago.
+    assert client.calls == ["gone", "gone", "gone"]
+
+
+async def test_a_stamped_candidate_goes_to_the_back_of_the_queue(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """Review finding: an unproven candidate must not stay first in line and starve the
+    other mentions under the per-run cap."""
+    gone_id = _comment_mention(repo, "gone")
+    waiting_id = _store(repo, "waiting")
+    _age_attempt(repo, waiting_id, minutes=60)  # attempted an hour ago
+    _use(monkeypatch, ScriptedClient({"gone": [NOT_A_VALID_COMMENT]}))
+    # Only the candidate this time (never attempted, so it goes first).
+    await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE, max_mentions=1)
+
+    # Next run (no freshness window, so nothing is skipped): the one waiting longest
+    # goes first — the candidate was stamped, it does not jump the queue again.
+    plan = repo.plan_scope_refresh(tenant_id=TENANT, query=SCOPE, fresh_seconds=0, limit=1)
+
+    assert _attempted_at(repo, gone_id) is not None
+    assert [t.mention_id for t in plan.targets] == [waiting_id]
+
+
+async def test_a_stamped_candidate_is_removed_once_the_proof_exists(
+    monkeypatch: pytest.MonkeyPatch, repo: MemoryMentionsRepository
+) -> None:
+    """Stamping never blocks a removal: on a later click, when another comment of the
+    connection reads fine, the safeguards hold and the mention leaves the list."""
+    gone_id = _comment_mention(repo, "gone")
+    client = ScriptedClient({"gone": [NOT_A_VALID_COMMENT], "new": [_comment("new")]})
+    _use(monkeypatch, client)
+    first = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+    assert (first.removed, first.failed) == (0, 1)
+
+    _comment_mention(repo, "new")  # another comment mention arrives on the connection
+    _age_attempt(repo, gone_id, minutes=5)
+    later = await composition.refresh_mentions_in_scope(tenant_id=TENANT, scope=SCOPE)
+
+    assert later.removed == 1
+    assert gone_id not in _visible_ids(repo)
 
 
 async def test_throttling_leaves_a_candidate_pending_and_unstamped(

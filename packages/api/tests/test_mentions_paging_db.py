@@ -1,4 +1,4 @@
-"""`PostgresMentionsRepository.list_mentions_page` / `has_received_after` (QUA-152)
+"""`PostgresMentionsRepository.list_mentions_page` (QUA-152)
 against real Postgres.
 
 What the in-memory twin cannot prove: that the SQL total order really yields every row
@@ -244,7 +244,7 @@ def test_search_treats_like_wildcards_literally() -> None:
     assert {r.id for r in _page(repo, tenant_id, MentionQuery(search="a_b")).rows} == {underscore}
 
 
-def test_snapshot_is_stable_and_new_mentions_are_only_detected() -> None:
+def test_snapshot_is_stable_and_a_new_snapshot_takes_new_mentions_in() -> None:
     repo = PostgresMentionsRepository()
     tenant_id, connection_id = _fresh_tenant_with_connection()
     for _ in range(13):
@@ -257,37 +257,16 @@ def test_snapshot_is_stable_and_new_mentions_are_only_detected() -> None:
 
     again_first = _page(repo, tenant_id, as_of=first.as_of)
     again_second = _page(repo, tenant_id, page=2, as_of=first.as_of)
-    arrived = repo.has_received_after(
-        tenant_id=tenant_id, version=VERSION, query=MentionQuery(), after=first.as_of
-    )
     refreshed = _page(repo, tenant_id)
 
     assert [r.id for r in again_first.rows] == [r.id for r in first.rows]
     assert [r.id for r in again_second.rows] == [r.id for r in second_page.rows]
     assert again_first.counts.total == 13
-    assert arrived is True
     assert refreshed.rows[0].id == late
     assert refreshed.counts.total == 14
 
 
-def test_new_mention_detection_respects_filters() -> None:
-    repo = PostgresMentionsRepository()
-    tenant_id, connection_id = _fresh_tenant_with_connection()
-    snapshot = _page(repo, tenant_id).as_of
-    _add(repo, tenant_id, connection_id)  # a caption mention only
-
-    def arrived(query: MentionQuery) -> bool:
-        return repo.has_received_after(
-            tenant_id=tenant_id, version=VERSION, query=query, after=snapshot
-        )
-
-    assert arrived(MentionQuery()) is True
-    assert arrived(MentionQuery(origin=ORIGIN_COMMENT)) is False
-    _add(repo, tenant_id, connection_id, comment=True)
-    assert arrived(MentionQuery(origin=ORIGIN_COMMENT)) is True
-
-
-def test_another_tenant_sees_no_rows_counts_or_new_mentions() -> None:
+def test_another_tenant_sees_no_rows_or_counts() -> None:
     repo = PostgresMentionsRepository()
     tenant_a, connection_a = _fresh_tenant_with_connection()
     tenant_b, _connection_b = _fresh_tenant_with_connection()
@@ -295,16 +274,9 @@ def test_another_tenant_sees_no_rows_counts_or_new_mentions() -> None:
         _add(repo, tenant_a, connection_a)
 
     page_b = _page(repo, tenant_b)
-    new_b = repo.has_received_after(
-        tenant_id=tenant_b,
-        version=VERSION,
-        query=MentionQuery(),
-        after=datetime(2000, 1, 1, tzinfo=UTC),
-    )
 
     assert page_b.counts == MentionCounts()
     assert page_b.rows == ()
-    assert new_b is False
     assert _page(repo, tenant_a).counts.total == 5
 
 
@@ -549,7 +521,6 @@ def test_a_removed_mention_leaves_every_read_and_a_redelivery_keeps_it_out() -> 
     other_tenant, _ = _fresh_tenant_with_connection()
     kept = _add(repo, tenant_id, connection_id)
     gone = _add(repo, tenant_id, connection_id, comment=True)
-    before = _page(repo, tenant_id).as_of
 
     assert repo.mark_removed(tenant_id=other_tenant, mention_id=gone) is False  # RLS
     assert repo.mark_removed(tenant_id=tenant_id, mention_id=gone) is True
@@ -561,9 +532,6 @@ def test_a_removed_mention_leaves_every_read_and_a_redelivery_keeps_it_out() -> 
     assert repo.summarize(
         tenant_id=tenant_id, version=VERSION, query=MentionQuery(), as_of=page.as_of
     ) == MentionCounts(total=1, pending=1)
-    assert not repo.has_received_after(
-        tenant_id=tenant_id, version=VERSION, query=MentionQuery(), after=before
-    )
     plan = repo.plan_scope_refresh(
         tenant_id=tenant_id, query=MentionQuery(), fresh_seconds=0, limit=10
     )

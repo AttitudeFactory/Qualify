@@ -15,11 +15,11 @@ class only applies them:
 - changing a filter or the search starts a new snapshot on page 1;
 - changing page keeps the snapshot, so no row repeats or goes missing — except going back
   to page 1, which takes a new snapshot so what arrived meanwhile shows at once;
-- the 45-second tick re-reads the SAME page under the SAME snapshot (fresh sentiment
-  states, no skeleton). On page 1 it first checks whether anything arrived and, if so,
-  reads the page under a new snapshot: new mentions appear with no notice and no "Nueva"
-  mark — a mention is not a message (QUA-152, 2026-10-15). A failed tick keeps the rows
-  and says so softly; the next tick runs as usual.
+- the 45-second tick re-reads the current page (fresh sentiment states, no skeleton):
+  under the SAME snapshot on a later page; on page 1 under a NEW one, with the period's
+  window recomputed, so new mentions appear with no notice and no "Nueva" mark — a
+  mention is not a message (QUA-152, 2026-10-15). A failed tick keeps the rows and says
+  so softly; the next tick runs as usual.
 """
 
 from __future__ import annotations
@@ -52,11 +52,11 @@ from .mentions_paging import (
     refresh_outcome,
     refresh_still_running,
     stopped_outcome,
+    tick_takes_new_snapshot,
 )
 from .mentions_paging import page_items as _page_items
 from .mentions_provider import (
     MentionPageVM,
-    has_new,
     load_page,
     refresh_content,
     refresh_scope,
@@ -213,7 +213,9 @@ class DashboardState(rx.State):
 
     # ---------------------------------------------------------------- helpers
 
-    def _query(self) -> MentionQuery:
+    def _query(self, since: str | None = None) -> MentionQuery:
+        """The listing's query; `since` overrides the stored window start (ISO-8601)."""
+        since = self.since if since is None else since
         return MentionQuery(
             connection_id=(
                 UUID(self.accounts[self.account_filter])
@@ -223,7 +225,7 @@ class DashboardState(rx.State):
             origin=ORIGIN_OPTIONS.get(self.origin_filter),
             sentiment_state=SENTIMENT_OPTIONS.get(self.sentiment_filter),
             search=self.search_query,
-            since=datetime.fromisoformat(self.since) if self.since else None,
+            since=datetime.fromisoformat(since) if since else None,
         )
 
     def _scope_query(self) -> MentionQuery:
@@ -375,12 +377,6 @@ class DashboardState(rx.State):
             await self._read(page=self.page + 1, new_snapshot=False)
 
     @rx.event
-    async def refresh_list(self) -> None:
-        """ "Actualizar" (the list changed): a new snapshot on page 1, keeping the
-        filters."""
-        await self._read(page=1, new_snapshot=True)
-
-    @rx.event
     def refresh_now(self) -> list[rx.event.EventSpec] | None:
         """ "Actualizar menciones": re-read from the network every mention of the scope
         (account + period, all pages) and store what changed. This handler only marks the
@@ -482,41 +478,36 @@ class DashboardState(rx.State):
 
     @rx.event
     async def refresh_tick(self) -> None:
-        """The 45-second heartbeat. Re-reads the current page under the SAME snapshot; on
-        page 1, when anything arrived after it, under a new snapshot instead — new mentions
-        appear with no notice. Elsewhere the page's set of rows never changes by itself.
-        A failure keeps the rows on screen with a soft notice and never stops the next
-        tick (it never touches `mentions_error`)."""
+        """The 45-second heartbeat. Re-reads the current page: on page 1 under a NEW
+        snapshot with the period's window recomputed, so what arrived meanwhile simply shows
+        (no notice); on a later page under the SAME snapshot, whose set of rows never changes
+        by itself. ONE read per tick. A failure keeps the rows on screen with a soft notice
+        and never stops the next tick (it never touches `mentions_error`)."""
         if self.is_loading_mentions or not self.as_of or self.mentions_error:
             return
         tenant_id = await self._tenant()
         if tenant_id is None:
             return
-        query = self._query()
+        fresh = tick_takes_new_snapshot(self.page)
+        since = _window_start(self.period_filter) if fresh else self.since
         try:
-            arrived = self.page == 1 and await asyncio.to_thread(
-                has_new, tenant_id, query=query, as_of=self.as_of
-            )
             reread = await asyncio.to_thread(
                 load_page,
                 tenant_id,
-                query=query,
+                query=self._query(since=since),
                 page=self.page,
-                as_of="" if arrived else self.as_of,
+                as_of="" if fresh else self.as_of,
             )
         except Exception as exc:  # noqa: BLE001 — keep the rows; say it, don't break
             logger.warning("mentions refresh tick failed: %s", type(exc).__name__)
             self.refresh_error = _REFRESH_ERROR
             return
-        action = decide_tick(
-            snapshot_total=self.snapshot_total,
-            reread_total=reread.filtered_total,
-            has_new=arrived,
-            page=self.page,
-        )
-        if action == "take_new":
+        if fresh:
+            self.since = since
             self._apply_page(reread, new_snapshot=True)
-        elif action == "update_rows":
+        elif decide_tick(
+            snapshot_total=self.snapshot_total, reread_total=reread.filtered_total
+        ) == ("update_rows"):
             self._apply_page(reread, new_snapshot=False)
         else:
             self.list_changed = True

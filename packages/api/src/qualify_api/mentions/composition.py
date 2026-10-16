@@ -375,8 +375,8 @@ def list_mentions_for_tenant(
 #     above only if it was read successfully before AND another `mentioned_comment` read of
 #     the same connection succeeded in this run or in the last REFRESH_FRESH_SECONDS (the
 #     two passes of one click; the request shape is valid). Without that proof it keeps its
-#     data and is NOT stamped as attempted, so the next pass may settle it. Never applied
-#     to `mentioned_media`;
+#     data; the visible pass leaves it unstamped for the scope pass, which stamps it (so it
+#     never stays first in line). Never applied to `mentioned_media`;
 #   - with the capacity left (at most REMOVED_RECHECK_PER_RUN), removed mentions not tried
 #     for REMOVED_RECHECK_SECONDS and removed no longer than REMOVED_RECHECK_MAX_AGE_SECONDS
 #     ago are re-read: one that answers shows again (`restored`).
@@ -464,7 +464,13 @@ async def refresh_mentions_content(
             not_attempted=len(mention_ids),
         )
     return await _refresh_targets(
-        repo, tenant_id=tenant_id, targets=targets, in_scope=len(targets), already_fresh=0
+        repo,
+        tenant_id=tenant_id,
+        targets=targets,
+        in_scope=len(targets),
+        already_fresh=0,
+        # The scope pass of the same click follows: an unproven candidate is left for it.
+        stamp_unproven=False,
     )
 
 
@@ -511,9 +517,15 @@ async def _refresh_targets(
     in_scope: int,
     already_fresh: int,
     recently_failed: int = 0,
+    stamp_unproven: bool = True,
 ) -> ContentRefreshReport:
     """Every repository call runs in a worker thread (`asyncio.to_thread`): this coroutine
-    runs on the Reflex backend's event loop, which serves every other session too."""
+    runs on the Reflex backend's event loop, which serves every other session too.
+
+    `stamp_unproven=False` (the visible pass only) leaves a deleted-comment candidate with
+    no comparable read unstamped, so the scope pass of the same click re-reads it next to
+    the connection's other comments. The scope pass stamps it like any failure, so it goes
+    to the back of the queue and never starves the other mentions."""
     clients: dict[UUID, tuple[HttpMentionedContentClient, str] | None] = {}
     clients_lock = asyncio.Lock()
     slots = asyncio.Semaphore(REFRESH_CONCURRENCY)
@@ -753,15 +765,18 @@ async def _refresh_targets(
         """A comment mention whose read answered 400/100 with no subcode. Removed only when
         another `mentioned_comment` read of the same connection succeeded (`comparable_read`)
         — proof that the request itself is valid and the refusal is about this comment —
-        and the account answers. Without that proof it is kept and NOT stamped as attempted:
-        the next pass (the scope run of the same click) may have it. A systematic refusal of
-        every comment read is never taken for a deletion. A stopped run (throttled, usage
-        pause) leaves it pending: nothing was decided."""
+        and the account answers. Without that proof it is kept: unstamped in the visible
+        pass (the scope pass of the same click may have the proof), stamped in the scope pass
+        (to the back of the queue, retried on a later click). A systematic refusal of every
+        comment read is never taken for a deletion. A stopped run (throttled, usage pause)
+        leaves it pending: nothing was decided."""
         read_started, failure = candidates[target.mention_id]
         async with slots:
             if stop.is_set():
                 return "not_attempted"
             if not await comparable_read(target):
+                if stamp_unproven:
+                    return await keep_as_failed(target, failure)
                 _LOGGER.info(
                     "mentions refresh: mention=%s kept, no comparable comment read yet "
                     "(%s http=%s code=%s subcode=%s)",
@@ -1006,17 +1021,6 @@ def summarize_mentions_for_tenant(
         version=current_mention_analysis_version(),
         query=query,
         as_of=as_of,
-    )
-
-
-def has_new_mentions_for_tenant(*, tenant_id: UUID, query: MentionQuery, after: datetime) -> bool:
-    """Whether any mention matching `query` arrived after the dashboard's snapshot — what
-    tells its tick to take new mentions in (QUA-152). Never shown as a count."""
-    return production_mentions_repository().has_received_after(
-        tenant_id=tenant_id,
-        version=current_mention_analysis_version(),
-        query=query,
-        after=after,
     )
 
 

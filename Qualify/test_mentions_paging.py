@@ -18,6 +18,7 @@ from .mentions_paging import (
     pages_label,
     refresh_outcome,
     refresh_still_running,
+    tick_takes_new_snapshot,
 )
 
 
@@ -42,29 +43,25 @@ def test_pages_label() -> None:
     assert pages_label(40) == "Total de 40 páginas"
 
 
-def test_a_tick_with_the_same_set_updates_rows_in_place() -> None:
-    assert decide_tick(snapshot_total=24, reread_total=24, has_new=False, page=1) == "update_rows"
+def test_only_the_first_page_takes_a_new_snapshot_on_a_tick() -> None:
+    """Page 1 is live (what arrived simply shows); a later page keeps its snapshot so
+    paging never repeats or skips a row (QUA-152)."""
+    assert tick_takes_new_snapshot(1) is True
+    assert tick_takes_new_snapshot(2) is False
 
 
-def test_new_mentions_on_page_one_are_taken_in_directly() -> None:
-    """No notice to click: the first page takes them in under a new snapshot (QUA-152)."""
-    assert decide_tick(snapshot_total=24, reread_total=24, has_new=True, page=1) == "take_new"
-    # Also when the set changed meanwhile: the new snapshot covers both.
-    assert decide_tick(snapshot_total=24, reread_total=23, has_new=True, page=1) == "take_new"
+def test_a_later_page_with_the_same_set_updates_rows_in_place() -> None:
+    assert decide_tick(snapshot_total=24, reread_total=24) == "update_rows"
 
 
-def test_new_mentions_never_shift_a_later_page() -> None:
-    """On page 2+ the snapshot is kept, so paging never repeats or skips a row; nothing
-    announces the new mentions — going back to page 1 takes them in."""
-    assert decide_tick(snapshot_total=24, reread_total=24, has_new=True, page=2) == "update_rows"
+def test_a_later_page_whose_set_changed_announces_it_and_never_swaps_rows() -> None:
+    assert decide_tick(snapshot_total=24, reread_total=23) == "announce_change"
+    assert decide_tick(snapshot_total=24, reread_total=25) == "announce_change"
 
 
-def test_a_tick_that_finds_a_different_set_announces_it_and_never_swaps_rows() -> None:
-    assert decide_tick(snapshot_total=24, reread_total=23, has_new=False, page=1) == (
-        "announce_change"
-    )
-    assert decide_tick(snapshot_total=24, reread_total=25, has_new=True, page=3) == (
-        "announce_change"
+def test_one_pending_mention_reads_in_the_singular() -> None:
+    assert _outcome(refreshed=29, not_attempted=1).notice == (
+        "Queda 1 por actualizar. Pulsa Actualizar para continuar."
     )
 
 

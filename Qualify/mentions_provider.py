@@ -35,7 +35,6 @@ from zoneinfo import ZoneInfo
 
 from qualify_api.mentions.composition import (
     ContentRefreshReport,
-    has_new_mentions_for_tenant,
     list_mentions_page_for_tenant,
     refresh_mentions_content,
     refresh_mentions_in_scope,
@@ -243,14 +242,6 @@ def load_page(
     )
 
 
-def has_new(tenant_id: UUID, *, query: MentionQuery, as_of: str) -> bool:
-    """Whether any mention matching `query` arrived after the snapshot — what tells the
-    tick to take new mentions in (never shown). Blocking DB call."""
-    if not as_of:
-        return False
-    return has_new_mentions_for_tenant(tenant_id=tenant_id, query=query, after=_parse(as_of))
-
-
 async def refresh_content(tenant_id: UUID, mention_ids: list[str]) -> ContentRefreshReport:
     """Re-read these (visible) mentions from their network right away and store what
     changed (QUA-152). A failed read keeps the stored data."""
@@ -285,7 +276,6 @@ __all__ = [
     "account_labels",
     "account_options",
     "format_moment",
-    "has_new",
     "load_page",
     "to_vm",
 ]

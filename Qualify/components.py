@@ -510,7 +510,7 @@ def notices() -> rx.Component:
                     "Actualizar",
                     size="2",
                     variant="soft",
-                    on_click=DashboardState.refresh_list,
+                    on_click=DashboardState.go_to_page("1"),
                 ),
                 align="center",
                 spacing="3",

@@ -379,19 +379,6 @@ class MentionsRepository(Protocol):
         overall cap: this pages through ALL stored mentions (QUA-152)."""
         ...
 
-    def has_received_after(
-        self,
-        *,
-        tenant_id: UUID,
-        version: AnalysisVersion,
-        query: MentionQuery,
-        after: datetime,
-    ) -> bool:
-        """Whether any mention matching `query` arrived after `after` — what tells the
-        dashboard's tick to take new mentions in. Reads at most one row; never changes the
-        paginated set."""
-        ...
-
     def summarize(
         self,
         *,
@@ -839,21 +826,6 @@ class MemoryMentionsRepository:
             ]
         )
 
-    def has_received_after(
-        self,
-        *,
-        tenant_id: UUID,
-        version: AnalysisVersion,
-        query: MentionQuery,
-        after: datetime,
-    ) -> bool:
-        return any(
-            m.received_at > after
-            for m, _label, _state in self._matching(
-                tenant_id=tenant_id, version=version, query=query
-            )
-        )
-
     def list_pending_for_analysis(
         self,
         *,
@@ -1285,23 +1257,6 @@ class PostgresMentionsRepository:
         inner, state_filter = self._filtered(tenant_id=tenant_id, version=version, query=query)
         with tenant_session(tenant_id) as session:
             return _sql_counts(session, inner, [inner.c.received_at <= as_of, *state_filter])
-
-    def has_received_after(
-        self,
-        *,
-        tenant_id: UUID,
-        version: AnalysisVersion,
-        query: MentionQuery,
-        after: datetime,
-    ) -> bool:
-        inner, state_filter = self._filtered(tenant_id=tenant_id, version=version, query=query)
-        with tenant_session(tenant_id) as session:
-            first = session.scalar(
-                select(inner.c.mention_id)
-                .where(inner.c.received_at > after, *state_filter)
-                .limit(1)
-            )
-            return first is not None
 
     def list_pending_for_analysis(
         self,
