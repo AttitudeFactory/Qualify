@@ -1,0 +1,4 @@
+{
+  "_fixture_note": "DOC-DERIVED, not recorded: shape read on 2026-10-14 from guides/mark-message-as-read, reference/business-profiles, conversational-components, qr-codes (shared {success:true}). Phone numbers and ids are placeholders. The smoke CLI (qualify_api.whatsapp.smoke) against the test number is what replaces this with a recorded payload.",
+  "success": true
+}

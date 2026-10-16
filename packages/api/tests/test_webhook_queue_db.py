@@ -394,3 +394,92 @@ def test_deleting_a_delivery_never_deletes_its_changes(owner, queue) -> None:
 
     row = _row(owner, "meta_webhook_events", event)
     assert row is not None and row.delivery_id is None and row.status == "pending"
+
+
+# --- replay of Instagram comments recorded before their handler existed ----------------
+
+
+def _settled_change(
+    owner: Engine,
+    *,
+    entry_id: str,
+    field: str = "comments",
+    object_: str = "instagram",
+    status: str = "unsupported",
+    last_error: str | None = None,
+    entry_time: int | None = None,
+) -> UUID:
+    event_id = uuid4()
+    received = NOW - timedelta(days=2)
+    with owner.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO meta_webhook_events (id, change_index, received_at, object, "
+                "entry_id, entry_time, field, value, dedup_key, status, attempts, "
+                "next_attempt_at, processed_at, last_error) VALUES (:id, 0, :at, :o, :e, :t, "
+                ":f, '{}'::jsonb, :k, :s, 1, :at, :at, :err)"
+            ),
+            {
+                "id": event_id,
+                "at": received,
+                "o": object_,
+                "e": entry_id,
+                "t": entry_time,
+                "f": field,
+                "k": f"t-{uuid4()}",
+                "s": status,
+                "err": last_error,
+            },
+        )
+    return event_id
+
+
+def test_requeue_takes_back_only_replayable_instagram_comments(owner, queue) -> None:
+    acct = _acct()
+    never_judged = _settled_change(owner, entry_id=acct)
+    no_username = _settled_change(owner, entry_id=acct, last_error="connection_username_unknown")
+    judged = _settled_change(owner, entry_id=acct, last_error="no_account_mention")
+    processed = _settled_change(owner, entry_id=acct, status="processed")
+    other_field = _settled_change(owner, entry_id=acct, field="story_insights")
+    other_object = _settled_change(owner, entry_id=acct, object_="page")
+    other_account = _settled_change(owner, entry_id=_acct())
+
+    assert queue.requeue_unsupported_comments(now=NOW, entry_id=acct) == 2  # dry run
+    assert _row(owner, "meta_webhook_events", never_judged).status == "unsupported"
+
+    assert queue.requeue_unsupported_comments(now=NOW, execute=True, entry_id=acct) == 2
+
+    for requeued in (never_judged, no_username):
+        row = _row(owner, "meta_webhook_events", requeued)
+        assert (row.status, row.attempts, row.last_error, row.processed_at) == (
+            "pending",
+            0,
+            None,
+            None,
+        )
+        assert row.next_attempt_at == NOW
+        assert row.received_at == NOW - timedelta(days=2)  # retention clock untouched
+    assert _row(owner, "meta_webhook_events", judged).status == "unsupported"
+    assert _row(owner, "meta_webhook_events", processed).status == "processed"
+    assert _row(owner, "meta_webhook_events", other_field).status == "unsupported"
+    assert _row(owner, "meta_webhook_events", other_object).status == "unsupported"
+    assert _row(owner, "meta_webhook_events", other_account).status == "unsupported"
+
+
+def test_a_second_requeue_finds_nothing_once_the_handler_has_judged(owner, queue) -> None:
+    acct = _acct()
+    event = _settled_change(owner, entry_id=acct, entry_time=959_860_800)
+    assert queue.requeue_unsupported_comments(now=NOW, execute=True, entry_id=acct) == 1
+
+    claimed = {c.id: c for c in queue.claim(worker_id="w-requeue", now=NOW, limit=50)}
+    assert event in claimed
+    assert claimed[event].entry_time == 959_860_800  # Meta's send time reaches the handler
+    assert queue.settle(
+        event_id=event,
+        worker_id="w-requeue",
+        now=NOW,
+        status="unsupported",
+        error="no_account_mention",
+    )
+
+    assert queue.requeue_unsupported_comments(now=NOW, execute=True, entry_id=acct) == 0

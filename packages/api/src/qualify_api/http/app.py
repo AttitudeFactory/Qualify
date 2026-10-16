@@ -140,12 +140,44 @@ def build_production_whatsapp_settings() -> whatsapp_routes.WhatsAppWebhookSetti
     return whatsapp_routes.WhatsAppWebhookSettings.from_env()
 
 
-def build_production_whatsapp_sink() -> whatsapp_routes.WhatsAppEventSink:
-    """WA-03: log identifier-only summaries. WA-07 swaps this for the persisting sink
-    behind the same callable type; the route does not change."""
-    from qualify_api.whatsapp.sink import log_only_sink  # noqa: PLC0415
+def build_production_whatsapp_chat_service() -> whatsapp_routes.ChatService:
+    """WA-10. Lazy like the publishing builders; the service holds no connection of its
+    own (each call opens `tenant_session`), so building it per request is cheap."""
+    from qualify_api.whatsapp.chats import production_chat_service  # noqa: PLC0415
 
-    return log_only_sink
+    return production_chat_service()
+
+
+def build_production_whatsapp_media_locator() -> whatsapp_routes.MediaLocator:
+    """0061: download-on-first-request into R2, served through the public-media token.
+    Lazy like `build_production_public_media_gate`: it needs the R2, Redis, public base URL
+    and Meta env, and an app booted without them should fail the media request loudly,
+    not the whole boot."""
+    from qualify_api.whatsapp.media import production_media_locator  # noqa: PLC0415
+
+    return production_media_locator()
+
+
+def build_production_whatsapp_metrics_service() -> whatsapp_routes.ConversationMetricsService:
+    """WA-17. Lazy like the chat service; per-call `tenant_session`, cheap to build."""
+    from qualify_api.whatsapp.metrics import production_metrics_service  # noqa: PLC0415
+
+    return production_metrics_service()
+
+
+def build_production_whatsapp_qr_prefix_source() -> whatsapp_routes.QrPrefixSource:
+    """WA-17: QR codes listed through the resolver-built client; Meta settings are read
+    only when a metrics request actually arrives."""
+    from qualify_api.whatsapp.metrics import production_qr_prefix_source  # noqa: PLC0415
+
+    return production_qr_prefix_source()
+
+
+def build_production_whatsapp_analytics_service() -> whatsapp_routes.WabaAnalyticsService:
+    """WA-21. Lazy for the same reason as the QR source: Meta settings at request time."""
+    from qualify_api.whatsapp.analytics import production_analytics_service  # noqa: PLC0415
+
+    return production_analytics_service()
 
 
 def build_production_leads_service() -> LeadIntakeService:
@@ -271,7 +303,26 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
         app.dependency_overrides[whatsapp_routes.get_webhook_settings] = (
             build_production_whatsapp_settings
         )
-        app.dependency_overrides[whatsapp_routes.get_event_sink] = build_production_whatsapp_sink
+        # The WhatsApp webhook records into the SAME intake log as the mentions one
+        # (QUA-147): one recorder, one queue, one worker for every Meta product.
+        app.dependency_overrides[whatsapp_routes.get_delivery_recorder] = (
+            build_production_delivery_recorder
+        )
+        app.dependency_overrides[whatsapp_routes.get_chat_service] = (
+            build_production_whatsapp_chat_service
+        )
+        app.dependency_overrides[whatsapp_routes.get_media_locator] = (
+            build_production_whatsapp_media_locator
+        )
+        app.dependency_overrides[whatsapp_routes.get_metrics_service] = (
+            build_production_whatsapp_metrics_service
+        )
+        app.dependency_overrides[whatsapp_routes.get_qr_prefix_source] = (
+            build_production_whatsapp_qr_prefix_source
+        )
+        app.dependency_overrides[whatsapp_routes.get_analytics_service] = (
+            build_production_whatsapp_analytics_service
+        )
         # C1: parsed at assembly so a malformed QUALIFY_DEV_PRINCIPALS fails the boot,
         # not the first request.
         app.dependency_overrides[deps.current_principal] = deps.build_dev_principal_dependency()

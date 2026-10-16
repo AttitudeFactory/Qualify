@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
+from qualify_api.mentions.repository import MentionQuery
 
 from .mentions_paging import ALL_ACCOUNTS, ALL_HISTORY, ALL_ORIGINS, ALL_SENTIMENTS, DEFAULT_PERIOD
 from .mentions_provider import MentionVM
@@ -133,15 +134,10 @@ def test_pager_vars() -> None:
     assert (state.has_prev, state.has_next) == (True, False)
 
 
-def test_new_mentions_notice_reads_from_the_count() -> None:
-    state = DashboardState()
-    assert state.new_mentions_notice == ""
-
-    state.new_count = 1
-    assert state.new_mentions_notice == "1 mención nueva"
-
-    state.new_count = 50
-    assert state.new_mentions_notice == "50+ menciones nuevas"
+def test_the_dashboard_has_no_new_mention_notice() -> None:
+    """A mention is not a message (QUA-152): no counter or notice of new arrivals exists."""
+    names = set(DashboardState.get_fields()) | set(DashboardState.computed_vars)
+    assert not {"new_count", "new_mentions_notice", "new_since"} & names
 
 
 def test_the_screen_opens_on_the_last_14_days() -> None:
@@ -187,7 +183,6 @@ def test_the_account_filter_shows_only_with_several_accounts() -> None:
 def _row(mention_id: str) -> MentionVM:
     return MentionVM(
         id=mention_id,
-        is_new=False,
         platform="instagram",
         kind="post",
         kind_label="Publicación",
@@ -232,7 +227,8 @@ def test_refresh_now_only_starts_the_run_and_hands_it_to_the_background() -> Non
     assert state.is_refreshing is True
     assert state.refresh_run == 4
     assert state.refresh_started_at > 0
-    assert state.refresh_tone == "info"
+    assert state.refresh_notice == ""  # nothing on the page: the button shows it loading
+    assert "Actualizando menciones" in str(result)  # the flow starts with a toast
     assert "refresh_scope" in str(result)  # carrying its run token
 
 
@@ -345,6 +341,45 @@ async def test_the_background_run_updates_the_visible_page_then_the_scope(
     assert state.is_refreshing is False
     assert state.refresh_notice == ""  # done is a toast, not a notice
     assert len(emitted) == 1
+    assert "Menciones actualizadas." in str(emitted[0])
+
+
+async def test_a_mention_deleted_on_the_network_never_leaves_a_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The case of the 2026-10-15 report: the visible pass finds one mention deleted, the
+    scope run then sees only the rest. The run is done — no "no se pudo leer" warning."""
+    _wire(
+        monkeypatch,
+        visible=_report(in_scope=2, refreshed=1, removed=1),
+        scope=_report(in_scope=1, refreshed=0, already_fresh=1),
+    )
+    state = _running_state()
+
+    emitted = await _run(state)
+
+    assert state.refresh_notice == ""
+    assert state.is_refreshing is False
+    assert len(emitted) == 1
+    assert "1 ya no está disponible y se quitó." in str(emitted[0])
+
+
+async def test_removals_are_announced_when_the_run_stops_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .mentions_paging import THROTTLED_NOTICE
+
+    _wire(
+        monkeypatch,
+        visible=_report(in_scope=2, refreshed=0, removed=1, rate_limited=True),
+        scope=_report(),
+    )
+    state = _running_state()
+
+    emitted = await _run(state)
+
+    assert state.refresh_notice == THROTTLED_NOTICE  # what to do, on the page
+    assert "1 ya no está disponible y se quitó." in str(emitted[0])  # what changed, a toast
 
 
 async def test_a_throttled_visible_pass_stops_the_run_and_says_so(
@@ -361,10 +396,10 @@ async def test_a_throttled_visible_pass_stops_the_run_and_says_so(
 
     assert "scope" not in seen  # never asked for the rest
     assert state.is_refreshing is False
-    assert (state.refresh_notice, state.refresh_tone) == (THROTTLED_NOTICE, "warn")
+    assert state.refresh_notice == THROTTLED_NOTICE
 
 
-async def test_a_pending_scope_stays_on_screen_as_a_warning(
+async def test_unread_mentions_are_only_counted_in_the_toast(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _wire(monkeypatch, visible=_report(), scope=_report(in_scope=30, refreshed=27, failed=3))
@@ -372,9 +407,9 @@ async def test_a_pending_scope_stays_on_screen_as_a_warning(
 
     emitted = await _run(state)
 
-    assert state.refresh_tone == "warn"
-    assert state.refresh_notice.startswith("Se actualizaron 27 de 30 menciones.")
-    assert emitted == []
+    assert state.refresh_notice == ""  # nothing to do about it: no on-page notice
+    assert len(emitted) == 1
+    assert "Se actualizaron 27 de 30 menciones." in str(emitted[0])
 
 
 async def test_a_failure_in_the_run_unlocks_the_button_and_says_so(
@@ -388,7 +423,7 @@ async def test_a_failure_in_the_run_unlocks_the_button_and_says_so(
     await _run(state)
 
     assert state.is_refreshing is False
-    assert (state.refresh_notice, state.refresh_tone) == (REFRESH_FAILED_NOTICE, "warn")
+    assert state.refresh_notice == REFRESH_FAILED_NOTICE
 
 
 async def test_a_superseded_run_never_writes_over_the_newer_one(
@@ -465,7 +500,7 @@ async def test_a_usage_pause_in_the_visible_pass_stops_the_run(
     await _run(state)
 
     assert "scope" not in seen
-    assert (state.refresh_notice, state.refresh_tone) == (USAGE_PAUSED_NOTICE, "warn")
+    assert state.refresh_notice == USAGE_PAUSED_NOTICE
     assert state.is_refreshing is False
 
 
@@ -481,7 +516,7 @@ async def test_a_session_without_tenant_says_so(monkeypatch: pytest.MonkeyPatch)
     await _run(state)
 
     assert "visible" not in seen
-    assert (state.refresh_notice, state.refresh_tone) == ("No hay una sesión activa.", "warn")
+    assert state.refresh_notice == "No hay una sesión activa."
     assert state.is_refreshing is False
 
 
@@ -530,3 +565,209 @@ async def test_a_failing_visible_pass_still_reloads_and_continues(
     assert seen["reads"] == 2  # the page is re-read anyway
     assert "scope" in seen  # and the scope still runs
     assert state.is_refreshing is False
+
+
+# --- a new mention appears, never announced as a message (QUA-152) ----------------------
+
+OLD_SNAPSHOT = "2026-10-14T00:00:00+00:00"
+NEW_SNAPSHOT = "2026-10-15T00:00:00+00:00"
+
+
+def _wire_tick(monkeypatch: pytest.MonkeyPatch, *, broken: bool = False) -> dict:
+    """The tick's ONE read, `load_page`: under the old snapshot it holds m1/m2, under a
+    new one also the webhook's m3. Records (page, as_of, since). `broken` makes it fail
+    once, like a database blip."""
+    from . import state as state_module
+    from .mentions_provider import MentionCountsVM, MentionPageVM
+
+    seen: dict = {"loads": [], "broken": broken}
+
+    async def fake_tenant(self: DashboardState) -> UUID:
+        return UUID("a0000000-0000-4000-8000-000000000001")
+
+    def fake_load_page(
+        tenant_id: UUID, *, query: MentionQuery, page: int, as_of: str, **kwargs: object
+    ) -> MentionPageVM:
+        if seen["broken"]:
+            seen["broken"] = False
+            raise RuntimeError("db blip")
+        seen["loads"].append((page, as_of, query.since))
+        ids = ["m1", "m2"] if as_of else ["m3", "m1", "m2"]
+        return MentionPageVM(
+            rows=[_row(i) for i in ids],
+            summary=MentionCountsVM(total=len(ids)),
+            filtered_total=len(ids),
+            page=page,
+            total_pages=2,
+            pages_label="",
+            as_of=as_of or NEW_SNAPSHOT,
+        )
+
+    monkeypatch.setattr(DashboardState, "_tenant", fake_tenant)
+    monkeypatch.setattr(state_module, "load_page", fake_load_page)
+    return seen
+
+
+STALE_WINDOW = (datetime.now(UTC) - timedelta(days=20)).isoformat()
+
+
+def _listing_state(page: int = 1) -> DashboardState:
+    """A listing opened long ago: its window start is 20 days back by now."""
+    state = DashboardState()
+    state.mentions = [_row("m1"), _row("m2")]
+    state.as_of = OLD_SNAPSHOT
+    state.snapshot_total = 2
+    state.page = page
+    state.total_pages = 2
+    state.since = STALE_WINDOW
+    return state
+
+
+def _days_back(since: datetime | None) -> float:
+    assert since is not None
+    return (datetime.now(UTC) - since).total_seconds() / 86400
+
+
+async def test_a_new_mention_appears_on_the_first_page_without_any_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _wire_tick(monkeypatch)
+    state = _listing_state()
+
+    await DashboardState.refresh_tick.fn(state)
+
+    assert [row.id for row in state.mentions] == ["m3", "m1", "m2"]
+    assert [(page, as_of) for page, as_of, _ in seen["loads"]] == [(1, "")]  # ONE read
+    assert (state.as_of, state.snapshot_total) == (NEW_SNAPSHOT, 3)
+    # Nothing presents it as a message that arrived, nor as "the list changed".
+    assert (state.refresh_notice, state.list_changed, state.refresh_error) == ("", False, "")
+
+
+async def test_the_first_page_tick_keeps_the_period_window_current(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review finding: a dashboard left open on page 1 must keep showing the selected
+    period (the last 14 days by default, or the chosen one), not a window that grows."""
+    seen = _wire_tick(monkeypatch)
+    state = _listing_state()  # opened when its window started 20 days ago
+
+    await DashboardState.refresh_tick.fn(state)
+
+    since = seen["loads"][0][2]
+    assert 13.99 < _days_back(since) < 14.01  # the default period, recomputed
+    assert state.since == since.isoformat()
+
+    state.period_filter = "Últimos 7 días"
+    await DashboardState.refresh_tick.fn(state)
+    assert 6.99 < _days_back(seen["loads"][1][2]) < 7.01
+
+    state.period_filter = ALL_HISTORY
+    await DashboardState.refresh_tick.fn(state)
+    assert seen["loads"][2][2] is None
+
+
+async def test_a_later_page_keeps_its_snapshot_and_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _wire_tick(monkeypatch)
+    state = _listing_state(page=2)
+
+    await DashboardState.refresh_tick.fn(state)
+
+    page, as_of, since = seen["loads"][0]
+    assert (page, as_of) == (2, OLD_SNAPSHOT)  # same snapshot: paging stays exact
+    assert since == datetime.fromisoformat(STALE_WINDOW)  # same listing, same window
+    assert (state.refresh_notice, state.list_changed) == ("", False)
+
+
+async def test_a_mention_committed_late_on_page_one_shows_without_the_change_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review finding: on page 1 a set that changed under the old snapshot (a mention
+    committed late) now simply shows too — never "La lista cambió"."""
+    _wire_tick(monkeypatch)
+    state = _listing_state()
+    state.snapshot_total = 1  # the old snapshot missed a row that committed late
+
+    await DashboardState.refresh_tick.fn(state)
+
+    assert state.list_changed is False
+    assert state.snapshot_total == 3
+
+
+async def test_a_later_page_whose_set_changed_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    _wire_tick(monkeypatch)
+    state = _listing_state(page=2)
+    state.snapshot_total = 5  # the same snapshot now holds a different set
+
+    await DashboardState.refresh_tick.fn(state)
+
+    assert state.list_changed is True
+    assert [row.id for row in state.mentions] == ["m1", "m2"]  # rows never swapped silently
+
+
+async def test_a_failed_tick_keeps_the_rows_and_the_next_tick_still_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review finding (QUA-152): a database blip during a tick must never become the
+    screen's load error, which also stopped every later tick."""
+    seen = _wire_tick(monkeypatch, broken=True)
+    state = _listing_state()
+
+    await DashboardState.refresh_tick.fn(state)
+
+    assert [row.id for row in state.mentions] == ["m1", "m2"]  # kept
+    assert state.mentions_error == ""  # the screen is not broken
+    assert state.refresh_error != ""  # a soft notice says it
+    assert (state.as_of, state.since) == (OLD_SNAPSHOT, STALE_WINDOW)  # nothing half-applied
+
+    await DashboardState.refresh_tick.fn(state)  # the next tick works
+
+    assert [row.id for row in state.mentions] == ["m3", "m1", "m2"]
+    assert state.refresh_error == ""
+    assert len(seen["loads"]) == 1
+
+
+@pytest.mark.parametrize("how", ["go_to_page", "prev_page"])
+async def test_going_back_to_page_one_shows_what_arrived_at_once(
+    monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    seen = _wire_tick(monkeypatch)
+    state = _listing_state(page=2)
+
+    if how == "go_to_page":
+        await DashboardState.go_to_page.fn(state, "1")
+    else:
+        await DashboardState.prev_page.fn(state)
+
+    assert [(page, as_of) for page, as_of, _ in seen["loads"]] == [(1, "")]
+    assert [row.id for row in state.mentions] == ["m3", "m1", "m2"]
+    assert 13.99 < _days_back(seen["loads"][0][2]) < 14.01  # window recomputed too
+
+
+async def test_moving_between_later_pages_keeps_the_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _wire_tick(monkeypatch)
+    state = _listing_state(page=1)
+
+    await DashboardState.go_to_page.fn(state, "2")
+
+    assert [(page, as_of) for page, as_of, _ in seen["loads"]] == [(2, OLD_SNAPSHOT)]
+
+
+def test_the_list_changed_button_goes_to_page_one_through_the_one_handler() -> None:
+    """Review finding: "Actualizar" and going to page 1 were two identical handlers."""
+    from .components import notices
+
+    assert not hasattr(DashboardState, "refresh_list")
+    assert "go_to_page" in str(notices())
+
+
+def test_the_notices_never_announce_a_new_mention() -> None:
+    from .components import notices
+
+    rendered = str(notices())
+
+    for announcement in ("menciones nuevas", "Ver nuevas", "bell", "new_mentions"):
+        assert announcement not in rendered
+    # The legitimate refresh outcomes are still there.
+    assert "list_changed" in rendered and "refresh_notice" in rendered

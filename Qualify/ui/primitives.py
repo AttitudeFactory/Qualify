@@ -15,7 +15,7 @@ it. The rules, in short (full text in docs/design-system.md §5):
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 import reflex as rx
 
@@ -539,6 +539,182 @@ def progress_panel(
         width="100%",
         padding="2.5rem 0",
         class_name="q-progress-panel",
+    )
+
+
+# ---------------------------------------------------------------------------------------
+# Choosing, uploading, showing, conversing (founder, 2026-10-09). Four recipes the
+# Liquid Glass batches found repeated on two or more screens AND present in the kit —
+# the plan's two conditions for a primitive (docs/plan-migracion-liquid-glass.md §0).
+# Each one is the system's only door to its material: `.q-choice-card`, `.q-dropzone`,
+# `.q-thumb`, `.q-bubble` in assets/qualify.css ("Shared primitives").
+# ---------------------------------------------------------------------------------------
+
+DropzoneVariant = Literal["zone", "compact", "tile", "bare"]
+
+
+def dropzone(
+    *children: rx.Component,
+    upload_id: str,
+    on_drop: Any,
+    accept: dict[str, list[str]] | None = None,
+    max_files: int | rx.Var = 1,
+    multiple: bool = False,
+    variant: DropzoneVariant = "zone",
+    tile_size: str | None = None,
+    **upload_props: Any,
+) -> rx.Component:
+    """Where files are dropped or picked: ``rx.upload.root`` wearing the kit's sunken,
+    dashed field (`.q-dropzone`), the accent when a file hovers it. The ONLY way a page
+    builds an upload — the styled ``rx.upload`` paints its own inline dashed border that
+    no class can override, which is the trap this hides; the guard forbids both forms
+    outside here.
+
+    ``variant``: ``"zone"`` is the big empty-state prompt; ``"compact"`` a one-line or
+    small well inside a form; ``"tile"`` a square that sits in a grid of selected media
+    (``tile_size`` sets its side); ``"bare"`` no material at all — a button or a whole
+    tile that is itself the hit area, the look drawn by its children. Any other
+    ``rx.upload`` prop (``max_size``, ``disabled``, ``on_drop_rejected``, ``padding``…)
+    passes through."""
+    classes = {
+        "zone": "q-dropzone",
+        "compact": "q-dropzone q-dropzone--compact",
+        "tile": "q-dropzone q-dropzone--tile",
+        "bare": "q-dropzone--bare",
+    }
+    style = dict(upload_props.pop("style", {}) or {})
+    if tile_size is not None:
+        style["--q-dropzone-tile"] = tile_size
+    return rx.upload.root(
+        *children,
+        id=upload_id,
+        accept=accept,
+        max_files=max_files,
+        multiple=multiple,
+        on_drop=on_drop,
+        class_name=classes[variant],
+        **({"style": style} if style else {}),
+        **upload_props,
+    )
+
+
+def choice_card(
+    *children: rx.Component,
+    selected: rx.Var[bool] | bool,
+    on_select: Any = None,
+    role: Literal["radio", "checkbox"] = "radio",
+    disabled: rx.Var[bool] | bool = False,
+    padding: str = "1rem 1.25rem",
+    **props: Any,
+) -> rx.Component:
+    """A card that is a choice: a real ``<button>`` (§8 — never a box with ``on_click``)
+    on the card material, a 2px accent ring plus wash when ``selected``, the kit's lift
+    under the pointer. ``role="radio"`` for one-of-many (the usual), ``"checkbox"`` for
+    any-of-many; either way the state is also in ``aria-checked``, so a screen reader
+    hears it. ``disabled`` draws it dashed and quiet and really disables the button
+    (native ``disabled``: no click, no Enter/Space, nothing for ``on_select`` to hear),
+    with ``aria-disabled`` alongside for readers; a reason belongs in the children,
+    next to the title. Put the check mark the kit draws
+    in the corner with ``choice_card_check()`` when the ring alone would be too quiet."""
+    is_disabled = disabled
+    on = rx.cond(selected, "q-choice-card q-choice-card--on", "q-choice-card")
+    class_name = (
+        rx.cond(is_disabled, "q-choice-card q-choice-card--off", on)
+        if isinstance(is_disabled, rx.Var)
+        else ("q-choice-card q-choice-card--off" if is_disabled else on)
+    )
+    aria_disabled = (
+        rx.cond(is_disabled, "true", "false")
+        if isinstance(is_disabled, rx.Var)
+        else ("true" if is_disabled else "false")
+    )
+    return rx.el.button(
+        *children,
+        type="button",
+        role=role,
+        aria_checked=rx.cond(selected, "true", "false"),
+        aria_disabled=aria_disabled,
+        disabled=is_disabled,
+        on_click=on_select,
+        class_name=class_name,
+        padding=padding,
+        **props,
+    )
+
+
+def choice_card_check(size: str = "1.15rem") -> rx.Component:
+    """The solid accent check in a selected `choice_card`'s corner: colour + shape +
+    the word in the title, never the ring alone (P1). Render it under ``rx.cond``."""
+    return rx.box(
+        rx.icon("check", size=12),
+        class_name="q-choice-card-check",
+        width=size,
+        height=size,
+        min_width=size,
+        aria_hidden="true",
+    )
+
+
+def media_thumb(
+    src: rx.Var[str] | str,
+    *,
+    size: str | None = "72px",
+    width: str | None = None,
+    height: str | None = None,
+    round: bool = False,
+    icon: str = "image",
+    icon_size: int = 26,
+    alt: str | rx.Var[str] = "",
+    fit: str = "cover",
+    has: rx.Var[bool] | None = None,
+    **img_props: Any,
+) -> rx.Component:
+    """A picture in the system's frame (`.q-thumb`: control material, hairline, control
+    radius) — or, when there is none, the same frame holding ``icon``, so a list never
+    shows a hole or a broken-image glyph. ``round=True`` is the avatar: a circle, the
+    kit's `.lq-avatar`. ``size`` sets a square; ``width``/``height`` override it (a
+    full-width ``height``-only thumb is the card-top picture). ``has`` replaces the
+    default emptiness test (``src != ""``) when the VM already says so. ``alt`` defaults
+    to ``""``: the thumb is decorative next to its own caption; pass a real one when it
+    is the only thing that names the content. ``img_props`` reach the ``<img>``
+    (``custom_attrs`` for ``referrerpolicy``/``draggable``, ``object_position``…)."""
+    box_w = width or size
+    box_h = height or size
+    present = has if has is not None else (src != "" if isinstance(src, rx.Var) else bool(src))
+    classes = "q-thumb q-thumb--round" if round else "q-thumb"
+    frame = {"width": box_w, "height": box_h, "min_width": box_w}
+    picture = rx.image(
+        src=src,
+        alt=alt,
+        object_fit=fit,
+        class_name=classes,
+        **frame,
+        **img_props,
+    )
+    empty = rx.center(
+        rx.icon(icon, size=icon_size),
+        class_name=f"{classes} q-thumb--empty",
+        aria_hidden="true",
+        **frame,
+    )
+    return rx.cond(present, picture, empty)
+
+
+def chat_bubble(
+    *children: rx.Component,
+    direction: Literal["out", "in"] = "out",
+    meta: rx.Component | None = None,
+    **props: Any,
+) -> rx.Component:
+    """One message in a conversation, the kit's chat bubble: ``"out"`` is what we say
+    (the accent wash, tail at the bottom left — the inbox's drafted replies), ``"in"``
+    what the other side said (the control material, tail at the bottom right).
+    ``meta`` (a time, a status pill) sits under the text, inside the bubble."""
+    return rx.box(
+        *children,
+        *([meta] if meta is not None else []),
+        class_name=f"q-bubble q-bubble--{direction}",
+        **props,
     )
 
 

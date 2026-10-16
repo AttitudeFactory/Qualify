@@ -94,17 +94,20 @@ def production_revoke_service() -> RevokeService:
     )
 
 
-def start_connect(*, tenant_id: UUID, brand_id: UUID | None, user_id: UUID) -> str:
+def start_connect(
+    *, tenant_id: UUID, brand_id: UUID | None, user_id: UUID, rerequest: bool = False
+) -> str:
     """Register a one-shot `state` and return the Meta authorization URL to redirect to.
 
     Keyword-only on purpose: three same-typed UUIDs in a row is precisely the signature
     where a positional swap compiles, type-checks, and silently connects the wrong tenant.
 
-    Requires Redis (the `state` jti lives there) and Postgres is untouched until the
-    callback. Blocking — call it off the event loop.
+    `rerequest` is the retry after `page_access_required` (QUA-202): Meta shows the Page
+    picker again instead of skipping it. Requires Redis (the `state` jti lives there) and
+    Postgres is untouched until the callback. Blocking — call it off the event loop.
     """
     return production_connect_service().start_connect(
-        tenant_id=tenant_id, brand_id=brand_id, user_id=user_id
+        tenant_id=tenant_id, brand_id=brand_id, user_id=user_id, rerequest=rerequest
     )
 
 

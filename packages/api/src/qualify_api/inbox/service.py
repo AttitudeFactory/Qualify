@@ -51,6 +51,7 @@ from typing import Final, Protocol
 from uuid import UUID
 
 import httpx
+from qualify_shared.social.graph_errors import is_missing_object_error
 from qualify_shared.social.ig_shapes import COMMENTS_EDGE_PERMISSIONS
 
 from qualify_api.inbox.client import CommentsClient, CommentsReadError
@@ -250,7 +251,11 @@ def _is_missing_media_error(exc: CommentsReadError | MediaReadError) -> bool:
     confirming this is not a guess. Same posture `CommentsAuthExpired`'s 401/190 already
     has (verified live 2026-08-14 per QUA-90's docstring).
     """
-    return exc.http_status == 400 and exc.platform_code == 100 and exc.platform_subcode == 33
+    return is_missing_object_error(
+        http_status=exc.http_status,
+        platform_code=exc.platform_code,
+        platform_subcode=exc.platform_subcode,
+    )
 
 
 def _is_auth_error(exc: CommentsReadError | MediaReadError) -> bool:

@@ -45,6 +45,12 @@ class AuthenticatedClient(Protocol):
 
     async def post(self, url: str, **kwargs: Any) -> httpx.Response: ...
 
+    async def delete(self, url: str, **kwargs: Any) -> httpx.Response:
+        """Added for WA-06 (`DELETE /{PHONE_NUMBER_ID}/message_qrdls/{code}`) — the first
+        Graph call in this codebase that is a real DELETE. Same discipline as the other two
+        verbs: the credential rides as a header, never as a return value."""
+        ...
+
 
 class CredentialResolver(Protocol):
     """`scheme` has NO default, deliberately (R12).
@@ -84,6 +90,9 @@ class _InjectedAuthClient:
 
     async def post(self, url: str, **kwargs: Any) -> httpx.Response:
         return await self._client.post(url, **kwargs)
+
+    async def delete(self, url: str, **kwargs: Any) -> httpx.Response:
+        return await self._client.delete(url, **kwargs)
 
     async def aclose(self) -> None:
         await self._client.aclose()

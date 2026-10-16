@@ -1,7 +1,8 @@
 """HTTP/HMAC contract for the WhatsApp webhook receiver (WA-03).
 
-Fully offline: no network, no Postgres. The sink is a fake that records what it was
-handed. Mirrors `test_mentions_webhook.py`'s harness shape.
+Fully offline: no network, no Postgres. The delivery recorder is a fake here —
+`test_webhook_receiver_db.py` covers `record_delivery` itself against real Postgres (it is
+the same recorder the mentions route uses). Mirrors `test_mentions_webhook.py`'s harness.
 """
 
 from __future__ import annotations
@@ -9,21 +10,23 @@ from __future__ import annotations
 import hmac
 import json
 from hashlib import sha256
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
-from qualify_shared.social.wa_shapes import WANotification
 
 from qualify_api.http import whatsapp_routes
 from qualify_api.http.app import create_app
+from qualify_api.webhooks.envelope import MAX_BODY_BYTES
+from qualify_api.webhooks.receiver import RecordedDelivery, record_delivery
 from qualify_api.whatsapp.config import WhatsAppWebhookSettings
-from qualify_api.whatsapp.sink import log_only_sink
 
 APP_SECRET = "test-app-secret"
 VERIFY_TOKEN = "test-wa-verify-token"
 
 TEST_WABA_ID = "2338576026889338"
 TEST_PHONE_NUMBER_ID = "1393787420477981"
+DELIVERY_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 
 
 def _sign(body: bytes, *, secret: str = APP_SECRET) -> str:
@@ -31,17 +34,28 @@ def _sign(body: bytes, *, secret: str = APP_SECRET) -> str:
 
 
 class Harness:
-    def __init__(self) -> None:
-        self.received: list[tuple[WANotification, bytes]] = []
+    """The app with a fake recorder that remembers every call (and can be made to fail)."""
 
-        async def fake_sink(*, notification: WANotification, raw_body: bytes) -> None:
-            self.received.append((notification, raw_body))
+    def __init__(self, *, recorder_raises: Exception | None = None) -> None:
+        self.recorded: list[tuple[bytes, str]] = []
+
+        def fake_recorder(*, body: bytes, signature_header: str) -> RecordedDelivery:
+            if recorder_raises is not None:
+                raise recorder_raises
+            self.recorded.append((body, signature_header))
+            return RecordedDelivery(
+                delivery_id=DELIVERY_ID,
+                duplicate_delivery=False,
+                parse_status="parsed",
+                changes_total=1,
+                changes_new=1,
+            )
 
         app = create_app(configure_production=False)
         app.dependency_overrides[whatsapp_routes.get_webhook_settings] = lambda: (
             WhatsAppWebhookSettings(app_secret=APP_SECRET, verify_token=VERIFY_TOKEN)
         )
-        app.dependency_overrides[whatsapp_routes.get_event_sink] = lambda: fake_sink
+        app.dependency_overrides[whatsapp_routes.get_delivery_recorder] = lambda: fake_recorder
         self.http = TestClient(app)
 
     def post(self, body: bytes, *, headers: dict[str, str]):  # noqa: ANN201
@@ -53,8 +67,8 @@ class Harness:
 
 
 def _status_body(*, status: str = "delivered") -> bytes:
-    """The live 2026-10-14 shape (see `packages/shared/tests/fixtures/
-    whatsapp_status_read_live_2026-10-14.json`), trimmed to what the route asserts."""
+    """The live 2026-10-14 shape (`packages/shared/tests/fixtures/
+    whatsapp_status_read_live_2026-10-14.json`), trimmed to what the route sees."""
     payload = {
         "object": "whatsapp_business_account",
         "entry": [
@@ -143,46 +157,40 @@ def test_get_missing_verify_token_is_422_not_a_silent_pass() -> None:
 
 
 # ---------------------------------------------------------------------------
-# POST signature validation
+# POST: a refused body is never recorded
 # ---------------------------------------------------------------------------
 
 
-def test_post_with_valid_signature_reaches_the_sink_with_the_parsed_notification() -> None:
+def test_post_with_valid_signature_is_recorded_then_200() -> None:
     harness = Harness()
     body = _status_body(status="delivered")
 
     response = harness.post(body, headers={"X-Hub-Signature-256": _sign(body)})
 
     assert response.status_code == 200
-    ((notification, raw_body),) = harness.received
-    assert raw_body == body  # the sink gets the exact signed bytes, not a re-serialization
-    (entry,) = notification.entry
-    assert entry.id == TEST_WABA_ID
-    value = entry.changes[0].messages_value()
-    assert value is not None
-    assert value.metadata.phone_number_id == TEST_PHONE_NUMBER_ID
-    assert [s.status for s in value.statuses] == ["delivered"]
+    # The recorder gets the exact signed bytes and the header, never a re-serialization.
+    assert harness.recorded == [(body, _sign(body))]
 
 
-def test_post_with_missing_signature_is_403_and_never_reaches_the_sink() -> None:
+def test_post_with_missing_signature_is_403_and_nothing_is_recorded() -> None:
     harness = Harness()
 
     response = harness.post(_status_body(), headers={})
 
     assert response.status_code == 403
-    assert harness.received == []
+    assert harness.recorded == []
 
 
-def test_post_with_invalid_signature_is_403() -> None:
+def test_post_with_invalid_signature_is_403_and_nothing_is_recorded() -> None:
     harness = Harness()
 
     response = harness.post(_status_body(), headers={"X-Hub-Signature-256": "sha256=" + "0" * 64})
 
     assert response.status_code == 403
-    assert harness.received == []
+    assert harness.recorded == []
 
 
-def test_post_signed_with_the_wrong_secret_is_403() -> None:
+def test_post_signed_with_the_wrong_secret_is_403_and_nothing_is_recorded() -> None:
     harness = Harness()
     body = _status_body()
 
@@ -191,7 +199,7 @@ def test_post_signed_with_the_wrong_secret_is_403() -> None:
     )
 
     assert response.status_code == 403
-    assert harness.received == []
+    assert harness.recorded == []
 
 
 def test_post_with_a_tampered_body_is_403() -> None:
@@ -204,10 +212,21 @@ def test_post_with_a_tampered_body_is_403() -> None:
     response = harness.post(tampered, headers={"X-Hub-Signature-256": _sign(signed)})
 
     assert response.status_code == 403
+    assert harness.recorded == []
+
+
+def test_post_over_the_size_limit_is_413_and_nothing_is_recorded() -> None:
+    harness = Harness()
+    body = b"{" + b" " * MAX_BODY_BYTES + b"}"
+
+    response = harness.post(body, headers={"X-Hub-Signature-256": _sign(body)})
+
+    assert response.status_code == 413
+    assert harness.recorded == []
 
 
 # ---------------------------------------------------------------------------
-# Past HMAC: always 200, sink only for a real WhatsApp notification
+# Past the signature: record first, then 200 — the recorder decides what a body IS
 # ---------------------------------------------------------------------------
 
 
@@ -216,79 +235,48 @@ def test_post_with_a_tampered_body_is_403() -> None:
     [
         b"not json at all",
         json.dumps({"object": "instagram", "entry": []}).encode(),
-        json.dumps({"object": "whatsapp_business_account"}).encode()[:-1],  # truncated
         json.dumps(["a", "list"]).encode(),
     ],
-    ids=["not-json", "instagram-object", "truncated", "wrong-top-level-type"],
+    ids=["not-json", "instagram-object", "wrong-top-level-type"],
 )
-def test_post_signed_but_not_a_whatsapp_notification_is_200_and_skips_the_sink(
-    body: bytes,
-) -> None:
+def test_post_signed_but_odd_bodies_are_still_recorded_then_200(body: bytes) -> None:
+    """The route does not interpret the body: an unparseable one is recorded as such
+    (a retry would not fix it) and a non-WhatsApp envelope is the processor's call."""
     harness = Harness()
 
     response = harness.post(body, headers={"X-Hub-Signature-256": _sign(body)})
 
     assert response.status_code == 200
-    assert harness.received == []
+    assert harness.recorded == [(body, _sign(body))]
 
 
-def test_post_with_an_unknown_field_still_parses_and_reaches_the_sink() -> None:
-    """`account_update` etc. have a different `value` shape; the receiver must accept
-    them (Meta would otherwise retry for 7 days) and let the sink decide."""
-    harness = Harness()
-    body = json.dumps(
-        {
-            "object": "whatsapp_business_account",
-            "entry": [
-                {
-                    "id": TEST_WABA_ID,
-                    "changes": [{"field": "account_update", "value": {"event": "VERIFIED"}}],
-                }
-            ],
-        }
-    ).encode()
+def test_post_whose_record_fails_is_500_so_meta_retries() -> None:
+    harness = Harness(recorder_raises=RuntimeError("database unavailable"))
+    body = _status_body()
 
     response = harness.post(body, headers={"X-Hub-Signature-256": _sign(body)})
 
-    assert response.status_code == 200
-    ((notification, _),) = harness.received
-    assert notification.entry[0].changes[0].field == "account_update"
-    assert notification.entry[0].changes[0].messages_value() is None
+    assert response.status_code == 500
 
 
 # ---------------------------------------------------------------------------
-# The production sink (WA-03's own acceptance: it logs identifiers, nothing else)
+# Production wiring
 # ---------------------------------------------------------------------------
 
 
-async def test_log_only_sink_logs_identifiers_and_never_the_recipient(
-    caplog: pytest.LogCaptureFixture,
+def test_production_app_wires_settings_and_the_shared_recorder(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from qualify_shared.social.wa_shapes import parse_whatsapp_notification
-
-    body = _status_body(status="read")
-    notification = parse_whatsapp_notification(json.loads(body))
-
-    with caplog.at_level("INFO", logger="qualify_api.whatsapp.sink"):
-        await log_only_sink(notification=notification, raw_body=body)
-
-    (record,) = caplog.records
-    assert TEST_WABA_ID in record.getMessage()
-    assert TEST_PHONE_NUMBER_ID in record.getMessage()
-    assert "statuses=read" in record.getMessage()
-    assert "584240000000" not in record.getMessage()  # the recipient's number never logs
-
-
-def test_production_app_wires_settings_and_sink(monkeypatch: pytest.MonkeyPatch) -> None:
     """`create_app()` (production mode) must override both dependencies — an app that
     forgot one would 500 on Meta's first call, which the panel reports as a failed
-    verification with no useful detail."""
+    verification with no useful detail. The recorder is the SAME `record_delivery` the
+    mentions route uses: one intake log for every Meta product."""
     monkeypatch.setenv("QUALIFY_META_APP_SECRET", APP_SECRET)
     monkeypatch.setenv("QUALIFY_WA_WEBHOOK_VERIFY_TOKEN", VERIFY_TOKEN)
     app = create_app(configure_production=True)
 
     assert whatsapp_routes.get_webhook_settings in app.dependency_overrides
-    assert whatsapp_routes.get_event_sink in app.dependency_overrides
+    assert whatsapp_routes.get_delivery_recorder in app.dependency_overrides
     settings = app.dependency_overrides[whatsapp_routes.get_webhook_settings]()
     assert settings == WhatsAppWebhookSettings(app_secret=APP_SECRET, verify_token=VERIFY_TOKEN)
-    assert app.dependency_overrides[whatsapp_routes.get_event_sink]() is log_only_sink
+    assert app.dependency_overrides[whatsapp_routes.get_delivery_recorder]() is record_delivery

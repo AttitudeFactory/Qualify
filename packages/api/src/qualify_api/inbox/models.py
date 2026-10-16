@@ -98,7 +98,8 @@ class Thread(Base):
             ["social_connections.id", "social_connections.tenant_id"],
             name="fk_thread_conn_tenant",
         ),
-        CheckConstraint("channel IN ('comment','dm')", name="ck_thread_channel"),
+        # 0057 (WA-04): a WhatsApp chat is a thread of this same table.
+        CheckConstraint("channel IN ('comment','dm','whatsapp')", name="ck_thread_channel"),
         CheckConstraint("status IN ('open','closed')", name="ck_thread_status"),
         Index("ix_thread_tenant", "tenant_id"),
         Index("ix_thread_inbox_order", "tenant_id", "last_message_at"),
@@ -136,6 +137,15 @@ class Message(Base):
             name="fk_message_conn_tenant",
         ),
         CheckConstraint("direction IN ('inbound','outbound')", name="ck_message_direction"),
+        CheckConstraint(
+            "delivery_status IS NULL OR delivery_status IN ('sent','delivered','read','failed')",
+            name="ck_message_delivery_status",
+        ),
+        CheckConstraint(
+            "media_type IS NULL OR media_type IN ('image','audio','video','document',"
+            "'sticker','location','contacts','interactive','button','order','other')",
+            name="ck_message_media_type",
+        ),
         Index("ix_message_tenant", "tenant_id"),
         Index("ix_message_thread", "thread_id", "posted_at"),
     )
@@ -165,6 +175,19 @@ class Message(Base):
     # Cleared automatically if Meta shows the comment again (see that method's docstring
     # for why a restore, not a real delete-then-undelete, is the likely explanation).
     deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # 0057 (WA-04): the receipt Meta sends back for an OUTBOUND WhatsApp message
+    # (`statuses[]` in the webhook, keyed by `wamid` = `external_message_id`). NULL on
+    # every inbound message, and on an outbound one until the first receipt arrives.
+    delivery_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    delivery_error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 0061: inbound WhatsApp media. `media_type` is the WhatsApp message type for every
+    # non-text inbound message (CHECKed list, `other` for anything new); `media_id` and
+    # `media_mime` are Meta's for the downloadable types; `media_object_key` is the R2
+    # copy, filled lazily by `whatsapp.media.CapturingMediaLocator` on first request.
+    media_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_mime: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class InboxMetaCallLog(Base):

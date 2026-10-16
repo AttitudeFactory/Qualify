@@ -10,11 +10,18 @@ from __future__ import annotations
 import reflex as rx
 
 from .connections_state import ConnectionsState
-from .connections_vm import CapabilityVM, ConnectionVM
+from .connections_vm import (
+    CONNECT_REQUIREMENTS,
+    WHATSAPP_RECONNECT_HINT,
+    CapabilityVM,
+    ConnectionVM,
+    ConnectRequirementVM,
+)
 from .ui import (
     app_shell,
     callout,
     card,
+    drawer,
     empty_state,
     page_body,
     page_header,
@@ -120,13 +127,29 @@ def _disabled_capability(cap: CapabilityVM) -> rx.Component:
     )
 
 
-def degraded_banner() -> rx.Component:
+def _whatsapp_reconnect_hint(tone: str) -> rx.Component:
+    """WA-05: the banner body for a WhatsApp card. No button — the Instagram
+    «Reconectar» starts the OAuth flow, which is the wrong door for a number connected
+    by an administrator with a system-user token (QUA-203 is the self-service story)."""
+    return callout(rx.text(WHATSAPP_RECONNECT_HINT, size="2"), tone)
+
+
+def degraded_banner(conn: ConnectionVM) -> rx.Component:
     """Actionable degraded state — a Reconnect BUTTON, not a decorative icon.
 
-    Takes no connection: reconnecting re-runs the C-04 authorization flow for the
-    tenant, and the grant that comes back is matched to the existing row by account,
-    not by an id the button carries.
+    The button carries no connection id: reconnecting re-runs the C-04 authorization
+    flow for the tenant, and the grant that comes back is matched to the existing row
+    by account. `conn` is read only for its platform (WA-05): a WhatsApp card gets the
+    administrative hint instead of the button.
     """
+    return rx.cond(
+        conn.platform == "whatsapp",
+        _whatsapp_reconnect_hint("warn"),
+        _instagram_degraded_banner(),
+    )
+
+
+def _instagram_degraded_banner() -> rx.Component:
     # The system's callout in the `warn` tone (card material in the tone's hairline).
     # The button is `soft` in the same tone: a card's own action, never the page's one
     # solid (P3) — several degraded cards would otherwise each claim it.
@@ -155,7 +178,15 @@ def degraded_banner() -> rx.Component:
     )
 
 
-def revoked_banner() -> rx.Component:
+def revoked_banner(conn: ConnectionVM) -> rx.Component:
+    return rx.cond(
+        conn.platform == "whatsapp",
+        _whatsapp_reconnect_hint("error"),
+        _instagram_revoked_banner(),
+    )
+
+
+def _instagram_revoked_banner() -> rx.Component:
     return callout(
         rx.hstack(
             rx.text(
@@ -269,8 +300,8 @@ def connection_card(conn: ConnectionVM) -> rx.Component:
             # same time as claiming the connection is `degraded`.
             _data_access_badge(conn.data_access_state, conn.data_access_message),
             # Actionable banners per state.
-            rx.cond(conn.status == "degraded", degraded_banner(), rx.fragment()),
-            rx.cond(conn.status == "revoked", revoked_banner(), rx.fragment()),
+            rx.cond(conn.status == "degraded", degraded_banner(conn), rx.fragment()),
+            rx.cond(conn.status == "revoked", revoked_banner(conn), rx.fragment()),
             # Granted scopes.
             rx.cond(
                 conn.granted_scopes.length() > 0,
@@ -344,10 +375,24 @@ def _empty_state() -> rx.Component:
     )
 
 
+def help_button(size: str = "2") -> rx.Component:
+    """«Pedir ayuda 1:1» (QUA-202) — the same button wherever it appears (header,
+    checklist, guided panel), always `soft`/neutral: it is never the page's one solid."""
+    return rx.button(
+        rx.icon("life-buoy", size=T.ICON_SM if size == "1" else 15),
+        "Pedir ayuda 1:1",
+        on_click=ConnectionsState.open_support,
+        variant="soft",
+        size=size,
+        **T.tone_scheme("neutral"),
+    )
+
+
 def connections_topbar() -> rx.Component:
     return page_header(
         "Cuentas conectadas",
         "Revisa que tus redes sociales estén conectadas y con los permisos que Qualify necesita.",
+        help_button(),
     )
 
 
@@ -369,15 +414,328 @@ def _connect_notice() -> rx.Component:
     )
 
 
+# -- QUA-202: guided connection ----------------------------------------------------------
+
+
+def _step_number(number: rx.Var | str, tone: str) -> rx.Component:
+    """A small numbered disc. The number is the ordering cue, the text is the content —
+    never a number alone (§8), never a colour alone."""
+    return rx.badge(
+        number,
+        radius="full",
+        variant="solid",
+        size="1",
+        min_width="1.5rem",
+        justify_content="center",
+        flex_shrink="0",
+        class_name="q-nums",
+        **T.tone_scheme(tone),
+    )
+
+
+def _step_row(step: rx.Var[str], index: rx.Var[int]) -> rx.Component:
+    return rx.hstack(
+        _step_number(index + 1, "warn"),
+        rx.text(step, size="2"),
+        spacing="3",
+        align="start",
+        width="100%",
+    )
+
+
+def connect_guidance_panel() -> rx.Component:
+    """The dead-end result as a path, not a sentence (§6.3: the fix lives inside the
+    callout). What happened, the steps for exactly this case, and the two actions —
+    «Volver a conectar» (with `rerequest` when the Page picker must come back) and
+    «Pedir ayuda 1:1»."""
+    return callout(
+        rx.vstack(
+            rx.heading(ConnectionsState.guidance_title, size="4", as_="h2"),
+            rx.text(ConnectionsState.guidance_summary, size="2"),
+            rx.vstack(
+                rx.foreach(ConnectionsState.guidance_steps, _step_row),
+                spacing="2",
+                width="100%",
+                margin_top="0.25rem",
+            ),
+            rx.hstack(
+                rx.button(
+                    rx.icon("refresh-cw", size=15),
+                    "Volver a conectar",
+                    on_click=ConnectionsState.retry_connect,
+                    variant="soft",
+                    size="2",
+                    **T.tone_scheme("warn"),
+                ),
+                help_button(),
+                spacing="3",
+                wrap="wrap",
+                margin_top="0.25rem",
+            ),
+            spacing="3",
+            align_items="start",
+            width="100%",
+        ),
+        "warn",
+        icon="triangle-alert",
+    )
+
+
+def _requirement_row(requirement: ConnectRequirementVM, number: int) -> rx.Component:
+    """One of the three pre-flight requirements, with its steps behind «¿Cómo lo hago?».
+    Static content, dynamic open/closed: `CONNECT_REQUIREMENTS` is a Python list, so the
+    rows are built at compile time and only the toggle lives in state."""
+    is_open = ConnectionsState.expanded_requirement == requirement.key
+    steps = rx.vstack(
+        *[
+            rx.hstack(
+                _step_number(str(i + 1), "accent"),
+                rx.text(step, size="2"),
+                spacing="3",
+                align="start",
+                width="100%",
+            )
+            for i, step in enumerate(requirement.steps)
+        ],
+        spacing="2",
+        width="100%",
+        padding_top="0.5rem",
+    )
+    return rx.vstack(
+        rx.hstack(
+            _step_number(str(number), "accent"),
+            rx.vstack(
+                rx.text(requirement.title, size="3", weight="medium", color=T.TEXT_STRONG),
+                rx.text(requirement.summary, size="2", color=T.TEXT_MUTED),
+                spacing="0",
+                align_items="start",
+                flex="1",
+            ),
+            rx.button(
+                rx.icon(rx.cond(is_open, "chevron-up", "chevron-down"), size=T.ICON_SM),
+                rx.cond(is_open, "Ocultar", "¿Cómo lo hago?"),
+                on_click=ConnectionsState.toggle_requirement(requirement.key),
+                variant="ghost",
+                size="1",
+                color_scheme="gray",
+                aria_expanded=is_open,
+                flex_shrink="0",
+            ),
+            spacing="3",
+            align="start",
+            width="100%",
+        ),
+        rx.cond(is_open, steps, rx.fragment()),
+        spacing="0",
+        align_items="start",
+        width="100%",
+    )
+
+
+def connect_requirements_card() -> rx.Component:
+    """«Antes de conectar»: the three things the account needs, each with its steps in
+    the Instagram app. A pre-flight hint (R4a), not a check — the screen cannot verify
+    any of it, and the copy never pretends to."""
+    rows: list[rx.Component] = []
+    for number, requirement in enumerate(CONNECT_REQUIREMENTS, start=1):
+        if number > 1:
+            rows.append(rx.divider())
+        rows.append(_requirement_row(requirement, number))
+    return card(
+        rx.vstack(
+            rx.hstack(
+                rx.icon("list-checks", size=T.ICON_MD, color=T.tone_color("accent", 9)),
+                rx.vstack(
+                    rx.heading("Antes de conectar", size="4", as_="h2"),
+                    rx.text(
+                        "Tu cuenta de Instagram necesita tres cosas. Revisarlas toma dos "
+                        "minutos y evita que la conexión falle.",
+                        size="2",
+                        color=T.TEXT_MUTED,
+                    ),
+                    spacing="0",
+                    align_items="start",
+                    flex="1",
+                ),
+                rx.cond(
+                    ConnectionsState.has_connections,
+                    rx.button(
+                        "Ocultar",
+                        on_click=ConnectionsState.toggle_checklist,
+                        variant="ghost",
+                        size="1",
+                        color_scheme="gray",
+                    ),
+                    rx.fragment(),
+                ),
+                spacing="3",
+                align="start",
+                width="100%",
+            ),
+            *rows,
+            rx.hstack(
+                rx.text(
+                    "¿Tienes dudas? Una persona del equipo lo revisa contigo.",
+                    size="2",
+                    color=T.TEXT_MUTED,
+                ),
+                rx.spacer(),
+                help_button(),
+                width="100%",
+                align="center",
+                wrap="wrap",
+                spacing="3",
+            ),
+            spacing="3",
+            align_items="start",
+            width="100%",
+        ),
+        padding="1.25rem 1.5rem",
+    )
+
+
+def _folded_checklist() -> rx.Component:
+    """One line for a tenant whose accounts already work (§6.5)."""
+    return rx.hstack(
+        rx.icon("list-checks", size=T.ICON_SM, color=T.TEXT_FAINT),
+        rx.text("¿Vas a conectar otra cuenta?", size="2", color=T.TEXT_MUTED),
+        rx.button(
+            "Ver los tres requisitos",
+            on_click=ConnectionsState.toggle_checklist,
+            variant="ghost",
+            size="1",
+            color_scheme="gray",
+        ),
+        spacing="2",
+        align="center",
+        width="100%",
+    )
+
+
+def _support_field(label: str, control: rx.Component, hint: str | None = None) -> rx.Component:
+    """Label above, help below (§5.6)."""
+    return rx.vstack(
+        rx.text(label, size="2", weight="medium"),
+        control,
+        *([rx.text(hint, size="1", color=T.TEXT_MUTED)] if hint else []),
+        spacing="1",
+        align_items="start",
+        width="100%",
+    )
+
+
+def support_drawer() -> rx.Component:
+    """«Pedir ayuda 1:1» (QUA-202): a short form, prefilled with the session's email,
+    that files a ticket for the global support channel. The drawer's one solid button
+    is its own (§5.8) — the page's solid stays «Conectar cuenta»."""
+    return drawer(
+        rx.vstack(
+            rx.cond(
+                ConnectionsState.support_error != "",
+                callout(ConnectionsState.support_error, "error"),
+                rx.fragment(),
+            ),
+            rx.cond(
+                ConnectionsState.has_guidance,
+                callout(
+                    "Adjuntamos el resultado de tu último intento para que la persona que "
+                    "te atienda llegue con el contexto.",
+                    "info",
+                ),
+                rx.fragment(),
+            ),
+            _support_field(
+                "Correo",
+                rx.input(
+                    value=ConnectionsState.support_email,
+                    on_change=ConnectionsState.set_support_email,
+                    type="email",
+                    name="email",
+                    required=True,
+                    placeholder="tu@negocio.com",
+                    width="100%",
+                ),
+                "Te escribimos aquí.",
+            ),
+            _support_field(
+                "WhatsApp (opcional)",
+                rx.input(
+                    value=ConnectionsState.support_whatsapp,
+                    on_change=ConnectionsState.set_support_whatsapp,
+                    type="tel",
+                    name="whatsapp",
+                    placeholder="+58 412 000 0000",
+                    width="100%",
+                ),
+                "Si prefieres que te llamemos o te escribamos por ahí.",
+            ),
+            _support_field(
+                "Cuéntanos qué pasó (opcional)",
+                rx.text_area(
+                    value=ConnectionsState.support_message,
+                    on_change=ConnectionsState.set_support_message,
+                    placeholder="Ej.: no encuentro la opción de Página en mi Instagram.",
+                    rows="4",
+                    width="100%",
+                ),
+            ),
+            spacing="4",
+            width="100%",
+            align_items="start",
+        ),
+        open=ConnectionsState.support_open,
+        on_open_change=ConnectionsState.set_support_open,
+        title="Pedir ayuda 1:1",
+        icon="life-buoy",
+        description=(
+            "Una persona del equipo de Qualify te contacta y deja la conexión lista "
+            "contigo. Sin costo."
+        ),
+        footer=rx.hstack(
+            rx.button(
+                "Cancelar",
+                on_click=ConnectionsState.set_support_open(False),
+                variant="soft",
+                **T.tone_scheme("neutral"),
+            ),
+            rx.spacer(),
+            rx.button(
+                rx.icon("send", size=15),
+                "Enviar solicitud",
+                on_click=ConnectionsState.submit_support,
+                loading=ConnectionsState.support_sending,
+            ),
+            width="100%",
+            align="center",
+        ),
+    )
+
+
 def _connections_body() -> rx.Component:
     return page_body(
+        rx.cond(
+            ConnectionsState.support_notice != "",
+            callout(ConnectionsState.support_notice, "ok", icon="life-buoy"),
+            rx.fragment(),
+        ),
+        rx.cond(ConnectionsState.has_guidance, connect_guidance_panel(), rx.fragment()),
         rx.cond(ConnectionsState.connect_notice != "", _connect_notice(), rx.fragment()),
         rx.cond(ConnectionsState.action_error != "", _action_error(), rx.fragment()),
+        rx.cond(
+            ConnectionsState.show_checklist,
+            connect_requirements_card(),
+            rx.cond(
+                ConnectionsState.has_connections & ~ConnectionsState.is_loading,
+                _folded_checklist(),
+                rx.fragment(),
+            ),
+        ),
         rx.cond(
             ConnectionsState.load_error != "",
             callout(ConnectionsState.load_error, "error"),
             _loaded_body(),
         ),
+        support_drawer(),
     )
 
 

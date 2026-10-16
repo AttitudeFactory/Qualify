@@ -29,7 +29,6 @@ from .ui import (
     skeleton_rows,
     stat_card,
     tag,
-    tone_badge,
 )
 from .ui import tokens as T
 
@@ -58,8 +57,15 @@ _MENTION_COL_WIDTH = rx.breakpoints(initial="220px", xl="260px")
 # that the sidebar leaves ~700 px, measured too narrow for it. Below it (phones, tablets,
 # small laptops) each mention is a card and the pager shrinks to "‹ Página n de N ›". A
 # hover card does not exist on touch, so the card shows the text itself.
-_TABLE_ONLY = rx.breakpoints(initial="none", lg="block")
-_CARDS_ONLY = rx.breakpoints(initial="block", lg="none")
+#
+# The switch is a CSS class, not `rx.breakpoints` on `display` (2026-10-16). In the exported
+# build the global stylesheet is linked twice (once in the prerendered head, once more by the
+# hydration, AFTER emotion's style tags), so Radix's `.rt-Box { display: block }` outranked
+# emotion's media rules and the table and the cards showed at once. The rules live in
+# assets/qualify-listen.css, which is compiled INTO that global stylesheet after Radix's
+# own rules — the `.q-wa-chats` pattern — so they win in every copy of it.
+_TABLE_ONLY = "q-mentions-table-only"
+_CARDS_ONLY = "q-mentions-cards-only"
 # Breathing room after the mention, so its column never reads as glued to Sentimiento.
 _MENTION_GUTTER = "2rem"
 
@@ -208,7 +214,6 @@ def _date_cell(mention: MentionRow) -> rx.Component:
             ),
             spacing="0",
         ),
-        rx.cond(mention.is_new, tone_badge("Nueva", "accent")),
         spacing="2",
         align="center",
     )
@@ -324,7 +329,6 @@ def mention_card(mention: MentionRow) -> rx.Component:
                     rx.text(mention.date, size="1", color=T.TEXT_MUTED, class_name="q-nums"),
                     platform_badge(mention.platform),
                     tag(mention.kind_label),
-                    rx.cond(mention.is_new, tone_badge("Nueva", "accent")),
                     spacing="2",
                     align="center",
                     wrap="wrap",
@@ -364,8 +368,8 @@ def mention_card(mention: MentionRow) -> rx.Component:
 
 
 def mentions_cards() -> rx.Component:
-    # The responsive `display` lives on a plain box: a Radix Flex (`vstack`) owns its own
-    # `display` and would ignore the breakpoint.
+    # The responsive class lives on a plain box: a Radix Flex (`vstack`) owns its own
+    # `display` and would fight the rule.
     return rx.box(
         rx.vstack(
             rx.foreach(DashboardState.mentions, mention_card),
@@ -373,7 +377,7 @@ def mentions_cards() -> rx.Component:
             width="100%",
         ),
         width="100%",
-        display=_CARDS_ONLY,
+        class_name=_CARDS_ONLY,
     )
 
 
@@ -402,7 +406,7 @@ def mentions_table() -> rx.Component:
         ),
         overflow_x="auto",
         width="100%",
-        display=_TABLE_ONLY,
+        class_name=_TABLE_ONLY,
     )
 
 
@@ -461,7 +465,7 @@ def pager() -> rx.Component:
                 width="100%",
                 align="center",
             ),
-            display=_TABLE_ONLY,
+            class_name=_TABLE_ONLY,
         ),
         rx.box(
             rx.hstack(
@@ -491,7 +495,7 @@ def pager() -> rx.Component:
                 spacing="3",
                 width="100%",
             ),
-            display=_CARDS_ONLY,
+            class_name=_CARDS_ONLY,
         ),
         width="100%",
     )
@@ -501,18 +505,10 @@ def pager() -> rx.Component:
 
 
 def notices() -> rx.Component:
-    """The refresh outcomes. None of them changes the rows on screen by itself."""
+    """The refresh outcomes. None of them changes the rows on screen by itself. A new
+    mention has no notice here: it simply appears in the list (QUA-152) — it is not a
+    message and is never announced as one."""
     return rx.vstack(
-        rx.cond(
-            DashboardState.new_mentions_notice != "",
-            rx.hstack(
-                callout(DashboardState.new_mentions_notice, "info", icon="bell", flex="1"),
-                rx.button("Ver nuevas", size="2", on_click=DashboardState.refresh_list),
-                align="center",
-                spacing="3",
-                width="100%",
-            ),
-        ),
         rx.cond(
             DashboardState.list_changed,
             rx.hstack(
@@ -521,7 +517,7 @@ def notices() -> rx.Component:
                     "Actualizar",
                     size="2",
                     variant="soft",
-                    on_click=DashboardState.refresh_list,
+                    on_click=DashboardState.go_to_page("1"),
                 ),
                 align="center",
                 spacing="3",
@@ -534,11 +530,7 @@ def notices() -> rx.Component:
         ),
         rx.cond(
             DashboardState.refresh_notice != "",
-            rx.cond(
-                DashboardState.refresh_tone == "warn",
-                callout(DashboardState.refresh_notice, "warn"),
-                callout(DashboardState.refresh_notice, "info", icon="refresh-cw"),
-            ),
+            callout(DashboardState.refresh_notice, "warn"),
         ),
         spacing="2",
         width="100%",
@@ -600,7 +592,8 @@ def mentions_body() -> rx.Component:
                                 rx.vstack(
                                     mentions_table(),
                                     mentions_cards(),
-                                    rx.separator(size="4"),
+                                    # No separator: the last row (or card) already draws
+                                    # the one line above the pager.
                                     pager(),
                                     spacing="3",
                                     width="100%",

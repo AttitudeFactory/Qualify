@@ -313,50 +313,8 @@ body[data-rank-dragging] { cursor: grabbing; }
    only from the tokens and the Radix scales; the palette a brand picks stays data
    (inline `background=` from state) and only its ring lives here. */
 
-/* A choice card (`_choice_card`): a real button that reads as a card. Selected = a
-   2px accent ring (plus the check mark the button itself renders, §8); hovered = a
-   softer ring and the kit's lift. `.q-choice.q-choice--on` outranks `:hover` so the
-   selection never dims under the pointer. */
-.q-choice {
-  appearance: none;
-  border: 0;
-  width: 100%;
-  padding: 1rem 1.25rem;
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-  border-radius: var(--q-radius-card);
-  background: var(--q-card-fill);
-  box-shadow: inset 0 0 0 1px var(--q-card-edge), inset 0 1px 0 var(--q-card-hi), var(--q-elev-island);
-  transition:
-    box-shadow var(--q-dur) var(--q-ease),
-    transform var(--q-dur) var(--q-spring);
-}
-@media (hover: hover) {
-  .q-choice:hover {
-    box-shadow: inset 0 0 0 2px var(--accent-7), inset 0 1px 0 var(--q-card-hi), var(--q-elev-lift);
-    transform: translateY(-2px);
-  }
-}
-.q-choice.q-choice--on {
-  box-shadow: inset 0 0 0 2px var(--accent-9), inset 0 1px 0 var(--q-card-hi), 0 0 0 4px var(--accent-a3), var(--q-elev-island);
-}
-.q-choice:active { transform: translateY(0) scale(0.99); }
-/* The check in the selected card's corner: solid accent, its contrast colour on top. */
-.q-choice-check {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  border-radius: 9999px;
-  background: linear-gradient(135deg, var(--accent-9), var(--accent-8));
-  color: var(--accent-contrast);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32), 0 4px 10px var(--accent-a5);
-}
+/* The choice card is `ui.choice_card` now (qualify.css, "Shared primitives"). */
 
-/* A dropzone (`rx.upload` reset to `border="none"`, this box inside it): a dashed
-   edge on the field fill, the accent when the pointer is over it. */
 /* `.q-dropzone` is shared — defined once in qualify.css (lote 6). */
 
 /* A tile's preview well (an uploaded element, a type face): a sunken field, not a
@@ -381,20 +339,7 @@ body[data-rank-dragging] { cursor: grabbing; }
 }
 .q-brand-glyph--square { border-radius: var(--q-radius-control); }
 
-/* An account's round picture with its placeholder icon under it (`_avatar`,
-   `_profile_avatar`, the from-scratch kit's logo slot): the control material. */
-.q-brand-avatar {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  overflow: hidden;
-  border-radius: 9999px;
-  color: var(--gray-8);
-  background: var(--q-control-fill);
-  box-shadow: inset 0 0 0 1px var(--q-control-edge), inset 0 1px 0 var(--q-control-hi);
-}
+/* An account's round picture is `ui.media_thumb(round=True)` now. */
 
 /* A palette swatch: the brand's own colour is DATA (`background=` from state); this is
    only the ring that keeps a white or a near-panel colour visible in both themes.

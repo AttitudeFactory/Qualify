@@ -36,6 +36,7 @@ import json
 from typing import Any, Protocol
 
 import httpx
+from qualify_shared.social.graph_errors import is_missing_object_error
 from qualify_shared.social.ig_shapes import (
     MENTIONED_COMMENT_FIELDS,
     MENTIONED_MEDIA_FIELDS,
@@ -90,6 +91,44 @@ def is_transient(exc: MentionedContentReadError) -> bool:
     return (status is not None and status >= 500) or exc.platform_code in _TRANSIENT_CODES
 
 
+def is_gone(exc: MentionedContentReadError) -> bool:
+    """Meta answers "does not exist, or this app can no longer see it" (400/100/33, see
+    `qualify_shared.social.graph_errors`). For a mention that means it is no longer
+    available to the brand — deleted, made private, or the author blocked the account —
+    which is exactly when it should stop showing. Any other refusal (comments disabled,
+    validation, throttling) keeps the mention — except the one `mentioned_comment` answer
+    `is_comment_unavailable_candidate` describes, which the caller settles separately.
+
+    Two caveats the caller handles: the same answer can be about the connected account's
+    own node (these reads are field expansions on it), so the account is confirmed
+    readable before removing (`account_reachable`); and "can no longer see it" can end,
+    so a removed mention is re-read now and then and shows again when it answers."""
+    return is_missing_object_error(
+        http_status=exc.http_status,
+        platform_code=exc.platform_code,
+        platform_subcode=exc.platform_subcode,
+    )
+
+
+def is_comment_unavailable_candidate(exc: MentionedContentReadError) -> bool:
+    """400 / code 100 / NO subcode — what a `mentioned_comment` read of a comment that
+    left Instagram actually answers. [VERIFIED LIVE 2026-10-15, production, QUA-152: a
+    comment read successfully hours earlier, deleted, then answered `OAuthException`
+    "(#100) Param comment_id is not a valid instagram comment ID" with no
+    `error_subcode`.] The 400/100/33 of `is_gone` was verified on a direct media read
+    (`GET /{media-id}/comments`), not on this field expansion through the account's node.
+
+    Only a CANDIDATE: code 100 without a subcode is also Meta's answer to a malformed
+    parameter, so on its own it does not prove the comment is gone. The caller removes on
+    it only for a comment mention that was read successfully before, when another
+    `mentioned_comment` read of the same connection succeeded in the same run (the request
+    shape is valid) and the account answers. It is deliberately NOT applied to
+    `mentioned_media` (no equivalent live evidence yet) nor folded into
+    `qualify_shared.social.graph_errors.is_missing_object_error`, which the inbox shares
+    and which keeps requiring subcode 33."""
+    return exc.http_status == 400 and exc.platform_code == 100 and exc.platform_subcode is None
+
+
 def usage_percent(headers: httpx.Headers) -> int:
     """The highest usage Meta reports for this app (`X-App-Usage`) or this account's
     Business Use Case budget (`X-Business-Use-Case-Usage`), 0-100. Unreadable or absent
@@ -129,6 +168,8 @@ class MentionedContentClient(Protocol):
     async def get_mentioned_permalink(
         self, *, ig_user_id: str, media_id: str, comment_id: str | None
     ) -> str | None: ...
+
+    async def account_reachable(self, *, ig_user_id: str) -> None: ...
 
 
 # QUA-152: the "Ver" link. `permalink` is a Public IG Media field but is NOT in the
@@ -249,6 +290,12 @@ class HttpMentionedContentClient:
     async def get_mentioned_comment(self, *, ig_user_id: str, comment_id: str) -> MentionedComment:
         fields_expr = f"mentioned_comment.comment_id({comment_id}){{{MENTIONED_COMMENT_FIELDS}}}"
         return _parse_mentioned_comment_response(await self._get(ig_user_id, fields_expr))
+
+    async def account_reachable(self, *, ig_user_id: str) -> None:
+        """`GET /{ig-user-id}?fields=id`: returns when the connected account's node is
+        readable, raises `MentionedContentReadError` otherwise. Tells a "does not exist"
+        about the mentioned object apart from one about the account itself."""
+        await self._get(ig_user_id, "id")
 
     async def get_mentioned_permalink(
         self, *, ig_user_id: str, media_id: str, comment_id: str | None

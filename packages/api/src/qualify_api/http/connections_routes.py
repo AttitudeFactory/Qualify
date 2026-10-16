@@ -21,9 +21,14 @@ request; it reconstitutes them from the signed `state`.
 whoever is in that browser — the operator, or Meta's App Reviewer — must land back on
 `/connections` with a readable result, not on a raw JSON body. So every outcome, failures
 included, is a `303 See Other` to `/connections?connect=<code>`. The code is a closed
-vocabulary (`ConnectOutcome` plus `invalid_state` / `denied`): no id, no username, no count
-travels in the URL — the page re-reads the connection list from Postgres on load, and the
-counts R9(e.1) needs are already logged by `ConnectService`.
+vocabulary (`ConnectOutcome` plus `invalid_state` / `denied`): no id and no username
+travels in the URL — the page re-reads the connection list from Postgres on load.
+
+**The two dead ends also carry their counts (QUA-202).** `link_required` and
+`page_access_required` add `pages=<n>&linked=<n>` — the two integers R9(e.1) declared safe
+(counts only: no Page id, no name, no token) — so the page can tell the operator "Meta nos
+mostró 2 Páginas, ninguna con tu Instagram" instead of a sentence they cannot act on. A
+successful outcome carries nothing but its code.
 """
 
 from __future__ import annotations
@@ -36,7 +41,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from qualify_api.connections.service import ConnectService
+from qualify_api.connections.service import ConnectOutcome, ConnectService
 from qualify_api.connections.state_token import InvalidState
 from qualify_api.http.deps import Principal, current_principal
 
@@ -85,10 +90,21 @@ def get_connections_page_url() -> str:
     return f"{base.rstrip('/')}/connections"
 
 
-def _back_to_connections(page_url: str, code: str) -> RedirectResponse:
+def _back_to_connections(
+    page_url: str, code: str, *, pages: int | None = None, linked: int | None = None
+) -> RedirectResponse:
     # 303, not 302/307: the browser must follow with a GET and never replay the callback
     # (the `state` is single-use; a replay would only ever produce `invalid_state`).
-    return RedirectResponse(f"{page_url}?{urlencode({'connect': code})}", status_code=303)
+    query: dict[str, str] = {"connect": code}
+    if pages is not None and linked is not None:
+        query["pages"] = str(pages)
+        query["linked"] = str(linked)
+    return RedirectResponse(f"{page_url}?{urlencode(query)}", status_code=303)
+
+
+# The outcomes whose redirect carries the R9(e.1) counts — the ones the operator must act
+# on. The counts are the only non-code values ever placed in this URL.
+_GUIDED_OUTCOMES = frozenset({ConnectOutcome.LINK_REQUIRED, ConnectOutcome.PAGE_ACCESS_REQUIRED})
 
 
 @router.post("/start", response_model=StartConnectResponse)
@@ -123,4 +139,11 @@ async def oauth_callback(
         result = await service.complete_connect(code=code, state=state)
     except InvalidState:
         return _back_to_connections(page_url, INVALID_STATE)
+    if result.outcome in _GUIDED_OUTCOMES:
+        return _back_to_connections(
+            page_url,
+            str(result.outcome),
+            pages=result.page_count,
+            linked=result.linked_page_count,
+        )
     return _back_to_connections(page_url, str(result.outcome))

@@ -17,26 +17,27 @@
   animation: q-settle var(--q-dur-slow) var(--q-ease) both;
 }
 
-/* ── Vitrina: selectable local (`_local_card`) ───────────────────────────────
- * A card that IS a button: a native <button> wearing the card material, so the
- * selection is a click or a key press and `aria-pressed` names the chosen one.
- * The accent ring on the pressed card is a control state, drawn with the tone's
- * own steps — never a hex. */
-.q-pick-card {
+/* The selectable local card is `ui.choice_card` now (qualify.css, "Shared primitives"). */
+
+/* ── Menciones: one view per width ──────────────────────────────────────────
+ * The 8-column table from 80em (Radix `lg`, 1280 px at 16 px) up; below it each mention
+ * is a card and the pager shrinks to "‹ Página n de N ›" (Qualify/components.py).
+ * Classes, not `rx.breakpoints` on `display` (2026-10-16): the exported build links the
+ * global stylesheet twice and the second copy lands after emotion's style tags, so Radix's
+ * `.rt-Box { display: block }` outranked emotion's media rules and both views showed at
+ * once. These rules are compiled into that same global stylesheet AFTER Radix's, with the
+ * same specificity, so they win in every copy of it — the `.q-wa-chats` pattern. */
+.q-mentions-table-only {
+  display: none;
+}
+.q-mentions-cards-only {
   display: block;
-  width: 100%;
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-  appearance: none;
-  -webkit-appearance: none;
 }
-.q-pick-card[aria-pressed="true"] {
-  border-color: var(--accent-8);
-  background: linear-gradient(var(--accent-a3), var(--accent-a3)), var(--q-card-fill);
-  box-shadow: inset 0 1px 0 var(--q-card-hi), 0 0 0 1px var(--accent-8), var(--q-elev-island);
-}
-.q-pick-card[aria-pressed="true"].q-lift:hover {
-  box-shadow: inset 0 1px 0 var(--q-card-hi), 0 0 0 1px var(--accent-8), var(--q-elev-lift);
+@media (min-width: 80em) {
+  .q-mentions-table-only {
+    display: block;
+  }
+  .q-mentions-cards-only {
+    display: none;
+  }
 }

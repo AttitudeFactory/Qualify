@@ -6,11 +6,18 @@
 #   dc() { docker compose --env-file /opt/qualify/.env.prod -f deploy/docker-compose.prod.yml "$@"; }
 #   dc build && dc run --rm -T migrate && dc up -d
 #
-# Only Caddy publishes ports (80/443). Postgres and Redis are reachable on the internal
-# compose network only — never published, never reachable from the internet.
+# NOTHING in this stack publishes a port in production. The VPS edge proxy (deploy/edge/, its
+# own compose in /opt/edge) owns 80/443, terminates TLS and reaches Qualify's `caddy` over the
+# external network `qualify-edge` (alias `qualify-web`), so deploying Qualify never restarts the
+# entry of the other products on this box. For a standalone run (local smoke) add
+# deploy/docker-compose.standalone.yml, which publishes Caddy's :80. Postgres and Redis are
+# reachable on the internal compose network only — never published, never reachable from the
+# internet.
 #
 # Always on: caddy, api, reflex, postgres, redis, webhook-worker (QUA-147: settles recorded
-# Meta webhooks; read-only toward Meta, never publishes). `migrate` is a one-shot (below).
+# Meta webhooks; read-only toward Meta, never publishes) and whatsapp-worker (WA-08: sends
+# what was explicitly enqueued in `whatsapp_outbox`, nothing else). `migrate` is a one-shot
+# (below).
 #
 # Optional services, OFF unless their profile is enabled (COMPOSE_PROFILES in .env.prod):
 #   calendar-worker  QUA-111 executor — PUBLISHES FOR REAL to connected accounts.
@@ -233,22 +240,19 @@ services:
       args:
         QUALIFY_PUBLIC_URL: ${QUALIFY_PUBLIC_URL}
     restart: unless-stopped
-    environment:
-      QUALIFY_DOMAIN: ${QUALIFY_DOMAIN:?set in .env.prod}
-      QUALIFY_ACME_EMAIL: ${QUALIFY_ACME_EMAIL:?set in .env.prod}
-    ports:
-      - "${QUALIFY_HTTP_PORT:-80}:80"
-      - "${QUALIFY_HTTPS_PORT:-443}:443"
-      - "${QUALIFY_HTTPS_PORT:-443}:443/udp"
+    # No `ports:` — the edge proxy (deploy/edge/) is the only listener on 80/443. Caddy here
+    # serves plain HTTP on :80 inside the networks below; `caddy_data` is kept (unused since
+    # TLS moved to the edge) only so its certificates can seed the edge's volume.
     volumes:
       - caddy_data:/data
       - caddy_config:/config
-    # `pedidos`: red externa del compose de Pedidos (Bianki·Polette), que vive en este mismo
-    # VPS y se publica desde este Caddy (bloque `pedidos.attitudefactory.co` del Caddyfile).
-    # Debe existir antes de `up`: `docker network create pedidos`.
+    # `edge` = the external network `qualify-edge`, created by deploy/edge/install.sh. The alias
+    # is the upstream name in deploy/edge/Caddyfile.
     networks:
-      - default
-      - pedidos
+      default: {}
+      edge:
+        aliases:
+          - qualify-web
     depends_on:
       api:
         condition: service_started
@@ -274,6 +278,29 @@ services:
       - qualify_api.webhooks.worker
       - --interval
       - ${QUALIFY_WEBHOOK_WORKER_INTERVAL:-30}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # WA-08 WhatsApp outbox sender. Drains `whatsapp_outbox` (the replies people write in
+  # /whatsapp, what the menu engine answers, later campaigns): claim -> 24 h window ->
+  # pacing -> send -> settle, as qualify_app under tenant_session. Always on, like
+  # webhook-worker: without it nothing a person or the bot says ever leaves Qualify. It
+  # sends only what was explicitly enqueued — never on its own initiative — so a deploy
+  # that starts it is not a deploy that starts talking. Several instances at once are safe
+  # (FOR UPDATE SKIP LOCKED), but one is enough.
+  whatsapp-worker:
+    <<: [*app-image, *app-env-file, *logging]
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+    command:
+      - python
+      - -m
+      - qualify_api.whatsapp.worker
+      - --all-tenants
+      - --interval
+      - ${QUALIFY_WHATSAPP_WORKER_INTERVAL:-5}
     depends_on:
       postgres:
         condition: service_healthy
@@ -334,5 +361,6 @@ volumes:
   caddy_config:
 
 networks:
-  pedidos:
+  edge:
     external: true
+    name: qualify-edge

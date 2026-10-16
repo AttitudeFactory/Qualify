@@ -1,0 +1,21 @@
+{
+  "_fixture_note": "DOC-DERIVED, not recorded: shape read on 2026-10-14 from business-phone-numbers/conversational-components (GET ?fields=conversational_automation) + reference/conversational-automation-api (enable_welcome_message). Phone numbers and ids are placeholders. The smoke CLI (qualify_api.whatsapp.smoke) against the test number is what replaces this with a recorded payload.",
+  "conversational_automation": {
+    "enable_welcome_message": true,
+    "prompts": [
+      "Ver el menu",
+      "Horario de hoy"
+    ],
+    "commands": [
+      {
+        "command_name": "menu",
+        "command_description": "Ver el menu del dia"
+      },
+      {
+        "command_name": "pedido",
+        "command_description": "Estado de mi pedido"
+      }
+    ]
+  },
+  "id": "1393787420477981"
+}

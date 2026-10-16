@@ -30,7 +30,10 @@ from .ui import (
     app_shell,
     callout,
     card,
+    choice_card,
+    dropzone,
     loading_spinner,
+    media_thumb,
     page_body,
     page_header,
     progress_panel,
@@ -134,8 +137,10 @@ def _choice_card(
     help_text: str = "",
 ) -> rx.Component:
     """One radio tile of «¿Qué quieres crear?»: a category, or a type within Video —
-    or a kind of carousel slide, with its «?» (`help_text`)."""
-    return rx.box(
+    or a kind of carousel slide, with its «?» (`help_text`). The tile is a `choice_card`
+    (a real ``<button>``); the «?» is a button too, so it sits beside the tile, never
+    inside it — nested buttons are not HTML."""
+    tile = choice_card(
         rx.hstack(
             rx.icon(
                 icon,
@@ -150,17 +155,23 @@ def _choice_card(
                 align_items="start",
                 flex="1",
             ),
-            _help(title, help_text) if help_text else rx.fragment(),
             spacing="3",
             align="start",
             width="100%",
         ),
-        on_click=on_click,
-        role="radio",
-        aria_checked=rx.cond(selected, "true", "false"),
-        cursor="pointer",
+        selected=selected,
+        on_select=on_click,
         padding="0.65rem 0.85rem" if compact else "0.95rem 1rem",
-        class_name=rx.cond(selected, "q-cr-option q-cr-option--selected", "q-cr-option"),
+        width="100%",
+        height="100%",
+    )
+    if not help_text:
+        return tile
+    return rx.hstack(
+        tile,
+        _help(title, help_text),
+        spacing="1",
+        align="start",
         width="100%",
         height="100%",
     )
@@ -224,21 +235,20 @@ def _kind_picker() -> rx.Component:
 
 
 def _upload_zone(upload_id: str, label: str, handler: object, *, multiple: bool) -> rx.Component:
-    """A drop zone on the control material (`.q-cr-dropzone`). `rx.upload.root`, not
-    `rx.upload`: the styled one injects an inline dashed border no class could override."""
-    return rx.upload.root(
+    """A compact drop zone (`ui.dropzone`) for the pictures of a piece."""
+    return dropzone(
         rx.vstack(
             rx.icon("image-up", size=T.ICON_MD, color=T.TEXT_FAINT),
             rx.text(label, size="1", text_align="center", color=T.TEXT_MUTED),
             align="center",
             spacing="1",
         ),
-        id=upload_id,
+        upload_id=upload_id,
         accept=_IMAGE_ACCEPT,
         max_files=10 if multiple else 1,
         multiple=multiple,
         on_drop=handler(rx.upload_files(upload_id=upload_id)),
-        class_name="q-cr-dropzone",
+        variant="compact",
         width="100%",
     )
 
@@ -1129,18 +1139,15 @@ def _look_grid(looks: rx.Var[list[dict[str, str]]], gender: str) -> rx.Component
 
 def _look_card(look: rx.Var[dict[str, str]]) -> rx.Component:
     selected = CreativeState.avatar_look_id == look["id"]
-    return rx.box(
-        rx.cond(
-            look["preview"] != "",
-            rx.image(
-                src=look["preview"],
-                width="100%",
-                height="5.25rem",
-                object_fit="cover",
-                object_position="top",
-                border_radius="0.4rem",
-            ),
-            rx.center(rx.icon("user-round", size=22, color=T.TEXT_FAINT), height="5.25rem"),
+    return choice_card(
+        media_thumb(
+            look["preview"],
+            size=None,
+            width="100%",
+            height="5.25rem",
+            icon="user-round",
+            icon_size=22,
+            object_position="top",
         ),
         rx.text(
             look["name"],
@@ -1153,10 +1160,9 @@ def _look_card(look: rx.Var[dict[str, str]]) -> rx.Component:
             text_overflow="ellipsis",
         ),
         key=look["id"],
-        on_click=CreativeState.choose_look(look["id"]),
-        cursor="pointer",
+        selected=selected,
+        on_select=CreativeState.choose_look(look["id"]),
         padding="0.3rem",
-        class_name=rx.cond(selected, "q-cr-option q-cr-option--selected", "q-cr-option"),
         width="100%",
     )
 
@@ -1518,24 +1524,16 @@ def _section(
 def _product_tile(item: rx.Var[dict[str, str]]) -> rx.Component:
     """One catalog product of the picker: its primary photo, name, price, counts."""
     selected = CreativeState.selected_product_id == item["id"]
-    return rx.box(
-        rx.cond(
-            item["photo_key"] != "",
-            rx.image(
-                src=rx.get_upload_url(item["photo_key"]),
-                width="100%",
-                height="5.25rem",
-                object_fit="cover",
-                border_radius="0.4rem",
-                alt=item["name"],
-            ),
-            rx.center(
-                rx.icon("image-off", size=22, color=T.TEXT_FAINT),
-                height="5.25rem",
-                width="100%",
-                background=T.SURFACE_BG_RAISED,
-                border_radius="0.4rem",
-            ),
+    return choice_card(
+        media_thumb(
+            rx.get_upload_url(item["photo_key"]),
+            has=item["photo_key"] != "",
+            size=None,
+            width="100%",
+            height="5.25rem",
+            icon="image-off",
+            icon_size=22,
+            alt=item["name"],
         ),
         rx.text(
             item["name"],
@@ -1556,12 +1554,9 @@ def _product_tile(item: rx.Var[dict[str, str]]) -> rx.Component:
             width="100%",
         ),
         key=item["id"],
-        on_click=CreativeState.choose_product(item["id"]),
-        role="radio",
-        aria_checked=rx.cond(selected, "true", "false"),
-        cursor="pointer",
+        selected=selected,
+        on_select=CreativeState.choose_product(item["id"]),
         padding="0.3rem",
-        class_name=rx.cond(selected, "q-cr-option q-cr-option--selected", "q-cr-option"),
         width="100%",
     )
 

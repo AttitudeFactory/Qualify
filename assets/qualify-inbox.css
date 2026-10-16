@@ -12,25 +12,7 @@
  * (`--q-control-*`): relief alone, no backdrop-filter (D5 — these repeat inside lists).
  */
 
-/* The 72px Reel thumbnail (`_thumbnail`, `_reel_thumbnail`): the control radius and
-   edge, so the image sits in the card like a control does. `--empty` is the placeholder
-   for a Reel with no thumbnail (a Reel outside the 2-week window, or one the API did
-   not return a picture for): the same frame, filled with the control material. */
-.q-inbox-thumb {
-  width: 72px;
-  height: 72px;
-  flex: 0 0 72px;
-  object-fit: cover;
-  border-radius: var(--q-radius-control);
-  box-shadow: inset 0 0 0 1px var(--q-control-edge);
-}
-.q-inbox-thumb--empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--q-control-fill);
-  box-shadow: inset 0 0 0 1px var(--q-control-edge), inset 0 1px 0 var(--q-control-hi);
-}
+/* The 72px thumbnail is `ui.media_thumb` now (qualify.css, "Shared primitives"). */
 
 /* A Reel row's content-loading placeholder (`_card_skeleton`): the card's frame with
    nothing behind it, same as `ui.skeleton_card` — the shape of the row that is coming,
@@ -40,18 +22,87 @@
   box-shadow: none;
 }
 
-/* The assisted reply (`_draft_view_mode` / `_draft_edit_mode`): the kit's outgoing
-   chat bubble (demos/demo.css `.chat-message--out`) on our control tokens — a flat
-   tail on the bottom-left, the accent as a wash (step a3) rather than the kit's solid
-   gradient, so the generated text stays gray-12 and the contrast rule of §8 holds in
-   both themes. The draft is what the business will say, the comment above it is what
-   was said: two materials, one card. */
-.q-inbox-reply {
+/* The drafted reply's bubble is `ui.chat_bubble` now. */
+
+/* ── WhatsApp → Chats (WA-11, `Qualify/whatsapp_tab_chats.py`) ─────────────────────
+   Two panes on desktop (list | conversation); under 768 px ONE pane at a time: the list
+   until a conversation is open (`.q-wa-chats--open`), then the conversation with its
+   back button. Rows are `ui.card` with the lift (they open something); the active one
+   gets the accent edge. Bubbles are `ui.chat_bubble`: outbound right, inbound left, the
+   kit's tail turned to point at the side it comes from. */
+.q-wa-chats {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
   width: 100%;
-  padding: 0.75rem 0.9rem;
+}
+.q-wa-chats__list,
+.q-wa-chats__conv {
+  min-width: 0;
+}
+.q-wa-chats__back {
+  display: none;
+}
+.q-wa-row--active {
+  box-shadow: inset 0 0 0 1px var(--accent-8), var(--q-elev-island);
+}
+.q-wa-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.q-wa-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.q-wa-scroll--list {
+  max-height: 70vh;
+  padding: 2px;
+}
+/* column-reverse anchors the scroll at the newest message without any script. */
+.q-wa-scroll--messages {
+  display: flex;
+  flex-direction: column-reverse;
+  max-height: 45vh;
+  min-height: 12rem;
+  padding: 0.25rem;
+}
+.q-wa-msg {
+  display: flex;
+  width: 100%;
+}
+.q-wa-msg .q-bubble {
+  width: auto;
+  max-width: min(78%, 34rem);
+}
+.q-wa-msg--out {
+  justify-content: flex-end;
+}
+.q-wa-msg--out .q-bubble--out {
+  border-radius: 14px 14px 4px 14px;
+}
+.q-wa-msg--in .q-bubble--in {
   border-radius: 14px 14px 14px 4px;
-  background:
-    linear-gradient(135deg, var(--accent-a3), var(--accent-a2)),
-    var(--q-control-fill);
-  box-shadow: inset 0 0 0 1px var(--accent-a5), inset 0 1px 0 var(--q-control-hi);
+}
+.q-wa-composer {
+  border-top: 1px solid var(--gray-a5);
+}
+@media (max-width: 767px) {
+  .q-wa-chats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .q-wa-chats--open .q-wa-chats__list,
+  .q-wa-chats:not(.q-wa-chats--open) .q-wa-chats__conv {
+    display: none;
+  }
+  .q-wa-chats__back {
+    display: inline-flex;
+  }
+  .q-wa-scroll--list {
+    max-height: none;
+  }
+  .q-wa-msg .q-bubble {
+    max-width: 88%;
+  }
 }

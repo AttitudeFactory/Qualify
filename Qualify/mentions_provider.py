@@ -12,9 +12,10 @@ This module owns exactly one thing: turning a `MentionRecord` (a service shape) 
   on Instagram; the reception time only when Meta did not give one.
 - **Canal** / **Tipo** — where (Instagram) and what (Publicación / Comentario), apart.
 - **Autor** — who mentioned the account: the publication's author for a mention in a
-  caption. Instagram does not share who wrote a comment that mentions the account, so a
-  comment mention reads "No disponible" with that reason; the publication's author is
-  NEVER shown as the comment's.
+  caption; for a comment on one of the account's OWN posts, the commenter (the `comments`
+  webhook carries it). Instagram does not share who wrote a comment on SOMEONE ELSE's post
+  that mentions the account, so that comment mention reads "No disponible" with that
+  reason; the publication's author is NEVER shown as the comment's.
 - **Mención** — the caption or the comment text, full text on hover.
 - **Likes** — of that mention (the post or the comment). Absent is never a 0: "Ocultos"
   when the owner hid them, "—" when Meta gave nothing.
@@ -34,7 +35,6 @@ from zoneinfo import ZoneInfo
 
 from qualify_api.mentions.composition import (
     ContentRefreshReport,
-    count_new_mentions_for_tenant,
     list_mentions_page_for_tenant,
     refresh_mentions_content,
     refresh_mentions_in_scope,
@@ -42,7 +42,6 @@ from qualify_api.mentions.composition import (
 )
 from qualify_api.mentions.repository import (
     ENRICHMENT_FAILED,
-    NEW_MENTIONS_CAP,
     MentionCounts,
     MentionQuery,
     MentionRecord,
@@ -75,7 +74,6 @@ class MentionVM:
     renders. Every field is text (or a flag); nothing is left for the UI to infer."""
 
     id: str
-    is_new: bool
     platform: str
     kind: str  # "post" / "comment"
     kind_label: str  # "Publicación" / "Comentario"
@@ -147,14 +145,17 @@ def account_labels(tenant_id: UUID) -> dict[UUID, str]:
 def _author(record: MentionRecord, *, is_comment: bool, unread: bool) -> tuple[str, str]:
     if unread:
         return NOT_AVAILABLE, AUTHOR_NOTE_UNREAD
-    if is_comment:
-        return NOT_AVAILABLE, AUTHOR_NOTE_COMMENT
+    # A comment row's author can only be the commenter: it is written solely from the
+    # `comments` webhook's `from` (comments on the account's own posts); no read ever puts
+    # the publication's owner there.
     if record.author_username:
         return f"@{record.author_username}", ""
+    if is_comment:
+        return NOT_AVAILABLE, AUTHOR_NOTE_COMMENT
     return NOT_AVAILABLE, AUTHOR_NOTE_POST
 
 
-def to_vm(record: MentionRecord, *, new_since: datetime | None) -> MentionVM:
+def to_vm(record: MentionRecord) -> MentionVM:
     is_comment = record.comment_id is not None
     unread = record.enrichment_status == ENRICHMENT_FAILED
     content = record.text if is_comment else record.caption
@@ -179,7 +180,6 @@ def to_vm(record: MentionRecord, *, new_since: datetime | None) -> MentionVM:
     day, time = _day_and_time(moment)
     return MentionVM(
         id=str(record.id),
-        is_new=new_since is not None and record.received_at > new_since,
         platform=record.platform,
         kind="comment" if is_comment else "post",
         kind_label="Comentario" if is_comment else "Publicación",
@@ -219,11 +219,10 @@ def load_page(
     query: MentionQuery,
     page: int,
     as_of: str = "",
-    new_since: str = "",
 ) -> MentionPageVM:
     """One page of 12 under the snapshot `as_of` ('' = take a new one), plus the summary
-    for the scope (account + period) under the SAME snapshot. Rows received after
-    `new_since` are flagged `is_new`. Blocking DB call — run it off-thread."""
+    for the scope (account + period) under the SAME snapshot. Blocking DB call — run it
+    off-thread."""
     result = list_mentions_page_for_tenant(
         tenant_id=tenant_id, query=query, page=page, as_of=_parse(as_of)
     )
@@ -232,9 +231,8 @@ def load_page(
         query=MentionQuery(connection_id=query.connection_id, since=query.since),
         as_of=result.as_of,
     )
-    since = _parse(new_since)
     return MentionPageVM(
-        rows=[to_vm(r, new_since=since) for r in result.rows],
+        rows=[to_vm(r) for r in result.rows],
         summary=_counts_vm(summary),
         filtered_total=result.counts.total,
         page=result.page,
@@ -242,14 +240,6 @@ def load_page(
         pages_label=pages_label(result.total_pages),
         as_of=result.as_of.isoformat(),
     )
-
-
-def count_new(tenant_id: UUID, *, query: MentionQuery, as_of: str) -> int:
-    """Mentions matching `query` received after the snapshot, capped at `NEW_MENTIONS_CAP`.
-    Blocking DB call."""
-    if not as_of:
-        return 0
-    return count_new_mentions_for_tenant(tenant_id=tenant_id, query=query, after=_parse(as_of))
 
 
 async def refresh_content(tenant_id: UUID, mention_ids: list[str]) -> ContentRefreshReport:
@@ -280,13 +270,11 @@ def account_options(tenant_id: UUID) -> dict[str, str]:
 
 
 __all__ = [
-    "NEW_MENTIONS_CAP",
     "MentionCountsVM",
     "MentionPageVM",
     "MentionVM",
     "account_labels",
     "account_options",
-    "count_new",
     "format_moment",
     "load_page",
     "to_vm",

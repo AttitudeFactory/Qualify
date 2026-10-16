@@ -1,12 +1,21 @@
 # Qualify CI — the merge gate. Reproduce locally with `just ci-lint` / `just ci-test`
-# (same commands as the jobs below). What blocks vs. what only informs is documented in
+# (same commands as the steps below). What blocks vs. what only informs is documented in
 # CLAUDE.md § "CI".
 #
-# Minutes matter (GitHub Free, 2,000 min/month on a private repo): runs trigger once per
-# PR event or main push (never twice for push + pull_request on the same branch), older
-# runs of the same PR are cancelled, every job has a timeout, and the Docker builds only
-# happen when their inputs change (packages/render for `docker-render`, the app/frontend
-# sources for `docker-deploy`) or on main.
+# Minutes matter: from 2026-11 the org is back on GitHub Free (2,000 min/month on a private
+# repo, every job billed rounded UP to the whole minute). Measured 2026-10-01..15: 4,294
+# billed minutes (~8,600/month), 94 merges to main, most of it short jobs paying a full
+# minute each and work repeated on main. So:
+#   - ONE job (`test`) does lint + offline tests + the migration gate + db tests: one runner
+#     boot and one `uv sync` instead of four (`changes`, `lint`, `test`, `test-db`).
+#   - PRs only. No run on push to main: the PR already ran this exact gate, and `just merge`
+#     refuses a red PR. Production is fed by deploy.yml (daily + by hand), which builds the
+#     images of the tip of main itself — a broken build keeps the previous release live.
+#   - Docker/Node checks live in workflows with `paths:` filters (images.yml, render.yml), so
+#     a PR that does not touch their inputs starts no runner at all.
+#   - Draft PRs run nothing; older runs of the same PR are cancelled.
+#   - Secret scanning per PR is a gitleaks step over the PR's own commits (seconds); the full
+#     history scan stays in security.yml (weekly).
 #
 # Every third-party action is pinned to a commit SHA (the tag is kept in the comment so
 # Dependabot can bump both).
@@ -15,14 +24,12 @@ name: ci
 on:
   pull_request:
     branches: ["main"]
-  push:
-    branches: ["main"]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  # A newer push to the same PR supersedes the running one; main runs always complete.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -32,83 +39,87 @@ env:
   UV_LOCKED: "1"
   # `setup-uv` installs the interpreter pinned in `.python-version` through uv itself.
   UV_PYTHON_DOWNLOADS: automatic
+  GITLEAKS_VERSION: "8.30.1"
 
 jobs:
-  # Cheap probe (seconds) that lets the Node/Docker jobs be conditional: on main today
-  # packages/render holds only CONTRACT.md; the Node code lands with PR #65.
-  changes:
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      render_touched: ${{ steps.filter.outputs.render }}
-      app_image_touched: ${{ steps.filter.outputs.app_image }}
-      render_package: ${{ steps.probe.outputs.package }}
-      render_dockerfile: ${{ steps.probe.outputs.dockerfile }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Did this PR touch packages/render?
-        id: filter
-        if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
-        with:
-          filters: |
-            render:
-              - 'packages/render/**'
-            # Everything that goes into deploy/Dockerfile's `app`/`web` images (or can break
-            # `reflex export`): docs-only PRs skip the image build.
-            app_image:
-              - '.github/workflows/ci.yml'
-              - 'deploy/**'
-              - '.dockerignore'
-              - 'pyproject.toml'
-              - 'uv.lock'
-              - 'rxconfig.py'
-              - 'reflex.lock/**'
-              - 'alembic.ini'
-              - 'assets/**'
-              - 'migrations/**'
-              - 'Qualify/**'
-              - 'packages/*/pyproject.toml'
-              - 'packages/*/src/**'
-      - name: Does the render service exist on this ref?
-        id: probe
-        run: |
-          if [ -f packages/render/package.json ]; then echo "package=true"; else echo "package=false"; fi >> "$GITHUB_OUTPUT"
-          if [ -f packages/render/Dockerfile ]; then echo "dockerfile=true"; else echo "dockerfile=false"; fi >> "$GITHUB_OUTPUT"
-          cat "$GITHUB_OUTPUT"
-
-  lint:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      # ruff lives in the `dev` group; nothing else is needed to lint.
-      - run: uv sync --locked --only-group dev
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-
-  # Offline unit tests: no Postgres/Redis, no vendors, no model weights. Default groups
-  # only (backend + crm + dev) — the `ml`/torch group is NEVER installed in CI.
   test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
       pull-requests: write # sticky coverage comment on the PR
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          # The root conftest.py refuses any DSN whose database does not end in `_test`.
+          POSTGRES_DB: qualify_test
+          POSTGRES_USER: qualify_owner
+          POSTGRES_PASSWORD: ci
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U qualify_owner -d qualify_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - "6379:6379"
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      # Owner DSN for Alembic (migrations run as qualify_owner). App/admin/credential roles
+      # are created by migration 0001/0002 with dev passwords, identical in CI and compose.
+      QUALIFY_MIGRATION_DSN: postgresql+psycopg://qualify_owner:ci@localhost:5432/qualify_test
+      QUALIFY_APP_DSN: postgresql+psycopg://qualify_app:app_dev@localhost:5432/qualify_test
+      QUALIFY_ADMIN_DSN: postgresql+psycopg://qualify_admin:admin_dev@localhost:5432/qualify_test
+      QUALIFY_CREDENTIAL_DSN: postgresql+psycopg://qualify_credential:credential_dev@localhost:5432/qualify_test
+      QUALIFY_WEBHOOK_DSN: postgresql+psycopg://qualify_webhook:webhook_dev@localhost:5432/qualify_test
+      QUALIFY_WEBHOOK_WORKER_DSN: postgresql+psycopg://qualify_webhook_worker:webhook_worker_dev@localhost:5432/qualify_test
+      QUALIFY_REDIS_URL: redis://localhost:6379/15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The PR's own commits for gitleaks; history is small, the fetch takes seconds.
+          fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --locked
+
+      # --- lint (was the `lint` job). `github` format = inline annotations on the PR diff,
+      # which replaces the reviewdog job that used to run in review.yml.
+      - name: ruff check
+        run: uv run ruff check . --output-format=github
+      - name: ruff format --check
+        run: uv run ruff format --check .
+
+      # --- secrets in THIS PR's commits (BLOCKING). Full history: security.yml, daily.
+      - name: gitleaks (PR commits only; FAILS on a real secret; output redacted)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$tarball" "${base}/${tarball}"
+          curl -sSfL -o checksums.txt "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep " ${tarball}$" checksums.txt | sha256sum -c -
+          tar -xzf "$tarball" gitleaks
+          ./gitleaks git --no-banner --redact --exit-code 2 --config .gitleaks.toml \
+            --log-opts="${BASE_SHA}..${HEAD_SHA}" .
+
+      # --- offline unit tests: no Postgres/Redis, no vendors, no model weights. Default
+      # groups only (backend + crm + dev) — the `ml`/torch group is NEVER installed in CI.
       - name: pytest (offline) with coverage
         run: >-
           uv run pytest -m "not integration and not db and not slow"
@@ -148,53 +159,9 @@ jobs:
             gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -F body=@comment.md >/dev/null
           fi
 
-  # `db`-marked tests against real service containers, plus the reversibility gate:
-  # `alembic upgrade head` -> `downgrade base` -> `upgrade head` must land clean
-  # (`just migrate-down` is a repo gate — ADR 27).
-  test-db:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          # The root conftest.py refuses any DSN whose database does not end in `_test`.
-          POSTGRES_DB: qualify_test
-          POSTGRES_USER: qualify_owner
-          POSTGRES_PASSWORD: ci
-        ports:
-          - "5432:5432"
-        options: >-
-          --health-cmd "pg_isready -U qualify_owner -d qualify_test"
-          --health-interval 2s
-          --health-timeout 3s
-          --health-retries 20
-      redis:
-        image: redis:7
-        ports:
-          - "6379:6379"
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 2s
-          --health-timeout 3s
-          --health-retries 20
-    env:
-      # Owner DSN for Alembic (migrations run as qualify_owner). App/admin/credential roles
-      # are created by migration 0001/0002 with dev passwords, identical in CI and compose.
-      QUALIFY_MIGRATION_DSN: postgresql+psycopg://qualify_owner:ci@localhost:5432/qualify_test
-      QUALIFY_APP_DSN: postgresql+psycopg://qualify_app:app_dev@localhost:5432/qualify_test
-      QUALIFY_ADMIN_DSN: postgresql+psycopg://qualify_admin:admin_dev@localhost:5432/qualify_test
-      QUALIFY_CREDENTIAL_DSN: postgresql+psycopg://qualify_credential:credential_dev@localhost:5432/qualify_test
-      QUALIFY_WEBHOOK_DSN: postgresql+psycopg://qualify_webhook:webhook_dev@localhost:5432/qualify_test
-      QUALIFY_WEBHOOK_WORKER_DSN: postgresql+psycopg://qualify_webhook_worker:webhook_worker_dev@localhost:5432/qualify_test
-      QUALIFY_REDIS_URL: redis://localhost:6379/15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv sync --locked
+      # --- db tests + the reversibility gate (was the `test-db` job):
+      # `alembic upgrade head` -> `downgrade base` -> `upgrade head` must land clean
+      # (`just migrate-down` is a repo gate — ADR 27).
       - name: alembic upgrade head (fresh database)
         run: uv run alembic upgrade head
       - name: alembic downgrade base (reversibility gate)
@@ -208,102 +175,3 @@ jobs:
         run: uv run alembic upgrade head
       - name: pytest -m db
         run: uv run pytest -m "db and not integration and not slow"
-
-  # Typecheck the Remotion render service (packages/render). No Docker build here.
-  node-render:
-    needs: changes
-    if: needs.changes.outputs.render_package == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: packages/render
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: packages/render/package-lock.json
-      - run: npm ci
-      - run: npm run typecheck
-
-  # Build (never push) the render image so a broken Dockerfile is caught before `just up`.
-  # Only when the PR touches packages/render/** or on main; layers cached in GHA.
-  docker-render:
-    needs: changes
-    if: >-
-      needs.changes.outputs.render_dockerfile == 'true' &&
-      (github.event_name != 'pull_request' || needs.changes.outputs.render_touched == 'true')
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: packages/render
-          push: false
-          cache-from: type=gha,scope=render
-          cache-to: type=gha,scope=render,mode=max
-
-  # Build the production images of deploy/Dockerfile (`web` = Caddy + `reflex export`,
-  # `app` = the Python runtime) and boot-test them, so a broken Dockerfile or a page that
-  # breaks the static export is caught here instead of on the production server, where
-  # `just deploy` builds them today. Never pushed. On PRs only when an input of the images
-  # changed (see `changes`), always on main; layers cached in GHA.
-  docker-deploy:
-    needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.app_image_touched == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - name: Build web (Caddy + static frontend)
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: deploy/Dockerfile
-          target: web
-          push: false
-          load: true
-          tags: qualify-web:ci
-          cache-from: type=gha,scope=deploy
-      - name: Build app (Python runtime)
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: deploy/Dockerfile
-          target: app
-          push: false
-          load: true
-          tags: qualify-app:ci
-          cache-from: type=gha,scope=deploy
-          # One cache write per run, from the build that walks every stage `web` also uses
-          # (deps, frontend-build); the Caddy stage itself is two COPYs.
-          cache-to: type=gha,scope=deploy,mode=max
-      - name: Smoke — the Reflex backend boots and answers /ping
-        run: |
-          docker run -d --name reflex -e QUALIFY_CALENDAR_WORKER=off \
-            -e REFLEX_API_URL=http://localhost:8000 -e GRANIAN_WORKERS=1 \
-            qualify-app:ci reflex run --env prod --backend-only --backend-port 8000
-          for _ in $(seq 1 60); do
-            if docker exec reflex python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ping', timeout=2)" 2>/dev/null; then
-              echo "reflex backend: /ping 200"; exit 0
-            fi
-            sleep 2
-          done
-          docker logs reflex; exit 1
-      - name: Smoke — Caddy serves the exported frontend
-        run: |
-          docker run -d --name web -p 18080:80 -e QUALIFY_DOMAIN=http://localhost \
-            -e QUALIFY_ACME_EMAIL=ci@example.com qualify-web:ci
-          for path in / /login /drafts/abc; do
-            code=""
-            for _ in $(seq 1 15); do
-              code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: localhost' "http://127.0.0.1:18080$path" || true)
-              [ "$code" = 200 ] && break; sleep 1
-            done
-            echo "$path -> $code"; [ "$code" = 200 ] || { docker logs web; exit 1; }
-          done

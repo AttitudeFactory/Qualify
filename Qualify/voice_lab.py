@@ -53,6 +53,7 @@ from .tenant import tenant_uuid
 from .ui import (
     callout,
     card,
+    dropzone,
     loading_spinner,
     progress_panel,
     removable_pill,
@@ -87,8 +88,10 @@ _CLONE_LIMIT = "Se alcanzó el límite de voces clonadas."
 _CLONE_PLAN = "Clonar voces requiere un plan de pago de HeyGen."
 _DB_ERROR = "No se pudo leer la base de datos."
 #: The microphone recorder, shipped INSIDE the `rx.call_script` that starts it: the
-#: app's `head_components` scripts go through react-helmet and were measured not to
-#: load (2026-10-01), while `call_script` is a plain `eval`. The file is idempotent
+#: app's `head_components` scripts go through react-helmet, which on Reflex < 0.9.9
+#: could drop them around hydration (measured 2026-10-01 on a 0.9.7 venv; fixed
+#: upstream in 0.9.9, see the note on `head_components` in Qualify.py), while
+#: `call_script` is a plain `eval`. The file is idempotent
 #: (`if (window.qualifyVoice) return;`), so sending it with every Grabar is safe.
 _RECORDER_JS = (Path(__file__).resolve().parent.parent / "assets" / "voice-recorder.js").read_text(
     encoding="utf-8"
@@ -811,7 +814,7 @@ def _voice_lab_card() -> rx.Component:
                     _recorder(),
                     # Always mounted while there is no recording yet: a finished
                     # recording is handed to THIS dropzone (`assets/voice-recorder.js`).
-                    rx.upload(
+                    dropzone(
                         rx.vstack(
                             rx.icon("upload", size=T.ICON_MD, color=T.TEXT_FAINT),
                             rx.text(
@@ -822,23 +825,17 @@ def _voice_lab_card() -> rx.Component:
                             ),
                             spacing="1",
                             align="center",
-                            class_name="q-dropzone",
-                            padding="1rem",
                             width="100%",
                         ),
-                        id=VOICE_UPLOAD_ID,
+                        upload_id=VOICE_UPLOAD_ID,
                         accept=_AUDIO_ACCEPT,
                         max_files=1,
                         on_drop=VoiceLabState.handle_sample_upload(
                             rx.upload_files(upload_id=VOICE_UPLOAD_ID)
                         ),
-                        # `rx.upload` paints its own dashed border unless told not to:
-                        # the vstack above is the dropzone's look (`.q-dropzone`)
-                        border="none",
-                        padding="0",
+                        variant="compact",
                         width="100%",
-                        cursor="pointer",
-                        display=rx.cond(VoiceLabState.recording, "none", "block"),
+                        display=rx.cond(VoiceLabState.recording, "none", "flex"),
                     ),
                     spacing="2",
                     width="100%",

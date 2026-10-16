@@ -1,0 +1,15 @@
+{
+  "_fixture_note": "DOC-DERIVED, not recorded: last page of templates/template-management's list (paging without next). Ids are placeholders.",
+  "data": [
+    {
+      "name": "order_ready",
+      "components": [{"type": "BODY", "text": "Tu pedido está listo"}],
+      "language": "es_CO",
+      "status": "PAUSED",
+      "category": "UTILITY",
+      "id": "1407680676729941",
+      "quality_score": "RED"
+    }
+  ],
+  "paging": {"cursors": {"before": "QVFIUafter1", "after": "QVFIUend"}}
+}

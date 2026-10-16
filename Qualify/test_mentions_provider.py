@@ -10,7 +10,7 @@ reception dates kept apart, every sentiment state passed through as its own valu
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -90,8 +90,8 @@ def _record(
     )
 
 
-def _vm(record: MentionRecord, *, new_since: datetime | None = None) -> MentionVM:
-    return to_vm(record, new_since=new_since)
+def _vm(record: MentionRecord) -> MentionVM:
+    return to_vm(record)
 
 
 # --- columns ----------------------------------------------------------------------------
@@ -113,6 +113,21 @@ def test_comment_mention_never_borrows_the_publication_author() -> None:
     assert vm.author == NOT_AVAILABLE
     assert vm.author_note == AUTHOR_NOTE_COMMENT
     assert vm.text == "@qualifymkt.co mira esto"
+
+
+def test_a_comment_on_an_own_post_shows_its_commenter() -> None:
+    """Only the `comments` webhook writes a comment row's author, and it is the commenter."""
+    vm = _vm(replace(_record(comment=True), author_username="yesii_roa"))
+
+    assert (vm.kind, vm.author, vm.author_note) == ("comment", "@yesii_roa", "")
+
+
+def test_an_unread_comment_never_shows_an_author() -> None:
+    record = replace(
+        _record(comment=True, enrichment=ENRICHMENT_FAILED), author_username="yesii_roa"
+    )
+
+    assert (_vm(record).author, _vm(record).author_note) == (NOT_AVAILABLE, AUTHOR_NOTE_UNREAD)
 
 
 def test_a_failed_meta_read_says_so_in_author_and_text() -> None:
@@ -199,7 +214,7 @@ def test_account_options_are_unique_labels(monkeypatch: pytest.MonkeyPatch) -> N
     ]
 
 
-# --- sentiment and the "Nueva" mark -----------------------------------------------------
+# --- sentiment, and no "new" mark -------------------------------------------------------
 
 
 @pytest.mark.parametrize("state", ["POS", "NEU", "NEG", "PENDING", "NO_TEXT", "ERROR"])
@@ -207,12 +222,9 @@ def test_every_sentiment_state_passes_through_untouched(state: str) -> None:
     assert _vm(_record(state=state)).sentiment_state == state
 
 
-def test_rows_received_after_the_previous_snapshot_are_marked_new() -> None:
-    cut = datetime(2026, 10, 13, 14, 3, tzinfo=UTC)
-
-    assert _vm(_record(), new_since=cut).is_new is True  # received 14:05
-    assert _vm(_record(), new_since=datetime(2026, 10, 13, 15, 0, tzinfo=UTC)).is_new is False
-    assert _vm(_record(), new_since=None).is_new is False
+def test_a_row_carries_no_new_arrival_mark() -> None:
+    """A mention is not a message: its row is never flagged as a new arrival (QUA-152)."""
+    assert "is_new" not in {field.name for field in fields(MentionVM)}
 
 
 # --- page assembly ----------------------------------------------------------------------
@@ -254,16 +266,6 @@ def test_load_page_returns_the_scope_summary_apart_from_the_filtered_total(
     assert vm.filtered_total == 14
     assert (vm.summary.total, vm.summary.pending, vm.summary.error) == (57, 50, 2)
     assert (vm.page, vm.total_pages, vm.pages_label) == (2, 2, "Total de 2 páginas")
-
-
-def test_count_new_needs_a_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mentions_provider, "count_new_mentions_for_tenant", lambda **kwargs: 7)
-
-    assert mentions_provider.count_new(TENANT, query=MentionQuery(), as_of="") == 0
-    assert (
-        mentions_provider.count_new(TENANT, query=MentionQuery(), as_of="2026-10-13T15:00:00+00:00")
-        == 7
-    )
 
 
 def test_day_and_time_are_also_given_apart_for_the_stacked_layout() -> None:

@@ -1,0 +1,61 @@
+# Remotion render service (packages/render): typecheck + image build (were ci.yml
+# `node-render` / `docker-render`). They start ONLY when packages/render changes — on a PR
+# or on main — so the rest of the repo's PRs boot no Node/Docker runner.
+# `just merge` requires these checks only when they reported.
+name: render
+
+on:
+  pull_request:
+    branches: ["main"]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'packages/render/**'
+      - '.github/workflows/render.yml'
+  push:
+    branches: ["main"]
+    paths:
+      - 'packages/render/**'
+      - '.github/workflows/render.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: render-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Typecheck the Remotion render service (packages/render). No Docker build here.
+  node-render:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: packages/render
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: packages/render/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+
+  # Build (never push) the render image so a broken Dockerfile is caught before `just up`.
+  # Layers cached in GHA.
+  docker-render:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: packages/render
+          push: false
+          cache-from: type=gha,scope=render
+          cache-to: type=gha,scope=render,mode=max

@@ -27,13 +27,14 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import cache
 from typing import Literal
 from uuid import UUID
 
 import httpx
 from qualify_shared.db.session import tenant_session
+from qualify_shared.social.graph_errors import is_auth_error
 from sqlalchemy import select
 
 from qualify_api.config import MetaOAuthSettings
@@ -44,6 +45,8 @@ from qualify_api.connections.resolver import AuthenticatedClient, InjectingCrede
 from qualify_api.mentions.meta_client import (
     HttpMentionedContentClient,
     MentionedContentReadError,
+    is_comment_unavailable_candidate,
+    is_gone,
     is_rate_limited,
     is_transient,
 )
@@ -85,6 +88,17 @@ class _ConnectionIgUserIdReader:
                     SocialConnection.id == connection_id
                 )
             )
+
+
+def connection_username(*, tenant_id: UUID, connection_id: UUID) -> str | None:
+    """The connected account's Instagram username (`social_connections.external_username`)
+    — what an own-post comment must @mention to be a mention. Read through
+    `tenant_session` with the tenant `resolve_external_account` just produced, never
+    through the webhook worker's cross-tenant door."""
+    with tenant_session(tenant_id) as session:
+        return session.scalar(
+            select(SocialConnection.external_username).where(SocialConnection.id == connection_id)
+        )
 
 
 @cache
@@ -148,6 +162,9 @@ async def ingest_mention(
     media_id: str,
     comment_id: str | None,
     resolution: TenantResolution,
+    text: str | None = None,
+    author_username: str | None = None,
+    observed_at: datetime | None = None,
 ) -> UUID | None:
     """Enrich (best-effort) and persist one `RESOLVED` mention event. Returns the
     persisted mention's id, or `None` if the connection turned out not to be resolvable
@@ -156,6 +173,11 @@ async def ingest_mention(
     Enrichment picks exactly one endpoint: `mentioned_comment` when `comment_id` is
     present (a mention inside a comment), `mentioned_media` otherwise (a caption
     mention) — mirrors `MentionsChangeValue`'s own caption-vs-comment split, never both.
+
+    `text`/`author_username`/`observed_at` come only from the `comments` webhook (a
+    comment on the account's OWN media that @mentions it), which carries what
+    `mentions` does not — see `_enrich_and_store`. The `mentions` path passes none of
+    them and behaves exactly as before.
     """
     assert resolution.tenant_id is not None and resolution.connection_id is not None
 
@@ -172,6 +194,9 @@ async def ingest_mention(
             media_id=media_id,
             comment_id=comment_id,
             resolution=resolution,
+            webhook_text=text,
+            webhook_author=author_username,
+            observed_at=observed_at,
         )
     finally:
         await _close_client(client)
@@ -184,7 +209,24 @@ async def _enrich_and_store(
     media_id: str,
     comment_id: str | None,
     resolution: TenantResolution,
+    webhook_text: str | None = None,
+    webhook_author: str | None = None,
+    observed_at: datetime | None = None,
 ) -> UUID:
+    """`webhook_text`/`webhook_author`/`observed_at` (the `comments` webhook only) default
+    to None, which leaves the `mentions` path exactly as it was. When given, for a comment:
+
+    - the author is the commenter (`from.username`), never the publication's owner;
+    - the network text wins; the webhook text is used when the network gives none, so the
+      mention is readable even if `mentioned_comment` refuses (still ENRICHED: the content
+      came from Meta, through the webhook);
+    - `observed_at` (when Meta sent the change) dates the mention only when the network
+      gave no creation date, so a replayed old comment is not shown as just received;
+    - the same `(connection, media_id, comment_id)` already stored (e.g. first by
+      `mentions`) is never duplicated: a successful network read is written to it as
+      "Actualizar" would (`refresh_content`); without one, only its missing text/author
+      are filled in (`fill_missing_comment_fields`).
+    """
     assert resolution.tenant_id is not None and resolution.connection_id is not None
     caption: str | None = None
     text: str | None = None
@@ -230,8 +272,21 @@ async def _enrich_and_store(
             type(exc).__name__,
         )
 
+    network_read = enrichment_status == ENRICHMENT_OK
+    network_posted_at = content_posted_at
+    from_comments_webhook = comment_id is not None and (
+        webhook_text is not None or webhook_author is not None
+    )
+    if from_comments_webhook:
+        author_username = webhook_author
+        if text is None and webhook_text is not None:
+            text = webhook_text
+            enrichment_status = ENRICHMENT_OK
+        if content_posted_at is None:
+            content_posted_at = observed_at
+
     permalink: str | None = None
-    if enrichment_status == ENRICHMENT_OK:
+    if network_read:
         # QUA-152: best-effort, AFTER the content read and in its own call — a refusal
         # leaves the mention exactly as it would be without a link, never ENRICHMENT_FAILED.
         permalink = await _read_permalink(
@@ -252,8 +307,39 @@ async def _enrich_and_store(
         content_posted_at=content_posted_at,
         enrichment_status=enrichment_status,
         permalink=permalink,
+        # A successful network read at ingestion IS a read: without this stamp a mention
+        # born here was never `ever_read`, so a comment deleted on Instagram afterwards
+        # answered 400/100 to "Actualizar" and was kept as failed instead of removed.
+        # Webhook-only text (the network refused) stays unstamped on purpose.
+        read_from_network=network_read,
     )
-    mention_id, _created = production_mentions_repository().upsert_mention(mention)
+    repo = production_mentions_repository()
+    mention_id, created = repo.upsert_mention(mention)
+    if not created and from_comments_webhook:
+        # Already stored (e.g. first by `mentions`, which carries no author).
+        if network_read:
+            # The network's current content, as "Actualizar" writes it; the author is
+            # never part of a network read, so it only fills a missing one (below).
+            repo.refresh_content(
+                tenant_id=resolution.tenant_id,
+                mention_id=mention_id,
+                content=MentionContent(
+                    caption=None,
+                    text=text,
+                    author_username=None,
+                    media_type=None,
+                    like_count=like_count,
+                    # Never the send-time fallback: it would overwrite a real date.
+                    content_posted_at=network_posted_at,
+                    permalink=permalink,
+                ),
+            )
+        repo.fill_missing_comment_fields(
+            tenant_id=resolution.tenant_id,
+            mention_id=mention_id,
+            text=None if network_read else text,
+            author_username=author_username,
+        )
     return mention_id
 
 
@@ -283,7 +369,22 @@ def list_mentions_for_tenant(
 #   - a throttling answer from Meta, or a reported usage at/above REFRESH_USAGE_STOP_PERCENT,
 #     stops the run: nothing more is requested, what is left is reported as pending;
 #   - a mention re-read successfully in the last REFRESH_FRESH_SECONDS is current and is
-#     not requested again (two tabs, a double click).
+#     not requested again (two tabs, a double click);
+#   - a mention Meta reports unavailable (`is_gone`: deleted, made private, blocked) is
+#     marked removed and stops showing — once per connection and run, the account itself
+#     is confirmed readable first, since the same answer can be about the account (then
+#     it is an account problem: nothing is removed). Not a failure: nothing to read;
+#   - a COMMENT mention whose read answers 400/100 with no subcode
+#     (`is_comment_unavailable_candidate`, what Meta really answers for a deleted comment
+#     through `mentioned_comment`) is settled once every live read is done: removed as
+#     above only if it was read successfully before AND another `mentioned_comment` read of
+#     the same connection succeeded in this run or in the last REFRESH_FRESH_SECONDS (the
+#     two passes of one click; the request shape is valid). Without that proof it keeps its
+#     data; the visible pass leaves it unstamped for the scope pass, which stamps it (so it
+#     never stays first in line). Never applied to `mentioned_media`;
+#   - with the capacity left (at most REMOVED_RECHECK_PER_RUN), removed mentions not tried
+#     for REMOVED_RECHECK_SECONDS and removed no longer than REMOVED_RECHECK_MAX_AGE_SECONDS
+#     ago are re-read: one that answers shows again (`restored`).
 # One read per mention; the link only while it is not stored yet (it does not change).
 
 REFRESH_MAX_PER_RUN = 200
@@ -293,7 +394,17 @@ REFRESH_BACKOFF_SECONDS = (1.0, 3.0)
 REFRESH_USAGE_STOP_PERCENT = 75
 REFRESH_FRESH_SECONDS = 60
 
-_Outcome = Literal["refreshed", "failed", "not_attempted", "credential_failed"]
+_Outcome = Literal[
+    "refreshed",
+    "failed",
+    "not_attempted",
+    "credential_failed",
+    "removed",
+    "restored",  # a removed mention answered again: it shows again
+    "unchanged",  # a removed mention re-checked and still unavailable: not reported
+    "deferred",  # internal: an unavailable-comment candidate, settled after the live reads
+]
+_AccountState = Literal["ok", "account_gone", "unknown"]
 
 
 class _RateLimited(Exception):
@@ -316,6 +427,18 @@ class ContentRefreshReport:
     # Not readable because the CONNECTION has no usable credential (revoked, undecryptable):
     # an account problem, not the mention's — never stamped as an attempt on the mention.
     credential_failed: int = 0
+    # The network says the content is no longer available (deleted, made private, the
+    # author blocked the account): the mention left the dashboard (migration 0062).
+    # Neither current nor pending — it left the scope.
+    removed: int = 0
+    # Removed mentions re-checked (outside the scope's counts) that answered again and
+    # show again.
+    restored: int = 0
+
+    @property
+    def remaining_scope(self) -> int:
+        """The scope once the removed mentions left it — what "N de M" counts."""
+        return self.in_scope - self.removed
 
     @property
     def pending(self) -> int:
@@ -346,7 +469,13 @@ async def refresh_mentions_content(
             not_attempted=len(mention_ids),
         )
     return await _refresh_targets(
-        repo, tenant_id=tenant_id, targets=targets, in_scope=len(targets), already_fresh=0
+        repo,
+        tenant_id=tenant_id,
+        targets=targets,
+        in_scope=len(targets),
+        already_fresh=0,
+        # The scope pass of the same click follows: an unproven candidate is left for it.
+        stamp_unproven=False,
     )
 
 
@@ -393,15 +522,32 @@ async def _refresh_targets(
     in_scope: int,
     already_fresh: int,
     recently_failed: int = 0,
+    stamp_unproven: bool = True,
 ) -> ContentRefreshReport:
     """Every repository call runs in a worker thread (`asyncio.to_thread`): this coroutine
-    runs on the Reflex backend's event loop, which serves every other session too."""
+    runs on the Reflex backend's event loop, which serves every other session too.
+
+    `stamp_unproven=False` (the visible pass only) leaves a deleted-comment candidate with
+    no comparable read unstamped, so the scope pass of the same click re-reads it next to
+    the connection's other comments. The scope pass stamps it like any failure, so it goes
+    to the back of the queue and never starves the other mentions."""
     clients: dict[UUID, tuple[HttpMentionedContentClient, str] | None] = {}
     clients_lock = asyncio.Lock()
     slots = asyncio.Semaphore(REFRESH_CONCURRENCY)
     stop = asyncio.Event()  # no new reads: throttled, or usage at the limit
     throttled = asyncio.Event()
     usage_paused = asyncio.Event()
+    # connection -> the state of its account node, checked only when a read says "does
+    # not exist" (see `is_gone`). A settled answer is kept for the run; an `unknown` one is
+    # dropped so the next mention asks again. Registered without awaiting: no lock, so it
+    # never waits behind another connection's credential resolution.
+    accounts: dict[UUID, asyncio.Task[_AccountState]] = {}
+    # Connections with at least one successful `mentioned_comment` read in this run, and
+    # the comment mentions whose read answered `is_comment_unavailable_candidate` (with the
+    # moment that read started). Settled only once every live read is done, so the order
+    # in which concurrent reads finish never decides a removal.
+    comment_read_ok: set[UUID] = set()
+    candidates: dict[UUID, tuple[datetime, MentionedContentReadError]] = {}
 
     async def client_for(connection_id: UUID) -> tuple[HttpMentionedContentClient, str] | None:
         async with clients_lock:  # ONE credential resolution per connection and run
@@ -423,15 +569,149 @@ async def _refresh_targets(
         throttled.set()
         stop.set()
 
+    def watch_usage(client: HttpMentionedContentClient) -> None:
+        if getattr(client, "usage_percent", 0) >= REFRESH_USAGE_STOP_PERCENT:
+            usage_paused.set()
+            stop.set()
+            _LOGGER.warning("mentions refresh paused: Meta usage at or above the limit")
+
+    async def account_state(
+        client: HttpMentionedContentClient, ig_user_id: str, connection_id: UUID
+    ) -> _AccountState:
+        task = accounts.get(connection_id)
+        if task is None:
+            task = asyncio.ensure_future(_account_state(client, ig_user_id))
+            accounts[connection_id] = task
+        state = await task
+        if state == "unknown" and accounts.get(connection_id) is task:
+            del accounts[connection_id]
+        return state
+
+    async def store(target: RefreshTarget, content: MentionContent) -> bool | None:
+        """True stored, False not this tenant's, None the database failed."""
+        try:
+            return await asyncio.to_thread(
+                repo.refresh_content,
+                tenant_id=tenant_id,
+                mention_id=target.mention_id,
+                content=content,
+            )
+        except Exception as exc:  # noqa: BLE001 — a DB error on one row, not the run
+            _LOGGER.warning(
+                "mentions refresh could not store: mention=%s (%s)",
+                target.mention_id,
+                type(exc).__name__,
+            )
+            return None
+
+    async def stamp_attempt(target: RefreshTarget) -> None:
+        await asyncio.to_thread(
+            _mark_attempt, repo, tenant_id=tenant_id, mention_id=target.mention_id
+        )
+
+    async def recheck_removed(target: RefreshTarget) -> _Outcome:
+        """A removed mention, re-read with the spare capacity left once every live mention
+        is done: it shows again only if it answers. Nothing about it is reported unless it
+        comes back, and a throttling answer here only ends the rechecks — it never turns
+        the run into a "limited" one the person has to retry."""
+        async with slots:
+            if stop.is_set():
+                return "unchanged"
+            client_and_user = await client_for(target.connection_id)
+            if client_and_user is None:
+                # Stamped all the same: an unreadable connection's removed mentions must
+                # not stay first in line and starve every other connection's rechecks.
+                await stamp_attempt(target)
+                return "unchanged"
+            client, ig_user_id = client_and_user
+            try:
+                content = await _read_content(
+                    client, ig_user_id=ig_user_id, target=target, on_throttle=stop.set
+                )
+            except _RateLimited:
+                stop.set()
+                return "unchanged"
+            except Exception:  # noqa: BLE001 — still unavailable (or unknown): stays removed
+                await stamp_attempt(target)
+                return "unchanged"
+            finally:
+                watch_usage(client)
+            if await store(target, content):
+                _LOGGER.info("mentions refresh restored a mention: mention=%s", target.mention_id)
+                return "restored"
+            return "unchanged"
+
+    async def remove_if_account_ok(
+        target: RefreshTarget,
+        client: HttpMentionedContentClient,
+        ig_user_id: str,
+        read_started: datetime,
+    ) -> _Outcome | None:
+        """The mention's content read said "unavailable": remove it once the account itself
+        is confirmed readable. None = nothing settled (the account check failed, or the
+        removal could not be written): the caller keeps the mention as a plain failure."""
+        try:
+            account = await account_state(client, ig_user_id, target.connection_id)
+        except _RateLimited:
+            on_throttle()
+            return "not_attempted"
+        watch_usage(client)  # the account check is a Graph call too
+        if account == "account_gone":
+            # The "does not exist" is about the account: nothing is removed.
+            _LOGGER.warning(
+                "mentions refresh: connection=%s account node not readable",
+                target.connection_id,
+            )
+            return "credential_failed"
+        if account == "ok":
+            removed = await asyncio.to_thread(
+                _mark_removed,
+                repo,
+                tenant_id=tenant_id,
+                mention_id=target.mention_id,
+                read_started=read_started,
+            )
+            if removed is not None:
+                _LOGGER.info(
+                    "mentions refresh: mention=%s %s",
+                    target.mention_id,
+                    "removed (unavailable)" if removed else "read meanwhile, kept",
+                )
+                # Not removed = a successful read landed after this one started
+                # (another tab, the comments webhook): it exists and is current.
+                return "removed" if removed else "refreshed"
+        # The account check itself failed (network, 5xx), or the removal could not be
+        # written: never remove on a doubt — a plain failure, asked again later.
+        return None
+
+    async def keep_as_failed(target: RefreshTarget, exc: MentionedContentReadError) -> _Outcome:
+        # Error codes only, never the body: they are what tells a deleted object apart
+        # from any other refusal when this path is checked in production.
+        _LOGGER.info(
+            "mentions refresh kept stored content: mention=%s (%s http=%s code=%s subcode=%s)",
+            target.mention_id,
+            type(exc).__name__,
+            exc.http_status,
+            exc.platform_code,
+            exc.platform_subcode,
+        )
+        await stamp_attempt(target)
+        return "failed"
+
     async def refresh_one(target: RefreshTarget) -> _Outcome:
         async with slots:
             if stop.is_set():
                 return "not_attempted"
+            client_and_user = await client_for(target.connection_id)
+            if client_and_user is None:
+                return "credential_failed"
+            client, ig_user_id = client_and_user
+            # Taken BEFORE the read: only a successful read that lands after this moment
+            # (another tab, the comments webhook) can keep a refused mention from removal.
+            # Compared with `content_refreshed_at`, which Postgres stamps: app and database
+            # share the host clock (compose locally, one VPS in production).
+            read_started = datetime.now(UTC)
             try:
-                client_and_user = await client_for(target.connection_id)
-                if client_and_user is None:
-                    return "credential_failed"
-                client, ig_user_id = client_and_user
                 content = await _read_content(
                     client, ig_user_id=ig_user_id, target=target, on_throttle=on_throttle
                 )
@@ -439,43 +719,130 @@ async def _refresh_targets(
                 on_throttle()
                 _LOGGER.warning("mentions refresh stopped: Meta is throttling this account")
                 return "not_attempted"
+            except MentionedContentReadError as exc:
+                watch_usage(client)
+                if is_gone(exc):
+                    settled = await remove_if_account_ok(target, client, ig_user_id, read_started)
+                    if settled is not None:
+                        return settled
+                elif (
+                    target.comment_id is not None
+                    and target.ever_read
+                    and is_comment_unavailable_candidate(exc)
+                ):
+                    # Decided after every live read (`settle_candidate`): whether another
+                    # comment read of this connection succeeded is only known then.
+                    candidates[target.mention_id] = (read_started, exc)
+                    return "deferred"
+                return await keep_as_failed(target, exc)
             except Exception as exc:  # noqa: BLE001 — keep the stored data, log the type only
                 _LOGGER.info(
                     "mentions refresh kept stored content: mention=%s (%s)",
                     target.mention_id,
                     type(exc).__name__,
                 )
-                await asyncio.to_thread(
-                    _mark_attempt, repo, tenant_id=tenant_id, mention_id=target.mention_id
-                )
+                await stamp_attempt(target)
                 return "failed"
-            if getattr(client, "usage_percent", 0) >= REFRESH_USAGE_STOP_PERCENT:
-                usage_paused.set()
-                stop.set()
-                _LOGGER.warning("mentions refresh paused: Meta usage at or above the limit")
-            try:
-                stored = await asyncio.to_thread(
-                    repo.refresh_content,
-                    tenant_id=tenant_id,
-                    mention_id=target.mention_id,
-                    content=content,
-                )
-            except Exception as exc:  # noqa: BLE001 — a DB error on one row, not the run
-                _LOGGER.warning(
-                    "mentions refresh could not store: mention=%s (%s)",
-                    target.mention_id,
-                    type(exc).__name__,
-                )
-                return "failed"
-            return "refreshed" if stored else "failed"
+            watch_usage(client)
+            if target.comment_id is not None:
+                comment_read_ok.add(target.connection_id)
+            return "refreshed" if await store(target, content) else "failed"
 
+    async def comparable_read(target: RefreshTarget) -> bool:
+        """Proof that this connection's `mentioned_comment` requests are valid: another
+        comment read of it succeeded in this run, or within REFRESH_FRESH_SECONDS — the
+        visible pass and the scope pass of one click are two runs."""
+        if target.connection_id in comment_read_ok:
+            return True
+        try:
+            return await asyncio.to_thread(
+                repo.comment_read_recently,
+                tenant_id=tenant_id,
+                connection_id=target.connection_id,
+                besides=target.mention_id,
+                within_seconds=REFRESH_FRESH_SECONDS,
+            )
+        except Exception as exc:  # noqa: BLE001 — no proof: never remove on a doubt
+            _LOGGER.info("mentions refresh: comparable read unknown (%s)", type(exc).__name__)
+            return False
+
+    async def settle_candidate(target: RefreshTarget) -> _Outcome:
+        """A comment mention whose read answered 400/100 with no subcode. Removed only when
+        another `mentioned_comment` read of the same connection succeeded (`comparable_read`)
+        — proof that the request itself is valid and the refusal is about this comment —
+        and the account answers. Without that proof it is kept: unstamped in the visible
+        pass (the scope pass of the same click may have the proof), stamped in the scope pass
+        (to the back of the queue, retried on a later click). A systematic refusal of every
+        comment read is never taken for a deletion. A stopped run (throttled, usage pause)
+        leaves it pending: nothing was decided."""
+        read_started, failure = candidates[target.mention_id]
+        async with slots:
+            if stop.is_set():
+                return "not_attempted"
+            if not await comparable_read(target):
+                if stamp_unproven:
+                    return await keep_as_failed(target, failure)
+                _LOGGER.info(
+                    "mentions refresh: mention=%s kept, no comparable comment read yet "
+                    "(%s http=%s code=%s subcode=%s)",
+                    target.mention_id,
+                    type(failure).__name__,
+                    failure.http_status,
+                    failure.platform_code,
+                    failure.platform_subcode,
+                )
+                return "failed"
+            client_and_user = await client_for(target.connection_id)
+            if client_and_user is None:
+                return "credential_failed"
+            client, ig_user_id = client_and_user
+            settled = await remove_if_account_ok(target, client, ig_user_id, read_started)
+            if settled is not None:
+                return settled
+            return await keep_as_failed(target, failure)
+
+    async def run_all(
+        batch: list[RefreshTarget],
+        one: Callable[[RefreshTarget], Awaitable[_Outcome]],
+        *,
+        on_error: _Outcome,
+    ) -> list[_Outcome]:
+        """Every coroutine settles before this returns — an unexpected error in one never
+        leaves the others running against clients the `finally` below closes."""
+        results = await asyncio.gather(*(one(target) for target in batch), return_exceptions=True)
+        outcomes: list[_Outcome] = []
+        for result in results:
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, BaseException):
+                _LOGGER.warning("mentions refresh: unexpected error (%s)", type(result).__name__)
+                outcomes.append(on_error)
+            else:
+                outcomes.append(result)
+        return outcomes
+
+    live = [target for target in targets if not target.removed]
+    rechecks = [target for target in targets if target.removed]
     try:
-        outcomes = await asyncio.gather(*(refresh_one(target) for target in targets))
+        outcomes = await run_all(live, refresh_one, on_error="failed")
+        pending_candidates = [target for target in live if target.mention_id in candidates]
+        if pending_candidates:
+            outcomes = [outcome for outcome in outcomes if outcome != "deferred"]
+            outcomes += await run_all(pending_candidates, settle_candidate, on_error="failed")
+        # Removed mentions only with what the live ones left: never competing for the
+        # slots, the usage budget or the throttling answer of what the person asked for.
+        if rechecks and not stop.is_set():
+            outcomes += await run_all(rechecks, recheck_removed, on_error="unchanged")
     finally:
+        # A cancelled run may leave an account check in flight: cancel it, wait until it
+        # has settled (its exception retrieved), and only then close the clients it uses.
+        for task in accounts.values():
+            task.cancel()
+        await asyncio.gather(*accounts.values(), return_exceptions=True)
         for client_and_user in clients.values():
             if client_and_user is not None:
                 await _close_client(client_and_user[0])
-    planned_but_left = in_scope - already_fresh - recently_failed - len(targets)
+    planned_but_left = in_scope - already_fresh - recently_failed - len(live)
     return ContentRefreshReport(
         in_scope=in_scope,
         refreshed=outcomes.count("refreshed"),
@@ -484,6 +851,8 @@ async def _refresh_targets(
         # is reported as failed, not requested again.
         failed=outcomes.count("failed") + recently_failed,
         credential_failed=outcomes.count("credential_failed"),
+        removed=outcomes.count("removed"),
+        restored=outcomes.count("restored"),
         not_attempted=outcomes.count("not_attempted") + max(0, planned_but_left),
         rate_limited=throttled.is_set(),
         usage_paused=usage_paused.is_set() and not throttled.is_set(),
@@ -495,6 +864,37 @@ def _mark_attempt(repo: MentionsRepository, *, tenant_id: UUID, mention_id: UUID
         repo.mark_refresh_attempt(tenant_id=tenant_id, mention_id=mention_id)
     except Exception as exc:  # noqa: BLE001 — bookkeeping only
         _LOGGER.info("mentions refresh attempt not stamped (%s)", type(exc).__name__)
+
+
+async def _account_state(client: HttpMentionedContentClient, ig_user_id: str) -> _AccountState:
+    """Whether the connected account's node is readable — retried like a content read.
+    `account_gone` only for an answer about the account itself ("does not exist", or an
+    expired/revoked token); anything else unresolved is `unknown`. Raises `_RateLimited`
+    when Meta throttles the check."""
+    try:
+        await _with_retries(lambda: client.account_reachable(ig_user_id=ig_user_id))
+    except _RateLimited:
+        raise
+    except MentionedContentReadError as exc:
+        auth = is_auth_error(http_status=exc.http_status, platform_code=exc.platform_code)
+        return "account_gone" if is_gone(exc) or auth else "unknown"
+    except Exception:  # noqa: BLE001 — network or anything else: never remove on a doubt
+        return "unknown"
+    return "ok"
+
+
+def _mark_removed(
+    repo: MentionsRepository, *, tenant_id: UUID, mention_id: UUID, read_started: datetime
+) -> bool | None:
+    """`repo.mark_removed`'s answer, or None when the write fails (the mention then counts
+    as failed and keeps showing; the next run sees the same answer again)."""
+    try:
+        return repo.mark_removed(
+            tenant_id=tenant_id, mention_id=mention_id, unless_read_after=read_started
+        )
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.warning("mentions refresh could not remove (%s)", type(exc).__name__)
+        return None
 
 
 async def _read_content(
@@ -626,17 +1026,6 @@ def summarize_mentions_for_tenant(
         version=current_mention_analysis_version(),
         query=query,
         as_of=as_of,
-    )
-
-
-def count_new_mentions_for_tenant(*, tenant_id: UUID, query: MentionQuery, after: datetime) -> int:
-    """Mentions matching `query` that arrived after the dashboard's snapshot, up to
-    `NEW_MENTIONS_CAP` — what the new-mention notice shows (QUA-152)."""
-    return production_mentions_repository().count_received_after(
-        tenant_id=tenant_id,
-        version=current_mention_analysis_version(),
-        query=query,
-        after=after,
     )
 
 

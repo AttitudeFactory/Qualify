@@ -35,6 +35,8 @@ from .ui import (
     app_shell,
     callout,
     card,
+    choice_card,
+    dropzone,
     empty_state,
     loading_spinner,
     page_body,
@@ -629,22 +631,20 @@ def _route_option(option: RouteOptionVM) -> rx.Component:
         rx.cond(
             option.needs_upload,
             rx.vstack(
-                # `rx.upload.root`, not `rx.upload`: the styled one injects an inline
-                # dashed border no class could override; the material is `.q-cr-dropzone`.
-                rx.upload.root(
+                dropzone(
                     rx.vstack(
                         rx.icon("image-up", size=22, color=T.TEXT_FAINT),
                         rx.text("Arrastra tu foto o haz clic para elegirla", size="2"),
                         align="center",
                         spacing="2",
                     ),
-                    id="creative_photo",
+                    upload_id="creative_photo",
                     accept={"image/*": [".png", ".jpg", ".jpeg", ".webp"]},
                     max_files=1,
                     on_drop=CreativeState.handle_photo_upload(
                         rx.upload_files(upload_id="creative_photo")
                     ),
-                    class_name="q-cr-dropzone",
+                    variant="compact",
                     padding="1.5rem",
                     width="100%",
                 ),
@@ -672,21 +672,18 @@ def _route_option(option: RouteOptionVM) -> rx.Component:
     )
     return rx.cond(
         option.enabled,
-        rx.box(
+        choice_card(
             header,
             rx.cond(selected, expanded),
-            on_click=CreativeState.select_route(option.key),
-            cursor="pointer",
-            padding="1rem 1.25rem",
-            class_name=rx.cond(selected, "q-cr-option q-cr-option--selected", "q-cr-option"),
+            selected=selected,
+            on_select=CreativeState.select_route(option.key),
             width="100%",
         ),
-        rx.box(
+        choice_card(
             header,
             rx.text(option.disabled_reason, size="1", color=T.TEXT_MUTED),
-            padding="1rem 1.25rem",
-            class_name="q-cr-option q-cr-option--off",
-            opacity="0.6",
+            selected=False,
+            disabled=True,
             width="100%",
         ),
     )

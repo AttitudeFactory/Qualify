@@ -1,0 +1,16 @@
+{
+  "_fixture_note": "DOC-DERIVED, not recorded: shape read on 2026-10-14 from cloud-api/reference/messages (MessageResponsePayload, message_status=accepted). Phone numbers and ids are placeholders. The smoke CLI (qualify_api.whatsapp.smoke) against the test number is what replaces this with a recorded payload.",
+  "messaging_product": "whatsapp",
+  "contacts": [
+    {
+      "input": "+15550001234",
+      "wa_id": "15550001234"
+    }
+  ],
+  "messages": [
+    {
+      "id": "wamid.HBgLMTU1NTAwMDEyMzQVAgARGBJUT1BMQVRFMDAwMDAwMDAwMDAA",
+      "message_status": "accepted"
+    }
+  ]
+}

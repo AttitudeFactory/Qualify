@@ -1,0 +1,17 @@
+{
+  "_fixture_note": "DOC-DERIVED, not recorded: shape read on 2026-10-14 from cloud-api/reference/business-profiles (GET). Phone numbers and ids are placeholders. The smoke CLI (qualify_api.whatsapp.smoke) against the test number is what replaces this with a recorded payload.",
+  "data": [
+    {
+      "about": "Pedidos por WhatsApp",
+      "address": "Calle 1 # 2-3, Bogota",
+      "description": "Comida rapida",
+      "email": "hola@example.com",
+      "messaging_product": "whatsapp",
+      "profile_picture_url": "https://pps.whatsapp.net/v/t61.24694-24/EXAMPLE",
+      "websites": [
+        "https://example.com"
+      ],
+      "vertical": "RESTAURANT"
+    }
+  ]
+}

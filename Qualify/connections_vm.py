@@ -47,8 +47,10 @@ class ConnectionVM:
     """
 
     id: str
-    platform: str  # "instagram" | "facebook"
+    platform: str  # "instagram" | "facebook" | "whatsapp" (WA-05)
     brand: str
+    # The card's title. Instagram: the @username. WhatsApp: the display number, plus the
+    # verified name when `whatsapp_phone_numbers` has one (WA-05) — see `whatsapp_label`.
     external_username: str
     status: ConnectionStatus
     last_verified_at: str  # PRE-FORMATTED server-side (never a raw datetime var)
@@ -77,6 +79,24 @@ class ConnectionVM:
     # True when any shown capability is provisional (C-05.4) — drives an honest
     # "por verificar" marker in the UI rather than asserting an unverified row.
     has_provisional_capabilities: bool = False
+
+
+# WA-05: a WhatsApp number is connected by an administrator with a system-user token
+# (`qualify_api.whatsapp.connect`), not through Meta's consent screen — so its degraded/
+# revoked banners carry this hint instead of the Instagram «Reconectar» button, which
+# would start the wrong flow. Self-service connect is QUA-203, deliberately out of scope.
+WHATSAPP_RECONNECT_HINT = (
+    "Los números de WhatsApp se conectan desde la administración de Qualify, no desde "
+    "esta pantalla. Pide al equipo de Qualify que vuelva a ejecutar la conexión del número."
+)
+
+
+def whatsapp_label(display_phone_number: str, verified_name: str | None) -> str:
+    """The card title of a WhatsApp connection: «+57 300 1234567 · Bianki» when Meta
+    reported a verified name, the bare number otherwise. Pre-composed server-side so the
+    client receives one string, same discipline as every other formatted field here."""
+    name = (verified_name or "").strip()
+    return f"{display_phone_number} · {name}" if name else display_phone_number
 
 
 def _capability_vm(verdict: CapabilityVerdict) -> CapabilityVM:
@@ -174,3 +194,131 @@ def connect_result_notice(code: str) -> tuple[str, str]:
     """(message, tone) for a `?connect=` code; ("", "info") for none or an unknown one —
     the parameter arrives in the URL, so junk is ignored rather than echoed."""
     return CONNECT_RESULT_NOTICES.get(code, ("", "info"))
+
+
+# --------------------------------------------------------------------------------------
+# QUA-202: guided connection. Everything below is copy for a non-technical operator —
+# no "OAuth", no "scope", no "token" anywhere in it (`test_guidance_copy_has_no_jargon`).
+# --------------------------------------------------------------------------------------
+
+# The path inside the Instagram app that every Page step shares. One constant so the
+# three places that spell it out never drift.
+_IG_PAGE_PATH = "Instagram → Editar perfil → Información pública de la empresa → Página"
+
+
+@dataclass(frozen=True)
+class ConnectRequirementVM:
+    """One of the three things the operator needs BEFORE pressing «Conectar cuenta».
+    A pre-flight hint (R4a), never a verification: the screen cannot check any of it."""
+
+    key: str
+    title: str
+    summary: str
+    steps: list[str]
+
+
+CONNECT_REQUIREMENTS: list[ConnectRequirementVM] = [
+    ConnectRequirementVM(
+        key="professional",
+        title="Tu Instagram es una cuenta profesional",
+        summary="Tipo Empresa o Creador. Una cuenta personal no se puede conectar.",
+        steps=[
+            "En Instagram, abre tu perfil y toca el menú ☰ → Configuración y actividad.",
+            "Entra en «Tipo de cuenta y herramientas» → «Cambiar a cuenta profesional».",
+            "Elige «Empresa» y termina el asistente (puedes omitir lo que no apliques).",
+        ],
+    ),
+    ConnectRequirementVM(
+        key="page",
+        title="Tienes una Página de Facebook de tu negocio",
+        summary=(
+            "Qualify habla con Meta a través de esa Página. Si no tienes, "
+            "se crea en dos minutos desde la app de Instagram."
+        ),
+        steps=[
+            f"{_IG_PAGE_PATH}.",
+            "Toca «Conectar o crear» → «Crear una nueva Página de Facebook».",
+            "Ponle el nombre de tu negocio y guarda. Ya está vinculada a tu Instagram.",
+        ],
+    ),
+    ConnectRequirementVM(
+        key="linked",
+        title="Tu Instagram está vinculado a esa Página",
+        summary="Es lo que más se olvida: tener la Página no basta, hay que unirlas.",
+        steps=[
+            f"{_IG_PAGE_PATH}.",
+            "Toca «Conectar o crear» y elige la Página de tu negocio.",
+            "Al conectar con Qualify, Meta te preguntará qué Páginas compartir: "
+            "marca la de tu negocio.",
+        ],
+    ),
+]
+
+
+@dataclass(frozen=True)
+class ConnectGuidance:
+    """The guided panel for a dead-end `?connect=` result: what happened (with the two
+    R9(e.1) counts the callback adds to the URL), the steps that fix exactly THIS case,
+    and whether the retry must ask Meta to show the Page picker again (`rerequest`).
+
+    `code == ""` means "no panel": the plain `connect_result_notice` is shown instead."""
+
+    code: str = ""
+    title: str = ""
+    summary: str = ""
+    steps: list[str] = field(default_factory=list)
+    rerequest: bool = False
+
+
+def _count(raw: str) -> int | None:
+    """A `?pages=` / `?linked=` value: a small non-negative integer, or nothing. The
+    value arrives in the URL, so anything else is ignored rather than rendered."""
+    if not raw.isdigit() or len(raw) > 4:
+        return None
+    return int(raw)
+
+
+def _pages_phrase(pages: int) -> str:
+    return "1 Página de Facebook" if pages == 1 else f"{pages} Páginas de Facebook"
+
+
+def connect_result_guidance(code: str, pages: str = "", linked: str = "") -> ConnectGuidance:
+    """The guided panel for `link_required` / `page_access_required`; an empty guidance
+    for every other code. The two outcomes need OPPOSITE instructions (R9f): one says
+    "vincula tu Instagram a la Página", the other "marca la Página en la ventana de
+    Meta" — collapsing them into one message is the bug QUA-123's sentence had."""
+    count = _count(pages)
+    if code == "link_required":
+        shown = (
+            f"Meta nos mostró {_pages_phrase(count)}, pero ninguna tiene tu Instagram vinculado."
+            if count
+            else "Meta no encontró ninguna Página de Facebook con tu Instagram vinculado."
+        )
+        return ConnectGuidance(
+            code=code,
+            title="Falta vincular tu Instagram a tu Página de Facebook",
+            summary=f"{shown} Sin ese vínculo, Qualify no puede trabajar con tu cuenta.",
+            steps=[
+                f"Abre {_IG_PAGE_PATH}.",
+                "Toca «Conectar o crear» y elige la Página de tu negocio "
+                "(o crea una nueva si no tienes).",
+                "Vuelve aquí y pulsa «Volver a conectar».",
+            ],
+            rerequest=False,
+        )
+    if code == "page_access_required":
+        return ConnectGuidance(
+            code=code,
+            title="Meta no compartió ninguna Página con Qualify",
+            summary=(
+                "En la ventana de Meta no quedó marcada ninguna Página de Facebook. "
+                "Sin ella, Qualify no puede trabajar con tu Instagram."
+            ),
+            steps=[
+                "Pulsa «Volver a conectar»: Meta volverá a preguntarte qué compartir.",
+                "Cuando pregunte por las Páginas, marca la Página de tu negocio y continúa.",
+                f"¿No tienes Página? Créala desde {_IG_PAGE_PATH} → «Conectar o crear».",
+            ],
+            rerequest=True,
+        )
+    return ConnectGuidance()

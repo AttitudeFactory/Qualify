@@ -71,7 +71,7 @@ def summarize(report: dict) -> str:
     lines.append(f"| **total** | | {g_stm} | {g_cov} | **{_pct(g_cov, g_stm)}** |")
     lines.append("")
     lines.append(
-        "_`db` tests are measured in the `test-db` job without coverage; `integration` "
+        "_`db` tests run later in the same `test` job, without coverage; `integration` "
         "tests never run in CI._"
     )
     return "\n".join(lines) + "\n"

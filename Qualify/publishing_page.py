@@ -68,7 +68,7 @@ from .publishing_vm import ConnectionOptionVM, PendingItemVM
 from .stories_page import stories_flow, stories_tips_card
 from .stories_state import StoriesState
 from .trending_panel import trending_card
-from .ui import app_shell, callout, card, loading_spinner, page_body, page_header, section
+from .ui import app_shell, callout, card, dropzone, loading_spinner, page_body, page_header, section
 from .ui import tokens as T
 from .ui.image_preview import gallery_image_preview_capture_anchor
 from .ui.video_preview import gallery_preview_capture_anchor, video_frame_preview_src
@@ -188,11 +188,9 @@ def _upload_widget(children: rx.Component, *, compact: bool) -> rx.Component:
     `PublishState.add_files`, which this is only a client-side nicety on top of, same
     posture the original single-video dropzone already documented for itself.
     """
-    # `rx.upload.root` is the same widget as `rx.upload` minus three style defaults
-    # (border, padding, text-align) the `.q-dropzone` material sets itself.
-    return rx.upload.root(
+    return dropzone(
         children,
-        id=_UPLOAD_ID,
+        upload_id=_UPLOAD_ID,
         # QUA-103: JPEG joins the two video containers Meta already accepted here —
         # JPEG is the ONLY image format Meta's Content Publishing API supports at all
         # (a platform restriction, not an incomplete whitelist — see
@@ -236,7 +234,7 @@ def _upload_widget(children: rx.Component, *, compact: bool) -> rx.Component:
             "Formato no permitido",
             description=f"Solo se aceptan archivos MP4, MOV o JPEG, hasta {_MAX_ITEMS} en total.",
         ),
-        class_name="q-dropzone q-dropzone--tile" if compact else "q-dropzone",
+        variant="tile" if compact else "zone",
     )
 
 
