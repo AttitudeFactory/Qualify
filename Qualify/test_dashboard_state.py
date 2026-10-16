@@ -226,7 +226,8 @@ def test_refresh_now_only_starts_the_run_and_hands_it_to_the_background() -> Non
     assert state.is_refreshing is True
     assert state.refresh_run == 4
     assert state.refresh_started_at > 0
-    assert state.refresh_tone == "info"
+    assert state.refresh_notice == ""  # nothing on the page: the button shows it loading
+    assert "Actualizando menciones" in str(result)  # the flow starts with a toast
     assert "refresh_scope" in str(result)  # carrying its run token
 
 
@@ -339,6 +340,7 @@ async def test_the_background_run_updates_the_visible_page_then_the_scope(
     assert state.is_refreshing is False
     assert state.refresh_notice == ""  # done is a toast, not a notice
     assert len(emitted) == 1
+    assert "Menciones actualizadas." in str(emitted[0])
 
 
 async def test_a_mention_deleted_on_the_network_never_leaves_a_warning(
@@ -355,9 +357,10 @@ async def test_a_mention_deleted_on_the_network_never_leaves_a_warning(
 
     emitted = await _run(state)
 
-    assert (state.refresh_notice, state.refresh_tone) == ("", "")
+    assert state.refresh_notice == ""
     assert state.is_refreshing is False
     assert len(emitted) == 1
+    assert "1 ya no está disponible y se quitó." in str(emitted[0])
 
 
 async def test_removals_are_announced_when_the_run_stops_early(
@@ -372,11 +375,10 @@ async def test_removals_are_announced_when_the_run_stops_early(
     )
     state = _running_state()
 
-    await _run(state)
+    emitted = await _run(state)
 
-    assert state.refresh_tone == "warn"
-    assert state.refresh_notice.startswith("1 mención ya no está disponible en la red social")
-    assert state.refresh_notice.endswith(THROTTLED_NOTICE)
+    assert state.refresh_notice == THROTTLED_NOTICE  # what to do, on the page
+    assert "1 ya no está disponible y se quitó." in str(emitted[0])  # what changed, a toast
 
 
 async def test_a_throttled_visible_pass_stops_the_run_and_says_so(
@@ -393,10 +395,10 @@ async def test_a_throttled_visible_pass_stops_the_run_and_says_so(
 
     assert "scope" not in seen  # never asked for the rest
     assert state.is_refreshing is False
-    assert (state.refresh_notice, state.refresh_tone) == (THROTTLED_NOTICE, "warn")
+    assert state.refresh_notice == THROTTLED_NOTICE
 
 
-async def test_a_pending_scope_stays_on_screen_as_a_warning(
+async def test_unread_mentions_are_only_counted_in_the_toast(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _wire(monkeypatch, visible=_report(), scope=_report(in_scope=30, refreshed=27, failed=3))
@@ -404,9 +406,9 @@ async def test_a_pending_scope_stays_on_screen_as_a_warning(
 
     emitted = await _run(state)
 
-    assert state.refresh_tone == "warn"
-    assert state.refresh_notice.startswith("Se actualizaron 27 de 30 menciones.")
-    assert emitted == []
+    assert state.refresh_notice == ""  # nothing to do about it: no on-page notice
+    assert len(emitted) == 1
+    assert "Se actualizaron 27 de 30 menciones." in str(emitted[0])
 
 
 async def test_a_failure_in_the_run_unlocks_the_button_and_says_so(
@@ -420,7 +422,7 @@ async def test_a_failure_in_the_run_unlocks_the_button_and_says_so(
     await _run(state)
 
     assert state.is_refreshing is False
-    assert (state.refresh_notice, state.refresh_tone) == (REFRESH_FAILED_NOTICE, "warn")
+    assert state.refresh_notice == REFRESH_FAILED_NOTICE
 
 
 async def test_a_superseded_run_never_writes_over_the_newer_one(
@@ -497,7 +499,7 @@ async def test_a_usage_pause_in_the_visible_pass_stops_the_run(
     await _run(state)
 
     assert "scope" not in seen
-    assert (state.refresh_notice, state.refresh_tone) == (USAGE_PAUSED_NOTICE, "warn")
+    assert state.refresh_notice == USAGE_PAUSED_NOTICE
     assert state.is_refreshing is False
 
 
@@ -513,7 +515,7 @@ async def test_a_session_without_tenant_says_so(monkeypatch: pytest.MonkeyPatch)
     await _run(state)
 
     assert "visible" not in seen
-    assert (state.refresh_notice, state.refresh_tone) == ("No hay una sesión activa.", "warn")
+    assert state.refresh_notice == "No hay una sesión activa."
     assert state.is_refreshing is False
 
 

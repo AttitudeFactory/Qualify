@@ -6,7 +6,12 @@ from __future__ import annotations
 import pytest
 
 from .mentions_paging import (
+    CREDENTIAL_NOTICE,
+    REFRESH_FAILED_NOTICE,
     SENTIMENT_OPTIONS,
+    STOPPED_TOAST,
+    THROTTLED_NOTICE,
+    USAGE_PAUSED_NOTICE,
     RefreshOutcome,
     decide_tick,
     page_items,
@@ -84,25 +89,21 @@ def _outcome(**overrides: object) -> RefreshOutcome:
     return refresh_outcome(**values)
 
 
-def test_a_complete_run_says_every_mention_was_updated() -> None:
-    assert _outcome() == RefreshOutcome("Se actualizaron las 30 menciones del periodo.", "ok")
-    assert _outcome(in_scope=1, refreshed=0, already_fresh=1).message == (
-        "Se actualizaron la mención del periodo."
-    )
+def test_a_complete_run_is_a_short_success_toast_and_no_notice() -> None:
+    assert _outcome() == RefreshOutcome("Menciones actualizadas.", "ok", "")
 
 
 def test_an_empty_scope_is_not_a_success_message() -> None:
-    assert _outcome(in_scope=0, refreshed=0).tone == "info"
+    assert _outcome(in_scope=0, refreshed=0) == RefreshOutcome(
+        "No hay menciones para actualizar en este periodo.", "info", ""
+    )
 
 
-def test_failures_keep_the_run_incomplete_and_say_data_is_kept() -> None:
-    outcome = _outcome(refreshed=27, failed=3)
-
-    assert outcome.tone == "warn"
-    assert outcome.message == (
-        "Se actualizaron 27 de 30 menciones. 3 no se pudieron leer en la red social "
-        "(puede que ya no existan o que no hayan respondido) y conservan sus datos. "
-        "Vuelve a pulsar Actualizar para continuar."
+def test_unread_mentions_warn_in_the_toast_but_leave_no_notice() -> None:
+    """Founder's call 2026-10-15: a mention the network refused keeps its data and there is
+    nothing to do about it — the toast counts it, the page says nothing."""
+    assert _outcome(refreshed=27, failed=3) == RefreshOutcome(
+        "Se actualizaron 27 de 30 menciones.", "warn", ""
     )
 
 
@@ -110,68 +111,70 @@ def test_a_capped_run_is_never_reported_as_done() -> None:
     outcome = _outcome(in_scope=250, refreshed=200, not_attempted=50)
 
     assert outcome.tone == "warn"
-    assert "50 quedaron pendientes porque se alcanzó el límite de esta actualización" in (
-        outcome.message
-    )
+    assert outcome.notice == "Quedan 50 por actualizar. Pulsa Actualizar para continuar."
 
 
 def test_throttling_is_named_as_the_reason() -> None:
     outcome = _outcome(refreshed=5, already_fresh=5, not_attempted=20, rate_limited=True)
 
-    assert outcome.message.startswith("Se actualizaron 10 de 30 menciones.")
-    assert "porque la red social limitó las consultas" in outcome.message
+    assert outcome.toast == "Se actualizaron 10 de 30 menciones."
+    assert outcome.notice == THROTTLED_NOTICE
 
 
 def test_a_usage_pause_is_not_called_throttling() -> None:
     outcome = _outcome(refreshed=10, not_attempted=20, usage_paused=True)
 
-    assert "para no agotar el límite de consultas" in outcome.message
-    assert "limitó" not in outcome.message
+    assert outcome.notice == USAGE_PAUSED_NOTICE
+    assert "limitó" not in outcome.notice
 
 
 def test_a_run_that_could_not_start_never_invents_numbers() -> None:
-    from .mentions_paging import REFRESH_FAILED_NOTICE
-
     outcome = _outcome(in_scope=0, refreshed=0, planning_failed=True)
 
-    assert outcome == RefreshOutcome(REFRESH_FAILED_NOTICE, "warn")
+    assert outcome == RefreshOutcome(STOPPED_TOAST, "warn", REFRESH_FAILED_NOTICE)
 
 
 def test_an_account_problem_is_named_as_such_not_as_deleted_content() -> None:
-    outcome = _outcome(refreshed=25, credential_failed=5)
+    """The most actionable reason wins the single notice."""
+    outcome = _outcome(refreshed=20, credential_failed=5, failed=3, not_attempted=2)
 
-    assert outcome.tone == "warn"
-    assert "5 no se pudieron leer porque no se pudo acceder a la cuenta conectada" in (
-        outcome.message
-    )
-    assert "ya no existan" not in outcome.message
-    assert "1 no se pudo leer porque" in _outcome(refreshed=29, credential_failed=1).message
+    assert outcome.notice == CREDENTIAL_NOTICE
 
 
-def test_removed_mentions_are_announced_without_a_warning() -> None:
+def test_removed_mentions_are_announced_in_the_toast_without_a_warning() -> None:
     outcome = _outcome(in_scope=6, refreshed=6, removed=1)
 
     assert outcome == RefreshOutcome(
-        "Se actualizaron las 6 menciones del periodo. 1 mención ya no está disponible en la red "
-        "social y se quitó de la lista.",
-        "ok",
+        "Menciones actualizadas. 1 ya no está disponible y se quitó.", "ok", ""
     )
-    assert "2 menciones ya no están disponibles" in _outcome(removed=2).message
+    assert "2 ya no están disponibles y se quitaron." in _outcome(removed=2).toast
 
 
 def test_a_scope_left_empty_by_removals_is_still_announced() -> None:
     outcome = _outcome(in_scope=0, refreshed=0, removed=1)
 
-    assert outcome.tone == "ok"
-    assert outcome.message.startswith("1 mención ya no está disponible en la red social")
+    assert outcome == RefreshOutcome("1 ya no está disponible y se quitó.", "ok", "")
 
 
 def test_removals_never_hide_what_is_still_pending() -> None:
     outcome = _outcome(in_scope=6, refreshed=5, failed=1, removed=1)
 
     assert outcome.tone == "warn"
-    assert outcome.message.startswith("Se actualizaron 5 de 6 menciones. 1 mención ya no")
-    assert "Vuelve a pulsar Actualizar" in outcome.message
+    assert outcome.toast == "Se actualizaron 5 de 6 menciones. 1 ya no está disponible y se quitó."
+    assert outcome.notice == ""
+
+
+def test_every_notice_is_one_short_sentence_or_two() -> None:
+    """Founder's call 2026-10-15: on-page notices are punctual; the detail is the toast's."""
+    cases = [
+        _outcome(in_scope=250, refreshed=200, not_attempted=50),
+        _outcome(refreshed=10, not_attempted=20, rate_limited=True),
+        _outcome(refreshed=10, not_attempted=20, usage_paused=True),
+        _outcome(refreshed=25, credential_failed=5),
+        _outcome(in_scope=0, refreshed=0, planning_failed=True),
+    ]
+    for outcome in cases:
+        assert 0 < len(outcome.notice) <= 80, outcome.notice
 
 
 def test_a_live_run_keeps_the_button_when_the_screen_is_reopened() -> None:
@@ -192,17 +195,13 @@ def test_a_run_that_never_started_or_died_unlocks_the_button() -> None:
 
 
 def test_a_failed_plan_still_explains_rows_that_left_the_list() -> None:
-    from .mentions_paging import REFRESH_FAILED_NOTICE
-
     outcome = _outcome(in_scope=0, refreshed=0, planning_failed=True, removed=2)
 
-    assert outcome.tone == "warn"
-    assert outcome.message.startswith("2 menciones ya no están disponibles")
-    assert outcome.message.endswith(REFRESH_FAILED_NOTICE)
+    assert outcome.toast == f"{STOPPED_TOAST} 2 ya no están disponibles y se quitaron."
+    assert outcome.notice == REFRESH_FAILED_NOTICE
 
 
 def test_restored_mentions_are_announced() -> None:
     outcome = _outcome(restored=1)
 
-    assert outcome.tone == "ok"
-    assert outcome.message.endswith("1 mención volvió a estar disponible y se muestra de nuevo.")
+    assert outcome == RefreshOutcome("Menciones actualizadas. 1 volvió a mostrarse.", "ok", "")
