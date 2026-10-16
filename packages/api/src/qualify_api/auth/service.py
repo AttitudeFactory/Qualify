@@ -30,6 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from qualify_api.auth.drafts import claim_draft, find_open_draft
+from qualify_api.auth.invites import lock_invite, mark_invite_used
 from qualify_api.auth.provider import (
     AuthProvider,
     AuthSession,
@@ -183,6 +184,48 @@ def _open_draft_tenant_id(email: str) -> UUID | None:
         return draft.tenant_id if draft is not None else None
 
 
+def _persist_business(
+    session: Session,
+    *,
+    draft_tenant_id: UUID | None,
+    tenant_id: UUID,
+    auth_user_id: UUID,
+    email: str,
+    business_name: str,
+    country: str,
+    timezone: str,
+    currency: str,
+    display_name: str,
+) -> None:
+    """The local half of a signup: adopt the pre-login draft when it belongs to this
+    tenant, then tenant/user/membership/brand."""
+    draft = find_open_draft(session, email) if draft_tenant_id is not None else None
+    # On the retry path the identity may already be stamped to another tenant: the
+    # draft is only adopted by the tenant it was provisioned as.
+    if draft is not None and draft.tenant_id == tenant_id:
+        claim_draft(
+            session,
+            draft,
+            email=email,
+            business_name=business_name,
+            country=country,
+            timezone=timezone,
+            currency=currency,
+            display_name=display_name,
+        )
+    _upsert_local_half(
+        session,
+        tenant_id=tenant_id,
+        auth_user_id=auth_user_id,
+        email=email,
+        business_name=business_name,
+        country=country,
+        timezone=timezone,
+        currency=currency,
+        display_name=display_name,
+    )
+
+
 def register_business(
     provider: AuthProvider,
     *,
@@ -193,41 +236,45 @@ def register_business(
     timezone: str,
     currency: str,
     display_name: str | None = None,
+    invite_id: UUID | None = None,
 ) -> RegisteredBusiness:
     """Signup: assigns a fresh `tenant_id` automatically and builds both halves — unless
     a Brand Kit was started before login with this email (§ request 2026-10-02): then
-    the signup adopts that draft's tenant, so the account opens with its Brand Kit."""
+    the signup adopts that draft's tenant, so the account opens with its Brand Kit.
+
+    With an `invite_id` (from `invites.authorize_signup`) the invite is locked and
+    re-checked in the same transaction as the local half, BEFORE the identity user is
+    created, and spent only once the business exists. Order matters: the identity
+    provider is outside our transaction, so a signup that lost the race on the invite
+    must learn it before it creates a user there (an orphan identity would block that
+    email). The lock is held across one provider call, on one row that only the racing
+    tabs of one link contend for. Without an invite (dev/tests, `QUALIFY_SIGNUP_OPEN=1`)
+    nothing is locked and every refusal still fires before the database is touched."""
     _validate_signup(business_name, email, password)
     draft_tenant_id = _open_draft_tenant_id(email)
-    auth_user_id, tenant_id = _resolve_identity_for_signup(
-        provider, email, password, draft_tenant_id or uuid4()
+    local = dict(
+        draft_tenant_id=draft_tenant_id,
+        email=email,
+        business_name=business_name.strip(),
+        country=country,
+        timezone=timezone,
+        currency=currency,
+        display_name=display_name or business_name.strip(),
     )
-    with admin_session() as session:
-        draft = find_open_draft(session, email) if draft_tenant_id is not None else None
-        # On the retry path the identity may already be stamped to another tenant: the
-        # draft is only adopted by the tenant it was provisioned as.
-        if draft is not None and draft.tenant_id == tenant_id:
-            claim_draft(
-                session,
-                draft,
-                email=email,
-                business_name=business_name.strip(),
-                country=country,
-                timezone=timezone,
-                currency=currency,
-                display_name=display_name or business_name.strip(),
-            )
-        _upsert_local_half(
-            session,
-            tenant_id=tenant_id,
-            auth_user_id=auth_user_id,
-            email=email,
-            business_name=business_name.strip(),
-            country=country,
-            timezone=timezone,
-            currency=currency,
-            display_name=display_name or business_name.strip(),
+    if invite_id is None:
+        auth_user_id, tenant_id = _resolve_identity_for_signup(
+            provider, email, password, draft_tenant_id or uuid4()
         )
+        with admin_session() as session:
+            _persist_business(session, tenant_id=tenant_id, auth_user_id=auth_user_id, **local)
+    else:
+        with admin_session() as session:
+            invite = lock_invite(session, invite_id, email)
+            auth_user_id, tenant_id = _resolve_identity_for_signup(
+                provider, email, password, draft_tenant_id or uuid4()
+            )
+            _persist_business(session, tenant_id=tenant_id, auth_user_id=auth_user_id, **local)
+            mark_invite_used(session, invite)
     return RegisteredBusiness(
         tenant_id=tenant_id,
         auth_user_id=auth_user_id,
