@@ -184,6 +184,9 @@ class RefreshTarget:
     # A removed mention re-read to see whether it is available again (migration 0062). It
     # is outside the scope's counts: a run reports it only when it comes back.
     removed: bool = False
+    # Re-read successfully at least once (`content_refreshed_at` set): the id was valid
+    # then, so a later "not a valid comment ID" answer means it stopped being one.
+    ever_read: bool = False
 
 
 @dataclass(frozen=True)
@@ -610,6 +613,7 @@ def _target(m: Mention) -> RefreshTarget:
         comment_id=m.comment_id,
         has_permalink=m.permalink is not None,
         removed=m.removed_at is not None,
+        ever_read=m.content_refreshed_at is not None,
     )
 
 

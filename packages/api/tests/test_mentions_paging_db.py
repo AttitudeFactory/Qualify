@@ -614,6 +614,21 @@ def test_a_successful_read_clears_removed_at() -> None:
     assert [row.id for row in _page(repo, tenant_id).rows] == [mention_id]
 
 
+def test_a_refresh_target_says_whether_the_mention_was_ever_read() -> None:
+    """`ever_read` (the 400/100-without-subcode removal guard) mirrors
+    `content_refreshed_at`: only a successful read sets it — a failed attempt never does."""
+    repo = PostgresMentionsRepository()
+    tenant_id, connection_id = _fresh_tenant_with_connection()
+    read_id = _add(repo, tenant_id, connection_id, comment=True)
+    attempted_id = _add(repo, tenant_id, connection_id, comment=True)
+    repo.refresh_content(tenant_id=tenant_id, mention_id=read_id, content=_content())
+    repo.mark_refresh_attempt(tenant_id=tenant_id, mention_id=attempted_id)
+
+    targets = repo.list_refresh_targets(tenant_id=tenant_id, mention_ids=(read_id, attempted_id))
+
+    assert {t.mention_id: t.ever_read for t in targets} == {read_id: True, attempted_id: False}
+
+
 def test_scope_plan_rechecks_long_removed_mentions_only_with_spare_capacity() -> None:
     from datetime import timedelta
 
