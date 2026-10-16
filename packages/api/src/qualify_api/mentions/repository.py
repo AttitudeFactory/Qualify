@@ -139,6 +139,12 @@ class NewMention:
     content_posted_at: datetime | None
     enrichment_status: str
     permalink: str | None = None  # QUA-152: best-effort link to the media on Instagram
+    # True only when the content above came from a SUCCESSFUL network read of Meta's
+    # content endpoint at ingestion. Stamps `content_refreshed_at` on creation, so the
+    # mention counts as `ever_read` from the start (the 400/100 removal guard) exactly as
+    # a later "Actualizar" would make it. `ENRICHMENT_OK` alone is not enough: the comments
+    # webhook also reaches that status with its own text when the network refused.
+    read_from_network: bool = False
 
 
 @dataclass(frozen=True)
@@ -693,6 +699,8 @@ class MemoryMentionsRepository:
             permalink=mention.permalink,
             received_at=self._stamp(),
         )
+        if mention.read_from_network:
+            row.content_refreshed_at = row.content_refresh_attempted_at = self._stamp()
         self._mentions[mention_id] = row
         self._natural_keys[key] = mention_id
         return mention_id, True
@@ -1066,6 +1074,12 @@ class PostgresMentionsRepository:
                     content_posted_at=mention.content_posted_at,
                     enrichment_status=mention.enrichment_status,
                     permalink=mention.permalink,
+                    # The database clock, as `refresh_content` stamps it — the removal
+                    # guard compares this column against app-side instants on the same host.
+                    content_refreshed_at=func.now() if mention.read_from_network else None,
+                    content_refresh_attempted_at=(
+                        func.now() if mention.read_from_network else None
+                    ),
                 )
                 session.add(row)
                 session.flush()  # trips uq_mention_natural_key on a duplicate

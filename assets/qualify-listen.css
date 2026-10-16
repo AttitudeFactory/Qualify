@@ -18,3 +18,26 @@
 }
 
 /* The selectable local card is `ui.choice_card` now (qualify.css, "Shared primitives"). */
+
+/* ── Menciones: one view per width ──────────────────────────────────────────
+ * The 8-column table from 80em (Radix `lg`, 1280 px at 16 px) up; below it each mention
+ * is a card and the pager shrinks to "‹ Página n de N ›" (Qualify/components.py).
+ * Classes, not `rx.breakpoints` on `display` (2026-10-16): the exported build links the
+ * global stylesheet twice and the second copy lands after emotion's style tags, so Radix's
+ * `.rt-Box { display: block }` outranked emotion's media rules and both views showed at
+ * once. These rules are compiled into that same global stylesheet AFTER Radix's, with the
+ * same specificity, so they win in every copy of it — the `.q-wa-chats` pattern. */
+.q-mentions-table-only {
+  display: none;
+}
+.q-mentions-cards-only {
+  display: block;
+}
+@media (min-width: 80em) {
+  .q-mentions-table-only {
+    display: block;
+  }
+  .q-mentions-cards-only {
+    display: none;
+  }
+}
