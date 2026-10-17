@@ -15,8 +15,9 @@
 # internet.
 #
 # Always on: caddy, api, reflex, postgres, redis, webhook-worker (QUA-147: settles recorded
-# Meta webhooks; read-only toward Meta, never publishes) and whatsapp-worker (WA-08: sends
-# what was explicitly enqueued in `whatsapp_outbox`, nothing else). `migrate` is a one-shot
+# Meta webhooks; read-only toward Meta, never publishes), whatsapp-worker (WA-08: sends
+# what was explicitly enqueued in `whatsapp_outbox`, nothing else) and conversations-worker
+# (QUA-226: sends what a person approved in `conversation_outbox` and polls Instagram Direct). `migrate` is a one-shot
 # (below).
 #
 # Optional services, OFF unless their profile is enabled (COMPOSE_PROFILES in .env.prod):
@@ -301,6 +302,32 @@ services:
       - --all-tenants
       - --interval
       - ${QUALIFY_WHATSAPP_WORKER_INTERVAL:-5}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # QUA-226 Conversaciones (Instagram Direct). Drains `conversation_outbox` — only what a
+  # person approved in /conversations (the approver is a NOT NULL column) — and, with
+  # `--sync`, reconciles each connected Instagram account against Meta every
+  # QUALIFY_CONVERSATIONS_SYNC_INTERVAL seconds (threads, messages, the counterpart's
+  # profile). Always on, like whatsapp-worker: without it nothing a person writes leaves
+  # Qualify and nothing arrives between webhooks. Never sends on its own initiative.
+  # Several instances are safe (FOR UPDATE SKIP LOCKED), one is enough.
+  conversations-worker:
+    <<: [*app-image, *app-env-file, *logging]
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+    command:
+      - python
+      - -m
+      - qualify_api.conversations.worker
+      - --all-tenants
+      - --sync
+      - --interval
+      - ${QUALIFY_CONVERSATIONS_WORKER_INTERVAL:-5}
+      - --sync-interval
+      - ${QUALIFY_CONVERSATIONS_SYNC_INTERVAL:-300}
     depends_on:
       postgres:
         condition: service_healthy
