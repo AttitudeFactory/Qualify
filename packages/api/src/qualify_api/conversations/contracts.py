@@ -99,6 +99,29 @@ class RemoteMessage:
     # The channel's media kind for a non-text message (`messages.media_type`'s CHECKed
     # list, `other` for anything new); `None` for text.
     media_type: str | None = None
+    # The channel's own CDN URL of the attachment (signed, expiring); `None` for text.
+    media_url: str | None = None
+
+
+@dataclass(frozen=True)
+class RemoteProfile:
+    """What the channel says about the counterpart (Instagram's User Profile API: the
+    person consented by messaging the business). `avatar_url` expires after days."""
+
+    name: str | None = None
+    username: str | None = None
+    avatar_url: str | None = None
+
+
+@dataclass(frozen=True)
+class RemoteRead:
+    """The counterpart read the conversation up to `last_read_at` (Instagram's
+    `messaging_seen`: `read.mid` + the event's timestamp). Keyed on the counterpart like
+    a message, so it lands on the same thread."""
+
+    counterpart_external_id: str
+    last_read_at: datetime
+    external_message_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -127,25 +150,71 @@ class ConversationSource(Protocol):
         cursor: str | None = None,
     ) -> Page[RemoteMessage]: ...
 
+    async def fetch_profile(
+        self, connection: SourceConnection, counterpart_external_id: str
+    ) -> RemoteProfile | None:
+        """The counterpart's profile, or `None` when the channel has none to give (no
+        API, no consent, a blocked business, an error). Best-effort by contract."""
+        ...
+
 
 @dataclass(frozen=True)
 class SendResult:
     external_message_id: str
 
 
+#: Ephemeral presence signals a channel may show the counterpart (Messenger Platform's
+#: `sender_action`). Never a message, never queued, never approved: they carry no content.
+ACTION_MARK_SEEN: Final = "mark_seen"
+ACTION_TYPING_ON: Final = "typing_on"
+ACTION_TYPING_OFF: Final = "typing_off"
+SENDER_ACTIONS: Final = frozenset({ACTION_MARK_SEEN, ACTION_TYPING_ON, ACTION_TYPING_OFF})
+
+#: The media kinds a reply may attach (`messages.media_type`'s CHECKed list, narrowed to
+#: what the Messenger Platform sends from a URL — `send-message.md` «Limitations»: image
+#: png/jpeg ≤ 8 MB, audio aac/m4a/wav/mp4 ≤ 25 MB, video mp4/ogg/avi/mov/webm ≤ 25 MB,
+#: file pdf ≤ 25 MB). Qualify's `document` is the channel's `file`: a sender maps it.
+REPLY_MEDIA_TYPES: Final = frozenset({"image", "audio", "video", "document"})
+
+#: Stickers a reply may send without any object of its own (`send-message.md` «Send a
+#: heart sticker»): the wire body is `attachment.type` alone. Stored on the outbound
+#: message as `media_type = 'sticker'`.
+STICKER_LIKE_HEART: Final = "like_heart"
+REPLY_STICKERS: Final = frozenset({STICKER_LIKE_HEART})
+MEDIA_TYPE_STICKER: Final = "sticker"
+
+
 class ConversationSender(Protocol):
-    """Sends one channel's private messages for one connection. `build_payload` produces
-    the already-built wire body the outbox stores (the channel's own shape, so the sender
-    worker never re-derives it); `send` ships one such body."""
+    """Sends one channel's private messages for one connection. `build_payload` /
+    `build_media_payload` produce the already-built wire body the outbox stores (the
+    channel's own shape, so the sender worker never re-derives it); `send` ships one such
+    body. A media body is built WITHOUT its URL: the worker fills it in at send time
+    (`with_media_url`) from the R2 object the outbox row carries, because the public URL
+    Meta fetches is short-lived. `send_action` shows a presence signal (seen / typing)
+    and is best-effort: a channel without one may raise `NotImplementedError`."""
 
     @property
     def channel(self) -> str: ...
 
     def build_payload(self, *, recipient_external_id: str, text: str) -> dict[str, Any]: ...
 
+    def build_media_payload(
+        self, *, recipient_external_id: str, media_type: str
+    ) -> dict[str, Any]: ...
+
+    def with_media_url(self, payload: Mapping[str, Any], url: str) -> dict[str, Any]: ...
+
+    def build_sticker_payload(
+        self, *, recipient_external_id: str, sticker: str
+    ) -> dict[str, Any]: ...
+
     async def send(
         self, connection: SourceConnection, payload: Mapping[str, Any]
     ) -> SendResult: ...
+
+    async def send_action(
+        self, connection: SourceConnection, *, recipient_external_id: str, action: str
+    ) -> None: ...
 
 
 class UnknownChannel(LookupError):

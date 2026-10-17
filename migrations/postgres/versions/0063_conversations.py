@@ -34,7 +34,25 @@ What a multichannel inbox still lacks, and this revision adds:
   (`payload` is the already-built body in the channel's own wire shape). Same queue shape
   as `whatsapp_outbox` (0057) and `meta_webhook_events` (0050): claim by `(status,
   next_attempt_at)` with `FOR UPDATE SKIP LOCKED`, `attempts`/`locked_*`, terminal
-  `failed`/`dead`.
+  `failed`/`dead`. A media reply (an image or an audio the person attached) carries the
+  R2 object (`media_object_key`, `media_type`, `media_content_type`): the sender mints the
+  short-lived public URL Meta fetches AT SEND TIME (QUA-68's `/public/media/{token}`),
+  never at enqueue time, so a row that waited longer than the token's TTL still goes out.
+- `messages.media_url` — the channel's own CDN URL of an INBOUND attachment (Instagram
+  hands one per `attachments[]` item, signed and expiring). The outbound side keeps using
+  0061's `media_object_key` (the R2 copy Qualify itself sent). A row may have either,
+  never both.
+- `threads.counterpart_name/username/avatar_url/profile_at` — what the channel's profile
+  API says about the counterpart (Instagram's User Profile API, consented by the fact
+  that they messaged the business). The picture URL expires after days, so the sync
+  refreshes a stale profile; the UI falls back to initials without one.
+- `conversation_drafts` — E4: a reply a model proposed for ONE inbound message, with the
+  statuses of `comment_reply_drafts` (0014) and the same rule: a draft is never a send.
+  Sending is `conversation_outbox` with the person's approval (`draft_id` points back),
+  so «no path sends without a human» stays a property of the outbox's NOT NULL column.
+  Each row carries its cost provenance (model, tokens, USD — QUA-144) and the validated
+  facts the model was given (`grounding`), which is what `needs_review` is judged
+  against: a draft that asserts something outside those facts is flagged for review.
 
 **Why a second outbox and not `whatsapp_outbox`.** The one invariant this module must
 make unbreakable is ADR 21c: NO private reply leaves without a human. `whatsapp_outbox`
@@ -119,6 +137,15 @@ def upgrade() -> None:
         "CREATE UNIQUE INDEX uq_thread_conversation_id ON threads "
         "(connection_id, external_conversation_id) WHERE external_conversation_id IS NOT NULL;"
     )
+    # --- threads: the counterpart's profile (User Profile API; the picture URL expires) --
+    op.add_column("threads", sa.Column("counterpart_name", sa.Text(), nullable=True))
+    op.add_column("threads", sa.Column("counterpart_username", sa.Text(), nullable=True))
+    op.add_column("threads", sa.Column("counterpart_avatar_url", sa.Text(), nullable=True))
+    op.add_column(
+        "threads", sa.Column("counterpart_profile_at", sa.DateTime(timezone=True), nullable=True)
+    )
+    # --- messages: the channel's CDN URL of an inbound attachment ----------------------
+    op.add_column("messages", sa.Column("media_url", sa.Text(), nullable=True))
 
     # --- conversation_sync_state -------------------------------------------------------
     op.create_table(
@@ -202,6 +229,10 @@ def upgrade() -> None:
         sa.Column("approved_at", sa.DateTime(timezone=True), nullable=False),
         # Bare uuid until the assisted-draft table exists (E4 adds the FK).
         sa.Column("draft_id", PGUUID(as_uuid=True), nullable=True),
+        # A media reply: the R2 object the sender links into a public URL at send time.
+        sa.Column("media_object_key", sa.Text(), nullable=True),
+        sa.Column("media_type", sa.Text(), nullable=True),
+        sa.Column("media_content_type", sa.Text(), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -238,8 +269,71 @@ def upgrade() -> None:
     # Deliberately NO grant to qualify_webhook_worker: see the module docstring.
     _enable_tenant_rls("conversation_outbox")
 
+    # --- conversation_drafts (E4): model-suggested replies, decided by a person -----------
+    op.create_table(
+        "conversation_drafts",
+        sa.Column(
+            "id",
+            PGUUID(as_uuid=True),
+            server_default=sa.text("gen_random_uuid()"),
+            primary_key=True,
+        ),
+        sa.Column("tenant_id", PGUUID(as_uuid=True), nullable=False),
+        sa.Column("thread_id", PGUUID(as_uuid=True), nullable=False),
+        # The inbound message the draft answers.
+        sa.Column("message_id", PGUUID(as_uuid=True), nullable=False),
+        sa.Column("generator_version", sa.Text(), nullable=False),
+        sa.Column("generated_text", sa.Text(), nullable=False),
+        sa.Column("gate_reason", sa.Text(), nullable=False),
+        # True when the model lacked validated tenant data for something it says.
+        sa.Column("needs_review", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+        sa.Column("status", sa.Text(), nullable=False, server_default="proposed"),
+        sa.Column("final_text", sa.Text(), nullable=True),
+        # Cost provenance (QUA-144): the model that wrote it and what the call cost.
+        sa.Column("model_id", sa.Text(), nullable=True),
+        sa.Column("model_revision", sa.Text(), nullable=True),
+        sa.Column("input_tokens", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("output_tokens", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("cost_usd", sa.Numeric(10, 6), nullable=False, server_default="0"),
+        # The validated facts the model was given (product names and prices, the
+        # business name): what «requiere revisión» is judged against.
+        sa.Column("grounding", JSONB(), nullable=False, server_default=sa.text("'{}'::jsonb")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column("decided_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column(
+            "decided_by_user_id", PGUUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True
+        ),
+        sa.ForeignKeyConstraint(
+            ["thread_id", "tenant_id"],
+            ["threads.id", "threads.tenant_id"],
+            name="fk_conv_draft_thread_tenant",
+        ),
+        sa.ForeignKeyConstraint(
+            ["message_id", "tenant_id"],
+            ["messages.id", "messages.tenant_id"],
+            name="fk_conv_draft_message_tenant",
+        ),
+        sa.CheckConstraint(
+            "status IN ('proposed','accepted','edited','discarded','sending','sent',"
+            "'send_failed','send_ambiguous')",
+            name="ck_conv_draft_status",
+        ),
+    )
+    op.create_index("ix_conv_draft_tenant", "conversation_drafts", ["tenant_id"])
+    op.create_index("ix_conv_draft_thread", "conversation_drafts", ["thread_id", "created_at"])
+    op.execute("GRANT SELECT, INSERT, UPDATE ON conversation_drafts TO qualify_app;")
+    _enable_tenant_rls("conversation_drafts")
+
 
 def downgrade() -> None:
+    op.drop_index("ix_conv_draft_thread", table_name="conversation_drafts")
+    op.drop_index("ix_conv_draft_tenant", table_name="conversation_drafts")
+    op.drop_table("conversation_drafts")
     op.drop_index("ix_conv_outbox_thread", table_name="conversation_outbox")
     op.drop_index("ix_conv_outbox_claim", table_name="conversation_outbox")
     op.drop_index("ix_conv_outbox_tenant", table_name="conversation_outbox")
@@ -247,5 +341,10 @@ def downgrade() -> None:
     op.drop_index("ix_conv_sync_state_tenant", table_name="conversation_sync_state")
     op.drop_table("conversation_sync_state")
     op.execute("DROP INDEX IF EXISTS uq_thread_conversation_id;")
+    op.drop_column("messages", "media_url")
+    op.drop_column("threads", "counterpart_profile_at")
+    op.drop_column("threads", "counterpart_avatar_url")
+    op.drop_column("threads", "counterpart_username")
+    op.drop_column("threads", "counterpart_name")
     op.drop_column("threads", "last_read_at")
     op.drop_column("threads", "external_conversation_id")

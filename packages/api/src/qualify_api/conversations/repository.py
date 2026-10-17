@@ -42,7 +42,7 @@ from uuid import UUID, uuid4
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import bindparam, text
 
-from qualify_api.conversations.contracts import AccessVerdict, RemoteMessage
+from qualify_api.conversations.contracts import AccessVerdict, RemoteMessage, RemoteProfile
 
 THREAD_OPEN = "open"
 THREAD_CLOSED = "closed"
@@ -73,6 +73,12 @@ class ThreadRecord:
     last_outbound_at: datetime | None
     last_read_at: datetime | None
     created_at: datetime
+    # The counterpart's profile as the channel reported it (0063); all None until a sync
+    # fetched it. `counterpart_profile_at` says how fresh the (expiring) picture is.
+    counterpart_name: str | None = None
+    counterpart_username: str | None = None
+    counterpart_avatar_url: str | None = None
+    counterpart_profile_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +95,9 @@ class MessageRecord:
     ingested_at: datetime
     delivery_status: str | None
     media_type: str | None
+    # Inbound: the channel's CDN URL (0063). Outbound: the R2 object Qualify sent (0061).
+    media_url: str | None = None
+    media_object_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -140,11 +149,30 @@ class ConversationRepository(Protocol):
 
     def get_thread(self, *, tenant_id: UUID, thread_id: UUID) -> ThreadRecord | None: ...
 
+    def find_thread(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        channel: str,
+        counterpart_external_id: str,
+    ) -> ThreadRecord | None: ...
+
     def list_messages(
         self, *, tenant_id: UUID, thread_id: UUID, limit: int = 50
     ) -> list[MessageRecord]: ...
 
     def mark_read(self, *, tenant_id: UUID, thread_id: UUID, now: datetime) -> bool: ...
+
+    def mark_outbound_read(self, *, tenant_id: UUID, thread_id: UUID, up_to: datetime) -> int: ...
+
+    def save_profile(
+        self, *, tenant_id: UUID, thread_id: UUID, profile: RemoteProfile, now: datetime
+    ) -> None: ...
+
+    def hide_message(
+        self, *, tenant_id: UUID, thread_id: UUID, message_id: UUID, now: datetime
+    ) -> bool: ...
 
     def get_sync_state(
         self, *, tenant_id: UUID, connection_id: UUID, channel: str
@@ -207,11 +235,24 @@ _INSERT_MESSAGE = text(
     """
     INSERT INTO messages (id, tenant_id, thread_id, connection_id, external_message_id,
                           direction, author_external_id, author_username, text, posted_at,
-                          shape_version, media_type)
+                          shape_version, media_type, media_url)
     VALUES (:id, :tenant_id, :thread_id, :connection_id, :external_message_id, :direction,
             :author_external_id, :author_username, :text, :posted_at, :shape_version,
-            :media_type)
+            :media_type, :media_url)
     ON CONFLICT (connection_id, external_message_id) DO NOTHING
+    """
+)
+
+# The counterpart read up to an instant (`messaging_seen`): every outbound at or before it
+# becomes `read`. Idempotent and monotonic — a `read` row never goes back to `sent`.
+_MARK_OUTBOUND_READ = text(
+    """
+    UPDATE messages
+       SET delivery_status = 'read'
+     WHERE thread_id = :thread_id
+       AND direction = 'outbound'
+       AND COALESCE(posted_at, ingested_at) <= CAST(:up_to AS timestamptz)
+       AND delivery_status IS DISTINCT FROM 'read'
     """
 )
 
@@ -235,7 +276,8 @@ _BUMP_THREAD = text(
 _THREAD_COLUMNS = """
     t.id, t.tenant_id, t.connection_id, t.channel, t.external_thread_id,
     t.external_conversation_id, t.status, t.assigned_agent_id, t.last_message_at,
-    t.last_inbound_at, t.last_read_at, t.created_at,
+    t.last_inbound_at, t.last_read_at, t.created_at, t.counterpart_name,
+    t.counterpart_username, t.counterpart_avatar_url, t.counterpart_profile_at,
     (SELECT max(COALESCE(m.posted_at, m.ingested_at)) FROM messages m
       WHERE m.thread_id = t.id AND m.direction = 'outbound') AS last_outbound_at
 """
@@ -262,12 +304,22 @@ _LIST_THREADS_FOR_CONNECTION = text(
 
 _GET_THREAD = text(f"SELECT {_THREAD_COLUMNS} FROM threads t WHERE t.id = :thread_id")
 
+_FIND_THREAD = text(
+    f"""
+    SELECT {_THREAD_COLUMNS}
+      FROM threads t
+     WHERE t.connection_id = :connection_id AND t.channel = :channel
+       AND t.external_thread_id = :counterpart
+    """
+)
+
 # Newest first in SQL (that is what `LIMIT` must cut), reversed in Python so the caller
 # reads the conversation top-down.
 _LIST_MESSAGES = text(
     """
     SELECT id, thread_id, connection_id, external_message_id, direction, author_external_id,
-           author_username, text, posted_at, ingested_at, delivery_status, media_type
+           author_username, text, posted_at, ingested_at, delivery_status, media_type,
+           media_url, media_object_key
       FROM messages
      WHERE thread_id = :thread_id AND deleted_at IS NULL
      ORDER BY COALESCE(posted_at, ingested_at) DESC, id DESC
@@ -279,6 +331,28 @@ _MARK_READ = text(
     """
     UPDATE threads
        SET last_read_at = GREATEST(last_read_at, CAST(:now AS timestamptz))
+     WHERE id = :thread_id
+    """
+)
+
+# «Eliminar para mí»: the row stays (the channel still has the message, and so does the
+# other person); it just leaves every listing of this tenant. Idempotent.
+_HIDE_MESSAGE = text(
+    """
+    UPDATE messages
+       SET deleted_at = CAST(:now AS timestamptz)
+     WHERE id = :message_id AND thread_id = :thread_id AND deleted_at IS NULL
+    """
+)
+
+# A profile refresh never erases what a previous one knew: a NULL field keeps the old.
+_SAVE_PROFILE = text(
+    """
+    UPDATE threads
+       SET counterpart_name = COALESCE(:name, counterpart_name),
+           counterpart_username = COALESCE(:username, counterpart_username),
+           counterpart_avatar_url = COALESCE(:avatar_url, counterpart_avatar_url),
+           counterpart_profile_at = :now
      WHERE id = :thread_id
     """
 )
@@ -349,6 +423,10 @@ def _thread_record(row: object) -> ThreadRecord:
         last_outbound_at=r.last_outbound_at,  # type: ignore[attr-defined]
         last_read_at=r.last_read_at,  # type: ignore[attr-defined]
         created_at=r.created_at,  # type: ignore[attr-defined]
+        counterpart_name=r.counterpart_name,  # type: ignore[attr-defined]
+        counterpart_username=r.counterpart_username,  # type: ignore[attr-defined]
+        counterpart_avatar_url=r.counterpart_avatar_url,  # type: ignore[attr-defined]
+        counterpart_profile_at=r.counterpart_profile_at,  # type: ignore[attr-defined]
     )
 
 
@@ -398,6 +476,7 @@ class PostgresConversationRepository:
                     "posted_at": message.posted_at,
                     "shape_version": message.shape_version,
                     "media_type": message.media_type,
+                    "media_url": message.media_url,
                 },
             )
             return result.rowcount == 1
@@ -445,6 +524,25 @@ class PostgresConversationRepository:
             row = session.execute(_GET_THREAD, {"thread_id": thread_id}).one_or_none()
         return None if row is None else _thread_record(row)
 
+    def find_thread(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        channel: str,
+        counterpart_external_id: str,
+    ) -> ThreadRecord | None:
+        with tenant_session(tenant_id) as session:
+            row = session.execute(
+                _FIND_THREAD,
+                {
+                    "connection_id": connection_id,
+                    "channel": channel,
+                    "counterpart": counterpart_external_id,
+                },
+            ).one_or_none()
+        return None if row is None else _thread_record(row)
+
     def list_messages(
         self, *, tenant_id: UUID, thread_id: UUID, limit: int = 50
     ) -> list[MessageRecord]:
@@ -464,6 +562,8 @@ class PostgresConversationRepository:
                 ingested_at=r.ingested_at,
                 delivery_status=r.delivery_status,
                 media_type=r.media_type,
+                media_url=r.media_url,
+                media_object_key=r.media_object_key,
             )
             for r in rows
         ]
@@ -473,6 +573,35 @@ class PostgresConversationRepository:
     def mark_read(self, *, tenant_id: UUID, thread_id: UUID, now: datetime) -> bool:
         with tenant_session(tenant_id) as session:
             result = session.execute(_MARK_READ, {"thread_id": thread_id, "now": now})
+            return result.rowcount == 1
+
+    def mark_outbound_read(self, *, tenant_id: UUID, thread_id: UUID, up_to: datetime) -> int:
+        with tenant_session(tenant_id) as session:
+            result = session.execute(_MARK_OUTBOUND_READ, {"thread_id": thread_id, "up_to": up_to})
+            return result.rowcount
+
+    def save_profile(
+        self, *, tenant_id: UUID, thread_id: UUID, profile: RemoteProfile, now: datetime
+    ) -> None:
+        with tenant_session(tenant_id) as session:
+            session.execute(
+                _SAVE_PROFILE,
+                {
+                    "thread_id": thread_id,
+                    "name": profile.name,
+                    "username": profile.username,
+                    "avatar_url": profile.avatar_url,
+                    "now": now,
+                },
+            )
+
+    def hide_message(
+        self, *, tenant_id: UUID, thread_id: UUID, message_id: UUID, now: datetime
+    ) -> bool:
+        with tenant_session(tenant_id) as session:
+            result = session.execute(
+                _HIDE_MESSAGE, {"message_id": message_id, "thread_id": thread_id, "now": now}
+            )
             return result.rowcount == 1
 
     def get_sync_state(
@@ -653,6 +782,7 @@ class MemoryConversationRepository:
                 ingested_at=_utcnow(),
                 delivery_status=None,
                 media_type=message.media_type,
+                media_url=message.media_url,
             )
         )
         return True
@@ -713,6 +843,19 @@ class MemoryConversationRepository:
         entry = self._visible(tenant_id, thread_id)
         return None if entry is None else self._with_outbound(entry)
 
+    def find_thread(
+        self,
+        *,
+        tenant_id: UUID,
+        connection_id: UUID,
+        channel: str,
+        counterpart_external_id: str,
+    ) -> ThreadRecord | None:
+        thread_id = self._by_natural_key.get((connection_id, channel, counterpart_external_id))
+        if thread_id is None:
+            return None
+        return self.get_thread(tenant_id=tenant_id, thread_id=thread_id)
+
     def list_messages(
         self, *, tenant_id: UUID, thread_id: UUID, limit: int = 50
     ) -> list[MessageRecord]:
@@ -730,6 +873,46 @@ class MemoryConversationRepository:
         if current is None or _as_utc(now) > _as_utc(current):
             entry.record = replace(entry.record, last_read_at=now)
         return True
+
+    def mark_outbound_read(self, *, tenant_id: UUID, thread_id: UUID, up_to: datetime) -> int:
+        entry = self._visible(tenant_id, thread_id)
+        if entry is None:
+            return 0
+        changed = 0
+        for i, m in enumerate(entry.messages):
+            if (
+                m.direction == "outbound"
+                and m.delivery_status != "read"
+                and _as_utc(m.posted_at or m.ingested_at) <= _as_utc(up_to)
+            ):
+                entry.messages[i] = replace(m, delivery_status="read")
+                changed += 1
+        return changed
+
+    def save_profile(
+        self, *, tenant_id: UUID, thread_id: UUID, profile: RemoteProfile, now: datetime
+    ) -> None:
+        entry = self._visible(tenant_id, thread_id)
+        if entry is None:
+            return
+        rec = entry.record
+        entry.record = replace(
+            rec,
+            counterpart_name=profile.name or rec.counterpart_name,
+            counterpart_username=profile.username or rec.counterpart_username,
+            counterpart_avatar_url=profile.avatar_url or rec.counterpart_avatar_url,
+            counterpart_profile_at=now,
+        )
+
+    def hide_message(
+        self, *, tenant_id: UUID, thread_id: UUID, message_id: UUID, now: datetime
+    ) -> bool:
+        entry = self._visible(tenant_id, thread_id)
+        if entry is None:
+            return False
+        before = len(entry.messages)
+        entry.messages = [m for m in entry.messages if m.id != message_id]
+        return len(entry.messages) < before
 
     # -- sync state -----------------------------------------------------------------
 

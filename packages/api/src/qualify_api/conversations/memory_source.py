@@ -13,6 +13,7 @@ here, not in production.
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import count
@@ -20,11 +21,15 @@ from typing import Any
 
 from qualify_api.conversations.contracts import (
     CHANNEL_DM,
+    REPLY_MEDIA_TYPES,
+    REPLY_STICKERS,
+    SENDER_ACTIONS,
     AccessStatus,
     AccessVerdict,
     Page,
     RemoteConversation,
     RemoteMessage,
+    RemoteProfile,
     SendResult,
     SourceConnection,
 )
@@ -49,6 +54,7 @@ class MemoryConversationSource:
         self.page_size = page_size
         self.conversations: dict[str, RemoteConversation] = {}
         self.messages: dict[str, list[RemoteMessage]] = {}
+        self.profiles: dict[str, RemoteProfile] = {}
         self.access = AccessVerdict(AccessStatus.OK)
         self.fail_with: Exception | None = None
         self.calls: list[str] = []
@@ -88,6 +94,12 @@ class MemoryConversationSource:
         items = self.messages.get(conversation.counterpart_external_id, [])
         return _slice(list(items), cursor, self.page_size)
 
+    async def fetch_profile(
+        self, connection: SourceConnection, counterpart_external_id: str
+    ) -> RemoteProfile | None:
+        self._check("fetch_profile")
+        return self.profiles.get(counterpart_external_id)
+
 
 @dataclass
 class SentRecord:
@@ -96,15 +108,23 @@ class SentRecord:
     external_message_id: str
 
 
+@dataclass(frozen=True)
+class ActionRecord:
+    connection: SourceConnection
+    recipient_external_id: str
+    action: str
+
+
 @dataclass
 class MemoryConversationSender:
     """Records what it is asked to send; `fail_with` makes `send` raise. The payload shape
     is the Messenger Platform's (`{"recipient": {"id"}, "message": {"text"}}`,
     `features/send-message.md:46`) so the outbox stores the same shape the Instagram
-    sender (E3) will — only the transport differs."""
+    sender (E3) will — only the transport differs. Presence signals land in `actions`."""
 
     channel: str = CHANNEL_DM
     sent: list[SentRecord] = field(default_factory=list)
+    actions: list[ActionRecord] = field(default_factory=list)
     fail_with: Exception | None = None
     _ids: Any = field(default_factory=lambda: count(1), repr=False)
 
@@ -115,9 +135,43 @@ class MemoryConversationSender:
             raise ValueError("an empty message cannot be sent")
         return {"recipient": {"id": recipient_external_id}, "message": {"text": text}}
 
+    def build_media_payload(self, *, recipient_external_id: str, media_type: str) -> dict[str, Any]:
+        if not recipient_external_id:
+            raise ValueError("a recipient is required")
+        if media_type not in REPLY_MEDIA_TYPES:
+            raise ValueError(f"media_type {media_type!r} is not one of {REPLY_MEDIA_TYPES}")
+        return {
+            "recipient": {"id": recipient_external_id},
+            "message": {"attachment": {"type": media_type, "payload": {}}},
+        }
+
+    def with_media_url(self, payload: Mapping[str, Any], url: str) -> dict[str, Any]:
+        body = copy.deepcopy(dict(payload))
+        body["message"]["attachment"]["payload"] = {"url": url}
+        return body
+
+    def build_sticker_payload(self, *, recipient_external_id: str, sticker: str) -> dict[str, Any]:
+        if not recipient_external_id:
+            raise ValueError("a recipient is required")
+        if sticker not in REPLY_STICKERS:
+            raise ValueError(f"sticker {sticker!r} is not one of {REPLY_STICKERS}")
+        return {
+            "recipient": {"id": recipient_external_id},
+            "message": {"attachment": {"type": sticker}},
+        }
+
     async def send(self, connection: SourceConnection, payload: Mapping[str, Any]) -> SendResult:
         if self.fail_with is not None:
             raise self.fail_with
         external_message_id = f"mid.memory.{next(self._ids)}"
         self.sent.append(SentRecord(connection, dict(payload), external_message_id))
         return SendResult(external_message_id=external_message_id)
+
+    async def send_action(
+        self, connection: SourceConnection, *, recipient_external_id: str, action: str
+    ) -> None:
+        if action not in SENDER_ACTIONS:
+            raise ValueError(f"unknown sender action {action!r}")
+        if self.fail_with is not None:
+            raise self.fail_with
+        self.actions.append(ActionRecord(connection, recipient_external_id, action))

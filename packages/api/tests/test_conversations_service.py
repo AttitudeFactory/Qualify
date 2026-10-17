@@ -40,6 +40,7 @@ from qualify_api.conversations.service import (
     ThreadNotFound,
     WindowClosed,
     attention_state,
+    split_reply,
 )
 from qualify_api.conversations.sync import ConversationSyncService
 
@@ -290,3 +291,81 @@ def test_registry_rejects_mismatched_channels() -> None:
         registry.sender_for("a")
     with pytest.raises(UnknownChannel):
         registry.source_for("b")
+
+
+# --- long texts and stickers (second pass) ---------------------------------------------------
+
+
+def test_split_reply_prefers_paragraphs_sentences_then_words() -> None:
+    assert split_reply("") == [] and split_reply("   ") == []
+    assert split_reply("corto") == ["corto"]
+    assert split_reply("a" * 1000) == ["a" * 1000]
+    assert split_reply("a" * 1001) == ["a" * 1000, "a"]  # no boundary: a hard cut
+    para = ("x" * 600) + "\n\n" + ("y" * 600)
+    assert split_reply(para) == ["x" * 600, "y" * 600]
+    sentence = ("Hola. " * 200).strip()  # 1199 chars of sentences
+    parts = split_reply(sentence)
+    assert len(parts) == 2 and all(len(p) <= 1000 for p in parts)
+    assert parts[0].endswith("Hola.") and parts[1].startswith("Hola.")
+    words = "palabra " * 200
+    parts = split_reply(words)
+    assert " ".join(parts) == words.strip() and all(len(p) <= 1000 for p in parts)
+    assert split_reply("ab cd", limit=3) == ["ab", "cd"]
+
+
+def test_reply_text_queues_one_row_per_part_in_order(world) -> None:
+    clock, repo, outbox, _sender, service, thread_id = world
+    ids = service.reply_text(
+        tenant_id=TENANT, thread_id=thread_id, text="palabra " * 200, approval=_approval(clock())
+    )
+    assert len(ids) == 2
+    rows = [outbox.rows[i] for i in ids]
+    assert [r.payload["message"]["text"] for r in rows] == split_reply("palabra " * 200)
+    assert rows[0].created_at <= rows[1].created_at
+    with pytest.raises(ValueError):
+        service.reply_text(
+            tenant_id=TENANT, thread_id=thread_id, text="  ", approval=_approval(clock())
+        )
+
+
+def test_reply_text_is_refused_outside_the_window_before_any_row(world) -> None:
+    clock, repo, outbox, _sender, service, thread_id = world
+    clock.now = T0 + timedelta(hours=25)
+    with pytest.raises(WindowClosed):
+        service.reply_text(
+            tenant_id=TENANT,
+            thread_id=thread_id,
+            text="palabra " * 200,
+            approval=_approval(clock()),
+        )
+    assert outbox.rows == {}
+
+
+def test_reply_sticker_is_a_queued_heart_with_approval(world) -> None:
+    clock, repo, outbox, sender, service, thread_id = world
+    with pytest.raises(ApprovalRequired):
+        service.reply_sticker(
+            tenant_id=TENANT,
+            thread_id=thread_id,
+            sticker="like_heart",
+            approval=None,  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError):
+        service.reply_sticker(
+            tenant_id=TENANT, thread_id=thread_id, sticker="thumbs", approval=_approval(clock())
+        )
+    item_id = service.reply_sticker(
+        tenant_id=TENANT, thread_id=thread_id, sticker="like_heart", approval=_approval(clock())
+    )
+    row = outbox.rows[item_id]
+    assert row.payload == {
+        "recipient": {"id": "igsid-alice"},
+        "message": {"attachment": {"type": "like_heart"}},
+    }
+    assert row.media is not None and row.media.media_type == "sticker"
+    assert row.media.needs_link is False and sender.sent == []
+    clock.now = T0 + timedelta(hours=25)
+    with pytest.raises(WindowClosed):
+        service.reply_sticker(
+            tenant_id=TENANT, thread_id=thread_id, sticker="like_heart", approval=_approval(clock())
+        )

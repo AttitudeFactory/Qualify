@@ -52,7 +52,7 @@ _ROLE_DSNS = {
     "worker": webhook_worker_dsn,
     "credential": credential_dsn,
 }
-_NEW_TABLES = ("conversation_sync_state", "conversation_outbox")
+_NEW_TABLES = ("conversation_sync_state", "conversation_outbox", "conversation_drafts")
 
 
 @pytest.fixture(scope="module")
@@ -89,6 +89,11 @@ _INSERT_OUTBOX = (
     "approved_by_user_id, approved_at) SELECT gen_random_uuid(), gen_random_uuid(), "
     "gen_random_uuid(), 'dm', '{}'::jsonb, gen_random_uuid(), now() WHERE false"
 )
+_INSERT_DRAFT = (
+    "INSERT INTO conversation_drafts (tenant_id, thread_id, message_id, generator_version, "
+    "generated_text, gate_reason) SELECT gen_random_uuid(), gen_random_uuid(), "
+    "gen_random_uuid(), 'v', 't', 'g' WHERE false"
+)
 
 
 # --- grants, per role ------------------------------------------------------------------
@@ -103,6 +108,9 @@ _INSERT_OUTBOX = (
         "SELECT * FROM conversation_outbox LIMIT 1",
         _INSERT_OUTBOX,
         "UPDATE conversation_outbox SET status = status WHERE false",
+        "SELECT * FROM conversation_drafts LIMIT 1",
+        _INSERT_DRAFT,
+        "UPDATE conversation_drafts SET status = status WHERE false",
     ],
 )
 def test_app_can_read_insert_update(engines, sql: str) -> None:
@@ -118,6 +126,7 @@ def test_admin_reads_sync_state_only(engines) -> None:
     assert _attempt(engines["admin"], "SELECT * FROM conversation_sync_state LIMIT 1") == "ok"
     assert _attempt(engines["admin"], _INSERT_STATE) == "denied"
     assert _attempt(engines["admin"], "SELECT * FROM conversation_outbox LIMIT 1") == "denied"
+    assert _attempt(engines["admin"], "SELECT * FROM conversation_drafts LIMIT 1") == "denied"
 
 
 @pytest.mark.parametrize(
@@ -129,6 +138,8 @@ def test_admin_reads_sync_state_only(engines) -> None:
         "DELETE FROM conversation_outbox WHERE false",
         "SELECT * FROM conversation_sync_state LIMIT 1",
         _INSERT_STATE,
+        "SELECT * FROM conversation_drafts LIMIT 1",
+        _INSERT_DRAFT,
     ],
 )
 def test_webhook_worker_has_nothing_on_the_new_tables(engines, sql: str) -> None:

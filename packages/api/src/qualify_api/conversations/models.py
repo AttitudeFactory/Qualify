@@ -140,6 +140,10 @@ class ConversationOutboxItem(Base):
     )
     approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     draft_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    # A media reply: the R2 object the sender links into a public URL at send time.
+    media_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=sql_now("now()"), nullable=False
     )

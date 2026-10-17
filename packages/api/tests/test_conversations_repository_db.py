@@ -34,7 +34,16 @@ from qualify_api.conversations.contracts import (
     AccessVerdict,
     RemoteConversation,
     RemoteMessage,
+    RemoteProfile,
     SourceConnection,
+)
+from qualify_api.conversations.drafts import (
+    DraftPending,
+    DraftStatus,
+    InvalidDraftTransition,
+    PostgresDraftRepository,
+    UnknownDraft,
+    new_draft,
 )
 from qualify_api.conversations.memory_source import (
     SHAPE_VERSION_MEMORY,
@@ -327,6 +336,14 @@ def _payload(text_: str) -> dict:
     return {"recipient": {"id": "igsid-x"}, "message": {"text": text_}}
 
 
+def _claim_now() -> datetime:
+    """An instant a claim may use. `enqueue` leaves `next_attempt_at` to the database's
+    own `now()` (the row is due immediately), so a claim must pass a `now` AFTER the real
+    clock — a fixed `T0 + 1 min` was due only while the wall clock was before it, which
+    made these tests pass on the morning of 2026-10-16 and fail that same afternoon."""
+    return datetime.now(UTC) + timedelta(minutes=1)
+
+
 def test_enqueue_records_the_approver_and_claim_marks_sent_once(seeded) -> None:
     repo = PostgresConversationRepository()
     outbox = PostgresConversationOutboxRepository()
@@ -345,7 +362,7 @@ def test_enqueue_records_the_approver_and_claim_marks_sent_once(seeded) -> None:
     assert row.id == item_id and row.status == "pending"
     assert row.approved_by_user_id == seeded["user"] and row.draft_id == approval.draft_id
 
-    now = T0 + timedelta(minutes=1)
+    now = _claim_now()
     claimed = outbox.claim(tenant_id=TENANT, worker_id="w1", now=now, limit=LIMIT)
     mine = [c for c in claimed if c.id == item_id]
     assert len(mine) == 1 and mine[0].payload == _payload("Sí, tenemos M.")
@@ -392,7 +409,7 @@ def test_claim_skips_rows_locked_by_another_worker(seeded) -> None:
         )
         for i in range(3)
     }
-    now = T0 + timedelta(minutes=1)
+    now = _claim_now()
     engine = create_engine(app_dsn())
     try:
         with engine.connect() as held:
@@ -429,7 +446,7 @@ def test_retry_failed_dead_are_status_guarded(seeded) -> None:
     [row] = outbox.list_for_thread(tenant_id=TENANT, thread_id=tid)
     assert row.status == "pending"
 
-    now = T0 + timedelta(minutes=1)
+    now = _claim_now()
     outbox.claim(tenant_id=TENANT, worker_id="w1", now=now, limit=LIMIT)
     outbox.mark_retry(
         tenant_id=TENANT,
@@ -487,3 +504,154 @@ def test_other_tenant_reads_nothing(seeded) -> None:
         is None
     )
     assert not repo.mark_read(tenant_id=OTHER, thread_id=tid, now=T0)
+
+
+# --- second pass: the counterpart's profile and the drafts table ------------------------------
+
+
+def test_profile_is_saved_without_erasing_what_a_previous_one_knew(seeded) -> None:
+    repo = PostgresConversationRepository()
+    tid = _thread_with_inbound(repo, seeded)
+    assert repo.get_thread(tenant_id=TENANT, thread_id=tid).counterpart_profile_at is None
+
+    repo.save_profile(
+        tenant_id=TENANT,
+        thread_id=tid,
+        profile=RemoteProfile(name="Yesika Roa", username="yesii_roa", avatar_url="https://p/1"),
+        now=T0,
+    )
+    thread = repo.get_thread(tenant_id=TENANT, thread_id=tid)
+    assert (thread.counterpart_name, thread.counterpart_username) == ("Yesika Roa", "yesii_roa")
+    assert thread.counterpart_avatar_url == "https://p/1" and thread.counterpart_profile_at == T0
+
+    # A later fetch that knows less (no picture) keeps the old picture, moves the instant.
+    repo.save_profile(
+        tenant_id=TENANT,
+        thread_id=tid,
+        profile=RemoteProfile(username="yesii_roa"),
+        now=T0 + timedelta(days=1),
+    )
+    thread = repo.get_thread(tenant_id=TENANT, thread_id=tid)
+    assert (
+        thread.counterpart_name == "Yesika Roa" and thread.counterpart_avatar_url == "https://p/1"
+    )
+    assert thread.counterpart_profile_at == T0 + timedelta(days=1)
+    # Another tenant neither sees nor changes it.
+    repo.save_profile(tenant_id=OTHER, thread_id=tid, profile=RemoteProfile(name="X"), now=T0)
+    assert repo.get_thread(tenant_id=TENANT, thread_id=tid).counterpart_name == "Yesika Roa"
+
+
+def _inbound_message_id(repo: PostgresConversationRepository, tid: UUID, seeded) -> UUID:
+    repo.insert_message(
+        tenant_id=TENANT,
+        thread_id=tid,
+        connection_id=seeded["connection"],
+        message=_msg(f"mid.{uuid4().hex[:8]}", at=T0),
+    )
+    return repo.list_messages(tenant_id=TENANT, thread_id=tid)[-1].id
+
+
+def test_drafts_one_proposed_per_message_decided_once_under_rls(seeded) -> None:
+    repo = PostgresConversationRepository()
+    drafts = PostgresDraftRepository()
+    tid = _thread_with_inbound(repo, seeded)
+    mid = _inbound_message_id(repo, tid, seeded)
+
+    draft = drafts.create(
+        new_draft(
+            tenant_id=TENANT,
+            thread_id=tid,
+            message_id=mid,
+            generator_version="qua226.1:claude-haiku-5-5",
+            generated_text="¡Hola! Sí, hay talla M.",
+            gate_reason="inbound_text",
+            needs_review=True,
+            now=T0,
+            model_id="claude-haiku-5-5",
+            model_revision="claude-haiku-5-5-20260901",
+            input_tokens=300,
+            output_tokens=40,
+            cost_usd=0.00005,
+            grounding={"business_name": "Bianki", "products": [], "unsupported_claims": ["env"]},
+        )
+    )
+    stored = drafts.get(tenant_id=TENANT, draft_id=draft.id)
+    assert stored is not None and stored.status is DraftStatus.PROPOSED
+    assert stored.needs_review and stored.grounding["unsupported_claims"] == ["env"]
+    assert (stored.model_id, stored.input_tokens, stored.output_tokens) == (
+        "claude-haiku-5-5",
+        300,
+        40,
+    )
+    assert stored.cost_usd == pytest.approx(0.00005)
+    assert [d.id for d in drafts.list_pending(tenant_id=TENANT, thread_id=tid)] == [draft.id]
+
+    with pytest.raises(DraftPending):
+        drafts.create(
+            new_draft(
+                tenant_id=TENANT,
+                thread_id=tid,
+                message_id=mid,
+                generator_version="v",
+                generated_text="otra",
+                gate_reason="inbound_text",
+            )
+        )
+
+    edited = drafts.decide(
+        tenant_id=TENANT,
+        draft_id=draft.id,
+        status=DraftStatus.EDITED,
+        final_text="¡Hola! Sí, hay M.",
+        decided_by_user_id=seeded["user"],
+        now=T0 + timedelta(minutes=1),
+    )
+    assert edited.status is DraftStatus.EDITED and edited.final_text == "¡Hola! Sí, hay M."
+    again = drafts.get(tenant_id=TENANT, draft_id=draft.id)
+    assert again is not None and again.decided_by_user_id == seeded["user"]
+    with pytest.raises(InvalidDraftTransition):
+        drafts.decide(
+            tenant_id=TENANT,
+            draft_id=draft.id,
+            status=DraftStatus.ACCEPTED,
+            final_text=None,
+            decided_by_user_id=seeded["user"],
+            now=T0,
+        )
+    assert drafts.list_pending(tenant_id=TENANT, thread_id=tid) == []
+    # Discarded → a new suggestion for the same message is allowed again.
+    second = drafts.create(
+        new_draft(
+            tenant_id=TENANT,
+            thread_id=tid,
+            message_id=mid,
+            generator_version="v",
+            generated_text="v2",
+            gate_reason="inbound_text",
+        )
+    )
+    assert second.id != draft.id
+
+    # RLS: the other tenant sees nothing and cannot decide.
+    assert drafts.get(tenant_id=OTHER, draft_id=draft.id) is None
+    assert drafts.list_pending(tenant_id=OTHER, thread_id=tid) == []
+    with pytest.raises(UnknownDraft):
+        drafts.decide(
+            tenant_id=OTHER,
+            draft_id=second.id,
+            status=DraftStatus.DISCARDED,
+            final_text=None,
+            decided_by_user_id=seeded["user"],
+            now=T0,
+        )
+
+
+def test_hide_message_is_per_tenant_and_idempotent(seeded) -> None:
+    repo = PostgresConversationRepository()
+    tid = _thread_with_inbound(repo, seeded)
+    mid = _inbound_message_id(repo, tid, seeded)
+    assert repo.hide_message(tenant_id=OTHER, thread_id=tid, message_id=mid, now=T0) is False
+    assert [m.id for m in repo.list_messages(tenant_id=TENANT, thread_id=tid)] == [mid]
+    assert repo.hide_message(tenant_id=TENANT, thread_id=tid, message_id=mid, now=T0) is True
+    assert repo.list_messages(tenant_id=TENANT, thread_id=tid) == []
+    assert repo.hide_message(tenant_id=TENANT, thread_id=tid, message_id=mid, now=T0) is False

@@ -40,7 +40,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from qualify_api.conversations.contracts import (
     AccessStatus,
@@ -48,6 +49,8 @@ from qualify_api.conversations.contracts import (
     ConversationSource,
     RemoteConversation,
     RemoteMessage,
+    RemoteProfile,
+    RemoteRead,
     SourceConnection,
 )
 from qualify_api.conversations.repository import (
@@ -57,6 +60,10 @@ from qualify_api.conversations.repository import (
 )
 
 logger = logging.getLogger("qualify_api.conversations.sync")
+
+#: How long a fetched profile (and its expiring picture URL) is trusted before the next
+#: sync asks the channel again. The User Profile API is one call per thread.
+PROFILE_TTL = timedelta(hours=24)
 
 # Verdicts that make listing pointless: the channel has already said no.
 _BLOCKING_ACCESS = frozenset(
@@ -186,6 +193,7 @@ class ConversationSyncService:
         )
         if upsert.created:
             report.threads_created += 1
+        await self.refresh_profile(connection, source, upsert.thread_id, conversation)
         newest_inbound: datetime | None = None
         newest_any: datetime | None = conversation.updated_at
         cursor: str | None = None
@@ -248,6 +256,61 @@ class ConversationSyncService:
         )
         return IngestResult(
             thread_id=str(upsert.thread_id), thread_created=upsert.created, message_created=created
+        )
+
+    async def refresh_profile(
+        self,
+        connection: SourceConnection,
+        source: ConversationSource,
+        thread_id: UUID,
+        conversation: RemoteConversation,
+    ) -> bool:
+        """Fetch the counterpart's profile when the thread has none or its picture is
+        older than `PROFILE_TTL` (the channel's URL expires). Best-effort: a source without
+        a profile API, or one that fails, changes nothing. Returns whether it saved."""
+        thread = self._repo.get_thread(tenant_id=connection.tenant_id, thread_id=thread_id)
+        if thread is None:
+            return False
+        fetched_at = thread.counterpart_profile_at
+        if fetched_at is not None and _as_utc(self._clock()) - _as_utc(fetched_at) < PROFILE_TTL:
+            return False
+        fetch = getattr(source, "fetch_profile", None)
+        profile: RemoteProfile | None = None
+        if fetch is not None:
+            try:
+                profile = await fetch(connection, conversation.counterpart_external_id)
+            except Exception as exc:  # noqa: BLE001 — a profile is decoration, never a failure
+                logger.info(
+                    "conversations.profile.skipped thread=%s reason=%s",
+                    thread_id,
+                    type(exc).__name__,
+                )
+                profile = None
+        if profile is None and conversation.counterpart_username:
+            # The listing already named them: keep at least the handle.
+            profile = RemoteProfile(username=conversation.counterpart_username)
+        if profile is None:
+            return False
+        self._repo.save_profile(
+            tenant_id=connection.tenant_id, thread_id=thread_id, profile=profile, now=self._clock()
+        )
+        return True
+
+    def ingest_read(self, connection: SourceConnection, *, channel: str, read: RemoteRead) -> int:
+        """The counterpart read the conversation (Instagram's `messaging_seen`): every
+        outbound of that thread at or before `read.last_read_at` becomes `read`. A thread
+        the inbox never saw is ignored (0 rows): a receipt alone creates nothing. Returns
+        how many messages changed."""
+        thread = self._repo.find_thread(
+            tenant_id=connection.tenant_id,
+            connection_id=connection.connection_id,
+            channel=channel,
+            counterpart_external_id=read.counterpart_external_id,
+        )
+        if thread is None:
+            return 0
+        return self._repo.mark_outbound_read(
+            tenant_id=connection.tenant_id, thread_id=thread.id, up_to=read.last_read_at
         )
 
     def _finish(
