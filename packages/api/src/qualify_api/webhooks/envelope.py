@@ -15,6 +15,14 @@ Two fingerprints, two dedup levels (migration 0050):
   change can reappear inside another body, with another `time`. Key order and whitespace
   do not change it; any difference inside `value` does.
 
+**Messaging items (QUA-226).** The Instagram Messaging webhooks deliver a different
+entry shape: `{"id", "time", "messaging": [{sender, recipient, timestamp, message}, ...]}`
+(`business-messaging/instagram-messaging/webhooks.md:53-81`) — no `changes`, no `field`.
+Each `entry[i].messaging[j]` item is mapped to one change with `field = "messages"` and the
+item as its `value`, after the entry's `changes` (so an entry carrying both keeps a stable
+order). The processor then routes it by `instagram:messages`, exactly like a `changes`
+entry would be. Nothing else about the item is interpreted here.
+
 A body that is not this shape (not JSON, no `entry` list, an entry without a string `id`,
 a change without a string `field`) is `EnvelopeError` as a whole: the receiver still
 stores the delivery (raw body included) as `unparseable`, with no changes, rather than
@@ -41,6 +49,10 @@ from typing import Any
 # Meta's notifications are small (a few ids per change); 1 MiB leaves room for a large
 # batch while keeping a public, unauthenticated endpoint from buffering arbitrary bodies.
 MAX_BODY_BYTES = 1024 * 1024
+
+# The `field` a `messaging[]` item is recorded under (the Instagram Messaging webhooks'
+# own name for the subscription, `webhooks.md:39`).
+MESSAGING_FIELD = "messages"
 
 # In a decoded Python str, any code point in the surrogate block is a LONE surrogate (pairs
 # were joined by json.loads); NUL is the one character `jsonb` refuses outright.
@@ -147,6 +159,25 @@ def parse_delivery(body: bytes) -> ParsedDelivery:
                     value=value,
                     dedup_key=change_dedup_key(
                         object_=object_, entry_id=entry_id, field=field, value=value
+                    ),
+                )
+            )
+        raw_messaging = entry.get("messaging", [])
+        if not isinstance(raw_messaging, list):
+            raise EnvelopeError("an entry's 'messaging' is not a list")
+        for item in raw_messaging:
+            if not isinstance(item, dict):
+                raise EnvelopeError("a messaging item is not an object")
+            changes.append(
+                ParsedChange(
+                    change_index=len(changes),
+                    object=object_,
+                    entry_id=entry_id,
+                    entry_time=entry_time,
+                    field=MESSAGING_FIELD,
+                    value=item,
+                    dedup_key=change_dedup_key(
+                        object_=object_, entry_id=entry_id, field=MESSAGING_FIELD, value=item
                     ),
                 )
             )

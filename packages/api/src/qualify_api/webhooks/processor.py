@@ -413,6 +413,13 @@ def production_processor(*, worker_id: str) -> Processor:
     """The real queue (`qualify_webhook_worker`), the real mentions pipeline, the real
     WhatsApp inbound handler (WA-07) and the template webhooks (WA-18). Imported lazily
     so building a processor for tests never pulls the Meta/credential stack."""
+    from qualify_api.conversations.composition import (  # noqa: PLC0415
+        production_sync_service,
+    )
+    from qualify_api.conversations.webhook import (  # noqa: PLC0415
+        INSTAGRAM_MESSAGES_HANDLER_KEY,
+        instagram_messages_handler,
+    )
     from qualify_api.mail.handlers import production_resend_handlers  # noqa: PLC0415
     from qualify_api.meegle.handlers import production_meegle_handlers  # noqa: PLC0415
     from qualify_api.mentions.composition import (  # noqa: PLC0415
@@ -469,6 +476,12 @@ def production_processor(*, worker_id: str) -> Processor:
             ),
             TEMPLATE_STATUS_HANDLER_KEY: template_handler,
             TEMPLATE_QUALITY_HANDLER_KEY: template_handler,
+            # QUA-226: an Instagram Direct message (`entry[].messaging[]`, mapped by the
+            # envelope to `instagram:messages`) → the Conversaciones inbox, by `mid`.
+            INSTAGRAM_MESSAGES_HANDLER_KEY: instagram_messages_handler(
+                resolve=resolve_external_account,
+                sync=production_sync_service(),
+            ),
             # Meegle onboarding (plan-altas-meegle M1): `meegle:2001|1005|2004`, only when
             # QUALIFY_MEEGLE_* is set; otherwise those events stay `unsupported`.
             **production_meegle_handlers(),

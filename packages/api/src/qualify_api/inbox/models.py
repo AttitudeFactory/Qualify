@@ -120,6 +120,19 @@ class Thread(Base):
     last_message_at: Mapped[datetime | None] = mapped_column(nullable=True)
     last_inbound_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=sql_now("now()"), nullable=False)
+    # 0065 (QUA-226): the poll-side conversation id (`t_…`), when known — never the
+    # thread's identity (that is the counterpart's id in `external_thread_id`); and when
+    # a person last opened the thread. Both NULL on comment and WhatsApp threads.
+    external_conversation_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 0065 (QUA-226): the counterpart's profile as the channel reports it (name, handle,
+    # an expiring picture URL) and when it was last refreshed. NULL on comment threads.
+    counterpart_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    counterpart_username: Mapped[str | None] = mapped_column(Text, nullable=True)
+    counterpart_avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    counterpart_profile_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class Message(Base):
@@ -188,6 +201,9 @@ class Message(Base):
     media_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     media_mime: Mapped[str | None] = mapped_column(Text, nullable=True)
     media_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 0065 (QUA-226): the channel's own CDN URL of an inbound Instagram attachment
+    # (signed, expiring). NULL on comments, WhatsApp and every outbound row.
+    media_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class InboxMetaCallLog(Base):

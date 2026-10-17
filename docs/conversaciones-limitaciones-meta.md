@@ -1,0 +1,108 @@
+# Conversaciones (QUA-226) — limitaciones externas y dependencias de Meta
+
+**Estado: 2026-10-16.** Lista verificable que exige el criterio de aceptación 7 del ticket:
+cada fila dice qué está implementado en código, qué está configurado en el entorno local,
+qué hay que habilitar o aprobar en Meta y qué depende de una cuenta o un token real. Las
+columnas con «pendiente» son exactamente eso: nada de lo que sigue se ha observado contra
+Instagram en vivo.
+
+> Regla de la casa: el canal en memoria (`QUALIFY_CONVERSATIONS_DM_CHANNEL=memory`) valida
+> la interfaz y el flujo interno (bandeja → respuesta → outbox → sender → burbuja). **No
+> demuestra que la API de Instagram funcione.** Lo que sí lo demostraría es la columna
+> «Verificación» de la tabla 2, hoy vacía.
+
+## 1. Qué hay en el código (rama QUA-226)
+
+| Pieza | Módulo | Estado |
+| --- | --- | --- |
+| Contratos de canal, repositorios, outbox con aprobación humana, servicio de bandeja, sincronización | `qualify_api.conversations` (E1) | Hecho y probado offline y con `db` |
+| Pantalla `/conversations` en Escuchas: cuentas, acceso, lista, hilo, marcar leído, responder | `Qualify/conversations_*.py` (E2) | Hecho; validación en localhost pendiente |
+| Adaptador de Instagram Direct (`ConversationSource` + `ConversationSender`) sobre la Messenger Platform | `conversations/instagram_source.py` (E3) | **Lectura verificada en vivo el 2026-10-16** (acceso, listado, mensaje de texto); adjuntos y **envío sin verificar** |
+| Handler de webhook `instagram:messages` y mapeo de `entry[].messaging[]` en el envelope | `conversations/webhook.py`, `webhooks/envelope.py` (E3) | Escrito desde el corpus; **sin verificar en vivo** |
+| Sender del outbox (ventana revalidada al enviar) y worker con reconciliación opcional | `conversations/sender.py`, `conversations/worker.py` (E5) | Hecho y probado offline |
+| Recibos de lectura («Visto») | `webhook.py` (`read` → `ingest_read`), `repository.mark_outbound_read` | Hecho; **solo llega por webhook** (`messaging_seen`), en local no hay webhook |
+| Señales de presencia (`mark_seen` al abrir, `typing_on` al escribir) | `service.signal`, `instagram_source.send_action` | Hecho; inline y sin aprobación porque no son contenido; **sin verificar en vivo** |
+| Adjuntos: foto, audio, vídeo y PDF en ambos sentidos; corazón (`like_heart`) saliente | `instagram_source` (CDN URL entrante, `attachment` saliente con `document → file`), `sender` (URL pública al enviar; un sticker no enlaza nada), `conversations_page` (cuatro dropzones + ❤️) | Hecho; **sin verificar en vivo** |
+| Nota de voz grabada en el navegador | `assets/qualify-voice.js` (Web Audio → WAV 16 kHz mono, en partes base64 < 1 MB) → `conversations_state.voice_*` → R2 como cualquier audio | Hecho; sin ffmpeg ni códec: Instagram acepta `wav` |
+| Textos largos | `service.split_reply` + `reply_text`: una fila de outbox por cada ≤ 1000 caracteres, cortadas por párrafo/frase/palabra | Hecho; la pantalla avisa «Se enviará en N mensajes» y ya no limita |
+| Perfil del contacto (nombre, usuario, foto) | `instagram_source.fetch_profile` (User Profile API, `GET /{IGSID}?fields=name,username,profile_pic`), `sync.refresh_profile` (al crear el hilo y cada 24 h: la URL de la foto caduca), `threads.counterpart_*` (0065) | Hecho; **sin verificar en vivo**; sin perfil la UI muestra iniciales |
+| Borradores asistidos con modelo (E4) | `conversations/suggest.py` (compuerta → `claude-haiku-5-5` con *strict tool use* → veredicto de *grounding*), `conversation_drafts` (0065, RLS, coste por fila), `PostgresDraftRepository`, `composition.grounding_for` (marca + catálogo) | Hecho y probado offline; el envío sigue siendo solo `reply(..., approval=HumanApproval(draft_id))` |
+| Paginación histórica de un hilo («cargar anteriores») | `repository.list_messages(limit)` | **Fuera de alcance**: se muestran los últimos 50; el repositorio no expone cursor |
+
+## 2. Dependencias de Meta, con evidencia
+
+| # | Requisito | Fuente en el corpus | Código | Entorno local (2026-10-16) | Meta | Verificación en vivo |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | Permiso `instagram_manage_messages` en el token de Página | `business-messaging/instagram-messaging/get-started.md:27,50`; `features/send-message.md` («Requirements») | La matriz C-05 lo conoce (`MANAGE_DMS`); el adaptador devuelve `PERMISSION_MISSING` sin llamar a Meta si no está concedido | **Concedido en desarrollo (2026-10-16, 21:37 UTC):** añadido a `QUALIFY_META_SCOPES` y a la *configuración* de Facebook Login for Business (con `config_id`, el diálogo pide los permisos de la configuración, no los del parámetro `scope`); la conexión `qualifymkt.co` reconectada lo lleva | App Review para Advanced Access (QUA-140, envío 2) sigue pendiente para clientes sin rol | **Verificado** (acceso estándar, tester con rol) |
+| 2 | Nivel de acceso: con Standard Access solo se puede tratar con personas con rol en la app | `overview.md:122`; `send-message.md` («Limitations»); `webhooks.md:12-13` | — | Posture `development` en todas las conexiones | Para clientes reales: Advanced Access de `instagram_manage_messages` + app en Live (QUA-142, en curso, plazo Meta 2026-12-11) | Pendiente |
+| 3 | El dueño activa «Permitir acceso a los mensajes» en la app de Instagram | `get-started.md:129`; `ig_shapes.UNCOVERED_SURFACES["direct_messages_human_toggle"]` | No hay señal de API: `AccessStatus.UNKNOWN`/`OK` con lista vacía se muestran como «por verificar», nunca como cero | Activado en `qualifymkt.co` el 2026-10-16 (captura del dueño; «Quién puede enviarte solicitudes» = Todos) | Acción humana del dueño de cada cuenta | No automatizable (confirmado por captura, no por API) |
+| 4 | Página de Facebook vinculada a la cuenta profesional (fork Facebook Login, ADR 25) | `get-started.md:15`, `send-message.md` («Requirements») | `social_connections.linked_page_id NOT NULL`; el adaptador dirige `/{page-id}/conversations` y `/{page-id}/messages` | Presente en las conexiones | — | Pendiente |
+| 5 | Token de Página con tarea `MESSAGE`/`MODERATE` | `get-started.md:16,48`; `send-message.md` | El resolver inyecta la credencial de la conexión (R3) | Credenciales de desarrollo sin el scope 1 | Reconectar tras el punto 1 | Pendiente |
+| 6 | Suscripción de la Página a los webhooks de la app (`subscribed_apps`) y campo `messages` suscrito en el panel | `webhooks.md:11,16`; `get-started.md:165` | **No existe** (`subscribed_apps` no aparece en el código: QUA-129) | — | Panel → Webhooks → Instagram → suscribir `messages`; `pages_manage_metadata` ya se pide | Pendiente |
+| 7 | Forma del webhook: `object: instagram`, `entry[].messaging[]` con `sender`, `recipient`, `timestamp`, `message.mid/text/attachments/is_echo` | `webhooks.md:53-81` | Envelope mapea `messaging[]` a `field = "messages"`; handler bajo `instagram:messages` | Receptor y cola duraderos existentes (QUA-147) | — | Pendiente (ningún DM real ha llegado) |
+| 8 | Lectura: `GET /{page-id}/conversations?platform=instagram` y `GET /{conversation-id}/messages?fields=…`; solo ~20 mensajes recientes con detalle | `get-started.md:133`; `instagram-api-with-instagram-login/conversations-api.md` («Note») | `MESSAGES_PAGE_LIMIT = 20`, una página por conversación; el webhook es el camino hacia delante | Poll local: `just conversations-sync --tenant …` | — | **Verificado para texto (2026-10-16, 21:44 UTC):** sonda de acceso, listado de conversaciones con participantes y `GET /{conversation-id}/messages` respondieron **200**; un DM de texto de un tester con rol se ingirió como un hilo (`counterpart` = IGSID, `external_conversation_id` = id `aWdf…`) con un mensaje `inbound` con `author_username` y `created_time`. **Pendiente:** adjuntos (media) y el envío (`POST /messages`, nunca llamado) |
+| 9 | Conversaciones en «Requests» sin actividad 30 días dejan de aparecer | `conversations-api.md` («Limitations») | No modelado: un hilo ya guardado no desaparece de Qualify aunque Meta deje de listarlo | — | — | Documentado, no cubierto |
+| 10 | Envío: `POST /{page-id}/messages` con `{"recipient":{"id":IGSID},"message":{"text"}}`; ≤ 1000 bytes UTF-8 | `send-message.md` («Send a basic message», «Limitations») | `build_payload` valida el límite; el servicio valida 1000 caracteres | Worker local: `just conversations-worker --tenant … --sync` | — | **Verificado (2026-10-16, 22:07 UTC):** una respuesta aprobada en `/conversations` salió por el worker (`claimed=1 sent=1`), `POST` **200** con `message_id`; `mark_sent` escribió la fila `outbound` con `delivery_status = sent` y `last_inbound_at` no se movió (B2) |
+| 11 | Ventana de 24 h desde el último mensaje de la persona | `overview.md:27-28` | `WindowClosed` al redactar y `window_closed` al enviar (sender) | — | Human Agent tag (7 días) **no modelado**: otro permiso y otra App Review | Pendiente |
+| 11b | «Visto» del cliente: webhook `messaging_seen` (`entry[].messaging[].read.mid` + `timestamp`) | `webhooks.md:41,211-236` | `parse_messaging_item` → `RemoteRead` → `mark_outbound_read` (toda salida ≤ timestamp pasa a `read`) | Sin webhook en local: no observable aquí | Suscribir `messaging_seen` en el panel (hoy solo `messages` y `mentions`) | Pendiente |
+| 11c | Señales al cliente: `POST /{page-id}/messages` con `sender_action` = `mark_seen` / `typing_on` / `typing_off`, solo con `recipient` | `features/sender-actions.md` | `InstagramDirectSender.send_action`; `service.signal` las ignora si la ventana está cerrada; nunca pasan por el outbox | Se envían al abrir un hilo y mientras se escribe (cada ≥ 6 s) | — | Pendiente |
+| 11d | Lo que Instagram **no** expone: «escribiendo…» del cliente y «entregado» | `webhooks.md` (campos: `messages`, `messaging_postbacks`, `messaging_seen`, `message_reactions`, …) | La UI no muestra typing ajeno ni «entregado»; solo «Enviando» (outbox), «Enviado» (200 de Meta) y «Visto» | — | — | No existe en la API |
+| 11e | Adjuntos: entrada `attachments[].payload.url` (webhook) / `image_data.url`, `video_data.url`, `file_url` (edge); salida `message.attachment.{type,payload.url}` con URL pública — `image` png/jpeg ≤ 8 MB, `audio` aac/m4a/wav/mp4 ≤ 25 MB, `video` mp4/ogg/avi/mov/webm ≤ 25 MB, `file` pdf ≤ 25 MB; sticker `like_heart` sin payload | `webhooks.md:66-77`; `graph-api/reference/message.md:98`; `send-message.md` («Send an image», «Send a heart sticker», «Limitations») | `messages.media_url` guarda la URL CDN entrante; un adjunto saliente se sube a R2 y el sender publica la URL (`/public/media/{token}`, 15 min) **al enviar**; `document` se traduce a `file` en el cable; el corazón va como `media_type = sticker` sin objeto | `QUALIFY_PUBLIC_MEDIA_BASE_URL` apunta al túnel (FastAPI 3000) | Encuestas y ubicación **no existen** en la API de envío de Instagram | Pendiente (ni un adjunto entrante ni uno saliente observados aún) |
+| 11f | Perfil del contacto: `GET /{IGSID}?fields=name,username,profile_pic` con token de Página; consentimiento implícito al escribir al negocio; la URL de la foto caduca en días | `features/user-profile.md` | `fetch_profile` → `threads.counterpart_name/username/avatar_url/profile_at`; se refresca cada 24 h; cualquier error deja el hilo sin perfil (iniciales) | — | Advanced Access para cuentas sin rol, como el resto | Pendiente |
+| 11g | Tiempos de Graph y envíos ambiguos: httpx espera 5 s por defecto y Meta tarda más en el edge de mensajes con adjuntos y en un envío cuya media descarga de Qualify durante la petición | Observado 2026-10-16: `ReadTimeout` repetidos en `GET /{conversation-id}/messages`; un envío de foto hizo `ReadTimeout`, se reintentó y **llegó dos veces** | Lecturas con 30 s y envíos con 60 s (`READ_TIMEOUT_S`/`SEND_TIMEOUT_S`); un fallo de transporte **después** de enviar la petición (`ReadTimeout`, `RemoteProtocolError`, …) es `is_ambiguous`: el sender lo cierra como `failed` con `send_ambiguous` y no reintenta; la pantalla dice «puede haber salido» y la sincronización muestra el eco si salió | — | La Messenger Platform no admite claves de idempotencia | Verificado el fallo; la mitigación, pendiente de observar |
+| 11h | Sticker `like_heart` por API | `send-message.md` («Send a heart sticker») | `reply_sticker` existe y funciona (POST 200, 2026-10-16) | — | En la app de la persona llega como un **corazón blanco**, no el rojo de la app | **Verificado**; por eso el botón ❤️ envía el emoji como texto (`HEART_TEXT`) |
+| 11i | Audio por la API de lectura: **no existe**. Cualquier mensaje de audio (las notas de voz de la persona y los ecos de los audios que envía Qualify) vuelve del edge `GET /{conversation-id}/messages` como `is_unsupported: true`, con `message` vacío y sin `attachments` | **Verificado en vivo 2026-10-16** (sonda sobre el hilo real) | El parser lo guarda como `media_type = other`; la pantalla dice «Contenido que Instagram no muestra aquí (p. ej. una nota de voz)» y la lista «Nota de voz u otro contenido»; el envío de audio sí funciona (POST 200 y la persona lo oye) | — | Un webhook `messages` con `is_unsupported` se trata igual | Verificado |
+| 11j | Deshacer el envío («eliminar para todos») y editar un mensaje | Ningún endpoint en el corpus (`features/*`, `webhooks.md`: solo `is_deleted` cuando el **cliente** borra) | «Eliminar para mí» = `messages.deleted_at` (local, por tenant); no hay «para todos» ni «editar» en la pantalla | — | No existe en la Messenger Platform para Instagram | Documentado |
+| 12 | Códigos de error (190 auth, 10 y 2xx permisos, 429/5xx reintentables) | `graph_errors.py` (190 verificado en vivo 2026-08-14 en otro módulo); el resto, lectura del corpus | `InstagramDirectError.is_auth_error / is_permission_error / is_retryable` | — | — | Solo 190 verificado (en otro endpoint) |
+| 13 | Presupuesto de llamadas en Development Mode: 200/h por par Página-app | `ACCESS-MODEL.md` vía QUA-20 | `--sync-interval` 300 s por defecto; el ledger de llamadas del inbox **no** está cableado | — | — | Pendiente |
+
+## 3. Qué debe configurar el fundador antes de una prueba real
+
+1. **Meta App Dashboard → Casos de uso → Personalizar:** añadir `instagram_manage_messages`
+   (hoy queda fuera del envío 1, QUA-124). Comprobar su nivel de acceso (Standard es
+   suficiente para cuentas con rol en la app; Advanced para clientes).
+2. **`.env` (local) y `.env.prod`:** añadir `instagram_manage_messages` a
+   `QUALIFY_META_SCOPES` y **reconectar** la cuenta de Instagram desde `/connections` para
+   que el nuevo token lo lleve. Hasta entonces el adaptador responde `PERMISSION_MISSING`
+   (`scope_not_granted`) sin gastar llamadas.
+3. **Instagram (app del dueño):** Configuración → Mensajes y respuestas a historias →
+   Controles de mensajes → Herramientas conectadas → *Permitir acceso a los mensajes*.
+4. **Meta App Dashboard → Webhooks → Instagram:** suscribir el campo `messages` al mismo
+   callback que ya recibe `mentions`/`comments`. Y construir QUA-129 (`POST
+   /{page-id}/subscribed_apps` al conectar), que hoy no existe.
+5. **Cuenta de prueba:** un tester con rol en la app que escriba por DM a la cuenta
+   conectada (Standard Access solo cubre a personas con rol). Sin eso ningún webhook ni poll
+   devolverá mensajes aunque todo lo anterior esté bien.
+6. **Worker:** `just conversations-worker --tenant <uuid> --sync` para el poll + envío, o el
+   `webhook-worker` ya existente para la vía por webhook.
+
+## 4. Qué puede impedir la prueba real aunque todo esté configurado
+
+- **App Review / Advanced Access** (QUA-140, QUA-142): para cualquier persona sin rol en la
+  app. Bloquea clientes reales, no el desarrollo con testers.
+- **Ambigüedad Live/Standard (enmienda ADR 21/24, punto d):** si la app pasa a Live, no está
+  probado que los permisos con Standard Access sigan funcionando para los roles. Probar con
+  un tester antes de cambiar el modo.
+- **Interruptor del dueño (fila 3):** sin él, poll y webhook devuelven vacío y no hay forma
+  de distinguirlo por API. La bandeja lo muestra como «por verificar».
+
+## 5. Pendientes que este ticket deja escritos
+
+- **E4 — borradores asistidos: hecho.** `suggest.py` + `conversation_drafts` (0065). Lo que
+  queda: observar el coste real por sugerencia (queda en la fila: `model_id`, tokens, USD) y
+  decidir si el catálogo vacío debe bloquear la sugerencia en vez de marcarla «requiere
+  revisión».
+- **Saldo del modelo:** el 2026-10-16 la primera «Sugerir respuesta» real devolvió `400 Your credit balance is too low` de la API de Anthropic (la cuenta de `QUALIFY_ANTHROPIC_API_KEY` sin saldo). La pantalla lo dice en un toast y el botón vuelve a estar disponible; hasta recargar saldo no hay sugerencias en ningún entorno.
+- **Verificación en vivo de la segunda pasada:** perfil (11f), adjuntos de vídeo/PDF/corazón y
+  nota de voz (11e) están escritos desde el corpus; hay que mandar y recibir uno de cada.
+- **Paginación histórica de un hilo:** el repositorio expone `limit` sin cursor; la pantalla
+  muestra los últimos 50 y lo dice. Añadir `before` al repositorio y «cargar anteriores» a
+  la pantalla es un seguimiento pequeño.
+- **Ledger de llamadas (fila 13):** `inbox.repository.calls_in_last_hour` existe para
+  comentarios; cablearlo al poll de conversaciones queda para cuando haya tráfico real.
+- **«Requests» a 30 días (fila 9):** decidir si merece alerta.
+- **Migración 0065:** `origin/main` ya tiene `0063_signup_invites` y `0064_signup_invites_meegle`.
+  La migración de esta rama debe renumerarse a `0065` sobre `0064` al incorporar `main`,
+  antes de aplicarla en cualquier entorno compartido (ensayado en un worktree aparte). En la
+  base de desarrollo local las columnas de perfil y `conversation_drafts` se aplicaron a mano
+  como `qualify_owner` el 2026-10-16 (la revisión ya estaba aplicada y se editó *in place*).

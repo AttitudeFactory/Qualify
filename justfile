@@ -135,6 +135,34 @@ whatsapp-tick *args:
 whatsapp-worker *args:
     uv run --no-sync python -m qualify_api.whatsapp.worker {{args}}
 
+# QUA-226: the private-conversations outbox sender (claim → 24 h window → channel send →
+# settle). With the real channel it SENDS FOR REAL through Instagram; with
+# QUALIFY_CONVERSATIONS_DM_CHANNEL=memory nothing leaves the process. Scope is mandatory:
+#   just conversations-tick --tenant <uuid> [--sync]   # one pass (use this locally)
+#   just conversations-tick --all-tenants [--sync]     # one pass, every tenant (production)
+conversations-tick *args:
+    uv run --no-sync python -m qualify_api.conversations.worker --once {{args}}
+
+# QUA-226: the conversations worker — a pass every --interval seconds (default 5) until
+# Ctrl+C; `--sync` adds the Instagram reconciliation poll (at most every --sync-interval
+# seconds, default 300 — Development Mode budgets 200 calls/h per Page/app pair).
+#   just conversations-worker --tenant <uuid> [--sync]
+#   just conversations-worker --all-tenants [--sync] [--interval 5] [--sync-interval 300]
+conversations-worker *args:
+    uv run --no-sync python -m qualify_api.conversations.worker {{args}}
+
+# QUA-226: one pass of the reconciliation poll only (no sending).
+#   just conversations-sync --tenant <uuid>
+conversations-sync *args:
+    uv run --no-sync python -m qualify_api.conversations.worker --once --sync-only {{args}}
+
+# QUA-226: seed sample private conversations through the IN-MEMORY channel so /conversations
+# can be validated on localhost without Meta. Refuses unless
+# QUALIFY_CONVERSATIONS_DM_CHANNEL=memory is set (same value the app must run with).
+#   QUALIFY_CONVERSATIONS_DM_CHANNEL=memory just conversations-seed --tenant <uuid> [--connection <uuid>]
+conversations-seed *args:
+    uv run --no-sync python -m qualify_api.conversations.devseed {{args}}
+
 # --- Production (Hetzner VPS, docs/despliegue-hetzner.md) ---------------------------------
 # `target` = the server's ssh target, e.g. deploy@203.0.113.10.
 #   just deploy deploy@<ip>               # origin/main

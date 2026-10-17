@@ -25,6 +25,8 @@ from .clarity_state import ClarityState
 from .components import filter_bar, mentions_body, stats_row, topbar
 from .connections_page import connections_index
 from .connections_state import ConnectionsState
+from .conversations_page import conversations_index
+from .conversations_state import ConversationsState
 from .creative_pages import (
     create_index,
     draft_detail_index,
@@ -241,6 +243,13 @@ app.add_page(
     route="/inbox",
     on_load=[AuthState.require_login, InboxState.load_screen],
     title="Qualify · Contenido",
+)
+# QUA-226: the private inbox of the connected accounts (Instagram Direct first).
+app.add_page(
+    conversations_index,
+    route="/conversations",
+    on_load=[AuthState.require_login, ConversationsState.enter_page],
+    title="Qualify · Conversaciones",
 )
 app.add_page(
     leads_index,

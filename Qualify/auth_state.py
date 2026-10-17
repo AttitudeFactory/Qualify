@@ -784,6 +784,7 @@ class AuthState(rx.State):
             from .catalog_state import CatalogState
             from .clarity_state import ClarityState
             from .connections_state import ConnectionsState
+            from .conversations_state import ConversationsState
             from .creative_state import CreativeState
             from .creative_wizard_pages import BrandConnectState, BrandWizardState
             from .gallery_state import GalleryState
@@ -847,6 +848,9 @@ class AuthState(rx.State):
                 # WA-11: the number's conversations, the open thread, the composer draft
                 # and the acting user's id (a backend var — `reset` clears those too)
                 WhatsAppChatsState,
+                # QUA-226: the private inbox — accounts, access state, threads, the open
+                # conversation, the reply draft and the acting user's id
+                ConversationsState,
                 # WA-16: the number's menus, the open editor draft and the preview chat
                 WhatsAppMenuState,
                 # WA-18: templates, opt-ins, campaigns and the Conexión metrics block
