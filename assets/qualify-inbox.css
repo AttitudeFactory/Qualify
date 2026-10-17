@@ -106,3 +106,351 @@
     max-width: 88%;
   }
 }
+
+/* ── Conversaciones (QUA-226, `Qualify/conversations_page.py`) ─────────────────────
+   Built on the WhatsApp chat recipe above (same grid, same bubbles) plus what a private
+   inbox adds: the counterpart's avatar, day chips, the entrance of a new bubble, the
+   «Enviando» dots of a queued reply, the «Visto» footer and the pulse of a row whose
+   newest message just arrived. Everything paints with the kit's tokens; the avatar's hue
+   is data the page hands over as `--q-conv-hue`. */
+.q-conv-avatar {
+  --q-conv-hue: 190;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 9999px;
+  color: var(--gray-12);
+  background:
+    linear-gradient(135deg, hsl(var(--q-conv-hue) 70% 62% / 0.55), hsl(calc(var(--q-conv-hue) + 40) 70% 48% / 0.55)),
+    var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge), inset 0 1px 0 var(--q-control-hi);
+  letter-spacing: 0.02em;
+}
+.q-conv-avatar--lg {
+  width: 3rem;
+  height: 3rem;
+}
+.q-conv-unread {
+  position: absolute;
+  right: -2px;
+  top: -2px;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 9999px;
+  background: var(--accent-9);
+  box-shadow: 0 0 0 2px var(--q-control-fill);
+  animation: q-conv-breathe 1.8s var(--q-ease) infinite;
+}
+@keyframes q-conv-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.25); }
+}
+/* A row whose newest inbound arrived since the last refresh: one soft pulse on the edge. */
+.q-conv-row--fresh {
+  animation: q-conv-pulse 1.6s var(--q-ease) 2;
+}
+@keyframes q-conv-pulse {
+  0%, 100% { box-shadow: inset 0 0 0 1px var(--q-control-edge); }
+  50% { box-shadow: inset 0 0 0 2px var(--accent-8), 0 0 0 6px var(--accent-a4); }
+}
+/* Day chips between messages. */
+.q-conv-day {
+  padding: 0.15rem 0.6rem;
+  border-radius: 9999px;
+  color: var(--gray-11);
+  background: var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge);
+  font-variant-numeric: tabular-nums;
+}
+/* A bubble's entrance: transform only, never opacity (the q-settle rule) — a frozen
+   animation leaves it 6 px low and slightly small, never invisible. Keyed by message id
+   in the page, so only a NEW bubble plays it. */
+.q-conv-msg {
+  animation: q-conv-pop var(--q-dur-slow) var(--q-spring) both;
+  transform-origin: bottom center;
+}
+.q-wa-msg--out.q-conv-msg { transform-origin: bottom right; }
+.q-wa-msg--in.q-conv-msg { transform-origin: bottom left; }
+@keyframes q-conv-pop {
+  from { transform: translateY(6px) scale(0.97); }
+  to { transform: none; }
+}
+/* «Enviando»: three dots breathing in turn, inside the bubble's meta line. */
+.q-conv-dots {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  height: 14px;
+}
+.q-conv-dots > * {
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: var(--gray-10);
+  animation: q-conv-dot 1.1s var(--q-ease) infinite;
+}
+.q-conv-dots > *:nth-child(2) { animation-delay: 0.18s; }
+.q-conv-dots > *:nth-child(3) { animation-delay: 0.36s; }
+@keyframes q-conv-dot {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.55; }
+  40% { transform: translateY(-3px); opacity: 1; }
+}
+.q-conv-seen {
+  padding-right: 0.25rem;
+}
+/* Media inside a bubble. */
+.q-conv-media {
+  display: block;
+  border-radius: 10px;
+  max-width: min(18rem, 70vw);
+}
+.q-conv-media--image {
+  max-height: 16rem;
+  object-fit: cover;
+  cursor: zoom-in;
+}
+.q-conv-media--audio {
+  width: 17rem;
+  max-width: 100%;
+}
+.q-conv-media--video {
+  max-height: 16rem;
+}
+/* The attachment chip over the composer. */
+.q-conv-attach {
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--q-radius-control);
+  background: var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge);
+}
+.q-conv-attach-thumb {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 8px;
+  object-fit: cover;
+}
+/* The conversation pane fills the panel and its messages area grows with it. */
+.q-conv-card {
+  display: flex;
+  flex-direction: column;
+}
+.q-conv-scroll.q-wa-scroll--messages {
+  max-height: 56vh;
+  min-height: 16rem;
+}
+
+/* ── Conversaciones, second pass (profile avatars, the channel's look, voice, AI) ───
+   The person's Instagram picture when the sync fetched one (Radix Avatar, so a URL that
+   expired falls back to the initials by itself); the channel's glyph on the corner of
+   every avatar; outbound bubbles in the channel's gradient (Radix scales, never a hex);
+   the pane washed with the same hues at low alpha. */
+.q-conv-chats {
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+}
+.q-conv-filters .q-conv-filter {
+  flex: 0 0 auto;
+}
+.q-conv-list {
+  padding: 2px 2px 0.5rem;
+}
+.q-conv-row {
+  padding: 0.9rem 1rem;
+}
+.q-conv-avatar-wrap {
+  --q-conv-hue: 190;
+  display: inline-block;
+  line-height: 0;
+}
+.q-conv-avatar-wrap .rt-AvatarRoot {
+  box-shadow: inset 0 0 0 1px var(--q-control-edge), 0 1px 2px var(--black-a3);
+}
+.q-conv-avatar-wrap .rt-AvatarFallback {
+  color: var(--gray-12);
+  background:
+    linear-gradient(135deg, hsl(var(--q-conv-hue) 70% 62% / 0.6), hsl(calc(var(--q-conv-hue) + 40) 70% 48% / 0.6)),
+    var(--q-control-fill);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.q-conv-avatar-wrap .rt-AvatarImage {
+  object-fit: cover;
+}
+.q-conv-channel {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, var(--purple-9), var(--pink-9) 55%, var(--orange-9));
+  box-shadow: 0 0 0 2px var(--q-control-fill);
+}
+.q-conv-avatar-wrap--lg .q-conv-channel {
+  width: 1.3rem;
+  height: 1.3rem;
+}
+.q-conv-head {
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--gray-a5);
+}
+.q-conv-close {
+  flex-shrink: 0;
+}
+/* The pane's wash: the channel's hues, barely there, over the card material. */
+.q-conv-card {
+  background-image:
+    radial-gradient(120% 80% at 100% 0%, var(--pink-a3), transparent 55%),
+    radial-gradient(90% 70% at 0% 100%, var(--purple-a3), transparent 60%);
+  background-repeat: no-repeat;
+}
+.q-conv-scroll.q-wa-scroll--messages {
+  border-radius: var(--q-radius-control);
+  background: var(--gray-a2);
+  padding: 0.6rem;
+}
+/* Outbound bubbles: the channel's gradient, light text, glass edge. */
+.q-conv-msg.q-wa-msg--out .q-bubble--out {
+  color: white;
+  background: linear-gradient(135deg, var(--purple-9), var(--pink-9) 60%, var(--orange-9));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.28), 0 6px 16px -8px var(--pink-a8);
+}
+.q-conv-msg.q-wa-msg--out .q-bubble--out .q-conv-meta,
+.q-conv-msg.q-wa-msg--out .q-bubble--out .rt-Text {
+  color: inherit;
+}
+.q-conv-msg.q-wa-msg--out .q-bubble--out .q-conv-meta {
+  opacity: 0.85;
+}
+.q-conv-msg.q-wa-msg--out .q-bubble--out .q-conv-dots > * {
+  background: rgb(255 255 255 / 0.85);
+}
+.q-conv-msg.q-wa-msg--out .q-bubble--out svg {
+  color: white;
+}
+.q-conv-msg--sticker.q-wa-msg--out .q-bubble--out {
+  background: transparent;
+  box-shadow: none;
+  color: var(--gray-12);
+}
+.q-conv-msg--sticker.q-wa-msg--out .q-bubble--out .q-conv-meta,
+.q-conv-msg--sticker.q-wa-msg--out .q-bubble--out .rt-Text {
+  color: var(--gray-11);
+}
+.q-conv-msg--sticker.q-wa-msg--out .q-bubble--out svg {
+  color: var(--gray-11);
+}
+.q-conv-heart {
+  color: var(--red-9) !important;
+  fill: var(--red-9);
+  filter: drop-shadow(0 4px 10px var(--red-a6));
+}
+.q-wa-msg--in .q-bubble--in {
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+.q-conv-file {
+  padding: 0.4rem 0.6rem;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 0.18);
+}
+.q-wa-msg--in .q-conv-file {
+  background: var(--gray-a3);
+}
+.q-conv-window {
+  padding: 0.1rem 0;
+}
+/* «Eliminar para mí»: invisible until the bubble is hovered or focused. */
+.q-conv-hide {
+  opacity: 0;
+  transition: opacity var(--q-dur-fast, 120ms) var(--q-ease);
+}
+.q-wa-msg:hover .q-conv-hide,
+.q-wa-msg:focus-within .q-conv-hide {
+  opacity: 1;
+}
+@media (hover: none) {
+  .q-conv-hide { opacity: 0.7; }
+}
+/* Voice note: the recording dot and the timer. */
+.q-conv-recording {
+  padding: 0.15rem 0.5rem;
+  border-radius: 9999px;
+  background: var(--red-a3);
+  box-shadow: inset 0 0 0 1px var(--red-a5);
+}
+.q-conv-rec {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 9999px;
+  background: var(--red-9);
+  animation: q-conv-breathe 1s var(--q-ease) infinite;
+}
+.q-conv-timer {
+  font-size: 12px;
+  color: var(--gray-12);
+  min-width: 2.8rem;
+}
+/* The AI suggestion chip over the box. */
+.q-conv-suggest {
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--q-radius-control);
+  background: var(--accent-a2);
+  box-shadow: inset 0 0 0 1px var(--accent-a5);
+}
+.q-conv-suggest--review {
+  background: var(--amber-a2);
+  box-shadow: inset 0 0 0 1px var(--amber-a6);
+}
+/* The right pane without a conversation. */
+.q-conv-placeholder {
+  min-height: 16rem;
+  padding: 2rem 1rem;
+  border-radius: var(--q-radius-card);
+  border: 1px dashed var(--gray-a6);
+}
+.q-conv-placeholder-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 9999px;
+  color: var(--gray-11);
+  background: var(--q-control-fill);
+  box-shadow: inset 0 0 0 1px var(--q-control-edge);
+}
+/* Tablet: a narrower list column; phone: one pane, the chat taller, bigger bubbles. */
+@media (max-width: 1023px) and (min-width: 768px) {
+  .q-conv-chats {
+    grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
+  }
+}
+@media (max-width: 767px) {
+  .q-conv-chats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .q-conv-close {
+    display: none;
+  }
+  .q-conv-scroll.q-wa-scroll--messages {
+    max-height: 58dvh;
+    min-height: 14rem;
+  }
+  .q-conv-card {
+    padding: 0.75rem !important;
+  }
+  .q-conv-tools .rt-Button {
+    padding-inline: 0.5rem;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .q-conv-msg, .q-conv-row--fresh, .q-conv-unread, .q-conv-dots > *, .q-conv-rec {
+    animation: none;
+  }
+}
