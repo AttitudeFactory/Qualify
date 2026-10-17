@@ -25,8 +25,8 @@ Instagram en vivo.
 | Adjuntos: foto, audio, vídeo y PDF en ambos sentidos; corazón (`like_heart`) saliente | `instagram_source` (CDN URL entrante, `attachment` saliente con `document → file`), `sender` (URL pública al enviar; un sticker no enlaza nada), `conversations_page` (cuatro dropzones + ❤️) | Hecho; **sin verificar en vivo** |
 | Nota de voz grabada en el navegador | `assets/qualify-voice.js` (Web Audio → WAV 16 kHz mono, en partes base64 < 1 MB) → `conversations_state.voice_*` → R2 como cualquier audio | Hecho; sin ffmpeg ni códec: Instagram acepta `wav` |
 | Textos largos | `service.split_reply` + `reply_text`: una fila de outbox por cada ≤ 1000 caracteres, cortadas por párrafo/frase/palabra | Hecho; la pantalla avisa «Se enviará en N mensajes» y ya no limita |
-| Perfil del contacto (nombre, usuario, foto) | `instagram_source.fetch_profile` (User Profile API, `GET /{IGSID}?fields=name,username,profile_pic`), `sync.refresh_profile` (al crear el hilo y cada 24 h: la URL de la foto caduca), `threads.counterpart_*` (0063) | Hecho; **sin verificar en vivo**; sin perfil la UI muestra iniciales |
-| Borradores asistidos con modelo (E4) | `conversations/suggest.py` (compuerta → `claude-haiku-5-5` con *strict tool use* → veredicto de *grounding*), `conversation_drafts` (0063, RLS, coste por fila), `PostgresDraftRepository`, `composition.grounding_for` (marca + catálogo) | Hecho y probado offline; el envío sigue siendo solo `reply(..., approval=HumanApproval(draft_id))` |
+| Perfil del contacto (nombre, usuario, foto) | `instagram_source.fetch_profile` (User Profile API, `GET /{IGSID}?fields=name,username,profile_pic`), `sync.refresh_profile` (al crear el hilo y cada 24 h: la URL de la foto caduca), `threads.counterpart_*` (0065) | Hecho; **sin verificar en vivo**; sin perfil la UI muestra iniciales |
+| Borradores asistidos con modelo (E4) | `conversations/suggest.py` (compuerta → `claude-haiku-5-5` con *strict tool use* → veredicto de *grounding*), `conversation_drafts` (0065, RLS, coste por fila), `PostgresDraftRepository`, `composition.grounding_for` (marca + catálogo) | Hecho y probado offline; el envío sigue siendo solo `reply(..., approval=HumanApproval(draft_id))` |
 | Paginación histórica de un hilo («cargar anteriores») | `repository.list_messages(limit)` | **Fuera de alcance**: se muestran los últimos 50; el repositorio no expone cursor |
 
 ## 2. Dependencias de Meta, con evidencia
@@ -88,7 +88,7 @@ Instagram en vivo.
 
 ## 5. Pendientes que este ticket deja escritos
 
-- **E4 — borradores asistidos: hecho.** `suggest.py` + `conversation_drafts` (0063). Lo que
+- **E4 — borradores asistidos: hecho.** `suggest.py` + `conversation_drafts` (0065). Lo que
   queda: observar el coste real por sugerencia (queda en la fila: `model_id`, tokens, USD) y
   decidir si el catálogo vacío debe bloquear la sugerencia en vez de marcarla «requiere
   revisión».
@@ -101,7 +101,7 @@ Instagram en vivo.
 - **Ledger de llamadas (fila 13):** `inbox.repository.calls_in_last_hour` existe para
   comentarios; cablearlo al poll de conversaciones queda para cuando haya tráfico real.
 - **«Requests» a 30 días (fila 9):** decidir si merece alerta.
-- **Migración 0063:** `origin/main` ya tiene `0063_signup_invites` y `0064_signup_invites_meegle`.
+- **Migración 0065:** `origin/main` ya tiene `0063_signup_invites` y `0064_signup_invites_meegle`.
   La migración de esta rama debe renumerarse a `0065` sobre `0064` al incorporar `main`,
   antes de aplicarla en cualquier entorno compartido (ensayado en un worktree aparte). En la
   base de desarrollo local las columnas de perfil y `conversation_drafts` se aplicaron a mano

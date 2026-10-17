@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+from urllib.parse import parse_qs
 
 import reflex as rx
 from qualify_api.auth import (
@@ -36,12 +38,28 @@ from qualify_api.auth import (
     EmailHasAccount,
     IncompleteRegistration,
     InvalidCredentials,
+    LoginResult,
+    PasswordChangeInvalid,
+    PasswordRejected,
+    RateLimited,
     RegistrationInvalid,
+    SessionExpired,
+    SignupNotAllowed,
+    authorize_signup,
+    change_password,
+    complete_password_reset,
     default_auth_provider,
+    login_throttle,
+    lookup_invite,
     register_business,
+    request_password_reset,
+    reset_request_throttle,
     resolve_login,
+    signup_open,
     start_brand_kit_draft,
+    throttle_key,
 )
+from reflex.config import get_config
 from sqlalchemy.exc import SQLAlchemyError
 
 logger = logging.getLogger(__name__)
@@ -52,6 +70,26 @@ _INCOMPLETE = (
     "email y contraseña para completarlo."
 )
 _AUTH_DOWN = "No se pudo verificar la sesión. Inténtalo de nuevo en un momento."
+_RATE_LIMITED = "Demasiados intentos seguidos. Espera un minuto y vuelve a intentarlo."
+_RESET_LINK_DEAD = "Este enlace ya venció o ya se usó. Pide uno nuevo y ábrelo desde el correo."
+_RESET_LINK_MISSING = "Abre el enlace que te enviamos por correo para crear tu nueva contraseña."
+_SESSION_STALE = "Tu sesión es antigua. Sal, vuelve a entrar y cambia la contraseña."
+
+
+def _wait_message(seconds: int) -> str:
+    """ "Try again later" with the real wait, so a locked-out operator is not guessing."""
+    if seconds < 60:
+        return f"Demasiados intentos fallidos. Espera {seconds} s y vuelve a intentarlo."
+    return (
+        f"Demasiados intentos fallidos. Espera {math.ceil(seconds / 60)} min y vuelve a "
+        "intentarlo, o recupera tu contraseña."
+    )
+
+
+def _email_looks_valid(email: str) -> bool:
+    return email.count("@") == 1 and "." in email.split("@")[1] and " " not in email
+
+
 _SIGNUP_DEFAULTS = {"country": "VE", "timezone": "America/Caracas", "currency": "USD"}
 
 
@@ -60,8 +98,17 @@ def _login_blocking(email: str, password: str):
 
 
 def _signup_blocking(
-    business_name: str, email: str, password: str, country: str, timezone: str, currency: str
+    business_name: str,
+    email: str,
+    password: str,
+    country: str,
+    timezone: str,
+    currency: str,
+    invite_token: str = "",
 ):
+    # The gate decides BEFORE the identity user exists; the invite is spent inside
+    # register_business's transaction (`invites` module docstring).
+    invite_id = authorize_signup(email, invite_token or None)
     return register_business(
         default_auth_provider(),
         business_name=business_name,
@@ -70,11 +117,42 @@ def _signup_blocking(
         country=country,
         timezone=timezone,
         currency=currency,
+        invite_id=invite_id,
     )
+
+
+def _invite_blocking(token: str) -> tuple[str, str]:
+    """(email, business) of a still-usable invite; ("", "") when the link is
+    unknown, used or expired."""
+    invite = lookup_invite(token)
+    return (invite.email, invite.business_name) if invite is not None else ("", "")
 
 
 def _sign_out_blocking(access_token: str) -> None:
     default_auth_provider().sign_out(access_token)
+
+
+#: Where the recovery email's link lands. Must be in Supabase's "Redirect URLs" allow
+#: list (Authentication → URL Configuration), or GoTrue falls back to the Site URL and
+#: the token never reaches this page.
+RESET_ROUTE = "/reset"
+
+
+def _reset_redirect_url() -> str:
+    base = (get_config().deploy_url or "http://localhost:3000").rstrip("/")
+    return f"{base}{RESET_ROUTE}"
+
+
+def _request_reset_blocking(email: str) -> None:
+    request_password_reset(default_auth_provider(), email, _reset_redirect_url())
+
+
+def _complete_reset_blocking(token: str, password: str, confirm: str) -> LoginResult:
+    return complete_password_reset(default_auth_provider(), token, password, confirm)
+
+
+def _change_password_blocking(email: str, current: str, new: str, confirm: str) -> str:
+    return change_password(default_auth_provider(), email, current, new, confirm)
 
 
 def _start_draft_blocking(email: str):
@@ -126,6 +204,24 @@ class AuthState(rx.State):
 
     auth_error: str = ""
     is_authenticating: bool = False
+    #: The password fields' eye toggle (login, signup, reset, change). UI only.
+    show_password: bool = False
+
+    # Forgotten password (2026-10-06). `reset_sent_to` is the address the screen says
+    # it emailed — shown back whether or not it has an account (no enumeration).
+    reset_sent_to: str = ""
+    #: The /reset page: "checking" (reading the link), "ready" (form), "invalid".
+    reset_link_state: str = "checking"
+    #: Change-password card on /settings: a success line after saving.
+    password_saved: bool = False
+
+    # Signup gate: invite-only for the MVP (founder decision 2026-10-14).
+    #: MVP: signup is invite-only. True only in dev (`QUALIFY_SIGNUP_OPEN=1`).
+    signup_open: bool = False
+    #: "" (no invite in the URL), "ok" (valid: the email is fixed) or "invalid".
+    invite_state: str = ""
+    invite_email: str = ""
+    invite_business: str = ""
 
     # The Brand Kit before login (§ request 2026-10-02): the draft tenant provisioned for
     # the email typed on /brand/start. Set ONLY by `start_brand_kit` and read ONLY by the
@@ -145,6 +241,11 @@ class AuthState(rx.State):
 
     # Backend-only (never serialized to the client). Held so logout can revoke.
     _access_token: str = ""
+    # The recovery link's token while /reset is open. Backend-only, like the above:
+    # it can set the account's password, so it never goes back to the browser.
+    _recovery_token: str = ""
+    # The invite link's token while /signup is open. Backend-only: it is a credential.
+    _invite_token: str = ""
 
     @rx.var
     def is_authenticated(self) -> bool:
@@ -169,6 +270,15 @@ class AuthState(rx.State):
         return None
 
     @rx.event
+    def require_session(self) -> rx.event.EventSpec | None:
+        """`on_load` of the account's own settings: a login is enough. Unlike
+        `require_login` it does not send an unfinished Brand Kit to /brand — changing
+        the password must never wait on the kit. A pre-login draft does not pass."""
+        if not self.session_tenant_id:
+            return rx.redirect("/login")
+        return None
+
+    @rx.event
     def require_brand_access(self) -> rx.event.EventSpec | None:
         """First `on_load` of the Brand Kit's pages: a login OR a pre-login draft. With
         neither, the first view asks for the email (/brand/start)."""
@@ -186,10 +296,47 @@ class AuthState(rx.State):
 
     @rx.event
     def redirect_if_authenticated(self) -> rx.event.EventSpec | None:
-        """`on_load` of /login and /signup: an authenticated session skips them."""
+        """`on_load` of /login, /signup and /forgot: an authenticated session skips
+        them; otherwise each opens clean (no error or eye state left by another)."""
+        self.auth_error = ""
+        self.show_password = False
+        self.reset_sent_to = ""
+        self.signup_open = signup_open()
         if self.session_tenant_id:
             return rx.redirect("/")
         return None
+
+    @rx.event
+    async def enter_signup(self):
+        """`on_load` of /signup: bounce a session and read the invite link. Without a
+        valid invite the page says Qualify is invite-only (unless dev opened signup).
+        The token leaves the URL right away."""
+        if self.session_tenant_id:
+            return rx.redirect("/")
+        self.auth_error = ""
+        self.show_password = False
+        self.signup_open = signup_open()
+        token = str(self.router.url.query_parameters.get("invite", "") or "")
+        if not token:
+            if not self._invite_token:  # a reload after the URL was cleaned keeps it
+                self.invite_state = ""
+                self.invite_email = ""
+                self.invite_business = ""
+            return None
+        try:
+            email, business = await asyncio.to_thread(_invite_blocking, token)
+        except SQLAlchemyError as exc:
+            logger.error("invite lookup failed: %s", type(exc).__name__)
+            email, business = "", ""
+        self._invite_token = token if email else ""
+        self.invite_email = email
+        self.invite_business = business
+        self.invite_state = "ok" if email else "invalid"
+        return rx.call_script("history.replaceState(null, '', window.location.pathname)")
+
+    @rx.event
+    def toggle_show_password(self) -> None:
+        self.show_password = not self.show_password
 
     @rx.event
     def enter_brand_start(self) -> rx.event.EventSpec | None:
@@ -270,11 +417,23 @@ class AuthState(rx.State):
 
     @rx.event(background=True)
     async def handle_login(self, form_data: dict):
-        email = str(form_data.get("email", ""))
+        # Surrounding whitespace only (phone keyboards append a space after an
+        # autocompleted email). The `+alias` and the case stay literal — criterion 6.
+        email = str(form_data.get("email", "")).strip()
         password = str(form_data.get("password", ""))
         async with self:
             self.is_authenticating = True
             self.auth_error = ""
+        # The attempt is reserved BEFORE the provider is called (check + count under one
+        # lock), keyed case-insensitively: parallel guesses, or the same email in other
+        # capitalisations, share the one window. Only a wrong password keeps the count.
+        key = throttle_key(email)
+        wait = login_throttle.try_acquire(key)
+        if wait:
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = _wait_message(wait)
+            return
         try:
             result = await asyncio.to_thread(_login_blocking, email, password)
         except InvalidCredentials:
@@ -283,17 +442,34 @@ class AuthState(rx.State):
                 self.auth_error = _BAD_CREDENTIALS
             return
         except IncompleteRegistration:
+            login_throttle.forgive(key)
             async with self:
                 self.is_authenticating = False
                 self.auth_error = _INCOMPLETE
             return
+        except RateLimited:
+            login_throttle.forgive(key)
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = _RATE_LIMITED
+            return
         except (AuthProviderError, AuthNotConfigured, SQLAlchemyError) as exc:
             # Only the exception type is logged — same hygiene rule as every state.
             logger.error("login failed: %s", type(exc).__name__)
+            login_throttle.forgive(key)
             async with self:
                 self.is_authenticating = False
                 self.auth_error = _AUTH_DOWN
             return
+        login_throttle.clear(key)
+        # Only the in-app destinations below; never a URL from the form itself.
+        next_route = str(form_data.get("next", "/"))
+        yield rx.redirect(await self._open_session(result, next_route))
+
+    async def _open_session(self, result: LoginResult, next_route: str) -> str:
+        """Make a verified login this session's tenant; returns where to go. Shared by
+        the login form and the password reset — the one place `session_tenant_id` is
+        written."""
         try:
             kit_complete = await asyncio.to_thread(_kit_complete_blocking, result.tenant_id)
         except SQLAlchemyError as exc:
@@ -318,9 +494,8 @@ class AuthState(rx.State):
             self.guest_tenant_id = ""
             self.guest_email = ""
             self.login_email_hint = ""
-        # Only the in-app destinations below; never a URL from the form itself.
-        next_route = str(form_data.get("next", "/"))
-        yield rx.redirect(next_route if next_route in _POST_LOGIN_ROUTES else "/")
+            self.show_password = False
+        return next_route if next_route in _POST_LOGIN_ROUTES else "/"
 
     @rx.event(background=True)
     async def handle_signup(self, form_data: dict):
@@ -335,14 +510,32 @@ class AuthState(rx.State):
         async with self:
             self.is_authenticating = True
             self.auth_error = ""
+            invite_token = self._invite_token
         try:
             await asyncio.to_thread(
-                _signup_blocking, business_name, email, password, country, timezone, currency
+                _signup_blocking,
+                business_name,
+                email,
+                password,
+                country,
+                timezone,
+                currency,
+                invite_token,
             )
+        except SignupNotAllowed as exc:
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = exc.message
+            return
         except RegistrationInvalid as exc:
             async with self:
                 self.is_authenticating = False
                 self.auth_error = exc.message
+            return
+        except RateLimited:
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = _RATE_LIMITED
             return
         except (AuthProviderError, AuthNotConfigured, SQLAlchemyError) as exc:
             logger.error("signup failed: %s", type(exc).__name__)
@@ -354,6 +547,10 @@ class AuthState(rx.State):
         # Auto sign-in with the same credentials the operator just chose. A signup that
         # adopted the pre-login Brand Kit (same email, § 2026-10-02) opens on it.
         async with self:
+            self._invite_token = ""
+            self.invite_state = ""
+            self.invite_email = ""
+            self.invite_business = ""
             # Literal comparison (criterion 6): the field comes prefilled with it.
             adopted = bool(self.guest_email) and self.guest_email == email
         credentials = {
@@ -363,6 +560,211 @@ class AuthState(rx.State):
         }
         async for event in AuthState.handle_login.fn(self, credentials):
             yield event
+
+    # ----------------------------------------------------------------------------------
+    # Forgotten password (2026-10-06): /forgot asks for the email, the provider mails a
+    # link to /reset, /reset sets the new password and signs in.
+    # ----------------------------------------------------------------------------------
+
+    @rx.event(background=True)
+    async def request_reset(self, form_data: dict):
+        email = str(form_data.get("email", "")).strip()
+        async with self:
+            self.is_authenticating = True
+            self.auth_error = ""
+            self.reset_sent_to = ""
+        if not _email_looks_valid(email):
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = "Escribe un correo válido."
+            return
+        if reset_request_throttle.retry_after(throttle_key(email)):
+            # Already sent one a moment ago: the screen says the same as a fresh send.
+            async with self:
+                self.is_authenticating = False
+                self.reset_sent_to = email
+            return
+        try:
+            await asyncio.to_thread(_request_reset_blocking, email)
+        except RateLimited:
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = (
+                    "Enviamos demasiados correos en poco tiempo. Espera unos minutos y "
+                    "vuelve a intentarlo."
+                )
+            return
+        except (AuthProviderError, AuthNotConfigured) as exc:
+            logger.error("password reset request failed: %s", type(exc).__name__)
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = _AUTH_DOWN
+            return
+        reset_request_throttle.note(throttle_key(email))
+        async with self:
+            self.is_authenticating = False
+            self.reset_sent_to = email
+
+    @rx.event
+    def enter_reset(self) -> rx.event.EventSpec:
+        """`on_load` of /reset. The provider puts the recovery token in the URL
+        FRAGMENT (`#access_token=…&type=recovery`), which never reaches a server — so
+        the page reads it in the browser and hands it to `receive_recovery_link`."""
+        self.auth_error = ""
+        self.show_password = False
+        self.reset_link_state = "checking"
+        return rx.call_script("window.location.hash", callback=AuthState.receive_recovery_link)
+
+    @rx.event
+    def receive_recovery_link(self, fragment: str) -> rx.event.EventSpec:
+        params = parse_qs(str(fragment or "").lstrip("#"))
+        token = (params.get("access_token") or [""])[0]
+        if token and (params.get("type") or [""])[0] == "recovery":
+            self._recovery_token = token
+            self.reset_link_state = "ready"
+        elif params.get("error") or params.get("error_code"):
+            self._recovery_token = ""
+            self.reset_link_state = "invalid"
+            self.auth_error = _RESET_LINK_DEAD
+        elif self._recovery_token:
+            self.reset_link_state = "ready"  # a reload of /reset after the hash was wiped
+        else:
+            self.reset_link_state = "invalid"
+            self.auth_error = _RESET_LINK_MISSING
+        # The token must not linger in the address bar, the history or a shared URL.
+        return rx.call_script("history.replaceState(null, '', window.location.pathname)")
+
+    @rx.event(background=True)
+    async def submit_new_password(self, form_data: dict):
+        password = str(form_data.get("password", ""))
+        confirm = str(form_data.get("confirm", ""))
+        async with self:
+            token = self._recovery_token
+            self.is_authenticating = True
+            self.auth_error = ""
+        if not token:
+            async with self:
+                self.is_authenticating = False
+                self.reset_link_state = "invalid"
+                self.auth_error = _RESET_LINK_MISSING
+            return
+        try:
+            result = await asyncio.to_thread(_complete_reset_blocking, token, password, confirm)
+        except (PasswordChangeInvalid, PasswordRejected) as exc:
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = exc.message
+            return
+        except SessionExpired:
+            async with self:
+                self._recovery_token = ""
+                self.is_authenticating = False
+                self.reset_link_state = "invalid"
+                self.auth_error = _RESET_LINK_DEAD
+            return
+        except RateLimited:
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = _RATE_LIMITED
+            return
+        except IncompleteRegistration:
+            # The password IS changed; only the account's local half is missing.
+            async with self:
+                self._recovery_token = ""
+                self.is_authenticating = False
+                self.auth_error = _INCOMPLETE
+            return
+        except (
+            InvalidCredentials,
+            AuthProviderError,
+            AuthNotConfigured,
+            SQLAlchemyError,
+        ) as exc:
+            logger.error("password reset failed: %s", type(exc).__name__)
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = _AUTH_DOWN
+            return
+        async with self:
+            self._recovery_token = ""
+        login_throttle.clear(throttle_key(result.email))
+        yield rx.redirect(await self._open_session(result, "/"))
+        yield rx.toast.success("Listo: tu contraseña quedó cambiada.")
+
+    # ----------------------------------------------------------------------------------
+    # Change password while logged in (/settings)
+    # ----------------------------------------------------------------------------------
+
+    @rx.event
+    def enter_settings(self) -> None:
+        self.auth_error = ""
+        self.show_password = False
+        self.password_saved = False
+
+    @rx.event(background=True)
+    async def submit_password_change(self, form_data: dict):
+        current = str(form_data.get("current_password", ""))
+        new = str(form_data.get("password", ""))
+        confirm = str(form_data.get("confirm", ""))
+        async with self:
+            email = self.user_email
+            self.is_authenticating = True
+            self.auth_error = ""
+            self.password_saved = False
+        if not email:
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = _SESSION_STALE
+            return
+        # Same reservation as the login: the current password is a guess until the
+        # provider says otherwise; every other outcome gives the attempt back.
+        key = throttle_key(email)
+        wait = login_throttle.try_acquire(key)
+        if wait:
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = _wait_message(wait)
+            return
+        try:
+            token = await asyncio.to_thread(_change_password_blocking, email, current, new, confirm)
+        except InvalidCredentials:
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = "La contraseña actual no es correcta."
+            return
+        except (PasswordChangeInvalid, PasswordRejected) as exc:
+            login_throttle.forgive(key)
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = exc.message
+            return
+        except SessionExpired:
+            login_throttle.forgive(key)
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = _SESSION_STALE
+            return
+        except RateLimited:
+            login_throttle.forgive(key)
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = _RATE_LIMITED
+            return
+        except (AuthProviderError, AuthNotConfigured) as exc:
+            logger.error("password change failed: %s", type(exc).__name__)
+            login_throttle.forgive(key)
+            async with self:
+                self.is_authenticating = False
+                self.auth_error = _AUTH_DOWN
+            return
+        login_throttle.clear(key)
+        async with self:
+            self._access_token = token
+            self.is_authenticating = False
+            self.show_password = False
+            self.password_saved = True
+        yield rx.call_script("document.getElementById('q-password-form')?.reset()")
+        yield rx.toast.success("Contraseña actualizada.")
 
     @rx.event(background=True)
     async def logout(self):

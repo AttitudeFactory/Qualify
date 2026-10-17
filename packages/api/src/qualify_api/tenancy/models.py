@@ -17,7 +17,16 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, UniqueConstraint, text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -111,6 +120,37 @@ class BrandKitDraft(Base):
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SignupInvite(Base):
+    """A single-use, emailed invitation to register a business (migration 0063). Only
+    the token's SHA-256 is stored; `qualify_api.auth.invites` owns every read/write.
+    Global (no tenant, no RLS) and `qualify_admin`-only."""
+
+    __tablename__ = "signup_invites"
+    __table_args__ = (UniqueConstraint("token_hash", name="uq_signup_invites_token_hash"),)
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    email: Mapped[str] = mapped_column(String, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String, nullable=False)
+    invited_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    recipient_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    business_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    note: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Migration 0064 (plan-altas-meegle M1): the "Alta de cliente" item that asked for the
+    # invite, and Resend's delivery trail (filled by M2).
+    meegle_work_item_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    resend_email_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    bounced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Brand(Base):

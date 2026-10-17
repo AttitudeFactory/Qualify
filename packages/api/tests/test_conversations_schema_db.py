@@ -1,10 +1,10 @@
-"""Migration 0063 (QUA-226, E1), checked as the REAL roles — same method as
+"""Migration 0065 (QUA-226, E1), checked as the REAL roles — same method as
 `test_whatsapp_schema_db.py`: one statement per role inside a transaction that is always
 rolled back; writes use `WHERE false` so the grant is exercised without a row and without
 RLS entering the picture. Then the constraints with real rows through `tenant_session`.
 
 What this file pins:
-- the per-role grant table of 0063's docstring, cell by cell — including the deliberate
+- the per-role grant table of 0065's docstring, cell by cell — including the deliberate
   ABSENCE: `qualify_webhook_worker` has nothing on `conversation_outbox`;
 - `approved_by_user_id NOT NULL`: a queued reply without a person is unbuildable;
 - the CHECKs (channel, kind, status, access/sync statuses);

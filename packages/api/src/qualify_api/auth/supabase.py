@@ -10,6 +10,12 @@ Endpoints used (GoTrue v2, stable):
     POST {url}/auth/v1/token?grant_type=password   sign-in (publishable key)
     POST {url}/auth/v1/logout                      revoke refresh tokens (user token)
     POST {url}/auth/v1/admin/users                 create confirmed user (secret key)
+    POST {url}/auth/v1/recover                     email a recovery link (publishable key)
+    GET  {url}/auth/v1/user                        who a user token belongs to (user token)
+    PUT  {url}/auth/v1/user                        set a new password (user token)
+
+None of the user-token calls can touch `app_metadata`: GoTrue only lets the admin
+endpoint write it, so a password change or reset never moves a login to another tenant.
 
 The admin call is the only place `app_metadata.tenant_id` is written. GoTrue rejects
 `app_metadata` writes on the public signup endpoint by design — that asymmetry is the
@@ -29,11 +35,29 @@ from qualify_api.auth.provider import (
     AuthSession,
     EmailAlreadyRegistered,
     InvalidCredentials,
+    PasswordRejected,
+    RateLimited,
+    SessionExpired,
 )
 
 logger = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 15.0
+
+#: GoTrue's `error_code` for a refused new password → what the operator reads.
+_PASSWORD_REJECTIONS = {
+    "same_password": "La nueva contraseña debe ser distinta de la actual.",
+    "weak_password": "Esa contraseña es demasiado débil. Usa una más larga o menos común.",
+}
+_PASSWORD_REJECTED_DEFAULT = "No se pudo usar esa contraseña. Prueba con otra."
+
+
+def _error_code(response) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    return str(body.get("error_code") or "") if isinstance(body, dict) else ""
 
 
 def _parse_tenant_id(user: dict) -> UUID | None:
@@ -71,6 +95,8 @@ class SupabaseAuthProvider:
             # GoTrue answers 400 for every credential problem (bad password, no such
             # user, unconfirmed email). One bucket on purpose — see InvalidCredentials.
             raise InvalidCredentials()
+        if response.status_code == 429:
+            raise RateLimited()
         if response.status_code != 200:
             logger.error("supabase sign_in unexpected status %s", response.status_code)
             raise AuthProviderError(f"identity provider answered {response.status_code}")
@@ -138,4 +164,79 @@ class SupabaseAuthProvider:
             # 422 is GoTrue's historical "email already registered"; 409 the newer one.
             raise EmailAlreadyRegistered()
         logger.error("supabase admin_create_user unexpected status %s", response.status_code)
+        raise AuthProviderError(f"identity provider answered {response.status_code}")
+
+    def _user_headers(self, access_token: str) -> dict[str, str]:
+        return {
+            "apikey": self._settings.publishable_key,
+            "Authorization": f"Bearer {access_token}",
+        }
+
+    def send_password_reset(self, email: str, redirect_to: str) -> None:
+        try:
+            response = httpx.post(
+                f"{self._settings.auth_base_url}/recover",
+                params={"redirect_to": redirect_to},
+                headers={"apikey": self._settings.publishable_key},
+                json={"email": email},
+                timeout=_TIMEOUT_SECONDS,
+            )
+        except httpx.HTTPError as exc:
+            logger.error("supabase recover transport failure: %s", type(exc).__name__)
+            raise AuthProviderError("could not reach the identity provider") from exc
+        if response.status_code == 429:
+            raise RateLimited()
+        if response.status_code >= 500:
+            logger.error("supabase recover unexpected status %s", response.status_code)
+            raise AuthProviderError(f"identity provider answered {response.status_code}")
+        if response.status_code != 200:
+            # A 4xx here describes the email (malformed, unknown, unconfirmed). The
+            # screen answers the same for every email, so this is logged, never shown.
+            logger.warning("supabase recover answered %s", response.status_code)
+
+    def user_email(self, access_token: str) -> str:
+        try:
+            response = httpx.get(
+                f"{self._settings.auth_base_url}/user",
+                headers=self._user_headers(access_token),
+                timeout=_TIMEOUT_SECONDS,
+            )
+        except httpx.HTTPError as exc:
+            logger.error("supabase get_user transport failure: %s", type(exc).__name__)
+            raise AuthProviderError("could not reach the identity provider") from exc
+        if response.status_code in (401, 403):
+            raise SessionExpired()
+        if response.status_code != 200:
+            logger.error("supabase get_user unexpected status %s", response.status_code)
+            raise AuthProviderError(f"identity provider answered {response.status_code}")
+        email = (response.json() or {}).get("email")
+        if not email:
+            raise AuthProviderError("identity provider returned a user without email")
+        return str(email)
+
+    def update_password(self, access_token: str, new_password: str) -> None:
+        try:
+            response = httpx.put(
+                f"{self._settings.auth_base_url}/user",
+                headers=self._user_headers(access_token),
+                json={"password": new_password},
+                timeout=_TIMEOUT_SECONDS,
+            )
+        except httpx.HTTPError as exc:
+            logger.error("supabase update_user transport failure: %s", type(exc).__name__)
+            raise AuthProviderError("could not reach the identity provider") from exc
+        if response.status_code == 200:
+            return
+        if response.status_code in (401, 403):
+            raise SessionExpired()
+        if response.status_code == 429:
+            raise RateLimited()
+        if response.status_code in (400, 422):
+            code = _error_code(response)
+            if code == "reauthentication_needed":
+                # "Secure password change" on: the token is too old to change the
+                # password without a nonce. A fresh sign-in/recovery link fixes it.
+                raise SessionExpired()
+            raise PasswordRejected(_PASSWORD_REJECTIONS.get(code, _PASSWORD_REJECTED_DEFAULT))
+        logger.error("supabase update_user unexpected status %s", response.status_code)
         raise AuthProviderError(f"identity provider answered {response.status_code}")

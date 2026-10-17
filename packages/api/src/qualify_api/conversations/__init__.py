@@ -11,16 +11,16 @@ on the catalog, decided by a person) closed the ticket's scope the same evening.
 - `contracts` — `ConversationSource` / `ConversationSender`, the channel seam; a channel
   is one implementation of each, registered in a `ChannelRegistry`. Thread identity is
   the COUNTERPART's external id (IGSID), so the webhook and poll paths converge.
-- `repository` — `threads`/`messages` (0004 + 0063) and `conversation_sync_state`
-  (0063): dedup by `(connection_id, external_message_id)` at INSERT time, access + sync
+- `repository` — `threads`/`messages` (0004 + 0065) and `conversation_sync_state`
+  (0065): dedup by `(connection_id, external_message_id)` at INSERT time, access + sync
   state per connection, `tenant_session` per call.
-- `outbox` — `conversation_outbox` (0063) and `HumanApproval`, the only way in. The
+- `outbox` — `conversation_outbox` (0065) and `HumanApproval`, the only way in. The
   approving person is a NOT NULL column; the webhook worker holds no grant on the table.
 - `sync` — the reconciliation poll and the single-message door, channel-agnostic.
 - `service` — list / read / mark read / reply (window-checked, then queued), the seam the
   UI will consume. `attention_state` derives «pendiente / leído / respondido».
 - `drafts` — the assisted-draft contract (statuses of 0014, pure transition) and its
-  store, `conversation_drafts` (0063), under RLS.
+  store, `conversation_drafts` (0065), under RLS.
 - `suggest` — E4: the gate (inbound text + open window), the Claude generator (strict
   tool use, `claude-haiku-5-5`), the grounding (brand name + catalog) recorded on each
   draft with its cost, and `ConversationDraftService` (suggest / decide — never send).

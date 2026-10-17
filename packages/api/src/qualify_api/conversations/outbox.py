@@ -1,11 +1,11 @@
 """The outbound side of private conversations (QUA-226, E1): the `conversation_outbox`
-queue (0063) and the ONE way into it — `enqueue`, which requires a `HumanApproval`.
+queue (0065) and the ONE way into it — `enqueue`, which requires a `HumanApproval`.
 
 ADR 21c in code: nothing in this repository can enqueue a send without the person who
 approved it. `HumanApproval` is a required, non-optional argument; the row's
 `approved_by_user_id` is NOT NULL; and the static guard
 `test_conversations_outbox_sanctity.py` fails if any module other than this one writes
-the table. The webhook worker role holds no privilege on it at all (0063), so the only
+the table. The webhook worker role holds no privilege on it at all (0065), so the only
 automated path into the system — a Meta delivery — cannot produce a send even by a bug.
 
 What this module does NOT contain yet: the sender loop and the worker (the plan's E1
@@ -89,7 +89,7 @@ class HumanApproval:
 
 @dataclass(frozen=True)
 class OutboxMedia:
-    """The R2 object a media reply sends (0063's three columns). The public URL Meta
+    """The R2 object a media reply sends (0065's three columns). The public URL Meta
     fetches is minted by the sender at send time, never stored here."""
 
     object_key: str

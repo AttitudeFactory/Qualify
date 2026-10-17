@@ -5,8 +5,14 @@ import logging
 import reflex as rx
 from qualify_api.planner.embedded import calendar_worker
 
-from .auth_pages import brand_start_index, login_index, signup_index
-from .auth_state import BRAND_START_ROUTE, AuthState
+from .auth_pages import (
+    brand_start_index,
+    forgot_index,
+    login_index,
+    reset_index,
+    signup_index,
+)
+from .auth_state import BRAND_START_ROUTE, RESET_ROUTE, AuthState
 from .avatar_proxy import avatar_api
 from .brand_kit_editor import BrandEditState, brand_edit_index
 from .campaign_state import CampaignState
@@ -46,6 +52,7 @@ from .publish_hub_state import PublishHubState
 from .publishing_page import publish_index
 from .publishing_state import PublishState
 from .r2_media import router as r2_media_router
+from .settings_page import settings_index
 from .signals_page import signals_index
 from .state import DashboardState
 from .styleguide_page import styleguide_index
@@ -163,8 +170,23 @@ app.add_page(
 app.add_page(
     signup_index,
     route="/signup",
-    on_load=AuthState.redirect_if_authenticated,
+    on_load=AuthState.enter_signup,
     title="Qualify · Registrar negocio",
+)
+# Forgotten password (2026-10-06): /forgot mails the provider's recovery link, which
+# lands on /reset (that URL must be in Supabase's Redirect URLs allow list). /reset is
+# NOT bounced for a logged-in session: the link may be opened in a browser that is in.
+app.add_page(
+    forgot_index,
+    route="/forgot",
+    on_load=AuthState.redirect_if_authenticated,
+    title="Qualify · Recuperar contraseña",
+)
+app.add_page(
+    reset_index,
+    route=RESET_ROUTE,
+    on_load=AuthState.enter_reset,
+    title="Qualify · Nueva contraseña",
 )
 # The Brand Kit before login (§ request 2026-10-02): its first view asks for the email
 # the kit is saved to; from there the Brand Kit's pages accept that pre-login draft
@@ -248,6 +270,12 @@ app.add_page(
     route="/signals",
     on_load=[AuthState.require_login],
     title="Qualify · Señales",
+)
+app.add_page(
+    settings_index,
+    route="/settings",
+    on_load=[AuthState.require_session, AuthState.enter_settings],
+    title="Qualify · Configuración",
 )
 # Canva round trip (§ request 2026-09-28): where Canva sends the user back after the
 # OAuth consent and after "Return" in its editor. Both work in on_load and redirect to

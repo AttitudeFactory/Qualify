@@ -1,8 +1,8 @@
 """ORM models for the Conversaciones module (QUA-226, E1). DDL/RLS/grants are migration
-0063's job; these mirror it for typed access via the sanctioned sessions — the same
+0065's job; these mirror it for typed access via the sanctioned sessions — the same
 relationship `whatsapp/models.py` has to 0057. The conversation itself is NOT here: a
 private thread is an `inbox.models.Thread` with `channel = 'dm'` and its `Message`s
-(0004), which 0063 only widened with `external_conversation_id` and `last_read_at`.
+(0004), which 0065 only widened with `external_conversation_id` and `last_read_at`.
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ class ConversationSyncState(Base):
 class ConversationOutboxItem(Base):
     """One private message Qualify intends to send: the already-built wire body of the
     channel (`payload`), the queue columns, and — NOT NULL — the person who approved it.
-    No row of this table can exist without a human (ADR 21c); see 0063's docstring for
+    No row of this table can exist without a human (ADR 21c); see 0065's docstring for
     why this is a second outbox and not `whatsapp_outbox`."""
 
     __tablename__ = "conversation_outbox"

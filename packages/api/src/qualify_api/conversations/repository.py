@@ -1,5 +1,5 @@
-"""Persistence of private conversations (QUA-226, E1): `threads`/`messages` (0004 + 0063)
-and `conversation_sync_state` (0063), channel-agnostic.
+"""Persistence of private conversations (QUA-226, E1): `threads`/`messages` (0004 + 0065)
+and `conversation_sync_state` (0065), channel-agnostic.
 
 Every method is tenant-scoped by `tenant_id`; the Postgres implementation opens
 `tenant_session(tenant_id)` per call (the `qualify_app` role), so RLS bounds every
@@ -73,7 +73,7 @@ class ThreadRecord:
     last_outbound_at: datetime | None
     last_read_at: datetime | None
     created_at: datetime
-    # The counterpart's profile as the channel reported it (0063); all None until a sync
+    # The counterpart's profile as the channel reported it (0065); all None until a sync
     # fetched it. `counterpart_profile_at` says how fresh the (expiring) picture is.
     counterpart_name: str | None = None
     counterpart_username: str | None = None
@@ -95,7 +95,7 @@ class MessageRecord:
     ingested_at: datetime
     delivery_status: str | None
     media_type: str | None
-    # Inbound: the channel's CDN URL (0063). Outbound: the R2 object Qualify sent (0061).
+    # Inbound: the channel's CDN URL (0065). Outbound: the R2 object Qualify sent (0061).
     media_url: str | None = None
     media_object_key: str | None = None
 

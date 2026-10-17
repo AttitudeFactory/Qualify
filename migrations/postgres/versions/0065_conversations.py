@@ -1,7 +1,11 @@
 """conversations: the private-messaging inbox foundation (QUA-226, E1)
 
-Revision ID: 0063
-Revises: 0062
+Numbered 0065 (not 0063) because `main` took 0063 (`signup_invites`) and 0064
+(`signup_invites_meegle`) while this branch was open; production had never applied the
+0063 of this branch, so the renumbering is a rename, not a data change.
+
+Revision ID: 0065
+Revises: 0064
 Create Date: 2026-10-16
 
 What exists and is REUSED, untouched: `threads`/`messages` (0004) already model a DM
@@ -91,8 +95,8 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
-revision = "0063"
-down_revision = "0062"
+revision = "0065"
+down_revision = "0064"
 branch_labels = None
 depends_on = None
 

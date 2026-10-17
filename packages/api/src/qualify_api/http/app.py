@@ -25,6 +25,7 @@ from qualify_api.http import (
     deps,
     inbox_routes,
     leads_routes,
+    meegle_routes,
     mentions_routes,
     public_media_routes,
     publishing_routes,
@@ -41,6 +42,7 @@ from qualify_api.http.replies_routes import (
 )
 from qualify_api.http.sentiment_routes import AnalyzePendingComments
 from qualify_api.leads.service import LeadIntakeService
+from qualify_api.mail import routes as mail_routes
 from qualify_api.publishing.media_token import MediaTokenStore
 from qualify_api.publishing.service import PublishService
 from qualify_api.publishing.staging import MediaStagingService
@@ -133,6 +135,27 @@ def build_production_analyze_mention_sentiment() -> mentions_routes.AnalyzeMenti
     from qualify_api.mentions.composition import analyze_pending_mentions  # noqa: PLC0415
 
     return analyze_pending_mentions
+
+
+def build_production_meegle_event_settings() -> meegle_routes.MeegleEventSettings:
+    """Env read only (plugin id + callback token). Raises `MeegleNotConfigured` on the
+    first event when the engine is off — a loud 500, never an accepted unverified event."""
+    return meegle_routes.MeegleEventSettings.from_env()
+
+
+def build_production_meegle_delivery_recorder() -> meegle_routes.MeegleDeliveryRecorder:
+    """The same INSERT-only intake door as the Meta webhooks, with the Meegle parser."""
+    from qualify_api.meegle.receiver import record_meegle_delivery  # noqa: PLC0415
+
+    return record_meegle_delivery
+
+
+def build_production_resend_delivery_recorder() -> mail_routes.ResendDeliveryRecorder:
+    """The same INSERT-only intake door as the Meta and Meegle webhooks, with the Resend
+    parser (M2). The settings builder lives next to the route: an unset secret is a 503."""
+    from qualify_api.mail.webhook import record_resend_delivery  # noqa: PLC0415
+
+    return record_resend_delivery
 
 
 def build_production_whatsapp_settings() -> whatsapp_routes.WhatsAppWebhookSettings:
@@ -254,6 +277,8 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
     app.include_router(mentions_routes.router)
     app.include_router(replies_routes.router)
     app.include_router(whatsapp_routes.router)
+    app.include_router(meegle_routes.router)
+    app.include_router(mail_routes.router)
     if configure_production:
         app.dependency_overrides[connections_routes.get_connect_service] = build_production_service
         app.dependency_overrides[publishing_routes.get_publish_service] = (
@@ -322,6 +347,18 @@ def create_app(*, configure_production: bool = True) -> FastAPI:
         )
         app.dependency_overrides[whatsapp_routes.get_analytics_service] = (
             build_production_whatsapp_analytics_service
+        )
+        app.dependency_overrides[meegle_routes.get_event_settings] = (
+            build_production_meegle_event_settings
+        )
+        app.dependency_overrides[meegle_routes.get_delivery_recorder] = (
+            build_production_meegle_delivery_recorder
+        )
+        app.dependency_overrides[mail_routes.get_webhook_settings] = (
+            mail_routes.build_production_resend_webhook_settings
+        )
+        app.dependency_overrides[mail_routes.get_delivery_recorder] = (
+            build_production_resend_delivery_recorder
         )
         # C1: parsed at assembly so a malformed QUALIFY_DEV_PRINCIPALS fails the boot,
         # not the first request.

@@ -373,7 +373,8 @@ def test_row_words_attention_window_preview_and_identity() -> None:
         "warn",
     )
     assert row.window_open and row.window_tone == "ok"
-    assert row.window_short == "" and row.window_label.startswith("Instagram solo permite responder")
+    assert row.window_short == ""
+    assert row.window_label.startswith("Instagram solo permite responder")
     assert row.time_label == "hace 2 h"
     assert not row.is_closed and not row.fresh
 

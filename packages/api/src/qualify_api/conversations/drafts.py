@@ -15,7 +15,7 @@ are written against it:
   `approved_by_user_id` is NOT NULL. Keeping the two apart is what makes "no code path
   sends without approval" a property of the schema rather than of each caller's care.
 
-`conversation_drafts` (0063) is the store, read through `PostgresDraftRepository` under
+`conversation_drafts` (0065) is the store, read through `PostgresDraftRepository` under
 RLS; `MemoryDraftRepository` is the same contract for offline tests. One `proposed` draft
 per message at a time (`DraftPending`); a discarded one never blocks a new suggestion.
 """
