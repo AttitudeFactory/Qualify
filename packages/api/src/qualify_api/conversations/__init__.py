@@ -1,9 +1,12 @@
 """Conversaciones — the multichannel private-messaging inbox (QUA-226, Fase 1 Parte 4-B,
 ADR 21c: assisted replies only, never autonomous).
 
-E1 (this package as of 2026-10-16) is the FOUNDATION: contracts, persistence, the queue
-and their tests. No channel adapter talks to Meta yet (E3), no worker sends (later), no
-UI reads it (E2), no model drafts a reply (E4).
+E1 (2026-10-16) is the FOUNDATION: contracts, persistence, the queue and their tests.
+E2 (the Reflex screen, `Qualify/conversations_*.py`), E3 (`instagram_source` +
+`webhook`: the Instagram Direct channel, read from the corpus and NOT yet verified
+against Meta — `docs/conversaciones-limitaciones-meta.md`) and E5 (`sender` + `worker`:
+the outbox loop) followed the same day; E4 (`suggest`: Claude-drafted replies grounded
+on the catalog, decided by a person) closed the ticket's scope the same evening.
 
 - `contracts` — `ConversationSource` / `ConversationSender`, the channel seam; a channel
   is one implementation of each, registered in a `ChannelRegistry`. Thread identity is
@@ -16,11 +19,20 @@ UI reads it (E2), no model drafts a reply (E4).
 - `sync` — the reconciliation poll and the single-message door, channel-agnostic.
 - `service` — list / read / mark read / reply (window-checked, then queued), the seam the
   UI will consume. `attention_state` derives «pendiente / leído / respondido».
-- `drafts` — the assisted-draft CONTRACT (statuses of 0014, pure transition); no table
-  yet.
+- `drafts` — the assisted-draft contract (statuses of 0014, pure transition) and its
+  store, `conversation_drafts` (0063), under RLS.
+- `suggest` — E4: the gate (inbound text + open window), the Claude generator (strict
+  tool use, `claude-haiku-5-5`), the grounding (brand name + catalog) recorded on each
+  draft with its cost, and `ConversationDraftService` (suggest / decide — never send).
 - `memory_source` — the second channel: an in-memory source + sender pair, the proof the
-  seam holds and the fixture of the offline tests.
+  seam holds and the fixture of the offline tests. `composition` can serve `dm` with it
+  (`QUALIFY_CONVERSATIONS_DM_CHANNEL=memory`) so the loop runs on localhost without Meta;
+  `devseed` fills it.
 - `window` — the 24 h window, re-exported from `whatsapp.window` (one decision, shared).
+- `instagram_source` / `webhook` — Instagram Direct: the Messenger Platform adapter and
+  the `instagram:messages` intake handler (E3).
+- `sender` / `worker` — the outbox loop (window re-checked at send time) and its CLI (E5).
+- `composition` — production wiring; the one place the channel implementation is chosen.
 
 Blocked outside the code (see the ticket): `instagram_manage_messages` is not requested
 today and its access level is unconfirmed; Page webhook subscription is QUA-129; the
@@ -44,10 +56,13 @@ from qualify_api.conversations.contracts import (
 )
 from qualify_api.conversations.drafts import (
     ConversationDraft,
+    DraftPending,
     DraftRepository,
     DraftStatus,
     InvalidDraftTransition,
     MemoryDraftRepository,
+    PostgresDraftRepository,
+    UnknownDraft,
     decide_draft,
     new_draft,
 )
@@ -69,6 +84,7 @@ from qualify_api.conversations.repository import (
     ThreadRecord,
     ThreadUpsert,
 )
+from qualify_api.conversations.sender import ConversationOutboxSender, SendReport
 from qualify_api.conversations.service import (
     AttentionState,
     ConversationService,
@@ -80,6 +96,8 @@ from qualify_api.conversations.service import (
 from qualify_api.conversations.sync import ConversationSyncService, IngestResult, SyncReport
 
 __all__ = [
+    "ConversationOutboxSender",
+    "SendReport",
     "CHANNEL_DM",
     "AccessStatus",
     "AccessVerdict",
@@ -94,14 +112,17 @@ __all__ = [
     "ConversationService",
     "ConversationSource",
     "ConversationSyncService",
+    "DraftPending",
     "DraftRepository",
     "DraftStatus",
     "HumanApproval",
     "IngestResult",
     "InvalidDraftTransition",
+    "UnknownDraft",
     "MemoryConversationOutboxRepository",
     "MemoryConversationRepository",
     "MemoryDraftRepository",
+    "PostgresDraftRepository",
     "MessageRecord",
     "OutboxRecord",
     "Page",

@@ -134,6 +134,9 @@ just calendar-tick --tenant <uuid>     # QUA-111: one Planificador tick — PUBL
 just calendar-worker --tenant <uuid>   # QUA-111: a tick every 60 s until Ctrl+C
 just whatsapp-tick --tenant <uuid>     # WA-08: one pass of the WhatsApp outbox sender — SENDS FOR REAL
 just whatsapp-worker --tenant <uuid>   # WA-08: a pass every 5 s until Ctrl+C (locally always --tenant)
+just conversations-tick --tenant <uuid> [--sync]    # QUA-226: one pass of the DM outbox sender (+ Instagram poll) — SENDS FOR REAL unless QUALIFY_CONVERSATIONS_DM_CHANNEL=memory
+just conversations-worker --tenant <uuid> [--sync]  # QUA-226: a pass every 5 s until Ctrl+C
+just conversations-seed --tenant <uuid>             # QUA-226: sample DMs through the in-memory channel (needs QUALIFY_CONVERSATIONS_DM_CHANNEL=memory)
 ```
 
 The calendar executor (QUA-111, `packages/api/src/qualify_api/planner/worker.py`) publishes due, approved `calendar_events` through `PublishService`. **Locally always pass `--tenant`:** `--all-tenants` is the production discovery, and this dev database holds dozens of test tenants it would act on. Decision, guarantees and UML: `docs/automatizacion-calendario-qua111.md`.
