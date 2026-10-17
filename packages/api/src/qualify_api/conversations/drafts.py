@@ -1,8 +1,8 @@
-"""Assisted-reply drafts for private conversations — the CONTRACT only (QUA-226, E1).
+"""Assisted-reply drafts for private conversations (QUA-226, E1 contract + E4 store).
 
-Generation (Claude, catalog grounding, cost reporting) is E4 and lives nowhere yet. What
-E1 fixes is the shape every later piece must agree on, so the outbox and the service can
-already be written against it:
+Generation (Claude, catalog grounding, cost reporting) lives in `suggest.py`. What this
+module fixes is the shape every piece agrees on, so the outbox, the service and the UI
+are written against it:
 
 - A draft's statuses are `comment_reply_drafts`' own (0014), verbatim: a draft is
   `proposed` until a person `accepted`/`edited`/`discarded` it; only an accepted or edited
@@ -15,19 +15,23 @@ already be written against it:
   `approved_by_user_id` is NOT NULL. Keeping the two apart is what makes "no code path
   sends without approval" a property of the schema rather than of each caller's care.
 
-No Postgres table exists for drafts yet (E4's revision adds it, with the `settle_once`
-trigger of 0014). `MemoryDraftRepository` is the only implementation and exists so the
-contract is executable in tests, not as a stand-in for the real store.
+`conversation_drafts` (0063) is the store, read through `PostgresDraftRepository` under
+RLS; `MemoryDraftRepository` is the same contract for offline tests. One `proposed` draft
+per message at a time (`DraftPending`); a discarded one never blocks a new suggestion.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass, replace
+import json
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Final, Protocol
+from typing import Any, Final, Protocol
 from uuid import UUID, uuid4
+
+from qualify_shared.db.session import tenant_session
+from sqlalchemy import text
 
 
 class DraftStatus(StrEnum):
@@ -68,6 +72,16 @@ class ConversationDraft:
     final_text: str | None = None
     decided_at: datetime | None = None
     decided_by_user_id: UUID | None = None
+    # Cost provenance (QUA-144): which model wrote it and what the call cost. Zero on a
+    # draft that no model wrote (tests, a future rule-based generator).
+    model_id: str | None = None
+    model_revision: str | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+    # The validated facts the generator was given (business name, products with their
+    # prices) — what `needs_review` is judged against. Never user text.
+    grounding: Mapping[str, Any] = field(default_factory=dict)
 
 
 class InvalidDraftTransition(ValueError):
@@ -76,6 +90,11 @@ class InvalidDraftTransition(ValueError):
 
 class UnknownDraft(LookupError):
     """No draft with that id is visible in this tenant."""
+
+
+class DraftPending(ValueError):
+    """The message already has a `proposed` draft: decide it before asking for another.
+    A discarded draft does NOT block a new one — «sugerir de nuevo» is allowed."""
 
 
 class DraftRepository(Protocol):
@@ -113,6 +132,12 @@ def new_draft(
     gate_reason: str,
     needs_review: bool = False,
     now: datetime | None = None,
+    model_id: str | None = None,
+    model_revision: str | None = None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cost_usd: float = 0.0,
+    grounding: Mapping[str, Any] | None = None,
 ) -> ConversationDraft:
     """A fresh `proposed` draft. The only constructor callers should use: a draft is
     born `proposed`, never in any other status."""
@@ -127,6 +152,12 @@ def new_draft(
         needs_review=needs_review,
         status=DraftStatus.PROPOSED,
         created_at=now or _utcnow(),
+        model_id=model_id,
+        model_revision=model_revision,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cost_usd=cost_usd,
+        grounding=dict(grounding or {}),
     )
 
 
@@ -169,10 +200,12 @@ class MemoryDraftRepository:
 
     def create(self, draft: ConversationDraft) -> ConversationDraft:
         if any(
-            d.message_id == draft.message_id and d.tenant_id == draft.tenant_id
+            d.message_id == draft.message_id
+            and d.tenant_id == draft.tenant_id
+            and d.status is DraftStatus.PROPOSED
             for d in self.rows.values()
         ):
-            raise ValueError(f"a draft already exists for message {draft.message_id}")
+            raise DraftPending(f"a proposed draft already exists for message {draft.message_id}")
         self.rows[draft.id] = draft
         return draft
 
@@ -215,4 +248,167 @@ class MemoryDraftRepository:
             now=now,
         )
         self.rows[draft_id] = decided
+        return decided
+
+
+# --- Postgres -----------------------------------------------------------------------------
+
+_DRAFT_COLUMNS = """
+    d.id, d.tenant_id, d.thread_id, d.message_id, d.generator_version, d.generated_text,
+    d.gate_reason, d.needs_review, d.status, d.final_text, d.created_at, d.decided_at,
+    d.decided_by_user_id, d.model_id, d.model_revision, d.input_tokens, d.output_tokens,
+    d.cost_usd, d.grounding
+"""
+
+_INSERT_DRAFT = text(
+    """
+    INSERT INTO conversation_drafts (
+        id, tenant_id, thread_id, message_id, generator_version, generated_text,
+        gate_reason, needs_review, status, created_at, model_id, model_revision,
+        input_tokens, output_tokens, cost_usd, grounding
+    ) VALUES (
+        :id, :tenant_id, :thread_id, :message_id, :generator_version, :generated_text,
+        :gate_reason, :needs_review, 'proposed', :created_at, :model_id, :model_revision,
+        :input_tokens, :output_tokens, :cost_usd, CAST(:grounding AS jsonb)
+    )
+    """
+)
+
+_PENDING_FOR_MESSAGE = text(
+    """
+    SELECT 1 FROM conversation_drafts
+     WHERE message_id = :message_id AND status = 'proposed'
+     LIMIT 1
+    """
+)
+
+_GET_DRAFT = text(f"SELECT {_DRAFT_COLUMNS} FROM conversation_drafts d WHERE d.id = :draft_id")
+
+_LIST_PENDING = text(
+    f"""
+    SELECT {_DRAFT_COLUMNS} FROM conversation_drafts d
+     WHERE d.status = 'proposed'
+       AND (CAST(:thread_id AS uuid) IS NULL OR d.thread_id = :thread_id)
+     ORDER BY d.created_at
+    """
+)
+
+# The transition is decided in Python (`decide_draft`) and written back only if the row
+# is still `proposed`: two people deciding the same draft cannot both win.
+_DECIDE = text(
+    """
+    UPDATE conversation_drafts
+       SET status = :status, final_text = :final_text, decided_at = :now,
+           decided_by_user_id = :user_id
+     WHERE id = :draft_id AND status = 'proposed'
+    """
+)
+
+
+def _row_to_draft(r: Any) -> ConversationDraft:
+    grounding = r.grounding if isinstance(r.grounding, dict) else {}
+    return ConversationDraft(
+        id=r.id,
+        tenant_id=r.tenant_id,
+        thread_id=r.thread_id,
+        message_id=r.message_id,
+        generator_version=r.generator_version,
+        generated_text=r.generated_text,
+        gate_reason=r.gate_reason,
+        needs_review=bool(r.needs_review),
+        status=DraftStatus(r.status),
+        created_at=r.created_at,
+        final_text=r.final_text,
+        decided_at=r.decided_at,
+        decided_by_user_id=r.decided_by_user_id,
+        model_id=r.model_id,
+        model_revision=r.model_revision,
+        input_tokens=int(r.input_tokens or 0),
+        output_tokens=int(r.output_tokens or 0),
+        cost_usd=float(r.cost_usd or 0),
+        grounding=grounding,
+    )
+
+
+class PostgresDraftRepository:
+    """`conversation_drafts` under RLS (`tenant_session`). Same contract as the memory
+    repository; the only difference is that the "one proposed draft per message" rule is
+    checked with a query, not a scan."""
+
+    def create(self, draft: ConversationDraft) -> ConversationDraft:
+        with tenant_session(draft.tenant_id) as session:
+            pending = session.execute(
+                _PENDING_FOR_MESSAGE, {"message_id": draft.message_id}
+            ).first()
+            if pending is not None:
+                raise DraftPending(
+                    f"a proposed draft already exists for message {draft.message_id}"
+                )
+            session.execute(
+                _INSERT_DRAFT,
+                {
+                    "id": draft.id,
+                    "tenant_id": draft.tenant_id,
+                    "thread_id": draft.thread_id,
+                    "message_id": draft.message_id,
+                    "generator_version": draft.generator_version,
+                    "generated_text": draft.generated_text,
+                    "gate_reason": draft.gate_reason,
+                    "needs_review": draft.needs_review,
+                    "created_at": draft.created_at,
+                    "model_id": draft.model_id,
+                    "model_revision": draft.model_revision,
+                    "input_tokens": draft.input_tokens,
+                    "output_tokens": draft.output_tokens,
+                    "cost_usd": draft.cost_usd,
+                    "grounding": json.dumps(dict(draft.grounding)),
+                },
+            )
+        return draft
+
+    def get(self, *, tenant_id: UUID, draft_id: UUID) -> ConversationDraft | None:
+        with tenant_session(tenant_id) as session:
+            row = session.execute(_GET_DRAFT, {"draft_id": draft_id}).first()
+        return _row_to_draft(row) if row is not None else None
+
+    def list_pending(
+        self, *, tenant_id: UUID, thread_id: UUID | None = None
+    ) -> list[ConversationDraft]:
+        with tenant_session(tenant_id) as session:
+            rows = session.execute(_LIST_PENDING, {"thread_id": thread_id}).all()
+        return [_row_to_draft(r) for r in rows]
+
+    def decide(
+        self,
+        *,
+        tenant_id: UUID,
+        draft_id: UUID,
+        status: DraftStatus,
+        final_text: str | None,
+        decided_by_user_id: UUID,
+        now: datetime,
+    ) -> ConversationDraft:
+        draft = self.get(tenant_id=tenant_id, draft_id=draft_id)
+        if draft is None:
+            raise UnknownDraft(str(draft_id))
+        decided = decide_draft(
+            draft,
+            status=status,
+            final_text=final_text,
+            decided_by_user_id=decided_by_user_id,
+            now=now,
+        )
+        with tenant_session(tenant_id) as session:
+            result = session.execute(
+                _DECIDE,
+                {
+                    "draft_id": draft_id,
+                    "status": decided.status.value,
+                    "final_text": decided.final_text,
+                    "now": now,
+                    "user_id": decided_by_user_id,
+                },
+            )
+            if result.rowcount != 1:
+                raise InvalidDraftTransition(f"draft {draft_id} was decided concurrently")
         return decided
