@@ -11,8 +11,12 @@ Meegle work item "Alta de cliente", and this package is the engine behind it —
 - `schema`    — field keys, select values and node ids resolved by display name, cached.
 - `onboarding`— the use-cases: invite on **Datos**, expire on termination, mark
                 **Registrada** on signup.
-- `handlers`  — the webhook-processor handlers (`meegle:2001`, `meegle:1005`,
-                `meegle:2004`) and their production assembly.
+- `events`    — the recorded value, typed (who, which item, `field_info`, `node_info`).
+- `tickets`   — plan §3bis: a change in a Feature / Issue / Task of the space → one text
+                in the Lark group (`QUALIFY_MEEGLE_NOTIFY_WEBHOOK_URL`), the item re-read
+                through the client, the delta from the event.
+- `handlers`  — the webhook-processor handlers (`meegle:1001|1005|1009|2001|2004|3001`),
+                routed by work item type, and their production assembly.
 
 The plugin secret is confined to this package (`test_meegle_sanctity.py`).
 """

@@ -17,6 +17,18 @@ someone else's space.
     QUALIFY_MEEGLE_WORK_ITEM_TYPE   the "Alta de cliente" work item type key
     QUALIFY_MEEGLE_USER_KEY         whose name the writes carry (`X-User-Key`, plan D1)
 
+The ticket notifier (`tickets.py`, plan §3bis) is a second, optional layer on the same
+engine — off until its webhook is set, with the six above still required:
+
+    QUALIFY_MEEGLE_NOTIFY_WEBHOOK_URL  Lark custom bot webhook of the group that hears
+                                       ticket changes (SECRET on Lark's side: whoever has
+                                       it can post there)
+    QUALIFY_MEEGLE_TICKET_TYPES        work item type keys it covers; default
+                                       `story,issue,sub_task` (Features, Issues, Tasks)
+    QUALIFY_MEEGLE_WEB_URL             host of the links in the notices; default
+                                       https://project.larksuite.com (where the real item
+                                       URLs live — meegle.com is the API host only)
+
 The names of the fields and nodes Qualify reads and writes (`MeegleNames`) default to the
 plan's §2 and can be overridden one by one (`QUALIFY_MEEGLE_FIELD_*`, `QUALIFY_MEEGLE_NODE_*`)
 if the item is created with other labels. Keys and node ids are never configured: the
@@ -76,6 +88,38 @@ class MeegleSettings:
 def meegle_configured() -> bool:
     """True iff every required variable is set (the cheap question before building anything)."""
     return all(os.environ.get(name, "").strip() for name in _REQUIRED)
+
+
+NOTIFY_WEBHOOK_ENV = "QUALIFY_MEEGLE_NOTIFY_WEBHOOK_URL"
+TICKET_TYPES_ENV = "QUALIFY_MEEGLE_TICKET_TYPES"
+WEB_URL_ENV = "QUALIFY_MEEGLE_WEB_URL"
+DEFAULT_WEB_URL = "https://project.larksuite.com"
+DEFAULT_TICKET_TYPES = ("story", "issue", "sub_task")
+
+
+@dataclass(frozen=True)
+class TicketSettings:
+    """The ticket notifier's own knobs. `webhook_url == ""` means the notifier is off."""
+
+    webhook_url: str
+    ticket_types: frozenset[str]
+    web_url: str
+
+    @classmethod
+    def from_env(cls) -> TicketSettings:
+        raw_types = os.environ.get(TICKET_TYPES_ENV, "").strip()
+        types = frozenset(
+            part.strip() for part in raw_types.split(",") if part.strip()
+        ) or frozenset(DEFAULT_TICKET_TYPES)
+        return cls(
+            webhook_url=os.environ.get(NOTIFY_WEBHOOK_ENV, "").strip(),
+            ticket_types=types,
+            web_url=(os.environ.get(WEB_URL_ENV, "").strip() or DEFAULT_WEB_URL).rstrip("/"),
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.webhook_url)
 
 
 @dataclass(frozen=True)

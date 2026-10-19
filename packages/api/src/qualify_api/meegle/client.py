@@ -1,9 +1,13 @@
 """A thin, typed httpx client over the Meegle Open API — no SDK (house style).
 
-Only the six calls the onboarding engine needs (plan §3), each a method returning plain
-dataclasses. Authentication is the plugin token: `POST /open_api/authen/plugin_token`
-with `{plugin_id, plugin_secret, type: 0}` → `data.token` valid `data.expire_time`
-seconds (2 h), cached here and renewed `TOKEN_MARGIN` before it expires. Every call carries
+The calls the onboarding engine needs (plan §3) plus what the ticket notifier adds (one
+read of the space's `simple_name` for links), each a method returning plain dataclasses.
+Every item call takes an optional `work_item_type`: the onboarding engine lives on the
+configured "Alta de cliente" type (the default), the ticket notifier reads Features /
+Issues / Tasks of the same space. Authentication is the plugin token:
+`POST /open_api/authen/plugin_token` with `{plugin_id, plugin_secret, type: 0}` →
+`data.token` valid `data.expire_time` seconds (2 h), cached here and renewed
+`TOKEN_MARGIN` before it expires. Every call carries
 `X-Plugin-Token` and `X-User-Key` (plan D1: the writes are signed by the configured member
 of the space).
 
@@ -24,6 +28,7 @@ Paths (`docs/plan-altas-meegle.md` §1, verified against the Go SDK):
     POST /open_api/{project_key}/work_item/{type}/{id}/workflow/query  workflow
     POST /open_api/{project_key}/work_item/{type}/query                query
     POST /open_api/{project_key}/field/all                             fields_meta
+    POST /open_api/projects/detail                                     space_simple_name
 """
 
 from __future__ import annotations
@@ -65,6 +70,9 @@ class WorkItem:
     name: str
     fields: dict[str, Any]  # field_key -> field_value, as Meegle returned it
     current_nodes: tuple[str, ...] = ()  # node ids the item currently sits on
+    current_node_names: tuple[str, ...] = ()  # their display names, same order
+    work_item_type_key: str = ""
+    status_key: str = ""  # `work_item_status.state_key` (status-flow items), else ""
 
 
 @dataclass(frozen=True)
@@ -194,9 +202,17 @@ class MeegleClient:
 
     # -- paths ---------------------------------------------------------------------------
 
-    def _item_path(self, work_item_id: int, suffix: str = "") -> str:
+    def _type(self, work_item_type: str | None) -> str:
+        return work_item_type or self._settings.work_item_type
+
+    def _item_path(
+        self, work_item_id: int, suffix: str = "", *, work_item_type: str | None = None
+    ) -> str:
         s = self._settings
-        return f"/open_api/{s.project_key}/work_item/{s.work_item_type}/{work_item_id}{suffix}"
+        return (
+            f"/open_api/{s.project_key}/work_item/{self._type(work_item_type)}"
+            f"/{work_item_id}{suffix}"
+        )
 
     # -- writes --------------------------------------------------------------------------
 
@@ -238,9 +254,14 @@ class MeegleClient:
 
     # -- reads ---------------------------------------------------------------------------
 
-    def workflow(self, work_item_id: int) -> list[WorkflowNode]:
+    def workflow(
+        self, work_item_id: int, *, work_item_type: str | None = None
+    ) -> list[WorkflowNode]:
         data = self._call(
-            "POST", self._item_path(work_item_id, "/workflow/query"), json={}, what="workflow"
+            "POST",
+            self._item_path(work_item_id, "/workflow/query", work_item_type=work_item_type),
+            json={},
+            what="workflow",
         )
         nodes = data.get("workflow_nodes") if isinstance(data, dict) else None
         out: list[WorkflowNode] = []
@@ -262,12 +283,14 @@ class MeegleClient:
             )
         return out
 
-    def query(self, work_item_ids: Iterable[int]) -> list[WorkItem]:
+    def query(
+        self, work_item_ids: Iterable[int], *, work_item_type: str | None = None
+    ) -> list[WorkItem]:
         s = self._settings
         ids = [int(i) for i in work_item_ids]
         data = self._call(
             "POST",
-            f"/open_api/{s.project_key}/work_item/{s.work_item_type}/query",
+            f"/open_api/{s.project_key}/work_item/{self._type(work_item_type)}/query",
             json={"work_item_ids": ids, "expand": {"need_multi_text": True}},
             what="query",
         )
@@ -286,24 +309,32 @@ class MeegleClient:
             for pair in raw.get("multi_texts") or []:
                 if isinstance(pair, dict) and isinstance(pair.get("field_key"), str):
                     fields[pair["field_key"]] = pair.get("field_value")
-            current = tuple(
-                _str(node.get("id"))
+            nodes = [
+                node
                 for node in raw.get("current_nodes") or []
                 if isinstance(node, dict) and isinstance(node.get("id"), str)
-            )
+            ]
+            status = raw.get("work_item_status")
+            status_key = _str(status.get("state_key")) if isinstance(status, dict) else ""
             items.append(
                 WorkItem(
-                    id=item_id, name=_str(raw.get("name")), fields=fields, current_nodes=current
+                    id=item_id,
+                    name=_str(raw.get("name")),
+                    fields=fields,
+                    current_nodes=tuple(_str(node.get("id")) for node in nodes),
+                    current_node_names=tuple(_str(node.get("name")) for node in nodes),
+                    work_item_type_key=_str(raw.get("work_item_type_key")),
+                    status_key=status_key,
                 )
             )
         return items
 
-    def fields_meta(self) -> list[FieldMeta]:
+    def fields_meta(self, *, work_item_type: str | None = None) -> list[FieldMeta]:
         s = self._settings
         data = self._call(
             "POST",
             f"/open_api/{s.project_key}/field/all",
-            json={"work_item_type_key": s.work_item_type},
+            json={"work_item_type_key": self._type(work_item_type)},
             what="fields_meta",
         )
         out: list[FieldMeta] = []
@@ -324,3 +355,24 @@ class MeegleClient:
                 )
             )
         return out
+
+    def space_simple_name(self) -> str:
+        """The space's `simple_name` (the first path segment of every Meegle link), or ""
+        when Meegle does not return it — the notifier then links without it."""
+        s = self._settings
+        data = self._call(
+            "POST",
+            "/open_api/projects/detail",
+            json={"project_keys": [s.project_key]},
+            what="space_simple_name",
+        )
+        if isinstance(data, dict):
+            spaces = data.values()
+        elif isinstance(data, list):
+            spaces = data
+        else:
+            spaces = []
+        for space in spaces:
+            if isinstance(space, dict) and space.get("project_key") == s.project_key:
+                return _str(space.get("simple_name"))
+        return ""
