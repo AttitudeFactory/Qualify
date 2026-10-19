@@ -141,7 +141,7 @@ def notifier(meegle: FakeMeegle, lark: FakeLark) -> TicketNotifier:
     poster = LarkWebhookPoster(
         "https://lark.test/hook/abc", transport=httpx.MockTransport(lark.handler)
     )
-    return TicketNotifier(client, poster, web_url="https://meegle.test")
+    return TicketNotifier(client, poster, web_url="https://project.larksuite.test")
 
 
 def event(
@@ -209,7 +209,7 @@ def test_status_change_names_who_old_new_item_and_link(
         "🎫 Herwin Rey cambió el estado · Issue «WA-21 · Analítica de la WABA»",
         "Status: Backlog → Done",
         "archiving_status: false → true",
-        "https://meegle.test/5h2wsx/issue/detail/24789637",
+        "https://project.larksuite.test/5h2wsx/issue/detail/24789637",
     ]
 
 
@@ -286,7 +286,7 @@ def test_created_terminated_and_node_events(
     ]
     assert texts[2].splitlines() == [
         "🎫 Herwin Rey completó el nodo «Finished» · Feature «Épica — Publicar»",
-        "https://meegle.test/5h2wsx/story/detail/24789637",
+        "https://project.larksuite.test/5h2wsx/story/detail/24789637",
     ]
     assert texts[3].splitlines()[:2] == [
         "🎫 Herwin Rey revirtió el nodo «Finished» · Feature «Épica — Publicar»",
@@ -382,15 +382,15 @@ def test_ticket_settings_defaults_and_overrides(monkeypatch: pytest.MonkeyPatch)
         "QUALIFY_MEEGLE_WEB_URL",
     ):
         monkeypatch.delenv(name, raising=False)
-    off = TicketSettings.from_env(base_url="https://meegle.com")
+    off = TicketSettings.from_env()
     assert off.enabled is False
     assert off.ticket_types == frozenset({"story", "issue", "sub_task"})
-    assert off.web_url == "https://meegle.com"
+    assert off.web_url == "https://project.larksuite.com"
     monkeypatch.setenv("QUALIFY_MEEGLE_NOTIFY_WEBHOOK_URL", " https://open.larksuite.com/hook/x ")
     monkeypatch.setenv("QUALIFY_MEEGLE_TICKET_TYPES", "issue, story,,")
-    monkeypatch.setenv("QUALIFY_MEEGLE_WEB_URL", "https://project.larksuite.com/")
-    on = TicketSettings.from_env(base_url="https://meegle.com")
+    monkeypatch.setenv("QUALIFY_MEEGLE_WEB_URL", "https://meegle.com/")
+    on = TicketSettings.from_env()
     assert on.enabled is True
     assert on.webhook_url == "https://open.larksuite.com/hook/x"
     assert on.ticket_types == frozenset({"issue", "story"})
-    assert on.web_url == "https://project.larksuite.com"
+    assert on.web_url == "https://meegle.com"

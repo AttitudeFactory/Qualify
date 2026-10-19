@@ -223,7 +223,7 @@ cambio de campo**, con quién, qué cambió (campo: antes → después), el íte
   ```
   🎫 Herwin Rey cambió el estado · Issue «WA-21 · Analítica de la WABA»
   Status: Backlog → Done
-  https://meegle.com/5h2wsx/issue/detail/24789637
+  https://project.larksuite.com/5h2wsx/issue/detail/24789637
   ```
 
   Verbos: `creó` (+ estado o nodo actual), `modificó` (una línea por campo, saltando los que no
@@ -246,7 +246,9 @@ cambio de campo**, con quién, qué cambió (campo: antes → después), el íte
 
 **Variables nuevas** (`.env.example`, `deploy/.env.prod.example`): `QUALIFY_MEEGLE_NOTIFY_WEBHOOK_URL`
 (obligatoria para avisar), `QUALIFY_MEEGLE_TICKET_TYPES` (opcional, `story,issue,sub_task`),
-`QUALIFY_MEEGLE_WEB_URL` (opcional, por defecto `QUALIFY_MEEGLE_BASE_URL`).
+`QUALIFY_MEEGLE_WEB_URL` (opcional, por defecto `https://project.larksuite.com`: ahí viven las URL reales de los
+ítems — verificado con los grupos de Lark que Meegle crea por ítem y con el parser de URL del MCP para
+`story`, `issue` y `sub_task`; `meegle.com` es solo el host de la Open API).
 
 ## 4. Fases
 

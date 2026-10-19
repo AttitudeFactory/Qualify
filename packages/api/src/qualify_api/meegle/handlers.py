@@ -256,7 +256,7 @@ def production_meegle_handlers() -> Mapping[str, Handler]:
         logger.info("meegle engine off (QUALIFY_MEEGLE_* not set): events stay unsupported")
         return {}
     settings = MeegleSettings.from_env()
-    ticket_settings = TicketSettings.from_env(base_url=settings.base_url)
+    ticket_settings = TicketSettings.from_env()
     tickets: TicketNotifier | None = None
     if ticket_settings.enabled:
         tickets = TicketNotifier(

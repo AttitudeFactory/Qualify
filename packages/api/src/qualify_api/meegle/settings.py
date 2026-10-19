@@ -25,7 +25,9 @@ engine — off until its webhook is set, with the six above still required:
                                        it can post there)
     QUALIFY_MEEGLE_TICKET_TYPES        work item type keys it covers; default
                                        `story,issue,sub_task` (Features, Issues, Tasks)
-    QUALIFY_MEEGLE_WEB_URL             host of the links in the notices; default = base URL
+    QUALIFY_MEEGLE_WEB_URL             host of the links in the notices; default
+                                       https://project.larksuite.com (where the real item
+                                       URLs live — meegle.com is the API host only)
 
 The names of the fields and nodes Qualify reads and writes (`MeegleNames`) default to the
 plan's §2 and can be overridden one by one (`QUALIFY_MEEGLE_FIELD_*`, `QUALIFY_MEEGLE_NODE_*`)
@@ -91,6 +93,7 @@ def meegle_configured() -> bool:
 NOTIFY_WEBHOOK_ENV = "QUALIFY_MEEGLE_NOTIFY_WEBHOOK_URL"
 TICKET_TYPES_ENV = "QUALIFY_MEEGLE_TICKET_TYPES"
 WEB_URL_ENV = "QUALIFY_MEEGLE_WEB_URL"
+DEFAULT_WEB_URL = "https://project.larksuite.com"
 DEFAULT_TICKET_TYPES = ("story", "issue", "sub_task")
 
 
@@ -103,7 +106,7 @@ class TicketSettings:
     web_url: str
 
     @classmethod
-    def from_env(cls, *, base_url: str = DEFAULT_BASE_URL) -> TicketSettings:
+    def from_env(cls) -> TicketSettings:
         raw_types = os.environ.get(TICKET_TYPES_ENV, "").strip()
         types = frozenset(
             part.strip() for part in raw_types.split(",") if part.strip()
@@ -111,7 +114,7 @@ class TicketSettings:
         return cls(
             webhook_url=os.environ.get(NOTIFY_WEBHOOK_ENV, "").strip(),
             ticket_types=types,
-            web_url=(os.environ.get(WEB_URL_ENV, "").strip() or base_url).rstrip("/"),
+            web_url=(os.environ.get(WEB_URL_ENV, "").strip() or DEFAULT_WEB_URL).rstrip("/"),
         )
 
     @property
