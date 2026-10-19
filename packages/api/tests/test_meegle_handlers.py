@@ -10,12 +10,17 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from qualify_api.meegle.events import MeegleEvent
 from qualify_api.meegle.handlers import (
+    FIELD_MODIFIED_HANDLER_KEY,
+    IGNORED_EVENT,
     IGNORED_OPENAPI,
     IGNORED_ROLLBACK,
     NODE_COMPLETED_HANDLER_KEY,
     NODE_ROLLED_BACK_HANDLER_KEY,
     OTHER_WORK_ITEM_TYPE,
+    STATUS_CHANGED_HANDLER_KEY,
+    WORK_ITEM_CREATED_HANDLER_KEY,
     WORK_ITEM_NOT_FOUND,
     WORK_ITEM_TERMINATED_HANDLER_KEY,
     meegle_handlers,
@@ -73,6 +78,22 @@ class FakeEngine:
         return 2
 
 
+class FakeNotifier:
+    def __init__(self) -> None:
+        self.seen: list[tuple[int, str, int | None]] = []
+        self.raises: Exception | None = None
+        self.reason = "sent"
+
+    def notify(self, event: MeegleEvent) -> str:
+        if self.raises is not None:
+            raise self.raises
+        self.seen.append((event.data.event_type, event.data.work_item_type_key, event.work_item_id))
+        return self.reason
+
+
+TICKET_TYPES = frozenset({"story", "issue", "sub_task"})
+
+
 def _event(value: Any, *, field: str = "2001", attempts: int = 1) -> ClaimedEvent:
     return ClaimedEvent(
         id=uuid4(),
@@ -85,11 +106,19 @@ def _event(value: Any, *, field: str = "2001", attempts: int = 1) -> ClaimedEven
     )
 
 
-async def _run(engine: FakeEngine, *events: ClaimedEvent) -> FakeQueue:
+async def _run(
+    engine: FakeEngine, *events: ClaimedEvent, tickets: FakeNotifier | None = None
+) -> FakeQueue:
     queue = FakeQueue(list(events))
     processor = Processor(
         queue=queue,
-        handlers=meegle_handlers(engine, work_item_type="alta_cliente", names=MeegleNames()),  # type: ignore[arg-type]
+        handlers=meegle_handlers(
+            engine,  # type: ignore[arg-type]
+            work_item_type="alta_cliente",
+            names=MeegleNames(),
+            tickets=tickets,
+            ticket_types=TICKET_TYPES if tickets is not None else frozenset(),
+        ),
         worker_id="w1",
         clock=lambda: NOW,
     )
@@ -98,9 +127,21 @@ async def _run(engine: FakeEngine, *events: ClaimedEvent) -> FakeQueue:
 
 
 def test_handler_keys_are_object_qualified() -> None:
-    assert NODE_COMPLETED_HANDLER_KEY == "meegle:2001"
+    assert WORK_ITEM_CREATED_HANDLER_KEY == "meegle:1001"
     assert WORK_ITEM_TERMINATED_HANDLER_KEY == "meegle:1005"
+    assert FIELD_MODIFIED_HANDLER_KEY == "meegle:1009"
+    assert NODE_COMPLETED_HANDLER_KEY == "meegle:2001"
     assert NODE_ROLLED_BACK_HANDLER_KEY == "meegle:2004"
+    assert STATUS_CHANGED_HANDLER_KEY == "meegle:3001"
+    keys = set(meegle_handlers(FakeEngine(), work_item_type="alta_cliente"))  # type: ignore[arg-type]
+    assert keys == {
+        "meegle:1001",
+        "meegle:1005",
+        "meegle:1009",
+        "meegle:2001",
+        "meegle:2004",
+        "meegle:3001",
+    }
 
 
 async def test_datos_completed_starts_the_invitation(meegle_events) -> None:  # noqa: ANN001
@@ -210,3 +251,115 @@ def test_production_handlers_are_empty_when_the_engine_is_off(
     ):
         monkeypatch.delenv(name, raising=False)
     assert dict(production_meegle_handlers()) == {}
+
+
+# -- routing by work item type (tickets) -------------------------------------------------
+
+
+async def test_ticket_types_go_to_the_notifier_for_every_event(meegle_events) -> None:  # noqa: ANN001
+    engine = FakeEngine()
+    tickets = FakeNotifier()
+    events = [
+        _event(meegle_events.value(event_type=code, work_item_type=item_type), field=str(code))
+        for code in (1001, 1009, 3001, 2001, 2004, 1005)
+        for item_type in ("story", "issue", "sub_task")
+    ]
+    queue = await _run(engine, *events, tickets=tickets)
+    for event in events:
+        assert queue.settled[event.id] == ("processed", "sent")
+    assert len(tickets.seen) == 18
+    assert {t for _, t, _ in tickets.seen} == TICKET_TYPES
+    assert engine.started == [] and engine.expired == []
+
+
+async def test_the_onboarding_type_never_reaches_the_notifier(meegle_events) -> None:  # noqa: ANN001
+    engine = FakeEngine()
+    tickets = FakeNotifier()
+    datos = _event(meegle_events.value(nodes=["started"]))
+    created = _event(meegle_events.value(event_type=1001), field="1001")
+    modified = _event(meegle_events.value(event_type=1009), field="1009")
+    status = _event(meegle_events.value(event_type=3001), field="3001")
+    queue = await _run(engine, datos, created, modified, status, tickets=tickets)
+    assert queue.settled[datos.id] == ("processed", None)
+    assert engine.started == [ITEM]
+    for event in (created, modified, status):
+        assert queue.settled[event.id] == ("processed", IGNORED_EVENT)
+    assert tickets.seen == []
+
+
+async def test_ticket_events_stay_unsupported_without_a_notifier(meegle_events) -> None:  # noqa: ANN001
+    engine = FakeEngine()
+    event = _event(meegle_events.value(event_type=3001, work_item_type="issue"), field="3001")
+    queue = await _run(engine, event)
+    # No handler is registered for 3001 at all when the notifier is off: the processor
+    # keeps the event `unsupported` on its own, replayable.
+    assert queue.settled[event.id][0] == "unsupported"
+
+
+async def test_a_type_outside_both_sets_is_unsupported_even_with_a_notifier(
+    meegle_events,  # noqa: ANN001
+) -> None:
+    engine = FakeEngine()
+    tickets = FakeNotifier()
+    event = _event(meegle_events.value(event_type=1009, work_item_type="sprint"), field="1009")
+    queue = await _run(engine, event, tickets=tickets)
+    assert queue.settled[event.id] == ("unsupported", OTHER_WORK_ITEM_TYPE)
+    assert tickets.seen == []
+
+
+async def test_own_writes_on_tickets_are_ignored_too(meegle_events) -> None:  # noqa: ANN001
+    engine = FakeEngine()
+    tickets = FakeNotifier()
+    event = _event(
+        meegle_events.value(source="openapi", event_type=1009, work_item_type="issue"), field="1009"
+    )
+    queue = await _run(engine, event, tickets=tickets)
+    assert queue.settled[event.id] == ("processed", IGNORED_OPENAPI)
+    assert tickets.seen == []
+
+
+async def test_ticket_outcomes_rejected_vanished_and_retried(meegle_events) -> None:  # noqa: ANN001
+    engine = FakeEngine()
+    tickets = FakeNotifier()
+    tickets.reason = "lark_rejected:19024"
+    rejected = _event(meegle_events.value(event_type=3001, work_item_type="issue"), field="3001")
+    queue = await _run(engine, rejected, tickets=tickets)
+    assert queue.settled[rejected.id] == ("processed", "lark_rejected:19024")
+
+    tickets.raises = WorkItemNotFound("x")
+    gone = _event(meegle_events.value(event_type=3001, work_item_type="issue"), field="3001")
+    queue = await _run(engine, gone, tickets=tickets)
+    assert queue.settled[gone.id] == ("dead", WORK_ITEM_NOT_FOUND)
+
+    tickets.raises = ConnectionError("lark down")
+    down = _event(
+        meegle_events.value(event_type=3001, work_item_type="issue"), field="3001", attempts=1
+    )
+    queue = await _run(engine, down, tickets=tickets)
+    assert down.id not in queue.settled
+    assert queue.failed[down.id] == (1, "ConnectionError")
+
+
+def test_production_handlers_without_a_webhook_cover_the_onboarding_type_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name, value in {
+        "QUALIFY_MEEGLE_PLUGIN_ID": "MII",
+        "QUALIFY_MEEGLE_PLUGIN_SECRET": "s",
+        "QUALIFY_MEEGLE_CALLBACK_TOKEN": "t",
+        "QUALIFY_MEEGLE_PROJECT_KEY": "p",
+        "QUALIFY_MEEGLE_WORK_ITEM_TYPE": "alta_cliente",
+        "QUALIFY_MEEGLE_USER_KEY": "u",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("QUALIFY_MEEGLE_NOTIFY_WEBHOOK_URL", raising=False)
+    assert set(production_meegle_handlers()) == {
+        "meegle:1001",
+        "meegle:1005",
+        "meegle:1009",
+        "meegle:2001",
+        "meegle:2004",
+        "meegle:3001",
+    }
+    monkeypatch.setenv("QUALIFY_MEEGLE_NOTIFY_WEBHOOK_URL", "https://open.larksuite.com/hook/x")
+    assert len(production_meegle_handlers()) == 6

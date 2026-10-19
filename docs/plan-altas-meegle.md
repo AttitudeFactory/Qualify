@@ -190,6 +190,64 @@ Sin las seis de Meegle, el motor queda apagado — `MeegleNotConfigured` nombra 
 `just invite` de hoy sigue funcionando y los eventos quedan `unsupported` en la bandeja; el test
 estático `test_meegle_settings.py` confina el secreto del plugin a `qualify_api/meegle/`.
 
+### 3bis. Avisos de cambios en tickets al grupo de Lark `[ENTREGADO 2026-10-19]`
+
+Decisión del fundador (2026-10-19): el equipo quiere enterarse en **Qualify-devs** de lo que cambia en
+los tickets del espacio (Features `story`, Issues `issue`, Tasks `sub_task`), y Meegle no avisa a nadie
+por defecto (solo @menciones y las reglas que configure un admin). Se exprime primero el plan Free
+(§7.4) y se programa solo lo que las reglas nativas no pueden hacer: **un aviso genérico por cualquier
+cambio de campo**, con quién, qué cambió (campo: antes → después), el ítem y su enlace.
+
+- **Mismo motor, segunda capa.** `qualify_api.meegle.tickets.TicketNotifier` cuelga de los mismos
+  handlers (`qualify_api.meegle.handlers`), que ahora **enrutan por tipo de ítem**: el tipo «Alta de
+  cliente» → motor de altas (igual que antes); `story` / `issue` / `sub_task`
+  (`QUALIFY_MEEGLE_TICKET_TYPES`) → notificador; cualquier otro → `unsupported`
+  (`other_work_item_type`, guardado y reprocesable). Claves registradas: `meegle:1001` creado,
+  `meegle:1009` campo modificado, `meegle:3001` cambio de estado, `meegle:2001` / `meegle:2004` nodo
+  completado / revertido, `meegle:1005` terminado. Mismo contrato `Outcome`, misma dedup por
+  `idempotent_key` (en el INSERT), mismo descarte de `source = "openapi"` (así, si un día Qualify
+  escribe en un ticket, no se avisa a sí mismo).
+- **Qué se cree y de dónde.** Nombre, tipo y estado del ítem se **releen por la Open API**
+  (`MeegleClient.query` con el tipo del evento) — la firma del evento no cubre el cuerpo (§3) y la
+  relectura demuestra además que el ítem existe en el espacio configurado (si no: `dead` /
+  `work_item_not_found`). El **delta** (quién: `user_info`; antes → después: `field_info`; nodo:
+  `node_info`) solo existe en el evento — la alternativa, el endpoint de registros de operación,
+  cuesta una llamada más por evento contra las 500/día para las mismas cadenas — y se renderiza
+  con los metadatos del tipo (`POST /field/all`, nombres y etiquetas de opciones, una vez por tipo
+  por proceso). Para `3001` sin `work_item_status` en `field_info`, el estado nuevo sale del ítem
+  releído. El enlace es `{QUALIFY_MEEGLE_WEB_URL}/{simple_name}/{tipo}/detail/{id}` (`simple_name`
+  del espacio por `POST /open_api/projects/detail`, una vez por proceso; sin él, el aviso va sin
+  enlace).
+- **Formato** (`msg_type = text`, solo Lark — sin clave `text` de Cliq/Slack; Lark enlaza las URL):
+
+  ```
+  🎫 Herwin Rey cambió el estado · Issue «WA-21 · Analítica de la WABA»
+  Status: Backlog → Done
+  https://meegle.com/5h2wsx/issue/detail/24789637
+  ```
+
+  Verbos: `creó` (+ estado o nodo actual), `modificó` (una línea por campo, saltando los que no
+  cambian; máximo 12), `cambió el estado`, `completó el nodo «X»`, `revirtió el nodo «X»` (+ motivo),
+  `terminó` (+ motivo). Si el evento no trae persona: `una automatización` / `el sistema`.
+- **Resultado por evento.** `processed` / `sent`; rechazo definitivo de Lark (`code` ≠ 0 que no sea
+  el límite de ritmo, o HTTP 4xx) → `processed` / `lark_rejected:<code>` (Lark contesta 200 aunque
+  rechace: se mira el `code`); Lark caído, 5xx o `11232` (límite de ritmo) → excepción → la cola
+  reintenta con backoff. La URL del webhook es secreta (quien la tenga publica en el grupo) y nunca
+  llega a un log.
+- **Coste por aviso:** 1 webhook de Meegle (el evento) + 1 llamada a la Open API (`query`) +
+  1 petición a Lark. `fields_meta` y `simple_name` se cachean por proceso. Ver §7.4.
+- **Apagado = off.** Sin `QUALIFY_MEEGLE_NOTIFY_WEBHOOK_URL` el motor de altas sigue igual y los
+  eventos de tipos de ticket quedan `unsupported`, reprocesables el día que se ponga. Las seis
+  variables de §3 siguen siendo obligatorias (el notificador lee por la misma Open API).
+- **Fuera de alcance (anotado):** las subtareas de nodo llegan como eventos `4001`–`4009` del ítem
+  padre (p. ej. `4003` tarea completada), no como `work_item_type_key = sub_task`; no se manejan
+  todavía (quedan `unsupported`). Y el notificador **no escribe** en Meegle: la parte 2 (§7.2) no
+  necesitó código.
+
+**Variables nuevas** (`.env.example`, `deploy/.env.prod.example`): `QUALIFY_MEEGLE_NOTIFY_WEBHOOK_URL`
+(obligatoria para avisar), `QUALIFY_MEEGLE_TICKET_TYPES` (opcional, `story,issue,sub_task`),
+`QUALIFY_MEEGLE_WEB_URL` (opcional, por defecto `QUALIFY_MEEGLE_BASE_URL`).
+
 ## 4. Fases
 
 | Fase | Entrega | Verificación |
@@ -197,6 +255,7 @@ estático `test_meegle_settings.py` confina el secreto del plugin a `qualify_api
 | **M0 — manual (Herwin, sin código)** | Tipo «Alta de cliente» con nodos y campos en el espacio Qualify; plugin «Qualify» en el Developer Platform con Event Listener (tipo: *Other work item*; eventos 2001, 2004, 1005), URL de callback `https://app.qualify.la/api/meegle/events` y token; instalarlo en el espacio. Resend: API key en `.env.prod` y el webhook hacia `https://app.qualify.la/api/mail/resend` con su *Signing Secret* en `QUALIFY_RESEND_WEBHOOK_SECRET` (runbook `despliegue-hetzner.md` §9, paso 7). | El plugin aparece instalado; el log del `api` muestra el primer evento firmado. |
 | **M1 — motor (PR)** — `[ENTREGADO 2026-10-16]` | `qualify_api.meegle` (settings, envelope, receiver, client, schema, onboarding, handlers), ruta `POST /api/meegle/events`, migración `0064` (`meegle_work_item_id` + `resend_email_id`/`delivered_at`/`opened_at`/`bounced_at`), handler de nodo Datos → invitación + correo + escritura, `1005` → vencer, `2004` → nada, `register_business` → nodo Registrada. Tests offline con `httpx.MockTransport` y motor falso (settings, sobre/firma, ruta, cliente, resolutor, casos de uso, handlers); `db` para la bandeja real + 0064 + el write-back del registro. | Completar «Datos» en Meegle manda el correo y el ítem muestra enlace y estado en < 1 min (el `webhook-worker` corre cada 30 s). **Pendiente de verificar en vivo**: requiere M0 (plugin instalado, tipo de ítem creado) y las variables en `.env.prod`. |
 | **M2 — entrega (PR)** — `[ENTREGADO 2026-10-16]` | `POST /api/mail/resend` (`qualify_api.mail.webhook` + `routes` + `handlers`): firma Svix, bandeja de webhooks (`object = "resend"`), `invites.mark_delivery` → `delivered_at` / `opened_at` / `bounced_at` (primera vez), y escritura en Meegle a mejor esfuerzo (`mark_delivered` → estado `entregada` + nodo **Invitada**; `mark_opened` → `abierta`; `mark_bounced` → `rebotó` + comentario con el motivo). Variable `QUALIFY_RESEND_WEBHOOK_SECRET`; test estático la confina a `qualify_api/mail/`. Tests offline (firma válida / secreto equivocado / marca vencida / cabecera ausente, sobre, ruta, handlers con bandeja y Meegle falsos vía `httpx.MockTransport`, idempotencia) y `db` (columnas + bandeja real). Sin migración: las columnas son de 0064. | Un correo real a un buzón propio avanza el nodo; uno a un dominio inexistente marca `rebotó`. **Pendiente de verificar en vivo**: requiere el webhook registrado en Resend (runbook `despliegue-hetzner.md` §9) y el secreto en `.env.prod`. |
+| **M4 — avisos de tickets (PR)** — `[ENTREGADO 2026-10-19]` | §3bis: `qualify_api.meegle.tickets` + `events`, handlers enrutados por tipo (`meegle:1001|1009|3001|2001|2004|1005`), cliente con tipo por llamada y `space_simple_name`, variable `QUALIFY_MEEGLE_NOTIFY_WEBHOOK_URL`. Tests offline (`test_meegle_tickets.py`, handlers, cliente). Sin migración. | Runbook §7.3. **Pendiente en vivo**: bot de Lark, plugin suscrito a Feature/Issue, variable en `.env.prod`. |
 | **M3 — automatizaciones (Herwin)** | Las 3–4 reglas nativas de §2 y, si quiere, el grupo de Lark por ítem. | Recordatorio llega al tercer día. |
 | **Futuro** | Nodos 4 y 5 los completa Qualify (Brand Kit guardado, primera publicación); el alta en la llamada (A2) crea el ítem desde Qualify o desde un formulario de Lark Base. | — |
 
@@ -224,3 +283,92 @@ estático `test_meegle_settings.py` confina el secreto del plugin a `qualify_api
   bastan, y el conector exige publicar versiones del plugin por cada cambio de formulario.
 - No mueve el registro ni la custodia a Meegle: Meegle ve correo, nombre, negocio, estado y
   enlace; nunca contraseñas, tokens ni datos de cuentas conectadas.
+
+## 7. Runbook — avisos de tickets y «LISTO» (2026-10-19)
+
+Todo lo de este apartado lo hace una persona en Meegle / Lark; el PR deja el motor listo. Lo
+verificado abajo se midió con el MCP de Meegle sobre el espacio real (`6ad251e7ce655b7ed3a0e9b4`,
+`simple_name 5h2wsx`) el 2026-10-19.
+
+### 7.1 Lo que hay en el espacio (medido)
+
+| Tipo | `type_key` | Flujo | Estados / nodos |
+|---|---|---|---|
+| Features | `story` | **nodos** (`flow_type 0`) | Start → Product Evaluation → Product Design → UX Design → Tech Review → Tech Design → Backend / Web Frontend / Android / iOS Development → Testing → Product Acceptance Testing → **Finished** (`end`). Todas las épicas están en `Start`. |
+| Issues | `issue` | **estados** (`flow_type 1`) | Backlog (`OPEN`) · Todo (`LSxcc1xn_`) · In Progress (`IN PROGRESS`) · RESOLVED · REOPENED · **Done** (`CLOSED`) · Terminated (`systemEnded`). 230 ítems; 104 en Done. Transiciones: In Progress → RESOLVED / Done; Done → REOPENED. |
+| Tasks | `sub_task` | subtareas de nodo | Incomplete (`unfinished`) · Completed (`done`). Son subtareas (eventos `4001`–`4009` del ítem padre). |
+| Alta de cliente | `6ad27a818d034c2af89a26d1` (`alta_cliente`) | nodos | los de §2 |
+
+### 7.2 Qué es «LISTO» — y por qué la parte 2 no lleva código
+
+**No existe nada llamado «LISTO» en el espacio**: ni como estado de ningún tipo, ni como opción de un
+campo `select`, ni como vista (`search_view_by_title`). Lectura más probable: **«Listo» es la columna
+del tablero de Issues que la interfaz en español muestra para el estado `Done` (`CLOSED`)**; en
+Features el equivalente es el nodo **Finished** y en Tasks el estado **Completed**. *Pendiente de
+confirmar por el fundador con un clic en el tablero* (el MCP devuelve las etiquetas en inglés).
+
+Con esa lectura, **el cierre automático ya es nativo y no consume ninguna regla**: `Done` es estado
+final del flujo de Issues, y entrar en él pone `archiving_status` («If completed») en `true` en la
+misma operación. Evidencia (registro de operaciones de WA-21, `24789637`): un solo `modify` de
+`work_item_status` `OPEN → CLOSED` acompañado de `archiving_status false → true` y `archiving_date`.
+Los 104 Issues en Done tienen `archiving_status = true`. Para Features, completar el nodo `Finished`
+termina el flujo; para Tasks, `Completed` es su único estado final.
+
+Si «LISTO» resulta ser **otra cosa** (un estado nuevo que el fundador añada, o `RESOLVED`), la ruta
+sigue siendo nativa — **una regla por tipo, tres de las diez**:
+
+| Tipo | Disparador | Condición | Operación |
+|---|---|---|---|
+| Issues | *Status changed* (cambio de estado) | estado nuevo = «Listo» (o `RESOLVED`) | *Status transition* → **Done** |
+| Features | *Field value changed* / *Node status changed* | el campo o nodo que signifique «Listo» | *Node operation* → completar **Finished** |
+| Tasks | *Task completed* | — | nada que hacer: ya es final |
+
+Solo si una regla nativa no pudiera hacer la transición (p. ej. una transición con formulario
+obligatorio), el handler tiene ya el cliente a mano (`operate_node` / un `transition_state` por
+añadir) respetando el descarte `openapi`; **no se implementa hasta que haga falta**.
+
+### 7.3 Pasos manuales para activar los avisos
+
+1. **Bot de Lark.** Grupo *Qualify-devs* (`oc_049b1d076c73cb424f05f852607afc5a`) → Configuración →
+   Bots → Añadir bot → *Bot personalizado* «Meegle tickets». Sin firma ni palabra clave obligatoria
+   (el motor manda texto plano sin `timestamp`/`sign`). Copiar el webhook a
+   `QUALIFY_MEEGLE_NOTIFY_WEBHOOK_URL` en `.env.prod` y reiniciar `webhook-worker`
+   (`just deploy` / `docker compose up -d webhook-worker`).
+2. **Ampliar el Event Listener del plugin.** Developer Platform → plugin «Qualify» → Event
+   Listener: hoy solo *Other work item* (Alta de cliente, eventos 2001/2004/1005). Añadir **Feature**
+   e **Issue** con los eventos que se quieran recibir por código (ver 7.5 para el reparto) y
+   publicar una versión nueva del plugin (el callback se puede cambiar en caliente; la suscripción
+   a eventos, no). Reinstalar la versión en el espacio.
+3. **Reglas nativas** (7.5): Espacio → Automatización → Nueva regla.
+4. **Comprobar:** cambiar el estado de un Issue de prueba; en < 1 min (el worker corre cada 30 s)
+   el grupo recibe el texto de §3bis; `select status, last_error from meta_webhook_events where
+   object = 'meegle' order by created_at desc limit 5` muestra `processed` / `sent`.
+
+### 7.4 Presupuesto del plan Free (medido en meegle.com/pricing, 2026-10-19)
+
+| Recurso | Free | Qué lo consume aquí |
+|---|---|---|
+| Reglas de automatización | **10 por espacio** | cada regla nativa de 7.5; las 3–4 de M3 (altas) |
+| Standard API | **500 llamadas/día** | 1 por aviso por código (`query`); `field/all` y `projects/detail` una vez por proceso; ~6 por alta |
+| Webhook | **100/día** | cada evento que el Event Listener entrega a `/api/meegle/events` (≈3 por alta) |
+
+El cuello es el **webhook**: `1009` dispara **un evento por campo editado** (editar 5 campos en 20
+tickets = 100 eventos = el día entero). Las reglas nativas no gastan ni webhooks ni API. De ahí el
+reparto:
+
+### 7.5 Reparto recomendado: reglas nativas vs código
+
+| Caso | Vía | Receta / coste |
+|---|---|---|
+| Issue creado | **regla** `Issues · Work item created → Notification (grupo Qualify-devs)` con plantilla «{{creator}} creó {{name}} {{link}}» | 1 regla, 0 webhooks |
+| Issue cambia de estado | **regla** `Issues · Status changed → Notification` («{{operator}} movió {{name}} a {{status}}») | 1 regla |
+| Feature creada | **regla** `Features · Work item created → Notification` | 1 regla |
+| Feature cambia de nodo | **regla** `Features · Node status changed → Notification` | 1 regla |
+| Tarea completada | **regla** `Features · Task completed → Notification` (opcional) | 1 regla |
+| **Cualquier campo** editado (asignado, prioridad, etiqueta, nombre…), con antes → después | **código** (este PR): suscribir el plugin a `1009` para Feature e Issue | 1 webhook + 1 API por edición |
+| Ítem terminado, con motivo | **código**: `1005` | 1 webhook + 1 API |
+| Nodo revertido, con motivo | **código**: `2004` | 1 webhook + 1 API |
+
+Total reglas: 4–5 de avisos + 3–4 de altas (M3) = **≤ 9 de 10**. El código cubre igualmente
+`1001`/`3001`/`2001` por si el fundador prefiere no gastar reglas en ellos; es solo cuestión de qué
+eventos se suscriben en el plugin.

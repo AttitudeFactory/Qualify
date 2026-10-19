@@ -42,9 +42,12 @@ OBJECT_MEEGLE = "meegle"
 SOURCE_OPENAPI = "openapi"
 
 # Event codes this engine knows (Event Listener docs, "Event List").
+EVENT_WORK_ITEM_CREATED = 1001
 EVENT_WORK_ITEM_TERMINATED = 1005
+EVENT_FIELD_MODIFIED = 1009
 EVENT_NODE_COMPLETED = 2001
 EVENT_NODE_ROLLED_BACK = 2004
+EVENT_STATUS_CHANGED = 3001
 
 # Meegle's per-event bodies are a few KB; the intake's 1 MiB cap would be generous, this is
 # the ceiling a public, unauthenticated endpoint should buffer for one event.

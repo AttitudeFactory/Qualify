@@ -2,17 +2,21 @@
 mismo contrato `Outcome`").
 
 Registered under `meegle:<event_type>` (`webhooks.processor.handler_key`), so they see
-only what `qualify_api.meegle.receiver` recorded. Every handler runs the same prelude:
+only what `qualify_api.meegle.receiver` recorded. One recorded event is routed by the
+WORK ITEM TYPE it names, after a prelude every route shares:
 
 1. the recorded value must be `{"source": …, "data": {…}}` with the documented shape →
    otherwise `dead` (`contract_violation`);
 2. `source == "openapi"` is Qualify's own write-back → settled `processed`
-   (`ignored:openapi`), so the engine never reacts to itself;
-3. an item of another work item type → `unsupported` (`other_work_item_type`): the plugin
-   may be subscribed more widely than the engine; kept, never acted on;
-4. no work item id in the event → `dead`.
+   (`ignored:openapi`), so the engine never reacts to itself — including to the writes the
+   ticket notifier may one day make;
+3. no work item id in the event → `dead`;
+4. the configured "Alta de cliente" type → the onboarding handlers below; a ticket type
+   (`TicketSettings.ticket_types`: Features / Issues / Tasks) → the ticket notifier, when
+   one is configured; anything else → `unsupported` (`other_work_item_type`): the plugin
+   may be subscribed more widely than the engine; kept, never acted on, replayable.
 
-Then, per event (plan §2):
+Onboarding, per event (plan §2):
 
 - **2001 node completed** — the completed node is named through the item's workflow
   (`SchemaResolver.node_name`; the event carries the template node key, e.g. `state_0`).
@@ -22,16 +26,25 @@ Then, per event (plan §2):
   `invite_failed:<reason>` in `last_error`: the item itself shows the error and the node
   is rolled back — retrying the event would only repeat the same failure.
 - **1005 terminated** — `expire_for_terminated`.
-- **2004 rolled back** — nothing (`ignored:rollback`): the person will complete Datos
-  again, which is a new 2001.
+- **2004 rolled back** — nothing (`ignored:rollback`).
+- **1001 / 1009 / 3001** on the onboarding type — nothing to do (`processed`,
+  `ignored:event`): the plugin subscribes to them for the ticket types, Meegle sends them
+  per type, but a wider subscription must not burn retries.
 
-Anything else raised (Meegle unreachable, a schema name missing, the database) propagates:
-the processor retries with backoff and settles `dead` after `MAX_ATTEMPTS`.
+Tickets (plan §3bis), every event the plugin delivers for a ticket type — `1001` created,
+`1009` field modified, `3001` status changed, `2001` / `2004` node completed / rolled
+back, `1005` terminated: `TicketNotifier.notify` re-reads the item, formats who · what ·
+item · link and posts it to the Lark group. `processed` (`sent`), or `processed` with
+`lark_rejected:<code>` when Lark refused the message for good; a vanished item is `dead`.
+
+Anything else raised (Meegle unreachable, a schema name missing, Lark down, the database)
+propagates: the processor retries with backoff and settles `dead` after `MAX_ATTEMPTS`.
 
 `production_meegle_handlers()` returns `{}` when the engine is off (`meegle_configured()`
 false), so an unconfigured deployment leaves Meegle events `unsupported` in the queue —
 replayable the day it is configured — instead of burning retries on
-`MeegleNotConfigured`.
+`MeegleNotConfigured`. With the engine on and `QUALIFY_MEEGLE_NOTIFY_WEBHOOK_URL` unset,
+ticket events stay `unsupported` the same way.
 """
 
 from __future__ import annotations
@@ -39,17 +52,21 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import ValidationError
 
 from qualify_api.meegle.envelope import (
+    EVENT_FIELD_MODIFIED,
     EVENT_NODE_COMPLETED,
     EVENT_NODE_ROLLED_BACK,
+    EVENT_STATUS_CHANGED,
+    EVENT_WORK_ITEM_CREATED,
     EVENT_WORK_ITEM_TERMINATED,
     OBJECT_MEEGLE,
-    SOURCE_OPENAPI,
 )
+from qualify_api.meegle.events import MeegleEvent
 from qualify_api.meegle.onboarding import OnboardingEngine, WorkItemNotFound
 from qualify_api.meegle.settings import MeegleNames
 from qualify_api.webhooks.processor import Handler, Outcome, handler_key
@@ -62,62 +79,50 @@ from qualify_api.webhooks.repository import (
 
 logger = logging.getLogger("qualify_api.meegle.handlers")
 
-NODE_COMPLETED_HANDLER_KEY = handler_key(OBJECT_MEEGLE, str(EVENT_NODE_COMPLETED))
+WORK_ITEM_CREATED_HANDLER_KEY = handler_key(OBJECT_MEEGLE, str(EVENT_WORK_ITEM_CREATED))
 WORK_ITEM_TERMINATED_HANDLER_KEY = handler_key(OBJECT_MEEGLE, str(EVENT_WORK_ITEM_TERMINATED))
+FIELD_MODIFIED_HANDLER_KEY = handler_key(OBJECT_MEEGLE, str(EVENT_FIELD_MODIFIED))
+NODE_COMPLETED_HANDLER_KEY = handler_key(OBJECT_MEEGLE, str(EVENT_NODE_COMPLETED))
 NODE_ROLLED_BACK_HANDLER_KEY = handler_key(OBJECT_MEEGLE, str(EVENT_NODE_ROLLED_BACK))
+STATUS_CHANGED_HANDLER_KEY = handler_key(OBJECT_MEEGLE, str(EVENT_STATUS_CHANGED))
+
+TICKET_EVENT_CODES: frozenset[int] = frozenset(
+    {
+        EVENT_WORK_ITEM_CREATED,
+        EVENT_FIELD_MODIFIED,
+        EVENT_STATUS_CHANGED,
+        EVENT_NODE_COMPLETED,
+        EVENT_NODE_ROLLED_BACK,
+        EVENT_WORK_ITEM_TERMINATED,
+    }
+)
 
 IGNORED_OPENAPI = "ignored:openapi"
 IGNORED_ROLLBACK = "ignored:rollback"
+IGNORED_EVENT = "ignored:event"
 OTHER_WORK_ITEM_TYPE = "other_work_item_type"
 CONTRACT_VIOLATION = "contract_violation"
 WORK_ITEM_NOT_FOUND = "work_item_not_found"
 
-
-class _WorkItemRef(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    work_item_id: int
-    work_item_name: str = ""
-    work_item_type_key: str = ""
+TypedHandler = Callable[[MeegleEvent, int], Awaitable[Outcome]]
 
 
-class _NodeInfo(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    update_nodes: list[str] | None = None
-    reason: str | None = None
+class TicketHandler(Protocol):
+    """`tickets.TicketNotifier`, or a fake: returns the settle reason, raises
+    `WorkItemNotFound` for an item that is not in the space."""
+
+    def notify(self, event: MeegleEvent) -> str: ...
 
 
-class _EventData(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    event_type: int
-    idempotent_key: str
-    work_item_type_key: str = ""
-    project_key: str = ""
-    work_item_info: list[_WorkItemRef] = []
-    node_info: _NodeInfo | None = None
-
-
-class MeegleEvent(BaseModel):
-    """The recorded value of one Meegle change (`envelope.parse_meegle_delivery`)."""
-
-    model_config = ConfigDict(extra="ignore")
-    source: str | None = None
-    data: _EventData
-
-    @property
-    def work_item_id(self) -> int | None:
-        return self.data.work_item_info[0].work_item_id if self.data.work_item_info else None
-
-
-def _prelude(event: ClaimedEvent, *, work_item_type: str) -> tuple[MeegleEvent, int] | Outcome:
+def _parse(event: ClaimedEvent) -> tuple[MeegleEvent, int] | Outcome:
+    """The shared prelude: contract, own writes, the work item id."""
     try:
         parsed = MeegleEvent.model_validate(event.value or {})
     except ValidationError:
         logger.error("meegle event=%s field=%s value off-contract", event.id, event.field)
         return Outcome(STATUS_DEAD, CONTRACT_VIOLATION)
-    if parsed.source == SOURCE_OPENAPI:
+    if parsed.is_own_write:
         return Outcome(STATUS_PROCESSED, IGNORED_OPENAPI)
-    if parsed.data.work_item_type_key and parsed.data.work_item_type_key != work_item_type:
-        return Outcome(STATUS_UNSUPPORTED, OTHER_WORK_ITEM_TYPE)
     work_item_id = parsed.work_item_id
     if work_item_id is None:
         logger.error("meegle event=%s carries no work item", event.id)
@@ -125,16 +130,10 @@ def _prelude(event: ClaimedEvent, *, work_item_type: str) -> tuple[MeegleEvent, 
     return parsed, work_item_id
 
 
-def meegle_handlers(
-    engine: OnboardingEngine, *, work_item_type: str, names: MeegleNames | None = None
-) -> Mapping[str, Handler]:
-    names = names or MeegleNames()
-
-    async def node_completed(event: ClaimedEvent) -> Outcome:
-        prelude = _prelude(event, work_item_type=work_item_type)
-        if isinstance(prelude, Outcome):
-            return prelude
-        parsed, work_item_id = prelude
+def _onboarding_handlers(
+    engine: OnboardingEngine, names: MeegleNames
+) -> Mapping[int, TypedHandler]:
+    async def node_completed(parsed: MeegleEvent, work_item_id: int) -> Outcome:
         keys = (parsed.data.node_info.update_nodes if parsed.data.node_info else None) or []
         try:
             completed = [
@@ -157,25 +156,71 @@ def meegle_handlers(
             return Outcome(STATUS_PROCESSED)
         return Outcome(STATUS_PROCESSED, f"invite_failed:{result.reason}")
 
-    async def work_item_terminated(event: ClaimedEvent) -> Outcome:
-        prelude = _prelude(event, work_item_type=work_item_type)
-        if isinstance(prelude, Outcome):
-            return prelude
-        _, work_item_id = prelude
+    async def work_item_terminated(parsed: MeegleEvent, work_item_id: int) -> Outcome:
         expired = await asyncio.to_thread(engine.expire_for_terminated, work_item_id)
         return Outcome(STATUS_PROCESSED, f"expired={expired}")
 
-    async def node_rolled_back(event: ClaimedEvent) -> Outcome:
-        prelude = _prelude(event, work_item_type=work_item_type)
-        if isinstance(prelude, Outcome):
-            return prelude
+    async def node_rolled_back(parsed: MeegleEvent, work_item_id: int) -> Outcome:
         return Outcome(STATUS_PROCESSED, IGNORED_ROLLBACK)
 
+    async def nothing(parsed: MeegleEvent, work_item_id: int) -> Outcome:
+        return Outcome(STATUS_PROCESSED, IGNORED_EVENT)
+
     return {
-        NODE_COMPLETED_HANDLER_KEY: node_completed,
-        WORK_ITEM_TERMINATED_HANDLER_KEY: work_item_terminated,
-        NODE_ROLLED_BACK_HANDLER_KEY: node_rolled_back,
+        EVENT_NODE_COMPLETED: node_completed,
+        EVENT_WORK_ITEM_TERMINATED: work_item_terminated,
+        EVENT_NODE_ROLLED_BACK: node_rolled_back,
+        EVENT_WORK_ITEM_CREATED: nothing,
+        EVENT_FIELD_MODIFIED: nothing,
+        EVENT_STATUS_CHANGED: nothing,
     }
+
+
+def _ticket_handler(notifier: TicketHandler) -> TypedHandler:
+    async def notify(parsed: MeegleEvent, work_item_id: int) -> Outcome:
+        try:
+            reason = await asyncio.to_thread(notifier.notify, parsed)
+        except WorkItemNotFound:
+            return Outcome(STATUS_DEAD, WORK_ITEM_NOT_FOUND)
+        return Outcome(STATUS_PROCESSED, reason)
+
+    return notify
+
+
+def meegle_handlers(
+    engine: OnboardingEngine,
+    *,
+    work_item_type: str,
+    names: MeegleNames | None = None,
+    tickets: TicketHandler | None = None,
+    ticket_types: frozenset[str] = frozenset(),
+) -> Mapping[str, Handler]:
+    """One handler per event code, routing by work item type: `work_item_type` → the
+    onboarding engine; `ticket_types` → `tickets` (when given); the rest → unsupported."""
+    onboarding = _onboarding_handlers(engine, names or MeegleNames())
+    ticket = _ticket_handler(tickets) if tickets is not None else None
+    codes = set(onboarding) | (TICKET_EVENT_CODES if ticket is not None else set())
+
+    def route(code: int) -> Handler:
+        async def handler(event: ClaimedEvent) -> Outcome:
+            prelude = _parse(event)
+            if isinstance(prelude, Outcome):
+                return prelude
+            parsed, work_item_id = prelude
+            item_type = parsed.data.work_item_type_key
+            if item_type in ("", work_item_type):
+                # An event without a type key is taken for the onboarding type, as before
+                # the ticket notifier existed (the plugin was subscribed to that type only).
+                typed = onboarding.get(code)
+                if typed is not None:
+                    return await typed(parsed, work_item_id)
+            elif ticket is not None and item_type in ticket_types:
+                return await ticket(parsed, work_item_id)
+            return Outcome(STATUS_UNSUPPORTED, OTHER_WORK_ITEM_TYPE)
+
+        return handler
+
+    return {handler_key(OBJECT_MEEGLE, str(code)): route(code) for code in sorted(codes)}
 
 
 def production_engine() -> OnboardingEngine:
@@ -196,19 +241,38 @@ def production_engine() -> OnboardingEngine:
 
 
 def production_meegle_handlers() -> Mapping[str, Handler]:
-    """What `webhooks.processor.production_processor` registers: the three handlers when
-    the engine is configured, nothing otherwise (events stay `unsupported`, replayable)."""
+    """What `webhooks.processor.production_processor` registers: the onboarding handlers
+    when the engine is configured (plus the ticket notifier when its webhook is set),
+    nothing otherwise (events stay `unsupported`, replayable)."""
+    from qualify_api.meegle.client import MeegleClient  # noqa: PLC0415
     from qualify_api.meegle.settings import (  # noqa: PLC0415
         MeegleSettings,
+        TicketSettings,
         meegle_configured,
     )
+    from qualify_api.meegle.tickets import LarkWebhookPoster, TicketNotifier  # noqa: PLC0415
 
     if not meegle_configured():
         logger.info("meegle engine off (QUALIFY_MEEGLE_* not set): events stay unsupported")
         return {}
     settings = MeegleSettings.from_env()
+    ticket_settings = TicketSettings.from_env(base_url=settings.base_url)
+    tickets: TicketNotifier | None = None
+    if ticket_settings.enabled:
+        tickets = TicketNotifier(
+            MeegleClient(settings),
+            LarkWebhookPoster(ticket_settings.webhook_url),
+            web_url=ticket_settings.web_url,
+        )
+        logger.info(
+            "meegle ticket notices on for types=%s", ",".join(sorted(ticket_settings.ticket_types))
+        )
+    else:
+        logger.info("meegle ticket notices off (QUALIFY_MEEGLE_NOTIFY_WEBHOOK_URL not set)")
     return meegle_handlers(
         production_engine(),
         work_item_type=settings.work_item_type,
         names=MeegleNames.from_env(),
+        tickets=tickets,
+        ticket_types=ticket_settings.ticket_types,
     )
