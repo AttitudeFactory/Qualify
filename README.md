@@ -142,7 +142,7 @@ PR (ci en verde) → just merge <pr> → flujo `deploy` (por merge o diario) →
 2. **`deploy`** (`.github/workflows/deploy.yml`) hace todo lo demás para ese commit:
    - **`images`**: construye y publica `ghcr.io/attitudefactory/qualify-{app,web,deploy}:<sha completo>`.
    - **`deploy`**: entra por ssh al servidor, con una llave que solo puede correr `server-deploy.sh`. El servidor descarga las imágenes, corre `migrate`, levanta el stack y prueba la salud a través del proxy.
-   - **`notify`**: avisa el resultado en el canal #devops de Cliq.
+   - **`notify`**: publica una tarjeta con el resultado (etapas, duración, commit/PR, autor) en el grupo Qualify-devs de Lark.
 3. Tarda unos 7 minutos.
 4. Si se mergean varios PRs seguidos, los despliegues hacen fila: uno a la vez y nunca se cancelan a medias.
 5. **Si falla la construcción o la migración, producción sigue en la versión anterior.**
