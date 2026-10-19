@@ -12,7 +12,7 @@ requires-python = ">=3.12"
 # caller that only needs the schemas never drags a network client into its tree.
 # Pillow arrives with the composition module, not before it exists.
 dependencies = [
-    "pydantic>=2.13.5",
+    "pydantic>=2.14.1",
     "pillow>=11.0",
     "pillow-heif>=0.18",
 ]
