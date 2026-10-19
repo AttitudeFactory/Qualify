@@ -304,10 +304,11 @@ verificado abajo se midió con el MCP de Meegle sobre el espacio real (`6ad251e7
 ### 7.2 Qué es «LISTO» — y por qué la parte 2 no lleva código
 
 **No existe nada llamado «LISTO» en el espacio**: ni como estado de ningún tipo, ni como opción de un
-campo `select`, ni como vista (`search_view_by_title`). Lectura más probable: **«Listo» es la columna
-del tablero de Issues que la interfaz en español muestra para el estado `Done` (`CLOSED`)**; en
-Features el equivalente es el nodo **Finished** y en Tasks el estado **Completed**. *Pendiente de
-confirmar por el fundador con un clic en el tablero* (el MCP devuelve las etiquetas en inglés).
+campo `select`, ni como vista (`search_view_by_title`). **«Listo» es la columna del tablero de Issues
+que la interfaz en español muestra para el estado `Done` (`CLOSED`)** — confirmado por el fundador el
+2026-10-19 con WA-12 (`24789628`), que está en esa columna y la API devuelve `Done` / `CLOSED` con
+«If completed» = `true`. En Features el equivalente es el nodo **Finished** y en Tasks el estado
+**Completed**.
 
 Con esa lectura, **el cierre automático ya es nativo y no consume ninguna regla**: `Done` es estado
 final del flujo de Issues, y entrar en él pone `archiving_status` («If completed») en `true` en la
