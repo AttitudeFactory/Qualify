@@ -9,6 +9,7 @@ from qualify_creative.adapters.anthropic_copy import AnthropicCopyAdapter, CopyR
 from qualify_creative.adapters.byteplus_ark import (
     ArkAPIError,
     ArkError,
+    ArkPresetRefused,
     ArkTaskFailed,
     ArkTaskTimeout,
     SeedanceVideoAdapter,
@@ -29,6 +30,7 @@ __all__ = [
     "AnthropicCopyAdapter",
     "ArkAPIError",
     "ArkError",
+    "ArkPresetRefused",
     "ArkTaskFailed",
     "ArkTaskTimeout",
     "CopyRefused",

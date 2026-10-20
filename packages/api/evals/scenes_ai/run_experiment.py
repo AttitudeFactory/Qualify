@@ -10,6 +10,10 @@ hand, never in CI:
     just langfuse-up
     just langfuse-setup        # once: the review queue and its scales
     just eval-escenas
+
+Seedream goes through the custom endpoints of ``QUALIFY_BYTEPLUS_ARK_ENDPOINTS``; a model
+without one is refused unless ``--allow-presets`` is passed (m-24820898) — then it reaches
+the preset authorized for BytePlus's data collection, fine only for these fictional brands.
 """
 
 from __future__ import annotations
@@ -39,6 +43,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--configs", help="comma-separated; default: every config")
     parser.add_argument("--max-concurrency", type=int, default=3)
+    parser.add_argument(
+        "--allow-presets",
+        action="store_true",
+        help=(
+            "call a model with no QUALIFY_BYTEPLUS_ARK_ENDPOINTS entry by bare id, i.e. "
+            "through the ModelArk preset authorized for data collection (everything sent is "
+            "licensed to BytePlus): only for these fictional brands"
+        ),
+    )
     args = parser.parse_args(argv)
     _load_env(args.env_file)
 
@@ -66,7 +79,9 @@ def main(argv: list[str] | None = None) -> int:
             sc.DATASET,
             name=sc.DATASET,
             run_name=f"{label} · {stamp}",
-            task=lambda case, m=model: sc.generate(case, m, api_key=key),
+            task=lambda case, m=model: sc.generate(
+                case, m, api_key=key, allow_presets=args.allow_presets
+            ),
             evaluators=sc.ITEM_EVALUATORS,
             run_evaluators=sc.RUN_EVALUATORS,
             max_concurrency=args.max_concurrency,

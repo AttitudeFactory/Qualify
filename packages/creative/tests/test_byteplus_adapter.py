@@ -33,6 +33,11 @@ API_KEY = "ark-key"
 PRICING = JsonPricingTable("v3")
 FRAME = "data:image/jpeg;base64,AAAA"
 SCRIPT = 'Hola, somos Nibbles. Esta es la "smash" triple.'
+#: The custom endpoints the adapters call (m-24820898): never the model's preset.
+ENDPOINTS = {
+    "seedance-1-0-pro-250528": "ep-20261020-seedance10",
+    "seedream-5-0-lite-260128": "ep-20261020-seedream50",
+}
 
 
 class FakeClock:
@@ -94,6 +99,7 @@ def seedance(
     handler: Callable[[httpx.Request], httpx.Response], clock: FakeClock | None = None, **kw: Any
 ) -> SeedanceVideoAdapter:
     clock = clock or FakeClock()
+    kw.setdefault("endpoints", ENDPOINTS)
     return SeedanceVideoAdapter(
         transport=httpx.MockTransport(handler),
         sleep=clock.sleep,
@@ -122,7 +128,7 @@ def test_seedance_creates_an_i2v_task_and_polls_it_to_the_video() -> None:
     assert create.headers["Authorization"] == f"Bearer {API_KEY}"
     body = json.loads(create.content)
     assert body == {
-        "model": "seedance-1-0-pro-250528",
+        "model": "ep-20261020-seedance10",  # the custom endpoint, never the preset
         # 1.0 is silent: the script is NOT put in the prompt, and no audio flag is sent
         "content": [
             {"type": "text", "text": "The presenter talks to the camera."},
@@ -158,7 +164,7 @@ def test_seedance_clamps_the_briefs_length_to_the_models_range() -> None:
 def test_a_2x_seedance_speaks_the_script_in_quotes() -> None:
     adapter = SeedanceVideoAdapter(model="dreamina-seedance-2-5-260628")
     spec = adapter.spec({"prompt": "Escena.", "dialogue": SCRIPT, "duration_seconds": 15})
-    body = spec.body()
+    body = spec.body("ep-test")
     text = body["content"][0]["text"]  # type: ignore[index]
     # the line travels between double quotes; the script's own quotes are softened
     assert text.endswith("\"Hola, somos Nibbles. Esta es la 'smash' triple.\"")
@@ -262,7 +268,7 @@ def test_seedream_sends_the_references_and_returns_the_bytes() -> None:
             },
         )
 
-    adapter = SeedreamImageAdapter(transport=httpx.MockTransport(handler))
+    adapter = SeedreamImageAdapter(endpoints=ENDPOINTS, transport=httpx.MockTransport(handler))
     result = adapter.generate(
         image_request(images=[FRAME, "https://cdn/bg.jpg"], size="1728x2160"), api_key=API_KEY
     )
@@ -271,7 +277,7 @@ def test_seedream_sends_the_references_and_returns_the_bytes() -> None:
     assert request.url.path == "/api/v3/images/generations"
     body = json.loads(request.content)
     assert body == {
-        "model": "seedream-5-0-lite-260128",
+        "model": "ep-20261020-seedream50",  # the custom endpoint, never the preset
         "prompt": "An appetizing burger in a cozy restaurant.",
         "size": "1728x2160",
         "response_format": "b64_json",
@@ -293,7 +299,7 @@ def test_one_reference_travels_as_a_string_and_none_is_text_to_image() -> None:
         bodies.append(json.loads(request.content))
         return httpx.Response(200, json={"data": [{"b64_json": "AA=="}]})
 
-    adapter = SeedreamImageAdapter(transport=httpx.MockTransport(handler))
+    adapter = SeedreamImageAdapter(endpoints=ENDPOINTS, transport=httpx.MockTransport(handler))
     adapter.generate(image_request(images=[FRAME]), api_key=API_KEY)
     adapter.generate(image_request(), api_key=API_KEY)
     assert bodies[0]["image"] == FRAME and "image" not in bodies[1]
@@ -307,9 +313,9 @@ def test_seedream_without_an_image_or_with_an_error_raises() -> None:
         )
 
     with pytest.raises(ArkAPIError, match="OutputImageSensitiveContentDetected"):
-        SeedreamImageAdapter(transport=httpx.MockTransport(moderated)).generate(
-            image_request(), api_key=API_KEY
-        )
+        SeedreamImageAdapter(
+            endpoints=ENDPOINTS, transport=httpx.MockTransport(moderated)
+        ).generate(image_request(), api_key=API_KEY)
 
 
 def _flaky(failures: list[Exception | httpx.Response], ok: httpx.Response) -> Any:
@@ -343,7 +349,9 @@ def test_a_dropped_connection_on_seedream_is_sent_again() -> None:
         _IMAGE_OK,
     )
     clock = FakeClock()
-    adapter = SeedreamImageAdapter(transport=httpx.MockTransport(handler), sleep=clock.sleep)
+    adapter = SeedreamImageAdapter(
+        endpoints=ENDPOINTS, transport=httpx.MockTransport(handler), sleep=clock.sleep
+    )
     result = adapter.generate(image_request(), api_key=API_KEY)
     assert result.payload["images"] == [b"\x00"]
     assert len(handler.calls) == 3 and clock.sleeps == [2.0, 4.0]
@@ -352,7 +360,9 @@ def test_a_dropped_connection_on_seedream_is_sent_again() -> None:
 def test_a_post_gives_up_after_its_attempts() -> None:
     error = httpx.RemoteProtocolError("Server disconnected without sending a response.")
     handler = _flaky([error, error, error], _IMAGE_OK)
-    adapter = SeedreamImageAdapter(transport=httpx.MockTransport(handler), sleep=lambda _: None)
+    adapter = SeedreamImageAdapter(
+        endpoints=ENDPOINTS, transport=httpx.MockTransport(handler), sleep=lambda _: None
+    )
     with pytest.raises(httpx.RemoteProtocolError):
         adapter.generate(image_request(), api_key=API_KEY)
     assert len(handler.calls) == 3
@@ -369,7 +379,9 @@ def test_a_post_the_vendor_may_have_started_is_never_sent_twice(
     failure: Exception | httpx.Response,
 ) -> None:
     handler = _flaky([failure], _IMAGE_OK)
-    adapter = SeedreamImageAdapter(transport=httpx.MockTransport(handler), sleep=lambda _: None)
+    adapter = SeedreamImageAdapter(
+        endpoints=ENDPOINTS, transport=httpx.MockTransport(handler), sleep=lambda _: None
+    )
     with pytest.raises((httpx.ReadTimeout, ArkAPIError)):
         adapter.generate(image_request(), api_key=API_KEY)
     assert len(handler.calls) == 1
@@ -434,7 +446,9 @@ def test_get_task_quotes_the_id_into_one_path_segment() -> None:
 def test_a_gateway_error_is_not_sent_twice(status: int) -> None:
     """PR #100 review: a 502/504 may come after the vendor started — no second bill."""
     handler = _flaky([httpx.Response(status, json={"error": {"code": "Gateway"}})], _IMAGE_OK)
-    adapter = SeedreamImageAdapter(transport=httpx.MockTransport(handler), sleep=lambda _: None)
+    adapter = SeedreamImageAdapter(
+        endpoints=ENDPOINTS, transport=httpx.MockTransport(handler), sleep=lambda _: None
+    )
     with pytest.raises(ArkAPIError):
         adapter.generate(image_request(), api_key=API_KEY)
     assert len(handler.calls) == 1
@@ -446,7 +460,7 @@ def test_seedream_is_priced_per_piece_and_caps_the_references() -> None:
     with pytest.raises(ValueError, match="at most 14"):
         adapter.estimate_cost_usd(image_request(images=[FRAME] * 15), PRICING)
     with pytest.raises(ValueError, match="explicit"):
-        adapter.generate(image_request(), api_key="")
+        SeedreamImageAdapter(endpoints=ENDPOINTS).generate(image_request(), api_key="")
 
 
 def test_v3_pricing_carries_the_byteplus_rates() -> None:

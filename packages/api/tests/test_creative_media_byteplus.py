@@ -553,6 +553,11 @@ def test_a_seedance_brief_needs_no_voice_but_a_described_presenter() -> None:
         ("MissingPlatformKey: QUALIFY_BYTEPLUS_ARK_API_KEY", "no está disponible ahora mismo"),
         ("ArkTaskTimeout: task cgt-1 still running", "tardando más de lo normal"),
         ("HTTP 429 RateLimitExceeded", "muchas generaciones en curso"),
+        # m-24820898: no custom endpoint configured — nothing was sent
+        (
+            "ArkPresetRefused: ModelArk preset refused: no custom endpoint (ep-…) configured",
+            "no está disponible ahora mismo",
+        ),
         ("something else", "No se pudo generar la pieza. Inténtalo de nuevo."),
     ],
 )

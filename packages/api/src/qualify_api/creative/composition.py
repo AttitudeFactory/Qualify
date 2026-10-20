@@ -36,6 +36,7 @@ from qualify_creative.adapters.byteplus_ark import (
     DEFAULT_SEEDREAM_MODEL,
     SeedanceVideoAdapter,
     SeedreamImageAdapter,
+    parse_endpoints,
     seedance_family,
 )
 from qualify_creative.adapters.byteplus_omnihuman import (
@@ -105,6 +106,12 @@ OMNIHUMAN_RESOLUTION_ENV = "QUALIFY_OMNIHUMAN_RESOLUTION"
 ARK_BASE_URL_ENV = "QUALIFY_BYTEPLUS_ARK_BASE_URL"
 SEEDANCE_MODEL_ENV = "QUALIFY_SEEDANCE_MODEL"
 SEEDREAM_MODEL_ENV = "QUALIFY_SEEDREAM_MODEL"
+#: The custom endpoint (``ep-…``) each model is called through, ``model=ep-…`` comma
+#: separated (m-24820898). A model without one is REFUSED: its bare id reaches the preset
+#: authorized in the «Data Collaboration» campaign, which licenses everything sent to
+#: BytePlus perpetually (`byteplus_ark` module docstring). There is deliberately no env
+#: switch that allows presets — that escape is the internal eval's, in code.
+ARK_ENDPOINTS_ENV = "QUALIFY_BYTEPLUS_ARK_ENDPOINTS"
 #: Seedance's output resolution: 720p by default (1.0 pro bills the same per token at
 #: every resolution, so 1080p is ~2.4x the cost of 720p for the same seconds).
 SEEDANCE_RESOLUTION_ENV = "QUALIFY_SEEDANCE_RESOLUTION"
@@ -256,6 +263,11 @@ class DbVoiceProfileReader:
         return self._service.active_profile(tenant_id=tenant_id, brand_id=brand_id)
 
 
+def ark_endpoints_from_env() -> dict[str, str]:
+    """The ModelArk custom endpoints this deployment calls (`ARK_ENDPOINTS_ENV`)."""
+    return parse_endpoints(os.environ.get(ARK_ENDPOINTS_ENV))
+
+
 def _check_seedance(model: str, resolution: str) -> None:
     """Refuse a Seedance model / resolution pair the family cannot render HERE, at wiring
     (PR #100 review): left to the pre-flight, a typo in the env var or `-fast` + `1080p`
@@ -287,14 +299,18 @@ def production_content_service() -> ContentService:
         req_key=os.environ.get(OMNIHUMAN_REQ_KEY_ENV) or DEFAULT_OMNIHUMAN_REQ_KEY
     )
     ark_base_url = os.environ.get(ARK_BASE_URL_ENV) or ARK_BASE_URL
+    ark_endpoints = ark_endpoints_from_env()
     seedream = SeedreamImageAdapter(
         model=os.environ.get(SEEDREAM_MODEL_ENV) or DEFAULT_SEEDREAM_MODEL,
         base_url=ark_base_url,
+        endpoints=ark_endpoints,
     )
     seedance_model = os.environ.get(SEEDANCE_MODEL_ENV) or DEFAULT_SEEDANCE_MODEL
     seedance_resolution = os.environ.get(SEEDANCE_RESOLUTION_ENV) or DEFAULT_SEEDANCE_RESOLUTION
     _check_seedance(seedance_model, seedance_resolution)
-    seedance = SeedanceVideoAdapter(model=seedance_model, base_url=ark_base_url)
+    seedance = SeedanceVideoAdapter(
+        model=seedance_model, base_url=ark_base_url, endpoints=ark_endpoints
+    )
     # the brand's logo may live in R2 (Brand Kit, 2026-10-01): read it there
     store = R2ReadingMediaStore(LocalMediaStore(media_root()))
     remotion = RemotionTemplateAdapter(

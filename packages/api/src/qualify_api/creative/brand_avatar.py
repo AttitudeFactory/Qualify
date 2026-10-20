@@ -493,6 +493,7 @@ def production_deps() -> AvatarDeps:
         PRICING_VERSION,
         SEEDREAM_MODEL_ENV,
         PlatformKeyResolver,
+        ark_endpoints_from_env,
         media_root,
     )
     from qualify_api.creative.media import LocalMediaStore, R2ReadingMediaStore
@@ -505,6 +506,9 @@ def production_deps() -> AvatarDeps:
             "seedream": SeedreamImageAdapter(
                 model=os.environ.get(SEEDREAM_MODEL_ENV) or DEFAULT_SEEDREAM_MODEL,
                 base_url=os.environ.get(ARK_BASE_URL_ENV) or BASE_URL,
+                # the mascot is drawn from the brand's own kit and logo: never the
+                # data-collection preset (m-24820898)
+                endpoints=ark_endpoints_from_env(),
             )
         },
         pricing=pricing,

@@ -64,3 +64,55 @@ def test_the_published_manifests_load_from_the_repo(fresh_service) -> None:
     # v2 (2026-10-13): the 9:16 / 4:5 / 1:1 video and the three stills
     assert registry.get("promo_producto").render_count == 6
     assert registry.get("promo_producto", 1).render_count == 3
+
+
+def _ark(service, name: str):
+    provider = service._router._providers[name]
+    return getattr(provider, "inner", provider)
+
+
+def test_without_endpoints_the_ark_adapters_refuse_every_model(monkeypatch, fresh_service) -> None:
+    """m-24820898: production never falls back to a bare model id — the preset authorized
+    for BytePlus's data collection — and there is no env switch that would allow it."""
+    from qualify_creative.adapters import ArkPresetRefused
+
+    monkeypatch.delenv(composition.ARK_ENDPOINTS_ENV, raising=False)
+    for name in ("seedream", "seedance"):
+        adapter = _ark(fresh_service, name)
+        assert adapter.allow_presets is False
+        with pytest.raises(ArkPresetRefused):
+            adapter.wire_model(adapter.model)
+
+
+def test_the_configured_endpoints_reach_both_ark_adapters(monkeypatch) -> None:
+    from qualify_creative.adapters.byteplus_ark import (
+        DEFAULT_SEEDANCE_MODEL,
+        DEFAULT_SEEDREAM_MODEL,
+    )
+
+    monkeypatch.setenv(composition.RENDER_URL_ENV, "http://render.test:3200")
+    monkeypatch.setenv(
+        composition.ARK_ENDPOINTS_ENV,
+        f"{DEFAULT_SEEDREAM_MODEL}=ep-img,{DEFAULT_SEEDANCE_MODEL}=ep-vid,"
+        f"{composition.DEFAULT_SEEDANCE_REFERENCE_MODEL}=ep-ref",
+    )
+    composition.production_content_service.cache_clear()
+    try:
+        service = composition.production_content_service()
+        assert _ark(service, "seedream").wire_model(DEFAULT_SEEDREAM_MODEL) == "ep-img"
+        seedance = _ark(service, "seedance")
+        assert seedance.wire_model(DEFAULT_SEEDANCE_MODEL) == "ep-vid"
+        # the clip-with-references model rides the same map
+        assert seedance.wire_model(composition.DEFAULT_SEEDANCE_REFERENCE_MODEL) == "ep-ref"
+    finally:
+        composition.production_content_service.cache_clear()
+
+
+def test_a_malformed_endpoint_list_fails_at_wiring(monkeypatch) -> None:
+    monkeypatch.setenv(composition.ARK_ENDPOINTS_ENV, "seedream-5-0-lite-260128")
+    composition.production_content_service.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="model=ep-"):
+            composition.production_content_service()
+    finally:
+        composition.production_content_service.cache_clear()

@@ -45,7 +45,7 @@ from qualify_creative.schemas import BrandKit, BriefObjective, ContentBrief, Med
 from qualify_shared import observability
 from qualify_shared.observability import ItemOutcome, Score
 
-from qualify_api.creative.composition import PRICING_VERSION
+from qualify_api.creative.composition import PRICING_VERSION, ark_endpoints_from_env
 from qualify_api.creative.media import SCENE_SIZES, ad_scene_prompt
 from qualify_api.creative.observed import TracedProvider
 from qualify_api.creative.review import REVIEW_QUEUE
@@ -128,8 +128,13 @@ def generate(
     provider: GenerationProvider | None = None,
     review_queue: str | None = REVIEW_QUEUE,
     attach: Callable[[bytes, str], Any] = observability.media,
+    allow_presets: bool = False,
 ) -> dict[str, Any]:
-    """The task: the scene, the words on it, the finished image — attached for review."""
+    """The task: the scene, the words on it, the finished image — attached for review.
+
+    Seedream is called through the deployment's custom endpoints (`ark_endpoints_from_env`);
+    ``allow_presets`` lets a model without one go by bare id to the campaign-authorized
+    preset — acceptable ONLY because these brands are fictional (m-24820898)."""
     kit = BrandKit.model_validate(case["kit"])
     brief = build_brief(case, kit)
     mode = brief.media.ad_mode or AdImageMode.SCENE
@@ -151,7 +156,12 @@ def generate(
         params={"prompt": prompt, "images": references, "size": SCENE_SIZES[ratio], "model": model},
     )
     pricing = JsonPricingTable(PRICING_VERSION)
-    adapter = provider or TracedProvider(SeedreamImageAdapter(model=model), pricing)
+    adapter = provider or TracedProvider(
+        SeedreamImageAdapter(
+            model=model, endpoints=ark_endpoints_from_env(), allow_presets=allow_presets
+        ),
+        pricing,
+    )
     started = time.perf_counter()
     try:
         result = adapter.generate(request, api_key=api_key)

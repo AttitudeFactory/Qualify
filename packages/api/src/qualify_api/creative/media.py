@@ -486,6 +486,8 @@ _ARK_FAILURES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("AuthenticationError", "HTTP 401"), UNAVAILABLE_TEXT),
     (("ModelNotOpen",), MODEL_NOT_OPEN_TEXT),
     (("ServiceNotOpen", "InvalidEndpointOrModel"), UNAVAILABLE_TEXT),
+    # no custom endpoint configured for the model (m-24820898): nothing was sent
+    (("ArkPresetRefused", "ModelArk preset refused"), UNAVAILABLE_TEXT),
     (("AccountOverdue", "ServiceOverdue", "InvalidAccountStatus"), UNAVAILABLE_TEXT),
     (("PrivacyInformation",), REAL_PERSON_TEXT),
     (("SensitiveContentDetected",), FILTERED_TEXT),

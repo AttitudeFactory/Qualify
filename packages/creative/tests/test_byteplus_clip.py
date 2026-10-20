@@ -14,9 +14,13 @@ VIDEO = "https://qualify.example/public/media/tok-video"
 AUDIO = "https://qualify.example/public/media/tok-audio"
 
 
+ENDPOINTS = {V1: "ep-v1", V2: "ep-v2"}
+
+
 def _body(**params: object) -> dict[str, object]:
-    adapter = SeedanceVideoAdapter(model=V1)
-    return adapter.spec({"prompt": "Un clip del producto", **params}).body()
+    adapter = SeedanceVideoAdapter(model=V1, endpoints=ENDPOINTS)
+    spec = adapter.spec({"prompt": "Un clip del producto", **params})
+    return spec.body(adapter.wire_model(spec.model_id))
 
 
 def test_the_closing_frame_rides_after_the_opening_one() -> None:
@@ -39,7 +43,7 @@ def test_references_go_to_a_2x_model_with_their_own_roles() -> None:
         duration_seconds=5,
     )
     content = body["content"]
-    assert body["model"] == V2
+    assert body["model"] == ENDPOINTS[V2]  # the per-request model's own endpoint
     assert [(item["type"], item.get("role")) for item in content] == [  # type: ignore[index, union-attr]
         ("text", None),
         ("image_url", "reference_image"),

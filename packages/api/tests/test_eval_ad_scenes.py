@@ -107,6 +107,19 @@ def test_a_vendor_failure_is_scored_not_raised(items: list[dict[str, Any]]) -> N
     assert {s.name: s.value for s in scene_scores(case, output, None, {})} == {"errores": 1.0}
 
 
+def test_without_the_flag_or_an_endpoint_the_eval_reaches_no_preset(
+    items: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """m-24820898: the real adapter refuses the bare id (the data-collection preset)
+    before any request unless `--allow-presets` was passed; the refusal is scored."""
+    from qualify_api.creative import composition
+
+    monkeypatch.delenv(composition.ARK_ENDPOINTS_ENV, raising=False)
+    case = items[0]["input"]
+    output = generate(case, "seedream-5-0-lite-260128", api_key="k", review_queue=None)
+    assert output["error"].startswith("ArkPresetRefused")
+
+
 def test_a_case_with_photos_sends_them_as_references(
     items: list[dict[str, Any]], tmp_path: Path
 ) -> None:
