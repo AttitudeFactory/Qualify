@@ -136,6 +136,12 @@ may link as well — but `m-<id>` is the documented syntax; prefer it and keep o
 numbers out of the title. Branch and commit links cannot be edited afterwards, so get the id right
 before the first push. Reference: https://meegle.com/b/helpcenter/product/integration-github
 
+The other direction is a GitHub **autolink** (repo Settings → Autolink references, id `18004011`):
+every `m-<id>` in a PR title, description, comment or commit renders as a link to
+`https://project.larksuite.com/5h2wsx/issue/detail/<id>`. It only resolves **Issues** (Features
+live under `/story/detail/`), and GitHub offers autolinks on private repos only on paid plans, so
+it may stop rendering once the org is back on GitHub Free (2026-11) — the Meegle side keeps working.
+
 ### Commands
 
 A `justfile` is the entry point for everything backend. Prefer it over ad-hoc commands — the recipes encode ordering that is easy to get wrong (e.g. `dev` = `up` → `migrate` → `seed`):
