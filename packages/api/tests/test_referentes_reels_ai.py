@@ -126,7 +126,34 @@ def test_the_affinity_is_the_verdict() -> None:
     reviews, _ = review_reels(BRAND, REELS, api_key="k", client_factory=lambda key: strict)
     assert [(r.affinity, r.fits) for r in reviews] == [("producto", True)]
     system = str(client.calls[0]["system"])
-    assert "SOLO cuando afinidad es producto" in system and "promoción de otro negocio" in system
+    assert "true cuando afinidad es producto o categoria" in system
+    assert "promoción de otro negocio" in system
+
+
+def test_the_same_kind_of_offer_fits_too() -> None:
+    """§ request 2026-10-20: «un poco más completo» — `categoria` (a variant, substitute
+    or direct complement of the brand's product) fits; the prompt explains it with several
+    rubros, not only food, and the whole niche (`rubro`) still does not fit."""
+    client = ScriptedClient(
+        [
+            _use(
+                {
+                    "resultados": [
+                        {"id": "1", "afinidad": "categoria", "encaja": False, "razon": "Hot dog."},
+                        {"id": "2", "afinidad": "rubro", "encaja": True, "razon": "Postre."},
+                    ]
+                }
+            )
+        ]
+    )
+    reviews, _ = review_reels(BRAND, REELS, api_key="k", client_factory=lambda key: client)
+    assert [(r.affinity, r.fits) for r in reviews] == [("categoria", True), ("rubro", False)]
+    system = str(client.calls[0]["system"])
+    for rubro in ("gimnasio", "clínica", "software de facturación", "agencia de viajes"):
+        assert rubro in system, rubro
+    assert "se COMPRA" in system and "una receta casera" in system
+    enum = client.calls[0]["tools"][0]["input_schema"]["properties"]["resultados"]["items"]
+    assert enum["properties"]["afinidad"]["enum"] == ["producto", "categoria", "rubro", "otro"]
 
 
 def test_without_a_valid_affinity_nothing_fits() -> None:

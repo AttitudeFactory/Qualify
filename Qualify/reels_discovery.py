@@ -24,7 +24,8 @@ The pipeline, all blocking (the state runs it in a thread):
    that fits says nothing about each of its videos (a food creator also posts make-up),
    so the most viewed reels are checked one by one against the brand — above all by
    what is SAID in them — with the same brand brief the referentes review reads, and
-   only `afinidad: producto` is kept. ONLY checked reels are shown (§ founder
+   only `afinidad: producto` or `categoria` (the same kind of offer, § 2026-10-20) is
+   kept. ONLY checked reels are shown (§ founder
    2026-10-16): no brief, no key, a failed review or a reel the model skipped → not on
    screen, and the result says why (`check`), so the view can say «inténtalo más tarde».
 5. **Ranked** by views (likes break ties; Instagram hides views on some posts), cut to

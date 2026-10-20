@@ -6,6 +6,10 @@ from CI:
 
     uv run --no-sync python packages/api/evals/reels_ai/run_eval.py --env-file .env
 
+`--rescore results/<file>.json` scores a saved run again with the current gold labels
+and rule (`gold`), without a single call — how a run made under an older rule is
+compared with a new one.
+
 Reads `QUALIFY_ANTHROPIC_API_KEY` from the environment or `--env-file`. Writes the raw
 answers and the scores to `results/<timestamp>.json` next to this file and prints a table
 per case and a table per trap type.
@@ -38,7 +42,7 @@ import anthropic
 
 from qualify_api.claude_tools import ClaudeToolError, ModelConfig
 from qualify_api.referentes.ai import BrandBrief
-from qualify_api.referentes.reels_ai import REVIEW_BATCH, ReelToReview, review_reels
+from qualify_api.referentes.reels_ai import FITS, REVIEW_BATCH, ReelToReview, review_reels
 
 HERE = Path(__file__).resolve().parent
 
@@ -130,15 +134,18 @@ def run_case(config: ModelConfig, case: dict[str, Any], api_key: str) -> dict[st
 
 
 def gold(reel: dict[str, Any]) -> str:
-    """What the reel must do under the rule in force (§ founder, 2026-10-15 evening: only
-    the brand's OWN product is shown), read from the accepted affinities: y when
-    `producto` is accepted, n when it is not, m when both `producto` and `otro` are. The
-    `fit` column of `cases.json` records the afternoon's rule (the whole niche fits) and
-    is kept for the record, not read."""
+    """What the reel must do under the rule in force — `reels_ai.FITS`: the brand's own
+    product and, since 2026-10-20, its category (§ founder 2026-10-15 evening: never the
+    whole niche) — read from the accepted affinities: y when every accepted affinity
+    fits, n when none does, m (not scored) when they are mixed, since either verdict is
+    then right. (Until 2026-10-20 a reel accepting `producto` and `rubro` was y, so a
+    `rubro` answer — accepted — counted as a miss.) The `fit` column of `cases.json`
+    records the 2026-10-15 afternoon rule and is not read."""
     accepted = set(reel.get("affinities") or ())
-    if "producto" not in accepted:
+    fitting = accepted & FITS
+    if not fitting:
         return "n"
-    return "m" if "otro" in accepted else "y"
+    return "y" if fitting == accepted else "m"
 
 
 def score(case: dict[str, Any], answers: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -191,13 +198,26 @@ def main() -> int:
     parser.add_argument("--configs", nargs="*", default=["sonnet-5@low"], choices=list(CONFIGS))
     # 1 for a free tier through a gateway, which queues and rejects parallel calls
     parser.add_argument("--workers", type=int, default=5)
+    # score a saved results file again with the current labels and rule — no calls
+    parser.add_argument("--rescore")
     args = parser.parse_args()
     _load_env(args.env_file)
+    cases = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))["cases"]
+    if args.rescore:
+        saved = json.loads(Path(args.rescore).read_text(encoding="utf-8"))
+        by_id = {case["id"]: case for case in cases}
+        results = [
+            (name, 0, {**run, "score": score(by_id[run["case"]], run["answers"])})
+            for name, entry in saved.items()
+            for run in entry["runs"]
+            if run["case"] in by_id
+        ]
+        summarize(list(saved), results, cases)
+        return 0
     api_key = os.environ.get("QUALIFY_ANTHROPIC_API_KEY", "").strip()
     if not api_key:
         print("QUALIFY_ANTHROPIC_API_KEY is not set", file=sys.stderr)
         return 2
-    cases = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))["cases"]
     jobs = [
         (name, case, repeat)
         for name in args.configs
@@ -208,13 +228,25 @@ def main() -> int:
         results = list(
             pool.map(lambda job: (job[0], job[2], run_case(CONFIGS[job[0]], job[1], api_key)), jobs)
         )
+    report = summarize(args.configs, results, cases)
+    out = HERE / "results" / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    out.parent.mkdir(exist_ok=True)
+    out.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"written {out}")
+    return 0
 
+
+def summarize(
+    configs: list[str], results: list[tuple[str, int, dict[str, Any]]], cases: list[dict]
+) -> dict[str, Any]:
+    """Print the per-case table, the totals and the per-trap tally of each config, and
+    return them as the report written next to this file."""
     report: dict[str, Any] = {}
     print(
         f"{'config':15} {'case':16} {'prec':>5} {'recall':>6} {'traps':>7} {'affin':>6} "
         f"{'answ':>6} {'sec':>5} {'$':>7}"
     )
-    for name in args.configs:
+    for name in configs:
         rows = [r for n, _, r in results if n == name]
         for r in rows:
             s = r["score"]
@@ -257,12 +289,7 @@ def main() -> int:
             "total": {"precision_num": y_kept, "y": y, "n_kept": n_kept, "n": n, "cost_usd": cost},
             "per_trap": dict(per_trap),
         }
-
-    out = HERE / "results" / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
-    out.parent.mkdir(exist_ok=True)
-    out.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"written {out}")
-    return 0
+    return report
 
 
 if __name__ == "__main__":

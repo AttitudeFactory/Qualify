@@ -19,9 +19,11 @@
     "  handle             the handle carries the rubro's word, the content does not (must DROP)",
     "  city               shares only the city (must DROP)",
     "  generic            trend/dance/«sígueme» with nothing of the category (must DROP)",
+    "  category           the same KIND of offer, not the exact product: variant, substitute, direct complement (must KEEP as categoria, § 2026-10-20)",
     "  adjacent           a neighbouring category the audience also consumes (m: not scored)",
     "`accounts` = handle -> what the referentes review said of the account (`account_note` in production); the eval passes it like production does.",
-    "Four brands carry the Brand Kit and catalog too (`hashtags`, `positioning`, `audience`, `products`, `publishes`), as production passes them since 2026-10-15; the other six only the seed."
+    "Four brands carry the Brand Kit and catalog too (`hashtags`, `positioning`, `audience`, `products`, `publishes`), as production passes them since 2026-10-15; the other six only the seed.",
+    "Scoring (§ 2026-10-20, `run_eval.gold`): a reel is y when every accepted affinity fits (`reels_ai.FITS`: producto, categoria), n when none does, m (not scored) when they are mixed. The `fit` column records the rule of 2026-10-15 afternoon and is not read."
   ],
   "cases": [
     {
@@ -77,6 +79,7 @@
           "caption": "Probamos la pizza gigante de 1 metro en Caracas",
           "fit": "y",
           "affinities": [
+            "categoria",
             "rubro"
           ],
           "trap": "over_strict"
@@ -217,6 +220,17 @@
             "otro"
           ],
           "trap": "injection"
+        },
+        {
+          "id": "r15",
+          "handle": "perrosdonpepe",
+          "account_kind": "marca",
+          "caption": "Probamos los perros calientes más cargados de la ciudad: tocineta, queso y papitas 🌭",
+          "fit": "y",
+          "affinities": [
+            "categoria"
+          ],
+          "trap": "category"
         }
       ],
       "accounts": {
@@ -224,7 +238,8 @@
         "usfoodie": "Creador de comida: reseñas de hamburguesas en EE. UU.",
         "pizzaguy": "Pizzería artesanal",
         "burgerking.ve": "Cadena de hamburguesas",
-        "cheesecakeok": "Pastelería de postres"
+        "cheesecakeok": "Pastelería de postres",
+        "perrosdonpepe": "Puesto de perros calientes"
       }
     },
     {
@@ -251,9 +266,9 @@
           "caption": "Secuencia de yoga de 10 minutos para la espalda baja",
           "fit": "y",
           "affinities": [
-            "rubro"
+            "categoria"
           ],
-          "trap": "over_strict"
+          "trap": "category"
         },
         {
           "id": "g2",
@@ -262,6 +277,7 @@
           "caption": "Cómo preparé mi primera media maratón: plan de 8 semanas",
           "fit": "y",
           "affinities": [
+            "categoria",
             "rubro"
           ],
           "trap": "over_strict"
@@ -274,7 +290,7 @@
           "fit": "y",
           "affinities": [
             "producto",
-            "rubro"
+            "categoria"
           ],
           "trap": "competitor"
         },
@@ -287,7 +303,7 @@
           "fit": "y",
           "affinities": [
             "producto",
-            "rubro"
+            "categoria"
           ],
           "trap": "other_language"
         },
@@ -366,10 +382,21 @@
           "caption": "Día 1 de mi reto de 30 días de abdominales, vamos juntos 💪",
           "fit": "y",
           "affinities": [
-            "rubro",
-            "producto"
+            "producto",
+            "categoria"
           ],
           "trap": "transcript_rescues"
+        },
+        {
+          "id": "g12",
+          "handle": "spinclub",
+          "account_kind": "marca",
+          "caption": "Clase de spinning de 45 minutos con intervalos, ¿te animas? 🚴",
+          "fit": "y",
+          "affinities": [
+            "categoria"
+          ],
+          "trap": "category"
         }
       ],
       "accounts": {
@@ -377,7 +404,8 @@
         "yogaconsofi": "Instructora de yoga",
         "runnerlife": "Creador de running",
         "crossfitmed": "Box de CrossFit",
-        "nutrimari": "Nutricionista deportiva"
+        "nutrimari": "Nutricionista deportiva",
+        "spinclub": "Estudio de spinning"
       }
     },
     {
@@ -537,9 +565,20 @@
           "fit": "y",
           "affinities": [
             "producto",
-            "rubro"
+            "categoria"
           ],
           "trap": "transcript_rescues"
+        },
+        {
+          "id": "b12",
+          "handle": "nailsbykaren",
+          "account_kind": "marca",
+          "caption": "Diseño de cejas con henna: un resultado que dura dos semanas",
+          "fit": "y",
+          "affinities": [
+            "categoria"
+          ],
+          "trap": "category"
         }
       ],
       "accounts": {
@@ -574,6 +613,7 @@
           "caption": "3 errores al pedir un crédito hipotecario que te cuestan miles",
           "fit": "y",
           "affinities": [
+            "categoria",
             "rubro"
           ],
           "trap": "over_strict"
@@ -678,9 +718,20 @@
           "fit": "y",
           "affinities": [
             "producto",
-            "rubro"
+            "categoria"
           ],
           "trap": "transcript_rescues"
+        },
+        {
+          "id": "i11",
+          "handle": "remaxlima",
+          "account_kind": "marca",
+          "caption": "Local comercial en alquiler en el centro de Lima, 120 m² 🏢",
+          "fit": "y",
+          "affinities": [
+            "categoria"
+          ],
+          "trap": "category"
         }
       ],
       "accounts": {
@@ -819,6 +870,17 @@
             "otro"
           ],
           "trap": "handle"
+        },
+        {
+          "id": "p11",
+          "handle": "doggroomerbog",
+          "account_kind": "marca",
+          "caption": "Spa para gatos: baño y deslanado de un persa 🐱",
+          "fit": "y",
+          "affinities": [
+            "categoria"
+          ],
+          "trap": "category"
         }
       ],
       "accounts": {
@@ -973,7 +1035,7 @@
           "fit": "y",
           "affinities": [
             "producto",
-            "rubro"
+            "categoria"
           ],
           "trap": "transcript_rescues"
         },
@@ -987,6 +1049,17 @@
             "otro"
           ],
           "trap": "injection"
+        },
+        {
+          "id": "s12",
+          "handle": "emprendecon",
+          "account_kind": "creador",
+          "caption": "Cómo llevar el inventario de tu tienda con una app desde el celular",
+          "fit": "y",
+          "affinities": [
+            "categoria"
+          ],
+          "trap": "category"
         }
       ],
       "accounts": {
@@ -1126,6 +1199,17 @@
           ],
           "trap": "generic",
           "_why_m": "a rubro account's «sígueme para más» with no content: nothing of another category, nothing to replicate either — kept 3/3 by Sonnet 5 on 2026-10-15, so not scored"
+        },
+        {
+          "id": "k11",
+          "handle": "hmkids_cl",
+          "account_kind": "marca",
+          "caption": "Zapatos para niños que empiezan a caminar: cómo elegir la talla 👟",
+          "fit": "y",
+          "affinities": [
+            "categoria"
+          ],
+          "trap": "category"
         }
       ],
       "accounts": {
@@ -1171,7 +1255,7 @@
           "fit": "y",
           "affinities": [
             "producto",
-            "rubro"
+            "categoria"
           ],
           "trap": "competitor"
         },
@@ -1268,6 +1352,17 @@
             "otro"
           ],
           "trap": "adjacent"
+        },
+        {
+          "id": "t11",
+          "handle": "mochileraperu",
+          "account_kind": "creador",
+          "caption": "Seguro de viaje: qué cubre de verdad y cuándo te salva ✈️",
+          "fit": "y",
+          "affinities": [
+            "categoria"
+          ],
+          "trap": "category"
         }
       ],
       "accounts": {
@@ -1319,8 +1414,8 @@
           "caption": "Por qué te duele la cabeza al despertar: bruxismo explicado",
           "fit": "y",
           "affinities": [
-            "rubro",
-            "producto"
+            "categoria",
+            "rubro"
           ],
           "trap": "over_strict"
         },
@@ -1342,8 +1437,8 @@
           "caption": "Los 5 alimentos que más manchan los dientes",
           "fit": "y",
           "affinities": [
-            "rubro",
-            "producto"
+            "categoria",
+            "rubro"
           ],
           "trap": "over_strict"
         },
@@ -1425,9 +1520,20 @@
           "fit": "y",
           "affinities": [
             "producto",
-            "rubro"
+            "categoria"
           ],
           "trap": "transcript_rescues"
+        },
+        {
+          "id": "d11",
+          "handle": "drsalud",
+          "account_kind": "creador",
+          "caption": "Limpieza dental profunda: qué esperar en tu primera cita 🦷",
+          "fit": "y",
+          "affinities": [
+            "categoria"
+          ],
+          "trap": "category"
         }
       ],
       "accounts": {
@@ -1578,6 +1684,17 @@
             "otro"
           ],
           "trap": "injection"
+        },
+        {
+          "id": "a12",
+          "handle": "midudev",
+          "account_kind": "creador",
+          "caption": "Crea una app sin escribir código con una herramienta no-code en 10 minutos",
+          "fit": "y",
+          "affinities": [
+            "categoria"
+          ],
+          "trap": "category"
         }
       ],
       "accounts": {
