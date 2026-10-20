@@ -64,6 +64,59 @@ def test_the_text_layer_is_laid_over_every_frame() -> None:
     assert plain.getpixel((270, 338)) == pytest.approx(worded.getpixel((270, 338)), abs=6)
 
 
+def _clip_with_sound(width: int, height: int, seconds: int = 1, rate: int = 12) -> bytes:
+    """A tiny clip with an AAC tone — what a Seedance 2.x clip with a soundtrack is."""
+    out = io.BytesIO()
+    with av.open(out, "w", format="mp4") as sink:
+        video = sink.add_stream("libx264", rate=rate)
+        video.width, video.height, video.pix_fmt = width, height, "yuv420p"
+        audio = sink.add_stream("aac", rate=44100)
+        audio.layout = "mono"
+        for i in range(seconds * rate):
+            pixels = np.full((height, width, 3), (20 * i) % 255, dtype=np.uint8)
+            for packet in video.encode(av.VideoFrame.from_ndarray(pixels, format="rgb24")):
+                sink.mux(packet)
+        samples = 1024
+        for i in range(seconds * 44100 // samples):
+            t = (np.arange(samples) + i * samples) / 44100
+            tone = (0.2 * np.sin(2 * np.pi * 440 * t)).astype(np.float32).reshape(1, -1)
+            frame = av.AudioFrame.from_ndarray(tone, format="fltp", layout="mono")
+            frame.sample_rate = 44100
+            frame.pts = i * samples
+            for packet in audio.encode(frame):
+                sink.mux(packet)
+        for stream in (video, audio):
+            for packet in stream.encode():
+                sink.mux(packet)
+    return out.getvalue()
+
+
+def test_a_clip_keeps_its_soundtrack_under_the_logo_only_when_asked() -> None:
+    """§ request 2026-10-20: the brand's logo over a clip must not cost the clip its
+    sound; a gallery slide (the default) still plays muted."""
+    size = (216, 384)
+    layer = text_layer(size=size, palette=("#1F2937", "#0EA5A4"))
+    source = _clip_with_sound(360, 640)
+    kept = PyAvVideoFitter().fit(source, size=size, overlay=layer, keep_audio=True)
+    dropped = PyAvVideoFitter().fit(source, size=size, overlay=layer)
+    with av.open(io.BytesIO(kept.data)) as out:
+        (audio,) = out.streams.audio
+        assert audio.codec_context.name == "aac"
+        assert sum(1 for _ in out.demux(audio)) > 10
+        (video,) = out.streams.video
+        assert (video.width, video.height) == size
+    with av.open(io.BytesIO(dropped.data)) as out:
+        assert not out.streams.audio
+    assert kept.duration_sec == pytest.approx(1.0)
+
+
+def test_keeping_the_audio_of_a_silent_clip_changes_nothing() -> None:
+    fitted = PyAvVideoFitter().fit(_clip(360, 640), size=(216, 384), keep_audio=True)
+    with av.open(io.BytesIO(fitted.data)) as out:
+        assert not out.streams.audio and len(out.streams.video) == 1
+    assert fitted.duration_sec == pytest.approx(1.0)
+
+
 def test_an_odd_size_is_refused_before_encoding() -> None:
     with pytest.raises(ValueError, match="even dimensions"):
         PyAvVideoFitter().fit(b"", size=(215, 270))
@@ -92,3 +145,37 @@ def test_a_source_whose_frames_all_sit_at_time_zero_is_rebuilt_at_24_fps() -> No
         (video,) = out.streams.video
         assert video.average_rate == 24
         assert out.duration / 1_000_000 == pytest.approx(2.0, abs=0.1)
+
+
+def test_a_soundtrack_follows_a_picture_that_starts_late() -> None:
+    """Review 2026-10-20: the fitted picture starts at 0 from the source's first frame;
+    a source whose video starts 1 s in must not keep its sound 1 s ahead."""
+    rate, samples = 12, 1024
+    out = io.BytesIO()
+    with av.open(out, "w", format="mp4") as sink:
+        video = sink.add_stream("libx264", rate=rate)
+        video.width, video.height, video.pix_fmt = 360, 640, "yuv420p"
+        audio = sink.add_stream("aac", rate=44100)
+        audio.layout = "mono"
+        for i in range(2 * rate):  # 2 s of picture, from 1 s to 3 s
+            pixels = np.full((640, 360, 3), (20 * i) % 255, dtype=np.uint8)
+            frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
+            frame.pts = rate + i
+            for packet in video.encode(frame):
+                sink.mux(packet)
+        for i in range(3 * 44100 // samples):  # 3 s of sound, from 0 s
+            t = (np.arange(samples) + i * samples) / 44100
+            tone = (0.2 * np.sin(2 * np.pi * 440 * t)).astype(np.float32).reshape(1, -1)
+            sound = av.AudioFrame.from_ndarray(tone, format="fltp", layout="mono")
+            sound.sample_rate, sound.pts = 44100, i * samples
+            for packet in audio.encode(sound):
+                sink.mux(packet)
+        for stream in (video, audio):
+            for packet in stream.encode():
+                sink.mux(packet)
+    fitted = PyAvVideoFitter().fit(out.getvalue(), size=(216, 384), keep_audio=True)
+    with av.open(io.BytesIO(fitted.data)) as result:
+        (sound,) = result.streams.audio
+        times = [p.pts * p.time_base for p in result.demux(sound) if p.pts is not None]
+    assert min(times) < 0.05  # the sound from 1 s in now starts with the picture
+    assert max(times) < 2.1  # and what came before the picture is gone

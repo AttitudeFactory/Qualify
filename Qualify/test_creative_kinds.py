@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from qualify_api.stock.guard import stock_problems
 from qualify_creative.enums import ContentKind, ImageRoute
 
 from . import creative_provider
@@ -55,7 +56,9 @@ def test_an_omnihuman_avatar_kind_loads_its_voices_once(monkeypatch: pytest.Monk
     assert state.choose_kind("avatar_video") is not None  # chains load_voice_options
     assert state.video_engine == "omnihuman" and state.video_reads_with_voice
     state.voice_options = [{"id": "vo", "name": "Elena"}]
-    assert state.choose_kind("animated_avatar_video") is None
+    # the voices are not loaded twice; the animated avatar loads its Brand Kit character
+    events = state.choose_kind("animated_avatar_video")
+    assert [e.fn.__name__ for e in events] == ["load_brand_character"]
 
 
 def test_a_stale_heygen_engine_falls_back_until_the_presenter_keys_exist(
@@ -235,9 +238,9 @@ def test_going_to_review_starts_the_generator_over() -> None:
     state.ad_scene_prompt = "Una mano con la smash"
     state.media_product_keys = ["uploads/t/p.png"]
 
-    redirect = state.review_in_drafts()
+    events = state.review_in_drafts()
 
-    assert redirect is not None and "/drafts/d0000000-0000-4000-8000-000000000001" in str(redirect)
+    assert "/drafts/d0000000-0000-4000-8000-000000000001" in str(events)
     assert state.generator_view == "form"
     assert state.gen_draft_id == "" and state.brief_topic == ""
     assert state.ad_scene_prompt == "" and state.media_product_keys == []
@@ -256,8 +259,9 @@ def test_leaving_the_flyer_drops_the_carousel() -> None:
         ("avatar_video", {"voice_id": "vo"}, ""),  # «Mujer», described: nothing to pick
         ("avatar_video", {"voice_id": "vo", "human_avatar_mode": "custom"}, "Describe"),
         ("avatar_video", {}, "Elige la voz"),
-        ("animated_avatar_video", {"voice_id": "vo", "avatar_source": "ai"}, "Describe"),
-        ("animated_avatar_video", {"voice_id": "vo", "avatar_source": "image"}, "Sube la imagen"),
+        # § 2026-10-20: the character comes from the Brand Kit — nothing to describe
+        ("animated_avatar_video", {"voice_id": "vo", "avatar_source": "ai"}, "Brand Kit"),
+        ("animated_avatar_video", {"voice_id": "vo", "avatar_source": "image"}, "Brand Kit"),
         (
             "animated_avatar_video",
             {"voice_id": "vo", "avatar_source": "image", "avatar_image_key": "uploads/t/a.png"},
@@ -365,6 +369,41 @@ def test_a_flyer_with_products_is_the_untouched_upload_route(
     assert brief.image_route is ImageRoute.FROM_UPLOAD
     assert brief.source_media_key == "uploads/t/p1.png"
     assert brief.kind is ContentKind.STATIC_FLYER
+
+
+_STOCK_PHOTO = f"t/{_TENANT_ID}/stock/pixabay/7221445/43104764eeaa4549.jpg"
+_STOCK_BACKGROUND = f"t/{_TENANT_ID}/stock/pixabay/10260393/e55e89304d49f8b5.jpg"
+
+
+def test_an_inspiration_photo_is_never_the_upload_routes_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Draft d75dc864 (2026-10-20): an «Inspiración» photo first among the products became
+    `source_media_key`, where the stock guard refuses it — «Esa imagen de stock no puede
+    usarse ahí». The operator's own photo is the source; the stock one stays a product."""
+    own = f"uploads/{_TENANT_ID}/catalog/p/ef0466ae.jpg"
+    brief = _submit(
+        monkeypatch,
+        "static_flyer",
+        {"product_keys": [_STOCK_PHOTO, own], "background_key": _STOCK_BACKGROUND},
+    )
+    assert brief.image_route is ImageRoute.FROM_UPLOAD
+    assert brief.source_media_key == own
+    assert brief.media.product_keys == (_STOCK_PHOTO, own)
+    assert stock_problems(brief) is None
+
+
+def test_a_piece_with_only_inspiration_images_has_no_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    brief = _submit(
+        monkeypatch,
+        "static_flyer",
+        {"product_keys": [_STOCK_PHOTO], "background_key": _STOCK_BACKGROUND},
+    )
+    assert brief.image_route is ImageRoute.TEMPLATE_ONLY
+    assert brief.source_media_key is None
+    assert stock_problems(brief) is None
 
 
 def test_a_piece_without_images_is_template_only(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -592,13 +631,14 @@ def test_an_own_script_and_the_engine_reach_the_inputs() -> None:
 
 def test_each_kind_shows_only_its_sections_in_order() -> None:
     assert generator_sections("avatar_video") == ["topic", "channel", "presenter", "details"]
-    assert generator_sections("animated_avatar_video") == generator_sections("avatar_video")
+    # § 2026-10-20: the animated avatar's character is chosen in «Tipo de avatar»
+    assert generator_sections("animated_avatar_video") == ["topic", "channel", "details"]
     # the script's length is asked in «Publicación» (2026-10-14): no «details»
     assert generator_sections("creator_script") == ["topic", "channel"]
     assert generator_sections("clip") == ["topic", "channel"]
     assert generator_sections("template") == ["topic", "channel", "details"]
-    # the ad image asks no «¿Qué quieres en la imagen?» — its scene is it
-    assert generator_sections("static_flyer") == ["channel", "details"]
+    # § 2026-10-20: the ad image's scene is asked in «Contexto», like every context
+    assert generator_sections("static_flyer") == ["topic", "channel", "details"]
 
 
 def test_the_sections_renumber_as_the_kind_changes() -> None:
@@ -609,7 +649,7 @@ def test_the_sections_renumber_as_the_kind_changes() -> None:
     assert state.gen_section_numbers["presenter"] == 3
     assert state.gen_section_numbers["details"] == 4
     state.brief_kind = "static_flyer"
-    assert state.gen_section_numbers == {"channel": 1, "details": 2}
+    assert state.gen_section_numbers == {"topic": 1, "channel": 2, "details": 3}
 
 
 def test_generar_says_the_first_thing_still_missing_in_section_order() -> None:
@@ -1104,3 +1144,19 @@ def test_the_title_goes_on_one_slide_and_the_button_is_gone() -> None:
     assert [slide["text"] for slide in state.carousel_slides] == ["none", "none", "none"]
     state.set_slide_field(1, "text", "cta")  # not offered any more
     assert state.carousel_slides[1]["text"] == "none"
+
+
+def test_back_from_borradores_the_animated_avatar_reloads_its_character() -> None:
+    """Review 2026-10-20: the reset clears the character while the kind stays — it is
+    loaded again from the Brand Kit, or the next piece would be blocked."""
+    state = CreativeState()
+    state.brief_kind = "animated_avatar_video"
+    state.avatar_prompt = "A friendly mascot"
+    state.brand_character_label = "La mascota"
+    state.gen_draft_id = "d0000000-0000-4000-8000-000000000001"
+    events = state.review_in_drafts()
+    assert state.avatar_prompt == "" and state.brand_character_label == ""
+    assert events[0].fn.__name__ == "load_brand_character"
+    assert "/drafts/d0000000-0000-4000-8000-000000000001" in str(events[1])
+    state.brief_kind = "clip"
+    assert all("load_brand_character" not in str(e) for e in state.review_in_drafts())

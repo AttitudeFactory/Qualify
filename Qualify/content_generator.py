@@ -413,22 +413,33 @@ _VIDEO_ACCEPT = {"video/*": [".mp4", ".mov", ".webm", ".m4v"]}
 _REFERENCE_MAX_BYTES = 200 * 1024 * 1024
 
 
+_REFERENCE_HINT = (
+    "Un clip que te guste: su ritmo, encuadre y estructura son la referencia para hacer tu video."
+)
+
+
 def _reference_view() -> rx.Component:
-    """Avatar's «Referencia» (§ request 2026-10-14): a video to make the piece from —
-    optional, before the context; from the catalog, uploaded or one of the pieces."""
-    key = CreativeState.reference_video_key
+    """«Ad»'s «Referencia» (§ request 2026-10-14): a video to make the piece from —
+    optional; from the catalog, uploaded or one of the pieces. An avatar asks it in
+    «Guion y fondo» since 2026-10-20 (`_reference_body`)."""
     return rx.vstack(
         rx.vstack(
             rx.heading("Video de referencia (opcional)", size="4", as_="h3"),
-            rx.text(
-                "Un clip que te guste: su ritmo, encuadre y estructura son la referencia "
-                "para hacer tu video.",
-                size="1",
-                color=T.TEXT_MUTED,
-            ),
+            rx.text(_REFERENCE_HINT, size="1", color=T.TEXT_MUTED),
             spacing="0",
             align_items="start",
         ),
+        _reference_body(),
+        spacing="4",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _reference_body() -> rx.Component:
+    """The reference video held, and its picker."""
+    key = CreativeState.reference_video_key
+    return rx.vstack(
         rx.cond(
             key != "",
             rx.vstack(
@@ -771,12 +782,13 @@ def _inspiration_hit_tile(tile: rx.Var[dict[str, str]], target: str, image: bool
     )
 
 
-def _inspiration_search(target: str, image: bool) -> rx.Component:
+def _inspiration_search(target: str, image: bool | None) -> rx.Component:
     """«Inspiración» inside a slot's picker: the Brand Kit's words searched straight
     away, or the operator's own; a click on a hit brings it into the slot. Once the slot
     holds something from inspiration the search folds away — no second discovery, and no
     preview of what was picked: the slot above already shows it — until «Buscar otra»
-    (§ request 2026-10-19). The background keeps its search open."""
+    (§ request 2026-10-19). The background keeps its search open. `image=None`: a mixed
+    slot, its images and its videos under one search box (§ request 2026-10-20)."""
     search = _inspiration_search_body(target, image)
     if target == "background":
         return search
@@ -802,10 +814,53 @@ def _inspiration_search(target: str, image: bool) -> rx.Component:
     )
 
 
-def _inspiration_search_body(target: str, image: bool) -> rx.Component:
+def _inspiration_hits(target: str, image: bool, *, titled: bool = False) -> rx.Component:
+    """One bank's hits in a slot's inspiration search; `titled` (a mixed slot) names the
+    grid, since images and videos sit one above the other."""
     hits = CreativeState.stock_results if image else CreativeState.vstock_results
     loading = CreativeState.stock_loading if image else CreativeState.vstock_loading
     noun = "imágenes" if image else "videos"
+    grid = rx.cond(
+        loading & (hits.length() == 0),
+        _picker_note(f"Buscando {noun}…"),
+        rx.cond(
+            hits.length() > 0,
+            rx.flex(
+                rx.foreach(hits, lambda tile: _inspiration_hit_tile(tile, target, image)),
+                wrap="wrap",
+                spacing="2",
+                max_height="18rem",
+                overflow_y="auto",
+                width="100%",
+            ),
+            _picker_note(
+                f"Aún no hay {noun}: busca arriba o deja la caja vacía para usar tu Brand Kit."
+                if titled
+                else f"Escribe qué buscas o deja la caja vacía para usar tu Brand Kit. "
+                f"Solo {noun} sin personas."
+            ),
+        ),
+    )
+    if not titled:
+        return grid
+    return rx.vstack(
+        rx.text(noun.capitalize(), size="1", weight="medium", color=T.TEXT_MUTED),
+        grid,
+        spacing="1",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _inspiration_search_body(target: str, image: bool | None) -> rx.Component:
+    grids = (
+        [
+            _inspiration_hits(target, True, titled=True),
+            _inspiration_hits(target, False, titled=True),
+        ]
+        if image is None
+        else [_inspiration_hits(target, image)]
+    )
     return rx.vstack(
         rx.hstack(
             rx.input(
@@ -833,25 +888,7 @@ def _inspiration_search_body(target: str, image: bool) -> rx.Component:
             CreativeState.stock_error != "",
             callout(CreativeState.stock_error, "warn"),
         ),
-        rx.cond(
-            loading & (hits.length() == 0),
-            _picker_note(f"Buscando {noun}…"),
-            rx.cond(
-                hits.length() > 0,
-                rx.flex(
-                    rx.foreach(hits, lambda tile: _inspiration_hit_tile(tile, target, image)),
-                    wrap="wrap",
-                    spacing="2",
-                    max_height="18rem",
-                    overflow_y="auto",
-                    width="100%",
-                ),
-                _picker_note(
-                    f"Escribe qué buscas o deja la caja vacía para usar tu Brand Kit. "
-                    f"Solo {noun} sin personas."
-                ),
-            ),
-        ),
+        *grids,
         spacing="2",
         width="100%",
         align_items="start",
@@ -1001,6 +1038,134 @@ def _media_picker(target: str, upload: rx.Component, *, media_type: str = "image
             ("catalog", catalog_tab),
             ("brandcat", brandcat_tab),
             ("inspiration", _inspiration_search(target, image) if searchable else upload),
+            ("pieces", pieces_tab),
+            upload,
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _mixed_media_picker(target: str, upload: rx.Component) -> rx.Component:
+    """A mixed slot's sources (§ request 2026-10-20: «cuando se quiera un video se junten
+    … videos e imágenes»): the same tabs as `_media_picker`, each showing the images AND
+    the videos it has — the product's (catalog or inspiration), the brand's catalog, an
+    inspiration search, an upload and the pieces. A click sends the file to the slot of
+    its type (`CreativeState.pick_mixed_media`)."""
+    tab = CreativeState.picker_tab_view[target].to(str)
+    held = CreativeState.picker_selected[target].to(list[str])
+    stock = CreativeState.product_source == "stock"
+
+    def pick(source: str, key: rx.Var[str], media: str) -> object:
+        return CreativeState.pick_mixed_media(target, source, key, media)
+
+    def tiles(*groups: rx.Component) -> rx.Component:
+        return rx.flex(
+            *groups,
+            wrap="wrap",
+            spacing="2",
+            max_height="18rem",
+            overflow_y="auto",
+            width="100%",
+        )
+
+    photos, videos = CreativeState.product_photo_keys, CreativeState.product_video_keys
+    catalog_tab = rx.cond(
+        (photos.length() + videos.length()) > 0,
+        tiles(
+            rx.foreach(
+                photos,
+                lambda key: _catalog_picker_tile(
+                    key, held.contains(key), pick("catalog", key, "image"), True
+                ),
+            ),
+            rx.foreach(
+                videos,
+                lambda key: _catalog_picker_tile(
+                    key, held.contains(key), pick("catalog", key, "video"), False
+                ),
+            ),
+        ),
+        _picker_note(
+            rx.cond(
+                stock,
+                "Tu inspiración no tiene fotos ni videos: búscalos en «Catálogo» o súbelos.",
+                rx.cond(
+                    CreativeState.selected_product_id != "",
+                    "El producto que elegiste no tiene fotos ni videos en el catálogo.",
+                    "Elige un producto del catálogo al empezar y sus fotos y videos aparecen aquí.",
+                ),
+            )
+        ),
+    )
+
+    def brand_photo(item: rx.Var[dict[str, str]]) -> rx.Component:
+        key = item["key"]
+        return _picker_tile(
+            _key_src(key),
+            key != "",
+            held.contains(key),
+            pick("brandcat", key, "image"),
+            "image",
+            item["name"],
+        )
+
+    def brand_video(item: rx.Var[dict[str, str]]) -> rx.Component:
+        key = item["key"]
+        return _picker_video_tile(
+            key,
+            None,
+            rx.get_upload_url(key),
+            held.contains(key),
+            pick("brandcat", key, "video"),
+            item["name"],
+        )
+
+    brand_photos, brand_videos = (
+        CreativeState.brand_catalog_photos,
+        CreativeState.brand_catalog_videos,
+    )
+    brandcat_tab = rx.cond(
+        CreativeState.catalog_loading,
+        _picker_note("Cargando tu catálogo…"),
+        rx.cond(
+            (brand_photos.length() + brand_videos.length()) > 0,
+            tiles(rx.foreach(brand_photos, brand_photo), rx.foreach(brand_videos, brand_video)),
+            _picker_note("Tu catálogo aún no tiene fotos ni videos."),
+        ),
+    )
+
+    def piece(item: rx.Var[dict[str, str]], media: str) -> rx.Component:
+        return _picker_tile(
+            BACKEND_BASE + item["view"],
+            item["view"] != "",
+            held.contains(item["key"]),
+            pick("pieces", item["key"], media),
+            "image" if media == "image" else "film",
+            item["label"],
+        )
+
+    piece_images, piece_videos = CreativeState.piece_images, CreativeState.piece_videos
+    pieces_tab = rx.cond(
+        CreativeState.pieces_loading,
+        _picker_note("Cargando tus piezas…"),
+        rx.cond(
+            (piece_images.length() + piece_videos.length()) > 0,
+            tiles(
+                rx.foreach(piece_images, lambda item: piece(item, "image")),
+                rx.foreach(piece_videos, lambda item: piece(item, "video")),
+            ),
+            _picker_note("Aún no tienes piezas con fotos o videos."),
+        ),
+    )
+    return rx.vstack(
+        _picker_tabs(target, tab),
+        rx.match(
+            tab,
+            ("catalog", catalog_tab),
+            ("brandcat", brandcat_tab),
+            ("inspiration", _inspiration_search(target, None)),
             ("pieces", pieces_tab),
             upload,
         ),
@@ -1246,6 +1411,17 @@ def _clip_references_view() -> rx.Component:
                     spacing="3",
                     wrap="wrap",
                 ),
+                # review 2026-10-20: what sits between the first and the last file is a
+                # reference — only the advanced video model takes it
+                rx.cond(
+                    CreativeState.clip_strip.length() > 2,
+                    callout(
+                        "Lo que va entre el primero y el último son referencias y necesitan "
+                        "el modelo de video avanzado. Si no está activado, las imágenes del "
+                        "medio se omiten y los videos o audios no se pueden usar.",
+                        "info",
+                    ),
+                ),
             ),
         ),
         _clip_block(
@@ -1303,6 +1479,20 @@ def _clip_references_view() -> rx.Component:
                     _CLIP_AUDIO_ACCEPT,
                     CreativeState.handle_clip_audio_uploads,
                     max_files=3,
+                ),
+            ),
+        ),
+        # § request 2026-10-20: «poner mis logos en mis clips» — laid over every frame
+        rx.cond(
+            CreativeState.brand_logo_choices.length() > 0,
+            _clip_block(
+                "Tu logo (opcional)",
+                "Va en una esquina de todo el clip, encima del video. Elige uno.",
+                _brand_media_picker(
+                    CreativeState.brand_logo_choices,
+                    "chosen",
+                    CreativeState.toggle_brand_logo,
+                    "Logo",
                 ),
             ),
         ),
@@ -1864,7 +2054,10 @@ def _product_chip() -> rx.Component:
 
 
 def _avatar_type_view() -> rx.Component:
-    """Avatar's first view: which avatar — humano or animado."""
+    """Avatar's first view: which avatar — humano or animado. The animated avatar has
+    no «Presentador» view and asks nothing more (§ request 2026-10-20): its character
+    comes from the Brand Kit (`CreativeState.load_brand_character`), its voice is the
+    brand's (`_sync_voice`)."""
     return rx.vstack(
         rx.vstack(
             rx.heading("¿Qué tipo de avatar?", size="4", as_="h3"),
@@ -2397,6 +2590,95 @@ def _slide_photo() -> rx.Component:
     )
 
 
+def _slide_reference_thumb(key: rx.Var[str]) -> rx.Component:
+    """The motion reference held: a piece by its poster, an inspiration or catalog video
+    by its first frame (a stock one plays from R2, `_product_video_src`)."""
+    return rx.cond(
+        CreativeState.piece_views.contains(key),
+        _slide_thumb(CreativeState.piece_views[key].to(str), rx.Var.create("video"), "4.5rem"),
+        _video_thumb(_product_video_src(key)),
+    )
+
+
+def _slide_media() -> rx.Component:
+    """An animated slide's files (§ request 2026-10-20: «cuando se quiera un video se
+    junten … videos e imágenes»): ONE picker where every tab shows images and videos
+    together — an image is the product photo the scene is generated from, a video the
+    motion reference the animation follows (never shown in the gallery). One of each."""
+    current = CreativeState.carousel_current
+    photo = rx.hstack(
+        _removable(
+            _clip_thumb(current["photo_key"]), CreativeState.clear_slide_photo, "Quitar foto"
+        ),
+        rx.vstack(
+            rx.text("Foto del producto", size="1", weight="medium"),
+            rx.text(current["photo_name"], size="1", color=T.TEXT_MUTED),
+            spacing="0",
+            align_items="start",
+        ),
+        spacing="2",
+        align="center",
+    )
+    reference = rx.hstack(
+        _removable(
+            _slide_reference_thumb(current["ref_key"]),
+            CreativeState.clear_slide_reference,
+            "Quitar video",
+        ),
+        rx.vstack(
+            rx.text("Video de referencia", size="1", weight="medium"),
+            rx.text(current["ref_name"], size="1", color=T.TEXT_MUTED),
+            spacing="0",
+            align_items="start",
+        ),
+        spacing="2",
+        align="center",
+    )
+    return _slide_panel(
+        _label_with_help(
+            "Imágenes y video",
+            "Imágenes y video",
+            "Elige una foto y, si quieres, un video, de donde estén: tu catálogo, tu "
+            "inspiración, tus piezas o subidos. La foto es la referencia para que tu "
+            "producto salga igual; el video, el movimiento de cámara y el ritmo que sigue "
+            "la animación (no aparece en la galería).",
+            size="1",
+            color=T.TEXT_MUTED,
+        ),
+        rx.vstack(
+            rx.cond(
+                (current["photo_key"] != "") | (current["ref_key"] != ""),
+                rx.flex(
+                    rx.cond(current["photo_key"] != "", photo),
+                    rx.cond(current["ref_key"] != "", reference),
+                    wrap="wrap",
+                    spacing="4",
+                ),
+                _picker_note("Sin foto ni video: la escena se crea solo con tu descripción."),
+            ),
+            _mixed_media_picker(
+                "slide_media",
+                rx.box(
+                    _clip_drop(
+                        "creative_slide_media",
+                        "Arrastra una foto y/o un video, o haz clic",
+                        "JPG, PNG o WEBP · MP4 o MOV hasta 200 MB",
+                        {**_CLIP_IMAGE_ACCEPT, **_CLIP_VIDEO_ACCEPT},
+                        CreativeState.handle_slide_media_upload,
+                        max_files=2,
+                    ),
+                    width="100%",
+                    max_width="20rem",
+                ),
+            ),
+            spacing="3",
+            width="100%",
+            align_items="start",
+        ),
+        width="100%",
+    )
+
+
 def _slide_panel(label: rx.Component, control: rx.Component, **props: object) -> rx.Component:
     """One block of the slide editor, visibly apart from its neighbours (§ request
     2026-10-09: "quiero separaciones"): its own raised panel with a border and padding —
@@ -2477,65 +2759,12 @@ def _slide_generated_fields() -> rx.Component:
         ),
         width="100%",
     )
-    reference = _slide_panel(
-        _label_with_help(
-            "Video de referencia (opcional)",
-            "Video de referencia",
-            "Un video cuyo movimiento de cámara y ritmo sigue la animación; no aparece en la "
-            "galería. De tu inspiración, una pieza o uno que subas.",
-            size="1",
-            color=T.TEXT_MUTED,
-        ),
-        rx.vstack(
-            rx.cond(
-                current["ref_key"] != "",
-                rx.hstack(
-                    _removable(
-                        rx.cond(
-                            CreativeState.piece_views.contains(current["ref_key"]),
-                            _slide_thumb(
-                                CreativeState.piece_views[current["ref_key"]].to(str),
-                                rx.Var.create("video"),
-                                "4.5rem",
-                            ),
-                            _video_thumb(rx.get_upload_url(current["ref_key"])),
-                        ),
-                        CreativeState.clear_slide_reference,
-                        "Quitar video",
-                    ),
-                    rx.text(current["ref_name"], size="1", color=T.TEXT_MUTED),
-                    spacing="3",
-                    align="center",
-                ),
-            ),
-            _media_picker(
-                "slide_reference",
-                rx.box(
-                    _clip_drop(
-                        "slide_reference",
-                        "Sube un video",
-                        "MP4 o MOV · hasta 200 MB",
-                        _CLIP_VIDEO_ACCEPT,
-                        CreativeState.handle_slide_reference_upload,
-                        max_files=1,
-                    ),
-                    width="100%",
-                    max_width="20rem",
-                ),
-                media_type="video",
-            ),
-            spacing="2",
-            width="100%",
-            align_items="start",
-        ),
-        width="100%",
-    )
     # § 2026-10-14: everything under the slides, across the whole view — the photo,
-    # what it shows, then its text beside its length (a phone stacks them)
+    # what it shows, then its text beside its length (a phone stacks them). An animated
+    # slide takes its photo and its motion video from ONE picker (§ request 2026-10-20)
     return rx.vstack(
-        _slide_photo(),
+        rx.cond(animated, _slide_media(), _slide_photo()),
         what_it_shows,
-        rx.cond(animated, reference),
         rx.grid(
             text,
             rx.cond(animated, length),
@@ -2785,27 +3014,12 @@ def _ad_image_section() -> rx.Component:
     """The advertising image: the scene, generated by Seedream (§ 2026-10-07) with the
     operator's product and/or background as references when they upload them — both
     optional since 2026-10-12, no picker: whatever is uploaded is used (`AdImageMode`
-    derived in the state); the words and the logo are set on top."""
+    derived in the state); the words and the logo are set on top. Its scene is asked in
+    «Contexto», like every option's context (§ request 2026-10-20)."""
     return rx.vstack(
         _background_upload("Foto del fondo (opcional)", "Arrastra la foto de tu local o del fondo"),
         _products_upload("Foto del producto (opcional)"),
         _upload_error(),
-        # § request 2026-10-08: no «¿Qué quieres en la imagen?» step — the scene is it
-        _field_label(
-            "Describe la escena",
-            "Qué se ve, dónde y cómo se siente. Es lo único obligatorio.",
-        ),
-        rx.text_area(
-            value=CreativeState.ad_scene_prompt,
-            on_change=CreativeState.set_ad_scene_prompt,
-            placeholder=(
-                "Una mano sosteniendo el vaso a la altura del pecho, la etiqueta de frente, "
-                "con el local desenfocado detrás y luz cálida…"
-            ),
-            width="100%",
-            rows="3",
-            max_length=600,
-        ),
         spacing="2",
         width="100%",
         align_items="start",
@@ -3168,30 +3382,106 @@ def _section_topic() -> rx.Component:
     # § request 2026-10-06: not a topic or a product name — the general context of what
     # the operator wants, in their own words. Objetivo was asked here until 2026-10-05;
     # the brief keeps `brief_objective` at its default.
+    # § request 2026-10-20: the second-to-last view of every option (after «Datos
+    # clave»); the flyer's context is its scene, asked here too since that day
+    flyer = CreativeState.brief_kind == "static_flyer"
     return _section(
         "topic",
         rx.match(
             CreativeState.gen_category,
             ("script", "¿Qué quieres en el guion?"),
-            ("image", "¿Qué quieres en la imagen?"),
+            ("image", "Describe la escena"),
             ("template", "¿Qué quieres en la pieza?"),
             ("carousel", "¿De qué trata la galería?"),
             ("clip", "¿Qué quieres en el clip?"),
             "¿Qué quieres en el video?",
         ),
-        "Un contexto general: de qué trata, qué debe transmitir, a quién le habla y "
-        "cualquier detalle que importe. Es lo único obligatorio.",
-        rx.text_area(
-            value=CreativeState.brief_topic,
-            on_change=CreativeState.set_brief_topic,
-            placeholder=(
-                "Ej.: quiero mostrar nuestra hamburguesa doble con papas, en promo solo "
-                "este fin de semana. Que se sienta antojable y cercano, para gente joven "
-                "que pide a domicilio, y que cierre invitando a pedir por WhatsApp."
-            ),
-            width="100%",
-            rows="5",
+        rx.cond(
+            flyer,
+            "Qué se ve, dónde y cómo se siente. Es lo único obligatorio.",
+            "Un contexto general: de qué trata, qué debe transmitir, a quién le habla y "
+            "cualquier detalle que importe. Es lo único obligatorio.",
         ),
+        rx.cond(
+            flyer,
+            rx.text_area(
+                value=CreativeState.ad_scene_prompt,
+                on_change=CreativeState.set_ad_scene_prompt,
+                placeholder=(
+                    "Una mano sosteniendo el vaso a la altura del pecho, la etiqueta de "
+                    "frente, con el local desenfocado detrás y luz cálida…"
+                ),
+                width="100%",
+                rows="5",
+                max_length=600,
+            ),
+            rx.text_area(
+                value=CreativeState.brief_topic,
+                on_change=CreativeState.set_brief_topic,
+                placeholder=(
+                    "Ej.: quiero mostrar nuestra hamburguesa doble con papas, en promo solo "
+                    "este fin de semana. Que se sienta antojable y cercano, para gente joven "
+                    "que pide a domicilio, y que cierre invitando a pedir por WhatsApp."
+                ),
+                width="100%",
+                rows="7",
+            ),
+        ),
+        _context_ai_tools(),
+    )
+
+
+def _context_ai_tools() -> rx.Component:
+    """«Potenciar con IA» (§ request 2026-10-20): the text above rewritten into a fuller
+    brief with the Brand Kit and the «Datos clave» — no invented facts — before anything
+    is generated; «Deshacer» brings the operator's own words back."""
+    enhancing = CreativeState.context_enhancing
+    return rx.vstack(
+        rx.hstack(
+            rx.button(
+                rx.icon("sparkles", size=T.ICON_SM),
+                rx.cond(enhancing, "Potenciando…", "Potenciar con IA"),
+                variant="soft",
+                size="2",
+                radius=_CONTROL_RADIUS,
+                loading=enhancing,
+                on_click=CreativeState.enhance_context,
+            ),
+            rx.cond(
+                (CreativeState.context_before_enhance != "") & ~enhancing,
+                rx.button(
+                    rx.icon("undo-2", size=T.ICON_SM),
+                    "Deshacer",
+                    variant="ghost",
+                    color_scheme="gray",
+                    size="2",
+                    on_click=CreativeState.undo_enhance_context,
+                ),
+            ),
+            rx.text(
+                "La IA ordena y enriquece tu texto con tu Brand Kit y tus datos clave, sin "
+                "inventar precios ni promociones. Revísalo antes de generar.",
+                size="1",
+                color=T.TEXT_MUTED,
+                flex="1",
+                min_width="12rem",
+            ),
+            spacing="3",
+            align="center",
+            wrap="wrap",
+            width="100%",
+        ),
+        rx.cond(
+            CreativeState.context_enhance_error != "",
+            callout(CreativeState.context_enhance_error, "warn"),
+        ),
+        rx.cond(
+            CreativeState.context_enhance_note != "",
+            callout(CreativeState.context_enhance_note, "warn"),
+        ),
+        spacing="2",
+        width="100%",
+        align_items="start",
     )
 
 
@@ -3352,6 +3642,10 @@ def _section_details() -> rx.Component:
                     "Se componen en una sola imagen detrás del avatar.",
                 ),
                 _images_section(),
+                # § request 2026-10-20: no «Referencia» view of its own for an avatar
+                rx.divider(),
+                _field_label("Video de referencia (opcional)", _REFERENCE_HINT),
+                _reference_body(),
                 spacing="4",
                 align_items="start",
                 width="100%",
@@ -3359,7 +3653,8 @@ def _section_details() -> rx.Component:
         ),
         # a real creator's script takes no brand resources (§ request 2026-10-08): they
         # record with whatever they have
-        # nor does a clip: it shows only its frames and references (§ 2026-10-14)
+        # nor does a clip here: it takes only a logo, in its own «Referencias» view
+        # (§ request 2026-10-20)
         rx.cond(
             (CreativeState.brief_kind != "creator_script") & (CreativeState.brief_kind != "clip"),
             rx.fragment(
@@ -3510,6 +3805,69 @@ def _view_steps() -> rx.Component:
     )
 
 
+def _summary_row(item: rx.Var[dict[str, str]]) -> rx.Component:
+    """One choice of the piece, and «Editar» back to the view that sets it."""
+    return rx.hstack(
+        rx.text(
+            item["label"],
+            size="2",
+            color=T.TEXT_MUTED,
+            width="10rem",
+            flex_shrink="0",
+        ),
+        rx.text(item["value"], size="2", flex="1", min_width="0", white_space="pre-wrap"),
+        rx.cond(
+            item["index"] != "",
+            rx.button(
+                rx.icon("pencil", size=12),
+                "Editar",
+                variant="ghost",
+                color_scheme="gray",
+                size="1",
+                on_click=CreativeState.go_to_view(item["index"]),
+                aria_label="Editar " + item["label"],
+                flex_shrink="0",
+            ),
+        ),
+        spacing="3",
+        align="start",
+        width="100%",
+        padding_y="0.55rem",
+        border_bottom=T.BORDER,
+        wrap=rx.breakpoints(initial="wrap", sm="nowrap"),
+    )
+
+
+def _summary_view() -> rx.Component:
+    """«Resumen» (§ request 2026-10-20): every option's last view — what the piece will
+    be made from, each choice with «Editar» back to its view, and what still keeps
+    Generar from running. Generar is in its footer."""
+    return rx.vstack(
+        rx.vstack(
+            rx.heading("Resumen", size="4", as_="h3"),
+            rx.text(
+                "Revisa lo que vamos a crear. Si algo no está bien, edítalo antes de generar.",
+                size="1",
+                color=T.TEXT_MUTED,
+            ),
+            spacing="0",
+            align_items="start",
+        ),
+        rx.cond(
+            CreativeState.gen_problem != "",
+            callout(CreativeState.gen_problem, "warn"),
+        ),
+        rx.vstack(
+            rx.foreach(CreativeState.gen_summary, _summary_row),
+            spacing="0",
+            width="100%",
+        ),
+        spacing="4",
+        width="100%",
+        align_items="start",
+    )
+
+
 def _view_nav() -> rx.Component:
     """The view's footer: Atrás, and Siguiente — or, on the last view, Generar, the
     form's one solid action (§5.5), with what still keeps it from generating above it."""
@@ -3584,6 +3942,7 @@ def _create_view() -> rx.Component:
                     ("channel", _section_channel()),
                     ("presenter", _section_presenter()),
                     ("details", _section_details()),
+                    ("summary", _summary_view()),
                     _section_rules(),
                 ),
                 width="100%",

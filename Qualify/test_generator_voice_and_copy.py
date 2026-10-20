@@ -254,8 +254,8 @@ def test_the_picker_offers_its_categories_with_the_ad_image_back() -> None:
     state.choose_category("image")
     assert (state.gen_category, state.brief_kind) == ("image", "static_flyer")
     assert state.gen_kind_label == "Imagen publicitaria"
-    # § 2026-10-08: no «¿Qué quieres en la imagen?» — the scene, in its details, is it
-    assert generator_sections(state.brief_kind) == ["channel", "details"]
+    # § 2026-10-20: the scene is the ad image's context, asked in «Contexto»
+    assert generator_sections(state.brief_kind) == ["topic", "channel", "details"]
 
 
 def test_the_options_live_in_a_side_panel_and_the_centre_names_the_choice() -> None:
@@ -280,46 +280,52 @@ def test_the_options_live_in_a_side_panel_and_the_centre_names_the_choice() -> N
 
 def test_each_option_is_a_sequence_of_views() -> None:
     """§ request 2026-10-14 ("estilo view"): one view at a time, Avatar opening on its
-    types; «Datos clave» (ex «Reglas») before «Contexto»; Generar on the last view."""
+    types. § request 2026-10-20: every option ends «Datos clave» → «Contexto» →
+    «Resumen», and Generar is on the summary."""
     from .creative_state import generator_views
 
+    # § 2026-10-20 (2): an avatar's reference video is asked in «Guion y fondo»
     assert generator_views("video", "avatar_video") == [
         "avatar_type",
-        "reference",
-        "rules",
-        "topic",
         "channel",
         "presenter",
         "details",
+        "rules",
+        "topic",
+        "summary",
     ]
-    assert generator_views("image", "static_flyer") == ["rules", "channel", "details"]
-    # Avatar and Clip take their references before the facts and the context; a
-    # clip's frames are applied from its references, so it has no «details» view
-    assert generator_views("clip", "clip") == ["reference", "rules", "topic", "channel"]
-    assert generator_views("script", "creator_script") == ["rules", "topic", "channel"]
+    # no «Presentador» for the animated avatar: its character is in «Tipo de avatar»
+    assert "presenter" not in generator_views("video", "animated_avatar_video")
+    assert generator_views("image", "static_flyer") == [
+        "channel",
+        "details",
+        "rules",
+        "topic",
+        "summary",
+    ]
+    # Avatar and Clip take their references first; a clip's frames are applied from
+    # its references, so it has no «details» view
+    assert generator_views("clip", "clip") == ["reference", "channel", "rules", "topic", "summary"]
+    assert generator_views("script", "creator_script") == ["channel", "rules", "topic", "summary"]
+    assert generator_views("carousel", "carousel")[-3:] == ["rules", "topic", "summary"]
     assert "reference" not in generator_views("template", "template")
     state = CreativeState()
     state.choose_category("video")
     assert state.gen_view == "avatar_type" and state.gen_is_first_view
     state.next_view()
-    assert state.gen_view == "reference"
+    assert state.gen_view == "channel"
     state.go_to_view("99")  # clamped to the last view
-    assert state.gen_view == "details" and state.gen_is_last_view
+    assert state.gen_view == "summary" and state.gen_is_last_view
     state.next_view()
-    assert state.gen_view == "details"
+    assert state.gen_view == "summary"
     state.prev_view()
-    assert state.gen_view == "presenter"
+    assert state.gen_view == "topic"
     steps = state.gen_view_steps
-    assert [step["label"] for step in steps][:4] == [
-        "Tipo de avatar",
-        "Referencia",
-        "Datos clave",
-        "Contexto",
-    ]
+    assert [step["label"] for step in steps][-3:] == ["Datos clave", "Contexto", "Resumen"]
     assert steps[0]["done"] == "true" and steps[5]["current"] == "true"
     # another option starts on its own first view
     state.choose_category("carousel")
-    assert state.gen_step == 0 and state.gen_view == "rules"
+    assert state.gen_step == 0 and state.gen_view == "details"
     # «Descubrir reels» is a mode of its own; picking an option goes back to creating
     state.open_discover()
     assert state.gen_mode == "discover"
@@ -713,12 +719,14 @@ def test_the_catalog_photos_ride_along_for_every_kind_that_composes_photos() -> 
 
 def test_clip_and_ad_take_a_reference_video_on_the_brief() -> None:
     """§ request 2026-10-14: a reference clip before the context — kept on the brief
-    (`MediaInputs.reference_video_key`) for Clip and Ad only."""
+    (`MediaInputs.reference_video_key`) for Clip and Ad only. § 2026-10-20: an avatar
+    asks it in «Guion y fondo», «Ad» in its own view."""
     from qualify_creative.schemas import MediaInputs
 
-    from .content_generator import _reference_view
+    from .content_generator import _reference_view, _section_details
 
     assert "reference_video" in str(_reference_view())
+    assert "reference_video" in str(_section_details())
     state = CreativeState()
     state.reference_video_key = "uploads/t/ref.mp4"
     state.reference_video_name = "ref.mp4"
@@ -780,15 +788,16 @@ def _clip_state_with_product() -> CreativeState:
 
 
 def test_a_clip_follows_the_ads_flow_and_starts_on_the_catalog_photo() -> None:
-    """§ request 2026-10-14: Clip is Referencias → Datos clave → Contexto → Publicación;
+    """§ requests 2026-10-14/20: Clip is Referencias → Publicación → Datos clave →
+    Contexto → Resumen;
     the catalog product chosen first is a reference and, applied from it, the opening
     frame — sent once, as the frame."""
     state = _clip_state_with_product()
     state.choose_category("clip")
     assert (state.gen_category, state.brief_kind) == ("clip", "clip")
-    assert state.gen_views == ["reference", "rules", "topic", "channel"]
+    assert state.gen_views == ["reference", "channel", "rules", "topic", "summary"]
     labels = [step["label"] for step in state.gen_view_steps]
-    assert labels == ["Referencias", "Datos clave", "Contexto", "Publicación"]
+    assert labels == ["Referencias", "Publicación", "Datos clave", "Contexto", "Resumen"]
     assert state.clip_first_frame_key == "uploads/t/p1.jpg"
     assert state.clip_image_keys == ["uploads/t/p1.jpg"]
     assert state.product_photo_keys == ["uploads/t/p1.jpg", "uploads/t/p1b.jpg"]
@@ -1151,7 +1160,7 @@ def test_generar_guion_asks_its_length_in_publicacion() -> None:
     assert "set_media_duration" in channel and "creator_script" in channel
     state = CreativeState()
     state.choose_category("script")
-    assert state.gen_views[-1] == "channel"
+    assert state.gen_views[0] == "channel" and state.gen_views[-1] == "summary"
 
 
 def test_a_piece_is_named_by_its_title_not_its_prompt() -> None:
@@ -1207,3 +1216,201 @@ def test_a_picture_is_removed_with_its_trash_button() -> None:
     state.media_product_keys, state.media_product_names = ["uploads/t/mine.jpg"], ["mine.jpg"]
     state.remove_product_preview("uploads/t/mine.jpg")
     assert state.media_product_keys == [] and state.media_product_names == []
+
+
+# -- «Resumen» and «Potenciar con IA» (§ request 2026-10-20) -----------------------------
+
+
+def test_the_summary_names_every_choice_and_edits_it_in_its_own_view() -> None:
+    state = CreativeState()
+    state.choose_category("clip")
+    state.brief_highlights = [{"key": "precio", "value": "20 $"}]
+    # review 2026-10-20: worked out only while the summary is on screen
+    assert state.gen_summary == [] and state.gen_problem == ""
+    state.go_to_view(str(len(state.gen_views) - 1))  # the summary
+    rows = {row["label"]: row for row in state.gen_summary}
+    assert rows["Qué creamos"]["value"] == "Clip"
+    assert rows["Datos clave"]["value"] == "precio: 20 $"
+    assert rows["Contexto"]["value"].startswith("Falta")
+    assert state.gen_problem != ""  # the context is still missing
+    # «Editar» goes back to the view that sets it
+    assert state.gen_views[int(rows["Contexto"]["index"])] == "topic"
+    assert state.gen_views[int(rows["Referencias"]["index"])] == "reference"
+    state.brief_topic = "La smash doble cayendo en cámara lenta"
+    rows = {row["label"]: row for row in state.gen_summary}
+    assert rows["Contexto"]["value"] == "La smash doble cayendo en cámara lenta"
+    assert state.gen_problem == ""
+
+
+def test_the_animated_avatar_takes_its_character_from_the_brand_kit() -> None:
+    """§ request 2026-10-20 (2): «quita lo de abajo… quiero que se obtenga desde el
+    brandkit» — nothing to fill in under «Avatar animado»; the character is loaded."""
+    from .content_generator import _avatar_type_view
+
+    rendered = str(_avatar_type_view())
+    assert "set_avatar_source" not in rendered and "set_avatar_prompt" not in rendered
+    state = CreativeState()
+    state.choose_category("video")
+    events = state.choose_video_type("animated_avatar_video")
+    names = [str(e) for e in (events if isinstance(events, list) else [events])]
+    assert any("load_brand_character" in name for name in names)
+    assert "presenter" not in state.gen_views and "reference" not in state.gen_views
+    state.go_to_view(str(len(state.gen_views) - 1))  # the summary
+    rows = {row["label"]: row for row in state.gen_summary}
+    assert rows["Personaje"]["index"] == ""  # the Brand Kit's: not edited here
+    assert state.gen_views[int(rows["Video de referencia"]["index"])] == "details"
+
+
+async def test_the_brand_kits_drawn_avatar_is_the_character(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uuid import uuid4
+
+    from . import creative_state as module
+
+    async def ids(self: CreativeState) -> tuple[object, object, object]:
+        return uuid4(), uuid4(), uuid4()
+
+    monkeypatch.setattr(CreativeState, "_session_ids", ids)
+    monkeypatch.setattr(
+        module,
+        "brand_character",
+        lambda *a: {"source": "image", "key": "t/x/brand/b/avatar/a.jpg", "name": "El avatar"},
+    )
+    state = CreativeState()
+    state.choose_category("video")
+    state.choose_video_type("animated_avatar_video")
+    await CreativeState.load_brand_character.fn(_Proxy(state))
+    assert (state.avatar_source, state.avatar_image_key) == ("image", "t/x/brand/b/avatar/a.jpg")
+    assert state.avatar_rights_confirmed and state.brand_character_label == "El avatar"
+    state.brief_topic = "La smash doble"
+    assert "personaje" not in state._form_problem()
+    # no drawn avatar: a mascot described from the kit
+    monkeypatch.setattr(
+        module,
+        "brand_character",
+        lambda *a: {"source": "ai", "prompt": "A friendly mascot", "name": "La mascota"},
+    )
+    await CreativeState.load_brand_character.fn(_Proxy(state))
+    assert (state.avatar_source, state.avatar_prompt) == ("ai", "A friendly mascot")
+    assert state.avatar_image_key == ""
+    # no kit at all: Generar says so
+    monkeypatch.setattr(module, "brand_character", lambda *a: {})
+    await CreativeState.load_brand_character.fn(_Proxy(state))
+    assert "Brand Kit" in state._form_problem()
+
+
+def test_the_flyer_asks_its_scene_in_the_context_view() -> None:
+    from .content_generator import _ad_image_section, _section_topic
+
+    assert "set_ad_scene_prompt" in str(_section_topic())
+    assert "set_ad_scene_prompt" not in str(_ad_image_section())
+    state = CreativeState()
+    state.choose_category("image")
+    state.ad_scene_prompt = "Una mano con el vaso"
+    state.go_to_view(str(len(state.gen_views) - 1))  # the summary
+    rows = {row["label"]: row for row in state.gen_summary}
+    assert rows["Escena"]["value"] == "Una mano con el vaso"
+
+
+class _Proxy:
+    """Reflex's StateProxy in a test (as `test_dashboard_state.py`): `async with self`
+    is a no-op lock, every attribute goes to the real state."""
+
+    def __init__(self, state: CreativeState) -> None:
+        object.__setattr__(self, "_state", state)
+
+    async def __aenter__(self) -> _Proxy:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._state, name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        setattr(self._state, name, value)
+
+
+async def test_potenciar_replaces_the_context_and_deshacer_brings_it_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uuid import uuid4
+
+    from qualify_api.creative.context_ai import ContextProposal
+
+    from . import creative_state as module
+
+    seen: dict[str, object] = {}
+
+    def fake(tenant_id: object, brand_id: object, **form: object) -> ContextProposal:
+        seen.update(form)
+        return ContextProposal(text="Quiero mostrar la smash doble…", added_facts=("2x1",))
+
+    async def ids(self: CreativeState) -> tuple[object, object, object]:
+        return uuid4(), uuid4(), uuid4()
+
+    monkeypatch.setattr(module, "enhance_generator_context", fake)
+    monkeypatch.setattr(CreativeState, "_session_ids", ids)
+    state = CreativeState()
+    state.choose_category("clip")
+    state.brief_topic = "smash doble"
+    state.brief_highlights = [{"key": "precio", "value": "20 $"}]
+    await CreativeState.enhance_context.fn(_Proxy(state))
+
+    assert state.brief_topic == "Quiero mostrar la smash doble…"
+    assert seen["text"] == "smash doble" and seen["piece"] == "Clip"
+    assert seen["highlights"] == [["precio", "20 $"]]
+    assert "2x1" in state.context_enhance_note and not state.context_enhancing
+    state.undo_enhance_context()
+    assert state.brief_topic == "smash doble" and state.context_before_enhance == ""
+
+
+async def test_potenciar_writes_a_flyers_scene_and_needs_some_words_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uuid import uuid4
+
+    from qualify_api.creative.context_ai import ContextProposal
+
+    from . import creative_state as module
+
+    async def ids(self: CreativeState) -> tuple[object, object, object]:
+        return uuid4(), uuid4(), uuid4()
+
+    monkeypatch.setattr(
+        module, "enhance_generator_context", lambda *a, **k: ContextProposal(text="Escena rica")
+    )
+    monkeypatch.setattr(CreativeState, "_session_ids", ids)
+    state = CreativeState()
+    state.choose_category("image")
+    state.ad_scene_prompt = "vaso"
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    assert state.context_enhance_error != "" and state.ad_scene_prompt == "vaso"
+    state.ad_scene_prompt = "un vaso en la barra"
+    await CreativeState.enhance_context.fn(_Proxy(state))
+    assert state.ad_scene_prompt == "Escena rica" and state.brief_topic == ""
+    state.choose_category("clip")  # another kind: nothing of the flyer's to undo
+    assert state.context_before_enhance == ""
+
+
+def test_the_clips_middle_images_are_named_on_the_summary() -> None:
+    """Review 2026-10-20: what sits between the first and last file is a reference, and
+    the summary says what that needs before Generar."""
+    state = CreativeState()
+    state.choose_category("clip")
+    state.clip_images = [{"key": "uploads/t/a.jpg", "name": "a", "source": "upload"}]
+    state.clip_videos = [{"key": "uploads/t/v.mp4", "name": "v", "source": "upload"}]
+    state._sync_clip_frames()
+    # a third file in the middle is a reference, and the summary says what that needs
+    state.clip_images = [
+        *state.clip_images,
+        {"key": "uploads/t/b.jpg", "name": "b", "source": "upload"},
+    ]
+    state.clip_sequence = ["uploads/t/a.jpg", "uploads/t/b.jpg", "uploads/t/v.mp4"]
+    state._sync_clip_frames()
+    assert state._media_inputs()["clip_image_keys"] == ["uploads/t/b.jpg"]
+    state.go_to_view(str(len(state.gen_views) - 1))  # the summary
+    rows = {row["label"]: row for row in state.gen_summary}
+    assert "modelo de video avanzado" in rows["Imágenes del medio"]["value"]

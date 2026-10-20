@@ -382,7 +382,7 @@ _LOGO_PLACEMENT: dict[ContentKind, str] = {
     ContentKind.STATIC_FLYER: "it is printed on the image",
     ContentKind.TEMPLATE: "the template places it where the brand mark goes",
     ContentKind.CAROUSEL: "it is printed in a corner of the generated slides",
-    ContentKind.CLIP: "it is not printed: a clip shows only what its frames and references show",
+    ContentKind.CLIP: "it is laid in a corner of every frame of the clip",
     ContentKind.CREATOR_SCRIPT: "show it on camera where it fits (packaging, the counter, a sign)",
 }
 

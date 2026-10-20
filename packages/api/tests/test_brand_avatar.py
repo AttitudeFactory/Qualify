@@ -244,3 +244,23 @@ def test_only_the_reserved_key_is_carried_and_only_in_its_document() -> None:
 def test_a_fresh_uuid_does_not_leak_into_the_key_prefix() -> None:
     other = uuid4()
     assert not ba.avatar_object_key(other, BRAND).startswith(f"t/{TENANT}/")
+
+
+def test_the_animated_avatar_videos_character_is_described_from_the_kit() -> None:
+    """§ request 2026-10-20: the «Avatar animado» video's character comes from the Brand
+    Kit — described from it while the kit has no drawn avatar: the character only (the
+    video composes the background), within the avatar prompt's field."""
+    inputs = ba.AvatarInputs(
+        brand_name="Nibbles' Burgers",
+        sector="Hamburguesería smash",
+        palette=("#C4622D", "#F5C518", "#111111", "#FFFFFF"),
+        tone=(80, 75, 90, 30),
+        style="ilustración cálida",
+    )
+    text = ba.describe_character(inputs)
+    assert "Nibbles' Burgers" in text and "Hamburguesería smash" in text
+    assert "#C4622D, #F5C518, #111111" in text and "#FFFFFF" not in text
+    assert "background" not in text and len(text) <= ba.CHARACTER_MAX_CHARS
+    assert "Style" not in ba.describe_character(ba.AvatarInputs(brand_name="x", style="a"))
+    long = ba.describe_character(ba.AvatarInputs(brand_name="x", style="y " * 400))
+    assert len(long) <= ba.CHARACTER_MAX_CHARS and long.endswith("…")

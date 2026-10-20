@@ -34,9 +34,11 @@ from pydantic import ValidationError
 from qualify_api.creative import models as orm
 from qualify_api.creative.brand_service import BrandKitService
 from qualify_api.creative.composition import production_content_service
+from qualify_api.creative.context_ai import ContextInput, ContextProposal, enhance_context
 from qualify_api.creative.readiness import readiness
 from qualify_api.creative.service import DraftDetail
 from qualify_api.creative.voice_service import VoiceProfileService
+from qualify_api.stock.keys import is_stock_key
 from qualify_api.tenancy.models import Brand
 from qualify_creative.enums import (
     BriefIntent,
@@ -348,7 +350,14 @@ def build_brief(
     """
     content_kind = ContentKind(kind)
     inputs = MediaInputs.model_validate(dict(media or {}))
-    own_images = [*inputs.product_keys, *([inputs.background_key] if inputs.background_key else [])]
+    # an «Inspiración» (stock) file is never the route's source: the licence guard keeps
+    # stock out of `source_media_key` (a from-upload source is published as it is), and
+    # stock is not the operator's own image — a piece with only stock has none
+    own_images = [
+        key
+        for key in (*inputs.product_keys, inputs.background_key)
+        if key and not is_stock_key(key)
+    ]
     if content_kind is not ContentKind.STATIC_FLYER or image_route == "":
         image_route = ImageRoute.FROM_UPLOAD.value if own_images else ImageRoute.TEMPLATE_ONLY.value
         source_media_key = own_images[0] if own_images else ""
@@ -395,6 +404,61 @@ def preview_brief_prompt(tenant_id: UUID, brand_id: UUID, **form: Any) -> bool:
     return production_content_service().preview_prompt(
         tenant_id=tenant_id, brand_id=brand_id, brief=brief
     )
+
+
+def brand_character(tenant_id: UUID, brand_id: UUID) -> dict[str, str]:
+    """The «Avatar animado»'s character, from the Brand Kit (§ request 2026-10-20: no
+    picker any more): the brand's own drawn avatar when the kit has a ready one (an image
+    Qualify made for the brand, so its rights are the brand's), else a mascot described
+    from the kit — name, business, colours, tone. `{}` without a kit.
+
+    `{source: "image", key, name}` or `{source: "ai", prompt, name}`."""
+    from qualify_api.creative.brand_avatar import (
+        AvatarStatus,
+        describe_character,
+        load_avatar_inputs,
+        load_brand_avatar,
+    )
+
+    avatar = load_brand_avatar(tenant_id, brand_id)
+    if avatar is not None and avatar.status is AvatarStatus.READY and avatar.object_key:
+        return {"source": "image", "key": avatar.object_key, "name": "El avatar de tu marca"}
+    inputs = load_avatar_inputs(tenant_id, brand_id)
+    if inputs is None:
+        return {}
+    return {
+        "source": "ai",
+        "prompt": describe_character(inputs),
+        "name": "La mascota de tu marca, creada con tu Brand Kit",
+    }
+
+
+def enhance_generator_context(
+    tenant_id: UUID,
+    brand_id: UUID,
+    *,
+    text: str,
+    piece: str,
+    scene: bool,
+    product: str,
+    highlights: Sequence[Sequence[str]],
+    must_mention: str,
+    must_avoid: str,
+) -> ContextProposal:
+    """«Potenciar con IA» (§ request 2026-10-20): the context the operator wrote,
+    rewritten with the brand's kit and the piece's «Datos clave» — no new facts
+    (`qualify_api.creative.context_ai`). Nothing is created or stored."""
+    kit = BrandKitService().get_kit(tenant_id=tenant_id, brand_id=brand_id)
+    data = ContextInput(
+        text=text,
+        piece=piece,
+        scene=scene,
+        product=product,
+        highlights=tuple((str(name), str(fact)) for name, fact in highlights),
+        must_mention=must_mention,
+        must_avoid=must_avoid,
+    )
+    return enhance_context(data, kit)
 
 
 # ---------------------------------------------------------------------------

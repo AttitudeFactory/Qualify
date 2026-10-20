@@ -248,6 +248,37 @@ def build_avatar_prompt(inputs: AvatarInputs) -> str:
     return " ".join(parts)
 
 
+#: The animated avatar's described character fits its field (`schemas.AVATAR_PROMPT_MAX`).
+CHARACTER_MAX_CHARS = 600
+
+
+def describe_character(inputs: AvatarInputs) -> str:
+    """The brand's mascot as a CHARACTER description for the «Avatar animado» video (§
+    request 2026-10-20: «que se obtenga desde el brandkit»), used while the kit has no
+    drawn avatar: who the character is, never a framing or a background — the video
+    composes those. Same inputs as `build_avatar_prompt`, at most `CHARACTER_MAX_CHARS`."""
+    parts = ["A friendly animated mascot character in a modern 3D animated-film style"]
+    if inputs.brand_name:
+        parts[0] += f', the official mascot of "{inputs.brand_name}"'
+    parts[0] += "."
+    if inputs.sector:
+        parts.append(f'It embodies the business: "{inputs.sector}".')
+    elif inputs.positioning:
+        parts.append(f'It embodies the brand: "{inputs.positioning}".')
+    if inputs.palette:
+        parts.append("Main colours: " + ", ".join(inputs.palette[:3]) + ".")
+    tone = _tone_lines(inputs.tone)
+    if tone:
+        parts.append("Personality: " + "; ".join(tone) + ".")
+    if len(inputs.style) >= 3:  # a stray letter in the logo brief is not a style
+        parts.append(f'Style the brand likes: "{inputs.style}".')
+    parts.append("No text, no logos.")
+    text = " ".join(parts)
+    if len(text) <= CHARACTER_MAX_CHARS:
+        return text
+    return text[: CHARACTER_MAX_CHARS - 1].rsplit(" ", 1)[0] + "…"
+
+
 # ---------------------------------------------------------------------------------------
 # The record
 
@@ -411,6 +442,27 @@ def load_brand_avatar(tenant_id: UUID, brand_id: UUID, *, store: Any = None) -> 
     return BrandAvatar.from_record(store.load_avatar(tenant_id=tenant_id, brand_id=brand_id))
 
 
+def load_avatar_inputs(tenant_id: UUID, brand_id: UUID) -> AvatarInputs | None:
+    """The kit's avatar inputs (`avatar_inputs`) read from the database — None without a
+    kit. Only reads: no vendor, no switch (the animated avatar video uses them too)."""
+    from qualify_api.creative.brand_context import DbBrandContextReader
+    from qualify_api.creative.brand_kit_store import BrandKitStore
+    from qualify_api.creative.brand_names import DbBrandNames
+    from qualify_api.creative.brand_service import BrandKitService
+
+    kit = BrandKitService().get_kit(tenant_id=tenant_id, brand_id=brand_id)
+    if kit is None:
+        return None
+    store = BrandKitStore()
+    details = store.load_details(tenant_id=tenant_id, brand_id=brand_id)
+    return avatar_inputs(
+        kit,
+        brand_name=DbBrandNames()(tenant_id=tenant_id, brand_id=brand_id),
+        context=DbBrandContextReader(store).context(tenant_id=tenant_id, brand_id=brand_id),
+        logo_brief=details.logo_brief,
+    )
+
+
 # ---------------------------------------------------------------------------------------
 # Production wiring — TODO(keys): never run against BytePlus yet
 
@@ -435,10 +487,7 @@ def production_deps() -> AvatarDeps:
     from qualify_creative.providers import GenerationRequest, RenderedPrompt
     from qualify_creative.router import BudgetContext, CreativeRouter
 
-    from qualify_api.creative.brand_context import DbBrandContextReader
     from qualify_api.creative.brand_kit_store import BrandKitStore
-    from qualify_api.creative.brand_names import DbBrandNames
-    from qualify_api.creative.brand_service import BrandKitService
     from qualify_api.creative.composition import (
         ARK_BASE_URL_ENV,
         PRICING_VERSION,
@@ -464,16 +513,7 @@ def production_deps() -> AvatarDeps:
     media = R2ReadingMediaStore(LocalMediaStore(media_root()))
 
     def load_inputs(tenant_id: UUID, brand_id: UUID) -> AvatarInputs | None:
-        kit = BrandKitService().get_kit(tenant_id=tenant_id, brand_id=brand_id)
-        if kit is None:
-            return None
-        details = store.load_details(tenant_id=tenant_id, brand_id=brand_id)
-        return avatar_inputs(
-            kit,
-            brand_name=DbBrandNames()(tenant_id=tenant_id, brand_id=brand_id),
-            context=DbBrandContextReader(store).context(tenant_id=tenant_id, brand_id=brand_id),
-            logo_brief=details.logo_brief,
-        )
+        return load_avatar_inputs(tenant_id, brand_id)
 
     def read_media(key: str) -> bytes | None:
         try:
