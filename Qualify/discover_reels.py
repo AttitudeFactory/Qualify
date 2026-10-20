@@ -80,7 +80,9 @@ class DiscoverReelsState(rx.State):
     @rx.var
     def unchecked_note(self) -> str:
         """The «inténtalo más tarde» body, with the reason the check failed when known."""
-        base = "El servicio que comprueba que cada reel sea de tu producto no respondió"
+        base = (
+            "El servicio que comprueba que cada reel sea de tu producto o tu categoría no respondió"
+        )
         if self.check_detail:
             return f"{base}: {self.check_detail}. Inténtalo más tarde."
         return f"{base}. Inténtalo más tarde."

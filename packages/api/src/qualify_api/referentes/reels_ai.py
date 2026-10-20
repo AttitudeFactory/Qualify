@@ -1,8 +1,9 @@
 """Claude checks a referente's reels against the brand's rubro, as a TOOL — stateless.
 
 «Descubrir reels» (§ request 2026-10-15) shows the most viewed reels of a brand's
-referentes, and only the ones of the brand's own rubro: a burger shop that follows a
-food creator must not get that creator's make-up reel. A referente fitting the brand
+referentes, and only the ones of the brand's own product or its category — never the
+rest of its niche: a burger shop that follows a food creator must not get that creator's
+make-up reel. A referente fitting the brand
 (`qualify_api.referentes.ai`, `encaja`) says nothing about each of its videos, so each
 reel is judged by what it says about itself — above all what is SPOKEN in it (its
 transcript, since 2026-10-15), then its caption, hashtags and sound, and the account it

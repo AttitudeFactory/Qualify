@@ -105,15 +105,40 @@ corridas están puntuadas con las mismas etiquetas finales (`--rescore`, sin lla
 
 | Corrida | Prompt | precision | recall | trampas | `category` | $ (30 marcas) |
 |---|---|---|---|---|---|---|
-| `20261020-175227` | solo `producto` (el de producción hasta hoy) | 0.977* | 0.933* | 2/216 | 30/33* | 0.39 |
+| `20261020-175227` | solo `producto` (el de producción hasta hoy) | 0.964 | 0.900* | 2/216 | 0/3* | 0.39 |
 | `20261020-180109` | `categoria`, primera versión | 0.988 | 0.922 | 1/216 | 26/33 | 0.41 |
 | **`20261020-180356`** | **`categoria`, versión vigente** | **0.966** | **0.944** | 3/216 | 28/33 | 0.42 |
 
-\* No comparable en `category`: esa corrida no vio los 10 reels nuevos y la eval cuenta un
-reel sin respuesta como mostrado (como producción no lo hace, pero así está escrita la
-puntuación), lo que la infla. Con su propia regla y sus propias etiquetas daba recall
-0.613: un reel que aceptaba `producto` y `rubro` contaba como fallo si el modelo decía
+\* Esa corrida no vio los 10 reels nuevos de `category`: `--rescore` puntúa solo lo que cada
+corrida preguntó (`asked`; en las corridas guardadas antes de existir, lo que respondieron),
+así que su recall cuenta 10 reels menos. Con su propia regla y sus propias etiquetas daba
+recall 0.613: un reel que aceptaba `producto` y `rubro` contaba como fallo si el modelo decía
 `rubro`, aunque esa respuesta fuera aceptable (corregido en `gold`).
+
+### ¿Funciona en cualquier rubro? — 4 rubros que el prompt no nombra (`results/20261020-183448.json`)
+
+El prompt explica `categoria` con ejemplos de seis rubros. Para comprobar que el criterio es
+general, y que no se aprendió solo los ejemplos, se añadieron cuatro marcas de rubros que el
+prompt no menciona. Dos de ellas no tienen nicho en la taxonomía de la app (`niches: []`,
+como llegarían en producción): el filtro solo ve su rubro y su categoría de cuenta.
+
+| Marca | precision | recall | trampas |
+|---|---|---|---|
+| Concesionaria de autos (sin nicho) | 1.0 | 1.0 | 0/21 |
+| Farmacia | 1.0 | 0.917 | 0/18 |
+| Tienda de repuestos (sin nicho) | 1.0 | 0.917 | 0/18 |
+| Academia de inglés (servicio, sin producto físico) | 1.0 | 0.917 | 0/18 |
+| **Total (3 repeticiones)** | **1.0** | **0.938** | **0/75** |
+
+- **Ninguna trampa pasa** en ningún tipo:
+  - palabras con doble sentido: «coche para bebé», «receta de sancocho», «repuesto de tinta», «clases de manejo»;
+  - publicidad de otras marcas;
+  - transcripciones de otra cosa;
+  - nombres de cuenta engañosos;
+  - instrucciones metidas en el texto.
+- **`categoria`, 21/24.** Pasan el seguro todo riesgo y los usados certificados para la concesionaria, el aceite para los repuestos y el curso TOEFL para la academia. Cada fallo es un reel en 1 de 3 corridas: la ortopedia para la farmacia, las llantas para los repuestos y las clases de francés para la academia. Es el mismo patrón que en las marcas originales: donde más duda el modelo es en `categoria`, nunca en las trampas.
+- **Sin nicho funciona igual.** La concesionaria y la tienda de repuestos sacan 1.0 y 0.917.
+- **Costo:** ≈0.012 USD por marca.
 
 **Frente a la medición anterior (2026-10-15, regla de la tarde «todo el nicho encaja»,
 Sonnet 5 @ low):** precision 1.000, recall 1.000 y 0/150 trampas. Esas cifras no se pueden

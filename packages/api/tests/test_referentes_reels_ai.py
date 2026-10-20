@@ -152,8 +152,8 @@ def test_the_same_kind_of_offer_fits_too() -> None:
     for rubro in ("gimnasio", "clínica", "software de facturación", "agencia de viajes"):
         assert rubro in system, rubro
     assert "se COMPRA" in system and "una receta casera" in system
-    enum = client.calls[0]["tools"][0]["input_schema"]["properties"]["resultados"]["items"]
-    assert enum["properties"]["afinidad"]["enum"] == ["producto", "categoria", "rubro", "otro"]
+    item = client.calls[0]["tools"][0]["input_schema"]["properties"]["resultados"]["items"]
+    assert item["properties"]["afinidad"]["enum"] == ["producto", "categoria", "rubro", "otro"]
 
 
 def test_without_a_valid_affinity_nothing_fits() -> None:

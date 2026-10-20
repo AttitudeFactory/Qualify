@@ -44,6 +44,11 @@ from qualify_api.claude_tools import ClaudeToolError, ModelConfig
 from qualify_api.referentes.ai import BrandBrief
 from qualify_api.referentes.reels_ai import FITS, REVIEW_BATCH, ReelToReview, review_reels
 
+#: The rule the gold set encodes (§ 2026-10-20): what must be shown. Pinned here, not
+#: read from production, so a change to `reels_ai.FITS` cannot move the gold with it —
+#: `main` refuses to run while the two differ (review of PR #173).
+RULE_FITS = frozenset({"producto", "categoria"})
+
 HERE = Path(__file__).resolve().parent
 
 #: A transport or rate-limit error is retried this many times, waiting longer each time.
@@ -129,12 +134,14 @@ def run_case(config: ModelConfig, case: dict[str, Any], api_key: str) -> dict[st
         "cost_usd": round(cost, 5),
         "error": "; ".join(errors),
         "answers": answers,
+        # what was asked, so `--rescore` never scores a reel added to cases.json later
+        "asked": [item.id for item in items],
         "score": score(case, answers),
     }
 
 
 def gold(reel: dict[str, Any]) -> str:
-    """What the reel must do under the rule in force — `reels_ai.FITS`: the brand's own
+    """What the reel must do under the rule in force — `RULE_FITS`: the brand's own
     product and, since 2026-10-20, its category (§ founder 2026-10-15 evening: never the
     whole niche) — read from the accepted affinities: y when every accepted affinity
     fits, n when none does, m (not scored) when they are mixed, since either verdict is
@@ -142,19 +149,28 @@ def gold(reel: dict[str, Any]) -> str:
     `rubro` answer — accepted — counted as a miss.) The `fit` column of `cases.json`
     records the 2026-10-15 afternoon rule and is not read."""
     accepted = set(reel.get("affinities") or ())
-    fitting = accepted & FITS
+    fitting = accepted & RULE_FITS
     if not fitting:
         return "n"
     return "y" if fitting == accepted else "m"
 
 
-def score(case: dict[str, Any], answers: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def score(
+    case: dict[str, Any],
+    answers: dict[str, dict[str, Any]],
+    asked: list[str] | None = None,
+) -> dict[str, Any]:
+    """`asked`: the reels the run sent (None = every reel of the case). A reel it did not
+    send is not scored — counting it as kept (as an unanswered one is) inflated recall
+    when a saved run was rescored after reels were added (review of PR #173)."""
     y = n = y_kept = n_kept = 0
     aff_total = aff_ok = 0
     traps: list[str] = []
     missed: list[str] = []
     by_trap: dict[str, dict[str, int]] = defaultdict(lambda: {"ok": 0, "of": 0})
     for reel in case["reels"]:
+        if asked is not None and reel["id"] not in asked:
+            continue
         answer = answers.get(reel["id"])
         kept = True if answer is None else answer["fits"]  # unanswered = unreviewed = kept
         label = f"{case['id']}:{reel['id']}"
@@ -182,6 +198,7 @@ def score(case: dict[str, Any], answers: dict[str, dict[str, Any]]) -> dict[str,
         "recall": round(y_kept / y, 3) if y else 1.0,
         "traps": n_kept,
         "traps_of": n,
+        "y_of": y,
         "affinity": round(aff_ok / aff_total, 3) if aff_total else None,
         "answered": f"{len(answers)}/{len(case['reels'])}",
         "trap_ids": traps,
@@ -200,6 +217,8 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=5)
     # score a saved results file again with the current labels and rule — no calls
     parser.add_argument("--rescore")
+    # only these case ids (e.g. a new rubro) — checked before any paid call
+    parser.add_argument("--cases", nargs="*")
     args = parser.parse_args()
     _load_env(args.env_file)
     cases = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))["cases"]
@@ -207,13 +226,36 @@ def main() -> int:
         saved = json.loads(Path(args.rescore).read_text(encoding="utf-8"))
         by_id = {case["id"]: case for case in cases}
         results = [
-            (name, 0, {**run, "score": score(by_id[run["case"]], run["answers"])})
+            # a run saved before `asked` was recorded: what it answered is all we know
+            (
+                name,
+                0,
+                {
+                    **run,
+                    "score": score(
+                        by_id[run["case"]], run["answers"], run.get("asked") or list(run["answers"])
+                    ),
+                },
+            )
             for name, entry in saved.items()
             for run in entry["runs"]
             if run["case"] in by_id
         ]
-        summarize(list(saved), results, cases)
+        summarize(list(saved), results)
         return 0
+    if FITS != RULE_FITS:
+        print(
+            f"reels_ai.FITS {sorted(FITS)} differs from the eval's RULE_FITS "
+            f"{sorted(RULE_FITS)}: update the gold set's rule first",
+            file=sys.stderr,
+        )
+        return 2
+    if args.cases:
+        unknown = set(args.cases) - {case["id"] for case in cases}
+        if unknown:
+            print(f"unknown cases: {sorted(unknown)}", file=sys.stderr)
+            return 2
+        cases = [case for case in cases if case["id"] in args.cases]
     api_key = os.environ.get("QUALIFY_ANTHROPIC_API_KEY", "").strip()
     if not api_key:
         print("QUALIFY_ANTHROPIC_API_KEY is not set", file=sys.stderr)
@@ -228,7 +270,7 @@ def main() -> int:
         results = list(
             pool.map(lambda job: (job[0], job[2], run_case(CONFIGS[job[0]], job[1], api_key)), jobs)
         )
-    report = summarize(args.configs, results, cases)
+    report = summarize(args.configs, results)
     out = HERE / "results" / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -237,10 +279,12 @@ def main() -> int:
 
 
 def summarize(
-    configs: list[str], results: list[tuple[str, int, dict[str, Any]]], cases: list[dict]
+    configs: list[str],
+    results: list[tuple[str, int, dict[str, Any]]],
 ) -> dict[str, Any]:
     """Print the per-case table, the totals and the per-trap tally of each config, and
-    return them as the report written next to this file."""
+    return them as the report written next to this file. The totals add up what each run
+    scored, so a rescored run counts only the reels it asked about."""
     report: dict[str, Any] = {}
     print(
         f"{'config':15} {'case':16} {'prec':>5} {'recall':>6} {'traps':>7} {'affin':>6} "
@@ -257,9 +301,8 @@ def summarize(
             )
         # totals over every scored reel, and per trap type
         per_trap: dict[str, dict[str, int]] = defaultdict(lambda: {"ok": 0, "of": 0})
-        repeats = len(rows) // len(cases) or 1
-        y = sum(1 for c in cases for x in c["reels"] if gold(x) == "y") * repeats
-        n = sum(1 for c in cases for x in c["reels"] if gold(x) == "n") * repeats
+        y = sum(r["score"]["y_of"] for r in rows)
+        n = sum(r["score"]["traps_of"] for r in rows)
         y_kept = y - sum(len(r["score"]["missed_ids"]) for r in rows)
         n_kept = sum(r["score"]["traps"] for r in rows)
         for r in rows:
