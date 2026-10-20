@@ -137,7 +137,7 @@ def test_quota_exhausted_refuses_new_searches_but_the_cache_still_answers() -> N
 
 def test_a_429_cools_the_provider_down_and_is_not_retried() -> None:
     provider = FakeProvider(error=StockRateLimited("slow down", retry_after_s=40))
-    state = MemoryKeyValue()
+    state = MemoryKeyValue(clock=lambda: 1000.0)  # frozen: the TTL read is exact
     service = _service(provider, state=state)
     with pytest.raises(StockUnavailable) as exc:
         service.search(TENANT, "gimnasio")

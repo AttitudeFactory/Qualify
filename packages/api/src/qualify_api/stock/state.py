@@ -9,6 +9,7 @@ Counters follow `leads/rate_limit.py`: INCR, and EXPIRE only on the window's fir
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from typing import Any, Protocol
@@ -78,7 +79,9 @@ class MemoryKeyValue:
     def ttl(self, key: str) -> int | None:
         with self._lock:
             hit = self._live(key)
-            return max(1, int(hit[1] - self._clock())) if hit else None
+            # rounded up, like Redis: a key set for 40 s reads 40 until a full second
+            # has gone, not 39 as soon as any time has passed
+            return max(1, math.ceil(hit[1] - self._clock())) if hit else None
 
 
 class FallbackKeyValue:
