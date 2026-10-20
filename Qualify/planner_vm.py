@@ -1209,7 +1209,7 @@ def build_output_chip(
 # The key drives the tile's colour (`q-kind-*`); the destination has its own (`q-dest-*`).
 _IMAGE_KIND = ("image", "Imagen", "image")
 _VIDEO_KIND = ("video", "Video", "film")
-_CAROUSEL_KIND = ("carousel", "Carrusel", "gallery-horizontal-end")
+_CAROUSEL_KIND = ("carousel", "Galería", "gallery-horizontal-end")
 _PACK_KIND = ("pack", "Multiformato", "layers")
 # Every content key with its glyph — the page matches over it (`rx.icon` needs a literal).
 KIND_ICONS: dict[str, str] = {

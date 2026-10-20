@@ -142,10 +142,11 @@ class BrandVoiceProfile(Base):
 
 
 class BrandVoiceClone(Base):
-    """The brand's own voice cloned in HeyGen (0032): one per brand, replaced on a new
-    clone. Manual, with the operator's recorded consent (`consent_by`/`consent_at`).
-    `heygen_voice_id` works anywhere a HeyGen `voice_id` does once `status` is
-    `complete`."""
+    """The brand's own cloned voice (0032; vendor-neutral since 0066): one per brand,
+    replaced on a new clone. Manual, with the operator's recorded consent
+    (`consent_by`/`consent_at`/`consent_text`). `provider` says where it lives —
+    `seed_speech` since 2026-10-16, `heygen` for rows made before — and
+    `external_voice_id` is its id there (Seed Speech: our own post-paid `qlf-…`)."""
 
     __tablename__ = "brand_voice_clones"
     __table_args__ = (
@@ -162,13 +163,20 @@ class BrandVoiceClone(Base):
     brand_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("brands.id"), nullable=False
     )
-    heygen_voice_id: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False, server_default="heygen")
+    external_voice_id: Mapped[str] = mapped_column(Text, nullable=False)
+    #: History only (0066): the HeyGen id of a voice cloned before the move to Seed Speech.
+    heygen_voice_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="processing")
     failure_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     language: Mapped[str | None] = mapped_column(Text, nullable=True)
     gender: Mapped[str | None] = mapped_column(Text, nullable=True)
     preview_audio_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sample_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preview_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    consent_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     consent_by: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
@@ -525,7 +533,9 @@ class TemplateRun(Base):
 
     __tablename__ = "template_runs"
     __table_args__ = (
-        CheckConstraint("engine IN ('remotion','heygen','ugc')", name="ck_template_runs_engine"),
+        CheckConstraint(
+            "engine IN ('remotion','heygen','omnihuman','ugc')", name="ck_template_runs_engine"
+        ),
         CheckConstraint(
             "status IN ('pending','generating','completed','failed','cancelled')",
             name="ck_template_runs_status",

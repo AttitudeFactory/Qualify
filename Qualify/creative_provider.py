@@ -331,6 +331,7 @@ def build_brief(
     source_media_key: str,
     must_mention: str,
     must_avoid: str,
+    highlights: Sequence[Sequence[str]] = (),
     variants_requested: int = 3,
     kind: str = "static_flyer",
     media: Mapping[str, object] | None = None,
@@ -363,6 +364,7 @@ def build_brief(
         constraints=BriefConstraints(
             must_mention=_split_commas(must_mention),
             must_avoid=_split_commas(must_avoid),
+            highlights=tuple((str(name), str(fact)) for name, fact in highlights),
         ),
         variants_requested=variants_requested,
         kind=content_kind,
@@ -401,7 +403,7 @@ def preview_brief_prompt(tenant_id: UUID, brand_id: UUID, **form: Any) -> bool:
 
 def catalog_products(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], ...]:
     """The brand's products for the generator's picker, as flat string rows (a Reflex var
-    cannot carry the catalog's dataclasses): `{id, name, price_label, photo_key,
+    cannot carry the catalog's dataclasses): `{id, name, photo_key,
     photo_count, video_count}`. Read through the catalog's own door."""
     from .catalog_provider import list_products
 
@@ -409,12 +411,12 @@ def catalog_products(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], .
         {
             "id": product.product_id,
             "name": product.name,
-            "price_label": product.price_label,
             "photo_key": product.primary_photo_key,
             "photo_count": str(product.photo_count),
             "video_count": str(product.video_count),
             "counts_label": product.counts_label,
             "photo_keys": "\n".join(m.key for m in product.media if m.media_type == "image"),
+            "video_keys": "\n".join(m.key for m in product.media if m.media_type == "video"),
         }
         for product in list_products(tenant_id, brand_id)
     )
@@ -433,8 +435,8 @@ def recipe_options(
     what THIS Post has — the photos the operator uploaded for the piece plus the catalog
     product's own (deduplicated), the catalog's clips (or a video the operator staged),
     and the angle — against the templates published in the repo. `has_avatar` is False
-    until the tenant's HeyGen presenter is a stored fact, so HeyGen is offered as the
-    alternative it is, never as the suggestion."""
+    until the tenant's presenter is a stored fact, so the talking presenter (OmniHuman)
+    is offered as the alternative it is, never as the suggestion."""
     from qualify_api.catalog.read import DbProductCatalog
     from qualify_creative.render import PostFacts, TemplateRegistry, suggest_recipes
     from qualify_creative.video import is_video_filename
@@ -463,7 +465,7 @@ def recipe_options(
 
 
 #: The Brand Kit's files the generator can place in a piece: raster images only (a
-#: Pillow composition and HeyGen take nothing else) — never the fonts.
+#: Pillow composition and the image models take nothing else) — never the fonts.
 _BRAND_MEDIA_TYPES = {
     "image/png": (".png",),
     "image/jpeg": (".jpg", ".jpeg"),
@@ -518,6 +520,21 @@ def brand_media(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], ...]:
     return tuple(rows)
 
 
+_MONTHS = ("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
+
+
+def _piece_label(title: str, media_type: str, created_at: object) -> str:
+    """A piece by its title (§ request 2026-10-14: «el título del video, no lo del
+    prompt») — its copy's hook — else by what it is and when it was made."""
+    title = " ".join(title.split())
+    if title:
+        return title[:40] + "…" if len(title) > 40 else title
+    what = "Video" if media_type == "video" else "Imagen"
+    day = getattr(created_at, "day", None)
+    month = getattr(created_at, "month", None)
+    return f"{what} del {day} {_MONTHS[month - 1]}" if day and month else what
+
+
 def brand_pieces(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], ...]:
     """The images and videos of the brand's own pieces, the most recent first — what a
     carousel's «De una pieza» slide picks from (§ request 2026-10-09). `view` is a
@@ -537,12 +554,11 @@ def brand_pieces(tenant_id: UUID, brand_id: UUID) -> tuple[dict[str, str], ...]:
         except Exception as exc:  # noqa: BLE001 — a thumbnail is not worth failing the list
             logger.warning("piece view not issued: %s", type(exc).__name__)
             view = ""
-        topic = " ".join(piece.topic.split())
         rows.append(
             {
                 "key": piece.object_key,
                 "media_type": piece.media_type,
-                "label": (topic[:40] + "…" if len(topic) > 40 else topic) or "Pieza",
+                "label": _piece_label(piece.title, piece.media_type, piece.created_at),
                 "view": view,
             }
         )
@@ -802,132 +818,78 @@ def reject_draft(
 
 
 # ---------------------------------------------------------------------------
-# The avatar kinds' video engine (/create, § request 2026-10-07)
+# The avatar kinds' video engine (/create, § request 2026-10-07; ByteDance 2026-10-16)
 
-#: Which vendor renders the two avatar kinds: Seedance (BytePlus ModelArk) unless the
-#: deployment says `heygen`. Read per call, like the keys: an env change, nothing else.
+#: Which vendor renders the two avatar kinds. HeyGen is retired (2026-10-16): the
+#: talking presenter is OmniHuman (photo + Seed Speech voice, lips in sync), the scene
+#: video Seedance. Read per call, like the keys: an env change, nothing else.
 VIDEO_ENGINE_ENV = "QUALIFY_VIDEO_ENGINE"
-VIDEO_ENGINES = ("seedance", "heygen")
+VIDEO_ENGINES = ("omnihuman", "seedance")
+#: The two keys the talking presenter needs (Seed Speech reads, OmniHuman animates).
+PRESENTER_KEY_ENVS = ("QUALIFY_BYTEPLUS_SPEECH_API_KEY", "QUALIFY_BYTEPLUS_CV_API_KEY")
+GENDERS = ("female", "male")
+
+
+def presenter_keys_ready() -> bool:
+    import os
+
+    return all(os.environ.get(name, "").strip() for name in PRESENTER_KEY_ENVS)
 
 
 def configured_video_engine() -> str:
+    """`QUALIFY_VIDEO_ENGINE` when it names a live engine; otherwise OmniHuman once both
+    of its keys are set (§ request 2026-10-16: «dejar todo preparado para cuando tenga
+    las api key»), Seedance until then. A stale `heygen` falls through the same way."""
     import os
 
     value = (os.environ.get(VIDEO_ENGINE_ENV) or "").strip().lower()
-    return value if value in VIDEO_ENGINES else "seedance"
+    if value in VIDEO_ENGINES:
+        return value
+    if not presenter_keys_ready():
+        return "seedance"
+    # OmniHuman downloads the photo and the voice: without a public URL (a local run, no
+    # tunnel) every presenter would fail after its frame and voice were paid for
+    from qualify_api.creative.composition import public_media_ready
+
+    return "omnihuman" if public_media_ready() else "seedance"
 
 
 # ---------------------------------------------------------------------------
-# HeyGen catalog for the avatar kinds (/create)
-
-#: The platform's HeyGen key (D4: Qualify pays) — same variable the composition's key
-#: resolver reads for the renders.
-HEYGEN_KEY_ENV = "QUALIFY_HEYGEN_API_KEY"
-#: Library looks and Spanish voices change rarely: one read per process-hour.
-_CATALOG_TTL_SECONDS = 3600
-_CATALOG_LIMIT = 50
-#: The picker samples the library per character, not HeyGen's flat looks page — that
-#: page's first 150 looks were all men (measured 2026-09-28, see the adapter). A few
-#: characters per gender, a couple of looks each, fetched in parallel.
-_GROUPS_PER_GENDER = 10
-_LOOKS_PER_GROUP = 2
-GENDERS = ("female", "male")
-_catalog_cache: dict[str, tuple[float, list[dict[str, str]], list[dict[str, str]]]] = {}
-
-
-class HeyGenNotConfigured(RuntimeError):
-    """`QUALIFY_HEYGEN_API_KEY` is not set: the avatar kinds cannot be offered."""
+# The voices of the talking presenter (/create)
 
 
 def brand_clone_voice(tenant_id: UUID, brand_id: UUID) -> dict[str, str] | None:
-    """The brand's own HeyGen voice clone (§ request 2026-09-30, `voice_lab`) as a voice
-    of the /create picker, once HeyGen finished it — None otherwise. `own` keeps it
-    listed whatever gender the picker shows."""
+    """The brand's own cloned voice (Seed Speech, `voice_lab`) as a voice of the /create
+    picker, once ready — None otherwise. Its id is `"brand"`, never the clone's id: the
+    producer resolves it server-side (`voice_access`). `own` keeps it listed whatever
+    gender the picker shows."""
+    from qualify_api.creative.voice_access import BRAND_VOICE
     from qualify_api.creative.voice_clone import VoiceCloneService
 
     clone = VoiceCloneService().current(tenant_id=tenant_id, brand_id=brand_id)
     if clone is None or not clone.is_ready:
         return None
-    return {
-        "id": clone.heygen_voice_id,
-        "name": f"Tu voz · {clone.name}",
-        "gender": clone.gender,
-        "own": "1",
-    }
+    return {"id": BRAND_VOICE, "name": f"Tu voz · {clone.name}", "gender": clone.gender, "own": "1"}
 
 
-def heygen_catalog() -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    """(looks, voices) for the avatar pickers — see `build_heygen_catalog` — cached per
-    process-hour."""
-    import os
-    import time
+def public_voices() -> list[dict[str, str]]:
+    """The public Spanish voices the presenter may read with — a closed list, the same
+    one the producer accepts (`byteplus_speech.PUBLIC_SPANISH_VOICES`)."""
+    from qualify_creative.adapters.byteplus_speech import PUBLIC_SPANISH_VOICES
 
-    from qualify_creative.adapters.heygen_video import HeyGenAvatarVideoAdapter
-
-    key = os.environ.get(HEYGEN_KEY_ENV, "").strip()
-    if not key:
-        raise HeyGenNotConfigured(f"{HEYGEN_KEY_ENV} is not set")
-    cached = _catalog_cache.get("public")
-    if cached is not None and time.time() - cached[0] < _CATALOG_TTL_SECONDS:
-        return cached[1], cached[2]
-    looks, voices = build_heygen_catalog(HeyGenAvatarVideoAdapter(), key)
-    _catalog_cache["public"] = (time.time(), looks, voices)
-    return looks, voices
-
-
-def build_heygen_catalog(
-    adapter: Any, key: str
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    """Each look `{id, name, preview, gender}` (its id is a render's `avatar_id`), each
-    voice `{id, name, gender}` (Spanish only — the scripts are written in the brand's
-    Spanish variant). `gender` is HeyGen's own `"female"`/`"male"`, so the pickers can
-    offer women and men side by side."""
-    from concurrent.futures import ThreadPoolExecutor
-
-    groups = [
-        group
-        for group in adapter.list_avatar_groups(api_key=key, limit=_CATALOG_LIMIT)
-        if group.get("id") and group.get("gender") in GENDERS
-    ]
-    picked = [
-        group
-        for gender in GENDERS
-        for group in [g for g in groups if g.get("gender") == gender][:_GROUPS_PER_GENDER]
+    return [
+        {"id": v["id"], "name": f"{v['name']} · {v['style']}", "gender": v["gender"]}
+        for v in PUBLIC_SPANISH_VOICES
     ]
 
-    def group_looks(group: Mapping[str, Any]) -> list[dict[str, str]]:
+
+def voice_options(tenant_id: UUID | None, brand_id: UUID | None) -> list[dict[str, str]]:
+    """The brand's own voice first (when ready), then the public ones. A clone that
+    cannot be read only leaves the list without it."""
+    own = None
+    if tenant_id is not None and brand_id is not None:
         try:
-            page = adapter.list_avatar_looks(
-                api_key=key, limit=_LOOKS_PER_GROUP, group_id=str(group["id"])
-            )
-        except Exception as exc:  # one character failing must not empty the picker
-            logger.info("heygen looks for group %s not read: %s", group.get("id"), exc)
-            return []
-        return [
-            {
-                "id": str(look["id"]),
-                "name": str(look.get("name") or look["id"]),
-                "preview": str(look.get("preview_image_url") or ""),
-                "gender": str(group["gender"]),
-            }
-            for look in page
-            # a look still processing (or failed) cannot render yet
-            if look.get("id") and look.get("status", "completed") == "completed"
-        ]
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        looks = [look for batch in pool.map(group_looks, picked) for look in batch]
-
-    voices = [
-        {
-            "id": str(voice["voice_id"]),
-            "name": str(voice.get("name") or voice["voice_id"]),
-            "gender": gender,
-        }
-        for gender in GENDERS
-        for voice in adapter.list_voices(
-            api_key=key, language="Spanish", gender=gender, limit=_CATALOG_LIMIT
-        )
-        if voice.get("voice_id")
-    ]
-    return looks, voices
+            own = brand_clone_voice(tenant_id, brand_id)
+        except Exception as exc:  # noqa: BLE001 — the public voices still serve
+            logger.warning("brand voice clone unreadable: %s", type(exc).__name__)
+    return [own, *public_voices()] if own else public_voices()

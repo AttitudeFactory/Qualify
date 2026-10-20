@@ -1376,3 +1376,50 @@ def test_a_failed_generation_still_logs_what_it_spent(caplog: pytest.LogCaptureF
     # the first call's money was spent and is accounted for; the outcome says why it failed
     assert len(totals) == 1 and "calls=1 cost_usd=0.017500" in totals[0]
     assert "outcome=ok" not in totals[0]
+
+
+# ---------------------------------------------------------------------------
+# Langfuse (docs/plan-observabilidad-langfuse.md §4): one trace per generation
+
+
+def test_a_generation_is_one_langfuse_trace_whose_session_is_the_draft() -> None:
+    import json as _json
+
+    from qualify_shared import observability
+
+    with observability.capture_spans() as exporter:
+        router = FakeRouter([ok_outcome(copy_dict("Hook uno"))])
+        service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+        brief = make_brief(variants=1)
+        draft_id = repo.seed_draft(brief)
+        service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+        observability.flush()
+
+    (root,) = exporter.get_finished_spans()
+    attrs = dict(root.attributes)
+    assert root.name == f"generar {brief.kind.value}"
+    assert attrs["session.id"] == str(draft_id)
+    assert set(attrs["langfuse.trace.tags"]) == {brief.kind.value, brief.format.value}
+    assert attrs["langfuse.trace.metadata.tenant_id"] == str(TENANT_ID)
+    assert _json.loads(attrs["langfuse.observation.input"])["topic"] == brief.topic
+    assert repo.drafts[draft_id].status == GENERATED  # tracing changed nothing
+
+
+def test_a_printed_kind_sends_its_printed_limits_and_a_spoken_one_none() -> None:
+    """2026-10-13: the copy adapter holds the answer to the printed hook/CTA limits the
+    prompt asks for — the service tells it which, per kind."""
+    from qualify_creative.enums import ContentKind
+
+    for kind, expected in (
+        (ContentKind.STATIC_FLYER, {"max_lengths": {"hook": 50, "cta": 32}}),
+        (ContentKind.CREATOR_SCRIPT, {}),
+    ):
+        router = FakeRouter([ok_outcome(copy_dict("Hook uno"))])
+        service, repo, _ = make_service(router=router, kit=make_kit(), voice=make_voice())
+        brief = make_brief(variants=1).model_copy(
+            update={"kind": kind, "format": kind.default_format}
+        )
+        draft_id = repo.seed_draft(brief)
+        service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
+        (request,) = router.requests
+        assert dict(request.params) == expected, kind

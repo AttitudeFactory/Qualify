@@ -249,7 +249,7 @@ class CanvaConnectClient:
         self._now = now
 
     def _http(self, access_token: str | None = None) -> Any:
-        import httpx  # lazy, same as the HeyGen adapter
+        import httpx  # lazy, same as the other vendor adapters
 
         headers = {"accept": "application/json"}
         if access_token is not None:

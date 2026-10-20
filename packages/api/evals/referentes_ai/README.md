@@ -36,6 +36,48 @@ la búsqueda trajo. La excepción son 4 cuentas `synthetic` en el caso del resta
 - **traps** = cuentas `n` que quedaron. Es el error que esta función existe para evitar.
 - **kind** = el `tipo` cae dentro de lo aceptado.
 
+## Experimento en Langfuse — 2026-10-14 (`results/langfuse-20261014-065507.json`) — ACTUAL
+
+Los mismos casos y el mismo puntaje, como corridas de dataset en Langfuse (dataset
+`referentes-revisar`), con los modelos Claude 5.5 como candidatos. `run_experiment.py`
+importa el runner y el puntaje de `run_eval.py`, no los copia:
+
+```bash
+just langfuse-up
+just eval-referentes
+just eval-referentes --configs haiku-5.5@low
+```
+
+Una corrida por configuración, sin repetir todavía.
+
+| Modelo | precision | recall | perdidos | traps | kind | $ total |
+|---|---|---|---|---|---|---|
+| Sonnet 5 @ low (producción) | 1.000 | 0.758 | 9 | 0/106 | 0.917 | 0.142 |
+| Sonnet 5.5 @ low | 1.000 | 0.735 | 10 | 0/106 | **0.991** | 0.130 |
+| **Haiku 5.5 @ low** | 1.000 | **0.799** | **8** | 0/106 | 0.936 | **0.013** |
+
+**El recall bajó para todos frente a septiembre (0.926), y no es el harness.** Se repitió
+`run_eval.py` sin Langfuse para Sonnet 5 @ low el mismo día
+(`results/20261014-071418.json`): recall 0.78 y una trampa (`matsimultiservicios`). Casi
+toda la caída está en un caso:
+
+- `phone-store-caracas` bajó a recall 0.455. Sonnet 5 descartó seis creadores tech que
+  publican en inglés (`tatechtips`, `imparkerburton` en las dos redes, `reddnea` en las
+  dos redes, `one.more.official`).
+- Es el mismo criterio que en septiembre solo aparecía con effort medium: «público
+  internacional». Hoy aparece también en low.
+- `programming-creator` pierde las mismas dos cuentas discutibles de septiembre.
+
+Lectura:
+
+- **Haiku 5.5 es candidato fuerte para reemplazar a Sonnet 5.** Cero trampas, el mejor
+  recall de los tres y 11 veces más barato. Haiku 4.5 se había descartado justo por las
+  trampas.
+- Antes de cambiar el default hace falta una segunda corrida, como pide el plan (§6.3).
+- El caso de la tienda de celulares muestra un criterio inestable de los tres modelos con
+  cuentas en otro idioma. Se arreglaría en el prompt («el idioma o el país del público no
+  bastan para descartar»), pero es un cambio de producción y no se hizo aquí.
+
 ## Resultado (25-09-2026, prompt final, 2 repeticiones × 4 casos)
 
 | Modelo | precision | recall | traps | kind | s/caso* | $/caso |

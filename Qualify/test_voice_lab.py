@@ -1,5 +1,6 @@
-"""Tu voz (§ request 2026-09-30): the HeyGen clone round trip and how the finished clone
-reaches the avatar videos' voice picker on /create. HeyGen and the database are fakes."""
+"""Tu voz (§ request 2026-09-30; Seed Speech since 2026-10-16): the clone round trip and
+how the finished clone reaches the avatar videos' voice picker on /create. Seed Speech, R2
+and the database are fakes."""
 
 from __future__ import annotations
 
@@ -10,7 +11,8 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from qualify_api.creative.voice_clone import COMPLETE, FAILED, PROCESSING, VoiceClone
+from qualify_api.creative.voice_clone import COMPLETE, FAILED, PROCESSING, SEED_SPEECH, VoiceClone
+from qualify_creative.adapters.byteplus_speech import PUBLIC_VOICE_IDS, VoiceStatus
 
 from . import creative_provider, voice_lab
 from .creative_state import CreativeState
@@ -32,36 +34,32 @@ BRAND = UUID("b0000000-0000-4000-8000-0000000000f1")
 USER = UUID("c0000000-0000-4000-8000-0000000000f1")
 
 CLONE = VoiceClone(
-    heygen_voice_id="vc_1",
+    provider=SEED_SPEECH,
+    voice_id="qlf-1",
     name="Voz de Café del Parque",
     status=PROCESSING,
     failure_message="",
-    language="es",
+    language="es-CO",
     gender="",
     preview_audio_url="",
     consent_at=datetime(2026, 9, 30, tzinfo=UTC),
 )
 
 
-class FakeAdapter:
-    def __init__(self, voice: dict[str, Any] | None = None) -> None:
+class FakeSpeech:
+    """`SeedSpeechClient` without the network."""
+
+    def __init__(self, status: VoiceStatus | None = None) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
-        self.voice = voice or {}
+        self.status = status or VoiceStatus(speaker_id="qlf-1", status=1)
 
-    def upload_asset(self, **kw: Any) -> dict[str, Any]:
-        self.calls.append(("upload_asset", kw))
-        return {"asset_id": "aud_1"}
-
-    def clone_voice(self, **kw: Any) -> str:
+    def clone_voice(self, **kw: Any) -> VoiceStatus:
         self.calls.append(("clone_voice", kw))
-        return "vc_2"
+        return VoiceStatus(speaker_id=kw["speaker_id"], status=1)
 
-    def delete_voice(self, **kw: Any) -> None:
-        self.calls.append(("delete_voice", kw))
-
-    def get_voice(self, **kw: Any) -> dict[str, Any]:
+    def get_voice(self, **kw: Any) -> VoiceStatus:
         self.calls.append(("get_voice", kw))
-        return self.voice
+        return self.status
 
 
 class FakeClones:
@@ -76,107 +74,174 @@ class FakeClones:
 
     def record(self, **kw: Any) -> str | None:
         self.recorded.append(kw)
-        old = self.clone.heygen_voice_id if self.clone else None
-        self.clone = replace(CLONE, heygen_voice_id=kw["heygen_voice_id"], status=PROCESSING)
-        return old
+        old = self.clone.voice_id if self.clone else None
+        self.clone = replace(
+            CLONE,
+            voice_id=kw["voice_id"],
+            status=PROCESSING,
+            sample_object_key=kw.get("sample_object_key") or "",
+        )
+        return old if old != kw["voice_id"] else None
 
     def update_status(self, **kw: Any) -> VoiceClone | None:
         assert self.clone is not None
         self.clone = replace(
             self.clone,
             status=kw["status"],
-            gender=kw.get("gender") or self.clone.gender,
-            preview_audio_url=kw.get("preview_audio_url") or "",
+            preview_object_key=kw.get("preview_object_key") or "",
             failure_message=kw.get("failure_message") or "",
         )
         return self.clone
 
 
 @pytest.fixture
-def heygen(monkeypatch: pytest.MonkeyPatch) -> FakeAdapter:
-    adapter = FakeAdapter()
-    monkeypatch.setattr(voice_lab, "_heygen", lambda: (adapter, "hg-key"))
-    return adapter
+def speech(monkeypatch: pytest.MonkeyPatch) -> FakeSpeech:
+    client = FakeSpeech()
+    monkeypatch.setattr(voice_lab, "_seed_speech", lambda: (client, "speech-key"))
+    return client
 
 
-def test_cloning_uploads_the_recording_and_replaces_the_previous_clone(
-    monkeypatch: pytest.MonkeyPatch, heygen: FakeAdapter, tmp_path: Path
+@pytest.fixture
+def r2(monkeypatch: pytest.MonkeyPatch) -> dict[str, tuple[bytes, str]]:
+    kept: dict[str, tuple[bytes, str]] = {}
+
+    def keep(tenant_id: UUID, key: str, data: bytes, content_type: str) -> None:
+        assert key.startswith(f"t/{tenant_id}/brand/")  # always under the tenant's prefix
+        kept[key] = (data, content_type)
+
+    monkeypatch.setattr(voice_lab, "_keep_in_r2", keep)
+    monkeypatch.setattr(voice_lab, "clone_audio", lambda path: b"RIFF-wav")
+    return kept
+
+
+def test_cloning_keeps_the_sample_in_r2_and_trains_a_new_voice(
+    monkeypatch: pytest.MonkeyPatch,
+    speech: FakeSpeech,
+    r2: dict[str, tuple[bytes, str]],
+    tmp_path: Path,
 ) -> None:
-    clones = FakeClones(CLONE)
+    activated = replace(CLONE, status=COMPLETE, activated_at=datetime(2026, 10, 1, tzinfo=UTC))
+    clones = FakeClones(activated)
     monkeypatch.setattr(voice_lab, "VoiceCloneService", lambda: clones)
     recording = tmp_path / "mi_voz.mp3"
     recording.write_bytes(b"audio")
 
-    clone = voice_lab.start_voice_clone(TENANT, BRAND, USER, recording, "Voz de la marca")
+    clone = voice_lab.start_voice_clone(TENANT, BRAND, USER, recording, "Voz de la marca", "es-MX")
 
-    assert [name for name, _ in heygen.calls] == ["upload_asset", "clone_voice", "delete_voice"]
-    upload = heygen.calls[0][1]
-    assert upload["file_bytes"] == b"audio" and upload["filename"] == "mi_voz.mp3"
-    assert upload["content_type"] == "audio/mpeg"
-    assert heygen.calls[1][1]["audio_asset_id"] == "aud_1"
-    assert heygen.calls[1][1]["language"] == "es"
-    assert heygen.calls[2][1]["voice_id"] == "vc_1"  # the old clone frees its slot
-    # consent is recorded with the clone: who asked for it
-    assert clones.recorded[0]["consent_by"] == USER
-    assert clone is not None and clone.heygen_voice_id == "vc_2" and clone.status == PROCESSING
+    ((name, call),) = speech.calls
+    assert name == "clone_voice"
+    assert call["audio"] == b"RIFF-wav" and call["audio_format"] == "wav"
+    assert call["language"] == 16  # es-MX
+    # an activated voice cannot be retrained: the new one gets a new opaque id
+    assert call["speaker_id"].startswith("qlf-") and call["speaker_id"] != "qlf-1"
+    assert str(TENANT) not in call["speaker_id"]
+    ((sample_key, (data, content_type)),) = r2.items()
+    assert data == b"RIFF-wav" and content_type == "audio/wav"
+    assert sample_key.startswith(f"t/{TENANT}/brand/{BRAND}/voice/sample-")
+    # consent is recorded with the clone: who asked for it, and what they confirmed
+    recorded = clones.recorded[0]
+    assert recorded["consent_by"] == USER and recorded["consent_text"]
+    assert recorded["provider"] == SEED_SPEECH and recorded["language"] == "es-MX"
+    assert recorded["sample_object_key"] == sample_key
+    assert clone is not None and clone.voice_id == call["speaker_id"]
+    assert clone.status == PROCESSING
 
 
-def test_refreshing_asks_heygen_only_while_processing(
-    monkeypatch: pytest.MonkeyPatch, heygen: FakeAdapter
+def test_a_voice_never_used_is_retrained_under_the_same_id(
+    monkeypatch: pytest.MonkeyPatch,
+    speech: FakeSpeech,
+    r2: dict[str, tuple[bytes, str]],
+    tmp_path: Path,
+) -> None:
+    clones = FakeClones(replace(CLONE, status=COMPLETE))  # ready, but never synthesized
+    monkeypatch.setattr(voice_lab, "VoiceCloneService", lambda: clones)
+    recording = tmp_path / "otra.m4a"
+    recording.write_bytes(b"audio")
+    voice_lab.start_voice_clone(TENANT, BRAND, USER, recording, "Voz")
+    assert speech.calls[0][1]["speaker_id"] == "qlf-1"
+    assert speech.calls[0][1]["language"] == 3  # es-CO, the default
+
+
+def test_refreshing_asks_seed_speech_only_while_processing(
+    monkeypatch: pytest.MonkeyPatch, speech: FakeSpeech, r2: dict[str, tuple[bytes, str]]
 ) -> None:
     clones = FakeClones(CLONE)
     monkeypatch.setattr(voice_lab, "VoiceCloneService", lambda: clones)
-    heygen.voice = {
-        "status": "complete",
-        "gender": "female",
-        "preview_audio_url": "https://files.heygen.ai/p.mp3",
-    }
+    monkeypatch.setattr(voice_lab, "_download_demo", lambda url: b"demo-mp3")
+    speech.status = VoiceStatus(
+        speaker_id="qlf-1", status=2, demo_audio_url="https://cdn.byteplus/demo.mp3"
+    )
     clone = voice_lab.refresh_voice_clone(TENANT, BRAND)
-    assert clone is not None and clone.status == COMPLETE and clone.gender == "female"
+    assert clone is not None and clone.status == COMPLETE
+    # the demo's URL lives one hour: it is copied to R2 and the clone points at it
+    demo_key = f"t/{TENANT}/brand/{BRAND}/voice/demo-qlf-1.mp3"
+    assert r2[demo_key] == (b"demo-mp3", "audio/mpeg")
+    assert clone.preview_object_key == demo_key
 
-    heygen.calls.clear()
+    speech.calls.clear()
     assert voice_lab.refresh_voice_clone(TENANT, BRAND) == clone
-    assert heygen.calls == []  # finished: no more HeyGen calls
+    assert speech.calls == []  # finished: no more vendor calls
 
-    # an unknown status from HeyGen is treated as still processing
+    # still training (status 1) stays processing; status 3 is a failure
     clones.clone = CLONE
-    heygen.voice = {"status": "queued"}
+    speech.status = VoiceStatus(speaker_id="qlf-1", status=1)
     assert voice_lab.refresh_voice_clone(TENANT, BRAND).status == PROCESSING  # type: ignore[union-attr]
-    heygen.voice = {"status": "failed", "failure_message": "too noisy"}
+    speech.status = VoiceStatus(speaker_id="qlf-1", status=3)
     failed = voice_lab.refresh_voice_clone(TENANT, BRAND)
-    assert failed is not None and failed.status == FAILED and failed.failure_message == "too noisy"
+    assert failed is not None and failed.status == FAILED
+    assert "grabación más limpia" in failed.failure_message
 
 
-def test_only_a_finished_clone_reaches_the_voice_picker(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_heygen_clone_is_never_refreshed_nor_shown(
+    monkeypatch: pytest.MonkeyPatch, speech: FakeSpeech
+) -> None:
+    old = replace(CLONE, provider="heygen", voice_id="vc_1")
+    monkeypatch.setattr(voice_lab, "VoiceCloneService", lambda: FakeClones(old))
+    assert voice_lab.refresh_voice_clone(TENANT, BRAND) == old
+    assert speech.calls == []
+    state = voice_lab.VoiceLabState()
+    state._show_clone(old)
+    assert state.clone_status == "" and state.clone_name == ""  # cloned again from scratch
+
+
+def test_only_a_finished_seed_speech_clone_reaches_the_voice_picker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     clones = FakeClones(CLONE)
     monkeypatch.setattr(
         "qualify_api.creative.voice_clone.VoiceCloneService", lambda: clones, raising=True
     )
     assert creative_provider.brand_clone_voice(TENANT, BRAND) is None  # still processing
+    clones.clone = replace(CLONE, status=COMPLETE, provider="heygen")
+    assert creative_provider.brand_clone_voice(TENANT, BRAND) is None  # retired vendor
     clones.clone = replace(CLONE, status=COMPLETE, gender="female")
+    # its id is "brand", never the clone's: the producer resolves it server-side
     assert creative_provider.brand_clone_voice(TENANT, BRAND) == {
-        "id": "vc_1",
+        "id": "brand",
         "name": "Tu voz · Voz de Café del Parque",
         "gender": "female",
         "own": "1",
     }
+    options = creative_provider.voice_options(TENANT, BRAND)
+    assert options[0]["id"] == "brand"
+    assert {o["id"] for o in options[1:]} == set(PUBLIC_VOICE_IDS)
 
 
 def test_the_brands_own_voice_is_listed_whatever_gender_and_chosen_first() -> None:
     state = CreativeState()
-    state.heygen_voices = [
-        {"id": "vc_1", "name": "Tu voz", "gender": "", "own": "1"},
+    state.voice_options = [
+        {"id": "brand", "name": "Tu voz", "gender": "", "own": "1"},
         {"id": "vo_elena", "name": "Elena", "gender": "female"},
         {"id": "vo_jorge", "name": "Jorge", "gender": "male"},
     ]
     state.voice_gender = "male"
-    assert [v["id"] for v in state.visible_voices] == ["vc_1", "vo_jorge"]
+    assert [v["id"] for v in state.visible_voices] == ["brand", "vo_jorge"]
     state.voice_id = ""
     state._sync_voice()
-    assert state.voice_id == "vc_1"
+    assert state.voice_id == "brand"
     state.voice_gender = "female"
     state._sync_voice()
-    assert state.voice_id == "vc_1"  # still visible: not switched away
+    assert state.voice_id == "brand"  # still visible: not switched away
 
 
 def test_the_analysis_transcribes_locally_and_needs_only_claudes_key(
@@ -239,24 +304,33 @@ def test_recording_from_the_microphone_reports_what_went_wrong(
     assert "micrófono" in state.sample_error
 
 
-def test_a_browser_recording_goes_to_heygen_as_wav(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_a_recording_goes_to_seed_speech_as_a_24k_mono_wav_of_at_most_30s(
+    tmp_path: Path,
 ) -> None:
     import io
+    import math
+    import struct
     import wave
 
-    # numpy is in the `dev` group so this runs in CI too; the decoding itself (PyAV,
-    # the `ml` group) is replaced, so `qualify_models` need not be installed
-    import numpy as np
+    pytest.importorskip("av")  # the `media` extra (the backend group: CI has it)
+    recording = tmp_path / "grabacion-1.wav"
+    rate, seconds = 44_100, 32  # stereo 44.1 kHz, longer than the cut
+    with wave.open(str(recording), "wb") as source:
+        source.setnchannels(2)
+        source.setsampwidth(2)
+        source.setframerate(rate)
+        frame = b"".join(
+            struct.pack("<hh", s, s)
+            for s in (int(8000 * math.sin(2 * math.pi * 440 * i / rate)) for i in range(rate))
+        )
+        for _ in range(seconds):
+            source.writeframes(frame)
 
-    recording = tmp_path / "grabacion-1.webm"
-    recording.write_bytes(b"webm")
-    second = np.full(44_100, 0.5, dtype=np.float32)
-    monkeypatch.setattr(voice_lab, "_decode_for_clone", lambda path: second)
-    data, filename, content_type = voice_lab.clone_audio(recording)
-    assert (filename, content_type) == ("grabacion-1.wav", "audio/wav")
+    data = voice_lab.clone_audio(recording)
     with wave.open(io.BytesIO(data)) as wav:
-        assert (wav.getnchannels(), wav.getframerate(), wav.getnframes()) == (1, 44_100, 44_100)
+        assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (1, 2, 24_000)
+        assert wav.getnframes() == 24_000 * 30
+    assert len(data) < 10 * 1024 * 1024  # the clone API's limit
 
 
 # -- the analysis behind a progress screen, then straight to ¿Cómo suena? (2026-10-01) ---
@@ -335,3 +409,37 @@ def test_the_local_whisper_is_faster_whisper_when_installed(
     fallback = voice_lab._build_whisper("")
     assert isinstance(fallback, providers.LocalWhisperTranscriptionProvider)
     assert fallback.model_id == "openai/whisper-large-v3-turbo"
+
+
+def test_the_local_transcription_is_a_zero_cost_generation_without_the_audio(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Phase 3 of docs/plan-observabilidad-langfuse.md: Whisper is traced with its model,
+    language and transcript — never the audio, nor the file's name (it can carry a
+    person's name)."""
+    import json
+
+    from qualify_shared import observability
+
+    recording = tmp_path / "voz de Ana Pérez.m4a"
+    recording.write_bytes(b"not really audio")
+
+    class LocalWhisper:
+        model_id = "deepdml/faster-whisper-large-v3-turbo-ct2"
+
+        def transcribe(self, path: Path) -> tuple[str, str]:
+            return "Hola, somos el Café del Parque", "es"
+
+    monkeypatch.setattr(voice_lab, "_local_whisper", LocalWhisper())
+    with observability.capture_spans() as exporter:
+        assert voice_lab._transcribe_locally(recording) == "Hola, somos el Café del Parque"
+        observability.flush()
+        (span,) = exporter.get_finished_spans()
+
+    attrs = dict(span.attributes)
+    assert span.name == "whisper"
+    assert attrs["langfuse.observation.model.name"] == LocalWhisper.model_id
+    assert json.loads(attrs["langfuse.observation.input"]) == {"format": "m4a"}
+    assert json.loads(attrs["langfuse.observation.cost_details"]) == {"audio": 0.0}
+    assert attrs["langfuse.observation.metadata.language"] == "es"
+    assert "Ana" not in json.dumps(attrs)  # the file name never leaves

@@ -21,16 +21,24 @@ type HookSceneProps = {
   durationInFrames: number;
 };
 
+/** Room kept free at the bottom for Instagram's own interface. A 9:16 video sits under
+ * the Reels caption and buttons; a 4:5 or 1:1 one is shown in the feed with nothing on
+ * top of it. The 9:16 values are v1's, so a Reel renders exactly as it always did. */
+const safeBottom = (height: number, vertical: number, feed: number): number =>
+  height >= 1800 ? vertical : feed;
+
 const HookScene: React.FC<HookSceneProps> = ({photo, hook, brandName, fonts, durationInFrames}) => {
   const frame = useCurrentFrame();
-  const {fps} = useVideoConfig();
+  const {fps, height} = useVideoConfig();
   const enter = spring({frame, fps, config: {damping: 200, stiffness: 120}});
   const y = interpolate(enter, [0, 1], [80, 0]);
   const opacity = fadeIn(frame, 10) * fadeOut(frame, durationInFrames, CROSSFADE_FRAMES);
   return (
     <AbsoluteFill style={{opacity}}>
       <CoverPhoto src={photo} dim={0.45} />
-      <AbsoluteFill style={{justifyContent: 'flex-end', padding: '0 88px 300px 88px'}}>
+      <AbsoluteFill
+        style={{justifyContent: 'flex-end', padding: `0 88px ${safeBottom(height, 300, 120)}px 88px`}}
+      >
         <div style={{transform: `translateY(${y}px)`, opacity: enter}}>
           {brandName ? (
             <div
@@ -71,7 +79,7 @@ const PhotoScene: React.FC<PhotoSceneProps> = ({
   durationInFrames,
 }) => {
   const frame = useCurrentFrame();
-  const {fps} = useVideoConfig();
+  const {fps, height} = useVideoConfig();
   // Gentle Ken Burns, alternating direction per photo so consecutive scenes differ.
   const zoomFrom = index % 2 === 0 ? 1.0 : 1.08;
   const zoomTo = index % 2 === 0 ? 1.08 : 1.0;
@@ -86,7 +94,7 @@ const PhotoScene: React.FC<PhotoSceneProps> = ({
       <CoverPhoto src={photo} scale={scale} dim={0.15} />
       {priceLine ? (
         <AbsoluteFill style={{justifyContent: 'flex-end', alignItems: 'flex-start', padding: 88}}>
-          <div style={{transform: `scale(${pillIn}) translateY(${(1 - pillIn) * 40}px)`, marginBottom: 200}}>
+          <div style={{transform: `scale(${pillIn}) translateY(${(1 - pillIn) * 40}px)`, marginBottom: safeBottom(height, 200, 40)}}>
             <PricePill text={priceLine} palette={palette} font={fonts.heading} size={64} />
           </div>
         </AbsoluteFill>

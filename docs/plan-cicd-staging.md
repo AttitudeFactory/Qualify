@@ -1,5 +1,7 @@
 # Plan — CI/CD a costo cero y despliegue a staging del MVP
 
+> **`[OBSOLETO]` HeyGen — decisión del fundador, 2026-10-16.** Los videos con avatar migran a la suite de ByteDance (BytePlus): **OmniHuman** (el avatar que habla), **Seedance** (el video), **Seedream** (la imagen y el primer fotograma) y **Seed Speech** (la voz clonada). Toda mención a HeyGen en este documento describe el estado anterior o una alternativa ya descartada: no la tomes como decisión vigente. **La migración aún no está hecha en el código** (medido el 2026-10-16): el detalle y lo que falta está en [Pendientes del generador §6](pendientes-generador-contenido.md).
+
 **Estado:** `[PLAN 2026-10-05]` — encargo del fundador del mismo día. Nada de esto está implementado; dos agentes construyen el CI y la revisión automática en sus ramas usando este documento como contrato.
 **Veredicto en una línea:** en un repo **privado** de una organización **Free**, casi todo lo "gratis" del mercado deja de serlo; el CI/CD a costo cero se arma con **CLIs open source dentro de GitHub Actions** y el bloqueo real se pone **en el deploy, no en el merge** (staging nunca recibe un `main` en rojo).
 **Convención:** `[V 2026-10-05]` = verificado hoy contra la fuente (precio, licencia, límite); `[H]` = hipótesis o estimación propia; `[M]` = medido en este repo hoy. Los precios **caducan**.

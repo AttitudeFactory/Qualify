@@ -550,8 +550,8 @@ def test_recipe_cards_carry_engine_cost_eta_outputs_and_the_suggestion() -> None
     from .creative_vm import build_recipe_options
 
     cards = build_recipe_options(_recipes(photo_count=3))
-    assert [c.key for c in cards] == ["remotion", "heygen", "ugc"]
-    remotion, heygen, ugc = cards
+    assert [c.key for c in cards] == ["remotion", "omnihuman", "ugc"]
+    remotion, presenter, ugc = cards
 
     assert remotion.suggested and remotion.rule == 2  # ≥2 photos, no video
     assert remotion.selectable and remotion.available
@@ -563,12 +563,12 @@ def test_recipe_cards_carry_engine_cost_eta_outputs_and_the_suggestion() -> None
     assert remotion.eta_label == "~38 s"
     assert remotion.outputs_label == "Reel · Feed · Historia"
 
-    assert not heygen.suggested and not heygen.available and not heygen.selectable
-    assert heygen.reason == "el negocio no tiene avatar configurado"
-    assert (heygen.engine_label, heygen.engine_tone) == ("HeyGen", "info")
-    assert heygen.cost_label == "USD 0.50 a 2.00"
-    assert heygen.eta_label == ""
-    assert heygen.outputs_label == "Reel"
+    assert not presenter.suggested and not presenter.available and not presenter.selectable
+    assert presenter.reason == "el negocio no tiene avatar configurado"
+    assert (presenter.engine_label, presenter.engine_tone) == ("Avatar", "info")
+    assert presenter.cost_label == "USD 1.80 a 3.70"
+    assert presenter.eta_label == ""
+    assert presenter.outputs_label == "Reel"
 
     assert ugc.engine_label == "UGC" and not ugc.selectable
     assert "solo cotiza" in ugc.reason

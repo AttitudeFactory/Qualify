@@ -16,6 +16,10 @@ API facts pinned from the `claude-api` skill (2026-09), not from memory:
 - The client is always built with an explicit `api_key` (`QUALIFY_ANTHROPIC_API_KEY`):
   the no-arg constructor would fall back to ambient credentials and bill the wrong
   account.
+
+Every `messages.create` goes through `messages_create`, which records it as one Langfuse
+generation (docs/plan-observabilidad-langfuse.md §5) — a no-op without LANGFUSE_* keys.
+The caller's function is the trace (`observability.traced`); each turn nests in it.
 """
 
 from __future__ import annotations
@@ -25,18 +29,22 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from qualify_shared import observability
+
 API_KEY_ENV = "QUALIFY_ANTHROPIC_API_KEY"
 
 #: The non-streaming `max_tokens` ceiling (larger values make the SDK demand streaming).
 MAX_NON_STREAMING_TOKENS = 16000
 
 #: $ per million tokens (input, output), from the `claude-api` skill's model table
-#: (cached 2026-06-24; Haiku 5.5 added 2026-10-08). Used for reporting only — nothing is
-#: budgeted from it.
+#: (cached 2026-06-24; Haiku 5.5 added 2026-10-08; Opus 5.5 and Sonnet 5.5 2026-10-13).
+#: Used for reporting only — nothing is budgeted from it.
 PRICES: dict[str, tuple[float, float]] = {
     "claude-haiku-5-5": (0.10, 0.50),
     "claude-haiku-4-5": (1.0, 5.0),
+    "claude-sonnet-5-5": (2.0, 10.0),
     "claude-sonnet-5": (2.0, 10.0),
+    "claude-opus-5-5": (4.0, 20.0),
     "claude-opus-5": (5.0, 25.0),
 }
 
@@ -93,6 +101,7 @@ def api_key_from_env() -> str:
 
 
 def default_client(api_key: str) -> Any:
+    """Anthropic itself (§ 2026-10-19: the OmniRoute gateway option was reverted)."""
     import anthropic  # lazy: optional dependency (`qualify-creative[llm]`)
 
     return anthropic.Anthropic(api_key=api_key)
@@ -130,6 +139,96 @@ class Meter:
         )
 
 
+#: Content blocks that carry a tenant's file — replaced by a marker before tracing.
+_FILE_BLOCKS = frozenset({"image", "document"})
+
+
+def _traceable(value: Any) -> Any:
+    """`messages` as Langfuse may see them: every image or document block (a brief's
+    PDF, a logo, a brandboard page) becomes a marker — base64 without a `data:` prefix
+    would slip past the generic masking."""
+    if isinstance(value, list):
+        return [_traceable(item) for item in value]
+    if isinstance(value, dict):
+        if value.get("type") in _FILE_BLOCKS:
+            source = value.get("source") if isinstance(value.get("source"), dict) else {}
+            return {"type": value["type"], "omitted": True, "media_type": source.get("media_type")}
+        return {key: _traceable(item) for key, item in value.items()}
+    return value
+
+
+def _response_blocks(response: Any) -> list[dict[str, Any]]:
+    """The answer as text and tool calls; thinking blocks are left out (empty by default,
+    and never the user's business)."""
+    out: list[dict[str, Any]] = []
+    for block in getattr(response, "content", None) or ():
+        kind = getattr(block, "type", None)
+        if kind == "text":
+            out.append({"type": "text", "text": block.text})
+        elif kind == "tool_use":
+            out.append({"type": "tool_use", "name": block.name, "input": block.input})
+    return out
+
+
+def _usage_and_cost(response: Any, model_id: str) -> tuple[dict[str, int], dict[str, float]]:
+    """Tokens, and their price from `PRICES` with cache reads and writes at the full
+    input rate — the conservative reading `ContentService._call_cost` also uses."""
+    usage = response.usage
+    tokens = {
+        "input": usage.input_tokens,
+        "output": usage.output_tokens,
+        "cache_read": getattr(usage, "cache_read_input_tokens", 0) or 0,
+        "cache_creation": getattr(usage, "cache_creation_input_tokens", 0) or 0,
+    }
+    if model_id not in PRICES:
+        return tokens, {}
+    price_in, price_out = PRICES[model_id]
+    billable_in = tokens["input"] + tokens["cache_read"] + tokens["cache_creation"]
+    return tokens, {
+        "input": billable_in * price_in / 1_000_000,
+        "output": tokens["output"] * price_out / 1_000_000,
+    }
+
+
+def _system_text(system: Any) -> Any:
+    """The system prompt as plain text: `create_turn` sends it as a cached text block."""
+    if isinstance(system, list):
+        return "\n\n".join(block.get("text", "") for block in system if isinstance(block, dict))
+    return system
+
+
+def messages_create(client: Any, config: ModelConfig, **kwargs: Any) -> Any:
+    """`client.messages.create(**kwargs)`, recorded as one Langfuse generation: the
+    request (files replaced by markers), the answer, the tokens and their price. A
+    refusal or a truncation is marked on it; the caller still decides what it means."""
+    with observability.generation(
+        "claude",
+        model=config.model_id,
+        input={
+            "system": _system_text(kwargs.get("system")),
+            "messages": _traceable(kwargs.get("messages")),
+            "tools": [tool.get("name") for tool in kwargs.get("tools") or ()],
+        },
+        metadata={"effort": config.effort, "max_tokens": kwargs.get("max_tokens")},
+    ) as observation:
+        response = client.messages.create(**kwargs)
+        model = getattr(response, "model", None) or config.model_id
+        try:
+            usage, cost = _usage_and_cost(response, config.model_id)
+        except Exception:  # noqa: BLE001 — an odd usage object is still traced
+            usage, cost = {}, {}
+        observation.finish(
+            output=_response_blocks(response),
+            model=model,
+            usage=usage,
+            cost=cost,
+            metadata={"stop_reason": response.stop_reason},
+        )
+        if response.stop_reason in ("refusal", "max_tokens"):
+            observation.fail(ClaudeToolError(f"stop_reason={response.stop_reason}"))
+        return response
+
+
 def create_turn(
     client: Any,
     config: ModelConfig,
@@ -153,7 +252,7 @@ def create_turn(
     }
     if config.effort:
         kwargs["output_config"] = {"effort": config.effort}
-    response = client.messages.create(**kwargs)
+    response = messages_create(client, config, **kwargs)
     meter.add(response)
     if response.stop_reason == "refusal":
         raise ClaudeToolError(f"{config.model_id} refused the request")

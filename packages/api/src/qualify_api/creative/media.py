@@ -13,20 +13,18 @@ brief's `ContentKind` asks for (§ request 2026-09-25).
   Seedream composes the presenter (described, or the operator's image), the products
   and the background into the video's first frame, and Seedance animates it. Seedance
   1.0 makes silent video; the 2.x models speak the script (a quoted line in the prompt).
-- `AVATAR_VIDEO` / `ANIMATED_AVATAR_VIDEO` with `VideoEngine.HEYGEN` — HeyGen, through
-  the `GenerationProvider` seam and the `CreativeRouter` (credential resolution + the
-  budget pre-flight):
-  1. background + products composed into ONE background image
-     (`compose.compose_scene`) — HeyGen has no native product placement — uploaded as a
-     HeyGen asset;
-  2. the subject: the library look the operator picked (`AVATAR_VIDEO`), a synthetic
-     avatar generated from their description (`AvatarSource.AI`, a prompt avatar —
-     created, then polled until ready; photoreal for `AVATAR_VIDEO`, animated for
-     `ANIMATED_AVATAR_VIDEO`) or their uploaded image animated as-is
-     (`AvatarSource.IMAGE`, HeyGen's image mode, animated kind only);
-  3. the render, reading the copy's `script` with the chosen voice;
-  4. the video DOWNLOADED into our store at once: HeyGen's `video_url` is a pre-signed
-     link with an undocumented expiry, and a draft must never depend on it.
+- `AVATAR_VIDEO` / `ANIMATED_AVATAR_VIDEO` with `VideoEngine.OMNIHUMAN` (§ request
+  2026-10-16, the move from HeyGen to ByteDance), through the `GenerationProvider` seam
+  and the `CreativeRouter` (credential resolution + the budget pre-flight):
+  1. the voice resolved server-side (`voice_access.BrandVoiceResolver`): the brand's own
+     cloned voice or a public one — refused before any spend otherwise;
+  2. the presenter composed by Seedream (described, or the operator's image) with the
+     products and the background;
+  3. the script read by Seed Speech in that voice (MP3);
+  4. OmniHuman makes the presenter say it, lips in sync, from the photo and the voice as
+     public-media token URLs; the video is DOWNLOADED at once (its URL lives 1 h).
+- `VideoEngine.HEYGEN` is RETIRED (2026-10-16): a brief stored with it is refused with a
+  message, nothing is rendered.
 - `CAROUSEL` (§ request 2026-10-09): the operator's slides in order — a Seedream scene
   with the words chosen for it (`compose.render_carousel_slide`), that scene animated by
   Seedance and fitted to the feed with its words laid over every frame
@@ -47,8 +45,8 @@ Every write carries its MIME type (`MediaWrite.content_type` → `image_assets.c
 
 from __future__ import annotations
 
-import hashlib
 import io
+import json
 import logging
 import math
 import sys
@@ -59,10 +57,18 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID
 
-from qualify_creative.adapters.byteplus_ark import output_dimensions, video_cost_usd
+from qualify_creative.adapters.byteplus_ark import (
+    output_dimensions,
+    seedance_family,
+    video_cost_usd,
+)
+from qualify_creative.adapters.byteplus_omnihuman import (
+    DEFAULT_REQ_KEY as DEFAULT_OMNIHUMAN_REQ_KEY,
+)
+from qualify_creative.adapters.byteplus_omnihuman import MODEL_IDS, omnihuman_cost_usd
+from qualify_creative.adapters.byteplus_speech import VOICE_SLOT_MODEL, speech_cost_usd
 from qualify_creative.compose import (
     FlyerText,
-    compose_scene,
     render_ad_slides,
     render_carousel_slide,
     render_closing_slide,
@@ -102,17 +108,28 @@ from qualify_creative.render.props import ProductFacts, PropsProblem, fit_text
 from qualify_creative.render.recipes import Engine
 from qualify_creative.render.registry import TemplateNotFound
 from qualify_creative.router import BudgetContext, CreativeRouter, HopAction
-from qualify_creative.schemas import SCRIPT_MAX, BrandKit, ContentBrief, CopyPayload
+from qualify_creative.schemas import (
+    SCRIPT_MAX,
+    BrandKit,
+    CarouselSlide,
+    ContentBrief,
+    CopyPayload,
+)
 from qualify_creative.video import VideoFitter
+
+from qualify_api.stock.guard import stock_problems
+from qualify_api.stock.keys import is_stock_key
 
 from . import trace
 from .pieces import PieceFile, PieceFiles
-from .voice_access import VoiceGuard
+from .voice_access import ResolvedVoice, VoiceRefused, default_public_voice
 
 logger = logging.getLogger(__name__)
 
-HEYGEN = "heygen"
 REMOTION = "remotion"
+#: ByteDance's talking presenter (§ 2026-10-16): two more router links, two more keys.
+SEED_SPEECH = "seed_speech"
+OMNIHUMAN = "omnihuman"
 #: BytePlus ModelArk (§ 2026-10-07): one key, two router links.
 SEEDREAM = "seedream"
 SEEDANCE = "seedance"
@@ -138,25 +155,14 @@ COMPOSE_MODEL = "qualify-compose-v1"
 #: The MIME types this module stores, and that the publisher accepts.
 JPEG = "image/jpeg"
 MP4 = "video/mp4"
+MP3 = "audio/mpeg"
+#: Spanish read aloud runs ~14-16 characters a second: the fallback length of a voice
+#: track whose duration PyAV cannot read.
+_CHARS_PER_SECOND = 15.0
 #: Render jobs are named deterministically from the draft and the recipe, so a retry of
 #: the same draft re-uses the service's job (CONTRACT §4: `POST /render` is idempotent on
 #: the id) instead of rendering twice.
 TEMPLATE_JOB_NAMESPACE = UUID("6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f")
-PROMPT_AVATAR_MODEL = "heygen_prompt_avatar"
-VIDEO_RESOLUTION = "1080p"
-
-#: How an animated character is asked of HeyGen's prompt avatar: the operator describes
-#: WHO; the style is what makes it "animated" rather than a photoreal person.
-ANIMATED_STYLE = (
-    "Personaje animado estilo 3D tipo película de animación, colores vivos, expresivo, "
-    "de frente a cámara, plano medio, fondo liso. "
-)
-#: The same prompt avatar for a custom HUMAN presenter (`AVATAR_VIDEO`, source AI): a
-#: synthetic photoreal person — nobody's likeness, so no consent question applies.
-HUMAN_STYLE = (
-    "Persona real fotorrealista, presentadora de video para redes sociales, expresión "
-    "natural y cercana, de frente a cámara, plano medio, iluminación suave, fondo liso. "
-)
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +317,7 @@ _TENANT_ROOTS = ("t", "uploads", "generated")
 _FOREIGN_FILE = "Uno de los archivos de la pieza no es de tu marca."
 _BAD_KEY = "Uno de los archivos de la pieza tiene una ruta que no es válida. Vuelve a elegirlo."
 _MISSING_PIECE = "La pieza de la diapositiva {n} ya no está disponible. Elige otra."
+_MISSING_STOCK = "El video de stock de la diapositiva {n} ya no está disponible. Elige otro."
 
 
 def parse_tenant_key(key: str) -> tuple[str, ...] | None:
@@ -353,6 +360,11 @@ def _key_problems(
         *media.brand_element_keys,
         kit.logo_asset_key,
         *(slide.object_key for slide in media.slides),
+        media.clip_first_frame_key,
+        media.clip_last_frame_key,
+        *media.clip_image_keys,
+        *media.clip_video_keys,
+        *media.clip_audio_keys,
     ]
     present = [key for key in keys if key]
     malformed = [key for key in present if parse_tenant_key(key) is None]
@@ -410,6 +422,15 @@ class R2ReadingMediaStore:
 # shown in the generator and in Borradores) names no vendor, model, env var or cost, and
 # never carries the vendor's raw error — that goes to the log, where it is produced.
 
+#: A brief stored with the retired HeyGen engine (2026-10-16).
+RETIRED_ENGINE_TEXT = (
+    "Este video se pidió con un motor de avatar que ya no usamos. Vuelve a crearlo desde "
+    "Crear pieza."
+)
+#: The voice track is longer than OmniHuman takes (1.5: under 60 s).
+AVATAR_SCRIPT_TOO_LONG = (
+    "El guion es demasiado largo para un video con avatar: acórtalo a menos de un minuto."
+)
 #: A key missing or refused, a model not activated, an account with no balance, a lane
 #: not wired: nothing the operator can fix — the team has to.
 UNAVAILABLE_TEXT = "La generación no está disponible ahora mismo. Avisa al equipo."
@@ -421,27 +442,35 @@ GENERIC_FAILURE_TEXT = "No se pudo generar la pieza. Inténtalo de nuevo."
 BUDGET_TEXT = "Se alcanzó el límite de gasto de la marca."
 NO_TEMPLATE_TEXT = "No hay una plantilla para esta pieza."
 
-#: The avatar-video vendor's failures, by meaning. Matched on the error text the adapter /
-#: router carry; the first match wins, so the content filter precedes the generic failure.
-_HEYGEN_FAILURES: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("insufficient_credit", "HTTP 402"), UNAVAILABLE_TEXT),
-    (("HeyGenRenderTimeout",), SLOW_TEXT),
-    (("moderation_failed",), FILTERED_TEXT),
-    (("HTTP 401", "HTTP 403"), UNAVAILABLE_TEXT),
-    (("HTTP 429",), RATE_LIMITED_TEXT),
-    (("QUALIFY_HEYGEN_API_KEY", "no HeyGen key"), UNAVAILABLE_TEXT),
-    (("HeyGen is not configured",), UNAVAILABLE_TEXT),
+#: The talking presenter's vendors (Seed Speech, OmniHuman — § 2026-10-16), by meaning:
+#: error codes from their docs, read 2026-10-16. Matched on the text the adapters carry.
+_AVATAR_FAILURES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        (
+            "QUALIFY_BYTEPLUS_SPEECH_API_KEY",
+            "QUALIFY_BYTEPLUS_CV_API_KEY",
+            "MissingPlatformKey",
+            "SeedSpeechNotConfigured",
+        ),
+        UNAVAILABLE_TEXT,
+    ),
+    (("code 50510", "code 50511", "code 50512"), FILTERED_TEXT),  # content pre-filter
+    (("code 50400", "code 50401", "HTTP 401", "HTTP 403"), UNAVAILABLE_TEXT),
+    (("code 45000000", "permission denied"), UNAVAILABLE_TEXT),
+    (("OmniHumanTimeout",), SLOW_TEXT),
+    (("concurrency", "HTTP 429", "code 50429"), RATE_LIMITED_TEXT),
+    (("provider not registered",), UNAVAILABLE_TEXT),
 )
 
 
-def heygen_failure_text(raw: str) -> str:
-    """What the operator reads when an avatar video fails: the known cases by meaning,
-    in plain Spanish, else the generic failure. `raw` (the vendor's own text) is never
-    part of the result — the caller logs it."""
-    for needles, text in _HEYGEN_FAILURES:
+def avatar_failure_text(raw: str) -> str:
+    """What the operator reads when a talking presenter fails: the known cases by
+    meaning, else the image/video ones (Seedream composes the presenter), else the
+    generic failure. `raw` is never part of the result — the caller logs it."""
+    for needles, text in _AVATAR_FAILURES:
         if any(needle in raw for needle in needles):
             return text
-    return GENERIC_FAILURE_TEXT
+    return ark_failure_text(raw)
 
 
 #: The generated image / video vendor's failures (error codes from its docs, read
@@ -501,6 +530,63 @@ def props_failure_text(problems: list[PropsProblem]) -> str:
     return " ".join(texts)
 
 
+def _audio_seconds(data: bytes) -> float | None:
+    """A voice track's length, read with PyAV (header only); None when it cannot tell."""
+    try:
+        import av  # noqa: PLC0415 — the `media` extra, already used by the video fitter
+
+        with av.open(io.BytesIO(data)) as container:
+            if container.duration:
+                return container.duration / 1_000_000
+            stream = container.streams.audio[0] if container.streams.audio else None
+            if stream is not None and stream.duration and stream.time_base:
+                return float(stream.duration * stream.time_base)
+    except Exception:  # noqa: BLE001 — a fallback length is computed by the caller
+        return None
+    return None
+
+
+#: A clip frame with one of these endings is a video (§ request 2026-10-19: a video
+#: can open or close the clip) — one of its frames is used.
+_VIDEO_SUFFIXES = (".mp4", ".mov", ".webm", ".m4v")
+
+
+def _video_frame(data: bytes, *, last: bool) -> bytes:
+    """A video's first frame — or its last — as a JPEG. Raises when the file has no
+    video frame. For the last one it seeks to the keyframe before the final second and
+    decodes from there, not the whole file (review 2026-10-19); a container that cannot
+    seek is decoded from the start, as before."""
+    frame = _decode_frame(data, last=last, seek=last)
+    if frame is None and last:
+        frame = _decode_frame(data, last=True, seek=False)
+    if frame is None:
+        raise ValueError("the video has no frame")
+    out = io.BytesIO()
+    frame.to_image().convert("RGB").save(out, format="JPEG", quality=92)
+    return out.getvalue()
+
+
+def _decode_frame(data: bytes, *, last: bool, seek: bool) -> Any:
+    import av  # noqa: PLC0415 — the `media` extra, already used by the video fitter
+
+    frame = None
+    with av.open(io.BytesIO(data)) as container:
+        if not container.streams.video:
+            return None
+        stream = container.streams.video[0]
+        if seek and stream.duration and stream.time_base:
+            target = max(0, stream.duration - int(1 / stream.time_base))
+            try:
+                container.seek(target, stream=stream, backward=True)
+            except av.FFmpegError:
+                return None
+        for decoded in container.decode(stream):
+            frame = decoded
+            if not last:
+                break
+    return frame
+
+
 def _data_url(image: bytes) -> str:
     """A reference image as the `data:` URL ModelArk takes (normalized, <=2048 px)."""
     import base64
@@ -521,18 +607,22 @@ def generated_object_key(tenant_id: UUID, draft_id: UUID, revision: int, name: s
     return f"t/{tenant_id}/generated/{draft_id}/r{revision}/{name}"
 
 
-def template_port(manifest: TemplateManifest, fmt: ContentFormat) -> str | None:
+def template_port(
+    manifest: TemplateManifest, fmt: ContentFormat, *, video: bool | None = None
+) -> str | None:
     """The ONE output of `manifest` a brief of format `fmt` renders (§ request 2026-10-06:
-    a template gives one piece, not the Reel + feed + story package). A Reel is the
-    template's video output; any other format is the still of the same proportions.
-    None when the template has no output of that format."""
-    want_video = fmt is ContentFormat.REELS_9_16
+    a template gives one piece, not the Reel + feed + story package): its video output of
+    the format's proportions when `video` (a Reel always is; a Story video is the 9:16
+    one, § 2026-10-13), else its still of those proportions. None when the template has
+    no such output."""
+    want_video = fmt is ContentFormat.REELS_9_16 if video is None else video
     width, height = fmt.dimensions
     for port, out in manifest.outputs.items():
         is_video = out.media_type == "video"
         if is_video != want_video:
             continue
-        if want_video or out.width * height == out.height * width:
+        # the same proportions, video or still: a 4:5 post video is not the 9:16 Reel
+        if out.width * height == out.height * width:
             return port
     return None
 
@@ -570,30 +660,10 @@ class _Saver:
         return key
 
 
-class HeyGenTools(Protocol):
-    """The HeyGen calls that are not a render (`HeyGenAvatarVideoAdapter` has them)."""
+class VoiceResolver(Protocol):
+    """Which voice reads a brand's script (`voice_access.BrandVoiceResolver`)."""
 
-    def upload_asset(
-        self,
-        *,
-        api_key: str,
-        file_bytes: bytes,
-        filename: str,
-        content_type: str,
-        idempotency_key: str | None = None,
-    ) -> Any: ...
-
-    def create_prompt_avatar(
-        self,
-        *,
-        api_key: str,
-        name: str,
-        prompt: str,
-        aspect_ratio: str = ...,
-        idempotency_key: str | None = None,
-    ) -> str: ...
-
-    def wait_for_look(self, look_id: str, *, api_key: str) -> Any: ...
+    def __call__(self, *, tenant_id: UUID, brand_id: UUID, choice: str) -> ResolvedVoice: ...
 
 
 Downloader = Callable[[str], bytes]
@@ -667,6 +737,45 @@ class ProductCatalog(Protocol):
     ) -> tuple[ProductFacts, ...]: ...
 
 
+class ReferenceLinks(Protocol):
+    """A clip's reference video or audio as a public ``https`` URL ModelArk can fetch —
+    it takes no Base64 for them (§ 2026-10-14). The production linker stores the bytes
+    under the tenant's R2 prefix and hands out a short-lived public-media token URL."""
+
+    def __call__(self, *, tenant_id: UUID, key: str, data: bytes, content_type: str) -> str: ...
+
+
+def _links_ready(links: ReferenceLinks | None) -> bool:
+    """Whether reference links can be handed to a vendor right now. A linker without a
+    `ready()` (a test double) is taken as ready; the production one checks the public base
+    URL and R2 (`composition.public_media_ready`)."""
+    if links is None:
+        return False
+    ready = getattr(links, "ready", None)
+    return bool(ready()) if callable(ready) else True
+
+
+#: A clip's reference media types, by the file's extension.
+_REFERENCE_TYPES = {
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+}
+
+CLIP_NO_PUBLIC_URL = (
+    "Para usar videos o audios de referencia, el servidor necesita una dirección pública "
+    "desde la que el generador pueda descargarlos, y no está configurada. Quita esas "
+    "referencias o pide que la configuren."
+)
+#: The talking presenter needs the same public URL: OmniHuman fetches the photo and the
+#: voice from it, and takes no Base64.
+AVATAR_NO_PUBLIC_URL = (
+    "El video con avatar necesita una dirección pública desde la que el generador pueda "
+    "descargar la foto y la voz, y no está configurada. Avisa al equipo."
+)
+
+
 class MediaProducer:
     def __init__(
         self,
@@ -675,9 +784,12 @@ class MediaProducer:
         router: CreativeRouter,
         credentials: CredentialResolver,
         pricing: PricingTable,
-        heygen: HeyGenTools | None,
         download: Downloader = _http_download,
-        voice_guard: VoiceGuard | None = None,
+        voices: VoiceResolver | None = None,
+        on_brand_voice_used: Callable[[UUID, UUID, str], None] | None = None,
+        omnihuman_resolution: int = 720,
+        omnihuman_max_seconds: float = 59.0,
+        omnihuman_req_key: str = DEFAULT_OMNIHUMAN_REQ_KEY,
         remotion: RemotionTemplateAdapter | None = None,
         templates: TemplateRegistry | None = None,
         brand_names: BrandNames | None = None,
@@ -686,17 +798,23 @@ class MediaProducer:
         seedance_resolution: str = "720p",
         pieces: PieceFiles | None = None,
         fitter: VideoFitter | None = None,
+        seedance_reference_model: str | None = None,
+        reference_links: ReferenceLinks | None = None,
     ) -> None:
         self._store = store
         self._router = router
         self._credentials = credentials
         self._pricing = pricing
-        self._heygen = heygen
         self._download = download
-        #: Which voices a brand may render with (`voice_access`, § 2026-10-05). None
-        #: = no check — only for tests with a fake HeyGen; `composition` always wires
-        #: `BrandVoiceGuard`.
-        self._voice_guard = voice_guard
+        #: The talking presenter (§ 2026-10-16): which voice reads the script (the
+        #: brand's own clone or a public one, `voice_access`), the stamp of a cloned
+        #: voice's first real synthesis, and OmniHuman's resolution and audio ceiling.
+        #: No resolver = the presenter is unavailable.
+        self._voices = voices
+        self._on_brand_voice_used = on_brand_voice_used
+        self._omnihuman_resolution = omnihuman_resolution
+        self._omnihuman_max_seconds = omnihuman_max_seconds
+        self._omnihuman_req_key = omnihuman_req_key
         self._remotion = remotion
         self._templates = templates
         self._brand_names = brand_names
@@ -711,6 +829,10 @@ class MediaProducer:
         #: existing piece nor a video slide.
         self._pieces = pieces
         self._fitter = fitter
+        #: A clip with references (§ 2026-10-14) needs a Seedance 2.x model, and its
+        #: video/audio references a public URL. None = a clip takes frames only.
+        self._seedance_reference_model = seedance_reference_model
+        self._reference_links = reference_links
 
     def produce(
         self,
@@ -745,6 +867,13 @@ class MediaProducer:
             return MediaOutcome(
                 failure=FailureReason.ROUTE_BLOCKED_BY_POLICY.value, detail=_FOREIGN_FILE
             )
+        misplaced_stock = stock_problems(brief)
+        if misplaced_stock:
+            # before any read, spend or vendor call — stock only where a piece may use it
+            logger.warning("creative media for draft %s refused: stock misplaced", draft_id)
+            return MediaOutcome(
+                failure=FailureReason.ROUTE_BLOCKED_BY_POLICY.value, detail=misplaced_stock
+            )
         save = _Saver(self._store, tenant_id, draft_id, revision)
         try:
             if brief.kind is ContentKind.STATIC_FLYER and self._generated_ad_images:
@@ -755,12 +884,23 @@ class MediaProducer:
                 media = self._seedance_video(
                     tenant_id, draft_id, brief, kit, copy, budget, usage, save
                 )
+            elif brief.kind.is_video and brief.media.video_engine is VideoEngine.OMNIHUMAN:
+                media = self._omnihuman_video(
+                    tenant_id, draft_id, brief, kit, copy, budget, usage, save
+                )
             elif brief.kind.is_video:
-                media = self._video(tenant_id, draft_id, brief, kit, copy, budget, usage, save)
+                # HeyGen, retired 2026-10-16: nothing is rendered nor paid
+                raise _MediaFailed(
+                    FailureReason.PROVIDER_ERROR.value,
+                    RETIRED_ENGINE_TEXT,
+                    raw=f"retired video engine {brief.media.video_engine}",
+                )
             elif brief.kind is ContentKind.TEMPLATE:
                 return self._template(tenant_id, draft_id, brief, kit, copy, budget, usage, save)
             elif brief.kind is ContentKind.CAROUSEL:
                 media = self._carousel(tenant_id, draft_id, brief, kit, copy, budget, usage, save)
+            elif brief.kind is ContentKind.CLIP:
+                media = self._clip(tenant_id, draft_id, brief, kit, copy, budget, usage, save)
             else:
                 media = ()
         except _MediaFailed as exc:
@@ -776,15 +916,11 @@ class MediaProducer:
         except Exception as exc:  # a vendor error, a missing upload, a bad image file
             logger.warning("creative media for draft %s failed: %s", draft_id, exc)
             raw = f"{type(exc).__name__}: {exc}"
-            on_ark = (
-                (brief.kind is ContentKind.STATIC_FLYER and self._generated_ad_images)
-                or (brief.kind.is_video and brief.media.video_engine is VideoEngine.SEEDANCE)
-                or brief.kind is ContentKind.CAROUSEL
-            )
+            presenter = brief.kind.is_video and (brief.media.video_engine is VideoEngine.OMNIHUMAN)
             return MediaOutcome(
                 usage=tuple(usage),
                 failure=FailureReason.PROVIDER_ERROR.value,
-                detail=ark_failure_text(raw) if on_ark else heygen_failure_text(raw),
+                detail=avatar_failure_text(raw) if presenter else ark_failure_text(raw),
             )
         return MediaOutcome(media=tuple(media), usage=tuple(usage))
 
@@ -792,6 +928,22 @@ class MediaProducer:
 
     def _read(self, key: str | None) -> bytes | None:
         return self._store.read(key) if key else None
+
+    def _clip_frame(self, key: str | None, *, last: bool) -> bytes | None:
+        """A clip's opening or closing frame: an image as it is; a video (§ request
+        2026-10-19) lends its first frame to open the clip and its last to close it."""
+        data = self._read(key)
+        if data is None or not str(key).lower().endswith(_VIDEO_SUFFIXES):
+            return data
+        try:
+            return _video_frame(data, last=last)
+        except Exception as exc:  # noqa: BLE001 — a broken file: say which, never a crash
+            logger.warning("clip frame from video failed: %s", type(exc).__name__)
+            raise _MediaFailed(
+                FailureReason.INVALID_PARAMETERS.value,
+                "No pudimos sacar el fotograma del video que abre o cierra el clip. "
+                "Prueba con otro video o con una imagen.",
+            ) from exc
 
     def _products(self, brief: ContentBrief) -> list[bytes]:
         return [self._store.read(key) for key in brief.media.product_keys]
@@ -872,9 +1024,10 @@ class MediaProducer:
         request: GenerationRequest,
         budget: BudgetContext,
         usage: list[MediaUsage],
+        failure_text: Callable[[str], str] | None = None,
     ) -> Any:
-        """One ModelArk call through the router (key + budget pre-flight); the failure
-        in the operator's words."""
+        """One vendor call through the router (key + budget pre-flight); the failure in
+        the operator's words (`failure_text`, ModelArk's by default)."""
         outcome = self._router.run(
             tenant_id=tenant_id,
             brand_id=brand_id,
@@ -889,7 +1042,7 @@ class MediaProducer:
                 FailureReason.BUDGET_EXCEEDED.value
                 if blocked
                 else FailureReason.PROVIDER_ERROR.value,
-                BUDGET_TEXT if blocked else ark_failure_text(detail),
+                BUDGET_TEXT if blocked else (failure_text or ark_failure_text)(detail),
                 raw=detail,
             )
         return outcome.result
@@ -969,7 +1122,8 @@ class MediaProducer:
         save: _Saver,
     ) -> list[MediaWrite]:
         """The advertising image: Seedream generates the photograph with the operator's
-        own product and/or background as references (one per carousel slide), and the
+        own product and/or background as references (one per carousel slide) — or from
+        the described scene alone when they uploaded none (§ 2026-10-12) — and the
         words and the real logo are set on top locally."""
         media = brief.media
         mode = media.ad_mode or (
@@ -978,6 +1132,8 @@ class MediaProducer:
             else AdImageMode.BACKGROUND
             if media.background_key
             else AdImageMode.PRODUCT
+            if media.product_keys
+            else AdImageMode.SCENE
         )
         products = self._products(brief) if mode.needs_product else []
         background = self._read(media.background_key) if mode.needs_background else None
@@ -1019,6 +1175,24 @@ class MediaProducer:
         )
         width, height = brief.format.dimensions
         model_id = usage[-1].model_id if usage else SEEDREAM
+        if brief.format is ContentFormat.REELS_9_16:
+            # § 2026-10-13: Instagram publishes only a video as a Reel — the composed
+            # image (words and logo on it) gets a slow push-in; nothing is generated twice
+            return [
+                self._ad_reel(
+                    slides[0],
+                    brief=brief,
+                    model_id=model_id,
+                    params={
+                        "ad_mode": mode.value,
+                        "scene_prompt": media.scene_prompt,
+                        "generated_scenes": len(scenes),
+                        "products": len(products),
+                        "background": background is not None,
+                    },
+                    save=save,
+                )
+            ]
         out: list[MediaWrite] = []
         for position, png in enumerate(slides):
             key = save(f"slide-{position + 1}.jpg", to_meta_jpeg(png), JPEG)
@@ -1047,6 +1221,40 @@ class MediaProducer:
                 )
             )
         return out
+
+    def _ad_reel(
+        self,
+        still: bytes,
+        *,
+        brief: ContentBrief,
+        model_id: str,
+        params: dict[str, Any],
+        save: _Saver,
+    ) -> MediaWrite:
+        """The advertising image as a Reel: the composed still animated into a short
+        H.264 video, its poster the still itself."""
+        reel = self._require_fitter().animate_still(still, size=brief.format.dimensions)
+        video_key = save("reel.mp4", reel.data, MP4)
+        poster_key = save("reel-poster.jpg", to_meta_jpeg(reel.poster or still), JPEG)
+        return MediaWrite(
+            position=0,
+            media_type="video",
+            media_url=video_key,
+            object_key=video_key,
+            width=reel.width,
+            height=reel.height,
+            aspect_ratio=brief.format.aspect_ratio,
+            model_id=model_id,
+            provider=SEEDREAM,
+            content_type=MP4,
+            ai_generated=True,
+            params={
+                **params,
+                "duration_seconds": round(reel.duration_sec, 2),
+                "thumbnail_key": poster_key,
+                "animated_still": True,
+            },
+        )
 
     def _seedance_video(
         self,
@@ -1175,6 +1383,176 @@ class MediaProducer:
             )
         ]
 
+    # -- clip (§ request 2026-10-14) -------------------------------------------------------
+
+    def _clip(
+        self,
+        tenant_id: UUID,
+        draft_id: UUID,
+        brief: ContentBrief,
+        kit: BrandKit,
+        copy: CopyPayload,
+        budget: BudgetContext,
+        usage: list[MediaUsage],
+        save: _Saver,
+    ) -> list[MediaWrite]:
+        """A generated video with no presenter. With references, a Seedance 2.x model
+        follows them — the frames go first among the reference images and the prompt
+        names them, because ModelArk does not mix the frame roles with references; with
+        frames alone, the default model animates from the opening frame to the closing
+        one; with neither, from the words alone."""
+        media = brief.media
+        ratio = SEEDANCE_RATIOS[brief.format]
+        first = self._clip_frame(media.clip_first_frame_key, last=False)
+        last = self._clip_frame(media.clip_last_frame_key, last=True)
+        images = [self._store.read(key) for key in media.clip_image_keys]
+        params: dict[str, object] = {
+            "ratio": ratio,
+            "duration_seconds": media.duration_seconds,
+        }
+        resolution = self._seedance_resolution
+        if media.clip_has_references:
+            model = self._seedance_reference_model
+            if not model:
+                raise _MediaFailed(
+                    FailureReason.INVALID_PARAMETERS.value,
+                    "Las referencias necesitan un modelo de video que las acepte, y no hay "
+                    "uno configurado.",
+                )
+            frames = [frame for frame in (first, last) if frame is not None]
+            params["model"] = model
+            params["reference_images"] = [_data_url(image) for image in (*frames, *images)]
+            params["reference_videos"] = self._reference_urls(tenant_id, media.clip_video_keys)
+            params["reference_audios"] = self._reference_urls(tenant_id, media.clip_audio_keys)
+            family = seedance_family(model)
+            if resolution not in family.resolutions:
+                resolution = "720p"
+        else:
+            if first is not None:
+                params["first_frame"] = _data_url(first)
+            if last is not None:
+                params["last_frame"] = _data_url(last)
+        params["resolution"] = resolution
+        prompt = clip_prompt(
+            brief=brief,
+            kit=kit,
+            copy=copy,
+            image_roles=media.clip_image_roles,
+            first_frame=first is not None,
+            last_frame=last is not None,
+            images=len(images),
+            videos=len(media.clip_video_keys),
+            audios=len(media.clip_audio_keys),
+        )
+        params["prompt"] = prompt
+        request = GenerationRequest(
+            task=GenerationTask.SCENE_VIDEO,
+            rendered_prompt=RenderedPrompt("", "", ""),
+            params=params,
+        )
+        trace.media_request(
+            draft_id=draft_id,
+            provider="Seedance",
+            what="clip",
+            fields={
+                "prompt": prompt,
+                "modelo": str(params.get("model") or "el predeterminado"),
+                "fotogramas": f"inicial {'sí' if first else 'no'} · final {'sí' if last else 'no'}",
+                "referencias": (
+                    f"{len(images)} imágenes · {len(media.clip_video_keys)} videos · "
+                    f"{len(media.clip_audio_keys)} audios"
+                ),
+                "formato": f"{ratio} · {resolution}",
+                "duración pedida": f"{media.duration_seconds} s",
+            },
+        )
+        result = self._run(
+            tenant_id=tenant_id,
+            brand_id=brief.brand_id,
+            link=SEEDANCE,
+            request=request,
+            budget=budget,
+            usage=usage,
+        )
+        payload = dict(result.payload) if isinstance(result.payload, dict) else {}
+        out_resolution = str(payload.get("resolution") or resolution)
+        tokens = int(result.usage.output_tokens)
+        usage.append(
+            MediaUsage(
+                provider=result.provider,
+                model_id=result.model_id,
+                unit="second",
+                quantity=math.ceil(result.usage.media_seconds),
+                cost_usd=video_cost_usd(self._pricing, result.model_id, out_resolution, tokens),
+            )
+        )
+        video_key = save("clip.mp4", self._download(str(result.media_url)), MP4)
+        thumbnail_key = save("first-frame.jpg", to_meta_jpeg(first), JPEG) if first else None
+        width, height = output_dimensions(result.model_id, out_resolution, ratio)
+        return [
+            MediaWrite(
+                position=0,
+                media_type="video",
+                media_url=video_key,
+                object_key=video_key,
+                width=width,
+                height=height,
+                aspect_ratio=ratio,
+                model_id=result.model_id,
+                provider=result.provider,
+                content_type=MP4,
+                ai_generated=True,
+                params={
+                    "task_id": payload.get("task_id"),
+                    "duration_seconds": payload.get("duration_seconds"),
+                    "resolution": out_resolution,
+                    "tokens": tokens,
+                    "spoken": bool(payload.get("generate_audio")),
+                    "references": {
+                        "images": len(images),
+                        "videos": len(media.clip_video_keys),
+                        "audios": len(media.clip_audio_keys),
+                    },
+                    "thumbnail_key": thumbnail_key,
+                    "model_revision": result.model_revision,
+                },
+            )
+        ]
+
+    def _reference_urls(self, tenant_id: UUID, keys: tuple[str, ...]) -> list[str]:
+        """Each reference video/audio as the public URL ModelArk fetches."""
+        if not keys:
+            return []
+        if self._reference_links is None:
+            raise _MediaFailed(FailureReason.INVALID_PARAMETERS.value, CLIP_NO_PUBLIC_URL)
+        urls: list[str] = []
+        for key in keys:
+            suffix = Path(key).suffix.lower()
+            content_type = _REFERENCE_TYPES.get(suffix)
+            if content_type is None:
+                raise _MediaFailed(
+                    FailureReason.INVALID_PARAMETERS.value,
+                    f"El archivo de referencia «{Path(key).name}» no es MP4, MOV, MP3 ni WAV.",
+                )
+            try:
+                urls.append(
+                    self._reference_links(
+                        tenant_id=tenant_id,
+                        key=key,
+                        data=self._store.read(key),
+                        content_type=content_type,
+                    )
+                )
+            except _MediaFailed:
+                raise
+            except Exception as exc:  # R2 or the public-media config
+                raise _MediaFailed(
+                    FailureReason.INVALID_PARAMETERS.value,
+                    CLIP_NO_PUBLIC_URL,
+                    raw=f"{type(exc).__name__}: {exc}",
+                ) from exc
+        return urls
+
     # -- carousel (§ request 2026-10-09) -------------------------------------------------
 
     def _carousel(
@@ -1201,11 +1579,20 @@ class MediaProducer:
         # every reused piece is resolved BEFORE the first paid call (PR #100 review): a
         # piece gone from slide 4 must not cost slides 1-3 first
         pieces = self._existing_pieces(tenant_id, brief)
+        # the same for every stock video: read up front, before anything is paid
+        stock_videos = self._stock_videos(brief)
         out: list[MediaWrite] = []
         for position, slide in enumerate(media.slides):
             number = position + 1
             if slide.source is SlideSource.EXISTING:
                 out.append(self._existing_slide(brief, pieces[position], position, save))
+                continue
+            if slide.source is SlideSource.STOCK:
+                out.append(
+                    self._stock_slide(
+                        brief, kit, copy, slide, stock_videos[position], position, logo, save
+                    )
+                )
                 continue
             hook = copy.hook if slide.text is SlideText.HOOK else ""
             cta = copy.cta if slide.text is SlideText.CTA else ""
@@ -1277,6 +1664,7 @@ class MediaProducer:
                     still=still,
                     overlay=overlay,
                     seconds=slide.seconds,
+                    reference_video_key=slide.reference_video_key,
                     position=position,
                     total=total,
                     params=params,
@@ -1332,24 +1720,50 @@ class MediaProducer:
         budget: BudgetContext,
         usage: list[MediaUsage],
         save: _Saver,
+        reference_video_key: str | None = None,
     ) -> MediaWrite:
         """Seedance animates the slide's scene (silent, nobody talking), then the clip is
-        fitted to the feed with the slide's words over every frame."""
+        fitted to the feed with the slide's words over every frame. With a reference
+        video (§ request 2026-10-19) a Seedance 2.x model follows its camera and rhythm —
+        the scene goes as reference image 1, since ModelArk does not mix a first frame
+        with references."""
         fitter = self._require_fitter()
         number = position + 1
         ratio = SEEDANCE_RATIOS[brief.format]
-        motion = carousel_motion_prompt()
+        motion = carousel_motion_prompt(brief)
+        resolution = self._seedance_resolution
+        request_params: dict[str, Any] = {
+            "ratio": ratio,
+            "duration_seconds": seconds,
+            "generate_audio": False,
+        }
+        if reference_video_key:
+            model = self._seedance_reference_model
+            if not model:
+                raise _MediaFailed(
+                    FailureReason.INVALID_PARAMETERS.value,
+                    "El video de referencia necesita un modelo de video que lo acepte, y no "
+                    "hay uno configurado.",
+                )
+            if resolution not in seedance_family(model).resolutions:
+                resolution = "720p"
+            motion = (
+                f"{motion} Image 1 is the scene: keep its content, product and look. Follow "
+                "the camera movement, pacing and rhythm of the reference video, not its "
+                "content."
+            )
+            request_params.update(
+                model=model,
+                reference_images=[_data_url(scene)],
+                reference_videos=self._reference_urls(tenant_id, (reference_video_key,)),
+            )
+        else:
+            request_params["first_frame"] = _data_url(scene)
+        request_params.update(prompt=motion, resolution=resolution)
         request = GenerationRequest(
             task=GenerationTask.SCENE_VIDEO,
             rendered_prompt=RenderedPrompt("", "", ""),
-            params={
-                "prompt": motion,
-                "first_frame": _data_url(scene),
-                "ratio": ratio,
-                "resolution": self._seedance_resolution,
-                "duration_seconds": seconds,
-                "generate_audio": False,
-            },
+            params=request_params,
         )
         trace.media_request(
             draft_id=draft_id,
@@ -1357,7 +1771,8 @@ class MediaProducer:
             what=f"video de la diapositiva {number}/{total}",
             fields={
                 "prompt de movimiento": motion,
-                "formato": f"{ratio} · {self._seedance_resolution}",
+                "video de referencia": "sí" if reference_video_key else "no",
+                "formato": f"{ratio} · {resolution}",
                 "duración pedida": f"{seconds} s",
                 "texto encima": "sí" if overlay else "no",
             },
@@ -1371,7 +1786,7 @@ class MediaProducer:
             usage=usage,
         )
         payload = dict(result.payload) if isinstance(result.payload, dict) else {}
-        resolution = str(payload.get("resolution") or self._seedance_resolution)
+        resolution = str(payload.get("resolution") or resolution)
         tokens = int(result.usage.output_tokens)
         usage.append(
             MediaUsage(
@@ -1439,6 +1854,73 @@ class MediaProducer:
                 )
             found[position] = piece
         return found
+
+    def _stock_videos(self, brief: ContentBrief) -> dict[int, bytes]:
+        """The stock video behind every `STOCK` slide, by slide position — read before
+        any provider is paid. Only a stock key (`t/{tenant}/stock/…`, ownership already
+        checked by `_key_problems`) is taken; a file gone from R2 fails the carousel."""
+        found: dict[int, bytes] = {}
+        for position, slide in enumerate(brief.media.slides):
+            if slide.source is not SlideSource.STOCK:
+                continue
+            number = position + 1
+            key = slide.object_key or ""
+            try:
+                if not is_stock_key(key):
+                    raise ValueError("not a stock key")
+                found[position] = self._store.read(key)
+            except Exception as exc:  # R2 down, the object retired, a forged key
+                logger.warning("carousel slide %s: stock video unreadable: %s", number, exc)
+                raise _MediaFailed(
+                    FailureReason.ROUTE_BLOCKED_BY_POLICY.value, _MISSING_STOCK.format(n=number)
+                ) from exc
+        return found
+
+    def _stock_slide(
+        self,
+        brief: ContentBrief,
+        kit: BrandKit,
+        copy: CopyPayload,
+        slide: CarouselSlide,
+        data: bytes,
+        position: int,
+        logo: bytes | None,
+        save: _Saver,
+    ) -> MediaWrite:
+        """A stock video fitted to the format with the slide's words and the brand's
+        logo over every frame (`compose.text_layer`) — a new work, never the stock file
+        as it is (plan-integracion-stock §5.2). Composed here, no model involved."""
+        number = position + 1
+        size = brief.format.dimensions
+        hook = copy.hook if slide.text is SlideText.HOOK else ""
+        cta = copy.cta if slide.text is SlideText.CTA else ""
+        overlay = text_layer(size=size, hook=hook, cta=cta, palette=kit.palette_rgb, logo=logo)
+        fitted = self._require_fitter().fit(data, size=size, overlay=overlay)
+        key = save(f"slide-{number}.mp4", fitted.data, MP4)
+        params: dict[str, Any] = {
+            "slide": number,
+            "source": SlideSource.STOCK.value,
+            "text": slide.text.value,
+            "from_key": slide.object_key,
+            "duration_seconds": round(fitted.duration_sec, 2),
+        }
+        if fitted.poster:
+            params["thumbnail_key"] = save(
+                f"slide-{number}-poster.jpg", to_meta_jpeg(fitted.poster), JPEG
+            )
+        return MediaWrite(
+            position=position,
+            media_type="video",
+            media_url=key,
+            object_key=key,
+            width=fitted.width,
+            height=fitted.height,
+            aspect_ratio=brief.format.aspect_ratio,
+            model_id=COMPOSE_MODEL,
+            provider="qualify",
+            content_type=MP4,
+            params=params,
+        )
 
     def _existing_slide(
         self, brief: ContentBrief, piece: PieceFile, position: int, save: _Saver
@@ -1523,11 +2005,12 @@ class MediaProducer:
             else ()
         )
         manifest, rule = self._pick_template(brief, products, budget)
-        port = template_port(manifest, brief.format)
+        port = template_port(manifest, brief.format, video=brief.wants_template_video)
         if port is None:
             raise _MediaFailed(
                 FailureReason.INVALID_PARAMETERS.value,
-                f"la plantilla «{manifest.name}» no tiene salida {brief.format.value}",
+                f"la plantilla «{manifest.name}» no tiene "
+                f"{'video' if brief.wants_template_video else 'imagen'} en {brief.format.value}",
             )
         selected = {port: manifest.outputs[port]}
         if brief.media.brand_logo_key:
@@ -1763,36 +2246,9 @@ class MediaProducer:
 
     # -- video -------------------------------------------------------------------------
 
-    def _key(self, tenant_id: UUID, brand_id: UUID) -> str:
-        try:
-            resolved = self._credentials.resolve(
-                tenant_id=tenant_id, brand_id=brand_id, provider=HEYGEN
-            )
-        except Exception as exc:  # the resolver's own error types are adapter-specific
-            raise _MediaFailed(
-                FailureReason.PROVIDER_ERROR.value, UNAVAILABLE_TEXT, raw=f"no HeyGen key: {exc}"
-            ) from exc
-        return resolved.api_key
+    # -- the talking presenter over ByteDance (§ request 2026-10-16) ---------------------
 
-    def _upload(self, key: str, data: bytes, name: str, idempotency: str) -> str:
-        assert self._heygen is not None
-        asset = self._heygen.upload_asset(
-            api_key=key,
-            file_bytes=data,
-            filename=name,
-            content_type="image/png" if name.endswith(".png") else "image/jpeg",
-            idempotency_key=idempotency,
-        )
-        asset_id = asset.get("asset_id") if isinstance(asset, dict) else None
-        if not asset_id:
-            raise _MediaFailed(
-                FailureReason.PROVIDER_ERROR.value,
-                GENERIC_FAILURE_TEXT,
-                raw=f"HeyGen upload: no asset_id ({asset!r:.200})",
-            )
-        return str(asset_id)
-
-    def _video(
+    def _omnihuman_video(
         self,
         tenant_id: UUID,
         draft_id: UUID,
@@ -1803,220 +2259,248 @@ class MediaProducer:
         usage: list[MediaUsage],
         save: _Saver,
     ) -> list[MediaWrite]:
-        if self._heygen is None:
+        """Seedream composes the presenter (described, or the operator's image) with the
+        products and the background; Seed Speech reads the exact script in the chosen
+        voice — the brand's own clone or a public one, resolved HERE, never taken from
+        the browser — and OmniHuman makes the presenter say it, lips in sync. The photo
+        and the voice reach OmniHuman as public-media token URLs (it takes no Base64);
+        its result URL lives one hour, so the video is copied at once."""
+        # before anything is paid for: OmniHuman fetches the photo and the voice from a
+        # public URL, so without one every step after this would be money lost
+        if not _links_ready(self._reference_links):
+            raise _MediaFailed(FailureReason.INVALID_PARAMETERS.value, AVATAR_NO_PUBLIC_URL)
+        assert self._reference_links is not None
+        if self._voices is None:
             raise _MediaFailed(
-                FailureReason.PROVIDER_ERROR.value,
-                UNAVAILABLE_TEXT,
-                raw="HeyGen is not configured",
+                FailureReason.PROVIDER_ERROR.value, UNAVAILABLE_TEXT, raw="no voice resolver"
             )
-        # The operator's own script wins: it is read word for word.
-        script = (
-            brief.media.own_script.strip()
-            or copy.script
-            or f"{copy.hook} {copy.caption} {copy.cta}"
-        ).strip()
-        # A retry of the same script re-uses HeyGen's render (24 h idempotency window);
-        # a regenerated script is a new render.
-        stamp = hashlib.sha256(f"{draft_id}:{script}".encode()).hexdigest()[:24]
-        key = self._key(tenant_id, brief.brand_id)
         media = brief.media
-        # § request 2026-10-05: the voice must be this brand's own clone or a public
-        # one — every clone sits in the same HeyGen account, so without this check a
-        # brand could render in another brand's cloned voice. Before any upload or
-        # render, so a refusal costs nothing.
-        if self._voice_guard is not None and not self._voice_guard(
+        script = (
+            media.own_script.strip() or copy.script or f"{copy.hook} {copy.caption} {copy.cta}"
+        ).strip()
+        if len(script) > SCRIPT_MAX:
+            script = fit_text(script, SCRIPT_MAX)
+        # the voice first: a voice this brand may not use is refused before any spend
+        try:
+            voice = self._voices(
+                tenant_id=tenant_id,
+                brand_id=brief.brand_id,
+                choice=media.voice_id or default_public_voice(),
+            )
+        except VoiceRefused as exc:
+            raise _MediaFailed(FailureReason.ROUTE_BLOCKED_BY_POLICY.value, str(exc)) from exc
+
+        # 1. the presenter, composed by Seedream
+        ratio = SEEDANCE_RATIOS[brief.format]
+        products = self._products(brief)
+        background = self._read(media.background_key)
+        character = (
+            self._store.read(media.avatar_image_key)
+            if media.avatar_source is AvatarSource.IMAGE and media.avatar_image_key
+            else None
+        )
+        references = [
+            *([character] if character is not None else []),
+            *products,
+            *([background] if background is not None else []),
+        ]
+        frame = self._scene_image(
             tenant_id=tenant_id,
+            draft_id=draft_id,
             brand_id=brief.brand_id,
-            voice_id=media.voice_id or "",
-            api_key=key,
-        ):
-            raise _MediaFailed(
-                FailureReason.ROUTE_BLOCKED_BY_POLICY.value,
-                "La voz elegida no está disponible para esta marca: solo puedes usar "
-                "tu propia voz clonada o una de las voces disponibles.",
-            )
-
-        params: dict[str, object] = {
-            "script": script,
-            "voice_id": media.voice_id,
-            "resolution": VIDEO_RESOLUTION,
-            "aspect_ratio": brief.format.aspect_ratio,
-            "idempotency_key": stamp,
-            "title": f"qualify {draft_id}",
-        }
-        if kit.regional_variant:
-            params["locale"] = kit.regional_variant
-
-        scene = compose_scene(
-            products=self._products(brief),
-            background=self._read(media.background_key),
-            palette=kit.palette_rgb,
-            size=brief.format.dimensions,
-            # only the logo the piece was GIVEN: an avatar video had none before
-            logo=self._logo(kit, media.brand_logo_key) if media.brand_logo_key else None,
-        )
-        if scene is not None:
-            params["background_image_asset_id"] = self._upload(
-                key, scene, "scene.png", f"{stamp}-scene"
-            )
-
-        subject: dict[str, object]
-        library_look = media.avatar_source is not AvatarSource.AI
-        if brief.kind is ContentKind.AVATAR_VIDEO and library_look:
-            subject = {"avatar_id": media.avatar_look_id, "engine": media.engine}
-        elif media.avatar_source is AvatarSource.IMAGE:
-            image = self._store.read(media.avatar_image_key or "")
-            name = "avatar.png" if (media.avatar_image_key or "").endswith(".png") else "avatar.jpg"
-            subject = {"image_asset_id": self._upload(key, image, name, f"{stamp}-avatar")}
-        else:
-            subject = {
-                "avatar_id": self._prompt_avatar(
-                    key, brief, stamp, budget, usage, draft_id=draft_id
-                ),
-                "engine": media.engine,
-            }
-        params.update(subject)
-
-        request = GenerationRequest(
-            task=GenerationTask.AVATAR_VIDEO,
-            rendered_prompt=RenderedPrompt(
-                stable_prefix="", volatile_suffix="", prefix_fingerprint=""
+            prompt=first_frame_prompt(
+                brief=brief,
+                kit=kit,
+                has_character_image=character is not None,
+                products=len(products),
+                has_background=background is not None,
             ),
-            params=params,
+            references=references,
+            ratio=ratio,
+            budget=budget,
+            usage=usage,
+            what="presentador del video",
         )
+        presenter = to_meta_jpeg(frame)
+        frame_key = save("presenter.jpg", presenter, JPEG)
+
+        # 2. the voice, read by Seed Speech
         trace.media_request(
             draft_id=draft_id,
-            provider="HeyGen",
-            what="video con avatar",
+            provider="Seed Speech",
+            what="voz del video",
             fields={
-                "guion (lo que dice el avatar)": params.get("script"),
-                "voz": params.get("voice_id"),
-                "avatar": params.get("avatar_id"),
-                "motor": params.get("engine"),
-                "foto animada": "sí" if "image_asset_id" in params else None,
-                "fondo compuesto": "sí" if "background_image_asset_id" in params else None,
-                "formato": f"{params.get('aspect_ratio')} · {params.get('resolution')}",
-                "locale": params.get("locale"),
+                "guion (lo que dice el presentador)": script,
+                "voz": "la de la marca" if voice.brand_clone else voice.speaker,
             },
         )
-        spent = sum((u.cost_usd for u in usage), Decimal(0))
-        outcome = self._router.run(
+        spoken = self._run(
             tenant_id=tenant_id,
             brand_id=brief.brand_id,
-            chain=(HEYGEN,),
-            request=request,
-            budget=BudgetContext(
-                remaining_usd=budget.remaining_usd - spent, hard_stop=budget.hard_stop
+            link=SEED_SPEECH,
+            request=GenerationRequest(
+                task=GenerationTask.VOICEOVER,
+                rendered_prompt=RenderedPrompt("", "", ""),
+                params={
+                    "text": script,
+                    "speaker": voice.speaker,
+                    "resource_id": voice.resource_id,
+                    "language": voice.language,
+                },
             ),
+            budget=budget,
+            usage=usage,
+            failure_text=avatar_failure_text,
         )
-        if outcome.result is None:
-            blocked = any(h.action is HopAction.BUDGET_BLOCKED for h in outcome.hops)
-            detail = "; ".join(h.reason or h.action.value for h in outcome.hops)
-            raise _MediaFailed(
-                FailureReason.BUDGET_EXCEEDED.value
-                if blocked
-                else FailureReason.PROVIDER_ERROR.value,
-                BUDGET_TEXT if blocked else heygen_failure_text(detail),
-                raw=detail,
+        audio = bytes(spoken.payload) if isinstance(spoken.payload, bytes | bytearray) else b""
+        characters = int(spoken.usage.input_tokens)
+        usage.append(
+            MediaUsage(
+                provider=spoken.provider,
+                model_id=spoken.model_id,
+                unit="character",
+                quantity=characters,
+                cost_usd=speech_cost_usd(self._pricing, spoken.model_id, characters),
             )
-        result = outcome.result
-        payload = dict(result.payload) if isinstance(result.payload, dict) else {}
-        seconds = result.usage.media_seconds
-        rate = self._pricing.unit_price(
-            model_id=result.model_id, unit=f"per_second_{VIDEO_RESOLUTION}"
         )
+        if voice.brand_clone and voice.charges_slot:
+            # the clone's first real synthesis: BytePlus charges its post-paid slot now
+            usage.append(
+                MediaUsage(
+                    provider=spoken.provider,
+                    model_id=VOICE_SLOT_MODEL,
+                    unit="piece",
+                    quantity=1,
+                    cost_usd=self._pricing.unit_price(model_id=VOICE_SLOT_MODEL, unit="per_piece"),
+                )
+            )
+        if voice.brand_clone and self._on_brand_voice_used is not None:
+            # the first real synthesis fixes the voice (Seed Speech charges its slot)
+            try:
+                self._on_brand_voice_used(tenant_id, brief.brand_id, voice.speaker)
+            except Exception as exc:  # the stamp is bookkeeping; the video goes on
+                logger.warning("brand voice activation not stamped: %s", type(exc).__name__)
+        voice_key = save("voice.mp3", audio, MP3)
+        seconds = _audio_seconds(audio) or len(script) / _CHARS_PER_SECOND
+        if seconds > self._omnihuman_max_seconds:
+            raise _MediaFailed(
+                FailureReason.INVALID_PARAMETERS.value,
+                AVATAR_SCRIPT_TOO_LONG,
+                raw=f"voice track {seconds:.1f}s > {self._omnihuman_max_seconds}s",
+            )
+
+        # 3. the talking video, by OmniHuman
+        try:
+            image_url = self._reference_links(
+                tenant_id=tenant_id, key=frame_key, data=presenter, content_type=JPEG
+            )
+            audio_url = self._reference_links(
+                tenant_id=tenant_id, key=voice_key, data=audio, content_type=MP3
+            )
+        except Exception as exc:  # R2 or the public-media config
+            raise _MediaFailed(
+                FailureReason.INVALID_PARAMETERS.value,
+                AVATAR_NO_PUBLIC_URL,
+                raw=f"{type(exc).__name__}: {exc}",
+            ) from exc
+        motion = motion_prompt(brief=brief, products=len(products))
+        trace.media_request(
+            draft_id=draft_id,
+            provider="OmniHuman",
+            what="video con avatar",
+            fields={
+                "prompt de gestos": motion,
+                "duración de la voz": f"{seconds:.1f} s",
+                "resolución": f"{self._omnihuman_resolution}p",
+            },
+        )
+        billed = Decimal(str(round(seconds, 2)))
+        try:
+            result = self._run(
+                tenant_id=tenant_id,
+                brand_id=brief.brand_id,
+                link=OMNIHUMAN,
+                request=GenerationRequest(
+                    task=GenerationTask.AVATAR_VIDEO,
+                    rendered_prompt=RenderedPrompt("", "", ""),
+                    params={
+                        "image_url": image_url,
+                        "audio_url": audio_url,
+                        "prompt": motion,
+                        "resolution": self._omnihuman_resolution,
+                        "audio_seconds": round(seconds, 2),
+                    },
+                ),
+                budget=budget,
+                usage=usage,
+                failure_text=avatar_failure_text,
+            )
+        except _MediaFailed as exc:
+            if "OmniHumanTimeout" in (exc.raw or ""):
+                # the window closed but the render goes on — and is billed when it ends:
+                # record what it will cost, so the budget is not blind to it
+                usage.append(
+                    MediaUsage(
+                        provider=OMNIHUMAN,
+                        model_id=MODEL_IDS.get(self._omnihuman_req_key, self._omnihuman_req_key),
+                        unit="second",
+                        quantity=math.ceil(seconds),
+                        cost_usd=omnihuman_cost_usd(
+                            self._pricing,
+                            self._omnihuman_req_key,
+                            self._omnihuman_resolution,
+                            billed,
+                        ),
+                    )
+                )
+                logger.warning("omnihuman timed out, billed render recorded: %s", exc.raw)
+            raise
+        payload = dict(result.payload) if isinstance(result.payload, dict) else {}
+        req_key = str(payload.get("req_key") or result.model_revision or "")
         usage.append(
             MediaUsage(
                 provider=result.provider,
                 model_id=result.model_id,
                 unit="second",
                 quantity=math.ceil(seconds),
-                cost_usd=(seconds * rate).quantize(Decimal("0.000001")),
+                cost_usd=omnihuman_cost_usd(
+                    self._pricing,
+                    req_key,
+                    int(payload.get("resolution") or self._omnihuman_resolution),
+                    billed,
+                ),
             )
         )
-
         video_key = save("video.mp4", self._download(str(result.media_url)), MP4)
-        extra: dict[str, Any] = {}
-        thumbnail = payload.get("thumbnail_url")
-        if thumbnail:
-            try:
-                extra["thumbnail_key"] = save("thumbnail.jpg", self._download(str(thumbnail)), JPEG)
-            except Exception as exc:  # a missing poster frame is not a failed video
-                logger.info("heygen thumbnail not kept: %s", exc)
+        width, height = brief.format.dimensions
         return [
             MediaWrite(
                 position=0,
                 media_type="video",
                 media_url=video_key,
                 object_key=video_key,
-                width=brief.format.dimensions[0],
-                height=brief.format.dimensions[1],
-                aspect_ratio=brief.format.aspect_ratio,
+                width=width,
+                height=height,
+                aspect_ratio=ratio,
                 model_id=result.model_id,
                 provider=result.provider,
                 content_type=MP4,
                 ai_generated=True,
                 params={
-                    "video_id": payload.get("video_id"),
-                    "duration_seconds": payload.get("duration_seconds"),
-                    "subject": "avatar" if "avatar_id" in subject else "image",
+                    "task_id": payload.get("task_id"),
+                    "duration_seconds": round(seconds, 2),
+                    "resolution": payload.get("resolution"),
                     "avatar_source": media.avatar_source.value if media.avatar_source else None,
-                    "avatar_id": subject.get("avatar_id"),
-                    "voice_id": media.voice_id,
-                    "background_composed": scene is not None,
+                    # provenance of the voice: which one read it, never another brand's id
+                    "voice": "brand" if voice.brand_clone else "public",
+                    "voice_id": None if voice.brand_clone else voice.speaker,
+                    "voice_resource": voice.resource_id,
+                    "voice_key": voice_key,
+                    "thumbnail_key": frame_key,
                     "model_revision": result.model_revision,
-                    **extra,
                 },
             )
         ]
-
-    def _prompt_avatar(
-        self,
-        key: str,
-        brief: ContentBrief,
-        stamp: str,
-        budget: BudgetContext,
-        usage: list[MediaUsage],
-        *,
-        draft_id: UUID,
-    ) -> str:
-        """A synthetic avatar from the operator's description — a photoreal person for
-        `AVATAR_VIDEO`, an animated character otherwise: created, then waited for — its
-        look id is the video's avatar."""
-        assert self._heygen is not None
-        price = self._pricing.unit_price(model_id=PROMPT_AVATAR_MODEL, unit="per_piece")
-        if budget.hard_stop and price > budget.remaining_usd:
-            raise _MediaFailed(
-                FailureReason.BUDGET_EXCEEDED.value,
-                BUDGET_TEXT,
-                raw=f"prompt avatar over budget ({price} > {budget.remaining_usd})",
-            )
-        style = HUMAN_STYLE if brief.kind is ContentKind.AVATAR_VIDEO else ANIMATED_STYLE
-        prompt = (style + brief.media.avatar_prompt.strip())[:1000]
-        trace.media_request(
-            draft_id=draft_id,
-            provider="HeyGen",
-            what="avatar a partir de una descripción",
-            fields={"prompt": prompt, "costo": f"USD {price:.4f}"},
-        )
-        look_id = self._heygen.create_prompt_avatar(
-            api_key=key,
-            name=f"qualify-{stamp[:8]}",
-            prompt=prompt,
-            aspect_ratio=brief.format.aspect_ratio,
-            idempotency_key=f"{stamp}-look",
-        )
-        usage.append(
-            MediaUsage(
-                provider=HEYGEN,
-                model_id=PROMPT_AVATAR_MODEL,
-                unit="piece",
-                quantity=1,
-                cost_usd=price,
-            )
-        )
-        self._heygen.wait_for_look(look_id, api_key=key)
-        return look_id
 
 
 # ---------------------------------------------------------------------------
@@ -2036,6 +2520,38 @@ _ORIENTATION = {
     "9:16": "vertical 9:16",
     "1:1": "square 1:1",
 }
+
+
+#: How much of the «Datos clave» JSON (§ request 2026-10-14) goes into a media prompt:
+#: the facts that fit, in the operator's order — the vendor's cap is 3,000 characters.
+_FACTS_MAX = 500
+
+#: What a media prompt does with the facts: an image or a clip never draws them (the
+#: words are laid over afterwards, or the post carries them) — they shape what is shown.
+_FACTS_IN_IMAGE = (
+    "Let them shape what the scene shows (a 2x1 shows two, a weekend offer feels like a"
+    " weekend) — never draw them: the words are laid over afterwards."
+)
+_FACTS_IN_CLIP = (
+    "Let them shape the story — what is shown and how urgent it feels — never write them"
+    " on screen: the post's text carries them."
+)
+_FACTS_IN_MOTION = "The presenter's words carry them; let the gestures and the product shown match."
+
+
+def _facts_line(brief: ContentBrief, use: str) -> str:
+    """«Datos clave» as the JSON the operator's facts are (§ request 2026-10-14): every
+    prompt gets them, each told what to do with them. "" without facts."""
+    data: dict[str, str] = {}
+    for name, fact in brief.constraints.highlights:
+        candidate = {**data, name: fact}
+        if len(json.dumps(candidate, ensure_ascii=False)) > _FACTS_MAX:
+            break
+        data = candidate
+    if not data:
+        return ""
+    facts = json.dumps(data, ensure_ascii=False)
+    return f"Key facts of this offer (the client's own data, as JSON): {facts}. {use}"
 
 
 def _palette_line(kit: BrandKit) -> str:
@@ -2066,7 +2582,8 @@ def ad_scene_prompt(
     has_background: bool,
 ) -> str:
     """The advertising photograph Seedream is asked for. Reference images come in this
-    order: the product photos first, the background (the operator's place) last."""
+    order: the product photos first, the background (the operator's place) last. With
+    no photo at all (`AdImageMode.SCENE`) the scene is invented from the words."""
     ratio = brief.format.aspect_ratio
     lines = [
         f"Professional advertising photograph for a social media ad"
@@ -2091,10 +2608,16 @@ def ad_scene_prompt(
             "shape, colors, label) naturally inside the client's real place (the last "
             "image, keep it recognisable), as if photographed there."
         )
+    elif not products and not has_background:
+        lines.append(
+            "There are no reference images: compose the product and the setting from the "
+            "scene described below, plausible for this brand."
+        )
     if brief.media.scene_prompt.strip():
         scene = _quoted(brief.media.scene_prompt)
         lines.append(f'Scene the client asked for (in Spanish): "{scene}".')
     lines.append(f'The post is about (in Spanish): "{_quoted(brief.topic, _PROMPT_TOPIC_MAX)}".')
+    lines.append(_facts_line(brief, _FACTS_IN_IMAGE))
     lines.append(
         "Keep the top quarter and the bottom fifth of the frame calm and uncluttered: the "
         "headline and a button are laid over them afterwards."
@@ -2141,6 +2664,7 @@ def carousel_scene_prompt(
         lines.append(f'This slide shows (in Spanish): "{_quoted(scene)}".')
     topic = _quoted(brief.topic, _PROMPT_TOPIC_MAX)
     lines.append(f'The carousel is about (in Spanish): "{topic}".')
+    lines.append(_facts_line(brief, _FACTS_IN_IMAGE))
     if has_text:
         lines.append(
             "Keep the top quarter and the bottom fifth of the frame calm and uncluttered: "
@@ -2151,15 +2675,17 @@ def carousel_scene_prompt(
     return " ".join(line for line in lines if line)
 
 
-def carousel_motion_prompt() -> str:
+def carousel_motion_prompt(brief: ContentBrief | None = None) -> str:
     """What Seedance does with a carousel slide's scene: a short, silent, product-led
-    shot — nobody talks, nothing is written."""
-    return (
+    shot — nobody talks, nothing is written. The «Datos clave» ride along (2026-10-14)."""
+    lines = [
         "Bring this photograph to life as a short cinematic product shot: a slow, smooth "
         "camera move (gentle push-in or slight orbit), subtle natural motion in the scene "
         "(steam, light, a hand, the background), the product keeps its exact look and "
-        "label. Nobody talks to the camera. No text on screen."
-    )
+        "label. Nobody talks to the camera. No text on screen.",
+        _facts_line(brief, _FACTS_IN_CLIP) if brief is not None else "",
+    ]
+    return " ".join(line for line in lines if line)
 
 
 def _cover_png(data: bytes, size: tuple[int, int]) -> bytes:
@@ -2217,8 +2743,135 @@ def first_frame_prompt(
     if has_background:
         lines.append("The scene takes place in the client's real place (the last image).")
     lines.append(f'The video is about (in Spanish): "{_quoted(brief.topic, _PROMPT_TOPIC_MAX)}".')
+    lines.append(_facts_line(brief, _FACTS_IN_IMAGE))
     lines.append(_palette_line(kit))
     lines.append(_NO_TEXT)
+    return " ".join(line for line in lines if line)
+
+
+#: What each clip reference image is told to be (§ request 2026-10-14), by its role.
+_CLIP_ROLE_LINES = {
+    "product": "the client's real product — keep it exactly as it is (shape, colors, label)",
+    "place": "the client's real place — the story happens there, keep it recognisable",
+    "style": "a style reference — borrow its look, light, framing and mood, not its content",
+}
+#: How long each shot's description may be in the prompt.
+_SHOT_MAX = 260
+
+
+def _numbered(numbers: list[int]) -> str:
+    if len(numbers) == 1:
+        return f"Image {numbers[0]}"
+    return "Images " + ", ".join(str(n) for n in numbers[:-1]) + f" and {numbers[-1]}"
+
+
+def _story_lines(copy: CopyPayload | None, seconds: int) -> list[str]:
+    """The clip's story (§ request 2026-10-14: «el clip cuenta una historia» and «los
+    ganchos ya se tienen, quiero usarlos»): the copy's own three shots — hook,
+    development, payoff — timed to the clip; without them, the same three beats built
+    on the copy's hook and CTA."""
+    shots = [shot for shot in (copy.shots if copy else ()) if shot.visual.strip()][:4]
+    lines: list[str] = []
+    if copy and copy.hook.strip():
+        lines.append(
+            "It opens on this hook, shown — never written (in Spanish): "
+            f'"{_quoted(copy.hook, 160)}".'
+        )
+    if shots:
+        total = sum(shot.seconds for shot in shots) or 1
+        lines.append("The story, shot by shot (in Spanish):")
+        start = 0
+        for number, shot in enumerate(shots, 1):
+            end = seconds if number == len(shots) else round(start + shot.seconds * seconds / total)
+            lines.append(f'Shot {number} ({start}-{end} s): "{_quoted(shot.visual, _SHOT_MAX)}".')
+            start = end
+        return lines
+    hook_end = max(2, round(seconds * 0.2))
+    middle_end = max(hook_end + 2, round(seconds * 0.7))
+    cta = copy.cta.strip() if copy else ""
+    lines.extend(
+        (
+            f"Shot 1 (0-{hook_end} s): the hook — the moment that makes people stop scrolling.",
+            f"Shot 2 ({hook_end}-{middle_end} s): the development — the product in action and "
+            "what it gives.",
+            f"Shot 3 ({middle_end}-{seconds} s): the payoff — the product as the hero"
+            + (
+                f', leading to the call to action (in Spanish): "{_quoted(cta, 120)}".'
+                if cta
+                else "."
+            ),
+        )
+    )
+    return lines
+
+
+def clip_prompt(
+    *,
+    brief: ContentBrief,
+    kit: BrandKit,
+    first_frame: bool,
+    last_frame: bool,
+    images: int,
+    videos: int,
+    audios: int,
+    copy: CopyPayload | None = None,
+    image_roles: tuple[str, ...] = (),
+) -> str:
+    """What a clip is asked for (§ 2026-10-14): an advertising video that tells a story
+    in three shots on the copy's hook, each reference named by the number the API gives
+    it and told its role (the product, the place, a style), the «Datos clave», the
+    palette. With references, the frames are the first reference images and the prompt
+    says so (ModelArk's documented way: «the opening frame is Image 1»)."""
+    ratio = SEEDANCE_RATIOS[brief.format]
+    seconds = brief.media.duration_seconds
+    topic_max = 300 if copy and copy.shots else _PROMPT_TOPIC_MAX
+    lines = [
+        f"A {_ORIENTATION.get(ratio, ratio)} advertising video for social media that tells a "
+        "short story, cinematic and well lit, with no presenter talking to the camera.",
+        f'It is about (in Spanish): "{_quoted(brief.topic, topic_max)}".',
+    ]
+    if brief.product_ref:
+        lines.append(
+            f'It shows the client\'s real product, "{_quoted(brief.product_ref, 120)}", '
+            "exactly as it is: shape, colors, label."
+        )
+    lines.extend(_story_lines(copy, seconds))
+    references = images or videos or audios
+    if references:
+        index = 1
+        if first_frame:
+            lines.append(f"The opening frame is Image {index}.")
+            index += 1
+        if last_frame:
+            lines.append(f"The closing frame is Image {index}.")
+            index += 1
+        if images:
+            roles = list(image_roles) if len(image_roles) == images else ["product"] * images
+            by_role: dict[str, list[int]] = {}
+            for offset, role in enumerate(roles):
+                by_role.setdefault(role if role in _CLIP_ROLE_LINES else "product", []).append(
+                    index + offset
+                )
+            for role, numbers in by_role.items():
+                lines.append(f"{_numbered(numbers)}: {_CLIP_ROLE_LINES[role]}.")
+        if videos:
+            named = "Video 1" if videos == 1 else f"Videos 1 to {videos}"
+            lines.append(
+                f"Refer to the camera movement, motion and pacing of {named}, keeping the "
+                "motion details consistent, with the client's product and scene."
+            )
+        if audios:
+            named = "Audio 1" if audios == 1 else f"Audios 1 to {audios}"
+            lines.append(f"Use {named} as the soundtrack and match the rhythm to it.")
+    elif first_frame and last_frame:
+        lines.append(
+            "It moves from the opening frame (shot 1) to the closing frame (the last shot)."
+        )
+    elif first_frame:
+        lines.append("It starts on the opening frame and brings it to life.")
+    lines.append(_facts_line(brief, _FACTS_IN_CLIP))
+    lines.append(_palette_line(kit))
+    lines.append("No text on screen.")
     return " ".join(line for line in lines if line)
 
 
@@ -2239,7 +2892,8 @@ def motion_prompt(*, brief: ContentBrief, products: int) -> str:
             "They show the product to the camera; the product keeps its exact look and label."
         )
     lines.append("Smooth, slight handheld camera movement, natural light. No text on screen.")
-    return " ".join(lines)
+    lines.append(_facts_line(brief, _FACTS_IN_MOTION))
+    return " ".join(line for line in lines if line)
 
 
 # ---------------------------------------------------------------------------

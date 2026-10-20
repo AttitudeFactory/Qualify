@@ -1,0 +1,28 @@
+{
+  "runs": {
+    "sonnet-5@low": {
+      "trampas_total": 0.0,
+      "perdidos_total": 9.0,
+      "costo_total_usd": 0.1423,
+      "precision_media": 1.0,
+      "recall_medio": 0.758,
+      "tipo_medio": 0.917
+    },
+    "sonnet-5.5@low": {
+      "trampas_total": 0.0,
+      "perdidos_total": 10.0,
+      "costo_total_usd": 0.1301,
+      "precision_media": 1.0,
+      "recall_medio": 0.735,
+      "tipo_medio": 0.991
+    },
+    "haiku-5.5@low": {
+      "trampas_total": 0.0,
+      "perdidos_total": 8.0,
+      "costo_total_usd": 0.0129,
+      "precision_media": 1.0,
+      "recall_medio": 0.799,
+      "tipo_medio": 0.936
+    }
+  }
+}

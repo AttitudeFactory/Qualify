@@ -157,6 +157,9 @@ class UnpublishableReason(StrEnum):
     # carousel as a story), or a feed image outside Meta's 4:5–1.91:1 range.
     DESTINATION_NOT_SUPPORTED = "destination_not_supported"
     IMAGE_RATIO_NOT_ALLOWED = "image_ratio_not_allowed"
+    # Stock plan §5.2: a third-party stock file (`t/{tenant}/stock/…`) is an INPUT of a
+    # piece, never the piece — both licences forbid publishing it standalone.
+    STOCK_NOT_PUBLISHABLE = "stock_not_publishable"
 
 
 @dataclass(frozen=True)

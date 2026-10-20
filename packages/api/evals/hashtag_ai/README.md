@@ -27,7 +27,34 @@ uv run --no-sync --with anthropic python packages/api/evals/hashtag_ai/run_eval.
 
 The labels are the spec. Review them; a wrong label is a wrong measurement.
 
-## Result — tools, 2026-09-25 (`results/20260925-120905.json`) — CURRENT
+## Langfuse experiment, 2026-10-13 (`results/langfuse-20261013-184511.json`) — CURRENT
+
+Same gold sets and scorers, run as Langfuse dataset runs (`run_experiment.py`, `just
+eval-hashtags`; datasets `hashtags-clasificar` and `hashtags-elegir`, environment `eval`)
+with the two Claude 5.5 models as new candidates. **One run, no repeat yet**: the plan's
+rule (docs/plan-observabilidad-langfuse.md §6.3) asks for a second run before a default
+changes, and the selection set is 15 brands, under the rule's 30.
+
+Classification, 95 tags in batches of 20:
+
+| config | kind | kind+niche | total $ |
+|---|---|---|---|
+| `claude-haiku-4-5` (default) | 0.968 | 0.968 | 0.0220 |
+| `claude-haiku-5-5` @ low | 0.968 | 0.968 | **0.0033** |
+
+Selection, 15 brands, at most 3 picks:
+
+| config | precision | recall@3 | traps | bad | $/brand | p50 s |
+|---|---|---|---|---|---|---|
+| `claude-sonnet-5` @ medium (default) | 0.917 | 0.869 | 1 | 0 | 0.00987 | 8.37 |
+| `claude-sonnet-5-5` @ medium | **0.976** | **0.905** | **0** | 0 | 0.00722 | **5.71** |
+| `claude-haiku-5-5` @ medium | 0.917 | 0.798 | 0 | 0 | **0.00063** | 7.15 |
+
+Reading: Haiku 5.5 classifies exactly as well as Haiku 4.5 at about a seventh of the
+cost; Sonnet 5.5 beats Sonnet 5 on every column, traps included, and is cheaper and
+faster. Both are candidates to become the defaults once a second run confirms them.
+
+## Result — tools, 2026-09-25 (`results/20260925-120905.json`)
 
 Selection: 15 cases × 2 repeats, at most 3 picks, 8 starting candidates, the rest via
 tools.

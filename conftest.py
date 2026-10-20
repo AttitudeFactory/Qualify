@@ -9,11 +9,13 @@ development `qualify` (see `testing/testdb.py` for why and how).
   forward (never emptied), and every sanctioned door is checked to really connect there.
 - `--reset-test-db`: DROP + CREATE + migrate `qualify_test` BEFORE the run. Explicit only:
   without it, whatever a run leaves stays in `qualify_test` for inspection.
+- Every test: no export to a real Langfuse (`_no_langfuse_export`).
 """
 
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -67,3 +69,18 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     reporter = config.pluginmanager.get_plugin("terminalreporter")
     if reporter is not None:
         reporter.write_line(f"test database: {status}")
+
+
+@pytest.fixture(autouse=True)
+def _no_langfuse_export(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """No test traces to a real Langfuse. Since 2026-10-13 the app's .env carries the
+    LANGFUSE_* keys, and modules that load it (`load_dotenv`) would make the suite export
+    its spans to the local server — and make tracing state leak between tests. A test that
+    needs tracing configures its own client (`observability.capture_spans`)."""
+    from qualify_shared import observability
+
+    for name in (observability.PUBLIC_KEY_ENV, observability.SECRET_KEY_ENV):
+        monkeypatch.delenv(name, raising=False)
+    observability.reset()
+    yield
+    observability.reset()

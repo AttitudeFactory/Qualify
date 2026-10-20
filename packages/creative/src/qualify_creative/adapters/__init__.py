@@ -14,12 +14,15 @@ from qualify_creative.adapters.byteplus_ark import (
     SeedanceVideoAdapter,
     SeedreamImageAdapter,
 )
-from qualify_creative.adapters.heygen_video import (
-    HeyGenAPIError,
-    HeyGenAvatarVideoAdapter,
-    HeyGenError,
-    HeyGenRenderFailed,
-    HeyGenRenderTimeout,
+from qualify_creative.adapters.byteplus_omnihuman import (
+    OmniHumanError,
+    OmniHumanTimeout,
+    OmniHumanVideoAdapter,
+)
+from qualify_creative.adapters.byteplus_speech import (
+    SeedSpeechClient,
+    SeedSpeechError,
+    SeedSpeechVoiceoverAdapter,
 )
 
 __all__ = [
@@ -29,11 +32,12 @@ __all__ = [
     "ArkTaskFailed",
     "ArkTaskTimeout",
     "CopyRefused",
-    "HeyGenAPIError",
-    "HeyGenAvatarVideoAdapter",
-    "HeyGenError",
-    "HeyGenRenderFailed",
-    "HeyGenRenderTimeout",
+    "OmniHumanError",
+    "OmniHumanTimeout",
+    "OmniHumanVideoAdapter",
+    "SeedSpeechClient",
+    "SeedSpeechError",
+    "SeedSpeechVoiceoverAdapter",
     "SeedanceVideoAdapter",
     "SeedreamImageAdapter",
 ]

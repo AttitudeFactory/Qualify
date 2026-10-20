@@ -1,5 +1,7 @@
 # Backlog — Motor de Plantillas (Remotion)
 
+> **`[OBSOLETO]` HeyGen — decisión del fundador, 2026-10-16.** Los videos con avatar migran a la suite de ByteDance (BytePlus): **OmniHuman** (el avatar que habla), **Seedance** (el video), **Seedream** (la imagen y el primer fotograma) y **Seed Speech** (la voz clonada). Toda mención a HeyGen en este documento describe el estado anterior o una alternativa ya descartada: no la tomes como decisión vigente. **La migración aún no está hecha en el código** (medido el 2026-10-16): el detalle y lo que falta está en [Pendientes del generador §6](pendientes-generador-contenido.md).
+
 **Fecha:** 2026-10-05 · **Estado:** `[PLAN — decisiones del fundador cerradas 2026-10-05, listo para abrir historias]`
 **Origen:** doc del fundador «Qualify — Módulo de Plantillas de Contenido: investigación y objetivo semanal» (Claude Docs, 2026-10-04) y la revisión contra el repo del 2026-10-05.
 **Semana objetivo:** 5 al 11 de octubre de 2026, demo con tienda piloto el domingo 11.

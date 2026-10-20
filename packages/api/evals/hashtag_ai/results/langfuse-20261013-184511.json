@@ -1,0 +1,41 @@
+{
+  "runs": {
+    "clasificar/haiku-4.5": {
+      "exactitud_tipo_y_nicho": 0.968,
+      "exactitud_tipo": 0.968,
+      "costo_total_usd": 0.022
+    },
+    "clasificar/haiku-5.5@low": {
+      "exactitud_tipo_y_nicho": 0.968,
+      "exactitud_tipo": 0.968,
+      "costo_total_usd": 0.0033
+    },
+    "elegir/sonnet-5@medium": {
+      "precision_media": 0.917,
+      "recall_medio": 0.869,
+      "trampas_total": 1.0,
+      "malos_total": 0.0,
+      "costo_por_marca_usd": 0.00987,
+      "segundos_p50": 8.37,
+      "errores": 0.0
+    },
+    "elegir/sonnet-5.5@medium": {
+      "precision_media": 0.976,
+      "recall_medio": 0.905,
+      "trampas_total": 0.0,
+      "malos_total": 0.0,
+      "costo_por_marca_usd": 0.00722,
+      "segundos_p50": 5.71,
+      "errores": 0.0
+    },
+    "elegir/haiku-5.5@medium": {
+      "precision_media": 0.917,
+      "recall_medio": 0.798,
+      "trampas_total": 0.0,
+      "malos_total": 0.0,
+      "costo_por_marca_usd": 0.00063,
+      "segundos_p50": 7.15,
+      "errores": 0.0
+    }
+  }
+}

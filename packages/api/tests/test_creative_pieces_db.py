@@ -115,3 +115,33 @@ def test_only_this_brands_pieces_are_listed_and_confirmed() -> None:
     assert reader.file(tenant_id=TENANT_P, brand_id=mine, object_key=sibling_image) is None
     assert reader.file(tenant_id=TENANT_P, brand_id=mine, object_key=foreign_image) is None
     assert reader.file(tenant_id=TENANT_P, brand_id=mine, object_key="") is None
+
+
+def test_a_piece_carries_its_chosen_copys_hook_as_its_title() -> None:
+    """§ request 2026-10-14: a picker shows a piece by its title — the hook of its chosen
+    copy variant (else its first one) — not by the prompt it was made from."""
+    (brand,) = _brands(TENANT_P, 1)
+    image, _ = _piece(TENANT_P, brand, "el prompt largo que escribió el operador")
+    untitled, _ = _piece(TENANT_P, brand, "otra pieza sin copy")
+    with tenant_session(TENANT_P) as session:
+        draft_id = session.scalars(
+            select(creative.ImageAsset.draft_id).where(creative.ImageAsset.object_key == image)
+        ).one()
+        variants = []
+        for ordinal, hook in enumerate(("Primera opción", "La smash del domingo")):
+            variant = creative.CopyVariant(
+                tenant_id=TENANT_P,
+                draft_id=draft_id,
+                ordinal=ordinal,
+                copy={"hook": hook, "caption": "", "cta": "", "hashtags": []},
+                model_id="test",
+            )
+            session.add(variant)
+            session.flush()
+            variants.append(variant)
+        draft = session.get(creative.ContentDraft, draft_id)
+        draft.selected_variant_id = variants[1].id
+    files = DbPieceFiles().files(tenant_id=TENANT_P, brand_id=brand)
+    listed = {piece.object_key: piece for piece in files}
+    assert listed[image].title == "La smash del domingo"
+    assert listed[untitled].title == ""

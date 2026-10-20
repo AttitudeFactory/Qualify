@@ -180,6 +180,20 @@ def test_an_ad_image_keeps_its_mode_and_scene() -> None:
     assert brief.media.scene_prompt.startswith("Una mano")
     assert AdImageMode.PRODUCT.needs_product and not AdImageMode.PRODUCT.needs_background
     assert AdImageMode.BACKGROUND.needs_background and not AdImageMode.BACKGROUND.needs_product
+    assert AdImageMode.BOTH.needs_product and AdImageMode.BOTH.needs_background
+
+
+def test_an_ad_image_from_the_scene_alone_needs_no_photo() -> None:
+    """§ 2026-10-12: the photos are optional — a flyer may be the described scene only."""
+    assert not AdImageMode.SCENE.needs_product and not AdImageMode.SCENE.needs_background
+    brief = _brief(
+        ContentKind.STATIC_FLYER,
+        ad_mode=AdImageMode.SCENE,
+        scene_prompt="Una hamburguesa sobre una mesa de madera, luz cálida",
+    )
+    assert brief.media.ad_mode is AdImageMode.SCENE
+    assert brief.media.product_keys == () and brief.media.background_key is None
+    assert brief.requires_ai_disclosure
 
 
 def test_only_the_ad_image_takes_a_mode_or_a_scene() -> None:
@@ -336,11 +350,16 @@ def test_the_video_scene_is_vertical_and_only_made_when_there_is_something() -> 
 
 
 def test_each_kind_offers_its_own_formats() -> None:
+    """§ 2026-10-13: every kind in every Instagram format that suits it."""
     assert ContentKind.STATIC_FLYER.formats[0] is ContentFormat.FEED_4_5
     assert ContentFormat.STORY_9_16 in ContentKind.STATIC_FLYER.formats
+    assert ContentFormat.REELS_9_16 in ContentKind.STATIC_FLYER.formats  # animated
     assert ContentKind.AVATAR_VIDEO.formats[0] is ContentFormat.REELS_9_16
     assert ContentFormat.FEED_1_1 in ContentKind.ANIMATED_AVATAR_VIDEO.formats
-    assert ContentFormat.FEED_1_1 not in ContentKind.CREATOR_SCRIPT.formats
+    assert set(ContentKind.CREATOR_SCRIPT.formats) == set(ContentFormat)
+    assert set(ContentKind.TEMPLATE.formats) == set(ContentFormat)
+    # Instagram takes a carousel only in the feed
+    assert all(fmt.is_feed for fmt in ContentKind.CAROUSEL.formats)
     for kind in ContentKind:
         assert kind.default_format is kind.formats[0]
     assert ContentFormat.FEED_1_1.aspect_ratio == "1:1"
@@ -354,9 +373,32 @@ def test_a_format_the_kind_does_not_offer_is_refused() -> None:
             objective=BriefObjective.SALE,
             topic="x",
             image_route=ImageRoute.TEMPLATE_ONLY,
-            kind=ContentKind.CREATOR_SCRIPT,
-            format=ContentFormat.FEED_1_1,
+            kind=ContentKind.CAROUSEL,
+            format=ContentFormat.STORY_9_16,
+            media=MediaInputs(
+                slides=(
+                    CarouselSlide(source=SlideSource.GENERATED),
+                    CarouselSlide(source=SlideSource.GENERATED),
+                )
+            ),
         )
+
+
+def test_a_template_video_is_asked_by_the_flag_or_by_the_reel() -> None:
+    """§ 2026-10-13: «Video publicitario» in any format; a Reel is always the video, so a
+    brief stored before the flag existed reads the same."""
+
+    def template(fmt: ContentFormat, **media: object) -> ContentBrief:
+        return _brief(ContentKind.TEMPLATE, product_keys=("uploads/t/a.jpg",), **media).model_copy(
+            update={"format": fmt}
+        )
+
+    reel = template(ContentFormat.REELS_9_16)
+    assert reel.wants_template_video and not reel.media.template_video
+    assert not template(ContentFormat.STORY_9_16).wants_template_video
+    assert template(ContentFormat.STORY_9_16, template_video=True).wants_template_video
+    with pytest.raises(ValidationError, match="only a template"):
+        _brief(ContentKind.STATIC_FLYER, template_video=True, scene_prompt="x")
 
 
 def test_a_story_cannot_be_a_carousel() -> None:

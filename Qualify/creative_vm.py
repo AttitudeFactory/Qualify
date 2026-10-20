@@ -781,7 +781,7 @@ KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     (
         "static_flyer",
         "Imagen publicitaria",
-        "Un anuncio con tu producto, tu local o ambos. Una imagen o un carrusel.",
+        "Un anuncio con tu producto, tu local o ambos. Una imagen o una galería.",
         "image",
     ),
     (
@@ -792,9 +792,16 @@ KIND_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     ),
     (
         "carousel",
-        "Carrusel",
-        "Imágenes y videos en un solo post: escenas generadas, animadas o piezas que ya hiciste.",
+        "Galería",
+        "Tres diapositivas en un solo post: escenas generadas, una animada o piezas que ya "
+        "hiciste.",
         "gallery-horizontal-end",
+    ),
+    (
+        "clip",
+        "Clip",
+        "Un video generado sin presentador, desde fotogramas o referencias.",
+        "film",
     ),
 )
 KIND_LABELS: dict[str, str] = {key: title for key, title, _, _ in KIND_OPTIONS}
@@ -806,56 +813,71 @@ KIND_LABELS: dict[str, str] = {key: title for key, title, _, _ in KIND_OPTIONS}
 CATEGORY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
     (
         "script",
-        "Guion para creador real",
-        "Una persona de tu marca lo graba: generamos el guion, sus tomas y el texto del post.",
+        "Generar guion",
+        "Para un creador UGC: generamos el guion, sus tomas y el texto del post, y él lo graba.",
         "clapperboard",
     ),
+    # § request 2026-10-14: «Avatar» — a presenter, human or animated, tells it (the
+    # key stays "video": the category every avatar kind was filed under)
     (
         "video",
-        "Video",
-        "Lo generamos completo: con un avatar que lo presenta o un video publicitario de "
-        "tu producto.",
+        "Avatar",
+        "Un video generado completo, presentado por un avatar humano o un personaje animado.",
+        "user-round",
+    ),
+    # § request 2026-10-14: a generated video with no presenter — from its frames, or
+    # from references (images, videos, audio), the catalog's or uploaded
+    (
+        "clip",
+        "Clip",
+        "Un video generado sin presentador: desde un fotograma inicial (y uno final) o "
+        "desde tus referencias de imagen, video y audio.",
         "film",
-    ),
-    (
-        "image",
-        "Imagen publicitaria",
-        "Tu producto y tu local en una escena generada con IA, con tu texto y tu logo. Una "
-        "imagen o un carrusel.",
-        "image",
-    ),
-    (
-        "template",
-        "Con plantilla",
-        "Tus fotos reales en una plantilla de tu nicho: una imagen para el feed o la historia.",
-        "layout-template",
     ),
     # § request 2026-10-09: "poner la opción de carrusel al momento del tipo del post"
     (
         "carousel",
-        "Carrusel",
-        "Varias diapositivas en un post: imágenes y videos generados, o piezas que ya hiciste.",
+        "Galería",
+        "Tres diapositivas en un post: escenas generadas, un video animado como máximo o "
+        "piezas que ya hiciste.",
         "gallery-horizontal-end",
     ),
+    (
+        "image",
+        "Flyer",
+        "Una escena generada con IA, con tu producto o tu local si subes sus fotos, tu "
+        "texto y tu logo. Una imagen o una galería.",
+        "image",
+    ),
+    (
+        "template",
+        "Plantilla",
+        "Tus fotos reales en una plantilla de tu nicho: una imagen para el feed o la historia.",
+        "layout-template",
+    ),
+    # «Ad» (the template's video) left the panel on 2026-10-14
 )
-#: Within Video, its types — (key, title, blurb, icon). `ad_video` is the template
-#: kind rendering its Reel.
+#: Within Avatar, its types — (key, title, blurb, icon): the two avatar kinds.
 VIDEO_TYPE_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
-    ("avatar_video", "Avatar humano", "Un presentador generado lee el guion.", "user-round"),
+    (
+        "avatar_video",
+        "Avatar humano",
+        "Un presentador humano generado con IA lee tu guion a cámara.",
+        "user-round",
+    ),
     (
         "animated_avatar_video",
         "Avatar animado",
-        "Un personaje animado, creado por IA o desde tu imagen.",
+        "Un personaje animado, creado por IA o desde tu imagen, cuenta tu mensaje.",
         "smile",
     ),
-    (
-        "ad_video",
-        "Video publicitario",
-        "Tus fotos de producto en un Reel con plantilla, sin presentador.",
-        "clapperboard",
-    ),
 )
-VIDEO_TYPE_LABELS: dict[str, str] = {key: title for key, title, _, _ in VIDEO_TYPE_OPTIONS}
+#: What a video piece is called: the clip types, and «Ad»'s Reel — the template kind
+#: that rendered a video (`build_draft_vm` names a draft by it too).
+VIDEO_TYPE_LABELS: dict[str, str] = {
+    **{key: title for key, title, _, _ in VIDEO_TYPE_OPTIONS},
+    "ad_video": "Video publicitario",
+}
 
 
 @dataclass(frozen=True)
@@ -1037,10 +1059,10 @@ class BriefFormVM:
 # the router's three options as the cards the operator picks from.
 
 #: `Engine` value → (badge label, tone). Remotion is the product's own engine (accent);
-#: HeyGen is a vendor (info); UGC is a quote with no renderer behind it yet (neutral).
+#: the talking presenter is a vendor (info); UGC is a quote with no renderer yet (neutral).
 ENGINE_BADGES: dict[str, tuple[str, str]] = {
     "remotion": ("Remotion", "accent"),
-    "heygen": ("HeyGen", "info"),
+    "omnihuman": ("Avatar", "info"),
     "ugc": ("UGC", "neutral"),
 }
 #: Output port → the word the card prints, same vocabulary as `PORT_LABELS` but short:
@@ -1055,7 +1077,7 @@ class RecipeOptionVM:
     as the selection (the engine value — the router returns one option per engine)."""
 
     key: str  # Engine value
-    engine_label: str  # "Remotion" | "HeyGen" | "UGC"
+    engine_label: str  # "Remotion" | "Avatar" | "UGC"
     engine_tone: str
     label: str  # the manifest's name, or the engine's own label
     template_id: str  # "" for a non-template option

@@ -23,6 +23,7 @@ restriction); backlog MC-08.
 from __future__ import annotations
 
 import hashlib
+import json
 
 from qualify_creative.enums import (
     AvatarSource,
@@ -56,7 +57,7 @@ _SPOKEN_WORDS_PER_SECOND = 2.3
 
 #: One angle per variant (§ request 2026-10-08). Every variant used to get the same
 #: prompt and "take a distinct angle", blind to which variant it was — and the three
-#: converged on one opening. `claude-opus-5` takes no `temperature`, so the variety has to
+#: converged on one opening. Claude Opus 5.5 takes no `temperature`, so the variety has to
 #: be asked for; each draft starts the rotation at its own offset.
 VARIANT_ANGLES: tuple[str, ...] = (
     "lead with one concrete, sensory detail of the product",
@@ -280,6 +281,17 @@ _KIND_ASSIGNMENT: dict[ContentKind, str] = {
         " Reel and its feed and story stills. The hook and the CTA are printed on them, so"
         " keep them short and punchy. Leave `script` empty and `shots` empty."
     ),
+    ContentKind.CLIP: (
+        "This is a short generated advertising video that tells a story, with no"
+        " presenter and no words on screen: the visuals carry it. Write its story in"
+        " `shots`, exactly three beats: (1) the hook — the first seconds SHOW what your"
+        " hook promises, so people stop scrolling; (2) the development — the product in"
+        " action and what it gives, the key facts at work; (3) the payoff — the product"
+        " as the hero, the moment that leads to your CTA. Each `visual` says what the"
+        " camera shows (one or two sentences, concrete, no words on screen); `line`"
+        " stays empty. The hook also opens the caption; the caption and the CTA carry"
+        " the message. Leave `script` empty."
+    ),
     ContentKind.CAROUSEL: (
         "This is a feed carousel: several slides — images and short silent videos — the"
         " viewer swipes through. The hook and the CTA are printed on the slides the"
@@ -337,6 +349,7 @@ def _carousel_slides(brief: ContentBrief) -> list[str]:
             SlideSource.GENERATED: "a generated image",
             SlideSource.ANIMATED: "a short silent video",
             SlideSource.EXISTING: "an image or video the brand already made",
+            SlideSource.STOCK: "a stock video with the brand's words over it",
         }[slide.source]
         scene = slide.scene_prompt.strip()
         text = {SlideText.HOOK: ", the hook printed on it", SlideText.CTA: ", the CTA on it"}.get(
@@ -351,6 +364,17 @@ def _carousel_slides(brief: ContentBrief) -> list[str]:
 #: The kinds whose hook and CTA are printed on an image (§ request 2026-10-08).
 _PRINTED_KINDS = frozenset({ContentKind.STATIC_FLYER, ContentKind.TEMPLATE, ContentKind.CAROUSEL})
 
+
+def printed_limits(kind: ContentKind) -> dict[str, int]:
+    """The character limits the prompt asks for on a kind whose hook and CTA are printed
+    on an image — the same numbers the copy adapter holds the answer to (2026-10-13: a
+    model is only ASKED for them; structured outputs cannot carry `maxLength`). Empty for
+    a kind whose words are not printed."""
+    if kind in _PRINTED_KINDS:
+        return {"hook": PRINTED_HOOK_MAX, "cta": PRINTED_CTA_MAX}
+    return {}
+
+
 #: What the piece does with the logo it was given, per kind — the brand mark's place.
 _LOGO_PLACEMENT: dict[ContentKind, str] = {
     ContentKind.AVATAR_VIDEO: "it is shown in a corner of the video, behind the presenter",
@@ -358,6 +382,7 @@ _LOGO_PLACEMENT: dict[ContentKind, str] = {
     ContentKind.STATIC_FLYER: "it is printed on the image",
     ContentKind.TEMPLATE: "the template places it where the brand mark goes",
     ContentKind.CAROUSEL: "it is printed in a corner of the generated slides",
+    ContentKind.CLIP: "it is not printed: a clip shows only what its frames and references show",
     ContentKind.CREATOR_SCRIPT: "show it on camera where it fits (packaging, the counter, a sign)",
 }
 
@@ -464,6 +489,12 @@ def _volatile_suffix(
             "- shots: array of objects {visual: string, line: string, seconds: integer},"
             f" their seconds adding up to about {brief.media.duration_seconds}"
         )
+    elif brief.kind is ContentKind.CLIP:
+        field_lines.append(
+            '- shots: array of exactly 3 objects {visual: string, line: "", seconds:'
+            " integer} — the hook, the development, the payoff — their seconds adding up"
+            f" to {brief.media.duration_seconds}"
+        )
     else:
         field_lines.append("- shots: array, empty for this piece")
     if brief.intent.includes_ads:
@@ -499,6 +530,15 @@ def _volatile_suffix(
         *_recent_lines(recent),
         f"Must mention: {_listing(constraints.must_mention)}",
         f"Must avoid: {_listing(constraints.must_avoid)}",
+        *(
+            (
+                "Key facts to feature, as JSON (the operator's own data, «Datos clave»):"
+                " state each value exactly as written — never change, round or invent one: "
+                + json.dumps(dict(constraints.highlights), ensure_ascii=False),
+            )
+            if constraints.highlights
+            else ()
+        ),
         f"Maximum caption characters for this piece: {max_chars}",
         "",
         "== Output ==",

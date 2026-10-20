@@ -1,5 +1,7 @@
 # Despliegue de Qualify en Hetzner — `qualify.attitudefactory.co`
 
+> **`[OBSOLETO]` HeyGen — decisión del fundador, 2026-10-16.** Los videos con avatar migran a la suite de ByteDance (BytePlus): **OmniHuman** (el avatar que habla), **Seedance** (el video), **Seedream** (la imagen y el primer fotograma) y **Seed Speech** (la voz clonada). Toda mención a HeyGen en este documento describe el estado anterior o una alternativa ya descartada: no la tomes como decisión vigente. **La migración aún no está hecha en el código** (medido el 2026-10-16): el detalle y lo que falta está en [Pendientes del generador §6](pendientes-generador-contenido.md).
+
 **Estado:** `[LISTO PARA EJECUTAR 2026-10-05]` — el repo ya es desplegable; lo que falta lo hace el fundador (crear el servidor, el registro DNS, el `.env.prod` y los ajustes de Meta). Cierra la bifurcación de host de [`prioridad-despliegue-subdominio.md`](prioridad-despliegue-subdominio.md) §4: **Hetzner**.
 **Para qué:** que Meta App Review tenga una URL pública estable donde iniciar sesión, y que el callback OAuth de Meta tenga un redirect URI fijo (`https://qualify.attitudefactory.co/api/connections/callback`) en vez del túnel `cloudflared` efímero.
 **Piezas en el repo:** `deploy/Dockerfile`, `deploy/docker-compose.prod.yml`, `deploy/Caddyfile`, `deploy/.env.prod.example`, `deploy/deploy.sh`, `deploy/bootstrap-server.sh`, `deploy/backup-db.sh`, `deploy/bootstrap_db_roles.py`, `deploy/bootstrap-claude.sh` + `deploy/claude-server.md` (§13), y las recetas `just deploy*`.

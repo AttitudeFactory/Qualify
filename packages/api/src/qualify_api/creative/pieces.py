@@ -10,15 +10,15 @@ so RLS scopes it too — whether the key is a file of one of THIS brand's drafts
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
-from qualify_api.creative.models import ContentBrief, ContentDraft, ImageAsset
+from qualify_api.creative.models import ContentBrief, ContentDraft, CopyVariant, ImageAsset
 
 #: How many files the picker offers — the most recent first.
 DEFAULT_PIECE_LIMIT = 60
@@ -37,9 +37,12 @@ class PieceFile:
     position: int
     #: A video's thumbnail (`params.thumbnail_key`), when it has one.
     poster_key: str | None
-    #: What the piece is about (the brief's topic) — the picker's label.
+    #: What the piece is about (the brief's topic).
     topic: str
     created_at: datetime | None = None
+    #: The piece's title — its chosen copy's hook (§ request 2026-10-14: a picker shows
+    #: a piece by its title, not by the prompt it was made from); "" when it has none.
+    title: str = ""
 
 
 class PieceFiles(Protocol):
@@ -101,4 +104,25 @@ class DbPieceFiles:
                 .order_by(ContentDraft.created_at.desc(), ImageAsset.position)
                 .limit(limit)
             ).all()
-            return [_piece(*row) for row in rows]
+            titles = _titles(session, {draft.id: draft.selected_variant_id for _, draft, _ in rows})
+            return [replace(_piece(*row), title=titles.get(row[1].id, "")) for row in rows]
+
+
+def _titles(session: Any, drafts: dict[UUID, UUID | None]) -> dict[UUID, str]:
+    """Each draft's title: the hook of its chosen copy variant, else of its first."""
+    if not drafts:
+        return {}
+    variants = session.execute(
+        select(CopyVariant.draft_id, CopyVariant.id, CopyVariant.copy, CopyVariant.edited_copy)
+        .where(CopyVariant.draft_id.in_(list(drafts)))
+        .order_by(CopyVariant.draft_id, CopyVariant.ordinal)
+    ).all()
+    titles: dict[UUID, str] = {}
+    for draft_id, variant_id, copy, edited in variants:
+        chosen = drafts.get(draft_id)
+        if draft_id in titles and variant_id != chosen:
+            continue
+        hook = str(((edited or copy) or {}).get("hook") or "").strip()
+        if hook and (draft_id not in titles or variant_id == chosen):
+            titles[draft_id] = " ".join(hook.split())
+    return titles

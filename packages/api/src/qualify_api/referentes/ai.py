@@ -28,6 +28,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from qualify_shared import observability
+
 from ..claude_tools import (
     CallStats,
     ClaudeToolError,
@@ -86,6 +88,11 @@ class BrandBrief:
     country: str = ""
     positioning: str = ""
     audience: str = ""
+    #: From the Brand Kit and the catalog (§ request 2026-10-15, «Descubrir reels»): what
+    #: the brand sells, by name, and examples of what it publishes — the brand's own
+    #: definition of its content, sharper than the rubro in the operator's words.
+    products: Sequence[str] = ()
+    publishes: Sequence[str] = ()
 
 
 @dataclass(frozen=True)
@@ -193,7 +200,7 @@ def _clip(text: str, limit: int) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
-def _brand_block(brand: BrandBrief) -> str:
+def _brand_block(brand: BrandBrief, *, hashtags_label: str = "Hashtags de la búsqueda") -> str:
     lines = [f"Marca: @{brand.handle.lstrip('@')}"]
     if brand.category:
         lines.append(f"Categoría: {brand.category}")
@@ -211,7 +218,12 @@ def _brand_block(brand: BrandBrief) -> str:
     if place:
         lines.append(f"Ubicación: {place}")
     if brand.hashtags:
-        lines.append("Hashtags de la búsqueda: " + " ".join(f"#{t}" for t in brand.hashtags))
+        lines.append(f"{hashtags_label}: " + " ".join(f"#{t}" for t in brand.hashtags))
+    if brand.products:
+        lines.append("Productos que vende: " + "; ".join(_clip(p, 60) for p in brand.products[:12]))
+    if brand.publishes:
+        lines.append("Ejemplos de lo que publica:")
+        lines.extend(f"  - {_clip(p, 160)}" for p in brand.publishes[:5])
     return "\n".join(lines)
 
 
@@ -250,6 +262,7 @@ def _review_message(brand: BrandBrief, accounts: Sequence[AccountToReview]) -> s
     )
 
 
+@observability.traced("revisar referentes", tags=("brand_kit",))
 def review_accounts(
     brand: BrandBrief,
     accounts: Sequence[AccountToReview],

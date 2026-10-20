@@ -22,6 +22,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from qualify_shared import observability
+
 from ..claude_tools import (
     ClientFactory,
     Meter,
@@ -115,6 +117,7 @@ def _clean(tag: str) -> str:
     return "".join(ch for ch in fold(tag.strip().lstrip("#")) if ch.isalnum() or ch == "_")
 
 
+@observability.traced("hashtags del caption", tags=("generador",))
 def suggest_for_caption(
     caption: str,
     *,

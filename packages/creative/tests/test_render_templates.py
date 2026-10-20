@@ -380,22 +380,22 @@ def _suggested(options: list[Any]) -> Any:
 
 def test_rule_2_two_photos_no_video_is_the_promo_template(registry: TemplateRegistry) -> None:
     options = suggest_recipes(_facts(), registry)
-    assert [o.engine for o in options] == [Engine.REMOTION, Engine.HEYGEN, Engine.UGC]
+    assert [o.engine for o in options] == [Engine.REMOTION, Engine.OMNIHUMAN, Engine.UGC]
     chosen = _suggested(options)
     assert chosen.engine is Engine.REMOTION and chosen.rule == 2
     assert chosen.template_id == "promo_producto" and chosen.outputs == ("reel", "feed", "story")
     assert chosen.cost_usd_min == Decimal(0) and chosen.eta_sec == 38.0
     assert chosen.cost_label == "USD 0.00"
-    heygen = options[1]
-    assert not heygen.available and heygen.cost_label == "USD 0.50 a 2.00"
+    presenter = options[1]
+    assert not presenter.available and presenter.cost_label == "USD 1.80 a 3.70"
     assert not options[2].available
 
 
-def test_rule_1_presenter_with_avatar_goes_to_heygen(registry: TemplateRegistry) -> None:
+def test_rule_1_presenter_with_avatar_goes_to_omnihuman(registry: TemplateRegistry) -> None:
     chosen = _suggested(
         suggest_recipes(_facts(angle=ContentType.TESTIMONIAL, has_avatar=True), registry)
     )
-    assert chosen.engine is Engine.HEYGEN and chosen.rule == 1
+    assert chosen.engine is Engine.OMNIHUMAN and chosen.rule == 1
 
 
 def test_rule_1_without_avatar_falls_through_to_rule_2(registry: TemplateRegistry) -> None:
@@ -767,3 +767,40 @@ def test_job_payload_parses_per_output_state() -> None:
     )
     assert job.completed_ports == ["feed"] and job.outputs["reel"].progress == 0.42
     assert job.first_failure is None and not job.status.terminal
+
+
+def test_registry_reads_a_kept_older_version_beside_the_latest(templates_dir: Path) -> None:
+    """CONTRACT §1: a published version is never edited — the older one stays beside the
+    latest as `manifest.v<N>.json`, so a run pinned to it still resolves."""
+    v2 = json.loads(json.dumps(PROMO))
+    v2["version"] = 2
+    for port in v2["outputs"].values():
+        port["composition"] = port["composition"].replace("-v1--", "-v2--")
+    folder = templates_dir / "promo_producto"
+    (folder / "manifest.v1.json").write_text(json.dumps(PROMO))
+    (folder / "manifest.json").write_text(json.dumps(v2))
+    (folder / "notes.json").write_text("{}")  # not a manifest: ignored
+    reg = TemplateRegistry.from_dir(templates_dir)
+    assert reg.get("promo_producto").version == 2
+    assert reg.get("promo_producto", 1).version == 1
+
+
+def test_the_published_promo_template_has_every_instagram_shape() -> None:
+    """promo_producto v2 (2026-10-13): a video and a still in 9:16, 4:5 and 1:1 — the 9:16
+    still being the Story — and v1 kept for pinned runs."""
+    root = default_templates_dir()
+    if not root.is_dir():
+        pytest.skip("packages/render/templates not present in this checkout")
+    reg = TemplateRegistry.from_dir(root)
+    latest = reg.get("promo_producto")
+    assert latest.version == 2
+    shapes = {(o.media_type, o.aspect_ratio) for o in latest.outputs.values()}
+    assert shapes == {
+        ("video", "9:16"),
+        ("video", "4:5"),
+        ("video", "1:1"),
+        ("image", "4:5"),
+        ("image", "1:1"),
+        ("image", "9:16"),
+    }
+    assert set(reg.get("promo_producto", 1).outputs) == {"reel", "feed", "story"}

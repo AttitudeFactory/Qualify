@@ -1,0 +1,53 @@
+{
+  "_doc": "Recordings for the voice-transcription experiment (qualify_api.evals.voice_transcription). `audio` is relative to this directory and points into audio/, which is git-ignored on purpose (a voice is personal data, and these WAVs weigh ~31 MB). `reference` is the HUMAN transcript, word for word. The six colombia-* cases come from Google's crowdsourced Colombian Spanish corpus (OpenSLR 72, CC BY-SA 4.0, Guevara-Rukoz et al., LREC 2020): ten read sentences of one speaker joined with 0.5 s of silence, the transcripts joined in the same order. Rebuild the WAVs with `just eval-voz-audio`. Add your own recordings to audio/ with a case each. A case whose file is missing is skipped.",
+  "cases": [
+    {
+      "id": "colombia-female-2436",
+      "audio": "audio/colombia-female-2436.wav",
+      "reference": "Quiero saber qué está pasando en Veracruz. Quiero saber que tipo de pizza tiene menos calorías. ¿Quieres que te mande las reseñas de diferentes medios? ¿Qué te parece los más grandes éxitos en español? ¿Qué funciones de películas hay por la tarde? La pijama de rayas es azul Te puedo mandar también la carta de café y comida. Muy bien, te enviare esas canciones enseguida Quiero estar en España solo cinco días. La mermelada de zarzamora es muy fácil de hacer",
+      "language": "es",
+      "source": "openslr-72",
+      "seconds": 57.7
+    },
+    {
+      "id": "colombia-female-3034",
+      "audio": "audio/colombia-female-3034.wav",
+      "reference": "¿Quién subió el mejor video? Los hamster comen zanahorias Los cabecillas de la banda huyeron a caballo ¿Cuál es el color favorito más popular? Los niños tienen mucha imaginación Toda ésta información la puede encontrar en la página web de la secretaría de cultura ¿Hay clases de cerámica cerca de mi casa? El jugador salió en el minuto veintinueve por una molestia en el tobillo izquierdo La calle está llena de huecos La nave encalló en los arrecifes",
+      "language": "es",
+      "source": "openslr-72",
+      "seconds": 46.1
+    },
+    {
+      "id": "colombia-female-9334",
+      "audio": "audio/colombia-female-9334.wav",
+      "reference": "¿Me ayudas a buscar una tienda dónde pueda comprarle un regalo a mi esposo? También necesitamos una calcomanía de un dinosaurio para el computador. Me duele mucho la cabeza cuando hago ejercicio. Los corazones de pollo son una delicia ¿Cuánto cuesta ese traje de baño español? La ciudad es bellísima y tan alegre Una máquina de escribir cuesta como cuatro mil pesos. Quiero que la bolsa se pueda usar de pañalera, pero que también la pueda usar para salir. El problema es que no tenemos computador para la escena ¿Nos puedes ayudar? Las motos no son muy seguras.",
+      "language": "es",
+      "source": "openslr-72",
+      "seconds": 53.7
+    },
+    {
+      "id": "colombia-male-3349",
+      "audio": "audio/colombia-male-3349.wav",
+      "reference": "El jeroglífico tiene un pez amarillo Hay más de setenta estaciones en el centro de la ciudad. Necesito que me ayudes con mi tarea. ¿En qué calle está la casa? El único tipo de música que me gusta es el jazz. Una máquina de escribir cuesta como cuatro mil pesos. Y sabes, no necesitas comprar una bicicleta, puedes usar las de la ciudad. La obscuridad del pozo era obscena por naturaleza Ando buscando las canciones más famosas del dos mil dieciséis. Comprala y que llegue a mi domicilio, que yo le quiero dar el regalo.",
+      "language": "es",
+      "source": "openslr-72",
+      "seconds": 55.6
+    },
+    {
+      "id": "colombia-male-7508",
+      "audio": "audio/colombia-male-7508.wav",
+      "reference": "¿Hay algún trabajo en particular que le haya dado como el salto a la fama por así decirlo? La película me llegó al corazón Por las tardes se escucha música en la Plaza. Necesito que me ayudes a buscar el nombre de este director, el que dirigió las de Batman ¿En qué calle está la casa? Vientos y tormentas todo el día, lleve un buen paraguas, por ahí un impermeable Te recomiendo que te lleves un buen libro o descargues una buena película o de plano una buena almohada La ciudad es bellísima y tan alegre Cada vez que veo una raya en el cielo me da muchísimo miedo Ayer llovió mucho, y llegue tarde a mi reunión",
+      "language": "es",
+      "source": "openslr-72",
+      "seconds": 56.4
+    },
+    {
+      "id": "colombia-male-2121",
+      "audio": "audio/colombia-male-2121.wav",
+      "reference": "Los zapatos se estropearon con la lluvia torrencial de ayer Me parece muy interesante el libro de Francisco sobre arte contemporáneo En tres semanas me salió un viaje a Caracas y no tengo ni idea que aerolínea tomar El paso número tres para eliminar el calor es ponerte ropa algo más ligera Tienen que estar cuarenta y cinco minutos antes de la función para recoger los boletos ¿Cuántos albergues abrieron después del terremoto del diecinueve de septiembre? La ciudad de San Sebastián no ha cambiado nada en los últimos años Miami se encuentra situada en la costa este de los Estados Unidos La ciudad se encuentra a cuatro horas en tren de alta velocidad Según mis datos este domingo veinticinco de Diciembre no hay partidos de fútbol",
+      "language": "es",
+      "source": "openslr-72",
+      "seconds": 70.3
+    }
+  ]
+}

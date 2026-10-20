@@ -1,0 +1,114 @@
+{
+  "_doc": "Dataset for the Brand Kit document reading (qualify_api.creative.brief_ai.propose_kit_changes), docs/plan-observabilidad-langfuse.md §7, fase 6. Eight FICTIONAL brand documents written for this eval (no tenant's document), in different shapes: sectioned briefs, prose, a manual with a competitor's slogan as a trap, one with no forbidden claims at all. `expected` per field: for text fields, phrases of which at least one must appear in the proposal; for list fields, the items the document states. An EMPTY list means the document says nothing about that field, so any proposal there is invented. A field left out of `expected` is not scored. The current kit is empty (a new brand). Review and extend freely.",
+  "cases": [
+    {
+      "id": "gimnasio-funcional",
+      "filename": "brief-gimnasio.md",
+      "document": "# Brief de marca — Fuerte Box\n\n## Quiénes somos\nFuerte Box es un gimnasio de entrenamiento funcional en Barranquilla con clases de 45 minutos en grupos pequeños, guiadas siempre por un coach certificado.\n\n## A quién le hablamos\nAdultos de 25 a 45 años que trabajan en oficina y quieren ganar fuerza sin pasar horas en el gimnasio.\n\n## Cómo hablamos\nDirecto y motivador, sin gritar. Ejemplos que sí usamos:\n- \"Hoy entrenas 45 minutos y sales con energía para todo el día.\"\n- \"Tu primera clase es para conocernos, no para competir.\"\n\nLo que nunca escribimos:\n- \"NO PAIN NO GAIN\"\n- \"Quema 1.000 calorías en una clase\"\n\n## Palabras que evitamos\nmilagro, detox, quemagrasa\n\n## Promesas que no hacemos\nNo prometemos bajar de peso en un tiempo determinado. No decimos que nuestros planes reemplazan la consulta médica.\n\n## Llamados a la acción\n- Agenda tu clase de prueba\n- Escríbenos por WhatsApp",
+      "expected": {
+        "positioning": ["entrenamiento funcional", "grupos pequeños", "45 minutos"],
+        "audience": ["25 a 45", "oficina"],
+        "do_examples": ["Hoy entrenas 45 minutos y sales con energía para todo el día", "Tu primera clase es para conocernos, no para competir"],
+        "dont_examples": ["NO PAIN NO GAIN", "Quema 1.000 calorías en una clase"],
+        "cta_patterns": ["Agenda tu clase de prueba", "Escríbenos por WhatsApp"],
+        "banned_words": ["milagro", "detox", "quemagrasa"],
+        "forbidden_claims": ["bajar de peso en un tiempo determinado", "reemplazan la consulta médica"]
+      }
+    },
+    {
+      "id": "cafe-especialidad",
+      "filename": "manual-cafe.txt",
+      "document": "Manual de voz de Tueste Lento, café de especialidad de Pereira.\n\nTostamos en pequeños lotes café de fincas del Eje Cafetero y lo servimos en nuestra barra de la Circunvalar. Nuestra gente son estudiantes y profesionales jóvenes que buscan un buen café para trabajar o conversar, y viajeros que quieren probar el café de la región.\n\nNuestra voz es cercana y curiosa: contamos de dónde viene cada grano. Escribimos cosas como \"Esta semana tostamos un lavado de Santuario con notas a panela y mandarina\". No escribimos como una cadena: nada de \"el mejor café del mundo\" ni de \"café premium de calidad superior\".\n\nCuidado con los nombres de otros: la cafetería de enfrente usa el lema \"Despierta con sabor\"; no es nuestro y no lo usamos.\n\nAl cerrar una publicación invitamos así: \"Pasa por tu taza\" o \"Reserva tu cata de los sábados\".",
+      "expected": {
+        "positioning": ["pequeños lotes", "especialidad", "Eje Cafetero"],
+        "audience": ["estudiantes", "profesionales jóvenes", "viajeros"],
+        "do_examples": ["Esta semana tostamos un lavado de Santuario con notas a panela y mandarina"],
+        "dont_examples": ["el mejor café del mundo", "café premium de calidad superior"],
+        "cta_patterns": ["Pasa por tu taza", "Reserva tu cata de los sábados"],
+        "banned_words": [],
+        "forbidden_claims": ["el mejor café del mundo"]
+      }
+    },
+    {
+      "id": "odontologia",
+      "filename": "brief-clinica.md",
+      "document": "## Clínica Sonrisa Norte — guía para redes\n\nSomos una clínica odontológica familiar en Bucaramanga con especialistas en ortodoncia y odontopediatría. Atendemos a familias con niños y a adultos que llevan tiempo aplazando su visita al odontólogo por miedo.\n\nTono: tranquilo, claro y empático. Explicamos los procedimientos sin tecnicismos. Ejemplo: \"Antes de empezar te explicamos cada paso; tú decides el ritmo\".\n\nPor ser un servicio de salud, NUNCA publicamos:\n- resultados garantizados de un tratamiento,\n- tratamientos \"sin dolor\" como promesa,\n- precios de procedimientos sin una valoración previa.\n\nNo usamos las palabras \"barato\" ni \"perfecto\". Para invitar decimos \"Agenda tu valoración\".",
+      "expected": {
+        "positioning": ["odontológica familiar", "ortodoncia", "odontopediatría"],
+        "audience": ["familias con niños", "miedo"],
+        "do_examples": ["Antes de empezar te explicamos cada paso; tú decides el ritmo"],
+        "cta_patterns": ["Agenda tu valoración"],
+        "banned_words": ["barato", "perfecto"],
+        "forbidden_claims": ["resultados garantizados", "sin dolor", "precios de procedimientos sin una valoración previa"]
+      }
+    },
+    {
+      "id": "boutique-ropa",
+      "filename": "brief-boutique.txt",
+      "document": "Brief — Lino & Algodón, boutique de ropa de mujer en Cali.\n\nVendemos ropa fresca de lino y algodón hecha por talleres caleños, pensada para el clima de la ciudad. Le hablamos a mujeres de 28 a 50 años que trabajan y quieren verse bien sin sufrir el calor.\n\nEscribimos con calidez y seguridad. Frases nuestras: \"Hecho en Cali, para el calor de Cali\" y \"Ropa que respira contigo\". Evitamos el lenguaje de moda rápida: nada de \"compra ya antes de que se acabe\" ni de \"outfit low cost\".\n\nNo decimos que una prenda adelgaza ni que es talla única para todos los cuerpos.\n\nCierres habituales: \"Visítanos en el barrio Granada\" y \"Pide tu talla por DM\".",
+      "expected": {
+        "positioning": ["lino", "talleres caleños", "clima"],
+        "audience": ["28 a 50", "mujeres"],
+        "do_examples": ["Hecho en Cali, para el calor de Cali", "Ropa que respira contigo"],
+        "dont_examples": ["compra ya antes de que se acabe", "outfit low cost"],
+        "cta_patterns": ["Visítanos en el barrio Granada", "Pide tu talla por DM"],
+        "banned_words": [],
+        "forbidden_claims": ["adelgaza", "talla única para todos los cuerpos"]
+      }
+    },
+    {
+      "id": "panaderia-sin-restricciones",
+      "filename": "brief-panaderia.md",
+      "document": "# Pan de la Abuela\n\nPanadería de barrio en Manizales desde 1987. Horneamos pan aliñado, almojábanas y roscones todos los días a las 5 de la mañana.\n\nNuestros clientes son los vecinos del barrio La Francia y quienes pasan camino al trabajo.\n\nNos gusta escribir como hablamos en la panadería: \"¡Ya salió el pan calientito!\" o \"Las almojábanas de las 6 vuelan, no te quedes sin la tuya\".\n\nSiempre invitamos con \"Te esperamos desde las 5 a.m.\"",
+      "expected": {
+        "positioning": ["panadería de barrio", "1987", "pan aliñado"],
+        "audience": ["vecinos", "La Francia", "camino al trabajo"],
+        "do_examples": ["¡Ya salió el pan calientito!", "Las almojábanas de las 6 vuelan, no te quedes sin la tuya"],
+        "dont_examples": [],
+        "cta_patterns": ["Te esperamos desde las 5 a.m."],
+        "banned_words": [],
+        "forbidden_claims": []
+      }
+    },
+    {
+      "id": "escuela-programacion",
+      "filename": "brief-academia.txt",
+      "document": "Código Abierto Academia — brief de comunicación\n\nEnseñamos programación web en cursos nocturnos de 16 semanas, en Medellín y en línea, con proyectos reales desde la primera clase. Nuestros estudiantes son personas de 20 a 40 años que quieren cambiar de carrera hacia tecnología y no pueden dejar su trabajo para estudiar.\n\nVoz: honesta y práctica. Mostramos lo que construyen nuestros estudiantes. Ejemplo: \"En la semana 8, Laura publicó su primera aplicación\".\n\nEstá prohibido prometer empleo garantizado al terminar el curso o salarios específicos. Tampoco decimos que se aprende a programar en 30 días.\n\nEvitamos: \"gurú\", \"hackear tu vida\", \"dinero fácil\".\n\nLlamados: \"Inscríbete a la clase abierta del martes\" y \"Descarga el programa del curso\".",
+      "expected": {
+        "positioning": ["programación web", "16 semanas", "proyectos reales"],
+        "audience": ["20 a 40", "cambiar de carrera"],
+        "do_examples": ["En la semana 8, Laura publicó su primera aplicación"],
+        "cta_patterns": ["Inscríbete a la clase abierta del martes", "Descarga el programa del curso"],
+        "banned_words": ["gurú", "hackear tu vida", "dinero fácil"],
+        "forbidden_claims": ["empleo garantizado", "salarios específicos", "programar en 30 días"]
+      }
+    },
+    {
+      "id": "peluqueria-mascotas",
+      "filename": "brief-mascotas.md",
+      "document": "## Patitas Limpias — spa para mascotas en Cartagena\n\nBaño, corte y cuidado para perros y gatos, con citas de una mascota a la vez para que estén tranquilas. Hablamos con dueños de mascotas que las tratan como parte de la familia.\n\nCómo sonamos: alegres y tiernos. \"Hoy Lola salió oliendo a coco y moviendo la cola\".\n\nNo usamos sedantes y no lo prometemos de otra forma: nunca decimos que la mascota \"no sentirá nada\" ni damos consejos veterinarios.\n\nLa competencia dice \"el spa más lujoso de la costa\"; esa frase no es nuestra.\n\nInvitamos con \"Reserva el turno de tu peludo\".",
+      "expected": {
+        "positioning": ["perros y gatos", "una mascota a la vez", "spa para mascotas"],
+        "audience": ["dueños de mascotas", "familia"],
+        "do_examples": ["Hoy Lola salió oliendo a coco y moviendo la cola"],
+        "cta_patterns": ["Reserva el turno de tu peludo"],
+        "banned_words": [],
+        "forbidden_claims": ["no sentirá nada", "consejos veterinarios"]
+      }
+    },
+    {
+      "id": "inmobiliaria-prosa",
+      "filename": "manual-inmobiliaria.txt",
+      "document": "Somos Raíz Propia, una asesoría inmobiliaria en Bogotá que acompaña a compradores de primera vivienda desde la búsqueda del proyecto hasta la entrega de las llaves, incluido el estudio de títulos. Nos escriben sobre todo parejas jóvenes y familias que van a usar el subsidio de vivienda por primera vez. Hablamos con calma y con datos; preferimos explicar un trámite que vender una sensación, por eso decimos cosas como \"Te explicamos el subsidio paso a paso, sin letra pequeña\". Nunca escribimos \"oportunidad única\" ni usamos la palabra \"ganga\", y no hablamos de valorización asegurada ni de rentabilidad garantizada, porque no podemos sostenerlo. Cuando invitamos a escribirnos usamos \"Agenda tu asesoría sin costo\".",
+      "expected": {
+        "positioning": ["primera vivienda", "estudio de títulos", "asesoría inmobiliaria"],
+        "audience": ["parejas jóvenes", "subsidio"],
+        "do_examples": ["Te explicamos el subsidio paso a paso, sin letra pequeña"],
+        "dont_examples": ["oportunidad única"],
+        "cta_patterns": ["Agenda tu asesoría sin costo"],
+        "banned_words": ["ganga"],
+        "forbidden_claims": ["valorización asegurada", "rentabilidad garantizada"]
+      }
+    }
+  ]
+}

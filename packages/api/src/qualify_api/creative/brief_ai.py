@@ -42,6 +42,8 @@ from dataclasses import dataclass
 from pathlib import PurePath
 from typing import Any
 
+from qualify_shared import observability
+
 from ..claude_tools import (
     MAX_NON_STREAMING_TOKENS,
     CallStats,
@@ -442,6 +444,7 @@ def _delete_file(client: Any, file_id: str) -> None:
         logger.warning("brand document file %s not deleted: %s", file_id, exc)
 
 
+@observability.traced("leer documento", tags=("brand_kit",))
 def _propose(
     client: Any,
     document: DocumentInput,

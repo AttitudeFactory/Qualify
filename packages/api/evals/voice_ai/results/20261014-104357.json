@@ -1,0 +1,96 @@
+{
+  "runs": {
+    "large-v3-turbo": {
+      "run": {
+        "wer_medio": 0.0153,
+        "rtf_medio": 0.498,
+        "casos_con_referencia_humana": 6.0,
+        "casos": 6.0
+      },
+      "items": {
+        "colombia-male-2121": {
+          "wer": 0.0236,
+          "rtf": 0.614,
+          "texto": "Los zapatos se estropearon con la lluvia torrencial de ayer Me parece muy interesante el libro de Francisco sobre arte contemporáneo Entre semanas me salió un viaje a Caracas y no tengo ni idea que aerolínea tomar El paso número tres para eliminar el calor es ponerte ropa algo más ligera Tienen que estar cuarenta y cinco minutos antes de la función para recoger los boletos ¿Cuántos albergues abrieron después del terremoto del diecinueve de septiembre? La ciudad de San Sebastian no ha cambiado nada en los últimos años Miami se encuentra situada en la costa este de los Estados Unidos La ciudad se encuentra cuatro horas en tren de alta velocidad Según mis datos este domingo veinticinco de diciembre no hay partidos de fútbol",
+          "fuente_referencia": "humana"
+        },
+        "colombia-male-7508": {
+          "wer": 0.0085,
+          "rtf": 0.434,
+          "texto": "¿Hay algún trabajo en particular que le haya dado como el salto a la fama por así decirlo? La película me llegó al corazón. Por las tardes se escucha música en la Plaza. Necesito que me ayudes a buscar el nombre de este director, el que dirigió las de Batman. ¿En qué calle está la casa? Vientos y tormentas todo el día, llevo un buen paraguas, por ahí un impermeable. Te recomiendo que te lleves un buen libro o descargues una buena película o de plano una buena almohada. La ciudad es bellísima y tan alegre. Cada vez que veo una raya en el cielo me da muchísimo miedo. Ayer llovió mucho y llegue tarde a mi reunión.",
+          "fuente_referencia": "humana"
+        },
+        "colombia-male-3349": {
+          "wer": 0.0,
+          "rtf": 0.499,
+          "texto": "El jeroglífico tiene un pez amarillo Hay más de setenta estaciones en el centro de la ciudad Necesito que me ayudes con mi tarea ¿En qué calle está la casa? El único tipo de música que me gusta es el jazz Una máquina de escribir cuesta como cuatro mil pesos ¿Y sabes? No necesitas comprar una bicicleta, puedes usar las de la ciudad La obscuridad del pozo era obscena por naturaleza Ando buscando las canciones más famosas del dos mil dieciséis Cómprala y que llegue a mi domicilio, que yo le quiero dar el regalo",
+          "fuente_referencia": "humana"
+        },
+        "colombia-female-9334": {
+          "wer": 0.0102,
+          "rtf": 0.475,
+          "texto": "¿Me ayudas a buscar una tienda donde pueda comprarle un regalo a mi esposo? También necesitamos una calcomanía de un dinosaurio para el computador. Me duele mucho la cabeza cuando hago ejercicio. Los corazones de pollo son una delicia. ¿Cuánto cuesta ese traje de baño español? La ciudad es bellísima y tan alegre. Una máquina de escribir cuesta como cuatro mil pesos. Quiero que la bolsa se pueda usar de pañalera, pero que también la pueda usar para salir. El problema es que no tenemos computador para la cena, ¿nos puedes ayudar? Las motos no son muy seguras.",
+          "fuente_referencia": "humana"
+        },
+        "colombia-female-3034": {
+          "wer": 0.0,
+          "rtf": 0.532,
+          "texto": "¿Quién subió el mejor video? Los hamster comen zanahorias Los cabecillas de la banda huyeron a caballo ¿Cuál es el color favorito más popular? Los niños tienen mucha imaginación. Toda esta información la puede encontrar en la página web de la Secretaría de Cultura. ¿Hay clases de cerámica cerca de mi casa? El jugador salió en el minuto veintinueve por una molestia en el tobillo izquierdo. La calle está llena de huecos. La nave encalló en los arrecifes.",
+          "fuente_referencia": "humana"
+        },
+        "colombia-female-2436": {
+          "wer": 0.0494,
+          "rtf": 0.435,
+          "texto": "Quiero saber que está pasando en Veracruz Quiero saber que tipo de pizza tiene menos calorías ¿Quieres que te mande las reseñas de diferentes medios? ¿Qué te parecen los más grandes éxitos en español? ¿Qué funciones de películas hay hoy por la tarde? La pijama de rayas es azul Te puedo mandar también la carta de café y comida Muy bien, te mandaré esas canciones enseguida Quiero estar en España solo cinco días La mermelada de zarzamor es muy fácil de hacer",
+          "fuente_referencia": "humana"
+        }
+      }
+    },
+    "small": {
+      "run": {
+        "wer_medio": 0.0768,
+        "rtf_medio": 0.177,
+        "casos_con_referencia_humana": 6.0,
+        "casos": 6.0
+      },
+      "items": {
+        "colombia-male-2121": {
+          "wer": 0.0945,
+          "rtf": 0.191,
+          "texto": "Los zapatos estropearon con la lluvia torrencial de ayer. Me parece muy interesante el libro de Francisco sobre arte contemporáneo. Entre semanas me salió un viaje a Caracas y no tengo ni idea qué aerolínea tomar. El paso número 3 para eliminar el calor es ponerte ropa algo más ligera. Tienen que estar 45 minutos antes de la función para recoger los boletos. ¿Cuántos albergues abrieron después del terremoto del 19 de septiembre? La ciudad de San Sebastiano ha cambiado nada en los últimos años. Miami se encuentra situada en la costa este de los Estados Unidos. La ciudad se encuentra a 4 horas en tren de alta velocidad. Según mis datos, este domingo 25 de diciembre no hay partidos de fútbol.",
+          "fuente_referencia": "humana"
+        },
+        "colombia-male-7508": {
+          "wer": 0.1271,
+          "rtf": 0.202,
+          "texto": "Hay algún trabajo en particular que le haya dado como el salto a la fama por así decirlo. La película me llegó al corazón. Por las tardes se escucha música en la plaza. Necesito que me ayudes a buscar el nombre de este director, el que dirigió las de Batman. ¿En qué calle está la casa? Vientos y tormentas todo el día. Llevo un buen paraguas. Por ahí un impermeable. Te recomiendo que te lleves un buen libro o descargues una buena película o de plano una buena almohada. La ciudad desvellísima y tan alegre. Cada vez que veo una raya en el cielo me da muchísimo miedo. Ayer yo vio mucho y llegué tarde a mi reunión. No me subió mucho y llegué tarde a mi reunión.",
+          "fuente_referencia": "humana"
+        },
+        "colombia-male-3349": {
+          "wer": 0.1053,
+          "rtf": 0.142,
+          "texto": "El jeroglífico tiene un pez amarillo. Hay más de 70 estaciones en el centro de la ciudad. Necesito que me ayudes con mi tarea. ¿En qué calle está la casa? El único tipo de música que me gusta es el jazz. Una máquina de escribir cuesta como 4 mil pesos. Y sabes, no necesitas comprar una bicicleta. Puedes usarlas de la ciudad. La obscuridad del pozo era obsena por naturaleza. Ando buscando las canciones más famosas del 2016. ¡Comprala y que llegue a mí a misilio! Que yo le quiero dar el regalo.",
+          "fuente_referencia": "humana"
+        },
+        "colombia-female-9334": {
+          "wer": 0.0204,
+          "rtf": 0.152,
+          "texto": "¿Me ayudas a buscar una tienda donde pueda comprarle un regalo a mi esposo? También necesitamos una calcomanía de un dinosaurio para el computador. Me duele mucho la cabeza cuando hago ejercicio. Los corazones de pollo son una delicia. ¿Cuánto cuesta ese traje de baño español? La ciudad es bellísima y tan alegre. Una máquina de escribir cuesta como 4 mil pesos. Quiero que la bolsa se pueda usar de pañalera, pero que también la pueda usar para salir. ¿El problema es que no tenemos computador para la cena? ¿Nos puedes ayudar? Las motos no son muy seguras.",
+          "fuente_referencia": "humana"
+        },
+        "colombia-female-3034": {
+          "wer": 0.0641,
+          "rtf": 0.174,
+          "texto": "¿Quién subió el mejor vídeo? Los hamsters comenzan a orias. Los cabecillas de la banda huyeron a caballo. ¿Cuál es el color favorito más popular? Los niños tienen mucha imaginación. Toda esta información la puede encontrar en la página web de la Secretaría de Cultura. Hay clases de cerámica cerca de mi casa. El jugador salió en el minuto 29 por una molestia en el tobillo izquierdo. La calle está llena de huecos. La nave encalló en los arrecifes.",
+          "fuente_referencia": "humana"
+        },
+        "colombia-female-2436": {
+          "wer": 0.0494,
+          "rtf": 0.2,
+          "texto": "Quiero saber qué está pasando en Veracruz. Quiero saber qué tipo de pizza tiene menos calorías. ¿Quieres que te mande las reseñas de diferentes medios? ¿Qué te parece los más grandes éxitos en español? ¿Qué funciones de películas hay hoy por la tarde? La pijama de rayas es azul. Te puedo mandar también la carta de café y comida. Muy bien, te mandaré esas canciones enseguida. Quiero estar en España solo 5 días. La mermelada de sarsamor es muy fácil de hacer.",
+          "fuente_referencia": "humana"
+        }
+      }
+    }
+  }
+}

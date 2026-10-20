@@ -77,7 +77,7 @@ _KIND_FILTERS: tuple[tuple[str, str], ...] = (
     ("all", "Todo"),
     ("image", "Imágenes"),
     ("video", "Videos"),
-    ("carousel", "Carruseles"),
+    ("carousel", "Galerías"),
     ("pack", "Multiformato"),
 )
 
@@ -1648,7 +1648,7 @@ def _detail_body() -> rx.Component:
                 d.detail_href != "",
                 rx.link(
                     rx.hstack(
-                        rx.text("Abrir en Borradores", size="1"),
+                        rx.text("Abrir en Piezas", size="1"),
                         rx.icon("external-link", size=12),
                         align="center",
                         spacing="1",

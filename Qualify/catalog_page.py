@@ -4,12 +4,13 @@ The screen where the founder puts the real products of a brand with their real p
 and short clips — the one input the template engine cannot invent. Three blocks on one
 page, design-system §9.1 (`app_shell(page_header, page_body)`):
 
-1. **Nuevo producto** — a card with the form (name, price + currency, category,
-   description). Opens from the header's one solid action.
+1. **Nuevo producto** — a card with the form (name, category, description). Opens
+   from the header's one solid action. No price: the founder dropped it from the
+   catalog (2026-10-19); prices already stored stay in the DB, unused by this screen.
 2. **The editor** of the selected product — its fields, and its media: an upload zone
    that takes photos AND short videos (both normalized at upload by the service), the
    tiles with a "Principal" badge, "Hacer principal" and "Quitar".
-3. **The grid** of products as cards: primary photo, name, price, category, counts.
+3. **The grid** of products as cards: primary photo, name, category, counts.
 
 Media keys render through `rx.get_upload_url`, like every upload the generator makes:
 the catalog writes to the same store (`catalog_provider`).
@@ -51,70 +52,28 @@ def _field(label: str, control: rx.Component, hint: str | None = None) -> rx.Com
     )
 
 
-def _currency_select(value: rx.Var[str], on_change: object) -> rx.Component:
-    return rx.select.root(
-        rx.select.trigger(width="7rem"),
-        rx.select.content(
-            rx.foreach(CatalogState.currencies, lambda code: rx.select.item(code, value=code)),
-        ),
-        value=value,
-        on_change=on_change,
-    )
-
-
-def _price_row(
-    price: rx.Var[str], on_price: object, currency: rx.Var[str], on_currency: object
-) -> rx.Component:
-    return rx.hstack(
-        rx.input(
-            value=price,
-            on_change=on_price,
-            placeholder="12.50",
-            width="100%",
-            class_name="q-nums",
-        ),
-        _currency_select(currency, on_currency),
-        spacing="2",
-        width="100%",
-    )
-
-
 def _product_fields(
     *,
     name: rx.Var[str],
     on_name: object,
-    price: rx.Var[str],
-    on_price: object,
-    currency: rx.Var[str],
-    on_currency: object,
     category: rx.Var[str],
     on_category: object,
     description: rx.Var[str],
     on_description: object,
     name_autofocus: bool = False,
 ) -> rx.Component:
-    """The same four fields for creating and for editing a product."""
+    """The same three fields for creating and for editing a product."""
     return rx.vstack(
-        rx.grid(
-            _field(
-                "Nombre",
-                rx.input(
-                    value=name,
-                    on_change=on_name,
-                    placeholder="Ej.: Shawarma mixto",
-                    width="100%",
-                    auto_focus=name_autofocus,
-                ),
-                "Es lo único obligatorio.",
+        _field(
+            "Nombre",
+            rx.input(
+                value=name,
+                on_change=on_name,
+                placeholder="Ej.: Shawarma mixto",
+                width="100%",
+                auto_focus=name_autofocus,
             ),
-            _field(
-                "Precio",
-                _price_row(price, on_price, currency, on_currency),
-                "Opcional. Lo imprime la plantilla cuando el ángulo lo pide.",
-            ),
-            columns=rx.breakpoints(initial="1", sm="2"),
-            spacing="3",
-            width="100%",
+            "Es lo único obligatorio.",
         ),
         _field(
             "Categoría",
@@ -167,16 +126,13 @@ def _new_product_form() -> rx.Component:
                 _product_fields(
                     name=CatalogState.new_name,
                     on_name=CatalogState.set_new_name,
-                    price=CatalogState.new_price,
-                    on_price=CatalogState.set_new_price,
-                    currency=CatalogState.new_currency,
-                    on_currency=CatalogState.set_new_currency,
                     category=CatalogState.new_category,
                     on_category=CatalogState.set_new_category,
                     description=CatalogState.new_description,
                     on_description=CatalogState.set_new_description,
                     name_autofocus=True,
                 ),
+                _new_media_field(),
                 rx.cond(
                     CatalogState.form_error != "",
                     rx.text(CatalogState.form_error, size="1", color=T.tone_color("error", 11)),
@@ -211,6 +167,83 @@ def _new_product_form() -> rx.Component:
             width="100%",
         ),
         padding="1.25rem 1.5rem",
+    )
+
+
+def _new_file_chip(name: rx.Var[str], index: rx.Var[int]) -> rx.Component:
+    return rx.hstack(
+        rx.icon("paperclip", size=12, color=T.TEXT_MUTED),
+        rx.text(
+            name,
+            size="1",
+            max_width="12rem",
+            white_space="nowrap",
+            overflow="hidden",
+            text_overflow="ellipsis",
+            title=name,
+        ),
+        rx.icon_button(
+            rx.icon("x", size=12),
+            variant="ghost",
+            color_scheme=T.tone_scale("neutral"),
+            size="1",
+            type="button",
+            on_click=CatalogState.remove_new_file(index),
+            aria_label="Quitar " + name,
+        ),
+        spacing="1",
+        align="center",
+        padding="0.1rem 0.25rem 0.1rem 0.5rem",
+        border=T.BORDER,
+        border_radius="999px",
+    )
+
+
+def _new_media_field() -> rx.Component:
+    """Photos and videos right in the form (§ request 2026-10-19: «no me deja poner la
+    imagen de una vez»): they wait as chips and are processed as soon as the product is
+    created — the editor that opens shows their progress."""
+    return _field(
+        "Fotos y videos",
+        rx.vstack(
+            dropzone(
+                rx.vstack(
+                    rx.icon("image-up", size=T.ICON_MD, color=T.TEXT_FAINT),
+                    rx.text(
+                        "Arrastra fotos y videos cortos del producto, o haz clic",
+                        size="1",
+                        text_align="center",
+                        color=T.TEXT_MUTED,
+                    ),
+                    rx.text(
+                        "JPG, PNG, HEIC · MP4, MOV (hasta 15 s). Se procesan al crear el producto.",
+                        size="1",
+                        text_align="center",
+                        color=T.TEXT_FAINT,
+                    ),
+                    align="center",
+                    spacing="1",
+                ),
+                upload_id="catalog_new_media",
+                accept=MEDIA_ACCEPT,
+                multiple=True,
+                max_files=12,
+                on_drop=CatalogState.handle_new_media(
+                    rx.upload_files(upload_id="catalog_new_media")
+                ),
+                variant="compact",
+            ),
+            rx.cond(
+                CatalogState.new_files.length() > 0,
+                rx.flex(
+                    rx.foreach(CatalogState.new_files, _new_file_chip),
+                    wrap="wrap",
+                    gap="0.4rem",
+                ),
+            ),
+            spacing="2",
+            width="100%",
+        ),
     )
 
 
@@ -397,10 +430,6 @@ def _editor() -> rx.Component:
             _product_fields(
                 name=CatalogState.edit_name,
                 on_name=CatalogState.set_edit_name,
-                price=CatalogState.edit_price,
-                on_price=CatalogState.set_edit_price,
-                currency=CatalogState.edit_currency,
-                on_currency=CatalogState.set_edit_currency,
                 category=CatalogState.edit_category,
                 on_category=CatalogState.set_edit_category,
                 description=CatalogState.edit_description,
@@ -455,30 +484,15 @@ def _product_card(product: rx.Var[ProductVM]) -> rx.Component:
     return card(
         rx.vstack(
             _thumb(product),
-            rx.hstack(
-                rx.text(
-                    product.name,
-                    size="3",
-                    weight="medium",
-                    overflow="hidden",
-                    text_overflow="ellipsis",
-                    white_space="nowrap",
-                    min_width="0",
-                ),
-                rx.spacer(),
-                rx.cond(
-                    product.price_label != "",
-                    rx.text(
-                        product.price_label,
-                        size="3",
-                        weight="bold",
-                        class_name="q-nums",
-                        flex_shrink="0",
-                    ),
-                ),
+            rx.text(
+                product.name,
+                size="3",
+                weight="medium",
+                overflow="hidden",
+                text_overflow="ellipsis",
+                white_space="nowrap",
+                min_width="0",
                 width="100%",
-                align="baseline",
-                spacing="2",
             ),
             rx.hstack(
                 rx.cond(product.category != "", tag(product.category)),

@@ -27,6 +27,7 @@ from typing import Any
 import reflex as rx
 
 from . import brand_documents
+from .brand_avatar_panel import brand_avatar_card
 from .creative_state import CreativeState
 from .creative_vm import KitFormVM
 from .creative_wizard_pages import (  # the wizard's own controls, shared on purpose
@@ -397,8 +398,10 @@ def _section(key: str, title: str, icon: str, blurb: str) -> rx.Component:
 
 
 def _edit_view() -> rx.Component:
-    """The sections, one column, centred (§ request 2026-10-05: no side index)."""
+    """The sections, one column, centred (§ request 2026-10-05: no side index), under
+    «Tu avatar animado» (§ request 2026-10-19 — generated, so it has no «Editar»)."""
     return rx.vstack(
+        brand_avatar_card(),
         *(_section(*spec) for spec in SECTIONS),
         spacing="3",
         width="100%",

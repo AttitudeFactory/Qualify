@@ -1,0 +1,94 @@
+{
+  "runs": {
+    "seedream-5.0-lite": {
+      "run": {
+        "errores_total": 0.0,
+        "tamano_ok_tasa": 1.0,
+        "costo_total_usd": 0.35,
+        "segundos_p50": 38.44
+      },
+      "items": {
+        "inm-fachada": {
+          "modo": "scene",
+          "formato": "story_9_16",
+          "ancho": 1080,
+          "alto": 1920,
+          "costo_usd": 0.035,
+          "segundos": 29.62
+        },
+        "inm-llaves": {
+          "modo": "scene",
+          "formato": "feed_1_1",
+          "ancho": 1080,
+          "alto": 1080,
+          "costo_usd": 0.035,
+          "segundos": 35.43
+        },
+        "inm-sala": {
+          "modo": "scene",
+          "formato": "feed_4_5",
+          "ancho": 1080,
+          "alto": 1350,
+          "costo_usd": 0.035,
+          "segundos": 42.54
+        },
+        "bur-partido": {
+          "modo": "scene",
+          "formato": "reels_9_16",
+          "ancho": 1080,
+          "alto": 1920,
+          "costo_usd": 0.035,
+          "segundos": 33.14
+        },
+        "bur-plancha": {
+          "modo": "scene",
+          "formato": "story_9_16",
+          "ancho": 1080,
+          "alto": 1920,
+          "costo_usd": 0.035,
+          "segundos": 37.35
+        },
+        "bur-doble": {
+          "modo": "scene",
+          "formato": "feed_4_5",
+          "ancho": 1080,
+          "alto": 1350,
+          "costo_usd": 0.035,
+          "segundos": 75.43
+        },
+        "hel-reel": {
+          "modo": "scene",
+          "formato": "reels_9_16",
+          "ancho": 1080,
+          "alto": 1920,
+          "costo_usd": 0.035,
+          "segundos": 35.21
+        },
+        "hel-noche": {
+          "modo": "scene",
+          "formato": "feed_1_1",
+          "ancho": 1080,
+          "alto": 1080,
+          "costo_usd": 0.035,
+          "segundos": 50.63
+        },
+        "hel-cono-doble": {
+          "modo": "scene",
+          "formato": "story_9_16",
+          "ancho": 1080,
+          "alto": 1920,
+          "costo_usd": 0.035,
+          "segundos": 39.52
+        },
+        "hel-mango": {
+          "modo": "scene",
+          "formato": "feed_4_5",
+          "ancho": 1080,
+          "alto": 1350,
+          "costo_usd": 0.035,
+          "segundos": 43.91
+        }
+      }
+    }
+  }
+}
