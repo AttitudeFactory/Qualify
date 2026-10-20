@@ -115,19 +115,26 @@ the day the plan allows it is `infra/github/ruleset-main.json` (`just protect-ma
 
 ### Every PR carries its Meegle ticket number
 
-**Rule (2026-10-20): every PR names the Meegle ticket it delivers by its numeric work item ID**
-(e.g. `24789646` — the number in the ticket URL `…/issue/detail/24789646`), in the **branch name**
-and in the **PR title**: branch `<type>/<id>-<slug>` (`feat/24789646-dm-propuesto`), title ending
-in `(<id>)` (`feat(conversations): DM drafts from comment intents (24789646)`). Meegle is the only
-tracker (Linear is retired); no ticket → create or find one first, never open the PR without it.
+**Rule (2026-10-20): every PR names the Meegle ticket it delivers as `m-<work item id>`** — the
+id is the number in the ticket URL (`…/issue/detail/24789646` → `m-24789646`; Cmd+Shift+C on the
+ticket copies it). It goes in three places:
+
+- **branch**: `<type>/m-<id>-<slug>` (`feat/m-24789646-dm-propuesto`);
+- **PR title**, at the end: `feat(conversations): DM drafts from comment intents (m-24789646)`;
+- **PR description**: `Resolves m-24789646` — the keyword is what lets the merge move the ticket.
+
+Meegle is the only tracker (Linear is retired); no ticket → create or find one first, never open
+the PR without it. Several tickets: `Resolves m-111, m-222`. Agents follow the same rule.
 
 Why it matters: the Meegle **GitHub plugin** (Space configuration → Plug-ins → GitHub) receives
-this repo's `pull_request`/`push` webhooks and moves the ticket by itself — **PR opened → the
-review status** (`RESOLVED`, planned rename «To Be Reviewed»), **PR merged → `Done`**. It links a
-PR to a ticket with the pattern `[0-9]+` over branch/title, so keep **other standalone numbers out
-of the PR title** (write "migration 0065" in the body, not the title) or the PR can attach to the
-wrong ticket. Driver keywords `close/closes/fix/fixes/resolve/resolves` are configured too.
-Several tickets in one PR: list every ID in the title. Agents follow the same rule.
+this repo's `pull_request`/`push` webhooks. `m-<id>` (or `f-<id>`, any case, anywhere in branch,
+commit, title or description) **links** the PR to the ticket — it shows under the ticket's GitHub
+tab. The completion rule then moves it: **PR opened → `RESOLVED`** (review; planned rename «To Be
+Reviewed») and **PR merged → `Done`**, the latter driven by `close|fix|resolve` (+ `-s`, `-d`,
+`-ing`) followed by `m-<id>`. The space also has a custom link pattern `[0-9]+`, so a bare number
+may link as well — but `m-<id>` is the documented syntax; prefer it and keep other standalone
+numbers out of the title. Branch and commit links cannot be edited afterwards, so get the id right
+before the first push. Reference: https://meegle.com/b/helpcenter/product/integration-github
 
 ### Commands
 
