@@ -10,7 +10,9 @@ regla no puede estar activa hoy.
 
 ## Cuando se active (GitHub Team, o repo público)
 
-`ruleset-main.json` es la regla lista: exige PR y exige en verde el job `test` de
+`ruleset-main.json` es la regla lista: exige PR, exige en verde el job `test`, obliga a
+actualizar la rama con `main` y exige resolver los hilos de revisión. Mantiene cero
+aprobaciones requeridas mientras el equipo está prototipando.
 `.github/workflows/ci.yml` (lint + tests offline + migraciones + tests con base), que corre solo
 en PRs. Los checks de
 `images.yml` (`docker-deploy`) y `render.yml` (`node-render`, `docker-render`) **no** van en la

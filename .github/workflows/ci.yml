@@ -88,6 +88,55 @@ jobs:
         with:
           # The PR's own commits for gitleaks; history is small, the fetch takes seconds.
           fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+
+      # The template makes the author state the change, its verification and its scope.
+      # This check deliberately validates structure and mandatory attestations only; a
+      # reviewer still decides whether the statements are true and sufficient.
+      - name: PR description follows the team template
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          # Remove template hints: a blank PR must not pass because the HTML comment
+          # itself contains an example issue identifier or `N/A`.
+          body=$(jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" | sed -E 's/<!--[^>]*-->//g')
+          failed=0
+
+          require_heading() {
+            if ! grep -Fqx "$1" <<<"$body"; then
+              echo "::error::Falta la sección obligatoria: $1"
+              failed=1
+            fi
+          }
+
+          require_checked() {
+            if ! grep -Fqx -- "- [x] $1" <<<"$body"; then
+              echo "::error::Marca esta verificación o corrige la descripción: $1"
+              failed=1
+            fi
+          }
+
+          for heading in \
+            '## Contexto' \
+            '## Cambios' \
+            '## Riesgo y reversión' \
+            '## Verificación' \
+            '## Documentación y decisiones' \
+            '## Fuera de alcance'; do
+            require_heading "$heading"
+          done
+
+          if ! grep -Eq '^- Issue / tarea: .*(QUA-[0-9]+|https?://|N/A)' <<<"$body"; then
+            echo '::error::Indica una tarea (QUA-123 o URL), o N/A con motivo, en «Issue / tarea». '
+            failed=1
+          fi
+
+          require_checked 'Añadí o actualicé pruebas para el comportamiento modificado.'
+          require_checked 'Ejecuté `just ci-lint` y `just ci-test`, o el check `test` está verde.'
+
+          if [ "$failed" -ne 0 ]; then
+            echo 'Usa .github/pull_request_template.md y completa las declaraciones requeridas.'
+            exit 1
+          fi
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           enable-cache: true
