@@ -131,13 +131,15 @@ this repo's `pull_request`/`push` webhooks. `m-<id>` (or `f-<id>`, any case, any
 commit, title or description) **links** the PR to the ticket — it shows under the ticket's GitHub
 tab. A completion rule is configured — **PR opened → `RESOLVED`** (review; planned rename «To Be
 Reviewed») and **PR merged → `Done`**, the latter meant to be driven by `close|fix|resolve` (+ `-s`,
-`-d`, `-ing`) followed by `m-<id>` — **but as of 2026-10-20 it does not move Issues**: measured on
-PRs #168 and #169 (tickets 24805842, 24805864), the PR linked and Meegle received every event with
-200, yet neither rule fired (not from Backlog, not from In Progress, not with a bare number either).
-Until that is fixed, **move the ticket by hand** (In Progress → review → Done) when the PR opens
-and merges. The space also has a custom link pattern `[0-9]+`, so a bare number
-may link as well — but `m-<id>` is the documented syntax; prefer it and keep other standalone
-numbers out of the title. Branch and commit links cannot be edited afterwards, so get the id right
+`-d`, `-ing`) followed by `m-<id>` — **but as of 2026-10-20 no completion rule moves anything**.
+Measured on PRs #168, #169 and #170: the PR linked to the ticket and Meegle received every event
+with 200, yet nothing moved — not Issues (rule on statuses; ticket in Backlog or In Progress; with
+`m-<id>` or a bare number) and not Features (rule «PR merged → complete Backend Development» on the
+node-driven Product Feature Request template, two test Features sitting in that node, with the
+custom link pattern `[0-9]+` and again after setting it to `m-[0-9]+`; per-item «Upgrade Template»
+changed nothing visible). Until Meegle fixes or explains it, **move the ticket by hand** (In
+Progress → review → Done) when the PR opens and merges. The custom link pattern is now `m-[0-9]+`,
+matching the documented syntax. Branch and commit links cannot be edited afterwards, so get the id right
 before the first push. Reference: https://meegle.com/b/helpcenter/product/integration-github
 
 The other direction is a GitHub **autolink** (repo Settings → Autolink references, id `18004011`):
