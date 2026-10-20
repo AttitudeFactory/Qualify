@@ -129,9 +129,13 @@ the PR without it. Several tickets: `Resolves m-111, m-222`. Agents follow the s
 Why it matters: the Meegle **GitHub plugin** (Space configuration → Plug-ins → GitHub) receives
 this repo's `pull_request`/`push` webhooks. `m-<id>` (or `f-<id>`, any case, anywhere in branch,
 commit, title or description) **links** the PR to the ticket — it shows under the ticket's GitHub
-tab. The completion rule then moves it: **PR opened → `RESOLVED`** (review; planned rename «To Be
-Reviewed») and **PR merged → `Done`**, the latter driven by `close|fix|resolve` (+ `-s`, `-d`,
-`-ing`) followed by `m-<id>`. The space also has a custom link pattern `[0-9]+`, so a bare number
+tab. A completion rule is configured — **PR opened → `RESOLVED`** (review; planned rename «To Be
+Reviewed») and **PR merged → `Done`**, the latter meant to be driven by `close|fix|resolve` (+ `-s`,
+`-d`, `-ing`) followed by `m-<id>` — **but as of 2026-10-20 it does not move Issues**: measured on
+PRs #168 and #169 (tickets 24805842, 24805864), the PR linked and Meegle received every event with
+200, yet neither rule fired (not from Backlog, not from In Progress, not with a bare number either).
+Until that is fixed, **move the ticket by hand** (In Progress → review → Done) when the PR opens
+and merges. The space also has a custom link pattern `[0-9]+`, so a bare number
 may link as well — but `m-<id>` is the documented syntax; prefer it and keep other standalone
 numbers out of the title. Branch and commit links cannot be edited afterwards, so get the id right
 before the first push. Reference: https://meegle.com/b/helpcenter/product/integration-github
