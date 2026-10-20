@@ -381,6 +381,20 @@
   padding-top: 0.75rem;
   border-top: 1px solid var(--q-card-edge);
 }
+/* The generator's step bar (§ request 2026-10-20: «se corta el texto»): the shared
+   stepper keeps every step at its full width and clips what does not fit, so with seven
+   or eight steps the last ones were cut at the card's edge. Here a two-word label wraps
+   onto a second line (a word is never split), the joining lines give way first, and if
+   it still does not fit the bar goes on to a second row — nothing is ever clipped. */
+.q-cr-view .q-stepper { overflow: visible; flex-wrap: wrap; row-gap: 0.35rem; }
+.q-cr-view .q-step { flex: 0 1 auto; }
+.q-cr-view .q-step-label {
+  white-space: normal;
+  line-height: 1.15;
+  text-align: left;
+  max-width: 7.5rem;
+}
+.q-cr-view .q-step-line { flex: 1 1 0.5rem; min-width: 0.35rem; }
 
 /* A clip type as a skeleton box (2026-10-14): only the avatar of who will appear, on the
    field material, with the skeleton's slow sheen; its name and blurb sit under it. */

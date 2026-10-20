@@ -1036,3 +1036,29 @@ def test_an_animated_slide_takes_a_motion_reference_stock_included() -> None:
         ContentKind.CAROUSEL, slides=(slide, CarouselSlide(source=SlideSource.GENERATED))
     )
     assert stock_problems(brief) is None
+
+
+def test_a_gallery_reference_without_a_public_url_fails_before_any_scene_is_paid() -> None:
+    """Draft of 2026-10-20: a gallery whose last slide followed a reference video paid for
+    every scene, then failed on that slide — no public URL for ModelArk to fetch it.
+    It is refused up front now, before the first Seedream call."""
+    from qualify_creative.enums import SlideSource
+    from qualify_creative.schemas import CarouselSlide
+
+    from qualify_api.creative.media import CLIP_NO_PUBLIC_URL
+
+    video = f"uploads/{TENANT_ID}/ref.mp4"
+    brief = _brief(
+        ContentKind.CAROUSEL,
+        slides=(
+            CarouselSlide(source=SlideSource.GENERATED),
+            CarouselSlide(source=SlideSource.GENERATED),
+            CarouselSlide(source=SlideSource.ANIMATED, reference_video_key=video),
+        ),
+    )
+    vendor = SpyVendor()
+    outcome = _produce(_producer(MemoryStore({video: b"mp4"}), vendor), brief, uuid4())
+
+    assert outcome.failure == FailureReason.INVALID_PARAMETERS.value
+    assert outcome.detail == CLIP_NO_PUBLIC_URL
+    assert vendor.requests == [] and outcome.usage == ()

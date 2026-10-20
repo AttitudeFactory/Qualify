@@ -91,6 +91,34 @@ def test_an_animated_slide_takes_a_video_only_as_its_motion_reference() -> None:
     assert state.carousel_slides[1]["ref_key"] == ""
 
 
+_IMAGE_KEY = "t/a0000000-0000-4000-8000-000000000001/stock/pixabay/7221445/0123456789abcdef.jpg"
+
+
+def test_an_animated_slide_picks_images_and_videos_from_one_picker() -> None:
+    """§ request 2026-10-20: «cuando se quiera un video se junten … videos e imágenes» —
+    the animated slide's one picker shows both; an image becomes its photo, a video its
+    motion reference."""
+    state = CreativeState()
+    image = {"key": _IMAGE_KEY, "view": "/r2media/img", "author": "Ana", "asset_id": "y"}
+    state._apply_stock_selection([image], [_IMPORTED])
+    state.brief_kind = "carousel"
+    state.carousel_slides = state._three_slides()
+    state.carousel_selected = 2
+    state.set_slide_source("animated")
+    assert state.picker_tab_view["slide_media"] == "catalog"  # the inspiration's files
+    state.pick_mixed_media("slide_media", "catalog", _IMAGE_KEY, "image")
+    state.pick_mixed_media("slide_media", "catalog", _KEY, "video")
+    state.pick_mixed_media("slide_media", "catalog", _KEY, "audio")  # no such slot: nothing
+    slide = state.carousel_slides[2]
+    assert slide["photo_key"] == _IMAGE_KEY and slide["ref_key"] == _KEY
+    assert state.picker_selected["slide_media"] == [_IMAGE_KEY, _KEY]
+    photos, slides = state._carousel_slides_payload(False)
+    assert photos == [_IMAGE_KEY] and slides[2]["reference_video_key"] == _KEY
+    state.pick_mixed_media("slide_media", "catalog", _KEY, "video")  # again: out
+    assert state.carousel_slides[2]["ref_key"] == ""
+    assert state.carousel_slides[2]["photo_key"] == _IMAGE_KEY
+
+
 def test_the_background_takes_inspiration_and_has_no_catalog_tab() -> None:
     state = CreativeState()
     assert state.set_picker_tab("background", "brandcat") is None
@@ -311,6 +339,7 @@ def test_inspiration_search_is_in_every_slot() -> None:
             "slide",
             "background",
             "slide_reference",
+            "slide_media",
         ]
     )
     assert state.set_picker_tab("reference", "inspiration") is not None  # kit searches
@@ -394,3 +423,12 @@ def test_a_stock_product_never_lands_on_a_search_tab() -> None:
     state.picker_tabs = {"clip_videos": "inspiration"}  # chosen with a catalog product
     state._apply_stock_selection([], [_IMPORTED])
     assert state.picker_tab_view["clip_videos"] == "catalog"
+
+
+def test_a_clip_sends_the_logo_chosen_for_it() -> None:
+    """§ request 2026-10-20: «poner mis logos en mis clips»."""
+    state = CreativeState()
+    state.brief_kind = "clip"
+    assert state._media_inputs()["brand_logo_key"] is None
+    state.brand_logo_key = "t/a0000000-0000-4000-8000-000000000001/brand/b/logo/x.png"
+    assert state._media_inputs()["brand_logo_key"] == state.brand_logo_key

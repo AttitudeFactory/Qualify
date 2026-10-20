@@ -546,7 +546,7 @@ def test_a_seedance_brief_needs_no_voice_but_a_described_presenter() -> None:
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("ArkAPIError: HTTP 404 ModelNotOpen: x", "no está disponible ahora mismo"),
+        ("ArkAPIError: HTTP 404 ModelNotOpen: x", "no está activado todavía"),
         ("HTTP 400 InputImageSensitiveContentDetected.PrivacyInformation", "personas reales"),
         ("HTTP 400 OutputVideoSensitiveContentDetected", "filtro de contenido"),
         ("HTTP 403 AccountOverdueError", "no está disponible ahora mismo"),
@@ -671,8 +671,11 @@ class FakeFitter:
         size: tuple[int, int],
         overlay: bytes | None = None,
         max_seconds: float = 60.0,
+        keep_audio: bool = False,
     ) -> FittedVideo:
-        self.calls.append({"data": data, "size": size, "overlay": overlay})
+        self.calls.append(
+            {"data": data, "size": size, "overlay": overlay, "keep_audio": keep_audio}
+        )
         return FittedVideo(
             data=b"fitted-" + data,
             width=size[0],

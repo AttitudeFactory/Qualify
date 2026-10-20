@@ -8,7 +8,8 @@ libx264 and the filters), so the same code runs on a developer's Windows machine
 the production image, neither of which has `ffmpeg` on PATH. The crop, the scale and the
 overlay run inside an FFmpeg filter graph — per-frame Pillow or numpy took 30 s for a
 5 s slide, the graph ~5 s. The audio is dropped: Instagram plays a carousel muted, and
-Seedance 1.0 makes none.
+Seedance 1.0 makes none — unless the caller keeps it (`keep_audio`, § request 2026-10-20:
+a clip with the brand's logo over it keeps its soundtrack), then it is copied as it is.
 
 It also turns ONE still into a short video (`animate_still`, § request 2026-10-13): the
 advertising image offered as a Reel. Instagram publishes only a video as a Reel, so the
@@ -59,6 +60,7 @@ class VideoFitter(Protocol):
         size: tuple[int, int],
         overlay: bytes | None = None,
         max_seconds: float = MAX_SLIDE_SECONDS,
+        keep_audio: bool = False,
     ) -> FittedVideo: ...
 
     def animate_still(
@@ -67,7 +69,7 @@ class VideoFitter(Protocol):
 
 
 class PyAvVideoFitter:
-    """H.264 `yuv420p` MP4 at `size`, `+faststart`, no audio."""
+    """H.264 `yuv420p` MP4 at `size`, `+faststart`; no audio unless `keep_audio`."""
 
     def available(self) -> bool:
         try:
@@ -83,6 +85,7 @@ class PyAvVideoFitter:
         size: tuple[int, int],
         overlay: bytes | None = None,
         max_seconds: float = MAX_SLIDE_SECONDS,
+        keep_audio: bool = False,
     ) -> FittedVideo:
         width, height = size
         if width % 2 or height % 2:
@@ -91,7 +94,9 @@ class PyAvVideoFitter:
         # rewrites the file in a second pass, which a write-only buffer cannot take
         with tempfile.TemporaryDirectory(prefix="qualify-slide-") as tmp:
             out = Path(tmp) / "slide.mp4"
-            frames, rate, poster = _encode(data, out, size, overlay, max_seconds)
+            frames, rate, poster = _encode(
+                data, out, size, overlay, max_seconds, keep_audio=keep_audio
+            )
             encoded = out.read_bytes()
         if not frames:
             raise ValueError("the video has no frames")
@@ -186,7 +191,13 @@ def _layer_frame(av: Any, overlay: bytes, size: tuple[int, int]) -> Any:
 
 
 def _encode(
-    data: bytes, out: Path, size: tuple[int, int], overlay: bytes | None, max_seconds: float
+    data: bytes,
+    out: Path,
+    size: tuple[int, int],
+    overlay: bytes | None,
+    max_seconds: float,
+    *,
+    keep_audio: bool = False,
 ) -> tuple[int, float, bytes | None]:
     import av  # noqa: PLC0415 — lazy: only a carousel's video slides need it
 
@@ -199,7 +210,10 @@ def _encode(
         stream = source.streams.video[0]
         rate = _frame_rate(stream)
         base = stream.time_base
+        audio_in = source.streams.audio[0] if keep_audio and source.streams.audio else None
         with av.open(str(out), mode="w", format="mp4", options={"movflags": "+faststart"}) as sink:
+            # the soundtrack is copied, not re-encoded: the picture is the only change
+            audio_out = sink.add_stream_from_template(audio_in) if audio_in is not None else None
             encoder = sink.add_stream("libx264", rate=rate)
             encoder.width, encoder.height = width, height
             encoder.pix_fmt = "yuv420p"
@@ -260,11 +274,40 @@ def _encode(
                         sink.mux(packet)
                     done += 1
 
-            for frame in source.decode(stream):
-                if frame.time is not None and frame.time >= max_seconds:
-                    break
-                video_in.push(frame)
-                frames += drain()
+            if audio_in is None:
+                for frame in source.decode(stream):
+                    if frame.time is not None and frame.time >= max_seconds:
+                        break
+                    video_in.push(frame)
+                    frames += drain()
+            else:
+                # the fitted picture starts at 0 from the source's first frame, so the
+                # copied soundtrack is moved by the same offset — a source whose streams
+                # start later than 0 would otherwise come out of sync (review 2026-10-20);
+                # sound from before the first frame is dropped
+                start = stream.start_time * stream.time_base if stream.start_time is not None else 0
+                shift = round(start / audio_in.time_base)
+                ended = False
+                for packet in source.demux(stream, audio_in):
+                    if packet.stream.type == "audio":
+                        # the empty packet that flushes a demuxer is not muxed
+                        if packet.dts is None or packet.pts is None:
+                            continue
+                        pts = packet.pts - shift
+                        if pts < 0 or pts * packet.time_base >= max_seconds:
+                            continue
+                        packet.pts, packet.dts = pts, max(packet.dts - shift, 0)
+                        packet.stream = audio_out
+                        sink.mux(packet)
+                        continue
+                    if ended:
+                        continue
+                    for frame in packet.decode():
+                        if frame.time is not None and frame.time - start >= max_seconds:
+                            ended = True
+                            break
+                        video_in.push(frame)
+                        frames += drain()
             video_in.push(None)
             frames += drain()
             for packet in encoder.encode():

@@ -347,3 +347,190 @@ def test_datos_clave_reach_every_media_prompt() -> None:
         assert len(prompt) < 3000
     for prompt in prompts(*briefs):
         assert "Key facts" not in prompt
+
+
+def test_the_chosen_logo_goes_over_every_frame_and_the_sound_stays() -> None:
+    """§ request 2026-10-20: «me hace falta poner mis logos en mis clips» — the logo is
+    laid over the generated clip at its own size; its soundtrack is kept."""
+    from .test_creative_media_byteplus import FakeFitter
+
+    store, seedance, fitter, draft_id = _clip_store(), FakeSeedance(), FakeFitter(), uuid4()
+    store.files[f"uploads/{TENANT_ID}/logo.png"] = _image((200, 10, 10))
+    producer = _clip_producer(store, seedance)
+    producer._fitter = fitter
+    brief = _brief(
+        ContentKind.CLIP,
+        clip_first_frame_key=f"uploads/{TENANT_ID}/first.jpg",
+        brand_logo_key=f"uploads/{TENANT_ID}/logo.png",
+    )
+    outcome = _produce(producer, brief, draft_id)
+
+    assert outcome.failure is None
+    (call,) = fitter.calls
+    assert call["data"] == b"mp4-bytes" and call["overlay"][:4] == b"\x89PNG"
+    assert call["keep_audio"] is True
+    (video,) = outcome.media
+    assert call["size"] == (video.width, video.height)  # the clip's own size: no crop
+    assert store.files[generated_key(TENANT_ID, draft_id, "clip.mp4")] == b"fitted-mp4-bytes"
+    assert video.params["logo"] is True
+
+
+def test_a_clip_without_a_logo_is_stored_as_seedance_made_it() -> None:
+    from .test_creative_media_byteplus import FakeFitter
+
+    store, seedance, fitter, draft_id = _clip_store(), FakeSeedance(), FakeFitter(), uuid4()
+    producer = _clip_producer(store, seedance)
+    producer._fitter = fitter
+    brief = _brief(ContentKind.CLIP, clip_first_frame_key=f"uploads/{TENANT_ID}/first.jpg")
+    outcome = _produce(producer, brief, draft_id)
+
+    assert outcome.failure is None and fitter.calls == []
+    assert store.files[generated_key(TENANT_ID, draft_id, "clip.mp4")] == b"mp4-bytes"
+    assert outcome.media[0].params["logo"] is False
+
+
+def test_a_logo_with_no_fitter_wired_fails_before_seedance_is_paid() -> None:
+    store, seedance = _clip_store(), FakeSeedance()
+    store.files[f"uploads/{TENANT_ID}/logo.png"] = _image((200, 10, 10))
+    brief = _brief(
+        ContentKind.CLIP,
+        clip_first_frame_key=f"uploads/{TENANT_ID}/first.jpg",
+        brand_logo_key=f"uploads/{TENANT_ID}/logo.png",
+    )
+    outcome = _produce(_clip_producer(store, seedance), brief, uuid4())
+
+    assert outcome.failure == FailureReason.PROVIDER_ERROR.value
+    assert seedance.requests == [] and outcome.usage == ()
+
+
+class _NoReferenceModel(FakeSeedance):
+    """An account without Seedance 2.x: a request naming a model is refused before any
+    task exists (ModelArk's `ModelNotOpen`, measured live 2026-10-20)."""
+
+    def generate(self, request: Any, *, api_key: str) -> Any:
+        if request.params.get("model"):
+            self.requests.append(request)
+            raise RuntimeError("ArkAPIError: HTTP 404 ModelNotOpen: not activated")
+        return super().generate(request, api_key=api_key)
+
+
+def test_a_clip_of_images_only_falls_back_to_its_frames_without_the_2x_model() -> None:
+    """§ request 2026-10-20: «si le estoy pasando solo imágenes» — three images make the
+    middle one a reference (2.x only); without 2.x on the account the clip is made from
+    its opening and closing images on the default model, not refused."""
+    store, seedance, draft_id = _clip_store(), _NoReferenceModel(), uuid4()
+    brief = _brief(
+        ContentKind.CLIP,
+        clip_first_frame_key=f"uploads/{TENANT_ID}/first.jpg",
+        clip_last_frame_key=f"uploads/{TENANT_ID}/last.jpg",
+        clip_image_keys=(f"uploads/{TENANT_ID}/product.jpg",),
+        clip_image_roles=("product",),
+    )
+    outcome = _produce(_clip_producer(store, seedance, RecordingLinks()), brief, draft_id)
+
+    assert outcome.failure is None
+    refused, made = seedance.requests
+    assert refused.params["model"] == REF_MODEL
+    assert "model" not in made.params and "reference_images" not in made.params
+    assert str(made.params["first_frame"]).startswith("data:image/")
+    assert str(made.params["last_frame"]).startswith("data:image/")
+    (video,) = outcome.media
+    assert video.params["references_dropped"] == {"images": 1, "videos": 0}
+    assert video.params["references"]["images"] == 0
+    assert len(outcome.usage) == 1  # only the clip that was made is paid
+
+
+def test_a_reference_video_without_the_2x_model_still_says_so() -> None:
+    store, seedance = _clip_store(), _NoReferenceModel()
+    brief = _brief(
+        ContentKind.CLIP,
+        clip_first_frame_key=f"uploads/{TENANT_ID}/first.jpg",
+        clip_video_keys=(f"uploads/{TENANT_ID}/ref.mp4",),
+    )
+    outcome = _produce(_clip_producer(store, seedance, RecordingLinks()), brief, uuid4())
+
+    assert outcome.failure == FailureReason.PROVIDER_ERROR.value
+    assert "no está activado" in (outcome.detail or "")
+    assert len(seedance.requests) == 1  # no frames-only retry: the video would be lost
+
+
+class _BrokenFitter:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def fit(self, data: bytes, **kwargs: Any) -> Any:
+        self.calls.append({"data": data, **kwargs})
+        raise ValueError("an H.264 slide needs even dimensions")
+
+
+def test_a_logo_that_cannot_be_laid_keeps_the_paid_clip() -> None:
+    """Review 2026-10-20: the clip is billed before the logo goes on it — a failure to
+    lay the logo leaves the clip as Seedance made it, never a failed piece."""
+    store, seedance, fitter, draft_id = _clip_store(), FakeSeedance(), _BrokenFitter(), uuid4()
+    store.files[f"uploads/{TENANT_ID}/logo.png"] = _image((200, 10, 10))
+    producer = _clip_producer(store, seedance)
+    producer._fitter = fitter
+    brief = _brief(
+        ContentKind.CLIP,
+        clip_first_frame_key=f"uploads/{TENANT_ID}/first.jpg",
+        brand_logo_key=f"uploads/{TENANT_ID}/logo.png",
+    )
+    outcome = _produce(producer, brief, draft_id)
+
+    assert outcome.failure is None and len(fitter.calls) == 1
+    assert store.files[generated_key(TENANT_ID, draft_id, "clip.mp4")] == b"mp4-bytes"
+    assert outcome.media[0].params["logo"] is False
+
+
+def test_a_video_that_closes_the_clip_falls_back_to_its_frame_without_2x() -> None:
+    """Review 2026-10-20: a video is a motion reference even when it closes the clip;
+    without Seedance 2.x the clip is still made, ending on that video's last frame."""
+    store, seedance, draft_id = _clip_store(), _NoReferenceModel(), uuid4()
+    store.files[f"uploads/{TENANT_ID}/ref.mp4"] = _tiny_mp4()
+    brief = _brief(
+        ContentKind.CLIP,
+        clip_first_frame_key=f"uploads/{TENANT_ID}/first.jpg",
+        clip_last_frame_key=f"uploads/{TENANT_ID}/ref.mp4",
+        clip_video_keys=(f"uploads/{TENANT_ID}/ref.mp4",),
+    )
+    outcome = _produce(_clip_producer(store, seedance, RecordingLinks()), brief, draft_id)
+
+    assert outcome.failure is None
+    refused, made = seedance.requests
+    assert refused.params["reference_videos"] and "model" not in made.params
+    assert str(made.params["last_frame"]).startswith("data:image/")
+    assert outcome.media[0].params["references_dropped"] == {"images": 0, "videos": 1}
+
+
+def test_without_a_public_url_a_frame_video_clip_is_still_made() -> None:
+    store, seedance, draft_id = _clip_store(), FakeSeedance(), uuid4()
+    store.files[f"uploads/{TENANT_ID}/ref.mp4"] = _tiny_mp4()
+    brief = _brief(
+        ContentKind.CLIP,
+        clip_first_frame_key=f"uploads/{TENANT_ID}/ref.mp4",
+        clip_video_keys=(f"uploads/{TENANT_ID}/ref.mp4",),
+    )
+    outcome = _produce(_clip_producer(store, seedance, links=None), brief, draft_id)
+
+    assert outcome.failure is None
+    (made,) = seedance.requests
+    assert "model" not in made.params and "first_frame" in made.params
+
+
+def _tiny_mp4() -> bytes:
+    """A real 1 s clip: a frame video's first/last frame is extracted locally."""
+    import io
+
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    out = io.BytesIO()
+    with av.open(out, "w", format="mp4") as sink:
+        stream = sink.add_stream("libx264", rate=12)
+        stream.width, stream.height, stream.pix_fmt = 64, 112, "yuv420p"
+        for i in range(12):
+            pixels = np.full((112, 64, 3), 20 * i, dtype=np.uint8)
+            for packet in stream.encode(av.VideoFrame.from_ndarray(pixels, format="rgb24")):
+                sink.mux(packet)
+        for packet in stream.encode():
+            sink.mux(packet)
+    return out.getvalue()

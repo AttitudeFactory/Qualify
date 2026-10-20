@@ -434,6 +434,12 @@ AVATAR_SCRIPT_TOO_LONG = (
 #: A key missing or refused, a model not activated, an account with no balance, a lane
 #: not wired: nothing the operator can fix — the team has to.
 UNAVAILABLE_TEXT = "La generación no está disponible ahora mismo. Avisa al equipo."
+#: ModelArk's `ModelNotOpen` (2026-10-20: every Seedance 2.x — the only models that take
+#: reference videos and audios — was off in the account): fixed in the ModelArk console.
+MODEL_NOT_OPEN_TEXT = (
+    "El modelo de video que hace falta no está activado todavía: avisa al equipo. Mientras "
+    "tanto, un clip sin videos ni audios de referencia sí se puede generar."
+)
 FILTERED_TEXT = "La pieza no pasó el filtro de contenido. Cambia la descripción o las fotos."
 REAL_PERSON_TEXT = "No podemos usar fotos de personas reales como referencia. Usa otra foto."
 SLOW_TEXT = "Está tardando más de lo normal. Revisa Borradores en un rato."
@@ -478,7 +484,8 @@ def avatar_failure_text(raw: str) -> str:
 _ARK_FAILURES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("QUALIFY_BYTEPLUS_ARK_API_KEY", "MissingPlatformKey"), UNAVAILABLE_TEXT),
     (("AuthenticationError", "HTTP 401"), UNAVAILABLE_TEXT),
-    (("ModelNotOpen", "ServiceNotOpen", "InvalidEndpointOrModel"), UNAVAILABLE_TEXT),
+    (("ModelNotOpen",), MODEL_NOT_OPEN_TEXT),
+    (("ServiceNotOpen", "InvalidEndpointOrModel"), UNAVAILABLE_TEXT),
     (("AccountOverdue", "ServiceOverdue", "InvalidAccountStatus"), UNAVAILABLE_TEXT),
     (("PrivacyInformation",), REAL_PERSON_TEXT),
     (("SensitiveContentDetected",), FILTERED_TEXT),
@@ -755,6 +762,28 @@ def _links_ready(links: ReferenceLinks | None) -> bool:
     return bool(ready()) if callable(ready) else True
 
 
+def _clip_frames_suffice(brief: ContentBrief) -> bool:
+    """Whether a clip can still be made from its opening and closing frames when its
+    references cannot be used (no Seedance 2.x, no public URL): no audio, and every video
+    is one of its frames — the motion it would follow is lost, the clip is not (review
+    2026-10-20). Middle images are dropped the same way."""
+    media = brief.media
+    frames = {media.clip_first_frame_key, media.clip_last_frame_key}
+    return not media.clip_audio_keys and all(key in frames for key in media.clip_video_keys)
+
+
+def _fetched_references(brief: ContentBrief) -> bool:
+    """Whether the piece needs ModelArk to fetch a file by URL, with no way around it: a
+    clip's reference videos or audios (unless its frames suffice), or an animated gallery
+    slide's motion reference."""
+    media = brief.media
+    if brief.kind is ContentKind.CLIP and (media.clip_video_keys or media.clip_audio_keys):
+        return not _clip_frames_suffice(brief)
+    return brief.kind is ContentKind.CAROUSEL and any(
+        slide.source is SlideSource.ANIMATED and slide.reference_video_key for slide in media.slides
+    )
+
+
 #: A clip's reference media types, by the file's extension.
 _REFERENCE_TYPES = {
     ".mp4": "video/mp4",
@@ -873,6 +902,14 @@ class MediaProducer:
             logger.warning("creative media for draft %s refused: stock misplaced", draft_id)
             return MediaOutcome(
                 failure=FailureReason.ROUTE_BLOCKED_BY_POLICY.value, detail=misplaced_stock
+            )
+        if _fetched_references(brief) and not _links_ready(self._reference_links):
+            # before any spend: a reference video/audio reaches ModelArk only as a public
+            # URL — a gallery found it out on its last slide, its scenes already paid for
+            # (draft of 2026-10-20)
+            logger.warning("creative media for draft %s refused: no public URL", draft_id)
+            return MediaOutcome(
+                failure=FailureReason.INVALID_PARAMETERS.value, detail=CLIP_NO_PUBLIC_URL
             )
         save = _Saver(self._store, tenant_id, draft_id, revision)
         try:
@@ -1406,74 +1443,119 @@ class MediaProducer:
         first = self._clip_frame(media.clip_first_frame_key, last=False)
         last = self._clip_frame(media.clip_last_frame_key, last=True)
         images = [self._store.read(key) for key in media.clip_image_keys]
-        params: dict[str, object] = {
-            "ratio": ratio,
-            "duration_seconds": media.duration_seconds,
-        }
-        resolution = self._seedance_resolution
-        if media.clip_has_references:
-            model = self._seedance_reference_model
-            if not model:
-                raise _MediaFailed(
-                    FailureReason.INVALID_PARAMETERS.value,
-                    "Las referencias necesitan un modelo de video que las acepte, y no hay "
-                    "uno configurado.",
-                )
-            frames = [frame for frame in (first, last) if frame is not None]
-            params["model"] = model
-            params["reference_images"] = [_data_url(image) for image in (*frames, *images)]
-            params["reference_videos"] = self._reference_urls(tenant_id, media.clip_video_keys)
-            params["reference_audios"] = self._reference_urls(tenant_id, media.clip_audio_keys)
-            family = seedance_family(model)
-            if resolution not in family.resolutions:
-                resolution = "720p"
-        else:
-            if first is not None:
-                params["first_frame"] = _data_url(first)
-            if last is not None:
-                params["last_frame"] = _data_url(last)
-        params["resolution"] = resolution
-        prompt = clip_prompt(
-            brief=brief,
-            kit=kit,
-            copy=copy,
-            image_roles=media.clip_image_roles,
-            first_frame=first is not None,
-            last_frame=last is not None,
-            images=len(images),
-            videos=len(media.clip_video_keys),
-            audios=len(media.clip_audio_keys),
-        )
-        params["prompt"] = prompt
-        request = GenerationRequest(
-            task=GenerationTask.SCENE_VIDEO,
-            rendered_prompt=RenderedPrompt("", "", ""),
-            params=params,
-        )
-        trace.media_request(
-            draft_id=draft_id,
-            provider="Seedance",
-            what="clip",
-            fields={
-                "prompt": prompt,
-                "modelo": str(params.get("model") or "el predeterminado"),
-                "fotogramas": f"inicial {'sí' if first else 'no'} · final {'sí' if last else 'no'}",
-                "referencias": (
-                    f"{len(images)} imágenes · {len(media.clip_video_keys)} videos · "
-                    f"{len(media.clip_audio_keys)} audios"
-                ),
-                "formato": f"{ratio} · {resolution}",
-                "duración pedida": f"{media.duration_seconds} s",
-            },
-        )
-        result = self._run(
-            tenant_id=tenant_id,
-            brand_id=brief.brand_id,
-            link=SEEDANCE,
-            request=request,
-            budget=budget,
-            usage=usage,
-        )
+        # the logo the operator chose (§ request 2026-10-20) goes over every frame, laid
+        # here, after Seedance: read, and the fitter checked, before anything is paid
+        logo = self._logo(kit, media.brand_logo_key) if media.brand_logo_key else None
+        fitter = self._require_fitter() if logo is not None else None
+
+        def request_for(references: bool) -> tuple[GenerationRequest, dict[str, object], str]:
+            """The Seedance request: with the references on a 2.x model, or from the
+            frames alone on the default model."""
+            params: dict[str, object] = {
+                "ratio": ratio,
+                "duration_seconds": media.duration_seconds,
+            }
+            resolution = self._seedance_resolution
+            if references:
+                model = self._seedance_reference_model
+                if not model:
+                    raise _MediaFailed(
+                        FailureReason.INVALID_PARAMETERS.value,
+                        "Las referencias necesitan un modelo de video que las acepte, y no "
+                        "hay uno configurado.",
+                    )
+                frames = [frame for frame in (first, last) if frame is not None]
+                params["model"] = model
+                params["reference_images"] = [_data_url(image) for image in (*frames, *images)]
+                params["reference_videos"] = self._reference_urls(tenant_id, media.clip_video_keys)
+                params["reference_audios"] = self._reference_urls(tenant_id, media.clip_audio_keys)
+                family = seedance_family(model)
+                if resolution not in family.resolutions:
+                    resolution = "720p"
+            else:
+                if first is not None:
+                    params["first_frame"] = _data_url(first)
+                if last is not None:
+                    params["last_frame"] = _data_url(last)
+            params["resolution"] = resolution
+            prompt = clip_prompt(
+                brief=brief,
+                kit=kit,
+                copy=copy,
+                image_roles=media.clip_image_roles if references else (),
+                first_frame=first is not None,
+                last_frame=last is not None,
+                images=len(images) if references else 0,
+                videos=len(media.clip_video_keys) if references else 0,
+                audios=len(media.clip_audio_keys) if references else 0,
+            )
+            params["prompt"] = prompt
+            trace.media_request(
+                draft_id=draft_id,
+                provider="Seedance",
+                what="clip",
+                fields={
+                    "prompt": prompt,
+                    "modelo": str(params.get("model") or "el predeterminado"),
+                    "fotogramas": (
+                        f"inicial {'sí' if first else 'no'} · final {'sí' if last else 'no'}"
+                    ),
+                    "referencias": (
+                        f"{len(images)} imágenes · {len(media.clip_video_keys)} videos · "
+                        f"{len(media.clip_audio_keys)} audios"
+                        if references
+                        else "ninguna"
+                    ),
+                    "formato": f"{ratio} · {resolution}",
+                    "duración pedida": f"{media.duration_seconds} s",
+                },
+            )
+            request = GenerationRequest(
+                task=GenerationTask.SCENE_VIDEO,
+                rendered_prompt=RenderedPrompt("", "", ""),
+                params=params,
+            )
+            return request, params, resolution
+
+        references = media.clip_has_references
+        dropped_images = dropped_videos = 0
+        try:
+            request, params, resolution = request_for(references)
+            result = self._run(
+                tenant_id=tenant_id,
+                brand_id=brief.brand_id,
+                link=SEEDANCE,
+                request=request,
+                budget=budget,
+                usage=usage,
+            )
+        except _MediaFailed as exc:
+            # § 2026-10-20: the references could not be used — the account has no Seedance
+            # 2.x (refused before any task: nothing paid) or there is no public URL for a
+            # video. When the frames suffice (middle images, or videos that are only its
+            # first/last file) the clip is made from them on the default model; audio, or
+            # a video that is only a reference, has no such fallback.
+            unavailable = "ModelNotOpen" in (exc.raw or "") or exc.detail == CLIP_NO_PUBLIC_URL
+            if not (references and unavailable and _clip_frames_suffice(brief)):
+                raise
+            logger.warning(
+                "clip %s: references unavailable, made from its frames (%s images, %s videos"
+                " not followed)",
+                draft_id,
+                len(images),
+                len(media.clip_video_keys),
+            )
+            dropped_images, dropped_videos = len(images), len(media.clip_video_keys)
+            references = False
+            request, params, resolution = request_for(False)
+            result = self._run(
+                tenant_id=tenant_id,
+                brand_id=brief.brand_id,
+                link=SEEDANCE,
+                request=request,
+                budget=budget,
+                usage=usage,
+            )
         payload = dict(result.payload) if isinstance(result.payload, dict) else {}
         out_resolution = str(payload.get("resolution") or resolution)
         tokens = int(result.usage.output_tokens)
@@ -1486,9 +1568,26 @@ class MediaProducer:
                 cost_usd=video_cost_usd(self._pricing, result.model_id, out_resolution, tokens),
             )
         )
-        video_key = save("clip.mp4", self._download(str(result.media_url)), MP4)
-        thumbnail_key = save("first-frame.jpg", to_meta_jpeg(first), JPEG) if first else None
+        video = self._download(str(result.media_url))
         width, height = output_dimensions(result.model_id, out_resolution, ratio)
+        thumbnail = first
+        logo_laid = False
+        if fitter is not None:
+            # the clip's own size, so nothing is cropped; its soundtrack stays
+            layer = text_layer(size=(width, height), palette=kit.palette_rgb, logo=logo)
+            try:
+                fitted = fitter.fit(video, size=(width, height), overlay=layer, keep_audio=True)
+            except Exception as exc:  # noqa: BLE001 — the clip is paid for: never lose it
+                # review 2026-10-20: a logo that cannot be laid leaves the clip as Seedance
+                # made it, rather than failing a piece already billed
+                logger.warning("clip %s: logo not laid: %s", draft_id, type(exc).__name__)
+            else:
+                video, thumbnail = fitted.data, fitted.poster or first
+                logo_laid = True
+        video_key = save("clip.mp4", video, MP4)
+        thumbnail_key = (
+            save("first-frame.jpg", to_meta_jpeg(thumbnail), JPEG) if thumbnail else None
+        )
         return [
             MediaWrite(
                 position=0,
@@ -1508,12 +1607,15 @@ class MediaProducer:
                     "resolution": out_resolution,
                     "tokens": tokens,
                     "spoken": bool(payload.get("generate_audio")),
+                    # the middle images left out on an account without 2.x (§ 2026-10-20)
+                    "references_dropped": {"images": dropped_images, "videos": dropped_videos},
                     "references": {
-                        "images": len(images),
-                        "videos": len(media.clip_video_keys),
+                        "images": len(images) if references else 0,
+                        "videos": len(media.clip_video_keys) if references else 0,
                         "audios": len(media.clip_audio_keys),
                     },
                     "thumbnail_key": thumbnail_key,
+                    "logo": logo_laid,
                     "model_revision": result.model_revision,
                 },
             )
