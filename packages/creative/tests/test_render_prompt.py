@@ -445,3 +445,31 @@ def test_a_video_says_what_is_on_screen() -> None:
 def test_a_creators_script_has_no_on_screen_line() -> None:
     suffix = render(brief=make_brief(kind=ContentKind.CREATOR_SCRIPT)).volatile_suffix
     assert "On screen:" not in suffix
+
+
+def test_datos_clave_reach_the_prompt_exactly_as_written() -> None:
+    """§ request 2026-10-14: the operator's facts (price, discount…) are in the
+    assignment, verbatim; a brief without any renders as before."""
+    with_facts = render(
+        brief=make_brief(
+            constraints=BriefConstraints(highlights=(("precio", "$18.900"), ("descuento", "20 %")))
+        )
+    )
+    text = with_facts.stable_prefix + with_facts.volatile_suffix
+    assert '{"precio": "$18.900", "descuento": "20 %"}' in text  # as JSON
+    assert "never change, round or invent" in text
+    plain = render(brief=make_brief())
+    assert "Key facts" not in plain.stable_prefix + plain.volatile_suffix
+
+
+def test_a_clip_copy_writes_its_story_in_three_shots() -> None:
+    """§ request 2026-10-14: the clip tells a story — the copy writes it, on its own
+    hook: three shots (hook, development, payoff) the video prompt then follows."""
+    from qualify_creative.enums import ContentKind
+
+    rendered = render(
+        brief=make_brief(kind=ContentKind.CLIP, format=ContentKind.CLIP.default_format)
+    )
+    text = rendered.stable_prefix + rendered.volatile_suffix
+    assert "exactly 3 objects" in text and "the hook, the development, the payoff" in text
+    assert "tells a story" in text

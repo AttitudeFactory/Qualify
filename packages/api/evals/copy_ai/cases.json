@@ -1,0 +1,106 @@
+{
+  "_doc": "Dataset for the generator's copy (docs/plan-observabilidad-langfuse.md §6-§7). Three FICTIONAL brands (no tenant's data) and 24 briefs spread across kinds, formats, objectives and content types. Constraints are chosen to tempt the model: a 'must_avoid' word the topic invites, a price that must appear, banned words a lazy copy would use. There is no gold copy: the evaluators are the deterministic gates of §6.2 (brand rules, schema, printed lengths, constraints, diversity). Review and extend freely; ids are stable so Langfuse upserts instead of duplicating.",
+  "brands": {
+    "heladeria": {
+      "kit": {
+        "brand_id": "6b1d2c3e-0001-4a10-9a01-000000000001",
+        "positioning": "Helados artesanales con frutas del Norte de Santander, hechos cada mañana en Cúcuta",
+        "audience": "Familias y parejas jóvenes de Cúcuta que salen a pasear el fin de semana",
+        "tone_axes": {"formal_casual": 80, "sober_enthusiastic": 75, "technical_plain": 85, "brief_elaborate": 30},
+        "do_examples": ["Hoy amanecimos con mango biche recién picado", "Pasa por tu cono antes de que se acabe"],
+        "dont_examples": ["EL MEJOR HELADO DEL MUNDO!!!", "Productos de calidad superior a precios increíbles"],
+        "banned_words": ["barato", "light", "industrial"],
+        "forbidden_claims": ["sin azúcar", "el mejor helado de colombia", "cero calorías"],
+        "hashtag_policy": {"minimum": 2, "maximum": 6, "always": ["laceibahelados"], "never": ["dieta"]},
+        "length_targets": {"caption_min_chars": 60, "caption_max_chars": 600},
+        "cta_patterns": ["Te esperamos en el Malecón", "Escríbenos al DM para pedidos"]
+      },
+      "voice": {
+        "brand_id": "6b1d2c3e-0001-4a10-9a01-000000000001",
+        "version": 1,
+        "status": "active",
+        "tone_axes": {"formal_casual": 80, "sober_enthusiastic": 75, "technical_plain": 85, "brief_elaborate": 30},
+        "lexicon": ["artesanal", "recién hecho", "fruta de temporada", "cono"],
+        "avoid_lexicon": ["gourmet", "premium"],
+        "sentence_rhythm": "Frases cortas, una idea cada una, con un toque de calor costeño.",
+        "signature_moves": ["Abre con el sabor del día", "Nombra la fruta y de dónde viene"]
+      }
+    },
+    "hamburguesas": {
+      "kit": {
+        "brand_id": "6b1d2c3e-0002-4a10-9a01-000000000002",
+        "positioning": "Smash burgers a la plancha con carne madurada, en un local pequeño de Chapinero",
+        "audience": "Jóvenes de 20 a 35 años en Bogotá que buscan hamburguesas para compartir después del trabajo",
+        "tone_axes": {"formal_casual": 90, "sober_enthusiastic": 85, "technical_plain": 70, "brief_elaborate": 20},
+        "do_examples": ["Plancha a tope, queso derretido, cero excusas", "La doble ya está lista, ¿y tú?"],
+        "dont_examples": ["Estimado cliente, le invitamos a degustar", "Comida rápida de calidad"],
+        "banned_words": ["gourmet", "chatarra", "barata"],
+        "forbidden_claims": ["100% saludable", "la mejor hamburguesa de bogotá", "carne orgánica"],
+        "hashtag_policy": {"minimum": 2, "maximum": 5, "always": ["brasanorte"], "never": ["fastfood"]},
+        "length_targets": {"caption_min_chars": 40, "caption_max_chars": 450},
+        "cta_patterns": ["Pide por Rappi", "Ven al local en la 57"]
+      },
+      "voice": {
+        "brand_id": "6b1d2c3e-0002-4a10-9a01-000000000002",
+        "version": 2,
+        "status": "active",
+        "tone_axes": {"formal_casual": 90, "sober_enthusiastic": 85, "technical_plain": 70, "brief_elaborate": 20},
+        "lexicon": ["smash", "plancha", "doble", "costra", "salsa de la casa"],
+        "avoid_lexicon": ["exquisito", "manjar"],
+        "sentence_rhythm": "Frases muy cortas, imperativas, con jerga bogotana suave.",
+        "signature_moves": ["Habla del sonido de la plancha", "Reta al lector a terminarse la triple"]
+      }
+    },
+    "inmobiliaria": {
+      "kit": {
+        "brand_id": "6b1d2c3e-0003-4a10-9a01-000000000003",
+        "positioning": "Asesoría para comprar vivienda nueva en el Valle de Aburrá, sin presiones y con acompañamiento legal",
+        "audience": "Familias y profesionales de Medellín que compran su primera vivienda",
+        "tone_axes": {"formal_casual": 35, "sober_enthusiastic": 30, "technical_plain": 50, "brief_elaborate": 60},
+        "do_examples": ["Te acompañamos desde la separación hasta la entrega", "Revisa con nosotros el estudio de títulos"],
+        "dont_examples": ["¡¡APROVECHA ESTA GANGA!!", "Compra ya antes de que suba"],
+        "banned_words": ["ganga", "regalado", "urgente"],
+        "forbidden_claims": ["rentabilidad garantizada", "valorización asegurada", "crédito aprobado"],
+        "hashtag_policy": {"minimum": 1, "maximum": 4, "always": ["habitatinmobiliaria"], "never": ["remate"]},
+        "length_targets": {"caption_min_chars": 120, "caption_max_chars": 900},
+        "cta_patterns": ["Agenda tu asesoría sin costo", "Escríbenos por WhatsApp"]
+      },
+      "voice": {
+        "brand_id": "6b1d2c3e-0003-4a10-9a01-000000000003",
+        "version": 1,
+        "status": "active",
+        "tone_axes": {"formal_casual": 35, "sober_enthusiastic": 30, "technical_plain": 50, "brief_elaborate": 60},
+        "lexicon": ["acompañamiento", "subsidio", "cuota inicial", "entrega"],
+        "avoid_lexicon": ["oportunidad única", "inversión segura"],
+        "sentence_rhythm": "Frases completas y claras, tono de asesor de confianza.",
+        "signature_moves": ["Explica un paso del proceso de compra", "Cierra con una pregunta que invite a conversar"]
+      }
+    }
+  },
+  "cases": [
+    {"id": "hel-01", "brand": "heladeria", "brief": {"kind": "static_flyer", "format": "feed_4_5", "objective": "sale", "content_type": "new_product", "topic": "Nuevo sabor: mango biche con sal y limón", "constraints": {"must_mention": ["mango biche"], "must_avoid": ["light"]}, "media": {"ad_mode": "scene", "scene_prompt": "Un cono de mango biche goteando bajo el sol del Malecón"}}},
+    {"id": "hel-02", "brand": "heladeria", "brief": {"kind": "static_flyer", "format": "story_9_16", "objective": "sale", "content_type": "price", "topic": "Cono doble a 9.000 pesos solo este sábado", "constraints": {"must_mention": ["9.000"], "must_avoid": ["barato"]}, "media": {"ad_mode": "scene", "scene_prompt": "Dos bolas de helado en cono, fondo de colores vivos"}}},
+    {"id": "hel-03", "brand": "heladeria", "brief": {"kind": "creator_script", "format": "reels_9_16", "objective": "awareness", "content_type": "behind_scenes", "topic": "Cómo picamos la fruta cada mañana antes de abrir"}},
+    {"id": "hel-04", "brand": "heladeria", "brief": {"kind": "carousel", "format": "feed_4_5", "objective": "consideration", "content_type": "menu", "topic": "Los seis sabores de la semana", "media": {"slides": [{"source": "generated", "text": "hook"}, {"source": "generated"}], "closing_slide": true}}},
+    {"id": "hel-05", "brand": "heladeria", "brief": {"kind": "creator_script", "format": "feed_4_5", "objective": "lead", "content_type": "catering", "topic": "Carrito de helados para fiestas infantiles", "constraints": {"must_mention": ["fiestas"], "must_avoid": ["sin azúcar"]}}},
+    {"id": "hel-06", "brand": "heladeria", "brief": {"kind": "static_flyer", "format": "feed_1_1", "objective": "awareness", "content_type": "hours_location", "topic": "Abrimos de 2 a 10 de la noche en el Malecón", "constraints": {"must_mention": ["Malecón"]}, "media": {"ad_mode": "scene", "scene_prompt": "La heladería iluminada al atardecer"}}},
+    {"id": "hel-07", "brand": "heladeria", "brief": {"kind": "template", "format": "feed_4_5", "objective": "sale", "content_type": "promotion", "topic": "2x1 en paletas de guanábana los martes", "constraints": {"must_mention": ["martes"]}, "media": {"product_keys": ["uploads/eval/paleta.jpg"]}}},
+    {"id": "hel-08", "brand": "heladeria", "brief": {"kind": "avatar_video", "format": "reels_9_16", "objective": "consideration", "content_type": "testimonial", "topic": "Una clienta cuenta por qué vuelve cada domingo", "media": {"video_engine": "seedance", "avatar_source": "ai", "avatar_prompt": "Mujer de 30 años, sonriente, camiseta de colores"}}},
+    {"id": "bur-01", "brand": "hamburguesas", "brief": {"kind": "static_flyer", "format": "feed_4_5", "objective": "sale", "content_type": "combo", "topic": "Combo doble smash + papas + gaseosa a 32.900", "constraints": {"must_mention": ["32.900"], "must_avoid": ["gourmet"]}, "media": {"ad_mode": "scene", "scene_prompt": "Hamburguesa doble con queso fundido en la plancha"}}},
+    {"id": "bur-02", "brand": "hamburguesas", "brief": {"kind": "creator_script", "format": "reels_9_16", "objective": "awareness", "content_type": "behind_scenes", "topic": "El sonido de la carne cuando toca la plancha"}},
+    {"id": "bur-03", "brand": "hamburguesas", "brief": {"kind": "static_flyer", "format": "story_9_16", "objective": "sale", "content_type": "sold_out", "topic": "Se nos acabó la triple antes de las 9 de la noche", "media": {"ad_mode": "scene", "scene_prompt": "Plancha vacía con espátula y restos de queso"}}},
+    {"id": "bur-04", "brand": "hamburguesas", "brief": {"kind": "carousel", "format": "feed_1_1", "objective": "consideration", "content_type": "product", "topic": "Anatomía de nuestra smash: pan, carne, queso y salsa", "media": {"slides": [{"source": "generated", "text": "hook"}, {"source": "generated"}, {"source": "generated"}], "closing_slide": true}}},
+    {"id": "bur-05", "brand": "hamburguesas", "brief": {"kind": "template", "format": "story_9_16", "objective": "sale", "content_type": "new_product", "topic": "Llega la smash de chorizo santarrosano", "constraints": {"must_mention": ["chorizo"], "must_avoid": ["saludable"]}, "media": {"product_keys": ["uploads/eval/chorizo.jpg"]}}},
+    {"id": "bur-06", "brand": "hamburguesas", "brief": {"kind": "creator_script", "format": "feed_4_5", "objective": "lead", "content_type": "loyalty", "topic": "Tarjeta de sellos: la décima hamburguesa va por la casa", "constraints": {"must_mention": ["décima"]}}},
+    {"id": "bur-07", "brand": "hamburguesas", "brief": {"kind": "static_flyer", "format": "reels_9_16", "objective": "awareness", "content_type": "seasonal", "topic": "Noche de partido: pantalla grande y baldes de papas", "media": {"ad_mode": "scene", "scene_prompt": "Amigos viendo fútbol con hamburguesas en la mesa"}}},
+    {"id": "bur-08", "brand": "hamburguesas", "brief": {"kind": "avatar_video", "format": "reels_9_16", "objective": "sale", "content_type": "promotion", "topic": "Los jueves la segunda hamburguesa va a mitad de precio", "constraints": {"must_mention": ["jueves"]}, "media": {"video_engine": "seedance", "avatar_source": "ai", "avatar_prompt": "Cocinero joven con gorra y delantal"}}},
+    {"id": "inm-01", "brand": "inmobiliaria", "brief": {"kind": "static_flyer", "format": "feed_4_5", "objective": "lead", "content_type": "product", "topic": "Apartamentos de 2 alcobas en Bello desde 280 millones", "constraints": {"must_mention": ["280 millones"], "must_avoid": ["ganga", "valorización"]}, "media": {"ad_mode": "scene", "scene_prompt": "Sala luminosa de un apartamento nuevo con vista a la montaña"}}},
+    {"id": "inm-02", "brand": "inmobiliaria", "brief": {"kind": "creator_script", "format": "reels_9_16", "objective": "consideration", "content_type": "faq", "topic": "Qué es el estudio de títulos y por qué no debes saltártelo"}},
+    {"id": "inm-03", "brand": "inmobiliaria", "brief": {"kind": "carousel", "format": "feed_4_5", "objective": "consideration", "content_type": "faq", "topic": "Cinco pasos para comprar vivienda con subsidio Mi Casa Ya", "constraints": {"must_mention": ["subsidio"], "must_avoid": ["crédito aprobado"]}, "media": {"slides": [{"source": "generated", "text": "hook"}, {"source": "generated"}, {"source": "generated"}, {"source": "generated"}], "closing_slide": true}}},
+    {"id": "inm-04", "brand": "inmobiliaria", "brief": {"kind": "static_flyer", "format": "story_9_16", "objective": "lead", "content_type": "opening_countdown", "topic": "Faltan 10 días para el lanzamiento del proyecto en Envigado", "constraints": {"must_mention": ["Envigado"]}, "media": {"ad_mode": "scene", "scene_prompt": "Fachada moderna de un edificio residencial al atardecer"}}},
+    {"id": "inm-05", "brand": "inmobiliaria", "brief": {"kind": "creator_script", "format": "feed_4_5", "objective": "awareness", "content_type": "team_story", "topic": "Nuestra asesora cuenta la primera entrega que acompañó"}},
+    {"id": "inm-06", "brand": "inmobiliaria", "brief": {"kind": "template", "format": "feed_1_1", "objective": "sale", "content_type": "price", "topic": "Cuota inicial desde 1,2 millones mensuales", "constraints": {"must_mention": ["cuota inicial"], "must_avoid": ["garantizada"]}, "media": {"product_keys": ["uploads/eval/render.jpg"]}}},
+    {"id": "inm-07", "brand": "inmobiliaria", "brief": {"kind": "avatar_video", "format": "feed_4_5", "objective": "consideration", "content_type": "faq", "topic": "Diferencias entre comprar sobre planos y vivienda usada", "media": {"video_engine": "seedance", "avatar_source": "ai", "avatar_prompt": "Asesor inmobiliario de 40 años, camisa clara, oficina luminosa"}}},
+    {"id": "inm-08", "brand": "inmobiliaria", "brief": {"kind": "static_flyer", "format": "reels_9_16", "objective": "awareness", "content_type": "testimonial", "topic": "Una familia recibe las llaves de su primer apartamento", "constraints": {"must_avoid": ["urgente"]}, "media": {"ad_mode": "scene", "scene_prompt": "Familia feliz frente a la puerta de su nuevo apartamento"}}}
+  ]
+}

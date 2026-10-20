@@ -1,0 +1,104 @@
+{
+  "version": "v4",
+  "sources": {
+    "claude-sonnet-5-5": "skill claude-api 2026-10-06: $2 in / $10 out. A copy-model candidate in the Langfuse experiments (2026-10-13).",
+    "claude-opus-5-5": "skill claude-api 2026-10-06 (per-MTok list prices): $4 in / $20 out. Replaces claude-opus-5 as the generator's copy model (2026-10-13).",
+    "claude-opus-4-8": "skill claude-api 2026-10-06: $5 in / $25 out. Listed because the copy call opts into server-side fallbacks (`fallbacks: \"default\"`): a policy decline on claude-opus-5-5 is re-run on claude-opus-5 or claude-opus-4-8, and the served model is what gets priced.",
+    "claude-opus-5": "skill claude-api 2026-08 (per-MTok list prices)",
+    "flux2_pro": "docs/comparativa-apis-creativo-motor-angulos.md §2.1",
+    "seedream_v4": "docs/comparativa-apis-creativo-motor-angulos.md §2.1",
+    "ideogram_v3_default": "docs/comparativa-apis-creativo-motor-angulos.md §2.1",
+    "heygen_avatar_iv": "HeyGen API pay-as-you-go 2026-09, third-party breakdowns (g2.com, anam.ai); official sheet is behind app.heygen.com/developers/api?modal=pricing. Priced at the HIGHEST avatar type for the engine (digital twin / studio $0.0667/s; photo avatar is $0.05/s) because the adapter does not know the avatar type at pre-flight. 4K deliberately unpriced.",
+    "heygen_avatar_iii": "Same sources. Priced at the photo-avatar rate ($0.0433/s; digital twin is $0.0167/s), again the conservative side. 4K deliberately unpriced.",
+    "heygen_image": "developers.heygen.com/docs/enterprise-pricing (read 2026-09-25): Avatar IV photo avatar 0.1 credit/s = $0.05/s; the one-off image mode (`type: image`) runs on Avatar IV. 4K deliberately unpriced.",
+    "heygen_prompt_avatar": "Avatar creation is 1 credit per call on the same page; the prompt avatar's own price is not listed, so it is priced at 1 credit x $0.50 — the conservative reading.",
+    "remotion_selfhost": "Founder decision 2026-10-05 (docs/plan-mvp-plantillas-remotion.md §2.3, backlog §0.1): the render service runs in Docker on our own VPS, so a render costs nothing beyond the server; Remotion's Free License applies while the team is 3 people or fewer (remotion.dev/docs/terms, read 2026-10-05). An explicit 0 — the day Automators ($0.01/render, $100/month floor) or Lambda applies, this entry changes, not the code.",
+    "seedance-1-0-pro-250528": "docs.byteplus.com ModelArk model-pricing (read 2026-10-07), online inference, input without video. Billed per token: width x height x 24 fps x seconds / 1024 at the output size (estimate); usage.completion_tokens is the real count. Same rate at every resolution: USD 2.5/M.",
+    "seedance-1-0-pro-fast-251015": "docs.byteplus.com ModelArk model-pricing (read 2026-10-07), online inference, input without video. Billed per token: width x height x 24 fps x seconds / 1024 at the output size (estimate); usage.completion_tokens is the real count. USD 1.0/M.",
+    "dreamina-seedance-2-0-260128": "docs.byteplus.com ModelArk model-pricing (read 2026-10-07), online inference, input without video. Billed per token: width x height x 24 fps x seconds / 1024 at the output size (estimate); usage.completion_tokens is the real count. 480p/720p USD 7.0/M, 1080p 7.7/M (4K deliberately unpriced).",
+    "dreamina-seedance-2-0-fast-260128": "docs.byteplus.com ModelArk model-pricing (read 2026-10-07), online inference, input without video. Billed per token: width x height x 24 fps x seconds / 1024 at the output size (estimate); usage.completion_tokens is the real count. List price USD 5.6/M (the time-limited enterprise discount is ignored: it ended 2026-10-07 and needs an enterprise account).",
+    "dreamina-seedance-2-0-mini-260615": "docs.byteplus.com ModelArk model-pricing (read 2026-10-07), online inference, input without video. Billed per token: width x height x 24 fps x seconds / 1024 at the output size (estimate); usage.completion_tokens is the real count. List price USD 3.5/M (same note on the discount).",
+    "dreamina-seedance-2-5-260628": "docs.byteplus.com ModelArk model-pricing (read 2026-10-07), online inference, input without video. Billed per token: width x height x 24 fps x seconds / 1024 at the output size (estimate); usage.completion_tokens is the real count. 480p/720p USD 10.70/M, 1080p 11.7/M.",
+    "seedream-5-0-lite-260128": "docs.byteplus.com ModelArk model-pricing (read 2026-10-07): USD 0.035 per generated image, input images free; a moderated image is not billed. The API reports it as seedream-5-0-260128, priced the same.",
+    "seedream-5-0-260128": "Alias of seedream-5-0-lite-260128 (the model id the API echoes back)."
+  },
+  "entries": {
+    "claude-sonnet-5-5": {
+      "per_mtok_in": "2.00",
+      "per_mtok_out": "10.00"
+    },
+    "claude-opus-5-5": {
+      "per_mtok_in": "4.00",
+      "per_mtok_out": "20.00"
+    },
+    "claude-opus-4-8": {
+      "per_mtok_in": "5.00",
+      "per_mtok_out": "25.00"
+    },
+    "claude-opus-5": {
+      "per_mtok_in": "5.00",
+      "per_mtok_out": "25.00"
+    },
+    "flux2_pro": {
+      "per_piece": "0.03"
+    },
+    "seedream_v4": {
+      "per_piece": "0.03"
+    },
+    "ideogram_v3_default": {
+      "per_piece": "0.06"
+    },
+    "heygen_avatar_iv": {
+      "per_second_720p": "0.0667",
+      "per_second_1080p": "0.0667"
+    },
+    "heygen_avatar_iii": {
+      "per_second_720p": "0.0433",
+      "per_second_1080p": "0.0433"
+    },
+    "heygen_image": {
+      "per_second_720p": "0.05",
+      "per_second_1080p": "0.05"
+    },
+    "heygen_prompt_avatar": {
+      "per_piece": "0.50"
+    },
+    "remotion_selfhost": {
+      "per_render": "0.00"
+    },
+    "seedance-1-0-pro-250528": {
+      "per_mtok_video_480p": "2.5",
+      "per_mtok_video_720p": "2.5",
+      "per_mtok_video_1080p": "2.5"
+    },
+    "seedance-1-0-pro-fast-251015": {
+      "per_mtok_video_480p": "1.0",
+      "per_mtok_video_720p": "1.0",
+      "per_mtok_video_1080p": "1.0"
+    },
+    "dreamina-seedance-2-0-260128": {
+      "per_mtok_video_480p": "7.0",
+      "per_mtok_video_720p": "7.0",
+      "per_mtok_video_1080p": "7.7"
+    },
+    "dreamina-seedance-2-0-fast-260128": {
+      "per_mtok_video_480p": "5.6",
+      "per_mtok_video_720p": "5.6"
+    },
+    "dreamina-seedance-2-0-mini-260615": {
+      "per_mtok_video_480p": "3.5",
+      "per_mtok_video_720p": "3.5"
+    },
+    "dreamina-seedance-2-5-260628": {
+      "per_mtok_video_480p": "10.70",
+      "per_mtok_video_720p": "10.70",
+      "per_mtok_video_1080p": "11.7"
+    },
+    "seedream-5-0-lite-260128": {
+      "per_piece": "0.035"
+    },
+    "seedream-5-0-260128": {
+      "per_piece": "0.035"
+    }
+  }
+}

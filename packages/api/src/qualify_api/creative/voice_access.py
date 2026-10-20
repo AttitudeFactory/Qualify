@@ -1,124 +1,109 @@
-"""Which HeyGen voices a brand may render with (§ request 2026-10-05: "cierra esa
-vulnerabilidad porque otro usuario / marca pueda usar la voz clonada de otro
-usuario/marca").
+"""Which voice reads a brand's script (§ request 2026-10-05: "cierra esa vulnerabilidad
+porque otro usuario / marca pueda usar la voz clonada de otro usuario/marca"; Seed Speech
+since 2026-10-16).
 
-Every brand's voice clone lives in the ONE HeyGen account Qualify renders with
-(`QUALIFY_HEYGEN_API_KEY`), so HeyGen itself would happily render brand A's script in
-brand B's cloned voice: the isolation between tenants is Qualify's to enforce, and until
-this module the `voice_id` a render asked for travelled to HeyGen unchecked — the /create
-picker only ever offers the right voices, but a picker is not a boundary.
+Every brand's cloned voice lives in the ONE BytePlus Seed Speech account Qualify pays
+for, so the vendor itself would happily read brand A's script in brand B's voice: the
+isolation is Qualify's to enforce. Since the move to Seed Speech the browser never names
+a cloned voice at all — the brief carries either `BRAND_VOICE` ("my brand's own voice")
+or the id of a PUBLIC voice, and this module turns that into the speaker the vendor
+gets:
 
-The rule, applied where the render is built (`MediaProducer._video`):
-
-- the brand's OWN clone (`brand_voice_clones`, read through the tenant's RLS session) is
-  allowed, and
-- so is any voice of HeyGen's PUBLIC catalog as the picker lists it — Spanish, both
-  genders, `type="public"` (the same `list_voices` calls `build_heygen_catalog` makes, so
-  nothing the picker offers is ever refused);
-- anything else — another brand's clone above all, but also a voice id made up by hand —
-  is refused BEFORE anything is uploaded or rendered, as a policy failure
-  (`FailureReason.ROUTE_BLOCKED_BY_POLICY`), so nothing is spent on it.
-
-The public catalog is cached in-process for `PUBLIC_TTL_SECONDS`; the clone is read per
-render (it changes when the operator re-clones, and the read is one indexed row).
+- `BRAND_VOICE` → the brand's OWN clone, read through the tenant's RLS session; only a
+  ready Seed Speech clone qualifies (a HeyGen clone of before 2026-10-16 does not);
+- a public voice id → accepted only if it is in the closed list the picker shows
+  (`byteplus_speech.PUBLIC_VOICE_IDS`);
+- anything else — another brand's speaker id above all, but also an id made up by hand —
+  is refused BEFORE anything is synthesized or rendered, as a policy failure, so nothing
+  is spent on it.
 """
 
 from __future__ import annotations
 
-import hashlib
-import logging
-import threading
-import time
 from collections.abc import Callable
-from typing import Any, Protocol
+from dataclasses import dataclass
 from uuid import UUID
 
-logger = logging.getLogger(__name__)
+from qualify_creative.adapters.byteplus_speech import (
+    CLONE_RESOURCE,
+    PUBLIC_RESOURCE,
+    PUBLIC_SPANISH_VOICES,
+    PUBLIC_VOICE_IDS,
+)
 
-#: HeyGen's language name for the voices the scripts are written in.
-PUBLIC_LANGUAGE = "Spanish"
-PUBLIC_GENDERS = ("female", "male")
-#: Per gender — the same page size the /create picker reads (`creative_provider.
-#: _CATALOG_LIMIT`), so the allowed set and the offered set are the same set.
-PUBLIC_LIMIT = 50
-PUBLIC_TTL_SECONDS = 3600
-
-
-class VoiceGuard(Protocol):
-    """`True` when `voice_id` may be rendered for this brand with this HeyGen key."""
-
-    def __call__(self, *, tenant_id: UUID, brand_id: UUID, voice_id: str, api_key: str) -> bool: ...
+#: What the brief carries for "the brand's own cloned voice" — never the clone's id.
+BRAND_VOICE = "brand"
 
 
-CloneLookup = Callable[[UUID, UUID], str | None]
-"""(tenant_id, brand_id) → the brand's own clone's HeyGen voice id, or None."""
+class VoiceRefused(Exception):
+    """The voice the brief asks for is not this brand's to use. `args[0]` is the
+    operator-facing text."""
 
 
-def _db_clone_lookup(tenant_id: UUID, brand_id: UUID) -> str | None:
+NO_BRAND_VOICE = "Tu voz clonada no está lista. Clónala en el Brand Kit (Tu voz) o elige otra voz."
+UNKNOWN_VOICE = (
+    "La voz elegida no está disponible para esta marca: solo puedes usar tu propia voz "
+    "clonada o una de las voces disponibles."
+)
+
+
+@dataclass(frozen=True)
+class ResolvedVoice:
+    speaker: str
+    resource_id: str
+    brand_clone: bool
+    #: The clone's language tag (`es-MX`…) — what `explicit_language` should say.
+    language: str = "es"
+    #: A brand clone never synthesized yet: its first real read charges the slot.
+    charges_slot: bool = False
+
+
+CloneLookup = Callable[[UUID, UUID], tuple[str, str, bool] | None]
+"""(tenant_id, brand_id) → (speaker id, language, never used yet) of the brand's READY
+Seed Speech clone, or None."""
+
+
+def _db_clone_lookup(tenant_id: UUID, brand_id: UUID) -> tuple[str, str] | None:
     from .voice_clone import VoiceCloneService  # noqa: PLC0415 — keeps the DB out of tests
 
     clone = VoiceCloneService().current(tenant_id=tenant_id, brand_id=brand_id)
-    return None if clone is None else clone.heygen_voice_id
+    if clone is None or not clone.is_ready:
+        return None
+    return clone.voice_id, clone.language or "es", clone.activated_at is None
 
 
-def public_voice_ids(adapter: Any, api_key: str) -> frozenset[str]:
-    """The ids of HeyGen's public Spanish voices, as the picker lists them."""
-    ids: set[str] = set()
-    for gender in PUBLIC_GENDERS:
-        for voice in adapter.list_voices(
-            api_key=api_key,
-            voice_type="public",
-            language=PUBLIC_LANGUAGE,
-            gender=gender,
-            limit=PUBLIC_LIMIT,
-        ):
-            voice_id = voice.get("voice_id") if isinstance(voice, dict) else None
-            if voice_id:
-                ids.add(str(voice_id))
-    return frozenset(ids)
+def default_public_voice(gender: str = "female") -> str:
+    """The first public voice of `gender` — what a brief with no voice reads with."""
+    for voice in PUBLIC_SPANISH_VOICES:
+        if voice["gender"] == gender:
+            return voice["id"]
+    return PUBLIC_SPANISH_VOICES[0]["id"]
 
 
-class BrandVoiceGuard:
-    """The production `VoiceGuard`: the brand's own clone, or a public voice."""
+def _explicit_language(tag: str) -> str:
+    return "es-mx" if tag.lower().startswith("es-mx") else "es"
 
-    def __init__(
-        self,
-        adapter: Any,
-        *,
-        clone_lookup: CloneLookup = _db_clone_lookup,
-        ttl_seconds: float = PUBLIC_TTL_SECONDS,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self._adapter = adapter
+
+class BrandVoiceResolver:
+    """The production resolver: the brand's own clone, or a public voice."""
+
+    def __init__(self, *, clone_lookup: CloneLookup = _db_clone_lookup) -> None:
         self._clone_lookup = clone_lookup
-        self._ttl = ttl_seconds
-        self._clock = clock
-        #: The public catalog per HeyGen key (by its digest, not the key itself): the key
-        #: is resolved per tenant and brand, and what an account lists can differ.
-        self._public: dict[str, tuple[float, frozenset[str]]] = {}
-        self._lock = threading.Lock()
 
-    def _public_ids(self, api_key: str) -> frozenset[str]:
-        account = hashlib.sha256(api_key.encode()).hexdigest()
-        with self._lock:
-            cached = self._public.get(account)
-            if cached is not None and self._clock() - cached[0] < self._ttl:
-                return cached[1]
-        ids = public_voice_ids(self._adapter, api_key)
-        with self._lock:
-            self._public[account] = (self._clock(), ids)
-        return ids
-
-    def __call__(self, *, tenant_id: UUID, brand_id: UUID, voice_id: str, api_key: str) -> bool:
-        if not voice_id:
-            return False
-        own = self._clone_lookup(tenant_id, brand_id)
-        if own is not None and voice_id == own:
-            return True
-        allowed = voice_id in self._public_ids(api_key)
-        if not allowed:
-            # the id, not the brand: enough to find the attempt, nothing to leak
-            logger.warning(
-                "voice %s refused for brand %s: not public, not its clone", voice_id, brand_id
+    def __call__(self, *, tenant_id: UUID, brand_id: UUID, choice: str) -> ResolvedVoice:
+        choice = (choice or "").strip()
+        if choice == BRAND_VOICE:
+            found = self._clone_lookup(tenant_id, brand_id)
+            if found is None:
+                raise VoiceRefused(NO_BRAND_VOICE)
+            speaker, language, fresh = found
+            return ResolvedVoice(
+                speaker=speaker,
+                resource_id=CLONE_RESOURCE,
+                brand_clone=True,
+                language=_explicit_language(language),
+                charges_slot=fresh,
             )
-        return allowed
+        if choice in PUBLIC_VOICE_IDS:
+            return ResolvedVoice(speaker=choice, resource_id=PUBLIC_RESOURCE, brand_clone=False)
+        raise VoiceRefused(UNKNOWN_VOICE)

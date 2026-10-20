@@ -340,7 +340,7 @@ app.add_page(
         CreativeState.load_brand,
         CreativeState.load_voice,
         BrandWizardState.resume,
-        # Tu voz: the brand's HeyGen clone, if any
+        # Tu voz: the brand's cloned voice (Seed Speech), if any
         VoiceLabState.load_clone,
         # the saved brandboard and logo brief (§ 2026-10-01)
         BrandWizardState.load_saved_assets,
@@ -392,14 +392,18 @@ app.add_page(
 app.add_page(
     create_index,
     route="/create",
-    on_load=[AuthState.require_login, CreativeState.load_create],
+    on_load=[
+        AuthState.require_login,
+        CreativeState.load_create,
+        CreativeState.load_catalog_products,
+    ],
     title="Qualify · Crear pieza",
 )
 app.add_page(
     drafts_index,
     route="/drafts",
     on_load=[AuthState.require_login, GalleryState.load],
-    title="Qualify · Borradores",
+    title="Qualify · Piezas",
 )
 app.add_page(
     draft_detail_index,

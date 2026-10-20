@@ -13,19 +13,15 @@ callers on the event loop must run them off-thread.
 
 from __future__ import annotations
 
-from decimal import Decimal
 from functools import cache
 from uuid import UUID
 
 from qualify_api.catalog.service import CatalogError, CatalogService
 from qualify_api.creative.composition import media_root
 from qualify_api.creative.media import LocalMediaStore
-from qualify_api.tenancy.models import Tenant
 from qualify_creative.video import FfmpegVideoNormalizer
-from qualify_shared.db.session import tenant_session
-from sqlalchemy import select
 
-from .catalog_vm import DEFAULT_CURRENCY, ProductVM, build_product_vm
+from .catalog_vm import ProductVM, build_product_vm
 
 __all__ = [
     "CatalogError",
@@ -34,7 +30,6 @@ __all__ = [
     "list_products",
     "remove_media",
     "set_primary",
-    "tenant_currency",
     "update_product",
 ]
 
@@ -43,17 +38,6 @@ __all__ = [
 def _service() -> CatalogService:
     """One service per process: the store root and the ffmpeg wrapper are stateless."""
     return CatalogService(store=LocalMediaStore(media_root()), video=FfmpegVideoNormalizer())
-
-
-def tenant_currency(tenant_id: UUID) -> str:
-    """The tenant's ISO-4217 currency (signup's choice), `DEFAULT_CURRENCY` when the
-    row cannot be read — a default for a form field is not worth failing the page."""
-    try:
-        with tenant_session(tenant_id) as session:
-            value = session.scalar(select(Tenant.currency).where(Tenant.id == tenant_id))
-    except Exception:  # noqa: BLE001 — a default is all that is needed
-        return DEFAULT_CURRENCY
-    return (value or DEFAULT_CURRENCY).strip().upper()
 
 
 def list_products(tenant_id: UUID, brand_id: UUID) -> tuple[ProductVM, ...]:
@@ -67,19 +51,16 @@ def create_product(
     user_id: UUID | None,
     *,
     name: str,
-    price_amount: Decimal | None,
-    currency: str,
     description: str,
     category: str,
 ) -> UUID:
-    """Raises `CatalogError` (Spanish message in `args[0]`) when the service refuses."""
+    """Raises `CatalogError` (Spanish message in `args[0]`) when the service refuses.
+    The screen no longer asks for a price: a new product is created without one."""
     return _service().create_product(
         tenant_id=tenant_id,
         brand_id=brand_id,
         user_id=user_id,
         name=name,
-        price_amount=price_amount,
-        price_currency=currency,
         description=description,
         category=category,
     )
@@ -90,17 +71,15 @@ def update_product(
     product_id: UUID,
     *,
     name: str,
-    price_amount: Decimal | None,
-    currency: str,
     description: str,
     category: str,
 ) -> None:
+    """Price and currency are not passed, so the service leaves whatever a product
+    already has stored untouched (no data loss; the screen just stopped editing them)."""
     _service().update_product(
         tenant_id=tenant_id,
         product_id=product_id,
         name=name,
-        price_amount=price_amount,
-        price_currency=currency,
         description=description,
         category=category,
     )

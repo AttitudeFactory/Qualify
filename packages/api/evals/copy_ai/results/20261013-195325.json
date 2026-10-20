@@ -1,0 +1,104 @@
+{
+  "dataset": "copy-generador",
+  "variants": 2,
+  "runs": {
+    "opus-5.5@low": {
+      "model": "claude-opus-5-5",
+      "effort": "low",
+      "items": 24,
+      "means": {
+        "costo_usd": 0.0427,
+        "diversidad": 0.7679,
+        "errores": 0.0,
+        "esquema_ok": 1.0,
+        "largos_ok": 1.0,
+        "latencia_s": 7.1588,
+        "puertas_ok": 1.0,
+        "reglas_ok": 1.0,
+        "restricciones_ok": 1.0
+      },
+      "run": {
+        "tasa_puertas": 1.0,
+        "costo_por_pieza_usd": 0.04273,
+        "latencia_p95_s": 10.72,
+        "errores_total": 0.0
+      },
+      "url": "http://localhost:3100/project/qualify/datasets/cmv79x72a000bml2zreagcjwq/runs/f278dc203ac5ffa7",
+      "notes": {
+        "inm-08": 1.0,
+        "inm-07": 1.0,
+        "inm-06": 1.0,
+        "inm-05": 1.0,
+        "inm-04": 1.0,
+        "inm-03": 1.0,
+        "inm-02": 1.0,
+        "inm-01": 1.0,
+        "bur-08": 1.0,
+        "bur-07": 1.0,
+        "bur-06": 1.0,
+        "bur-05": 1.0,
+        "bur-04": 1.0,
+        "bur-03": 1.0,
+        "bur-02": 1.0,
+        "bur-01": 1.0,
+        "hel-08": 1.0,
+        "hel-07": 1.0,
+        "hel-06": 1.0,
+        "hel-05": 1.0,
+        "hel-04": 1.0,
+        "hel-03": 1.0,
+        "hel-02": 1.0,
+        "hel-01": 1.0
+      }
+    },
+    "sonnet-5.5@medium": {
+      "model": "claude-sonnet-5-5",
+      "effort": "medium",
+      "items": 24,
+      "means": {
+        "costo_usd": 0.0201,
+        "diversidad": 0.8187,
+        "errores": 0.0,
+        "esquema_ok": 1.0,
+        "largos_ok": 1.0,
+        "latencia_s": 5.8238,
+        "puertas_ok": 1.0,
+        "reglas_ok": 1.0,
+        "restricciones_ok": 1.0
+      },
+      "run": {
+        "tasa_puertas": 1.0,
+        "costo_por_pieza_usd": 0.0201,
+        "latencia_p95_s": 9.26,
+        "errores_total": 0.0
+      },
+      "url": "http://localhost:3100/project/qualify/datasets/cmv79x72a000bml2zreagcjwq/runs/51957b57757743a8",
+      "notes": {
+        "inm-08": 1.0,
+        "inm-07": 1.0,
+        "inm-06": 1.0,
+        "inm-05": 1.0,
+        "inm-04": 1.0,
+        "inm-03": 1.0,
+        "inm-02": 1.0,
+        "inm-01": 1.0,
+        "bur-08": 1.0,
+        "bur-07": 1.0,
+        "bur-06": 1.0,
+        "bur-05": 1.0,
+        "bur-04": 1.0,
+        "bur-03": 1.0,
+        "bur-02": 1.0,
+        "bur-01": 1.0,
+        "hel-08": 1.0,
+        "hel-07": 1.0,
+        "hel-06": 1.0,
+        "hel-05": 1.0,
+        "hel-04": 1.0,
+        "hel-03": 1.0,
+        "hel-02": 1.0,
+        "hel-01": 1.0
+      }
+    }
+  }
+}

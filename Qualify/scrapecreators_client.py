@@ -6,7 +6,9 @@ Scope, deliberately narrow:
   - Profile reads (bio, follower count, avatar, ...) plus, since 2026-09-10, the
     user's own recent post LIST (date + like/comment/view counts per post, nothing
     else) — enough for `profile_metrics` to report real figures over a time window
-    (`METRICS_WINDOW_DAYS`). No video/audio, no comments, no other people's posts.
+    (`METRICS_WINDOW_DAYS`). Since 2026-10-15 also a referente's REEL list
+    (`fetch_reels`, «Descubrir reels»): link, cover, caption and figures per video.
+    Still no video/audio bytes and no comments.
     That is `packages/scraper` territory (Zyte + the multimodal cascade, Fase 1
     Partes 2/3, ADR 17/18) and this module has nothing to do with it: different
     vendor, different data, different lifecycle.
@@ -39,6 +41,7 @@ import re
 import time
 from collections import Counter
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -510,6 +513,344 @@ def _page_captions(network: str, payload: dict[str, Any]) -> list[str]:
 
 _HASHTAG_RE = re.compile(r"#(\w+)")
 
+
+# ---------------------------------------------------------------------------
+# A referente's reels (§ request 2026-10-15, «Descubrir reels»): link, cover, caption,
+# figures, length and sound per video. Shapes measured live 2026-10-15 (6 calls on a
+# public restaurant account): Instagram's `/v1/instagram/user/reels` lists ONLY reels,
+# each under `items[].media`, paged by `paging_info.max_id`; TikTok's
+# `/v3/tiktok/profile/videos` with `sort_by=latest` (`popular` is the account's whole
+# history by LIKES, useless for a week or a month) and `include_pinned=false`. Neither
+# filters by date: the walk goes newest to oldest and stops at the window's edge.
+#
+# `video` is the reel's own MP4 on the network's CDN (Instagram `video_versions[0]`,
+# TikTok `video.play_addr`): measured 2026-10-15, both CDNs answer a cross-origin browser
+# with `access-control-allow-origin: *` and byte ranges, so a plain `<video>` plays JUST
+# the video in Qualify — streamed, never stored. The URL is signed and dies in ~24 h
+# (TikTok) / ~33 h (Instagram); the card falls back to the network's embed when it does.
+
+#: Pages a reel walk may read per account: a month of a daily poster on Instagram (12
+#: per page) and a little less on TikTok (10 per page). The walk stops earlier as soon
+#: as a page ends before `since`, so a quieter account costs one or two credits.
+REEL_MAX_PAGES = 4
+
+_REELS_ENDPOINT = {
+    "instagram": "/v1/instagram/user/reels",
+    "tiktok": "/v3/tiktok/profile/videos",
+}
+
+
+def _first_candidate_url(value: object) -> str:
+    """The first URL of an Instagram `image_versions2.candidates` list or a TikTok
+    `{"url_list": [...]}` wrapper; "" when there is none."""
+    if isinstance(value, dict):
+        for key in ("candidates", "url_list"):
+            inner = value.get(key)
+            if isinstance(inner, list):
+                for entry in inner:
+                    url = entry.get("url") if isinstance(entry, dict) else entry
+                    if isinstance(url, str) and url:
+                        return url
+    return value if isinstance(value, str) else ""
+
+
+def _https(value: object, *hosts: str) -> str:
+    """`value` when it is an `https://` URL — on one of `hosts` (suffix match) when any
+    are given — else "". The vendor's JSON is data: a reel's link ends up as an `href`
+    and its MP4 as a `<video src>`, so neither is taken on faith."""
+    if not isinstance(value, str) or not value.startswith("https://"):
+        return ""
+    host = (urlsplit(value).hostname or "").lower()
+    if hosts and not any(host == h or host.endswith("." + h) for h in hosts):
+        return ""
+    return value
+
+
+def _instagram_sound(item: dict[str, Any]) -> str:
+    """A reel's sound title: the licensed track's, else the original audio's name. The
+    list and the post detail disagree on the same reel at times (measured 2026-10-15):
+    this is the list's word."""
+    clips = item.get("clips_metadata")
+    if not isinstance(clips, dict):
+        return ""
+    music = clips.get("music_info")
+    asset = music.get("music_asset_info") if isinstance(music, dict) else None
+    if isinstance(asset, dict) and asset.get("title"):
+        artist = str(asset.get("display_artist") or "").strip()
+        return f"{asset['title']} · {artist}" if artist else str(asset["title"])
+    original = clips.get("original_sound_info")
+    if isinstance(original, dict) and original.get("original_audio_title"):
+        return str(original["original_audio_title"])
+    return ""
+
+
+def _instagram_media(item: dict[str, Any]) -> dict[str, Any]:
+    media = item.get("media")
+    return media if isinstance(media, dict) else item
+
+
+def _instagram_reel(item: dict[str, Any], handle: str) -> dict[str, Any] | None:
+    """One `/v1/instagram/user/reels` item (`{"media": {...}}`, or the media itself) in
+    the reel shape, or None for anything that is not a video. Instagram exposes neither
+    shares nor saves of someone else's reel; hidden counts read as unknown."""
+    media = _instagram_media(item)
+    if media.get("media_type") != 2 and media.get("product_type") != "clips":
+        return None
+    stamp = _int_or_none(media.get("taken_at"))
+    code = str(media.get("code") or "")
+    if stamp is None or not code:
+        return None
+    hidden = media.get("like_and_view_counts_disabled") is True
+    caption = media.get("caption")
+    text = caption.get("text") if isinstance(caption, dict) else caption
+    duration = media.get("video_duration")
+    return {
+        "id": code,
+        "network": "instagram",
+        "handle": handle,
+        "url": _https(media.get("url"), "instagram.com")
+        or f"https://www.instagram.com/reel/{code}/",
+        "caption": text if isinstance(text, str) else "",
+        "cover": _first_candidate_url(media.get("image_versions2"))
+        or str(media.get("thumbnail_url") or media.get("display_uri") or ""),
+        "takenAt": stamp,
+        # `play_count` comes as null on some reels next to a real `ig_play_count`
+        "views": None
+        if hidden
+        else _int_or_none(media.get("play_count") or media.get("ig_play_count")),
+        "likes": None if hidden else _int_or_none(media.get("like_count")),
+        "comments": _int_or_none(media.get("comment_count")),
+        "shares": None,
+        "saves": None,
+        "seconds": round(duration) if isinstance(duration, (int, float)) else None,
+        "sound": _instagram_sound(media),
+        "video": _https(_first_candidate_url({"candidates": media.get("video_versions")})),
+    }
+
+
+def _tiktok_reel(item: dict[str, Any], handle: str) -> dict[str, Any] | None:
+    """One TikTok video of `/v3/tiktok/profile/videos` in the reel shape, or None for a
+    photo post (`image_post_info`, or `aweme_type` 150)."""
+    if item.get("image_post_info") or item.get("aweme_type") == 150:
+        return None
+    stamp = _int_or_none(item.get("create_time"))
+    video_id = str(item.get("aweme_id") or "")
+    if stamp is None or not video_id:
+        return None
+    stats = item.get("statistics")
+    stats = stats if isinstance(stats, dict) else {}
+    video = item.get("video")
+    video = video if isinstance(video, dict) else {}
+    millis = _int_or_none(video.get("duration"))  # milliseconds on TikTok
+    music = item.get("music")
+    sound = ""
+    if isinstance(music, dict) and music.get("title"):
+        author = str(music.get("author") or "").strip()
+        sound = f"{music['title']} · {author}" if author else str(music["title"])
+    cover = ""
+    for key in ("cover", "origin_cover", "dynamic_cover"):
+        cover = _first_candidate_url(video.get(key))
+        if cover:
+            break
+    return {
+        "id": video_id,
+        "network": "tiktok",
+        "handle": handle,
+        "url": _https(item.get("url"), "tiktok.com")
+        or f"https://www.tiktok.com/@{handle}/video/{video_id}",
+        "caption": str(item.get("desc") or ""),
+        "cover": cover,
+        "takenAt": stamp,
+        "views": _int_or_none(stats.get("play_count")),
+        "likes": _int_or_none(stats.get("digg_count")),
+        "comments": _int_or_none(stats.get("comment_count")),
+        "shares": _int_or_none(stats.get("share_count")),
+        "saves": _int_or_none(stats.get("collect_count")),
+        "seconds": round(millis / 1000) if millis else None,
+        "sound": sound,
+        "captionUrl": _tiktok_caption_url(video),
+        "video": _https(_first_candidate_url(video.get("play_addr")))
+        or _https(_first_candidate_url(video.get("download_no_watermark_addr"))),
+    }
+
+
+def _tiktok_caption_url(video: dict[str, Any]) -> str:
+    """The video's own subtitles (`video.cla_info.caption_infos[].url`, a WEBVTT file on
+    TikTok's CDN, valid ~30 days): free with the list — measured 2026-10-15, present when
+    the video has a voice. Spanish first, else the first language listed."""
+    cla = video.get("cla_info")
+    infos = cla.get("caption_infos") if isinstance(cla, dict) else None
+    if not isinstance(infos, list):
+        return ""
+    urls = [
+        (str(i.get("lang") or "").lower(), str(i.get("url") or ""))
+        for i in infos
+        if isinstance(i, dict) and i.get("url")
+    ]
+    spanish = [url for lang, url in urls if lang.startswith(("spa", "es"))]
+    return (spanish or [url for _, url in urls] or [""])[0]
+
+
+# ---------------------------------------------------------------------------
+# What a reel SAYS (§ request 2026-10-15): its transcript, to show on the card and to
+# judge the rubro with. Instagram: `/v2/instagram/media/transcript` — the vendor's AI
+# speech-to-text, plain text without timings, 1 credit for a video up to 120 s (longer
+# ones are not transcribed unless paid at 10 credits/minute, which this never asks for),
+# 0 when the vendor's own cache answers (`cache_max_age`) or there is no speech.
+# TikTok: the video's native subtitles, fetched from its CDN — no credit at all.
+
+#: How old a vendor-cached transcript may be and still be taken for free (days).
+TRANSCRIPT_CACHE_DAYS = "30"
+#: The transcript route is synchronous and slow: the vendor asks for ≥30 s.
+TRANSCRIPT_TIMEOUT_SECONDS = 45.0
+_CAPTION_HOSTS = ("tiktokcdn.com", "tiktokcdn-eu.com", "tiktokcdn-us.com")
+_VTT_TIMING = re.compile(r"^\d{2}:\d{2}(:\d{2})?\.\d{3}\s+-->")
+_BOM = "﻿"
+
+
+def fetch_instagram_transcript(url: str, *, client: httpx.Client | None = None) -> str:
+    """What is said in an Instagram reel (its public URL), as plain text, or "" when it
+    has no speech. One credit, or none from the vendor's cache. Raises
+    `ScrapeCreatorsError` on failure."""
+    owns_client = client is None
+    active = client or httpx.Client(timeout=TRANSCRIPT_TIMEOUT_SECONDS)
+    try:
+        payload = _get(
+            active,
+            "/v2/instagram/media/transcript",
+            {"url": url, "cache_max_age": TRANSCRIPT_CACHE_DAYS},
+        )
+    finally:
+        if owns_client:
+            active.close()
+    parts = payload.get("transcripts")
+    texts = [
+        str(p.get("text") or "").strip()
+        for p in (parts if isinstance(parts, list) else [])
+        if isinstance(p, dict)
+    ]
+    return " ".join(t for t in texts if t)
+
+
+def vtt_text(vtt: str) -> str:
+    """The spoken words of a WEBVTT file, in order, without the header, cue identifiers
+    (numeric or not), timings or cue settings. Read block by block: in a cue block,
+    everything up to and including its timing line is not speech. A leading BOM (the
+    spec allows one; `str.strip` does not remove it) is dropped."""
+    lines: list[str] = []
+    for block in re.split(r"\n\s*\n", vtt.lstrip(_BOM).replace("\r\n", "\n")):
+        rows = [row.strip() for row in block.split("\n") if row.strip()]
+        if not rows or rows[0].startswith(("WEBVTT", "NOTE", "STYLE", "REGION")):
+            continue
+        timing = next((n for n, row in enumerate(rows) if _VTT_TIMING.match(row)), None)
+        if timing is None:
+            continue  # not a cue
+        for line in rows[timing + 1 :]:
+            if not lines or lines[-1] != line:
+                lines.append(line)
+    return " ".join(lines)
+
+
+def fetch_tiktok_captions(url: str, *, client: httpx.Client | None = None) -> str:
+    """A TikTok video's native subtitles as plain text, from `_tiktok_caption_url`. Free.
+    "" only for a URL off TikTok's CDN (a definitive answer). A network error, a non-200
+    (an expired signature included: the next read of the account brings a fresh URL) or
+    a body that is not WEBVTT raises `ScrapeCreatorsError`, so the caller does not
+    remember a transient failure as "this video has no speech"."""
+    host = (urlsplit(url).hostname or "").lower()
+    if not url.startswith("https://") or not any(
+        host == h or host.endswith("." + h) for h in _CAPTION_HOSTS
+    ):
+        return ""
+    owns_client = client is None
+    active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
+    try:
+        response = active.get(url, follow_redirects=True)
+    except httpx.HTTPError as exc:
+        raise ScrapeCreatorsError(f"tiktok captions unreadable: {type(exc).__name__}") from exc
+    finally:
+        if owns_client:
+            active.close()
+    if response.status_code != 200:
+        raise ScrapeCreatorsError(
+            f"tiktok captions answered HTTP {response.status_code}",
+            status_code=response.status_code,
+        )
+    text = response.text.lstrip(_BOM + " \t\r\n")
+    if not text.startswith("WEBVTT"):
+        raise ScrapeCreatorsError("tiktok captions are not WEBVTT")
+    return vtt_text(text)
+
+
+def _reel_page(network: str, payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+    """`(raw items, next cursor or None)` of one reel-list page."""
+    if network == "instagram":
+        items = payload.get("items")
+        paging = payload.get("paging_info")
+        paging = paging if isinstance(paging, dict) else {}
+        raw_next, more = paging.get("max_id"), paging.get("more_available")
+    else:
+        items = payload.get("aweme_list")
+        raw_next, more = payload.get("max_cursor"), payload.get("has_more")
+    rows = [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+    return rows, (str(raw_next) if more and raw_next else None)
+
+
+def _reel_stamp(network: str, item: dict[str, Any]) -> int | None:
+    if network == "instagram":
+        return _int_or_none(_instagram_media(item).get("taken_at"))
+    return _int_or_none(item.get("create_time"))
+
+
+def fetch_reels(
+    network: str,
+    handle: str,
+    *,
+    since: float,
+    client: httpx.Client | None = None,
+    max_pages: int = REEL_MAX_PAGES,
+) -> list[dict[str, Any]]:
+    """Every reel (video) `handle` published at or after `since` (unix seconds), newest
+    first, in the reel shape (`_instagram_reel` / `_tiktok_reel`). Walks the list newest
+    to oldest and stops at the first page whose LAST item is older than `since` (a pinned
+    post can still lead a page), an empty page, a missing or repeated cursor, or
+    `max_pages`. Each page is one credit; a video seen twice is kept once."""
+    handle = _normalize_handle(handle)
+    if not handle:
+        raise ValueError("handle must not be empty")
+    if network not in _REELS_ENDPOINT:
+        raise ValueError(f"unsupported network: {network!r}")
+    owns_client = client is None
+    active = client or httpx.Client(timeout=_TIMEOUT_SECONDS)
+    to_reel = _instagram_reel if network == "instagram" else _tiktok_reel
+    cursor_key = "max_id" if network == "instagram" else "max_cursor"
+    reels: dict[str, dict[str, Any]] = {}
+    cursor: str | None = None
+    try:
+        for _ in range(max_pages):
+            params = {"handle": handle}
+            if network == "tiktok":
+                params.update(sort_by="latest", include_pinned="false")
+            if cursor:
+                params[cursor_key] = cursor
+            payload = _get(active, _REELS_ENDPOINT[network], params)
+            items, next_cursor = _reel_page(network, payload)
+            if not items:
+                break
+            for item in items:
+                reel = to_reel(item, handle)
+                if reel is not None and reel["takenAt"] >= since:
+                    reels.setdefault(reel["id"], reel)
+            stamps = [s for s in (_reel_stamp(network, i) for i in items) if s]
+            if not stamps or stamps[-1] < since or not next_cursor or next_cursor == cursor:
+                break
+            cursor = next_cursor
+    finally:
+        if owns_client:
+            active.close()
+    return sorted(reels.values(), key=lambda r: r["takenAt"], reverse=True)
+
+
 #: How many of the account's own most-used hashtags the snapshot keeps.
 TOP_HASHTAGS = 12
 #: How many of its latest posts' texts the snapshot keeps, and how much of each
@@ -690,5 +1031,8 @@ __all__ = [
     "fetch_profile",
     "fetch_profile_and_posts",
     "fetch_recent_posts",
+    "fetch_instagram_transcript",
+    "fetch_reels",
+    "fetch_tiktok_captions",
     "profile_metrics",
 ]

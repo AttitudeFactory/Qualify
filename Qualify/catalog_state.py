@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -35,10 +36,9 @@ from .catalog_provider import (
     list_products,
     remove_media,
     set_primary,
-    tenant_currency,
     update_product,
 )
-from .catalog_vm import DEFAULT_CURRENCY, ProductVM, currency_choices, parse_price
+from .catalog_vm import ProductVM
 from .creative_provider import acting_user_id, default_brand_id
 from .tenant import tenant_uuid
 
@@ -56,6 +56,9 @@ _SAVED = "Cambios guardados."
 #: Where a dropped file waits between the foreground upload handler and the background
 #: ingest: under the upload dir, per tenant, never served to anyone (nothing links it).
 _STAGING = "catalog_staging"
+#: A parked file older than this was orphaned (a closed tab, a crashed ingest): the next
+#: `load_catalog` deletes it.
+_STAGING_TTL_S = 6 * 60 * 60
 
 
 class CatalogState(rx.State):
@@ -66,24 +69,24 @@ class CatalogState(rx.State):
     loading: bool = False
     error: str = ""
     notice: str = ""
-    currencies: list[str] = list(currency_choices(DEFAULT_CURRENCY))
     _brand_id: str = ""
 
     # -- the "Nuevo producto" form ------------------------------------------------------
     form_open: bool = False
     new_name: str = ""
-    new_price: str = ""
-    new_currency: str = DEFAULT_CURRENCY
     new_description: str = ""
     new_category: str = ""
     form_error: str = ""
     saving: bool = False
+    #: Photos and videos dropped in the form before the product exists (§ request
+    #: 2026-10-19: «no me deja poner la imagen de una vez»): their names, shown as chips;
+    #: parked in staging and ingested as soon as the product is created.
+    new_files: list[str] = []
+    _new_pending: list[list[str]] = []
 
     # -- the selected product's editor -------------------------------------------------
     selected_id: str = ""
     edit_name: str = ""
-    edit_price: str = ""
-    edit_currency: str = DEFAULT_CURRENCY
     edit_description: str = ""
     edit_category: str = ""
     edit_error: str = ""
@@ -95,7 +98,9 @@ class CatalogState(rx.State):
     upload_total: int = 0
     upload_current: str = ""
     upload_error: str = ""
-    #: (staging path, original filename) of files parked by `handle_media_upload`.
+    #: (staging path, original filename, product id) of the files waiting for the
+    #: ingest — each carries its own product, so a file never lands on whichever product
+    #: is selected when its turn comes.
     _pending: list[list[str]] = []
     media_busy: bool = False
 
@@ -167,9 +172,9 @@ class CatalogState(rx.State):
                 self.loading = False
             return
         tenant_id, brand_id, _ = ids
+        await asyncio.to_thread(_sweep_staging, tenant_id)
         try:
             products = await asyncio.to_thread(list_products, tenant_id, brand_id)
-            currency = await asyncio.to_thread(tenant_currency, tenant_id)
         except SQLAlchemyError as exc:
             logger.error("catalog load failed: %s", type(exc).__name__)
             async with self:
@@ -178,9 +183,6 @@ class CatalogState(rx.State):
             return
         async with self:
             self.products = list(products)
-            self.currencies = currency_choices(currency)
-            if self.new_currency not in self.currencies:
-                self.new_currency = self.currencies[0]
             self.loading = False
             if self.selected_id and self.selected is None:
                 self.selected_id = ""
@@ -212,20 +214,42 @@ class CatalogState(rx.State):
     def close_form(self) -> None:
         self.form_open = False
         self.form_error = ""
+        self._drop_new_files()
+
+    def _drop_new_files(self) -> None:
+        for path_str, _ in self._new_pending:
+            try:
+                Path(path_str).unlink(missing_ok=True)
+            except OSError:
+                pass
+        self._new_pending = []
+        self.new_files = []
+
+    @rx.event
+    async def handle_new_media(self, files: list[rx.UploadFile]) -> None:
+        """The form's own drop zone: the files wait (FOREGROUND, parked like the
+        editor's) until «Crear producto», then go through the same ingest."""
+        parked = await self._park(files)
+        if parked:
+            self._new_pending = [*self._new_pending, *parked]
+            self.new_files = [name for _, name in self._new_pending]
+
+    @rx.event
+    def remove_new_file(self, index: int) -> None:
+        index = int(index)
+        if not 0 <= index < len(self._new_pending):
+            return
+        path_str, _ = self._new_pending[index]
+        try:
+            Path(path_str).unlink(missing_ok=True)
+        except OSError:
+            pass
+        self._new_pending = [p for i, p in enumerate(self._new_pending) if i != index]
+        self.new_files = [name for _, name in self._new_pending]
 
     @rx.event
     def set_new_name(self, value: str) -> None:
         self.new_name = value
-
-    @rx.event
-    def set_new_price(self, value: str) -> None:
-        self.new_price = value
-
-    @rx.event
-    def set_new_currency(self, value: str | list[str]) -> None:
-        value = value if isinstance(value, str) else (value[0] if value else "")
-        if value:
-            self.new_currency = value
 
     @rx.event
     def set_new_description(self, value: str) -> None:
@@ -236,34 +260,25 @@ class CatalogState(rx.State):
         self.new_category = value
 
     @rx.event(background=True)
-    async def submit_new_product(self) -> None:
+    async def submit_new_product(self) -> AsyncIterator[rx.event.EventSpec]:
+        """Create the product; the files dropped in the form follow it straight away
+        (`ingest_pending`, with its progress in the editor that opens)."""
         async with self:
             if self.saving:
                 return
             if not self.new_name.strip():
                 self.form_error = _NAME_REQUIRED
                 return
-            try:
-                price = parse_price(self.new_price)
-            except ValueError as exc:
-                self.form_error = str(exc)
-                return
             self.saving = True
             self.form_error = ""
-            form = (
-                self.new_name,
-                price,
-                self.new_currency,
-                self.new_description,
-                self.new_category,
-            )
+            form = (self.new_name, self.new_description, self.new_category)
         ids = await self._session_ids()
         if ids is None:
             async with self:
                 self.saving = False
             return
         tenant_id, brand_id, user_id = ids
-        name, price, currency, description, category = form
+        name, description, category = form
         try:
             product_id = await asyncio.to_thread(
                 lambda: create_product(
@@ -271,8 +286,6 @@ class CatalogState(rx.State):
                     brand_id,
                     user_id,
                     name=name,
-                    price_amount=price,
-                    currency=currency,
                     description=description,
                     category=category,
                 )
@@ -293,22 +306,30 @@ class CatalogState(rx.State):
             self.saving = False
             self.form_open = False
             self.new_name = ""
-            self.new_price = ""
             self.new_description = ""
             self.new_category = ""
             self.notice = _CREATED
             self.selected_id = str(product_id)
             if self.selected is not None:
                 self._fill_editor(self.selected)
+            files = self._new_pending
+            self._new_pending = []
+            self.new_files = []
+            if files:
+                self._pending = [
+                    *self._pending,
+                    *([path, name, str(product_id)] for path, name in files),
+                ]
+                self.upload_done = 0
+                self.upload_total = len(self._pending)
+                self.upload_error = ""
+        if files:
+            yield CatalogState.ingest_pending
 
     # -- the editor -----------------------------------------------------------------------
 
     def _fill_editor(self, product: ProductVM) -> None:
         self.edit_name = product.name
-        self.edit_price = product.price_text
-        self.edit_currency = product.currency or (
-            self.currencies[0] if self.currencies else DEFAULT_CURRENCY
-        )
         self.edit_description = product.description
         self.edit_category = product.category
 
@@ -337,16 +358,6 @@ class CatalogState(rx.State):
         self.edit_name = value
 
     @rx.event
-    def set_edit_price(self, value: str) -> None:
-        self.edit_price = value
-
-    @rx.event
-    def set_edit_currency(self, value: str | list[str]) -> None:
-        value = value if isinstance(value, str) else (value[0] if value else "")
-        if value:
-            self.edit_currency = value
-
-    @rx.event
     def set_edit_description(self, value: str) -> None:
         self.edit_description = value
 
@@ -362,36 +373,23 @@ class CatalogState(rx.State):
             if not self.edit_name.strip():
                 self.edit_error = _NAME_REQUIRED
                 return
-            try:
-                price = parse_price(self.edit_price)
-            except ValueError as exc:
-                self.edit_error = str(exc)
-                return
             self.edit_saving = True
             self.edit_error = ""
             product_id = UUID(self.selected_id)
-            form = (
-                self.edit_name,
-                price,
-                self.edit_currency,
-                self.edit_description,
-                self.edit_category,
-            )
+            form = (self.edit_name, self.edit_description, self.edit_category)
         ids = await self._session_ids()
         if ids is None:
             async with self:
                 self.edit_saving = False
             return
         tenant_id, brand_id, _ = ids
-        name, price, currency, description, category = form
+        name, description, category = form
         try:
             await asyncio.to_thread(
                 lambda: update_product(
                     tenant_id,
                     product_id,
                     name=name,
-                    price_amount=price,
-                    currency=currency,
                     description=description,
                     category=category,
                 )
@@ -425,12 +423,29 @@ class CatalogState(rx.State):
         background ingest that normalizes and stores them one at a time."""
         if not files or not self.selected_id:
             return None
+        parked = await self._park(files)
+        if not parked:
+            return None
+        self._pending = [
+            *self._pending,
+            *([path, name, self.selected_id] for path, name in parked),
+        ]
+        self.upload_total = len(self._pending) + self.upload_done
+        if self.uploading:
+            return None  # the running ingest picks the new files up
+        self.upload_done = 0
+        self.upload_total = len(self._pending)
+        self.upload_error = ""
+        return CatalogState.ingest_pending
+
+    async def _park(self, files: list[rx.UploadFile]) -> list[list[str]]:
+        """Write the dropped files to the tenant's staging folder: [path, name] each."""
         auth = await self.get_state(AuthState)
         tenant_id = tenant_uuid(auth.session_tenant_id)
         if tenant_id is None:
             self.upload_error = _NO_SESSION
-            return None
-        staging = rx.get_upload_dir() / "uploads" / str(tenant_id) / _STAGING
+            return []
+        staging = _staging_dir(tenant_id)
         staging.mkdir(parents=True, exist_ok=True)
         parked: list[list[str]] = []
         for upload in files:
@@ -443,26 +458,16 @@ class CatalogState(rx.State):
             path = staging / f"{uuid4().hex}_{Path(name).name}"
             path.write_bytes(data)
             parked.append([str(path), name])
-        if not parked:
-            return None
-        self._pending = [*self._pending, *parked]
-        self.upload_total = len(self._pending) + self.upload_done
-        if self.uploading:
-            return None  # the running ingest picks the new files up
-        self.upload_done = 0
-        self.upload_total = len(self._pending)
-        self.upload_error = ""
-        return CatalogState.ingest_pending
+        return parked
 
     @rx.event(background=True)
     async def ingest_pending(self) -> AsyncIterator[None]:
         """Normalize + store every parked file through the service, reporting progress
         per file; errors are collected (a bad clip does not stop the photos)."""
         async with self:
-            if self.uploading or not self._pending or not self.selected_id:
+            if self.uploading or not self._pending:
                 return
             self.uploading = True
-            product_id = UUID(self.selected_id)
         ids = await self._session_ids()
         if ids is None:
             async with self:
@@ -475,19 +480,20 @@ class CatalogState(rx.State):
             async with self:
                 if not self._pending:
                     break
-                path_str, name = self._pending[0]
+                path_str, name, product_str = self._pending[0]
                 self._pending = self._pending[1:]
                 self.upload_current = name
             yield
             path = Path(path_str)
             try:
+                product_id = UUID(product_str)
                 data = await asyncio.to_thread(path.read_bytes)
                 await asyncio.to_thread(
                     lambda: add_media(tenant_id, product_id, data=data, filename=name)
                 )
             except CatalogError as exc:
                 failures.append(f"{name}: {exc.args[0] if exc.args else 'no se pudo procesar'}")
-            except KeyError:
+            except (KeyError, ValueError):
                 failures.append(f"{name}: {_PRODUCT_GONE}")
             except SQLAlchemyError as exc:
                 logger.error("media add failed: %s", type(exc).__name__)
@@ -543,3 +549,23 @@ class CatalogState(rx.State):
         await self._refresh(tenant_id, brand_id)
         async with self:
             self.media_busy = False
+
+
+def _staging_dir(tenant_id: UUID) -> Path:
+    return rx.get_upload_dir() / "uploads" / str(tenant_id) / _STAGING
+
+
+def _sweep_staging(tenant_id: UUID, *, now: float | None = None) -> None:
+    """Delete the tenant's parked files older than `_STAGING_TTL_S`: the ingest unlinks
+    what it consumes, but a closed tab or a crash leaves the rest behind for good."""
+    cutoff = (time.time() if now is None else now) - _STAGING_TTL_S
+    try:
+        entries = list(_staging_dir(tenant_id).iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if entry.is_file() and entry.stat().st_mtime < cutoff:
+                entry.unlink(missing_ok=True)
+        except OSError:
+            pass

@@ -72,6 +72,10 @@ POST_RETRY_STATUSES = frozenset({429, 503})
 POST_RETRY_BACKOFF_SECONDS = 2.0
 #: Seedream 5.0 lite / 4.x take up to 14 reference images.
 MAX_REFERENCE_IMAGES = 14
+#: Seedance 2.x references (create-video-generation-task-api, read 2026-10-14).
+MAX_CLIP_REFERENCE_IMAGES = 9
+MAX_REFERENCE_VIDEOS = 3
+MAX_REFERENCE_AUDIOS = 3
 #: Recommended prompt length for Seedream (300 Chinese chars / 600 English words) and
 #: Seedance (1,000 English words); a hard cap well under both.
 MAX_PROMPT_CHARS = 3000
@@ -94,26 +98,31 @@ class SeedanceFamily:
     camera_fixed: bool
     #: Output pixel table for token estimation: "v1" (1.0 series) or "v2" (2.x).
     dims: str
+    #: Takes a closing frame (`role: last_frame`) besides the opening one.
+    last_frame: bool = False
+    #: Takes references — images, videos, audio (`role: reference_*`); 2.x only (docs
+    #: read 2026-10-14: no 1.x model does).
+    references: bool = False
 
 
 SEEDANCE_FAMILIES: dict[str, SeedanceFamily] = {
     "seedance-1-0-pro": SeedanceFamily(
-        2, 12, frozenset({"480p", "720p", "1080p"}), False, True, "v1"
+        2, 12, frozenset({"480p", "720p", "1080p"}), False, True, "v1", last_frame=True
     ),
     "seedance-1-0-pro-fast": SeedanceFamily(
         2, 12, frozenset({"480p", "720p", "1080p"}), False, True, "v1"
     ),
     "dreamina-seedance-2-0": SeedanceFamily(
-        4, 15, frozenset({"480p", "720p", "1080p"}), True, False, "v2"
+        4, 15, frozenset({"480p", "720p", "1080p"}), True, False, "v2", True, True
     ),
     "dreamina-seedance-2-0-fast": SeedanceFamily(
-        4, 15, frozenset({"480p", "720p"}), True, False, "v2"
+        4, 15, frozenset({"480p", "720p"}), True, False, "v2", True, True
     ),
     "dreamina-seedance-2-0-mini": SeedanceFamily(
-        4, 15, frozenset({"480p", "720p"}), True, False, "v2"
+        4, 15, frozenset({"480p", "720p"}), True, False, "v2", True, True
     ),
     "dreamina-seedance-2-5": SeedanceFamily(
-        4, 30, frozenset({"480p", "720p", "1080p"}), True, False, "v2"
+        4, 30, frozenset({"480p", "720p", "1080p"}), True, False, "v2", True, True
     ),
 }
 
@@ -300,6 +309,22 @@ def _prompt(params: Mapping[str, object]) -> str:
     return _capped(prompt.strip())
 
 
+def _urls(value: object, name: str, *, data_ok: bool) -> tuple[str, ...]:
+    """A list of reference URLs, validated: ``data:`` only where ModelArk takes Base64
+    (images), ``https`` otherwise."""
+    if value is None:
+        return ()
+    if not isinstance(value, list | tuple) or not all(isinstance(v, str) and v for v in value):
+        raise ValueError(f"'{name}' must be a list of URLs")
+    for url in value:
+        if url.startswith("data:"):
+            if not data_ok:
+                raise ValueError(f"'{name}' must be public https URLs, not data URLs")
+        elif not url.startswith("https://"):
+            raise ValueError(f"'{name}' must be https URLs")
+    return tuple(value)
+
+
 def _capped(prompt: str) -> str:
     """The vendor's hard cap, checked on what is actually sent — after the dialogue line
     a video prompt gains (PR #100 review), not only on the operator's part."""
@@ -321,6 +346,12 @@ class _VideoSpec:
     family: SeedanceFamily
     prompt: str
     first_frame: str | None
+    last_frame: str | None
+    #: `role: reference_image` / `reference_video` / `reference_audio`, in order — the
+    #: prompt names them «Imagen 1», «Video 1», «Audio 1».
+    reference_images: tuple[str, ...]
+    reference_videos: tuple[str, ...]
+    reference_audios: tuple[str, ...]
     ratio: str
     resolution: str
     seconds: int
@@ -341,6 +372,29 @@ class _VideoSpec:
         first_frame = params.get("first_frame")
         if first_frame is not None and (not isinstance(first_frame, str) or not first_frame):
             raise ValueError("'first_frame' must be an image URL or a data URL")
+        last_frame = params.get("last_frame")
+        if last_frame is not None and (not isinstance(last_frame, str) or not last_frame):
+            raise ValueError("'last_frame' must be an image URL or a data URL")
+        if last_frame and not first_frame:
+            raise ValueError("a 'last_frame' needs a 'first_frame'")
+        if last_frame and not family.last_frame:
+            raise ValueError(f"{model_id} takes no closing frame")
+        images = _urls(params.get("reference_images"), "reference_images", data_ok=True)
+        videos = _urls(params.get("reference_videos"), "reference_videos", data_ok=False)
+        audios = _urls(params.get("reference_audios"), "reference_audios", data_ok=False)
+        if images or videos or audios:
+            if not family.references:
+                raise ValueError(f"{model_id} takes no references: use a Seedance 2.x model")
+            if first_frame or last_frame:
+                # ModelArk: a reference task cannot carry the frame roles
+                raise ValueError("references and first/last frame roles cannot be mixed")
+            if len(images) > MAX_CLIP_REFERENCE_IMAGES:
+                raise ValueError(f"at most {MAX_CLIP_REFERENCE_IMAGES} reference images")
+            if len(videos) > MAX_REFERENCE_VIDEOS or len(audios) > MAX_REFERENCE_AUDIOS:
+                raise ValueError(
+                    f"at most {MAX_REFERENCE_VIDEOS} reference videos and "
+                    f"{MAX_REFERENCE_AUDIOS} audio files"
+                )
         ratio = str(params.get("ratio") or "9:16")
         if ratio not in RATIOS:
             raise ValueError(f"ratio must be one of {sorted(RATIOS)}, got {ratio!r}")
@@ -359,6 +413,10 @@ class _VideoSpec:
             family=family,
             prompt=prompt,
             first_frame=first_frame,
+            last_frame=last_frame,
+            reference_images=images,
+            reference_videos=videos,
+            reference_audios=audios,
             ratio=ratio,
             resolution=resolution,
             seconds=seconds,
@@ -374,6 +432,22 @@ class _VideoSpec:
         if self.first_frame:
             content.append(
                 {"type": "image_url", "image_url": {"url": self.first_frame}, "role": "first_frame"}
+            )
+        if self.last_frame:
+            content.append(
+                {"type": "image_url", "image_url": {"url": self.last_frame}, "role": "last_frame"}
+            )
+        for url in self.reference_images:
+            content.append(
+                {"type": "image_url", "image_url": {"url": url}, "role": "reference_image"}
+            )
+        for url in self.reference_videos:
+            content.append(
+                {"type": "video_url", "video_url": {"url": url}, "role": "reference_video"}
+            )
+        for url in self.reference_audios:
+            content.append(
+                {"type": "audio_url", "audio_url": {"url": url}, "role": "reference_audio"}
             )
         body: dict[str, object] = {
             "model": self.model_id,
@@ -398,6 +472,10 @@ class SeedanceVideoAdapter(_ArkClient):
 
     - ``prompt`` (required) — the scene and its action; ``first_frame`` — an image URL or
       a ``data:`` URL the video starts on (image-to-video), omitted = text-to-video;
+      ``last_frame`` — the frame it ends on (needs ``first_frame``; 1.0 pro and 2.x);
+    - ``reference_images`` / ``reference_videos`` / ``reference_audios`` — what a 2.x
+      model follows (never mixed with the frames). Images may be ``data:`` URLs; videos
+      and audio must be public ``https`` URLs — ModelArk takes no Base64 for them;
     - ``model`` (default: the adapter's), ``ratio`` (``9:16``…), ``resolution``
       (``480p``/``720p``/``1080p`` as the family allows), ``duration_seconds`` (clamped
       to the family's range);

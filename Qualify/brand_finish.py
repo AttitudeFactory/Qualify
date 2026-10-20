@@ -618,4 +618,10 @@ async def save_brand_kit(state: Any, flow: str | None = None) -> bool:
             # (`AuthState.require_login`, § request 2026-10-02)
             auth = await state.get_state(AuthState)
             auth.brand_kit_complete = True
+    if flow is not None and ids is not None:
+        # § request 2026-10-19: a finished kit gets its «avatar animado», drawn in the
+        # background — never awaited here; a no-op while QUALIFY_BRAND_AVATAR is off
+        from .brand_avatar_panel import start_brand_avatar
+
+        start_brand_avatar(ids[0], ids[1])
     return True

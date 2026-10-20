@@ -1,10 +1,15 @@
 // One <Composition>/<Still> per output port; id = `<template_id>_v<version>__<port>`,
 // exactly the `composition` field of templates/<id>/manifest.json (CONTRACT §3).
 // Dimensions and duration bounds are read from the manifests so there is one source.
+// A published version is never edited (CONTRACT §1): v1 stays registered from its kept
+// manifest (`manifest.v1.json`) so a render pinned to it keeps working; v2 (2026-10-13)
+// adds the 4:5 and 1:1 video and the 1:1 still, so the «Video publicitario» and «Con
+// plantilla» pieces exist in every Instagram format that suits them.
 import React from 'react';
 import {Composition, Still, staticFile, type CalculateMetadataFunction} from 'remotion';
 import helloManifest from '../templates/hello_world/manifest.json';
 import promoManifest from '../templates/promo_producto/manifest.json';
+import promoManifestV1 from '../templates/promo_producto/manifest.v1.json';
 import {normalizeProps, type PropsInput} from './props';
 import {HelloWorld} from './templates/hello_world/HelloWorld';
 import {PromoReel} from './templates/promo_producto/PromoReel';
@@ -51,6 +56,40 @@ const promoReelMetadata: CalculateMetadataFunction<PropsInput & {bounds: typeof 
   };
 };
 
+type PromoManifest = typeof promoManifest | typeof promoManifestV1;
+type PortSpec = {kind: string; width: number; height: number; composition: string};
+
+/** One <Composition>/<Still> per output port of a promo manifest version. */
+const promoCompositions = (manifest: PromoManifest): React.ReactNode[] =>
+  Object.entries(manifest.outputs as Record<string, PortSpec>).map(([port, spec]) => {
+    const meta = {...promoDefaults.meta!, version: manifest.version, port};
+    if (spec.kind === 'video') {
+      return (
+        <Composition
+          key={spec.composition}
+          id={spec.composition}
+          component={PromoReel}
+          width={spec.width}
+          height={spec.height}
+          fps={FPS}
+          durationInFrames={Math.round(promoBounds.minSec * FPS)}
+          defaultProps={{...promoDefaults, meta, bounds: promoBounds}}
+          calculateMetadata={promoReelMetadata}
+        />
+      );
+    }
+    return (
+      <Still
+        key={spec.composition}
+        id={spec.composition}
+        component={PromoStill}
+        width={spec.width}
+        height={spec.height}
+        defaultProps={{...promoDefaults, meta}}
+      />
+    );
+  });
+
 export const RemotionRoot: React.FC = () => {
   return (
     <>
@@ -63,30 +102,8 @@ export const RemotionRoot: React.FC = () => {
         durationInFrames={Math.round(helloManifest.duration.min_sec * FPS)}
         defaultProps={helloDefaults}
       />
-      <Composition
-        id={promoManifest.outputs.reel.composition}
-        component={PromoReel}
-        width={promoManifest.outputs.reel.width}
-        height={promoManifest.outputs.reel.height}
-        fps={FPS}
-        durationInFrames={Math.round(promoBounds.minSec * FPS)}
-        defaultProps={{...promoDefaults, bounds: promoBounds}}
-        calculateMetadata={promoReelMetadata}
-      />
-      <Still
-        id={promoManifest.outputs.feed.composition}
-        component={PromoStill}
-        width={promoManifest.outputs.feed.width}
-        height={promoManifest.outputs.feed.height}
-        defaultProps={{...promoDefaults, meta: {...promoDefaults.meta!, port: 'feed'}}}
-      />
-      <Still
-        id={promoManifest.outputs.story.composition}
-        component={PromoStill}
-        width={promoManifest.outputs.story.width}
-        height={promoManifest.outputs.story.height}
-        defaultProps={{...promoDefaults, meta: {...promoDefaults.meta!, port: 'story'}}}
-      />
+      {promoCompositions(promoManifestV1)}
+      {promoCompositions(promoManifest)}
     </>
   );
 };

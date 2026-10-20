@@ -61,4 +61,6 @@ def test_a_seedance_pair_the_family_cannot_render_fails_at_wiring(
 
 def test_the_published_manifests_load_from_the_repo(fresh_service) -> None:
     registry = fresh_service._media._templates
-    assert registry.get("promo_producto").render_count == 3
+    # v2 (2026-10-13): the 9:16 / 4:5 / 1:1 video and the three stills
+    assert registry.get("promo_producto").render_count == 6
+    assert registry.get("promo_producto", 1).render_count == 3

@@ -1,5 +1,7 @@
 # UX — Dónde vive el motor de plantillas dentro del flujo del POST
 
+> **`[OBSOLETO]` HeyGen — decisión del fundador, 2026-10-16.** Los videos con avatar migran a la suite de ByteDance (BytePlus): **OmniHuman** (el avatar que habla), **Seedance** (el video), **Seedream** (la imagen y el primer fotograma) y **Seed Speech** (la voz clonada). Toda mención a HeyGen en este documento describe el estado anterior o una alternativa ya descartada: no la tomes como decisión vigente. **La migración aún no está hecha en el código** (medido el 2026-10-16): el detalle y lo que falta está en [Pendientes del generador §6](pendientes-generador-contenido.md).
+
 **Fecha:** 2026-10-05 · **Estado:** `[PROPUESTA UX — sin implementar; pide una decisión del fundador y un contrato con el arquitecto]`
 **Autor:** reflex-ui-engineer · **Alcance:** solo UI/UX del `Qualify/` (Reflex). No toca `packages/`.
 **Contexto que asume:** [plan-mvp-plantillas-remotion.md](plan-mvp-plantillas-remotion.md) (§1, §2.1, §3, §4), [backlog-motor-plantillas-remotion.md](backlog-motor-plantillas-remotion.md) §4.1, [diseno-motor-contenido-marca.md](diseno-motor-contenido-marca.md) §6, [design-system.md](design-system.md) §4.2, §7.2 y §9.1, y el código del worktree al cierre del día 1 (`Qualify/content_generator.py`, `creative_state.py`, `catalog_page.py`, `planner_page.py`, `publishing_page.py`, `ui/layout.py`).

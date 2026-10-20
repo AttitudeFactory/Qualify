@@ -20,11 +20,15 @@ failure mode:
 
 from __future__ import annotations
 
+import math
 import threading
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
+from qualify_creative.adapters.byteplus_omnihuman import (
+    DEFAULT_POLL_TIMEOUT_SECONDS as OMNIHUMAN_POLL_TIMEOUT_SECONDS,
+)
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
@@ -34,11 +38,16 @@ from qualify_api.creative.fsm import (
     DraftTrigger,
     apply_transition,
 )
-from qualify_api.creative.models import ContentDraft
+from qualify_api.creative.models import ContentBrief, ContentDraft
 
 #: §7.4 minimal implementation: a generation round trip is 15-60s, so ten minutes in
 #: ``DRAFTING`` means the worker is dead, not slow.
 DEFAULT_REAP_AFTER_MINUTES = 20
+#: A talking presenter is the one slow round trip (§ 2026-10-16): OmniHuman renders at
+#: ~25x real time, so a one-minute script takes ~25 min and the adapter waits up to its
+#: poll window. Its draft is reaped only after that window plus the presenter frame and
+#: the voice (a margin of 10 min) — before, the reaper failed a render still being paid.
+OMNIHUMAN_REAP_AFTER_MINUTES = math.ceil(OMNIHUMAN_POLL_TIMEOUT_SECONDS / 60) + 10
 
 
 class GenerationRunner(Protocol):
@@ -86,14 +95,29 @@ def reap_stale_drafts(
     a draft the reaper already failed makes the runner's idempotency check a no-op, and
     a draft the runner already finished is no longer ``DRAFTING`` so the reaper skips it.
     """
-    cutoff = datetime.now(UTC) - timedelta(minutes=older_than_minutes)
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(minutes=older_than_minutes)
+    presenter_cutoff = now - timedelta(
+        minutes=max(older_than_minutes, OMNIHUMAN_REAP_AFTER_MINUTES)
+    )
     with tenant_session(tenant_id) as session:
-        stale = session.scalars(
-            select(ContentDraft).where(
+        rows = session.execute(
+            select(ContentDraft, ContentBrief.media)
+            .join(ContentBrief, ContentBrief.id == ContentDraft.brief_id)
+            .where(
                 ContentDraft.status == DRAFTING,
                 ContentDraft.created_at < cutoff,
             )
         ).all()
+        stale = [
+            draft
+            for draft, media in rows
+            if not (
+                isinstance(media, dict)
+                and media.get("video_engine") == "omnihuman"
+                and draft.created_at >= presenter_cutoff
+            )
+        ]
         for draft in stale:
             draft.status = apply_transition(draft.status, DraftTrigger.REAP)
             draft.failure_reason = REAP_FAILURE_REASON

@@ -7,7 +7,8 @@ query later. Pure: no I/O, no clock. The template registry is the only input bes
 the Post's facts, which keeps the rules unit-testable one by one.
 
 Rules (in order; the first that applies suggests):
- 1. the script wants a person on camera and the tenant has an avatar → HeyGen
+ 1. the script wants a person on camera and the tenant has an avatar → OmniHuman (the
+    talking presenter since 2026-10-16; HeyGen retired)
  2. ≥2 product photos, no video → Remotion, promo_producto
  3. ≥1 real video → Remotion, corte_video (when published)
  4. the angle is a menu / several products → Remotion, menu (when published)
@@ -39,13 +40,14 @@ MENU_TEMPLATE = "menu_productos"
 #: come from the vendor sheets of 2026-10 (backlog §3) and exist so the user sees that a
 #: template costs cents and a synthetic scene costs dollars. Real estimates come from the
 #: engines' own adapters when the option is chosen.
-HEYGEN_QUOTE_USD = (Decimal("0.50"), Decimal("2.00"))
+#: OmniHuman 1.5: USD 0.12 per second of voice — a 15-30 s presenter, plus cents of voice.
+OMNIHUMAN_QUOTE_USD = (Decimal("1.80"), Decimal("3.70"))
 UGC_QUOTE_USD = (Decimal("1.50"), Decimal("3.50"))
 
 
 class Engine(StrEnum):
     REMOTION = "remotion"
-    HEYGEN = "heygen"
+    OMNIHUMAN = "omnihuman"
     UGC = "ugc"
 
 
@@ -57,7 +59,7 @@ class PostFacts:
     product_count: int = 1
     #: The script/brief asks for a person talking to camera.
     wants_presenter: bool = False
-    #: The tenant configured an avatar/voice for HeyGen.
+    #: The tenant can render a talking presenter (OmniHuman + a voice).
     has_avatar: bool = False
     #: Nothing in the catalog matches the scene the script describes.
     needs_missing_scene: bool = False
@@ -96,11 +98,11 @@ def suggest_recipes(
     *,
     remotion_cost_per_render_usd: Decimal = Decimal("0"),
 ) -> list[RecipeOption]:
-    """Always three engines, in a fixed order (Remotion, HeyGen, UGC), exactly one
+    """Always three engines, in a fixed order (Remotion, OmniHuman, UGC), exactly one
     `suggested=True` — unless nothing is renderable, in which case none is."""
     remotion = _remotion_option(facts, registry, remotion_cost_per_render_usd)
-    heygen = RecipeOption(
-        engine=Engine.HEYGEN,
+    presenter = RecipeOption(
+        engine=Engine.OMNIHUMAN,
         label="Avatar hablando a cámara",
         template_id="tpl_testimonio_avatar",
         template_version=None,
@@ -109,8 +111,8 @@ def suggest_recipes(
         available=facts.has_avatar,
         reason="" if facts.has_avatar else "el negocio no tiene avatar configurado",
         eta_sec=None,
-        cost_usd_min=HEYGEN_QUOTE_USD[0],
-        cost_usd_max=HEYGEN_QUOTE_USD[1],
+        cost_usd_min=OMNIHUMAN_QUOTE_USD[0],
+        cost_usd_max=OMNIHUMAN_QUOTE_USD[1],
         outputs=("reel",),
     )
     ugc = RecipeOption(
@@ -129,7 +131,7 @@ def suggest_recipes(
     )
 
     order = _decide(facts, remotion)
-    options = {Engine.REMOTION: remotion, Engine.HEYGEN: heygen, Engine.UGC: ugc}
+    options = {Engine.REMOTION: remotion, Engine.OMNIHUMAN: presenter, Engine.UGC: ugc}
     for rule, engine in order:
         candidate = options[engine]
         if not candidate.available:
@@ -138,7 +140,7 @@ def suggest_recipes(
             continue
         options[engine] = _mark(candidate, rule)
         break
-    return [options[Engine.REMOTION], options[Engine.HEYGEN], options[Engine.UGC]]
+    return [options[Engine.REMOTION], options[Engine.OMNIHUMAN], options[Engine.UGC]]
 
 
 def _decide(facts: PostFacts, remotion: RecipeOption) -> list[tuple[int, Engine]]:
@@ -146,7 +148,7 @@ def _decide(facts: PostFacts, remotion: RecipeOption) -> list[tuple[int, Engine]
     fits the cap wins; the others stay as visible alternatives."""
     order: list[tuple[int, Engine]] = []
     if facts.wants_presenter or facts.angle in PRESENTER_ANGLES:
-        order.append((1, Engine.HEYGEN))
+        order.append((1, Engine.OMNIHUMAN))
     if facts.photo_count >= 2 and facts.video_count == 0:
         order.append((2, Engine.REMOTION))
     if facts.video_count >= 1:

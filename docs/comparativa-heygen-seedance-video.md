@@ -1,5 +1,7 @@
 # Comparativa de video generativo: HeyGen vs Seedance (y alternativas) para el generador `/create`
 
+> **`[OBSOLETO]` HeyGen — decisión del fundador, 2026-10-16.** Los videos con avatar migran a la suite de ByteDance (BytePlus): **OmniHuman** (el avatar que habla), **Seedance** (el video), **Seedream** (la imagen y el primer fotograma) y **Seed Speech** (la voz clonada). Toda mención a HeyGen en este documento describe el estado anterior o una alternativa ya descartada: no la tomes como decisión vigente. **La migración aún no está hecha en el código** (medido el 2026-10-16): el detalle y lo que falta está en [Pendientes del generador §6](pendientes-generador-contenido.md).
+
 *Investigación del 2026-10-06 (gtm-specialist). Actualiza §2.2, §2.3, §5 y §6 de `docs/comparativa-apis-creativo-motor-angulos.md` (agosto/septiembre 2026) para el caso de video; no los repite. Caso de referencia: "Nibbles' Burgers" (smash burgers, Táchira, español venezolano), 9:16, 15–60 s, Reels/Stories. Fase del roadmap: motor de contenido/ángulos (Fase 5, adelantado por el carril de dogfooding de ADR 21/ADR 32). Motivo de compra que sirve: **activación** (crear piezas), no escucha.*
 
 > **Convención:** (DATO) = verificado en la fuente enlazada, leída el 2026-10-06 salvo otra fecha; (INFERENCIA) = deducción o estimación nuestra. Precios en USD, coste de proveedor (sin markup). Las URLs completas están en §6; en el texto se citan inline cuando el dato es decisivo.

@@ -787,6 +787,7 @@ class AuthState(rx.State):
             from .conversations_state import ConversationsState
             from .creative_state import CreativeState
             from .creative_wizard_pages import BrandConnectState, BrandWizardState
+            from .discover_reels import DiscoverReelsState
             from .gallery_state import GalleryState
             from .inbox_state import InboxState
             from .leads_state import LeadsState
@@ -816,6 +817,8 @@ class AuthState(rx.State):
                 PublishHubState,
                 DashboardState,
                 CreativeState,
+                # «Descubrir reels» (2026-10-15): the brand's referentes' reels
+                DiscoverReelsState,
                 # The Brand Kit wizard's OWN draft fields (request 2026-09-08) — step,
                 # chosen plan, staged logo, the connect flow's read profile. None of
                 # this lives in `CreativeState`, so it was never covered by the reset

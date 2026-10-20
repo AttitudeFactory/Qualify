@@ -2906,14 +2906,20 @@ class PhasedDiscovery:
             self.client.close()
 
 
-def _compact(value: int | None) -> str:
-    if not value:
+def compact_count(value: int | None) -> str:
+    """«1.2M», «92K», «640», «—» for unknown. The unit is chosen from the ROUNDED figure:
+    999 950 is «1M», never «1000K». Shared with `reels_discovery`."""
+    if value is None:
         return "—"
-    if value >= 1_000_000:
+    if value >= 999_950:
         return f"{value / 1_000_000:.1f}M".replace(".0M", "M")
     if value >= 1_000:
         return f"{value / 1_000:.1f}K".replace(".0K", "K")
     return str(value)
+
+
+def _compact(value: int | None) -> str:
+    return compact_count(value or None)  # a candidate's 0 reads as unknown here
 
 
 def _reason(candidate: Candidate) -> str:

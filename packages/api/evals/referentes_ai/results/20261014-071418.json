@@ -1,0 +1,917 @@
+{
+ "sonnet-5@low": {
+  "precision": 0.95,
+  "recall": 0.78,
+  "traps": 1,
+  "traps_of": 106,
+  "kind": 0.941,
+  "seconds_per_case": 31.1,
+  "cost_per_case_usd": 0.0395,
+  "runs": [
+   {
+    "case": "smash-burger-tachira",
+    "seconds": 33.7,
+    "cost_usd": 0.04756,
+    "error": "",
+    "answers": {
+     "tiktok:overtime": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido de humor/tecnología, nada relacionado con comida"
+     },
+     "instagram:overtime": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido de entrenamiento de básquetbol, sin relación con restaurantes"
+     },
+     "instagram:technology": {
+      "kind": "medio",
+      "fits": false,
+      "reason": "Página de noticias de tecnología, sin relación con comida"
+     },
+     "tiktok:imparkerburton": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Creador de contenido tech, no de comida"
+     },
+     "tiktok:tatechtips": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Reseñas de tecnología, no relacionado con hamburguesas"
+     },
+     "tiktok:lauratuttman": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Enseña programación, otro rubro"
+     },
+     "instagram:imparkerburton": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Creador de contenido tech Android, no comida"
+     },
+     "instagram:lauratuttman": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Tips y hacks generales, no de comida"
+     },
+     "tiktok:carterpcs": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido de PC y tecnología, no comida"
+     },
+     "tiktok:brujeriatech": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Enseña programación, otro rubro"
+     },
+     "instagram:brujeriatech": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido educativo de tecnología, no comida"
+     },
+     "instagram:leomarisreyes.dev": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Software engineer, contenido tech, no comida"
+     },
+     "tiktok:thejesusp": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Reseñas de celulares, no de comida"
+     },
+     "tiktok:phonecellven": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Venta de tablets/teléfonos, otro rubro"
+     },
+     "tiktok:vip_phonecity": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Comedia sobre tiendas de tecnología, no comida"
+     },
+     "tiktok:quitalelabolsavnzla": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Venta de estaciones de energía portátil, otro rubro"
+     },
+     "tiktok:diegolesrecomienda": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Recomienda tienda de computadoras, otro rubro"
+     },
+     "instagram:iutecp": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Instituto de tecnología, educación, no comida"
+     },
+     "instagram:gabyelectronica": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Mayorista de electrónica, otro rubro"
+     },
+     "instagram:thejesusp": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Mismo contenido tech que su cuenta de TikTok, no comida"
+     },
+     "tiktok:carlosdelgadosc": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Cursos de ingeniería digital, otro rubro"
+     },
+     "tiktok:_christianmarquez": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido turístico de Táchira, no gastronómico específico de hamburguesas"
+     },
+     "tiktok:trt_contigo": {
+      "kind": "medio",
+      "fits": false,
+      "reason": "Canal de televisión regional, sin relación con comida"
+     },
+     "instagram:cotaturve": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Ente gubernamental de turismo, otro rubro"
+     },
+     "tiktok:jesusdaviduseche87": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Reporte de gasolina en Táchira, no comida"
+     },
+     "tiktok:imaginacion96.1": {
+      "kind": "medio",
+      "fits": false,
+      "reason": "Radio local, sin relación con comida"
+     },
+     "tiktok:osmel_cuberos": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido deportivo de fútbol, no comida"
+     },
+     "tiktok:zoditachira21": {
+      "kind": "otro",
+      "fits": false,
+      "reason": "Cuenta militar/operativa, sin relación con comida"
+     },
+     "tiktok:kaelimaee": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Meal prep y comida saludable, distinto modelo al de smash burgers"
+     },
+     "tiktok:gabrielafloresv_": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido de humor sobre comida casera, no restaurante de hamburguesas"
+     },
+     "tiktok:thegoldenbalance": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Creadora de recetas de cocina en general, no especializada en hamburguesas smash"
+     },
+     "tiktok:iambiggroove": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido sobre steak/restaurante de carnes, no hamburguesas"
+     },
+     "instagram:thegoldenbalance": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Cuenta de recetas de cocina general asociada a un restaurante distinto, no smash burgers"
+     },
+     "instagram:gabrielafloresv_": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Bailarina y cantante, sin relación con comida"
+     },
+     "instagram:chubbies_burger": {
+      "kind": "marca",
+      "fits": true,
+      "reason": "Hamburguesería smash burger, mismo producto y formato"
+     },
+     "instagram:lahamburguesaaz": {
+      "kind": "marca",
+      "fits": true,
+      "reason": "Restaurante de hamburguesas, mismo rubro"
+     },
+     "tiktok:doumatpedro": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Promociona hamburguesas de un negocio, mismo rubro"
+     },
+     "tiktok:kelvynpadillaa": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Reseña hamburguesas tipo smash, mismo producto"
+     },
+     "tiktok:samuelgarciasoy": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Reseña hamburguesas en Venezuela, mismo rubro"
+     },
+     "tiktok:probaderaa": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Reseñador de hamburguesas venezolanas, mismo rubro"
+     },
+     "instagram:smashack.ve": {
+      "kind": "marca",
+      "fits": true,
+      "reason": "Cadena de smash burgers, mismo producto exacto"
+     },
+     "instagram:niggasburger": {
+      "kind": "marca",
+      "fits": true,
+      "reason": "Restaurante de hamburguesas en Venezuela, mismo rubro"
+     },
+     "instagram:burgerbunch.ve": {
+      "kind": "marca",
+      "fits": true,
+      "reason": "Restaurante de hamburguesas estilo smash, mismo rubro"
+     },
+     "instagram:taguara_58": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Food truck de comida venezolana variada, no especializado en hamburguesas smash"
+     },
+     "tiktok:alejolocuras": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Contenido sobre hamburguesas en Táchira, mismo rubro y ubicación"
+     },
+     "tiktok:theavengersburger": {
+      "kind": "marca",
+      "fits": true,
+      "reason": "Restaurante de hamburguesas, mismo rubro"
+     },
+     "tiktok:conamor.valen": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Reseña hamburguesas, mismo rubro"
+     },
+     "tiktok:georchauuu": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Contenido sobre hamburguesas en Táchira, mismo rubro"
+     },
+     "tiktok:delosandes_soy": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Foodie que reseña hamburguesas en Táchira, mismo rubro"
+     },
+     "tiktok:jeancarlosjcvape1": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Reseña hamburguesas en San Cristóbal, mismo rubro y ubicación"
+     },
+     "tiktok:adriancho_oficial": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Contenido sobre hamburguesas en Táchira, mismo rubro"
+     },
+     "instagram:tequesburger2023": {
+      "kind": "marca",
+      "fits": true,
+      "reason": "Delivery de hamburguesas en San Cristóbal, mismo rubro y ubicación"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 31,
+     "kind": 0.935,
+     "answered": "52/52",
+     "trap_ids": [],
+     "missed_ids": []
+    }
+   },
+   {
+    "case": "programming-creator",
+    "seconds": 45.6,
+    "cost_usd": 0.05674,
+    "error": "",
+    "answers": {
+     "instagram:technology": {
+      "kind": "medio",
+      "fits": false,
+      "reason": "Página de tech/business general, no es sobre programación específicamente"
+     },
+     "tiktok:carterpcs": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido de hardware/PC gaming, no enseña programación"
+     },
+     "tiktok:setupspawn": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Tips de tecnología y Google, no es sobre programación"
+     },
+     "instagram:setupspawn": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Entusiasta de PC y hardware, no de programación"
+     },
+     "tiktok:christian.grossi": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido sobre tecnología china en general, no programación"
+     },
+     "instagram:trumpbyryan": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Cuenta de comedia, sin relación con programación"
+     },
+     "tiktok:trumpbyryan": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido sobre tech chino en CES, no programación"
+     },
+     "instagram:illinoistech": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Universidad de tecnología general, no enfocada en enseñar programación"
+     },
+     "tiktok:reddnea": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido de gadgets Apple, no programación"
+     },
+     "tiktok:npr": {
+      "kind": "medio",
+      "fits": false,
+      "reason": "Medio de noticias generalista"
+     },
+     "tiktok:bloombergbusiness": {
+      "kind": "medio",
+      "fits": false,
+      "reason": "Medio de noticias de negocios/tecnología"
+     },
+     "tiktok:magicjohn.official": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido de tech/hardware, no programación"
+     },
+     "instagram:reddnea": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido sobre productos Apple, no programación"
+     },
+     "instagram:thecodingspacerd": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Clases de programación para niños 3-18 años, público distinto al de la marca"
+     },
+     "instagram:leomarisreyes.dev": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Software engineer que comparte recursos tech y programación, par real"
+     },
+     "tiktok:marjorihaddad": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Promociona herramienta de IA, no enseña programación"
+     },
+     "tiktok:bcodevenezuelaoficial": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Banco promoviendo desarrollo tecnológico, no es contenido de programación"
+     },
+     "tiktok:josegabrielarape": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Habla de salarios y vida de programadores en Venezuela, mismo público"
+     },
+     "tiktok:jacksonmartinez010": {
+      "kind": "otro",
+      "fits": false,
+      "reason": "Publicación de vacante laboral, no enseña programación"
+     },
+     "tiktok:somosisum": {
+      "kind": "marca",
+      "fits": true,
+      "reason": "Instituto que enseña informática/programación"
+     },
+     "tiktok:jean.iovino": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido sobre búsqueda de empleo tech, no enseña programación"
+     },
+     "tiktok:edtecnica": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Contenido sobre programar con ayuda de IA, mismo nicho"
+     },
+     "tiktok:uneweb": {
+      "kind": "marca",
+      "fits": true,
+      "reason": "Institución educativa de tecnología, par real en enseñanza"
+     },
+     "tiktok:carlosdelgadosc": {
+      "kind": "marca",
+      "fits": true,
+      "reason": "Cursos y diplomados de ingeniería/programación"
+     },
+     "tiktok:venezuelahablacantando.9": {
+      "kind": "otro",
+      "fits": false,
+      "reason": "Contenido de fútbol, sin relación"
+     },
+     "tiktok:trt_contigo": {
+      "kind": "medio",
+      "fits": false,
+      "reason": "Programación de TV, no de software"
+     },
+     "tiktok:adrianroa15": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido de turismo, sin relación"
+     },
+     "instagram:cotaturve": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Entidad de turismo regional, sin relación con programación"
+     },
+     "tiktok:julianacontrerash": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido de lifestyle, sin relación"
+     },
+     "tiktok:jesusdaviduseche87": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Reporte de gasolina local, sin relación"
+     },
+     "instagram:cicpclagrita": {
+      "kind": "otro",
+      "fits": false,
+      "reason": "Página de organismo policial local, sin relación con programación."
+     },
+     "tiktok:602kyle": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido sobre limpieza de laptops, no enseña programación."
+     },
+     "tiktok:lauratuttman": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Creadora que enseña a programar con tips y hacks, mismo público."
+     },
+     "instagram:lauratuttman": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Cuenta de hacks y tips de vida en general, no centrada en programación."
+     },
+     "instagram:cornell_tech": {
+      "kind": "otro",
+      "fits": false,
+      "reason": "Universidad formal de tecnología, modelo institucional distinto a enseñanza individual."
+     },
+     "tiktok:cerrajeria_caracas24h": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Cerrajería que usa 'programación' en sentido automotriz, no programación de software."
+     },
+     "tiktok:un24tvoficial": {
+      "kind": "medio",
+      "fits": false,
+      "reason": "Canal de noticias que cubre un evento de ciencia, no enseña programación."
+     },
+     "tiktok:luisgabrielmkt": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Programador venezolano que comparte su experiencia trabajando remoto, mismo rubro."
+     },
+     "tiktok:matsimultiservicios": {
+      "kind": "marca",
+      "fits": true,
+      "reason": "Academia que ofrece cursos de programación con instructores, mismo servicio."
+     },
+     "tiktok:csc_ve": {
+      "kind": "otro",
+      "fits": false,
+      "reason": "Sistema de atención al cliente y producción, no es programación de software."
+     },
+     "instagram:caracasretumba": {
+      "kind": "medio",
+      "fits": false,
+      "reason": "Página de conciertos en Caracas, sin relación con programación."
+     },
+     "tiktok:stellar_908": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido de estilo de vida sobre Táchira, no sobre programación."
+     },
+     "tiktok:anthonysherylanth": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido turístico del estado Táchira, sin relación con programación."
+     },
+     "tiktok:cfdcursos": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Anuncio de cursos sin especificar que sean de programación."
+     },
+     "tiktok:ventetachira1": {
+      "kind": "otro",
+      "fits": false,
+      "reason": "Cuenta de partido político, sin relación con programación."
+     },
+     "tiktok:imaginacion96.1": {
+      "kind": "medio",
+      "fits": false,
+      "reason": "Estación de radio, sin relación con programación."
+     },
+     "tiktok:imparkerburton": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Creador de contenido de gadgets y hardware, no de programación."
+     },
+     "tiktok:one.more.official": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Hacks de teléfono y gadgets, no enseñanza de programación."
+     },
+     "instagram:imparkerburton": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Mismo creador de gadgets Android, no relacionado con programación."
+     },
+     "instagram:citytechcuny": {
+      "kind": "otro",
+      "fits": false,
+      "reason": "Universidad formal con programas académicos, modelo distinto."
+     },
+     "tiktok:overtime": {
+      "kind": "medio",
+      "fits": false,
+      "reason": "Contenido de entretenimiento deportivo, sin relación con programación."
+     },
+     "instagram:overtime": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Marca de contenido deportivo/entretenimiento, no relacionado."
+     },
+     "tiktok:cursoslogros": {
+      "kind": "marca",
+      "fits": true,
+      "reason": "Curso de computación en Maracaibo, mismo tipo de servicio educativo."
+     },
+     "tiktok:ipuvorg": {
+      "kind": "otro",
+      "fits": false,
+      "reason": "Convención religiosa, sin relación con programación."
+     },
+     "tiktok:jesuscfg1": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido turístico sobre lugares de Táchira, sin relación con programación."
+     }
+    },
+    "score": {
+     "precision": 0.8,
+     "recall": 0.667,
+     "traps": 1,
+     "traps_of": 41,
+     "kind": 0.911,
+     "answered": "55/55",
+     "trap_ids": [
+      "tiktok:matsimultiservicios"
+     ],
+     "missed_ids": [
+      "instagram:thecodingspacerd",
+      "tiktok:jean.iovino"
+     ]
+    }
+   },
+   {
+    "case": "fine-dining-bogota",
+    "seconds": 17.2,
+    "cost_usd": 0.02219,
+    "error": "",
+    "answers": {
+     "tiktok:kaelimaee": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido de meal prep y recetas caseras, no cocina de autor ni restaurante"
+     },
+     "tiktok:gabrielafloresv_": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido humor sobre comida de mamá, sin relación con gastronomía de autor"
+     },
+     "tiktok:thegoldenbalance": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Recetas fitness/burger casera, no cocina de autor"
+     },
+     "instagram:thegoldenbalance": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Restaurante de hamburguesas, segmento distinto al fine dining"
+     },
+     "instagram:chubbies_burger": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Smash burger dark kitchen, no cocina de autor premium"
+     },
+     "instagram:lahamburguesaaz": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Restaurante de hamburguesas económico, no coincide con posicionamiento premium"
+     },
+     "tiktok:doumatpedro": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Promociona hamburguesas económicas, no gastronomía de autor"
+     },
+     "tiktok:kelvynpadillaa": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Reseña hamburguesas tipo smash, otro segmento"
+     },
+     "tiktok:samuelgarciasoy": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Reseña hamburguesas gigantes, comida rápida"
+     },
+     "tiktok:probaderaa": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Reseñas de hamburguesas, segmento de comida rápida"
+     },
+     "instagram:smashack.ve": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Cadena de smashed burgers, no restaurante de autor"
+     },
+     "instagram:niggasburger": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Fast food de hamburguesas, segmento distinto"
+     },
+     "instagram:burgerbunch.ve": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Hamburguesas americanas estilo delivery, no fine dining"
+     },
+     "instagram:taguara_58": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Food truck de comida venezolana, otro formato y segmento"
+     },
+     "tiktok:alejolocuras": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Reseña hamburguesas callejeras, otro segmento"
+     },
+     "tiktok:theavengersburger": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Combos de hamburguesas económicas, no coincide con premium"
+     },
+     "tiktok:conamor.valen": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Reseña hamburguesas, comida rápida"
+     },
+     "tiktok:georchauuu": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Promociona combos de hamburguesas económicos"
+     },
+     "tiktok:jeancarlosjcvape1": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Reseña hamburguesas, segmento distinto"
+     },
+     "tiktok:adriancho_oficial": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Reseña hamburguesas al grill, comida rápida"
+     },
+     "instagram:tequesburger2023": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Delivery de hamburguesas económico, no fine dining"
+     },
+     "tiktok:iambiggroove": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido de steak en RD sin relación con cocina de autor colombiana"
+     },
+     "tiktok:delosandes_soy": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Foodie enfocado en hamburguesas y comida callejera"
+     },
+     "instagram:criollo.autor": {
+      "kind": "marca",
+      "fits": true,
+      "reason": "Restaurante de cocina de autor colombiana con menú degustación en Bogotá, competencia directa"
+     },
+     "instagram:lamesadelchef.co": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Chef de cocina colombiana contemporánea en Bogotá, mismo nicho premium"
+     },
+     "tiktok:bogotaamanteles": {
+      "kind": "medio",
+      "fits": true,
+      "reason": "Reseñas de alta cocina en Bogotá, referente relevante para el público objetivo"
+     },
+     "instagram:vinoymantel": {
+      "kind": "marca",
+      "fits": true,
+      "reason": "Restaurante de cocina de mercado con maridajes en Bogotá, mismo segmento gastronómico premium"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 21,
+     "kind": 0.917,
+     "answered": "27/27",
+     "trap_ids": [],
+     "missed_ids": []
+    }
+   },
+   {
+    "case": "phone-store-caracas",
+    "seconds": 27.7,
+    "cost_usd": 0.03149,
+    "error": "",
+    "answers": {
+     "tiktok:phonecellven": {
+      "kind": "marca",
+      "fits": true,
+      "reason": "Tienda que vende celulares y reseña modelos, mismo rubro."
+     },
+     "tiktok:vip_phonecity": {
+      "kind": "marca",
+      "fits": true,
+      "reason": "Tienda de celulares venezolana, aunque el post sea humorístico sigue siendo del mismo rubro."
+     },
+     "instagram:gabyelectronica": {
+      "kind": "marca",
+      "fits": true,
+      "reason": "Mayorista de tecnología y celulares en Caracas, mismo rubro."
+     },
+     "tiktok:thejesusp": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Reseña celulares específicos, público objetivo compatible con tienda de celulares."
+     },
+     "instagram:thejesusp": {
+      "kind": "creador",
+      "fits": true,
+      "reason": "Mismo creador que reseña celulares, cuenta espejo de Instagram."
+     },
+     "tiktok:tatechtips": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido tech internacional en inglés, no enfocado en el mercado de tienda de celulares venezolana."
+     },
+     "tiktok:imparkerburton": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Creador de tecnología en inglés orientado a audiencia internacional, no es comparable."
+     },
+     "instagram:imparkerburton": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Mismo creador angloparlante de tecnología general, no coincide con el mercado local de la tienda."
+     },
+     "tiktok:reddnea": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido sobre productos Apple en inglés, audiencia internacional distinta."
+     },
+     "instagram:reddnea": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Ex empleado de Apple haciendo contenido general, no enfocado en venta de celulares local."
+     },
+     "tiktok:carterpcs": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido sobre PCs y gaming, no celulares."
+     },
+     "tiktok:setupspawn": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Tips generales de tecnología (Google), no relacionado a venta de celulares."
+     },
+     "tiktok:one.more.official": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido de entretenimiento con trucos de celular, no vende ni reseña productos como la tienda."
+     },
+     "tiktok:602kyle": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Reparación de laptops, no es el mismo producto."
+     },
+     "tiktok:quitalelabolsavnzla": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Vende estaciones de energía portátil, otro rubro."
+     },
+     "tiktok:diegolesrecomienda": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Recomienda tiendas de computadoras (CPU), no celulares."
+     },
+     "tiktok:brujeriatech": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido de programación, no venta de celulares."
+     },
+     "instagram:leomarisreyes.dev": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Ingeniera de software con contenido educativo tech, no relacionado a venta de celulares."
+     },
+     "tiktok:lauratuttman": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Enseña programación, distinto rubro."
+     },
+     "instagram:thecodingspacerd": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Academia de programación para niños, otro rubro."
+     },
+     "tiktok:josegabrielarape": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Habla de salarios de programadores, no vende celulares."
+     },
+     "tiktok:edtecnica": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido sobre programación con IA, otro rubro."
+     },
+     "instagram:iutecp": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Instituto universitario de tecnología, no vende celulares."
+     },
+     "tiktok:bcodevenezuelaoficial": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Es un banco, no una tienda de celulares."
+     },
+     "instagram:technology": {
+      "kind": "medio",
+      "fits": false,
+      "reason": "Medio de noticias tech general, no vende celulares."
+     },
+     "tiktok:npr": {
+      "kind": "medio",
+      "fits": false,
+      "reason": "Medio de noticias, no relacionado a venta de celulares."
+     },
+     "tiktok:bloombergbusiness": {
+      "kind": "medio",
+      "fits": false,
+      "reason": "Medio de noticias de negocios, no es tienda de celulares."
+     },
+     "tiktok:christian.grossi": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido de entretenimiento sobre tecnología china en general, no venta de celulares."
+     },
+     "tiktok:cerrajeria_caracas24h": {
+      "kind": "marca",
+      "fits": false,
+      "reason": "Cerrajería, otro rubro totalmente distinto."
+     },
+     "tiktok:trumpbyryan": {
+      "kind": "creador",
+      "fits": false,
+      "reason": "Contenido de noticias/entretenimiento tech, no vende celulares."
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 0.455,
+     "traps": 0,
+     "traps_of": 13,
+     "kind": 1.0,
+     "answered": "30/30",
+     "trap_ids": [],
+     "missed_ids": [
+      "tiktok:tatechtips",
+      "tiktok:imparkerburton",
+      "instagram:imparkerburton",
+      "tiktok:reddnea",
+      "instagram:reddnea",
+      "tiktok:one.more.official"
+     ]
+    }
+   }
+  ]
+ }
+}

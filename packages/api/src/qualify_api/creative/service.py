@@ -30,7 +30,12 @@ from typing import Protocol
 from uuid import UUID
 
 from qualify_creative.adapters.anthropic_copy import CopyRefused
-from qualify_creative.brand import check_hard_rules, check_route_allowed, render_prompt
+from qualify_creative.brand import (
+    check_hard_rules,
+    check_route_allowed,
+    printed_limits,
+    render_prompt,
+)
 from qualify_creative.brand.fidelity import RULE_CAPTION_LENGTH
 from qualify_creative.brand.render import VARIANT_ANGLES
 from qualify_creative.enums import (
@@ -59,11 +64,12 @@ from qualify_creative.schemas import (
     CopyPayload,
     HardFailure,
 )
+from qualify_shared import observability
 from qualify_shared.db.session import tenant_session
 from sqlalchemy import select
 
 from qualify_api.creative import models as orm
-from qualify_api.creative import trace
+from qualify_api.creative import review, trace
 from qualify_api.creative.dispatch import TaskDispatcher, reap_stale_drafts
 from qualify_api.creative.fsm import (
     DRAFT_STATUSES,
@@ -1070,6 +1076,33 @@ class ContentService:
         brief = self._repo.get_brief(tenant_id=tenant_id, brief_id=draft.brief_id)
         if brief is None:
             raise UnknownDraft(f"draft {draft.id} has no readable brief")
+        # One Langfuse trace per generation (docs/plan-observabilidad-langfuse.md §4): the
+        # draft is the session, so its regenerations sit together; every vendor call the
+        # router makes inside is nested here (`observed.TracedProvider`). A no-op unless
+        # LANGFUSE_* keys are set.
+        with observability.trace(
+            f"generar {brief.kind.value}",
+            session_id=str(draft.id),
+            tags=(brief.kind.value, brief.format.value),
+            metadata={
+                "tenant_id": tenant_id,
+                "brand_id": draft.brand_id,
+                "draft_id": draft.id,
+                "revision": draft.revision,
+                "kind": brief.kind.value,
+                "format": brief.format.value,
+                "pipeline_version": draft.pipeline_version,
+                "voice_version": draft.voice_profile_version,
+                # what a reviewer in the annotation queue opens to see the media
+                "borrador": review.draft_url(draft.id),
+            },
+            input={"topic": brief.topic, "kind": brief.kind.value, "format": brief.format.value},
+            # deterministic, so approving or rejecting it later scores this very trace
+            trace_seed=review.trace_seed(draft.id, draft.revision),
+        ):
+            self._generate_brief(tenant_id=tenant_id, draft=draft, brief=brief)
+
+    def _generate_brief(self, *, tenant_id: UUID, draft: DraftRecord, brief: ContentBrief) -> None:
         kit = self._brand.kit(tenant_id=tenant_id, brand_id=draft.brand_id)
         voice = self._voice.active(tenant_id=tenant_id, brand_id=draft.brand_id)
         if kit is None or voice is None:
@@ -1096,9 +1129,15 @@ class ContentService:
             angle_offset=draft.id.int % len(VARIANT_ANGLES),
         )
         schema = CopyPayload.model_json_schema()
+        limits = printed_limits(brief.kind)
         requests = tuple(
             GenerationRequest(
-                task=GenerationTask.COPY, rendered_prompt=prompt, output_schema=schema
+                task=GenerationTask.COPY,
+                rendered_prompt=prompt,
+                output_schema=schema,
+                # the printed hook/CTA limits the prompt asks for, which the adapter holds
+                # the answer to (2026-10-13) — {} for a kind whose words are not printed
+                params={"max_lengths": limits} if limits else {},
             )
             for prompt in prompts
         )
@@ -1278,6 +1317,12 @@ class ContentService:
             # review): a flyer without `ad_mode` is still Seedream's when it is wired,
             # and a regeneration may change the vendor.
             requires_ai_disclosure=brief.requires_ai_disclosure or ai_generated_media(media_writes),
+        )
+        # an image or a video made by a model under test goes to the human review queue
+        review.queue_media_for_review(
+            draft_id=draft.id,
+            revision=draft.revision,
+            providers={write.provider for write in media_writes},
         )
 
     @staticmethod
@@ -1501,6 +1546,14 @@ class ContentService:
             user_id=user_id,
             approved_at=datetime.now(UTC),
         )
+        # the operator's verdict, on the generation's Langfuse trace (plan §8)
+        review.score_approval(
+            draft_id=draft_id,
+            revision=record.revision,
+            ordinal=variant.ordinal,
+            copy=variant.copy,
+            edited_copy=variant.edited_copy,
+        )
         return self._require_detail(tenant_id=tenant_id, draft_id=draft_id)
 
     def reject(
@@ -1530,6 +1583,8 @@ class ContentService:
             tenant_id=tenant_id, draft_id=draft_id, new_status=new_status, failure_reason=None
         )
         logger.info("draft %s rejected by user %s: %s", draft_id, user_id, reason)
+        # scored on the rejected generation's trace, before a regeneration bumps it
+        review.score_rejection(draft_id=draft_id, revision=record.revision, reason=reason)
         if regenerate:
             self._repo.bump_revision(tenant_id=tenant_id, draft_id=draft_id)
         if regenerate and self.dispatcher is not None:

@@ -1113,7 +1113,7 @@ def drafts_index() -> rx.Component:
     completar · Listo · Usado · Desechado), filters, and «Asignar» into the
     Planificador's drawer (QUA-118 AC 1 / AC 3)."""
     return _screen(
-        "Borradores",
+        "Piezas",
         "Tus POSTs y en qué punto está cada uno: nada sale sin aprobación humana.",
         _padded(
             rx.cond(GalleryState.error != "", _error_callout(GalleryState.error)),

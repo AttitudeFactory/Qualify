@@ -10,12 +10,18 @@ overlay run inside an FFmpeg filter graph — per-frame Pillow or numpy took 30 
 5 s slide, the graph ~5 s. The audio is dropped: Instagram plays a carousel muted, and
 Seedance 1.0 makes none.
 
+It also turns ONE still into a short video (`animate_still`, § request 2026-10-13): the
+advertising image offered as a Reel. Instagram publishes only a video as a Reel, so the
+composed image — words and logo already on it — gets a slow push-in, encoded the same
+way. The text is part of the image, so it stays sharp; nothing is generated twice.
+
 Behind a Protocol so the media producer's tests never encode a video.
 """
 
 from __future__ import annotations
 
 import io
+import math
 import tempfile
 from dataclasses import dataclass
 from fractions import Fraction
@@ -27,6 +33,11 @@ MAX_SLIDE_SECONDS = 60.0
 #: The frame rate used when the source's own is missing or nonsensical (a file whose
 #: frames all sit at time 0 reads as thousands of fps): Seedance's, and Instagram's.
 FALLBACK_FPS = 24
+#: A still animated into a Reel (`animate_still`): its length, frame rate and how far the
+#: push-in goes — 6 % over the whole clip reads as motion without blurring the words.
+STILL_SECONDS = 6.0
+STILL_FPS = 30
+STILL_ZOOM = 1.06
 
 
 @dataclass(frozen=True)
@@ -48,6 +59,10 @@ class VideoFitter(Protocol):
         size: tuple[int, int],
         overlay: bytes | None = None,
         max_seconds: float = MAX_SLIDE_SECONDS,
+    ) -> FittedVideo: ...
+
+    def animate_still(
+        self, image: bytes, *, size: tuple[int, int], seconds: float = STILL_SECONDS
     ) -> FittedVideo: ...
 
 
@@ -83,6 +98,72 @@ class PyAvVideoFitter:
         return FittedVideo(
             data=encoded, width=width, height=height, duration_sec=frames / rate, poster=poster
         )
+
+    def animate_still(
+        self, image: bytes, *, size: tuple[int, int], seconds: float = STILL_SECONDS
+    ) -> FittedVideo:
+        """`image` as a `seconds`-long H.264 MP4 at `size` with a slow, eased push-in to
+        the centre; the poster is the still itself."""
+        width, height = size
+        if width % 2 or height % 2:
+            raise ValueError(f"an H.264 video needs even dimensions, not {width}×{height}")
+        if seconds <= 0:
+            raise ValueError("a video needs a positive length")
+        with tempfile.TemporaryDirectory(prefix="qualify-still-") as tmp:
+            out = Path(tmp) / "still.mp4"
+            frames, poster = _encode_still(image, out, size, seconds)
+            encoded = out.read_bytes()
+        return FittedVideo(
+            data=encoded,
+            width=width,
+            height=height,
+            duration_sec=frames / STILL_FPS,
+            poster=poster,
+        )
+
+
+def _push_in_box(progress: float, size: tuple[int, int]) -> tuple[float, float, float, float]:
+    """The source window at `progress` (0-1) of the push-in: centred, shrinking from the
+    whole frame to 1/STILL_ZOOM of it, eased in and out. Float coordinates — Pillow
+    resamples from a fractional box, so the motion has no one-pixel steps."""
+    eased = 0.5 - 0.5 * math.cos(math.pi * min(max(progress, 0.0), 1.0))
+    zoom = 1.0 + (STILL_ZOOM - 1.0) * eased
+    width, height = size
+    w, h = width / zoom, height / zoom
+    x, y = (width - w) / 2, (height - h) / 2
+    return (x, y, x + w, y + h)
+
+
+def _encode_still(
+    image: bytes, out: Path, size: tuple[int, int], seconds: float
+) -> tuple[int, bytes]:
+    import av  # noqa: PLC0415 — lazy: only an ad image offered as a Reel needs it
+    from PIL import Image, ImageOps  # noqa: PLC0415
+
+    still = ImageOps.fit(Image.open(io.BytesIO(image)).convert("RGB"), size)
+    poster = io.BytesIO()
+    still.save(poster, format="JPEG", quality=90)
+    total = max(1, round(seconds * STILL_FPS))
+    tick = Fraction(1, STILL_FPS)
+    with av.open(str(out), mode="w", format="mp4", options={"movflags": "+faststart"}) as sink:
+        encoder = sink.add_stream("libx264", rate=STILL_FPS)
+        encoder.width, encoder.height = size
+        encoder.pix_fmt = "yuv420p"
+        encoder.options = {"crf": "20", "preset": "veryfast"}
+        encoder.codec_context.time_base = tick
+        for index in range(total):
+            box = _push_in_box(index / max(total - 1, 1), size)
+            frame = av.VideoFrame.from_image(
+                still.resize(size, Image.Resampling.BICUBIC, box=box)
+            ).reformat(format="yuv420p")
+            # stamped by hand, one tick per frame (see `_encode`: no pts = time 0)
+            frame.pts = index
+            frame.time_base = tick
+            for packet in encoder.encode(frame):
+                sink.mux(packet)
+        for packet in encoder.encode():
+            sink.mux(packet)
+    return total, poster.getvalue()
 
 
 def _frame_rate(stream: Any) -> Fraction:

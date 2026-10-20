@@ -72,7 +72,7 @@ NAV_ZONES: list[tuple[str, str, list[Item]]] = [
             # before the login and edited from Negocio → Brand Kit. The guest rail
             # keeps "Marca" as the entry to make it.
             ("Crear pieza", "wand-sparkles", "/create", True),
-            ("Borradores", "layout-list", "/drafts", True),
+            ("Piezas", "layout-list", "/drafts", True),
             ("Planificador", "calendar-days", "/planner", True),
             # QUA-113: Stories is a flow inside Publicar, not an entry of its own.
             ("Publicar", "upload", "/publish", True),

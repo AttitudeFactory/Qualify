@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from qualify_creative.adapters import AnthropicCopyAdapter, CopyRefused
+from qualify_creative.adapters.anthropic_copy import FALLBACK_BETA
 from qualify_creative.enums import GenerationTask
 from qualify_creative.pricing import JsonPricingTable
 from qualify_creative.providers import GenerationRequest, RenderedPrompt
@@ -52,8 +53,12 @@ class FakeMessages:
 
 
 class FakeClient:
+    """`client.messages` and `client.beta.messages` are the same fake: the copy call goes
+    through the beta namespace (server-side fallbacks), the token count does not."""
+
     def __init__(self, messages: FakeMessages) -> None:
         self.messages = messages
+        self.beta = SimpleNamespace(messages=messages)
 
 
 class RefusalResponse:
@@ -71,21 +76,28 @@ class RefusalResponse:
         raise AssertionError("usage was read before checking stop_reason")
 
 
-def ok_response(payload: dict[str, object]) -> SimpleNamespace:
+def ok_response(
+    payload: dict[str, object],
+    *,
+    model: str = "claude-opus-5-5",
+    iterations: list[SimpleNamespace] | None = None,
+    blocks: list[SimpleNamespace] | None = None,
+) -> SimpleNamespace:
     return SimpleNamespace(
         stop_reason="end_turn",
-        model="claude-opus-5",
-        content=[SimpleNamespace(type="text", text=json.dumps(payload))],
+        model=model,
+        content=[*(blocks or []), SimpleNamespace(type="text", text=json.dumps(payload))],
         usage=SimpleNamespace(
             input_tokens=1200,
             output_tokens=350,
             cache_read_input_tokens=1000,
             cache_creation_input_tokens=64,
+            iterations=iterations,
         ),
     )
 
 
-def make_adapter(messages: FakeMessages) -> tuple[AnthropicCopyAdapter, list[str]]:
+def make_adapter(messages: FakeMessages, **options: Any) -> tuple[AnthropicCopyAdapter, list[str]]:
     seen_keys: list[str] = []
     client = FakeClient(messages)
 
@@ -93,7 +105,7 @@ def make_adapter(messages: FakeMessages) -> tuple[AnthropicCopyAdapter, list[str
         seen_keys.append(api_key)
         return client
 
-    return AnthropicCopyAdapter(client_factory=factory), seen_keys
+    return AnthropicCopyAdapter(client_factory=factory, **options), seen_keys
 
 
 def test_generate_request_shape_and_result() -> None:
@@ -108,7 +120,7 @@ def test_generate_request_shape_and_result() -> None:
 
     kwargs = messages.create_kwargs
     assert kwargs is not None
-    assert kwargs["model"] == "claude-opus-5"
+    assert kwargs["model"] == "claude-opus-5-5"
     assert kwargs["max_tokens"] == 16000
     # Prompt caching: the stable prefix takes the cache_control breakpoint.
     assert kwargs["system"] == [
@@ -116,17 +128,26 @@ def test_generate_request_shape_and_result() -> None:
     ]
     # The volatile brief rides the user message, after the breakpoint.
     assert kwargs["messages"] == [{"role": "user", "content": VOLATILE_SUFFIX}]
+    # Opus 5.5: thinking is always on (`disabled` is a 400) and effort is explicit — its
+    # own default is `medium` where Opus 5's was `high`
     assert kwargs["thinking"] == {"type": "adaptive"}
-    # Structured output via output_config.format, never prefill.
-    assert kwargs["output_config"] == {"format": {"type": "json_schema", "schema": SCHEMA}}
-    # Sampling params 400 on claude-opus-5 — they must never appear.
+    # Structured output via output_config.format, never prefill or forced tool use.
+    assert kwargs["output_config"] == {
+        "effort": "medium",
+        "format": {"type": "json_schema", "schema": SCHEMA},
+    }
+    assert "tool_choice" not in kwargs
+    # A safety-classifier false positive is re-run server-side, not an outage
+    assert kwargs["betas"] == [FALLBACK_BETA] == ["server-side-fallback-2026-07-01"]
+    assert kwargs["fallbacks"] == "default"
+    # Sampling params 400 on Opus 5.5 — they must never appear.
     assert "temperature" not in kwargs
     assert "top_p" not in kwargs
     assert "top_k" not in kwargs
 
     assert result.payload == payload
     assert result.provider == "anthropic"
-    assert result.model_id == "claude-opus-5"
+    assert result.model_id == "claude-opus-5-5"
     assert result.usage.input_tokens == 1200
     assert result.usage.output_tokens == 350
     assert result.usage.cache_read_tokens == 1000
@@ -141,7 +162,40 @@ def test_generate_without_schema_omits_output_config() -> None:
     adapter.generate(make_request(output_schema=None), api_key="sk-k")
 
     assert messages.create_kwargs is not None
-    assert "output_config" not in messages.create_kwargs
+    assert messages.create_kwargs["output_config"] == {"effort": "medium"}
+
+
+def test_a_copy_served_by_a_fallback_model_is_reported_as_that_model() -> None:
+    """After a policy decline the fallback model served the copy: the top-level usage is
+    its attempt, billed at its rates — so it is the model priced and recorded."""
+    messages = FakeMessages(
+        response=ok_response(
+            {"hook": "x"},
+            model="claude-opus-5",
+            iterations=[
+                SimpleNamespace(type="message"),
+                SimpleNamespace(type="fallback_message"),
+            ],
+            blocks=[SimpleNamespace(type="fallback")],
+        )
+    )
+    adapter, _ = make_adapter(messages)
+
+    result = adapter.generate(make_request(), api_key="sk-k")
+
+    assert result.model_id == "claude-opus-5" and result.payload == {"hook": "x"}
+    assert JsonPricingTable("v4").unit_price(model_id=result.model_id, unit="per_mtok_out")
+
+
+def test_without_fallbacks_the_plain_endpoint_is_called() -> None:
+    messages = FakeMessages(response=ok_response({"hook": "x"}))
+    adapter, _ = make_adapter(messages, fallbacks=False, effort="low")
+
+    adapter.generate(make_request(output_schema=None), api_key="sk-k")
+
+    assert messages.create_kwargs is not None
+    assert "betas" not in messages.create_kwargs and "fallbacks" not in messages.create_kwargs
+    assert messages.create_kwargs["output_config"] == {"effort": "low"}
 
 
 def test_refusal_raises_before_reading_content() -> None:
@@ -150,20 +204,22 @@ def test_refusal_raises_before_reading_content() -> None:
 
     with pytest.raises(CopyRefused) as excinfo:
         adapter.generate(make_request(), api_key="sk-k")
-    assert excinfo.value.model_id == "claude-opus-5"
+    assert excinfo.value.model_id == "claude-opus-5-5"
 
 
 def test_estimate_cost_usd_counts_input_and_prices_allowance() -> None:
-    # 100_000 input tokens at $5/MTok = $0.50; 2_000 allowance at $25/MTok = $0.05.
+    # Opus 5.5: 100_000 input tokens at $4/MTok = $0.40; 2_000 allowance at $20/MTok = $0.04.
     messages = FakeMessages(count_result=SimpleNamespace(input_tokens=100_000))
     adapter, seen_keys = make_adapter(messages)
 
-    estimate = adapter.estimate_cost_usd(make_request(), JsonPricingTable(), api_key="sk-count-key")
+    estimate = adapter.estimate_cost_usd(
+        make_request(), JsonPricingTable("v4"), api_key="sk-count-key"
+    )
 
-    assert estimate == Decimal("0.55")
+    assert estimate == Decimal("0.44")
     assert seen_keys == ["sk-count-key"]
     assert messages.count_kwargs is not None
-    assert messages.count_kwargs["model"] == "claude-opus-5"
+    assert messages.count_kwargs["model"] == "claude-opus-5-5"
     # The counted prompt mirrors the generate prompt (system prefix + user brief).
     assert messages.count_kwargs["system"] == [{"type": "text", "text": STABLE_PREFIX}]
     assert messages.count_kwargs["messages"] == [{"role": "user", "content": VOLATILE_SUFFIX}]
@@ -213,3 +269,107 @@ def test_the_strict_schema_matches_the_sdks_own_transform() -> None:
 
     raw = CopyPayload.model_json_schema()
     assert strict_schema(raw) == anthropic.transform_schema(raw)
+
+
+# -- character limits held, not only asked for (2026-10-13) ----------------------------
+
+
+class SequenceMessages(FakeMessages):
+    """Answers each call with the next response, recording every request."""
+
+    def __init__(self, responses: list[Any]) -> None:
+        super().__init__()
+        self._responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    def create(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        self.create_kwargs = kwargs
+        return self._responses.pop(0)
+
+
+def _copy_schema_request(**params: Any) -> GenerationRequest:
+    from qualify_creative.schemas import CopyPayload
+
+    return GenerationRequest(
+        task=GenerationTask.COPY,
+        rendered_prompt=RenderedPrompt(STABLE_PREFIX, VOLATILE_SUFFIX, "fp"),
+        output_schema=CopyPayload.model_json_schema(),
+        params=params,
+    )
+
+
+def test_the_limits_are_the_schemas_and_the_tighter_printed_ones() -> None:
+    from qualify_creative.adapters.anthropic_copy import max_lengths
+
+    assert max_lengths(_copy_schema_request()) == {
+        "hook": 60,
+        "ads_headline": 40,
+        "ads_description": 30,
+    }
+    printed = max_lengths(_copy_schema_request(max_lengths={"hook": 50, "cta": 32}))
+    assert printed["hook"] == 50 and printed["cta"] == 32
+
+
+def test_a_field_over_its_limit_gets_one_repair_turn() -> None:
+    """The 61-character hook Sonnet 5.5 wrote in the experiment: asked once to shorten
+    exactly that field, with the answer replayed as the assistant turn."""
+    long_hook = "Mango biche con limón y un poquito de sal. Ese es mi domingo."  # 61
+    first = ok_response({"hook": long_hook, "caption": "c", "cta": "Ven"})
+    fixed = ok_response(
+        {"hook": "Mango biche con limón y sal: mi domingo", "caption": "c", "cta": "Ven"}
+    )
+    messages = SequenceMessages([first, fixed])
+    adapter, _ = make_adapter(messages)
+
+    result = adapter.generate(_copy_schema_request(), api_key="k")
+
+    assert result.payload["hook"] == "Mango biche con limón y sal: mi domingo"
+    first_call, repair_call = messages.calls
+    assert len(repair_call["messages"]) == 3  # append-only: user, the answer, the ask
+    assert repair_call["messages"][1]["role"] == "assistant"
+    assert long_hook in repair_call["messages"][1]["content"][0]["text"]
+    assert "hook: 61 characters, maximum 60" in repair_call["messages"][2]["content"]
+    assert repair_call["system"] == first_call["system"]  # the cached prefix is kept
+    # both calls are paid for, so both are counted
+    assert result.usage.input_tokens == 2400 and result.usage.output_tokens == 700
+
+
+def test_a_second_miss_is_cut_at_a_word_boundary_never_failing_the_draft() -> None:
+    from qualify_creative.schemas import CopyPayload
+
+    long_cta = "Búscanos en el Malecón este domingo y pide tu cono"  # 51 > 32 printed
+    responses = [
+        ok_response({"hook": "h", "caption": "c", "cta": long_cta}),
+        ok_response({"hook": "h", "caption": "c", "cta": long_cta}),
+    ]
+    messages = SequenceMessages(responses)
+    adapter, _ = make_adapter(messages)
+
+    result = adapter.generate(_copy_schema_request(max_lengths={"cta": 32}), api_key="k")
+
+    assert len(messages.calls) == 2  # one repair, no more
+    assert result.payload["cta"] == "Búscanos en el Malecón este"
+    assert len(result.payload["cta"]) <= 32
+    CopyPayload.model_validate(result.payload)
+
+
+def test_copy_within_its_limits_costs_one_call() -> None:
+    messages = SequenceMessages([ok_response({"hook": "Corto", "caption": "c", "cta": "Ven"})])
+    adapter, _ = make_adapter(messages)
+    adapter.generate(_copy_schema_request(max_lengths={"hook": 50, "cta": 32}), api_key="k")
+    assert len(messages.calls) == 1
+
+
+def test_a_failed_repair_still_saves_the_draft_with_a_cut() -> None:
+    class Failing(SequenceMessages):
+        def create(self, **kwargs: Any) -> Any:
+            self.calls.append(kwargs)
+            if len(self.calls) == 2:
+                raise RuntimeError("overloaded")
+            return self._responses.pop(0)
+
+    messages = Failing([ok_response({"hook": "x " * 40, "caption": "c", "cta": "Ven"})])
+    adapter, _ = make_adapter(messages)
+    result = adapter.generate(_copy_schema_request(), api_key="k")
+    assert len(result.payload["hook"]) <= 60

@@ -1,6 +1,6 @@
 """HTTP client for the render service — CONTRACT.md §4, nothing more.
 
-`httpx` is imported lazily (same rule as the HeyGen adapter): only a process that renders
+`httpx` is imported lazily (same rule as the vendor adapters): only a process that renders
 needs it. Every method raises :class:`RenderServiceError` with the service's own `error`
 code, so callers branch on `exc.code`, never on message text.
 """
