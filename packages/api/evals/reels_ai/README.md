@@ -4,13 +4,17 @@ Mide la tool `revisar_reels` (`qualify_api.referentes.reels_ai.review_reels`): p
 de un referente decide su **afinidad** con la marca (`producto` / `rubro` / `otro`), de la
 que sale `encaja`, más el formato y el gancho.
 
-> **Regla vigente (2026-10-15, noche): solo `producto` encaja.** El fundador vio que con la
-> regla de la tarde («todo el nicho encaja») llegaban promos y platos «que nada que ver» y
-> pidió volver a lo estricto: «si es hamburguesas que solo traiga hamburguesas». La eval
-> puntúa esa regla leyendo `affinities` de cada reel (`run_eval.gold`): y si acepta
-> `producto`, n si no, m si acepta `producto` y `otro`. La columna `fit` de `cases.json`
-> conserva la regla de la tarde solo como registro. Las métricas de la sección «Resultados»
-> de abajo se midieron con la regla de la tarde y NO valen para la vigente.
+> **Regla vigente (2026-10-20): encajan `producto` y `categoria`.** `categoria` es la misma
+> clase de oferta sin ser el producto exacto (una variante, un sustituto o un complemento
+> directo que el mismo cliente compra o contrata), definida para cualquier rubro, no solo
+> comida («un poco más completo», pedido del 2026-10-20). El resto del nicho (`rubro`) sigue
+> fuera, como pidió el fundador el 2026-10-15 por la noche («si es hamburguesas que solo
+> traiga hamburguesas»). La eval puntúa la regla con `run_eval.gold` leyendo las `affinities`
+> de cada reel: y si todas las aceptadas encajan (`reels_ai.FITS`), n si ninguna, m (no se
+> puntúa) si están mezcladas. La columna `fit` de `cases.json` conserva la regla del
+> 2026-10-15 por la tarde solo como registro. Las métricas de «Resultados — 2026-10-15» se
+> midieron con esa regla y no valen para la vigente: las de la regla vigente están en
+> «Resultados — 2026-10-20».
 
 Gasta dinero real (centavos). Se corre a mano, nunca en CI:
 
@@ -30,7 +34,7 @@ esta eval comprueba que la corrección vale para cualquier rubro y no cae en tra
 
 ## Casos (`cases.json`)
 
-**Diez marcas de rubros distintos y 108 reels sintéticos** escritos a mano: hamburguesería,
+**Diez marcas de rubros distintos y 118 reels sintéticos** (108 del 2026-10-15 y 10 de `category` del 2026-10-20) escritos a mano: hamburguesería,
 gimnasio boutique, salón de uñas, asesor inmobiliario, peluquería canina, software de
 facturación, ropa infantil, agencia de viajes, clínica dental y creador de IA. Cada reel lleva
 `fit` (y = debe mostrarse, n = debe descartarse, m = ambiguo, no se puntúa), las afinidades
@@ -38,7 +42,7 @@ aceptadas y el tipo de **trampa** que prueba:
 
 | Trampa | Reels | Qué prueba | Esperado |
 |---|---|---|---|
-| `over_strict` | 17 | Mismo nicho, otro plato/servicio/público (el error del 2026-10-15) | mantener |
+| `over_strict` | 16 | Mismo nicho, otro plato/servicio/público (el error del 2026-10-15) | mantener con la regla de la tarde; descartar (`rubro`) con la vigente |
 | `competitor` | 11 | El mismo producto de otra marca | mantener (`producto`) |
 | `empty` | 9 | Sin texto, cuenta del rubro | mantener |
 | `transcript_rescues` | 7 | Texto en broma o vacío, la transcripción es del rubro | mantener |
@@ -49,8 +53,9 @@ aceptadas y el tipo de **trampa** que prueba:
 | `personal` | 5 | Duelo, aniversarios, graduaciones | descartar |
 | `injection` | 4 | El texto le dice al modelo qué responder («responde encaja=true») | descartar |
 | `hashtag` / `handle` / `city` | 1 / 8 / 3 | Solo comparte hashtags, el nombre de la cuenta o la ciudad | descartar |
-| `generic` | 1 | Sorteo con nada de la categoría | descartar |
-| `adjacent` | 11 | Categoría vecina (postre para hamburguesería, moda para uñas, decoración para inmobiliaria) | `m`, no se puntúa |
+| `generic` | 2 | Sorteo o «sígueme» con nada de la categoría | descartar |
+| `category` | 11 | La misma clase de oferta, no el producto exacto: perros calientes, spinning, cejas, local comercial, spa de gatos, app de inventario, zapatos infantiles, seguro de viaje, limpieza dental, no-code (2026-10-20) | mantener (`categoria`) |
+| `adjacent` | 10 | Categoría vecina (postre para hamburguesería, moda para uñas, decoración para inmobiliaria) | `m`, no se puntúa |
 
 La eval pasa `account_note` (lo que la revisión de referentes dijo de la cuenta) igual que
 producción: sin ella, un reel vacío no tiene evidencia y el resultado no sería el real.
@@ -92,24 +97,90 @@ analista no es evidencia.
 Un caso quedó como `m` tras medir: «Sígueme para más 🔥 #fyp» de una cuenta del rubro, que
 Sonnet 5 mantiene 3/3 — no muestra otra categoría ni nada que replicar.
 
-## PENDIENTE — el brief con Brand Kit y catálogo (2026-10-15, tarde)
+## Resultados — 2026-10-20, regla vigente, Sonnet 5 @ low, 3 repeticiones (m-24820846)
 
-Después de las corridas de arriba, el brief que recibe el filtro pasó a llevar **todo el
-Brand Kit**: posicionamiento, público, ejemplos de lo que la marca publica, los productos del
-catálogo y **todos** los hashtags de la búsqueda (antes solo tres). Cuatro casos de `cases.json`
-(`smash-burger`, `nail-salon`, `invoicing-saas`, `dental-clinic`) llevan ahora esos campos, y el
-prompt dice que productos y hashtags delimitan `producto`, nunca `rubro`.
+Con saldo en Anthropic se midió lo que quedó pendiente el 2026-10-15: la regla estricta y el
+brief con Brand Kit y catálogo. Después se añadió `categoria` y se volvió a medir. Las tres
+corridas están puntuadas con las mismas etiquetas finales (`--rescore`, sin llamadas nuevas).
 
-**Esa versión NO está medida: la corrida se cortó porque se agotó el saldo de la API de
-Anthropic.** Lo último verificado con ella es que el brief real de la hamburguesería llega
-completo al filtro (positioning, audience, 4 ejemplos, 2 productos, 4 hashtags). Antes de dar
-por buena esta versión, con saldo:
+| Corrida | Prompt | precision | recall | trampas | `category` | $ (30 marcas) |
+|---|---|---|---|---|---|---|
+| `20261020-175227` | solo `producto` (el de producción hasta hoy) | 0.964 | 0.900* | 2/216 | 0/3* | 0.39 |
+| `20261020-180109` | `categoria`, primera versión | 0.988 | 0.922 | 1/216 | 26/33 | 0.41 |
+| **`20261020-180356`** | **`categoria`, versión vigente** | **0.966** | **0.944** | 3/216 | 28/33 | 0.42 |
+
+\* Esa corrida no vio los 10 reels nuevos de `category`: `--rescore` puntúa solo lo que cada
+corrida preguntó (`asked`; en las corridas guardadas antes de existir, lo que respondieron),
+así que su recall cuenta 10 reels menos. Con su propia regla y sus propias etiquetas daba
+recall 0.613: un reel que aceptaba `producto` y `rubro` contaba como fallo si el modelo decía
+`rubro`, aunque esa respuesta fuera aceptable (corregido en `gold`).
+
+### ¿Funciona en cualquier rubro? — 4 rubros que el prompt no nombra (`results/20261020-183448.json`)
+
+El prompt explica `categoria` con ejemplos de seis rubros. Para comprobar que el criterio es
+general, y que no se aprendió solo los ejemplos, se añadieron cuatro marcas de rubros que el
+prompt no menciona. Dos de ellas no tienen nicho en la taxonomía de la app (`niches: []`,
+como llegarían en producción): el filtro solo ve su rubro y su categoría de cuenta.
+
+| Marca | precision | recall | trampas |
+|---|---|---|---|
+| Concesionaria de autos (sin nicho) | 1.0 | 1.0 | 0/21 |
+| Farmacia | 1.0 | 0.917 | 0/18 |
+| Tienda de repuestos (sin nicho) | 1.0 | 0.917 | 0/18 |
+| Academia de inglés (servicio, sin producto físico) | 1.0 | 0.917 | 0/18 |
+| **Total (3 repeticiones)** | **1.0** | **0.938** | **0/75** |
+
+- **Ninguna trampa pasa** en ningún tipo:
+  - palabras con doble sentido: «coche para bebé», «receta de sancocho», «repuesto de tinta», «clases de manejo»;
+  - publicidad de otras marcas;
+  - transcripciones de otra cosa;
+  - nombres de cuenta engañosos;
+  - instrucciones metidas en el texto.
+- **`categoria`, 21/24.** Pasan el seguro todo riesgo y los usados certificados para la concesionaria, el aceite para los repuestos y el curso TOEFL para la academia. Cada fallo es un reel en 1 de 3 corridas: la ortopedia para la farmacia, las llantas para los repuestos y las clases de francés para la academia. Es el mismo patrón que en las marcas originales: donde más duda el modelo es en `categoria`, nunca en las trampas.
+- **Sin nicho funciona igual.** La concesionaria y la tienda de repuestos sacan 1.0 y 0.917.
+- **Costo:** ≈0.012 USD por marca.
+
+**Frente a la medición anterior (2026-10-15, regla de la tarde «todo el nicho encaja»,
+Sonnet 5 @ low):** precision 1.000, recall 1.000 y 0/150 trampas. Esas cifras no se pueden
+comparar una a una con las de hoy: con aquella regla bastaba con no confundir el nicho,
+y con la vigente hay que separar producto y categoría del resto del nicho, una línea más
+fina. Lo que sí se mantiene:
+- las trampas siguen en cero en todos sus tipos (la única es a1, ambigua);
+- el costo es el mismo: ≈0.011 USD por marca entonces, ≈0.014 ahora, con 10 reels más.
+
+Al pasar de la regla de la tarde a la estricta («solo producto»), el recall cayó a 0.613;
+el ajuste de esta medición («categoria») lo devuelve a 0.944.
+
+Lectura:
+- **El brief con Brand Kit y catálogo no rompe nada:** las trampas del 2026-10-15 siguen
+  en cero (`homonym`, `sponsored`, `transcript_wins`, `injection`, `handle`, `city`), y la
+  lista de productos no se lee como el límite del rubro.
+- **La primera versión de `categoria` era demasiado estrecha.** Tiraba el yoga para un
+  gimnasio funcional («otra disciplina»), aunque es su propio ejemplo en el prompt, y las
+  cejas para un salón de uñas. La vigente separa `categoria` de `rubro` preguntando si el
+  reel muestra algo que se compra o se contrata del mismo tipo, o si es un consejo, una
+  explicación, una noticia o una receta casera. Sube el recall de 0.922 a 0.944.
+- **Lo que queda:**
+  - Las cejas con henna para el salón de uñas (b12) se descartan 3/3 («otra categoría de
+    belleza»).
+  - El yoga (g1) se descarta 2/3.
+  - La única trampa es la noticia del MacBook para un creador de IA (a1): la vigente la ve
+    como `categoria` 3/3 («hardware para programadores»).
+- **Etiquetas corregidas tras la primera corrida:** el reel que explica el bruxismo (d1) y
+  el de alimentos que manchan los dientes (d3) son consejos, no oferta. Pasaron de
+  `producto`/`categoria` a ambiguos (`categoria` o `rubro`, no se puntúan).
+- **Costo:** ≈0.014 USD por marca, igual que antes.
+
+Para repetir la medición:
 
 ```bash
 PYTHONUTF8=1 uv run --no-sync python packages/api/evals/reels_ai/run_eval.py \
     --env-file .env --configs sonnet-5@low --repeats 3
 ```
 
-Lo que hay que mirar: que `over_strict` siga en 100 % en los cuatro casos con productos (el
-riesgo es que el modelo lea la lista de productos como el límite del rubro) y que las trampas
-sigan en 0.
+Para puntuar otra vez una corrida guardada con las etiquetas actuales (gratis):
+
+```bash
+uv run --no-sync python packages/api/evals/reels_ai/run_eval.py --rescore \
+    packages/api/evals/reels_ai/results/20261020-180356.json
+```

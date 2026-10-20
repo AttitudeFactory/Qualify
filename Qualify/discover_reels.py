@@ -80,7 +80,9 @@ class DiscoverReelsState(rx.State):
     @rx.var
     def unchecked_note(self) -> str:
         """The «inténtalo más tarde» body, with the reason the check failed when known."""
-        base = "El servicio que comprueba que cada reel sea de tu producto no respondió"
+        base = (
+            "El servicio que comprueba que cada reel sea de tu producto o tu categoría no respondió"
+        )
         if self.check_detail:
             return f"{base}: {self.check_detail}. Inténtalo más tarde."
         return f"{base}. Inténtalo más tarde."
@@ -502,20 +504,27 @@ def _reel_tile(reel: rx.Var[dict[str, str]]) -> rx.Component:
                     wrap="wrap",
                     class_name="q-dr-figures-line",
                 ),
-                # § 2026-10-19: no «Tu producto» pill — every reel shown is of the product
-                rx.cond(
-                    reel["format"] != "",
-                    rx.hstack(
-                        rx.cond(
-                            reel["format"] != "",
-                            rx.box(
-                                rx.text(reel["format"], size="1"),
-                                class_name="q-dr-tag q-dr-tag--muted",
-                            ),
+                # § 2026-10-20: the shown reels are the product OR its category again, so
+                # the card says which (it had no pill while only the product was shown)
+                rx.hstack(
+                    rx.cond(
+                        reel["affinity"] == "categoria",
+                        rx.box(
+                            rx.text("Tu categoría", size="1"),
+                            class_name="q-dr-tag q-dr-tag--muted",
+                            title="La misma clase de oferta que vendes, sin ser tu producto",
                         ),
-                        spacing="1",
-                        wrap="wrap",
+                        rx.box(rx.text("Tu producto", size="1"), class_name="q-dr-tag"),
                     ),
+                    rx.cond(
+                        reel["format"] != "",
+                        rx.box(
+                            rx.text(reel["format"], size="1"),
+                            class_name="q-dr-tag q-dr-tag--muted",
+                        ),
+                    ),
+                    spacing="1",
+                    wrap="wrap",
                 ),
                 spacing="1",
                 width="100%",

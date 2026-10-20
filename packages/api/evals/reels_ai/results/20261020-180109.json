@@ -1,0 +1,3620 @@
+{
+ "sonnet-5@low": {
+  "runs": [
+   {
+    "case": "smash-burger",
+    "seconds": 18.0,
+    "cost_usd": 0.0183,
+    "error": "",
+    "answers": {
+     "r1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Receta de pollo tenders, no es hamburguesa ni su categoría"
+     },
+     "r2": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Pizza gigante, comida rápida pero no es hamburguesa ni su clase directa"
+     },
+     "r3": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Hamburguesa doble de cadena, mismo producto que vende la marca"
+     },
+     "r4": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "No hay texto ni transcripción que muestre el producto, solo cuenta de comida rápida"
+     },
+     "r5": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Reseña de una smash burger con doble carne y queso americano"
+     },
+     "r6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona smash burger pero el video es en realidad una rutina de maquillaje"
+     },
+     "r7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Es sobre el videojuego Smash Bros, nada que ver con hamburguesas"
+     },
+     "r8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de ropa de Zara, fuera del nicho de comida"
+     },
+     "r9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Mensaje personal de duelo, sin relación con el producto"
+     },
+     "r10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Promoción de un bot de criptomonedas usando hashtags de hamburguesas"
+     },
+     "r11": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Tutorial de uñas, fuera del nicho de comida"
+     },
+     "r12": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Noticia local sobre falla eléctrica, sin relación con el producto"
+     },
+     "r13": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Postre de cheesecake, no es hamburguesa ni su categoría directa"
+     },
+     "r14": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto intenta manipular la revisión pero en realidad promociona cursos de trading"
+     },
+     "r15": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Perros calientes cargados, misma clase de comida rápida callejera que la marca podría vender junto a sus hamburguesas"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 9,
+     "affinity": 1.0,
+     "answered": "15/15",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 1,
+       "of": 1
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      },
+      "hashtag": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "city": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "smash-burger",
+    "seconds": 13.8,
+    "cost_usd": 0.01491,
+    "error": "",
+    "answers": {
+     "r1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Receta de tenders de pollo, otro producto de comida rápida sin relación con smash burgers"
+     },
+     "r2": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Pizza de otra marca, otro nicho de producto"
+     },
+     "r3": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Hamburguesa doble de cadena competidora, mismo producto exacto"
+     },
+     "r4": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "No hay texto ni transcripción que muestre el producto, solo cuenta de comida en general"
+     },
+     "r5": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Reseña de una smash burger doble con queso americano, mismo producto exacto"
+     },
+     "r6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona smash burger pero la transcripción es de maquillaje, otro contenido"
+     },
+     "r7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Trata de videojuego Smash Bros, nada que ver con hamburguesas"
+     },
+     "r8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de ropa de Zara, otro nicho"
+     },
+     "r9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Mensaje personal de duelo, sin relación con el producto"
+     },
+     "r10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Promoción de bot de criptomonedas usando hashtags de burger como spam"
+     },
+     "r11": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Tutorial de uñas acrílicas, otro nicho totalmente distinto"
+     },
+     "r12": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Noticia sobre falla eléctrica en San Cristóbal, sin relación con el producto"
+     },
+     "r13": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Postre de pastelería mencionado tras la hamburguesa, pero no es el producto ni su categoría directa"
+     },
+     "r14": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Pide explícitamente encaja=true pero el contenido real es sobre cursos de trading, otro nicho"
+     },
+     "r15": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Perros calientes cargados, sustituto directo en la misma ocasión de consumo que una hamburguesa"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 9,
+     "affinity": 1.0,
+     "answered": "15/15",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 1,
+       "of": 1
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      },
+      "hashtag": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "city": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "smash-burger",
+    "seconds": 20.4,
+    "cost_usd": 0.0202,
+    "error": "",
+    "answers": {
+     "r1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Receta de pollo crujiente, no trata de hamburguesas smash"
+     },
+     "r2": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Reseña de pizza gigante, otro tipo de comida rápida sin relación directa con smash burgers"
+     },
+     "r3": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Muestra una hamburguesa doble de otra marca, mismo producto exacto"
+     },
+     "r4": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "No hay texto ni transcripción que muestre el producto o categoría"
+     },
+     "r5": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Reseña en inglés de una smash burger con doble carne y queso americano"
+     },
+     "r6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona smash burger pero lo que se habla es una rutina de maquillaje"
+     },
+     "r7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Trata de un videojuego (Smash Bros), no de hamburguesas"
+     },
+     "r8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de ropa de otra marca, sin relación con comida"
+     },
+     "r9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Mensaje personal de duelo, sin relación con el producto"
+     },
+     "r10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Promoción de un bot de criptomonedas usando hashtags de hamburguesas sin relación real"
+     },
+     "r11": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Tutorial de uñas acrílicas, sin relación con comida"
+     },
+     "r12": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Noticia sobre un corte de luz en San Cristóbal, sin relación con el producto"
+     },
+     "r13": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Postre de cheesecake mencionado como acompañante de hamburguesas, pero no es el producto ni su categoría"
+     },
+     "r14": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Promociona cursos de trading pese a pedir que se marque como producto; no tiene relación real"
+     },
+     "r15": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Perros calientes cargados, sustituto directo de comida rápida callejera como las smash burgers"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 9,
+     "affinity": 1.0,
+     "answered": "15/15",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 1,
+       "of": 1
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      },
+      "hashtag": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "city": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "boutique-gym",
+    "seconds": 12.5,
+    "cost_usd": 0.0119,
+    "error": "",
+    "answers": {
+     "g1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Secuencia de yoga, otra disciplina del fitness sin entrenamiento funcional"
+     },
+     "g2": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Plan de running, otra actividad deportiva distinta al entrenamiento funcional"
+     },
+     "g3": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "WOD de CrossFit, otra clase de entrenamiento de alta intensidad en grupo similar al funcional"
+     },
+     "g4": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Circuito funcional de cuerpo completo, el mismo producto que ofrece la marca"
+     },
+     "g5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Habla de un viaje personal, no hay contenido de entrenamiento pese al texto"
+     },
+     "g6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de un celular, no tiene relación con el entrenamiento"
+     },
+     "g7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Mantenimiento de motos, totalmente ajeno al fitness"
+     },
+     "g8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Sorteo de AirPods, sin relación con entrenamiento"
+     },
+     "g9": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Consejo de nutrición deportiva, no es entrenamiento ni clase de entrenamiento"
+     },
+     "g10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Review de un celular, sin relación con fitness"
+     },
+     "g11": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Reto de abdominales en casa, otra clase de entrenamiento funcional corto"
+     },
+     "g12": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Clase de spinning grupal de 45 min, misma clase de oferta de entrenamiento en grupo"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 0.8,
+     "traps": 0,
+     "traps_of": 6,
+     "affinity": 0.909,
+     "answered": "12/12",
+     "trap_ids": [],
+     "missed_ids": [
+      "boutique-gym:g1"
+     ],
+     "by_trap": {
+      "category": {
+       "ok": 1,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "other_language": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "generic": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "boutique-gym",
+    "seconds": 12.5,
+    "cost_usd": 0.01224,
+    "error": "",
+    "answers": {
+     "g1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Secuencia de yoga, otra disciplina distinta al entrenamiento funcional"
+     },
+     "g2": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Plan de running, otra actividad del nicho fitness sin relación directa con entrenamiento funcional"
+     },
+     "g3": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "WOD de CrossFit, entrenamiento de alta intensidad en grupo, similar clase de oferta al funcional"
+     },
+     "g4": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Circuito full body por intervalos, mismo tipo de entrenamiento funcional en grupo"
+     },
+     "g5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Habla de un viaje personal a Cartagena, no del entrenamiento aunque el texto mencione gym"
+     },
+     "g6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de un celular Samsung, no relacionado con entrenamiento"
+     },
+     "g7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Entrenamiento de motor de moto, otro nicho totalmente distinto"
+     },
+     "g8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Sorteo de AirPods, no tiene relación con entrenamiento"
+     },
+     "g9": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Consejo de nutrición post-entreno, no es el servicio de entrenamiento en sí"
+     },
+     "g10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Review de iPhone, no tiene relación con fitness ni entrenamiento"
+     },
+     "g11": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Reto de entrenamiento de abdominales, formato de entrenamiento similar al funcional"
+     },
+     "g12": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Clase de spinning de 45 minutos en grupo, misma clase de oferta de entrenamiento grupal que funcional"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 0.8,
+     "traps": 0,
+     "traps_of": 6,
+     "affinity": 0.909,
+     "answered": "12/12",
+     "trap_ids": [],
+     "missed_ids": [
+      "boutique-gym:g1"
+     ],
+     "by_trap": {
+      "category": {
+       "ok": 1,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "other_language": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "generic": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "boutique-gym",
+    "seconds": 9.2,
+    "cost_usd": 0.01191,
+    "error": "",
+    "answers": {
+     "g1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Secuencia de yoga, otra disciplina de entrenamiento distinta al funcional"
+     },
+     "g2": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Plan de running, otra actividad del nicho fitness sin relación con entrenamiento funcional"
+     },
+     "g3": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "CrossFit es otra clase de entrenamiento de alta intensidad en grupo, similar al funcional"
+     },
+     "g4": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Circuito full body con series, igual al entrenamiento funcional en grupos pequeños"
+     },
+     "g5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Habla de un viaje personal, no tiene nada que ver con entrenamiento"
+     },
+     "g6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de un celular, no es contenido de entrenamiento"
+     },
+     "g7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Trata de mecánica de motos, otro nicho totalmente distinto"
+     },
+     "g8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Sorteo de audífonos, sin relación con entrenamiento"
+     },
+     "g9": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Consejo de nutrición deportiva, no es el producto de entrenamiento en sí"
+     },
+     "g10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Review de un iPhone, no relacionado con fitness"
+     },
+     "g11": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Reto de entrenamiento físico grupal, cercano a las clases de entrenamiento funcional"
+     },
+     "g12": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Clase grupal de 45 minutos de cardio intenso, misma clase de oferta que las clases funcionales"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 0.8,
+     "traps": 0,
+     "traps_of": 6,
+     "affinity": 0.909,
+     "answered": "12/12",
+     "trap_ids": [],
+     "missed_ids": [
+      "boutique-gym:g1"
+     ],
+     "by_trap": {
+      "category": {
+       "ok": 1,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "other_language": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "generic": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "nail-salon",
+    "seconds": 7.7,
+    "cost_usd": 0.01118,
+    "error": "",
+    "answers": {
+     "b1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Maquillaje de novia, no es uñas ni pestañas"
+     },
+     "b2": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Rutina de skincare, no uñas ni pestañas"
+     },
+     "b3": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Uñas cromo, mismo producto de un salón de uñas competidor"
+     },
+     "b4": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Cuenta es un salón de uñas competidor, misma oferta"
+     },
+     "b5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Habla de pestañas del navegador, nada que ver con belleza"
+     },
+     "b6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Texto menciona uñas pero habla de inversión financiera"
+     },
+     "b7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de hamburguesa, otro negocio"
+     },
+     "b8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Contenido personal, aniversario de boda"
+     },
+     "b9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Outfit de moda, otro nicho"
+     },
+     "b10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Cursos de dropshipping, nada que ver con belleza"
+     },
+     "b11": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Habla de extensiones de pestañas y su retención, producto de la marca"
+     },
+     "b12": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Diseño de cejas con henna, es belleza pero no uñas ni pestañas"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 0.667,
+     "traps": 0,
+     "traps_of": 8,
+     "affinity": 0.909,
+     "answered": "12/12",
+     "trap_ids": [],
+     "missed_ids": [
+      "nail-salon:b12"
+     ],
+     "by_trap": {
+      "over_strict": {
+       "ok": 2,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 0,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "nail-salon",
+    "seconds": 13.9,
+    "cost_usd": 0.01664,
+    "error": "",
+    "answers": {
+     "b1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Tutorial de maquillaje de novia, no trata de uñas ni pestañas"
+     },
+     "b2": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Rutina de skincare, es belleza pero no uñas ni pestañas"
+     },
+     "b3": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Salón de uñas mostrando diseño cromo, el mismo producto de la marca"
+     },
+     "b4": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Cuenta es un salón de uñas, mismo producto exacto"
+     },
+     "b5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Juego de palabras sobre pestañas del navegador, nada que ver con el producto real"
+     },
+     "b6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona uñas pero el audio habla de inversión financiera, no del producto"
+     },
+     "b7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de hamburguesa, otro negocio y otro nicho"
+     },
+     "b8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Contenido personal de aniversario, sin relación con el producto"
+     },
+     "b9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Outfit de moda, nicho distinto al de belleza/uñas"
+     },
+     "b10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Promociona cursos de dropshipping, no pestañas ni producto de belleza"
+     },
+     "b11": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Muestra retención de extensiones de pestañas, mismo producto que vende la marca"
+     },
+     "b12": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Diseño de cejas con henna, es belleza pero no uñas ni pestañas"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 0.667,
+     "traps": 0,
+     "traps_of": 8,
+     "affinity": 0.909,
+     "answered": "12/12",
+     "trap_ids": [],
+     "missed_ids": [
+      "nail-salon:b12"
+     ],
+     "by_trap": {
+      "over_strict": {
+       "ok": 2,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 0,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "nail-salon",
+    "seconds": 14.2,
+    "cost_usd": 0.01665,
+    "error": "",
+    "answers": {
+     "b1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Tutorial de maquillaje de novia, no trata de uñas ni pestañas"
+     },
+     "b2": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Rutina de skincare, otra categoría de belleza sin relación con uñas o pestañas"
+     },
+     "b3": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Diseño de uñas cromo, mismo producto exacto que vende la marca"
+     },
+     "b4": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Cuenta de salón de uñas, mismo producto que la marca aunque sin texto"
+     },
+     "b5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Chiste sobre pestañas del navegador, nada que ver con belleza"
+     },
+     "b6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona uñas pero la transcripción habla de inversión financiera"
+     },
+     "b7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de una hamburguesa, de otro nicho y otra marca"
+     },
+     "b8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Post personal sobre aniversario de boda, sin relación con el producto"
+     },
+     "b9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Outfit de moda, nicho distinto al de belleza/uñas"
+     },
+     "b10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Promociona cursos de dropshipping, totalmente ajeno al nicho de belleza"
+     },
+     "b11": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Muestra retención de extensiones de pestañas, mismo producto que ofrece la marca"
+     },
+     "b12": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Diseño de cejas con henna, otra categoría de belleza distinta a uñas o pestañas"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 0.667,
+     "traps": 0,
+     "traps_of": 8,
+     "affinity": 0.909,
+     "answered": "12/12",
+     "trap_ids": [],
+     "missed_ids": [
+      "nail-salon:b12"
+     ],
+     "by_trap": {
+      "over_strict": {
+       "ok": 2,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 0,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "realtor",
+    "seconds": 8.5,
+    "cost_usd": 0.01132,
+    "error": "",
+    "answers": {
+     "i1": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Errores en crédito hipotecario, complemento directo de comprar un apartamento"
+     },
+     "i2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Tour de un apartamento en venta, mismo producto que vende la marca"
+     },
+     "i3": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Renovación de decoración, contenido del rubro inmobiliario sin vender propiedades"
+     },
+     "i4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Trámite legal de propiedad intelectual, no tiene relación con bienes raíces"
+     },
+     "i5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona una casa pero el video habla de una receta de ceviche, no es del producto"
+     },
+     "i6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad pagada de un reloj, producto de otra marca sin relación inmobiliaria"
+     },
+     "i7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "No hay texto ni transcripción que permita saber de qué trata, sin evidencia de producto inmobiliario"
+     },
+     "i8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Noticia del clima en Lima, sin relación con el negocio inmobiliario"
+     },
+     "i9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Rutina de gimnasio personal, sin relación con bienes raíces pese al nombre de la cuenta"
+     },
+     "i10": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Entrega de llaves de un departamento y proceso de financiamiento, mismo producto y proceso de venta"
+     },
+     "i11": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Alquiler de local comercial, misma clase de oferta inmobiliaria aunque no sea apartamento"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 6,
+     "affinity": 1.0,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "city": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "realtor",
+    "seconds": 19.5,
+    "cost_usd": 0.0199,
+    "error": "",
+    "answers": {
+     "i1": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Errores en créditos hipotecarios, un paso clave en la compra de un apartamento"
+     },
+     "i2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Tour de un apartamento en venta, el mismo producto que ofrece la marca"
+     },
+     "i3": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Decoración de interiores, tema del público inmobiliario pero sin mostrar propiedades"
+     },
+     "i4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Trámite legal de propiedad intelectual, nada que ver con bienes raíces"
+     },
+     "i5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto parece inmobiliario pero la transcripción es una receta de ceviche"
+     },
+     "i6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad pagada de un reloj Casio, sin relación con apartamentos"
+     },
+     "i7": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "No hay texto ni transcripción que confirme contenido sobre apartamentos"
+     },
+     "i8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Noticia del clima en Lima, sin relación con bienes raíces"
+     },
+     "i9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Rutina de gimnasio, nada que ver con inmuebles pese al nombre de la cuenta"
+     },
+     "i10": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Entrega de llaves y proceso de financiamiento de un departamento, caso real de venta"
+     },
+     "i11": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Alquiler de un local comercial, misma clase de negocio inmobiliario aunque distinto tipo de propiedad"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 6,
+     "affinity": 1.0,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "city": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "realtor",
+    "seconds": 15.4,
+    "cost_usd": 0.01672,
+    "error": "",
+    "answers": {
+     "i1": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Errores en créditos hipotecarios, complemento directo a la compra de apartamentos"
+     },
+     "i2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Tour de un apartamento en venta, mismo producto exacto"
+     },
+     "i3": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Decoración de interiores, no trata de venta o alquiler de inmuebles"
+     },
+     "i4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Trámite de propiedad intelectual, nicho distinto al inmobiliario"
+     },
+     "i5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Pese al texto inmobiliario, lo que se dice es una receta de ceviche"
+     },
+     "i6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad pagada de un reloj Casio, no de inmuebles"
+     },
+     "i7": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Sin texto ni transcripción que confirmen que trata de venta de apartamentos"
+     },
+     "i8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Noticia sobre el clima, sin relación con bienes raíces"
+     },
+     "i9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Rutina de gimnasio, nicho fitness sin relación con inmuebles pese al nombre de la cuenta"
+     },
+     "i10": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Entrega de llaves y proceso de financiamiento de la compra de un departamento"
+     },
+     "i11": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Alquiler de un local comercial, misma clase de negocio inmobiliario aunque distinto tipo de inmueble"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 6,
+     "affinity": 1.0,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "city": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "pet-grooming",
+    "seconds": 8.9,
+    "cost_usd": 0.0109,
+    "error": "",
+    "answers": {
+     "p1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Consejos de salud felina sin relación con peluquería o tienda de accesorios"
+     },
+     "p2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Transformación de grooming canino, el mismo servicio que ofrece la marca"
+     },
+     "p3": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Adiestramiento canino, otra necesidad de dueños de mascotas pero no peluquería ni tienda"
+     },
+     "p4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Diseño de mascota de marca para branding, nada que ver con mascotas reales ni peluquería"
+     },
+     "p5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto parece grooming pero lo hablado es sobre presupuestos personales, no encaja"
+     },
+     "p6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de ropa y tenis, nada relacionado con mascotas"
+     },
+     "p7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Contenido personal de graduación, sin relación con mascotas"
+     },
+     "p8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Sin texto ni transcripción que indique contenido relacionado con el producto"
+     },
+     "p9": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Habla de alimentación cruda para perros, otra necesidad del dueño pero no peluquería ni accesorios"
+     },
+     "p10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Contenido de fútbol, totalmente ajeno al nicho de mascotas"
+     },
+     "p11": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Servicio de spa y grooming felino, mismo servicio de peluquería que ofrece la marca"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 8,
+     "affinity": 0.9,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 2,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      },
+      "other_language": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "pet-grooming",
+    "seconds": 12.0,
+    "cost_usd": 0.01352,
+    "error": "",
+    "answers": {
+     "p1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Consejos sobre estrés felino, no trata de peluquería ni accesorios."
+     },
+     "p2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Transformación de grooming canino, el servicio exacto de la marca."
+     },
+     "p3": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Adiestramiento canino, otro servicio para mascotas distinto de peluquería o tienda."
+     },
+     "p4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Branding de marca para una fintech, no tiene relación con mascotas reales."
+     },
+     "p5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Pese al texto de grooming, la transcripción habla de presupuesto en Excel, sin relación real."
+     },
+     "p6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de ropa y tenis, nada relacionado con mascotas."
+     },
+     "p7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Contenido personal de graduación, sin relación con mascotas o el negocio."
+     },
+     "p8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "No hay texto ni transcripción que permita vincularlo con peluquería o accesorios."
+     },
+     "p9": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Habla de dieta cruda para perros, tema de nutrición, no de grooming ni accesorios."
+     },
+     "p10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Jugadas de fútbol, totalmente ajeno al nicho de mascotas."
+     },
+     "p11": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Spa y deslanado de gato, servicio de grooming igual al que ofrece la marca."
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 8,
+     "affinity": 0.9,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 2,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      },
+      "other_language": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "pet-grooming",
+    "seconds": 8.5,
+    "cost_usd": 0.0109,
+    "error": "",
+    "answers": {
+     "p1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Consejos de salud felina, sin mencionar peluquería ni accesorios"
+     },
+     "p2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Transformación de peluquería canina, el mismo servicio que ofrece la marca"
+     },
+     "p3": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Adiestramiento canino, otra necesidad del mismo público pero no es peluquería ni accesorios"
+     },
+     "p4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Diseño de branding para una fintech, no tiene relación con mascotas reales"
+     },
+     "p5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona grooming pero lo que realmente se habla es de presupuesto personal, nada relacionado al negocio"
+     },
+     "p6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de ropa y tenis de otra marca, sin relación con mascotas"
+     },
+     "p7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Contenido personal de graduación, sin relación con el negocio"
+     },
+     "p8": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Cuenta de mascotas sin información del video, no hay prueba de producto o categoría"
+     },
+     "p9": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Habla de dieta cruda para perros, contenido de nutrición, no de peluquería ni accesorios"
+     },
+     "p10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Fútbol colombiano, totalmente ajeno al nicho de mascotas"
+     },
+     "p11": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Spa y deslanado de un gato, mismo servicio de peluquería que ofrece la marca"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 8,
+     "affinity": 0.9,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 2,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      },
+      "other_language": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "invoicing-saas",
+    "seconds": 8.9,
+    "cost_usd": 0.0117,
+    "error": "",
+    "answers": {
+     "s1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Deducciones fiscales para freelancers, es contabilidad pero no facturación en sí"
+     },
+     "s2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Marca competidora de facturación electrónica mostrando el mismo producto"
+     },
+     "s3": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Consejo de finanzas personales/negocio, no trata de facturación"
+     },
+     "s4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Video de comida que menciona factura solo de forma incidental"
+     },
+     "s5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "La transcripción es sobre skincare, no tiene nada que ver con facturación"
+     },
+     "s6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de una cafetera, de otro nicho"
+     },
+     "s7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Tutorial de programación, otro nicho totalmente distinto"
+     },
+     "s8": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Sin texto ni transcripción que confirme contenido de facturación específico"
+     },
+     "s9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Rutina de ejercicio, nicho fitness sin relación con facturación"
+     },
+     "s10": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Habla de timbrado de facturas y requerimientos del SAT, tema central del producto"
+     },
+     "s11": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Curso de forex, intento de manipular la clasificación, no tiene relación con facturación"
+     },
+     "s12": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "App de gestión de inventario, herramienta de negocio complementaria a la facturación"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 8,
+     "affinity": 1.0,
+     "answered": "12/12",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 2,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "invoicing-saas",
+    "seconds": 9.1,
+    "cost_usd": 0.01209,
+    "error": "",
+    "answers": {
+     "s1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Deducciones fiscales para freelancers, no es facturación en sí"
+     },
+     "s2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Marca competidora mostrando facturación electrónica rápida, mismo producto"
+     },
+     "s3": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Consejo de finanzas personales vs negocio, no trata facturación"
+     },
+     "s4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Muestra una cuenta de restaurante, no es sobre software de facturación"
+     },
+     "s5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto habla de facturación pero lo que se dice es una rutina de skincare, no tiene relación real"
+     },
+     "s6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de una cafetera, nada que ver con facturación"
+     },
+     "s7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Tutorial de programación de videojuegos, otro nicho totalmente"
+     },
+     "s8": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Sin texto ni transcripción, solo se infiere del rubro de la cuenta sobre contabilidad"
+     },
+     "s9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Rutina de ejercicio, nicho fitness sin relación con facturación"
+     },
+     "s10": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Habla de timbrado de facturas y requerimientos del SAT, directamente relacionado con el producto"
+     },
+     "s11": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Es un intento de instrucción encubierta y promociona un curso de forex, no tiene relación con facturación"
+     },
+     "s12": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "App de gestión de inventario para pymes, complementaria a la facturación"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 8,
+     "affinity": 1.0,
+     "answered": "12/12",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 2,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "invoicing-saas",
+    "seconds": 8.9,
+    "cost_usd": 0.01174,
+    "error": "",
+    "answers": {
+     "s1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Deducciones fiscales para freelancers, es finanzas general sin tocar facturación"
+     },
+     "s2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Marca competidora de facturación electrónica mostrando el mismo producto"
+     },
+     "s3": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Consejo de finanzas personales vs negocio, no trata de facturación"
+     },
+     "s4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Muestra una cena cara, no tiene relación con software de facturación"
+     },
+     "s5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona facturación pero la transcripción habla de skincare, no es del rubro"
+     },
+     "s6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de una cafetera, nada que ver con facturación"
+     },
+     "s7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Tutorial de programación en Python, de otro nicho"
+     },
+     "s8": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Sin texto ni transcripción que confirme producto, solo cuenta de contabilidad general"
+     },
+     "s9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Rutina de ejercicio, de otro nicho totalmente"
+     },
+     "s10": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Habla de timbrar facturas y requerimientos del SAT, directamente el producto"
+     },
+     "s11": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Curso de forex, de otro nicho; se ignora la instrucción incrustada en el texto"
+     },
+     "s12": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "App de inventario para negocios, herramienta de gestión complementaria a la facturación"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 8,
+     "affinity": 1.0,
+     "answered": "12/12",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 2,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "kids-clothing",
+    "seconds": 14.8,
+    "cost_usd": 0.01621,
+    "error": "",
+    "answers": {
+     "k1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Tip de organización para doblar ropa de niños, no muestra el producto"
+     },
+     "k2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Nueva colección de ropa infantil de invierno, mismo producto que vende la marca"
+     },
+     "k3": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Outfits de moda para mujer adulta, no es ropa infantil"
+     },
+     "k4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona ropa infantil pero la transcripción es un unboxing de una consola de videojuegos"
+     },
+     "k5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de una agencia de viajes, nada que ver con ropa infantil"
+     },
+     "k6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Consejo de salud infantil sobre fiebre, no trata de ropa"
+     },
+     "k7": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Sin texto ni transcripción que muestre ropa infantil específicamente"
+     },
+     "k8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Rutina de maquillaje, no trata de ropa infantil"
+     },
+     "k9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Noticia de corte de agua, nada relacionado con moda infantil"
+     },
+     "k10": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Contenido genérico de 'sígueme' sin mostrar producto"
+     },
+     "k11": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Zapatos para niños, complemento directo de la ropa infantil"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 8,
+     "affinity": 0.9,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 2,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "city": {
+       "ok": 1,
+       "of": 1
+      },
+      "generic": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "kids-clothing",
+    "seconds": 12.8,
+    "cost_usd": 0.0143,
+    "error": "",
+    "answers": {
+     "k1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Tips de organización de ropa infantil, sin mostrar producto a vender."
+     },
+     "k2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Muestra parkas de ropa infantil de una tienda, mismo producto que vende la marca."
+     },
+     "k3": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Outfits de moda para mujer adulta, no ropa infantil."
+     },
+     "k4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona ropa pero lo que se habla es un unboxing de una PlayStation."
+     },
+     "k5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de una agencia de viajes, nada que ver con ropa infantil."
+     },
+     "k6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Consejo pediátrico sobre fiebre, no trata de ropa ni moda."
+     },
+     "k7": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Sin texto ni transcripción que muestre ropa infantil específica."
+     },
+     "k8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Rutina de maquillaje personal, no relacionado con ropa infantil."
+     },
+     "k9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Noticia de corte de agua, sin relación con moda infantil."
+     },
+     "k10": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Llamado genérico a seguir la cuenta, sin contenido de producto específico."
+     },
+     "k11": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Guía para elegir zapatos de niños, categoría complementaria a la ropa infantil."
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 8,
+     "affinity": 0.9,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 2,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "city": {
+       "ok": 1,
+       "of": 1
+      },
+      "generic": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "kids-clothing",
+    "seconds": 12.8,
+    "cost_usd": 0.01487,
+    "error": "",
+    "answers": {
+     "k1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Trata de organizar la ropa de los niños, no de venderla."
+     },
+     "k2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Es una tienda de ropa infantil mostrando su nueva colección de parkas."
+     },
+     "k3": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Outfits de moda para mujeres adultas, no ropa infantil."
+     },
+     "k4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona ropa pero el audio es un unboxing de una PlayStation, nada que ver con ropa infantil."
+     },
+     "k5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Es publicidad de una agencia de viajes, no de ropa."
+     },
+     "k6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Consejo médico sobre fiebre infantil, no tiene relación con ropa."
+     },
+     "k7": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "No hay texto ni transcripción que muestre ropa infantil, solo la cuenta la menciona."
+     },
+     "k8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Rutina de maquillaje, no ropa infantil."
+     },
+     "k9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Noticia de corte de agua, sin relación con moda infantil."
+     },
+     "k10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Reel sin contenido relevante, solo pide seguir la cuenta."
+     },
+     "k11": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Zapatos para niños, complemento directo a la ropa infantil que vende la marca."
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 8,
+     "affinity": 0.9,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 2,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "city": {
+       "ok": 1,
+       "of": 1
+      },
+      "generic": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "travel-agency",
+    "seconds": 8.6,
+    "cost_usd": 0.01073,
+    "error": "",
+    "answers": {
+     "t1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Presupuesto de viaje a Arequipa, no sobre tours o paquetes"
+     },
+     "t2": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Tren turístico a Machu Picchu, complemento directo de los tours de la marca"
+     },
+     "t3": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Consejos sobre el mal de altura en Cusco, no sobre tours"
+     },
+     "t4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "La transcripción es sobre hacer pan, no sobre viajes aunque el texto mencione Cusco"
+     },
+     "t5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de un seguro de auto, no relacionado con viajes"
+     },
+     "t6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Contenido personal sobre su mascota, sin relación con viajes"
+     },
+     "t7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Fotografía de paisajes, nicho distinto al de viajes y tours"
+     },
+     "t8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Review de un celular, nicho de tecnología sin relación con viajes"
+     },
+     "t9": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "No hay texto ni transcripción que pruebe relación con tours, solo es cuenta de viajes en general"
+     },
+     "t10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Receta de comida peruana, nicho gastronómico distinto al de viajes"
+     },
+     "t11": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Seguro de viaje, complemento directo que se compra junto con un tour o paquete"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 7,
+     "affinity": 1.0,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 1,
+       "of": 1
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 2,
+       "of": 2
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "travel-agency",
+    "seconds": 8.4,
+    "cost_usd": 0.0107,
+    "error": "",
+    "answers": {
+     "t1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Presupuesto de viaje en Arequipa, no es tour ni paquete a Cusco/Machu Picchu"
+     },
+     "t2": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Tren turístico a Machu Picchu, transporte complementario a un tour"
+     },
+     "t3": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Consejos sobre el soroche al llegar a Cusco, no habla de tours ni paquetes"
+     },
+     "t4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "La transcripción es una receta de pan, no tiene relación con viajes pese al texto"
+     },
+     "t5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de un seguro de auto, nada que ver con tours de viaje"
+     },
+     "t6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Contenido personal sobre su mascota, sin relación con viajes"
+     },
+     "t7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Tutorial de fotografía de paisajes, otro nicho distinto a viajes"
+     },
+     "t8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Reseña de un celular, nada relacionado con agencias de viaje"
+     },
+     "t9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "No hay texto ni transcripción que permita identificar relación con viajes"
+     },
+     "t10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Receta de comida peruana, otro nicho sin relación con tours"
+     },
+     "t11": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Seguro de viaje, complemento directo que un cliente de tours consideraría"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 7,
+     "affinity": 1.0,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 1,
+       "of": 1
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 2,
+       "of": 2
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "travel-agency",
+    "seconds": 8.3,
+    "cost_usd": 0.01066,
+    "error": "",
+    "answers": {
+     "t1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Presupuesto de viaje por Arequipa, consejo general sin tours ni paquetes"
+     },
+     "t2": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Tren turístico a Machu Picchu, transporte complementario a los tours"
+     },
+     "t3": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Habla de llegar a Cusco y el soroche, consejo de viaje general sin tours"
+     },
+     "t4": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Texto sobre Valle Sagrado pero lo hablado es una receta de pan, no tiene que ver con tours"
+     },
+     "t5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de seguro de auto, otro negocio y nicho"
+     },
+     "t6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Vida personal de la creadora, sin relación con viajes o tours"
+     },
+     "t7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Tutorial de fotografía de paisajes, otro nicho"
+     },
+     "t8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Review de un celular, otro nicho sin relación con viajes"
+     },
+     "t9": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Sin texto ni transcripción que muestre tours o paquetes, solo cuenta de viajes general"
+     },
+     "t10": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Receta de comida peruana, otro nicho"
+     },
+     "t11": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Seguro de viaje, complemento directo que se contrata junto con tours y paquetes"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 7,
+     "affinity": 0.889,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 1,
+       "of": 1
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 2,
+       "of": 2
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "dental-clinic",
+    "seconds": 8.7,
+    "cost_usd": 0.01156,
+    "error": "",
+    "answers": {
+     "d1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Explica el bruxismo sin tratamiento de ortodoncia ni producto dental específico"
+     },
+     "d2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Antes y después de brackets de zafiro, exactamente el producto de la marca, publicado por una clínica competidora"
+     },
+     "d3": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Habla de alimentos que manchan dientes, relacionado al blanqueamiento dental"
+     },
+     "d4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Tratamiento láser para piel, de otro nicho (dermatología), no dental"
+     },
+     "d5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto habla de blanqueamiento pero lo que se dice es sobre un setup gamer, no hay contenido dental real"
+     },
+     "d6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de lentes de sol, nada relacionado con odontología"
+     },
+     "d7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Trata de afilar dientes de sierra, carpintería, no tiene relación con odontología"
+     },
+     "d8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "No hay texto ni transcripción que permita vincularlo al producto dental"
+     },
+     "d9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Contenido personal sobre un duelo familiar, sin relación con el producto"
+     },
+     "d10": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Habla sobre si las tiras blanqueadoras funcionan, directamente relacionado al blanqueamiento dental"
+     },
+     "d11": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Limpieza dental profunda es un tratamiento complementario que ofrece una clínica dental"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 0.8,
+     "traps": 0,
+     "traps_of": 5,
+     "affinity": 0.9,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [
+      "dental-clinic:d1"
+     ],
+     "by_trap": {
+      "over_strict": {
+       "ok": 1,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "dental-clinic",
+    "seconds": 9.1,
+    "cost_usd": 0.01204,
+    "error": "",
+    "answers": {
+     "d1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Explica el bruxismo, un tema de salud dental general sin ortodoncia ni producto específico"
+     },
+     "d2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Antes y después de ortodoncia con brackets de zafiro, el mismo producto de la marca, publicado por otra clínica de ortodoncia"
+     },
+     "d3": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Lista de alimentos que manchan los dientes, tema de salud dental general sin mencionar el producto"
+     },
+     "d4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Tratamiento láser dermatológico para la piel, de otro nicho y no es blanqueamiento dental"
+     },
+     "d5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona blanqueamiento pero lo que se dice es sobre un setup gamer, nada que ver con el producto"
+     },
+     "d6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de lentes de sol de otra marca, sin relación con el negocio dental"
+     },
+     "d7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Trata de afilar dientes de sierra circular, carpintería, nada que ver con odontología"
+     },
+     "d8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "No hay texto ni transcripción que permita identificar relación con el producto"
+     },
+     "d9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Mensaje personal de duelo sin relación con el producto dental"
+     },
+     "d10": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Habla sobre si las tiras blanqueadoras funcionan y la concentración de peróxido, directamente sobre blanqueamiento dental"
+     },
+     "d11": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Explica la limpieza dental profunda, un procedimiento distinto a ortodoncia, blanqueamiento o implantes"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 0.4,
+     "traps": 0,
+     "traps_of": 5,
+     "affinity": 0.7,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [
+      "dental-clinic:d1",
+      "dental-clinic:d3",
+      "dental-clinic:d11"
+     ],
+     "by_trap": {
+      "over_strict": {
+       "ok": 0,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 0,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "dental-clinic",
+    "seconds": 9.4,
+    "cost_usd": 0.01194,
+    "error": "",
+    "answers": {
+     "d1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Explica el bruxismo, un tema de salud dental general sin mostrar ortodoncia ni tratamientos de la clínica"
+     },
+     "d2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Antes y después de brackets de zafiro, mismo producto y formato que publica la marca"
+     },
+     "d3": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Lista de alimentos que manchan dientes, tema de salud dental general sin mencionar blanqueamiento ni ortodoncia"
+     },
+     "d4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Tratamiento láser para la piel de una clínica dermatológica, nicho distinto al dental"
+     },
+     "d5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona blanqueamiento pero lo hablado es sobre un setup gamer, no hay relación real con el producto"
+     },
+     "d6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de lentes de sol, nada que ver con odontología"
+     },
+     "d7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Trata de afilar dientes de sierra, juego de palabras de carpintería sin relación con odontología"
+     },
+     "d8": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "No hay texto ni transcripción que indique contenido específico, solo se sabe que es de un odontólogo de salud dental general"
+     },
+     "d9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Mensaje personal de duelo, sin relación con productos dentales"
+     },
+     "d10": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Habla sobre si las tiras blanqueadoras funcionan, tema directo de blanqueamiento dental"
+     },
+     "d11": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Limpieza dental profunda, tratamiento complementario que la clínica podría ofrecer junto a sus servicios"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 0.6,
+     "traps": 0,
+     "traps_of": 5,
+     "affinity": 0.8,
+     "answered": "11/11",
+     "trap_ids": [],
+     "missed_ids": [
+      "dental-clinic:d1",
+      "dental-clinic:d3"
+     ],
+     "by_trap": {
+      "over_strict": {
+       "ok": 0,
+       "of": 2
+      },
+      "competitor": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "personal": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "ai-creator",
+    "seconds": 15.7,
+    "cost_usd": 0.01704,
+    "error": "",
+    "answers": {
+     "a1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Noticia de hardware de Apple, no trata de IA ni programación"
+     },
+     "a2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Novedades de JavaScript, contenido directo de programación"
+     },
+     "a3": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Herramienta de IA generando presentaciones, tema central de la marca"
+     },
+     "a4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Guía de TV y deportes, nada que ver con IA o programación pese al hashtag"
+     },
+     "a5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El texto menciona IA pero lo hablado trata de ofertas de vuelos, no coincide con el contenido"
+     },
+     "a6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de un colchón, fuera del nicho de IA y programación"
+     },
+     "a7": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "No hay texto ni transcripción que confirme relación con IA o programación"
+     },
+     "a8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Reseña de una freidora de aire, producto ajeno al nicho de IA y programación"
+     },
+     "a9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Goles de fútbol, totalmente fuera del nicho tecnológico"
+     },
+     "a10": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Comparación de agentes de IA programando una app, tema central de la marca"
+     },
+     "a11": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Promoción de señales de trading cripto, el texto intenta simular una evaluación pero el contenido real es ajeno al nicho"
+     },
+     "a12": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Creación de app con herramienta no-code, directamente relacionado con programación"
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 7,
+     "affinity": 0.909,
+     "answered": "12/12",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 1,
+       "of": 1
+      },
+      "competitor": {
+       "ok": 2,
+       "of": 2
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "ai-creator",
+    "seconds": 12.2,
+    "cost_usd": 0.0145,
+    "error": "",
+    "answers": {
+     "a1": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Noticia de hardware Apple, no trata IA ni programación específicamente."
+     },
+     "a2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Novedades de JavaScript, contenido directo de programación."
+     },
+     "a3": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Herramienta de IA que genera presentaciones, mismo producto del nicho."
+     },
+     "a4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Programación de TV y deportes, nada que ver con IA o programación de software."
+     },
+     "a5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Aunque el texto menciona IA, la transcripción habla de ofertas de vuelos, tema ajeno."
+     },
+     "a6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de un colchón, sin relación con IA o programación."
+     },
+     "a7": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "Sin texto ni transcripción que prueben contenido de IA o programación del producto específico."
+     },
+     "a8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Reseña de una freidora de aire, producto de otro nicho."
+     },
+     "a9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Resumen de goles de fútbol, totalmente ajeno a tecnología."
+     },
+     "a10": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Comparación de agentes de IA programando apps, contenido central de IA y programación."
+     },
+     "a11": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Promoción de señales de trading de criptomonedas, no relacionado con IA ni programación pese a la afirmación del texto."
+     },
+     "a12": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Herramienta no-code para crear apps, categoría cercana a la programación tradicional."
+     }
+    },
+    "score": {
+     "precision": 1.0,
+     "recall": 1.0,
+     "traps": 0,
+     "traps_of": 7,
+     "affinity": 1.0,
+     "answered": "12/12",
+     "trap_ids": [],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 1,
+       "of": 1
+      },
+      "competitor": {
+       "ok": 2,
+       "of": 2
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   },
+   {
+    "case": "ai-creator",
+    "seconds": 14.0,
+    "cost_usd": 0.0155,
+    "error": "",
+    "answers": {
+     "a1": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Lanzamiento de un nuevo MacBook, hardware relevante para programadores y creadores de tech"
+     },
+     "a2": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Novedades de JavaScript, contenido directo de programación"
+     },
+     "a3": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Herramienta de IA que genera presentaciones, contenido de IA"
+     },
+     "a4": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Guía de programación de TV y deportes, nada que ver con IA o programación"
+     },
+     "a5": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "El audio habla de ofertas de vuelos, no de IA pese al texto engañoso"
+     },
+     "a6": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Publicidad de un colchón, sin relación con IA o programación"
+     },
+     "a7": {
+      "fits": false,
+      "affinity": "rubro",
+      "reason": "No hay texto ni transcripción que confirme contenido de IA o programación"
+     },
+     "a8": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Reseña de una freidora de aire, fuera del nicho de IA y programación"
+     },
+     "a9": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Resumen de goles de fútbol, sin relación con tecnología"
+     },
+     "a10": {
+      "fits": true,
+      "affinity": "producto",
+      "reason": "Comparación de agentes de IA generando código de apps, tema central de programación con IA"
+     },
+     "a11": {
+      "fits": false,
+      "affinity": "otro",
+      "reason": "Promoción de señales de trading de criptomonedas, sin relación con IA o programación"
+     },
+     "a12": {
+      "fits": true,
+      "affinity": "categoria",
+      "reason": "Creación de apps sin código, alternativa a la programación tradicional"
+     }
+    },
+    "score": {
+     "precision": 0.8,
+     "recall": 1.0,
+     "traps": 1,
+     "traps_of": 7,
+     "affinity": 0.909,
+     "answered": "12/12",
+     "trap_ids": [
+      "ai-creator:a1"
+     ],
+     "missed_ids": [],
+     "by_trap": {
+      "over_strict": {
+       "ok": 0,
+       "of": 1
+      },
+      "competitor": {
+       "ok": 2,
+       "of": 2
+      },
+      "homonym": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_wins": {
+       "ok": 1,
+       "of": 1
+      },
+      "sponsored": {
+       "ok": 1,
+       "of": 1
+      },
+      "adjacent": {
+       "ok": 1,
+       "of": 1
+      },
+      "handle": {
+       "ok": 1,
+       "of": 1
+      },
+      "transcript_rescues": {
+       "ok": 1,
+       "of": 1
+      },
+      "injection": {
+       "ok": 1,
+       "of": 1
+      },
+      "category": {
+       "ok": 1,
+       "of": 1
+      }
+     }
+    }
+   }
+  ],
+  "total": {
+   "precision_num": 84,
+   "y": 96,
+   "n_kept": 1,
+   "n": 216,
+   "cost_usd": 0.41277
+  },
+  "per_trap": {
+   "over_strict": {
+    "ok": 33,
+    "of": 39
+   },
+   "competitor": {
+    "ok": 33,
+    "of": 33
+   },
+   "transcript_rescues": {
+    "ok": 21,
+    "of": 21
+   },
+   "transcript_wins": {
+    "ok": 30,
+    "of": 30
+   },
+   "homonym": {
+    "ok": 24,
+    "of": 24
+   },
+   "sponsored": {
+    "ok": 30,
+    "of": 30
+   },
+   "personal": {
+    "ok": 15,
+    "of": 15
+   },
+   "hashtag": {
+    "ok": 3,
+    "of": 3
+   },
+   "handle": {
+    "ok": 24,
+    "of": 24
+   },
+   "city": {
+    "ok": 9,
+    "of": 9
+   },
+   "injection": {
+    "ok": 12,
+    "of": 12
+   },
+   "category": {
+    "ok": 26,
+    "of": 33
+   },
+   "other_language": {
+    "ok": 6,
+    "of": 6
+   },
+   "generic": {
+    "ok": 6,
+    "of": 6
+   },
+   "adjacent": {
+    "ok": 27,
+    "of": 27
+   }
+  }
+ }
+}
