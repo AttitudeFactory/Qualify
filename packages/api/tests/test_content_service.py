@@ -55,6 +55,7 @@ from qualify_api.creative.service import (
     BudgetState,
     ContentService,
     DraftRecord,
+    DuplicateDraftRequest,
     ImageRecord,
     RouteBlockedByPolicy,
     UnknownVariant,
@@ -1423,3 +1424,86 @@ def test_a_printed_kind_sends_its_printed_limits_and_a_spoken_one_none() -> None
         service.run_generation(tenant_id=TENANT_ID, draft_id=draft_id)
         (request,) = router.requests
         assert dict(request.params) == expected, kind
+
+
+# ---------------------------------------------------------------------------
+# request_key (ticket 24803289): the same key never creates nor pays a second draft
+
+
+class KeyedRepository(InMemoryRepository):
+    """The in-memory repository with `content_drafts.request_key` and its unique index:
+    `race_winner` makes the next keyed insert lose to a concurrent create."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.by_key: dict[UUID, UUID] = {}
+        self.race_winner: UUID | None = None
+
+    def draft_id_for_request(self, *, tenant_id: UUID, request_key: UUID) -> UUID | None:
+        return self.by_key.get(request_key)
+
+    def insert_brief_and_draft(  # type: ignore[override]
+        self,
+        *,
+        tenant_id: UUID,
+        user_id: UUID,
+        brief: ContentBrief,
+        voice_profile_version: int,
+        pipeline_version: str,
+        request_key: UUID | None = None,
+    ) -> UUID:
+        if request_key is not None and self.race_winner is not None:
+            # another call inserted this key between our lookup and our insert
+            self.by_key[request_key] = self.race_winner
+            raise DuplicateDraftRequest(self.race_winner)
+        draft_id = super().insert_brief_and_draft(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            brief=brief,
+            voice_profile_version=voice_profile_version,
+            pipeline_version=pipeline_version,
+        )
+        if request_key is not None:
+            self.by_key[request_key] = draft_id
+        return draft_id
+
+
+def test_a_request_key_creates_one_draft_and_dispatches_it_once() -> None:
+    repo = KeyedRepository()
+    service, _, dispatcher = make_service(kit=make_kit(), voice=make_voice(), repo=repo)
+    key = uuid4()
+    first = service.create_draft(
+        tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=make_brief(), user_id=USER_ID, request_key=key
+    )
+    again = service.create_draft(
+        tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=make_brief(), user_id=USER_ID, request_key=key
+    )
+    assert again == first and len(repo.drafts) == 1
+    assert len(dispatcher.calls) == 1  # the paid generation runs once
+    assert service.draft_for_request(tenant_id=TENANT_ID, request_key=key) == first
+    assert service.draft_for_request(tenant_id=TENANT_ID, request_key=uuid4()) is None
+
+
+def test_a_concurrent_create_with_the_same_key_returns_the_winner_without_dispatching() -> None:
+    repo = KeyedRepository()
+    service, _, dispatcher = make_service(kit=make_kit(), voice=make_voice(), repo=repo)
+    repo.race_winner = uuid4()
+    draft_id = service.create_draft(
+        tenant_id=TENANT_ID,
+        brand_id=BRAND_ID,
+        brief=make_brief(),
+        user_id=USER_ID,
+        request_key=uuid4(),
+    )
+    assert draft_id == repo.race_winner and dispatcher.calls == []
+
+
+def test_without_a_key_every_call_is_a_new_draft_as_before() -> None:
+    # the plain InMemoryRepository has no notion of keys: callers that send none are
+    # untouched by the change
+    service, repo, dispatcher = make_service(kit=make_kit(), voice=make_voice())
+    for _ in range(2):
+        service.create_draft(
+            tenant_id=TENANT_ID, brand_id=BRAND_ID, brief=make_brief(), user_id=USER_ID
+        )
+    assert len(repo.drafts) == 2 and len(dispatcher.calls) == 2
